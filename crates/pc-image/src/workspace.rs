@@ -27,6 +27,9 @@ struct Transaction {
     proposed: Descriptor,
     tag: String,
     expected: Option<Digest>,
+    /// The workspace stays on its old image with its journals.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    keep: bool,
 }
 /// A fault hook runs after each externally meaningful publication operation.
 /// Returning an error leaves the workspace and any durable intent available.
@@ -89,7 +92,7 @@ pub struct PreparedSession {
     pub zero: std::collections::BTreeMap<std::path::PathBuf, std::rc::Rc<crate::zero::ZeroChain>>,
 }
 pub fn prepare_start(workspace: &Workspace<'_>, tag: &str, fresh: bool) -> Result<PreparedSession> {
-    prepare_selected(workspace, tag, fresh, None)
+    prepare_selected(workspace, tag, fresh, None, None)
 }
 
 /// Start the exact descriptor selected by a desktop, even if its tag has moved.
@@ -98,7 +101,63 @@ pub fn prepare_pinned(
     image: &Descriptor,
     fresh: bool,
 ) -> Result<PreparedSession> {
-    prepare_selected(workspace, "", fresh, Some(image))
+    prepare_selected(workspace, "", fresh, Some(image), None)
+}
+
+/// Start a machine's workspace on its pinned image, with the machine's
+/// settings overlay (hardware tables replacing the image's) when it has one.
+pub(crate) fn prepare_machine(
+    workspace: &Workspace<'_>,
+    image: &Descriptor,
+    settings: Option<&toml::Table>,
+) -> Result<PreparedSession> {
+    prepare_selected(workspace, "", false, Some(image), settings)
+}
+
+/// Pin a new workspace to `image` without preparing a launch: the session
+/// names the image and its machine identity, and no media exist yet. An
+/// existing session is left as it is.
+pub(crate) fn pin(workspace: &Workspace<'_>, image: &Descriptor) -> Result<()> {
+    if workspace.read("session.toml")?.is_some() {
+        return Ok(());
+    }
+    let store = workspace.store();
+    let manifest = Manifest::decode_with_types(
+        &image_store::BlobSource::read_verified(store, image, image_store::MAX_SMALL_BLOB)?,
+        PAYLOAD_TYPES,
+    )?;
+    if manifest.artifact_type() != mt::MACHINE || manifest.platform()? != "ibm-pc-at" {
+        return Err(invalid("not a PC machine image"));
+    }
+    write(
+        workspace,
+        "session.toml",
+        &Session {
+            schema: 1,
+            image: image.clone(),
+            machine: manifest.config.digest,
+            retention: retention_of(store, &image.digest)?,
+        },
+    )
+}
+
+/// The descriptor this workspace's session pins, read under ownership.
+pub(crate) fn pinned_descriptor(workspace: &Workspace<'_>) -> Result<Option<Descriptor>> {
+    if workspace.read("session.toml")?.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(session(workspace)?.image))
+}
+
+fn retention_of(store: &Store, image: &Digest) -> Result<std::collections::BTreeMap<String, u32>> {
+    Ok(crate::ImportRecord::read(store, image)?
+        .map(|r| {
+            r.generations
+                .into_iter()
+                .filter_map(|g| g.keep_generations.map(|n| (g.medium, n)))
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 fn prepare_selected(
@@ -106,6 +165,7 @@ fn prepare_selected(
     tag: &str,
     fresh: bool,
     selected: Option<&Descriptor>,
+    settings: Option<&toml::Table>,
 ) -> Result<PreparedSession> {
     if workspace.read("discard.toml")?.is_some() {
         return Err(invalid("discard pending; finish discarding this workspace"));
@@ -137,14 +197,7 @@ fn prepare_selected(
             Some(image) => image.clone(),
             None => store.tag_descriptor(tag)?,
         };
-        let retention = crate::ImportRecord::read(store, &image.digest)?
-            .map(|r| {
-                r.generations
-                    .into_iter()
-                    .filter_map(|g| g.keep_generations.map(|n| (g.medium, n)))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let retention = retention_of(store, &image.digest)?;
         Session {
             schema: 1,
             image,
@@ -169,8 +222,13 @@ fn prepare_selected(
         }
     }
     let directory = workspace.path().join("media");
-    let (image, machine, (bases, zero)) =
-        crate::provider::resolve_pinned(store, &state.image, &directory, Some(&state.retention))?;
+    let (image, machine, (bases, zero)) = crate::provider::resolve_pinned(
+        store,
+        &state.image,
+        &directory,
+        Some(&state.retention),
+        settings,
+    )?;
     if existing && state.machine != image.manifest.config.digest {
         return Err(invalid("workspace machine identity mismatch"));
     }
@@ -273,6 +331,23 @@ pub fn publish_as(
     expected: Option<&Digest>,
     flatten: bool,
     title: Option<&str>,
+    hook: impl FnMut(PublicationStep) -> Result<()>,
+) -> Result<Descriptor> {
+    publish_machine(workspace, tag, expected, flatten, title, None, false, hook)
+}
+/// Publish a machine's workspace: `settings`, the machine's overlay of
+/// hardware tables, replaces the image's in the new configuration. With
+/// `keep` the workspace stays on its old image with its journals; otherwise
+/// it moves onto the new image with fresh journals, as `publish_as` does.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn publish_machine(
+    workspace: &Workspace<'_>,
+    tag: &str,
+    expected: Option<&Digest>,
+    flatten: bool,
+    title: Option<&str>,
+    settings: Option<&toml::Table>,
+    keep: bool,
     mut hook: impl FnMut(PublicationStep) -> Result<()>,
 ) -> Result<Descriptor> {
     if workspace.read("discard.toml")?.is_some() {
@@ -284,6 +359,7 @@ pub fn publish_as(
         if transaction.schema != 1
             || transaction.tag != tag
             || transaction.expected.as_ref() != expected
+            || transaction.keep != keep
         {
             return Err(invalid(
                 "pending publication has different target or schema",
@@ -304,6 +380,12 @@ pub fn publish_as(
     let resolved = crate::provider::load_pinned(store, &old.image, true, true)?;
     let image = resolved.image;
     let mut config = resolved.config;
+    let mut overlay_cmos = None;
+    if let Some(machine) = settings {
+        let overlay = crate::revision::overlay(store, &config, &image.manifest.layers, machine)?;
+        config = overlay.config;
+        overlay_cmos = overlay.cmos;
+    }
     let bases = resolved.bases;
     if old.machine != image.manifest.config.digest {
         return Err(invalid("workspace machine identity mismatch"));
@@ -455,6 +537,13 @@ pub fn publish_as(
             hook(PublicationStep::BlobStored(blob.digest.clone()))?;
             n.head = blob.digest.clone();
             descriptors.push(classify(Descriptor::new(CMOS, blob.digest, blob.size)));
+        } else if let Some(bytes) = overlay_cmos {
+            // An unjournaled CMOS image gets the SETUP fields of the machine's
+            // settings, as Settings on an image stores them.
+            let blob = store.import(bytes.as_slice(), None)?;
+            hook(PublicationStep::BlobStored(blob.digest.clone()))?;
+            n.head = blob.digest.clone();
+            descriptors.push(classify(Descriptor::new(CMOS, blob.digest, blob.size)));
         }
     }
     let table = toml::Value::try_from(&config)
@@ -516,6 +605,7 @@ pub fn publish_as(
         proposed,
         tag: tag.into(),
         expected: expected.cloned(),
+        keep,
     };
     write(workspace, "transaction.toml", &transaction)?;
     hook(PublicationStep::IntentStored)?;
@@ -696,32 +786,34 @@ fn complete(
         }
     }
     hook(PublicationStep::TagUpdated)?;
-    let media = workspace.path().join("media");
-    let retired = workspace.path().join("retired");
-    // Identical manifests still need fresh journals. Pending intents block runs,
-    // so retry can also safely retire an already empty media directory.
-    if media.exists() && !retired.exists() {
-        fs::rename(&media, &retired)?;
+    if !transaction.keep {
+        let media = workspace.path().join("media");
+        let retired = workspace.path().join("retired");
+        // Identical manifests still need fresh journals. Pending intents block runs,
+        // so retry can also safely retire an already empty media directory.
+        if media.exists() && !retired.exists() {
+            fs::rename(&media, &retired)?;
+            fs::File::open(workspace.path())?.sync_all()?;
+        }
+        hook(PublicationStep::MediaRetired)?;
+        write(
+            workspace,
+            "session.toml",
+            &Session {
+                schema: 1,
+                image: transaction.proposed.clone(),
+                machine: image.manifest.config.digest,
+                retention: current.retention,
+            },
+        )?;
+        hook(PublicationStep::SessionUpdated)?;
+        if retired.exists() {
+            fs::remove_dir_all(retired)?;
+        }
+        fs::create_dir_all(&media)?;
         fs::File::open(workspace.path())?.sync_all()?;
+        hook(PublicationStep::JournalsRetired)?;
     }
-    hook(PublicationStep::MediaRetired)?;
-    write(
-        workspace,
-        "session.toml",
-        &Session {
-            schema: 1,
-            image: transaction.proposed.clone(),
-            machine: image.manifest.config.digest,
-            retention: current.retention,
-        },
-    )?;
-    hook(PublicationStep::SessionUpdated)?;
-    if retired.exists() {
-        fs::remove_dir_all(retired)?;
-    }
-    fs::create_dir_all(&media)?;
-    fs::File::open(workspace.path())?.sync_all()?;
-    hook(PublicationStep::JournalsRetired)?;
     let staging = workspace.path().join("publication");
     if staging.exists() {
         fs::remove_dir_all(staging)?;
@@ -874,9 +966,10 @@ impl SessionTransfer {
     }
 }
 
-/// Sweep decoded payload files that neither a tag nor a workspace's pinned
-/// image reaches; see `Store::sweep_materialized`. A damaged session refuses
-/// the sweep instead of dropping what that workspace may need.
+/// Sweep decoded payload files that neither a tag, a workspace's pinned
+/// image nor a machine's image reaches; see `Store::sweep_materialized`. A
+/// damaged session refuses the sweep instead of dropping what that workspace
+/// may need.
 pub fn sweep_materialized(store: &Store) -> Result<image_store::codec::Sweep> {
     let mut pinned = Vec::new();
     for name in store.list_workspaces()? {
@@ -884,6 +977,12 @@ pub fn sweep_materialized(store: &Store) -> Result<image_store::codec::Sweep> {
             pinned.push(digest);
         }
     }
+    pinned.extend(
+        store
+            .read_machines()?
+            .images()
+            .map(|image| image.digest.clone()),
+    );
     Ok(store.sweep_materialized(&pinned)?)
 }
 

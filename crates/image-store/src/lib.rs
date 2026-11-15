@@ -3,7 +3,8 @@
 //!
 //! Implements OCI Image Layout 1.0.0 and OCI Image Manifest / Content Descriptors
 //! 1.1: SHA-256 names exact stored bytes, not a decoded representation. See
-//! `backlog/docs/design/machine-images.md` §§1–3 and §5. Platform providers own
+//! `backlog/docs/design/machine-images.md` §§1–3 and §5; machines, the named
+//! local instances of images, are §3.2. Platform providers own
 //! config validation and ordered graph traversal; this crate owns no emulator,
 //! registry, disk reconstruction, or GC.
 //!
@@ -19,6 +20,7 @@ pub mod firmware;
 pub mod library;
 pub mod license;
 pub mod location;
+pub mod machine;
 pub mod media_set;
 pub mod metadata;
 mod store;

@@ -5,6 +5,33 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — Machines as named local instances of images (backend and
+  command line):** the store keeps machine records in `local/machines.toml`
+  (schema 1, atomic, index-locked; machine-images §3.2): a fixed workspace
+  id, a name unique ignoring case, the pinned image and the tag it came from,
+  labels, favourite, last run, pending inserts and a settings overlay.
+  `pc_image::machine` creates machines (default name the image title, then
+  `title (2)`) and lists them with derived state (Never started, Same as
+  image, Changed per drive + inserted media + CMOS + settings, Running;
+  detached and tag-moved; a per-machine problem). It renames, duplicates,
+  resets and deletes them, changes settings (SETUP fields of CMOS recomputed
+  as for image Settings) and saves as a new image (by default moving the
+  machine onto it with fresh journals, or keeping it on the old image).
+  Start is `prepare` plus `confirm` after assembly, so a failed assembly
+  keeps pending inserts and the last run. Opening a store for machine work
+  migrates desktop `regular-` workspaces to machines named after their image
+  title, keeps command-line workspaces' names and leaves Gaming-mode
+  workspaces alone; a desktop workspace made again later is adopted as
+  `title (2)`. `image machine ls|new|rename|duplicate|reset|rm|settings|commit|run`
+  mirrors the desktop actions. Tests cover every operation, migration from an
+  old-layout store (including a busy and a re-created desktop workspace),
+  reserved ids, an unjournaled CMOS and pending inserts. The slow golden
+  `machine_freedos_golden` (ignored) boots FreeDOS through a machine twice,
+  checking that its floppy journal keeps a written file, then resets it.
+  Interim, until the desktop starts machines: after a migration the desktop
+  shows that image unchanged and its Start begins a new desktop workspace
+  from the pristine image; that work is adopted as a further machine by the
+  next migration. Rolling back to an older build: §3.2.
 - **2026-11-15 — A halted machine takes a floppy and Ctrl+Alt+Del restarts
   it; a stopped machine takes floppies for Start:** a guest that halts with
   interrupts off (the open AT BIOS after "No ROM BASIC", when the boot code

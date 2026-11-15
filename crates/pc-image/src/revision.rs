@@ -27,9 +27,9 @@ use toml::{Table, Value};
 /// A stored machine image opened for Settings: its configuration and CMOS.
 pub struct Source {
     descriptor: Descriptor,
-    manifest: Manifest,
-    config: Config,
-    cmos: Option<[u8; 64]>,
+    pub(crate) manifest: Manifest,
+    pub(crate) config: Config,
+    pub(crate) cmos: Option<[u8; 64]>,
 }
 
 impl Source {
@@ -353,33 +353,103 @@ fn rebind(source: &Config, config: &mut Config) -> Result<()> {
 
 /// Check a revision with `machine` as its hardware tables. Firmware ROM
 /// bytes are read to lower the machine; disks are not.
-pub fn plan(store: &Store, source: &Source, machine: Table) -> Result<Plan> {
+/// The configuration that `machine` as hardware tables makes of `source`:
+/// drive slots rebound, lowering defaults frozen into the tables. Returns it
+/// with the lowered machines of the revision and of the source. Firmware ROM
+/// bytes are read to lower the machines; disks are not.
+pub(crate) fn lower_revision(
+    blobs: &dyn BlobSource,
+    source: &Config,
+    layers: &[Descriptor],
+    machine: Table,
+) -> Result<(Config, assembly::MachineConfig, assembly::MachineConfig)> {
     let mut config = Config {
         schema: 1,
         platform: "ibm-pc-at".into(),
         machine,
-        firmware: source.config.firmware.clone(),
+        firmware: source.firmware.clone(),
         media: Vec::new(),
         slots: Vec::new(),
-        nvram: source.config.nvram.clone(),
+        nvram: source.nvram.clone(),
     };
-    rebind(&source.config, &mut config)?;
-    let mut descriptors = source.manifest.layers.clone();
-    let lowered = crate::provider::prepare(decode(config_table(&config)?)?, &descriptors, store)?;
+    rebind(source, &mut config)?;
+    let lowered = crate::provider::prepare(decode(config_table(&config)?)?, layers, blobs)?;
     // What only the ROM bytes decide, such as a BIOS that types its fixed disks
     // from CMOS, refuses the machine here, unless a stored CMOS image replaces
     // the derived one, as assembly does.
-    if source.cmos.is_none() {
+    if source.nvram.is_none() {
         assembly::derive_cmos_config(&lowered.machine).map_err(|e| invalid(e.to_string()))?;
     }
     crate::defaults::materialize(&mut config.machine, &lowered.machine)?;
-    let old =
-        crate::provider::prepare(decode(config_table(&source.config)?)?, &descriptors, store)?;
+    let old = crate::provider::prepare(decode(config_table(source)?)?, layers, blobs)?;
+    Ok((config, lowered.machine, old.machine))
+}
+
+/// A machine's settings overlay on an image configuration: the configuration
+/// it makes and its lowered machine. A stored CMOS image without a journal is
+/// copied afresh at every Start, so its SETUP fields are recomputed here for
+/// the overlay (`cmos`, when they change) and the lowered machine starts from
+/// those bytes. A journaled CMOS received the recomputed bytes in its journal
+/// when the settings changed, so it needs nothing here.
+pub(crate) struct Overlay {
+    pub config: Config,
+    pub machine: assembly::MachineConfig,
+    pub cmos: Option<[u8; 64]>,
+}
+
+pub(crate) fn overlay(
+    blobs: &dyn BlobSource,
+    source: &Config,
+    layers: &[Descriptor],
+    machine: &Table,
+) -> Result<Overlay> {
+    let (config, mut lowered, old) = lower_revision(blobs, source, layers, machine.clone())?;
+    let mut cmos = None;
+    if source
+        .nvram
+        .as_ref()
+        .is_some_and(|n| matches!(n.mode, NvramMode::Image))
+    {
+        let stored = lowered
+            .devices
+            .iter()
+            .find_map(|device| match &device.kind {
+                assembly::DeviceKind::Rtc(rtc) => match rtc.nvram {
+                    assembly::NvramSource::Image(bytes) => Some(bytes),
+                    _ => None,
+                },
+                _ => None,
+            });
+        if let Some(stored) = stored {
+            // A machine whose SETUP values cannot be derived keeps the stored
+            // bytes, as Settings on an image does.
+            if let Ok((bytes, changes)) = recompute_cmos(&stored, &old, &lowered) {
+                if !changes.is_empty() {
+                    for device in &mut lowered.devices {
+                        if let assembly::DeviceKind::Rtc(rtc) = &mut device.kind {
+                            rtc.nvram = assembly::NvramSource::Image(bytes);
+                        }
+                    }
+                    cmos = Some(bytes);
+                }
+            }
+        }
+    }
+    Ok(Overlay {
+        config,
+        machine: lowered,
+        cmos,
+    })
+}
+
+pub fn plan(store: &Store, source: &Source, machine: Table) -> Result<Plan> {
+    let mut descriptors = source.manifest.layers.clone();
+    let (mut config, lowered, old) = lower_revision(store, &source.config, &descriptors, machine)?;
     let mut pending = BTreeMap::new();
     let mut cmos_note = None;
     let cmos_changes = match &source.cmos {
         Some(stored) => {
-            let (bytes, changes) = match recompute_cmos(stored, &old.machine, &lowered.machine) {
+            let (bytes, changes) = match recompute_cmos(stored, &old, &lowered) {
                 Ok(recomputed) => recomputed,
                 Err(error) => {
                     cmos_note = Some(format!(
@@ -404,10 +474,9 @@ pub fn plan(store: &Store, source: &Source, machine: Table) -> Result<Plan> {
             changes
         }
         None => {
-            let before =
-                assembly::derive_cmos_config(&old.machine).map_err(|e| invalid(e.to_string()))?;
-            let after = assembly::derive_cmos_config(&lowered.machine)
-                .map_err(|e| invalid(e.to_string()))?;
+            let before = assembly::derive_cmos_config(&old).map_err(|e| invalid(e.to_string()))?;
+            let after =
+                assembly::derive_cmos_config(&lowered).map_err(|e| invalid(e.to_string()))?;
             (0..64)
                 .filter(|&i| before[i] != after[i])
                 .map(|offset| CmosChange {
@@ -557,7 +626,7 @@ fn sections(lines: &[&str]) -> Vec<String> {
 }
 
 /// A longest-common-subsequence line diff with the table of each change.
-fn line_diff(old: &str, new: &str) -> Vec<DiffLine> {
+pub(crate) fn line_diff(old: &str, new: &str) -> Vec<DiffLine> {
     let a: Vec<_> = old.lines().collect();
     let b: Vec<_> = new.lines().collect();
     let (sa, sb) = (sections(&a), sections(&b));

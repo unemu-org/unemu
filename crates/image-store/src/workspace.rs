@@ -17,7 +17,7 @@ pub struct Workspace<'a> {
     _lock: File,
     _lease: File,
 }
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
         && name
@@ -156,6 +156,38 @@ impl Workspace<'_> {
     pub fn path(&self) -> &Path {
         &self.path
     }
+    /// The workspace id: its directory name under `workspaces/`.
+    pub fn name(&self) -> &str {
+        self.path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+    }
+    /// Move this stopped workspace to a new id, with its lock, journals and
+    /// documents. The namespace lock serializes the move with acquisition, so
+    /// no other owner can attach to either name meanwhile; the target must not
+    /// exist. The owner keeps its lock and continues under the new path.
+    pub fn rename(&mut self, name: &str) -> Result<()> {
+        if !valid_name(name) {
+            return Err(invalid("invalid workspace name"));
+        }
+        let _namespace = host::exclusive_lock(&self.store.root().join("locks/workspaces.lock"))?;
+        let parent = self
+            .path
+            .parent()
+            .ok_or_else(|| invalid("missing workspace parent"))?
+            .to_path_buf();
+        let target = parent.join(name);
+        match fs::symlink_metadata(&target) {
+            Ok(_) => return Err(invalid(format!("workspace {name} exists already"))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+            Err(e) => return Err(e.into()),
+        }
+        fs::rename(&self.path, &target)?;
+        host::sync_dir(&parent)?;
+        self.path = target;
+        Ok(())
+    }
     pub fn store(&self) -> &Store {
         self.store
     }
@@ -184,6 +216,12 @@ impl Workspace<'_> {
     }
     /// Discard affects only the selected workspace. The stable lock survives.
     pub fn discard(self) -> Result<()> {
+        self.discard_contents()
+    }
+
+    /// Discard like `discard`, keeping ownership so the caller can set the
+    /// workspace up again before anyone else can start it.
+    pub fn clear(&self) -> Result<()> {
         self.discard_contents()
     }
 

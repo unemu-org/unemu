@@ -490,6 +490,7 @@ content-addressed area:
   cache/summaries/                library summaries and search index; rebuildable
   local/blob-index.toml           build-time source hints, redistribution class, licence
   local/library.toml              metadata overlays, personal fields, last run, favourites
+  local/machines.toml             machines: named local instances of images (§3.2)
   local/pulls/<hex>.toml          unfinished pull or import: source and manifest digest
   locks/store.lock                shared operation leases; exclusive for GC
   locks/index.lock                short exclusive tag/index updates
@@ -593,6 +594,152 @@ a live lock file or replace its inode to bypass a lock.
 The local store, PC import, immutable layers, workspaces and offline publication
 are implemented, with synthetic concurrency, interruption and process-exit tests.
 Registry transport and image-store GUI integration remain prospective.
+
+### 3.2. Machines: named local instances of images
+
+Decision-29 splits what an image is from what a user runs. An **image** is the
+immutable manifest above: shareable, pushed and pulled, named by tags. A
+**machine** is a named, local, mutable instance of one image manifest, pinned
+by digest and remembered with the `repository:tag` it was made from. Its
+changes (disk and floppy journals, CMOS, machine settings, pending inserts)
+live beside the image, and it never leaves the local store: machines are never
+pushed, exported or pulled. One image can have many machines. The docker
+analogy holds: image ≈ docker image, machine ≈ container, Save as new image ≈
+`docker commit`, Gaming mode ≈ `docker run --rm`.
+
+**Store layout.** A machine is one record in `local/machines.toml` plus the
+workspace of the same id under `workspaces/<id>/`, which holds its session pin
+(`session.toml`) and journals exactly as any workspace does (§3, §4). The
+record file is versioned (`schema = 1`); a newer or invalid file fails closed
+and is never rewritten. Edits reread it under the short index lock and replace
+it atomically, like `local/library.toml`; lock order stays store lease,
+workspace lock, index lock. Every operation that changes a machine's journals,
+settings or pending inserts first takes its workspace lock (`machine::own`),
+so a running machine (any process holding the lock) refuses them; a lock held
+for an instant by another listing's running probe is retried briefly first.
+Rename, favourite and labels change only the record and work while the
+machine runs.
+
+```toml
+schema = 1
+
+[machines.dos-games]               # the workspace id, fixed for the command line
+name = "DOS games"                 # 1–64 characters, unique ignoring case
+source = "open-at-games:1.1.0"     # the tag it was made from; empty without one
+origin = "new"                     # new | duplicate | migration
+created = "2026-11-10 09:12 UTC"   # host text, like a last run; optional
+last_run = "2026-11-15 09:41 UTC"  # host text, set at each Start; optional
+favorite = true
+labels = ["games"]
+# migrated_from = "regular-…"      # only while a migration move is pending
+
+[machines.dos-games.image]         # the pinned manifest descriptor, by digest
+mediaType = "application/vnd.oci.image.manifest.v1+json"
+digest = "sha256:…"
+size = 1796
+
+[machines.dos-games.settings]      # optional: provider hardware tables that
+# …                                # replace the image's from the next Start
+
+[[machines.dos-games.pending]]     # media for the next Start
+drive = "A:"
+medium = "disk-1"                  # the medium id in the set's configuration
+reference = "wolf3d-shareware:1.4" # for display; the set is pinned below
+all = false                        # whether every disk of the set joins the catalogue
+journal = true                     # journal in the machine, else read-only
+[machines.dos-games.pending.set]   # the installation media set, by digest
+# …
+```
+
+Times are host text the frontend supplies (the CLI and the desktop read the
+host clock for library metadata only); nothing in the execution path reads a
+clock (determinism rule). The id is a slug of the name (lowercase ASCII letters
+and digits with single hyphens, at most 56 characters, `machine` when nothing
+remains), numbered `-2`, `-3`, … when a machine or any workspace directory has
+it. Rename changes only the name. A new machine's default name is its image's
+title (title annotation, else first catalogue title, else the reference), then
+`title (2)`, … . Names compare case-folded (uppercased, then lowercased, so
+"Straße" and "STRASSE" are one name) and may not contain control characters
+or invisible formatting characters (bidirectional controls, zero-width
+characters, the byte order mark, tag characters); Unicode normalization (NFC)
+is not applied yet. An id never starts with `regular-`, `gaming-`,
+`disposable-` or `fresh-`, the prefixes the desktop and Gaming mode give their
+own workspaces: such a slug gets `m-` in front ("Fresh install" is
+`m-fresh-install`). The record pins a manifest descriptor without the local
+tag annotation; a machine never follows a tag.
+
+**Derived state** (the library's State column), read without taking the
+lock: *Running* when another owner holds the workspace lock; *Changed:* the
+drives (in drive order: A:, B:, C:, D:) whose journals hold written sectors,
+then *CMOS* when the CMOS journal's content differs from the image's CMOS, then
+then *inserted media* when the journal of a disk inserted from an installation
+set holds writes (listed as changes with drive `inserted`), then
+*settings* when an overlay exists; *Never started* without a last run;
+otherwise *Same as image*. The listing also gives the journal bytes on the
+host, the tags that name the image now (none: **detached** — the image stays
+in the store for the machine; blobs are never collected while referenced), the
+image the source tag names now when it **moved**, pending inserts, a pending
+publication, and a *problem* when that machine's workspace or image cannot be
+read (the other machines list normally).
+
+**Operations** (`pc_image::machine`, mirrored by `image machine …`):
+
+| Operation | Behaviour |
+|---|---|
+| New machine from image | Record first under the index lock (name and id reserved), then the workspace is pinned to the image at once; nothing is verified or materialized until Start. A failure removes both. |
+| Rename | The name only. |
+| Duplicate | Copies the session pin and every journal (never locks, the desktop's record, publication staging or journal temporaries) into a new workspace, with the record's settings, pending inserts and labels, on the same image. Not the favourite or last run. The copies are independent. Refused while a publication is pending. |
+| Reset to image | Discards the workspace contents under its lock (§3.1 discard), drops the settings and pending inserts, and pins the workspace again. Name, id, favourite, labels and last run stay. |
+| Delete machine | Removes the workspace, then the record. The image and its tags stay. A crash between the two leaves a record without a workspace, which starts again from its image. |
+| Settings | Checks the hardware tables as a revision of the image's (`revision`: drive slots rebound, defaults frozen) and keeps them as the machine's overlay from its next Start; tables that lower to the image's machine, or an explicit clear, drop the overlay. The record is written first and goes back if the CMOS journal write then fails; a SETUP field that cannot be derived keeps the stored bytes, with a note. A field AT SETUP records in CMOS (memory, drives, equipment) is recomputed as Settings on an image recomputes it (§2, revision): only that field and the checksum change, written into the machine's CMOS journal when the image journals CMOS; a stored CMOS image without a journal is recomputed at every Start; derived CMOS follows the configuration. The image never changes. |
+| Save as new image | Offline whole-machine publication (§4) of the journals with the overlay as the new configuration, titled with the machine name by default. By default the machine moves onto the new image with fresh, empty journals and no overlay; with *keep on old image* the publication intent records it, the workspace keeps its image, journals and overlay, and the new image stands alone. Writes to disks inserted from installation sets are never part of the image; the command line warns about them, and moving onto the new image starts their journals afresh too. |
+| Start | Two steps. `prepare` opens the workspace's session on the pinned image (the session pin wins over the record, so a rebind from elsewhere is honoured) with the overlay and puts each pending insert into its floppy drive (chosen disk first, then the set's others when all join; journals named `<set hex>-<medium id>.upfj` as a live insert from the library names them); it changes no record. `confirm`, called once the machine has assembled, records the last run and the pinned image and drops the inserts the launch put in, so a failed assembly keeps both. A pending insert lasts until that Start; afterwards the image's catalogue applies again. |
+
+`image run NAME:TAG --workspace ID` on a machine's workspace starts it as the
+machine (overlay, inserts, last run) after checking that the tag names the
+pinned image. `image publish --from-workspace` and `image workspace discard`
+refuse a machine's workspace and name `image machine commit` or `reset`,
+which keep the record and the settings overlay consistent. `image sweep`
+keeps every machine's image.
+
+**Migration.** Opening a store for machine work (`machine::open_store`, every
+`image machine` command) first adopts older workspaces, idempotently and
+without losing data:
+
+- A desktop workspace (`regular-…` from its image digest, or the older
+  `gaming-…`) becomes a machine named after its image's title (then
+  `title (2)`, …) with an id from that name, and takes the image's favourite
+  star and last run. Its directory moves to the new id under its workspace
+  lock and the namespace lock; the desktop's own record of its sessions
+  (`desktop.toml`) is dropped, since the sessions are the machine's now. The
+  record, written first, names the old id in `migrated_from` until the move is
+  made, so an interrupted move completes on the next migration; an empty
+  directory left at the id is removed first, one with data is never touched.
+  Once the move is made the record forgets the old id.
+- A workspace named on the command line keeps its name as both id and name.
+- Unfinished Gaming-mode workspaces (`disposable-…`, `fresh-…`) stay as they
+  are.
+- A workspace in use waits for a later run. A machine whose move is still
+  pending because its old workspace is in use refuses every change and Start,
+  without ever making an empty workspace at its id.
+- A damaged workspace is reported (`migration-skipped:NAME`) and skipped; the
+  others migrate.
+
+*Interim, until the desktop starts machines itself:* the desktop of this
+build still finds its workspace for an image by the `regular-` prefix. After
+a migration it therefore shows that image without changes, its Start begins
+a new `regular-…` workspace from the pristine image, and its Save as new
+image… publishes from that new workspace. Nothing is lost: the work done
+there is adopted by the next migration as a further machine, `title (2)`.
+*Rolling back* to a build without machines: rename each machine's directory
+`workspaces/<id>` back to a `regular-…` name (any `regular-` name works; that
+desktop finds its workspace by the pinned image) and remove
+`local/machines.toml`; settings overlays and pending inserts, which that
+build does not know, are lost, journals are not.
+
+Out of scope, as decision-29 says: rebasing a machine onto a newer image or tag,
+machine export and import, machines on a registry, and the full insert flow
+for a stopped machine (only its stored result, the pending insert, exists here).
 
 ## 4. Disk chains and writable sessions
 

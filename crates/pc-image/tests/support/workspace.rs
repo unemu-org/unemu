@@ -45,6 +45,15 @@ pub struct Fixture {
 impl Fixture {
     /// `None` when a fetched ROM fixture is missing, which skips the test.
     pub fn new() -> Option<Self> {
+        Self::build(true)
+    }
+    /// The same machine with a stored CMOS image that is copied afresh at
+    /// every start instead of journaled.
+    #[allow(dead_code)]
+    pub fn without_cmos_journal() -> Option<Self> {
+        Self::build(false)
+    }
+    fn build(cmos_journal: bool) -> Option<Self> {
         let mut roms = Vec::new();
         for (from, to) in [
             ("kiselev-bios/bios-xi8088.bin", "bios.bin"),
@@ -69,7 +78,16 @@ impl Fixture {
         fs::write(path.join("two.img"), vec![0; 360 * 1024]).unwrap();
         fs::write(path.join("cmos.bin"), [0; 64]).unwrap();
         let file = path.join("machine.toml");
-        fs::write(&file, "schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='bios.bin'\n[[firmware.option_roms]]\nimage='xtide.bin'\nbase=0xC8000\nprovides=['fixed-disk']\n[board.rtc.nvram]\nimage='cmos.bin'\nwrite='journal'\njournal='source-cmos.upfj'\n[[card]]\nid='fdc-765'\n[[card.drives]]\nunit=0\ntype='360K'\n[[card.drives.media]]\nimage='one.img'\nwrite='journal'\njournal='source-one.upfj'\n[[card.drives.media]]\nimage='two.img'\nwrite='journal'\njournal='source-two.upfj'\n[[card]]\nkind='ide'\n[[card.drives]]\nchannel='master'\ngeometry={cylinders=1,heads=1,sectors=32}\nimage='fixed.img'\nwrite='journal'\njournal='source-fixed.upfj'\nkeep_generations=3\n").unwrap();
+        let text = "schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='bios.bin'\n[[firmware.option_roms]]\nimage='xtide.bin'\nbase=0xC8000\nprovides=['fixed-disk']\n[board.rtc.nvram]\nimage='cmos.bin'\nwrite='journal'\njournal='source-cmos.upfj'\n[[card]]\nid='fdc-765'\n[[card.drives]]\nunit=0\ntype='360K'\n[[card.drives.media]]\nimage='one.img'\nwrite='journal'\njournal='source-one.upfj'\n[[card.drives.media]]\nimage='two.img'\nwrite='journal'\njournal='source-two.upfj'\n[[card]]\nkind='ide'\n[[card.drives]]\nchannel='master'\ngeometry={cylinders=1,heads=1,sectors=32}\nimage='fixed.img'\nwrite='journal'\njournal='source-fixed.upfj'\nkeep_generations=3\n";
+        let text = if cmos_journal {
+            text.to_owned()
+        } else {
+            text.replace(
+                "write='journal'\njournal='source-cmos.upfj'\n[[card]]",
+                "[[card]]",
+            )
+        };
+        fs::write(&file, text).unwrap();
         let store = Store::open(path.join("store")).unwrap();
         let image = pc_image::import_machine(
             &store,

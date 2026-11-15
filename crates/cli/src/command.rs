@@ -24,6 +24,15 @@ const USAGE: &str = "usage: unemupc98 --boot (Real16 timer demo)
        unemupc98 image workspace discard NAME --store DIR --yes
        unemupc98 image workspace abandon-publication NAME --store DIR
        unemupc98 image publish --from-workspace NAME --store DIR --tag NAME:TAG [--flatten]
+       unemupc98 image machine ls --store DIR
+       unemupc98 image machine new NAME:TAG --store DIR [--name NAME]
+       unemupc98 image machine rename ID NAME --store DIR
+       unemupc98 image machine duplicate ID --store DIR [--name NAME]
+       unemupc98 image machine reset ID --store DIR --yes
+       unemupc98 image machine rm ID --store DIR --yes
+       unemupc98 image machine settings ID --store DIR [--set PATH=VALUE]... [--clear] [--dry-run]
+       unemupc98 image machine commit ID --store DIR --tag NAME:TAG [--title TITLE] [--keep-on-old-image]
+       unemupc98 image machine run ID --store DIR [--max-steps N]
        unemupc98 image media import FILE...|DIR --title TITLE --tag NAME:TAG --store DIR [--create] [--dry-run] [--no-compress] [--label N=TEXT]... [--format N=FORMAT]... [--extra PATH[:DOSNAME]]... [--open --license LicenseRef-NAME --license-text EXTRA] [SET-METADATA]
          SET-METADATA: [--publisher P]... [--developer D]... [--year YYYY] [--genre G]... [--platform PLATFORM] [--description TEXT]
        unemupc98 image firmware import FOLDER|FILES... [--store DIR] [--create] [--rescan] [--dry-run] [--for CATALOGUE-ID [EXTRAS] [METADATA]]

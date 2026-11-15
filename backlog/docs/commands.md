@@ -18,6 +18,18 @@ cargo run --offline -p cli -- image workspace abandon-publication play --store /
 cargo run --offline -p cli -- image publish --from-workspace play --store /path/to/store --tag dos-lab:flat --flatten
 cargo run --offline -p cli -- image publish --from-workspace play --store /path/to/store --tag dos-lab:1.1
 cargo run --offline -p cli -- image workspace discard play --store /path/to/store --yes
+cargo run --offline -p cli -- image machine ls --store /path/to/store
+cargo run --offline -p cli -- image machine new dos-lab:1.0 --store /path/to/store --name "DOS games"
+cargo run --offline -p cli -- image machine rename dos-games "Keen" --store /path/to/store
+cargo run --offline -p cli -- image machine duplicate dos-games --store /path/to/store --name "Keen copy"
+cargo run --offline -p cli -- image machine settings dos-games --store /path/to/store --set memory.extended_kib=3072 --dry-run
+cargo run --offline -p cli -- image machine settings dos-games --store /path/to/store --set memory.extended_kib=3072
+cargo run --offline -p cli -- image machine settings dos-games --store /path/to/store --clear
+cargo run --offline -p cli -- image machine run dos-games --store /path/to/store --max-steps 1000000
+cargo run --offline -p cli -- image machine commit dos-games --store /path/to/store --tag dos-games:1.0.0
+cargo run --offline -p cli -- image machine commit dos-games --store /path/to/store --tag dos-games:1.1.0 --title "DOS games" --keep-on-old-image
+cargo run --offline -p cli -- image machine reset dos-games --store /path/to/store --yes
+cargo run --offline -p cli -- image machine rm dos-games --store /path/to/store --yes
 cargo run --offline -p cli -- image media import /path/to/disks --title "Installation set" --tag install:1.0 --store /path/to/store --create
 cargo run --offline -p cli -- image media import /path/to/disk1.img /path/to/disk2.img --title "Installation set" --tag install:2.0 --label '1=Setup' --extra /path/to/manual.txt:MANUAL.TXT --store /path/to/store
 cargo run --offline -p cli -- image media import /path/to/disc.iso --title "Optical set" --tag optical:1.0 --format 1=iso-2048 --store /path/to/store
@@ -26,6 +38,41 @@ cargo run --offline -p cli -- image media ls --store /path/to/store
 cargo run --offline -p cli -- image media show install:1.0 --store /path/to/store
 cargo run --offline -p cli -- image push wolf3d-shareware:1.4 --store /path/to/store --dry-run
 ```
+
+Machines (machine-images §3.2) are named local instances of images: the
+desktop's Machines list on the command line. Each has a fixed id (its
+workspace, a slug of the first name; never starting `regular-`, `gaming-`,
+`disposable-` or `fresh-`, which get `m-` in front) and a free-text name,
+1–64 characters, unique ignoring case; `new` defaults the name to the image
+title, then `title (2)`. Every `image machine` command first adopts older
+workspaces as machines and reports each on the error stream as
+`migrated:ID`, and each workspace it leaves alone because it is damaged as
+`migration-skipped:NAME REASON`: a desktop `regular-…` workspace takes its
+image's title and a new id, a workspace named on the command line keeps its
+name, and Gaming-mode workspaces stay. `ls` prints
+`ID NAME SOURCE DIGEST STATE last-run:… changes:BYTES` with `detached`,
+`tag-moved:DIGEST`, `insert-pending:DRIVE`, `publication-pending` and
+`problem:…` flags, tab-separated; STATE is `Never started`, `Same as image`,
+`Changed: A:, C:, inserted media, CMOS, settings` or `Running`. `settings`
+prints the hardware-table diff from the image (`[table]`, `-old`, `+new`) and
+the CMOS bytes the change rewrites (`cmos:17h old:00 new:0C …`); `--set`
+takes a dotted path into the tables and a TOML value (other text is a
+string), `--clear` drops the overlay and returns to the image's settings, a
+`cmos-note:` line explains stored CMOS bytes kept because SETUP values
+cannot be derived, and the change applies at the machine's next start. `commit` (Save as new image…) moves the machine onto
+the new image with fresh journals unless `--keep-on-old-image`; its title
+defaults to the machine name, it warns on the error stream about writes to
+disks inserted from installation sets (never part of an image), and, like
+`image publish`, it moves no existing non-version tag (there is no
+`--expect DIGEST`). `reset` and `rm` print the machine and refuse
+without `--yes`; neither deletes the image. A running machine refuses every
+change but `rename`; a machine whose migration move is still pending refuses
+until its old desktop workspace is free. `run` records the last run and drops
+the pending inserts only once the machine has assembled. `image run NAME:TAG
+--workspace ID` on a machine's id starts it as the machine, refusing a tag
+that names another image; `image publish --from-workspace ID` and
+`image workspace discard ID` refuse a machine's id and name the machine
+command to use.
 
 Compression policy (store side). Machine imports, media-set imports and
 workspace publication compress payloads of at least 4 KiB with single-threaded

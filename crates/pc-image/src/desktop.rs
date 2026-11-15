@@ -227,7 +227,7 @@ fn device_name(kind: &str) -> String {
     }
     .into()
 }
-fn working_count(
+pub(crate) fn working_count(
     store: &Store,
     workspace: Option<&str>,
     id: &str,

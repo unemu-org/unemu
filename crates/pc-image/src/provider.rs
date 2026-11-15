@@ -526,7 +526,7 @@ pub(crate) type LaunchBases = (
 /// Assembly input only: a compressed journal floppy has no file, so launch
 /// through `workspace::prepare_start`, which also returns the verified bases.
 pub fn resolve(store: &Store, tag: &str, session: &Path) -> Result<assembly::MachineConfig> {
-    Ok(resolve_pinned(store, &store.tag_descriptor(tag)?, session, None)?.1)
+    Ok(resolve_pinned(store, &store.tag_descriptor(tag)?, session, None, None)?.1)
 }
 pub(crate) struct PreparedImage {
     pub image: image_store::ResolvedImage,
@@ -609,11 +609,14 @@ pub(crate) fn load_pinned(
         bases,
     })
 }
+/// `settings`, a machine's overlay of hardware tables, replaces the image's
+/// for this launch; media, firmware and CMOS bases stay the image's.
 pub(crate) fn resolve_pinned(
     store: &Store,
     descriptor: &Descriptor,
     session: &Path,
     overrides: Option<&BTreeMap<String, u32>>,
+    settings: Option<&toml::Table>,
 ) -> Result<(
     image_store::ResolvedImage,
     assembly::MachineConfig,
@@ -621,10 +624,21 @@ pub(crate) fn resolve_pinned(
 )> {
     let resolved = load_pinned(store, descriptor, false, true)?;
     let image = resolved.image;
-    let mut prepared = Prepared {
-        config: resolved.config,
-        machine: resolved.machine,
-        references: Vec::new(),
+    let mut prepared = match settings {
+        None => Prepared {
+            config: resolved.config,
+            machine: resolved.machine,
+            references: Vec::new(),
+        },
+        Some(machine) => {
+            let overlay =
+                crate::revision::overlay(store, &resolved.config, &image.manifest.layers, machine)?;
+            Prepared {
+                config: overlay.config,
+                machine: overlay.machine,
+                references: Vec::new(),
+            }
+        }
     };
     let bases = resolved.bases;
     let record = crate::ImportRecord::read(store, &image.image.digest)?;

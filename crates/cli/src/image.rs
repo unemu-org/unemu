@@ -2,6 +2,7 @@
 //! Opt-in local image commands; machine-images §§2–3, §5.1 and §8.
 
 mod firmware;
+mod machine;
 mod media;
 mod registry;
 mod template;
@@ -44,6 +45,7 @@ pub enum ImageCommand {
         flatten: bool,
     },
     Media(media::MediaCommand),
+    Machine(machine::MachineCommand),
     Firmware(firmware::FirmwareCommand),
     Registry(registry::RegistryCommand),
     Template(template::TemplateCommand),
@@ -73,6 +75,9 @@ pub fn parse(args: &[OsString]) -> Result<ImageCommand, &'static str> {
     }
     if args.first().is_some_and(|a| a == "media") {
         return media::parse(&args[1..]).map(ImageCommand::Media);
+    }
+    if args.first().is_some_and(|a| a == "machine") {
+        return machine::parse(&args[1..]).map(ImageCommand::Machine);
     }
     if args.first().is_some_and(|a| a == "template") {
         return template::parse(&args[1..]).map(ImageCommand::Template);
@@ -221,6 +226,26 @@ pub fn execute_with_firmware_sources(
             fresh,
         } => {
             let store = image_store::Store::open_existing(store)?;
+            if store.read_machines()?.get(&workspace).is_some() {
+                // A machine's workspace starts as the machine does: with its
+                // settings, pending inserts and last run.
+                if fresh {
+                    anyhow::bail!("--new requires a fresh workspace name");
+                }
+                let pinned = pc_image::machine::pinned_image(&store, &workspace)?;
+                match store.tag_descriptor(&tag) {
+                    Ok(requested) if requested.digest != pinned.digest => anyhow::bail!(
+                        "workspace pins {}; requested tag points to {}",
+                        pinned.digest,
+                        requested.digest
+                    ),
+                    Ok(_) | Err(image_store::Error::TagNotFound(_)) => (),
+                    Err(error) => return Err(error.into()),
+                }
+                let owner = pc_image::machine::own(&store, &workspace)?;
+                machine::run_owned(&owner, max_steps, "workspace", output, errors)?;
+                return Ok(0);
+            }
             let owner = store.workspace(&workspace)?;
             let prepared = pc_image::workspace::prepare_start(&owner, &tag, fresh)?;
             writeln!(output, "pinned-image:{}", prepared.image)?;
@@ -249,6 +274,9 @@ pub fn execute_with_firmware_sources(
             yes,
         } => {
             let store = image_store::Store::open_existing(store)?;
+            // A machine's changes include its settings and pending inserts,
+            // which only the machine command drops with its journals.
+            refuse_machine(&store, &workspace, "image machine reset ID --yes")?;
             let owner = store.open_workspace(&workspace)?;
             for path in owner.contents()? {
                 writeln!(output, "affected:{}", path.display())?;
@@ -270,12 +298,16 @@ pub fn execute_with_firmware_sources(
             flatten,
         } => {
             let store = image_store::Store::open_existing(store)?;
+            // A machine's settings belong in its new image, and its record
+            // follows the publication; only the machine command does both.
+            refuse_machine(&store, &workspace, "image machine commit ID --tag NAME:TAG")?;
             let owner = store.open_workspace(&workspace)?;
             let manifest =
                 pc_image::workspace::publish_with_options(&owner, &tag, None, flatten, |_| Ok(()))?;
             writeln!(output, "{tag}\t{}", manifest.digest)?;
         }
         ImageCommand::Media(command) => media::execute(command, output)?,
+        ImageCommand::Machine(command) => machine::execute(command, output, errors)?,
         ImageCommand::Firmware(command) => firmware::execute(command, output, firmware)?,
         ImageCommand::Registry(command) => registry::execute(command, output)?,
         ImageCommand::Template(command) => template::execute(command, output)?,
@@ -374,6 +406,22 @@ pub fn execute_with_firmware_sources(
         }
     }
     Ok(0)
+}
+
+/// Refuse a workspace command on a machine's workspace, naming the machine
+/// command that does it with the machine's own rules.
+fn refuse_machine(
+    store: &image_store::Store,
+    workspace: &str,
+    instead: &str,
+) -> anyhow::Result<()> {
+    if store.read_machines()?.get(workspace).is_some() {
+        anyhow::bail!(
+            "{workspace} is a machine; use {}",
+            instead.replace("ID", workspace)
+        );
+    }
+    Ok(())
 }
 
 fn parse_workspace(args: &[OsString]) -> Result<ImageCommand, &'static str> {
