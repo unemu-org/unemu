@@ -8,11 +8,14 @@
 //! Diskette Drive Adapter, through [`crate::media_set`].
 //!
 //! A set is user-supplied unless the import states otherwise
-//! ([`OpenStatement`]): the vendor's terms as one SPDX `LicenseRef-` and the
-//! extra holding their text. An open set marks every medium and extra open
-//! under that licence, each linking the terms text's digest in
-//! `unemu.terms`; its generated config and metadata are then open under
-//! `CC0-1.0`, as a firmware package's are when every other layer is open.
+//! ([`OpenStatement`]): its licence and the extra holding the licence's text,
+//! either the vendor's terms as one SPDX `LicenseRef-`, or an SPDX expression
+//! together with the extra holding the set's corresponding source. An open
+//! set marks every medium and extra open under that licence, each linking the
+//! terms text's digest in `unemu.terms` and the source archive's, when there
+//! is one, in `unemu.source`; its generated config and metadata are then open
+//! under `CC0-1.0`, as a firmware package's are when every other layer is
+//! open.
 
 use crate::media_set::{self as pc, PcMediaFormats};
 use image_store::{
@@ -99,14 +102,17 @@ pub struct Request {
     pub extras: Vec<ExtraSource>,
     pub compress: bool,
 }
-/// The user's statement that a set may be redistributed under the vendor's
-/// own terms. The program never guesses it from file names or contents.
+/// The user's statement that a set may be redistributed under the stated
+/// licence. The program never guesses it from file names or contents.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenStatement {
-    /// The vendor's terms as one SPDX `LicenseRef-<name>`.
+    /// The vendor's terms as one SPDX `LicenseRef-<name>`, or an SPDX
+    /// licence expression, which needs `source`.
     pub license: String,
-    /// The file name of the extra that holds the vendor's terms text.
+    /// The file name of the extra that holds the licence's text.
     pub terms: String,
+    /// The file name of the extra that holds the set's corresponding source.
+    pub source: Option<String>,
 }
 
 /// A folder's candidate images in stable file-name order, or the refusal of
@@ -199,7 +205,7 @@ pub fn propose_format(path: &Path, size: u64) -> Option<&'static str> {
 pub fn extra_kind(path: &Path) -> ExtraKind {
     match extension(path).as_str() {
         "txt" | "pdf" | "md" | "doc" => ExtraKind::Document,
-        "zip" | "7z" | "arj" | "rar" => ExtraKind::Archive,
+        "zip" | "7z" | "arj" | "rar" | "tar" | "tgz" | "gz" => ExtraKind::Archive,
         "exe" | "com" | "bat" => ExtraKind::Executable,
         _ => ExtraKind::Other,
     }
@@ -217,8 +223,16 @@ pub struct Plan {
     media: Vec<(PathBuf, &'static str, u64)>,
     extras: Vec<PathBuf>,
     compress: bool,
-    /// The stated vendor licence and the index of the terms-text extra.
-    open: Option<(Expression, usize)>,
+    /// The stated licence and the extras with its text and the source.
+    open: Option<Open>,
+}
+/// A checked [`OpenStatement`]: the licence and the positions of the
+/// terms-text and source-archive extras.
+#[derive(Clone, Debug)]
+struct Open {
+    license: Expression,
+    terms: usize,
+    source: Option<usize>,
 }
 impl Plan {
     /// Media and extras in publication order; blobs are placeholders until import.
@@ -230,7 +244,13 @@ impl Plan {
     pub fn open(&self) -> Option<(&Expression, &Extra)> {
         self.open
             .as_ref()
-            .map(|(license, index)| (license, &self.config.extras[*index]))
+            .map(|open| (&open.license, &self.config.extras[open.terms]))
+    }
+    /// The extra holding an open set's corresponding source, when one is
+    /// stated.
+    pub fn source(&self) -> Option<&Extra> {
+        let index = self.open.as_ref()?.source?;
+        Some(&self.config.extras[index])
     }
     pub fn tag(&self) -> &str {
         &self.tag
@@ -251,11 +271,12 @@ pub fn plan(request: &Request) -> Result<Plan> {
     plan_with(request, None)
 }
 
-/// [`plan`] with the user's statement that the set is open. The licence must
-/// be one `LicenseRef-<name>`, the vendor's own terms; a licence from the
-/// SPDX License List is refused, because a set cannot carry the source an
-/// open-source licence may oblige. The terms text must be exactly one of the
-/// request's extras, named by file name.
+/// [`plan`] with the user's statement that the set is open. The licence is
+/// one `LicenseRef-<name>`, the vendor's own terms, or an SPDX expression
+/// stated together with the extra holding the set's corresponding source, the
+/// source an open-source licence may oblige. The terms text and the source
+/// archive must each be exactly one of the request's extras, named by file
+/// name; the source archive is an archive extra other than the terms text.
 pub fn plan_with(request: &Request, open: Option<&OpenStatement>) -> Result<Plan> {
     ensure(valid_text(&request.title.title), || {
         format!("invalid title {:?}", request.title.title)
@@ -383,19 +404,51 @@ fn check_catalogue(title: &Title) -> Result<()> {
     Ok(())
 }
 
-/// The stated licence, checked, and the position of the terms-text extra.
-fn open_statement(open: &OpenStatement, config: &Config) -> Result<(Expression, usize)> {
+/// The stated licence, checked, and the positions of the terms-text and
+/// source-archive extras.
+fn open_statement(open: &OpenStatement, config: &Config) -> Result<Open> {
     let license =
         Expression::parse(&open.license).context(|| format!("licence {:?}", open.license))?;
-    ensure(license.is_reference(), || {
+    ensure(license.is_reference() || open.source.is_some(), || {
         format!(
             "licence {:?}: an installation set is open only under the vendor's own terms, \
-             stated as one LicenseRef-<name>",
+             stated as one LicenseRef-<name>, or under an SPDX licence expression together \
+             with the extra that holds its corresponding source",
             open.license
         )
     })?;
+    let terms = named_extra(config, "terms text", &open.terms)?;
+    let source = open
+        .source
+        .as_deref()
+        .map(|name| named_extra(config, "source archive", name))
+        .transpose()?;
+    if let Some(index) = source {
+        // The guard sees only that the link names an extra; its shape is
+        // checked here, where the extra's kind is known.
+        ensure(index != terms, || {
+            format!(
+                "source archive {:?}: the terms text cannot be the source archive",
+                config.extras[index].filename
+            )
+        })?;
+        ensure(config.extras[index].kind == ExtraKind::Archive, || {
+            format!(
+                "source archive {:?}: expected an archive extra (zip, tar, 7z, …)",
+                config.extras[index].filename
+            )
+        })?;
+    }
+    Ok(Open {
+        license,
+        terms,
+        source,
+    })
+}
+/// The position of the one extra whose file name is `name`.
+fn named_extra(config: &Config, what: &str, name: &str) -> Result<usize> {
     let named: Vec<usize> = (0..config.extras.len())
-        .filter(|&i| config.extras[i].filename == open.terms)
+        .filter(|&i| config.extras[i].filename == name)
         .collect();
     let extras = || {
         config
@@ -405,15 +458,13 @@ fn open_statement(open: &OpenStatement, config: &Config) -> Result<(Expression, 
             .collect::<Vec<_>>()
     };
     match named[..] {
-        [index] => Ok((license, index)),
+        [index] => Ok(index),
         [] => Err(Refusal(format!(
-            "terms text {:?}: not the file name of an extra of the set; extras: {:?}",
-            open.terms,
+            "{what} {name:?}: not the file name of an extra of the set; extras: {:?}",
             extras()
         ))),
         _ => Err(Refusal(format!(
-            "terms text {:?}: names {} extras of the set; give the terms text a file name of its own",
-            open.terms,
+            "{what} {name:?}: names {} extras of the set; give the {what} a file name of its own",
             named.len()
         ))),
     }
@@ -434,16 +485,24 @@ impl Outcome {
     }
 }
 
+/// What an open set's content layers carry: the licence and the decoded
+/// digests of the terms text and, when stated, of the source archive.
+#[derive(Clone, Copy)]
+struct Marks<'a> {
+    license: &'a Expression,
+    terms: &'a Digest,
+    source: Option<&'a Digest>,
+}
 /// The marks of one medium or extra: open under the stated licence and linked
-/// to the terms text, or user-supplied.
-fn content(mut d: Descriptor, open: Option<(&Expression, &Digest)>) -> Descriptor {
-    license::mark(&mut d, open.map(|(license, _)| license));
-    match open {
-        Some((_, terms)) => d
-            .annotations
-            .insert(license::TERMS.into(), terms.to_string()),
-        None => d.annotations.remove(license::TERMS),
+/// to the terms text and the source archive, or user-supplied.
+fn content(mut d: Descriptor, open: Option<Marks<'_>>) -> Descriptor {
+    license::mark(&mut d, open.map(|marks| marks.license));
+    let link = |d: &mut Descriptor, key: &str, digest: Option<&Digest>| match digest {
+        Some(digest) => d.annotations.insert(key.into(), digest.to_string()),
+        None => d.annotations.remove(key),
     };
+    link(&mut d, license::TERMS, open.map(|marks| marks.terms));
+    link(&mut d, license::SOURCE, open.and_then(|marks| marks.source));
     d
 }
 /// The marks of the config and metadata, which this program generates: open
@@ -455,21 +514,25 @@ fn generated(mut d: Descriptor, open: bool) -> Descriptor {
     license::mark(&mut d, None);
     d
 }
-/// The licence and terms link a layer of the planned set carries.
-fn expected_marks(
-    d: &Descriptor,
-    open: Option<(&Expression, &Digest)>,
-) -> Result<(Option<Expression>, Option<String>)> {
+/// The licence, terms link and source link a layer of the planned set
+/// carries.
+fn expected_marks(d: &Descriptor, open: Option<Marks<'_>>) -> Result<ExpectedMarks> {
     let generated = d.media_type == mt::MEDIA_SET_CONFIG || d.decoded_media_type() == mt::METADATA;
     Ok(match open {
-        None => (None, None),
+        None => (None, None, None),
         Some(_) if generated => (
             Some(Expression::parse(crate::firmware::METADATA_LICENSE)?),
             None,
+            None,
         ),
-        Some((license, terms)) => (Some(license.clone()), Some(terms.to_string())),
+        Some(marks) => (
+            Some(marks.license.clone()),
+            Some(marks.terms.to_string()),
+            marks.source.map(Digest::to_string),
+        ),
     })
 }
+type ExpectedMarks = (Option<Expression>, Option<String>, Option<String>);
 
 fn conflict(tag: &str, what: &str) -> Refusal {
     Refusal(format!(
@@ -532,6 +595,21 @@ pub fn publish(
     progress: &dyn Fn(usize, usize),
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Outcome> {
+    publish_checked(store, plan, progress, cancelled, &|_| Ok(()))
+}
+
+/// [`publish`], handing a new set's finished manifest to `check` before the
+/// manifest is stored and the tag written: a refusal, reported as `check`
+/// words it, writes neither, and the payloads already copied stay
+/// unreferenced until a sweep. A tag that already names the set is reported
+/// without a check, as [`publish`] reports it.
+pub fn publish_checked(
+    store: &Store,
+    plan: &Plan,
+    progress: &dyn Fn(usize, usize),
+    cancelled: &dyn Fn() -> bool,
+    check: &dyn Fn(&Manifest) -> std::result::Result<(), String>,
+) -> Result<Outcome> {
     match store.tag_descriptor(&plan.tag) {
         Ok(existing) => return compare_existing(store, plan, &existing, progress, cancelled),
         Err(image_store::Error::TagNotFound(_)) => store.check_new_tag(&plan.tag)?,
@@ -570,11 +648,18 @@ pub fn publish(
         layers.push(blob);
     }
     progress(total, total);
-    let open = plan
-        .open
-        .as_ref()
-        .map(|(license, index)| (license, config.extras[*index].blob.clone()));
-    let marks = open.as_ref().map(|(license, terms)| (*license, terms));
+    let open = plan.open.as_ref().map(|open| {
+        (
+            &open.license,
+            config.extras[open.terms].blob.clone(),
+            open.source.map(|index| config.extras[index].blob.clone()),
+        )
+    });
+    let marks = open.as_ref().map(|(license, terms, source)| Marks {
+        license,
+        terms,
+        source: source.as_ref(),
+    });
     let layers: Vec<Descriptor> = layers.into_iter().map(|d| content(d, marks)).collect();
     let mut seen = BTreeSet::new();
     let mut unique = Vec::<Descriptor>::new();
@@ -620,6 +705,7 @@ pub fn publish(
                 .insert(LICENSES.into(), all.as_str().into());
         }
     }
+    check(&manifest).map_err(Refusal)?;
     let manifest = store.import_manifest(&manifest)?;
     match store.update_tag(&plan.tag, &manifest, None, &Validator(&PcMediaFormats)) {
         Ok(()) => Ok(Outcome::Imported(manifest)),
@@ -694,14 +780,16 @@ fn compare_existing(
     }
     // The same bytes under other marks are another set: rights are part of
     // what the tag names.
-    let open = plan
-        .open
-        .as_ref()
-        .map(|(license, index)| (license, &stored.extras[*index].blob));
+    let open = plan.open.as_ref().map(|open| Marks {
+        license: &open.license,
+        terms: &stored.extras[open.terms].blob,
+        source: open.source.map(|index| &stored.extras[index].blob),
+    });
     for d in std::iter::once(&resolved.manifest.config).chain(&resolved.manifest.layers) {
-        let (license, terms) = expected_marks(d, open)?;
+        let (license, terms, source) = expected_marks(d, open)?;
         if license::open_license(d) != license
             || d.annotations.get(license::TERMS) != terms.as_ref()
+            || d.annotations.get(license::SOURCE) != source.as_ref()
         {
             return Err(different());
         }
@@ -936,6 +1024,7 @@ mod tests {
         OpenStatement {
             license: license.into(),
             terms: terms.into(),
+            source: None,
         }
     }
     fn extra(path: &Path) -> ExtraSource {
@@ -1095,6 +1184,209 @@ mod tests {
             publish_with(&shareware, Some(&vendor)).unwrap(),
             Outcome::AlreadyImported(d) if d.digest == open.image.digest
         ));
+    }
+
+    fn with_source(license: &str, terms: &str, source: &str) -> OpenStatement {
+        OpenStatement {
+            source: Some(source.into()),
+            ..statement(license, terms)
+        }
+    }
+
+    #[test]
+    fn an_spdx_licence_opens_a_set_only_with_one_extra_named_as_its_source() {
+        let temp = Temp::new("open-spdx-refusals");
+        let disk = temp.0.join("disk.img");
+        floppy(&disk, 1);
+        let (copying, archive) = (temp.0.join("COPYING"), temp.0.join("SRC.TAR"));
+        fs::write(&copying, b"Synthetic licence text").unwrap();
+        fs::write(&archive, b"Synthetic source archive").unwrap();
+        let mut request = request(&[disk], "Synthetic free software");
+        request.extras = vec![extra(&copying), extra(&archive)];
+        let refusal = |request: &Request, open: OpenStatement| {
+            plan_with(request, Some(&open)).unwrap_err().to_string()
+        };
+        // An SPDX expression needs the source archive, copyleft or not.
+        for license in ["GPL-2.0-only", "MIT", "LicenseRef-a OR MIT"] {
+            let text = refusal(&request, statement(license, "COPYING"));
+            assert!(
+                text.contains("the vendor's own terms") && text.contains("corresponding source"),
+                "{text}"
+            );
+        }
+        for license in [
+            "GPL-2.0-only",
+            "GPL-2.0-or-later AND MIT AND LicenseRef-other",
+            "MIT",
+        ] {
+            let plan =
+                plan_with(&request, Some(&with_source(license, "COPYING", "SRC.TAR"))).unwrap();
+            assert_eq!(
+                plan.open().map(|(l, e)| (l.as_str(), e.filename.as_str())),
+                Some((license, "COPYING"))
+            );
+            assert_eq!(plan.source().map(|e| e.filename.as_str()), Some("SRC.TAR"));
+        }
+        let text = refusal(
+            &request,
+            with_source("GPL-2.0-only", "COPYING", "SOURCES.ZIP"),
+        );
+        assert!(
+            text.starts_with("source archive \"SOURCES.ZIP\": not the file name of an extra")
+                && text.contains("SRC.TAR"),
+            "{text}"
+        );
+        fs::create_dir(temp.0.join("copy")).unwrap();
+        let copy = temp.0.join("copy/SRC.TAR");
+        fs::write(&copy, b"Another synthetic archive").unwrap();
+        request.extras.push(extra(&copy));
+        let text = refusal(&request, with_source("GPL-2.0-only", "COPYING", "SRC.TAR"));
+        assert!(text.contains("names 2 extras"), "{text}");
+        request.extras.pop();
+        // The source archive is an archive extra, never the terms text.
+        let text = refusal(&request, with_source("GPL-2.0-only", "SRC.TAR", "SRC.TAR"));
+        assert!(
+            text.contains("the terms text cannot be the source archive"),
+            "{text}"
+        );
+        let text = refusal(&request, with_source("GPL-2.0-only", "SRC.TAR", "COPYING"));
+        assert!(text.contains("expected an archive extra"), "{text}");
+        // A licence reference may name a source archive too.
+        let plan = plan_with(
+            &request,
+            Some(&with_source("LicenseRef-synthetic", "COPYING", "SRC.TAR")),
+        )
+        .unwrap();
+        assert!(plan.source().is_some());
+        assert!(plan_with(
+            &request,
+            Some(&statement("LicenseRef-synthetic", "COPYING"))
+        )
+        .unwrap()
+        .source()
+        .is_none());
+    }
+
+    #[test]
+    fn an_open_copyleft_set_links_every_medium_and_extra_to_its_source_archive() {
+        let temp = Temp::new("open-copyleft");
+        let (a, b) = (temp.0.join("a.img"), temp.0.join("b.img"));
+        floppy(&a, 1);
+        floppy(&b, 2);
+        let copying = temp.0.join("COPYING");
+        fs::write(&copying, "Synthetic licence text. ".repeat(300)).unwrap();
+        // Above the compression threshold: the links name decoded digests.
+        let archive = temp.0.join("SRC.TAR");
+        fs::write(&archive, vec![b's'; 9000]).unwrap();
+        let store = Store::open(temp.0.join("store")).unwrap();
+        let mut set = request(&[a, b], "Synthetic free software");
+        set.tag = "test:gpl".into();
+        set.extras = vec![extra(&copying), extra(&archive)];
+        let gpl = with_source("GPL-2.0-or-later AND MIT", "COPYING", "SRC.TAR");
+        let publish_with = |request: &Request, open: &OpenStatement| {
+            publish(
+                &store,
+                &plan_with(request, Some(open)).unwrap(),
+                &|_, _| {},
+                &|| false,
+            )
+        };
+        let outcome = publish_with(&set, &gpl).unwrap();
+        let open = store
+            .resolve_descriptor(outcome.descriptor(), &Validator(&PcMediaFormats))
+            .unwrap();
+        let config = Config::decode(&open.config).unwrap();
+        let (terms, source) = (
+            config.extras[0].blob.to_string(),
+            config.extras[1].blob.to_string(),
+        );
+        let stored = open
+            .manifest
+            .layers
+            .iter()
+            .find(|d| d.names(&config.extras[1].blob))
+            .unwrap();
+        assert!(stored.is_compressed() && stored.digest.to_string() != source);
+        for d in &open.manifest.layers {
+            if d.media_type == mt::METADATA {
+                assert!(!d.annotations.contains_key(license::SOURCE));
+                continue;
+            }
+            assert_eq!(
+                license::open_license(d).unwrap().as_str(),
+                "GPL-2.0-or-later AND MIT"
+            );
+            assert_eq!(d.annotations[license::TERMS], terms);
+            assert_eq!(d.annotations[license::SOURCE], source);
+        }
+        assert!(!open
+            .manifest
+            .config
+            .annotations
+            .contains_key(license::SOURCE));
+        assert_eq!(
+            open.manifest.annotations[LICENSES],
+            "GPL-2.0-or-later AND MIT AND CC0-1.0"
+        );
+        // Rules 4 and 5 find everything they need in the closure.
+        let closure: Vec<Descriptor> = std::iter::once(open.manifest.config.clone())
+            .chain(open.manifest.layers.clone())
+            .collect();
+        assert!(closure
+            .iter()
+            .all(|d| !license::source_missing(d, &closure)));
+        assert!(license::terms_unlinked(&closure).is_empty());
+        // Without the archive the media are refused by rule 4.
+        let without: Vec<Descriptor> = closure
+            .iter()
+            .filter(|d| !d.names(&config.extras[1].blob))
+            .cloned()
+            .collect();
+        assert_eq!(
+            without
+                .iter()
+                .filter(|d| license::source_missing(d, &without))
+                .count(),
+            3
+        );
+        // The source link is part of the set: the same files under a licence
+        // reference without one are a tag conflict.
+        let reference = statement("LicenseRef-synthetic", "COPYING");
+        let refusal = publish_with(&set, &reference).unwrap_err().to_string();
+        assert!(refusal.starts_with("tag conflict"), "{refusal}");
+        assert!(matches!(
+            publish_with(&set, &gpl).unwrap(),
+            Outcome::AlreadyImported(d) if d.digest == open.image.digest
+        ));
+    }
+
+    #[test]
+    fn a_check_refusal_stores_no_manifest_and_writes_no_tag() {
+        let temp = Temp::new("checked");
+        let disk = temp.0.join("disk.img");
+        floppy(&disk, 3);
+        let store = Store::open(temp.0.join("store")).unwrap();
+        let plan = plan(&request(&[disk], "Checked set")).unwrap();
+        let seen = std::cell::RefCell::new(None);
+        let refusal = publish_checked(&store, &plan, &|_, _| {}, &|| false, &|manifest| {
+            *seen.borrow_mut() = Some(manifest.clone());
+            Err("synthetic refusal".into())
+        })
+        .unwrap_err()
+        .to_string();
+        assert_eq!(refusal, "synthetic refusal");
+        let checked = seen.into_inner().expect("the check saw the manifest");
+        assert_eq!(checked.layers.len(), 2);
+        assert!(store.tag_descriptor("test:set").is_err());
+        let digest = Digest::of(&checked.encode().unwrap());
+        assert!(!store
+            .root()
+            .join("images/blobs/sha256")
+            .join(digest.hex())
+            .exists());
+        // The same plan passes once the check allows it.
+        let published = publish_checked(&store, &plan, &|_, _| {}, &|| false, &|_| Ok(())).unwrap();
+        assert_eq!(published.descriptor().digest, digest);
     }
 
     #[test]
@@ -1267,6 +1559,7 @@ mod tests {
         );
         assert_eq!(extra_kind(Path::new("Manual.PDF")), ExtraKind::Document);
         assert_eq!(extra_kind(Path::new("patch.zip")), ExtraKind::Archive);
+        assert_eq!(extra_kind(Path::new("SOURCE.TAR")), ExtraKind::Archive);
         assert_eq!(extra_kind(Path::new("fix.exe")), ExtraKind::Executable);
         assert_eq!(extra_kind(Path::new("art.png")), ExtraKind::Other);
     }

@@ -3,8 +3,10 @@
 //! Validation and publication are shared with the desktop library through
 //! `pc_image::media_import`; sources are copied by the store's streaming,
 //! full-SHA-256 ingestion path. A set is user-supplied unless `--open` states
-//! the vendor's terms (`--license LicenseRef-NAME`) and names the extra that
-//! holds their text (`--license-text`); nothing is guessed. Set-level
+//! its licence and names the extra that holds the licence's text
+//! (`--license-text`): the vendor's terms as `--license LicenseRef-NAME`, or
+//! an SPDX licence expression together with the extra that holds the set's
+//! corresponding source (`--source`); nothing is guessed. Set-level
 //! catalogue flags fill the set's one title record (machine-images §2.1), with
 //! the year and software-platform rules the shared import applies to the
 //! library's dialog too.
@@ -42,8 +44,10 @@ pub struct MediaCommand {
     /// `--open`: the user states the set may be redistributed.
     open: bool,
     license: Option<String>,
-    /// `--license-text`: the file name of the extra with the vendor's terms.
+    /// `--license-text`: the file name of the extra with the licence's text.
     license_text: Option<String>,
+    /// `--source`: the file name of the extra with the set's source archive.
+    source: Option<String>,
 }
 
 pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
@@ -69,6 +73,7 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
         open: false,
         license: None,
         license_text: None,
+        source: None,
     };
     let mut args = args[1..].iter();
     while let Some(arg) = args.next() {
@@ -171,15 +176,21 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
             Some("--license-text") if action == "import" && command.license_text.is_none() => {
                 command.license_text = Some(value.to_str().ok_or("invalid terms text name")?.into())
             }
+            Some("--source") if action == "import" && command.source.is_none() => {
+                command.source = Some(value.to_str().ok_or("invalid source archive name")?.into())
+            }
             _ => return Err("unknown or duplicate media option"),
         }
     }
     if (command.license.is_some() || command.license_text.is_some()) && !command.open {
         return Err("--license and --license-text state the terms of an open set; add --open");
     }
+    if command.source.is_some() && !command.open {
+        return Err("--source names the source archive of an open set; add --open");
+    }
     if command.open && (command.license.is_none() || command.license_text.is_none()) {
         return Err(
-            "--open needs --license LicenseRef-NAME and --license-text EXTRA: a set's terms are stated, never guessed",
+            "--open needs --license LicenseRef-NAME and --license-text EXTRA: a set's terms are stated, never guessed (an SPDX expression also needs --source EXTRA)",
         );
     }
     if command.store.as_os_str().is_empty() {
@@ -261,9 +272,9 @@ pub fn execute(command: MediaCommand, output: &mut impl Write) -> anyhow::Result
     Ok(())
 }
 
-/// One set in full: media, extras, its catalogue fields, the terms text its
-/// layers link, every layer's class, licence and link, and where its marks
-/// allow it to be pushed.
+/// One set in full: media, extras, its catalogue fields, the terms text and
+/// source archive its layers link, every layer's class, licence and terms
+/// link, and where its marks allow it to be pushed.
 fn show(store: &Store, tag: &str, output: &mut impl Write) -> anyhow::Result<()> {
     let image = store.resolve(tag, &Validator(&PcMediaFormats))?;
     let config = Config::decode(&image.config)?;
@@ -297,19 +308,26 @@ fn show(store: &Store, tag: &str, output: &mut impl Write) -> anyhow::Result<()>
         write_catalogue(output, title)?;
     }
     let link = |d: &image_store::Descriptor| d.annotations.get(license::TERMS).cloned();
-    let mut linked: Vec<String> = Vec::new();
-    for text in image.manifest.layers.iter().filter_map(link) {
-        if !linked.contains(&text) {
-            linked.push(text);
+    for (what, key) in [("terms", license::TERMS), ("source", license::SOURCE)] {
+        let mut linked: Vec<&String> = Vec::new();
+        for text in image
+            .manifest
+            .layers
+            .iter()
+            .filter_map(|d| d.annotations.get(key))
+        {
+            if !linked.contains(&text) {
+                linked.push(text);
+            }
         }
-    }
-    for text in &linked {
-        let extra = config.extras.iter().find(|e| &e.blob.to_string() == text);
-        writeln!(
-            output,
-            "terms\t{}\t{text}",
-            extra.map_or_else(|| "-".into(), |e| format!("{:?}", e.filename))
-        )?;
+        for text in linked {
+            let extra = config.extras.iter().find(|e| &e.blob.to_string() == text);
+            writeln!(
+                output,
+                "{what}\t{}\t{text}",
+                extra.map_or_else(|| "-".into(), |e| format!("{:?}", e.filename))
+            )?;
+        }
     }
     let class = |d: &image_store::Descriptor| {
         let terms = link(d).unwrap_or_else(|| "-".into());
@@ -349,6 +367,8 @@ fn show(store: &Store, tag: &str, output: &mut impl Write) -> anyhow::Result<()>
         "push\t{}",
         if restricted {
             "private registries outside unemu/ only: user-supplied layers"
+        } else if !guard::copyleft_without_source(&closure).is_empty() {
+            "private registries outside unemu/ only: open copyleft media without the set's source archive"
         } else if !guard::terms_without_text(&closure).is_empty() {
             "private registries outside unemu/ only: open media without the set's terms text"
         } else {
@@ -422,6 +442,7 @@ fn import(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> 
         (Some(license), Some(terms)) if command.open => Some(media_import::OpenStatement {
             license: license.clone(),
             terms: terms.clone(),
+            source: command.source.clone(),
         }),
         _ => None,
     };
@@ -443,6 +464,9 @@ fn import(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> 
     write_catalogue(output, &command.title)?;
     if let Some((license, terms)) = plan.open() {
         writeln!(output, "open\t{license}\tterms\t{:?}", terms.filename)?;
+    }
+    if let Some(source) = plan.source() {
+        writeln!(output, "source\t{:?}", source.filename)?;
     }
     if command.dry_run {
         writeln!(output, "dry run; no blobs or tag written")?;

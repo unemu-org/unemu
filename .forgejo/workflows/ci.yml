@@ -99,6 +99,18 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/ci-gate.sh tests
 
+      # The FreeDOS 1.4 Floppy Edition outputs (disks, licence index, source
+      # tar; about 55 MB) cost about 330 MB of downloads to rebuild. Their fetch
+      # script re-checks every cached file against its pin before it uses one,
+      # so a cache hit is never trusted unverified.
+      - name: Restore FreeDOS 1.4 fixtures
+        id: freedos_cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/restore@v4
+        with:
+          path: vendor/freedos/floppy-1.4
+          key: freedos-floppy-1.4-${{ hashFiles('vendor/freedos/fetch-floppy-1.4.sh', 'vendor/freedos/floppy-1.4-licenses.txt') }}
+
       # Missing fixtures make the boot goldens skip. Build them with the devShell's
       # nasm and filesystem tools first; a fetch/build failure must fail the job.
       - name: Build golden fixtures
@@ -111,6 +123,14 @@ jobs:
         id: goldens
         if: ${{ !cancelled() }}
         run: bash scripts/ci-gate.sh goldens
+
+      - name: Save FreeDOS 1.4 fixtures
+        id: freedos_cache_save
+        if: ${{ always() && steps.fixtures.outcome == 'success' && steps.freedos_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: vendor/freedos/floppy-1.4
+          key: freedos-floppy-1.4-${{ hashFiles('vendor/freedos/fetch-floppy-1.4.sh', 'vendor/freedos/floppy-1.4-licenses.txt') }}
 
       - name: Save cargo cache
         id: cache_save
@@ -135,6 +155,7 @@ jobs:
             nix=${{ steps.nix.outcome }}
             devshell=${{ steps.devshell.outcome }}
             cargo_cache=${{ steps.cargo_cache.outcome }}
+            freedos_cache=${{ steps.freedos_cache.outcome }}
             fmt=${{ steps.fmt.outcome }}
             guard=${{ steps.guard.outcome }}
             clippy=${{ steps.clippy.outcome }}
@@ -143,6 +164,7 @@ jobs:
             fixtures=${{ steps.fixtures.outcome }}
             goldens=${{ steps.goldens.outcome }}
             cache_save=${{ steps.cache_save.outcome }}
+            freedos_cache_save=${{ steps.freedos_cache_save.outcome }}
         run: |
           set -euo pipefail
           # node is part of the runner image. JSON encoding keeps arbitrary step

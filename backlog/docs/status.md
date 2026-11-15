@@ -5,6 +5,31 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — FreeDOS 1.4 Floppy Edition installation sets, open with
+  their source; copyleft media need their source:** `image template build`
+  now also builds `unemu/media/freedos-floppy-1.44m`, `-1.2m` and `-720k`
+  (version tag `1.4.0` and `latest`; `pc_image::template::build_media`,
+  separate from the firmware and machine build, whose `1.1.0` pins are
+  unchanged): the official edition's 7, 8 and 12 disks, byte for byte, in
+  installer order, with the licence index `LICENSES.TXT` (CC0-1.0; every
+  program's licence with the notice it rests on) and a deterministic source
+  tar as extras, open under the conjunction of the programs' licences
+  (including `Zlib`) and judged by the `unemu/` guard before they are
+  tagged. The release documents state no licence and are not carried. The
+  build checks every set fixture before its first tag.
+  `vendor/freedos/fetch-floppy-1.4.sh` (the last step of the CI fixtures
+  lane; CI caches its outputs, and a run whose outputs match their pins stops
+  at once) fetches the edition (`FD14-FloppyEdition.zip`, the SHA-256 the
+  release's `verify.txt` lists, ibiblio fallback), checks its member list,
+  pins all 27 disks, takes the official source packages of the 69 programs
+  from the release LiveCD (a small ISO 9660 reader; the LiveCD is deleted
+  once the packages verify) plus FDBANNER, and the installer, its
+  translations and the release builder at their `FreeDOS-v1.4` tags. `image
+  media import --open` also takes an SPDX expression with `--source EXTRA`
+  (an archive extra other than the licence text), and push-guard rule 4
+  covers copyleft media and linked set extras. See [machine images §5.2 and
+  §5.5](design/machine-images.md#55-official-template-images) and
+  `vendor/freedos/README.md`.
 - **2026-11-15 — Desktop icons follow the approved mock-ups:** the app now
   draws the mock-ups' icons ([icons note](design/icons.md)). The inline SVGs
   are painted with egui shapes from their own coordinates, in the text colour

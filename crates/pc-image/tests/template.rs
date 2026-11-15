@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Official template builds from the open fixtures: determinism, the guard
-//! seam, and machines that validate and lower; machine-images §5.5.
+//! seam, machines that validate and lower, and the installation sets the
+//! templates describe; machine-images §5.5.
 use image_store::{media_type as mt, BlobSource, ConfigValidator, Manifest, Store, MAX_SMALL_BLOB};
 use pc_image::create::{NewImage, PackageRom};
 use pc_image::template::{self, Built, Kind, Outcome, VERSION};
@@ -39,12 +40,29 @@ fn vendor() -> PathBuf {
 
 /// Whether the fetched ROMs and source archives of `sources` are present; the
 /// first missing one skips the test unless the fixture gate requires it.
-fn present(sources: &[template::FirmwareSource]) -> bool {
+fn firmware_present(sources: &[template::FirmwareSource]) -> bool {
     sources.iter().all(|source| {
         [source.rom, source.source_archive]
             .into_iter()
             .all(|relative| fixtures::fixture(relative).is_some())
     })
+}
+
+/// Every fixture file the installation sets read: their disks, then the
+/// extras they share.
+fn media_files() -> Vec<&'static str> {
+    template::media_files()
+        .into_iter()
+        .map(|file| file.path)
+        .collect()
+}
+
+/// Whether every fixture of the installation sets is present, as
+/// [`firmware_present`].
+fn media_present() -> bool {
+    media_files()
+        .into_iter()
+        .all(|relative| fixtures::fixture(relative).is_some())
 }
 
 fn allow(_: &str, _: &Manifest) -> Result<(), String> {
@@ -67,7 +85,7 @@ fn identities(built: &[Built]) -> Vec<(String, String, Vec<String>)> {
 
 #[test]
 fn two_builds_from_different_fixture_copies_give_identical_images() {
-    if !present(&template::FIRMWARE) {
+    if !firmware_present(&template::FIRMWARE) {
         return;
     }
     let t = Temp::new("template-determinism");
@@ -104,6 +122,7 @@ fn two_builds_from_different_fixture_copies_give_identical_images() {
     );
     for built in &a {
         let tags: Vec<_> = built.tags.iter().map(|(tag, _)| tag.as_str()).collect();
+        assert_eq!(built.version, VERSION);
         assert_eq!(
             tags,
             [
@@ -131,7 +150,7 @@ fn two_builds_from_different_fixture_copies_give_identical_images() {
 
 #[test]
 fn the_guard_sees_each_image_before_its_tags_and_a_refusal_tags_nothing_of_it() {
-    if !present(&template::FIRMWARE) {
+    if !firmware_present(&template::FIRMWARE) {
         return;
     }
     let t = Temp::new("template-guard");
@@ -186,7 +205,7 @@ fn a_missing_fixture_or_another_source_archive_names_the_fetch_script() {
         "{error}"
     );
     let bios = &template::FIRMWARE[0];
-    if !present(std::slice::from_ref(bios)) {
+    if !firmware_present(std::slice::from_ref(bios)) {
         return;
     }
     let copy = t.0.join("fixtures");
@@ -210,7 +229,7 @@ fn a_missing_fixture_or_another_source_archive_names_the_fetch_script() {
 
 #[test]
 fn template_machines_validate_lower_and_describe_themselves() {
-    if !present(&template::FIRMWARE) {
+    if !firmware_present(&template::FIRMWARE) {
         return;
     }
     let t = Temp::new("template-lowering");
@@ -337,7 +356,7 @@ const PINNED: [(&str, &str); 5] = [
 
 #[test]
 fn the_published_generation_keeps_its_pinned_digests() {
-    if !present(&template::FIRMWARE) {
+    if !firmware_present(&template::FIRMWARE) {
         return;
     }
     let t = Temp::new("template-pins");
@@ -361,7 +380,7 @@ fn the_published_generation_keeps_its_pinned_digests() {
 /// generated README credits Sergey Kiselev outside the source layer too.
 #[test]
 fn the_bios_package_readme_names_the_fork_and_its_original_author() {
-    if !present(&template::FIRMWARE) {
+    if !firmware_present(&template::FIRMWARE) {
         return;
     }
     let t = Temp::new("template-readme");
@@ -437,7 +456,7 @@ fn alias_outcome(built: &[Built], repository: &str) -> Outcome {
 
 #[test]
 fn a_version_tag_that_names_another_image_refuses_the_build() {
-    if !present(&template::FIRMWARE) {
+    if !firmware_present(&template::FIRMWARE) {
         return;
     }
     let t = Temp::new("template-version-conflict");
@@ -474,7 +493,7 @@ fn a_version_tag_that_names_another_image_refuses_the_build() {
 
 #[test]
 fn latest_moves_only_away_from_lower_versions_of_its_repository() {
-    if !present(&template::FIRMWARE) {
+    if !firmware_present(&template::FIRMWARE) {
         return;
     }
     let t = Temp::new("template-alias");
@@ -529,7 +548,7 @@ fn latest_moves_only_away_from_lower_versions_of_its_repository() {
 
 #[test]
 fn only_the_judged_manifest_is_tagged() {
-    if !present(&template::FIRMWARE) {
+    if !firmware_present(&template::FIRMWARE) {
         return;
     }
     let t = Temp::new("template-judged");
@@ -591,7 +610,7 @@ fn only_the_judged_manifest_is_tagged() {
 /// four, so library and registry views need not fall back to the catalogue id.
 #[test]
 fn each_firmware_package_states_its_title_description_vendor_and_version() {
-    if !present(&template::FIRMWARE) {
+    if !firmware_present(&template::FIRMWARE) {
         return;
     }
     let t = Temp::new("template-metadata");
@@ -637,4 +656,282 @@ fn each_firmware_package_states_its_title_description_vendor_and_version() {
             );
         }
     }
+}
+
+/// Copy every fixture of the installation sets to `to`.
+fn copy_media_fixtures(to: &std::path::Path) {
+    for relative in media_files() {
+        let target = to.join(relative);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(vendor().join(relative), target).unwrap();
+    }
+}
+
+/// Each installation set holds the edition's disks unmodified and in
+/// installer order, the licence index and the source archive, with the
+/// catalogue record and the registry browser's
+/// annotations. Every medium and extra is open under the release's licence
+/// and links the licence index and the source archive, so the official
+/// namespace's rules 4 and 5 pass.
+#[test]
+fn the_installation_sets_carry_the_edition_its_licence_index_and_its_source() {
+    use image_store::{
+        license,
+        media_set::{Config, ExtraKind, Validator},
+        metadata::Metadata,
+    };
+    use pc_image::media_set::{format_name, PcMediaFormats};
+    if !media_present() {
+        return;
+    }
+    let t = Temp::new("template-media");
+    let store = Store::open(t.0.join("store")).unwrap();
+    let release = &template::FREEDOS_1_4;
+    let built = template::build_media(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    for (source, set) in template::MEDIA.iter().zip(&built) {
+        assert_eq!(
+            (set.kind, set.repository.as_str()),
+            (Kind::Media, source.repository().as_str())
+        );
+        let resolved = store
+            .resolve_descriptor(&set.descriptor, &Validator(&PcMediaFormats))
+            .unwrap();
+        let config = Config::decode(&resolved.config).unwrap();
+        // The disks, byte for byte the edition's, in installer order.
+        assert_eq!(config.media.len(), source.disks.len());
+        for (medium, disk) in config.media.iter().zip(source.disks) {
+            assert_eq!(medium.label, disk.name);
+            assert_eq!(format_name(&medium.format).unwrap(), source.format);
+            assert_eq!(medium.blob.hex(), disk.sha256);
+        }
+        let extras: Vec<_> = config
+            .extras
+            .iter()
+            .map(|e| {
+                (
+                    e.filename.as_str(),
+                    e.dos_name.as_deref(),
+                    e.kind,
+                    e.blob.hex(),
+                )
+            })
+            .collect();
+        let expected: Vec<_> = release
+            .extras
+            .iter()
+            .map(|(file, kind)| {
+                (
+                    file.path.rsplit('/').next().unwrap(),
+                    Some(file.name),
+                    *kind,
+                    file.sha256,
+                )
+            })
+            .collect();
+        assert_eq!(extras, expected);
+        assert_eq!(extras.last().unwrap().2, ExtraKind::Archive);
+        // Open under the release's licence, linked to its text and source.
+        let terms = config
+            .extras
+            .iter()
+            .find(|e| e.filename == release.terms)
+            .unwrap();
+        let archive = config
+            .extras
+            .iter()
+            .find(|e| e.filename == release.source)
+            .unwrap();
+        for d in &resolved.manifest.layers {
+            if d.decoded_media_type() == mt::METADATA {
+                continue;
+            }
+            assert_eq!(license::open_license(d).unwrap().as_str(), release.license);
+            assert_eq!(d.annotations[license::TERMS], terms.blob.to_string());
+            assert_eq!(d.annotations[license::SOURCE], archive.blob.to_string());
+        }
+        let closure: Vec<_> = std::iter::once(resolved.manifest.config.clone())
+            .chain(resolved.manifest.layers.clone())
+            .collect();
+        assert!(closure.iter().all(|d| license::open_license(d).is_some()));
+        assert!(closure
+            .iter()
+            .all(|d| !license::source_missing(d, &closure)));
+        assert!(license::terms_unlinked(&closure).is_empty());
+        // The catalogue record and the registry browser's annotations.
+        let metadata = Metadata::decode(&resolved.metadata, &resolved.manifest.layers).unwrap();
+        let title = &metadata.titles[0];
+        assert_eq!(title.title, source.title);
+        assert_eq!(title.publishers, [release.publisher]);
+        assert_eq!(title.release_year, Some(2025));
+        assert_eq!(title.platform.as_deref(), Some("DOS"));
+        assert_eq!(title.genres, ["operating system"]);
+        assert_eq!(title.version.as_deref(), Some("1.4"));
+        assert_eq!(title.edition.as_deref(), Some("Floppy Edition"));
+        assert_eq!(metadata.labels, release.labels);
+        let annotations = &resolved.manifest.annotations;
+        for (key, value) in [
+            ("title", source.title),
+            ("description", source.description),
+            ("vendor", release.publisher),
+            ("authors", release.publisher),
+        ] {
+            assert_eq!(
+                annotations[&format!("org.opencontainers.image.{key}")],
+                value,
+                "{key}"
+            );
+        }
+        assert_eq!(
+            annotations["org.opencontainers.image.licenses"],
+            format!("{} AND CC0-1.0", release.license)
+        );
+    }
+}
+
+/// The guard judges every set before it is tagged, and a refused set leaves
+/// no tag of it behind.
+#[test]
+fn the_guard_judges_each_installation_set_before_its_tags() {
+    if !media_present() {
+        return;
+    }
+    let t = Temp::new("template-media-guard");
+    let store = Store::open(t.0.join("store")).unwrap();
+    let seen = RefCell::new(Vec::new());
+    let guard = |reference: &str, manifest: &Manifest| {
+        let (repository, tag) = reference.rsplit_once(':').unwrap();
+        if repository.starts_with("unemu/media/") {
+            assert_eq!(tag, template::FREEDOS_1_4.version);
+            assert_eq!(manifest.artifact_type(), mt::MEDIA_SET);
+            assert!(store
+                .tag_descriptor(&template::local_tag(repository, tag))
+                .is_err());
+            seen.borrow_mut().push(repository.to_owned());
+        }
+        if repository == "unemu/media/freedos-floppy-1.2m" {
+            Err("synthetic refusal".to_owned())
+        } else {
+            Ok(())
+        }
+    };
+    let error = template::build_media(&store, &vendor(), &guard, &mut |_| {})
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("unemu/media/freedos-floppy-1.2m:1.4.0 refused: synthetic refusal"),
+        "{error}"
+    );
+    assert_eq!(
+        *seen.borrow(),
+        [
+            "unemu/media/freedos-floppy-1.44m",
+            "unemu/media/freedos-floppy-1.2m"
+        ]
+    );
+    assert!(store
+        .tag_descriptor("unemu/media/freedos-floppy-1.44m:1.4.0")
+        .is_ok());
+    for tag in [
+        "unemu/media/freedos-floppy-1.2m:1.4.0",
+        "unemu/media/freedos-floppy-1.2m:latest",
+    ] {
+        assert!(store.tag_descriptor(tag).is_err(), "{tag}");
+    }
+}
+
+#[test]
+fn another_file_at_a_media_fixture_path_is_refused_before_any_set_is_tagged() {
+    if !media_present() {
+        return;
+    }
+    let t = Temp::new("template-media-fixture");
+    let copy = t.0.join("fixtures");
+    copy_media_fixtures(&copy);
+    // A boot disk with one changed byte is not the edition's.
+    let boot = copy.join(template::MEDIA[0].disks[0].path);
+    let mut bytes = fs::read(&boot).unwrap();
+    bytes[0x200] ^= 1;
+    fs::write(&boot, bytes).unwrap();
+    let store = Store::open(t.0.join("store")).unwrap();
+    let error = template::build_media(&store, &copy, &allow, &mut |_| {})
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("x86BOOT.img is not the file vendor/freedos/fetch-floppy-1.4.sh pins"),
+        "{error}"
+    );
+    let media_tags = |store: &Store| {
+        store
+            .list_tags(None, 100)
+            .unwrap()
+            .tags
+            .into_iter()
+            .filter(|t| t.name.starts_with("unemu/media/"))
+            .count()
+    };
+    assert_eq!(media_tags(&store), 0);
+    fs::remove_file(&boot).unwrap();
+    let error = template::build_media(&store, &copy, &allow, &mut |_| {})
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("missing fixture") && error.contains("fetch-floppy-1.4.sh"),
+        "{error}"
+    );
+    assert_eq!(media_tags(&store), 0);
+}
+
+/// The digests of the installation sets. Any change to what they are built
+/// from changes them; a set's version tag never moves, so a changed set needs
+/// a new release version and new pins.
+const MEDIA_PINNED: [(&str, &str); 3] = [
+    (
+        "unemu/media/freedos-floppy-1.44m",
+        "sha256:4c10c7a3e50b0313d5aa9619db5e11e8576d60664d4eee47779d10bf50280158",
+    ),
+    (
+        "unemu/media/freedos-floppy-1.2m",
+        "sha256:b76cb5c268e8812e458a2377003ecacb09f8cb457ec322bde39b7a03ff304356",
+    ),
+    (
+        "unemu/media/freedos-floppy-720k",
+        "sha256:2ac1f98cc8ed70ec4f8f251f927e6b24697c5c4372fd67f5d4785aa72d55c42e",
+    ),
+];
+
+#[test]
+fn two_media_builds_from_different_fixture_copies_give_the_pinned_sets() {
+    if !media_present() {
+        return;
+    }
+    let t = Temp::new("template-media-pins");
+    let copy = t.0.join("fixtures");
+    copy_media_fixtures(&copy);
+    let first = Store::open(t.0.join("first")).unwrap();
+    let second = Store::open(t.0.join("second")).unwrap();
+    let a = template::build_media(&first, &vendor(), &allow, &mut |_| {}).unwrap();
+    let b = template::build_media(&second, &copy, &allow, &mut |_| {}).unwrap();
+    assert_eq!(identities(&a), identities(&b));
+    for built in &a {
+        assert_eq!(built.version, template::FREEDOS_1_4.version);
+        assert!(built.tags.iter().all(|(_, o)| *o == Outcome::Created));
+    }
+    let digests: Vec<_> = a
+        .iter()
+        .map(|b| (b.repository.clone(), b.descriptor.digest.to_string()))
+        .collect();
+    let pinned: Vec<_> = MEDIA_PINNED
+        .iter()
+        .map(|(r, d)| (r.to_string(), d.to_string()))
+        .collect();
+    assert_eq!(
+        digests, pinned,
+        "the installation sets changed: their version tags never move; give them a new release version, then update these pins"
+    );
+    let again = template::build_media(&first, &vendor(), &allow, &mut |_| {}).unwrap();
+    assert_eq!(identities(&again), identities(&a));
+    assert!(again
+        .iter()
+        .flat_map(|b| &b.tags)
+        .all(|(_, o)| *o == Outcome::Present));
 }

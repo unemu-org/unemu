@@ -21,10 +21,15 @@ fn read_fixture(relative: &str, required_by_gate: bool) -> Option<Vec<u8>> {
         Ok(bytes) => Some(bytes),
         Err(error) if error.kind() == ErrorKind::NotFound => {
             let directory = relative.split('/').next().expect("fixture directory");
-            let message = format!(
-                "missing fixture {} — run vendor/{directory}/{}",
-                path.display(),
+            // The FreeDOS 1.4 Floppy Edition has a fetch script of its own.
+            let script = if relative.starts_with("freedos/floppy-1.4/") {
+                "fetch-floppy-1.4.sh"
+            } else {
                 fixture_script(directory)
+            };
+            let message = format!(
+                "missing fixture {} — run vendor/{directory}/{script}",
+                path.display()
             );
             assert!(
                 !required_by_gate

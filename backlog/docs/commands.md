@@ -162,7 +162,8 @@ the vendor's terms text in `extras/`) is open only by an explicit statement:
 `--open --license LicenseRef-NAME --license-text EXTRA`. `--open` needs both
 flags and each flag needs `--open`. The licence must be one SPDX `LicenseRef-`
 (the vendor's own terms; `MIT`, `GPL-2.0-only` or any other SPDX List
-identifier is refused), and `--license-text` names, by file name, exactly one
+identifier is refused unless the set also names its source archive, below),
+and `--license-text` names, by file name, exactly one
 of the `--extra` files. Every medium and extra is then marked open under that
 licence and linked to the terms text's digest (`unemu.terms`); the generated
 config and metadata are open under CC0-1.0. The preview prints
@@ -178,6 +179,20 @@ file imported without `--open`, say) keeps the set private, and `image push
 a store without it. Marks are part of the set, so a tag that already names
 the set under other marks refuses a new statement: import under a new tag.
 Game files and terms texts never enter the repository.
+
+A free-software set is opened under an SPDX licence expression with its
+source: `--open --license EXPRESSION --license-text EXTRA --source EXTRA`.
+`--source` names, by file name, exactly one `--extra` file, the archive of
+the set's corresponding source, and needs `--open`; an expression that is not
+one `LicenseRef-` is refused without it (copyleft or not), and a `LicenseRef-`
+statement may name one too. Every medium and extra then also links the
+archive's digest (`unemu.source`); the preview prints `source "FILE"` after
+the `open` line and `image media show` prints `source "FILE" DIGEST` after
+the `terms` lines. The push guard lets a set whose licence has a GPL, LGPL,
+AGPL or MPL part into `unemu/`, or onto a registry not marked private, only
+when every such medium and extra links a source archive that travels in the
+set; otherwise `show` reports `private registries outside unemu/ only: open
+copyleft media without the set's source archive` (machine-images §5.2).
 
 Firmware packages use the same store, with the shared default data root when
 `--store` is omitted:
@@ -601,12 +616,35 @@ machine-images §5.5):
 | `open-at:1.1.0`, `:latest` | `unemu/open-at` | IBM 5170-class 80286, the three ROMs, 640 KiB + 1 MiB, VGA, COM1 without a mouse, an empty 1.2M A: and an empty 1.44M B: drive, a blank zero-base 504 MiB (1024/16/63) ATA disk at 1F0h, no sound card |
 | `open-at-games:1.1.0`, `:latest` | `unemu/open-at-games` | `open-at` plus SB16 (220h, IRQ 5, DMA 1/5), a Microsoft mouse on COM1 and a 2 MiB Lo-tech EMS board (260h, frame D000h) |
 
+After the machines the build imports the FreeDOS 1.4 Floppy Edition
+installation sets (fixtures: `bash vendor/freedos/fetch-floppy-1.4.sh`, a
+script of its own; once its outputs match their pins it stops at once,
+without the network):
+
+| Local tags | Registry repository | Image |
+| --- | --- | --- |
+| `unemu/media/freedos-floppy-1.44m:1.4.0`, `:latest` | `unemu/media/freedos-floppy-1.44m` | the edition's seven 1.44M disks |
+| `unemu/media/freedos-floppy-1.2m:1.4.0`, `:latest` | `unemu/media/freedos-floppy-1.2m` | its eight 1.2M disks |
+| `unemu/media/freedos-floppy-720k:1.4.0`, `:latest` | `unemu/media/freedos-floppy-720k` | its twelve 720K disks |
+
+Each set holds the disks unmodified in installer order and, as extras,
+`LICENSES.TXT` (the licence index, its licence text) and the deterministic
+source archive, open under the conjunction of the programs' licences with both
+linked (machine-images §5.5). Its version tag is the release's (`1.4.0`), not
+`pc_image::template::VERSION`; its lines read `media`. The build checks every
+set fixture against the pin of `vendor/freedos/fetch-floppy-1.4.sh` before
+it writes the first tag of any image; another or a missing file stops it and
+names the script. `pc_image::template::build` (firmware and machines) and
+`build_media` (the sets) are separate, so the 1.1.0 template tests need only
+the firmware fixtures.
+
 The local tags are the short form `image pull` writes for each repository, so
 `image push TAG` without a reference reaches the repository in the table. Each
 source archive must be the one the catalogue pins (its fetch script builds it);
 another archive, or a missing fixture, stops the build and names the script.
-No operating system or other software goes into a template. The output is one
-`TAG<TAB>DIGEST<TAB>firmware|machine<TAB>created|present|moved:OLD|kept:CURRENT`
+No operating system goes into a template machine; installation sets, such as
+the FreeDOS ones above, are separate images. The output is one
+`TAG<TAB>DIGEST<TAB>firmware|machine|media<TAB>created|present|moved:OLD|kept:CURRENT`
 line per tag, written as soon as its image is built, then `guard:allowed`. A
 tag that already names the same image stays; a version tag naming another
 image stops the build (give a changed template a new version in
@@ -642,23 +680,35 @@ cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std
 cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:1.1.0 unemu/firmware/xub-r638-xtp-ata1f0:1.1.0 --store "$S" --dry-run
 cargo run --offline -p cli -- image push open-at:1.1.0 unemu/open-at:1.1.0 --store "$S" --dry-run
 cargo run --offline -p cli -- image push open-at-games:1.1.0 unemu/open-at-games:1.1.0 --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.44m:1.4.0 unemu/media/freedos-floppy-1.44m:1.4.0 --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.2m:1.4.0 unemu/media/freedos-floppy-1.2m:1.4.0 --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/media/freedos-floppy-720k:1.4.0 unemu/media/freedos-floppy-720k:1.4.0 --store "$S" --dry-run
 cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.2:latest unemu/firmware/unemu-at-bios-1.0.2-unemu.2:latest --store "$S" --dry-run
 cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:latest unemu/firmware/vgabios-0.8a-unemu.1-std:latest --store "$S" --dry-run
 cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:latest unemu/firmware/xub-r638-xtp-ata1f0:latest --store "$S" --dry-run
 cargo run --offline -p cli -- image push open-at:latest unemu/open-at:latest --store "$S" --dry-run
 cargo run --offline -p cli -- image push open-at-games:latest unemu/open-at-games:latest --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.44m:latest unemu/media/freedos-floppy-1.44m:latest --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.2m:latest unemu/media/freedos-floppy-1.2m:latest --store "$S" --dry-run
+cargo run --offline -p cli -- image push unemu/media/freedos-floppy-720k:latest unemu/media/freedos-floppy-720k:latest --store "$S" --dry-run
 
 cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.2:1.1.0 unemu/firmware/unemu-at-bios-1.0.2-unemu.2:1.1.0 --store "$S"
 cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.0 unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.0 --store "$S"
 cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:1.1.0 unemu/firmware/xub-r638-xtp-ata1f0:1.1.0 --store "$S"
 cargo run --offline -p cli -- image push open-at:1.1.0 unemu/open-at:1.1.0 --store "$S"
 cargo run --offline -p cli -- image push open-at-games:1.1.0 unemu/open-at-games:1.1.0 --store "$S"
+cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.44m:1.4.0 unemu/media/freedos-floppy-1.44m:1.4.0 --store "$S"
+cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.2m:1.4.0 unemu/media/freedos-floppy-1.2m:1.4.0 --store "$S"
+cargo run --offline -p cli -- image push unemu/media/freedos-floppy-720k:1.4.0 unemu/media/freedos-floppy-720k:1.4.0 --store "$S"
 
 cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.2:latest unemu/firmware/unemu-at-bios-1.0.2-unemu.2:latest --store "$S"
 cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.8a-unemu.1-std:latest unemu/firmware/vgabios-0.8a-unemu.1-std:latest --store "$S"
 cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:latest unemu/firmware/xub-r638-xtp-ata1f0:latest --store "$S"
 cargo run --offline -p cli -- image push open-at:latest unemu/open-at:latest --store "$S"
 cargo run --offline -p cli -- image push open-at-games:latest unemu/open-at-games:latest --store "$S"
+cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.44m:latest unemu/media/freedos-floppy-1.44m:latest --store "$S"
+cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.2m:latest unemu/media/freedos-floppy-1.2m:latest --store "$S"
+cargo run --offline -p cli -- image push unemu/media/freedos-floppy-720k:latest unemu/media/freedos-floppy-720k:latest --store "$S"
 ```
 
 Each dry run must end in `guard:allowed` with every blob `open`. A version tag

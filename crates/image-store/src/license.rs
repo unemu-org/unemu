@@ -20,8 +20,8 @@ use crate::{invalid, Descriptor, Result};
 pub const REDISTRIBUTION: &str = "unemu.redistribution";
 /// Descriptor annotation with the SPDX licence expression, next to the mark.
 pub const LICENSE: &str = "unemu.license";
-/// ROM descriptor annotation naming the decoded digest of its corresponding
-/// source archive, which travels in the same closure.
+/// ROM, medium or installation-set extra annotation naming the decoded digest
+/// of its corresponding source archive, which travels in the same closure.
 pub const SOURCE: &str = "unemu.source";
 /// Installation-media descriptor annotation naming the decoded digest of the
 /// vendor's terms text the bytes are redistributed under. The text is an
@@ -75,6 +75,7 @@ const LICENSES: &[&str] = &[
     "AGPL-3.0-or-later",
     "Apache-1.1",
     "Apache-2.0",
+    "Artistic-1.0",
     "Artistic-2.0",
     "BSD-1-Clause",
     "BSD-2-Clause",
@@ -94,6 +95,10 @@ const LICENSES: &[&str] = &[
     "EPL-2.0",
     "EUPL-1.1",
     "EUPL-1.2",
+    "GFDL-1.1-only",
+    "GFDL-1.1-or-later",
+    "GFDL-1.2-only",
+    "GFDL-1.2-or-later",
     "GFDL-1.3-only",
     "GFDL-1.3-or-later",
     "GPL-1.0-only",
@@ -102,6 +107,7 @@ const LICENSES: &[&str] = &[
     "GPL-2.0-or-later",
     "GPL-3.0-only",
     "GPL-3.0-or-later",
+    "Info-ZIP",
     "ISC",
     "LGPL-2.0-only",
     "LGPL-2.0-or-later",
@@ -119,6 +125,7 @@ const LICENSES: &[&str] = &[
     "OFL-1.1",
     "Unlicense",
     "UPL-1.0",
+    "Watcom-1.0",
     "WTFPL",
     "X11",
     "Zlib",
@@ -396,28 +403,38 @@ pub fn mark(descriptor: &mut Descriptor, license: Option<&Expression>) {
     }
 }
 
-/// Push-guard rule 4 for one layer, for any frontend: an open ROM whose
-/// licence obliges the corresponding source (under [`ACTIVE`]) and whose
-/// linked source archive (`unemu.source`) is not a tar or zip layer of
-/// `closure`. Such a ROM may stay only in a private registry outside `unemu/`.
-pub fn source_missing(rom: &Descriptor, closure: &[Descriptor]) -> bool {
-    if rom.decoded_media_type() != crate::media_type::FIRMWARE
-        || !open_license(rom).is_some_and(|l| l.needs_source(ACTIVE))
-    {
+/// Push-guard rule 4 for one layer, for any frontend: an open ROM, medium or
+/// installation-set extra whose licence obliges the corresponding source
+/// (under [`ACTIVE`]) and whose linked source archive (`unemu.source`) is not
+/// in `closure`. A ROM's archive is a tar or zip layer, as a firmware package
+/// stores it; a medium's or an extra's may also be an extra, the form an
+/// installation set stores its source archive in. An extra is checked when
+/// it links a source archive, or when `closure` holds an installation set's
+/// config descriptor, which the set rule needs: pass the config together with
+/// the layers. An unlinked extra elsewhere is a document that travels beside a
+/// firmware package's ROMs or a machine's media and is not checked. Such a
+/// layer may stay only in a private registry outside `unemu/`.
+pub fn source_missing(layer: &Descriptor, closure: &[Descriptor]) -> bool {
+    use crate::media_type as mt;
+    let media_set = closure.iter().any(|d| d.media_type == mt::MEDIA_SET_CONFIG);
+    let linked = layer.annotations.contains_key(SOURCE);
+    let archives: &[&str] = match layer.decoded_media_type() {
+        mt::FIRMWARE => &[mt::TAR, mt::ZIP],
+        mt::FLOPPY | mt::OPTICAL => &[mt::TAR, mt::ZIP, mt::EXTRA],
+        mt::EXTRA if media_set || linked => &[mt::TAR, mt::ZIP, mt::EXTRA],
+        _ => return false,
+    };
+    if !open_license(layer).is_some_and(|l| l.needs_source(ACTIVE)) {
         return false;
     }
-    let link = rom
+    let link = layer
         .annotations
         .get(SOURCE)
         .and_then(|s| s.parse::<crate::Digest>().ok());
     !link.is_some_and(|link| {
-        closure.iter().any(|d| {
-            d.names(&link)
-                && matches!(
-                    d.decoded_media_type(),
-                    crate::media_type::TAR | crate::media_type::ZIP
-                )
-        })
+        closure
+            .iter()
+            .any(|d| d.names(&link) && archives.contains(&d.decoded_media_type()))
     })
 }
 
@@ -606,6 +623,83 @@ mod tests {
             !source_missing(&rom, &[]),
             "a user-supplied ROM is rules 1 and 2"
         );
+    }
+
+    #[test]
+    fn rule_four_needs_a_copyleft_set_medium_and_extra_to_link_a_source_that_travels() {
+        let gpl = Expression::parse("GPL-2.0-only AND MIT").unwrap();
+        let layer = |kind: &str, bytes: &[u8], link: Option<&[u8]>| {
+            let mut d = Descriptor::new(kind, Digest::of(bytes), bytes.len() as u64);
+            mark(&mut d, Some(&gpl));
+            if let Some(link) = link {
+                d.annotations
+                    .insert(SOURCE.into(), Digest::of(link).to_string());
+            }
+            d
+        };
+        let config = Descriptor::new(media_type::MEDIA_SET_CONFIG, Digest::of(b"config"), 6);
+        let disk = layer(media_type::FLOPPY, b"disk", Some(b"src"));
+        let iso = layer(media_type::OPTICAL, b"iso", Some(b"src"));
+        let manual = layer(media_type::EXTRA, b"manual", Some(b"src"));
+        let source = layer(media_type::EXTRA, b"src", Some(b"src"));
+        let set = vec![
+            config.clone(),
+            disk.clone(),
+            iso.clone(),
+            manual.clone(),
+            source.clone(),
+        ];
+        for d in &set {
+            assert!(!source_missing(d, &set), "{}", d.media_type);
+        }
+        // The source archive left out, or a link to bytes that are not in
+        // the closure, refuses every linking medium and extra.
+        let without: Vec<_> = set[..4].to_vec();
+        for d in &without[1..] {
+            assert!(source_missing(d, &without), "{}", d.media_type);
+        }
+        let elsewhere = layer(media_type::FLOPPY, b"disk", Some(b"other"));
+        assert!(source_missing(&elsewhere, &set));
+        // No link at all, or a link that does not parse.
+        let mut unlinked = disk.clone();
+        unlinked.annotations.remove(SOURCE);
+        assert!(source_missing(&unlinked, &set));
+        unlinked
+            .annotations
+            .insert(SOURCE.into(), "not a digest".into());
+        assert!(source_missing(&unlinked, &set));
+        // A tar or zip layer is a source archive for media as for ROMs.
+        let tar = Descriptor::new(media_type::TAR, Digest::of(b"src"), 3);
+        assert!(!source_missing(&disk, &[config.clone(), disk.clone(), tar]));
+        // A licence without copyleft needs no source, and neither does a
+        // user-supplied layer, which rules 1 and 2 keep private.
+        let mut permissive = unlinked.clone();
+        mark(&mut permissive, Some(&Expression::parse("MIT").unwrap()));
+        assert!(!source_missing(&permissive, &without));
+        mark(&mut permissive, None);
+        assert!(!source_missing(&permissive, &without));
+        // Outside an installation set a medium still needs its source, and
+        // so does an extra that links one; an unlinked extra is a document
+        // beside a firmware package's ROMs.
+        let machine = vec![disk.clone(), manual.clone()];
+        assert!(source_missing(&disk, &machine));
+        assert!(source_missing(&manual, &machine), "a linked extra");
+        assert!(!source_missing(&disk, &[disk.clone(), source.clone()]));
+        assert!(!source_missing(&manual, &[manual.clone(), source.clone()]));
+        let mut document = manual.clone();
+        document.annotations.remove(SOURCE);
+        assert!(!source_missing(&document, &machine));
+        assert!(source_missing(
+            &document,
+            &[config.clone(), document.clone()]
+        ));
+        // A ROM's archive stays a tar or zip layer: an extra is not one.
+        let rom = layer(media_type::FIRMWARE, b"rom", Some(b"src"));
+        assert!(source_missing(&rom, &set));
+        assert!(!source_missing(
+            &rom,
+            &[Descriptor::new(media_type::ZIP, Digest::of(b"src"), 3)]
+        ));
     }
 
     #[test]

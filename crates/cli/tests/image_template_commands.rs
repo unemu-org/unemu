@@ -37,11 +37,22 @@ fn vendor() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor")
 }
 
-/// The open fixtures the templates need, or `None` when they are not fetched.
+/// The open firmware fixtures the templates need, or `None` when they are
+/// not fetched.
 fn fetched() -> Option<()> {
     for source in &pc_image::template::FIRMWARE {
         fixtures::fixture(source.rom)?;
         fixtures::fixture(source.source_archive)?;
+    }
+    Some(())
+}
+
+/// The fixtures `image template build` reads: the firmware and every
+/// installation set's disks and extras, which it checks before the first tag.
+fn command_fetched() -> Option<()> {
+    fetched()?;
+    for file in pc_image::template::media_files() {
+        fixtures::fixture(file.path)?;
     }
     Some(())
 }
@@ -99,7 +110,7 @@ fn rows(output: &str) -> Vec<(String, String, String, String)> {
 
 #[test]
 fn the_build_is_reproducible_all_open_for_unemu_and_its_dry_run_writes_nothing() {
-    if fetched().is_none() {
+    if command_fetched().is_none() {
         return;
     }
     let t = Temp::new("template-cli");
@@ -121,9 +132,16 @@ fn the_build_is_reproducible_all_open_for_unemu_and_its_dry_run_writes_nothing()
             "open-at:latest",
             "open-at-games:1.1.0",
             "open-at-games:latest",
+            "unemu/media/freedos-floppy-1.44m:1.4.0",
+            "unemu/media/freedos-floppy-1.44m:latest",
+            "unemu/media/freedos-floppy-1.2m:1.4.0",
+            "unemu/media/freedos-floppy-1.2m:latest",
+            "unemu/media/freedos-floppy-720k:1.4.0",
+            "unemu/media/freedos-floppy-720k:latest",
         ]
     );
     assert!(first.iter().all(|r| r.3 == "created"), "{first:?}");
+    assert!(first[10..].iter().all(|r| r.2 == "media"), "{first:?}");
     let digests = |rows: &[(String, String, String, String)]| {
         rows.iter()
             .map(|r| (r.0.clone(), r.1.clone(), r.2.clone()))
@@ -156,7 +174,7 @@ fn the_build_is_reproducible_all_open_for_unemu_and_its_dry_run_writes_nothing()
     assert!(!t.0.join("missing").exists());
 
     // `image push` of each tag to the official namespace would pass the guard:
-    // every blob open, every copyleft ROM with its source archive.
+    // every blob open, every copyleft ROM and medium with its source archive.
     let store = Store::open_existing(t.0.join("a")).unwrap();
     let entry = RegistryEntry::builtin(DEFAULT_REGISTRY);
     for (tag, digest, _, _) in &first {
@@ -181,7 +199,7 @@ fn the_build_is_reproducible_all_open_for_unemu_and_its_dry_run_writes_nothing()
 
 #[test]
 fn a_store_that_records_an_open_rom_as_user_supplied_refuses_the_build() {
-    if fetched().is_none() {
+    if command_fetched().is_none() {
         return;
     }
     let t = Temp::new("template-cli-refused");
@@ -349,7 +367,7 @@ fn variant(store: &Store, title: &str) -> pc_image::create::NewImage {
 
 #[test]
 fn the_dry_run_names_a_version_conflict_and_what_latest_does() {
-    if fetched().is_none() {
+    if command_fetched().is_none() {
         return;
     }
     let t = Temp::new("template-cli-states");
@@ -436,4 +454,45 @@ fn the_dry_run_names_a_version_conflict_and_what_latest_does() {
         store.tag_descriptor("open-at:latest").unwrap().digest,
         higher.digest
     );
+}
+
+/// Without the installation sets' fixtures the command refuses before it
+/// writes anything, so a missing set never leaves the templates half built.
+#[test]
+fn a_missing_set_fixture_stops_the_build_before_the_first_tag() {
+    if fetched().is_none() {
+        return;
+    }
+    let t = Temp::new("template-cli-no-media");
+    let copy = t.0.join("vendor");
+    for source in &pc_image::template::FIRMWARE {
+        for relative in [source.rom, source.source_archive] {
+            let to = copy.join(relative);
+            fs::create_dir_all(to.parent().unwrap()).unwrap();
+            fs::copy(vendor().join(relative), to).unwrap();
+        }
+    }
+    let store = t.0.join("store");
+    for dry_run in [false, true] {
+        let mut args: Vec<&dyn AsRef<std::ffi::OsStr>> = vec![
+            &"image",
+            &"template",
+            &"build",
+            &"--store",
+            &store,
+            &"--vendor",
+            &copy,
+        ];
+        if dry_run {
+            args.push(&"--dry-run");
+        }
+        let (code, output, errors) = run(&args);
+        assert_ne!(code, 0, "{output}");
+        assert!(
+            errors.contains("missing fixture") && errors.contains("fetch-floppy-1.4.sh"),
+            "{errors}"
+        );
+        assert!(!output.contains("\tsha256:"), "{output}");
+        assert!(!store.exists(), "nothing is written");
+    }
 }

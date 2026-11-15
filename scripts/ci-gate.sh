@@ -36,9 +36,12 @@ case "$step" in
         # unemu-at-bios are built by Nix from the repositories next to this
         # checkout's origin. The Kiselev, XTIDE, vgabios and unemu-at-bios
         # scripts also write the pinned source archives of their open
-        # images. XTIDE runs last: it exports its
+        # images. XTIDE runs after them: it exports its
         # source over the network with Subversion, which Nix supplies, so an
         # unreachable server cannot keep the other fixtures from being built.
+        # The FreeDOS 1.4 Floppy Edition runs last for the same reason: its
+        # first run downloads about 330 MB from FreeDOS, GitHub and GitLab,
+        # and with the workflow's cache of its outputs it only re-checks pins.
         # The lane stops at the first failing script; the last header names it.
         gate_command+=(bash -euc '
             echo "== fixtures: vendor/kiselev-bios/fetch.sh"
@@ -57,6 +60,8 @@ case "$step" in
             bash vendor/at-pm-test/build.sh
             echo "== fixtures: vendor/xtide-universal-bios/fetch.sh"
             bash vendor/xtide-universal-bios/fetch.sh
+            echo "== fixtures: vendor/freedos/fetch-floppy-1.4.sh"
+            bash vendor/freedos/fetch-floppy-1.4.sh
         ')
         ;;
     # The tests lane runs before the fixtures exist, so tests that read a

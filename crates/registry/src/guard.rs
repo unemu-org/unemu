@@ -18,9 +18,10 @@
 //! 2. a push into `unemu/` requires every blob to be open;
 //! 3. a restricted push additionally needs the target repository to refuse
 //!    anonymous reads (checked against the registry before the first upload);
-//! 4. an open ROM under a copyleft licence (GPL, LGPL, AGPL or MPL family)
-//!    goes to a namespace or registry not marked private, or into `unemu/`,
-//!    only with its linked source archive (`unemu.source`) in the same closure;
+//! 4. an open ROM, installation medium or installation-set extra under a
+//!    copyleft licence (GPL, LGPL, AGPL or MPL family) goes to a namespace or
+//!    registry not marked private, or into `unemu/`, only with its linked
+//!    source archive (`unemu.source`) in the same closure;
 //! 5. open installation media go to a namespace or registry not marked
 //!    private, or into `unemu/`, only with the vendor's terms text they link
 //!    (`unemu.terms`) as an open extra in the same closure; in a media set
@@ -223,9 +224,12 @@ pub enum Refusal {
     AnonymousReadable { reference: String },
     #[error("{reference} answers anonymous reads with a token challenge, which does not show whether it is private; Bearer authentication is not supported yet, so it cannot receive user-supplied blobs")]
     AnonymousAccessUnverified { reference: String },
-    #[error("{target} is in unemu/ or in a namespace or registry not marked private, and these open copyleft ROMs have no source archive in the image ({hint}): {}", list(.blobs))]
+    #[error("{target} is in unemu/ or in a namespace or registry not marked private, and these open copyleft {what} have no source archive in the image ({hint}): {}", list(.blobs))]
     CopyleftWithoutSource {
         target: String,
+        /// What the refused layers are: `ROMs`, or `media` for installation
+        /// media and their extras.
+        what: &'static str,
         /// What adds the source to this kind of artifact.
         hint: &'static str,
         blobs: Vec<Descriptor>,
@@ -341,13 +345,24 @@ pub fn check(
     }
     let missing = copyleft_without_source(closure);
     if !missing.is_empty() {
-        let package = closure
-            .iter()
-            .any(|c| c.descriptor.media_type == media_type::FIRMWARE_CONFIG);
+        let has = |kind: &str| closure.iter().any(|c| c.descriptor.media_type == kind);
+        let rom = |d: &Descriptor| d.decoded_media_type() == media_type::FIRMWARE;
+        let (roms, media) = (missing.iter().any(rom), missing.iter().any(|d| !rom(d)));
         return Err(Refusal::CopyleftWithoutSource {
             target: target.to_string(),
-            hint: if package {
+            what: match (roms, media) {
+                (true, true) => "ROMs and media",
+                (false, true) => "media",
+                _ => "ROMs",
+            },
+            hint: if has(media_type::MEDIA_SET_CONFIG) {
+                "import the set again under a new tag with --open --license EXPRESSION --license-text EXTRA --source EXTRA"
+            } else if has(media_type::FIRMWARE_CONFIG) {
                 "image firmware edit --source adds one"
+            } else if roms && media {
+                "the image must carry the source archives of its firmware packages and of the sets its media come from"
+            } else if media {
+                "the image must carry the source archive of the set its media come from"
             } else {
                 "import the machine again once its firmware package carries the source archive"
             },
@@ -362,7 +377,7 @@ pub fn check(
         return Err(Refusal::TermsWithoutText {
             target: target.to_string(),
             hint: if set {
-                "import the set again under a new tag with --open --license LicenseRef-NAME --license-text EXTRA"
+                "import the set again under a new tag with --open --license LicenseRef-NAME --license-text EXTRA, or an SPDX EXPRESSION with --source EXTRA as well"
             } else {
                 "the image must carry the terms text of the set its media come from"
             },
@@ -389,7 +404,7 @@ fn restriction_hint(closure: &[ClosureEntry]) -> &'static str {
         .iter()
         .any(|c| c.descriptor.media_type == media_type::MEDIA_SET_CONFIG)
     {
-        "; a media set is open only when imported under a new tag with --open --license LicenseRef-NAME --license-text EXTRA"
+        "; a media set is open only when imported under a new tag with --open --license LicenseRef-NAME --license-text EXTRA, or an SPDX EXPRESSION with --source EXTRA as well"
     } else {
         ""
     }
@@ -407,9 +422,9 @@ pub fn terms_without_text(closure: &[ClosureEntry]) -> Vec<Descriptor> {
         .collect()
 }
 
-/// Rule 4: effectively open ROM layers whose licence obliges the
-/// corresponding source but whose linked source archive is absent from the
-/// closure ([`license::source_missing`]). Only ROM layers are checked.
+/// Rule 4: effectively open ROM, medium and installation-set extra layers
+/// whose licence obliges the corresponding source but whose linked source
+/// archive is absent from the closure ([`license::source_missing`]).
 pub fn copyleft_without_source(closure: &[ClosureEntry]) -> Vec<Descriptor> {
     let layers: Vec<Descriptor> = closure.iter().map(|c| c.descriptor.clone()).collect();
     closure
@@ -431,7 +446,7 @@ pub enum Reach {
     /// user-supplied blob.
     UserSupplied,
     /// Private namespaces or registries outside `unemu/` only: an open
-    /// copyleft ROM without its linked source archive.
+    /// copyleft ROM or medium without its linked source archive.
     CopyleftWithoutSource,
 }
 /// The [`Reach`] of a closure; a user-supplied blob is named before a
@@ -886,6 +901,111 @@ mod tests {
             ),
             "{refusal}"
         );
+    }
+
+    /// A complete open copyleft set: two disks, the licence text and the
+    /// source archive, every one linking both; `source` false drops the links
+    /// to the archive and `archive` false leaves the archive out.
+    fn copyleft_set(source: bool, archive: bool) -> Vec<ClosureEntry> {
+        let gpl = license::Expression::parse("GPL-2.0-or-later AND MIT").unwrap();
+        let layer = |kind: &str, bytes: &[u8]| {
+            let mut d = Descriptor::new(kind, Digest::of(bytes), bytes.len() as u64);
+            license::mark(&mut d, Some(&gpl));
+            d.annotations
+                .insert(license::TERMS.into(), Digest::of(b"COPYING").to_string());
+            if source {
+                d.annotations
+                    .insert(license::SOURCE.into(), Digest::of(b"src.tar").to_string());
+            }
+            classified(d)
+        };
+        let mut set = vec![
+            entry(Some("open"), mt::MEDIA_SET_CONFIG, b"set config"),
+            layer(mt::FLOPPY, b"boot disk"),
+            layer(mt::FLOPPY, b"disk 2"),
+            layer(mt::EXTRA, b"COPYING"),
+            layer(mt::EXTRA, b"src.tar"),
+            entry(Some("open"), mt::METADATA, b"set metadata"),
+        ];
+        if !archive {
+            set.remove(4);
+        }
+        set
+    }
+
+    #[test]
+    fn an_open_copyleft_media_set_needs_its_linked_source_archive_outside_private_registries() {
+        let complete = copyleft_set(true, true);
+        for (private, reference) in [
+            (false, "freedos:1"),
+            (true, "freedos:1"),
+            (false, "owner/freedos:1"),
+        ] {
+            assert_eq!(
+                verdict(private, reference, &complete),
+                Ok(()),
+                "{reference}"
+            );
+        }
+        assert_eq!(reach(&complete), Reach::Anywhere);
+        // Without the links, or without the archive they name, every medium
+        // and extra is refused, whatever the target outside private registries.
+        for (case, set, refused) in [
+            ("unlinked", copyleft_set(false, true), 4),
+            ("absent", copyleft_set(true, false), 3),
+        ] {
+            assert_eq!(reach(&set), Reach::CopyleftWithoutSource, "{case}");
+            for (private, reference) in [
+                (false, "freedos:1"),
+                (true, "freedos:1"),
+                (false, "owner/freedos:1"),
+            ] {
+                let refusal = verdict(private, reference, &set).unwrap_err();
+                assert!(
+                    matches!(&refusal, Refusal::CopyleftWithoutSource { blobs, what: "media", hint, .. }
+                        if blobs.len() == refused && hint.contains("--source EXTRA")),
+                    "{case} {reference}: {refusal}"
+                );
+                assert!(
+                    refusal
+                        .to_string()
+                        .contains("these open copyleft media have no source archive"),
+                    "{refusal}"
+                );
+            }
+            // The user's own copy may still go to a private registry.
+            assert_eq!(verdict(true, "private/freedos:1", &set), Ok(()), "{case}");
+        }
+        // A machine image that binds a copyleft disk carries the set's source
+        // archive too, and so does an extra of the set that links it.
+        let disk = complete[1].clone();
+        let machine = [
+            entry(Some("open"), mt::CONFIG, b"machine config"),
+            disk.clone(),
+            complete[3].clone(),
+        ];
+        assert!(matches!(
+            verdict(false, "lab:1", &machine),
+            Err(Refusal::CopyleftWithoutSource { ref blobs, what: "media", hint, .. })
+                if *blobs == [disk.descriptor.clone(), complete[3].descriptor.clone()]
+                    && hint.contains("source archive of the set")
+        ));
+        // A machine missing both a ROM's and a disk's source names both.
+        let mut both = machine.to_vec();
+        both.extend(package("GPL-2.0-only", None).into_iter().skip(1).take(1));
+        assert!(matches!(
+            verdict(false, "lab:1", &both),
+            Err(Refusal::CopyleftWithoutSource { what: "ROMs and media", hint, .. })
+                if hint.contains("firmware packages and of the sets")
+        ));
+        let mut carried = machine.to_vec();
+        carried.push(complete[4].clone());
+        assert_eq!(verdict(false, "lab:1", &carried), Ok(()));
+        // A copyleft ROM keeps its own wording and hint.
+        assert!(matches!(
+            verdict(false, "owner/bios:1", &package("GPL-2.0-only", None)),
+            Err(Refusal::CopyleftWithoutSource { what: "ROMs", .. })
+        ));
     }
 
     #[test]

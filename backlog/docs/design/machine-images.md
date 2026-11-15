@@ -194,7 +194,7 @@ Annotations are string values and never bind hardware or media:
 | `unemu.platform` | Required on the manifest: machine platform, matching config and metadata; a routing hint for registry/library previews, never an independent authority. |
 | `unemu.redistribution` | `open` or `user-supplied`; absent evidence defaults to user-supplied. |
 | `unemu.license` | Reviewed SPDX licence expression for open content. |
-| `unemu.source` | On an open ROM: decoded digest of its corresponding source archive in the same closure (§5.3). |
+| `unemu.source` | On an open ROM, installation medium or installation-set extra: decoded digest of its corresponding source archive in the same closure (§5.3, §5.2). |
 | `unemu.terms` | On an open installation medium or extra: decoded digest of the vendor's terms-text extra in the same closure (§5.2). |
 | `unemu.provenance` | Publish-safe evidence supporting the open classification. |
 
@@ -1176,7 +1176,8 @@ explicit statement at import: `image media import … --open --license
 LicenseRef-<name> --license-text <EXTRA>`. The licence is one SPDX
 `LicenseRef-` that names the vendor's own terms; an identifier from the SPDX
 License List is refused, because a set cannot carry the source an
-open-source licence may oblige. `--license-text` names, by file name, exactly
+open-source licence may oblige, unless the set names its source archive
+(Free-software sets with their source, below). `--license-text` names, by file name, exactly
 one of the set's `--extra` files: the vendor's terms text as released.
 `--open` needs both flags and each flag needs `--open`; nothing is guessed
 from file names or contents. The statement uses the `image_store::license`
@@ -1217,6 +1218,46 @@ text needs that text, open, in its closure. The status is
 the guard's effective classes. `image media show` prints the terms extra each
 link names, every layer's class, licence and link, and the guard's verdict
 from its own classification.
+
+**Free-software sets with their source** (2026-11-15). An open set may also
+be stated under an SPDX licence expression instead of a vendor's
+`LicenseRef-`: `image media import … --open --license <EXPRESSION>
+--license-text <EXTRA> --source <EXTRA>`. `--source` names, by file name,
+exactly one extra of the set: the archive of its corresponding source, an
+extra of kind archive (`.zip`, `.tar`, `.tgz`, `.gz`, `.7z`, … by extension)
+other than the licence text. An expression that is not one `LicenseRef-` is
+refused without `--source`,
+copyleft or not, with the same "the vendor's own terms" refusal as before;
+the `LicenseRef-` path is unchanged and may name a source archive too. Every
+medium and extra then also carries `unemu.source`, the decoded digest of
+the source extra (which links itself); the config and metadata carry no
+source link. Marks are part of the set, so another source extra under the
+same tag is a tag conflict. `image media import` prints `source "<name>"`
+after the `open` line; `image media show` prints a `source` line beside the
+`terms` line.
+
+*Push guard, rule 4 for media.* Rule 4 of §5.3 covers installation media
+too: an open floppy or optical medium, and an open extra of an installation
+set, whose licence obliges the source under the active policy (any GPL,
+LGPL, AGPL or MPL identifier) goes to a registry not marked private, or into
+`unemu/`, only when its `unemu.source` names a layer of the same closure
+that is an extra, a tar or a zip. A missing, unparsable or dangling link
+refuses the push (`CopyleftWithoutSource`, worded "open copyleft media", with
+the hint to import the set again with `--source EXTRA`); a private registry
+outside `unemu/` keeps the user's own copy. Outside an installation set a
+copyleft medium still needs its source (a machine image binding such a disk
+must carry the set's source archive), and so does an extra that links one;
+an unlinked extra there is a document beside a firmware package's ROMs or a
+machine's media and is not checked. The set rule needs the set's config
+descriptor in the closure, which the guard always passes. A machine that
+misses both a ROM's and a medium's source is worded "ROMs and media". The
+refusal hints name `LicenseRef-NAME`, or an SPDX `EXPRESSION` with
+`--source EXTRA`. ROMs keep their own rule: their
+archive is a tar or zip layer. Rule 5 is unchanged: an open set's layers
+also link its licence text. `image media show` reports the case as
+"private registries outside unemu/ only: open copyleft media without the
+set's source archive". Unit tests cover the guard with synthetic sets;
+`image_store::license::source_missing` is the shared status.
 
 *Rights follow the bytes.* The most restrictive local mark per digest still
 wins: when another local tag records one of the set's media or its terms
@@ -1624,8 +1665,10 @@ conflict.
 *Push guard.* Besides the user-supplied rules of §5.1, rule 4 refuses an open
 ROM layer under a licence that needs its source when the linked archive is not
 in the same closure, unless the target is a registry marked private outside
-`unemu/`. Rule 4 checks ROM layers only; documents and archives fall under the
-user-supplied rules. Its status for one layer is
+`unemu/`. Rule 4 checks ROM layers here; a package's documents and archives
+fall under the user-supplied rules, and a copyleft extra of a firmware
+package or a machine image is checked only when it links a source archive
+(§5.2, rule 4 for media). Its status for one layer is
 `image_store::license::source_missing`, for frontends that show it. An all-open
 package with its source may enter `unemu/`. The most restrictive
 local mark per digest still wins, so a user-supplied record of the same ROM in
@@ -1839,8 +1882,64 @@ mapping. Each template generation has a semantic-version tag (`1.0.0`), which
 never moves, and `latest`, which follows the newest version. The local tags of
 a template build are the short forms a pull writes: `open-at:1.0.0` for
 `unemu/open-at`, and `unemu/firmware/<id>:1.0.0` for a package (two components
-remain after `unemu/`). Media sets and future software images get their own
+remain after `unemu/`). Installation sets live under `unemu/media/<name>`
+with their release's own version tag (FreeDOS 1.4 is `1.4.0`, since version
+tags are `MAJOR.MINOR.PATCH`) and `latest`; their local tags keep the full
+name, `unemu/media/<name>:<version>`. Future software images get their own
 names when their licence decision is made.
+
+**Installation sets (2026-11-15).** The templates describe the official
+**FreeDOS 1.4 Floppy Edition** (`vendor/freedos/fetch-floppy-1.4.sh`,
+`pc_image::template::MEDIA`) as one set per floppy format it ships:
+`freedos-floppy-1.44m` (7 disks), `freedos-floppy-1.2m` (8) and
+`freedos-floppy-720k` (12), each disk byte for byte the edition's, in
+installer order (`x86BOOT.img`, then `x86DSK01.img`…), labelled "Disk N of M
+- boot disk and installer (x86BOOT.img)" or "… - packages (x86DSKnn.img)".
+Every set carries the same two extras: `LICENSES.TXT`, kind document, a
+licence index this repository writes and dedicates under CC0-1.0 (each
+program's licence with the notice it rests on, and the quoted terms of
+`LicenseRef-FreeDOS-other`); and `freedos-1.4-floppy-src.tar`, kind archive,
+a deterministic tar
+of the official FreeDOS 1.4 source packages of every program on the disks
+(the release LiveCD's package zips with their `SOURCE/` trees, mTCP for
+FDNET's DHCP, FDBANNER) and of the installer at its `FreeDOS-v1.4` tags
+(FDI-x86, FDI, the fd-nls translations and fonts it uses, the release
+builder). The release documents (`readme.txt`, `announce.html`,
+`changes.log`, `report.html`, `verify.txt`) state no licence of their own and
+are not carried; the edition's documentation travels inside its disks and
+the source tar under each package's licence. The title record states the title "FreeDOS 1.4 (Floppy Edition,
+1.44M)" (and so on), publisher and developer "The FreeDOS Project", year
+2025, platform DOS, genre "operating system", version 1.4, edition "Floppy
+Edition", a description, and labels `freedos`, `open-source`,
+`operating-system`; the manifest carries the OCI title, description, vendor
+and authors annotations from it. Every fixture is checked against its pin
+before an import, so other bytes at a fixture path are refused.
+
+`image template build` imports the three sets after the template machines
+(`pc_image::template::build_media`, separate from the firmware and machine
+build, after checking every set fixture before the first tag), open under
+the conjunction of their programs' licences, `GPL-1.0-only AND
+GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later
+AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND
+Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND
+LicenseRef-FreeDOS-other` (exactly the 256-byte statement limit; the
+non-SPDX terms named together and quoted in `LICENSES.TXT`; a test keeps the
+code and the index equal), with
+`LICENSES.TXT` as the licence text and the source tar as the source archive
+(`--license-text` and `--source` of §5.2). Each set goes through the guard
+of `unemu/` before its manifest is stored (rules 4 and 5 pass: every medium
+and extra links both), tagged `unemu/media/<name>:1.4.0` and `latest`. The
+template machines' closure is unchanged, so their generation stays `1.1.0`
+with its pins; a separate test pins the three sets' digests. Each program's
+licence is read from its own notices (main source headers, licence files)
+and from the LSM only where those name no version; the narrowest grant of a
+package is listed. Two parts are read closely and are inside the claim: the
+cpidos fonts ship as UPX-packed CPI files, the form their author edits
+(`SOURCES.TXT`), so each CPX carries its source losslessly; the zlib 1.2.3
+library SHSURDRV links is modified and marked as such (`ZLIBCDRD.TXT`), and
+the zlib licence obliges no source. Get templates… lists machine
+images only, so it skips `unemu/media/…` after reading each manifest;
+offering sets belongs to the media picker.
 
 **First generation (1.0.0).** `open-at`: an IBM 5170-class board with the
 Kiselev AT-reset BIOS, the unemu VGA BIOS and XTIDE Universal BIOS r638 (each

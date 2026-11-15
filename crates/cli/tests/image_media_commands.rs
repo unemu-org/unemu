@@ -1106,3 +1106,133 @@ fn an_open_set_shows_its_licence_and_terms_and_only_a_linked_closure_enters_unem
     );
     assert!(err.contains("official namespace"), "{err}");
 }
+
+#[test]
+fn an_spdx_licensed_set_needs_its_source_and_only_a_linked_closure_enters_unemu() {
+    use image_store::{license, Digest, Manifest};
+    let t = Temp::new();
+    let p = &t.0;
+    let one = raw_disk(&p.join("one.img"), 1);
+    let two = raw_disk(&p.join("two.img"), 2);
+    let copying = p.join("COPYING");
+    fs::write(&copying, b"Synthetic licence text").unwrap();
+    let archive = p.join("SRC.TAR");
+    fs::write(&archive, b"Synthetic source archive").unwrap();
+    let import = |tag: &str, statement: &[&str]| {
+        let mut args = vec![
+            "import",
+            one.to_str().unwrap(),
+            two.to_str().unwrap(),
+            "--title",
+            "Synthetic free software",
+            "--tag",
+            tag,
+            "--extra",
+            copying.to_str().unwrap(),
+            "--extra",
+            archive.to_str().unwrap(),
+            "--create",
+        ];
+        args.extend(statement);
+        run(p, &args)
+    };
+    // --source belongs to an open statement, and an SPDX licence needs it.
+    let (code, _, err) = import("test:gpl", &["--source", "SRC.TAR"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("--source names the source archive of an open set; add --open"));
+    assert!(
+        err.contains("[--open --license EXPRESSION --license-text EXTRA --source EXTRA]"),
+        "{err}"
+    );
+    let gpl = [
+        "--open",
+        "--license",
+        "GPL-2.0-or-later AND MIT",
+        "--license-text",
+        "COPYING",
+    ];
+    let (code, _, err) = import("test:gpl", &gpl);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains("the vendor's own terms") && err.contains("corresponding source"),
+        "{err}"
+    );
+    let mut with_source = gpl.to_vec();
+    with_source.extend(["--source", "SOURCES.ZIP"]);
+    let (code, _, err) = import("test:gpl", &with_source);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("source archive \"SOURCES.ZIP\": not the file name of an extra"));
+    with_source[6] = "SRC.TAR";
+    let (code, out, err) = import("test:gpl", &with_source);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains("open\tGPL-2.0-or-later AND MIT\tterms\t\"COPYING\"\nsource\t\"SRC.TAR\"\n"),
+        "{out}"
+    );
+    // show names the licence text and the source archive every layer links.
+    let (terms, source) = (
+        Digest::of(b"Synthetic licence text").to_string(),
+        Digest::of(b"Synthetic source archive").to_string(),
+    );
+    let (code, out, err) = run(p, &["show", "test:gpl"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains(&format!(
+            "terms\t\"COPYING\"\t{terms}\nsource\t\"SRC.TAR\"\t{source}\n"
+        )),
+        "{out}"
+    );
+    for line in out
+        .lines()
+        .filter(|l| l.starts_with("layer\tmedium\t") || l.starts_with("layer\textra\t"))
+    {
+        assert!(
+            line.ends_with(&format!("\topen\tGPL-2.0-or-later AND MIT\t{terms}")),
+            "{line}"
+        );
+    }
+    assert!(
+        out.ends_with("push\tany configured registry, including unemu/\n"),
+        "{out}"
+    );
+    let (code, out, err) = dry_run(p, "test:gpl");
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.ends_with("guard:allowed\n"), "{out}");
+
+    // A hand-edited copy whose disk no longer links the archive is refused
+    // for unemu/ and shown as private-only.
+    let store = Store::open_existing(p.join("store")).unwrap();
+    let image = store
+        .resolve("test:gpl", &Validator(&PcMediaFormats))
+        .unwrap();
+    let mut layers = image.manifest.layers.clone();
+    layers[0].annotations.remove(license::SOURCE);
+    let mut manifest =
+        Manifest::new_media_set("ibm-pc-at", image.manifest.config.clone(), layers).unwrap();
+    manifest.annotations.clone_from(&image.manifest.annotations);
+    let descriptor = store.import_manifest(&manifest).unwrap();
+    store
+        .update_tag(
+            "test:unsourced",
+            &descriptor,
+            None,
+            &Validator(&PcMediaFormats),
+        )
+        .unwrap();
+    let (code, out, err) = dry_run(p, "test:unsourced");
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(out.ends_with("guard:refused\n"), "{out}");
+    assert!(
+        err.contains("these open copyleft media have no source archive")
+            && err.contains("--source EXTRA"),
+        "{err}"
+    );
+    let (code, out, err) = run(p, &["show", "test:unsourced"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.ends_with(
+            "push\tprivate registries outside unemu/ only: open copyleft media without the set's source archive\n"
+        ),
+        "{out}"
+    );
+}

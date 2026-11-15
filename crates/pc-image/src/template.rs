@@ -11,7 +11,12 @@
 //! host. Each image is offered to a caller's guard before anything of it is
 //! tagged, so a build can refuse what the official namespace would refuse.
 //! A template holds firmware and blank zero-base disks only; operating
-//! systems on disk images need their own licence decision.
+//! systems on disk images need their own licence decision. Installation
+//! media come as their own images instead ([`MEDIA`], built by
+//! [`build_media`]): an official release's disks, one installation set per
+//! floppy format, unmodified, with a licence index and the source archive,
+//! open under the licences of its programs (machine-images §5.2). A set's
+//! version tag is the release it holds, not the template generation.
 //!
 //! The machines are IBM 5170-class boards, as the IBM Personal Computer AT
 //! Technical Reference, System Board, describes: an 80286 with 640 KiB
@@ -21,8 +26,15 @@
 
 use crate::create::{self, Chs, Ems, Hardware, NewImage, PackageRom, Sb16, Serial, Video};
 use crate::firmware_import::{self, Statement};
+use crate::media_import::{self, ExtraSource, OpenStatement, Request, Source};
+use crate::media_set::PcMediaFormats;
 use crate::{invalid, PcProvider, Result};
-use image_store::{firmware::Validator, ConfigValidator, Descriptor, Digest, Manifest, Store};
+use image_store::{
+    firmware::Validator,
+    media_set::{ExtraKind, Validator as MediaValidator},
+    metadata::Title,
+    ConfigValidator, Descriptor, Digest, Manifest, Store,
+};
 use std::path::{Path, PathBuf};
 
 /// The version tag of this template generation. Version tags never move, so
@@ -183,6 +195,271 @@ pub const TEMPLATES: [Template; 2] = [
     },
 ];
 
+/// One file a media set of the templates takes from the fixtures: its path
+/// relative to the vendor directory, the SHA-256 its fetch script pins, and
+/// the disk label, or the extra's DOS 8.3 name.
+#[derive(Clone, Copy, Debug)]
+pub struct MediaFile {
+    pub path: &'static str,
+    pub sha256: &'static str,
+    pub name: &'static str,
+}
+const fn file(path: &'static str, sha256: &'static str, name: &'static str) -> MediaFile {
+    MediaFile { path, sha256, name }
+}
+
+/// An official operating-system release whose installation disks the
+/// templates describe, one installation set per floppy format, and what the
+/// sets share: the release's own version tag, its catalogue fields, its
+/// licence statement and the extras every set carries.
+#[derive(Clone, Copy, Debug)]
+pub struct MediaRelease {
+    /// The sets' version tag: the release they hold, not the template
+    /// generation ([`VERSION`]).
+    pub version: &'static str,
+    /// The script that fetches and verifies the fixtures.
+    pub fetch: &'static str,
+    pub publisher: &'static str,
+    pub year: i64,
+    /// The release's version and edition as the title record states them.
+    pub release: &'static str,
+    pub edition: &'static str,
+    pub genres: &'static [&'static str],
+    pub labels: &'static [&'static str],
+    /// The conjunction of the licences of everything on the disks.
+    pub license: &'static str,
+    /// The extras every set carries, in order: the licence index
+    /// ([`Self::terms`]) and the source archive ([`Self::source`]).
+    pub extras: &'static [(MediaFile, ExtraKind)],
+    pub terms: &'static str,
+    pub source: &'static str,
+}
+
+/// FreeDOS 1.4 Floppy Edition, released by the FreeDOS Project on 2025-04-02
+/// (`freedos/version.fdi` on its boot disks). The licence index comes from
+/// this repository and the source archive holds the official source
+/// packages of every program on the disks. The release documents are not
+/// carried: they state no licence of their own.
+pub const FREEDOS_1_4: MediaRelease = MediaRelease {
+    version: "1.4.0",
+    fetch: "vendor/freedos/fetch-floppy-1.4.sh",
+    publisher: "The FreeDOS Project",
+    year: 2025,
+    release: "1.4",
+    edition: "Floppy Edition",
+    genres: &["operating system"],
+    labels: &["freedos", "open-source", "operating-system"],
+    license: "GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other",
+    extras: &[
+        (
+            file(
+                "freedos/floppy-1.4/LICENSES.TXT",
+                "35d9478a2f5b3e54ded8d20b1b23feec10b0abd2e1e6715c77ddf314e7bf1a7f",
+                "LICENSES.TXT",
+            ),
+            ExtraKind::Document,
+        ),
+        (
+            file(
+                "freedos/floppy-1.4/freedos-1.4-floppy-src.tar",
+                "dfa7006e742cb9676a0a6401ce64214089923f055f4a7ba8f36960115b5362b6",
+                "FD14SRC.TAR",
+            ),
+            ExtraKind::Archive,
+        ),
+    ],
+    terms: "LICENSES.TXT",
+    source: "freedos-1.4-floppy-src.tar",
+};
+
+/// One installation set of the templates: a release's disks for one floppy
+/// format, unmodified and in installer order.
+#[derive(Clone, Copy, Debug)]
+pub struct MediaSource {
+    /// The repository name under `unemu/media/`.
+    pub name: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    /// The floppy format of every disk.
+    pub format: &'static str,
+    pub disks: &'static [MediaFile],
+    pub release: &'static MediaRelease,
+}
+
+impl MediaSource {
+    /// `unemu/media/<name>`.
+    pub fn repository(&self) -> String {
+        format!("{NAMESPACE}/media/{}", self.name)
+    }
+}
+
+/// The FreeDOS 1.4 Floppy Edition in each format it ships: 3.5-inch 1.44M,
+/// 5.25-inch 1.2M and 3.5-inch 720K.
+pub const MEDIA: [MediaSource; 3] = [
+    MediaSource {
+        name: "freedos-floppy-1.44m",
+        title: "FreeDOS 1.4 (Floppy Edition, 1.44M)",
+        description: "The official FreeDOS 1.4 Floppy Edition on seven 3.5-inch 1.44M diskettes, unmodified: the boot disk with the floppy installer, then six disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.",
+        format: "1.44M",
+        disks: &[
+            file(
+                "freedos/floppy-1.4/144m/x86BOOT.img",
+                "552f7cbb0625960c050a3e682a4d2121cc2ffdfa9dc9d592ccd49edf179333dc",
+                "Disk 1 of 7 - boot disk and installer (x86BOOT.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/144m/x86DSK01.img",
+                "b9dd5315f50a8b770b3d2ecb623b18ed067660e22f421504d199254f7f653516",
+                "Disk 2 of 7 - packages (x86DSK01.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/144m/x86DSK02.img",
+                "4a951f15da8dd98e54ea84f07fe2a7802e914aa8e66942f646d2e11ca3943e59",
+                "Disk 3 of 7 - packages (x86DSK02.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/144m/x86DSK03.img",
+                "fbfd172e1ac4bc4abb3f656cae94e2727d2b48b4d02cef0362564048f83f35da",
+                "Disk 4 of 7 - packages (x86DSK03.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/144m/x86DSK04.img",
+                "894d49c4dfdd294e33878ca317e19a0322f267f639b247a6b2a669799b4720f8",
+                "Disk 5 of 7 - packages (x86DSK04.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/144m/x86DSK05.img",
+                "0362e084497c5c995ccab1523c4e39f94b7139f988ffa3a4f7e871452c352f3c",
+                "Disk 6 of 7 - packages (x86DSK05.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/144m/x86DSK06.img",
+                "7a93d1d4e47f5edd5d0a9f17d57c3417ae135052db9449a67aa374a3b4316d80",
+                "Disk 7 of 7 - packages (x86DSK06.img)",
+            ),
+        ],
+        release: &FREEDOS_1_4,
+    },
+    MediaSource {
+        name: "freedos-floppy-1.2m",
+        title: "FreeDOS 1.4 (Floppy Edition, 1.2M)",
+        description: "The official FreeDOS 1.4 Floppy Edition on eight 5.25-inch 1.2M diskettes, unmodified: the boot disk with the floppy installer, then seven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.",
+        format: "1.2M",
+        disks: &[
+            file(
+                "freedos/floppy-1.4/120m/x86BOOT.img",
+                "03df6088be016e57a6c44275f5bb9ab0244db71de1360957fd76ba83243b6a77",
+                "Disk 1 of 8 - boot disk and installer (x86BOOT.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/120m/x86DSK01.img",
+                "83505b32f4165f393e76d5de3e59610bf49ffad6c349fd68a2f4795e0d5153af",
+                "Disk 2 of 8 - packages (x86DSK01.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/120m/x86DSK02.img",
+                "05303837dbd336c3fdc20fe55ea3e2778de467ecf2a68dbce905c721b0ddb94c",
+                "Disk 3 of 8 - packages (x86DSK02.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/120m/x86DSK03.img",
+                "f82ebe5153a2fb5a37a1569c8927447c086b2d06c77c979bea4ad65b14b4b111",
+                "Disk 4 of 8 - packages (x86DSK03.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/120m/x86DSK04.img",
+                "ddbbeb52f90c86ef4952a6c4e8b923577071712427a9cbb1578964fa8c9c7487",
+                "Disk 5 of 8 - packages (x86DSK04.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/120m/x86DSK05.img",
+                "e1687f7672e707cc7e70ac4b11a4a0bb6a4e37a05f1d93914d6867d481338768",
+                "Disk 6 of 8 - packages (x86DSK05.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/120m/x86DSK06.img",
+                "57b2e375740c061438f8e1446afd202a718278f3c20713c444454cf379afc913",
+                "Disk 7 of 8 - packages (x86DSK06.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/120m/x86DSK07.img",
+                "b5b7cc6dc0f85ad9c7a961311c3ccf2d811ae0dd37104f44bee8c31a2bc06fe3",
+                "Disk 8 of 8 - packages (x86DSK07.img)",
+            ),
+        ],
+        release: &FREEDOS_1_4,
+    },
+    MediaSource {
+        name: "freedos-floppy-720k",
+        title: "FreeDOS 1.4 (Floppy Edition, 720K)",
+        description: "The official FreeDOS 1.4 Floppy Edition on twelve 3.5-inch 720K diskettes, unmodified: the boot disk with the floppy installer, then eleven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.",
+        format: "720K",
+        disks: &[
+            file(
+                "freedos/floppy-1.4/720k/x86BOOT.img",
+                "cbca90627b944319f02043bc41f1715ff5366b23e5e8e75aa3ca23bb564e0789",
+                "Disk 1 of 12 - boot disk and installer (x86BOOT.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/720k/x86DSK01.img",
+                "02650e6d952aec1b7465574cc8ddb0f29058444029050f06ab29094589b2b889",
+                "Disk 2 of 12 - packages (x86DSK01.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/720k/x86DSK02.img",
+                "ad2c055b22312f217a76bf0af25be6bd09b5e208b416d4d51cd7cc8bf9d0cd57",
+                "Disk 3 of 12 - packages (x86DSK02.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/720k/x86DSK03.img",
+                "49d79c2a4d36bb026008f31ebf8e7597330a04a0f396111862e6d36ba2398613",
+                "Disk 4 of 12 - packages (x86DSK03.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/720k/x86DSK04.img",
+                "17f756003d3436b5371ab3108c37a73e78eb028ed89a75b067abde3f5ceb7e62",
+                "Disk 5 of 12 - packages (x86DSK04.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/720k/x86DSK05.img",
+                "c3aeb780e1a2cabc5c50e30d2078741a3026da9085ef052d4edaa42ee2b9685c",
+                "Disk 6 of 12 - packages (x86DSK05.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/720k/x86DSK06.img",
+                "d54ce27af491a15128d61f6ee9581cec92c4e823e59e79bb8875147494a0123f",
+                "Disk 7 of 12 - packages (x86DSK06.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/720k/x86DSK07.img",
+                "ea342ba1cb40ba253540d4a935b2ae2834d96d0a35e943f32caaa38684601425",
+                "Disk 8 of 12 - packages (x86DSK07.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/720k/x86DSK08.img",
+                "69ee59879182cdad0bf1a03b318a30dd69c11cd9c4985d875e4bf1587c922fec",
+                "Disk 9 of 12 - packages (x86DSK08.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/720k/x86DSK09.img",
+                "f344088ceb48f05c718d0158a902e584c1f66a7e0d8d67ab2adf9069e122051e",
+                "Disk 10 of 12 - packages (x86DSK09.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/720k/x86DSK10.img",
+                "de31af59860e1f59a67a2036113a0af4db8f72bebb4812fe5aa291c5faf3cce0",
+                "Disk 11 of 12 - packages (x86DSK10.img)",
+            ),
+            file(
+                "freedos/floppy-1.4/720k/x86DSK11.img",
+                "70e82a287d4d89b40c975d6a62700633cdd6dac0d55da53953edfc37c69a6c0b",
+                "Disk 12 of 12 - packages (x86DSK11.img)",
+            ),
+        ],
+        release: &FREEDOS_1_4,
+    },
+];
+
 /// What happened, or what a build would do, to one local tag.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -205,6 +482,8 @@ pub enum Outcome {
 pub enum Kind {
     Firmware,
     Machine,
+    /// An open installation set under `unemu/media/`.
+    Media,
 }
 
 /// One built image and its local tags.
@@ -213,6 +492,8 @@ pub struct Built {
     pub kind: Kind,
     /// The registry repository, such as `unemu/open-at`.
     pub repository: String,
+    /// The version tag's version: [`VERSION`], or a media set's release.
+    pub version: &'static str,
     pub descriptor: Descriptor,
     /// The version tag, then the alias. Local tags are the short form a pull
     /// of the repository writes, so `image push TAG` reaches the repository.
@@ -340,6 +621,63 @@ pub fn build(
     Ok(images)
 }
 
+/// Build every installation set of [`MEDIA`] from the fixtures under
+/// `vendor` into `store`, as [`build`] builds the templates. Every fixture of
+/// every set is checked against its pin first ([`check_media_fixtures`]), so
+/// a missing or changed file stops the build before any set is tagged.
+pub fn build_media(
+    store: &Store,
+    vendor: &Path,
+    guard: Guard<'_>,
+    built: &mut dyn FnMut(&Built),
+) -> Result<Vec<Built>> {
+    check_media_fixtures(vendor)?;
+    let mut sets = Vec::new();
+    for source in &MEDIA {
+        let set = build_set(store, vendor, source, guard)?;
+        built(&set);
+        sets.push(set);
+    }
+    Ok(sets)
+}
+
+/// Every fixture the installation sets read, as [`MediaFile`]s: each set's
+/// disks, then the extras their releases share.
+pub fn media_files() -> Vec<&'static MediaFile> {
+    let mut files: Vec<&MediaFile> = MEDIA.iter().flat_map(|set| set.disks).collect();
+    files.extend(FREEDOS_1_4.extras.iter().map(|(file, _)| file));
+    files
+}
+
+/// Check that every fixture of [`MEDIA`] exists and holds the bytes its
+/// fetch script pins; the error names the first that does not and the
+/// script to run.
+pub fn check_media_fixtures(vendor: &Path) -> Result<()> {
+    for file in media_files() {
+        media_fixture(vendor, file, FREEDOS_1_4.fetch)?;
+    }
+    Ok(())
+}
+
+/// The path of one fixture, refused unless it holds the pinned bytes: the
+/// licence statement covers these bytes only.
+fn media_fixture(vendor: &Path, file: &MediaFile, fetch: &str) -> Result<PathBuf> {
+    let path = vendor.join(file.path);
+    if !path.is_file() {
+        return Err(invalid(format!(
+            "missing fixture {}; run {fetch}",
+            path.display()
+        )));
+    }
+    if Digest::of(&std::fs::read(&path)?).hex() != file.sha256 {
+        return Err(invalid(format!(
+            "{} is not the file {fetch} pins; run it again",
+            path.display()
+        )));
+    }
+    Ok(path)
+}
+
 fn build_package(
     store: &Store,
     vendor: &Path,
@@ -399,7 +737,7 @@ fn build_package(
     let statement = source.statement(archive);
     let repository = source.repository();
     let preview = firmware_import::preview_manifest_with(&candidate, &[], &statement, catalogue)?;
-    check(guard, &repository, &preview.manifest)?;
+    check(guard, &repository, VERSION, &preview.manifest)?;
     let judged = Digest::of(&preview.manifest.encode()?);
     let version = local_tag(&repository, VERSION);
     let before = version_state(store, &version, &judged)?;
@@ -413,10 +751,11 @@ fn build_package(
         Some(&judged),
     )?;
     let rules = crate::firmware::PcFirmwareRules(catalogue);
-    let alias = alias(store, &repository, &descriptor, &Validator(&rules))?;
+    let alias = alias(store, &repository, VERSION, &descriptor, &Validator(&rules))?;
     Ok(Built {
         kind: Kind::Firmware,
         repository,
+        version: VERSION,
         tags: vec![(version, before), alias],
         descriptor,
     })
@@ -430,7 +769,7 @@ fn build_machine(
 ) -> Result<Built> {
     let repository = template.repository();
     let manifest = create::preview(image, store)?;
-    check(guard, &repository, &manifest)?;
+    check(guard, &repository, VERSION, &manifest)?;
     let judged = Digest::of(&manifest.encode_with_types(PcProvider.payload_types())?);
     let version = local_tag(&repository, VERSION);
     let before = version_state(store, &version, &judged)?;
@@ -438,18 +777,153 @@ fn build_machine(
         Outcome::Present => store.tag_descriptor(&version)?,
         _ => create::create_judged(store, image, &version, None, &judged)?,
     };
-    let alias = alias(store, &repository, &descriptor, &PcProvider)?;
+    let alias = alias(store, &repository, VERSION, &descriptor, &PcProvider)?;
     Ok(Built {
         kind: Kind::Machine,
         repository,
+        version: VERSION,
         tags: vec![(version, before), alias],
         descriptor,
     })
 }
 
-fn check(guard: Guard<'_>, repository: &str, manifest: &Manifest) -> Result<()> {
-    guard(&format!("{repository}:{VERSION}"), manifest)
-        .map_err(|reason| invalid(format!("{repository}:{VERSION} refused: {reason}")))
+/// What an installation set is imported from under `tag`, as `image media
+/// import` states it with its flags: the disks in installer order with their
+/// labels and format, the extras with their DOS names and kinds, and the
+/// catalogue fields. Every fixture is checked against its pin first.
+fn media_request(vendor: &Path, source: &MediaSource, tag: &str) -> Result<Request> {
+    let release = source.release;
+    // Another file at a fixture path is refused, never imported under the
+    // licence statement.
+    let fixture = |file: &MediaFile| media_fixture(vendor, file, release.fetch);
+    let media = source
+        .disks
+        .iter()
+        .map(|disk| {
+            Ok(Source {
+                path: fixture(disk)?,
+                label: Some(disk.name.into()),
+                format: Some(source.format.into()),
+            })
+        })
+        .collect::<Result<_>>()?;
+    let extras = release
+        .extras
+        .iter()
+        .map(|(file, kind)| {
+            Ok(ExtraSource {
+                path: fixture(file)?,
+                dos_name: Some(file.name.into()),
+                kind: Some(*kind),
+            })
+        })
+        .collect::<Result<_>>()?;
+    let title = Title {
+        title: source.title.into(),
+        description: Some(source.description.into()),
+        publishers: vec![release.publisher.into()],
+        developers: vec![release.publisher.into()],
+        release_year: Some(release.year),
+        genres: release.genres.iter().map(|g| (*g).into()).collect(),
+        platform: Some("DOS".into()),
+        version: Some(release.release.into()),
+        edition: Some(release.edition.into()),
+        ..Title::default()
+    };
+    Ok(Request {
+        tag: tag.into(),
+        title,
+        labels: release.labels.iter().map(|l| (*l).into()).collect(),
+        media,
+        extras,
+        compress: true,
+    })
+}
+
+/// The statement that opens a release's sets: its licence, the licence index
+/// as the licence's text and the source archive.
+fn media_statement(release: &MediaRelease) -> OpenStatement {
+    OpenStatement {
+        license: release.license.into(),
+        terms: release.terms.into(),
+        source: Some(release.source.into()),
+    }
+}
+
+/// The plan of one set under `tag`, open under its release's statement.
+fn media_plan(vendor: &Path, source: &MediaSource, tag: &str) -> Result<media_import::Plan> {
+    let request = media_request(vendor, source, tag)?;
+    media_import::plan_with(&request, Some(&media_statement(source.release)))
+        .map_err(|refusal| invalid(refusal.to_string()))
+}
+
+/// Import one installation set under its release's version tag. A new set is
+/// offered to the guard before its manifest is stored; a tag that already
+/// names it is compared without writing and offered as stored. The stored
+/// set must name the pinned bytes, so a fixture replaced between the check
+/// and the import is caught.
+fn build_set(
+    store: &Store,
+    vendor: &Path,
+    source: &MediaSource,
+    guard: Guard<'_>,
+) -> Result<Built> {
+    let repository = source.repository();
+    let release = source.release;
+    let version = local_tag(&repository, release.version);
+    let plan = media_plan(vendor, source, &version)?;
+    let validator = MediaValidator(&PcMediaFormats);
+    let before = match current(store, &version)? {
+        Some(_) => {
+            media_import::publish(store, &plan, &|_, _| {}, &|| false)
+                .map_err(|refusal| invalid(refusal.to_string()))?;
+            let stored = store.resolve(&version, &validator)?;
+            check(guard, &repository, release.version, &stored.manifest)?;
+            Outcome::Present
+        }
+        None => {
+            let judge = |manifest: &Manifest| {
+                check(guard, &repository, release.version, manifest).map_err(|e| e.to_string())
+            };
+            media_import::publish_checked(store, &plan, &|_, _| {}, &|| false, &judge)
+                .map_err(|refusal| invalid(refusal.to_string()))?;
+            Outcome::Created
+        }
+    };
+    let descriptor = store.tag_descriptor(&version)?;
+    let stored = store.resolve_descriptor(&descriptor, &validator)?;
+    let config = image_store::media_set::Config::decode(&stored.config)?;
+    let names: Vec<&str> = config
+        .media
+        .iter()
+        .map(|m| m.blob.hex())
+        .chain(config.extras.iter().map(|e| e.blob.hex()))
+        .collect();
+    let pins: Vec<&str> = source
+        .disks
+        .iter()
+        .chain(release.extras.iter().map(|(file, _)| file))
+        .map(|file| file.sha256)
+        .collect();
+    if names != pins {
+        return Err(invalid(format!(
+            "{version} does not hold the pinned fixtures; run {}",
+            release.fetch
+        )));
+    }
+    let alias = alias(store, &repository, release.version, &descriptor, &validator)?;
+    Ok(Built {
+        kind: Kind::Media,
+        repository,
+        version: release.version,
+        tags: vec![(version, before), alias],
+        descriptor,
+    })
+}
+
+fn check(guard: Guard<'_>, repository: &str, version: &str, manifest: &Manifest) -> Result<()> {
+    guard(&format!("{repository}:{version}"), manifest)
+        .map_err(|reason| invalid(format!("{repository}:{version} refused: {reason}")))
 }
 
 /// Created when absent, Present when it names `digest`; another image under
@@ -479,8 +953,14 @@ fn planned_version(store: &Store, tag: &str, digest: &Digest) -> Result<Outcome>
     })
 }
 
-/// What the alias of `repository` does for an image with `digest`.
-fn planned_alias(store: &Store, repository: &str, digest: &Digest) -> Result<(String, Outcome)> {
+/// What the alias of `repository` does for an image with `digest` under the
+/// version tag `version`.
+fn planned_alias(
+    store: &Store,
+    repository: &str,
+    version: &str,
+    digest: &Digest,
+) -> Result<(String, Outcome)> {
     let tag = local_tag(repository, ALIAS);
     let Some(current) = current(store, &tag)? else {
         return Ok((tag, Outcome::Created));
@@ -488,7 +968,7 @@ fn planned_alias(store: &Store, repository: &str, digest: &Digest) -> Result<(St
     if &current == digest {
         return Ok((tag, Outcome::Present));
     }
-    let ours = precedence(VERSION).ok_or_else(|| invalid("VERSION is not a version"))?;
+    let ours = precedence(version).ok_or_else(|| invalid(format!("{version} is not a version")))?;
     let prefix = local_tag(repository, "");
     let (mut lower, mut other) = (false, false);
     let mut after: Option<String> = None;
@@ -518,10 +998,11 @@ fn planned_alias(store: &Store, repository: &str, digest: &Digest) -> Result<(St
 fn alias(
     store: &Store,
     repository: &str,
+    version: &str,
     descriptor: &Descriptor,
     validator: &dyn ConfigValidator,
 ) -> Result<(String, Outcome)> {
-    let (tag, outcome) = planned_alias(store, repository, &descriptor.digest)?;
+    let (tag, outcome) = planned_alias(store, repository, version, &descriptor.digest)?;
     match &outcome {
         Outcome::Created => store.update_tag(&tag, descriptor, None, validator)?,
         Outcome::Moved(old) => store.update_tag(&tag, descriptor, Some(old), validator)?,
@@ -534,11 +1015,11 @@ fn alias(
 /// read: a dry run's report against the store it would write.
 pub fn plan_tags(store: &Store, built: &Built) -> Result<Vec<(String, Outcome)>> {
     let digest = &built.descriptor.digest;
-    let version = local_tag(&built.repository, VERSION);
+    let version = local_tag(&built.repository, built.version);
     let state = planned_version(store, &version, digest)?;
     Ok(vec![
         (version, state),
-        planned_alias(store, &built.repository, digest)?,
+        planned_alias(store, &built.repository, built.version, digest)?,
     ])
 }
 
@@ -561,8 +1042,74 @@ mod tests {
             image_store::Store::validate_tag_name(&local_tag(&template.repository(), VERSION))
                 .unwrap();
         }
+        for source in &MEDIA {
+            let tag = local_tag(&source.repository(), source.release.version);
+            image_store::Store::validate_tag_name(&tag).unwrap();
+            assert!(tag.starts_with("unemu/media/freedos-floppy-"), "{tag}");
+            assert!(tag.ends_with(":1.4.0"), "{tag}");
+        }
+        assert!(image_store::Store::is_version_tag(FREEDOS_1_4.version));
         assert!(image_store::Store::is_version_tag(VERSION));
         assert!(!image_store::Store::is_version_tag(ALIAS));
+    }
+
+    /// The statement in the code is the conjunction the licence index, the
+    /// sets' licence text, closes with.
+    #[test]
+    fn the_licence_expression_is_the_one_the_licence_index_states() {
+        let index = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../vendor/freedos/floppy-1.4-licenses.txt"),
+        )
+        .unwrap();
+        let (_, tail) = index
+            .split_once("The conjunction of every licence above is:")
+            .expect("the index states its conjunction");
+        let stated = tail
+            .split("\n\n")
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(stated, FREEDOS_1_4.license);
+        assert!(index.starts_with("SPDX-License-Identifier: CC0-1.0\n"));
+    }
+
+    #[test]
+    fn the_media_sets_state_a_copyleft_licence_with_its_text_and_source() {
+        use image_store::license::{Expression, ACTIVE};
+        let release = &FREEDOS_1_4;
+        let license = Expression::parse(release.license).unwrap();
+        assert_eq!(license.as_str(), release.license);
+        assert!(license.needs_source(ACTIVE));
+        let named = |name: &str| {
+            release
+                .extras
+                .iter()
+                .filter(|(file, _)| file.path.rsplit('/').next() == Some(name))
+                .count()
+        };
+        assert_eq!((named(release.terms), named(release.source)), (1, 1));
+        for (file, _) in release.extras {
+            assert!(crate::media_set::valid_dos_name(file.name), "{}", file.name);
+        }
+        for (source, disks) in MEDIA.iter().zip([7, 8, 12]) {
+            assert_eq!(source.disks.len(), disks, "{}", source.name);
+            assert!(crate::media_import::format_names().contains(&source.format));
+            assert!(source.disks[0].path.ends_with("/x86BOOT.img"));
+            for (index, disk) in source.disks.iter().enumerate() {
+                assert!(
+                    image_store::media_set::valid_text(disk.name),
+                    "{}",
+                    disk.name
+                );
+                assert!(disk
+                    .name
+                    .starts_with(&format!("Disk {} of {disks} - ", index + 1)));
+            }
+            assert!(image_store::media_set::valid_text(source.title));
+        }
     }
 
     #[test]
