@@ -337,6 +337,7 @@ fn assemble_preverified(
     let pit = devices::pit8253::SharedPit8253::default();
     let mut persistence = Vec::new();
     let mut native_audio = Vec::new();
+    let mut ems_frame = None;
 
     for dc in &config.devices {
         let boxed: Box<dyn Device> = match &dc.kind {
@@ -412,10 +413,12 @@ fn assemble_preverified(
                 );
                 Box::new(rtc)
             }
-            DeviceKind::LotechEms(c) => Box::new(
-                devices::LotechEms::new(c.port, c.frame, c.size_kib)
-                    .map_err(|_| ConfigError::InvalidLotechEmsResources { device: dc.id })?,
-            ),
+            DeviceKind::LotechEms(c) => {
+                let board = devices::LotechEms::new(c.port, c.frame, c.size_kib)
+                    .map_err(|_| ConfigError::InvalidLotechEmsResources { device: dc.id })?;
+                ems_frame = Some((dc.id, board.frame_memory(), u64::from(c.frame) << 4));
+                Box::new(board)
+            }
             DeviceKind::Vga(_) => Box::new(VgaText::new()),
             DeviceKind::VgaRegisters(_) => Box::new(devices::Vga::new()),
             DeviceKind::Mda(_) => Box::new(MdaText::new()),
@@ -523,6 +526,15 @@ fn assemble_preverified(
             .with_reset_signal(reset_signal)
             .with_a20_line(move || (line.change_count(), line.enabled()));
     }
+    if let Some((device, board, frame)) = ems_frame {
+        // The CPU cannot fetch from a trapped region; let it hold mapped pages.
+        let run = trap_runs(config)
+            .into_iter()
+            .find(|&(base, end)| base <= frame && frame + 0x10000 <= end)
+            .ok_or(ConfigError::InvalidLotechEmsResources { device })?;
+        let mut map = crate::ems_frame::EmsFrameMap::new(board, frame, run);
+        machine = machine.with_memory_map(move |cpu, event| map.sync(cpu, event));
+    }
 
     let mouse_target = config.devices.iter().find_map(|device| match &device.kind {
         DeviceKind::Uart(cfg) if cfg.mouse => Some(device.id),
@@ -612,6 +624,18 @@ fn build_cpu(config: &MachineConfig) -> Result<X86JitCpu, AssemblyError> {
     build_cpu_with_mapping_trace(config, |_, _, _| {})
 }
 
+/// The trapped CPU regions covering the configured MMIO windows.
+///
+/// The CPU requires each access to fit one region, while device ownership
+/// remains a bus concern. Only touching windows can share a trap region.
+fn trap_runs(config: &MachineConfig) -> Vec<(u64, u64)> {
+    let mut mmio: Vec<_> = config.memory.mmio.iter().collect();
+    mmio.sort_unstable_by_key(|window| window.base);
+    mmio.chunk_by(|left, right| left.end() == right.base)
+        .map(|run| (run[0].base, run[run.len() - 1].end()))
+        .collect()
+}
+
 fn has_a20_source(config: &MachineConfig) -> bool {
     config.devices.iter().any(|device| {
         matches!(
@@ -666,13 +690,7 @@ fn build_cpu_with_mapping_trace(
         cpu.map_ram(region.base, region.size)?;
         record_mapping(region.base, region.end(), "ram");
     }
-    let mut mmio: Vec<_> = config.memory.mmio.iter().collect();
-    mmio.sort_unstable_by_key(|window| window.base);
-    // The CPU requires each access to fit one region, while device ownership
-    // remains a bus concern. Only touching windows can share a trap region.
-    for run in mmio.chunk_by(|left, right| left.end() == right.base) {
-        let base = run[0].base;
-        let end = run[run.len() - 1].end();
+    for (base, end) in trap_runs(config) {
         cpu.map_mmio(base, end - base)?;
         record_mapping(base, end, "mmio");
     }

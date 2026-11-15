@@ -75,6 +75,37 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
     - An empty floppy drive's menu has no "Write mode for the next floppy"
       section; the mode is chosen in the Insert dialog.
     - The light is steady while the drive is busy, not flickering.
+- **2026-11-15 — Code runs from the EMS frame:** a Lo-tech EMS window whose
+  latch selects a populated page that no other latch selects is held as CPU
+  RAM, so overlay managers and EMS-aware programs can execute from mapped
+  pages; the CPU core is unchanged. After every guest port write, before that
+  instruction's DMA and the next instruction, the assembly-side frame map
+  writes held windows back into SRAM, retiles the frame's CPU regions and
+  loads newly held pages through the self-modifying-code-safe write path.
+  Unbacked windows are CPU ROM of FFh: they read and execute FFh and drop
+  guest and DMA writes, and a word straddling a held and an unbacked window
+  reads FFh for the unbacked byte. Pages selected by two latches stay trapped
+  on the board's coherent data path, without fetch. Operands and instructions
+  crossing two held windows work. Known limit: an operand crossing a trapped
+  region (a shared window, or another card's window beside the frame) and a
+  held or unbacked window stops the run with an unmapped-access CPU error,
+  because the core does not split one operand between RAM or ROM and a
+  trapped region. Held pages are written back whenever a run returns, so
+  device snapshots see current SRAM; a restore drops them and reloads. ISA DMA
+  in both directions uses the held CPU copy. Run chunking leaves registers,
+  time, device state and traces unchanged (synthetic rigs). MEASURED: the
+  write-back costs under 1 µs per 1 ms run chunk with four held windows (see
+  architecture). EMSCHECK in the open FreeDOS MEM golden now also copies a
+  routine into an EMS page, moves the page to another window and far-calls it
+  there. MEASURED: the previous EMSCHECK keeps its endpoint (18,681,813) under
+  the new map; the extended program re-pins it to 18,681,761 with unchanged
+  text `0eda968da7052433`, and the page-alias mutant moves by the same amount
+  (16,355,236, `df1f6dc3129c84ce`; the mutant wraps the assembled board, so
+  its aliased latches drive the frame map). Unbacked windows as ROM leave both
+  endpoints unchanged. Skipping the write-back fails eight synthetic rigs and
+  the golden's DOS page check. See
+  [architecture](architecture.md#x86jit-integration).
+
 - **2026-11-14 — macOS application menu:** the global menu bar has one
   application menu: About unemupc98, Hide unemupc98 (⌘H), Hide Others (⌥⌘H),
   Show All and Quit unemupc98 (⌘Q). About opens the shell's About dialog; Quit
@@ -534,9 +565,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   latches are deterministically FFh; CPU and device reset retain latches and
   SRAM. Ordinary RAM keeps its existing CPU path. On IBM 5170, E0000h–FFFFFh
   is system-board ROM space, so EMS uses C000h or D000h; Bare also permits E000h.
-  A code fetch from the frame raises a CPU fetch fault and stops the run with a
-  CPU error; this limitation is tracked as open work (upc-6le.53). Coverage and
-  model choices are in `crates/devices/src/lotech_ems.rs`.
+  Coverage and model choices are in `crates/devices/src/lotech_ems.rs`.
   Machine files require `frame` for `kind = "lotech-ems"`; `port` and `size_kib`
   have defaults. Both shipped game profiles enable 2 MiB at D000h, port 260h.
   The CPU-region snapshot includes the card. MEASURED: the open-profile
@@ -547,9 +576,10 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   FreeDOS MEM golden uses a disposable in-memory tools disk and a synthetic DOS
   program that checks all 128 pages through all four windows before MEM /E,
   including an aliased-page negative control. MEASURED: MEM reports 2,048 KiB
-  total and free EMS (2,097,152 bytes). The D000h endpoint retires 18,681,813
-  instructions with text FNV-1a `0eda968da7052433`; the page-alias mutant fails
-  the DOS check at 16,355,288 instructions with text `df1f6dc3129c84ce`. See
+  total and free EMS (2,097,152 bytes). The D000h endpoint first retired
+  18,681,813 instructions with text FNV-1a `0eda968da7052433`; the page-alias
+  mutant failed the DOS check at 16,355,288 instructions with text
+  `df1f6dc3129c84ce` (both re-pinned 2026-11-15, above). See
   [the machine reference](../../machines/README.md#lo-tech-ems-card-reference)
   and [fixture terms](../../vendor/ltemm/README.md).
 

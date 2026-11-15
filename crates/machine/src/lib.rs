@@ -18,6 +18,8 @@
 //! immediate DMA settle before PIC acknowledgement. INTA occurs only when the
 //! CPU reports IF set, no STI/SS shadow, and no pending instruction transaction
 //! (Intel 8259A datasheet, Interrupt Sequence; Intel 80286 PRM, §9.2).
+//! An attached memory-map hook ([`Machine::with_memory_map`]) is applied after
+//! each port write, before that settling, and flushed when a run returns.
 //!
 //! The production deadline engine visits every observable wired transition;
 //! `reference-scheduler` exposes a per-clock test oracle with identical CPU/IRQ
@@ -142,6 +144,23 @@ impl<C: Cpu> DmaMemory for CpuDmaMemory<'_, C> {
     }
 }
 
+/// When the machine calls an attached memory-map hook (§3.1, §4.2).
+///
+/// A board may let the CPU hold device memory as ordinary RAM, for example an
+/// EMS page frame whose mapped pages must stay executable. The machine never
+/// learns which device that is; it only calls the hook at these points.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum MemoryMapSync {
+    /// A run is starting or a guest port write has completed. Apply any
+    /// mapping change before the next guest instruction or DMA cycle.
+    Apply,
+    /// Control is returning to the host. Copy CPU-held memory back to its
+    /// device, so device snapshots and host bus reads see current contents.
+    Flush,
+}
+
+type MemoryMapHook<C> = Box<dyn FnMut(&mut C, MemoryMapSync) -> Result<(), CpuError>>;
+
 /// Errors from running a [`Machine`] (§3.1).
 #[derive(Debug, Error)]
 pub enum MachineError {
@@ -228,6 +247,7 @@ pub struct Machine<C: Cpu> {
     reset_pending: bool,
     a20_line: Option<Box<dyn Fn() -> (u64, bool)>>,
     a20_changes: u64,
+    memory_map: Option<MemoryMapHook<C>>,
 }
 
 impl<C: Cpu> Machine<C> {
@@ -269,6 +289,7 @@ impl<C: Cpu> Machine<C> {
             reset_pending: false,
             a20_line: None,
             a20_changes: 0,
+            memory_map: None,
         }
     }
 
@@ -310,6 +331,36 @@ impl<C: Cpu> Machine<C> {
                 self.a20_changes = changes;
             }
         }
+    }
+
+    /// Attach a hook that keeps part of the CPU memory map in step with a
+    /// device (§4.2).
+    ///
+    /// It receives [`MemoryMapSync::Apply`] when every run starts and right
+    /// after every guest port write, before that instruction's DMA and the
+    /// next instruction; a port write is the only guest action expected to
+    /// change such a map, and host changes between runs are applied when the
+    /// next run starts. It receives [`MemoryMapSync::Flush`] whenever
+    /// [`Self::run_bounded`] returns, including with an error. A machine has
+    /// one hook; attaching a second would silently drop the first.
+    #[must_use]
+    pub fn with_memory_map(
+        mut self,
+        hook: impl FnMut(&mut C, MemoryMapSync) -> Result<(), CpuError> + 'static,
+    ) -> Self {
+        debug_assert!(
+            self.memory_map.is_none(),
+            "a memory-map hook is already attached"
+        );
+        self.memory_map = Some(Box::new(hook));
+        self
+    }
+
+    fn sync_memory_map(&mut self, event: MemoryMapSync) -> Result<(), MachineError> {
+        if let Some(hook) = self.memory_map.as_mut() {
+            hook(&mut self.cpu, event)?;
+        }
+        Ok(())
     }
 
     /// Configure the construction-time CPU rate A/B (§6).
@@ -540,9 +591,19 @@ impl<C: Cpu> Machine<C> {
     /// halted caps round up to a whole virtual tick at fractional CPU rates.
     /// `None` imposes no cap. Captured output survives either stopping outcome.
     /// A previously reported reset is performed before any execution or cap
-    /// check, unless [`Self::reset_cpu`] already completed it.
+    /// check, unless [`Self::reset_cpu`] already completed it. An attached
+    /// memory-map hook is flushed on every return, see [`Self::with_memory_map`].
     pub fn run_bounded(&mut self, cap: Option<u64>) -> Result<RunOutcome, MachineError> {
+        let outcome = self.run_until(cap);
+        let flushed = self.sync_memory_map(MemoryMapSync::Flush);
+        let outcome = outcome?;
+        flushed?;
+        Ok(outcome)
+    }
+
+    fn run_until(&mut self, cap: Option<u64>) -> Result<RunOutcome, MachineError> {
         self.sync_a20();
+        self.sync_memory_map(MemoryMapSync::Apply)?;
         if self.reset_pending {
             self.reset_cpu()?;
         }
@@ -673,10 +734,12 @@ impl<C: Cpu> Machine<C> {
                     | CpuStop::MmioRead { .. }
             );
             completing = false;
+            let mut map_result = Ok(());
             let access_result = match stop {
                 CpuStop::PortOut { port, size, value } => {
                     let result = self.bus.port_write(port, size, value as u32);
                     self.sync_a20();
+                    map_result = self.sync_memory_map(MemoryMapSync::Apply);
                     result
                 }
                 CpuStop::PortIn { port, size } => self.bus.port_read(port, size).map(|value| {
@@ -722,6 +785,7 @@ impl<C: Cpu> Machine<C> {
             // deferred MMIO operation earns no extra step.
             let settle_result = self.settle(accessed);
             access_result?;
+            map_result?;
             charge_result?;
             settle_result?;
         }
@@ -958,6 +1022,79 @@ mod tests {
         assert!(!a20.enabled());
         assert_eq!(a20.change_count(), changes);
         assert_eq!(machine.bus_mut().port_read(0x71, 1).unwrap(), 0x0A);
+    }
+
+    #[test]
+    fn memory_map_hook_applies_after_each_port_write_and_flushes_on_return() {
+        use cpu::{x86jit_backend::RealSegments, CpuReg, X86JitCpu};
+        use std::{cell::RefCell, rc::Rc};
+
+        let guest = || {
+            let mut cpu =
+                X86JitCpu::new_real16_bare(0x10000, 0, 0x7C00, RealSegments::flat(0)).unwrap();
+            cpu.map_ram(0, 0x10000).unwrap();
+            // MOV DX, 3F8h; MOV AL, 41h; OUT DX, AL; MOV AL, 42h; OUT DX, AL; HLT.
+            cpu.write_mem(
+                0x7C00,
+                &[0xBA, 0xF8, 0x03, 0xB0, 0x41, 0xEE, 0xB0, 0x42, 0xEE, 0xF4],
+            )
+            .unwrap();
+            cpu
+        };
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let log = events.clone();
+        let mut machine = Machine::new(
+            guest(),
+            bus_with_capture(),
+            Box::new(NoIc),
+            Vec::new(),
+            None,
+        )
+        .with_memory_map(move |cpu: &mut X86JitCpu, event| {
+            log.borrow_mut().push((event, cpu.reg(CpuReg::Rax) & 0xFF));
+            Ok(())
+        });
+        assert_eq!(machine.run_bounded(Some(100)).unwrap(), RunOutcome::Halted);
+        // Each Apply sees the value just written and not the next MOV AL.
+        assert_eq!(
+            *events.borrow(),
+            [
+                (MemoryMapSync::Apply, 0),
+                (MemoryMapSync::Apply, 0x41),
+                (MemoryMapSync::Apply, 0x42),
+                (MemoryMapSync::Flush, 0x42),
+            ]
+        );
+
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let log = events.clone();
+        let mut failing = Machine::new(
+            guest(),
+            bus_with_capture(),
+            Box::new(NoIc),
+            Vec::new(),
+            None,
+        )
+        .with_memory_map(move |_: &mut X86JitCpu, event| {
+            log.borrow_mut().push(event);
+            if log.borrow().len() == 2 {
+                return Err(CpuError::Memory("refused".into()));
+            }
+            Ok(())
+        });
+        assert!(matches!(
+            failing.run_bounded(Some(100)),
+            Err(MachineError::Cpu(CpuError::Memory(_)))
+        ));
+        assert_eq!(
+            *events.borrow(),
+            [
+                MemoryMapSync::Apply,
+                MemoryMapSync::Apply,
+                MemoryMapSync::Flush
+            ]
+        );
+        assert_eq!(failing.bus().device(0).unwrap().save(), [0x41]);
     }
 
     /// A minimal capture device: records port writes, so the loop can be tested

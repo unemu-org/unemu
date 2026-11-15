@@ -11,6 +11,15 @@
 //! See `backlog/docs/design/spec.md` §4.2 and
 //! `backlog/docs/architecture.md` §x86jit integration.
 //!
+//! The latches and SRAM sit behind a shared [`LotechEmsFrame`] handle. The
+//! machine's memory map uses it to hold a window whose latch selects a
+//! populated page, and no other latch selects, as ordinary CPU RAM, so code
+//! can run from the frame. That copy is authoritative while it is held: the
+//! map writes it back into SRAM when the window releases the page and whenever
+//! control returns to the host. Unbacked windows become CPU ROM reading FFh.
+//! Only a page that two latches select reaches this device's bus faces. The
+//! device itself never touches CPU memory.
+//!
 //! ## Coverage matrix
 //! | Hardware | Model |
 //! |---|---|
@@ -21,7 +30,11 @@
 //! | SRAM power-on contents | model choice: zero for deterministic execution |
 //! | AEN and SMEM strobes, 8-bit cycles | CPU bus cycles only; no electrical timing |
 //! | Snapshot | versioned configuration, latches, SRAM and absolute clock; no traces |
-//! | Instruction fetch from the frame | CPU fetch fault stops the run with a CPU error; tracked as open work |
+//! | Instruction fetch from the frame | a populated page selected by one latch is held as CPU RAM; an unbacked window is CPU ROM of FFh; both execute and raise no MMIO trace events here |
+//! | Page selected by two latches | this data path, coherent, without fetch; an operand crossing into a neighbouring window of another form stops the run with a CPU error |
+
+use std::cell::{Cell, Ref, RefCell, RefMut};
+use std::rc::Rc;
 
 use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};
 
@@ -37,10 +50,72 @@ pub struct LotechEmsConfigError;
 pub struct LotechEms {
     port: u16,
     frame: u16,
-    pages: [u8; 4],
-    ram: Vec<u8>,
+    board: LotechEmsFrame,
     now: VClock,
     trace: device::TraceBuffer,
+}
+
+/// Host handle on one board's page latches and SRAM; clones share the board.
+///
+/// The machine's memory map follows the change counters to decide when a
+/// window moves between CPU RAM and this device's data path, and copies whole
+/// 16 KiB pages through [`Self::page`] and [`Self::page_mut`]. Guest traffic
+/// still reaches the board only through its bus faces.
+#[derive(Clone)]
+pub struct LotechEmsFrame(Rc<Board>);
+
+struct Board {
+    pages: Cell<[u8; 4]>,
+    ram: RefCell<Vec<u8>>,
+    latch_writes: Cell<u64>,
+    restores: Cell<u64>,
+}
+
+impl LotechEmsFrame {
+    /// The four page latches, window 0 first.
+    #[must_use]
+    pub fn latches(&self) -> [u8; 4] {
+        self.0.pages.get()
+    }
+
+    /// Latch writes accepted since power-on, wrapping at the integer limit.
+    #[must_use]
+    pub fn latch_writes(&self) -> u64 {
+        self.0.latch_writes.get()
+    }
+
+    /// Snapshot restores accepted since power-on, wrapping at the integer
+    /// limit. A restore replaces SRAM, so a held RAM copy is stale afterwards.
+    #[must_use]
+    pub fn restores(&self) -> u64 {
+        self.0.restores.get()
+    }
+
+    /// The 16 KiB SRAM page a latch value selects, if a populated chip backs it.
+    #[must_use]
+    pub fn page(&self, latch: u8) -> Option<Ref<'_, [u8]>> {
+        Ref::filter_map(self.0.ram.borrow(), |ram| ram.get(page_range(latch))).ok()
+    }
+
+    /// Mutable access to the page [`Self::page`] returns.
+    #[must_use]
+    pub fn page_mut(&self, latch: u8) -> Option<RefMut<'_, [u8]>> {
+        RefMut::filter_map(self.0.ram.borrow_mut(), |ram| {
+            ram.get_mut(page_range(latch))
+        })
+        .ok()
+    }
+}
+
+fn page_range(latch: u8) -> std::ops::Range<usize> {
+    let start = usize::from(latch) * PAGE;
+    start..start + PAGE
+}
+
+/// SRAM index of frame `offset` under `pages`; beyond the population for an
+/// unbacked latch.
+fn backing(pages: [u8; 4], offset: usize) -> usize {
+    usize::from(pages[offset / PAGE]) * PAGE + offset % PAGE
 }
 
 impl LotechEms {
@@ -79,11 +154,21 @@ impl LotechEms {
         Ok(Self {
             port,
             frame,
-            pages: [0xFF; 4],
-            ram: vec![0; size_kib as usize * 1024],
+            board: LotechEmsFrame(Rc::new(Board {
+                pages: Cell::new([0xFF; 4]),
+                ram: RefCell::new(vec![0; size_kib as usize * 1024]),
+                latch_writes: Cell::new(0),
+                restores: Cell::new(0),
+            })),
             now: VClock::ZERO,
             trace: device::TraceBuffer::default(),
         })
+    }
+
+    /// A handle on this board's latches and SRAM for the machine memory map.
+    #[must_use]
+    pub fn frame_memory(&self) -> LotechEmsFrame {
+        self.board.clone()
     }
 
     fn register(&self, port: u16, size: u8) -> Result<usize, DeviceError> {
@@ -119,10 +204,6 @@ impl LotechEms {
             })
         }
     }
-
-    fn backing(&self, offset: usize) -> usize {
-        usize::from(self.pages[offset / PAGE]) * PAGE + offset % PAGE
-    }
 }
 
 impl Device for LotechEms {
@@ -143,7 +224,13 @@ impl Device for LotechEms {
     }
     fn port_write(&mut self, port: u16, size: u8, value: u32) -> Result<(), DeviceError> {
         let index = self.register(port, size)?;
-        self.pages[index] = value as u8;
+        let board = &self.board.0;
+        let mut pages = board.pages.get();
+        pages[index] = value as u8;
+        board.pages.set(pages);
+        board
+            .latch_writes
+            .set(board.latch_writes.get().wrapping_add(1));
         self.trace.push(TraceEvent::Port {
             at: self.now,
             port,
@@ -155,11 +242,12 @@ impl Device for LotechEms {
     }
     fn mmio_read(&mut self, addr: u64, size: u8) -> Result<u64, DeviceError> {
         let offset = self.check_frame(addr, size)?;
+        let pages = self.board.latches();
+        let ram = self.board.0.ram.borrow();
         let mut value = 0;
         for byte in 0..usize::from(size) {
             value |= u64::from(
-                self.ram
-                    .get(self.backing(offset + byte))
+                ram.get(backing(pages, offset + byte))
                     .copied()
                     .unwrap_or(0xFF),
             ) << (byte * 8);
@@ -175,9 +263,10 @@ impl Device for LotechEms {
     }
     fn mmio_write(&mut self, addr: u64, size: u8, value: u64) -> Result<(), DeviceError> {
         let offset = self.check_frame(addr, size)?;
+        let pages = self.board.latches();
+        let mut ram = self.board.0.ram.borrow_mut();
         for byte in 0..usize::from(size) {
-            let index = self.backing(offset + byte);
-            if let Some(cell) = self.ram.get_mut(index) {
+            if let Some(cell) = ram.get_mut(backing(pages, offset + byte)) {
                 *cell = (value >> (byte * 8)) as u8;
             }
         }
@@ -211,13 +300,15 @@ impl Device for LotechEms {
         let mut blob = vec![1];
         blob.extend(self.port.to_le_bytes());
         blob.extend(self.frame.to_le_bytes());
-        blob.extend(self.pages);
+        blob.extend(self.board.latches());
         blob.extend(self.now.0.to_le_bytes());
-        blob.extend(&self.ram);
+        blob.extend(self.board.0.ram.borrow().iter());
         blob
     }
     fn restore(&mut self, blob: &[u8]) -> Result<(), DeviceError> {
-        if blob.len() != 17 + self.ram.len()
+        let board = &self.board.0;
+        let mut ram = board.ram.borrow_mut();
+        if blob.len() != 17 + ram.len()
             || blob[0] != 1
             || blob[1..3] != self.port.to_le_bytes()
             || blob[3..5] != self.frame.to_le_bytes()
@@ -227,9 +318,10 @@ impl Device for LotechEms {
                 reason: "version, jumpers or population differ",
             });
         }
-        self.pages.copy_from_slice(&blob[5..9]);
+        board.pages.set(std::array::from_fn(|i| blob[5 + i]));
         self.now = VClock(u64::from_le_bytes(std::array::from_fn(|i| blob[9 + i])));
-        self.ram.copy_from_slice(&blob[17..]);
+        ram.copy_from_slice(&blob[17..]);
+        board.restores.set(board.restores.get().wrapping_add(1));
         Ok(())
     }
     fn set_trace_policy(&mut self, policy: device::TracePolicy) {

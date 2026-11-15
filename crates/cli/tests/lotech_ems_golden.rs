@@ -2,7 +2,8 @@
 //! Lo-tech 2MB EMS Board schematic, revision r02, HCT573 page registers and SRAM.
 //! Open AT firmware and FreeDOS MEM exercise a fetched local-only driver.
 //! LIM Expanded Memory Specification 4.0, INT 67h AH=41h/43h/44h/45h;
-//! Intel 80286 Programmer's Reference Manual, Appendix A, Jcc and JMP.
+//! Intel 80286 Programmer's Reference Manual, Appendix A, Jcc and JMP, and
+//! Appendix B, CALL (far, indirect) and PUSH (immediate).
 //! See machines/README.md §Playing DOS games. CPU revision:
 //! 060d446a883a9b2fc94b3ef91258cb4e6e98d916.
 
@@ -19,10 +20,16 @@ mod fat12;
 #[path = "support/fixtures.rs"]
 pub mod fixtures;
 
-const GOLDEN: (u64, u64) = (0x0eda968da7052433, 18_681_813);
+// Re-pinned when EMSCHECK gained the routine it runs from an EMS page. The
+// screen is unchanged. The larger program alone moves the endpoint: the
+// aliased-page mutant, which fails before reaching that code, moves equally.
+const GOLDEN: (u64, u64) = (0x0eda968da7052433, 18_681_761);
 
 // Deliberately alias every physical page to page zero as a negative control.
-struct AliasedPages(devices::LotechEms);
+// It wraps the assembled board, so the frame map follows the aliased latches:
+// windows selecting page zero together are trapped, and EMSCHECK's page check
+// fails before it runs any code from the frame.
+struct AliasedPages(Box<dyn Device>);
 impl Device for AliasedPages {
     fn name(&self) -> &'static str {
         "aliased-ems-test"
@@ -97,6 +104,35 @@ fn page_check_program() -> Vec<u8> {
         code.extend([0x45, 0x81, 0xFD, 128, 0]);
         branch_ne(&mut code, &mut branches, label);
     }
+    // Run code from an EMS page: copy a routine in through window 1, move the
+    // page out to window 2 and far-call it there. MOV AX, CS:[0];
+    // ADD AX, 1230h; RETF reads the page's fill word, its logical number 5.
+    let map = |code: &mut Vec<u8>, branches: &mut Vec<_>, logical: u8, window: u8| {
+        code.extend([
+            0x89, 0xF2, 0xBB, logical, 0, 0xB8, window, 0x44, 0xCD, 0x67, 0x84, 0xE4,
+        ]);
+        branch_ne(code, branches, "failed-free");
+    };
+    map(&mut code, &mut branches, 5, 1);
+    for (offset, word) in [
+        (0x4100u16, 0xA12Eu16),
+        (0x4102, 0),
+        (0x4104, 0x3005),
+        (0x4106, 0xCB12),
+    ] {
+        code.extend([0x26, 0xC7, 0x06]);
+        code.extend(offset.to_le_bytes());
+        code.extend(word.to_le_bytes());
+    }
+    map(&mut code, &mut branches, 6, 1);
+    map(&mut code, &mut branches, 5, 2);
+    // MOV AX, ES; ADD AX, 800h; PUSH AX; PUSH 100h; MOV BP, SP;
+    // CALL FAR [BP]; ADD SP, 4; CMP AX, 1235h.
+    code.extend([
+        0x8C, 0xC0, 0x05, 0x00, 0x08, 0x50, 0x68, 0x00, 0x01, 0x89, 0xE5, 0xFF, 0x5E, 0x00, 0x83,
+        0xC4, 0x04, 0x3D, 0x35, 0x12,
+    ]);
+    branch_ne(&mut code, &mut branches, "failed-free");
     // Release the handle before MEM observes free pages and handles.
     code.extend([0x89, 0xF2, 0xB4, 0x45, 0xCD, 0x67, 0x84, 0xE4]);
     branch_ne(&mut code, &mut branches, "failed");
@@ -130,9 +166,11 @@ fn capture(config: &assembly::MachineConfig, broken: bool) -> (String, u64) {
     let mut rig = assembly::assemble_with_observation(config, &observation).unwrap();
     if broken {
         let index = rig.device_index[&DeviceId::LotechEms];
-        *rig.machine.bus_mut().device_mut(index).unwrap() = Box::new(AliasedPages(
-            devices::LotechEms::new(0x260, 0xD000, 2048).unwrap(),
-        ));
+        let slot = rig.machine.bus_mut().device_mut(index).unwrap();
+        let spare: Box<dyn Device> =
+            Box::new(devices::LotechEms::new(0x260, 0xD000, 2048).unwrap());
+        let board = std::mem::replace(slot, spare);
+        *slot = Box::new(AliasedPages(board));
     }
     rig.run_session(&RunPolicy {
         retired_cap: Some(80_000_000),

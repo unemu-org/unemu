@@ -162,6 +162,40 @@ fn snapshot_is_atomic_config_bound_and_keeps_trace_policy() {
 }
 
 #[test]
+fn frame_handle_shares_latches_pages_and_change_counts() {
+    let ems = LotechEms::new(0x260, 0xE000, 512).unwrap();
+    let frame = ems.frame_memory();
+    let mut bus = MockBus::new(Box::new(ems));
+    assert_eq!(frame.latches(), [0xFF; 4]);
+    assert_eq!((frame.latch_writes(), frame.restores()), (0, 0));
+    for unbacked in [32, 0x7F, 0x80, 0xFF] {
+        assert!(frame.page(unbacked).is_none());
+        assert!(frame.page_mut(unbacked).is_none());
+    }
+    assert_eq!(frame.page(31).unwrap().len(), PAGE);
+
+    bus.port_write(0x261, 1, 31).unwrap();
+    assert_eq!(frame.latches(), [0xFF, 31, 0xFF, 0xFF]);
+    assert_eq!(frame.latch_writes(), 1);
+    bus.mmio_write(0xE7FFF, 1, 0xA5).unwrap();
+    assert_eq!(frame.page(31).unwrap()[0x3FFF], 0xA5);
+    frame.page_mut(31).unwrap()[0] = 0x5A;
+    assert_eq!(bus.mmio_read(0xE4000, 1).unwrap(), 0x5A);
+    assert!(bus.port_write(0x261, 2, 0).is_err());
+    assert_eq!(frame.latch_writes(), 1);
+
+    let saved = bus.device().save();
+    bus.port_write(0x261, 1, 0).unwrap();
+    assert_eq!(frame.latch_writes(), 2);
+    bus.device_mut().restore(&saved).unwrap();
+    assert_eq!(frame.restores(), 1);
+    assert_eq!(frame.latches(), [0xFF, 31, 0xFF, 0xFF]);
+    assert!(bus.device_mut().restore(&[]).is_err());
+    assert_eq!(frame.restores(), 1);
+    assert_eq!(frame.latch_writes(), 2);
+}
+
+#[test]
 fn invalid_jumpers_and_populations_are_rejected() {
     for (port, frame, size) in [
         (0x261, 0xE000, 2048),

@@ -45,6 +45,7 @@ mod cpu;
 pub mod descriptors;
 mod device;
 mod drive;
+mod ems_frame;
 mod error;
 mod firmware;
 pub mod firmware_discovery;

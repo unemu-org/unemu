@@ -231,6 +231,18 @@ impl X86JitCpu {
         Ok(())
     }
 
+    /// Map one immutable region over the bytes the flat backing already holds
+    /// at `[base, base + size)`, without loading anything.
+    ///
+    /// For a range released with [`Self::unmap`]: the core's flat model keeps
+    /// the backing bytes across unmap and map, so an embedder that re-tags a
+    /// range it already filled (an unbacked EMS window reading FFh, §4.2) need
+    /// not rewrite it. Load new contents with [`Self::write_mem`], which can
+    /// write a ROM. Guest stores are dropped, as for [`Self::map_rom`].
+    pub fn map_rom_in_place(&mut self, base: u64, size: u64) -> Result<(), CpuError> {
+        self.map_region(base, size as usize, Prot::RX, RegionKind::Rom)
+    }
+
     /// Write `bytes` into guest RAM at linear address `addr` through the `Vm`
     /// API (so SMC tracking sees it). For an embedder that seeds the IVT or a
     /// device table into low memory before execution.
@@ -262,6 +274,26 @@ impl X86JitCpu {
     /// surfaced as [`CpuStop::MmioRead`]/[`CpuStop::MmioWrite`] (§4.2, §5.2).
     pub fn map_mmio(&mut self, base: u64, size: u64) -> Result<(), CpuError> {
         self.map_region(base, size as usize, Prot::RW, RegionKind::Trap)
+    }
+
+    /// Remove the region mapped at exactly `[base, base + size)`, so the range
+    /// can be mapped again with another kind (an EMS window that switches
+    /// between CPU RAM, ROM and a trapped board window, §4.2).
+    ///
+    /// The core drops cached translations overlapping the range; its flat
+    /// model only removes the region's tag, so the backing bytes stay in place
+    /// until they are rewritten. Mapping a trapped region
+    /// afterwards also invalidates the whole translation cache, so this is a
+    /// port-write-rate operation, not a per-access one. A range that is not
+    /// one whole mapped region is refused and the map is left unchanged.
+    pub fn unmap(&mut self, base: u64, size: u64) -> Result<(), CpuError> {
+        self.vm
+            .unmap(base, size as usize)
+            .map_err(|e| CpuError::Memory(format!("{e:?}")))?;
+        let end = base + size;
+        self.dma_regions
+            .retain(|(range, _)| range.start != base || range.end != end);
+        Ok(())
     }
 
     fn map_region(
@@ -852,6 +884,49 @@ mod tests {
         let mut value = [0];
         cpu.read_mem(0x4002, &mut value).unwrap();
         assert_eq!(value, [0xBA]);
+    }
+
+    #[test]
+    fn unmapped_window_remaps_as_ram_rom_and_trap_for_fetch_and_dma() {
+        // CALL FAR D000:0000; HLT.
+        let mut cpu = i286_guest(&[0x9A, 0, 0, 0, 0xD0, 0xF4]);
+        cpu.map_mmio(0xD0000, 0x4000).unwrap();
+        assert!(matches!(
+            cpu.unmap(0xD0000, 0x2000),
+            Err(CpuError::Memory(_))
+        ));
+        assert_eq!(cpu.guest_dma_read(0xD0000), DmaAccess::Mmio);
+
+        cpu.unmap(0xD0000, 0x4000).unwrap();
+        cpu.map_ram(0xD0000, 0x4000).unwrap();
+        // MOV AX, 1234h; RETF.
+        cpu.write_mem(0xD0000, &[0xB8, 0x34, 0x12, 0xCB]).unwrap();
+        let run = cpu.run_steps(10, StepRunOptions::default()).unwrap();
+        assert_eq!(run.stop, CpuStepStop::Exit(CpuStop::Halt));
+        assert_eq!(cpu.reg(CpuReg::Rax) & 0xFFFF, 0x1234);
+        assert_eq!(cpu.guest_dma_write(0xD0004, 0x56), DmaAccess::Complete(()));
+        let mut value = [0];
+        cpu.read_mem(0xD0004, &mut value).unwrap();
+        assert_eq!(value, [0x56]);
+
+        // Re-tagged as ROM, the window keeps its bytes and drops DMA stores.
+        cpu.unmap(0xD0000, 0x4000).unwrap();
+        cpu.map_rom_in_place(0xD0000, 0x4000).unwrap();
+        assert_eq!(cpu.guest_dma_write(0xD0004, 0x77), DmaAccess::Complete(()));
+        assert_eq!(cpu.guest_dma_read(0xD0004), DmaAccess::Complete(0x56));
+        cpu.set_reg(CpuReg::Rip, 0x1000);
+        let run = cpu.run_steps(10, StepRunOptions::default()).unwrap();
+        assert_eq!(run.stop, CpuStepStop::Exit(CpuStop::Halt));
+
+        cpu.unmap(0xD0000, 0x4000).unwrap();
+        cpu.map_mmio(0xD0000, 0x4000).unwrap();
+        assert_eq!(cpu.guest_dma_read(0xD0000), DmaAccess::Mmio);
+        assert_eq!(cpu.guest_dma_write(0xD0000, 0), DmaAccess::Mmio);
+        cpu.set_reg(CpuReg::Rip, 0x1000);
+        assert!(matches!(
+            cpu.run_steps(10, StepRunOptions::default()),
+            Err(CpuError::Unmapped { addr: 0xD0000 })
+        ));
     }
 
     #[test]

@@ -764,18 +764,46 @@ not copied into this workspace
   (RX, executable/readable with guest stores dropped). Host image loading uses
   `Vm::write_bytes`, which can populate ROM. Real-mode `INT n` already vectors
   through the guest IVT; it is not an outstanding embedder implementation.
-- The Lo-tech EMS board owns its SRAM behind `Device` and a 64 KiB MMIO
-  frame. Port writes update its four latches synchronously before the next CPU
-  instruction; normal RAM still uses the existing `Vm` RAM regions. Every
-  400h I/O alias is represented in the decode map and conflict validation.
-  The IBM 5170's E0000h–FFFFFh system-board ROM decode rejects an E000h
-  frame; the shipped profiles use D000h. Only Rust bare test rigs accept E000h.
-  The normal high ROM alias is unchanged. CPU reset preserves latches and SRAM.
-  The pinned CPU cannot fetch instructions from trap regions. A code fetch
-  from the frame raises a CPU fetch fault and stops the run with a CPU error;
-  this limitation is tracked as open work (upc-6le.53).
+- The Lo-tech EMS board owns its four latches and SRAM behind `Device` and a
+  64 KiB MMIO frame, and shares them with assembly through a `LotechEmsFrame`
+  handle. Port writes update the latches synchronously before the next CPU
+  instruction. Every 400h I/O alias is represented in the decode map and
+  conflict validation. The IBM 5170's E0000h–FFFFFh system-board ROM decode
+  rejects an E000h frame; the shipped profiles use D000h. Only Rust bare test
+  rigs accept E000h. The normal high ROM alias is unchanged. CPU reset
+  preserves latches and SRAM.
   See the coverage matrix in `crates/devices/src/lotech_ems.rs` and
   [machine fields](../../machines/README.md#lo-tech-ems-card-reference).
+- The CPU cannot fetch instructions from a `Trap` region, so assembly maps
+  each EMS frame window in one of three forms
+  (`crates/assembly/src/ems_frame.rs`). A window whose latch selects a
+  populated page that no other latch selects is `Ram`, and its CPU copy is
+  authoritative. An unbacked window is `Rom` filled with FFh: reads and
+  fetches see the floating bus, guest and DMA stores are dropped. Only a page
+  selected by two latches stays `Trap` and reaches the board, data-correct but
+  not executable. `Machine::with_memory_map` calls the map when every run
+  starts and after every guest port write, before that instruction's DMA and
+  the next instruction. It writes held copies back into SRAM (all of them
+  before a retile), retiles the frame with `X86JitCpu::unmap` and
+  `map_ram`/`map_rom_in_place`/`map_mmio` (neighbouring windows of one form
+  share a region; the DMA region table follows; the core's flat backing keeps
+  bytes across unmap and map), then loads newly held pages, or the FFh fill of
+  a newly unbacked window, with `Vm::write_bytes`, whose `note_write` drops
+  any translation of the previous contents. Its change counters advance last,
+  so a failed apply is retried whole. When a run returns, held pages are
+  written back, so device snapshots read current SRAM; a restore makes the
+  next run drop the held copies unwritten and reload them. The core joins RAM
+  and ROM regions for one operand, so a word straddling a held and an unbacked
+  window reads FFh for the unbacked byte; an operand crossing a `Trap` region
+  (a shared window, or another device's window beside the frame) and a held
+  or unbacked window stops with `CpuError::Unmapped`. A latch
+  write costs one or two 16 KiB copies; a retile, whose `Trap` map invalidates
+  the whole translation cache, happens only when a window changes form.
+  The write-back on every run return copies at most 64 KiB. MEASURED once in
+  release on the development host: 1 ms run chunks (1,193 steps) of a spinning
+  guest took 26.2–26.6 µs per return with no held window and 26.9–27.3 µs with
+  four, under 1 µs and about 3% of the chunk, so held windows carry no
+  per-window dirty tracking.
 - `inject_irq` forwards a queued vector; the core gates delivery on IF, pending
   completions and the STI/SS-load shadows, then enters the guest IVT handler.
   `completed_steps()` drives machine time; `retired()` remains available for

@@ -541,10 +541,18 @@ participate in conflict checking. The card has no IRQ or DMA setting.
 The r02 schematic's write-only page latches return FFh on reads. Values
 80h–FFh or unpopulated chips leave their 16 KiB windows unbacked. Deterministic
 power-on uses FFh latches and zero SRAM; a warm reset preserves both latches
-and SRAM. The frame uses the existing MMIO data-access path; executing code
-from the EMS frame is not supported by the pinned CPU's trap-region fetch path.
-A code fetch from the frame raises a CPU fetch fault and stops the run with a
-CPU error; this limitation is tracked as open work (upc-6le.53).
+and SRAM. Code can run from the frame: a window whose latch selects a
+populated page that no other latch selects is held as CPU RAM, so overlay
+managers and EMS-aware programs execute from mapped pages. Unbacked windows
+read and execute FFh and drop writes, as on the floating bus; a word that
+straddles a mapped and an unbacked window reads FFh for the unbacked byte.
+When two latches select the same page, both windows keep the board's coherent
+data path but cannot be executed from. One known limit remains: a word operand
+that crosses from such a shared window into a neighbouring window that is
+mapped or unbacked (for example `MOV AX,[3FFFh]` in the frame with window 0
+mapped and windows 1 and 2 on one page), or from another card's memory-mapped
+window directly below or above the frame into a mapped or unbacked window,
+stops the run with a CPU error.
 Hardware coverage is recorded in `crates/devices/src/lotech_ems.rs`.
 
 ## Playing DOS games
