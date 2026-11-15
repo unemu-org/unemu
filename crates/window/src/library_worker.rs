@@ -81,8 +81,20 @@ pub(super) enum Request {
     ),
     /// Publish the named catalogue sets of the last scan.
     ImportFirmware(Vec<String>),
+    /// Read the firmware packages and tags New machine… chooses from.
+    FirmwarePackages,
+    /// Build a new empty image under a reference, moving a tag only from the
+    /// digest the user confirmed.
+    CreateImage(Box<pc_image::create::NewImage>, String, Option<Digest>),
     Shutdown,
 }
+/// Firmware packages, every local tag with its manifest digest, and the
+/// redistribution marks of every local manifest (the push guard's input).
+pub(super) type StoreChoices = (
+    Vec<pc_image::create::Package>,
+    Vec<(String, Digest)>,
+    image_registry::guard::LocalMarks,
+);
 pub(super) enum Event {
     Snapshot(Arc<library_view::Snapshot>),
     Checked(Digest, Result<pc_image::inspection::ImageDetails>),
@@ -98,6 +110,9 @@ pub(super) enum Event {
     Deleted(String),
     Published(Box<ImageRow>),
     Recoveries(Vec<Recovery>),
+    Packages(Result<StoreChoices>),
+    /// The result of New machine…'s Create, apart from every other job.
+    Created(Result<Box<ImageRow>>),
     Error(String),
     FirmwareError(String),
     FirmwareScanned(Box<library_view::firmware::ScanReport>),
@@ -377,6 +392,40 @@ impl Backend for FirmwareCrash {
     }
 }
 
+pub(super) fn store_choices(store: &Store) -> Result<StoreChoices> {
+    let packages = pc_image::create::packages(store).map_err(|e| e.to_string())?;
+    let marks = image_registry::guard::LocalMarks::scan(store).map_err(|e| e.to_string())?;
+    let mut tags = Vec::new();
+    let mut after: Option<String> = None;
+    loop {
+        let page = store
+            .list_tags(after.as_deref(), 1000)
+            .map_err(|e| e.to_string())?;
+        tags.extend(page.tags.into_iter().map(|t| (t.name, t.manifest.digest)));
+        match page.next_after {
+            Some(next) => after = Some(next),
+            None => return Ok((packages, tags, marks)),
+        }
+    }
+}
+
+/// New machine…'s Create. The store refuses to move a version-shaped tag.
+fn create_image(
+    store: &Store,
+    image: &pc_image::create::NewImage,
+    reference: String,
+    expected: Option<&Digest>,
+) -> Result<Box<ImageRow>> {
+    let descriptor =
+        pc_image::create::create(store, image, &reference, expected).map_err(|e| e.to_string())?;
+    Ok(Box::new(ImageRow {
+        reference,
+        descriptor,
+        summary: None,
+        failure: None,
+    }))
+}
+
 fn storage_details(
     store: &Store,
     cache: &SummaryCache,
@@ -596,6 +645,22 @@ fn run<B: Backend>(
                                             })
                                         }),
                                 )),
+                                // New machine… builds images beside the running one.
+                                Ok(Request::FirmwarePackages) => {
+                                    send(Event::Packages(store_choices(&store)))
+                                }
+                                Ok(Request::CreateImage(image, reference, expected)) => {
+                                    send(Event::Created(create_image(
+                                        &store,
+                                        &image,
+                                        reference,
+                                        expected.as_ref(),
+                                    )));
+                                    cache.refresh(&store).map_err(|e| e.to_string())?;
+                                    send(Event::Snapshot(Arc::new(library_view::snapshot(
+                                        &cache, &query,
+                                    ))));
+                                }
                                 _ => (),
                             }
                         };
@@ -686,6 +751,10 @@ fn run<B: Backend>(
                             }
                         }
                     },
+                    Request::FirmwarePackages => send(Event::Packages(store_choices(&store))),
+                    Request::CreateImage(image, reference, expected) => send(Event::Created(
+                        create_image(&store, &image, reference, expected.as_ref()),
+                    )),
                     Request::ScanFirmware(folder, index, control) => {
                         match library_view::firmware::scan_folder(
                             &store,
@@ -1020,6 +1089,7 @@ mod tests {
                 } else {
                     Default::default()
                 },
+                zero: Default::default(),
             })
         }
         fn publish(&self, _: &Workspace<'_>, _: &str, _: bool) -> Result<Descriptor> {

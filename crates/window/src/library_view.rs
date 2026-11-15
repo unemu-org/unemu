@@ -495,6 +495,12 @@ pub(super) struct LibraryView {
     /// Kept apart from `selected`: a package is never a Start target.
     firmware_selected: Option<firmware::FirmwareRow>,
     firmware_import: Option<firmware::ImportDialog>,
+    /// File › New machine… while it is open.
+    pub new_machine: Option<crate::new_machine::Wizard>,
+    /// The wizard asked for Import ROM folder…; the shell picks the folder.
+    pub firmware_import_wanted: bool,
+    /// A created image was selected; the next frame drops the machine-file selection.
+    clear_file_selection: bool,
 }
 impl LibraryView {
     pub fn new(root: Option<PathBuf>) -> Self {
@@ -523,6 +529,9 @@ impl LibraryView {
             worker_dead: false,
             firmware_selected: None,
             firmware_import: None,
+            new_machine: None,
+            firmware_import_wanted: false,
+            clear_file_selection: false,
         }
     }
     #[cfg(test)]
@@ -553,155 +562,7 @@ impl LibraryView {
         }
 
         for event in events {
-            match event {
-                Event::Snapshot(snapshot) => {
-                    if let Some(selected) = &mut self.selected {
-                        if let Some(current) = snapshot.rows.iter().find(|r| {
-                            r.image.reference == selected.reference
-                                && r.image.descriptor.digest == selected.descriptor.digest
-                        }) {
-                            if current.image.summary.is_some() {
-                                selected.summary = current.image.summary.clone();
-                            }
-                        }
-                    }
-                    if let Some(selected) = &mut self.firmware_selected {
-                        if let Some(current) =
-                            snapshot.firmware_rows.iter().find(|r| r.same(selected))
-                        {
-                            *selected = current.clone();
-                        }
-                    }
-                    self.snapshot = snapshot;
-                }
-                Event::FirmwareScanned(report) => {
-                    self.busy = false;
-                    self.status = Some(if report.cancelled {
-                        "ROM folder scan cancelled".into()
-                    } else {
-                        "ROM folder scanned".into()
-                    });
-                    if let Some(dialog) = &mut self.firmware_import {
-                        dialog.scanned(*report);
-                    }
-                }
-                Event::FirmwareFailed(error) => {
-                    self.busy = false;
-                    match &mut self.firmware_import {
-                        Some(dialog) => dialog.failed(error),
-                        None => self.error = Some(error),
-                    }
-                }
-                Event::FirmwareImported(outcomes) => {
-                    self.busy = false;
-                    self.status = Some(
-                        outcomes
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                            .join("; "),
-                    );
-                    if let Some(dialog) = &mut self.firmware_import {
-                        dialog.finished(outcomes);
-                    }
-                }
-                Event::Checked(id, result) => {
-                    if self
-                        .selected
-                        .as_ref()
-                        .is_some_and(|r| r.descriptor.digest == id)
-                    {
-                        let ready = result.is_ok();
-                        self.readiness = Some(result);
-                        if self
-                            .pending_launch
-                            .as_ref()
-                            .is_some_and(|(wanted, _)| wanted == &id)
-                        {
-                            let mode = self.pending_launch.take().map(|(_, mode)| mode);
-                            if ready {
-                                if let Some(mode) = mode {
-                                    self.launch(mode);
-                                }
-                            }
-                        }
-                    }
-                }
-                Event::Launched(session, row, name, kind) => {
-                    let row = *row;
-                    self.selected = Some(row.clone());
-                    self.active = Some((row, name, kind));
-                    self.launched = Some(*session);
-                    self.pending_operation = false;
-                    self.busy = false;
-                }
-                Event::Finished => {
-                    self.busy = self.pending_operation;
-                    self.active = None;
-                    if !self.pending_operation {
-                        self.status = Some("Ready".into());
-                    }
-                }
-                Event::Layers(name, result) => {
-                    self.busy = false;
-                    if let Some(dialog) = &mut self.layers {
-                        dialog.set_workspace(name);
-                        dialog.set_details(result);
-                    }
-                }
-                Event::Published(row) => {
-                    self.busy = false;
-                    self.pending_operation = false;
-                    self.status = Some(format!("Published {}", row.reference));
-                    self.selected = Some(*row);
-                    self.layers = None;
-                    self.decision = None;
-                    self.labels.clear();
-                    self.recheck();
-                }
-                Event::Deleted(reference) => {
-                    self.busy = false;
-                    if self
-                        .selected
-                        .as_ref()
-                        .is_some_and(|row| row.reference == reference)
-                    {
-                        self.selected = None;
-                        self.readiness = None;
-                    }
-                    self.status = Some("Tag deleted; shared blobs retained".into());
-                }
-                Event::Done(message) => {
-                    self.decision = None;
-                    self.busy = false;
-                    self.pending_operation = false;
-                    self.status = Some(message);
-                    if let Some(dialog) = &mut self.layers {
-                        dialog.completed();
-                    }
-                    self.recheck();
-                    if self.layers.is_some() {
-                        self.open_layers();
-                    }
-                }
-                Event::Recoveries(rows) => {
-                    self.recoveries = rows;
-                }
-                Event::FirmwareError(error) => {
-                    self.busy = false;
-                    self.firmware_error = true;
-                    self.error = Some(error);
-                }
-                Event::Error(error) => {
-                    self.busy = false;
-                    self.pending_operation = false;
-                    self.firmware_error = false;
-                    self.error = Some(error.clone());
-                    if let Some(dialog) = &mut self.layers {
-                        dialog.error = Some(error);
-                    }
-                }
-            }
+            self.on_event(event);
         }
         if disconnected && !self.worker_dead {
             self.busy = false;
@@ -712,6 +573,182 @@ impl LibraryView {
                 self.error = Some(
                     "Image store worker stopped; choose the Image store folder to retry".into(),
                 );
+            }
+        }
+    }
+    fn on_event(&mut self, event: Event) {
+        match event {
+            Event::Snapshot(snapshot) => {
+                if let Some(selected) = &mut self.selected {
+                    if let Some(current) = snapshot.rows.iter().find(|r| {
+                        r.image.reference == selected.reference
+                            && r.image.descriptor.digest == selected.descriptor.digest
+                    }) {
+                        if current.image.summary.is_some() {
+                            selected.summary = current.image.summary.clone();
+                        }
+                    }
+                }
+                if let Some(selected) = &mut self.firmware_selected {
+                    if let Some(current) = snapshot.firmware_rows.iter().find(|r| r.same(selected))
+                    {
+                        *selected = current.clone();
+                    }
+                }
+                self.snapshot = snapshot;
+            }
+            Event::FirmwareScanned(report) => {
+                self.busy = false;
+                self.status = Some(if report.cancelled {
+                    "ROM folder scan cancelled".into()
+                } else {
+                    "ROM folder scanned".into()
+                });
+                if let Some(dialog) = &mut self.firmware_import {
+                    dialog.scanned(*report);
+                }
+            }
+            Event::FirmwareFailed(error) => {
+                self.busy = false;
+                match &mut self.firmware_import {
+                    Some(dialog) => dialog.failed(error),
+                    None => self.error = Some(error),
+                }
+            }
+            Event::FirmwareImported(outcomes) => {
+                self.busy = false;
+                self.status = Some(
+                    outcomes
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                );
+                if let Some(dialog) = &mut self.firmware_import {
+                    dialog.finished(outcomes);
+                }
+                if self.new_machine.is_some() {
+                    self.send(Request::FirmwarePackages);
+                }
+            }
+            Event::Checked(id, result) => {
+                if self
+                    .selected
+                    .as_ref()
+                    .is_some_and(|r| r.descriptor.digest == id)
+                {
+                    let ready = result.is_ok();
+                    self.readiness = Some(result);
+                    if self
+                        .pending_launch
+                        .as_ref()
+                        .is_some_and(|(wanted, _)| wanted == &id)
+                    {
+                        let mode = self.pending_launch.take().map(|(_, mode)| mode);
+                        if ready {
+                            if let Some(mode) = mode {
+                                self.launch(mode);
+                            }
+                        }
+                    }
+                }
+            }
+            Event::Launched(session, row, name, kind) => {
+                let row = *row;
+                self.selected = Some(row.clone());
+                self.active = Some((row, name, kind));
+                self.launched = Some(*session);
+                self.pending_operation = false;
+                self.busy = false;
+            }
+            Event::Finished => {
+                self.busy = self.pending_operation;
+                self.active = None;
+                if !self.pending_operation {
+                    self.status = Some("Ready".into());
+                }
+            }
+            Event::Layers(name, result) => {
+                self.busy = false;
+                if let Some(dialog) = &mut self.layers {
+                    dialog.set_workspace(name);
+                    dialog.set_details(result);
+                }
+            }
+            Event::Published(row) => {
+                self.busy = false;
+                self.pending_operation = false;
+                self.status = Some(format!("Published {}", row.reference));
+                self.selected = Some(*row);
+                self.layers = None;
+                self.decision = None;
+                self.labels.clear();
+                self.recheck();
+            }
+            Event::Deleted(reference) => {
+                self.busy = false;
+                if self
+                    .selected
+                    .as_ref()
+                    .is_some_and(|row| row.reference == reference)
+                {
+                    self.selected = None;
+                    self.readiness = None;
+                }
+                self.status = Some("Tag deleted; shared blobs retained".into());
+            }
+            Event::Done(message) => {
+                self.decision = None;
+                self.busy = false;
+                self.pending_operation = false;
+                self.status = Some(message);
+                if let Some(dialog) = &mut self.layers {
+                    dialog.completed();
+                }
+                self.recheck();
+                if self.layers.is_some() {
+                    self.open_layers();
+                }
+            }
+            Event::Recoveries(rows) => {
+                self.recoveries = rows;
+            }
+            // Package refreshes never touch a busy flag: a Create may still run.
+            Event::Packages(result) => {
+                if let Some(wizard) = &mut self.new_machine {
+                    match result {
+                        Ok(choices) => wizard.set_store(choices),
+                        Err(error) => wizard.error = Some(error),
+                    }
+                }
+            }
+            Event::Created(Ok(row)) => {
+                if self.new_machine.as_ref().is_some_and(|w| w.busy) {
+                    self.new_machine = None;
+                }
+                self.status = Some(format!("Created {}", row.reference));
+                self.show_created(*row);
+            }
+            Event::Created(Err(error)) => match &mut self.new_machine {
+                Some(wizard) => {
+                    wizard.busy = false;
+                    wizard.error = Some(error);
+                }
+                None => self.error = Some(error),
+            },
+            Event::FirmwareError(error) => {
+                self.busy = false;
+                self.firmware_error = true;
+                self.error = Some(error);
+            }
+            Event::Error(error) => {
+                self.busy = false;
+                self.pending_operation = false;
+                self.firmware_error = false;
+                self.error = Some(error.clone());
+                if let Some(dialog) = &mut self.layers {
+                    dialog.error = Some(error);
+                }
             }
         }
     }
@@ -826,6 +863,35 @@ impl LibraryView {
             self.send(Request::Layers(row, name));
         }
     }
+    /// Select a created image in the machine view with no filter, search or
+    /// collapsed group hiding it, so Start never targets a hidden machine.
+    fn show_created(&mut self, row: ImageRow) {
+        self.query.filter = Filter::All;
+        self.query.text.clear();
+        self.query.expanded.insert(row.repository().to_owned());
+        self.firmware_selected = None;
+        self.pending_launch = None;
+        self.clear_file_selection = true;
+        self.selected = Some(row);
+        self.readiness = None;
+        self.send(Request::Query(self.query.clone()));
+        self.recheck();
+    }
+    /// File › New machine…: the wizard reads firmware packages and tags first.
+    pub fn begin_new_machine(&mut self) {
+        let mut wizard = crate::new_machine::Wizard::new();
+        wizard.store = self
+            .root
+            .as_ref()
+            .and_then(|root| Store::open_existing(root).ok());
+        self.new_machine = Some(wizard);
+        self.send(Request::FirmwarePackages);
+        if self.worker_dead {
+            if let Some(wizard) = &mut self.new_machine {
+                wizard.error = self.error.clone();
+            }
+        }
+    }
     pub fn begin_import(&mut self, path: &Path) {
         self.import = Some((path.to_string_lossy().into_owned(), String::new()));
     }
@@ -838,6 +904,7 @@ impl LibraryView {
             || self.delete
             || self.decision.is_some()
             || self.firmware_import.is_some()
+            || self.new_machine.is_some()
     }
     /// Close Disk layers, Import image, Delete tag and Import ROM folder for an
     /// exit; a running scan is cancelled. The Gaming keep-or-discard question
@@ -849,6 +916,7 @@ impl LibraryView {
         if let Some(dialog) = self.firmware_import.take() {
             dialog.control.cancel();
         }
+        self.new_machine = None;
     }
     /// Entering the Firmware collection drops the machine selection, so Start
     /// never targets a machine that is no longer shown.
@@ -871,6 +939,9 @@ impl LibraryView {
         selected_file: &mut Option<usize>,
         branding: Option<(&mut crate::logo::Logo, bool, bool)>,
     ) -> Vec<Command> {
+        if std::mem::take(&mut self.clear_file_selection) {
+            *selected_file = None;
+        }
         ui.add_enabled_ui(!self.busy, |ui| {
             self.show_contents(ui, files, selected_file, branding)
         })
@@ -1018,7 +1089,12 @@ impl LibraryView {
                                             let chain = medium
                                                 .chain
                                                 .iter()
-                                                .map(|member| &member.digest.hex()[..8])
+                                                .map(|member| match member.blank_bytes {
+                                                    Some(bytes) => {
+                                                        format!("zero base {}", human_size(bytes))
+                                                    }
+                                                    None => member.digest.hex()[..8].to_owned(),
+                                                })
                                                 .collect::<Vec<_>>()
                                                 .join(" → ");
                                             meta.label(format!(
@@ -1383,6 +1459,27 @@ impl LibraryView {
         running: bool,
     ) -> Vec<Request> {
         let mut requests = Vec::new();
+        let can_import = !running && self.can_import_firmware();
+        if let Some(wizard) = &mut self.new_machine {
+            wizard.can_import_roms = can_import;
+            match crate::new_machine_view::show(ctx, wizard, classic) {
+                crate::new_machine_view::Action::None => (),
+                crate::new_machine_view::Action::Cancel => self.new_machine = None,
+                crate::new_machine_view::Action::Create => match wizard.request() {
+                    Ok((image, reference, expected)) => {
+                        wizard.busy = true;
+                        wizard.error = None;
+                        requests.push(Request::CreateImage(Box::new(image), reference, expected));
+                    }
+                    Err(error) => wizard.error = Some(error),
+                },
+                // The library's Import ROM folder… flow; the shell picks the
+                // folder, and the wizard rereads packages once it imported.
+                crate::new_machine_view::Action::ImportRoms => self.firmware_import_wanted = true,
+            }
+            self.firmware_modal(ctx, classic, &mut requests);
+            return requests;
+        }
         if let Some((path, tag)) = &mut self.import {
             let mut close = false;
             egui::Modal::new(egui::Id::unique("import-image")).show(ctx, |ui| {
@@ -1484,6 +1581,10 @@ impl LibraryView {
                 crate::layers_dialog::Action::None => (),
             }
         }
+        self.firmware_modal(ctx, classic, &mut requests);
+        requests
+    }
+    fn firmware_modal(&mut self, ctx: &egui::Context, classic: bool, requests: &mut Vec<Request>) {
         if let Some(dialog) = &mut self.firmware_import {
             match dialog.show(ctx, classic) {
                 firmware::DialogAction::Import => requests.extend(self.import_picks()),
@@ -1495,7 +1596,6 @@ impl LibraryView {
                 firmware::DialogAction::None => (),
             }
         }
-        requests
     }
 }
 
@@ -1824,6 +1924,7 @@ pub(super) mod tests {
             machine: assembly::bios(vec![0xf4; 32768], None),
             image: Digest::of(b"synthetic image"),
             bases: BTreeMap::from([(path.clone(), media::VerifiedBase::open(&path).unwrap())]),
+            zero: BTreeMap::new(),
         };
         let prepared = make();
         let before = media::data_passes(512);
@@ -1864,6 +1965,7 @@ pub(super) mod tests {
             machine: assembly::bios(vec![0xf4; 32768], None),
             image: Digest::of(b"synthetic"),
             bases: BTreeMap::from([(path.clone(), base)]),
+            zero: BTreeMap::new(),
         };
         let restored = prepared.into_transfer().unwrap().restore().unwrap();
         assert_eq!(restored.bases[&path].read_sector(0).unwrap(), [7; 512]);
@@ -2066,5 +2168,361 @@ pub(super) mod tests {
         assert_eq!(result.matched, 1);
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].image.descriptor.digest, images[0].digest);
+    }
+
+    #[test]
+    fn new_machine_creates_an_image_that_lists_validates_and_boots_the_open_bios() {
+        use image_store::ConfigValidator;
+        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let worker = Worker::spawn(firmware.store.root().to_owned(), egui::Context::default());
+        let next = |wanted: &dyn Fn(&Event) -> bool| loop {
+            match worker
+                .receive
+                .recv_timeout(std::time::Duration::from_secs(60))
+            {
+                Ok(Event::Error(error)) => panic!("worker: {error}"),
+                Ok(event) if wanted(&event) => break event,
+                Ok(_) => continue,
+                Err(error) => panic!("no worker event: {error}"),
+            }
+        };
+        worker.send.send(Request::FirmwarePackages).unwrap();
+        let Event::Packages(choices) = next(&|e| matches!(e, Event::Packages(_))) else {
+            unreachable!()
+        };
+        let mut wizard = crate::new_machine::Wizard::new();
+        wizard.set_store(choices.unwrap());
+        wizard.edit(|s| s.hardware.disks[0] = Some(pc_image::create::Chs::new(1024, 16, 63)));
+        wizard.title = "Open AT workbench".into();
+        wizard.go(crate::new_machine::SUMMARY);
+        assert!(wizard.private_notice().is_none());
+        let (image, reference, expected) = wizard.request().unwrap();
+        assert_eq!((reference.as_str(), &expected), ("open-at:1.0.0", &None));
+        worker
+            .send
+            .send(Request::CreateImage(
+                Box::new(image),
+                reference.clone(),
+                expected,
+            ))
+            .unwrap();
+        let Event::Created(Ok(row)) = next(&|e| matches!(e, Event::Created(_))) else {
+            panic!("Create failed")
+        };
+        // The new image appears in the library under its reference and title.
+        next(&|e| {
+            matches!(e, Event::Snapshot(snapshot) if snapshot.rows.iter().any(|r| {
+                r.image.reference == reference
+                    && r.image.summary.as_ref().is_some_and(|s| s.name == "Open AT workbench")
+            }))
+        });
+        // It validates as a complete image, and creating it again is refused.
+        let resolved = firmware
+            .store
+            .resolve(&reference, &pc_image::PcProvider)
+            .unwrap();
+        assert_eq!(resolved.image.digest, row.descriptor.digest);
+        let config: toml::Table = std::str::from_utf8(&resolved.config)
+            .unwrap()
+            .parse()
+            .unwrap();
+        pc_image::PcProvider
+            .validate(&config, &resolved.manifest.layers, &firmware.store)
+            .unwrap();
+        drop(worker);
+        assert!(
+            pc_image::create::create(&firmware.store, &wizard.image(), &reference, None).is_err()
+        );
+        // Start assembles the machine and the open BIOS runs its POST.
+        let owner = firmware.store.workspace("first-start").unwrap();
+        let prepared = pc_image::workspace::prepare_start(&owner, &reference, false).unwrap();
+        let policy = assembly::ObservationPolicy {
+            trace: device::TracePolicy::Off,
+            routes: vec![
+                assembly::ObservationRequest {
+                    device: assembly::DeviceId::Post,
+                    output: assembly::OutputKind::Bytes(device::ByteStreamKind::PostCheckpoints),
+                    byte_limit: 4096,
+                },
+                assembly::ObservationRequest {
+                    device: assembly::DeviceId::Vga,
+                    output: assembly::OutputKind::TextScanout,
+                    byte_limit: 0,
+                },
+            ],
+            ..Default::default()
+        };
+        let mut machine = assembly::assemble_with_verified_bases(
+            &prepared.machine,
+            &policy,
+            assembly::AssemblyOptions::default(),
+            &prepared.bases,
+        )
+        .unwrap();
+        let mut post = Vec::new();
+        for step in 1..=60u64 {
+            machine
+                .run_session(&assembly::RunPolicy::natural(Some(step * 1_000_000), None))
+                .unwrap();
+            post.extend(
+                machine
+                    .observation
+                    .drain_bytes(
+                        assembly::DeviceId::Post,
+                        device::ByteStreamKind::PostCheckpoints,
+                    )
+                    .unwrap(),
+            );
+            if post.contains(&0x00) {
+                // Let INT 19h try A: (empty) and then C: through XTIDE.
+                let at = {
+                    use cpu::Cpu;
+                    machine.machine.cpu().retired()
+                };
+                machine
+                    .run_session(&assembly::RunPolicy::natural(Some(at + 30_000_000), None))
+                    .unwrap();
+                break;
+            }
+        }
+        let capture = machine.capture_text(assembly::DeviceId::Vga).unwrap();
+        let video::Frame::Text(grid) = &capture.frame else {
+            panic!("expected VGA text")
+        };
+        // The open BIOS golden's checkpoint stream, through the option-ROM scan
+        // (40h–43h, XTIDE at C8000h) to the boot loader (Kiselev errno.inc).
+        assert_eq!(
+            post,
+            [
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x10, 0x11, 0x20, 0x21, 0x22,
+                0x24, 0x25, 0x30, 0x31, 0x40, 0x41, 0x42, 0x43, 0x00
+            ]
+        );
+        // XTIDE identified the blank C: and the boot read its zero sector 0
+        // through ATA, which has no boot signature.
+        let rows = grid.rows_as_strings();
+        let row = |text: &str| rows.iter().any(|row| row.contains(text));
+        assert!(row("Master at 1F0h: UNEMU ATA-2 PIO DISK"), "{rows:#?}");
+        assert!(row("Booting C"), "{rows:#?}");
+        assert!(row("Boot sector not found"), "{rows:#?}");
+        machine.finish_persistence().unwrap();
+        assert!(firmware.temp.path().exists());
+    }
+
+    fn worker_events(worker: &Worker, wanted: &dyn Fn(&Event) -> bool) -> Event {
+        loop {
+            match worker
+                .receive
+                .recv_timeout(std::time::Duration::from_secs(60))
+            {
+                Ok(Event::Error(error)) => panic!("worker: {error}"),
+                Ok(event) if wanted(&event) => return event,
+                Ok(_) => continue,
+                Err(error) => panic!("no worker event: {error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn new_machine_requests_are_served_while_a_session_runs() {
+        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let mut wizard = crate::new_machine::Wizard::new();
+        wizard.set_store(firmware.choices());
+        let (image, _, _) = wizard.request().unwrap();
+        let first =
+            pc_image::create::create(&firmware.store, &image, "open-at:1.0.0", None).unwrap();
+        let worker = Worker::spawn(firmware.store.root().to_owned(), egui::Context::default());
+        worker_events(&worker, &|e| matches!(e, Event::Recoveries(_)));
+        let row = ImageRow {
+            reference: "open-at:1.0.0".into(),
+            descriptor: first,
+            summary: None,
+            failure: None,
+        };
+        worker
+            .send
+            .send(Request::Launch(row, WorkspaceKind::Regular, None))
+            .unwrap();
+        worker_events(&worker, &|e| matches!(e, Event::Launched(..)));
+        // The session loop answers New machine… instead of dropping it.
+        worker.send.send(Request::FirmwarePackages).unwrap();
+        let Event::Packages(Ok((packages, _, _))) =
+            worker_events(&worker, &|e| matches!(e, Event::Packages(_)))
+        else {
+            panic!("package listing failed")
+        };
+        assert_eq!(packages.len(), 3);
+        worker
+            .send
+            .send(Request::CreateImage(
+                Box::new(image),
+                "open-at:1.1.0".into(),
+                None,
+            ))
+            .unwrap();
+        let Event::Created(Ok(created)) =
+            worker_events(&worker, &|e| matches!(e, Event::Created(_)))
+        else {
+            panic!("Create failed during a session")
+        };
+        assert_eq!(created.reference, "open-at:1.1.0");
+        firmware
+            .store
+            .resolve("open-at:1.1.0", &pc_image::PcProvider)
+            .unwrap();
+        worker.send.send(Request::Finish(Finish::Retain)).unwrap();
+        worker_events(&worker, &|e| matches!(e, Event::Finished));
+    }
+
+    #[test]
+    fn create_results_and_package_refreshes_touch_only_the_wizard() {
+        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let mut view = LibraryView::synthetic(firmware.store.root().to_owned());
+        view.query.filter = Filter::Firmware;
+        view.query.text = "kiselev".into();
+        // A Create is in flight when an Import ROM folder… refresh arrives.
+        view.begin_new_machine();
+        view.new_machine.as_mut().unwrap().busy = true;
+        view.on_event(Event::Packages(Ok(firmware.choices())));
+        let wizard = view.new_machine.as_ref().unwrap();
+        assert!(wizard.busy && wizard.packages.is_some());
+        // A generic job error goes to the library, never into the wizard.
+        view.on_event(Event::Error("an unrelated job failed".into()));
+        let wizard = view.new_machine.as_ref().unwrap();
+        assert!(wizard.busy && wizard.error.is_none());
+        assert!(view.error.is_some());
+        let row = ImageRow {
+            reference: "open-at:1.0.0".into(),
+            descriptor: Descriptor::new(mt::MANIFEST, Digest::of(b"created"), 7),
+            summary: None,
+            failure: None,
+        };
+        view.on_event(Event::Created(Ok(Box::new(row.clone()))));
+        assert!(view.new_machine.is_none());
+        // The created row is visible and selected in the machine view.
+        assert_eq!(view.query.filter, Filter::All);
+        assert!(view.query.text.is_empty());
+        assert!(view.query.expanded.contains("open-at"));
+        assert_eq!(
+            view.selected.as_ref().map(|r| r.reference.as_str()),
+            Some("open-at:1.0.0")
+        );
+        assert!(view.clear_file_selection);
+        // A Create finishing after the wizard closed leaves another job's busy flag.
+        view.busy = true;
+        view.on_event(Event::Created(Ok(Box::new(row))));
+        assert!(view.busy);
+        // A refused Create lands in the open wizard.
+        view.busy = false;
+        view.begin_new_machine();
+        view.new_machine.as_mut().unwrap().busy = true;
+        view.on_event(Event::Created(Err("refused".into())));
+        let wizard = view.new_machine.as_ref().unwrap();
+        assert!(!wizard.busy);
+        assert_eq!(wizard.error.as_deref(), Some("refused"));
+    }
+
+    #[test]
+    fn create_binds_a_two_chip_system_bios_by_part() {
+        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let dir = firmware.temp.path().join("chips");
+        std::fs::create_dir(&dir).unwrap();
+        let even = vec![0xF4; 32768];
+        let odd = vec![0x90; 32768];
+        std::fs::write(dir.join("even.bin"), &even).unwrap();
+        std::fs::write(dir.join("odd.bin"), &odd).unwrap();
+        let assembled: Vec<u8> = even.iter().zip(&odd).flat_map(|(a, b)| [*a, *b]).collect();
+        let (e, o, a) = (Digest::of(&even), Digest::of(&odd), Digest::of(&assembled));
+        let config = image_store::firmware::Config::decode(
+            format!(
+                "schema=1\nplatform='ibm-pc-at'\nname='Synthetic two-chip BIOS'\n[fits]\nboards=['ibm-5170']\nmachine_classes=['at']\n[[roms]]\nid='system-bios'\nrole='system-bios'\nsize=65536\nsha256='{}'\n[[roms.parts]]\nblob='{e}'\nsha256='{}'\nsize=32768\nposition='U27'\nlane='even'\n[[roms.parts]]\nblob='{o}'\nsha256='{}'\nsize=32768\nposition='U47'\nlane='odd'\n",
+                a.hex(),
+                e.hex(),
+                o.hex()
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let candidate = pc_image::firmware_import::Candidate {
+            catalogue_id: "two-chip".into(),
+            config,
+            sources: vec![dir.join("even.bin"), dir.join("odd.bin")],
+            distribution: assembly::FirmwareDistribution::UserSupplied,
+        };
+        pc_image::firmware_import::publish(
+            &firmware.store,
+            &candidate,
+            &[],
+            pc_image::firmware::catalogue(),
+        )
+        .unwrap();
+        let package = pc_image::create::packages(&firmware.store)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.config.name == "Synthetic two-chip BIOS")
+            .unwrap();
+        let image = pc_image::create::NewImage {
+            hardware: pc_image::create::Hardware {
+                board: assembly::BoardModel::Ibm5170,
+                rate: (8, 13),
+                fpu: false,
+                conventional_kib: 640,
+                extended_kib: 0,
+                video: pc_image::create::Video::Mda,
+                sound: None,
+                serial: pc_image::create::Serial::None,
+                ems: None,
+                floppies: [None, None],
+                ide_port: 0x1F0,
+                disks: [None, None],
+            },
+            firmware: vec![pc_image::create::PackageRom::new(
+                &package,
+                &package.config.roms[0],
+            )],
+            title: None,
+        };
+        let created = pc_image::test_support::with_synthetic_firmware(|| {
+            pc_image::create::create(&firmware.store, &image, "chips:1.0.0", None)
+        })
+        .unwrap();
+        let resolved = pc_image::test_support::with_synthetic_firmware(|| {
+            firmware.store.resolve("chips:1.0.0", &pc_image::PcProvider)
+        })
+        .unwrap();
+        assert_eq!(resolved.image.digest, created.digest);
+        let config: toml::Table = std::str::from_utf8(&resolved.config)
+            .unwrap()
+            .parse()
+            .unwrap();
+        let bindings: Vec<_> = config["firmware"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| (b["key"].as_str().unwrap(), b["blob"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            bindings,
+            [
+                ("firmware.bios.parts[0]", e.to_string().as_str()),
+                ("firmware.bios.parts[1]", o.to_string().as_str())
+            ]
+        );
+        let bios = &config["machine"]["firmware"]["bios"];
+        assert_eq!(bios["sha256"].as_str(), Some(a.hex()));
+        assert_eq!(bios["parts"].as_array().unwrap().len(), 2);
+        // The machine assembles the two chips into the BIOS it pins.
+        let machine = pc_image::test_support::with_synthetic_firmware(|| {
+            pc_image::resolve(
+                &firmware.store,
+                "chips:1.0.0",
+                &firmware.temp.path().join("session"),
+            )
+        })
+        .unwrap();
+        assert!(machine
+            .images
+            .iter()
+            .any(|image| image.source == assembly::ImageSource::Inline(assembled.clone())));
     }
 }

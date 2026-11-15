@@ -120,6 +120,7 @@ container filesystem tar layers.
 | `image/png`, `image/jpeg` | Cover art and screenshots referenced from the metadata blob. |
 | `application/vnd.unemu.firmware.v1` | Exact ROM/chip/container payload bytes; also the firmware-package manifest `artifactType` (§5.3), distinguished by descriptor context. |
 | `application/vnd.unemu.disk.base.v1` | Complete raw fixed-disk base. |
+| `application/vnd.unemu.disk.zero.v1+toml` | PC zero base: a blank fixed disk recorded only as geometry and capacity; every sector is zero (§4). |
 | `application/vnd.unemu.disk.layer.v1+toml` | Sealed fixed-disk layer descriptor from §4. |
 | `application/vnd.unemu.disk.sectors.v1` | Sector pack referenced by a sealed layer. |
 | `application/vnd.unemu.media.floppy.v1` | Complete raw floppy medium. |
@@ -591,9 +592,19 @@ Registry transport and image-store GUI integration remain prospective.
 
 ## 4. Disk chains and writable sessions
 
-A raw base is immutable bytes with full SHA-256 and geometry. A sealed layer is
-an immutable TOML descriptor: `schema`, `kind = "disk-layer"`, `parent` (raw base
-or sealed layer digest), `base` (root raw digest), `geometry`, `sectors` (sector
+A raw base is immutable bytes with full SHA-256 and geometry. A **zero base** is
+the PC provider's blank fixed disk: a canonical TOML descriptor of a few hundred
+bytes (`schema`, `kind = "zero-base"`, `capacity_sectors`, `geometry`) whose
+content is all zeros. Its decoded identity, the SHA-256 of that many zero bytes,
+is never stored: it is computed deterministically from the length by streaming a
+fixed zero buffer (and remembered per length), so no allocation or file grows
+with the disk. It costs the descriptor only, in the store, in a registry and on
+the host, on every filesystem; no sparse files or filesystem features are used.
+It is open content, it mounts only through a journal policy, and it is never
+compressed or materialized because it has no bytes. A layer over it names the
+descriptor digest as `parent` and `base`. A sealed layer is
+an immutable TOML descriptor: `schema`, `kind = "disk-layer"`, `parent` (raw base,
+zero base or sealed layer digest), `base` (root digest: the raw or zero base), `geometry`, `sectors` (sector
 pack digest), `sector_count` (number of replacements), and `result_sha256`
 (digest of the complete reconstructed disk) and `capacity_sectors`, so capacity
 never depends on a CHS translation. All sizes must agree with the root.
@@ -627,7 +638,13 @@ current v1 journal unchanged on top of it. Every workspace on that head,
 including each disposable gaming-mode workspace, shares the one file, so the
 materialization cost is one flat copy per distinct head, not per workspace or
 per run. Full SHA-256 verification still runs at every Start (§3), including
-for this shared cache file. A head that is itself a raw base needs no copy. A later
+for this shared cache file. A head that is itself a raw base needs no copy.
+A head rooted in a zero base is never materialized: the machine reads the chain
+straight through the overlay interface (unwritten sectors read as zeros), the
+v1 journal binds the decoded length and SHA-256, and Start streams a layered
+head once to check its `result_sha256`. Saving seals only the written sectors;
+flattening such a chain seals one layer over the zero base with the sectors that
+differ from zero, and a disk that is all zeros again flattens to the zero base. A later
 versioned journal binding may name a chain head plus its full logical
 digest/capacity; its scanner retains command/recovery guarantees. Both paths
 use the same overlay interface and always leave the old base intact.

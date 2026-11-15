@@ -18,6 +18,7 @@ toml.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+image-registry = { path = "../registry", version = "0.1.0" }
 media = { workspace = true, features = ["test-support"] }
 image-store = { path = "../image-store", version = "0.1.0", features = ["test-support"] }
 cpu.workspace = true

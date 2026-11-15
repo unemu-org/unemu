@@ -85,6 +85,8 @@ pub struct PreparedSession {
     pub machine: assembly::MachineConfig,
     pub bases: std::collections::BTreeMap<std::path::PathBuf, VerifiedBase>,
     pub image: Digest,
+    /// Zero-rooted bases among `bases`, kept as parts for a thread transfer.
+    pub zero: std::collections::BTreeMap<std::path::PathBuf, std::rc::Rc<crate::zero::ZeroChain>>,
 }
 pub fn prepare_start(workspace: &Workspace<'_>, tag: &str, fresh: bool) -> Result<PreparedSession> {
     prepare_selected(workspace, tag, fresh, None)
@@ -167,7 +169,7 @@ fn prepare_selected(
         }
     }
     let directory = workspace.path().join("media");
-    let (image, machine, bases) =
+    let (image, machine, (bases, zero)) =
         crate::provider::resolve_pinned(store, &state.image, &directory, Some(&state.retention))?;
     if existing && state.machine != image.manifest.config.digest {
         return Err(invalid("workspace machine identity mismatch"));
@@ -182,6 +184,7 @@ fn prepare_selected(
         machine,
         bases,
         image: state.image.digest,
+        zero,
     })
 }
 /// Cancel an unfinished publication without deleting its media or published tag.
@@ -330,8 +333,11 @@ pub fn publish_with_options(
         let flatten_disk = flatten
             && matches!(
                 old_head.decoded_media_type(),
-                mt::DISK_BASE | mt::DISK_LAYER
+                mt::DISK_BASE | mt::DISK_LAYER | DISK_ZERO
             );
+        // A zero-rooted chain flattens to one layer over its zero base, holding
+        // only the sectors that differ from zero, never a full raw copy.
+        let zero_root = disk.zero.as_ref().map(|chain| chain.root_source());
         let overlay = if m.policy == Policy::Journal {
             journal(workspace, &m.id, &disk.base)?
         } else {
@@ -351,7 +357,9 @@ pub fn publish_with_options(
         let final_disk: &dyn SectorSource = overlay
             .as_ref()
             .map_or(&disk.base as &dyn SectorSource, |overlay| overlay);
-        let d = if old_head.decoded_media_type() == mt::FLOPPY || flatten_disk {
+        let d = if old_head.decoded_media_type() == mt::FLOPPY
+            || (flatten_disk && zero_root.is_none())
+        {
             store.require_space(final_disk.byte_len())?;
             let kind = if old_head.decoded_media_type() == mt::FLOPPY {
                 mt::FLOPPY
@@ -371,24 +379,36 @@ pub fn publish_with_options(
             hook(PublicationStep::BlobStored(d.digest.clone()))?;
             classify(d)
         } else {
+            let sealed_sectors = (overlay
+                .as_ref()
+                .map_or(0, |overlay| overlay.written_sectors())
+                as u64)
+                .saturating_add(disk.zero.as_ref().map_or(0, |chain| chain.stored_sectors()));
             store.require_space(
-                (overlay
-                    .as_ref()
-                    .map_or(0, |overlay| overlay.written_sectors()) as u64)
+                sealed_sectors
                     .saturating_mul(media::layer::RECORD_LEN)
                     .saturating_mul(2),
             )?;
+            let (parent, parent_digest): (&dyn SectorSource, String) = match &zero_root {
+                Some(root) if flatten_disk => (root, disk.root.to_string()),
+                _ => (&disk.base, m.head.to_string()),
+            };
             let pack_path = scratch.join(format!("{}.pack", m.id));
             let mut file = fs::File::create(&pack_path)?;
             let layer = seal(
-                &disk.base,
+                parent,
                 final_disk,
                 crate::disk::geometry(&m.geometry),
-                &m.head.to_string(),
+                &parent_digest,
                 &disk.root.to_string(),
                 &mut file,
             )?;
             file.sync_all()?;
+            if flatten_disk && layer.sector_count == 0 {
+                // Every sector is zero again: the flattened head is the zero base.
+                m.head = disk.root.clone();
+                continue;
+            }
             hook(PublicationStep::PackStaged(m.id.clone()))?;
             let file = fs::File::open(&pack_path)?;
             let d = store.import_payload(
@@ -449,16 +469,24 @@ pub fn publish_with_options(
             .layers
             .iter()
             .filter(|d| matches!(d.media_type.as_str(), mt::METADATA | mt::PNG | mt::JPEG))
-            .cloned(),
+            // Metadata is generated catalogue data and stays open; artwork keeps its mark.
+            .map(|d| {
+                if d.media_type == mt::METADATA {
+                    crate::generated(d.clone())
+                } else {
+                    d.clone()
+                }
+            }),
     );
-    let configuration = stored(
+    // The configuration is this program's own file: open, never re-marked.
+    let configuration = crate::generated(stored(
         store,
         mt::CONFIG,
         toml::to_string(&config)
             .map_err(|e| invalid(e.to_string()))?
             .as_bytes(),
         &mut hook,
-    )?;
+    )?);
     let manifest = Manifest::new_with_types(
         "ibm-pc-at",
         configuration,
@@ -667,9 +695,11 @@ pub struct SessionTransfer {
     machine: assembly::MachineConfig,
     image: Digest,
     bases: std::collections::BTreeMap<std::path::PathBuf, Transfer>,
+    zero: std::collections::BTreeMap<std::path::PathBuf, crate::zero::ZeroChain>,
 }
 /// A file-backed base travels as its verified descriptor; an in-memory base,
-/// a compressed floppy, as its decoded bytes.
+/// a compressed floppy, as its decoded bytes. A zero-rooted disk travels as
+/// its parts (`zero`), never as its whole decoded length.
 enum Transfer {
     File(fs::File, media::Header, fs::Metadata),
     Memory(Vec<u8>),
@@ -678,8 +708,13 @@ impl PreparedSession {
     /// Duplicate already verified handles; paths are never reopened during transfer.
     pub fn into_transfer(self) -> Result<SessionTransfer> {
         let mut bases = std::collections::BTreeMap::new();
+        let mut zero = std::collections::BTreeMap::new();
         for (path, base) in self.bases {
             base.check_unchanged()?;
+            if let Some(chain) = self.zero.get(&path) {
+                zero.insert(path, chain.try_clone()?);
+                continue;
+            }
             let transfer = match base.metadata() {
                 Some(metadata) => {
                     let metadata = metadata.clone();
@@ -704,14 +739,15 @@ impl PreparedSession {
             machine: self.machine,
             image: self.image,
             bases,
+            zero,
         })
     }
 }
 impl SessionTransfer {
     /// Rebuild execution-local sector readers without reading or hashing
-    /// file-backed payloads.
+    /// file-backed payloads. A zero-rooted disk is rebuilt from its parts.
     pub fn restore(self) -> Result<PreparedSession> {
-        let bases = self
+        let mut bases: std::collections::BTreeMap<_, _> = self
             .bases
             .into_iter()
             .map(|(path, transfer)| {
@@ -726,10 +762,16 @@ impl SessionTransfer {
                 Ok((path, base))
             })
             .collect::<Result<_>>()?;
+        let mut zero = std::collections::BTreeMap::new();
+        for (path, chain) in self.zero {
+            bases.insert(path.clone(), chain.mount()?);
+            zero.insert(path, std::rc::Rc::new(chain));
+        }
         Ok(PreparedSession {
             machine: self.machine,
             image: self.image,
             bases,
+            zero,
         })
     }
 }

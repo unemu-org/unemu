@@ -12,6 +12,8 @@ pub struct ChainMember {
     pub digest: Digest,
     pub size: u64,
     pub shared_by: usize,
+    /// Decoded length of a zero base, which stores no sector data.
+    pub blank_bytes: Option<u64>,
 }
 /// Catalogue media retain their own chains and persistence intent.
 #[derive(Clone, Debug)]
@@ -94,6 +96,9 @@ pub fn inspect(
                 .find(|d| d.names(&head))
                 .ok_or_else(|| invalid("missing disk chain member"))?;
             let mut size = d.size;
+            let blank_bytes = (d.media_type == DISK_ZERO)
+                .then(|| crate::zero::ZeroBase::read(d, store).map(|zero| zero.byte_len()))
+                .transpose()?;
             let parent = if d.media_type == mt::DISK_LAYER {
                 let layer =
                     media::layer::Descriptor::decode(&store.read_verified(d, MAX_SMALL_BLOB)?)?;
@@ -112,6 +117,7 @@ pub fn inspect(
                 digest: head,
                 size,
                 shared_by: uses.get(&d.digest).copied().unwrap_or(0),
+                blank_bytes,
             });
             if let Some(parent) = parent {
                 head = parent;
@@ -168,6 +174,7 @@ pub fn inspect(
                 digest: nvram.head.clone(),
                 size: descriptor.size,
                 shared_by: uses.get(&nvram.head).copied().unwrap_or(0),
+                blank_bytes: None,
             }],
             working_sectors: if journaled {
                 working(store, workspace_name, "cmos", || {

@@ -114,7 +114,7 @@ impl LayersDialog {
                     if let Some(details) = &self.details {
                         for medium in &details.media {
                             ui.strong(format!("{} · {} · {}", medium.drive, medium.name, medium.policy.as_str()));
-                            for (i, member) in medium.chain.iter().enumerate() { ui.monospace(format!("{}{}  {}  {}{}", "  ".repeat(i), if i == 0 { "└─ base" } else { "└─ layer" }, &member.digest.hex()[..12], human_size(member.size), if member.shared_by>1{format!("  shared by {} images",member.shared_by)}else{String::new()})); }
+                            for (i, member) in medium.chain.iter().enumerate() { ui.monospace(format!("{}{}  {}  {}{}", "  ".repeat(i), if member.blank_bytes.is_some() { "└─ zero base" } else if i == 0 { "└─ base" } else { "└─ layer" }, &member.digest.hex()[..12], member.blank_bytes.map_or_else(|| human_size(member.size), |bytes| format!("{} blank · {} stored", human_size(bytes), human_size(member.size))), if member.shared_by>1{format!("  shared by {} images",member.shared_by)}else{String::new()})); }
                             ui.monospace(format!("    └─ working changes: {} sectors · not saved", medium.working_sectors.map_or_else(|| "unknown".into(), |n| n.to_string())));
                             ui.add_space(6.0);
                         }

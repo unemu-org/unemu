@@ -65,7 +65,10 @@ pub fn check(
             .iter()
             .find(|d| d.names(&m.head))
             .ok_or_else(|| invalid("missing disk head"))?;
-        let members = if matches!(head.decoded_media_type(), mt::DISK_BASE | mt::DISK_LAYER) {
+        let members = if matches!(
+            head.decoded_media_type(),
+            mt::DISK_BASE | mt::DISK_LAYER | DISK_ZERO
+        ) {
             crate::disk::display_chain(
                 &m.head,
                 &m.geometry,
@@ -94,12 +97,21 @@ pub fn check(
             policy: m.policy,
             chain: members
                 .into_iter()
-                .map(|(digest, size)| ChainMember {
-                    digest,
-                    size,
-                    shared_by: 0,
+                .map(|(digest, size)| {
+                    let zero = manifest
+                        .layers
+                        .iter()
+                        .find(|d| d.digest == digest && d.media_type == DISK_ZERO);
+                    Ok(ChainMember {
+                        blank_bytes: zero
+                            .map(|d| crate::zero::ZeroBase::read(d, store).map(|z| z.byte_len()))
+                            .transpose()?,
+                        digest,
+                        size,
+                        shared_by: 0,
+                    })
                 })
-                .collect(),
+                .collect::<Result<_>>()?,
             working_sectors: working_count(store, workspace, &m.id, m.policy)?,
         });
     }
@@ -119,6 +131,7 @@ pub fn check(
                 digest: n.head.clone(),
                 size: d.size,
                 shared_by: 0,
+                blank_bytes: None,
             }],
             working_sectors: working_count(store, workspace, "cmos", policy)?,
         });

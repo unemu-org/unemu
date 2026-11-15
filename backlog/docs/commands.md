@@ -120,7 +120,15 @@ failures before selection warn and fall back to declared files and ROM
 folders; selected-package corruption still blocks use. Machine-image
 import uses its explicit target store. Loaded bytes still pass machine pins and ordinary
 assembly validation; importing unlisted firmware never grants permission to run it.
-The Firmware collection UI is pending.
+
+File › New machine… in the window creates an empty image from stored firmware
+packages (for example after `image firmware import` of the open fixtures) and
+blank zero-base disks; it never writes a machine file. Its headless tests:
+
+```sh
+cargo test --offline -p pc-image --test zero_base --test zero_base_allocation
+cargo test --offline -p window new_machine
+```
 
 In the window, firmware readiness and Media > Insert > From library use the
 Preferences store root when set, otherwise the shared unemu family default:

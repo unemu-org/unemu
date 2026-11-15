@@ -1445,4 +1445,37 @@ impl Store {
     pub fn validate_tag_name(name: &str) -> Result<()> {
         validate_tag(name)
     }
+    /// Semantic Versioning 2.0.0 §§2, 9–10: `MAJOR.MINOR.PATCH` without leading
+    /// zeros, optionally followed by `-prerelease` and `+build` identifiers. Tags
+    /// of this shape are immutable once they name an image.
+    pub fn is_version_tag(tag: &str) -> bool {
+        let (core, build) = match tag.split_once('+') {
+            Some((core, build)) => (core, Some(build)),
+            None => (tag, None),
+        };
+        let (version, pre) = match core.split_once('-') {
+            Some((version, pre)) => (version, Some(pre)),
+            None => (core, None),
+        };
+        let numeric = |part: &str| {
+            !part.is_empty()
+                && part.bytes().all(|b| b.is_ascii_digit())
+                && (part == "0" || !part.starts_with('0'))
+        };
+        let identifiers = |text: &str| {
+            text.split('.').all(|id| {
+                !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            })
+        };
+        let parts: Vec<_> = version.split('.').collect();
+        parts.len() == 3
+            && parts.iter().all(|p| numeric(p))
+            && pre.is_none_or(|pre| {
+                identifiers(pre)
+                    && pre
+                        .split('.')
+                        .all(|id| !id.bytes().all(|b| b.is_ascii_digit()) || numeric(id))
+            })
+            && build.is_none_or(identifiers)
+    }
 }

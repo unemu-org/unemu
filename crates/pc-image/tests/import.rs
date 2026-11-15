@@ -1054,13 +1054,14 @@ fn compressed_import_and_resolution_write_nothing_and_a_mount_decodes_only_the_h
             .filter(|d| d.decoded_media_type() == kind)
             .all(|d| d.is_compressed()));
     }
-    // The push guard reads the redistribution mark on stored descriptors.
+    // The push guard reads the redistribution mark on stored descriptors: the
+    // user's payloads are user-supplied, the generated config and metadata open.
     assert!(image
         .manifest
         .layers
         .iter()
         .chain(std::iter::once(&image.manifest.config))
-        .all(|d| d.annotations["unemu.redistribution"] == "user-supplied"));
+        .all(|d| d.annotations["unemu.redistribution"] == generated_mark(d)));
     let before = tree(store.root());
     store.resolve("test:compressed", &PcProvider).unwrap();
     pc_image::inspection::inspect(&store, &record.manifest, None).unwrap();
@@ -1133,7 +1134,7 @@ fn compressing_a_machine_keeps_its_journal_retention() {
         .manifest
         .layers
         .iter()
-        .all(|d| d.annotations["unemu.redistribution"] == "user-supplied"));
+        .all(|d| d.annotations["unemu.redistribution"] == generated_mark(d)));
     let record = pc_image::ImportRecord::read(&store, &compressed.digest)
         .unwrap()
         .unwrap();
@@ -1186,4 +1187,14 @@ fn a_damaged_raw_base_is_refused_and_its_receipt_rejected() {
         store.resolve("test:raw", &PcProvider),
         Err(image_store::Error::DigestMismatch { .. })
     ));
+}
+/// Import marks its generated configuration and metadata open and every
+/// payload from the user's files user-supplied.
+fn generated_mark(d: &image_store::Descriptor) -> &'static str {
+    use image_store::media_type::{CONFIG, METADATA};
+    if matches!(d.media_type.as_str(), CONFIG | METADATA) {
+        "open"
+    } else {
+        "user-supplied"
+    }
 }

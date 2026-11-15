@@ -5,6 +5,29 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — New machine… wizard and zero bases:** File › New machine… (⌘N/Ctrl+N) opens a
+  seven-step wizard that builds a new empty image in the local store, never a machine file:
+  machine class (the closed list of seven; only AT 286 is selectable), motherboard with its
+  system BIOS picked from stored firmware packages whose fit metadata names the board (incompatible
+  packages under "Show incompatible" with reasons; an empty state offers the library's Import ROM folder…),
+  CPU and memory, video (video BIOS per card) / sound / COM1 / EMS, drives (floppies, the disk
+  adapter's option ROM such as XTIDE, blank C:/D:), name and tag, summary. Options, limits and
+  reasons come from the capabilities API over the draft machine document; video BIOS and option ROM
+  fit comes from the catalogue entries the packages name, and a package without a catalogue id never
+  fits. Tags follow the OCI grammar; version tags are refused when taken, other tags move only after
+  a confirmation (compare-and-swap). The generated configuration and metadata are open; a
+  user-supplied ROM makes the image private and the wizard says so. Create binds the package ROM
+  blobs by digest and gives every fixed disk a **zero base** (`application/vnd.unemu.disk.zero.v1+toml`):
+  a descriptor of a few hundred bytes whose identity is the SHA-256 of that many zeros. Zero-rooted
+  heads are read straight from their chain, never materialized; saves seal only written sectors and
+  flatten keeps one sparse layer. **MEASURED:** a 504 MiB C: allocates under 2 MiB and writes no file
+  over 16 KiB from Create through Start; a created open image (Kiselev AT BIOS, open VGA BIOS, XTIDE)
+  lists in the library, validates and POSTs through checkpoints 01h–08h. COM2, registry browsing for
+  packages (Get from registry…), the sample boards and speeds of the mock-up beyond the IBM 5170 at
+  6/8 MHz, and native visual acceptance remain open. A later Save as new image… (upc-5pw.32)
+  must keep the manifest title annotation and `unemu.firmware.sources`; workspace publication
+  rebuilds manifest annotations today. Generated configurations and metadata are open in
+  import, Create and publication alike; ROMs, disks, floppies and CMOS stay user-supplied.
 - **2026-11-14 — macOS application menu:** the global menu bar has one
   application menu: About unemupc98, Hide unemupc98 (⌘H), Hide Others (⌥⌘H),
   Show All and Quit unemupc98 (⌘Q). About opens the shell's About dialog; Quit

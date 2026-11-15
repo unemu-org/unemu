@@ -57,6 +57,18 @@ impl BoardModel {
         }
     }
 
+    /// Nominal CPU clocks of the board's variants in MHz, with the clock its
+    /// default rate is calibrated at. IBM Personal Computer AT Technical
+    /// Reference, System Board: type 1 and 2 boards run the 80286 at 6 MHz,
+    /// the type 3 board (models 319 and 339) at 8 MHz. Other clocks scale the
+    /// calibrated rate by their ratio; none is a cycle-exact clock.
+    pub const fn cpu_clocks_mhz(self) -> (u32, &'static [u32]) {
+        match self {
+            Self::Ibm5170 => (6, &[6, 8]),
+            Self::Bare => (0, &[]),
+        }
+    }
+
     /// Reviewed firmware builds owned by this motherboard.
     pub const fn firmware_catalogue(self) -> &'static [crate::FirmwareEntry] {
         match self {

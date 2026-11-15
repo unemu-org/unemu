@@ -104,6 +104,26 @@ impl VerifiedBase {
         })
     }
 
+    /// Wrap an immutable source whose complete identity the caller has already
+    /// established, such as an all-zero blank disk or a verified layer chain.
+    /// Reads go straight to the source; nothing is copied, hashed or materialized.
+    pub fn from_verified_source(
+        source: Rc<dyn SectorSource>,
+        identity: Header,
+    ) -> io::Result<Self> {
+        if identity.base_length != source.byte_len() {
+            return Err(io::Error::other("verified base length mismatch"));
+        }
+        identity.encode().map_err(io::Error::other)?;
+        source.check_unchanged()?;
+        Ok(Self {
+            source,
+            file: None,
+            identity,
+            metadata: None,
+        })
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, crate::Error> {
         let base = Self::memory(bytes);
         base.identity.encode()?;

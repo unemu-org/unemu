@@ -84,7 +84,8 @@ fn child(
     )
 }
 
-/// The FreeDOS reference machine; import marks every blob user-supplied.
+/// The FreeDOS reference machine; import marks every blob from the user's
+/// files user-supplied and its generated configuration and metadata open.
 fn import(store: &Path, tag: &str) -> String {
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml");
     let (code, output, errors) = run(&os(&[
@@ -191,12 +192,14 @@ fn dry_run_lists_redistribution_marks_and_refuses_the_official_namespace_offline
         .filter(|l| l.starts_with("config\t") || l.starts_with("layer\t"))
         .collect();
     assert!(closure.len() >= 3, "{output}");
-    assert!(
-        closure
-            .iter()
-            .all(|l| l.ends_with("\tuser-supplied\tthis image")),
-        "{output}"
-    );
+    // The generated configuration and metadata are open; the user's ROMs and
+    // disks stay user-supplied, so the official namespace still refuses.
+    for line in &closure {
+        let generated = line.starts_with("config\t")
+            || line.contains("\tapplication/vnd.unemu.metadata.v1+json\t");
+        let mark = if generated { "open" } else { "user-supplied" };
+        assert!(line.ends_with(&format!("\t{mark}\tthis image")), "{output}");
+    }
     assert!(output.ends_with("guard:refused\n"));
     assert!(errors.contains("official namespace"), "{errors}");
 }

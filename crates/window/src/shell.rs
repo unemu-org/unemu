@@ -1741,6 +1741,7 @@ impl Shell {
             Shortcuts => self.dialog = Some(("Keyboard shortcuts", shortcuts_help(self.macos_shortcuts))),
             About => self.dialog = Some(("About unemupc98", format!("unemupc98 {}\nIBM PC/AT emulator\nAGPL-3.0-or-later\nx86jit · egui / eframe · cpal\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), window::FONT_NOTICE, window::EGUI_FONT_NOTICE))),
             Placeholder("Open machine file") => self.open_machine_dialog(),
+            Placeholder("New machine") => { self.release(); self.image_library.begin_new_machine(); },
             Placeholder(title) => self.dialog = Some((title, "not yet available".into())),
             FirmwareFolders => { self.preferences_draft = self.preferences.clone(); self.rom_folder_input.clear(); self.dialog = Some(("ROM folders", "Firmware is located by SHA-256. Files are read in place; nothing is copied.".into())); },
             Settings => self.open_settings(),
@@ -2905,6 +2906,9 @@ impl eframe::App for Shell {
             self.classic,
             self.presenter.is_some(),
         );
+        if std::mem::take(&mut self.image_library.firmware_import_wanted) {
+            commands.push(Command::ImportFirmware);
+        }
         for action in image_actions {
             if matches!(
                 action,
@@ -4002,6 +4006,10 @@ mod tests {
                         assert!(shell.presenter.is_none());
                     }
                     Command::Fullscreen => assert!(shell.fullscreen),
+                    Command::Placeholder("New machine") => {
+                        assert!(shell.image_library.new_machine.is_some());
+                        shell.image_library.close_dialogs();
+                    }
                     Command::Placeholder(_) | Command::Shortcuts => assert!(shell.dialog.is_some()),
                     Command::Minimize => assert!(!shell.guest_focus),
                     Command::Settings => assert!(!shell.guest_focus),
@@ -5949,15 +5957,12 @@ kind='mda'
         assert!(take_guest_scancodes(&mut shell).is_empty());
         shell.answer_stop_prompt(false, &ctx);
 
-        // New machine is still a placeholder and Import image needs a stopped
-        // machine: neither ends the session.
+        // New machine builds an image beside the running machine and Import
+        // image needs a stopped machine: neither ends the session.
         shell.command(Command::Placeholder("New machine"), &ctx);
         assert_eq!(shell.stop_prompt, None);
-        assert_eq!(
-            shell.dialog.as_ref().map(|(title, _)| *title),
-            Some("New machine")
-        );
-        shell.dialog = None;
+        assert!(shell.image_library.new_machine.is_some());
+        shell.image_library.close_dialogs();
         shell.command(Command::ImportImage, &ctx);
         assert!(!shell.image_library.has_dialog());
         assert!(shell.presenter.as_ref().unwrap().running);

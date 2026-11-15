@@ -24,12 +24,12 @@ pub(crate) fn geometry(g: &Geometry) -> media::layer::Geometry {
         sector_bytes: g.sector_bytes,
     }
 }
-struct Graph {
-    root: Descriptor,
-    layers: Vec<(Digest, Layer, Descriptor)>,
-    refs: Vec<Digest>,
+pub(crate) struct Graph {
+    pub(crate) root: Descriptor,
+    pub(crate) layers: Vec<(Digest, Layer, Descriptor)>,
+    pub(crate) refs: Vec<Digest>,
 }
-fn graph(
+pub(crate) fn graph(
     head: &Digest,
     g: &Geometry,
     descriptors: &[Descriptor],
@@ -49,7 +49,7 @@ fn graph(
             .ok_or_else(|| invalid("missing disk parent"))?;
         refs.push(next.clone());
         match d.decoded_media_type() {
-            mt::DISK_BASE => break d.clone(),
+            mt::DISK_BASE | crate::zero::MEDIA_TYPE => break d.clone(),
             mt::DISK_LAYER => {
                 if layers.len() >= 64 {
                     return Err(invalid(
@@ -73,7 +73,16 @@ fn graph(
             _ => return Err(invalid("invalid fixed-disk parent type")),
         }
     };
-    if geometry(g).capacity()?.checked_mul(512) != Some(root.decoded_size()?) {
+    let root_length = if root.media_type == crate::zero::MEDIA_TYPE {
+        let zero = crate::zero::ZeroBase::read(&root, blobs)?;
+        if zero.geometry != geometry(g) {
+            return Err(invalid("zero base geometry mismatch"));
+        }
+        zero.byte_len()
+    } else {
+        root.decoded_size()?
+    };
+    if geometry(g).capacity()?.checked_mul(512) != Some(root_length) {
         return Err(invalid("root geometry mismatch"));
     }
     let root_digest = root.decoded_digest()?.to_string();
@@ -122,6 +131,8 @@ pub(crate) fn identity(
                 .result_sha256
                 .parse()?,
         )
+    } else if d.media_type == crate::zero::MEDIA_TYPE {
+        Ok(crate::zero::ZeroBase::read(d, blobs)?.identity())
     } else {
         Ok(head.clone())
     }
@@ -162,7 +173,8 @@ struct Layered {
     stream: RefCell<Stream>,
 }
 struct Stream {
-    base: BufReader<ContentReader>,
+    /// `None` for a zero base, whose sectors all read as zeros.
+    base: Option<BufReader<ContentReader>>,
     position: u64,
     /// Bottom layer first.
     packs: Vec<Pack>,
@@ -219,7 +231,10 @@ impl SectorSource for Layered {
             .checked_add(bytes.len() as u64)
             .filter(|end| *end <= self.length)
             .ok_or_else(|| io::Error::other("layered disk read past its end"))?;
-        stream.base.read_exact(bytes)?;
+        match &mut stream.base {
+            Some(base) => base.read_exact(bytes)?,
+            None => bytes.fill(0),
+        }
         stream.position = end;
         let last = first_lba + bytes.len().div_ceil(SECTOR_LEN) as u64;
         for pack in &mut stream.packs {
@@ -242,8 +257,10 @@ impl SectorSource for Layered {
             // The end of the disk is the end of every member; the final empty
             // read lets each reader check length, SHA-256 and receipt.
             let mut probe = [0; 1];
-            if stream.base.read(&mut probe)? != 0 {
-                return Err(io::Error::other("disk base longer than its geometry"));
+            if let Some(base) = &mut stream.base {
+                if base.read(&mut probe)? != 0 {
+                    return Err(io::Error::other("disk base longer than its geometry"));
+                }
             }
             for pack in &mut stream.packs {
                 if pack.peek()?.is_some() || pack.reader.read(&mut probe)? != 0 {
@@ -256,8 +273,16 @@ impl SectorSource for Layered {
 }
 fn layered(store: &Store, head: &Digest, g: &Geometry, image: &ResolvedImage) -> Result<Layered> {
     let graph = graph(head, g, &image.manifest.layers, store)?;
-    let base = image.content_reader(&graph.root.decoded_digest()?)?;
-    let length = base.size();
+    let (base, length) = if graph.root.media_type == crate::zero::MEDIA_TYPE {
+        (
+            None,
+            crate::zero::ZeroBase::read(&graph.root, store)?.byte_len(),
+        )
+    } else {
+        let base = image.content_reader(&graph.root.decoded_digest()?)?;
+        let length = base.size();
+        (Some(BufReader::with_capacity(64 * 1024, base)), length)
+    };
     let mut packs = Vec::new();
     for (_, layer, pack) in graph.layers.into_iter().rev() {
         packs.push(Pack {
@@ -274,7 +299,7 @@ fn layered(store: &Store, head: &Digest, g: &Geometry, image: &ResolvedImage) ->
     Ok(Layered {
         length,
         stream: RefCell::new(Stream {
-            base: BufReader::with_capacity(64 * 1024, base),
+            base,
             position: 0,
             packs,
         }),
@@ -288,6 +313,8 @@ pub(crate) struct Disk {
     pub identity: Digest,
     pub base: VerifiedBase,
     pub root: Digest,
+    /// A zero-rooted head, read through its chain rather than a materialized file.
+    pub zero: Option<std::rc::Rc<crate::zero::ZeroChain>>,
 }
 pub(crate) fn bases(
     store: &Store,
@@ -312,6 +339,7 @@ pub(crate) fn nvram(store: &Store, n: &Nvram, image: &ResolvedImage) -> Result<D
         identity: d.decoded_digest()?,
         base: file_base(image, &d)?,
         root: d.decoded_digest()?,
+        zero: None,
     })
 }
 /// Validate every medium without writing to the store: a layered head is
@@ -325,7 +353,18 @@ pub(crate) fn check(store: &Store, config: &Config, image: &ResolvedImage) -> Re
             continue;
         }
         let d = head(m, image)?;
-        if d.media_type == mt::DISK_LAYER {
+        if crate::zero::rooted(&m.head, &m.geometry, &image.manifest.layers, store)? {
+            // A zero base has no stored data; a chain over one streams like
+            // any layered head, its unwritten sectors read as zeros.
+            if d.media_type == mt::DISK_LAYER {
+                let identity = identity(&m.head, &image.manifest.layers, store)?;
+                let layered = layered(store, &m.head, &m.geometry, image)?;
+                if media::layer::copy_and_digest(&layered, &mut io::sink())? != identity.to_string()
+                {
+                    return Err(invalid("reconstructed disk digest mismatch"));
+                }
+            }
+        } else if d.media_type == mt::DISK_LAYER {
             let identity = identity(&m.head, &image.manifest.layers, store)?;
             let (path, marker) = head_paths(store, &identity, m);
             if path.is_file() && known_head(&marker) {
@@ -381,6 +420,9 @@ fn cached_head(path: &std::path::Path, m: &Medium, identity: &Digest) -> Result<
     Ok(verified)
 }
 pub(crate) fn base_path(store: &Store, m: &Medium, image: &ResolvedImage) -> Result<Disk> {
+    if let Some(disk) = crate::zero::disk(store, m, image)? {
+        return Ok(disk);
+    }
     let d = head(m, image)?;
     if d.media_type != mt::DISK_LAYER {
         let digest = d.decoded_digest()?;
@@ -390,6 +432,7 @@ pub(crate) fn base_path(store: &Store, m: &Medium, image: &ResolvedImage) -> Res
                 identity: digest.clone(),
                 base: memory_base(image, d)?,
                 root: digest,
+                zero: None,
             });
         }
         return Ok(Disk {
@@ -397,6 +440,7 @@ pub(crate) fn base_path(store: &Store, m: &Medium, image: &ResolvedImage) -> Res
             identity: digest.clone(),
             base: file_base(image, d)?,
             root: digest,
+            zero: None,
         });
     }
     let identity = identity(&m.head, &image.manifest.layers, store)?;
@@ -499,6 +543,7 @@ pub(crate) fn base_path(store: &Store, m: &Medium, image: &ResolvedImage) -> Res
         identity,
         base: verified,
         root: layer.base.parse()?,
+        zero: None,
     })
 }
 

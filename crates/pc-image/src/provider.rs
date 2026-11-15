@@ -12,6 +12,8 @@ use std::{
 };
 
 pub const CMOS: &str = "application/vnd.unemu.cmos.v1";
+/// A blank fixed disk: geometry only, every sector zero (see [`crate::zero`]).
+pub const DISK_ZERO: &str = crate::zero::MEDIA_TYPE;
 /// Explicit PC codecs. Optical images and saved states are refused.
 /// ATA/ATAPI-4, IDENTIFY DEVICE: raw fixed disks are further bounded by the
 /// existing XTIDE-compatible CHS geometry validator. A `+zstd` limit bounds
@@ -56,6 +58,10 @@ pub const PAYLOAD_TYPES: &[PayloadType] = &[
     PayloadType {
         media_type: CMOS,
         max_size: 64,
+    },
+    PayloadType {
+        media_type: DISK_ZERO,
+        max_size: crate::zero::MAX_DESCRIPTOR,
     },
 ];
 /// The IBM PC/AT provider; no host endpoints or inheritance are accepted.
@@ -131,10 +137,10 @@ impl machine_file::ImageReader for Reader<'_> {
         self.blobs.read_verified(d, limit).map_err(io::Error::other)
     }
 }
-struct Prepared {
-    config: Config,
-    machine: assembly::MachineConfig,
-    references: Vec<Digest>,
+pub(crate) struct Prepared {
+    pub(crate) config: Config,
+    pub(crate) machine: assembly::MachineConfig,
+    pub(crate) references: Vec<Digest>,
 }
 fn bind(
     reader: &mut Reader<'_>,
@@ -162,7 +168,11 @@ fn bind(
     refs.push(digest.clone());
     Ok(d)
 }
-fn prepare(config: Config, descriptors: &[Descriptor], blobs: &dyn BlobSource) -> Result<Prepared> {
+pub(crate) fn prepare(
+    config: Config,
+    descriptors: &[Descriptor],
+    blobs: &dyn BlobSource,
+) -> Result<Prepared> {
     if config.schema != 1 || config.platform != "ibm-pc-at" {
         return Err(invalid("unsupported PC config envelope"));
     }
@@ -270,10 +280,10 @@ fn prepare(config: Config, descriptors: &[Descriptor], blobs: &dyn BlobSource) -
                     .iter()
                     .find(|d| d.names(&medium.head))
                     .ok_or_else(|| invalid("missing disk head"))?;
-                if head.media_type == mt::DISK_LAYER {
-                    mt::DISK_LAYER
-                } else {
-                    mt::DISK_BASE
+                match head.media_type.as_str() {
+                    mt::DISK_LAYER => mt::DISK_LAYER,
+                    DISK_ZERO => DISK_ZERO,
+                    _ => mt::DISK_BASE,
                 }
             } else {
                 mt::FLOPPY
@@ -295,10 +305,19 @@ fn prepare(config: Config, descriptors: &[Descriptor], blobs: &dyn BlobSource) -
                 references.push(medium.head.clone());
                 descriptor(descriptors, &medium.head, payload_type)?
             };
-            let disk_size = if kind == "ide" && payload_type == mt::DISK_LAYER {
+            let disk_size = if kind == "ide" && payload_type != mt::DISK_BASE {
                 let refs =
                     crate::disk::references(&medium.head, &medium.geometry, descriptors, blobs)?;
                 references.extend(refs.into_iter().skip(1));
+                // A zero-rooted disk has no bytes to load: only a journal over the
+                // chain can mount it without materializing the whole disk.
+                if medium.policy != Policy::Journal
+                    && crate::zero::rooted(&medium.head, &medium.geometry, descriptors, blobs)?
+                {
+                    return Err(invalid(
+                        "a blank (zero base) disk mounts only through a journal",
+                    ));
+                }
                 crate::disk::geometry(&medium.geometry).capacity()? * 512
             } else {
                 d.decoded_size()?
@@ -472,6 +491,12 @@ fn config_from_image(image: &image_store::ResolvedImage) -> Result<Config> {
         .map_err(|e: toml::de::Error| invalid(e.to_string()))?;
     decode(table)
 }
+/// Verified launch bases keyed by the path each drive names; zero-rooted heads
+/// also keep their parts so a launch can move them to another thread.
+pub(crate) type LaunchBases = (
+    BTreeMap<std::path::PathBuf, media::VerifiedBase>,
+    BTreeMap<std::path::PathBuf, std::rc::Rc<crate::zero::ZeroChain>>,
+);
 /// Assembly input only: a compressed journal floppy has no file, so launch
 /// through `workspace::prepare_start`, which also returns the verified bases.
 pub fn resolve(store: &Store, tag: &str, session: &Path) -> Result<assembly::MachineConfig> {
@@ -566,7 +591,7 @@ pub(crate) fn resolve_pinned(
 ) -> Result<(
     image_store::ResolvedImage,
     assembly::MachineConfig,
-    BTreeMap<std::path::PathBuf, media::VerifiedBase>,
+    LaunchBases,
 )> {
     let resolved = load_pinned(store, descriptor, false, true)?;
     let image = resolved.image;
@@ -657,7 +682,11 @@ pub(crate) fn resolve_pinned(
         .values()
         .map(|disk| (base_key(store, disk), disk.base.clone()))
         .collect();
-    Ok((image, prepared.machine, verified))
+    let zero = bases
+        .values()
+        .filter_map(|disk| Some((base_key(store, disk), disk.zero.clone()?)))
+        .collect();
+    Ok((image, prepared.machine, (verified, zero)))
 }
 /// The verified-base key assembly looks a medium up by: its file, or for a
 /// compressed floppy held in memory a path under `cache/in-memory` that is
