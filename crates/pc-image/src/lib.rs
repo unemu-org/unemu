@@ -15,6 +15,7 @@ mod import;
 pub mod inspection;
 pub mod media_set;
 mod provider;
+pub mod revision;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 pub mod workspace;
@@ -86,7 +87,7 @@ fn decode<T: serde::de::DeserializeOwned>(table: toml::Table) -> Result<T> {
         .map_err(|e: toml::de::Error| invalid(e.to_string()))
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
     schema: u32,
@@ -101,7 +102,7 @@ struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     nvram: Option<Nvram>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Firmware {
     key: String,
@@ -111,7 +112,7 @@ struct Firmware {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_archive: Option<Digest>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Medium {
     #[serde(deserialize_with = "medium_id")]
@@ -153,7 +154,7 @@ impl Policy {
         }
     }
 }
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Geometry {
     cylinders: u32,
@@ -179,7 +180,7 @@ impl Geometry {
         }
     }
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Slot {
     controller: String,
@@ -189,14 +190,14 @@ struct Slot {
     #[serde(skip_serializing_if = "Option::is_none")]
     inserted: Option<String>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Nvram {
     mode: NvramMode,
     source: String,
     head: Digest,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum NvramMode {
     Image,

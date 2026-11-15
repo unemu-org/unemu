@@ -1551,6 +1551,13 @@ Test acceptance: every advertised allowed complete candidate passes the existing
 validator; blocked candidates produce its typed error; pending byte checks block
 launch. CLI and UI must obtain identical results and source-located diagnostics.
 
+Settings on an image (§7) describes a stored image's flattened hardware tables
+through the same lowering as a machine file and takes every choice, reason and
+diagnostic from these calls; structural choices the field list does not carry,
+such as installing diskette drive B:, are candidate tables run through the
+same calls. Publication revalidates the edited tables with the real ROM bytes
+through the PC provider before any tag moves.
+
 ## 7. Approved desktop behavior and technology
 
 The shell follows the approved [window mock-up](mockups/main-window.html) and
@@ -1643,12 +1650,58 @@ Actions open **classic modal dialogs** over the application window:
   cannot authorize Start. Before applying, preview the flattened machine-file
   diff and separate image/media binding changes within the dialog. Saving creates
   a new image revision; hardware changes require stopping/relaunching.
+  **Settings on an image** (approved [save-as-image mock-up](mockups/save-as-image.html),
+  revision 2) edits a draft of the stopped image's flattened hardware tables;
+  a running image opens read-only. Each edit goes through the capabilities
+  API and is written into those tables at once, so the review shows exactly
+  what was validated. Firmware stays as stored. Diskette drives can be added
+  (with an empty catalogue) or changed only while their catalogue is empty;
+  a drive with media keeps its type and cannot be removed, and no fixed disk is
+  added or removed here. **Review changes…** opens *Publish new image
+  revision*: the line diff of the flattened configuration, the CMOS bytes
+  recomputed as SETUP would, every binding (shared by digest or new), the old
+  and new machine digests and the name and tag. Publish writes a new
+  configuration blob, a new 64-byte CMOS blob when one changes, and a manifest
+  that binds every disk, firmware, catalogue medium, metadata and artwork blob
+  of the source again; the source image and its tags never change, and its
+  workspaces keep running it. The manifest keeps the source's annotations
+  (title, `unemu.firmware.sources`, others) and records
+  `org.opencontainers.image.base.digest`. CMOS: a stored image keeps every
+  byte except the SETUP fields whose value derived from the machine changes —
+  diskette types (10h), fixed-disk types (12h, 19h–1Ah), the equipment byte's
+  diskette, coprocessor and display bits (14h), base memory (15h–16h),
+  expansion memory (17h–18h) and the expansion size POST records (30h–31h) —
+  and then the checksum over 10h–2Dh (2Eh–2Fh); the clock and other options
+  are kept. A stored image whose SETUP values cannot be derived (an unlisted
+  fixed-disk geometry its stored CMOS describes) is kept byte for byte, and
+  the review says so. An image without a stored CMOS image derives CMOS at
+  Start; the review lists the bytes that derivation changes. The library
+  worker reads the image and checks the draft; the sheet itself never opens
+  the store, and Escape with unsaved edits asks before discarding them.
 - **Insert floppy** shows the selected slot's catalogue, Browse…, read-only or
   journal write mode, detected geometry and compatibility/retention warnings.
   Insert commits the selection; Cancel retains the current medium.
 - **Disk layers** shows the parent chain and writable changes alongside settings,
   firmware and other drive heads. Save as layer…, Discard changes and New image
   from here… use the complete-machine semantics in §4; saving stops the machine.
+  Save as layer…, New image from here… (with *Flatten disk chains into new
+  bases*), Gaming mode's Keep as new image… and Machine › Save as new image… all
+  open the one **Save as new image…** dialog, also used by *Publish new image
+  revision*: repository name, tag and (for saves) title. The tag follows the
+  registry grammar; it defaults to the next minor version after the source's
+  own version tag (else after the repository's newest version, else 1.0.0),
+  skipping taken versions. An existing version tag is refused with *Use
+  <next version>*; any other existing tag moves only after *Move tag?* shows
+  the digest it names now, and the store then swaps from exactly that digest.
+  The store itself refuses to move a version tag, and records deleted version
+  tags so such a name can later name only its old digest. A store refusal
+  rereads the tags and asks again. The saved manifest keeps the source's
+  annotations (dropping per-build ones such as `created`), may replace the
+  title, and records the source as its base; a save without changes is the
+  source manifest itself, so its tag aliases the same digest. An interrupted
+  save is offered as *Finish saving <tag>* with its own tag and expected
+  digest. The form starts from the image the workspace's session pins. New
+  disk layers stay user-supplied until marked open.
 - **Browse registry…** is a separate dialog opened from the configured Registry
   tree node. It pages repositories and tags, offers search and pulls the selected
   image into the local store. Use `/v2/_catalog?n=<count>&last=<repository>` where

@@ -5,6 +5,44 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — Settings on an image and Save as new image…:** the library's Settings… (and
+  Machine › Settings… with an image selected) opens a property sheet over the stopped image's
+  flattened hardware; a running image opens read-only. Every option and reason comes from the
+  capabilities API; each edit is written into the hardware tables and described again. Firmware
+  stays as stored; diskette drive B: can be installed with an empty catalogue, a drive whose
+  catalogue holds media keeps its type and stays, and fixed disks are not added or removed here.
+  Review changes… shows the flattened configuration diff, the CMOS bytes recomputed as SETUP would
+  (only the fields whose derived value changes — 10h, 12h/19h–1Ah, the 14h diskette, coprocessor
+  and display bits, 15h–18h, 30h–31h — then the 2Eh–2Fh checksum over 10h–2Dh; clock and other
+  options kept; images without a stored CMOS list the bytes Start will derive), every binding, the
+  old and new machine digests, and the name and tag. Publish writes a configuration blob, a CMOS
+  blob when one changes, and a manifest that binds every disk, firmware, catalogue and metadata
+  blob of the source again; the source and its tags are untouched. One **Save as new image…**
+  dialog (repository, OCI-grammar tag, title; flatten for New image from here…) serves Disk
+  layers' Save as layer…, New image from here… and Keep as new image…, the new Machine › Save as
+  new image…, and the revision review. The tag defaults to the next minor version after the
+  source's version tag (else the repository's newest, else 1.0.0); taken version tags are refused
+  with Use <next>, other tags move only after Move tag? and then compare-and-swap from the shown
+  digest; a refused save re-reads the store's tags and asks again (Move tag? with the current
+  digest, or the version refusal for a tag that appeared meanwhile). The store refuses to move a
+  version tag on every tag update (create, save, revision, pull) and keeps a record of deleted
+  version tags (`local/retired-version-tags.toml`), so a deleted version tag can later name only
+  the digest it named before. Publication keeps the source manifest's annotations (title,
+  `unemu.firmware.sources`, others; per-build ones such as `created` are dropped), may retitle,
+  and records `org.opencontainers.image.base.digest`; a save that changes nothing produces the
+  source manifest itself, so the new tag aliases the same digest. An interrupted save is offered
+  in Disk layers and Save as new image… as "Finish saving <tag>", which repeats it with its own
+  tag and expected digest. The library worker reads every image, tag and plan for these dialogs;
+  the UI thread opens no store for them. A stored CMOS image that SETUP values cannot be derived
+  for (an unlisted fixed-disk geometry) is kept byte for byte, and the review says so. Revision
+  publication still verifies every blob of the closure once, like every publication.
+  **MEASURED:** headless model, dialog and worker tests; pc-image tests publish memory, drive,
+  display and coprocessor revisions of a stored-CMOS image and compare every CMOS byte. Manual checks still open: the look of the sheet, the review and both tag
+  questions against the mock-up in both skins and themes; keyboard focus and Escape in the
+  stacked dialogs; Machine › Save as new image… on a running machine (it stops first, then the
+  workspace runs the new image); a revision that adds drive B: boots and the BIOS sees the
+  drive; a CMOS-revision image boots without a CMOS checksum error. Firmware changes, a new fixed
+  disk D:, catalogue editing and the "Keep the inserted floppies" choice remain open.
 - **2026-11-15 — New machine… wizard and zero bases:** File › New machine… (⌘N/Ctrl+N) opens a
   seven-step wizard that builds a new empty image in the local store, never a machine file:
   machine class (the closed list of seven; only AT 286 is selectable), motherboard with its
@@ -24,10 +62,10 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   over 16 KiB from Create through Start; a created open image (Kiselev AT BIOS, open VGA BIOS, XTIDE)
   lists in the library, validates and POSTs through checkpoints 01h–08h. COM2, registry browsing for
   packages (Get from registry…), the sample boards and speeds of the mock-up beyond the IBM 5170 at
-  6/8 MHz, and native visual acceptance remain open. A later Save as new image… (upc-5pw.32)
-  must keep the manifest title annotation and `unemu.firmware.sources`; workspace publication
-  rebuilds manifest annotations today. Generated configurations and metadata are open in
-  import, Create and publication alike; ROMs, disks, floppies and CMOS stay user-supplied.
+  6/8 MHz, and native visual acceptance remain open. Save as new image… keeps the manifest
+  title annotation and `unemu.firmware.sources` (see the Settings on an image entry). Generated
+  configurations and metadata are open in import, Create and publication alike; ROMs, disks,
+  floppies and CMOS stay user-supplied.
 - **2026-11-15 — Status-bar drive chips:** while a machine runs, the status
   bar shows one chip per drive it has, as in the approved
   [main-window mock-up](design/mockups/main-window.html) (revision 2):

@@ -42,6 +42,7 @@ use winit::{
 mod app_menu;
 mod drive_chips;
 mod host_audio;
+mod image_settings;
 mod layers_dialog;
 #[cfg(test)]
 mod library_test_support;
@@ -57,6 +58,7 @@ mod pacing;
 mod preferences;
 mod preferences_sheet;
 mod registries_model;
+mod save_image;
 mod settings_model;
 mod settings_sheet;
 mod shell;

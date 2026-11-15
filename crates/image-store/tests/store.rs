@@ -1487,3 +1487,108 @@ fn decoded_receipts_do_not_alias_stored_ids_or_trust_changed_bindings() {
         "{error}"
     );
 }
+
+#[test]
+fn version_tags_never_move_and_other_tags_move_only_from_the_confirmed_digest() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let (first, _) = fixture(&store, b"first");
+    let (second, _) = fixture(&store, b"second");
+    let first = publish(&store, &first, "lab:1.0.0");
+    let second = store.import_manifest(&second).unwrap();
+    let provider = Provider("zx-spectrum");
+    store.check_tag_target("lab:1.1.0", None, None).unwrap();
+    // Without the current digest an update loses the compare-and-swap; with
+    // it, a version tag still refuses to move.
+    assert!(matches!(
+        store.update_tag("lab:1.0.0", &second, None, &provider),
+        Err(Error::Conflict { current: Some(d) }) if d == first.digest
+    ));
+    let error = store
+        .update_tag("lab:1.0.0", &second, Some(&first.digest), &provider)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("version tags never move"), "{error}");
+    for expected in [None, Some(&first.digest)] {
+        let error = store
+            .check_tag_target("lab:1.0.0", expected, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("version tags never move"), "{error}");
+    }
+    assert_eq!(
+        store.tag_descriptor("lab:1.0.0").unwrap().digest,
+        first.digest
+    );
+    // Writing the same digest again is not a move.
+    store
+        .update_tag("lab:1.0.0", &first, Some(&first.digest), &provider)
+        .unwrap();
+    store
+        .update_tag("lab:latest", &first, None, &provider)
+        .unwrap();
+    assert!(matches!(
+        store.check_tag_target("lab:latest", None, None),
+        Err(Error::Conflict { current: Some(d) }) if d == first.digest
+    ));
+    store
+        .check_tag_target("lab:latest", Some(&first.digest), None)
+        .unwrap();
+    store
+        .update_tag("lab:latest", &second, Some(&first.digest), &provider)
+        .unwrap();
+    assert_eq!(
+        store.tag_descriptor("lab:latest").unwrap().digest,
+        second.digest
+    );
+    assert_eq!(
+        store.tag_descriptor("lab:1.0.0").unwrap().digest,
+        first.digest
+    );
+}
+
+#[test]
+fn a_deleted_version_tag_can_name_only_its_old_digest_again() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let (first, _) = fixture(&store, b"first");
+    let (second, _) = fixture(&store, b"second");
+    let first = publish(&store, &first, "lab:1.0.0");
+    let second = store.import_manifest(&second).unwrap();
+    let provider = Provider("zx-spectrum");
+    store
+        .update_tag("lab:scratch", &second, None, &provider)
+        .unwrap();
+    store.remove_tag("lab:1.0.0", &first.digest).unwrap();
+    store.remove_tag("lab:scratch", &second.digest).unwrap();
+    assert!(matches!(
+        store.tag_descriptor("lab:1.0.0"),
+        Err(Error::TagNotFound(_))
+    ));
+    let error = store
+        .update_tag("lab:1.0.0", &second, None, &provider)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("version tags never move"), "{error}");
+    for replacement in [None, Some(&second.digest)] {
+        assert!(store
+            .check_tag_target("lab:1.0.0", None, replacement)
+            .is_err());
+    }
+    // The same image may take its version tag back; other tags stay free.
+    store
+        .check_tag_target("lab:1.0.0", None, Some(&first.digest))
+        .unwrap();
+    store
+        .update_tag("lab:1.0.0", &first, None, &provider)
+        .unwrap();
+    store
+        .update_tag("lab:scratch", &first, None, &provider)
+        .unwrap();
+    // The record survives reopening the store.
+    store.remove_tag("lab:1.0.0", &first.digest).unwrap();
+    let reopened = Store::open(&dir.0).unwrap();
+    assert!(reopened
+        .update_tag("lab:1.0.0", &second, None, &provider)
+        .is_err());
+}

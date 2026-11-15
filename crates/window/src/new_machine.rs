@@ -81,22 +81,7 @@ pub(crate) struct Selection {
     pub option_rom: Option<RomRef>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TagLevel {
-    Ok,
-    Warn,
-    Bad,
-}
-/// The result of checking the repository name and tag against the store rules.
-#[derive(Clone, Debug)]
-pub(crate) struct TagCheck {
-    pub level: TagLevel,
-    pub text: String,
-    /// A suggested free version tag after a refusal.
-    pub fix: Option<String>,
-    /// The digest an existing movable tag names; Create asks before moving it.
-    pub moving: Option<Digest>,
-}
+pub(crate) use crate::save_image::{short, TagCheck, TagLevel};
 
 /// A prospective manifest, or why the ROM bytes refuse the machine.
 pub(crate) type Preview = Result<Rc<image_store::Manifest>, String>;
@@ -981,30 +966,9 @@ impl Wizard {
     pub fn reference(&self) -> String {
         format!("{}:{}", self.repo.trim(), self.tag.trim())
     }
-    fn existing(&self, reference: &str) -> Option<&Digest> {
-        self.tags
-            .iter()
-            .find(|(name, _)| name == reference)
-            .map(|(_, d)| d)
-    }
     /// The next free minor version of a repository, or 1.0.0.
     pub fn next_version(&self, repo: &str) -> String {
-        let prefix = format!("{repo}:");
-        let top = self
-            .tags
-            .iter()
-            .filter_map(|(name, _)| name.strip_prefix(&prefix))
-            .filter(|tag| image_registry::reference::is_version_tag(tag))
-            .filter_map(|tag| {
-                let core = tag.split(['-', '+']).next()?;
-                let mut parts = core.split('.').map(|n| n.parse::<u64>().ok());
-                Some((parts.next()??, parts.next()??, parts.next()??))
-            })
-            .max();
-        match top {
-            Some((major, minor, _)) => format!("{major}.{}.0", minor + 1),
-            None => "1.0.0".into(),
-        }
+        crate::save_image::next_version(repo, &self.tags)
     }
     /// A descriptive tag of the chosen hardware, such as `6mhz-1mb-2mbems`.
     pub fn hardware_tag(&self) -> String {
@@ -1032,74 +996,9 @@ impl Wizard {
     /// Store and registry tag rules: the OCI grammar, version tags never move,
     /// other tags move only after a confirmation.
     pub fn tag_check(&self) -> TagCheck {
-        let bad = |text: String| TagCheck {
-            level: TagLevel::Bad,
-            text,
-            fix: None,
-            moving: None,
-        };
-        let repo = self.repo.trim();
-        let tag = self.tag.trim();
-        if Store::validate_tag_name(&format!("{repo}:latest")).is_err() {
-            return bad("Repository names use lowercase letters and digits, separated by . _ or - characters.".into());
-        }
-        if tag.contains('+') {
-            return bad(
-                "Tags cannot contain \"+\": a registry tag allows only letters, digits and . _ -."
-                    .into(),
-            );
-        }
-        let reference = self.reference();
-        if Store::validate_tag_name(&reference).is_err() {
-            return bad("Tags start with a letter, digit or _ and use only letters, digits and . _ - (at most 128 characters).".into());
-        }
-        let version = image_registry::reference::is_version_tag(tag);
-        match self.existing(&reference) {
-            Some(digest) if version => TagCheck {
-                level: TagLevel::Bad,
-                text: format!(
-                    "{reference} already exists ({}). Version tags never move, so this name cannot be reused.",
-                    short(digest)
-                ),
-                fix: Some(self.next_version(repo)),
-                moving: None,
-            },
-            Some(digest) => TagCheck {
-                level: TagLevel::Warn,
-                text: format!(
-                    "{reference} already names {}. Create will ask before moving it; the old image stays reachable by its digest{}.",
-                    short(digest),
-                    {
-                        let others: Vec<_> = self
-                            .tags
-                            .iter()
-                            .filter(|(name, d)| d == digest && name != &reference)
-                            .map(|(name, _)| name.as_str())
-                            .collect();
-                        if others.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" and by {}", others.join(", "))
-                        }
-                    }
-                ),
-                fix: None,
-                moving: Some(digest.clone()),
-            },
-            None => TagCheck {
-                level: TagLevel::Ok,
-                text: format!(
-                    "{reference} is new. {}",
-                    if version {
-                        "As a version tag it will never move."
-                    } else {
-                        "This tag may move to a newer image later, after a confirmation."
-                    }
-                ),
-                fix: None,
-                moving: None,
-            },
-        }
+        crate::save_image::check_tag(&self.repo, &self.tag, &self.tags, "Create will ask", || {
+            self.next_version(self.repo.trim())
+        })
     }
 
     // ---- redistribution and summary ----------------------------------------
@@ -1355,10 +1254,6 @@ impl Wizard {
         }
         Ok((self.image(), self.reference(), None))
     }
-}
-
-pub(crate) fn short(digest: &Digest) -> String {
-    format!("sha256:{}…{}", &digest.hex()[..8], &digest.hex()[60..])
 }
 
 #[cfg(test)]

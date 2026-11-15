@@ -3,6 +3,7 @@
 //! Guest execution stays on the presenter thread. Durable records precede
 //! preparation so forced exit and interrupted publication never hide a session.
 use crate::library_view::{self, ImageRow, Query};
+use crate::save_image::Target;
 use image_store::{summary::SummaryCache, workspace::Workspace, Descriptor, Digest, Store};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -71,7 +72,14 @@ pub(super) enum Request {
     Delete(ImageRow),
     Edit(Digest, bool, Vec<String>),
     Layers(ImageRow, String),
-    Publish(ImageRow, String, String, bool),
+    /// Save as new image…: publish a workspace under the form's target.
+    Publish(ImageRow, String, Target),
+    /// Settings on an image: read the image's configuration and stored CMOS.
+    OpenSettings(ImageRow),
+    /// Settings on an image: check the draft at a revision of the sheet.
+    PlanRevision(ImageRow, u64, Box<toml::Table>),
+    /// Settings on an image: publish a checked configuration-only revision.
+    PublishRevision(Box<pc_image::revision::Plan>, Target),
     Discard(String),
     /// Scan a picked ROM folder, reusing the persistent ROM hash index.
     ScanFirmware(
@@ -95,6 +103,14 @@ pub(super) type StoreChoices = (
     Vec<(String, Digest)>,
     image_registry::guard::LocalMarks,
 );
+/// A refused publication and the store's tags at that moment, so the form
+/// asks again with the current digests.
+pub(super) struct Refused {
+    pub error: String,
+    pub tags: Vec<(String, Digest)>,
+}
+/// What Settings on an image starts from.
+pub(super) type OpenedSettings = (ImageRow, pc_image::revision::Source, Vec<(String, Digest)>);
 pub(super) enum Event {
     Snapshot(Arc<library_view::Snapshot>),
     Checked(Digest, Result<pc_image::inspection::ImageDetails>),
@@ -105,7 +121,12 @@ pub(super) enum Event {
         WorkspaceKind,
     ),
     Finished,
-    Layers(String, Result<pc_image::inspection::ImageDetails>),
+    /// A workspace's media, and the image its session pins for Save as new image….
+    Layers(
+        String,
+        Result<pc_image::inspection::ImageDetails>,
+        Box<crate::layers_dialog::SourceImage>,
+    ),
     Done(String),
     Deleted(String),
     Published(Box<ImageRow>),
@@ -113,6 +134,18 @@ pub(super) enum Event {
     Packages(Result<StoreChoices>),
     /// The result of New machine…'s Create, apart from every other job.
     Created(Result<Box<ImageRow>>),
+    /// The source of Settings on an image, with every local tag.
+    SettingsOpened(Result<Box<OpenedSettings>>),
+    /// The check of a Settings draft at a sheet revision, with every local tag.
+    Planned(
+        u64,
+        Result<Box<pc_image::revision::Plan>>,
+        Vec<(String, Digest)>,
+    ),
+    /// The store refused Save as new image….
+    PublishRefused(Refused),
+    /// The result of publishing a Settings revision.
+    Revised(std::result::Result<Box<ImageRow>, Refused>),
     Error(String),
     FirmwareError(String),
     FirmwareScanned(Box<library_view::firmware::ScanReport>),
@@ -300,7 +333,16 @@ trait Backend: Send + 'static {
         image: &Descriptor,
         new: bool,
     ) -> Result<pc_image::workspace::PreparedSession>;
-    fn publish(&self, owner: &Workspace<'_>, tag: &str, flatten: bool) -> Result<Descriptor>;
+    fn publish(&self, owner: &Workspace<'_>, target: &Target) -> Result<Descriptor>;
+    fn revise(
+        &self,
+        store: &Store,
+        plan: &pc_image::revision::Plan,
+        target: &Target,
+    ) -> Result<Descriptor> {
+        pc_image::revision::publish(store, plan, &target.reference, target.expected.as_ref())
+            .map_err(|e| e.to_string())
+    }
     fn check(
         &self,
         store: &Store,
@@ -324,9 +366,16 @@ impl Backend for PcBackend {
     ) -> Result<pc_image::workspace::PreparedSession> {
         pc_image::workspace::prepare_pinned(owner, image, new).map_err(|e| e.to_string())
     }
-    fn publish(&self, owner: &Workspace<'_>, tag: &str, flatten: bool) -> Result<Descriptor> {
-        pc_image::workspace::publish_with_options(owner, tag, None, flatten, |_| Ok(()))
-            .map_err(|e| e.to_string())
+    fn publish(&self, owner: &Workspace<'_>, target: &Target) -> Result<Descriptor> {
+        pc_image::workspace::publish_as(
+            owner,
+            &target.reference,
+            target.expected.as_ref(),
+            target.flatten,
+            target.title.as_deref(),
+            |_| Ok(()),
+        )
+        .map_err(|e| e.to_string())
     }
 }
 #[cfg(test)]
@@ -341,8 +390,16 @@ impl Backend for SyntheticBackend {
     ) -> Result<pc_image::workspace::PreparedSession> {
         pc_image::test_support::with_synthetic_firmware(|| PcBackend.prepare(w, image, new))
     }
-    fn publish(&self, w: &Workspace<'_>, tag: &str, flatten: bool) -> Result<Descriptor> {
-        pc_image::test_support::with_synthetic_firmware(|| PcBackend.publish(w, tag, flatten))
+    fn publish(&self, w: &Workspace<'_>, target: &Target) -> Result<Descriptor> {
+        pc_image::test_support::with_synthetic_firmware(|| PcBackend.publish(w, target))
+    }
+    fn revise(
+        &self,
+        store: &Store,
+        plan: &pc_image::revision::Plan,
+        target: &Target,
+    ) -> Result<Descriptor> {
+        pc_image::test_support::with_synthetic_firmware(|| PcBackend.revise(store, plan, target))
     }
     fn firmware_catalogue(&self) -> &'static [assembly::FirmwareEntry] {
         library_view::firmware::tests::synthetic_catalogue()
@@ -381,7 +438,7 @@ impl Backend for FirmwareCrash {
     ) -> Result<pc_image::workspace::PreparedSession> {
         Err("not used by firmware tests".into())
     }
-    fn publish(&self, _: &Workspace<'_>, _: &str, _: bool) -> Result<Descriptor> {
+    fn publish(&self, _: &Workspace<'_>, _: &Target) -> Result<Descriptor> {
         Err("not used by firmware tests".into())
     }
     fn firmware_catalogue(&self) -> &'static [assembly::FirmwareEntry] {
@@ -424,6 +481,110 @@ fn create_image(
         summary: None,
         failure: None,
     }))
+}
+
+/// Settings on an image: the store refuses to move a version-shaped tag.
+fn revise_image<B: Backend>(
+    backend: &B,
+    store: &Store,
+    plan: &pc_image::revision::Plan,
+    target: Target,
+) -> std::result::Result<Box<ImageRow>, Refused> {
+    match backend.revise(store, plan, &target) {
+        Ok(descriptor) => Ok(Box::new(ImageRow {
+            reference: target.reference,
+            descriptor,
+            summary: None,
+            failure: None,
+        })),
+        Err(error) => Err(Refused {
+            error,
+            tags: tags_of(store),
+        }),
+    }
+}
+
+fn tags_of(store: &Store) -> Vec<(String, Digest)> {
+    crate::save_image::local_tags(store).unwrap_or_default()
+}
+
+fn open_settings(store: &Store, row: ImageRow) -> Result<Box<OpenedSettings>> {
+    let source =
+        pc_image::revision::Source::open(store, &row.descriptor).map_err(|e| e.to_string())?;
+    Ok(Box::new((row, source, tags_of(store))))
+}
+
+fn plan_revision(
+    store: &Store,
+    row: &ImageRow,
+    machine: toml::Table,
+) -> Result<Box<pc_image::revision::Plan>> {
+    let source =
+        pc_image::revision::Source::open(store, &row.descriptor).map_err(|e| e.to_string())?;
+    pc_image::revision::plan(store, &source, machine)
+        .map(Box::new)
+        .map_err(|e| e.to_string())
+}
+
+/// The image a workspace's session pins (or the row's, before a session
+/// exists), named by a tag that names it, with its title, every local tag and
+/// any unfinished save. Read without the workspace lock, as display hints.
+fn save_source(store: &Store, row: &ImageRow, name: &str) -> crate::layers_dialog::SourceImage {
+    use image_store::BlobSource;
+    let tags = tags_of(store);
+    let image = pc_image::workspace::pinned_descriptor_at(store, name)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| row.descriptor.clone());
+    let reference = if image.digest == row.descriptor.digest {
+        row.reference.clone()
+    } else {
+        let repo = row.reference.rsplit_once(':').map(|(repo, _)| repo);
+        let naming: Vec<_> = tags
+            .iter()
+            .filter(|(_, digest)| *digest == image.digest)
+            .map(|(tag, _)| tag.clone())
+            .collect();
+        naming
+            .iter()
+            .find(|tag| tag.rsplit_once(':').map(|(r, _)| r) == repo)
+            .or(naming.first())
+            .cloned()
+            .unwrap_or_else(|| format!("{}@{}", repo.unwrap_or("recovered"), image.digest))
+    };
+    let title = store
+        .read_verified(&image, image_store::MAX_SMALL_BLOB)
+        .ok()
+        .and_then(|bytes| image_store::Manifest::decode_for_summary(&bytes).ok())
+        .and_then(|manifest| {
+            manifest
+                .annotations
+                .get(pc_image::workspace::TITLE)
+                .cloned()
+        });
+    crate::layers_dialog::SourceImage {
+        reference,
+        digest: Some(image.digest),
+        title,
+        tags,
+        pending: pc_image::workspace::pending_publication_at(store, name)
+            .ok()
+            .flatten(),
+    }
+}
+
+fn layers_event<B: Backend>(
+    backend: &B,
+    store: &Store,
+    cache: &SummaryCache,
+    row: &ImageRow,
+    name: String,
+) -> Event {
+    let details = backend
+        .check(store, row, Some(&name), &|| false)
+        .and_then(|details| storage_details(store, cache, row, details, &|| false));
+    let source = Box::new(save_source(store, row, &name));
+    Event::Layers(name, details, source)
 }
 
 fn storage_details(
@@ -561,14 +722,7 @@ fn run<B: Backend>(
                         } else {
                             name
                         };
-                        send(Event::Layers(
-                            name.clone(),
-                            backend
-                                .check(&store, &row, Some(&name), &|| false)
-                                .and_then(|details| {
-                                    storage_details(&store, &cache, &row, details, &|| false)
-                                }),
-                        ));
+                        send(layers_event(&backend, &store, &cache, &row, name));
                     }
                     Request::Launch(row, kind, resume) => {
                         pending_check = None;
@@ -635,16 +789,20 @@ fn run<B: Backend>(
                                     drop(owner);
                                     return Ok(false);
                                 }
-                                Ok(Request::Layers(row, name)) => send(Event::Layers(
-                                    name.clone(),
-                                    backend
-                                        .check(&store, &row, Some(&name), &|| false)
-                                        .and_then(|details| {
-                                            storage_details(&store, &cache, &row, details, &|| {
-                                                false
-                                            })
-                                        }),
-                                )),
+                                Ok(Request::Layers(row, name)) => {
+                                    send(layers_event(&backend, &store, &cache, &row, name))
+                                }
+                                // Settings on any image, read-only for the running one.
+                                Ok(Request::OpenSettings(row)) => {
+                                    send(Event::SettingsOpened(open_settings(&store, row)))
+                                }
+                                Ok(Request::PlanRevision(row, revision, machine)) => {
+                                    send(Event::Planned(
+                                        revision,
+                                        plan_revision(&store, &row, *machine),
+                                        tags_of(&store),
+                                    ))
+                                }
                                 // New machine… builds images beside the running one.
                                 Ok(Request::FirmwarePackages) => {
                                     send(Event::Packages(store_choices(&store)))
@@ -655,6 +813,16 @@ fn run<B: Backend>(
                                         &image,
                                         reference,
                                         expected.as_ref(),
+                                    )));
+                                    cache.refresh(&store).map_err(|e| e.to_string())?;
+                                    send(Event::Snapshot(Arc::new(library_view::snapshot(
+                                        &cache, &query,
+                                    ))));
+                                }
+                                // Settings on another, stopped image.
+                                Ok(Request::PublishRevision(plan, target)) => {
+                                    send(Event::Revised(revise_image(
+                                        &backend, &store, &plan, target,
                                     )));
                                     cache.refresh(&store).map_err(|e| e.to_string())?;
                                     send(Event::Snapshot(Arc::new(library_view::snapshot(
@@ -674,7 +842,7 @@ fn run<B: Backend>(
                         send(Event::Finished);
                         send(Event::Recoveries(recoveries(&store)?));
                     }
-                    Request::Publish(row, name, tag, flatten) => {
+                    Request::Publish(row, name, target) => {
                         let owner = store.workspace(&name).map_err(|e| e.to_string())?;
                         let record = read_record(&store, &name).ok().or_else(|| {
                             (name.starts_with("fresh-") || name.starts_with("disposable-")).then(
@@ -696,17 +864,26 @@ fn run<B: Backend>(
                         {
                             backend.prepare(&owner, &row.descriptor, false)?;
                         }
-                        let descriptor = backend.publish(&owner, &tag, flatten)?;
+                        let descriptor = match backend.publish(&owner, &target) {
+                            Ok(descriptor) => descriptor,
+                            Err(error) => {
+                                send(Event::PublishRefused(Refused {
+                                    error,
+                                    tags: tags_of(&store),
+                                }));
+                                return Ok(true);
+                            }
+                        };
                         if record.as_ref().is_some_and(|r| r.kind.disposable()) {
                             owner.discard_and_remove().map_err(|e| e.to_string())?;
                         } else if let Some(mut record) = record {
                             record.image = descriptor.clone();
-                            record.reference = tag.clone();
+                            record.reference = target.reference.clone();
                             record.recovery = false;
                             record.write(&owner)?;
                         }
                         send(Event::Published(Box::new(ImageRow {
-                            reference: tag,
+                            reference: target.reference,
                             descriptor,
                             summary: None,
                             failure: None,
@@ -754,6 +931,17 @@ fn run<B: Backend>(
                     Request::FirmwarePackages => send(Event::Packages(store_choices(&store))),
                     Request::CreateImage(image, reference, expected) => send(Event::Created(
                         create_image(&store, &image, reference, expected.as_ref()),
+                    )),
+                    Request::PublishRevision(plan, target) => send(Event::Revised(revise_image(
+                        &backend, &store, &plan, target,
+                    ))),
+                    Request::OpenSettings(row) => {
+                        send(Event::SettingsOpened(open_settings(&store, row)))
+                    }
+                    Request::PlanRevision(row, revision, machine) => send(Event::Planned(
+                        revision,
+                        plan_revision(&store, &row, *machine),
+                        tags_of(&store),
                     )),
                     Request::ScanFirmware(folder, index, control) => {
                         match library_view::firmware::scan_folder(
@@ -851,6 +1039,14 @@ mod tests {
         assert_eq!(actual, kind);
         (transfer.restore().unwrap(), name)
     }
+    fn target(reference: &str, flatten: bool) -> Target {
+        Target {
+            reference: reference.into(),
+            expected: None,
+            title: None,
+            flatten,
+        }
+    }
     fn finish(w: &Worker, outcome: Finish) -> Vec<Recovery> {
         w.send.send(Request::Finish(outcome)).unwrap();
         let Event::Recoveries(rows) = until(w, |e| matches!(e, Event::Recoveries(_))) else {
@@ -944,19 +1140,22 @@ mod tests {
             let details =
                 pc_image::desktop::check(&f.store, &f.row.descriptor, Some(&name), || false)
                     .unwrap();
-            let crate::layers_dialog::Action::Publish(workspace, tag, flatten) =
+            let crate::layers_dialog::Action::Publish(workspace, target) =
                 crate::layers_dialog::tests::reviewed_publication(
                     &name,
                     kind,
                     details,
+                    crate::layers_dialog::tests::source(&f.row.reference, &f.row.descriptor.digest),
                     "test:kept",
                     kind == WorkspaceKind::Regular,
+                    None,
                 )
             else {
                 panic!()
             };
+            assert_eq!(target.flatten, kind == WorkspaceKind::Regular);
             w.send
-                .send(Request::Publish(f.row.clone(), workspace, tag, flatten))
+                .send(Request::Publish(f.row.clone(), workspace, target))
                 .unwrap();
             until(&w, |e| matches!(e, Event::Published(_)));
             assert_eq!(
@@ -1026,6 +1225,37 @@ mod tests {
         }
     }
     #[test]
+    fn the_save_form_starts_from_the_image_the_workspace_session_pins() {
+        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let row = crate::image_settings::tests::open_image(&firmware);
+        let owner = firmware.store.workspace("pinned").unwrap();
+        let prepared = pc_image::workspace::prepare_start(&owner, "open-at:1.0.0", false).unwrap();
+        crate::image_settings::tests::write_c(&prepared, 9);
+        drop(prepared);
+        let saved = pc_image::workspace::publish_as(
+            &owner,
+            "open-at-dos:1.0.0",
+            None,
+            false,
+            Some("Open AT with FreeDOS"),
+            |_| Ok(()),
+        )
+        .unwrap();
+        drop(owner);
+        let source = save_source(&firmware.store, &row, "pinned");
+        assert_eq!(source.reference, "open-at-dos:1.0.0");
+        assert_eq!(source.digest, Some(saved.digest.clone()));
+        assert_eq!(source.title.as_deref(), Some("Open AT with FreeDOS"));
+        assert_eq!(source.pending, None);
+        // An untagged pin keeps the row's repository and names the digest.
+        firmware
+            .store
+            .remove_tag("open-at-dos:1.0.0", &saved.digest)
+            .unwrap();
+        let source = save_source(&firmware.store, &row, "pinned");
+        assert_eq!(source.reference, format!("open-at@{}", saved.digest));
+    }
+    #[test]
     fn failed_keep_leaves_workspace_for_next_startup() {
         let f = Fixture::new();
         let mut w = worker(&f);
@@ -1035,15 +1265,14 @@ mod tests {
             .send(Request::Publish(
                 f.row.clone(),
                 name.clone(),
-                "invalid tag".into(),
-                false,
+                target("invalid tag", false),
             ))
             .unwrap();
         loop {
-            if matches!(
-                w.receive.recv_timeout(Duration::from_secs(20)).unwrap(),
-                Event::Error(_)
-            ) {
+            if let Event::PublishRefused(refused) =
+                w.receive.recv_timeout(Duration::from_secs(20)).unwrap()
+            {
+                assert!(refused.tags.iter().any(|(tag, _)| tag == "test:source"));
                 break;
             }
         }
@@ -1092,7 +1321,7 @@ mod tests {
                 zero: Default::default(),
             })
         }
-        fn publish(&self, _: &Workspace<'_>, _: &str, _: bool) -> Result<Descriptor> {
+        fn publish(&self, _: &Workspace<'_>, _: &Target) -> Result<Descriptor> {
             unreachable!()
         }
     }
@@ -1151,8 +1380,8 @@ mod tests {
             assert_eq!(media::data_passes(16384) - raw, 1);
             result
         }
-        fn publish(&self, w: &Workspace<'_>, tag: &str, flatten: bool) -> Result<Descriptor> {
-            SyntheticBackend.publish(w, tag, flatten)
+        fn publish(&self, w: &Workspace<'_>, target: &Target) -> Result<Descriptor> {
+            SyntheticBackend.publish(w, target)
         }
         fn check(
             &self,
@@ -1202,7 +1431,7 @@ mod tests {
             f.change(&prepared, depth + 1);
             drop(prepared);
             f.row.descriptor = SyntheticBackend
-                .publish(&owner, &format!("test:depth-{depth}"), false)
+                .publish(&owner, &target(&format!("test:depth-{depth}"), false))
                 .unwrap();
         }
         let mut manifest = image_store::Manifest::decode_for_summary(
@@ -1291,7 +1520,7 @@ mod tests {
                 regular_name(&f.row.descriptor.digest),
             ))
             .unwrap();
-        let Event::Layers(_, result) = until(&w, |e| matches!(e, Event::Layers(..))) else {
+        let Event::Layers(_, result, _) = until(&w, |e| matches!(e, Event::Layers(..))) else {
             unreachable!()
         };
         let details = result.unwrap();

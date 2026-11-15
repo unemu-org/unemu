@@ -1200,7 +1200,9 @@ impl Shell {
                 Command::ImportFirmware => {
                     self.presenter.is_none() && self.image_library.can_import_firmware()
                 }
-                Command::Settings => self.image_library.selected.is_none(),
+                Command::SaveImage => {
+                    self.image_library.selected.is_some() || self.image_library.active.is_some()
+                }
                 _ => true,
             }
     }
@@ -1673,7 +1675,7 @@ impl Shell {
     fn stop_for_image_action(&mut self, action: &crate::library_view::Request) -> bool {
         use crate::library_view::Request;
         let target = match action {
-            Request::Publish(_, name, _, _) | Request::Discard(name) => name,
+            Request::Publish(_, name, _) | Request::Discard(name) => name,
             _ => return true,
         };
         let matches = self
@@ -2002,7 +2004,8 @@ impl Shell {
             Placeholder("New machine") => { self.release(); self.image_library.begin_new_machine(); },
             Placeholder(title) => self.dialog = Some((title, "not yet available".into())),
             FirmwareFolders => { self.preferences_draft = self.preferences.clone(); self.rom_folder_input.clear(); self.dialog = Some(("ROM folders", "Firmware is located by SHA-256. Files are read in place; nothing is copied.".into())); },
-            Settings => self.open_settings(),
+            Settings => if self.image_library.selected.is_some() { self.release(); self.image_library.open_settings(); } else { self.open_settings() },
+            SaveImage => { self.release(); self.image_library.begin_save_image(); },
             Preferences => { self.release(); self.preferences_dialog = Some(crate::preferences_sheet::PreferencesDialog::new(self.preferences_path.clone(), self.credential_store.clone())); },
             SaveState => {},
         }
@@ -2088,6 +2091,7 @@ impl Shell {
                 ui.separator();
                 self.item(ui, "Settings…", "Ctrl+,", Settings, commands);
                 self.item(ui, "Disk layers…", "", Layers, commands);
+                self.item(ui, "Save as new image…", "", SaveImage, commands);
             });
             ui.menu_button("Media", |ui| {
                 let drives = self.drive_views();
@@ -3161,7 +3165,7 @@ impl eframe::App for Shell {
         for action in image_actions {
             if matches!(
                 action,
-                crate::library_view::Request::Publish(_, _, _, _)
+                crate::library_view::Request::Publish(..)
                     | crate::library_view::Request::Discard(_)
             ) && !self.stop_for_image_action(&action)
             {
@@ -5966,6 +5970,56 @@ kind='mda'
             .unwrap()
             .join("desktop.toml")
             .exists());
+    }
+    #[test]
+    fn settings_on_an_image_and_save_as_new_image_open_from_the_machine_menu() {
+        use crate::library_test_support::Fixture;
+        let f = Fixture::new();
+        let ctx = egui::Context::default();
+        let mut shell = shell();
+        shell.stop();
+        shell.image_library =
+            crate::library_view::LibraryView::synthetic(f.store.root().to_owned());
+        assert!(!shell.command_allowed(Command::SaveImage));
+        shell.image_library.selected = Some(f.row.clone());
+        assert!(shell.command_allowed(Command::Settings));
+        shell.command(Command::Settings, &ctx);
+        for _ in 0..2000 {
+            shell.poll_images(&ctx);
+            if shell.image_library.image_settings.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let settings = shell.image_library.image_settings.as_ref().unwrap();
+        assert_eq!(settings.row.reference, "test:source");
+        assert!(!settings.read_only);
+        assert!(shell.has_dialog());
+        assert!(shell.settings.is_none(), "not the machine-file sheet");
+        shell.image_library.image_settings = None;
+        assert!(shell.command_allowed(Command::SaveImage));
+        shell.command(Command::SaveImage, &ctx);
+        for _ in 0..2000 {
+            shell.poll_images(&ctx);
+            if shell
+                .image_library
+                .layers
+                .as_ref()
+                .is_some_and(|dialog| dialog.save.is_some())
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let form = shell
+            .image_library
+            .layers
+            .as_ref()
+            .and_then(|dialog| dialog.save.as_ref())
+            .unwrap();
+        assert_eq!(form.source, "test:source");
+        assert!(shell.has_dialog());
+        shell.image_library.shutdown();
     }
     #[test]
     fn unchecked_image_start_command_checks_then_launches_and_blockers_disable_start() {

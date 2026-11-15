@@ -53,6 +53,8 @@ pub(crate) enum Command {
     FirmwareFolders,
     Preferences,
     Settings,
+    /// Machine › Save as new image…: the Disk layers save form.
+    SaveImage,
 }
 
 #[derive(Clone, Copy)]

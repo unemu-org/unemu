@@ -558,6 +558,14 @@ impl Store {
         if current.as_ref() != expected {
             return Err(Error::Conflict { current });
         }
+        // Even a caller that confirmed the current digest cannot move a version
+        // tag, nor bind a deleted one to another image.
+        let retired = self.read_retired_inner()?;
+        refuse_version_move(
+            name,
+            current.as_ref().or(retired.tags.get(name)),
+            Some(&manifest.digest),
+        )?;
         let mut descriptor = manifest.clone();
         descriptor
             .annotations
@@ -1133,6 +1141,28 @@ fn local_descriptor(raw: &RawValue) -> Result<Option<Descriptor>> {
     Ok(Some(descriptor))
 }
 
+/// A tag shaped like a semantic version names one image forever: once it
+/// exists, only the same digest (`replacement`, when known) may be written to it
+/// again. `replacement = None` refuses any update of an existing version tag.
+fn version_shaped(name: &str) -> bool {
+    name.rsplit_once(':')
+        .is_some_and(|(_, tag)| Store::is_version_tag(tag))
+}
+
+fn refuse_version_move(
+    name: &str,
+    current: Option<&Digest>,
+    replacement: Option<&Digest>,
+) -> Result<()> {
+    let version = version_shaped(name);
+    match current {
+        Some(current) if version && replacement != Some(current) => Err(invalid(format!(
+            "{name} already names {current}; version tags never move"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// OCI Distribution Specification, Pulling Manifests: repository components are
 /// `[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*` and tags are
 /// `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}`.
@@ -1245,6 +1275,39 @@ impl Store {
         Ok(path)
     }
 
+    /// Reject a tag update before an expensive ingest: an occupied version tag
+    /// never moves, and any other occupied tag moves only from the digest the
+    /// user confirmed (`expected`). An absent tag needs `expected = None`.
+    /// Publication still uses compare-and-swap to catch concurrent changes.
+    /// A deleted version tag still refuses any digest other than `replacement`
+    /// (`None` when the new image is not known yet).
+    pub fn check_tag_target(
+        &self,
+        name: &str,
+        expected: Option<&Digest>,
+        replacement: Option<&Digest>,
+    ) -> Result<()> {
+        validate_tag(name)?;
+        let current = match self.tag_descriptor(name) {
+            Ok(current) => Some(current.digest),
+            Err(Error::TagNotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+        let retired = {
+            let _lease = self.lease()?;
+            self.read_retired_inner()?
+        };
+        refuse_version_move(
+            name,
+            current.as_ref().or(retired.tags.get(name)),
+            replacement.filter(|_| current.is_none()),
+        )?;
+        if current.as_ref() != expected {
+            return Err(Error::Conflict { current });
+        }
+        Ok(())
+    }
+
     /// Reject invalid or occupied tag names before an expensive ingest.
     /// Publication must still use compare-and-swap to catch concurrent changes.
     pub fn check_new_tag(&self, name: &str) -> Result<()> {
@@ -1296,8 +1359,58 @@ impl Store {
                 current: Some(current.digest),
             });
         }
+        if version_shaped(name) {
+            // Recorded before the index changes: a crash in between leaves a
+            // name bound to the digest it already names, never a free version.
+            let mut retired = self.read_retired_inner()?;
+            retired.tags.insert(name.into(), current.digest.clone());
+            self.write_retired_locked(&retired)?;
+        }
         index.manifests.remove(position);
         self.write_index(&index)
+    }
+}
+
+/// Deleted version tags and the digest each named, `local/retired-version-tags.toml`.
+/// A version tag names one image forever (machine-images §3), so its name
+/// stays bound after its index entry goes.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetiredTags {
+    schema: u32,
+    #[serde(default)]
+    tags: BTreeMap<String, Digest>,
+}
+
+const RETIRED_TAGS: &str = "local/retired-version-tags.toml";
+
+impl Store {
+    /// Caller holds the store lease.
+    fn read_retired_inner(&self) -> Result<RetiredTags> {
+        let bytes = match read_bounded(&self.root.join(RETIRED_TAGS), 16 * MAX_SMALL_BLOB) {
+            Ok(bytes) => bytes,
+            Err(Error::Io(e)) if e.kind() == io::ErrorKind::NotFound => {
+                return Ok(RetiredTags {
+                    schema: 1,
+                    tags: BTreeMap::new(),
+                })
+            }
+            Err(error) => return Err(error),
+        };
+        let retired: RetiredTags =
+            toml::from_str(std::str::from_utf8(&bytes).map_err(|e| invalid(e.to_string()))?)
+                .map_err(|e| invalid(e.to_string()))?;
+        if retired.schema != 1 {
+            return Err(invalid("unsupported retired version tag record"));
+        }
+        Ok(retired)
+    }
+    /// Caller holds the store lease and the index lock.
+    fn write_retired_locked(&self, retired: &RetiredTags) -> Result<()> {
+        let bytes = toml::to_string(retired).map_err(|e| invalid(e.to_string()))?;
+        fs::create_dir_all(self.root.join("local"))?;
+        host::sync_dir(&self.root)?;
+        self.atomic_write(&self.root.join(RETIRED_TAGS), bytes.as_bytes())
     }
 }
 

@@ -886,29 +886,7 @@ pub fn create(
     tag: &str,
     expected: Option<&Digest>,
 ) -> Result<Descriptor> {
-    Store::validate_tag_name(tag)?;
-    let version = tag
-        .rsplit_once(':')
-        .is_some_and(|(_, tag)| Store::is_version_tag(tag));
-    match store.tag_descriptor(tag) {
-        Ok(current) if version => {
-            return Err(invalid(format!(
-                "{tag} already names {}; version tags never move",
-                current.digest
-            )))
-        }
-        Ok(current) if Some(&current.digest) != expected => {
-            return Err(image_store::Error::Conflict {
-                current: Some(current.digest),
-            }
-            .into())
-        }
-        Err(image_store::Error::TagNotFound(_)) if expected.is_some() => {
-            return Err(image_store::Error::Conflict { current: None }.into())
-        }
-        Err(image_store::Error::TagNotFound(_)) | Ok(_) => {}
-        Err(error) => return Err(error.into()),
-    }
+    store.check_tag_target(tag, expected, None)?;
     let rules = PcFirmwareRules(crate::firmware::catalogue());
     for rom in &image.firmware {
         store.resolve_descriptor(&rom.package.descriptor, &Validator(&rules))?;

@@ -258,6 +258,21 @@ pub fn publish_with_options(
     tag: &str,
     expected: Option<&Digest>,
     flatten: bool,
+    hook: impl FnMut(PublicationStep) -> Result<()>,
+) -> Result<Descriptor> {
+    publish_as(workspace, tag, expected, flatten, None, hook)
+}
+/// Save as new image…: publish under `tag`, keeping the source image's
+/// descriptive manifest annotations (its title, the firmware packages it came
+/// from) and recording the source as the new image's base. `title` replaces
+/// the title; an empty one removes it, `None` keeps the source's. A version
+/// tag never moves; any other existing tag moves only from `expected`.
+pub fn publish_as(
+    workspace: &Workspace<'_>,
+    tag: &str,
+    expected: Option<&Digest>,
+    flatten: bool,
+    title: Option<&str>,
     mut hook: impl FnMut(PublicationStep) -> Result<()>,
 ) -> Result<Descriptor> {
     if workspace.read("discard.toml")?.is_some() {
@@ -285,9 +300,7 @@ pub fn publish_with_options(
     }
     let old = session(workspace)?;
     let store = workspace.store();
-    if expected.is_none() {
-        store.check_new_tag(tag)?;
-    }
+    store.check_tag_target(tag, expected, None)?;
     let resolved = crate::provider::load_pinned(store, &old.image, true, true)?;
     let image = resolved.image;
     let mut config = resolved.config;
@@ -487,12 +500,13 @@ pub fn publish_with_options(
             .as_bytes(),
         &mut hook,
     )?);
-    let manifest = Manifest::new_with_types(
+    let mut manifest = Manifest::new_with_types(
         "ibm-pc-at",
         configuration,
         layers,
         PcProvider.payload_types(),
     )?;
+    derive_annotations(&mut manifest, &image.manifest, &old.image.digest, title)?;
     let proposed = store.import_manifest_with_types(&manifest, PcProvider.payload_types())?;
     hook(PublicationStep::BlobStored(proposed.digest.clone()))?;
     let verified = store.verify_publication_reusing(&proposed, &PcProvider, &image)?;
@@ -513,6 +527,88 @@ pub fn publish_with_options(
         false,
         Some(verified),
     )
+}
+/// The OCI annotation naming the image a new one was saved from.
+pub const BASE_DIGEST: &str = "org.opencontainers.image.base.digest";
+/// The OCI annotation holding an image's library title.
+pub const TITLE: &str = "org.opencontainers.image.title";
+/// OCI annotations that describe one particular build, not its copies.
+const PER_MANIFEST: &[&str] = &[
+    "org.opencontainers.image.created",
+    "org.opencontainers.image.version",
+    "org.opencontainers.image.revision",
+    "org.opencontainers.image.base.name",
+    "org.opencontainers.image.ref.name",
+];
+/// A saved image keeps what describes its source (title, firmware package
+/// provenance and any other manifest annotation); the platform comes from the
+/// new envelope. A save that changes nothing is the source image itself, so a
+/// new tag becomes an alias of the same digest. Otherwise the annotations of
+/// one particular build are dropped and the source is recorded as the base.
+pub(crate) fn derive_annotations(
+    manifest: &mut Manifest,
+    source: &Manifest,
+    source_digest: &Digest,
+    title: Option<&str>,
+) -> Result<()> {
+    for (key, value) in &source.annotations {
+        manifest
+            .annotations
+            .entry(key.clone())
+            .or_insert_with(|| value.clone());
+    }
+    match title.map(str::trim) {
+        Some("") => {
+            manifest.annotations.remove(TITLE);
+        }
+        Some(title) => {
+            manifest.annotations.insert(TITLE.into(), title.into());
+        }
+        None => {}
+    }
+    if Digest::of(&manifest.encode_with_types(PAYLOAD_TYPES)?) == *source_digest {
+        return Ok(());
+    }
+    for key in PER_MANIFEST {
+        manifest.annotations.remove(*key);
+    }
+    manifest
+        .annotations
+        .insert(BASE_DIGEST.into(), source_digest.to_string());
+    Ok(())
+}
+/// The tag and expected digest of an unfinished publication of a workspace,
+/// if one is pending. Publishing again with exactly these finishes it; Start
+/// stays blocked until then. Read without the workspace lock, as a hint for
+/// the desktop; the publication itself rechecks under ownership.
+pub fn pending_publication_at(
+    store: &Store,
+    name: &str,
+) -> Result<Option<(String, Option<Digest>)>> {
+    let Some(bytes) = read_small(&store.workspace_path(name)?.join("transaction.toml"))? else {
+        return Ok(None);
+    };
+    let transaction: Transaction = parse(&bytes)?;
+    if transaction.schema != 1 {
+        return Err(invalid("unsupported transaction schema"));
+    }
+    Ok(Some((transaction.tag, transaction.expected)))
+}
+/// A bounded workspace document, or `None` when it does not exist.
+fn read_small(path: &std::path::Path) -> Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let mut bytes = Vec::new();
+    file.take(image_store::MAX_SMALL_BLOB + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > image_store::MAX_SMALL_BLOB {
+        return Err(invalid("workspace document exceeds size limit"));
+    }
+    Ok(Some(bytes))
 }
 fn journal(
     workspace: &Workspace<'_>,
@@ -792,22 +888,16 @@ pub fn sweep_materialized(store: &Store) -> Result<image_store::codec::Sweep> {
 /// Read a workspace's image identity without acquiring its execution lock.
 /// Desktop discovery uses this only as a hint; Start rechecks under ownership.
 pub fn pinned_image_at(store: &Store, name: &str) -> Result<Option<Digest>> {
-    use std::io::Read;
-    let path = store.workspace_path(name)?.join("session.toml");
-    let file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.into()),
+    Ok(pinned_descriptor_at(store, name)?.map(|image| image.digest))
+}
+/// The manifest descriptor a workspace's session pins, read the same way.
+pub fn pinned_descriptor_at(store: &Store, name: &str) -> Result<Option<Descriptor>> {
+    let Some(bytes) = read_small(&store.workspace_path(name)?.join("session.toml"))? else {
+        return Ok(None);
     };
-    let mut bytes = Vec::new();
-    file.take(image_store::MAX_SMALL_BLOB + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > image_store::MAX_SMALL_BLOB {
-        return Err(invalid("workspace document exceeds size limit"));
-    }
     let state: Session = parse(&bytes)?;
     if state.schema != 1 {
         return Err(invalid("unsupported workspace schema"));
     }
-    Ok(Some(state.image.digest))
+    Ok(Some(state.image))
 }

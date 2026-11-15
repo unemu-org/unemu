@@ -501,6 +501,8 @@ pub(super) struct LibraryView {
     pub firmware_import_wanted: bool,
     /// A created image was selected; the next frame drops the machine-file selection.
     clear_file_selection: bool,
+    /// Settings on an image while it is open.
+    pub image_settings: Option<crate::image_settings::ImageSettings>,
 }
 impl LibraryView {
     pub fn new(root: Option<PathBuf>) -> Self {
@@ -532,6 +534,7 @@ impl LibraryView {
             new_machine: None,
             firmware_import_wanted: false,
             clear_file_selection: false,
+            image_settings: None,
         }
     }
     #[cfg(test)]
@@ -668,11 +671,39 @@ impl LibraryView {
                     self.status = Some("Ready".into());
                 }
             }
-            Event::Layers(name, result) => {
+            Event::Layers(name, result, source) => {
                 self.busy = false;
                 if let Some(dialog) = &mut self.layers {
                     dialog.set_workspace(name);
                     dialog.set_details(result);
+                    dialog.set_source(*source);
+                }
+            }
+            Event::PublishRefused(refused) => {
+                self.busy = false;
+                self.pending_operation = false;
+                match &mut self.layers {
+                    Some(dialog) => dialog.refused(refused.error, refused.tags),
+                    None => self.error = Some(refused.error),
+                }
+            }
+            Event::SettingsOpened(result) => {
+                self.busy = false;
+                let opened = result.and_then(|opened| {
+                    let (row, source, tags) = *opened;
+                    let running = self.active.as_ref().is_some_and(|(active, _, _)| {
+                        active.descriptor.digest == row.descriptor.digest
+                    });
+                    crate::image_settings::ImageSettings::new(row, source, tags, running)
+                });
+                match opened {
+                    Ok(settings) => self.image_settings = Some(settings),
+                    Err(error) => self.error = Some(error),
+                }
+            }
+            Event::Planned(revision, plan, tags) => {
+                if let Some(settings) = &mut self.image_settings {
+                    settings.planned(revision, plan.map(|plan| *plan), tags);
                 }
             }
             Event::Published(row) => {
@@ -728,6 +759,24 @@ impl LibraryView {
                 }
                 self.status = Some(format!("Created {}", row.reference));
                 self.show_created(*row);
+            }
+            Event::Revised(Ok(row)) => {
+                self.busy = false;
+                self.image_settings = None;
+                self.status = Some(format!(
+                    "Published {}; the source image is unchanged",
+                    row.reference
+                ));
+                self.show_created(*row);
+            }
+            Event::Revised(Err(refused)) => {
+                self.busy = false;
+                match &mut self.image_settings {
+                    Some(settings) if settings.review.is_some() => {
+                        settings.refused(refused.error, refused.tags)
+                    }
+                    _ => self.error = Some(refused.error),
+                }
             }
             Event::Created(Err(error)) => match &mut self.new_machine {
                 Some(wizard) => {
@@ -863,6 +912,20 @@ impl LibraryView {
             self.send(Request::Layers(row, name));
         }
     }
+    /// Machine › Save as new image…: Disk layers' Save as layer… form.
+    pub fn begin_save_image(&mut self) {
+        self.open_layers();
+        if let Some(dialog) = &mut self.layers {
+            dialog.begin_save(false);
+        }
+    }
+    /// Settings… on the selected image; the worker reads it and the sheet
+    /// opens read-only while the image runs.
+    pub fn open_settings(&mut self) {
+        if let Some(row) = self.selected.clone() {
+            self.send(Request::OpenSettings(row));
+        }
+    }
     /// Select a created image in the machine view with no filter, search or
     /// collapsed group hiding it, so Start never targets a hidden machine.
     fn show_created(&mut self, row: ImageRow) {
@@ -900,6 +963,7 @@ impl LibraryView {
     }
     pub fn has_dialog(&self) -> bool {
         self.layers.is_some()
+            || self.image_settings.is_some()
             || self.import.is_some()
             || self.delete
             || self.decision.is_some()
@@ -911,6 +975,7 @@ impl LibraryView {
     /// stays: the exit waits for that decision.
     pub fn close_dialogs(&mut self) {
         self.layers = None;
+        self.image_settings = None;
         self.import = None;
         self.delete = false;
         if let Some(dialog) = self.firmware_import.take() {
@@ -1161,10 +1226,13 @@ impl LibraryView {
                                     {
                                         commands.push(Command::Start);
                                     }
-                                    ui.add_enabled(false, egui::Button::new("Settings…"))
-                                        .on_hover_text(
-                                            "Image settings editing is not available yet.",
-                                        );
+                                    if ui
+                                        .button("Settings…")
+                                        .on_hover_text("Changes create a new image revision; disks are shared.")
+                                        .clicked()
+                                    {
+                                        commands.push(Command::Settings);
+                                    }
                                     if ui.button("Layers…").clicked() {
                                         commands.push(Command::Layers);
                                     }
@@ -1480,6 +1548,38 @@ impl LibraryView {
             self.firmware_modal(ctx, classic, &mut requests);
             return requests;
         }
+        if let Some(settings) = &mut self.image_settings {
+            settings.read_only = self.active.as_ref().is_some_and(|(active, _, _)| {
+                active.descriptor.digest == settings.row.descriptor.digest
+            });
+            if settings.review.is_some() {
+                match crate::settings_sheet::show_review(ctx, settings, self.busy, classic) {
+                    crate::settings_sheet::ReviewAction::None => (),
+                    crate::settings_sheet::ReviewAction::Back => settings.review = None,
+                    crate::settings_sheet::ReviewAction::Cancel => self.image_settings = None,
+                    crate::settings_sheet::ReviewAction::Publish(plan, target) => {
+                        self.busy = true;
+                        self.status = Some("Publishing the new image revision…".into());
+                        requests.push(Request::PublishRevision(plan, target));
+                    }
+                }
+            } else {
+                match crate::settings_sheet::show_image(ctx, settings, classic) {
+                    crate::settings_sheet::ImageAction::None => (),
+                    crate::settings_sheet::ImageAction::Cancel => self.image_settings = None,
+                    crate::settings_sheet::ImageAction::Review => {
+                        let request = settings.begin_review();
+                        requests.push(Request::PlanRevision(
+                            settings.row.clone(),
+                            request.revision,
+                            Box::new(request.machine),
+                        ));
+                    }
+                }
+            }
+            self.firmware_modal(ctx, classic, &mut requests);
+            return requests;
+        }
         if let Some((path, tag)) = &mut self.import {
             let mut close = false;
             egui::Modal::new(egui::Id::unique("import-image")).show(ctx, |ui| {
@@ -1559,7 +1659,7 @@ impl LibraryView {
                         self.begin_import(path);
                     }
                 }
-                crate::layers_dialog::Action::Publish(name, tag, flatten) => {
+                crate::layers_dialog::Action::Publish(name, target) => {
                     self.pending_operation = true;
                     self.busy = true;
                     self.status = Some("Publishing whole machine…".into());
@@ -1569,7 +1669,7 @@ impl LibraryView {
                         .map(|(r, _, _)| r)
                         .or(self.selected.as_ref())
                     {
-                        requests.push(Request::Publish(row.clone(), name, tag, flatten));
+                        requests.push(Request::Publish(row.clone(), name, target));
                     }
                 }
                 crate::layers_dialog::Action::Discard(name) => {
@@ -2524,5 +2624,461 @@ pub(super) mod tests {
             .images
             .iter()
             .any(|image| image.source == assembly::ImageSource::Inline(assembled.clone())));
+    }
+
+    fn until_view(view: &mut LibraryView, done: impl Fn(&LibraryView) -> bool) {
+        let ctx = egui::Context::default();
+        for _ in 0..1200 {
+            view.poll(&ctx);
+            if done(view) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("the library worker did not finish: {:?}", view.error);
+    }
+
+    /// The settings sheet as the worker opens it, after `open_settings`.
+    fn settings_opened(view: &mut LibraryView) {
+        view.image_settings = None;
+        view.open_settings();
+        until_view(view, |view| view.image_settings.is_some());
+    }
+    /// Review changes… as the sheet sends it, waiting for the worker's check.
+    fn review_checked(view: &mut LibraryView) {
+        let settings = view.image_settings.as_mut().unwrap();
+        let request = settings.begin_review();
+        let row = settings.row.clone();
+        view.send(Request::PlanRevision(
+            row,
+            request.revision,
+            Box::new(request.machine),
+        ));
+        until_view(view, |view| {
+            view.image_settings
+                .as_ref()
+                .and_then(|s| s.review.as_ref())
+                .is_some_and(|r| r.plan.is_some())
+        });
+    }
+
+    #[test]
+    fn save_as_new_image_from_layers_keeps_title_and_firmware_sources() {
+        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let row = crate::image_settings::tests::open_image(&firmware);
+        let before = firmware
+            .store
+            .resolve("open-at:1.0.0", &pc_image::PcProvider)
+            .unwrap()
+            .manifest
+            .annotations;
+        let worker = Worker::spawn(firmware.store.root().to_owned(), egui::Context::default());
+        worker_events(&worker, &|e| matches!(e, Event::Recoveries(_)));
+        let mut row = row;
+        for (tag, title, base) in [
+            ("open-at:1.1.0", None, "open-at:1.0.0"),
+            (
+                "open-at-dos:1.0.0",
+                Some("Open AT with FreeDOS"),
+                "open-at:1.1.0",
+            ),
+        ] {
+            worker
+                .send
+                .send(Request::Layers(
+                    row.clone(),
+                    regular_name(&row.descriptor.digest),
+                ))
+                .unwrap();
+            let Event::Layers(name, details, source) =
+                worker_events(&worker, &|e| matches!(e, Event::Layers(..)))
+            else {
+                unreachable!()
+            };
+            // After the first save the library selects the saved image, whose
+            // workspace the form then starts from.
+            assert_eq!(source.reference, base);
+            assert!(source.title.is_some());
+            assert!(source.tags.iter().any(|(t, _)| t == "open-at:1.0.0"));
+            let crate::layers_dialog::Action::Publish(workspace, target) =
+                crate::layers_dialog::tests::reviewed_publication(
+                    &name,
+                    WorkspaceKind::Regular,
+                    details.unwrap(),
+                    *source,
+                    tag,
+                    false,
+                    title,
+                )
+            else {
+                panic!("no publication")
+            };
+            // A save without changes would alias its source; write a sector.
+            let owner = firmware.store.workspace(&workspace).unwrap();
+            let prepared = pc_image::workspace::prepare_start(&owner, base, false).unwrap();
+            crate::image_settings::tests::write_c(&prepared, 1);
+            drop(prepared);
+            drop(owner);
+            worker
+                .send
+                .send(Request::Publish(row.clone(), workspace, target))
+                .unwrap();
+            let Event::Published(saved) =
+                worker_events(&worker, &|e| matches!(e, Event::Published(_)))
+            else {
+                unreachable!()
+            };
+            row = *saved;
+            let after = firmware
+                .store
+                .resolve(tag, &pc_image::PcProvider)
+                .unwrap()
+                .manifest
+                .annotations;
+            assert_eq!(
+                after[pc_image::workspace::TITLE],
+                title.unwrap_or("Open AT workbench"),
+                "{tag}"
+            );
+            assert_eq!(
+                after["unemu.firmware.sources"], before["unemu.firmware.sources"],
+                "{tag}"
+            );
+            assert!(
+                after.contains_key(pc_image::workspace::BASE_DIGEST),
+                "{tag}"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_revision_publishes_a_new_tag_and_leaves_the_source() {
+        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let row = crate::image_settings::tests::open_image(&firmware);
+        let mut view = LibraryView::synthetic(firmware.store.root().to_owned());
+        view.selected = Some(row.clone());
+        settings_opened(&mut view);
+        let settings = view.image_settings.as_mut().unwrap();
+        assert!(!settings.read_only);
+        settings.set(
+            "memory.extended_kib",
+            assembly::capabilities::Value::Integer(2048),
+        );
+        review_checked(&mut view);
+        let review = view
+            .image_settings
+            .as_mut()
+            .unwrap()
+            .review
+            .as_mut()
+            .unwrap();
+        let target = review.save.submit().unwrap();
+        assert_eq!(target.reference, "open-at:1.1.0");
+        let plan = review.plan.clone().unwrap().unwrap();
+        view.send(Request::PublishRevision(Box::new(plan), target));
+        until_view(&mut view, |view| view.image_settings.is_none());
+        assert_eq!(
+            view.selected.as_ref().map(|r| r.reference.as_str()),
+            Some("open-at:1.1.0")
+        );
+        assert_eq!(
+            firmware
+                .store
+                .tag_descriptor("open-at:1.0.0")
+                .unwrap()
+                .digest,
+            row.descriptor.digest
+        );
+        let old = firmware
+            .store
+            .resolve("open-at:1.0.0", &pc_image::PcProvider)
+            .unwrap()
+            .manifest;
+        let new = firmware
+            .store
+            .resolve("open-at:1.1.0", &pc_image::PcProvider)
+            .unwrap()
+            .manifest;
+        assert_eq!(
+            new.layers, old.layers,
+            "every disk, ROM and metadata blob is shared"
+        );
+        assert_ne!(new.config.digest, old.config.digest);
+        // A second revision cannot take the version tag the first one took.
+        view.selected = Some(row);
+        settings_opened(&mut view);
+        view.image_settings.as_mut().unwrap().set(
+            "memory.extended_kib",
+            assembly::capabilities::Value::Integer(4096),
+        );
+        review_checked(&mut view);
+        let review = view
+            .image_settings
+            .as_mut()
+            .unwrap()
+            .review
+            .as_mut()
+            .unwrap();
+        assert_eq!(review.save.reference(), "open-at:1.2.0");
+        review.save.set_tag("1.1.0".into());
+        assert!(review.save.submit().is_none());
+        assert!(matches!(
+            review.save.prompt,
+            Some(crate::save_image::Prompt::Refuse(_))
+        ));
+        // Running images open read-only.
+        let running = view.selected.clone().unwrap();
+        view.active = Some((running, "regular".into(), WorkspaceKind::Regular));
+        settings_opened(&mut view);
+        assert!(view.image_settings.as_ref().unwrap().read_only);
+    }
+
+    #[test]
+    fn settings_review_and_save_never_open_the_store_on_the_ui_thread() {
+        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let row = crate::image_settings::tests::open_image(&firmware);
+        let mut view = LibraryView::synthetic(firmware.store.root().to_owned());
+        // The view's own root points nowhere: only the worker reaches the store.
+        view.root = Some(firmware.temp.path().join("not-a-store"));
+        view.selected = Some(row);
+        settings_opened(&mut view);
+        view.image_settings.as_mut().unwrap().set(
+            "memory.extended_kib",
+            assembly::capabilities::Value::Integer(2048),
+        );
+        review_checked(&mut view);
+        let review = view
+            .image_settings
+            .as_ref()
+            .unwrap()
+            .review
+            .as_ref()
+            .unwrap();
+        assert!(matches!(review.plan, Some(Ok(_))));
+        assert!(review.save.tags.iter().any(|(t, _)| t == "open-at:1.0.0"));
+        view.image_settings = None;
+        view.begin_save_image();
+        until_view(&mut view, |view| {
+            view.layers.as_ref().is_some_and(|d| d.save.is_some())
+        });
+        let form = view.layers.as_ref().unwrap().save.as_ref().unwrap();
+        assert_eq!(form.source, "open-at:1.0.0");
+        assert_eq!(form.title.as_deref(), Some("Open AT workbench"));
+    }
+
+    #[test]
+    fn a_refused_revision_asks_again_with_the_digest_another_program_moved_the_tag_to() {
+        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let row = crate::image_settings::tests::open_image(&firmware);
+        firmware
+            .store
+            .update_tag(
+                "open-at:latest",
+                &row.descriptor,
+                None,
+                &pc_image::PcProvider,
+            )
+            .unwrap();
+        let mut view = LibraryView::synthetic(firmware.store.root().to_owned());
+        view.selected = Some(row.clone());
+        settings_opened(&mut view);
+        view.image_settings.as_mut().unwrap().set(
+            "memory.extended_kib",
+            assembly::capabilities::Value::Integer(2048),
+        );
+        review_checked(&mut view);
+        let settings = view.image_settings.as_mut().unwrap();
+        let review = settings.review.as_mut().unwrap();
+        review.save.set_tag("latest".into());
+        assert!(review.save.submit().is_none());
+        let target = review.save.confirm_move().unwrap();
+        assert_eq!(target.expected, Some(row.descriptor.digest.clone()));
+        let plan = review.plan.clone().unwrap().unwrap();
+        // Another program moves latest before Publish reaches the store.
+        let other = pc_image::create::create(
+            &firmware.store,
+            &crate::image_settings::tests::open_new_image(&firmware, 2048),
+            "open-at:other",
+            None,
+        )
+        .unwrap();
+        firmware
+            .store
+            .update_tag(
+                "open-at:latest",
+                &other,
+                Some(&row.descriptor.digest),
+                &pc_image::PcProvider,
+            )
+            .unwrap();
+        view.busy = true;
+        view.send(Request::PublishRevision(Box::new(plan), target));
+        until_view(&mut view, |view| !view.busy);
+        let review = view
+            .image_settings
+            .as_ref()
+            .unwrap()
+            .review
+            .as_ref()
+            .unwrap();
+        assert!(review.error.is_some());
+        assert_eq!(
+            review.save.prompt,
+            Some(crate::save_image::Prompt::Move(other.digest.clone())),
+            "the question returns with the current digest"
+        );
+        assert_eq!(
+            firmware
+                .store
+                .tag_descriptor("open-at:latest")
+                .unwrap()
+                .digest,
+            other.digest
+        );
+    }
+
+    #[test]
+    fn an_interrupted_save_is_offered_and_finished_with_its_own_tag() {
+        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let row = crate::image_settings::tests::open_image(&firmware);
+        let name = regular_name(&row.descriptor.digest);
+        let owner = firmware.store.workspace(&name).unwrap();
+        let prepared = pc_image::workspace::prepare_start(&owner, "open-at:1.0.0", false).unwrap();
+        crate::image_settings::tests::write_c(&prepared, 7);
+        drop(prepared);
+        assert!(pc_image::workspace::publish_with_hook(
+            &owner,
+            "open-at-dos:1.0.0",
+            None,
+            |step| {
+                if step == pc_image::workspace::PublicationStep::IntentStored {
+                    Err(pc_image::Error::Invalid("injected interruption".into()))
+                } else {
+                    Ok(())
+                }
+            }
+        )
+        .is_err());
+        drop(owner);
+        let mut view = LibraryView::synthetic(firmware.store.root().to_owned());
+        view.selected = Some(row);
+        view.begin_save_image();
+        until_view(&mut view, |view| {
+            view.layers.as_ref().is_some_and(|d| d.save.is_some())
+        });
+        let dialog = view.layers.as_ref().unwrap();
+        let Some(crate::layers_dialog::Action::Publish(workspace, target)) =
+            crate::layers_dialog::tests::finish(dialog)
+        else {
+            panic!("no pending save offered")
+        };
+        assert_eq!(target.reference, "open-at-dos:1.0.0");
+        assert_eq!(target.expected, None);
+        view.busy = true;
+        view.send(Request::Publish(
+            view.selected.clone().unwrap(),
+            workspace,
+            target,
+        ));
+        until_view(&mut view, |view| !view.busy);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(firmware.store.tag_descriptor("open-at-dos:1.0.0").is_ok());
+        assert_eq!(
+            pc_image::workspace::pending_publication_at(&firmware.store, &name).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn image_settings_and_its_review_render_without_a_window() {
+        let firmware = crate::library_test_support::FirmwareStore::new(false);
+        let row = crate::image_settings::tests::open_image(&firmware);
+        let mut settings = crate::image_settings::tests::opened(&firmware, row, false);
+        settings.set(
+            "memory.extended_kib",
+            assembly::capabilities::Value::Integer(2048),
+        );
+        let ctx = egui::Context::default();
+        let texts = |output: &egui::FullOutput| -> Vec<String> {
+            output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                    _ => None,
+                })
+                .collect()
+        };
+        for tab in assembly::capabilities::Group::ALL {
+            settings.tab = tab;
+            for frame in 0..2 {
+                let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    assert!(matches!(
+                        crate::settings_sheet::show_image(ui.ctx(), &mut settings, true),
+                        crate::settings_sheet::ImageAction::None
+                    ));
+                });
+                output.textures_delta.clear();
+                if tab == assembly::capabilities::Group::Memory && frame == 1 {
+                    let texts = texts(&output);
+                    assert!(
+                        texts
+                            .iter()
+                            .any(|t| t.contains("1 change — a new revision on review")),
+                        "{texts:?}"
+                    );
+                    assert!(texts.iter().any(|t| t == "Was: 1024"), "{texts:?}");
+                }
+            }
+        }
+        crate::image_settings::tests::reviewed(&mut settings, &firmware.store);
+        let mut last = Vec::new();
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                assert!(matches!(
+                    crate::settings_sheet::show_review(ui.ctx(), &mut settings, false, true),
+                    crate::settings_sheet::ReviewAction::None
+                ));
+            });
+            output.textures_delta.clear();
+            last = texts(&output);
+        }
+        for text in [
+            "Publish new image revision",
+            "Hardware changes — flattened machine configuration",
+            "CMOS bytes recomputed, as SETUP would",
+            "Image and media bindings",
+        ] {
+            assert!(last.iter().any(|t| t.contains(text)), "{text}: {last:?}");
+        }
+        // Escape on the sheet with edits asks before discarding them.
+        settings.review = None;
+        let escape = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(escape.clone(), |ui| {
+            assert!(matches!(
+                crate::settings_sheet::show_image(ui.ctx(), &mut settings, true),
+                crate::settings_sheet::ImageAction::None
+            ));
+        });
+        output.textures_delta.clear();
+        assert!(settings.discard_prompt);
+        let mut output = ctx.run_ui(escape, |ui| {
+            assert!(matches!(
+                crate::settings_sheet::show_image(ui.ctx(), &mut settings, true),
+                crate::settings_sheet::ImageAction::None
+            ));
+        });
+        output.textures_delta.clear();
+        assert!(!settings.discard_prompt, "Escape keeps editing");
+        assert!(settings.dirty());
     }
 }

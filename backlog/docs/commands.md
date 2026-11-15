@@ -169,6 +169,17 @@ cargo test --offline -p pc-image --test zero_base --test zero_base_allocation
 cargo test --offline -p window new_machine
 ```
 
+Settings on an image and the Save as new image… dialog (configuration-only
+revisions, CMOS recomputation, tag rules and kept annotations) have headless
+tests too:
+
+```sh
+cargo test --offline -p pc-image --test revision
+cargo test --offline -p image-store --test store version_tags
+cargo test --offline -p window -- save_image image_settings layers_dialog \
+  library_view::tests::save_as library_view::tests::settings_revision
+```
+
 In the window, firmware readiness and Media > Insert > From library use the
 Preferences store root when set, otherwise the shared unemu family default:
 `~/Library/Application Support/unemu/` on macOS,
@@ -228,6 +239,11 @@ name for a disposable gaming session; discard removes only that session. Journal
 policies persist locally; volatile policies still lose writes on close. Publication
 keeps journaled changes, seals fixed disks into sparse parent-bound layers and
 freezes changed floppies as whole compressed payloads and CMOS as raw blobs.
+A published image keeps the source manifest's annotations (title,
+`unemu.firmware.sources`) and records the source in
+`org.opencontainers.image.base.digest` (a save without changes is the source
+manifest itself). The store refuses to move a version tag and remembers deleted
+version tags, so their names can later name only their old digests.
 The CLI publishes only new tags. Publish, discard and abandon open existing workspaces only. Discard lists affected files and requires `--yes`; omitting it
 provides a preview. `abandon-publication` removes a pending intent while keeping
 media and any already published tag. CAS conflicts roll back the intent, so a
