@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Fetch a local-only fixture; neither archive nor driver may be redistributed.
+# Requires unzip, and curl unless LTEMM_ARCHIVE names a local copy. The flake
+# devShell provides both and the pinned CA roots the download is verified against.
 set -euo pipefail
 
 if command -v sha256sum >/dev/null 2>&1; then

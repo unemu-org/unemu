@@ -38,8 +38,8 @@ the publisher (as vendor) and the developer (as authors) in the standard OCI
 annotations that registry web UIs show.
 
 Run it inside `nix develop`, which provides mtools 4.0.49, the version that
-produced the pinned image; unzip and curl (download only) come from the
-host. It also needs Bash, awk, and `sha256sum` or `shasum`. The pinned hash
+produced the pinned image, and the pinned unzip and curl (download only),
+with their CA roots. It also needs Bash, awk, and `sha256sum` or `shasum`. The pinned hash
 was measured on macOS (arm64) with Info-ZIP UnZip 6.00; a Linux build has
 not been measured. The verified archive is cached in `build/`; a
 cached or supplied archive with another hash is refused. The script checks

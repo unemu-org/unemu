@@ -2137,7 +2137,7 @@ impl LibraryView {
                 .as_ref()
                 .expect("a library worker")
                 .receive
-                .recv_timeout(std::time::Duration::from_secs(30))
+                .recv_timeout(crate::test_wait::HANG_GUARD)
                 .expect("worker notification");
             if let Event::Error(error) = &event {
                 panic!("worker: {error}");
@@ -2784,7 +2784,7 @@ pub(super) mod tests {
         let mut view = LibraryView::new(Some(file));
         view.busy = true;
         let ctx = egui::Context::default();
-        for _ in 0..500 {
+        for _ in crate::test_wait::rounds() {
             view.poll(&ctx);
             if view.worker_dead {
                 break;
@@ -2805,7 +2805,7 @@ pub(super) mod tests {
         view.shutdown();
         let mut replacement = LibraryView::new(Some(temp.path().join("valid")));
         replacement.poll(&ctx);
-        for _ in 0..500 {
+        for _ in crate::test_wait::rounds() {
             replacement.poll(&ctx);
             if replacement.snapshot.storage.is_some() {
                 break;
@@ -2925,10 +2925,7 @@ pub(super) mod tests {
         };
         let worker = Worker::spawn(firmware.store.root().to_owned(), egui::Context::default());
         let next = |wanted: &dyn Fn(&Event) -> bool| loop {
-            match worker
-                .receive
-                .recv_timeout(std::time::Duration::from_secs(60))
-            {
+            match worker.receive.recv_timeout(crate::test_wait::HANG_GUARD) {
                 Ok(Event::Error(error)) => panic!("worker: {error}"),
                 Ok(event) if wanted(&event) => break event,
                 Ok(_) => continue,
@@ -3060,10 +3057,7 @@ pub(super) mod tests {
 
     fn worker_events(worker: &Worker, wanted: &dyn Fn(&Event) -> bool) -> Event {
         loop {
-            match worker
-                .receive
-                .recv_timeout(std::time::Duration::from_secs(60))
-            {
+            match worker.receive.recv_timeout(crate::test_wait::HANG_GUARD) {
                 Ok(Event::Error(error)) => panic!("worker: {error}"),
                 Ok(event) if wanted(&event) => return event,
                 Ok(_) => continue,
@@ -3284,7 +3278,7 @@ pub(super) mod tests {
 
     fn until_view(view: &mut LibraryView, done: impl Fn(&LibraryView) -> bool) {
         let ctx = egui::Context::default();
-        for _ in 0..1200 {
+        for _ in crate::test_wait::rounds() {
             view.poll(&ctx);
             if done(view) {
                 return;

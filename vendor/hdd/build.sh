@@ -36,11 +36,18 @@ START=17
 PARTITION_SECTORS=$((SECTORS - START))
 OFFSET=$((START * 512))
 
-# Ignore per-user mtools settings and fix every filesystem timestamp at the FAT
-# epoch. Omitting mcopy -m keeps host file mtimes out of the image.
-export MTOOLSRC=/dev/null MTOOLS_SKIP_CHECK=1
+# Fix every filesystem timestamp at the FAT epoch. Omitting mcopy -m keeps host
+# file mtimes out of the image.
+export MTOOLS_SKIP_CHECK=1
 export SOURCE_DATE_EPOCH=315532800 TZ=UTC
-unset MTOOLS_DATE_STRING MTOOLS_NFATS MTOOLS_DIR_LEN
+unset MTOOLSRC MTOOLS_DATE_STRING MTOOLS_NFATS MTOOLS_DIR_LEN
+# mtools reads ~/.mtoolsrc through HOME even when MTOOLSRC is set (that only
+# adds a further file), so mtools runs with an empty home directory. A
+# system-wide mtools.conf, if the host has one, is still read.
+mkdir "$WORK/home"
+run_mtools() {
+	HOME="$WORK/home" "$@"
+}
 
 dd if=/dev/zero of="$IMAGE" bs=512 count="$SECTORS" 2>/dev/null
 # Write the MBR ourselves instead of mpartition so no boot code or tool-selected
@@ -62,11 +69,11 @@ printf 'UNEMUPC ' | dd of="$WORK/boot.bin" bs=1 seek=3 conv=notrunc 2>/dev/null
 printf '\200\000\051' | dd of="$WORK/boot.bin" bs=1 seek=36 conv=notrunc 2>/dev/null
 printf '\315\030\364\353\375' | dd of="$WORK/boot.bin" bs=1 seek=62 conv=notrunc 2>/dev/null
 printf '\125\252' | dd of="$WORK/boot.bin" bs=1 seek=510 conv=notrunc 2>/dev/null
-mformat -i "$IMAGE@@$OFFSET" -T "$PARTITION_SECTORS" -h 4 -s 17 -H "$START" \
+run_mtools mformat -i "$IMAGE@@$OFFSET" -T "$PARTITION_SECTORS" -h 4 -s 17 -H "$START" \
 	-c 4 -R 1 -d 2 -r 32 -L 41 -m 0xf8 -N 0x28959854 -v UNEMUHDD \
 	-B "$WORK/boot.bin" ::
 printf 'unemupc98 hard disk fixture\r\n' > "$WORK/MARKER.TXT"
-mcopy -i "$IMAGE@@$OFFSET" "$WORK/MARKER.TXT" ::MARKER.TXT
+run_mtools mcopy -i "$IMAGE@@$OFFSET" "$WORK/MARKER.TXT" ::MARKER.TXT
 
 # FAT type is determined by data-cluster count, not the BPB's text label.
 read_le16() {
@@ -95,4 +102,4 @@ fi
 check_sha256 "$IMAGE" "e97f1eb42c1dcef1a2fbf9541135b22a955704836088c46bd280d27780e9ba2d"
 mv -f "$IMAGE" "$OUT"
 echo "built $OUT ($SIZE bytes, $CLUSTERS FAT16 data clusters)"
-mdir -i "$OUT@@$OFFSET" ::
+run_mtools mdir -i "$OUT@@$OFFSET" ::

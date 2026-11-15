@@ -106,6 +106,28 @@ fn read_fixture(path: &Path, fetch: &str) -> io::Result<Vec<u8>> {
     })
 }
 
+/// Waiting on background threads in tests.
+///
+/// A loaded CI runner can take many seconds for work that takes milliseconds
+/// on an idle machine, so no test outcome may depend on how soon a worker
+/// answers. The only wall-clock bound is this hang guard, which ends a test
+/// whose worker never answers instead of letting it run forever.
+#[cfg(test)]
+mod test_wait {
+    use std::time::{Duration, Instant};
+
+    /// How long a test waits for a background thread before it reports a hang.
+    pub(crate) const HANG_GUARD: Duration = Duration::from_secs(300);
+
+    /// Rounds of a polling loop until the hang guard has passed. The loop
+    /// pauses between rounds itself, and its own check after the loop
+    /// reports a hang.
+    pub(crate) fn rounds() -> impl Iterator<Item = ()> {
+        let deadline = Instant::now() + HANG_GUARD;
+        std::iter::from_fn(move || (Instant::now() < deadline).then_some(()))
+    }
+}
+
 #[cfg(test)]
 type InputLogEntry = (u64, Vec<u8>, Vec<std::ops::Range<usize>>);
 

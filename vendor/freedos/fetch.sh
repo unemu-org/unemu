@@ -12,7 +12,8 @@
 # This project reads the images without linking their code.
 #
 # Requires `git`, `nasm`, `unzip`, `curl`, and mtools (`mformat`/`mcopy`/`mdir`/`mlabel`)
-# on PATH — all in the flake devShell.
+# on PATH. Run it inside `nix develop`: the flake devShell provides all of them
+# and the pinned CA roots that the downloads are verified against.
 set -euo pipefail
 
 # Both GNU/Linux and macOS provide one of these SHA-256 tools.

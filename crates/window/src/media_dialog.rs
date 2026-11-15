@@ -1978,10 +1978,7 @@ mod review_tests {
         let receiver = job.pending.take().unwrap();
         let mut progress = false;
         loop {
-            match receiver
-                .recv_timeout(std::time::Duration::from_secs(30))
-                .unwrap()
-            {
+            match receiver.recv_timeout(crate::test_wait::HANG_GUARD).unwrap() {
                 LibraryMessage::Progress(_) => progress = true,
                 LibraryMessage::Ready(result) => {
                     assert_eq!(result.unwrap().0[0].index, Some(indices[0]));
@@ -2220,7 +2217,7 @@ mod review_tests {
             .pending
             .take()
             .unwrap()
-            .recv_timeout(std::time::Duration::from_secs(30))
+            .recv_timeout(crate::test_wait::HANG_GUARD)
             .unwrap();
         let LibraryMessage::Rows(Err(reason)) = message else {
             panic!("busy result")

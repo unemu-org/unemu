@@ -645,8 +645,8 @@ order and with the archive's DOS timestamps, onto a 1.44M FAT12 floppy with a
 fixed label, serial and non-bootable volume sector, checks the image's pinned
 SHA-256, and writes the vendor and licence texts to `extras/`. Nothing from the
 archive is run. Run the scripts inside `nix develop`, which provides mtools
-4.0.49 (it produced the pinned images, measured on macOS with the host's
-Info-ZIP UnZip 6.00; Linux not measured); unzip and curl come from the host.
+4.0.49, Info-ZIP UnZip 6.00 and curl (the pinned images were measured on macOS
+with the host's UnZip 6.00 and reproduce with the devShell's; Linux not measured).
 They are not part of CI: they need the network and third-party content.
 Everything under `vendor/shareware/` except the scripts and READMEs is
 gitignored, so archives, images, extras and unpacked files are never committed.
@@ -1274,7 +1274,11 @@ See `vendor/user-roms/README.md` for catalogue hashes and the proprietary golden
 
 The CI `fixtures` gate runs the Kiselev, FreeDOS, test386, XTIDE, hard-disk,
 open VGA BIOS, open AT BIOS and at-pm-test scripts below; each checks pinned
-output SHA-256 hashes. All but the two Nix-built BIOSes rebuild offline when
+output SHA-256 hashes. The gate prints `== fixtures: <script>` before each one
+and stops at the first failure, so the last header names the failing script.
+Downloads use the devShell's `curl` and verify against its pinned CA bundle,
+not the host's (see [`dev-setup.md`](dev-setup.md#stack-specific-toolchain-rust)).
+All but the two Nix-built BIOSes rebuild offline when
 their pinned source commits and release archives are cached (Nix caches the
 VGA and AT BIOS sources and store paths); `vendor/at-pm-test/build.sh` always builds offline, assembling the
 committed program source with the devShell's nasm into a 1.2M boot floppy.
@@ -1403,7 +1407,8 @@ vendor/hdd/build.sh                          # partitioned FAT16 data disk; pinn
 mdir -i vendor/hdd/fat16.img@@8704 ::          # UNEMUHDD, MARKER.TXT (29 bytes, 1980-01-01)
 ```
 
-It uses mtools 4.0.49 with a fixed serial, label and FAT-epoch timestamps.
+It uses mtools 4.0.49 with a fixed serial, label and FAT-epoch timestamps, and
+runs mtools with an empty `HOME` so no `~/.mtoolsrc` applies.
 See `vendor/hdd/README.md` for the IBM AT type-2 geometry, partition/BPB layout,
 hash and licence. The CI `fixtures` gate builds it.
 

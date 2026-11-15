@@ -1608,7 +1608,7 @@ mod tests {
         registry.hold_next("GET /v2/unemu/one/tags/list");
         std::thread::scope(|scope| {
             let listing = scope.spawn(|| list(&store, &accounts, &cancel));
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let deadline = std::time::Instant::now() + crate::test_wait::HANG_GUARD;
             while !registry.held() {
                 assert!(
                     std::time::Instant::now() < deadline,

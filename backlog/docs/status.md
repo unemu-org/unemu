@@ -5,6 +5,21 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — CI on Linux: pinned download tools and CA roots, no worker
+  race in window tests:** the devShell now provides `curl` and Info-ZIP
+  `unzip` 6.00 and points `NIX_SSL_CERT_FILE` and `CURL_CA_BUNDLE` at the
+  pinned nixpkgs CA bundle. The CI container's own bundle could not verify the
+  FreeDOS package mirror's current root, so the `fixtures` gate stopped in
+  `vendor/freedos/fetch.sh` and the goldens then missed the later fixtures.
+  The gate now prints a header before each script. **MEASURED on
+  aarch64-darwin:** with the pinned bundle minus that root, the devShell's
+  curl fails as CI did (`self-signed certificate in certificate chain`); with
+  the devShell's bundle it verifies. In a fresh tree every fixture script (the
+  `fixtures` gate, LTEMM and the three shareware floppies) reproduces all
+  pinned hashes with the devShell's tools. `vendor/hdd/build.sh` runs mtools
+  with an empty `HOME`, so no `~/.mtoolsrc` applies. Window tests that wait for
+  a background worker no longer fail after 10–60 s on a loaded runner: a
+  five-minute hang guard is their only time bound. A Linux CI run is pending.
 - **2026-11-15 — Floppy drive and medium types are separate; open AT B: is
   3.5-inch 1.44M:** the µPD765 model installs a `DriveType` per unit
   (360K, 720K, 1.2M, 1.44M, or a custom geometry taking only itself),

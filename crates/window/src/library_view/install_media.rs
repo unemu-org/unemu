@@ -1647,7 +1647,7 @@ pub(crate) mod tests {
     }
     fn poll_until(view: &mut LibraryView, mut done: impl FnMut(&LibraryView) -> bool) {
         let ctx = egui::Context::default();
-        for _ in 0..5000 {
+        for _ in crate::test_wait::rounds() {
             view.poll(&ctx);
             if done(view) {
                 return;

@@ -50,6 +50,15 @@ rest of nixpkgs — plus `nasm` + `binutils` (guest test-ROM builds),
 `qemu` (optional differential oracle), and `jq` (fetching the SingleStepTests
 corpus). Enter with `nix develop` or let direnv auto-load it.
 
+The fixture scripts under `vendor/` take their tools from the same devShell:
+`mtools` 4.0.49, `dosfstools`, `curl` and Info-ZIP `unzip` 6.00, so macOS and
+Linux run the same versions. The devShell also points `NIX_SSL_CERT_FILE` and
+`CURL_CA_BUNDLE` at the pinned nixpkgs CA bundle, so downloads verify against
+the same roots everywhere rather than the host's bundle (an old container bundle
+could not verify a FreeDOS mirror's current root). `SSL_CERT_FILE` stays unset:
+the registry client's native-roots loader would read that file instead of the
+macOS keychain. A host `SSL_CERT_FILE` still applies to tools that read it.
+
 ### Firmware toolchain (SeaBIOS)
 
 The separate `firmware` devShell keeps the cross toolchain out of the default
@@ -117,27 +126,30 @@ Cargo's registry, git database and `target/` are cached using `flake.lock` and
 `Cargo.lock`; CI never needs dependency credentials.
 
 The gates check the devShell, formatting, publication safety, Clippy, workspace
-tests, fixture builds and slow goldens. Fixtures are built by the three
-`vendor/{kiselev-bios,freedos,test386}/fetch.sh` scripts and the devShell's tools,
-including `nasm` and `mtools` 4.0.49. The scripts fetch only missing pinned commits
+tests, fixture builds and slow goldens. The `fixtures` gate runs the fixture
+scripts listed in `scripts/ci-gate.sh` with the devShell's tools, including
+`nasm`, `mtools` 4.0.49, `curl` and `unzip`. It prints a header before each
+script and stops at the first failure, so the last header names the failing
+script. The scripts fetch only missing pinned commits
 or release archives and check every output against its pinned SHA-256 hash.
 Retain their gitignored source clones and FreeDOS `build/*.zip` archives for
 offline rebuilds. FreeDOS fixes its serial, label and timestamps using mtools'
 `SOURCE_DATE_EPOCH` support; see `vendor/freedos/README.md`. Portable size checks
 and `sha256sum`/`shasum -a 256` also allow running the scripts outside the devShell
-with equivalent tools. The separate `vendor/hdd/build.sh` builds a partitioned
+with equivalent tools. `vendor/hdd/build.sh` builds a partitioned
 FAT16 data disk entirely offline with mtools 4.0.49, fixed timestamps/serial/label,
-and a pinned SHA-256; see `vendor/hdd/README.md`. It is not part of the CI
-`fixtures` gate. Each gate still runs after
-earlier failures. The final commit status, `ci / x86_64`, names failed steps.
+and a pinned SHA-256; it runs mtools with an empty `HOME`, because mtools reads
+`~/.mtoolsrc` even when `MTOOLSRC` is set. See `vendor/hdd/README.md`. Each gate
+still runs after earlier failures. The final commit status, `ci / x86_64`, names
+failed steps.
 
 The separate `vendor/xtide-universal-bios/fetch.sh` prepares the pinned r638 AT
 option ROM with standard shell tools (`curl` only when the download is missing),
 checks both hashes, pads with 00h to 8 KiB and fixes the last-byte checksum.
 Retain `vendor/xtide-universal-bios/build/ide_at.bin` for offline rebuilds;
 the generated image is `vendor/xtide-universal-bios/ide_at-r638-8k.bin`.
-Both paths are gitignored. This fixture is not part of the CI `fixtures` gate;
-see its README for the exact upstream GPL version 2 statement and
+Both paths are gitignored. It runs last in the CI `fixtures` gate, because its
+source export needs the network; see its README for the exact upstream GPL version 2 statement and
 [`commands.md`](commands.md#ci) for building it and checking the catalogue hash.
 
 Run a gate from the repository root with `bash scripts/ci-gate.sh <step>`;

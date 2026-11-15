@@ -1668,7 +1668,7 @@ pub(crate) mod tests {
     /// Wait for `condition` while applying the worker's queued events, so the
     /// worker never waits on a full queue meanwhile.
     pub(crate) fn wait_pumping(view: &mut LibraryView, mut condition: impl FnMut() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + crate::test_wait::HANG_GUARD;
         while !condition() {
             assert!(Instant::now() < deadline, "the condition was not reached");
             view.pump_queued();
@@ -2344,7 +2344,7 @@ pub(crate) mod tests {
             _ => usize::MAX,
         };
         let others = blobs.len() - 1;
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + crate::test_wait::HANG_GUARD;
         while fetched(&view) != others {
             assert!(Instant::now() < deadline, "{}", fetched(&view));
             view.pump_queued();
@@ -2454,7 +2454,7 @@ pub(crate) mod tests {
         let registry = &lab.registry;
         std::thread::scope(|scope| {
             scope.spawn(|| {
-                let deadline = Instant::now() + Duration::from_secs(30);
+                let deadline = Instant::now() + crate::test_wait::HANG_GUARD;
                 while !cancel.load(Ordering::SeqCst) {
                     assert!(Instant::now() < deadline);
                     std::thread::sleep(Duration::from_millis(1));

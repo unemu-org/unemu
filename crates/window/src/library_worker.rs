@@ -1181,7 +1181,7 @@ mod tests {
         loop {
             let event = worker
                 .receive
-                .recv_timeout(Duration::from_secs(20))
+                .recv_timeout(crate::test_wait::HANG_GUARD)
                 .expect("worker notification");
             if let Event::Error(e) = &event {
                 panic!("worker: {e}");
@@ -1449,8 +1449,10 @@ mod tests {
             ))
             .unwrap();
         loop {
-            if let Event::PublishRefused(refused) =
-                w.receive.recv_timeout(Duration::from_secs(20)).unwrap()
+            if let Event::PublishRefused(refused) = w
+                .receive
+                .recv_timeout(crate::test_wait::HANG_GUARD)
+                .unwrap()
             {
                 assert!(refused.tags.iter().any(|(tag, _)| tag == "test:source"));
                 break;
@@ -1524,7 +1526,9 @@ mod tests {
                 .unwrap();
             loop {
                 if matches!(
-                    w.receive.recv_timeout(Duration::from_secs(20)).unwrap(),
+                    w.receive
+                        .recv_timeout(crate::test_wait::HANG_GUARD)
+                        .unwrap(),
                     Event::Error(_)
                 ) {
                     break;
@@ -1747,7 +1751,11 @@ mod tests {
                 .send(Request::Import(path, "test:imported".into(), vec![]))
                 .unwrap();
             loop {
-                match w.receive.recv_timeout(Duration::from_secs(20)).unwrap() {
+                match w
+                    .receive
+                    .recv_timeout(crate::test_wait::HANG_GUARD)
+                    .unwrap()
+                {
                     Event::FirmwareError(_) => {
                         assert!(firmware);
                         break;
@@ -1780,7 +1788,7 @@ mod tests {
             ))
             .unwrap();
         loop {
-            match w.receive.recv_timeout(Duration::from_secs(20)) {
+            match w.receive.recv_timeout(crate::test_wait::HANG_GUARD) {
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Ok(_) => (),
                 Err(e) => panic!("{e}"),

@@ -883,10 +883,10 @@ mod tests {
                 tx.send(std::thread::current().id()).unwrap();
             },
         )
-        .recv_timeout(std::time::Duration::from_secs(10))
+        .recv_timeout(crate::test_wait::HANG_GUARD)
         .unwrap();
         assert_ne!(
-            rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap(),
+            rx.recv_timeout(crate::test_wait::HANG_GUARD).unwrap(),
             caller
         );
         assert!(result.0.checked);

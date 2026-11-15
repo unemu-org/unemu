@@ -39,14 +39,23 @@ case "$step" in
         # images. XTIDE runs last: it exports its
         # source over the network with Subversion, which Nix supplies, so an
         # unreachable server cannot keep the other fixtures from being built.
+        # The lane stops at the first failing script; the last header names it.
         gate_command+=(bash -euc '
+            echo "== fixtures: vendor/kiselev-bios/fetch.sh"
             bash vendor/kiselev-bios/fetch.sh
+            echo "== fixtures: vendor/freedos/fetch.sh"
             bash vendor/freedos/fetch.sh
+            echo "== fixtures: vendor/test386/fetch.sh"
             bash vendor/test386/fetch.sh
+            echo "== fixtures: vendor/hdd/build.sh"
             bash vendor/hdd/build.sh
+            echo "== fixtures: vendor/vgabios/fetch.sh"
             bash vendor/vgabios/fetch.sh
+            echo "== fixtures: vendor/unemu-at-bios/fetch.sh"
             bash vendor/unemu-at-bios/fetch.sh
+            echo "== fixtures: vendor/at-pm-test/build.sh"
             bash vendor/at-pm-test/build.sh
+            echo "== fixtures: vendor/xtide-universal-bios/fetch.sh"
             bash vendor/xtide-universal-bios/fetch.sh
         ')
         ;;

@@ -31,10 +31,10 @@
 #
 # Requires Bash, mtools (mformat, mcopy, mdir), unzip, curl (only to
 # download), awk, dd, locale, printf, tr, wc, mktemp, sha256sum or shasum,
-# and the C.UTF-8 locale. The project devShell provides mtools 4.0.49, the
-# version used for the pinned images; unzip and curl come from the host. The pinned image hashes were
-# measured on macOS (arm64) with Info-ZIP UnZip 6.00; a Linux build has not
-# been measured.
+# and the C.UTF-8 locale. The project devShell provides mtools 4.0.49,
+# Info-ZIP UnZip 6.00 and curl with pinned CA roots. The pinned image hashes
+# were measured on macOS (arm64) with the host's UnZip 6.00 and reproduce with
+# the devShell's; a Linux build has not been measured.
 
 if command -v sha256sum >/dev/null 2>&1; then
 	SHA256=(sha256sum)
@@ -51,7 +51,7 @@ require_tools() {
 		if ! command -v "$tool" >/dev/null 2>&1; then
 			case "$tool" in
 				mformat | mcopy | mdir) hint="nix develop provides mtools" ;;
-				unzip | curl) hint="install it with the host's package manager; the devShell does not provide it" ;;
+				unzip | curl) hint="nix develop provides it" ;;
 				*) hint="install it with the host's package manager" ;;
 			esac
 			echo "missing $tool on PATH: $hint" >&2
@@ -76,7 +76,7 @@ check_sha256() {
 		cached) echo "Remove the cached archive and run again; do not change its expected hash." >&2 ;;
 		supplied) echo "SHAREWARE_ARCHIVE must be the original $ARCHIVE named in README.md." >&2 ;;
 		member) echo "The archive is not the pinned release; do not change the expected hash." >&2 ;;
-		image) echo "Check the toolchain (mtools 4.0.49 from nix develop, Info-ZIP UnZip 6.00); review the image deliberately before updating its expected hash." >&2 ;;
+		image) echo "Check the toolchain (mtools 4.0.49 and Info-ZIP UnZip 6.00 from nix develop); review the image deliberately before updating its expected hash." >&2 ;;
 	esac
 	exit 1
 }

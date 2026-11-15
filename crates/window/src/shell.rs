@@ -5641,7 +5641,7 @@ kind='mda'
         let job = shell.readiness.take().unwrap();
         let prepared = job
             .receiver
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(crate::test_wait::HANG_GUARD)
             .unwrap();
         let progress = job.control.snapshot();
         shell.apply_readiness(job.index, job.revision, prepared);
@@ -5996,7 +5996,7 @@ kind='mda'
         let job = shell.readiness.take().unwrap();
         let (entry, prepared) = job
             .receiver
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(crate::test_wait::HANG_GUARD)
             .unwrap();
         assert!(prepared.is_some());
         assert_eq!(job.control.snapshot().listed, 1);
@@ -6017,7 +6017,7 @@ kind='mda'
         let mut job = shell.readiness.take().unwrap();
         let prepared = job
             .receiver
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(crate::test_wait::HANG_GUARD)
             .unwrap();
         assert!(job.control.snapshot().listed > 0);
         assert!(job.control.snapshot().files_read > 0);
@@ -6045,7 +6045,7 @@ kind='mda'
         let job = shell.readiness.take().unwrap();
         let prepared = job
             .receiver
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(crate::test_wait::HANG_GUARD)
             .unwrap();
         assert!(!job.control.is_cancelled());
         shell.apply_readiness(job.index, job.revision, prepared);
@@ -6069,7 +6069,7 @@ kind='mda'
         assert_eq!(shell.library_revision, revision);
         if let Some(job) = shell.readiness.take() {
             job.receiver
-                .recv_timeout(std::time::Duration::from_secs(10))
+                .recv_timeout(crate::test_wait::HANG_GUARD)
                 .unwrap();
         }
     }
@@ -6112,7 +6112,7 @@ kind='mda'
         let job = shell.readiness.take().unwrap();
         assert!(!job.user_cancelled);
         job.receiver
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(crate::test_wait::HANG_GUARD)
             .unwrap();
     }
 
@@ -6253,7 +6253,7 @@ kind='mda'
         assert_eq!(job.index, 0);
         let prepared = job
             .receiver
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(crate::test_wait::HANG_GUARD)
             .unwrap();
         shell.refresh_library();
         shell.apply_readiness(job.index, job.revision, prepared);
@@ -6263,7 +6263,7 @@ kind='mda'
         let job = shell.readiness.take().unwrap();
         let prepared = job
             .receiver
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(crate::test_wait::HANG_GUARD)
             .unwrap();
         shell.apply_readiness(job.index, job.revision, prepared);
         assert!(shell.library[0].checked);
@@ -6304,7 +6304,7 @@ kind='mda'
         let job = shell.readiness.take().unwrap();
         let prepared = job
             .receiver
-            .recv_timeout(std::time::Duration::from_secs(10))
+            .recv_timeout(crate::test_wait::HANG_GUARD)
             .unwrap();
         let document = prepared.1.as_ref().unwrap();
         let loaded = document.load(shell.args.options).unwrap();
@@ -6331,7 +6331,7 @@ kind='mda'
         shell.image_library.selected = Some(f.row.clone());
         shell.poll_images(&ctx);
         shell.command(Command::GamingMode, &ctx);
-        for _ in 0..2000 {
+        for _ in crate::test_wait::rounds() {
             shell.poll_images(&ctx);
             if shell.presenter.is_some() {
                 break;
@@ -6365,7 +6365,7 @@ kind='mda'
         shell.image_library.selected = Some(f.row.clone());
         assert!(shell.command_allowed(Command::Settings));
         shell.command(Command::Settings, &ctx);
-        for _ in 0..2000 {
+        for _ in crate::test_wait::rounds() {
             shell.poll_images(&ctx);
             if shell.image_library.image_settings.is_some() {
                 break;
@@ -6380,7 +6380,7 @@ kind='mda'
         shell.image_library.image_settings = None;
         assert!(shell.command_allowed(Command::SaveImage));
         shell.command(Command::SaveImage, &ctx);
-        for _ in 0..2000 {
+        for _ in crate::test_wait::rounds() {
             shell.poll_images(&ctx);
             if shell
                 .image_library
@@ -6416,7 +6416,7 @@ kind='mda'
         assert!(shell.image_library.readiness.is_none());
         assert!(shell.command_allowed(Command::Start));
         shell.command(Command::Start, &ctx);
-        for _ in 0..2000 {
+        for _ in crate::test_wait::rounds() {
             shell.poll_images(&ctx);
             if shell.presenter.is_some() {
                 break;
@@ -6785,7 +6785,7 @@ kind='mda'
         shell.image_library.selected = Some(f.row.clone());
         shell.poll_images(&ctx);
         shell.command(Command::GamingMode, &ctx);
-        for _ in 0..2000 {
+        for _ in crate::test_wait::rounds() {
             shell.poll_images(&ctx);
             if shell.presenter.is_some() {
                 break;
@@ -7145,7 +7145,7 @@ kind='mda'
             image_store::location::machine_media_dir(&root.join("machine.toml")).unwrap()
         );
         let mut failure = None;
-        for _ in 0..500 {
+        for _ in crate::test_wait::rounds() {
             failure = library.poll();
             if failure.is_some() || !library.is_busy() {
                 break;
@@ -7219,7 +7219,7 @@ kind='mda'
         assert_eq!(draft.unit, 0);
         let library = draft.library.as_mut().expect("its From library… view");
         assert_eq!(library.store_path, store.to_string_lossy());
-        for _ in 0..4000 {
+        for _ in crate::test_wait::rounds() {
             assert_eq!(library.poll(), None);
             if !library.is_busy() {
                 break;
@@ -7232,7 +7232,7 @@ kind='mda'
             library.selected, chosen,
             "the library window's set is chosen"
         );
-        for _ in 0..4000 {
+        for _ in crate::test_wait::rounds() {
             shell.confirm_insert();
             if shell.insert_dialog.is_none() {
                 break;
@@ -8367,7 +8367,7 @@ kind='mda'
                 },
                 &ctx,
             );
-            for _ in 0..4000 {
+            for _ in crate::test_wait::rounds() {
                 shell.poll_images(&ctx);
                 if shell.presenter.is_some() {
                     break;
@@ -8381,7 +8381,7 @@ kind='mda'
 
             shell.command(Command::Insert(0), &ctx);
             shell.open_insert_library();
-            for _ in 0..4000 {
+            for _ in crate::test_wait::rounds() {
                 let library = shell
                     .insert_dialog
                     .as_mut()
@@ -8410,7 +8410,7 @@ kind='mda'
                 .unwrap();
             library.selected = Some(row);
             library.journal = true;
-            for _ in 0..4000 {
+            for _ in crate::test_wait::rounds() {
                 shell.confirm_insert();
                 if shell.insert_dialog.is_none() {
                     break;
@@ -8462,7 +8462,7 @@ kind='mda'
                     .image_library
                     .send(crate::library_view::Request::Discard(name.clone()));
                 let workspace = f.store.workspace_path(&name).unwrap();
-                for _ in 0..4000 {
+                for _ in crate::test_wait::rounds() {
                     shell.poll_images(&ctx);
                     if !workspace.exists() {
                         break;
@@ -8472,7 +8472,7 @@ kind='mda'
                 assert!(!workspace.exists());
                 assert!(!journal.exists());
             } else {
-                for _ in 0..4000 {
+                for _ in crate::test_wait::rounds() {
                     shell.poll_images(&ctx);
                     if shell.image_library.active.is_none() {
                         break;

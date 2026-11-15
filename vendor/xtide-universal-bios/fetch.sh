@@ -9,8 +9,9 @@
 # that it assembles to both downloads.
 # Requires curl and Subversion (only for a missing cache; without svn on PATH
 # Nix supplies it from this repository's pinned nixpkgs), GNU tar, nasm, make
-# and standard shell tools from the flake devShell. Firmware bytes, cached
-# downloads and the source export are never committed.
+# and standard shell tools. The flake devShell provides all of them except
+# Subversion, and the pinned CA roots that the downloads are verified against.
+# Firmware bytes, cached downloads and the source export are never committed.
 set -euo pipefail
 
 # BSD tar (the macOS default) cannot fix member order, owners and modes, and
