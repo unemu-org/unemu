@@ -9,12 +9,13 @@
 //! corresponding source (`--source`); nothing is guessed. Set-level
 //! catalogue flags fill the set's one title record (machine-images §2.1), with
 //! the year and software-platform rules the shared import applies to the
-//! library's dialog too.
+//! library's dialog too, and the set's own labels, so a recipe can state
+//! everything the template build states for an installation set.
 
 use image_registry::guard;
 use image_store::{
     license,
-    media_set::{Config, Validator},
+    media_set::{valid_text, Config, Validator},
     media_type,
     metadata::{Metadata, Title},
     Store,
@@ -37,6 +38,8 @@ pub struct MediaCommand {
     /// `--title` and the set-level catalogue flags; absent fields stay unknown.
     /// Boxed: a full title record would dwarf every other image command.
     title: Box<Title>,
+    /// `--set-label`: the set's labels in the order given.
+    set_labels: Vec<String>,
     files: Vec<PathBuf>,
     labels: BTreeMap<usize, String>,
     formats: BTreeMap<usize, String>,
@@ -66,6 +69,7 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
         no_compress: false,
         tag: String::new(),
         title: Box::default(),
+        set_labels: Vec::new(),
         files: Vec::new(),
         labels: BTreeMap::new(),
         formats: BTreeMap::new(),
@@ -170,6 +174,25 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
             Some("--description") if action == "import" && command.title.description.is_none() => {
                 command.title.description = Some(catalogue_text(value)?)
             }
+            Some("--version") if action == "import" && command.title.version.is_none() => {
+                command.title.version = Some(catalogue_text(value)?)
+            }
+            Some("--edition") if action == "import" && command.title.edition.is_none() => {
+                command.title.edition = Some(catalogue_text(value)?)
+            }
+            Some("--set-label") if action == "import" => {
+                let label = catalogue_text(value)?;
+                // The dialog's rule for its Labels field and for disk labels.
+                if !valid_text(&label) {
+                    return Err("invalid set label: at most 128 characters, no control characters");
+                }
+                // Labels keep their order and are never deduplicated later,
+                // so a repeat would only give the same labels another digest.
+                if command.set_labels.contains(&label) {
+                    return Err("duplicate set label");
+                }
+                command.set_labels.push(label);
+            }
             Some("--license") if action == "import" && command.license.is_none() => {
                 command.license = Some(value.to_str().ok_or("invalid licence")?.into())
             }
@@ -219,9 +242,13 @@ fn catalogue_text(value: &OsString) -> Result<String, &'static str> {
     Ok(text.into())
 }
 
-/// The catalogue fields a set states, one line per value in stated order;
-/// nothing for a field left unknown.
-fn write_catalogue(output: &mut impl Write, title: &Title) -> std::io::Result<()> {
+/// The catalogue fields and labels a set states, one line per value in
+/// stated order; nothing for a field left unknown.
+fn write_catalogue(
+    output: &mut impl Write,
+    title: &Title,
+    labels: &[String],
+) -> std::io::Result<()> {
     for publisher in &title.publishers {
         writeln!(output, "publisher\t{publisher:?}")?;
     }
@@ -239,6 +266,15 @@ fn write_catalogue(output: &mut impl Write, title: &Title) -> std::io::Result<()
     }
     if let Some(description) = &title.description {
         writeln!(output, "description\t{description:?}")?;
+    }
+    if let Some(version) = &title.version {
+        writeln!(output, "version\t{version:?}")?;
+    }
+    if let Some(edition) = &title.edition {
+        writeln!(output, "edition\t{edition:?}")?;
+    }
+    for label in labels {
+        writeln!(output, "set-label\t{label:?}")?;
     }
     Ok(())
 }
@@ -305,7 +341,7 @@ fn show(store: &Store, tag: &str, output: &mut impl Write) -> anyhow::Result<()>
     }
     let metadata = Metadata::decode_for_display(&image.metadata, &image.manifest.layers)?;
     if let Some(title) = metadata.titles.first() {
-        write_catalogue(output, title)?;
+        write_catalogue(output, title, &metadata.labels)?;
     }
     let link = |d: &image_store::Descriptor| d.annotations.get(license::TERMS).cloned();
     for (what, key) in [("terms", license::TERMS), ("source", license::SOURCE)] {
@@ -417,7 +453,7 @@ fn import(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> 
     let request = media_import::Request {
         tag: command.tag.clone(),
         title: (*command.title).clone(),
-        labels: Vec::new(),
+        labels: command.set_labels.clone(),
         media: files
             .iter()
             .enumerate()
@@ -461,7 +497,7 @@ fn import(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> 
     for extra in &plan.config().extras {
         writeln!(output, "extra\t{:?}\t{:?}", extra.filename, extra.dos_name)?;
     }
-    write_catalogue(output, &command.title)?;
+    write_catalogue(output, &command.title, &command.set_labels)?;
     if let Some((license, terms)) = plan.open() {
         writeln!(output, "open\t{license}\tterms\t{:?}", terms.filename)?;
     }
@@ -481,6 +517,111 @@ fn import(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_import(flags: &[&str]) -> Result<MediaCommand, &'static str> {
+        let mut args: Vec<OsString> = [
+            "import", "disk.img", "--title", "Set", "--tag", "test:set", "--store", "store",
+        ]
+        .map(OsString::from)
+        .into();
+        args.extend(flags.iter().map(OsString::from));
+        parse(&args)
+    }
+
+    #[test]
+    fn set_labels_keep_the_order_given_and_version_and_edition_fill_the_title() {
+        let command = parse_import(&[
+            "--set-label",
+            "operating-system",
+            "--version",
+            " 1.4 ",
+            "--set-label",
+            "freedos",
+            "--edition",
+            "Floppy Edition",
+            "--set-label",
+            " open-source ",
+        ])
+        .unwrap();
+        assert_eq!(
+            command.set_labels,
+            ["operating-system", "freedos", "open-source"]
+        );
+        assert_eq!(command.title.version.as_deref(), Some("1.4"));
+        assert_eq!(command.title.edition.as_deref(), Some("Floppy Edition"));
+    }
+
+    #[test]
+    fn without_the_new_flags_the_command_is_unchanged() {
+        let command = parse_import(&[]).unwrap();
+        assert!(command.set_labels.is_empty());
+        assert_eq!(
+            *command.title,
+            Title {
+                title: "Set".into(),
+                ..Title::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_blank_repeated_or_invalid_set_label_version_or_edition_is_refused() {
+        let long = "x".repeat(129);
+        for (flags, reason) in [
+            (vec!["--set-label", "  "], "blank set metadata value"),
+            (vec!["--version", "\t"], "blank set metadata value"),
+            (vec!["--edition", " "], "blank set metadata value"),
+            (vec!["--set-label", ""], "missing media option value"),
+            (vec!["--version", "--edition"], "missing media option value"),
+            (
+                vec!["--set-label", "a", "--set-label", "b", "--set-label", " a"],
+                "duplicate set label",
+            ),
+            (
+                vec!["--version", "1.4", "--version", "1.4"],
+                "unknown or duplicate media option",
+            ),
+            (
+                vec!["--edition", "A", "--edition", "B"],
+                "unknown or duplicate media option",
+            ),
+            (
+                vec!["--set-label", &long],
+                "invalid set label: at most 128 characters, no control characters",
+            ),
+            (
+                vec!["--set-label", "a\u{7f}b"],
+                "invalid set label: at most 128 characters, no control characters",
+            ),
+        ] {
+            assert_eq!(parse_import(&flags), Err(reason), "{flags:?}");
+        }
+        let at_limit = "x".repeat(128);
+        assert_eq!(
+            parse_import(&["--set-label", &at_limit])
+                .unwrap()
+                .set_labels,
+            [at_limit]
+        );
+    }
+
+    #[test]
+    fn the_set_flags_belong_to_import_only() {
+        for action in ["ls", "show"] {
+            for flag in ["--set-label", "--version", "--edition"] {
+                let mut args: Vec<OsString> = vec![action.into()];
+                if action == "show" {
+                    args.push("test:set".into());
+                }
+                args.extend([flag, "value", "--store", "store"].map(OsString::from));
+                assert_eq!(
+                    parse(&args),
+                    Err("unknown or duplicate media option"),
+                    "{action} {flag}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn a_refused_folder_still_reports_the_hidden_files_skipped_before_it() {

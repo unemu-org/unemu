@@ -137,17 +137,25 @@ to user-supplied. Optical storage does not enable CD-ROM emulation.
 
 Set-level catalogue metadata fills the set's one title record in its metadata
 blob ([`design/machine-images.md`](design/machine-images.md) §2.1), the fields
-the library's Import installation media… dialog writes plus developers:
-`--publisher P`, `--developer D` and `--genre G` may be repeated and keep the
-order given; `--year YYYY` is a whole number from 1 to 9999; `--platform` is the
-software platform, spelled exactly as one of `DOS`, `Windows 3.x`,
-`Windows 9x`, `CP/M`, `MSX`, `ZX Spectrum`, `C64`, `Atari 8-bit`, `Atari ST` or
-`other` (not the machine platform `ibm-pc-at`); `--description TEXT` is free
-text. Values are trimmed and must not be blank. The year and platform rules are
-the dialog's, checked in the shared import both use. Without these flags the metadata, and so the set digest, are unchanged.
-The preview and `image media show` print one `publisher`, `developer` or
-`genre` line per value and `year`, `platform` and `description` lines for the
-fields given. The metadata is generated content: in an open set it is CC0-1.0
+the library's Import installation media… dialog writes plus developers, the
+version and the edition: `--publisher P`, `--developer D` and `--genre G` may
+be repeated and keep the order given; `--year YYYY` is a whole number from 1 to
+9999; `--platform` is the software platform, spelled exactly as one of `DOS`,
+`Windows 3.x`, `Windows 9x`, `CP/M`, `MSX`, `ZX Spectrum`, `C64`,
+`Atari 8-bit`, `Atari ST` or `other` (not the machine platform `ibm-pc-at`);
+`--description TEXT` is free text; `--version V` and `--edition E` name the
+release the set holds and its edition, once each (the FreeDOS sets below: `1.4`
+and `Floppy Edition`). `--set-label L` may be repeated and gives the set its
+labels, as the dialog's Labels field does, kept in the order given, so the same
+labels in another order are another set digest; a repeated label is refused,
+and a label, like a disk label, rejects control characters and is limited to
+128 characters. Values are trimmed and must not be blank. The year and platform
+rules are the dialog's, checked in the shared import both use. Without these
+flags the metadata, and so the set digest, are unchanged. The preview and
+`image media show` print one `publisher`, `developer` or `genre` line per
+value, `year`, `platform`, `description`, `version` and `edition` lines for
+the fields given, and one `set-label` line per label. The metadata is
+generated content: in an open set it is CC0-1.0
 like the config. It is part of the set: other metadata is another set digest.
 The manifest repeats the record in the OCI image-spec's standard annotations,
 which registry web UIs show: `org.opencontainers.image.title`, `.description`
@@ -155,6 +163,24 @@ which registry web UIs show: `org.opencontainers.image.title`, `.description`
 developers), lists joined with `, ` in the order given. A field not given adds
 no annotation, so a set without the flags keeps its digest; there is never a
 creation time.
+
+The command line reproduces the FreeDOS 1.4 Floppy Edition sets that
+`image template build` publishes (Official template images, below) byte for
+byte, with the same set digests; a test imports each set both ways and
+compares them. Fetch the fixtures with `bash vendor/freedos/fetch-floppy-1.4.sh`
+and import into a store that does not hold these tags yet (the command line
+never moves a tag). Each command states what the template states: the disks in
+installer order with their labels, the licence index and the source archive as
+extras with their DOS names, the title record with its version and edition,
+the set labels and the open statement. The floppy format is detected from the
+exact size and each extra's kind from its extension. The tags are the
+template's own, so `image push TAG` reaches `unemu/media/…`:
+
+```sh
+cargo run --offline -p cli -- image media import vendor/freedos/floppy-1.4/144m/x86BOOT.img vendor/freedos/floppy-1.4/144m/x86DSK01.img vendor/freedos/floppy-1.4/144m/x86DSK02.img vendor/freedos/floppy-1.4/144m/x86DSK03.img vendor/freedos/floppy-1.4/144m/x86DSK04.img vendor/freedos/floppy-1.4/144m/x86DSK05.img vendor/freedos/floppy-1.4/144m/x86DSK06.img --title "FreeDOS 1.4 (Floppy Edition, 1.44M)" --tag unemu/media/freedos-floppy-1.44m:1.4.0 --label '1=Disk 1 of 7 - boot disk and installer (x86BOOT.img)' --label '2=Disk 2 of 7 - packages (x86DSK01.img)' --label '3=Disk 3 of 7 - packages (x86DSK02.img)' --label '4=Disk 4 of 7 - packages (x86DSK03.img)' --label '5=Disk 5 of 7 - packages (x86DSK04.img)' --label '6=Disk 6 of 7 - packages (x86DSK05.img)' --label '7=Disk 7 of 7 - packages (x86DSK06.img)' --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher "The FreeDOS Project" --developer "The FreeDOS Project" --year 2025 --genre "operating system" --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on seven 3.5-inch 1.44M diskettes, unmodified: the boot disk with the floppy installer, then six disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition "Floppy Edition" --set-label freedos --set-label open-source --set-label operating-system --open --license "GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other" --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
+cargo run --offline -p cli -- image media import vendor/freedos/floppy-1.4/120m/x86BOOT.img vendor/freedos/floppy-1.4/120m/x86DSK01.img vendor/freedos/floppy-1.4/120m/x86DSK02.img vendor/freedos/floppy-1.4/120m/x86DSK03.img vendor/freedos/floppy-1.4/120m/x86DSK04.img vendor/freedos/floppy-1.4/120m/x86DSK05.img vendor/freedos/floppy-1.4/120m/x86DSK06.img vendor/freedos/floppy-1.4/120m/x86DSK07.img --title "FreeDOS 1.4 (Floppy Edition, 1.2M)" --tag unemu/media/freedos-floppy-1.2m:1.4.0 --label '1=Disk 1 of 8 - boot disk and installer (x86BOOT.img)' --label '2=Disk 2 of 8 - packages (x86DSK01.img)' --label '3=Disk 3 of 8 - packages (x86DSK02.img)' --label '4=Disk 4 of 8 - packages (x86DSK03.img)' --label '5=Disk 5 of 8 - packages (x86DSK04.img)' --label '6=Disk 6 of 8 - packages (x86DSK05.img)' --label '7=Disk 7 of 8 - packages (x86DSK06.img)' --label '8=Disk 8 of 8 - packages (x86DSK07.img)' --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher "The FreeDOS Project" --developer "The FreeDOS Project" --year 2025 --genre "operating system" --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on eight 5.25-inch 1.2M diskettes, unmodified: the boot disk with the floppy installer, then seven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition "Floppy Edition" --set-label freedos --set-label open-source --set-label operating-system --open --license "GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other" --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
+cargo run --offline -p cli -- image media import vendor/freedos/floppy-1.4/720k/x86BOOT.img vendor/freedos/floppy-1.4/720k/x86DSK01.img vendor/freedos/floppy-1.4/720k/x86DSK02.img vendor/freedos/floppy-1.4/720k/x86DSK03.img vendor/freedos/floppy-1.4/720k/x86DSK04.img vendor/freedos/floppy-1.4/720k/x86DSK05.img vendor/freedos/floppy-1.4/720k/x86DSK06.img vendor/freedos/floppy-1.4/720k/x86DSK07.img vendor/freedos/floppy-1.4/720k/x86DSK08.img vendor/freedos/floppy-1.4/720k/x86DSK09.img vendor/freedos/floppy-1.4/720k/x86DSK10.img vendor/freedos/floppy-1.4/720k/x86DSK11.img --title "FreeDOS 1.4 (Floppy Edition, 720K)" --tag unemu/media/freedos-floppy-720k:1.4.0 --label '1=Disk 1 of 12 - boot disk and installer (x86BOOT.img)' --label '2=Disk 2 of 12 - packages (x86DSK01.img)' --label '3=Disk 3 of 12 - packages (x86DSK02.img)' --label '4=Disk 4 of 12 - packages (x86DSK03.img)' --label '5=Disk 5 of 12 - packages (x86DSK04.img)' --label '6=Disk 6 of 12 - packages (x86DSK05.img)' --label '7=Disk 7 of 12 - packages (x86DSK06.img)' --label '8=Disk 8 of 12 - packages (x86DSK07.img)' --label '9=Disk 9 of 12 - packages (x86DSK08.img)' --label '10=Disk 10 of 12 - packages (x86DSK09.img)' --label '11=Disk 11 of 12 - packages (x86DSK10.img)' --label '12=Disk 12 of 12 - packages (x86DSK11.img)' --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher "The FreeDOS Project" --developer "The FreeDOS Project" --year 2025 --genre "operating system" --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on twelve 3.5-inch 720K diskettes, unmodified: the boot disk with the floppy installer, then eleven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition "Floppy Edition" --set-label freedos --set-label open-source --set-label operating-system --open --license "GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other" --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
+```
 
 A redistributable set (decision-26 amendment of 2026-11-15, for example a
 shareware release fetched under `vendor/shareware/` below: the disk image and

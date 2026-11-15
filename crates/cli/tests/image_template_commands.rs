@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `image template build` from the open fixtures: reproducible digests, dry
-//! runs, the push guard of the official namespace and a POST of the open-at
-//! template; machine-images §5.5. Nothing here reaches a network registry.
+//! runs, the push guard of the official namespace, a POST of the open-at
+//! template and `image media import` reproducing the installation sets;
+//! machine-images §5.5. Nothing here reaches a network registry.
 #[path = "support/fixtures.rs"]
 mod fixtures;
 
@@ -51,10 +52,7 @@ fn fetched() -> Option<()> {
 /// installation set's disks and extras, which it checks before the first tag.
 fn command_fetched() -> Option<()> {
     fetched()?;
-    for file in pc_image::template::media_files() {
-        fixtures::fixture(file.path)?;
-    }
-    Some(())
+    media_fetched()
 }
 
 fn run(args: &[&dyn AsRef<std::ffi::OsStr>]) -> (u8, String, String) {
@@ -495,4 +493,117 @@ fn a_missing_set_fixture_stops_the_build_before_the_first_tag() {
         assert!(!output.contains("\tsha256:"), "{output}");
         assert!(!store.exists(), "nothing is written");
     }
+}
+
+/// The fixtures of every installation set, or `None` when they are not
+/// fetched.
+fn media_fetched() -> Option<()> {
+    for file in pc_image::template::media_files() {
+        fixtures::fixture(file.path)?;
+    }
+    Some(())
+}
+
+/// The `image media import` command line that imports one installation set
+/// of the templates into `store`, every value taken from the set and its
+/// release as the template build states them: disk labels, extras with their
+/// DOS names, the catalogue record with the set labels, version and edition,
+/// and the open statement. The floppy format is detected from the exact size
+/// and the extras' kinds from their extensions, as a recipe would leave them.
+fn media_import_args(source: &pc_image::template::MediaSource, store: &Path) -> Vec<OsString> {
+    let release = source.release;
+    let mut args: Vec<OsString> = vec!["image".into(), "media".into(), "import".into()];
+    args.extend(source.disks.iter().map(|d| vendor().join(d.path).into()));
+    let mut flag = |name: &str, value: OsString| args.extend([name.into(), value]);
+    for (index, disk) in source.disks.iter().enumerate() {
+        flag("--label", format!("{}={}", index + 1, disk.name).into());
+    }
+    for (file, _) in release.extras {
+        let mut extra = vendor().join(file.path).into_os_string();
+        extra.push(":");
+        extra.push(file.name);
+        flag("--extra", extra);
+    }
+    let tag = pc_image::template::local_tag(&source.repository(), release.version);
+    flag("--title", source.title.into());
+    flag("--tag", tag.into());
+    flag("--publisher", release.publisher.into());
+    flag("--developer", release.publisher.into());
+    flag("--year", release.year.to_string().into());
+    for genre in release.genres {
+        flag("--genre", genre.into());
+    }
+    flag("--platform", "DOS".into());
+    flag("--description", source.description.into());
+    flag("--version", release.release.into());
+    flag("--edition", release.edition.into());
+    for label in release.labels {
+        flag("--set-label", label.into());
+    }
+    flag("--license", release.license.into());
+    flag("--license-text", release.terms.into());
+    flag("--source", release.source.into());
+    flag("--store", store.into());
+    args.extend(["--open".into(), "--create".into()]);
+    args
+}
+
+fn run_args(args: &[OsString]) -> (u8, String, String) {
+    run(&args
+        .iter()
+        .map(|a| a as &dyn AsRef<std::ffi::OsStr>)
+        .collect::<Vec<_>>())
+}
+
+/// The digest an import printed on its last line, after its tag.
+fn imported_digest(output: &str, tag: &str) -> String {
+    let last = output.lines().last().unwrap_or_default();
+    let digest = last.strip_prefix(&format!("{tag}\t"));
+    digest.unwrap_or_else(|| panic!("{output}")).to_owned()
+}
+
+/// A media recipe imports the official installation sets with the command
+/// line alone: each set it imports is byte for byte the set the template
+/// build publishes, so the same manifest digest. Without the set labels,
+/// version and edition it would be another set.
+#[test]
+fn the_media_import_command_reproduces_each_installation_set_of_the_templates() {
+    if media_fetched().is_none() {
+        return;
+    }
+    let t = Temp::new("template-media-import");
+    let store = Store::open(t.0.join("built")).unwrap();
+    let allow = |_: &str, _: &image_store::Manifest| Ok(());
+    let built = pc_image::template::build_media(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    assert_eq!(built.len(), pc_image::template::MEDIA.len());
+    for (source, set) in pc_image::template::MEDIA.iter().zip(&built) {
+        let tag = pc_image::template::local_tag(&source.repository(), source.release.version);
+        let args = media_import_args(source, &t.0.join("imported"));
+        let (code, output, errors) = run_args(&args);
+        assert_eq!(code, 0, "{tag}: {errors}");
+        assert_eq!(
+            imported_digest(&output, &tag),
+            set.descriptor.digest.to_string(),
+            "{tag}: {output}"
+        );
+    }
+
+    let source = &pc_image::template::MEDIA[0];
+    let tag = pc_image::template::local_tag(&source.repository(), source.release.version);
+    let mut args = media_import_args(source, &t.0.join("without"));
+    let mut index = 0;
+    while index < args.len() {
+        if ["--set-label", "--version", "--edition"].contains(&args[index].to_str().unwrap()) {
+            args.drain(index..index + 2);
+        } else {
+            index += 1;
+        }
+    }
+    let (code, output, errors) = run_args(&args);
+    assert_eq!(code, 0, "{errors}");
+    assert_ne!(
+        imported_digest(&output, &tag),
+        built[0].descriptor.digest.to_string(),
+        "{output}"
+    );
 }

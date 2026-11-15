@@ -282,6 +282,11 @@ pub fn plan_with(request: &Request, open: Option<&OpenStatement>) -> Result<Plan
         format!("invalid title {:?}", request.title.title)
     })?;
     check_catalogue(&request.title)?;
+    // Set labels obey the same text rule as every other label, whichever
+    // front end built the request.
+    for label in &request.labels {
+        ensure(valid_text(label), || format!("invalid set label {label:?}"))?;
+    }
     let empty = Digest::of(b"");
     let mut config = Config {
         schema: 1,
@@ -871,6 +876,21 @@ mod tests {
             extras: Vec::new(),
             compress: true,
         }
+    }
+
+    #[test]
+    fn an_invalid_set_label_is_refused_before_anything_is_read() {
+        let temp = Temp::new("set-label");
+        let a = temp.0.join("a.img");
+        floppy(&a, 1);
+        let mut request = request(&[a], "Synthetic set");
+        request.labels = vec!["freedos".into(), "line\nbreak".into()];
+        let error = plan(&request).unwrap_err().to_string();
+        assert!(error.contains("invalid set label"), "{error}");
+        request.labels = vec!["freedos".into(), "x".repeat(129)];
+        assert!(plan(&request).is_err());
+        request.labels = vec!["freedos".into(), "open-source".into()];
+        assert!(plan(&request).is_ok());
     }
 
     #[test]

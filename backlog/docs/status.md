@@ -5,6 +5,20 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — `image media import` reproduces the official FreeDOS sets:**
+  the command line could not express three fields the template build gives
+  the FreeDOS 1.4 Floppy Edition sets, so a set imported by hand was always
+  another set digest. New set-level flags: `--version V`, `--edition E` (the
+  title record's, once each) and a repeatable `--set-label L` (the set's
+  labels, in the order given; a repeated label is refused). The preview and
+  `image media show` print them. A fixture-gated test imports each of the
+  three sets with the command line and compares its digest with
+  `build_media`'s: all three are byte-identical, and without the new flags
+  the 1.44M set is another digest. The three documented commands give the
+  published sets' digests. Without the flags nothing changes; the shareware
+  import commands give the same digests as before. The commands are in
+  [commands](commands.md) (`image media import`).
+
 - **2026-11-15 — FreeDOS keeps its XMS after Ctrl+Alt+Del: open AT BIOS
   `v1.0.2-unemu.3`, open VGA BIOS `v0.8a-unemu.3`, templates 1.1.1:** with
   FreeDOS 1.4 loaded high over FDXMS286, a restart through guest

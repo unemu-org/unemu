@@ -909,6 +909,154 @@ fn a_bad_year_an_unknown_platform_or_a_blank_value_is_refused_before_any_blob() 
     );
 }
 
+#[test]
+fn set_labels_version_and_edition_land_in_the_metadata_in_order_and_show_prints_them() {
+    use image_store::metadata::Metadata;
+    let t = Temp::new();
+    let p = &t.0;
+    let disk = raw_disk(&p.join("disk.img"), 6);
+    let import = |tag: &str, flags: &[&str]| {
+        let mut args = vec![
+            "import",
+            disk.to_str().unwrap(),
+            "--title",
+            "Synthetic release",
+            "--tag",
+            tag,
+            "--create",
+        ];
+        args.extend(flags);
+        run(p, &args)
+    };
+    let digest = |output: &str| {
+        output
+            .lines()
+            .last()
+            .unwrap()
+            .split('\t')
+            .nth(1)
+            .unwrap()
+            .to_owned()
+    };
+    let flags = [
+        "--set-label",
+        "zeta",
+        "--version",
+        " 2.1 ",
+        "--set-label",
+        "alpha",
+        "--edition",
+        "Synthetic Edition",
+        "--set-label",
+        "middle",
+    ];
+    let lines = "version\t\"2.1\"\n\
+                 edition\t\"Synthetic Edition\"\n\
+                 set-label\t\"zeta\"\n\
+                 set-label\t\"alpha\"\n\
+                 set-label\t\"middle\"\n";
+    let (code, preview, err) = import("test:release", &[&flags[..], &["--dry-run"][..]].concat());
+    assert_eq!(code, 0, "{err}");
+    assert!(preview.contains(lines), "{preview}");
+    assert_eq!(blob_count(p), 0, "a dry run writes no blobs");
+    let (code, out, err) = import("test:release", &flags);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains(lines), "{out}");
+
+    // The labels are the set's, in the order given; version and edition are
+    // the title record's, trimmed like every set-level value.
+    let store = Store::open_existing(p.join("store")).unwrap();
+    let image = store
+        .resolve("test:release", &Validator(&PcMediaFormats))
+        .unwrap();
+    let metadata = Metadata::decode(&image.metadata, &image.manifest.layers).unwrap();
+    assert_eq!(metadata.labels, ["zeta", "alpha", "middle"]);
+    let [title] = &metadata.titles[..] else {
+        panic!("one title: {metadata:?}");
+    };
+    assert_eq!(title.version.as_deref(), Some("2.1"));
+    assert_eq!(title.edition.as_deref(), Some("Synthetic Edition"));
+    let (code, shown, err) = run(p, &["show", "test:release"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(shown.contains(lines), "{shown}");
+
+    // The order is part of the set: the same labels in another order are
+    // another set digest.
+    let mut reordered = flags;
+    reordered.swap(1, 5);
+    let (code, again, err) = import("test:reordered", &reordered);
+    assert_eq!(code, 0, "{err}");
+    assert_ne!(digest(&again), digest(&out));
+
+    // A set without the flags shows none of these lines.
+    let (code, _, err) = import("test:plain", &[]);
+    assert_eq!(code, 0, "{err}");
+    let (code, shown, err) = run(p, &["show", "test:plain"]);
+    assert_eq!(code, 0, "{err}");
+    for key in ["version", "edition", "set-label"] {
+        assert!(!shown.contains(&format!("\n{key}\t")), "{shown}");
+    }
+}
+
+#[test]
+fn a_blank_duplicate_or_misplaced_set_label_version_or_edition_is_refused() {
+    let t = Temp::new();
+    let p = &t.0;
+    let disk = raw_disk(&p.join("disk.img"), 8);
+    let long = "x".repeat(129);
+    for (flags, reason) in [
+        (vec!["--set-label", " "], "blank set metadata value"),
+        (vec!["--version", "\t"], "blank set metadata value"),
+        (vec!["--edition", "  "], "blank set metadata value"),
+        (
+            vec!["--set-label", "same", "--set-label", " same "],
+            "duplicate set label",
+        ),
+        (
+            vec!["--version", "1", "--version", "2"],
+            "unknown or duplicate media option",
+        ),
+        (
+            vec!["--edition", "A", "--edition", "B"],
+            "unknown or duplicate media option",
+        ),
+        (
+            vec!["--set-label", long.as_str()],
+            "invalid set label: at most 128 characters, no control characters",
+        ),
+        (
+            vec!["--set-label", "two\nlines"],
+            "invalid set label: at most 128 characters, no control characters",
+        ),
+        (vec!["--version"], "missing media option value"),
+    ] {
+        let mut args = vec![
+            "import",
+            disk.to_str().unwrap(),
+            "--title",
+            "Synthetic refused release",
+            "--tag",
+            "test:refused",
+            "--create",
+        ];
+        args.extend(&flags);
+        let (code, _, err) = run(p, &args);
+        assert_eq!(code, 2, "{flags:?}: {err}");
+        assert!(err.contains(reason), "{flags:?}: {err}");
+        assert_eq!(
+            blob_count(p),
+            0,
+            "{flags:?}: a refused import writes no blobs"
+        );
+    }
+    // The usage names the new set-level flags.
+    let (_, _, err) = run(p, &["import", "--version", " "]);
+    assert!(
+        err.contains("[--version V] [--edition E] [--set-label L]..."),
+        "{err}"
+    );
+}
+
 /// `image push LOCAL [TARGET] --dry-run` against the default registry with no
 /// configured registries: the guard's verdict for the official namespace.
 fn dry_run(root: &Path, tag: &str) -> (u8, String, String) {
