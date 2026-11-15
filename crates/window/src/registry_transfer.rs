@@ -1642,6 +1642,7 @@ pub(crate) mod tests {
         view.push = None;
         view.selected = Some(ImageRow {
             reference: tag.into(),
+            aliases: Vec::new(),
             descriptor: store.tag_descriptor(tag).unwrap(),
             summary: None,
             failure: None,

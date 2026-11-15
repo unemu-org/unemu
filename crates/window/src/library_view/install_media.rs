@@ -13,13 +13,13 @@
 //! 1.44M and 720K disks. Insertion itself goes through the drive's existing
 //! Insert dialog, which verifies every disk again.
 
-use super::{firmware::Redistribution, human_size, Filter, ImageRow, LibraryView, Query};
+use super::{firmware::Redistribution, human_size, Filter, ImageRow, LibraryView, Listed, Query};
 use assembly::FloppyGeometry;
 use image_store::{
     media_set::{valid_text, ExtraKind, MediaFormats, Medium},
     media_type,
     summary::{ImageSummary, MediaSetSummary, SummaryCache},
-    Descriptor, Store, Tag,
+    Descriptor, Store,
 };
 use pc_image::{media_import, media_set::PcMediaFormats};
 use std::{
@@ -115,7 +115,8 @@ fn kind_label(kind: ExtraKind) -> &'static str {
     }
 }
 
-/// One installation set tag in the Installation media collection.
+/// One installation set in the Installation media collection, with every tag
+/// of its repository that names it.
 #[derive(Clone, Debug)]
 pub(super) struct MediaRow {
     pub image: ImageRow,
@@ -126,8 +127,7 @@ impl MediaRow {
         self.image.summary.as_ref()?.media_set.as_ref()
     }
     pub fn same(&self, other: &Self) -> bool {
-        self.image.reference == other.image.reference
-            && self.image.descriptor.digest == other.image.descriptor.digest
+        self.image.same(&other.image)
     }
 }
 
@@ -236,19 +236,16 @@ pub(super) fn add_facets(facets: &mut BTreeMap<String, BTreeSet<String>>, summar
 /// result for the text and the label, genre, platform and year facets.
 pub(super) fn rows(
     cache: &SummaryCache,
-    sets: &[&Tag],
+    sets: &[&Listed],
     matches: &BTreeSet<String>,
     q: &Query,
 ) -> Vec<MediaRow> {
     let mut rows = Vec::new();
-    for tag in sets {
-        let summary = cache.summary(&tag.manifest.digest);
+    for set in sets {
+        let summary = cache.summary(&set.tag.manifest.digest);
         let matched = match summary {
-            Some(_) => matches.contains(&tag.name),
-            None => {
-                q.filter == Filter::Media
-                    && tag.name.to_lowercase().contains(&q.text.to_lowercase())
-            }
+            Some(_) => set.matched(matches),
+            None => q.filter == Filter::Media && set.named(&q.text),
         };
         let facet_match = match &q.filter {
             Filter::MediaFacet(kind, value) if kind == "Format" => {
@@ -263,14 +260,7 @@ pub(super) fn rows(
             redistribution: summary
                 .map(|s| Redistribution::of_payloads(s, is_set_payload))
                 .unwrap_or_default(),
-            image: ImageRow {
-                reference: tag.name.clone(),
-                descriptor: tag.manifest.clone(),
-                summary: summary.cloned(),
-                failure: cache
-                    .failure(&tag.manifest.digest)
-                    .map(|f| f.reason.clone()),
-            },
+            image: set.row(cache),
         });
     }
     rows.sort_by_cached_key(|row| sort_value(row, q.media_sort));
@@ -335,12 +325,7 @@ pub(super) fn cells(row: &MediaRow, drives: &[(u8, FloppyGeometry)]) -> [String;
     let title = summary.titles.first();
     [
         format!("{failed}{}", set_name(row)),
-        row.image
-            .reference
-            .rsplit(':')
-            .next()
-            .unwrap_or_default()
-            .into(),
+        row.image.tags(),
         title.and_then(|t| t.platform.clone()).unwrap_or_default(),
         disks_label(&formats(summary)),
         extras_label(set.extras.len()),
@@ -385,7 +370,7 @@ pub(super) fn details(
     let image = &row.image;
     let (Some(summary), Some(set)) = (image.summary.as_ref(), row.set()) else {
         ui.strong(image.name());
-        ui.label(&image.reference);
+        ui.label(image.references());
         ui.label(
             image
                 .failure
@@ -401,7 +386,7 @@ pub(super) fn details(
     ui.columns(3, |columns| {
         let facts = &mut columns[0];
         facts.strong(set_name(row));
-        facts.label(format!("{} · private library", image.reference));
+        facts.label(format!("{} · private library", image.references()));
         egui::Grid::new("media-set-facts")
             .num_columns(2)
             .show(facts, |ui| {
@@ -2012,7 +1997,7 @@ pub(crate) mod tests {
         view.media_selected = Some(result.media_rows[0].clone());
         let mut commands = Vec::new();
         let output = frame(&ctx, size, 0.0, vec![], |ui| {
-            commands = view.show(ui, &[], &mut file, None);
+            commands = view.show(ui, &[], &mut file);
         });
         let drawn = texts(&output);
         for expected in [
@@ -2144,7 +2129,7 @@ pub(crate) mod tests {
         let mut file = Some(0);
         let mut commands = Vec::new();
         let first = frame(&ctx, size, 0.0, vec![], |ui| {
-            commands.extend(view.show(ui, &[], &mut file, None));
+            commands.extend(view.show(ui, &[], &mut file));
         });
         let target = view.snapshot.media_rows[0].clone();
         let (_, rect) = texts(&first)
@@ -2167,7 +2152,7 @@ pub(crate) mod tests {
             (1.1, vec![]),
         ] {
             frame(&ctx, size, time, events, |ui| {
-                commands.extend(view.show(ui, &[], &mut file, None));
+                commands.extend(view.show(ui, &[], &mut file));
             });
         }
         assert!(view
@@ -2584,6 +2569,7 @@ pub(crate) mod tests {
         let row = |failure: Option<&str>| MediaRow {
             image: ImageRow {
                 reference: "synthetic-set:1.0".into(),
+                aliases: Vec::new(),
                 descriptor: Descriptor::new(media_type::MANIFEST, Digest::of(b"set"), 7),
                 summary: None,
                 failure: failure.map(Into::into),

@@ -28,6 +28,7 @@ impl Fixture {
         .manifest;
         let row = ImageRow {
             reference: "test:source".into(),
+            aliases: Vec::new(),
             descriptor,
             summary: None,
             failure: None,

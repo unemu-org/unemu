@@ -1887,8 +1887,15 @@ All machines, Recent, Favorites, user Labels/collections, the Genre, Platform,
 Year, Developer, Publisher and Series facets (§2.1), the Installation media
 collection (§5.2), the Firmware collection (§5.3) and, only when configured, Registry; a details list view fills the right pane. Sortable columns are name,
 tag, last run, size and labels. A search box filters all text fields incrementally.
-Group images by repository name, with tags as child rows, for example
-`dos-lab > 1.0, 2.0, gaming`. The list is virtualized: draw only visible rows.
+Group images by repository name, with one child row per manifest, for example
+`dos-lab > 1.0, 2.0, gaming`. Tags of one repository that name the same
+manifest, such as a version tag and its `latest` alias, share one row that
+lists them, version tags first (`2.0, latest`); the Installation media and
+Firmware collections list them the same way, and counts count rows. Actions
+use the row's version tag; Delete tag… names the tag it removes and offers the
+row's other tags. Machine files from disk are listed only under their own
+Machine files entry, never among the stored images. The list is virtualized:
+draw only visible rows.
 
 Startup reads the OCI index and the local summary cache, never every
 manifest. Cache machine platform, name, tags, title, labels, stored size and last

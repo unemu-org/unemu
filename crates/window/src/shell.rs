@@ -2563,18 +2563,10 @@ impl Shell {
                     .collect()
             })
             .unwrap_or_default();
-        commands.extend(self.image_library.show(
-            ui,
-            &self.library,
-            &mut self.selected,
-            self.logo.as_mut().map(|logo| {
-                (
-                    logo,
-                    self.preferences.reduced_motion,
-                    !self.hidden && !self.minimized,
-                )
-            }),
-        ));
+        commands.extend(
+            self.image_library
+                .show(ui, &self.library, &mut self.selected),
+        );
     }
 
     fn display(&mut self, ui: &mut egui::Ui) {
@@ -2925,11 +2917,6 @@ impl Shell {
         self.minimized = minimized;
         let lifecycle = self.events.borrow().queue.iter().any(|event| matches!(event,
             HostEvent::Window(event) if matches!(**event, WindowEvent::Focused(false) | WindowEvent::Occluded(_))));
-        if minimized || self.hidden {
-            if let Some(logo) = &mut self.logo {
-                logo.pause();
-            }
-        }
         if minimized || self.hidden || lifecycle {
             self.input(ctx, true);
             if minimized {
@@ -3126,9 +3113,6 @@ impl eframe::App for Shell {
         }
         self.screen = egui::Rect::NOTHING;
         if self.presenter.is_some() {
-            if let Some(logo) = &mut self.logo {
-                logo.pause();
-            }
             self.display(ui);
         } else {
             self.welcome(ui, &mut commands);
@@ -5741,6 +5725,36 @@ kind='mda'
             matches!(&shape.shape, egui::epaint::Shape::Text(text) if text.galley.text().contains("Loading machine…"))
         }));
         output.drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn the_library_sidebar_has_no_logo_entry() {
+        let mut shell = shell();
+        let ctx = egui::Context::default();
+        shell.logo = Some(crate::logo::Logo::load(&ctx).unwrap());
+        let output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 700.0),
+                )),
+                ..Default::default()
+            },
+            |ui| shell.welcome(ui, &mut Vec::new()),
+        );
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        for entry in ["Library", "All images", "Machine files"] {
+            assert!(texts.iter().any(|t| t == entry), "{entry}: {texts:?}");
+        }
+        assert!(!texts.iter().any(|t| t == "unemupc98"), "{texts:?}");
     }
 
     #[test]

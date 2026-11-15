@@ -480,6 +480,7 @@ pub(crate) mod tests {
             pc_image::create::create(&store.store, &image, "open-at:1.0.0", None).unwrap();
         ImageRow {
             reference: "open-at:1.0.0".into(),
+            aliases: Vec::new(),
             descriptor,
             summary: None,
             failure: None,

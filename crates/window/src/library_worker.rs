@@ -49,6 +49,7 @@ impl Recovery {
     pub fn row(&self) -> ImageRow {
         ImageRow {
             reference: self.reference.clone(),
+            aliases: Vec::new(),
             descriptor: self.image.clone(),
             summary: None,
             failure: None,
@@ -570,6 +571,7 @@ fn create_image(
         pc_image::create::create(store, image, &reference, expected).map_err(|e| e.to_string())?;
     Ok(Box::new(ImageRow {
         reference,
+        aliases: Vec::new(),
         descriptor,
         summary: None,
         failure: None,
@@ -586,6 +588,7 @@ fn revise_image<B: Backend>(
     match backend.revise(store, plan, &target) {
         Ok(descriptor) => Ok(Box::new(ImageRow {
             reference: target.reference,
+            aliases: Vec::new(),
             descriptor,
             summary: None,
             failure: None,
@@ -979,6 +982,7 @@ fn run<B: Backend>(
                         }
                         send(Event::Published(Box::new(ImageRow {
                             reference: target.reference,
+                            aliases: Vec::new(),
                             descriptor,
                             summary: None,
                             failure: None,
@@ -1642,6 +1646,7 @@ mod tests {
                 .unwrap();
                 ImageRow {
                     reference,
+                    aliases: Vec::new(),
                     descriptor,
                     summary: None,
                     failure: None,

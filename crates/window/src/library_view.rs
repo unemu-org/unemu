@@ -16,7 +16,7 @@ use crate::{
 };
 use image_store::{
     summary::{ArtifactKind, Facets, ImageSummary, SummaryCache},
-    Descriptor, Digest, Store,
+    Descriptor, Digest, Store, Tag,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -79,12 +79,31 @@ pub(super) struct Query {
 }
 #[derive(Clone, Debug)]
 pub(super) struct ImageRow {
+    /// The tag every action on the row uses.
     pub reference: String,
+    /// The other tags of this repository that name the same manifest. They
+    /// share the row, so a version tag and its `latest` alias are listed once.
+    pub aliases: Vec<String>,
     pub descriptor: Descriptor,
     pub summary: Option<ImageSummary>,
     pub failure: Option<String>,
 }
 impl ImageRow {
+    /// Rows are one per manifest of a repository, whichever tag leads them.
+    pub fn same(&self, other: &Self) -> bool {
+        self.repository() == other.repository() && self.descriptor.digest == other.descriptor.digest
+    }
+    pub fn has_tag(&self, reference: &str) -> bool {
+        self.reference == reference || self.aliases.iter().any(|a| a == reference)
+    }
+    /// Every tag of the row, the acting one first: "1.1.0, latest".
+    pub fn tags(&self) -> String {
+        tags(&self.reference, &self.aliases)
+    }
+    /// The repository with every tag of the row: "open-at:1.1.0, latest".
+    pub fn references(&self) -> String {
+        format!("{}:{}", self.repository(), self.tags())
+    }
     pub fn name(&self) -> &str {
         self.summary
             .as_ref()
@@ -103,6 +122,83 @@ impl ImageRow {
             .rsplit_once(':')
             .map_or(self.reference.as_str(), |(r, _)| r)
     }
+}
+fn tags(reference: &str, aliases: &[String]) -> String {
+    std::iter::once(reference)
+        .chain(aliases.iter().map(String::as_str))
+        .map(|r| r.rsplit_once(':').map_or(r, |(_, tag)| tag))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+/// One manifest of one repository as the library lists it, with every tag
+/// there that names it.
+pub(super) struct Listed<'a> {
+    pub tag: &'a Tag,
+    pub aliases: Vec<String>,
+}
+impl Listed<'_> {
+    fn names(&self) -> impl Iterator<Item = &String> {
+        std::iter::once(&self.tag.name).chain(&self.aliases)
+    }
+    /// The summary search matched one of the row's tags.
+    pub fn matched(&self, matches: &BTreeSet<String>) -> bool {
+        self.names().any(|name| matches.contains(name))
+    }
+    /// Before its summary exists a row matches the search by its tag names.
+    pub fn named(&self, text: &str) -> bool {
+        let text = text.to_lowercase();
+        self.names().any(|name| name.to_lowercase().contains(&text))
+    }
+    fn references(&self) -> String {
+        let name = &self.tag.name;
+        let repository = name.rsplit_once(':').map_or(name.as_str(), |(r, _)| r);
+        format!("{repository}:{}", tags(name, &self.aliases))
+    }
+    pub fn row(&self, cache: &SummaryCache) -> ImageRow {
+        let digest = &self.tag.manifest.digest;
+        ImageRow {
+            reference: self.tag.name.clone(),
+            aliases: self.aliases.clone(),
+            descriptor: self.tag.manifest.clone(),
+            summary: cache.summary(digest).cloned(),
+            failure: cache.failure(digest).map(|f| f.reason.clone()),
+        }
+    }
+}
+/// Tags of one repository that name the same manifest, such as a version tag
+/// and its `latest` alias, form one row. A version tag leads its row because
+/// it names that manifest forever (machine-images §3); the other tags follow
+/// by name. Rows keep the order of their first tag in `tags`.
+pub(super) fn listed(tags: &[Tag]) -> Vec<Listed<'_>> {
+    let mut rows: Vec<Vec<&Tag>> = Vec::new();
+    let mut index: BTreeMap<(&str, &Digest), usize> = BTreeMap::new();
+    for tag in tags {
+        let repository = tag
+            .name
+            .rsplit_once(':')
+            .map_or(tag.name.as_str(), |(r, _)| r);
+        match index.entry((repository, &tag.manifest.digest)) {
+            std::collections::btree_map::Entry::Occupied(row) => rows[*row.get()].push(tag),
+            std::collections::btree_map::Entry::Vacant(row) => {
+                row.insert(rows.len());
+                rows.push(vec![tag]);
+            }
+        }
+    }
+    let alias = |tag: &Tag| {
+        !tag.name
+            .rsplit_once(':')
+            .is_some_and(|(_, version)| Store::is_version_tag(version))
+    };
+    rows.into_iter()
+        .map(|mut tags| {
+            tags.sort_by(|a, b| (alias(a), &a.name).cmp(&(alias(b), &b.name)));
+            Listed {
+                tag: tags[0],
+                aliases: tags[1..].iter().map(|t| t.name.clone()).collect(),
+            }
+        })
+        .collect()
 }
 #[derive(Clone)]
 struct ViewRow {
@@ -171,10 +267,11 @@ fn sort_value(row: &ImageRow, column: usize) -> String {
     }
 }
 pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
+    // Counts are of rows, so a manifest under several tags counts once.
+    let listed = listed(cache.tags());
     let mut result = Snapshot {
         storage: cache.storage_totals(),
-        total: cache.tags().len(),
-        pending: cache.pending().len(),
+        total: listed.len(),
         warning: cache.library_error().map(str::to_owned),
         read: true,
         ..Default::default()
@@ -196,8 +293,10 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
         .map(|tag| tag.name.as_str())
         .collect();
     let mut machine_roms = firmware::MachineRoms::default();
-    for tag in cache.tags() {
+    for row in &listed {
+        let tag = row.tag;
         let s = cache.summary(&tag.manifest.digest);
+        result.pending += usize::from(pending.contains(tag.name.as_str()));
         let kind = s.map_or_else(
             || match tag.manifest.artifact_type.as_deref() {
                 Some(image_store::media_type::MEDIA_SET) => ArtifactKind::MediaSet,
@@ -215,19 +314,19 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
                 if let Some(s) = s {
                     firmware::add_facets(&mut result.facets, s);
                 }
-                packages.push(tag);
+                packages.push(row);
             } else {
                 result.media_total += 1;
                 result.media_pending += usize::from(pending.contains(tag.name.as_str()));
                 if let Some(s) = s {
                     install_media::add_facets(&mut result.media_facets, s);
                 }
-                sets.push(tag);
+                sets.push(row);
             }
             continue;
         }
         if let Some(s) = s.filter(|_| firmware_mode) {
-            machine_roms.add(&tag.name, s);
+            machine_roms.add(&row.references(), s);
         }
         if let Some(s) = s {
             if counted.insert(s.image.clone()) {
@@ -257,28 +356,21 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
             continue;
         }
         let text_match = if s.is_some() {
-            matches.contains(&tag.name)
+            row.matched(&matches)
         } else {
-            q.text.is_empty() || tag.name.to_lowercase().contains(&q.text.to_lowercase())
+            row.named(&q.text)
         };
         let filter_match = match &q.filter {
             Filter::MachineFiles => false,
             Filter::Favorites => s.is_some_and(|s| s.favorite),
             Filter::Recent => s.is_some_and(|s| s.last_run.is_some()),
-            Filter::Facet(_, _) => matches.contains(&tag.name),
+            Filter::Facet(_, _) => row.matched(&matches),
             _ => true,
         };
         if !text_match || !filter_match {
             continue;
         }
-        let image = ImageRow {
-            reference: tag.name.clone(),
-            descriptor: tag.manifest.clone(),
-            summary: s.cloned(),
-            failure: cache
-                .failure(&tag.manifest.digest)
-                .map(|f| f.reason.clone()),
-        };
+        let image = row.row(cache);
         groups
             .entry(image.repository().into())
             .or_default()
@@ -309,9 +401,14 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
         if count > 1 {
             let first = images[0].clone();
             let expanded = q.expanded.contains(first.repository());
+            // The header counts tags; its children are one per manifest.
+            let tags = images
+                .iter()
+                .map(|image| 1 + image.aliases.len())
+                .sum::<usize>();
             result.rows.push(ViewRow {
                 image: first,
-                group: Some(count),
+                group: Some(tags),
                 child: false,
             });
             if !expanded {
@@ -328,6 +425,11 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
 }
 
 const COLUMN_WIDTHS: [f32; 9] = [210.0, 90.0, 100.0, 120.0, 56.0, 130.0, 110.0, 100.0, 140.0];
+/// The details pane's first height, and the least either side of the split
+/// keeps: a few list rows with their header and footer, a few pane lines.
+const DETAILS_HEIGHT: f32 = 232.0;
+const DETAILS_MIN_HEIGHT: f32 = 120.0;
+const LIST_MIN_HEIGHT: f32 = 160.0;
 fn row_cells(row: &ViewRow) -> [String; 9] {
     let image = &row.image;
     let summary = image.summary.as_ref();
@@ -339,12 +441,7 @@ fn row_cells(row: &ViewRow) -> [String; 9] {
             if image.failure.is_some() { "[!] " } else { "" },
             image.name()
         ),
-        image
-            .reference
-            .rsplit(':')
-            .next()
-            .unwrap_or_default()
-            .into(),
+        image.tags(),
         title.and_then(|t| t.platform.clone()).unwrap_or_default(),
         title.map(|t| t.genres.join(", ")).unwrap_or_default(),
         title
@@ -552,7 +649,8 @@ pub(super) struct LibraryView {
     pub error: Option<String>,
     pub launched: Option<pc_image::workspace::SessionTransfer>,
     import: Option<(String, String)>,
-    delete: bool,
+    /// Delete tag… while it is open, with the tag it would remove.
+    delete: Option<String>,
     labels: String,
     pub rows_built: usize,
     pub recoveries: Vec<Recovery>,
@@ -616,7 +714,7 @@ impl LibraryView {
             error: None,
             launched: None,
             import: None,
-            delete: false,
+            delete: None,
             labels: String::new(),
             rows_built: 0,
             recoveries: Vec::new(),
@@ -711,13 +809,13 @@ impl LibraryView {
         match event {
             Event::Snapshot(snapshot) => {
                 if let Some(selected) = &mut self.selected {
-                    if let Some(current) = snapshot.rows.iter().find(|r| {
-                        r.image.reference == selected.reference
-                            && r.image.descriptor.digest == selected.descriptor.digest
-                    }) {
+                    if let Some(current) = snapshot.rows.iter().find(|r| r.image.same(selected)) {
                         if current.image.summary.is_some() {
                             selected.summary = current.image.summary.clone();
                         }
+                        // Tags may have come or gone; the row still acts on its lead tag.
+                        selected.reference.clone_from(&current.image.reference);
+                        selected.aliases.clone_from(&current.image.aliases);
                     }
                 }
                 if let Some(selected) = &mut self.firmware_selected {
@@ -730,7 +828,7 @@ impl LibraryView {
                     if let Some(row) = snapshot
                         .firmware_rows
                         .iter()
-                        .find(|r| r.image.reference == reference && r.image.summary.is_some())
+                        .find(|r| r.image.has_tag(&reference) && r.image.summary.is_some())
                     {
                         self.firmware_reselect = None;
                         self.show_package(row.clone());
@@ -927,13 +1025,17 @@ impl LibraryView {
             Event::Deleted(reference) => {
                 self.busy = false;
                 self.refresh_package();
-                if self
-                    .selected
-                    .as_ref()
-                    .is_some_and(|row| row.reference == reference)
-                {
-                    self.selected = None;
-                    self.readiness = None;
+                // The row stays while another tag still names its manifest.
+                if let Some(row) = &mut self.selected {
+                    row.aliases.retain(|alias| *alias != reference);
+                    if row.reference == reference {
+                        if row.aliases.is_empty() {
+                            self.selected = None;
+                            self.readiness = None;
+                        } else {
+                            row.reference = row.aliases.remove(0);
+                        }
+                    }
                 }
                 self.status = Some("Tag deleted; shared blobs retained".into());
             }
@@ -1263,13 +1365,17 @@ impl LibraryView {
         self.import = Some((path.to_string_lossy().into_owned(), String::new()));
     }
     pub fn begin_delete(&mut self) {
-        self.delete = self.selected.is_some() && self.active.is_none();
+        self.delete = self
+            .selected
+            .as_ref()
+            .filter(|_| self.active.is_none())
+            .map(|row| row.reference.clone());
     }
     pub fn has_dialog(&self) -> bool {
         self.layers.is_some()
             || self.image_settings.is_some()
             || self.import.is_some()
-            || self.delete
+            || self.delete.is_some()
             || self.decision.is_some()
             || self.firmware_import.is_some()
             || self.firmware_edit.is_some()
@@ -1287,7 +1393,7 @@ impl LibraryView {
         self.layers = None;
         self.image_settings = None;
         self.import = None;
-        self.delete = false;
+        self.delete = None;
         if let Some(dialog) = self.firmware_import.take() {
             dialog.control.cancel();
         }
@@ -1323,13 +1429,12 @@ impl LibraryView {
         ui: &mut egui::Ui,
         files: &[LibraryEntry],
         selected_file: &mut Option<usize>,
-        branding: Option<(&mut crate::logo::Logo, bool, bool)>,
     ) -> Vec<Command> {
         if std::mem::take(&mut self.clear_file_selection) {
             *selected_file = None;
         }
         ui.add_enabled_ui(!self.busy, |ui| {
-            self.show_contents(ui, files, selected_file, branding)
+            self.show_contents(ui, files, selected_file)
         })
         .inner
     }
@@ -1338,7 +1443,6 @@ impl LibraryView {
         ui: &mut egui::Ui,
         files: &[LibraryEntry],
         selected_file: &mut Option<usize>,
-        branding: Option<(&mut crate::logo::Logo, bool, bool)>,
     ) -> Vec<Command> {
         let mut commands = Vec::new();
         let mut changed = false;
@@ -1418,17 +1522,19 @@ impl LibraryView {
                         changed = true;
                     }
                 }
-                ui.separator();
-
-                if let Some((logo, reduced, visible)) = branding {
-                    ui.collapsing("unemupc98", |ui| logo.welcome(ui, reduced, visible));
-                }
             });
+        // The split between the list and the details pane drags, as in the
+        // library mock-up; egui keeps the chosen height for the session. The
+        // pane fills its height, so it scrolls only when its content is taller.
+        let details_max = (ui.available_height() - LIST_MIN_HEIGHT).max(DETAILS_MIN_HEIGHT);
         egui::Panel::bottom("library-details")
-            .exact_size(232.0)
+            .resizable(true)
+            .default_size(DETAILS_HEIGHT)
+            .size_range(DETAILS_MIN_HEIGHT..=details_max)
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("selected-image-details")
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
                         if self.query.filter.is_firmware() {
                             match self.firmware_selected.clone() {
@@ -1471,7 +1577,7 @@ impl LibraryView {
                                                 .color(egui::Color32::WHITE),
                                         );
                                     });
-                                columns[0].label(&row.reference);
+                                columns[0].label(row.references());
                                 columns[0].monospace(&row.descriptor.digest.hex()[..12]);
                                 let meta = &mut columns[1];
                                 meta.strong(row.name());
@@ -1756,27 +1862,29 @@ impl LibraryView {
             if empty {
                 empty_library(ui, &mut commands);
             }
-            let visible_files: Vec<_> =
-                if matches!(self.query.filter, Filter::All | Filter::MachineFiles) {
-                    let search = self.query.text.to_lowercase();
-                    let mut visible: Vec<_> = files
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, f)| {
-                            format!("{} {}", f.name, f.path.display())
-                                .to_lowercase()
-                                .contains(&search)
-                        })
-                        .map(|(i, _)| i)
-                        .collect();
-                    visible.sort_by_key(|i| files[*i].name.to_lowercase());
-                    if self.query.descending {
-                        visible.reverse();
-                    }
-                    visible
-                } else {
-                    Vec::new()
-                };
+            // Machine files from disk list only under Machine files; All
+            // images lists stored images alone.
+            let files_mode = self.query.filter == Filter::MachineFiles;
+            let visible_files: Vec<_> = if files_mode {
+                let search = self.query.text.to_lowercase();
+                let mut visible: Vec<_> = files
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| {
+                        format!("{} {}", f.name, f.path.display())
+                            .to_lowercase()
+                            .contains(&search)
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                visible.sort_by_key(|i| files[*i].name.to_lowercase());
+                if self.query.descending {
+                    visible.reverse();
+                }
+                visible
+            } else {
+                Vec::new()
+            };
             self.rows_built = 0;
             // The empty state replaces the table unless machine files are listed.
             if empty && visible_files.is_empty() {
@@ -1878,12 +1986,10 @@ impl LibraryView {
                                             let image = &row.image;
                                             let summary = image.summary.as_ref();
                                             let cells = row_cells(row);
-                                            let selected =
-                                                self.selected.as_ref().is_some_and(|r| {
-                                                    r.reference == image.reference
-                                                        && r.descriptor.digest
-                                                            == image.descriptor.digest
-                                                });
+                                            let selected = self
+                                                .selected
+                                                .as_ref()
+                                                .is_some_and(|r| r.same(image));
                                             let (clicked, double) = draw_cells(
                                                 ui,
                                                 &cells,
@@ -1912,20 +2018,28 @@ impl LibraryView {
                             },
                         );
                 });
-            ui.label(format!(
-                "{} of {} images · {} pending · {}",
-                self.snapshot.matched,
-                self.snapshot.total,
-                self.snapshot.pending,
-                self.snapshot
-                    .storage
-                    .map(|(total, saved)| format!(
-                        "{} distinct · {} dedup savings",
-                        human_size(total),
-                        human_size(saved)
-                    ))
-                    .unwrap_or_else(|| "Rebuilding storage totals…".into())
-            ));
+            if files_mode {
+                ui.label(format!(
+                    "{} of {} machine files",
+                    visible_files.len(),
+                    files.len()
+                ));
+            } else {
+                ui.label(format!(
+                    "{} of {} images · {} pending · {}",
+                    self.snapshot.matched,
+                    self.snapshot.total,
+                    self.snapshot.pending,
+                    self.snapshot
+                        .storage
+                        .map(|(total, saved)| format!(
+                            "{} distinct · {} dedup savings",
+                            human_size(total),
+                            human_size(saved)
+                        ))
+                        .unwrap_or_else(|| "Rebuilding storage totals…".into())
+                ));
+            }
         });
         if changed {
             self.send(Request::Query(self.query.clone()));
@@ -2006,7 +2120,7 @@ impl LibraryView {
                 self.import = None;
             }
         }
-        if self.delete {
+        if let Some(mut chosen) = self.delete.clone() {
             let mut close = false;
             egui::Modal::new(egui::Id::unique("delete-tag")).show(ctx, |ui| {
                 if classic {
@@ -2015,12 +2129,39 @@ impl LibraryView {
                     ui.heading("Delete tag?");
                 }
                 if let Some(row) = &self.selected {
-                    ui.label(&row.reference);
-                    ui.label(
-                        "Only this tag is removed. Shared bases and layers stay in the store.",
-                    );
+                    let tags: Vec<&String> = std::iter::once(&row.reference)
+                        .chain(&row.aliases)
+                        .collect();
+                    if !tags.contains(&&chosen) {
+                        chosen.clone_from(&row.reference);
+                    }
+                    // A row lists every tag of its manifest; the user picks one.
+                    if tags.len() > 1 {
+                        for tag in &tags {
+                            ui.radio_value(&mut chosen, (*tag).clone(), tag.as_str());
+                        }
+                    }
+                    ui.label(format!("Deletes {chosen}"));
+                    let kept: Vec<&str> = tags
+                        .iter()
+                        .filter(|tag| ***tag != chosen)
+                        .map(|tag| tag.as_str())
+                        .collect();
+                    ui.label(if kept.is_empty() {
+                        "Only this tag is removed. Shared bases and layers stay in the store."
+                            .to_owned()
+                    } else {
+                        format!(
+                            "Only this tag is removed; the image keeps {}. Shared bases and \
+                             layers stay in the store.",
+                            kept.join(", ")
+                        )
+                    });
                     if ui.button("Delete tag").clicked() {
-                        requests.push(Request::Delete(row.clone()));
+                        requests.push(Request::Delete(ImageRow {
+                            reference: chosen.clone(),
+                            ..row.clone()
+                        }));
                         self.busy = true;
                         close = true;
                     }
@@ -2029,9 +2170,7 @@ impl LibraryView {
                     close = true;
                 }
             });
-            if close {
-                self.delete = false;
-            }
+            self.delete = (!close).then_some(chosen);
         }
         if self.layers.is_none() {
             if let Some(record) = self.decision.clone() {
@@ -2320,7 +2459,7 @@ pub(super) mod tests {
                     events,
                     ..Default::default()
                 },
-                |ui| commands = library.show(ui, &[], &mut selected, None),
+                |ui| commands = library.show(ui, &[], &mut selected),
             );
             output.textures_delta.clear();
             let mut button = None;
@@ -2452,7 +2591,7 @@ pub(super) mod tests {
                 ..Default::default()
             },
             |ui| {
-                library.show(ui, &[], &mut selected, None);
+                library.show(ui, &[], &mut selected);
             },
         );
         output.textures_delta.clear();
@@ -2478,7 +2617,7 @@ pub(super) mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    library.show(ui, &[], &mut selected, None);
+                    library.show(ui, &[], &mut selected);
                 },
             );
             output.textures_delta.clear();
@@ -2491,18 +2630,24 @@ pub(super) mod tests {
     }
     #[test]
     fn repository_groups_expand_and_overlay_fields_filter_without_payload_reads() {
-        let (_temp, store, images) = catalogue(2);
+        let (_temp, store, images) = catalogue(3);
+        // A second revision of synthetic-0: another manifest under another tag.
         store
-            .update_tag("synthetic-0:two", &images[0], None, &Provider)
+            .remove_tag("synthetic-2:one", &images[2].digest)
             .unwrap();
         store
-            .edit_library(&images[0].digest, |entry| {
-                entry.favorite = true;
-                entry.labels = vec!["collection".into()];
-                entry.last_run = Some("123".into());
-                Ok(())
-            })
+            .update_tag("synthetic-0:two", &images[2], None, &Provider)
             .unwrap();
+        for image in [&images[0], &images[2]] {
+            store
+                .edit_library(&image.digest, |entry| {
+                    entry.favorite = true;
+                    entry.labels = vec!["collection".into()];
+                    entry.last_run = Some("123".into());
+                    Ok(())
+                })
+                .unwrap();
+        }
         let cache = warm(&store);
         let mut query = Query {
             filter: Filter::Favorites,
@@ -2523,6 +2668,385 @@ pub(super) mod tests {
         assert_eq!(
             snapshot(&cache, &query).rows[0].image.reference,
             "synthetic-1:one"
+        );
+    }
+    /// Appends a tag naming `manifest` to the store index, as a pull of a
+    /// version tag and its alias leaves the index.
+    fn tag_again(store: &Store, name: &str, manifest: &Descriptor) {
+        let index = store.root().join("images/index.json");
+        let text = std::fs::read_to_string(&index).unwrap();
+        let prefix = text.trim_end().strip_suffix("]}").unwrap();
+        let artifact = manifest
+            .artifact_type
+            .as_deref()
+            .map_or_else(String::new, |t| format!(",\"artifactType\":\"{t}\""));
+        std::fs::write(&index, format!("{prefix},{{\"mediaType\":\"{}\"{artifact},\"digest\":\"{}\",\"size\":{},\"annotations\":{{\"org.opencontainers.image.ref.name\":\"{name}\"}}}}]}}", mt::MANIFEST, manifest.digest, manifest.size)).unwrap();
+    }
+    #[test]
+    fn a_version_tag_and_its_alias_are_one_row_in_every_collection() {
+        let (temp, store, images) = catalogue(2);
+        // dos-lab:1.0.0 is one revision; 2.0.0 and its latest alias are another.
+        for (tag, image) in [
+            ("dos-lab:1.0.0", 0),
+            ("dos-lab:latest", 1),
+            ("dos-lab:2.0.0", 1),
+        ] {
+            store
+                .update_tag(tag, &images[image], None, &Provider)
+                .unwrap();
+        }
+        for (index, image) in images.iter().enumerate() {
+            store
+                .remove_tag(&format!("synthetic-{index}:one"), &image.digest)
+                .unwrap();
+        }
+        // A firmware package under its import tag, a version tag and latest.
+        let bytes = vec![0xf4; 32768];
+        let source = temp.path().join("synthetic.bin");
+        std::fs::write(&source, &bytes).unwrap();
+        let digest = Digest::of(&bytes);
+        let config = image_store::firmware::Config::decode(format!("schema=1\nplatform='ibm-pc-at'\nname='Synthetic firmware'\n[[roms]]\nid='system-bios'\nrole='system-bios'\nsize=32768\nsha256='{}'\nblob='{}'\n", digest.hex(), digest).as_bytes()).unwrap();
+        let candidate = pc_image::firmware_import::Candidate {
+            catalogue_id: "synthetic".into(),
+            config,
+            sources: vec![source],
+            distribution: assembly::FirmwareDistribution::UserSupplied,
+        };
+        let package = pc_image::firmware_import::publish(
+            &store,
+            &candidate,
+            &[],
+            pc_image::firmware::catalogue(),
+        )
+        .unwrap();
+        tag_again(&store, "firmware/synthetic:latest", &package);
+        tag_again(&store, "firmware/synthetic:1.1.0", &package);
+        // An installation set under a version tag and latest.
+        let machine = Manifest::decode_for_summary(
+            &store
+                .read_verified(&images[0], image_store::MAX_SMALL_BLOB)
+                .unwrap(),
+        )
+        .unwrap();
+        let bytes = image_store::media_set::Config {
+            schema: 1,
+            platform: "synthetic".into(),
+            media: vec![image_store::media_set::Medium {
+                id: "disk-1".into(),
+                label: "Disk 1".into(),
+                format: toml::Table::new(),
+                blob: Digest::of(b"disk"),
+            }],
+            extras: Vec::new(),
+        }
+        .encode()
+        .unwrap();
+        let blob = store.import(bytes.as_slice(), None).unwrap();
+        let config = Descriptor::new(mt::MEDIA_SET_CONFIG, blob.digest, blob.size);
+        let set = Manifest::new_media_set("synthetic", config, machine.layers).unwrap();
+        let set = store.import_manifest(&set).unwrap();
+        tag_again(&store, "installation:latest", &set);
+        tag_again(&store, "installation:1.0.0", &set);
+        // Eight tags, four manifests: pending counts manifests too.
+        let cold = SummaryCache::open(&store).unwrap();
+        assert_eq!(cold.tags().len(), 8);
+        assert_eq!(snapshot(&cold, &Query::default()).pending, 4);
+        let cache = warm(&store);
+
+        let mut query = Query::default();
+        query.expanded.insert("dos-lab".into());
+        let machines = snapshot(&cache, &query);
+        assert_eq!((machines.total, machines.matched), (2, 2));
+        let rows: Vec<_> = machines
+            .rows
+            .iter()
+            .map(|row| (row.group, row.child, row_cells(row)[1].clone()))
+            .collect();
+        // The header counts the repository's three tags over two rows.
+        assert_eq!(
+            rows,
+            [
+                (Some(3), false, String::from("1.0.0")),
+                (None, true, String::from("1.0.0")),
+                (None, true, String::from("2.0.0, latest")),
+            ]
+        );
+        let revision = &machines.rows[2].image;
+        assert_eq!(revision.reference, "dos-lab:2.0.0");
+        assert_eq!(revision.aliases, ["dos-lab:latest"]);
+        assert_eq!(revision.references(), "dos-lab:2.0.0, latest");
+        // A search for the alias finds its row, which still acts on the version tag.
+        let found = snapshot(
+            &cache,
+            &Query {
+                text: "latest".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(found.matched, 1);
+        assert_eq!(found.rows[0].image.reference, "dos-lab:2.0.0");
+
+        let firmware = snapshot(
+            &cache,
+            &Query {
+                filter: Filter::Firmware,
+                ..Default::default()
+            },
+        );
+        assert_eq!((firmware.firmware_total, firmware.matched), (1, 1));
+        assert_eq!(firmware.firmware_rows.len(), 1);
+        let package = &firmware.firmware_rows[0].image;
+        assert_eq!(package.reference, "firmware/synthetic:1.1.0");
+        assert_eq!(package.tags(), "1.1.0, 1, latest");
+
+        let media = snapshot(
+            &cache,
+            &Query {
+                filter: Filter::Media,
+                ..Default::default()
+            },
+        );
+        assert_eq!((media.media_total, media.matched), (1, 1));
+        assert_eq!(media.media_rows.len(), 1);
+        assert_eq!(media.media_rows[0].image.reference, "installation:1.0.0");
+        assert_eq!(
+            install_media::cells(&media.media_rows[0], &[])[1],
+            "1.0.0, latest"
+        );
+    }
+    #[test]
+    fn delete_tag_names_the_tag_offers_the_others_and_the_row_stays() {
+        use firmware::tests::{frame, texts};
+        let (_temp, store, images) = catalogue(1);
+        for tag in ["synthetic-0:latest", "synthetic-0:1.0.0"] {
+            store.update_tag(tag, &images[0], None, &Provider).unwrap();
+        }
+        store
+            .remove_tag("synthetic-0:one", &images[0].digest)
+            .unwrap();
+        let result = snapshot(&warm(&store), &Query::default());
+        assert_eq!((result.total, result.rows.len()), (1, 1));
+        let row = result.rows[0].image.clone();
+        let mut view = LibraryView::new(None);
+        view.snapshot = Arc::new(result);
+        view.selected = Some(row.clone());
+        view.begin_delete();
+        assert_eq!(view.delete.as_deref(), Some("synthetic-0:1.0.0"));
+
+        let ctx = egui::Context::default();
+        let mut requests = Vec::new();
+        let mut time = 0.0;
+        let mut draw = |view: &mut LibraryView, events: Vec<egui::Event>| {
+            time += 0.05;
+            let output = frame(&ctx, egui::vec2(1200.0, 900.0), time, events, |ui| {
+                requests.extend(view.modals(&ui.ctx().clone(), None, Vec::new(), false, false));
+            });
+            texts(&output)
+        };
+        // A modal sizes itself over its first frames.
+        let mut shown = draw(&mut view, vec![]);
+        for _ in 0..20 {
+            shown = draw(&mut view, vec![]);
+        }
+        let at = |shown: &[(String, egui::Rect)], text: &str| {
+            shown
+                .iter()
+                .find(|(t, _)| t == text)
+                .map(|(_, rect)| rect.center())
+                .unwrap_or_else(|| panic!("{text}: {shown:?}"))
+        };
+        at(&shown, "Deletes synthetic-0:1.0.0");
+        at(&shown, "Only this tag is removed; the image keeps synthetic-0:latest. Shared bases and layers stay in the store.");
+        let mut click = |view: &mut LibraryView, at: egui::Pos2| {
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            };
+            draw(view, vec![egui::Event::PointerMoved(at)]);
+            draw(view, vec![button(true)]);
+            draw(view, vec![button(false)]);
+            draw(view, vec![])
+        };
+        let shown = click(&mut view, at(&shown, "synthetic-0:latest"));
+        at(&shown, "Deletes synthetic-0:latest");
+        click(&mut view, at(&shown, "Delete tag"));
+        assert!(view.delete.is_none() && view.busy);
+        let [Request::Delete(chosen)] = requests.as_slice() else {
+            panic!("one Delete request");
+        };
+        assert_eq!(chosen.reference, "synthetic-0:latest");
+        assert_eq!(chosen.descriptor.digest, images[0].digest);
+
+        // The worker removes the alias; the row and its selection stay.
+        delete_tag(&store, chosen).unwrap();
+        view.on_event(Event::Deleted(chosen.reference.clone()));
+        let after = snapshot(&warm(&store), &Query::default());
+        assert_eq!((after.total, after.rows.len()), (1, 1));
+        assert_eq!(after.rows[0].image.tags(), "1.0.0");
+        view.on_event(Event::Snapshot(Arc::new(after)));
+        let selected = view.selected.as_ref().expect("selection survives");
+        assert_eq!(
+            (selected.reference.as_str(), selected.aliases.len()),
+            ("synthetic-0:1.0.0", 0)
+        );
+        // Deleting the lead tag of a row with an alias keeps it selected
+        // under the alias.
+        view.selected = Some(row);
+        view.on_event(Event::Deleted("synthetic-0:1.0.0".into()));
+        let selected = view.selected.as_ref().expect("the alias keeps the row");
+        assert_eq!(
+            (selected.reference.as_str(), selected.aliases.len()),
+            ("synthetic-0:latest", 0)
+        );
+    }
+    #[test]
+    fn the_details_split_drags_keeps_its_height_and_shows_the_whole_pane() {
+        use firmware::tests::{frame, texts};
+        let (_f, cache) = firmware::tests::library();
+        let mut view = LibraryView::new(None);
+        let mut selected_file = None;
+        view.select_first_package(&cache, &mut selected_file);
+        let ctx = egui::Context::default();
+        let size = egui::vec2(1400.0, 1000.0);
+        let mut time = 0.0;
+        let mut draw = |view: &mut LibraryView, events: Vec<egui::Event>| {
+            time += 0.05;
+            let output = frame(&ctx, size, time, events, |ui| {
+                view.show(ui, &[], &mut selected_file);
+            });
+            texts(&output)
+        };
+        // The pane's second line, under the package name, and its last facts line.
+        let top = "System BIOS · local package · firmware/synthetic-two-chip-bios:1";
+        let last = "Edit metadata… creates a new package revision; ROM blobs unchanged.";
+        let y = |shown: &[(String, egui::Rect)], text: &str| {
+            shown
+                .iter()
+                .find(|(t, _)| t == text)
+                .map(|(_, rect)| rect.min.y)
+        };
+        let mut shown = draw(&mut view, vec![]);
+        for _ in 0..3 {
+            shown = draw(&mut view, vec![]);
+        }
+        let default = y(&shown, top).expect("the pane shows the package");
+        // The default pane is too short for the package, so its end scrolls.
+        assert!(y(&shown, last).is_none(), "{shown:?}");
+        type Draw<'a> =
+            dyn FnMut(&mut LibraryView, Vec<egui::Event>) -> Vec<(String, egui::Rect)> + 'a;
+        let drag = |draw: &mut Draw, view: &mut LibraryView, from: f32, to: f32| {
+            let at = |y| egui::pos2(800.0, y);
+            let button = |y, pressed| egui::Event::PointerButton {
+                pos: at(y),
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            };
+            draw(view, vec![egui::Event::PointerMoved(at(from))]);
+            draw(view, vec![button(from, true)]);
+            draw(view, vec![egui::Event::PointerMoved(at((from + to) / 2.0))]);
+            draw(view, vec![egui::Event::PointerMoved(at(to))]);
+            draw(view, vec![button(to, false)]);
+            draw(view, vec![egui::Event::PointerMoved(egui::pos2(5.0, 5.0))])
+        };
+        // The split sits on the pane's top edge, the frame margin and the
+        // package name above that line.
+        let margin = default - (size.y - DETAILS_HEIGHT);
+        assert!(margin > 0.0 && margin < 40.0, "{default}");
+        drag(
+            &mut draw,
+            &mut view,
+            default - margin,
+            default - margin - 400.0,
+        );
+        let mut shown = draw(&mut view, vec![]);
+        let taller = y(&shown, top).expect("the pane still shows the package");
+        assert!(
+            (default - taller - 400.0).abs() < 2.0,
+            "{default} → {taller}"
+        );
+        assert!(y(&shown, last).is_some(), "the taller pane shows it all");
+        // The height stays over frames and over a refreshed list.
+        for _ in 0..5 {
+            draw(&mut view, vec![]);
+        }
+        view.snapshot = Arc::new(snapshot(&cache, &view.query));
+        shown = draw(&mut view, vec![]);
+        assert_eq!(y(&shown, top), Some(taller));
+        assert!(y(&shown, last).is_some());
+        // Dragging further keeps a few list rows above the split, and down
+        // keeps a few pane lines.
+        drag(&mut draw, &mut view, taller - margin, 20.0);
+        let shown = draw(&mut view, vec![]);
+        let highest = y(&shown, top).unwrap();
+        assert!(
+            (highest - margin - LIST_MIN_HEIGHT).abs() < 2.0,
+            "{highest}"
+        );
+        assert!(shown
+            .iter()
+            .any(|(t, r)| t.starts_with("Name") && r.max.y < highest));
+        drag(&mut draw, &mut view, highest - margin, size.y - 5.0);
+        let shown = draw(&mut view, vec![]);
+        let lowest = y(&shown, top).unwrap();
+        assert!(
+            (lowest - margin - (size.y - DETAILS_MIN_HEIGHT)).abs() < 2.0,
+            "{lowest}"
+        );
+    }
+    #[test]
+    fn all_images_lists_stored_images_and_machine_files_list_alone() {
+        let (_temp, store, _) = catalogue(2);
+        let cache = warm(&store);
+        let files = [
+            LibraryEntry::pending("/synthetic/alpha-machine.toml".into()),
+            LibraryEntry::pending("/synthetic/beta-machine.toml".into()),
+        ];
+        let mut library = LibraryView::new(None);
+        let ctx = egui::Context::default();
+        let shown = |library: &mut LibraryView| {
+            library.snapshot = Arc::new(snapshot(&cache, &library.query));
+            let mut selected = None;
+            let output =
+                firmware::tests::frame(&ctx, egui::vec2(1200.0, 700.0), 0.0, vec![], |ui| {
+                    library.show(ui, &files, &mut selected);
+                });
+            firmware::tests::texts(&output)
+                .into_iter()
+                .map(|(text, _)| text)
+                .collect::<Vec<_>>()
+        };
+        let all = shown(&mut library);
+        for image in ["Synthetic 0", "Synthetic 1"] {
+            assert!(all.iter().any(|t| t == image), "{image}: {all:?}");
+        }
+        assert!(
+            !all.iter()
+                .any(|t| t.contains("-machine") || t == "Machine file"),
+            "{all:?}"
+        );
+        assert!(
+            all.iter().any(|t| t.starts_with("2 of 2 images")),
+            "{all:?}"
+        );
+        let mut selected = None;
+        library.set_filter(Filter::MachineFiles, &mut selected);
+        let machine_files = shown(&mut library);
+        for file in ["alpha-machine", "beta-machine"] {
+            assert!(
+                machine_files.iter().any(|t| t == file),
+                "{file}: {machine_files:?}"
+            );
+        }
+        assert!(
+            !machine_files.iter().any(|t| t.starts_with("Synthetic ")),
+            "{machine_files:?}"
+        );
+        assert!(
+            machine_files.iter().any(|t| t == "2 of 2 machine files"),
+            "{machine_files:?}"
         );
     }
     #[test]
@@ -2562,6 +3086,7 @@ pub(super) mod tests {
             &store,
             &ImageRow {
                 reference: "synthetic-0:one".into(),
+                aliases: Vec::new(),
                 descriptor: image.clone(),
                 summary: None,
                 failure: None,
@@ -2626,6 +3151,7 @@ pub(super) mod tests {
         .unwrap();
         let future = ImageRow {
             reference: "future:one".into(),
+            aliases: Vec::new(),
             descriptor: store.import_manifest(&manifest).unwrap(),
             summary: None,
             failure: None,
@@ -2735,6 +3261,7 @@ pub(super) mod tests {
                 &store,
                 &ImageRow {
                     reference: format!("synthetic-{index}:one"),
+                    aliases: Vec::new(),
                     descriptor: image.clone(),
                     summary: None,
                     failure: None,
@@ -3080,6 +3607,7 @@ pub(super) mod tests {
         worker_events(&worker, &|e| matches!(e, Event::Recoveries(_)));
         let row = ImageRow {
             reference: "open-at:1.0.0".into(),
+            aliases: Vec::new(),
             descriptor: first,
             summary: None,
             failure: None,
@@ -3140,6 +3668,7 @@ pub(super) mod tests {
         assert!(view.error.is_some());
         let row = ImageRow {
             reference: "open-at:1.0.0".into(),
+            aliases: Vec::new(),
             descriptor: Descriptor::new(mt::MANIFEST, Digest::of(b"created"), 7),
             summary: None,
             failure: None,

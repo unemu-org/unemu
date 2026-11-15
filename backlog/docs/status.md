@@ -5,6 +5,35 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — Library rows are one per manifest; machine files only under
+  Machine files; resizable details pane; no logo entry:** tags of one
+  repository that name the same manifest (a version tag and its `latest`
+  alias, as `Get templates…` and pulls leave them) are now one row in the
+  machine list, the Installation media collection and the Firmware
+  collection. The row lists every tag, version tags first (`1.1.0, latest`)
+  in the Tag column and the details pane; a search for any of its tags finds
+  it. Row, pending and footer counts and the tree's Firmware and Installation
+  media counts count these rows, so a package under a version tag and
+  `latest` counts once. A repository group header still counts tags. Different manifests stay
+  separate rows (firmware `:1` and `:2` after Edit metadata…), and so does one
+  manifest in two repositories. Start, Settings…, Layers…, Save as new
+  image…, Push… and Edit metadata… act on the row's version tag. Delete tag…
+  names the tag it removes, offers the row's other tags as choices and keeps
+  its confirmation; the store still records a deleted version tag as retired.
+  Deleting one tag of a row leaves the row and its selection under the other
+  tags, and the selection follows the row across refreshes. The store and CLI
+  output are unchanged. All images now lists stored machine images only:
+  machine files from disk list only under Machine files, whose footer reads
+  `N of M machine files`; Recently played and Favourites list stored images,
+  as before. The split between the list and the details pane drags (the
+  library mock-up's splitter), shared by every collection, starting at
+  232 px; the pane keeps at least 120 px and the list 160 px, the height
+  lasts for the session, and the pane scrolls only when its content is
+  taller. The sidebar's collapsible `unemupc98` logo entry is gone; the
+  approved main-window and library mock-ups have no such entry. Its
+  animation went with it: the About dialog keeps the static logo, and the
+  file-only `reduced_motion` preference now affects only the indeterminate
+  firmware-scan progress bar.
 - **2026-11-15 — Template firmware packages describe themselves:** `image
   template build` now gives each of its three firmware packages a title
   (`unemu AT BIOS 1.0.2-unemu.2`, `unemu VGA BIOS 0.8a-unemu.2, standard VGA`,

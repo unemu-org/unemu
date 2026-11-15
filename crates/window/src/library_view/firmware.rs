@@ -13,13 +13,13 @@ use super::firmware_metadata::{
     layer_text, provenance_lines, Catalogue, Draft, EditDialog, Facts, Fields, PackageDetails,
     Rights, Verdict,
 };
-use super::{human_size, Filter, ImageRow, LibraryView, Query};
+use super::{human_size, Filter, ImageRow, LibraryView, Listed, Query};
 use assembly::firmware_discovery::DiscoveryControl;
 use image_store::{
     firmware::Rom,
     license, media_type,
     summary::{FirmwareSummary, ImageSummary, SummaryCache},
-    Descriptor, Digest, Store, Tag,
+    Descriptor, Digest, Store,
 };
 use pc_image::firmware_import::{self, Candidate, Statement};
 use std::{
@@ -121,7 +121,8 @@ impl Redistribution {
     }
 }
 
-/// One firmware package tag in the Firmware collection.
+/// One firmware package in the Firmware collection, with every tag of its
+/// repository that names it.
 #[derive(Clone, Debug)]
 pub(super) struct FirmwareRow {
     pub image: ImageRow,
@@ -147,8 +148,7 @@ impl FirmwareRow {
         self.image.summary.as_ref()?.firmware.as_ref()
     }
     pub fn same(&self, other: &Self) -> bool {
-        self.image.reference == other.image.reference
-            && self.image.descriptor.digest == other.image.descriptor.digest
+        self.image.same(&other.image)
     }
 }
 
@@ -215,20 +215,17 @@ pub(super) fn add_facets(facets: &mut BTreeMap<String, BTreeSet<String>>, summar
 /// query result for the text and the role/board/class facets.
 pub(super) fn rows(
     cache: &SummaryCache,
-    packages: &[&Tag],
+    packages: &[&Listed],
     matches: &BTreeSet<String>,
     q: &Query,
     machines: &MachineRoms,
 ) -> Vec<FirmwareRow> {
     let mut rows = Vec::new();
-    for tag in packages {
-        let summary = cache.summary(&tag.manifest.digest);
+    for package in packages {
+        let summary = cache.summary(&package.tag.manifest.digest);
         let matched = match summary {
-            Some(_) => matches.contains(&tag.name),
-            None => {
-                q.filter == Filter::Firmware
-                    && tag.name.to_lowercase().contains(&q.text.to_lowercase())
-            }
+            Some(_) => package.matched(matches),
+            None => q.filter == Filter::Firmware && package.named(&q.text),
         };
         let redistribution = summary.map(Redistribution::of).unwrap_or_default();
         let facet_match = match &q.filter {
@@ -247,14 +244,7 @@ pub(super) fn rows(
                 .unwrap_or_default(),
             source_missing: summary.is_some_and(source_missing),
             redistribution,
-            image: ImageRow {
-                reference: tag.name.clone(),
-                descriptor: tag.manifest.clone(),
-                summary: summary.cloned(),
-                failure: cache
-                    .failure(&tag.manifest.digest)
-                    .map(|f| f.reason.clone()),
-            },
+            image: package.row(cache),
         });
     }
     rows.sort_by_cached_key(|row| sort_value(row, q.firmware_sort));
@@ -465,7 +455,7 @@ pub(super) fn details(
     let image = &row.image;
     let (Some(f), Some(summary)) = (row.firmware(), image.summary.as_ref()) else {
         ui.strong(image.name());
-        ui.label(&image.reference);
+        ui.label(image.references());
         ui.label(
             image
                 .failure
@@ -480,7 +470,7 @@ pub(super) fn details(
     ui.label(format!(
         "{} · local package · {}",
         roles(f),
-        image.reference
+        image.references()
     ));
     match &f.description {
         Some(description) => {
@@ -2143,7 +2133,7 @@ pub(crate) mod tests {
         let draw = |view: &mut LibraryView, file: &mut Option<usize>| {
             let mut commands = Vec::new();
             let output = frame(&ctx, size, 0.0, vec![], |ui| {
-                commands = view.show(ui, &[], file, None);
+                commands = view.show(ui, &[], file);
             });
             (texts(&output), commands)
         };
@@ -2180,7 +2170,7 @@ pub(crate) mod tests {
         let mut file = Some(0);
         let mut commands = Vec::new();
         let first = frame(&ctx, size, 0.0, vec![], |ui| {
-            commands.extend(view.show(ui, &[], &mut file, None));
+            commands.extend(view.show(ui, &[], &mut file));
         });
         let target = view.snapshot.firmware_rows[0].clone();
         let (_, rect) = texts(&first)
@@ -2203,7 +2193,7 @@ pub(crate) mod tests {
             (1.1, vec![]),
         ] {
             frame(&ctx, size, time, events, |ui| {
-                commands.extend(view.show(ui, &[], &mut file, None));
+                commands.extend(view.show(ui, &[], &mut file));
             });
         }
         assert!(view
@@ -2504,6 +2494,7 @@ pub(crate) mod tests {
         // Deleting a tag that does not exist fails while the scan is queued.
         view.send(super::super::Request::Delete(ImageRow {
             reference: "missing:tag".into(),
+            aliases: Vec::new(),
             descriptor: Descriptor::new(media_type::MANIFEST, Digest::of(b"missing"), 7),
             summary: None,
             failure: None,
@@ -2607,7 +2598,7 @@ pub(crate) mod tests {
                 },
             ];
             frame(&ctx, egui::vec2(1400.0, 700.0), time, events, |ui| {
-                view.show(ui, &[], &mut None, None);
+                view.show(ui, &[], &mut None);
             });
             assert!(
                 view.rows_built > 0 && view.rows_built < 40,
@@ -2668,6 +2659,7 @@ pub(crate) mod tests {
         let row = |failure: Option<&str>| FirmwareRow {
             image: ImageRow {
                 reference: "firmware/synthetic:1".into(),
+                aliases: Vec::new(),
                 descriptor: Descriptor::new(media_type::MANIFEST, Digest::of(b"package"), 7),
                 summary: None,
                 failure: failure.map(Into::into),
