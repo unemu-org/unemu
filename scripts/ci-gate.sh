@@ -41,6 +41,7 @@ case "$step" in
             bash vendor/xtide-universal-bios/fetch.sh
             bash vendor/hdd/build.sh
             bash vendor/vgabios/fetch.sh
+            bash vendor/at-pm-test/build.sh
         ')
         ;;
     goldens) gate_command+=(env UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --locked --profile test --workspace -- --ignored) ;;

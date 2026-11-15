@@ -248,6 +248,8 @@ UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_interactive_
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_write_golden -- --ignored --nocapture
 # FreeDOS boots A: with the AT-reset BIOS and XT+ ROM, then lists readonly C:
 UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test ide_freedos_golden -- --ignored --nocapture
+# Open AT protected-mode test floppy: PM entry, 8042/triple-fault resets, A20 (design/at-pm-test.md)
+UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test at_pm_test_golden -- --include-ignored --nocapture
 cargo test -p devices                        # one crate's tests
 cargo build --offline -p window --bin unemupc98-window
 cargo run --offline -p window --bin unemupc98-window # default machines/at-freedos.toml
@@ -753,7 +755,7 @@ bash scripts/ci-gate.sh guard
 bash scripts/ci-gate.sh clippy
 bash scripts/ci-gate.sh deny                     # advisories, licences, bans, sources; all features
 bash scripts/ci-gate.sh tests
-bash scripts/ci-gate.sh fixtures                 # build/hash-check BIOS, FreeDOS, test386, XTIDE, HDD, VGA BIOS
+bash scripts/ci-gate.sh fixtures                 # build/hash-check BIOS, FreeDOS, test386, XTIDE, HDD, VGA BIOS, at-pm-test
 bash scripts/ci-gate.sh goldens                  # slow tests in the test profile; requires fixtures
 ```
 
@@ -807,6 +809,9 @@ Require/skip panics point at the calling test.
 The ignored `user_rom_ibm_1985_identity` checks assembled identity, per-chip hashes
 and misplaced/bad-chip diagnostics through assembly and machine-file lowering,
 without executing the BIOS. It accepts either the chip pair or an assembled image.
+`user_rom_ibm_5170_at_pm_test_resumes_through_the_shutdown_byte` boots the
+open AT protected-mode test floppy with the IBM 5170 BIOS and expects every
+reset to resume through the CMOS shutdown byte (`design/at-pm-test.md`).
 `user_rom_landmark_at_identity` similarly checks the Landmark AT assembled hash,
 mirrored halves and per-chip hashes. The CLI test
 `user_rom_landmark_at_real_mode_prefix` runs its first twelve diagnostics headlessly
@@ -826,11 +831,13 @@ UNEMUPC98_REQUIRE_USER_ROMS=1 bash scripts/ci-gate.sh user-roms
 
 See `vendor/user-roms/README.md` for catalogue hashes and the proprietary golden rule.
 
-The CI `fixtures` gate runs the Kiselev, FreeDOS, test386, XTIDE, hard-disk and
-open VGA BIOS scripts below; each checks pinned output SHA-256 hashes, and all
-but the VGA BIOS rebuild offline when their pinned source commits and release
-archives are cached (Nix caches the VGA BIOS sources and store paths). FreeDOS also
-fixes the volume serial (`2895-9853`), label (`FREEDOS`) and all filesystem
+The CI `fixtures` gate runs the Kiselev, FreeDOS, test386, XTIDE, hard-disk,
+open VGA BIOS and at-pm-test scripts below; each checks pinned output SHA-256
+hashes. All but the VGA BIOS rebuild offline when their pinned source commits
+and release archives are cached (Nix caches the VGA BIOS sources and store
+paths); `vendor/at-pm-test/build.sh` always builds offline, assembling the
+committed program source with the devShell's nasm into a 1.2M boot floppy.
+FreeDOS also fixes the volume serial (`2895-9853`), label (`FREEDOS`) and all filesystem
 timestamps (1980-01-01 UTC). A hash mismatch requires checking the sources and
 toolchain and deliberately rebuilding the goldens' expectations before changing
 the expected hash. See each `vendor/*/README.md` for cache paths and hashes.

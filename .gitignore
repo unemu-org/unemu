@@ -69,6 +69,10 @@ target/
 # FAT16 hard-disk data fixture: rebuilt offline by vendor/hdd/build.sh.
 /vendor/hdd/build/
 /vendor/hdd/fat16.img
+# Open AT protected-mode test floppy: assembled from the committed source by
+# vendor/at-pm-test/build.sh.
+/vendor/at-pm-test/build/
+/vendor/at-pm-test/at-pm-test-1200.img
 
 # repoctx local index (generated)
 .repoctx/

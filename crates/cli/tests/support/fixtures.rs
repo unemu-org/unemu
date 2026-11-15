@@ -22,8 +22,9 @@ fn read_fixture(relative: &str, required_by_gate: bool) -> Option<Vec<u8>> {
         Err(error) if error.kind() == ErrorKind::NotFound => {
             let directory = relative.split('/').next().expect("fixture directory");
             let message = format!(
-                "missing fixture {} — run vendor/{directory}/fetch.sh",
-                path.display()
+                "missing fixture {} — run vendor/{directory}/{}",
+                path.display(),
+                fixture_script(directory)
             );
             assert!(
                 !required_by_gate
@@ -35,6 +36,17 @@ fn read_fixture(relative: &str, required_by_gate: bool) -> Option<Vec<u8>> {
             None
         }
         Err(error) => panic!("cannot read fixture {}: {error}", path.display()),
+    }
+}
+
+/// Fixtures built offline from committed sources use `build.sh`; fixtures
+/// fetched from upstream use `fetch.sh`.
+fn fixture_script(directory: &str) -> &'static str {
+    let vendor = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor");
+    if vendor.join(directory).join("build.sh").is_file() {
+        "build.sh"
+    } else {
+        "fetch.sh"
     }
 }
 

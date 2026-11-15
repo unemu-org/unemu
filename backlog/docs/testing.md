@@ -45,6 +45,14 @@ end-to-end through `cli`/`machine`: program a device, take an interrupt, write t
 serial → assert the captured serial output. Built with `nasm` + `objcopy`
 (flat binaries) from the devShell.
 
+Project-owned guest programs that need firmware are booted from a floppy
+instead. Their source is committed next to a build script under `vendor/`,
+the built image is gitignored and pinned by SHA-256, and the CI `fixtures`
+gate builds it. The first is the open AT protected-mode return test
+([`design/at-pm-test.md`](design/at-pm-test.md)): 80286 protected-mode entry,
+the 8042 and triple-fault returns through the CMOS shutdown byte, and A20
+through the 8042, reported line by line on COM1.
+
 ### 5. Golden / trace tests
 
 Run a ROM; dump serial output + a device-state trace; compare against a committed
