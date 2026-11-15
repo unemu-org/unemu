@@ -33,12 +33,19 @@ assembly.workspace = true
 machine.workspace = true
 winit.workspace = true
 
-# The native application menu and system quit hook, at the versions eframe and
-# rfd already lock, so no new crate enters the build.
+# The native application menu, the system quit hook and the opt-in keyboard
+# tap for system shortcuts, at the versions eframe, rfd and arboard already
+# lock, so no new crate enters the build.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDate", "NSObjCRuntime", "NSObject", "NSRunLoop", "NSString"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder", "NSWindow"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFMachPort", "CFRunLoop"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEvent", "CGEventTypes"] }
+
+# Synthetic key events for the keyboard tap's decoding tests.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["CGRemoteOperation"] }
 
 [dev-dependencies]
 image-store = { path = "../image-store", version = "0.1.0", features = ["test-support"] }

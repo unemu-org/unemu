@@ -52,6 +52,8 @@ mod library_view;
 mod library_worker;
 mod logo;
 #[cfg(target_os = "macos")]
+mod macos_keys;
+#[cfg(target_os = "macos")]
 mod macos_menu;
 mod media_dialog;
 mod media_picker;
@@ -69,6 +71,7 @@ mod settings_sheet;
 mod shell;
 mod shell_icons;
 mod shell_model;
+mod system_keys;
 mod templates;
 
 const SINK_SCALE: u16 = 2;

@@ -19,7 +19,22 @@ pub(crate) enum Tab {
 pub(crate) struct PreferencesDialog {
     pub tab: Tab,
     pub registries: RegistriesPage,
+    /// General › the macOS system-shortcut option; `None` on other hosts.
+    pub system_shortcuts: Option<SystemShortcuts>,
 }
+
+/// The opt-in that hands macOS system shortcuts to the guest.
+pub(crate) struct SystemShortcuts {
+    pub on: bool,
+    /// What macOS said about the Accessibility privilege when it was turned on.
+    pub note: Option<String>,
+}
+
+/// Why the option asks for Accessibility access, in one sentence.
+pub(crate) const SYSTEM_SHORTCUTS_WHY: &str = "macOS takes Ctrl+arrows, Ctrl+digits, \
+    Ctrl+F1–F8, Ctrl+Space and F11 for Mission Control, Spaces and keyboard navigation \
+    before any app sees them, so passing them to the guest needs Accessibility access \
+    for unemupc98; Command shortcuts always stay with macOS.";
 
 impl PreferencesDialog {
     pub fn new(path: Option<PathBuf>, store: Arc<dyn CredentialStore>) -> Self {
@@ -30,6 +45,7 @@ impl PreferencesDialog {
                 store,
                 image_registry::credentials::EnvCredentials::from_env(),
             ),
+            system_shortcuts: None,
         }
     }
 }
@@ -39,6 +55,8 @@ pub(crate) enum Action {
     Close,
     /// Open the ROM folders and image store dialog instead.
     FirmwareFolders,
+    /// The system-shortcut check box changed; it applies at once.
+    SystemShortcuts(bool),
 }
 
 pub(crate) fn show(ctx: &egui::Context, dialog: &mut PreferencesDialog, classic: bool) -> Action {
@@ -92,6 +110,23 @@ pub(crate) fn show(ctx: &egui::Context, dialog: &mut PreferencesDialog, classic:
                         );
                         if ui.button("ROM folders and image store…").clicked() {
                             action = Action::FirmwareFolders;
+                        }
+                        if let Some(shortcuts) = &dialog.system_shortcuts {
+                            ui.separator();
+                            let mut on = shortcuts.on;
+                            if ui
+                                .checkbox(
+                                    &mut on,
+                                    "Send macOS system shortcuts to the guest while it has the keyboard",
+                                )
+                                .changed()
+                            {
+                                action = Action::SystemShortcuts(on);
+                            }
+                            small(ui, SYSTEM_SHORTCUTS_WHY);
+                            if let Some(note) = &shortcuts.note {
+                                warning(ui, note.as_str());
+                            }
                         }
                     }
                     Tab::Registries => registries_page(ui, &mut dialog.registries),
@@ -553,6 +588,7 @@ mod tests {
                 Arc::new(SessionStore::default()),
                 EnvCredentials::default(),
             ),
+            system_shortcuts: None,
         };
         let ctx = egui::Context::default();
         let frame = |dialog: &mut PreferencesDialog, events| {
@@ -629,6 +665,73 @@ mod tests {
     }
 
     #[test]
+    fn the_system_shortcut_option_explains_itself_and_toggles_at_once() {
+        const LABEL: &str = "Send macOS system shortcuts to the guest while it has the keyboard";
+        fn find(shape: &egui::Shape) -> Option<egui::Pos2> {
+            match shape {
+                egui::Shape::Text(text) if text.galley.text() == LABEL => {
+                    Some(text.visual_bounding_rect().center())
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(find),
+                _ => None,
+            }
+        }
+        let temp = assembly::test_support::TempDir::new("preferences-system-shortcuts");
+        let mut dialog = PreferencesDialog {
+            tab: Tab::General,
+            registries: RegistriesPage::new(
+                Some(temp.path().join("preferences.toml")),
+                Arc::new(SessionStore::default()),
+                EnvCredentials::default(),
+            ),
+            system_shortcuts: None,
+        };
+        let ctx = egui::Context::default();
+        let frame = |dialog: &mut PreferencesDialog, events| {
+            let mut action = Action::None;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| action = show(ui.ctx(), dialog, true),
+            );
+            output.textures_delta.clear();
+            (action, output)
+        };
+        let _ = frame(&mut dialog, vec![]);
+        let (_, output) = frame(&mut dialog, vec![]);
+        assert!(!texts(&output).iter().any(|t| t == LABEL), "macOS only");
+
+        dialog.system_shortcuts = Some(SystemShortcuts {
+            on: false,
+            note: Some("synthetic note".into()),
+        });
+        let _ = frame(&mut dialog, vec![]);
+        let (_, output) = frame(&mut dialog, vec![]);
+        let shown = texts(&output);
+        assert!(shown.iter().any(|t| t == SYSTEM_SHORTCUTS_WHY), "{shown:?}");
+        assert!(shown.iter().any(|t| t == "synthetic note"));
+        let at = output
+            .shapes
+            .iter()
+            .find_map(|shape| find(&shape.shape))
+            .expect("the check box is shown");
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let _ = frame(
+            &mut dialog,
+            vec![egui::Event::PointerMoved(at), button(true)],
+        );
+        let (action, _) = frame(&mut dialog, vec![button(false)]);
+        assert!(matches!(action, Action::SystemShortcuts(true)));
+    }
+
+    #[test]
     fn namespaces_render_as_child_rows_and_the_add_dialog_has_their_field() {
         let temp = assembly::test_support::TempDir::new("preferences-namespaces");
         let path = temp.path().join("preferences.toml");
@@ -644,6 +747,7 @@ mod tests {
                 Arc::new(SessionStore::default()),
                 EnvCredentials::default(),
             ),
+            system_shortcuts: None,
         };
         let ctx = egui::Context::default();
         let frame = |dialog: &mut PreferencesDialog| {
@@ -696,6 +800,7 @@ mod tests {
                 Arc::new(SessionStore::default()),
                 EnvCredentials::default(),
             ),
+            system_shortcuts: None,
         };
         let ctx = egui::Context::default();
         let frame = |dialog: &mut PreferencesDialog, events| {

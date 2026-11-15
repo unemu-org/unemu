@@ -5,6 +5,28 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-15 — macOS system shortcuts can go to the guest (opt-in):**
+  macOS acts on Ctrl+arrows (Mission Control, move a Space), Ctrl+digits,
+  Ctrl+F1–F8, Ctrl+Space and F11 before the window sees them, so games that
+  fire with Ctrl and move with the arrows switched Spaces. Preferences ›
+  General › "Send macOS system shortcuts to the guest while it has the
+  keyboard" (off by default, saved as `send_system_shortcuts`) asks for
+  Accessibility access when turned on and then installs an active Quartz
+  event tap (HID level, session level as fallback) only while a running,
+  unpaused guest has the keyboard and no dialog is open. The tap takes Ctrl
+  with an arrow, navigation key, digit, Space or function key, and every
+  function key, never a Command chord; it hands them to the window's ordinary
+  key queue, so focus checks and the focus-loss release of held keys are
+  unchanged. Focus loss, pause, dialogs, stop and quit remove the tap; a tap
+  macOS switched off for a slow answer is reinstalled; a refused tap leaves
+  one status hint. Without the option the shortcuts stay with macOS; Help and
+  `machines/README.md` § macOS system shortcuts in games give the System
+  Settings › Keyboard Shortcuts › Mission Control workaround. Decision logic
+  and lifetime are tested headless; the tap itself is checked by hand
+  (Duke Nukem II with Ctrl+arrows, ASSUMED until the maintainer's check).
+  NSApplication presentation options cannot block Mission Control, so they
+  are not used.
+
 - **2026-11-15 — An unsupported-instruction stop names CS:IP and the
   instruction bytes:** the CPU core reports the bytes of an instruction it
   does not lift, but the stop message used to show only the offset

@@ -26,6 +26,9 @@ struct Events {
     queue: Vec<HostEvent>,
     guest_focus: bool,
     captured: bool,
+    /// The guest takes macOS system shortcuts now: the keyboard tap may hand
+    /// it the keys it takes from macOS.
+    system_keys: bool,
     window: Option<Arc<Window>>,
     screen: Option<egui::Rect>,
     pointer: egui::Pos2,
@@ -367,6 +370,8 @@ struct Shell {
     restore_input: Option<(bool, bool)>,
     /// Quit waits for an answer while a push or pull runs: "push" or "pull".
     transfer_prompt: Option<&'static str>,
+    /// The opt-in keyboard tap that hands macOS system shortcuts to the guest.
+    system_keys: crate::system_keys::SystemKeys,
 }
 
 /// A shell action that would end a running session, held while the user
@@ -1736,6 +1741,7 @@ impl Shell {
             stop_prompt_input: (false, false),
             restore_input: None,
             transfer_prompt: None,
+            system_keys: crate::system_keys::SystemKeys::platform(),
         }
     }
 
@@ -1831,6 +1837,12 @@ impl Shell {
             self.preferences_path.clone(),
             self.credential_store.clone(),
         );
+        if self.macos_shortcuts {
+            let on = self.preferences.send_system_shortcuts;
+            // Reopening Preferences keeps telling what is still missing.
+            let note = (on && self.system_keys.access_missing()).then(|| ACCESS_NOTE.to_owned());
+            dialog.system_shortcuts = Some(crate::preferences_sheet::SystemShortcuts { on, note });
+        }
         if let Some(host) = self.image_library.login_wanted.take() {
             let page = &mut dialog.registries;
             match page.rows.iter().position(|row| row.entry.host == host) {
@@ -1960,6 +1972,66 @@ impl Shell {
         self.reset_keyboard();
         self.guest_focus = false;
         self.sync_routing();
+        self.sync_system_keys();
+    }
+
+    /// Whether the guest takes macOS system shortcuts now: the user turned
+    /// the option on and a running guest has the keyboard. Pause, dialogs and
+    /// a hidden window give the shortcuts back to macOS.
+    fn system_keys_wanted(&self) -> bool {
+        self.macos_shortcuts
+            && self.preferences.send_system_shortcuts
+            && self.guest_focus
+            && !self.paused
+            && !self.hidden
+            && !self.minimized
+            && !self.has_dialog()
+            && self
+                .presenter
+                .as_ref()
+                .is_some_and(|presenter| presenter.running && presenter.error.is_none())
+    }
+
+    fn sync_system_keys(&mut self) {
+        let wanted = self.system_keys_wanted();
+        self.events.borrow_mut().system_keys = wanted;
+        let events = self.events.clone();
+        if let Some(hint) = self.system_keys.sync(wanted, || system_key_sink(events)) {
+            self.message = hint.into();
+        }
+    }
+
+    /// Preferences › General: the option applies and saves at once. Turning
+    /// it on is the only moment macOS is asked for Accessibility access.
+    fn set_system_shortcuts(&mut self, on: bool) {
+        self.preferences.send_system_shortcuts = on;
+        self.preferences_draft.send_system_shortcuts = on;
+        let saved = self
+            .preferences_path
+            .as_ref()
+            .ok_or_else(|| io::Error::other("platform config directory is unavailable"))
+            .and_then(|path| self.preferences.save(path));
+        // The option is on for this session even when saving failed, so it
+        // asks for access either way.
+        let granted = !on || self.system_keys.request_access();
+        let note = [
+            saved
+                .err()
+                .map(|error| format!("Cannot save preferences: {error}")),
+            (!granted).then(|| ACCESS_NOTE.to_owned()),
+        ]
+        .into_iter()
+        .flatten()
+        .reduce(|first, second| format!("{first} {second}"));
+        if let Some(shortcuts) = self
+            .preferences_dialog
+            .as_mut()
+            .and_then(|dialog| dialog.system_shortcuts.as_mut())
+        {
+            shortcuts.on = on;
+            shortcuts.note = note;
+        }
+        self.sync_system_keys();
     }
 
     /// Ctrl+Alt+Del of a halted machine is its reset button: POST runs again
@@ -3508,6 +3580,7 @@ impl Shell {
             }
         }
         self.sync_routing();
+        self.sync_system_keys();
         // Every pass reads input, so a cancelled or abandoned question is
         // answered here, after the Exit that a system quit asked for has run.
         self.answer_system_quit(self.exit_progress(), ctx);
@@ -4112,6 +4185,9 @@ impl eframe::App for Shell {
                     self.close_preferences();
                     commands.push(Command::FirmwareFolders);
                 }
+                crate::preferences_sheet::Action::SystemShortcuts(on) => {
+                    self.set_system_shortcuts(on)
+                }
             }
         }
         let path = self
@@ -4198,6 +4274,7 @@ impl eframe::App for Shell {
         self.resume_input(blocked);
         self.tick(&ctx, blocked, self.elapsed());
         self.sync_routing();
+        self.sync_system_keys();
         {
             let mut events = self.events.borrow_mut();
             events.screen = if blocked || self.presenter.is_none() {
@@ -4490,6 +4567,28 @@ fn title_strip(ui: &mut egui::Ui, title: &str, icon: bool) {
     );
 }
 
+/// Shown in Preferences when the system-shortcut option is on without the
+/// Accessibility privilege.
+const ACCESS_NOTE: &str = "Allow unemupc98, or the terminal that started it, in System \
+    Settings › Privacy & Security › Accessibility. Until then these shortcuts stay with macOS.";
+
+/// Hands the keys the keyboard tap takes from macOS to the window's key
+/// queue, as if the window had received them; refuses them once the guest
+/// lost the keyboard, so the tap passes them on to macOS.
+fn system_key_sink(events: Rc<RefCell<Events>>) -> crate::system_keys::Deliver {
+    Box::new(move |key| {
+        let Ok(mut events) = events.try_borrow_mut() else {
+            return false;
+        };
+        if !(events.system_keys && events.guest_focus) {
+            return false;
+        }
+        events.keyboard(key.key, key.state, key.repeat, false, None);
+        events.repaint();
+        true
+    })
+}
+
 fn shortcuts_help(macos: bool) -> String {
     let mut help =
         String::from("Enter / double-click: start the selected machine (on an image: Start…)\n");
@@ -4526,6 +4625,7 @@ fn shortcuts_help(macos: bool) -> String {
     if macos {
         help.push_str("⌘⇧/: keyboard shortcuts\nPress ⌘ first for Command+Shift shortcuts. Shift pressed first remains guest input.\n");
         help.push_str("⌘Q: quit; ⌘W: close; ⌘H: hide; ⌘M: minimize; ⌘Tab: switch application\nCommand chords never reach the guest. Ctrl and Alt remain guest input.\n");
+        help.push_str("macOS takes Ctrl+arrows (Mission Control, Spaces), Ctrl+digits, Ctrl+F1–F8, Ctrl+Space and F11 before the guest sees them. Turn on Preferences › General › Send macOS system shortcuts to the guest (needs Accessibility access), or turn those shortcuts off in System Settings › Keyboard › Keyboard Shortcuts › Mission Control.\n");
     } else {
         help.push_str("F1: keyboard shortcuts (outside guest focus)\nCtrl+N/O/, also require shell focus while running.\n");
     }
@@ -4641,6 +4741,7 @@ mod tests {
             stop_prompt_input: (false, false),
             restore_input: None,
             transfer_prompt: None,
+            system_keys: crate::system_keys::fake::system_keys().0,
         }
     }
 
@@ -5711,6 +5812,241 @@ mod tests {
                 assert!(shell.dialog.is_none());
             }
         }
+    }
+
+    /// A running keyboard shell on macOS whose system-shortcut tap is a
+    /// recording fake.
+    fn system_keys_shell() -> (Shell, Rc<RefCell<crate::system_keys::fake::Log>>) {
+        let mut shell = keyboard_shell();
+        shell.macos_shortcuts = true;
+        let (keys, log) = crate::system_keys::fake::system_keys();
+        shell.system_keys = keys;
+        (shell, log)
+    }
+
+    /// One key event the tap took from macOS; false when the shell refused it.
+    fn tapped(
+        log: &Rc<RefCell<crate::system_keys::fake::Log>>,
+        key: KeyCode,
+        state: ElementState,
+        repeat: bool,
+    ) -> bool {
+        let mut deliver = log.borrow_mut().deliver.take().expect("tap installed");
+        let taken = deliver(crate::system_keys::GuestKey { key, state, repeat });
+        log.borrow_mut().deliver = Some(deliver);
+        taken
+    }
+
+    #[test]
+    fn the_system_shortcut_tap_exists_only_while_a_running_guest_has_the_keyboard() {
+        let ctx = egui::Context::default();
+        let (mut shell, log) = system_keys_shell();
+        shell.input(&ctx, false);
+        assert_eq!(log.borrow().installs, 0, "off by default");
+        assert!(!shell.events.borrow().system_keys);
+        for give_back in [
+            "pause",
+            "dialog",
+            "focus",
+            "hidden",
+            "minimized",
+            "stop",
+            "option",
+            "host",
+        ] {
+            let (mut shell, log) = system_keys_shell();
+            shell.preferences.send_system_shortcuts = true;
+            shell.input(&ctx, false);
+            assert!(shell.system_keys.installed(), "{give_back}");
+            assert!(shell.events.borrow().system_keys);
+            match give_back {
+                "pause" => shell.paused = true,
+                "dialog" => shell.dialog = Some(("Synthetic", String::new())),
+                "focus" => {
+                    shell
+                        .events
+                        .borrow_mut()
+                        .forward(&WindowEvent::Focused(false));
+                }
+                "hidden" => shell.hidden = true,
+                "minimized" => shell.minimized = true,
+                "stop" => {
+                    shell.stop();
+                }
+                "option" => shell.preferences.send_system_shortcuts = false,
+                // Other hosts have no system shortcuts to take.
+                _ => shell.macos_shortcuts = false,
+            }
+            shell.input(&ctx, false);
+            assert!(!shell.system_keys.installed(), "{give_back}");
+            assert!(!shell.events.borrow().system_keys, "{give_back}");
+            assert_eq!(log.borrow().removes, 1, "{give_back}");
+            assert!(log.borrow().deliver.is_none(), "{give_back}");
+        }
+        // Quitting drops the shell, which removes an installed tap.
+        let (mut shell, log) = system_keys_shell();
+        shell.preferences.send_system_shortcuts = true;
+        shell.input(&ctx, false);
+        drop(shell);
+        assert_eq!((log.borrow().installs, log.borrow().removes), (1, 1));
+    }
+
+    #[test]
+    fn a_refused_tap_explains_the_permission_once_in_the_status_bar() {
+        let ctx = egui::Context::default();
+        let (mut shell, log) = system_keys_shell();
+        log.borrow_mut().refuse = true;
+        shell.preferences.send_system_shortcuts = true;
+        shell.input(&ctx, false);
+        assert_eq!(shell.message, crate::system_keys::REFUSED_HINT);
+        assert!(!shell.system_keys.installed());
+        shell.message.clear();
+        shell.release();
+        shell.focus_guest();
+        shell.input(&ctx, false);
+        assert_eq!(log.borrow().installs, 2, "the next focus tries again");
+        assert!(shell.message.is_empty(), "once per session");
+    }
+
+    #[test]
+    fn ctrl_arrows_taken_from_macos_reach_the_guest_and_focus_loss_releases_them() {
+        use KeyCode::*;
+        let ctx = egui::Context::default();
+        let (mut shell, log) = system_keys_shell();
+        shell.preferences.send_system_shortcuts = true;
+        shell.input(&ctx, false);
+        // The window still receives Ctrl itself; the tap takes the arrow.
+        shell.events.borrow_mut().key(ControlLeft, Pressed);
+        assert!(tapped(&log, ArrowLeft, Pressed, false));
+        assert!(tapped(&log, ArrowLeft, Pressed, true));
+        shell.input(&ctx, false);
+        let mut first = vec![0x1D];
+        first.extend(window::set1_scancodes(ArrowLeft, Pressed).unwrap());
+        let made = take_guest_scancodes(&mut shell);
+        assert!(
+            made.starts_with(&first) && made.len() > first.len(),
+            "{made:x?}"
+        );
+        assert!(shell.guest_held.contains(&ArrowLeft));
+        // Focus moves to another application while both keys are down.
+        shell
+            .events
+            .borrow_mut()
+            .forward(&WindowEvent::Focused(false));
+        shell.input(&ctx, false);
+        let released = take_guest_scancodes(&mut shell);
+        let arrow_break = window::set1_scancodes(ArrowLeft, Released).unwrap();
+        assert!(
+            released
+                .windows(arrow_break.len())
+                .any(|w| w == arrow_break),
+            "{released:x?}"
+        );
+        assert!(released.contains(&0x9D), "{released:x?}");
+        assert!(shell.guest_held.is_empty() && shell.held.is_empty());
+        assert_eq!(log.borrow().removes, 1);
+        // The late releases macOS delivers to the window change nothing.
+        shell.events.borrow_mut().key(ArrowLeft, Released);
+        shell.events.borrow_mut().key(ControlLeft, Released);
+        shell.input(&ctx, false);
+        assert!(take_guest_scancodes(&mut shell).is_empty());
+    }
+
+    #[test]
+    fn the_tap_hands_keys_back_to_macos_when_the_shell_cannot_take_them() {
+        let ctx = egui::Context::default();
+        let (mut shell, log) = system_keys_shell();
+        shell.preferences.send_system_shortcuts = true;
+        shell.input(&ctx, false);
+        let busy = shell.events.borrow_mut();
+        assert!(!tapped(&log, KeyCode::ArrowUp, Pressed, false));
+        drop(busy);
+        shell.events.borrow_mut().guest_focus = false;
+        assert!(!tapped(&log, KeyCode::ArrowUp, Pressed, false));
+        assert!(shell.events.borrow().queue.is_empty());
+    }
+
+    #[test]
+    fn a_failed_save_still_asks_for_access_and_reports_both() {
+        let (mut shell, log) = system_keys_shell();
+        shell.preferences_path = None;
+        shell.open_preferences();
+        shell.set_system_shortcuts(true);
+        assert!(
+            shell.preferences.send_system_shortcuts,
+            "on for this session"
+        );
+        assert_eq!(log.borrow().access_requests, 1);
+        let dialog = shell.preferences_dialog.as_ref().unwrap();
+        let note = dialog
+            .system_shortcuts
+            .as_ref()
+            .unwrap()
+            .note
+            .clone()
+            .unwrap();
+        assert!(note.starts_with("Cannot save preferences:"), "{note}");
+        assert!(note.ends_with(ACCESS_NOTE), "{note}");
+    }
+
+    #[test]
+    fn turning_the_option_on_asks_for_accessibility_once_and_saves_it() {
+        let temp = assembly::test_support::TempDir::new("shell-system-shortcuts");
+        let path = temp.path().join("preferences.toml");
+        let (mut shell, log) = system_keys_shell();
+        shell.preferences_path = Some(path.clone());
+        shell.open_preferences();
+        let note = |shell: &Shell| {
+            let shortcuts = shell.preferences_dialog.as_ref().unwrap();
+            let shortcuts = shortcuts.system_shortcuts.as_ref().unwrap();
+            (shortcuts.on, shortcuts.note.clone())
+        };
+        assert_eq!(note(&shell), (false, None));
+        assert_eq!(log.borrow().access_requests, 0);
+        shell.set_system_shortcuts(true);
+        assert_eq!(log.borrow().access_requests, 1);
+        assert_eq!(note(&shell), (true, Some(ACCESS_NOTE.into())));
+        assert!(
+            crate::preferences::Preferences::load(&path)
+                .unwrap()
+                .send_system_shortcuts
+        );
+        assert_eq!(log.borrow().installs, 0, "not while Preferences is open");
+        shell.set_system_shortcuts(false);
+        assert_eq!(log.borrow().access_requests, 1, "asks only when turned on");
+        assert_eq!(note(&shell), (false, None));
+        assert!(
+            !crate::preferences::Preferences::load(&path)
+                .unwrap()
+                .send_system_shortcuts
+        );
+        // Reopening Preferences still says what is missing.
+        shell.set_system_shortcuts(true);
+        assert_eq!(log.borrow().access_requests, 2);
+        shell.close_preferences();
+        shell.open_preferences();
+        assert_eq!(note(&shell), (true, Some(ACCESS_NOTE.into())));
+        log.borrow_mut().access_granted = true;
+        shell.set_system_shortcuts(true);
+        assert_eq!(note(&shell), (true, None));
+        shell.close_preferences();
+        shell.focus_guest();
+        shell.input(&egui::Context::default(), false);
+        assert!(shell.system_keys.installed());
+        // Once a tap exists the privilege is known to be there.
+        log.borrow_mut().access_granted = false;
+        shell.open_preferences();
+        assert_eq!(note(&shell), (true, None));
+        shell.close_preferences();
+        // Other hosts do not offer the option.
+        shell.macos_shortcuts = false;
+        shell.open_preferences();
+        assert!(shell
+            .preferences_dialog
+            .as_ref()
+            .unwrap()
+            .system_shortcuts
+            .is_none());
     }
 
     #[test]

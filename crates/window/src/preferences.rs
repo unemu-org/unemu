@@ -13,6 +13,9 @@ pub(super) struct Preferences {
     pub store_root: Option<PathBuf>,
     pub rom_dirs: Vec<PathBuf>,
     pub reduced_motion: bool,
+    /// Off by default: taking macOS system shortcuts for the guest needs the
+    /// Accessibility privilege, which only the user may decide to grant.
+    pub send_system_shortcuts: bool,
     #[serde(flatten)]
     extra: std::collections::BTreeMap<String, toml::Value>,
 }
@@ -123,7 +126,12 @@ impl Preferences {
 }
 
 /// The keys this shell writes; every other key belongs to another writer.
-const OWNED_KEYS: [&str; 3] = ["store_root", "rom_dirs", "reduced_motion"];
+const OWNED_KEYS: [&str; 4] = [
+    "store_root",
+    "rom_dirs",
+    "reduced_motion",
+    "send_system_shortcuts",
+];
 
 /// Advisory lock on the sibling `<file>.lock`, shared with the command-line
 /// registry login. The file itself is replaced by rename, so it cannot carry
@@ -182,6 +190,22 @@ mod tests {
         prefs.reduced_motion = true;
         let restored: Preferences = toml::from_str(&toml::to_string(&prefs).unwrap()).unwrap();
         assert!(restored.reduced_motion);
+    }
+
+    #[test]
+    fn system_shortcuts_stay_with_macos_until_the_user_turns_them_on() {
+        let temp = assembly::test_support::TempDir::new("shell-system-shortcuts");
+        let path = temp.path().join("preferences.toml");
+        assert!(!Preferences::load(&path).unwrap().send_system_shortcuts);
+        std::fs::write(&path, "rom_dirs = []\n").unwrap();
+        let mut prefs = Preferences::load(&path).unwrap();
+        assert!(!prefs.send_system_shortcuts);
+        prefs.send_system_shortcuts = true;
+        prefs.save(&path).unwrap();
+        assert!(Preferences::load(&path).unwrap().send_system_shortcuts);
+        prefs.send_system_shortcuts = false;
+        prefs.save(&path).unwrap();
+        assert!(!Preferences::load(&path).unwrap().send_system_shortcuts);
     }
 
     #[test]

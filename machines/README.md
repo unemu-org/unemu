@@ -206,7 +206,8 @@ both skins, and the in-window menus remain available on every platform.
 On macOS, host shortcuts use Command: ⌘P pauses/resumes, ⌘K stops cleanly
 and returns to the library, and ⌘End sends guest Ctrl+Alt+Del. Command chords
 never type guest keys. Ctrl and Alt remain immediate guest input, including
-Ctrl+Alt+Del. ⌘Q quits, ⌘W closes, ⌘H hides, ⌘M minimizes and ⌘Tab switches
+Ctrl+Alt+Del, except the Ctrl shortcuts macOS takes first, such as Ctrl+arrows;
+see [macOS system shortcuts in games](#macos-system-shortcuts-in-games). ⌘Q quits, ⌘W closes, ⌘H hides, ⌘M minimizes and ⌘Tab switches
 applications; mute uses ⌘⇧M. Hold ⌘T for fast-forward; releasing Command or T
 ends the hold. ⌘Enter toggles full screen; ⌘N/⌘O/⌘, select New/Open/Settings.
 
@@ -666,6 +667,34 @@ that needs the XTIDE path and a matching geometry override, as described in
 615/4/17 mapping its system BIOS supports, with `controller_model = "at-adapter"`.
 The open profile uses ATA task-file semantics for XTIDE. Both profiles share
 `games.img` and `games.upfj`; run only one at a time.
+
+### macOS system shortcuts in games
+
+macOS takes some keys before any application sees them: Ctrl+←/→ moves to
+the next Space, Ctrl+↑ opens Mission Control and Ctrl+↓ shows the front
+application's windows; Ctrl+digits switch desktops, Ctrl+F1–F8 move keyboard
+focus, Ctrl+Space switches input sources and F11 shows the desktop. Games that
+fire with Ctrl and move with the arrows (Duke Nukem II, for example) then
+switch Spaces instead. There are two ways to keep these keys in the guest:
+
+- **Preferences › General › Send macOS system shortcuts to the guest while
+  it has the keyboard** (off by default). Turning it on asks macOS for
+  Accessibility access; allow unemupc98 (or the terminal that started it) in
+  System Settings › Privacy & Security › Accessibility. While a running guest
+  has the keyboard, Ctrl with an arrow, Home/End/Page Up/Page Down, a digit,
+  Space or a function key, and every function key go to the guest. Command
+  chords always stay with macOS, so ⌘Tab, ⌘G and ⌘Q still work. Pause, the
+  in-window menus, dialogs and clicking outside the screen give the keys back
+  to macOS; the native macOS menu bar does not release the guest's keyboard.
+  The keyboard tap exists only while the guest has the keyboard. Without the
+  permission the status bar says so once and macOS keeps the shortcuts.
+- Turn the colliding shortcuts off in System Settings › Keyboard › Keyboard
+  Shortcuts › Mission Control (and Keyboard navigation or Input Sources for
+  the others). This needs no permission but applies to every application.
+
+On most Apple keyboards the top row sends brightness and volume until you hold
+fn (or turn on "Use F1, F2, etc. keys as standard function keys"); hold fn for
+the guest's F1–F12.
 
 ### First DOS install
 

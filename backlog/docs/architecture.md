@@ -616,7 +616,12 @@ wait for a guest chord, keeping host shortcut prefixes out of the guest.
 Held keys from before Start/focus gain cannot enter through OS repeats or
 synthetic focus events. Only Ctrl+Alt chords remain host shortcuts during guest
 focus; F1 and Ctrl+N/O/comma reach the guest. Pointer release and Pause preserve
-keyboard focus. Reset queues explicit guest Ctrl/Alt/Delete makes rather than
+keyboard focus. On macOS an opt-in preference (`send_system_shortcuts`) adds
+`src/macos_keys.rs`, an active Quartz event tap that exists only while a running,
+unpaused guest has the keyboard and takes the Ctrl and function-key chords
+Mission Control and other system shortcuts would claim; `src/system_keys.rs`
+decides which keys and when, and the taken keys enter the same key queue as
+window events, so focus checks and held-key release are unchanged. Reset queues explicit guest Ctrl/Alt/Delete makes rather than
 resetting the board directly. Stop and normal window close finish only a
 successful, still-running session. Execution errors remain unsealed; a halt
 has already finished. A failed finish drops the session, shows its diagnostic
