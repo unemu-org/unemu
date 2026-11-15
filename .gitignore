@@ -39,11 +39,13 @@ target/
 # from a pinned commit by vendor/test386/fetch.sh, not checked in.
 /vendor/test386/test386.asm/
 /vendor/test386/test386.bin
-# Kiselev 8088_bios (Xi8088 config): the upstream clone and the assembled BIOS
-# are rebuilt from a pinned commit by vendor/kiselev-bios/fetch.sh, not checked in.
+# Kiselev 8088_bios (Xi8088 config): the upstream clone, the assembled BIOS and
+# its source archive are rebuilt from a pinned commit by
+# vendor/kiselev-bios/fetch.sh, not checked in.
 /vendor/kiselev-bios/8088_bios
 /vendor/kiselev-bios/bios-xi8088.bin
 /vendor/kiselev-bios/bios-xi8088-atreset.bin
+/vendor/kiselev-bios/kiselev-bios-*-src.tar
 /vendor/kiselev-bios/build/
 # SeaBIOS ISA configuration: pinned source cache, exports and built firmware.
 /vendor/seabios/src/
@@ -56,16 +58,19 @@ target/
 /vendor/freedos/freedos.img
 /vendor/freedos/freedos-1200.img
 /vendor/freedos/freedos-tools-1200.img
-# XTIDE Universal BIOS AT option ROM: pinned download and padded/checksummed
-# image are rebuilt by vendor/xtide-universal-bios/fetch.sh, not checked in.
+# XTIDE Universal BIOS AT option ROM: pinned download, source export, the
+# padded/checksummed images and their source archive are rebuilt by
+# vendor/xtide-universal-bios/fetch.sh, not checked in.
 /vendor/xtide-universal-bios/build/
 /vendor/xtide-universal-bios/ide_at-r638-8k.bin
 /vendor/xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin
-# Open VGA BIOS (LGPL) and its INT 10h probe floppy: built by Nix from a pinned
-# release by vendor/vgabios/fetch.sh, never committed.
+/vendor/xtide-universal-bios/xtide-universal-bios-*-src.tar
+# Open VGA BIOS (LGPL), its INT 10h probe floppy and their source archive:
+# built by Nix from a pinned release by vendor/vgabios/fetch.sh, never committed.
 /vendor/vgabios/build/
 /vendor/vgabios/vgabios-std.bin
 /vendor/vgabios/int10-probe-1200.img
+/vendor/vgabios/vgabios-*-src.tar
 # FAT16 hard-disk data fixture: rebuilt offline by vendor/hdd/build.sh.
 /vendor/hdd/build/
 /vendor/hdd/fat16.img

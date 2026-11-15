@@ -308,3 +308,211 @@ fn ltemm_local_fixture_has_pinned_hash_and_mz_header() {
             .1
     );
 }
+
+/// A corresponding-source archive that an open-firmware fixture script writes
+/// next to its images.
+struct SourceArchive {
+    relative: &'static str,
+    script: &'static str,
+    /// Top-level entries under the archive's root directory.
+    entries: &'static [&'static str],
+    /// Members copied verbatim from this repository.
+    copies: &'static [(&'static str, &'static str)],
+    /// A member and text that identify the pinned revision or our patch.
+    marker: (&'static str, &'static str),
+    /// Upstream paths left out: prebuilt binaries or developer tooling.
+    absent: &'static [&'static str],
+}
+
+const SOURCE_ARCHIVE_PIN: &str = "SOURCE_ARCHIVE_SHA256=\"";
+
+const SOURCE_ARCHIVES: &[SourceArchive] = &[
+    SourceArchive {
+        relative: "kiselev-bios/kiselev-bios-a4af458-atreset-src.tar",
+        script: include_str!("../../../vendor/kiselev-bios/fetch.sh"),
+        entries: &["8088_bios", "NOTICE", "at-reset.patch"],
+        copies: &[
+            (
+                "NOTICE",
+                include_str!("../../../vendor/kiselev-bios/source-notice.txt"),
+            ),
+            (
+                "at-reset.patch",
+                include_str!("../../../vendor/kiselev-bios/at-reset.patch"),
+            ),
+        ],
+        // The archived tree has the AT reset patch applied.
+        marker: (
+            "8088_bios/src/floppy2.inc",
+            "je\tint_13_fn00\t\t; Reset disk system regardless of DL",
+        ),
+        absent: &["8088_bios/binaries", "8088_bios/xtide_r625"],
+    },
+    SourceArchive {
+        relative: "vgabios/vgabios-0.8a-unemu.1-src.tar",
+        script: include_str!("../../../vendor/vgabios/fetch.sh"),
+        entries: &["NOTICE", "vgabios"],
+        copies: &[(
+            "NOTICE",
+            include_str!("../../../vendor/vgabios/source-notice.txt"),
+        )],
+        marker: ("vgabios/README.unemu.md", "# vgabios (unemu fork)"),
+        absent: &["vgabios/.beads/hooks"],
+    },
+    SourceArchive {
+        relative: "xtide-universal-bios/xtide-universal-bios-r638-src.tar",
+        script: include_str!("../../../vendor/xtide-universal-bios/fetch.sh"),
+        entries: &["NOTICE", "trunk"],
+        copies: &[(
+            "NOTICE",
+            include_str!("../../../vendor/xtide-universal-bios/source-notice.txt"),
+        )],
+        // The revision string the ROM's sign-on embeds.
+        marker: ("trunk/XTIDE_Universal_BIOS/Inc/Revision.inc", "638 "),
+        absent: &[],
+    },
+];
+
+struct TarMember {
+    path: String,
+    kind: u8,
+    mode: u64,
+    owner: (u64, u64),
+    owner_names: (String, String),
+    mtime: u64,
+    data: Vec<u8>,
+}
+
+fn tar_text(field: &[u8]) -> String {
+    let end = field
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(field.len());
+    String::from_utf8(field[..end].to_vec()).expect("UTF-8 tar header field")
+}
+
+fn tar_number(field: &[u8]) -> u64 {
+    u64::from_str_radix(tar_text(field).trim(), 8).expect("octal tar header field")
+}
+
+/// Members of a POSIX ustar archive (POSIX.1, pax utility, "ustar Interchange
+/// Format"): 512-byte headers, each followed by its data padded to 512 bytes,
+/// ended by zero blocks.
+fn ustar_members(archive: &[u8]) -> Vec<TarMember> {
+    assert_eq!(
+        archive.len() % 512,
+        0,
+        "tar archives are whole 512-byte blocks"
+    );
+    let mut members = Vec::new();
+    let mut offset = 0;
+    loop {
+        let header = &archive[offset..offset + 512];
+        if header.iter().all(|&byte| byte == 0) {
+            return members;
+        }
+        assert_eq!(&header[257..265], b"ustar\x0000", "ustar magic and version");
+        let name = tar_text(&header[..100]);
+        let prefix = tar_text(&header[345..500]);
+        let size = usize::try_from(tar_number(&header[124..136])).unwrap();
+        let start = offset + 512;
+        members.push(TarMember {
+            path: if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            },
+            kind: header[156],
+            mode: tar_number(&header[100..108]),
+            owner: (tar_number(&header[108..116]), tar_number(&header[116..124])),
+            owner_names: (tar_text(&header[265..297]), tar_text(&header[297..329])),
+            mtime: tar_number(&header[136..148]),
+            data: archive[start..start + size].to_vec(),
+        });
+        offset = start + size.div_ceil(512) * 512;
+    }
+}
+
+#[test]
+fn source_archive_pins_follow_build_script_format() {
+    for archive in SOURCE_ARCHIVES {
+        parse_pin(archive.script, SOURCE_ARCHIVE_PIN)
+            .unwrap_or_else(|error| panic!("source archive {}: {error}", archive.relative));
+    }
+}
+
+#[test]
+#[ignore = "requires fetched source archives"]
+fn source_archives_match_pins_and_carry_their_notice() {
+    for archive in SOURCE_ARCHIVES {
+        let Some(bytes) = fixtures::fixture(archive.relative) else {
+            continue;
+        };
+        let relative = archive.relative;
+        assert_eq!(
+            assembly::test_support::fixture_sha256(&bytes),
+            parse_pin(archive.script, SOURCE_ARCHIVE_PIN).unwrap(),
+            "source archive SHA-256: {relative}"
+        );
+        let root = Path::new(relative).file_stem().unwrap().to_str().unwrap();
+        let members = ustar_members(&bytes);
+        let mut entries = BTreeSet::new();
+        for member in &members {
+            let path = &member.path;
+            let inner = path
+                .strip_prefix(root)
+                .and_then(|inner| inner.strip_prefix('/'))
+                .unwrap_or_else(|| panic!("{relative}: {path} is outside {root}/"));
+            entries.extend(inner.split('/').next().filter(|entry| !entry.is_empty()));
+            // A source archive carries no prebuilt firmware images.
+            let lowercase = path.to_ascii_lowercase();
+            assert!(
+                !lowercase.ends_with(".bin") && !lowercase.ends_with(".rom"),
+                "{relative}: {path} is a binary image"
+            );
+            for &absent in archive.absent {
+                let excluded = inner == absent
+                    || inner
+                        .strip_prefix(absent)
+                        .is_some_and(|rest| rest.starts_with('/'));
+                assert!(!excluded, "{relative}: {path} should be left out");
+            }
+            // Nothing from the host that wrote the archive: no owner, no
+            // per-file times, only plain files and directories.
+            assert!(
+                matches!(member.kind, b'0' | b'5'),
+                "{relative}: {path} type"
+            );
+            assert!(
+                matches!(member.mode, 0o644 | 0o755),
+                "{relative}: {path} mode"
+            );
+            assert_eq!(member.owner, (0, 0), "{relative}: {path} owner");
+            assert_eq!(
+                member.owner_names,
+                (String::new(), String::new()),
+                "{relative}: {path} owner names"
+            );
+            assert_eq!(member.mtime, members[0].mtime, "{relative}: {path} mtime");
+        }
+        assert_eq!(
+            entries,
+            archive.entries.iter().copied().collect(),
+            "{relative}: top-level entries"
+        );
+        let member = |inner: &str| {
+            let path = format!("{root}/{inner}");
+            let found = members.iter().find(|member| member.path == path);
+            let found = found.unwrap_or_else(|| panic!("{relative}: no {path}"));
+            String::from_utf8_lossy(&found.data).into_owned()
+        };
+        for &(inner, expected) in archive.copies {
+            assert_eq!(member(inner), expected, "{relative}: {inner}");
+        }
+        let (inner, text) = archive.marker;
+        assert!(
+            member(inner).contains(text),
+            "{relative}: {inner} lacks {text:?}"
+        );
+    }
+}

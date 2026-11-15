@@ -98,6 +98,26 @@ not rely on a quick rewrite changing metadata: set a distinct mtime explicitly,
 or, for the firmware hash cache, inject the stale entry or the hash time through
 the cache's test seams.
 
+## Fetched fixtures and their source
+
+Firmware and media fixtures are fetched or built by `vendor/*/fetch.sh` (or
+`build.sh`) and pinned by SHA-256 in those scripts; tests read the pins from
+the scripts, so a test and its fixture cannot disagree silently. A missing
+fixture skips its test unless `UNEMUPC98_REQUIRE_FIXTURES=1`, which the CI
+`goldens` gate sets (see [`commands.md`](commands.md)).
+
+The open GPL/LGPL firmware fixtures (Kiselev BIOS, XTIDE Universal BIOS, the
+VGA BIOS fork) also get a deterministic source archive each, pinned the same
+way. In `crates/cli/tests/media_fixtures.rs`, a default-suite test checks that
+every archive pin parses. An ignored test, run by the `goldens` gate with
+`UNEMUPC98_REQUIRE_FIXTURES=1` after the `fixtures` gate has built the
+archives, checks each archive's hash, its top-level entries, its `NOTICE` (the
+committed `source-notice.txt`), that it holds no prebuilt image (`.bin`,
+`.rom`) or excluded upstream path, and that no member carries host data
+(owner, owner names, per-file times, links). The fixture scripts themselves
+rebuild a shipped image from each Kiselev and XTIDE archive's staged source
+before writing it.
+
 ## What "done" means for a testable unit
 
 - New device: unit tests + fuzz target + its row in the coverage matrix.

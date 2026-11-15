@@ -4,9 +4,31 @@
 # Prepare the pinned XTIDE Universal BIOS AT and configured XT+ option ROMs.
 # The upstream binary is shorter than its declared ROM size and has no valid
 # checksum. Keep its bytes intact, pad with zeros, and checksum the last byte.
-# Requires curl (only for a missing cache) and standard shell tools from the
-# flake devShell. Firmware bytes and cached downloads are never committed.
+# Also write the corresponding source, the pinned Subversion revision of the
+# project's trunk plus a NOTICE, as a deterministic tar archive, after checking
+# that it assembles to both downloads.
+# Requires curl and Subversion (only for a missing cache; without svn on PATH
+# Nix supplies it from this repository's pinned nixpkgs), GNU tar, nasm, make
+# and standard shell tools from the flake devShell. Firmware bytes, cached
+# downloads and the source export are never committed.
 set -euo pipefail
+
+# BSD tar (the macOS default) cannot fix member order, owners and modes, and
+# GNU tar would take extra options from TAR_OPTIONS.
+unset TAR_OPTIONS
+case "$(tar --version 2>/dev/null)" in
+	*"GNU tar"*) ;;
+	*)
+		echo "missing GNU tar: run this script inside nix develop" >&2
+		exit 1
+		;;
+esac
+for tool in nasm make; do
+	if ! command -v "$tool" >/dev/null 2>&1; then
+		echo "missing $tool: run this script inside nix develop" >&2
+		exit 1
+	fi
+done
 
 # Both GNU/Linux and macOS provide one of these SHA-256 tools.
 if command -v sha256sum >/dev/null 2>&1; then
@@ -25,6 +47,10 @@ check_sha256() {
 		echo "SHA-256 mismatch for $file: expected $expected, got $actual" >&2
 		if [ "${3:-output}" = archive ]; then
 			echo "Remove the cached archive and fetch the pinned release again; do not change its expected hash." >&2
+		elif [ "${3:-output}" = source ]; then
+			echo "Remove the cached source export $SOURCE_CACHE and export it again; then check source-notice.txt and the GNU tar version before updating the source archive hash." >&2
+		elif [ "${3:-output}" = rebuild ]; then
+			echo "The r$SOURCE_REVISION source no longer assembles to the pinned download; check the cached export $SOURCE_CACHE and the nasm and make versions." >&2
 		else
 			echo "Check the pinned sources and toolchain; deliberately rebuild the goldens' expectations before updating the expected output hash." >&2
 		fi
@@ -37,11 +63,24 @@ UPSTREAM_SHA256="6d5007bca3be0bffeb210969a299b67199368b4845f554b5a00715e2718dfea
 OUTPUT_SHA256="6409de912eab620ea144b79e723bed478814047dc2766fc19fd6e2e3690662d0"
 XTP_UPSTREAM_SHA256="338f70795a7c881a839ce25365678db0f2a356f2f255b7493a07f58f3ac65ec4"
 XTP_OUTPUT_SHA256="54975501e6887c836b8d57e7aad78421e745a9b71e250f94d5d1f9631eab1513"
+# The download centre builds every trunk commit; r638's trunk assembles to
+# both downloads byte for byte (README.md), so its export is their source.
+SOURCE_URL="https://www.xtideuniversalbios.org/svn/xtideuniversalbios/trunk"
+SOURCE_REVISION="638"
+# r638's commit time, 2026-06-09 09:36:36 UTC (svn info); an export has no
+# revision metadata of its own. The download centre's builds embed that date
+# through NASM's __DATE__.
+SOURCE_EPOCH="1780997796"
+SOURCE_DATE="2026-06-09"
+SOURCE_ARCHIVE_SHA256="7bbd5de269f4e1d52ae30b52531fcda842709b9ae49166ac249f9b37187b91e8"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK="$HERE/build"
 RAW="$WORK/ide_at.bin"
 OUT="$HERE/ide_at-r638-8k.bin"
+SOURCE_NAME="xtide-universal-bios-r$SOURCE_REVISION-src"
+SOURCE_CACHE="$WORK/trunk-r$SOURCE_REVISION"
+SOURCE_OUT="$HERE/$SOURCE_NAME.tar"
 mkdir -p "$WORK"
 
 if [ ! -f "$RAW" ]; then
@@ -116,3 +155,47 @@ fi
 check_sha256 "$TMP" "$XTP_OUTPUT_SHA256"
 mv "$TMP" "$OUT"
 echo "built $OUT ($SIZE bytes) from r638 ide_xtp.bin; ATA 1F0h, polling, boot A:, byte sum 0"
+
+SOURCE_DIR="$(mktemp -d "$WORK/source.XXXXXX")"
+trap 'rm -rf "$SOURCE_DIR"' EXIT
+svn_run() {
+	if command -v svn >/dev/null 2>&1; then
+		svn "$@"
+	elif command -v nix >/dev/null 2>&1; then
+		nix --extra-experimental-features "nix-command flakes" shell --no-update-lock-file \
+			--inputs-from "$HERE/../.." nixpkgs#subversion --command svn "$@"
+	else
+		echo "missing svn: install Subversion, or Nix to supply it" >&2
+		exit 1
+	fi
+}
+# A revision's export never changes, so a cached one keeps rebuilds offline;
+# the archive pin catches a changed cache.
+if [ ! -d "$SOURCE_CACHE" ]; then
+	echo "exporting XTIDE Universal BIOS r$SOURCE_REVISION source from $SOURCE_URL (needs the network once; cached in $SOURCE_CACHE)"
+	# r638 sets no eol-style, keyword or externals properties; the flags keep
+	# a host's Subversion configuration from changing the exported bytes.
+	svn_run export --quiet --non-interactive --ignore-externals --native-eol LF \
+		-r "$SOURCE_REVISION" "$SOURCE_URL" "$SOURCE_DIR/trunk"
+	mv -T "$SOURCE_DIR/trunk" "$SOURCE_CACHE"
+fi
+STAGE="$SOURCE_DIR/$SOURCE_NAME"
+mkdir -p "$STAGE"
+cp -R "$SOURCE_CACHE" "$STAGE/trunk"
+cp "$HERE/source-notice.txt" "$STAGE/NOTICE"
+# The archived source must still assemble to both downloads. Build in a copy
+# so no build output reaches the archive.
+cp -R "$STAGE/trunk" "$SOURCE_DIR/check"
+make -C "$SOURCE_DIR/check/XTIDE_Universal_BIOS" at xtplus \
+	AS="nasm -D__DATE__='\"$SOURCE_DATE\"'" > /dev/null
+check_sha256 "$SOURCE_DIR/check/XTIDE_Universal_BIOS/Build/ide_at.bin" "$UPSTREAM_SHA256" rebuild
+check_sha256 "$SOURCE_DIR/check/XTIDE_Universal_BIOS/Build/ide_xtp.bin" "$XTP_UPSTREAM_SHA256" rebuild
+# Member order, timestamps, owners and modes are fixed so the archive has the
+# same bytes on every host; ustar stores no atime or ctime.
+TEMPORARY_ARCHIVE="$SOURCE_DIR/source.tar"
+LC_ALL=C tar --create --file="$TEMPORARY_ARCHIVE" --directory="$SOURCE_DIR" \
+	--format=ustar --sort=name --hard-dereference --mtime="@$SOURCE_EPOCH" \
+	--owner=0 --group=0 --numeric-owner --mode='a=rX,u+w,ug-s' "$SOURCE_NAME"
+check_sha256 "$TEMPORARY_ARCHIVE" "$SOURCE_ARCHIVE_SHA256" source
+mv "$TEMPORARY_ARCHIVE" "$SOURCE_OUT"
+echo "wrote $SOURCE_OUT (source of both r638 images, GPL-2.0-only; rebuilds both downloads)"

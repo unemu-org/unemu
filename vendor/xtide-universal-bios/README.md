@@ -32,9 +32,11 @@ From the repository root, with the devShell tools on `PATH`:
 vendor/xtide-universal-bios/fetch.sh
 ```
 
-The script reuses `build/ide_at.bin` and `build/ide_xtp.bin` when present,
-so a cached build requires no network. Otherwise it fetches the pinned URLs
-with `curl`. It checks both upstream SHA-256 hashes on every build.
+The script reuses `build/ide_at.bin`, `build/ide_xtp.bin` and the source
+export `build/trunk-r638/` when present, so a cached build requires no
+network. Otherwise it fetches the pinned URLs with `curl` and exports the
+source with Subversion (see [Source archive](#source-archive)). It checks both
+upstream SHA-256 hashes on every build.
 
 The raw AT binary starts with `55 AA 10`: the length byte at offset 2 declares
 16 × 512 = 8,192 bytes, but the download has only 6,646 bytes and its byte sum
@@ -53,8 +55,9 @@ The result is `ide_at-r638-8k.bin` (8,192 bytes), SHA-256:
 The script checks the header, size, sum and pinned output hash before moving
 a temporary image into place. A changed cache or build recipe fails its hash
 check; investigate the change before deliberately updating any pin.
-Only `fetch.sh` and this README are committed in this directory. The cache,
-temporary files and output images are gitignored.
+Only `fetch.sh`, `source-notice.txt` and this README are committed in this
+directory. The caches, temporary files, output images and the source archive
+are gitignored.
 
 ## XT+ configured for 16-bit ATA and floppy boot
 
@@ -69,17 +72,9 @@ The binary download centre's GNU GPL version 2 statement above applies to
 both builds. The configured image retains the conservative `GPL-2.0-only`
 catalogue licence. No firmware or cached source bytes are committed.
 
-Source references below are relative to the SVN r638 export root, cached
-under `build/src/`. To obtain it, run from `vendor/xtide-universal-bios/`:
-
-```sh
-mkdir -p build
-svn export -r 638 https://www.xtideuniversalbios.org/svn/xtideuniversalbios/trunk build/src
-```
-
-Subversion is available through `nix shell nixpkgs#subversion`. The export is
-optional, only for reading these citations; `fetch.sh` does not require it.
-The configuration is derived from that revision:
+Source references below are relative to the SVN r638 trunk export that
+`fetch.sh` caches under `build/trunk-r638/` (the `trunk/` directory of the
+source archive). The configuration is derived from that revision:
 
 - `XTIDE_Universal_BIOS/Makefile:116–120` defines XT+ as XT plus `USE_186`,
   without `USE_AT` or `MODULE_IRQ`.
@@ -144,3 +139,76 @@ hard-disk boot in an existing machine profile.
 `ibm-5170`, providing `fixed-disk`, requiring CPU ≥ 80186 and `ata@1F0/14`.
 `machines/at-ide.toml` selects this configured XT+ image; the AT image remains
 available for system BIOSes that already initialize INT 40h.
+
+## Source archive
+
+`fetch.sh` also writes `xtide-universal-bios-r638-src.tar`, the corresponding
+source of both downloads and therefore of both images. It is what a published
+firmware package carries as its `source` layer: the images are GPL, so they may
+be published only together with it. Its root directory,
+`xtide-universal-bios-r638-src/`, holds:
+
+- `trunk/`: `svn export -r 638` of
+  `https://www.xtideuniversalbios.org/svn/xtideuniversalbios/trunk`
+  (repository UUID `143130fb-dee8-9d2b-0d25-209ee59ef9c5`), unchanged.
+- `NOTICE`: [`source-notice.txt`](source-notice.txt), unchanged. It names the
+  revision, the hashes of both downloads and of both shipped 8 KiB images,
+  how and when (2026-11-10 and 2026-11-11) the project derives the images,
+  including the checksum rule (the last byte makes the byte sum 0 modulo
+  256), the licence and the command that rebuilds the downloads.
+
+The archive's licence is **GPL-2.0-only**. Source files with a licence header
+grant "version 2 of the License, or (at your option) any later version", but
+61 of the 255 source files in the export (`.asm`, `.inc`, `.cpp`, `.h`, `.pl`)
+have no header and fall under `license.txt`, which is version 2, and the
+download centre's statement above names version 2. So the archive, like the
+binaries' catalogue entries, is version 2 only.
+
+How the source revision was matched to the downloads:
+
+- READ: the downloads sit under `binaries/r638/`, and the download centre's
+  `Readme.txt` says its binaries are built automatically from each commit.
+  `svn info -r 638` of trunk reports last-changed revision 638, committed
+  2026-06-09 09:36:36 UTC. Its `XTIDE_Universal_BIOS/Inc/Revision.inc` is
+  `638 `, the revision the ROM's sign-on shows.
+- MEASURED on 2026-11-15 with NASM 3.01 and GNU make 4.4.1: in the export's
+  `XTIDE_Universal_BIOS/`, `make at xtplus AS=nasm` writes `Build/ide_at.bin`
+  (6,646 bytes) and `Build/ide_xtp.bin` (6,629 bytes). Each differs from its
+  download only in the 10-byte build date at offset 32h, which NASM's
+  `__DATE__` fills. With that macro defined as the commit date,
+  `make at xtplus AS="nasm -D__DATE__='\"2026-06-09\"'"`, both outputs have
+  the pinned download SHA-256 values, byte for byte. The same command in an
+  extracted archive gives the same result.
+
+`fetch.sh` repeats that check on every run: it copies the staged `trunk/`,
+runs the same `make` command (NASM and make from the devShell) and compares
+both outputs with the pinned download hashes before writing the archive, so
+the archive always builds what we ship.
+
+r638 sets no `svn:eol-style`, `svn:keywords` or `svn:externals` property (one
+`svn:mime-type` only, MEASURED with `svn proplist -R`), so the export is the
+repository's bytes; the script still passes `--native-eol LF` and
+`--ignore-externals` so a host's Subversion settings cannot change them. When
+`svn` is not on `PATH` (the devShell has none), the script runs it from this
+repository's pinned nixpkgs with
+`nix shell --no-update-lock-file --inputs-from . nixpkgs#subversion`.
+
+The first run, or any run after `build/trunk-r638/` is removed, needs the
+network: it prints `exporting XTIDE Universal BIOS r638 source from …` before
+contacting the Subversion server, and Nix may download Subversion. Later runs
+reuse the cache and work offline, like the cached downloads. The CI `fixtures`
+gate runs this script last, so an unreachable server does not stop the other
+fixtures from being built.
+
+The archive is an uncompressed POSIX ustar file written by GNU tar: members
+sorted by name, every timestamp set to the r638 commit time, owner and group 0
+with no names, and modes 0644 or 0755. Its SHA-256 is pinned in `fetch.sh`;
+a changed cache fails it, and the message says to remove `build/trunk-r638/`
+and export again:
+
+| Output | SHA-256 |
+|---|---|
+| `xtide-universal-bios-r638-src.tar` | `7bbd5de269f4e1d52ae30b52531fcda842709b9ae49166ac249f9b37187b91e8` |
+
+MEASURED on 2026-11-15 on aarch64-darwin with GNU tar 1.35: a fresh export
+and the cached export give this hash. A Linux run has not been measured.

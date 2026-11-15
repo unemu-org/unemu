@@ -31,7 +31,8 @@ fixtures; they are not linked into the emulator and never committed.
 
 ## Rebuild
 
-From the repository root, with Nix (flakes) and git on `PATH`, as in the devShell:
+From the repository root, with Nix (flakes), git and GNU tar on `PATH`, as in the
+devShell:
 
 ```sh
 vendor/vgabios/fetch.sh
@@ -78,8 +79,9 @@ complete x86_64-linux build has not been measured (no Linux builder was
 available); a Linux hash mismatch would be a vgabios-side fix, such as pinning
 one preprocessor in its flake.
 
-Only `fetch.sh` and this README are committed in this directory. The outputs
-and the temporary `build/` directory are gitignored.
+Only `fetch.sh`, `source-notice.txt` and this README are committed in this
+directory. The outputs, the source archive and the temporary `build/` directory
+are gitignored.
 
 CI: the `fixtures` gate (`scripts/ci-gate.sh fixtures`) runs this script. The
 checkout's origin is its HTTPS URL without credentials, so the build succeeds
@@ -90,6 +92,48 @@ files. The `goldens` gate sets
 `UNEMUPC98_REQUIRE_FIXTURES=1`, so the tests that need these files fail when
 they are missing; they do not skip. Without that variable (a local run) they
 print a skip line and return. See `backlog/docs/commands.md`.
+
+## Source archive
+
+After both files pass their checks, `fetch.sh` writes
+`vgabios-0.8a-unemu.1-src.tar`, their corresponding source. It is what a
+published firmware package carries as its `source` layer: the ROM is
+LGPL-2.1-or-later, so it may be published only together with it. Its root
+directory, `vgabios-0.8a-unemu.1-src/`, holds:
+
+- `vgabios/`: the tree Nix built both files from (the flake's own source,
+  read with `builtins.getFlake`), so a mirror or a local clone gives the same
+  bytes. Two parts of the pinned revision are left out because neither builds
+  the files: the five `VGABIOS-lgpl-latest*.bin` images, upstream's prebuilt
+  unmodified 0.8a binaries whose source the archive does not carry, and
+  `.beads/hooks/`, a developer's issue-tracker git hooks. Everything else is
+  unchanged.
+- `NOTICE`: [`source-notice.txt`](source-notice.txt), unchanged. It names the
+  release, revision and licence, both file hashes, the parts left out and the
+  `nix build` commands that rebuild the files. It names the repository
+  `unemu-org/vgabios` but no forge address.
+
+The whole archive is **LGPL-2.1-or-later**. It is an uncompressed POSIX ustar
+file written by GNU tar: members sorted by name, every timestamp set to the
+revision's commit time (2026-11-14 20:37:30 UTC, the flake's `lastModified`),
+owner and group 0 with no names, and modes 0644 or 0755. Its SHA-256 is pinned
+in `fetch.sh`:
+
+| File | SHA-256 |
+|---|---|
+| `vgabios-0.8a-unemu.1-src.tar` | `80eaa4d73bb221d39257f89bc99798aa4b1d2c0cbae878cacee6e0d0c8d32cb4` |
+
+The archive adds no network access of its own: it reads the source Nix
+fetched for the build, which Nix caches (see Rebuild above), so only a first
+run needs the network. `UNEMU_VGABIOS_FLAKE` pointing at any other tree (a work tree under
+development, another revision) builds and archives that tree, so the archive
+pin fails even where the output pins pass; it is meant for mirrors that carry
+the pinned revision.
+
+MEASURED on 2026-11-15 on aarch64-darwin with GNU tar 1.35: the origin and
+`UNEMU_VGABIOS_CHECKOUT` builds write this same archive, and `nix build .#std`
+and `nix build .#int10-probe` in an extracted archive's `vgabios/` directory
+give both pinned file hashes. A Linux run has not been measured.
 
 ## Catalogue and machine
 

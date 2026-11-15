@@ -1,0 +1,41 @@
+vgabios-0.8a-unemu.1-src
+
+Corresponding source for two files that the unemupc98 emulator project builds
+from the unemu fork of the LGPL VGABIOS, the video BIOS used by Bochs and
+QEMU, changed to run on an 80286 (repository unemu-org/vgabios):
+
+  vgabios-std.bin       flake output std, 32,768 bytes
+    SHA-256 7570ef9c66fd386450bb35fd2b6c91aba6f8ec69a565a1d7747e6e6716ea5389
+  int10-probe-1200.img  flake output int10-probe, 1,228,800 bytes
+    SHA-256 21b9dd1db3068bb73f3fde16058578368719f98b6d4335f45ec6681eb47beb58
+
+Contents
+
+  vgabios/  the fork at release tag v0.8a-unemu.1, revision
+            8e154f04c5b1c8029d1ac3a3827f077352d579b7: the tree Nix builds
+            both files from, with two parts left out. The five
+            VGABIOS-lgpl-latest*.bin files are upstream's prebuilt,
+            unmodified 0.8a images, whose source this archive does not
+            carry. .beads/hooks/ holds a developer's issue-tracker git
+            hooks. Neither is used to build the files above. Nothing else
+            is changed. README.unemu.md lists the changes from upstream
+            VGABIOS 0.8a.
+  NOTICE    this file.
+
+Licence
+
+  LGPL-2.1-or-later. The vgabios.c header grants the GNU Lesser General
+  Public License version 2 or, at your option, any later version; COPYING is
+  version 2.1. The probe source carries SPDX-License-Identifier:
+  LGPL-2.1-or-later. Copyright the LGPL VGABios developers and the
+  contributors to the fork.
+
+Rebuild
+
+  With Nix (flakes enabled), from the vgabios directory; flake.nix and
+  flake.lock pin the toolchain:
+
+    nix build .#std            # result/vgabios-std.bin
+    nix build .#int10-probe    # result/int10-probe-1200.img
+
+  Both results must match the SHA-256 values above.

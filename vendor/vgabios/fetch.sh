@@ -4,8 +4,11 @@
 # Build the pinned release of the open VGA BIOS (the unemu fork of the LGPL
 # VGABIOS) and its INT 10h probe floppy with Nix, check both SHA-256 pins and
 # copy the two files here (see README.md). Neither file is ever committed.
+# It also writes their corresponding source, the pinned tree Nix built from
+# plus a NOTICE, as a deterministic tar archive.
 #
-# Requires the host's Nix with flakes, and git (also in the flake devShell).
+# Requires the host's Nix with flakes, git and GNU tar (both also in the flake
+# devShell).
 # The source repository lives next to this one, on the same forge and in the
 # same organization. Its location is derived at run time from this
 # repository's origin remote, so no forge address is written in this file.
@@ -28,6 +31,16 @@ if ! command -v git >/dev/null 2>&1; then
 	echo "missing git: run this script inside nix develop, or install git" >&2
 	exit 1
 fi
+# BSD tar (the macOS default) cannot fix member order, owners and modes, and
+# GNU tar would take extra options from TAR_OPTIONS.
+unset TAR_OPTIONS
+case "$(tar --version 2>/dev/null)" in
+	*"GNU tar"*) ;;
+	*)
+		echo "missing GNU tar: run this script inside nix develop" >&2
+		exit 1
+		;;
+esac
 
 # Both GNU/Linux and macOS provide one of these SHA-256 tools.
 if command -v sha256sum >/dev/null 2>&1; then
@@ -44,7 +57,11 @@ check_sha256() {
 	actual="$("${SHA256[@]}" "$file" | awk '{print $1}')"
 	if [ "$actual" != "$expected" ]; then
 		echo "SHA-256 mismatch for $file: expected $expected, got $actual" >&2
-		echo "Check the flake reference and the pinned release; deliberately rebuild the goldens' expectations before updating the expected output hash." >&2
+		if [ "${3:-output}" = source ]; then
+			echo "Check the flake reference, the pinned release, source-notice.txt and the GNU tar version before updating the source archive hash." >&2
+		else
+			echo "Check the flake reference and the pinned release; deliberately rebuild the goldens' expectations before updating the expected output hash." >&2
+		fi
 		exit 1
 	fi
 }
@@ -60,11 +77,14 @@ TAG="v0.8a-unemu.1"
 REVISION="8e154f04c5b1c8029d1ac3a3827f077352d579b7"
 ROM_SHA256="7570ef9c66fd386450bb35fd2b6c91aba6f8ec69a565a1d7747e6e6716ea5389"
 PROBE_SHA256="21b9dd1db3068bb73f3fde16058578368719f98b6d4335f45ec6681eb47beb58"
+SOURCE_ARCHIVE_SHA256="80eaa4d73bb221d39257f89bc99798aa4b1d2c0cbae878cacee6e0d0c8d32cb4"
 QUERY="ref=refs/tags/$TAG&rev=$REVISION"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROM_OUT="$HERE/vgabios-std.bin"
 PROBE_OUT="$HERE/int10-probe-1200.img"
+SOURCE_NAME="vgabios-${TAG#v}-src"
+SOURCE_OUT="$HERE/$SOURCE_NAME.tar"
 
 # Turn this repository's origin into the sibling repository's flake reference,
 # keeping the transport and the origin's own ".git" suffix convention, so the
@@ -153,7 +173,8 @@ PROBE_STORE="$(build int10-probe)"
 
 mkdir -p "$HERE/build"
 WORK="$(mktemp -d "$HERE/build/fetch.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+# The source copy below comes from the read-only store; make it removable.
+trap 'chmod -R u+w "$WORK" 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
 byte_sum() {
 	od -An -v -tu1 "$1" | awk '{for (i = 1; i <= NF; i++) sum += $i} END {print sum % 256}'
@@ -184,3 +205,29 @@ mv "$WORK/vgabios-std.bin" "$ROM_OUT"
 mv "$WORK/int10-probe-1200.img" "$PROBE_OUT"
 echo "built $ROM_OUT ($SIZE bytes, header 55aa40, byte sum 0)"
 echo "built $PROBE_OUT ($PROBE_SIZE bytes)"
+
+# The archive holds the tree Nix built both files from. Its commit time
+# (lastModified) becomes every member's timestamp.
+SOURCE_INFO="$(VGABIOS_FLAKE_REF="$FLAKE" "${NIX[@]}" eval --raw --impure --expr \
+	'let flake = builtins.getFlake (builtins.getEnv "VGABIOS_FLAKE_REF"); in "${toString flake.lastModified} ${flake.outPath}"')"
+SOURCE_EPOCH="${SOURCE_INFO%% *}"
+SOURCE_TREE="${SOURCE_INFO#* }"
+STAGE="$WORK/source/$SOURCE_NAME"
+mkdir -p "$STAGE"
+cp -R "$SOURCE_TREE" "$STAGE/vgabios"
+chmod -R u+w "$STAGE"
+# Neither builds the ROM: the VGABIOS-lgpl-latest images are prebuilt
+# unmodified 0.8a binaries whose source this archive does not carry, and
+# .beads/hooks/ holds a developer's issue-tracker git hooks.
+rm -f "$STAGE"/vgabios/VGABIOS-lgpl-latest*.bin
+rm -rf "$STAGE/vgabios/.beads/hooks"
+cp "$HERE/source-notice.txt" "$STAGE/NOTICE"
+# Member order, timestamps, owners and modes are fixed so the archive has the
+# same bytes on every host; ustar stores no atime or ctime.
+TEMPORARY_ARCHIVE="$WORK/source.tar"
+LC_ALL=C tar --create --file="$TEMPORARY_ARCHIVE" --directory="$WORK/source" \
+	--format=ustar --sort=name --hard-dereference --mtime="@$SOURCE_EPOCH" \
+	--owner=0 --group=0 --numeric-owner --mode='a=rX,u+w,ug-s' "$SOURCE_NAME"
+check_sha256 "$TEMPORARY_ARCHIVE" "$SOURCE_ARCHIVE_SHA256" source
+mv "$TEMPORARY_ARCHIVE" "$SOURCE_OUT"
+echo "wrote $SOURCE_OUT (source of both files, LGPL-2.1-or-later)"

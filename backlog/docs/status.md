@@ -125,6 +125,27 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
     - Every action applies at once: OK and Cancel both close, and Apply stays
       disabled.
     - Sign-in states show "Checking…" while the store is asked.
+- **2026-11-15 — Source archives for the open fixture firmware:** the
+  Kiselev, XTIDE Universal BIOS and open VGA BIOS fixture scripts now also write
+  the corresponding source of their GPL/LGPL images as deterministic,
+  SHA-256-pinned POSIX ustar archives next to them (gitignored; the CI
+  `fixtures` gate builds them): `kiselev-bios-a4af458-atreset-src.tar`
+  (upstream at the pinned commit with `at-reset.patch` applied, without
+  upstream's prebuilt `binaries/` and `xtide_r625/`, plus the patch and a
+  NOTICE; GPL-3.0-or-later), `xtide-universal-bios-r638-src.tar` (SVN r638
+  trunk export plus NOTICE; GPL-2.0-only) and `vgabios-0.8a-unemu.1-src.tar`
+  (the fork's pinned tree, the one Nix builds from, without upstream's prebuilt
+  `VGABIOS-lgpl-latest*.bin` and `.beads/hooks/`, plus NOTICE;
+  LGPL-2.1-or-later). Before writing them, the Kiselev and XTIDE scripts
+  rebuild a shipped image (AT reset BIOS) or both downloads from the staged
+  source and compare the pinned hashes.
+  **MEASURED on aarch64-darwin:** repeated runs reproduce each archive hash;
+  the NOTICE rebuild commands run in each extracted archive reproduce every
+  pinned image or download hash, including XTIDE r638 `ide_at.bin` and
+  `ide_xtp.bin` byte for byte with NASM 3.01 once `__DATE__` is the commit
+  date. Linux hashes are not measured. Carrying the archives as a firmware
+  package's `source` layer is separate work. See the vendor READMEs and
+  [`commands.md`](commands.md).
 - **2026-11-14 — No silent stop, session write modes, toolbar speed:** with a
   machine running, Machine library, Open machine file… (once a path is
   confirmed), Exit, ⌘Q/⌘W and the window's close button pause it and ask

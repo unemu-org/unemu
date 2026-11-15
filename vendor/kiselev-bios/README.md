@@ -80,11 +80,52 @@ The original remains selected by `machines/at-freedos.toml` and the existing
 goldens. `machines/at-ide.toml` selects the compatibility image and the configured
 XT+ option ROM.
 
+## Source archive
+
+`fetch.sh` also writes `kiselev-bios-a4af458-atreset-src.tar`, the
+corresponding source of both images. It is what a published firmware package
+carries as its `source` layer: the images are GPL-3.0-or-later, so they may be
+published only together with it. Its root directory,
+`kiselev-bios-a4af458-atreset-src/`, holds:
+
+- `8088_bios/`: upstream at the pinned commit with `at-reset.patch` applied.
+  Upstream's prebuilt images are left out: `binaries/` and `xtide_r625/` are
+  build outputs that neither image uses, and `xtide_r625/` holds XTIDE
+  Universal BIOS r625 binaries whose source the archive does not carry.
+  Upstream's flash-image targets that combine the BIOS with those binaries
+  (the `*-xtide*.rom` images in `src/Makefile` and `CMakeLists.txt`)
+  therefore do not build from the archive; the 32 KiB images do.
+- `at-reset.patch`: the committed patch, unchanged.
+- `NOTICE`: [`source-notice.txt`](source-notice.txt), unchanged. It names the
+  upstream repository, commit and licence, both image hashes, the date of our
+  change (2026-11-11), and the `nasm` commands that rebuild both images
+  (reversing the patch restores the original's source).
+
+The whole archive is **GPL-3.0-or-later**. It is an uncompressed POSIX ustar
+file written by GNU tar: members sorted by name, every timestamp set to the
+pinned commit's time (2026-07-16 17:18:55 UTC), owner and group 0 with no
+names, and modes 0644 or 0755. `fetch.sh` writes it after both images. On
+every run it first assembles the AT reset image from the staged tree and
+compares it with the pinned image hash, so the archive always builds what we
+ship; then it checks the archive's own SHA-256:
+
+| Output | SHA-256 |
+|---|---|
+| `kiselev-bios-a4af458-atreset-src.tar` | `ced63707661747fc045d1e6e565a5cc9be73f95a9c944accedd77b19467fb5f9` |
+
+MEASURED on 2026-11-15 on aarch64-darwin with GNU tar 1.35 and NASM 3.01:
+repeated runs give this hash, and the `NOTICE` commands run in an extracted
+archive rebuild both pinned image hashes. A Linux run has not been measured;
+the archive holds no host-dependent field, and the devShell pins the same
+GNU tar on both systems.
+
 ## Not committed
 
-The upstream clone (`8088_bios/`), temporary exports (`build/`) and both ROM
-outputs are `.gitignore`d. Run `fetch.sh` (which needs `git`, `nasm`, `patch`
-and `tar`, all in the flake devShell) to produce both images locally.
+The upstream clone (`8088_bios/`), temporary exports (`build/`), both ROM
+outputs and the source archive are `.gitignore`d. Run `fetch.sh` (which needs
+`git`, `nasm`, `patch` and GNU `tar`, all in the flake devShell) to produce
+them locally. Outside the devShell on macOS, the system's BSD `tar` cannot
+write the archive deterministically, and the script stops with a message.
 
 ## Reproducible and offline builds
 
@@ -95,8 +136,9 @@ expectations before updating the expected output hash.
 
 The script exports the pinned commit into a temporary directory, assembles and
 checks the original image, applies the patch with zero fuzz, then assembles and
-checks the compatibility image. Each output moves into place only after its
-size and hash pass; the cached checkout is not modified.
+checks the compatibility image. It then exports the commit again, applies the
+patch and writes the source archive. Each output moves into place only after
+its size and hash pass; the cached checkout is not modified.
 
 The clone's work tree may remain on upstream's default branch. All source
 paths and line references here refer to the pinned commit, which can be read
@@ -110,5 +152,6 @@ Use the same `git show` form for other cited `src/` files.
 
 The script uses portable size checks and either `sha256sum` or `shasum -a 256`
 (on macOS); the flake devShell supplies the build tools. When the clone already
-contains the pinned commit, rebuilding skips the network. A missing clone or
-commit is fetched as before.
+contains the pinned commit, rebuilding skips the network, archive included. A
+missing clone or commit is fetched as before, so the first run needs the
+network.

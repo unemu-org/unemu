@@ -795,7 +795,7 @@ bash scripts/ci-gate.sh guard
 bash scripts/ci-gate.sh clippy
 bash scripts/ci-gate.sh deny                     # advisories, licences, bans, sources; all features
 bash scripts/ci-gate.sh tests
-bash scripts/ci-gate.sh fixtures                 # build/hash-check BIOS, FreeDOS, test386, XTIDE, HDD, VGA BIOS, at-pm-test
+bash scripts/ci-gate.sh fixtures                 # build/hash-check BIOS, FreeDOS, test386, XTIDE, HDD, VGA BIOS, at-pm-test, source archives
 bash scripts/ci-gate.sh goldens                  # slow tests in the test profile; requires fixtures
 ```
 
@@ -882,6 +882,45 @@ timestamps (1980-01-01 UTC). A hash mismatch requires checking the sources and
 toolchain and deliberately rebuilding the goldens' expectations before changing
 the expected hash. See each `vendor/*/README.md` for cache paths and hashes.
 
+The Kiselev, XTIDE and open VGA BIOS scripts also write the corresponding source
+of their open (GPL and LGPL) images next to them, which a published firmware
+package carries as its `source` layer:
+
+| Archive | Contents | Licence |
+|---|---|---|
+| `vendor/kiselev-bios/kiselev-bios-a4af458-atreset-src.tar` | upstream at the pinned commit with `at-reset.patch` applied (without upstream's prebuilt `binaries/` and `xtide_r625/`), the patch, `NOTICE` | GPL-3.0-or-later |
+| `vendor/xtide-universal-bios/xtide-universal-bios-r638-src.tar` | SVN r638 trunk export, `NOTICE` | GPL-2.0-only |
+| `vendor/vgabios/vgabios-0.8a-unemu.1-src.tar` | the fork at the pinned revision (without upstream's prebuilt `VGABIOS-lgpl-latest*.bin` and `.beads/hooks/`), `NOTICE` | LGPL-2.1-or-later |
+
+Each is an uncompressed POSIX ustar archive written by GNU tar (from the
+devShell) with members sorted by name, one timestamp (the source revision's
+commit time), owner and group 0 without names and modes 0644/0755, so its
+bytes do not depend on the host; each script pins its SHA-256
+(`SOURCE_ARCHIVE_SHA256`) and checks it. Tar rather than zip: zip entries carry
+local-time DOS timestamps and per-entry extra fields; ustar carries no
+atime/ctime and needs no extended headers here. No compression keeps a
+compressor's version and header fields out of the bytes. The `NOTICE` is the
+vendor directory's committed `source-notice.txt`; it states what the archive is,
+the upstream location and revision, the licence and the commands that rebuild
+the images. Before writing its archive, the Kiselev script assembles the AT
+reset image from the staged tree and the XTIDE script runs upstream's `make`
+on a copy of the staged trunk; both compare the result with the pinned
+hashes, so an archive always builds what is shipped. BSD tar (the macOS
+default outside the devShell) cannot write these archives, and the scripts stop
+with a message. The XTIDE script needs the network and Subversion only when
+`vendor/xtide-universal-bios/build/trunk-r638/` is not cached (it says so
+before exporting); without `svn` on `PATH` it runs it with
+`nix shell --no-update-lock-file --inputs-from . nixpkgs#subversion`. The CI
+`fixtures` gate runs it last. The default suite checks that every archive pin
+parses. The ignored archive test checks each archive's hash, top-level
+entries, `NOTICE` text, absent prebuilt images (`.bin`, `.rom`) and excluded
+upstream paths, and host-free metadata; the `goldens` gate runs it with
+`UNEMUPC98_REQUIRE_FIXTURES=1`, so a missing archive fails there:
+
+```sh
+UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test media_fixtures source_archive -- --include-ignored
+```
+
 The XTIDE Universal BIOS option-ROM fixtures:
 
 ```sh
@@ -890,7 +929,8 @@ UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p assembly --lib xub
 ```
 
 It checks both the download and output SHA-256, reusing
-`vendor/xtide-universal-bios/build/ide_at.bin` for offline rebuilds. The output is
+`vendor/xtide-universal-bios/build/ide_at.bin` and the source export
+`build/trunk-r638/` for offline rebuilds. The output is
 `vendor/xtide-universal-bios/ide_at-r638-8k.bin`. Its catalogue entry is `Listed`;
 building it does not add an ATA device or hard-disk boot profile. See
 `vendor/xtide-universal-bios/README.md` for provenance, padding and checksum rules.
@@ -908,7 +948,8 @@ cargo test --offline -p cli --test open_vga_golden -- --include-ignored
 The script derives the forge from this repository's `origin` remote (same host,
 transport and organization, repository `vgabios`), builds release
 `v0.8a-unemu.1` at its pinned revision and checks both output SHA-256 values
-before replacing anything. `UNEMU_VGABIOS_FLAKE` overrides the whole flake
+before replacing anything, then writes the source archive of the tree it
+built from. `UNEMU_VGABIOS_FLAKE` overrides the whole flake
 reference and `--print-flake` shows the one it would build. A clone from a mirror
 derives the mirror's address, so the mirror must publish `vgabios` next to this
 repository. In CI the origin is the checkout's HTTPS URL without credentials:
