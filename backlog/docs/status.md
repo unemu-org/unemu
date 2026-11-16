@@ -5,6 +5,31 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — Library panes on the field and the second face, in an inset
+  outline:** as in the approved library mock-ups, the library's tree and list
+  panes now sit on the field colour (#ffffff light, #26282b dark) and the
+  details pane on the second face colour (#e7e4dc light, #3e4045 dark),
+  instead of the face colour, in the Machines, Images, Installation media
+  and Firmware collections alike. Each pane has the mock-ups' inset outline:
+  in the classic skin a sunken two-pixel bevel (shadow and dark shadow at
+  the top and left, highlight and second face at the bottom and right), in
+  the modern skin a flat 1 px line in the shadow colour around 6 px rounded
+  corners. The face colour shows in a 3 px gap around the panes and in a
+  6 px split between the list and the details pane, which still drags.
+  Dark stripes now read as lighter bands on the dark field rather than dark
+  ones on the face, and the modern light panes are white rather than beige.
+  The list's search field, which shares the field colour, is sunk into the
+  same bevel in the classic skin. Each pane takes the room its panel has
+  and keeps its contents inside its outline, so in a short window nothing
+  runs over the gaps or the status bar; a tree taller than its pane now
+  scrolls, as the mock-ups' panes do. Content stays 8 px from the panel's
+  edge across, and now 8 px rather than 2 px at the top and bottom of the
+  tree and the details pane. Row heights are unchanged. On the new grounds,
+  modern text, strong and muted text read at 4.5:1 or more, except the
+  mock-ups' own muted text on the second face in the dark theme (4.27:1),
+  and so do links, warnings, errors and open marks on the second face; the
+  classic skin's text keeps 3:1, as its icons need. The guest screen,
+  menus, toolbar, status bar and dialogs are unchanged.
 - **2026-11-16 — An unavailable firmware entry says why:** in Settings ›
   Firmware, on a machine or an image, an entry the list greys as
   "unavailable" now shows its reason when hovered (not in your store,

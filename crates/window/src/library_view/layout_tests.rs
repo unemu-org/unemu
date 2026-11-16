@@ -1334,3 +1334,534 @@ fn the_settings_sheet_firmware_tab_lays_out_at_every_width() {
         })));
     }
 }
+
+/// The mock-ups' second face colour (`face-2`), light and dark: the details
+/// pane's ground and the inner lower edge of the classic sunken bevel.
+const FACE_2: [egui::Color32; 2] = [
+    egui::Color32::from_rgb(0xe7, 0xe4, 0xdc),
+    egui::Color32::from_rgb(0x3e, 0x40, 0x45),
+];
+/// The mock-ups' shadow colour (`lo`), light and dark.
+const LO: [egui::Color32; 2] = [
+    egui::Color32::from_rgb(0x8d, 0x8a, 0x83),
+    egui::Color32::from_rgb(0x1f, 0x20, 0x23),
+];
+/// The mock-ups' dark shadow colour (`dk`), light and dark.
+const DK: [egui::Color32; 2] = [
+    egui::Color32::from_rgb(0x3f, 0x3d, 0x39),
+    egui::Color32::from_rgb(0x0f, 0x10, 0x11),
+];
+/// The mock-ups' highlight colour (`hi`), light and dark.
+const HI: [egui::Color32; 2] = [
+    egui::Color32::from_rgb(0xff, 0xff, 0xff),
+    egui::Color32::from_rgb(0x5c, 0x5f, 0x66),
+];
+/// The mock-ups' gap between the library's panes and around them.
+const PANE_GAP: f32 = 3.0;
+/// The window width the pane grounds are checked at.
+const GROUNDS_WIDTH: f32 = 1000.0;
+
+/// One rectangle or line segment a frame painted: its place in paint order,
+/// the clip it was painted under, and the shape.
+struct Item<T> {
+    order: usize,
+    clip: egui::Rect,
+    shape: T,
+}
+
+impl<T> Item<T> {
+    /// The part of `bounds`, the shape's own extent, its clip lets show.
+    fn visible(&self, bounds: egui::Rect) -> egui::Rect {
+        bounds.intersect(self.clip)
+    }
+}
+
+/// A line segment's end points and stroke.
+type Line = ([egui::Pos2; 2], egui::Stroke);
+
+/// The rectangles and line segments a frame paints, in paint order.
+struct Painted {
+    rects: Vec<Item<egui::epaint::RectShape>>,
+    lines: Vec<Item<Line>>,
+}
+
+impl Painted {
+    fn of(output: &egui::FullOutput) -> Self {
+        fn walk(shape: &egui::Shape, clip: egui::Rect, painted: &mut Painted, order: &mut usize) {
+            *order += 1;
+            match shape {
+                egui::Shape::Rect(rect) => painted.rects.push(Item {
+                    order: *order,
+                    clip,
+                    shape: rect.clone(),
+                }),
+                egui::Shape::LineSegment { points, stroke } => painted.lines.push(Item {
+                    order: *order,
+                    clip,
+                    shape: (*points, *stroke),
+                }),
+                egui::Shape::Vec(shapes) => {
+                    shapes.iter().for_each(|s| walk(s, clip, painted, order));
+                }
+                _ => (),
+            }
+        }
+        let mut painted = Painted {
+            rects: Vec::new(),
+            lines: Vec::new(),
+        };
+        let mut order = 0;
+        for clipped in &output.shapes {
+            walk(&clipped.shape, clipped.clip_rect, &mut painted, &mut order);
+        }
+        painted
+    }
+
+    /// The first pane-sized rectangle filled with `fill` where `place` wants it.
+    fn ground(
+        &self,
+        fill: egui::Color32,
+        place: impl Fn(egui::Rect) -> bool,
+    ) -> Option<&Item<egui::epaint::RectShape>> {
+        self.rects.iter().find(|r| {
+            let rect = r.shape.rect;
+            r.shape.fill == fill && rect.width() > 100.0 && rect.height() > 100.0 && place(rect)
+        })
+    }
+
+    /// The 1 px ring just inside `rect`, its top, left, right and bottom
+    /// edges, each as last painted.
+    fn ring(&self, rect: egui::Rect) -> [Option<&Item<Line>>; 4] {
+        let rect = rect.shrink(0.5);
+        let edge = |a: egui::Pos2, b: egui::Pos2| {
+            self.lines.iter().rev().find(|line| {
+                let (points, stroke) = line.shape;
+                let at = |p: egui::Pos2, q: egui::Pos2| p.distance(q) < 0.01;
+                stroke.width == 1.0
+                    && ((at(points[0], a) && at(points[1], b))
+                        || (at(points[0], b) && at(points[1], a)))
+            })
+        };
+        [
+            edge(rect.left_top(), rect.right_top()),
+            edge(rect.left_top(), rect.left_bottom()),
+            edge(rect.right_top(), rect.right_bottom()),
+            edge(rect.left_bottom(), rect.right_bottom()),
+        ]
+    }
+
+    /// The colours of [`Self::ring`].
+    fn ring_colours(&self, rect: egui::Rect) -> [Option<egui::Color32>; 4] {
+        self.ring(rect)
+            .map(|edge| edge.map(|line| line.shape.1.color))
+    }
+
+    /// The tree's, the list's and the details pane's grounds, in that order.
+    fn panes(&self, dark: bool, what: &str) -> [&Item<egui::epaint::RectShape>; 3] {
+        let theme = usize::from(dark);
+        let find = |name: &str, fill, place: &dyn Fn(egui::Rect) -> bool| {
+            self.ground(fill, place).unwrap_or_else(|| {
+                let rects: Vec<_> = self.rects.iter().map(|r| &r.shape).collect();
+                panic!("{what}: no {name} on {fill:?} in {rects:?}")
+            })
+        };
+        [
+            find("tree", FIELD[theme], &|r| r.right() <= TREE_WIDTH + 0.5),
+            find("list", FIELD[theme], &|r| {
+                r.left() >= TREE_WIDTH && r.top() < WINDOW_HEIGHT / 2.0
+            }),
+            find("details pane", FACE_2[theme], &|r| {
+                r.left() >= TREE_WIDTH && r.bottom() > WINDOW_HEIGHT / 2.0
+            }),
+        ]
+    }
+}
+
+/// The library `view` in the classic or the modern skin, light or dark, in a
+/// window `size` large, as its second frame paints it. With `status_bar`, a
+/// 20 px status bar under it takes the window's bottom, as the shell's does.
+/// Returns what was painted and the area the library had.
+fn paint_library(
+    view: &mut LibraryView,
+    classic: bool,
+    dark: bool,
+    size: egui::Vec2,
+    status_bar: bool,
+) -> (Painted, egui::Rect) {
+    view.classic = classic;
+    let ctx = egui::Context::default();
+    crate::shell::configure_context(&ctx);
+    ctx.set_visuals(crate::shell::skin_visuals(classic, dark));
+    let mut area = egui::Rect::NOTHING;
+    let mut draw = |ui: &mut egui::Ui| {
+        if status_bar {
+            egui::Panel::bottom("statusbar")
+                .exact_size(20.0)
+                .show_separator_line(false)
+                .show(ui, |_| {});
+        }
+        area = ui.available_rect_before_wrap();
+        view.show(ui, &[], &mut None);
+    };
+    firmware::tests::frame(&ctx, size, 0.0, vec![], &mut draw);
+    let output = firmware::tests::frame(&ctx, size, 1.0, vec![], &mut draw);
+    (Painted::of(&output), area)
+}
+
+/// The selected machine's library in the classic or the modern skin, light
+/// or dark, in a window the footer checks' height tall.
+fn skinned_library(classic: bool, dark: bool) -> Painted {
+    let (_f, mut view) = machine_view();
+    let size = egui::vec2(GROUNDS_WIDTH, WINDOW_HEIGHT);
+    paint_library(&mut view, classic, dark, size, false).0
+}
+
+/// The library's panes as the mock-ups draw them, in both skins and both
+/// themes: the tree and the list on the field colour (`.pane`), the details
+/// pane on the second face colour (`.details`), each inside the inset
+/// outline (`--in`) painted over its ground, with the face colour in the
+/// 3 px gap around them and the 6 px split between the list and the details
+/// pane. The classic skin draws the outline as the sunken two-pixel bevel,
+/// shadow and dark shadow at the top and left, highlight and second face at
+/// the bottom and right, on square corners; the modern skin as a flat 1 px
+/// line in the shadow colour inside the pane's edge, around the mock-ups'
+/// 6 px rounded corners. The list's search field stays in view on the
+/// field: the modern skin outlines it, the classic skin sinks it into the
+/// same bevel.
+#[test]
+fn the_panes_sit_on_the_field_and_the_second_face_inside_the_inset_outline() {
+    for classic in [false, true] {
+        for dark in [false, true] {
+            let what = format!("classic {classic}, dark {dark}");
+            let theme = usize::from(dark);
+            let painted = skinned_library(classic, dark);
+            let panes = painted.panes(dark, &what);
+            let [tree, list, details] = panes.map(|pane| pane.shape.rect);
+            assert_eq!(
+                tree,
+                egui::Rect::from_min_max(
+                    egui::pos2(PANE_GAP, PANE_GAP),
+                    egui::pos2(TREE_WIDTH, WINDOW_HEIGHT - PANE_GAP)
+                ),
+                "{what}"
+            );
+            for (pane, rect) in [("list", list), ("details pane", details)] {
+                assert_eq!(rect.left(), TREE_WIDTH + PANE_GAP, "{what}: {pane}");
+                assert_eq!(rect.right(), GROUNDS_WIDTH - PANE_GAP, "{what}: {pane}");
+            }
+            assert_eq!(list.top(), PANE_GAP, "{what}");
+            assert_eq!(details.bottom(), WINDOW_HEIGHT - PANE_GAP, "{what}");
+            assert_eq!(details.top() - list.bottom(), 2.0 * PANE_GAP, "{what}");
+            let window = egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(GROUNDS_WIDTH, WINDOW_HEIGHT),
+            );
+            assert!(
+                painted
+                    .rects
+                    .iter()
+                    .any(|r| r.shape.fill == FACE[theme] && r.shape.rect.contains_rect(window)),
+                "{what}: no face colour under the gaps"
+            );
+            // The bevel's edges in the mock-up's colours, each painted after `after`.
+            let sunken = |rect: egui::Rect, name: &str, after: usize| {
+                assert_eq!(
+                    painted.ring_colours(rect),
+                    [
+                        Some(LO[theme]),
+                        Some(LO[theme]),
+                        Some(HI[theme]),
+                        Some(HI[theme])
+                    ],
+                    "{what}: {name}'s outer bevel"
+                );
+                assert_eq!(
+                    painted.ring_colours(rect.shrink(1.0)),
+                    [
+                        Some(DK[theme]),
+                        Some(DK[theme]),
+                        Some(FACE_2[theme]),
+                        Some(FACE_2[theme])
+                    ],
+                    "{what}: {name}'s inner bevel"
+                );
+                for edge in painted
+                    .ring(rect)
+                    .into_iter()
+                    .chain(painted.ring(rect.shrink(1.0)))
+                {
+                    assert!(
+                        edge.is_some_and(|line| line.order > after),
+                        "{what}: {name}'s bevel is painted before its ground"
+                    );
+                }
+            };
+            let corners = egui::CornerRadius::same(if classic { 0 } else { 6 });
+            for (name, pane) in ["tree", "list", "details pane"].into_iter().zip(panes) {
+                let rect = pane.shape.rect;
+                assert_eq!(
+                    pane.shape.corner_radius, corners,
+                    "{what}: the {name}'s corners"
+                );
+                if classic {
+                    sunken(rect, name, pane.order);
+                } else {
+                    let outline = painted.rects.iter().find(|r| {
+                        r.shape.rect == rect
+                            && r.shape.fill == egui::Color32::TRANSPARENT
+                            && r.shape.stroke == egui::Stroke::new(1.0, LO[theme])
+                    });
+                    let outline = outline.unwrap_or_else(|| {
+                        panic!("{what}: the {name} has no 1 px shadow-coloured outline")
+                    });
+                    assert_eq!(outline.shape.corner_radius, corners, "{what}: {name}");
+                    assert_eq!(
+                        outline.shape.stroke_kind,
+                        egui::StrokeKind::Inside,
+                        "{what}: the {name}'s outline is not inside its edge"
+                    );
+                    assert!(
+                        outline.order > pane.order,
+                        "{what}: the {name}'s outline is painted before its ground"
+                    );
+                }
+            }
+            let search = painted
+                .rects
+                .iter()
+                .find(|r| {
+                    r.shape.fill == FIELD[theme]
+                        && r.shape.rect.height() < 30.0
+                        && list.contains_rect(r.shape.rect)
+                        && r.shape.rect.top() < list.top() + 30.0
+                })
+                .unwrap_or_else(|| panic!("{what}: no search field"));
+            if classic {
+                sunken(search.shape.rect, "search field", search.order);
+            } else {
+                assert_eq!(
+                    search.shape.stroke,
+                    egui::Stroke::new(1.0, LO[theme]),
+                    "{what}: search field"
+                );
+            }
+        }
+    }
+}
+
+/// In a short window under the status bar, with more in the tree, the list
+/// or the details pane than fits, no pane's ground or outline shows outside
+/// the library's area or in the gaps between and around the panes, in
+/// either skin. A pane takes the room its panel is given, not the room its
+/// content asks for: the tree scrolls, as the mock-ups' panes do.
+#[test]
+fn panes_stay_inside_the_library_in_a_short_window() {
+    let (_m, mut machine) = machine_view();
+    let (_f, cache) = firmware::tests::library();
+    let mut firmware = LibraryView::new(None);
+    firmware.select_first_package(&cache, &mut None);
+    let mut failures = Vec::new();
+    for (collection, view) in [("Machines", &mut machine), ("Firmware", &mut firmware)] {
+        for classic in [false, true] {
+            for height in [400.0, 300.0] {
+                let what = format!("{collection}, classic {classic}, {height} px");
+                let size = egui::vec2(GROUNDS_WIDTH, height);
+                let (painted, area) = paint_library(view, classic, false, size, true);
+                assert!(area.bottom() < height, "{what}: no status bar");
+                let inside = area.shrink(PANE_GAP);
+                let between = egui::Rect::from_x_y_ranges(
+                    area.left() + TREE_WIDTH..=area.left() + TREE_WIDTH + PANE_GAP,
+                    area.y_range(),
+                );
+                let pane_colours = [FIELD[0], FACE_2[0], LO[0], HI[0], DK[0]];
+                let mut shown: Vec<(String, egui::Rect)> = Vec::new();
+                for rect in &painted.rects {
+                    let colour = if rect.shape.fill == egui::Color32::TRANSPARENT {
+                        rect.shape.stroke.color
+                    } else {
+                        rect.shape.fill
+                    };
+                    if pane_colours.contains(&colour) {
+                        let bounds = rect.shape.visual_bounding_rect();
+                        shown.push((format!("{:?}", rect.shape), rect.visible(bounds)));
+                    }
+                }
+                for line in &painted.lines {
+                    let (points, stroke) = line.shape;
+                    if pane_colours.contains(&stroke.color) {
+                        let bounds = egui::Rect::from_two_pos(points[0], points[1])
+                            .expand(stroke.width / 2.0);
+                        shown.push((format!("{points:?} {stroke:?}"), line.visible(bounds)));
+                    }
+                }
+                assert!(!shown.is_empty(), "{what}: no pane painted");
+                for (shape, visible) in shown {
+                    if !visible.is_positive() {
+                        continue;
+                    }
+                    if !inside.expand(0.01).contains_rect(visible) {
+                        failures.push(format!(
+                            "{what}: {shape} shows at {visible:?}, outside the panes' {inside:?}"
+                        ));
+                    }
+                    let gap = visible.intersect(between);
+                    if gap.is_positive() {
+                        failures.push(format!(
+                            "{what}: {shape} shows at {gap:?}, in the gap beside the tree"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A tree taller than its pane scrolls, as the mock-ups' `.pane` does: in a
+/// short window the Firmware collection's open facet groups push the tree's
+/// last line out of view, and the mouse wheel over the tree brings it back
+/// whole inside the pane.
+#[test]
+fn a_tree_taller_than_its_pane_scrolls() {
+    let (_f, cache) = firmware::tests::library();
+    let mut view = LibraryView::new(None);
+    view.select_first_package(&cache, &mut None);
+    let ctx = egui::Context::default();
+    crate::shell::configure_context(&ctx);
+    ctx.set_visuals(crate::shell::skin_visuals(true, false));
+    let size = egui::vec2(GROUNDS_WIDTH, 300.0);
+    let last = "after the MVP — separate mock-up";
+    let mut time = 0.0;
+    let mut pass = |events: Vec<egui::Event>| {
+        time += 0.1;
+        let output = firmware::tests::frame(&ctx, size, time, events, |ui| {
+            egui::Panel::bottom("statusbar")
+                .exact_size(20.0)
+                .show(ui, |_| {});
+            view.show(ui, &[], &mut None);
+        });
+        drawn(&output).0.into_iter().find(|t| t.text == last)
+    };
+    pass(Vec::new());
+    let before = pass(Vec::new());
+    assert!(
+        !before.as_ref().is_some_and(whole),
+        "the tree fits a 300 px window: {before:?}"
+    );
+    let pointer = egui::pos2(TREE_WIDTH / 2.0, 100.0);
+    pass(vec![
+        egui::Event::PointerMoved(pointer),
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
+            delta: egui::vec2(0.0, -12000.0),
+            modifiers: egui::Modifiers::default(),
+        },
+    ]);
+    let mut after = None;
+    for _ in 0..30 {
+        after = pass(vec![egui::Event::PointerMoved(pointer)]);
+    }
+    let after = after.unwrap_or_else(|| panic!("{last:?} is not drawn"));
+    assert!(
+        whole(&after),
+        "scrolled to its end, the tree shows {after:?}"
+    );
+    assert!(after.rect.right() <= TREE_WIDTH, "{after:?}");
+}
+
+/// Text, stripes and the selection still read on the panes' grounds, by
+/// the contrast checks the skins already meet on the face. In the modern
+/// skin, whose text takes the mock-ups' ink and muted colours, plain,
+/// strong and muted text reach 4.5:1, the WCAG 2.x AA ratio for body text,
+/// on the field, the stripe and the second face; the one exception is the
+/// mock-ups' own muted text on their second face in the dark theme, which
+/// reads 4.27:1 there. Links, warnings, errors and the open mark in the
+/// details pane reach 4.5:1 on the second face too; the classic skin shares
+/// the warning, error and open-mark colours. The classic skin keeps egui's
+/// text and link colours, which the existing checks hold to 3:1, the ratio
+/// its icons in the text colour need; its plain and strong text keep that on
+/// every ground. Its link colour is egui's own and is left out. A stripe lies
+/// between the field and the face, so a striped row reads as a band of the
+/// list rather than a hole in it, and the selection stands out from the
+/// field at least as well as it did from the face.
+#[test]
+fn text_stripes_and_the_selection_read_on_the_pane_grounds() {
+    use super::tests::contrast;
+    const AA: f64 = 4.5;
+    const NON_TEXT: f64 = 3.0;
+    const MUTED_ON_FACE_2: f64 = 4.2;
+    let mut failures = Vec::new();
+    for classic in [false, true] {
+        for dark in [false, true] {
+            let what = format!("classic {classic}, dark {dark}");
+            let visuals = crate::shell::skin_visuals(classic, dark);
+            let painted = skinned_library(classic, dark);
+            let [tree, list, details] = painted.panes(dark, &what).map(|pane| pane.shape.fill);
+            let (field, face_2) = (list, details);
+            assert_eq!(tree, field, "{what}");
+            let stripe = visuals.faint_bg_color;
+            let face = visuals.panel_fill;
+            let text = if classic { NON_TEXT } else { AA };
+            let mut pairs = Vec::new();
+            for (ground_name, ground) in [("field", field), ("stripe", stripe), ("face-2", face_2)]
+            {
+                pairs.push(("text", visuals.text_color(), ground_name, ground, text));
+                pairs.push((
+                    "strong text",
+                    visuals.strong_text_color(),
+                    ground_name,
+                    ground,
+                    text,
+                ));
+                if !classic {
+                    let muted = if ground_name == "face-2" && dark {
+                        MUTED_ON_FACE_2
+                    } else {
+                        AA
+                    };
+                    let weak = visuals.weak_text_color();
+                    pairs.push(("muted text", weak, ground_name, ground, muted));
+                }
+            }
+            if !classic {
+                pairs.push(("link", visuals.hyperlink_color, "face-2", face_2, AA));
+            }
+            for (ink_name, ink) in [
+                ("warning", visuals.warn_fg_color),
+                ("error", visuals.error_fg_color),
+                ("open mark", pane::good_colour(&visuals)),
+            ] {
+                pairs.push((ink_name, ink, "face-2", face_2, AA));
+            }
+            for (ink_name, ink, ground_name, ground, needed) in pairs {
+                let ratio = contrast(ink, ground);
+                if !ink.is_opaque() || ratio < needed {
+                    failures.push(format!(
+                        "{what}: {ink_name} {ink:?} on the {ground_name} {ground:?} is \
+                         {ratio:.2}:1, under {needed}:1"
+                    ));
+                }
+            }
+            let across = contrast(field, face);
+            if !(contrast(field, stripe) > 1.0
+                && contrast(field, stripe) < across
+                && contrast(stripe, face) < across)
+            {
+                failures.push(format!(
+                    "{what}: the stripe {stripe:?} is not between the field {field:?} and the \
+                     face {face:?}"
+                ));
+            }
+            let selection = visuals.selection.bg_fill;
+            if contrast(selection, field) < contrast(selection, face) {
+                failures.push(format!(
+                    "{what}: the selection {selection:?} stands out less from the field \
+                     {field:?} than from the face {face:?}"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

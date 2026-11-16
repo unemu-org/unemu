@@ -314,7 +314,8 @@ fn face_colour(visuals: &egui::Visuals) -> Color32 {
     }
 }
 
-/// The mock-ups' second face colour: a repository's group row in a list.
+/// The mock-ups' second face colour: a repository's group row in a list,
+/// and the details pane's ground.
 pub(super) fn group_colour(visuals: &egui::Visuals) -> Color32 {
     if visuals.dark_mode {
         Color32::from_rgb(62, 64, 69)
@@ -330,6 +331,138 @@ fn shadow_colour(visuals: &egui::Visuals) -> Color32 {
     } else {
         Color32::from_rgb(141, 138, 131)
     }
+}
+
+/// The mock-ups' highlight colour (`hi`).
+fn highlight_colour(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        Color32::from_rgb(92, 95, 102)
+    } else {
+        Color32::WHITE
+    }
+}
+
+/// The mock-ups' dark shadow colour (`dk`).
+fn dark_shadow_colour(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        Color32::from_rgb(15, 16, 17)
+    } else {
+        Color32::from_rgb(63, 61, 57)
+    }
+}
+
+/// Room the inset outline takes inside a pane's edge: the classic skin's
+/// two-pixel bevel. The modern skin's 1 px line keeps the same room, so the
+/// content sits alike in both skins.
+const OUTLINE: i8 = 2;
+/// Room between a pane's outline and its content. With the outline and the
+/// mock-ups' 3 px gap it keeps the content 8 px from the panel's edge on every
+/// side. That is egui's default margin all round a central panel, but only
+/// across a side or bottom panel: along one egui keeps 2 px, so the tree's and
+/// the details pane's content sits 6 px further in at the top and bottom.
+const PADDING: i8 = 3;
+/// The modern skin's rounded pane corners: the mock-ups' 6 px `--radius`.
+/// The classic skin's panes are square.
+const MODERN_RADIUS: u8 = 6;
+
+fn corner_radius(classic: bool) -> egui::CornerRadius {
+    egui::CornerRadius::same(if classic { 0 } else { MODERN_RADIUS })
+}
+
+/// What a library pane sits on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Ground {
+    /// The field colour of the mock-ups' tree and list panes (`.pane`).
+    Field,
+    /// The second face colour of the mock-ups' details pane (`.details`).
+    Face2,
+}
+
+impl Ground {
+    fn colour(self, visuals: &egui::Visuals) -> Color32 {
+        match self {
+            Self::Field => visuals.text_edit_bg_color(),
+            Self::Face2 => group_colour(visuals),
+        }
+    }
+}
+
+/// One of the library's panes as its panel draws it: the face colour in a
+/// gap around it, its ground inside the mock-ups' inset outline (`--in`),
+/// and room between the outline and the content.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Pane {
+    pub ground: Ground,
+    /// The face colour between the panel's edge and the pane: the mock-ups'
+    /// 3 px gap between their panes and around them.
+    pub gap: egui::Margin,
+}
+
+impl Pane {
+    /// The panel's frame: the gap outside the pane and, inside it, room for
+    /// the outline and the padding. The frame paints nothing: the gap shows
+    /// the [`backdrop`], and [`Self::paint`] paints the pane.
+    pub fn frame(self) -> egui::Frame {
+        egui::Frame::new()
+            .outer_margin(self.gap)
+            .inner_margin(egui::Margin::same(OUTLINE + PADDING))
+    }
+
+    /// Paints the pane, its ground and its inset outline, first thing in its
+    /// panel's contents, and keeps the contents inside the outline. The pane
+    /// takes the room the panel gives its contents rather than the room they
+    /// use: contents taller or wider than the panel would otherwise carry the
+    /// pane over the gaps and past the library, across the status bar. As the
+    /// contents are clipped inside the outline, nothing they draw covers it.
+    pub fn paint(self, ui: &mut Ui, classic: bool) {
+        let rect = ui.max_rect() + egui::Margin::same(OUTLINE + PADDING);
+        let ground = self.ground.colour(ui.visuals());
+        ui.painter()
+            .rect_filled(rect, corner_radius(classic), ground);
+        inset(ui, rect, classic);
+        ui.shrink_clip_rect(rect.shrink(f32::from(OUTLINE)));
+    }
+}
+
+/// The mock-ups' inset outline (`--in`) just inside `rect`. The classic skin
+/// draws their sunken two-pixel bevel: the shadow and the dark shadow along
+/// the top and left edges, the highlight and the second face along the
+/// bottom and right ones. The modern skin draws their flat 1 px line in the
+/// shadow colour, around rounded corners.
+pub(super) fn inset(ui: &Ui, rect: egui::Rect, classic: bool) {
+    let visuals = ui.visuals();
+    let painter = ui.painter();
+    if classic {
+        crate::shell::bevel_ring(
+            painter,
+            rect,
+            shadow_colour(visuals),
+            highlight_colour(visuals),
+        );
+        crate::shell::bevel_ring(
+            painter,
+            rect.shrink(1.0),
+            dark_shadow_colour(visuals),
+            group_colour(visuals),
+        );
+    } else {
+        painter.rect_stroke(
+            rect,
+            corner_radius(classic),
+            Stroke::new(1.0, shadow_colour(visuals)),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
+/// The face colour under the library's panels, which shows in the gaps
+/// between their panes: nothing else paints the window there.
+pub(super) fn backdrop(ui: &Ui) {
+    ui.painter().rect_filled(
+        ui.available_rect_before_wrap(),
+        0.0,
+        ui.visuals().panel_fill,
+    );
 }
 
 /// The mock-ups' tint of a changed mini-table row.

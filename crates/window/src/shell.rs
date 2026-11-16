@@ -3427,6 +3427,7 @@ impl Shell {
                     .collect()
             })
             .unwrap_or_default();
+        self.image_library.classic = self.classic;
         commands.extend(
             self.image_library
                 .show(ui, &self.library, &mut self.selected),
@@ -4650,16 +4651,20 @@ pub(crate) fn bevel(ui: &egui::Ui, rect: egui::Rect, pressed: bool) {
     } else {
         (light, shadow)
     };
+    bevel_ring(ui.painter(), rect, top, bottom);
+}
+
+/// One 1 px ring of a classic bevel just inside `rect`: `top` along its top
+/// and left edges, `bottom` along its right and bottom ones.
+pub(crate) fn bevel_ring(painter: &egui::Painter, rect: egui::Rect, top: Color32, bottom: Color32) {
     let rect = rect.shrink(0.5);
-    ui.painter()
-        .line_segment([rect.left_bottom(), rect.left_top()], Stroke::new(1.0, top));
-    ui.painter()
-        .line_segment([rect.left_top(), rect.right_top()], Stroke::new(1.0, top));
-    ui.painter().line_segment(
+    painter.line_segment([rect.left_bottom(), rect.left_top()], Stroke::new(1.0, top));
+    painter.line_segment([rect.left_top(), rect.right_top()], Stroke::new(1.0, top));
+    painter.line_segment(
         [rect.right_top(), rect.right_bottom()],
         Stroke::new(1.0, bottom),
     );
-    ui.painter().line_segment(
+    painter.line_segment(
         [rect.right_bottom(), rect.left_bottom()],
         Stroke::new(1.0, bottom),
     );

@@ -513,6 +513,30 @@ const IMAGE_MACHINES_COLUMN: usize = 3;
 const DETAILS_HEIGHT: f32 = 420.0;
 const DETAILS_MIN_HEIGHT: f32 = 120.0;
 const LIST_MIN_HEIGHT: f32 = 160.0;
+/// The mock-ups' gap between the library's panes and around them.
+const PANE_GAP: i8 = 3;
+/// The tree pane, on the field colour as the mock-ups' `.pane`. It keeps no
+/// gap on its right: the list's and the details pane's gaps lie there.
+const TREE_PANE: pane::Pane = pane::Pane {
+    ground: pane::Ground::Field,
+    gap: egui::Margin {
+        left: PANE_GAP,
+        right: 0,
+        top: PANE_GAP,
+        bottom: PANE_GAP,
+    },
+};
+/// The list pane, on the field colour as the mock-ups' `.pane`. Its gap and
+/// the details pane's make the mock-ups' 6 px split between them.
+const LIST_PANE: pane::Pane = pane::Pane {
+    ground: pane::Ground::Field,
+    gap: egui::Margin::same(PANE_GAP),
+};
+/// The details pane, on the second face colour as the mock-ups' `.details`.
+const DETAILS_PANE: pane::Pane = pane::Pane {
+    ground: pane::Ground::Face2,
+    gap: egui::Margin::same(PANE_GAP),
+};
 /// The superseded firmware an image binds, read from its library summary.
 fn image_newer(image: &ImageRow) -> Vec<crate::firmware_choices::Newer> {
     image
@@ -1100,6 +1124,9 @@ pub(super) struct LibraryView {
     pub media_pick: Option<install_media::Pick>,
     /// Floppy units of the running machine, for Insert on a selected set.
     pub running_drives: Vec<(u8, assembly::FloppyGeometry)>,
+    /// Whether the window wears the classic skin, which sinks the panes into
+    /// a bevel; the modern skin outlines them with a flat line.
+    pub classic: bool,
     /// File › New machine… while it is open.
     pub new_machine: Option<crate::new_machine::Wizard>,
     /// The wizard asked for Import ROM folder…; the shell picks the folder.
@@ -1190,6 +1217,7 @@ impl LibraryView {
             media_import: None,
             media_pick: None,
             running_drives: Vec::new(),
+            classic: true,
             new_machine: None,
             firmware_import_wanted: false,
             settings_switch: None,
@@ -2448,85 +2476,96 @@ impl LibraryView {
     ) -> Vec<Command> {
         let mut commands = Vec::new();
         let mut changed = false;
+        let classic = self.classic;
+        pane::backdrop(ui);
         egui::Panel::left("library-tree")
             .exact_size(230.0)
+            .show_separator_line(false)
+            .frame(TREE_PANE.frame())
             .show(ui, |ui| {
-                ui.strong("Library");
-                let machines = self.machines.clone();
-                let recent = machines
-                    .iter()
-                    .filter(|m| m.listing.machine.last_run.is_some())
-                    .count();
-                let favourites = machines
-                    .iter()
-                    .filter(|m| m.listing.machine.favorite)
-                    .count();
-                // The machines mock-up's one Library group, in its order;
-                // each collection's facets sit under it while it is selected.
-                for (label, filter, indent) in [
-                    (format!("Machines ({})", machines.len()), Filter::Machines, false),
-                    (format!("Recently played ({recent})"), Filter::Recent, true),
-                    (format!("Favourites ({favourites})"), Filter::Favorites, true),
-                    (format!("Images ({})", self.snapshot.total), Filter::All, false),
-                    (
-                        format!("Installation media ({})", self.snapshot.media_total),
-                        Filter::Media,
-                        false,
-                    ),
-                    (
-                        format!("Firmware ({})", self.snapshot.firmware_total),
-                        Filter::Firmware,
-                        false,
-                    ),
-                    (format!("Machine files ({})", files.len()), Filter::MachineFiles, false),
-                ] {
-                    // Collections without an icon keep the icon's room, so
-                    // the names line up as in the machines mock-up's tree.
-                    let mark = match tree_icon(&filter) {
-                        Some(icon) => crate::shell_icons::atom(icon),
-                        None => crate::shell_icons::blank(),
-                    };
-                    let picked = ui
-                        .horizontal(|ui| {
-                            if indent {
-                                ui.add_space(16.0);
+                TREE_PANE.paint(ui, classic);
+                // A tree taller than its pane scrolls, as the mock-ups' panes do.
+                egui::ScrollArea::vertical()
+                    .id_salt("library-tree")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.strong("Library");
+                        let machines = self.machines.clone();
+                        let recent = machines
+                            .iter()
+                            .filter(|m| m.listing.machine.last_run.is_some())
+                            .count();
+                        let favourites = machines
+                            .iter()
+                            .filter(|m| m.listing.machine.favorite)
+                            .count();
+                        // The machines mock-up's one Library group, in its order;
+                        // each collection's facets sit under it while it is selected.
+                        for (label, filter, indent) in [
+                            (format!("Machines ({})", machines.len()), Filter::Machines, false),
+                            (format!("Recently played ({recent})"), Filter::Recent, true),
+                            (format!("Favourites ({favourites})"), Filter::Favorites, true),
+                            (format!("Images ({})", self.snapshot.total), Filter::All, false),
+                            (
+                                format!("Installation media ({})", self.snapshot.media_total),
+                                Filter::Media,
+                                false,
+                            ),
+                            (
+                                format!("Firmware ({})", self.snapshot.firmware_total),
+                                Filter::Firmware,
+                                false,
+                            ),
+                            (format!("Machine files ({})", files.len()), Filter::MachineFiles, false),
+                        ] {
+                            // Collections without an icon keep the icon's room, so
+                            // the names line up as in the machines mock-up's tree.
+                            let mark = match tree_icon(&filter) {
+                                Some(icon) => crate::shell_icons::atom(icon),
+                                None => crate::shell_icons::blank(),
+                            };
+                            let picked = ui
+                                .horizontal(|ui| {
+                                    if indent {
+                                        ui.add_space(16.0);
+                                    }
+                                    ui.selectable_label(self.query.filter == filter, (mark, label.as_str()))
+                                        .clicked()
+                                })
+                                .inner;
+                            if picked {
+                                self.set_filter(filter.clone(), selected_file);
+                                changed = true;
                             }
-                            ui.selectable_label(self.query.filter == filter, (mark, label.as_str()))
-                                .clicked()
-                        })
-                        .inner;
-                    if picked {
-                        self.set_filter(filter.clone(), selected_file);
-                        changed = true;
-                    }
-                    let current = &self.query.filter;
-                    let here = match filter {
-                        Filter::Favorites => current.is_machines(),
-                        Filter::All => {
-                            matches!(current, Filter::All)
-                                || matches!(current, Filter::Facet(kind, _) if !firmware::is_facet(kind))
+                            let current = &self.query.filter;
+                            let here = match filter {
+                                Filter::Favorites => current.is_machines(),
+                                Filter::All => {
+                                    matches!(current, Filter::All)
+                                        || matches!(current, Filter::Facet(kind, _) if !firmware::is_facet(kind))
+                                }
+                                Filter::Media => current.is_media(),
+                                Filter::Firmware => current.is_firmware(),
+                                _ => false,
+                            };
+                            if here {
+                                changed |= self.tree_facets(ui, &filter, selected_file);
+                            }
                         }
-                        Filter::Media => current.is_media(),
-                        Filter::Firmware => current.is_firmware(),
-                        _ => false,
-                    };
-                    if here {
-                        changed |= self.tree_facets(ui, &filter, selected_file);
-                    }
-                }
-                ui.add_space(6.0);
-                // Remotes come after the MVP, in their own mock-up.
-                ui.add_enabled_ui(false, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("+");
-                        ui.strong("Remotes");
-                    })
-                    .response
-                    .on_disabled_hover_text(
-                        "Configured registries, browse and pull: after the MVP, in a separate mock-up",
-                    );
-                    ui.label(egui::RichText::new("after the MVP — separate mock-up").small());
-                });
+                        ui.add_space(6.0);
+                        // Remotes come after the MVP, in their own mock-up.
+                        ui.add_enabled_ui(false, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("+");
+                                ui.strong("Remotes");
+                            })
+                            .response
+                            .on_disabled_hover_text(
+                                "Configured registries, browse and pull: after the MVP, in a separate mock-up",
+                            );
+                            ui.label(egui::RichText::new("after the MVP — separate mock-up").small());
+                        });
+                    });
             });
         // The split between the list and the details pane drags, as in the
         // library mock-up; egui keeps the chosen height for the session. The
@@ -2534,9 +2573,12 @@ impl LibraryView {
         let details_max = (ui.available_height() - LIST_MIN_HEIGHT).max(DETAILS_MIN_HEIGHT);
         egui::Panel::bottom("library-details")
             .resizable(true)
+            .show_separator_line(false)
             .default_size(DETAILS_HEIGHT)
             .size_range(DETAILS_MIN_HEIGHT..=details_max)
+            .frame(DETAILS_PANE.frame())
             .show(ui, |ui| {
+                DETAILS_PANE.paint(ui, classic);
                 // A pane taller than its area keeps its scroll bar in view, so
                 // what lies below, the note under the actions included, reads
                 // as further down rather than cut off.
@@ -2548,7 +2590,9 @@ impl LibraryView {
                         self.details_pane(ui, files, selected_file, &mut commands);
                     });
             });
-        egui::CentralPanel::default().show(ui, |ui| {
+        let panel = egui::CentralPanel::default().frame(LIST_PANE.frame());
+        panel.show(ui, |ui| {
+            LIST_PANE.paint(ui, classic);
             let firmware_mode = self.query.filter.is_firmware();
             let media_mode = self.query.filter.is_media();
             ui.horizontal(|ui| {
@@ -2578,8 +2622,13 @@ impl LibraryView {
                         );
                 }
                 ui.label("Search:");
-                if ui.text_edit_singleline(&mut self.query.text).changed() {
-                    changed = true;
+                let search = ui.text_edit_singleline(&mut self.query.text);
+                changed |= search.changed();
+                // The classic skin outlines no resting field, and the
+                // field's own colour is the pane's ground: the mock-ups'
+                // sunken field keeps it in view.
+                if classic {
+                    pane::inset(ui, search.rect, true);
                 }
             });
             if firmware_mode {
@@ -5721,7 +5770,7 @@ pub(super) mod tests {
     }
 
     /// WCAG 2.x contrast ratio between two opaque sRGB colours.
-    fn contrast(a: egui::Color32, b: egui::Color32) -> f64 {
+    pub(super) fn contrast(a: egui::Color32, b: egui::Color32) -> f64 {
         let luminance = |c: egui::Color32| {
             let channel = |v: u8| {
                 let v = f64::from(v) / 255.0;
