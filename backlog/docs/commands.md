@@ -1326,8 +1326,17 @@ cargo deny --all-features check --disable-fetch advisories licenses bans sources
 
 ## CI
 
-Forgejo Actions runs `.forgejo/workflows/ci.yml` on pushes to `main` and manual
-dispatches on the x86-64 runner. From the repository root, run the same gates locally:
+GitHub Actions runs `.github/workflows/ci.yml` on pushes to `main`, pull requests
+and manual dispatches, on a GitHub-hosted x86-64 `ubuntu-latest` runner. Read the
+runs with the GitHub CLI:
+
+```sh
+gh run list --repo unemu-org/unemupc --workflow ci.yml
+gh run view <run-id> --repo unemu-org/unemupc --log-failed
+gh run download <run-id> --repo unemu-org/unemupc   # ci-logs-attempt-<n>: ci-logs/<step>.log
+```
+
+From the repository root, run the same gates locally:
 
 ```sh
 bash scripts/ci-gate.sh devshell
@@ -1604,7 +1613,8 @@ runs directly), preserves its exit status, and tees combined output to the gitig
 `ci-logs/<step>.log`. Set `CI_LOG_DIR` to choose another log directory. Cargo builds/tests
 use `--locked`; the clippy gate lints all features and then the production CLI
 binary without dev-dependency feature unification; formatting uses `cargo fmt --check`. CI runs every gate even after failures,
-saves the Cargo cache, and reports failing steps in commit status `ci / x86_64`.
+saves the Cargo cache, uploads `ci-logs/` as a run artifact, and names failing
+steps in its final Gate summary step; any failed gate fails the job.
 See [`dev-setup.md`](dev-setup.md#ci) for the runner and cache setup.
 
 ## x86jit (CPU core)

@@ -118,12 +118,20 @@ plus the slow goldens. See decision-13.
 
 ## CI
 
-`.forgejo/workflows/ci.yml` runs on pushes to `main` and via `workflow_dispatch`.
-The Forgejo runner's `ubuntu-latest` label uses a `node:20-bookworm` container on
-x86-64 Linux without systemd. The workflow installs Nix using pinned installer
-v3.24.1 with `--init none` and the build sandbox disabled, then uses the flake devShell.
-Cargo's registry, git database and `target/` are cached using `flake.lock` and
-`Cargo.lock`; CI never needs dependency credentials.
+GitHub Actions runs `.github/workflows/ci.yml` on pushes to `main`, on pull
+requests and via `workflow_dispatch`, on GitHub-hosted `ubuntu-latest`: an x86-64
+Linux VM with systemd. The job first removes preinstalled toolchains it never uses
+(Android SDK, .NET, Haskell, CodeQL, Swift), because the Nix store, the `target/`
+directory, the caches and the fixture downloads outgrow the runner's free disk.
+It installs Nix with `cachix/install-nix-action` (multi-user daemon, build sandbox
+on), then uses the flake devShell. Every action is pinned to a full commit SHA,
+with its release in a comment. The workflow has read-only repository permissions
+and no secrets, and keeps the job token out of `.git/config` and `nix.conf`, so
+pull requests from forks run the same gates. Cargo's registry, git database and
+`target/` are cached using `flake.lock` and `Cargo.lock`; CI never needs
+dependency credentials. Read runs with `gh run list --repo unemu-org/unemupc`
+and `gh run view <run-id> --repo unemu-org/unemupc`; see
+[`commands.md`](commands.md#ci).
 
 The gates check the devShell, formatting, publication safety, Clippy, workspace
 tests, fixture builds and slow goldens. The `fixtures` gate runs the fixture
@@ -140,8 +148,9 @@ with equivalent tools. `vendor/hdd/build.sh` builds a partitioned
 FAT16 data disk entirely offline with mtools 4.0.49, fixed timestamps/serial/label,
 and a pinned SHA-256; it runs mtools with an empty `HOME`, because mtools reads
 `~/.mtoolsrc` even when `MTOOLSRC` is set. See `vendor/hdd/README.md`. Each gate
-still runs after earlier failures. The final commit status, `ci / x86_64`, names
-failed steps.
+still runs after earlier failures, and any failed gate fails the job. The final
+Gate summary step names the failed steps in the run summary, and `ci-logs/` is
+uploaded as the run's `ci-logs-attempt-<n>` artifact.
 
 The separate `vendor/xtide-universal-bios/fetch.sh` prepares the pinned r638 AT
 option ROM with standard shell tools (`curl` only when the download is missing),

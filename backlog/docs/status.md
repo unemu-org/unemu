@@ -5,6 +5,23 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — CI moves to GitHub Actions:** the repository moves to
+  `github.com/unemu-org/unemupc`, and `.github/workflows/ci.yml` becomes the
+  only CI; the Forgejo workflow is deleted. It runs the same
+  `scripts/ci-gate.sh` gates (devShell, formatting, publication guard,
+  Clippy, cargo deny, tests, fixtures, slow goldens; the user-ROM lane stays
+  local) on pushes to `main`, pull requests and manual dispatches, on
+  GitHub-hosted `ubuntu-latest`. The job frees disk space first, installs
+  Nix with the multi-user daemon and the build sandbox on, and keeps the
+  Cargo and FreeDOS 1.4 caches. Every action is pinned to a commit SHA; the
+  job has read-only permissions and no secrets, and keeps the job token out
+  of `.git/config` and `nix.conf`. Instead of a posted commit status, any
+  failed gate fails the job, a final Gate summary step names the failed
+  steps, and `ci-logs/` is uploaded as a run artifact. Read runs with
+  `gh run list --repo unemu-org/unemupc`. Evidence: actionlint (with
+  shellcheck) and zizmor report nothing, and the `fmt` and `guard` gates
+  pass locally; the first GitHub run follows the move and is not yet
+  observed.
 - **2026-11-16 — Release readiness of the tree:** the binaries no longer carry
   or use the path of the tree they were built in. The desktop's library lists
   machine files from `UNEMUPC_MACHINES_DIR`; else, when cargo started it, the

@@ -87,7 +87,8 @@ snapshot machine state, replay an input log for reproducible debugging.
 
 ## Host filesystem assumptions
 
-CI runs the tests **as root** in a Linux container (`.forgejo/workflows/ci.yml`).
+CI (`.github/workflows/ci.yml`) runs the tests as the non-root `runner` user on
+an x86-64 Linux VM, but a developer or another CI may run them **as root**.
 Root ignores permission bits, so a test that removes access with `chmod` must
 first probe the denial (try the access) and, when it succeeds, skip only the
 checks that need it with an `eprintln!` naming the reason; the rest of the test

@@ -90,7 +90,7 @@ A bead closes only when all of these hold on `main`:
 2. `cargo clippy --all-targets --all-features -- -D warnings` is clean.
 3. `cargo fmt --check` is clean.
 
-The Forgejo CI lane runs these checks via `scripts/ci-gate.sh`, plus the publication
+The CI lane runs these checks via `scripts/ci-gate.sh`, plus the publication
 guard, `cargo deny --all-features check licenses bans sources` on every run,
 and the slow goldens after building their fixtures. Use
 `bash scripts/ci-gate.sh <step>` to run the same gate locally; see

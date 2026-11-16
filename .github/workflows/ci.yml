@@ -1,17 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: CI
 
-# The Forgejo runner's ubuntu-latest label is a node:20-bookworm container on
-# x86-64 Linux, without systemd. Use the pinned Nix installer directly because
-# the job runs as root without an init system.
+# GitHub-hosted ubuntu-latest runners are x86-64 Linux VMs with systemd, so the
+# Nix installer sets up the usual multi-user daemon with the build sandbox on.
+# Every action is pinned to a full commit SHA; the comment names its release.
 #
-# Actions resolve against the runner's default action mirror. Every gate keeps
-# running after earlier failures; ci-logs/<step>.log and the final commit status
-# (context "ci / x86_64") identify which gates failed.
+# Every gate keeps running after earlier failures. ci-logs/<step>.log (uploaded
+# as an artifact) and the final "Gate summary" step name the failed gates; any
+# failed gate also fails the job, which is the check GitHub reports.
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
+
+# The job only reads the repository. Fork pull requests run with the same
+# read-only token and no secrets; nothing here needs more.
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -30,25 +36,46 @@ jobs:
     steps:
       # The pinned CPU dependency and its submodules are anonymously fetchable.
       # Do not leave the job token in .git/config next to unsandboxed builds.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Install Nix
-        id: nix
-        env:
-          NIX_INSTALLER_DIAGNOSTIC_ENDPOINT: ""
+      # The Nix store (devShell with the Rust toolchain and QEMU, plus the
+      # firmware builds), the test-profile target directory, the cache
+      # archives and the fixtures lane's downloads (about 330 MB) together
+      # outgrow the free space a hosted runner guarantees. Remove preinstalled
+      # toolchains this job never uses.
+      - name: Free disk space
+        id: disk
         run: |
           set -euo pipefail
-          mkdir -p ci-logs
-          # No daemon is needed with --init none: root uses the store directly.
-          # The container does not grant the namespaces needed by the sandbox.
-          {
-            curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix/tag/v3.24.1 \
-              | sh -s -- install linux --init none --no-confirm \
-                  --extra-conf "sandbox = false" --extra-conf "filter-syscalls = false"
-          } 2>&1 | tee ci-logs/nix.log
-          echo /nix/var/nix/profiles/default/bin >> "$GITHUB_PATH"
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift
+          df -h /
+
+      # The action pins the Nix release it installs (2.35.6 for this commit).
+      - name: Install Nix
+        id: nix
+        if: ${{ !cancelled() }}
+        uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+        with:
+          enable_kvm: false
+
+      # The action writes the job token into nix.conf for github.com downloads.
+      # Nix does not need it: without a token it fetches locked GitHub inputs
+      # from the public archive URLs, outside the API rate limit. Like the
+      # checkout above, keep the token away from the unsandboxed builds.
+      - name: Drop the job token from the Nix configuration
+        id: nix_token
+        if: ${{ !cancelled() && steps.nix.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          sudo sed -i '/^access-tokens[[:space:]]*=/d' /etc/nix/nix.conf
+          if grep -q 'access-tokens' /etc/nix/nix.conf; then
+            echo '::error::/etc/nix/nix.conf still sets access-tokens'
+            exit 1
+          fi
 
       - name: Dev shell
         id: devshell
@@ -61,7 +88,7 @@ jobs:
       - name: Restore cargo cache
         id: cargo_cache
         if: ${{ !cancelled() }}
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
@@ -107,7 +134,7 @@ jobs:
       - name: Restore FreeDOS 1.4 fixtures
         id: freedos_cache
         if: ${{ !cancelled() }}
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: vendor/freedos/floppy-1.4
           key: freedos-floppy-1.4-${{ hashFiles('vendor/freedos/fetch-floppy-1.4.sh', 'vendor/freedos/floppy-1.4-licenses.txt') }}
@@ -120,23 +147,25 @@ jobs:
         run: bash scripts/ci-gate.sh fixtures
 
       # Reuse the same test profile and binaries as the ordinary workspace tests.
+      # The user-supplied ROM lane is local only: CI never has that firmware.
       - name: Slow goldens
         id: goldens
         if: ${{ !cancelled() }}
         run: bash scripts/ci-gate.sh goldens
 
+      # A cancelled run is superseded by a newer one, which saves instead.
       - name: Save FreeDOS 1.4 fixtures
         id: freedos_cache_save
-        if: ${{ always() && steps.fixtures.outcome == 'success' && steps.freedos_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        if: ${{ !cancelled() && steps.fixtures.outcome == 'success' && steps.freedos_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: vendor/freedos/floppy-1.4
           key: freedos-floppy-1.4-${{ hashFiles('vendor/freedos/fetch-floppy-1.4.sh', 'vendor/freedos/floppy-1.4-licenses.txt') }}
 
       - name: Save cargo cache
         id: cache_save
-        if: ${{ always() && steps.devshell.outcome == 'success' && steps.cargo_cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        if: ${{ !cancelled() && steps.devshell.outcome == 'success' && steps.cargo_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index
@@ -145,47 +174,51 @@ jobs:
             target
           key: cargo-x86_64-${{ hashFiles('flake.lock') }}-${{ hashFiles('Cargo.lock') }}
 
-      - name: Report status
+      # A re-run keeps the earlier attempt's logs, so each attempt gets its own name.
+      - name: Upload gate logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-logs-attempt-${{ github.run_attempt }}
+          path: ci-logs/
+          if-no-files-found: warn
+
+      # Lists every step's outcome in the run summary and fails when any step
+      # failed, so the red step names all failed gates at once.
+      - name: Gate summary
         if: always()
         env:
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}/statuses/${{ github.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
-          JOB_STATUS: ${{ job.status }}
           OUTCOMES: >-
+            disk=${{ steps.disk.outcome }}
             nix=${{ steps.nix.outcome }}
+            nix_token=${{ steps.nix_token.outcome }}
             devshell=${{ steps.devshell.outcome }}
             cargo_cache=${{ steps.cargo_cache.outcome }}
-            freedos_cache=${{ steps.freedos_cache.outcome }}
             fmt=${{ steps.fmt.outcome }}
             guard=${{ steps.guard.outcome }}
             clippy=${{ steps.clippy.outcome }}
             deny=${{ steps.deny.outcome }}
             tests=${{ steps.tests.outcome }}
+            freedos_cache=${{ steps.freedos_cache.outcome }}
             fixtures=${{ steps.fixtures.outcome }}
             goldens=${{ steps.goldens.outcome }}
-            cache_save=${{ steps.cache_save.outcome }}
             freedos_cache_save=${{ steps.freedos_cache_save.outcome }}
+            cache_save=${{ steps.cache_save.outcome }}
         run: |
           set -euo pipefail
-          # node is part of the runner image. JSON encoding keeps arbitrary step
-          # names safe, and the automatic token is used only for this API call.
-          body=$(node <<'JS'
-          const failed = process.env.OUTCOMES.trim().split(/\s+/)
-            .filter(pair => pair.endsWith('=failure'))
-            .map(pair => pair.split('=')[0]);
-          const status = process.env.JOB_STATUS;
-          const state = status === 'success' ? 'success' : status === 'cancelled' ? 'error' : 'failure';
-          const description = status === 'success' ? 'all gate steps passed'
-            : status === 'cancelled' ? 'job cancelled'
-            : failed.length ? `failed: ${failed.join(', ')}` : 'job failed outside the gate steps';
-          console.log(JSON.stringify({state, context: 'ci / x86_64', description,
-            target_url: process.env.RUN_URL}));
-          JS
-          )
-          # A reporting outage must not replace the gate results in the job log.
-          if ! curl -sS --fail-with-body -X POST -H "Authorization: token $TOKEN" \
-            -H "Content-Type: application/json" --data "$body" "$API"; then
-            echo 'status report failed; the job result stands' >&2
+          failed=()
+          {
+            echo '| step | outcome |'
+            echo '| --- | --- |'
+            for pair in $OUTCOMES; do
+              echo "| ${pair%%=*} | ${pair#*=} |"
+              if [[ ${pair#*=} == failure ]]; then
+                failed+=("${pair%%=*}")
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          if (( ${#failed[@]} )); then
+            echo "::error::failed: ${failed[*]}"
+            exit 1
           fi
-          printf '\n%s\n' "$body"
+          echo 'all gate steps passed'

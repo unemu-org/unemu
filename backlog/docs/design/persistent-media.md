@@ -1333,8 +1333,8 @@ A successful export is checked byte for byte, and occupied destinations survive.
 
 On Linux the same code calls `File::sync_all` (`fsync` in Rust's Unix implementation),
 nonblocking `flock` and same-directory hard links/rename. Linux storage behavior
-is **ASSUMED, not measured in this macOS session**. The `ubuntu-latest` Forgejo
-job is an x86-64 Linux container; its workspace tests exercise
+is **ASSUMED, not measured in this macOS session**. The `ubuntu-latest` GitHub
+Actions job is an x86-64 Linux VM; its workspace tests exercise
 `real_file_round_trip_checkpoints_finish_and_empty_generations`,
 `real_lock_excludes_second_open_and_drop_only_releases_handles`,
 `header_publication_never_replaces_an_existing_destination`,
