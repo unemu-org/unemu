@@ -5,6 +5,17 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — Get templates lists only template repositories:** a template
+  is a repository one level under `unemu/` (`unemu/open-at`,
+  `unemu/open-at-games`). Nested repositories (firmware packages under
+  `unemu/firmware/…`, media sets under `unemu/media/…`, staging repositories
+  under `unemu/staging/…`) and the live registry test's `unemu/test-…`
+  repositories are left out by name before any request. Before, only the
+  firmware and live-test names were, so a machine image in a media or staging
+  repository would have been offered as a template. A dialog test seeds the
+  same machine image in all six kinds of repository and expects only
+  `open-at` and `open-at-games`, with the others never read; it fails without
+  the fix.
 - **2026-11-16 — The modern skin takes the mock-ups' colours; New machine…
   never suggests a template's repository name:** as in the approved
   mock-ups, the modern skin now shares the classic skin's colours and differs

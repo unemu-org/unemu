@@ -8,10 +8,11 @@
 //! `unemu/`. The catalog is the Docker Registry HTTP API V2 `_catalog`
 //! endpoint, paged with `n` and `Link`; the OCI Distribution Specification
 //! has none, and zot lists in it the repositories the caller may read, so a
-//! stored login goes with the first request. Firmware packages
-//! (`unemu/firmware/…`) and the live registry test's repositories
-//! (`unemu/test-…`) are left out by name before any request; media sets and
-//! anything else not a PC machine image by its manifest. Each repository
+//! stored login goes with the first request. Nested repositories (firmware
+//! packages, media sets, staging: `unemu/firmware/…`, `unemu/media/…`,
+//! `unemu/staging/…`) and the live registry test's repositories
+//! (`unemu/test-…`) are left out by name before any request; anything else
+//! not a PC machine image by its manifest. Each repository
 //! offers the version tag `latest` names when it is one of the 16 newest
 //! releases, else its newest release (Semantic Versioning 2.0.0 §11
 //! precedence; pre-releases only when it has no release). A repository that
@@ -165,10 +166,13 @@ impl ListingFailure {
     }
 }
 
-/// Repositories of the namespace that are not templates by name: firmware
-/// packages and the live registry test's repositories.
+/// Repositories of the namespace that are not templates by name. A template
+/// is a single name under the namespace (`unemu/open-at`); firmware packages,
+/// media sets and staging repositories live in nested repositories
+/// (`unemu/firmware/…`, `unemu/media/…`, `unemu/staging/…`), and the live
+/// registry test's repositories start with `test-`.
 fn not_a_template(name: &str) -> bool {
-    name.starts_with("firmware/") || name.starts_with("test-")
+    name.contains('/') || name.starts_with("test-")
 }
 
 /// Version tags newest first by Semantic Versioning 2.0.0 precedence (§11),
@@ -1568,6 +1572,52 @@ mod tests {
         // Get is hidden: there is nothing to choose.
         assert!(!dialog.offers_get());
         assert_eq!(dialog.footer_note(), None);
+    }
+
+    #[test]
+    fn only_repositories_one_level_under_the_namespace_are_templates() {
+        let registry = MockRegistry::start(Policy {
+            anonymous_read: vec!["*".into()],
+            ..Policy::default()
+        });
+        // Every repository holds the same PC machine image, so only its name
+        // can keep it off the list.
+        let config = Descriptor::new(mt::CONFIG, Digest::of(b"config"), 6);
+        let metadata = Descriptor::new(mt::METADATA, Digest::of(b"metadata"), 8);
+        let manifest = Manifest::new("ibm-pc-at", config, vec![metadata])
+            .unwrap()
+            .encode()
+            .unwrap();
+        for repository in [
+            "unemu/open-at",
+            "unemu/open-at-games",
+            "unemu/firmware/open-at-bios",
+            "unemu/media/freedos",
+            "unemu/staging/media/freedos",
+            "unemu/test-x",
+        ] {
+            registry.seed_manifest(repository, "1.0.0", &manifest);
+        }
+        registry.clear_log();
+        let target = assembly::test_support::TempDir::new("templates-nested");
+        let view = listed(target.path(), accounts(target.path(), &registry.host()));
+        let dialog = view.templates.as_ref().unwrap();
+        assert!(
+            matches!(dialog.state, TemplatesState::Ready),
+            "{:?}",
+            dialog.state
+        );
+        let names: Vec<_> = dialog.rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["open-at", "open-at-games"]);
+        // Nested and live-test repositories are not even read.
+        let log = registry.log();
+        for skipped in ["firmware/", "media/", "staging/", "test-"] {
+            assert!(
+                !log.iter()
+                    .any(|l| l.contains(&format!("/v2/unemu/{skipped}"))),
+                "{skipped}: {log:?}"
+            );
+        }
     }
 
     #[test]
