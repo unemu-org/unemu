@@ -14,7 +14,7 @@ actions and no secrets.
 
 Runners: Linux X64 (`x86_64-unknown-linux-gnu`, glibc 2.35 or newer, such as
 `ubuntu-22.04` and later) and macOS ARM64 (`aarch64-apple-darwin`, such as
-`macos-14`). Any other runner fails with a message naming its platform.
+`macos-latest`). Any other runner fails with a message naming its platform.
 
 ## Usage
 

@@ -1685,7 +1685,7 @@ the consumer: `UNEMU_REGISTRY_USER`, `UNEMU_REGISTRY_PASSWORD` and
 `UNEMU_REGISTRY_HOST`, on the push step only.
 
 `.github/workflows/setup-upcli.yml` tests the action when its files change:
-on `ubuntu-latest` and `macos-14` it checks that a wrong SHA-256 fails and
+on `ubuntu-latest` and `macos-latest` it checks that a wrong SHA-256 fails and
 installs nothing, then installs v0.0.1 and runs `upcli --version`. To run
 the script by hand, give it the inputs and the runner's variables:
 

@@ -40,7 +40,7 @@ jobs:
           # SHA-256 of each v0.0.1 archive, as the release's SHA256SUMS lists it.
           - runner: ubuntu-latest
             sha256: c4944264e6e9624e23339a57853387c9ed1cd25792902dd2e4613a84cde82a7e
-          - runner: macos-14
+          - runner: macos-latest
             sha256: d00c7178dc4fb67f3e20263a52db447e944af5db04ce866c08f2068942c9c4ac
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
