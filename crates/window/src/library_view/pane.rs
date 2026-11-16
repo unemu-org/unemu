@@ -486,6 +486,25 @@ pub(super) fn outset(ui: &Ui, rect: egui::Rect, classic: bool) {
     }
 }
 
+/// A box on the field colour inside the inset outline, as the mock-ups draw
+/// their tree and list views (`.tree`, `.listview`): what `add` draws sits
+/// `padding` in from the outline. The modern skin rounds its corners as it
+/// rounds a pane's.
+pub(crate) fn sunken<R>(
+    ui: &mut Ui,
+    classic: bool,
+    padding: i8,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> egui::InnerResponse<R> {
+    let inner = egui::Frame::new()
+        .fill(Ground::Field.colour(ui.visuals()))
+        .corner_radius(corner_radius(classic))
+        .inner_margin(egui::Margin::same(OUTLINE + padding))
+        .show(ui, add);
+    inset(ui, inner.response.rect, classic);
+    inner
+}
+
 /// The face colour under the library's panels, which shows in the gaps
 /// between their panes: nothing else paints the window there.
 pub(super) fn backdrop(ui: &Ui) {
@@ -615,7 +634,7 @@ fn table_line(
 
 /// The default action of a pane, as the mock-ups' default button: bold,
 /// with a darker outline than the other actions.
-pub(super) fn primary(ui: &Ui, label: &str) -> egui::Button<'static> {
+pub(crate) fn primary(ui: &Ui, label: &str) -> egui::Button<'static> {
     egui::Button::new(RichText::new(label).strong()).stroke(Stroke::new(
         1.5,
         ui.visuals().widgets.noninteractive.fg_stroke.color,

@@ -5,6 +5,36 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — Disk layers follows its approved mock-up:** the dialog
+  is one sunken tree in the code font, inside the classic bevel or the
+  modern 1 px outline the library's panes draw. Each fixed disk goes by
+  letter, IDE master or slave and size (`C: IDE master (20.4 MiB)`), with
+  its name and write mode, then its chain: each member by kind (a zero base
+  reads `base  blank`), a short digest (`abcd…wxyz`), its size and how many
+  images share it, down to the working changes, which take the selection
+  highlight. CMOS keeps its own small chain. Floppy drives follow by letter
+  and type (`A: 1.2M catalogue`), each medium by name with its write mode,
+  the one in the drive marked and unsaved sectors highlighted, or `empty`;
+  a floppy medium is one blob, so its digest is no longer listed. Firmware
+  goes by the names and open or user-supplied marks the image's details
+  pane gives it: the catalogue's names, a library package's for an unlisted
+  ROM, else the start of its digest. Settings name the image tag they come
+  from, as images record no settings revision number, and the stored,
+  exclusive and dedup sizes stay as one quiet line. No controller id,
+  medium id or configuration key is shown, neither in the discard question
+  nor in the Save as new image… form's list of what is saved. Under the
+  tree is the mock-up's notice, and the footer is one row, read and tabbed
+  in the same order: Save as new image… (the default), Discard changes,
+  Close. Save as layer… and New image from here… both opened the Save as
+  new image… form, the second only adding *Flatten disk chains into new
+  bases*; the one button opens the form with that option, unchecked.
+  Gaming mode keeps Keep as new image…, without the option. When the media
+  arrive the dialog takes its new size in one frame instead of growing over
+  three. Saving and discarding are unchanged. The design's other *New image
+  from here…*, forking a workspace from an earlier manifest, is marked as
+  not built. Details panes and Disk layers now call a ROM open only when
+  the firmware catalogue does not list its bytes as proprietary, whatever
+  the layer's own mark says, as the push guard already ruled.
 - **2026-11-16 — The Insert disk picker keeps its size:** opened from a
   drive chip's Insert…, the media picker grew taller every frame, about
   63 px a frame, until its rows and buttons left the window and nothing

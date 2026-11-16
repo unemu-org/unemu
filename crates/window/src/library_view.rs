@@ -8,12 +8,12 @@
 
 pub(crate) mod firmware;
 pub(crate) mod firmware_metadata;
-mod hardware;
+pub(crate) mod hardware;
 pub(crate) mod install_media;
 #[cfg(test)]
 mod layout_tests;
 pub(crate) mod machines;
-mod pane;
+pub(crate) mod pane;
 
 use crate::{
     layers_dialog::LayersDialog,
@@ -1594,9 +1594,20 @@ impl LibraryView {
                     self.status = Some("Ready".into());
                 }
             }
-            Event::Layers(name, result, source) => {
+            Event::Layers(name, result, source, checked, summary) => {
                 self.busy = false;
                 if let Some(dialog) = &mut self.layers {
+                    // The drives and ROMs go by the names the details pane
+                    // gives them; a failed check keeps what the dialog had.
+                    if let Ok(details) = &result {
+                        let facts = hardware::ImageFacts::new(
+                            details,
+                            checked.as_deref(),
+                            summary.as_deref(),
+                            &self.snapshot.rom_names,
+                        );
+                        dialog.set_image(checked.map(|checked| *checked), facts.firmware);
+                    }
                     dialog.set_workspace(name);
                     dialog.set_details(result);
                     dialog.set_source(*source);
@@ -2142,8 +2153,8 @@ impl LibraryView {
         }
     }
     /// Machine › Save as new image…: of the running or selected machine, its
-    /// own form with what happens to the machine afterwards; otherwise Disk
-    /// layers' Save as layer… form.
+    /// own form with what happens to the machine afterwards; otherwise the
+    /// Save as new image… form Disk layers opens.
     pub fn begin_save_image(&mut self) {
         let machine = match (&self.active_machine, &self.active) {
             (Some((id, _)), _) => Some(id.clone()),
@@ -5298,11 +5309,21 @@ pub(super) mod tests {
                     regular_name(&row.descriptor.digest),
                 ))
                 .unwrap();
-            let Event::Layers(name, details, source) =
+            let Event::Layers(name, details, source, checked, summary) =
                 worker_events(&worker, &|e| matches!(e, Event::Layers(..)))
             else {
                 unreachable!()
             };
+            // What Disk layers names the drives and ROMs with.
+            let checked = checked.expect("the image's configuration");
+            assert!(checked.draft.is_some());
+            let facts = hardware::ImageFacts::new(
+                details.as_ref().unwrap(),
+                Some(&checked),
+                summary.as_deref(),
+                &BTreeMap::new(),
+            );
+            assert!(!facts.firmware.is_empty(), "{facts:?}");
             // After the first save the library selects the saved image, whose
             // workspace the form then starts from.
             assert_eq!(source.reference, base);

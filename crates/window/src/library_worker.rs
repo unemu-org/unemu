@@ -4,7 +4,11 @@
 //! preparation so forced exit and interrupted publication never hide a session.
 use crate::library_view::{self, ImageRow, Query};
 use crate::save_image::Target;
-use image_store::{summary::SummaryCache, workspace::Workspace, Descriptor, Digest, Store};
+use image_store::{
+    summary::{ImageSummary, SummaryCache},
+    workspace::Workspace,
+    Descriptor, Digest, Store,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -218,11 +222,16 @@ pub(super) enum Event {
         WorkspaceKind,
     ),
     Finished,
-    /// A workspace's media, and the image its session pins for Save as new image….
+    /// A workspace's media, the image its session pins for Save as new image…,
+    /// and what names the image's drives and firmware as the details panes
+    /// name them: what a check reads of its configuration, and its summary,
+    /// whose ROM layers carry the open marks.
     Layers(
         String,
         Result<pc_image::inspection::ImageDetails>,
         Box<crate::layers_dialog::SourceImage>,
+        Option<Box<CheckedImage>>,
+        Option<Box<ImageSummary>>,
     ),
     Done(String),
     Deleted(String),
@@ -933,7 +942,13 @@ fn layers_event<B: Backend>(
         .check(store, row, Some(&name), &|| false)
         .and_then(|details| storage_details(store, cache, row, details, &|| false));
     let source = Box::new(save_source(store, row, &name));
-    Event::Layers(name, details, source)
+    let checked = details.is_ok().then(|| checked_image(store, row)).flatten();
+    let summary = cache
+        .summary(&row.descriptor.digest)
+        .or(row.summary.as_ref())
+        .cloned()
+        .map(Box::new);
+    Event::Layers(name, details, source, checked, summary)
 }
 
 fn storage_details(
@@ -2430,10 +2445,23 @@ mod tests {
                 regular_name(&f.row.descriptor.digest),
             ))
             .unwrap();
-        let Event::Layers(_, result, _) = until(&w, |e| matches!(e, Event::Layers(..))) else {
+        let Event::Layers(_, result, _, checked, summary) =
+            until(&w, |e| matches!(e, Event::Layers(..)))
+        else {
             unreachable!()
         };
         let details = result.unwrap();
+        // Disk layers names the drives from the draft and the ROMs as the
+        // details pane does.
+        let checked = checked.expect("the image's configuration");
+        assert!(checked.draft.is_some());
+        let facts = crate::library_view::hardware::ImageFacts::new(
+            &details,
+            Some(&checked),
+            summary.as_deref(),
+            &BTreeMap::new(),
+        );
+        assert!(!facts.firmware.is_empty(), "{facts:?}");
         assert!(details.dedup_bytes > 0);
         assert_eq!(
             details.exclusive_bytes + details.dedup_bytes,

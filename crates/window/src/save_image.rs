@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The one "Save as new image…" form: a repository name and a tag in the
-//! registry tag grammar, used by Disk layers (Save as layer…, New image from
-//! here…, Keep as new image…) and by Settings on an image; machine-images §§3
-//! and 7, `backlog/docs/design/mockups/save-as-image.html`.
+//! registry tag grammar, used by Disk layers (Save as new image…, Keep as new
+//! image…) and by Settings on an image; machine-images §§3 and 7,
+//! `backlog/docs/design/mockups/save-as-image.html`.
 //!
 //! The tag rules are the store's: a tag shaped like a version never moves once
 //! it names an image; any other existing tag moves only after a confirmation
@@ -208,7 +208,8 @@ pub(crate) struct SaveAsImage {
     /// Shown and saved when `Some`; Settings revisions keep the source title.
     pub title: Option<String>,
     source_title: Option<String>,
-    /// "Flatten disk chains into new bases", offered by New image from here….
+    /// "Flatten disk chains into new bases", offered by Disk layers' Save as
+    /// new image….
     pub flatten: Option<bool>,
     pub tags: Vec<(String, Digest)>,
     /// The source image's own version in its repository, if it has one.
@@ -263,7 +264,8 @@ impl SaveAsImage {
         self.title = Some(title.unwrap_or_default().to_owned());
         self
     }
-    /// Offer the flatten option of New image from here….
+    /// Offer the flatten option, unchecked, as Disk layers' Save as new
+    /// image… does.
     pub fn with_flatten(mut self) -> Self {
         self.flatten = Some(false);
         self

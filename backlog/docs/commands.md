@@ -1050,11 +1050,13 @@ on macOS, `%LOCALAPPDATA%/unemu` on Windows and
 `$XDG_DATA_HOME/unemu` (otherwise `~/.local/share/unemu`)
 on other Unix hosts. The store still requires a supported local filesystem.
 
-Machine > Disk layers… and the Layers toolbar button show per-medium chains,
-digests, sizes, sharing and working sectors. Save as layer… and New image from
-here… ask for a new repository:tag and stop the machine before publication;
-New also offers Flatten. Gaming sessions offer Keep as new image… instead.
-Discard changes lists writable media with changes before confirmation.
+Machine > Disk layers… and the Layers toolbar button show each fixed disk's
+chain with short digests, sizes, sharing and working sectors, the floppy
+catalogues, firmware and settings. Save as new image… asks for a new
+repository:tag, offers Flatten disk chains into new bases (unchecked), and
+stops the machine before publication. Gaming sessions offer Keep as new image…
+instead, without Flatten. Discard changes lists writable media with changes
+before confirmation.
 For machine files the dialog offers Import image…. Edit > Delete tag… confirms
 removal of that tag only; shared bases remain. These menu commands have no new
 key chords; existing shell shortcuts retain their platform mapping.

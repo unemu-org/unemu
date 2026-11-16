@@ -264,7 +264,8 @@ fn medium_rows(rows: &mut Vec<(&'static str, String)>, medium: &Medium) {
     ));
 }
 
-fn role(unit: u8) -> &'static str {
+/// An IDE drive's place on its cable: unit 0 is the master, unit 1 the slave.
+pub(crate) fn role(unit: u8) -> &'static str {
     if unit == 0 {
         "master"
     } else {

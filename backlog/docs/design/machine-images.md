@@ -761,7 +761,7 @@ library opens on Machines. Every machine change runs on the worker through
   repository defaulting to the machine name's slug at 1.0.0 and the title to
   the name; an unfinished save is finished from Disk layers' form. *Disk
   layers…* on a machine shows its chains with its working changes; its
-  Discard changes resets the machine and its Save as layer… commits it.
+  Discard changes resets the machine and its Save as new image… commits it.
 - *Insert…* of a drive opens the media picker. Into a stopped machine it
   stores a pending insert (`set_pending_inserts`, replacing the drive's
   earlier one); the drive chips and the Media menu show it "at Start" and
@@ -855,13 +855,13 @@ use the same overlay interface and always leave the old base intact.
 |---|---|
 | Start | Resume a selected local workspace, or create one from the pinned image. Readonly media reject writes; journal media get explicit private paths. |
 | Gaming mode | Create an isolated disposable workspace for every writable disk/catalogue medium and CMOS; never reuse the regular journals. On exit ask keep as a new image or discard. No automatic discard after a crash. |
-| Save as layer… (commit layer) | Stop the machine, finish all active media, seal each changed fixed-disk overlay into a parent-bound layer, freeze each changed floppy or CMOS to a new raw blob and publish a complete new manifest. Media without changes keep their head. The user names a new version/tag or moves an eligible unpublished local tag by compare-and-swap; pushed version tags remain immutable. Parents remain unchanged; the workspace then pins the new image and starts fresh journals. |
+| Save as layer… (commit layer; the Disk layers button reads Save as new image…) | Stop the machine, finish all active media, seal each changed fixed-disk overlay into a parent-bound layer, freeze each changed floppy or CMOS to a new raw blob and publish a complete new manifest. Media without changes keep their head. The user names a new version/tag or moves an eligible unpublished local tag by compare-and-swap; pushed version tags remain immutable. Parents remain unchanged; the workspace then pins the new image and starts fresh journals. |
 | Discard changes | Stop and release writers, then remove only this workspace's changes after showing affected media. The pinned image still exists. |
-| New image from here… | Select a complete historical manifest and fork a workspace at all of its heads; picking only one disk is an explicit advanced operation with a mismatch warning. |
+| New image from here… | *Designed, not built yet; no menu or button offers it.* Select a complete historical manifest and fork a workspace at all of its heads; picking only one disk is an explicit advanced operation with a mismatch warning. |
 | Export new base | Stream the selected chain into a new raw file, verify it, and publish without replacing any original. This is the existing media-tool meaning of commit/compact. |
 
-The Disk layers dialog labels commit layer **Save as layer…**, distinct from
-**export new base**. An eject still closes a recovery generation; it does not
+The Disk layers dialog labels commit layer **Save as new image…** (it was
+**Save as layer…** until 2026-11-16), distinct from **export new base**. An eject still closes a recovery generation; it does not
 silently make a disk layer.
 Preserve retention warnings: empty closes currently consume a generation too.
 
@@ -2313,10 +2313,10 @@ Actions open **classic modal dialogs** over the application window:
   journal write mode, detected geometry and compatibility/retention warnings.
   Insert commits the selection; Cancel retains the current medium.
 - **Disk layers** shows the parent chain and writable changes alongside settings,
-  firmware and other drive heads. Save as layer…, Discard changes and New image
-  from here… use the complete-machine semantics in §4; saving stops the machine.
-  Save as layer…, New image from here… (with *Flatten disk chains into new
-  bases*), Gaming mode's Keep as new image… and Machine › Save as new image… all
+  firmware and other drive heads. Its Save as new image… and Discard changes use
+  the complete-machine semantics in §4; saving stops the machine. Its Save as
+  new image… (with *Flatten disk chains into new bases*, unchecked), Gaming
+  mode's Keep as new image… and Machine › Save as new image… all
   open the one **Save as new image…** dialog, also used by *Publish new image
   revision*: repository name, tag and (for saves) title. The tag follows the
   registry grammar; it defaults to the next minor version after the source's

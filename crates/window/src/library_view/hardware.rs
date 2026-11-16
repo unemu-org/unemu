@@ -50,7 +50,9 @@ pub(crate) struct FirmwareFact {
     /// The catalogue or library name, else the start of its digest.
     pub name: String,
     /// Open or user-supplied, when the ROM's layers could be read: open only
-    /// when every chip of the ROM is open.
+    /// when every chip of the ROM is open and the firmware catalogue does not
+    /// list the ROM's bytes as proprietary. A catalogue entry listed as
+    /// user-supplied is user-supplied also before its layers are read.
     pub open: Option<bool>,
 }
 
@@ -202,7 +204,7 @@ fn hardware_without_draft(details: &ImageDetails) -> String {
 
 /// The configuration name of the card a drive hangs on: the card's own id,
 /// else its model name, as the image's slots record it.
-fn controller_name(draft: &Draft, id: assembly::DeviceId) -> String {
+pub(crate) fn controller_name(draft: &Draft, id: assembly::DeviceId) -> String {
     draft
         .card_ids
         .iter()
@@ -221,7 +223,7 @@ fn controller_name(draft: &Draft, id: assembly::DeviceId) -> String {
 }
 
 /// The drive letter of `unit` counted from `first`, if there is one.
-fn letter(first: u8, unit: u8) -> Option<String> {
+pub(crate) fn letter(first: u8, unit: u8) -> Option<String> {
     first
         .checked_add(unit)
         .filter(u8::is_ascii_uppercase)
@@ -229,7 +231,7 @@ fn letter(first: u8, unit: u8) -> Option<String> {
 }
 
 /// A medium's name, or its place in the catalogue when it has none.
-fn medium_name(index: usize, medium: &MediumDetails) -> String {
+pub(crate) fn medium_name(index: usize, medium: &MediumDetails) -> String {
     if medium.name.is_empty() || medium.name == medium.id {
         format!("disk {}", index + 1)
     } else {
@@ -417,6 +419,26 @@ fn role_of_key(key: &str) -> &'static str {
     }
 }
 
+/// Whether a ROM layer may be called open: it is marked open, and the
+/// firmware catalogue does not list its bytes, stored or decoded, whole or as
+/// a chip, as proprietary. Rights follow the bytes, as the push guard and the
+/// settings sheet rule, so no mark opens a ROM the catalogue lists as
+/// user-supplied.
+fn layer_open(layer: &Descriptor) -> bool {
+    let catalogue = pc_image::firmware::catalogue();
+    let listed = |digest: &Digest, size: u64| {
+        pc_image::firmware::proprietary(catalogue, digest.hex(), size).is_some()
+    };
+    let decoded_listed = || match (layer.decoded_digest(), layer.decoded_size()) {
+        (Ok(digest), Ok(size)) => listed(&digest, size),
+        // Bytes whose identity cannot be read are not known to be open.
+        _ => true,
+    };
+    license::open_license(layer).is_some()
+        && !listed(&layer.digest, layer.size)
+        && !(layer.is_compressed() && decoded_listed())
+}
+
 fn firmware(
     details: &ImageDetails,
     draft: Option<&Draft>,
@@ -424,8 +446,15 @@ fn firmware(
     summary: Option<&ImageSummary>,
     rom_names: &BTreeMap<Digest, String>,
 ) -> Vec<FirmwareFact> {
-    let open = |layers: Option<&[&Descriptor]>| {
-        layers.map(|layers| layers.iter().all(|d| license::open_license(d).is_some()))
+    // Open only when every chip is, and never when the catalogue entry the
+    // configuration names is user-supplied; without the layers, such an
+    // entry is still known to be user-supplied.
+    let open = |layers: Option<&[&Descriptor]>, entry: Option<&assembly::FirmwareEntry>| {
+        let listed_open = entry.is_none_or(crate::firmware_choices::catalogue_open);
+        match layers {
+            Some(layers) => Some(listed_open && layers.iter().all(|d| layer_open(d))),
+            None => (!listed_open).then_some(false),
+        }
     };
     let mut rows: Vec<FirmwareFact> = match draft {
         Some(draft) => fields
@@ -434,13 +463,17 @@ fn firmware(
             .map(|f| {
                 let hexes = rom_hexes(details, f.path.trim_end_matches(".image"));
                 let layers = rom_layers(&hexes, summary);
+                let entry = match &f.value {
+                    Value::Name(id) => crate::firmware_choices::entry(id),
+                    _ => None,
+                };
                 FirmwareFact {
                     role: f.label.clone(),
                     name: match &f.value {
                         Value::Name(_) => caps::value_label(draft, &f.path, &f.value),
                         _ => library_name(&hexes, layers.as_deref(), rom_names),
                     },
-                    open: open(layers.as_deref()),
+                    open: open(layers.as_deref(), entry),
                 }
             })
             .collect(),
@@ -459,7 +492,7 @@ fn firmware(
                     FirmwareFact {
                         role: role_of_key(key).into(),
                         name: library_name(&hexes, layers.as_deref(), rom_names),
-                        open: open(layers.as_deref()),
+                        open: open(layers.as_deref(), None),
                     }
                 })
                 .collect()
@@ -645,5 +678,33 @@ mod tests {
         assert_eq!(drives, ["B:", "C:", "CMOS"]);
         assert_eq!(facts.drives[1].described, "disk 1");
         assert!(!facts.hardware.contains("Board:"), "{}", facts.hardware);
+    }
+
+    /// A ROM whose bytes the firmware catalogue lists as proprietary stays
+    /// user-supplied whatever its layer's mark says, as the push guard and
+    /// the settings sheet rule; an unlisted ROM marked open is open.
+    #[test]
+    fn a_rom_the_catalogue_lists_as_proprietary_is_never_open() {
+        let f = Fixture::new();
+        let mut summary = summary(&f.store, &f.row);
+        let entry = pc_image::firmware::catalogue()
+            .iter()
+            .find(|e| e.distribution == assembly::FirmwareDistribution::UserSupplied)
+            .expect("a proprietary catalogue ROM");
+        let digest: Digest = format!("sha256:{}", entry.sha256).parse().unwrap();
+        let mut marked = Descriptor::new(mt::FIRMWARE, digest, entry.size);
+        license::mark(&mut marked, Some(&Expression::parse("MIT").unwrap()));
+        for (layer, open) in [(marked, false), (rom(&[0x5a; 16], true), true)] {
+            let hex = layer.decoded_digest().unwrap().hex()[..12].to_owned();
+            summary.storage_blobs = vec![layer];
+            let facts = ImageFacts::new(
+                &details(vec![format!("firmware.bios · {hex}")], Vec::new()),
+                None,
+                Some(&summary),
+                &BTreeMap::new(),
+            );
+            assert_eq!(facts.firmware.len(), 1, "{facts:?}");
+            assert_eq!(facts.firmware[0].open, Some(open), "{facts:?}");
+        }
     }
 }
