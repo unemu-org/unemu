@@ -117,6 +117,16 @@ can be described without reading their bytes; Start still runs normal image
 verification.
 New-machine/import and layer editing remain unavailable.
 
+Machines and images of the library choose their firmware on the Firmware tab
+of their own Settings… (not a machine file's sheet): a System BIOS and, for a
+VGA, a Video BIOS among the firmware catalogue entries that fit the board and
+that a firmware package of the local store holds. On a machine the choice
+applies from its next start; a system BIOS of another CMOS layout resets the
+machine's stored CMOS to the bytes its configuration derives. On an image it
+publishes a new revision under a new tag. A superseded release shows "Newer
+version available" in the details pane, with Switch to …. See
+`backlog/docs/design/machine-images.md` §7.
+
 To start a specific machine immediately in the same shell:
 
 ```sh

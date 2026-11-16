@@ -2394,7 +2394,7 @@ mod tests {
         assert!(crafted.source_missing);
         assert!(!row("firmware/legacy-rom:1").source_missing);
         assert_eq!(
-            cells(&crafted)[4],
+            cells(&crafted)[5],
             "Open · GPL-2.0-only ⚠ No source · private only"
         );
         let read = read_package(&store, tag, &crafted.image.descriptor.digest, &[]).unwrap();
@@ -2408,7 +2408,7 @@ mod tests {
             vec![],
             |ui| {
                 egui::CentralPanel::default().show(ui, |ui| {
-                    action = details(ui, &crafted, Some(&Ok(read.clone())), true);
+                    action = details(ui, &crafted, Some(&Ok(read.clone())), true, &[]);
                 });
             },
         ));
@@ -2485,7 +2485,7 @@ mod tests {
             .unwrap();
         assert!(!revised.source_missing);
         assert_eq!(
-            cells(revised)[4],
+            cells(revised)[5],
             "Open · GPL-2.0-only · with source archive"
         );
         let read = read_package(

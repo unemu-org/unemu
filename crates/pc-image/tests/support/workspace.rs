@@ -9,7 +9,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 #[path = "../../../cli/tests/support/fixtures.rs"]
-mod fixtures;
+pub mod fixtures;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 /// Bytes of a resolved medium: its file, its inline bytes, or, for a
 /// compressed floppy held in memory, its verified decoded payload.

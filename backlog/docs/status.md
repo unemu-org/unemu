@@ -5,6 +5,47 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — Firmware is editable in Settings… on machines and images;
+  "newer version available" for superseded firmware:** implements the approved
+  [firmware-settings mock-up](design/mockups/firmware-settings.html) (now in
+  the repository; the icon inventory counts 12 approved mock-ups). The
+  catalogue gives every system BIOS a CMOS layout (`CmosLayout`: open AT
+  BIOS, Kiselev Xi 8088, IBM AT, Landmark ROM POST) and every superseded entry
+  its replacement and a short reason as data (`Supersession`): the open AT
+  BIOS 1.0.2-unemu.2 → 1.0.2-unemu.3 ("clears memory above 1 MiB on POST:
+  XMS after Ctrl+Alt+Del"), vgabios 0.8a-unemu.1 → 0.9d-unemu.1 ("teletype
+  BEL sounds the speaker"). The Firmware tab of Settings… offers the System
+  BIOS and, for a VGA, the Video BIOS among the catalogue entries that fit the
+  board, grouped by family, each unavailable one with its reason (the
+  validator's, or not in the store with Import ROM folder… over the sheet); a
+  superseded entry is marked, listed after its replacement, never preselected
+  and offers "Use <replacement>". On a machine the choice applies from its
+  next start (C:, its layers and inserted media stay); the same CMOS layout
+  keeps its CMOS, another layout resets a stored CMOS to the bytes derived
+  from the configuration (one warning in the sheet). The overlay binds the
+  package ROM by digest at every start and in Save as new image….
+  On an image, Publish revision never overwrites a tag (`latest` included),
+  suggests the next minor version, or `<version>-local.N` for an official
+  template (local only, said in the review), and says when user-supplied
+  firmware makes the revision user-supplied. Machine and image details panes
+  show "Newer version available" with the stored reason, a link to a newer
+  tag of the image's repository that already uses the replacement, and
+  "Switch to <release>…", which opens Settings on the Firmware tab with the
+  replacement chosen; rows carry a quiet "↑ newer BIOS" badge with the hint
+  as tooltip. The Firmware collection has a Status column ("Superseded by
+  1.0.2-unemu.3"); its Role summary header reads Role. A machine's settings
+  record the package digest and layer descriptor of each ROM they choose, so
+  it keeps starting, saving and resetting after the package loses its tag;
+  the Firmware pane's "Used by" and its Delete tag… confirmation (now offered
+  for a selected package) name such machines. A crash between the record and
+  the CMOS journal leaves a pending reset that Start finishes. Revisions and
+  Save as new image… write `unemu.firmware.sources` from the packages the
+  closure uses. Official templates are known by their bare repository name
+  (so New machine…'s default `open-at` counts as one). Not yet: pulling a
+  firmware package that a configured registry offers when OK is pressed
+  (entries not in the store are unavailable with Import ROM folder…), and the
+  reduced Machine files collection (Create image…, Open machine file… adding
+  to the list); machine files keep their property sheets for now.
 - **2026-11-16 — Open BIOS sources from their public GitHub repositories;
   open VGA BIOS `v0.9d-unemu.1` sounds the teletype BEL; templates 1.2.0:**
   `vendor/unemu-at-bios/fetch.sh` and `vendor/vgabios/fetch.sh` now build

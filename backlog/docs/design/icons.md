@@ -73,6 +73,9 @@ icons are the project's own mock-up artwork, under the project licence.
 | media-picker | ▾ | Installation media › Insert into… ▾ menu button |
 | media-picker | ↑ ↓ | the picker's key note (↑↓ choose) |
 | registry-accounts, get-templates, firmware, save-as-image | ● ○ ✓ ✗ ⚠ ▲ ▼ ↑ ↓ └ ─ | already in the app's text; ✓ and ✗ are visible since the font subset |
+| firmware-settings | application monitor, Start, Settings, machine, image, media set, firmware, machine file | the same places as in the machines mock-up |
+| firmware-settings | ↑ | the Newer version available hint and the quiet "↑ newer BIOS" badge of machine and image rows |
+| firmware-settings | ⓘ ⚠ ✓ ● | the Settings… banner, the Firmware tab's CMOS line (⚠ another layout, ✓ the same) and changed tab labels |
 
 The name column of the library lists is now left-aligned: a centred egui label
 drops the space the icon and a group's indent need, and the mock-ups'
@@ -85,7 +88,9 @@ name cells are left-aligned. Child rows of a repository group are set in by
   **machines.html toolbar** (Gaming mode, New machine from image…, Save as new
   image…): the app has one toolbar, the main-window mock-up's machine toolbar,
   and these commands are not on it (they are in the menus and the details
-  panes). Run, Start, Stop and Settings share the toolbar's icons.
+  panes). Run, Start, Stop and Settings share the toolbar's icons. The
+  firmware-settings mock-up's Save as new image… and Create image… toolbar
+  buttons are not on it either.
 - **main-window welcome list monitor**: the welcome list holds images and
   machine files, which take the machines mock-up's own icons.
 - **View menu ✓ and ●**: egui's check boxes (Toolbar, Status bar) and selection

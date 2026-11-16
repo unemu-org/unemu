@@ -631,8 +631,13 @@ pub(crate) fn resolve_pinned(
             references: Vec::new(),
         },
         Some(machine) => {
-            let overlay =
-                crate::revision::overlay(store, &resolved.config, &image.manifest.layers, machine)?;
+            let packages = crate::revision::Packages::new(store);
+            let overlay = crate::revision::overlay(
+                &packages,
+                &resolved.config,
+                &image.manifest.layers,
+                machine,
+            )?;
             Prepared {
                 config: overlay.config,
                 machine: overlay.machine,

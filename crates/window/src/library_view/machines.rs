@@ -104,6 +104,47 @@ impl MachineRow {
         }
         badges
     }
+    /// The catalogue entries the machine runs: its own firmware choice
+    /// where its settings make one, else its image's.
+    pub fn firmware(
+        &self,
+    ) -> Vec<(
+        crate::firmware_choices::Slot,
+        &'static assembly::FirmwareEntry,
+    )> {
+        crate::firmware_choices::machine_firmware(
+            self.listing.machine.settings.as_ref(),
+            self.summary.as_ref(),
+        )
+    }
+    /// The firmware the machine's own settings choose instead of its
+    /// image's, by slot.
+    /// The firmware the machine's own settings choose instead of its
+    /// image's, by slot, each with the mark of the package blob the machine
+    /// binds (open only when every chip is), else the catalogue's.
+    pub fn own_firmware(&self) -> Vec<crate::firmware_choices::Own> {
+        let Some(settings) = self.listing.machine.settings.as_ref() else {
+            return Vec::new();
+        };
+        let image = self
+            .summary
+            .as_ref()
+            .map(crate::firmware_choices::in_summary)
+            .unwrap_or_default();
+        crate::firmware_choices::own_choices(settings)
+            .into_iter()
+            .filter(|own| {
+                !image
+                    .iter()
+                    .any(|(s, e)| *s == own.slot && e.id == own.entry.id)
+            })
+            .collect()
+    }
+    /// The superseded firmware the machine runs: the "newer version
+    /// available" hint and the row badge.
+    pub fn newer(&self) -> Vec<crate::firmware_choices::Newer> {
+        crate::firmware_choices::newer_of(&self.firmware())
+    }
     pub fn state_text(&self) -> String {
         let mut text = self.listing.state.to_string();
         for insert in &self.listing.machine.pending {
@@ -165,12 +206,27 @@ impl MachineRow {
             source.push_str(" · ");
             source.push_str(&badge);
         }
+        let mut state = self.state_text();
+        if !self.newer().is_empty() {
+            state.push_str(" · ");
+            state.push_str(crate::firmware_choices::BADGE);
+        }
         [
             self.name().to_owned(),
             source,
-            self.state_text(),
+            state,
             self.last_run().to_owned(),
             human_size(self.listing.change_bytes),
+        ]
+    }
+    /// The State cell's tooltip: the hint of the quiet badge, when it shows.
+    fn hints(&self) -> [Option<String>; 5] {
+        [
+            None,
+            None,
+            crate::firmware_choices::badge_tooltip(&self.newer()),
+            None,
+            None,
         ]
     }
 }
@@ -419,6 +475,8 @@ enum Action {
     Favorite(bool),
     Labels,
     ShowImage,
+    /// "Switch to …": Settings… with that firmware choice made.
+    Switch(crate::firmware_choices::Slot, &'static str),
 }
 
 /// A row of "Settings that differ from the image": the setting, this
@@ -580,7 +638,7 @@ impl LibraryView {
                             self.rows_built += 1;
                             let row = shown[index];
                             let selected = self.machine.as_deref() == Some(row.id());
-                            let (clicked, double) = super::draw_cells(
+                            let (clicked, double) = super::draw_cells_with_hints(
                                 ui,
                                 &row.cells(),
                                 &widths,
@@ -588,6 +646,7 @@ impl LibraryView {
                                 selected,
                                 index % 2 == 0,
                                 row.lead(),
+                                &row.hints(),
                             );
                             if (clicked || double) && !selected {
                                 self.select_machine(row.id().to_owned(), row.image_row());
@@ -761,6 +820,19 @@ impl LibraryView {
                 });
             });
         });
+        for newer in row.newer() {
+            let after = format!(
+                "Switching changes only this machine, from its next start. C:, its disk layers and its inserted media stay{}",
+                if newer.slot == crate::firmware_choices::Slot::Video || newer.same_layout() {
+                    ", and so does its CMOS (same layout)."
+                } else {
+                    "; its CMOS is reset for the new layout."
+                }
+            );
+            if pane::newer_hint(ui, &newer, &after, None).switch {
+                actions.push(Action::Switch(newer.slot, newer.by.id));
+            }
+        }
         if row.listing.moved_to.is_some() {
             pane::text(
                 ui,
@@ -826,7 +898,7 @@ impl LibraryView {
                         pane::meta(ui, "Applied at every start of this machine. Save as new image… writes them into the new image's configuration.");
                     }
                 }
-                pane::firmware_section(ui, facts.as_ref(), true);
+                pane::firmware_section(ui, facts.as_ref(), Some(&row.own_firmware()));
                 pane::section(ui, "Hardware, from the image");
                 match (&readiness, &facts) {
                     (Some(Ok(_)), Some(facts)) => {
@@ -915,6 +987,7 @@ impl LibraryView {
                     )));
                 }
                 Action::ShowImage => commands.push(Command::ShowSource),
+                Action::Switch(slot, id) => self.switch_firmware(slot, id),
             }
         }
     }
@@ -1856,6 +1929,100 @@ pub(crate) mod tests {
         assert_eq!(machine.source_label(), "games (no tag)");
         assert_eq!(machine.source_badges(), ["⚑ 1.0.0 moved", "detached"]);
         assert!(machine.reference().starts_with("games@sha256:"));
+    }
+
+    /// A machine on the superseded open AT BIOS: the quiet badge in its
+    /// State with the hint as tooltip, the hint with the stored reason and
+    /// Switch in its pane; Switch opens Settings on the Firmware tab with
+    /// the replacement chosen, and nothing is applied before OK.
+    #[test]
+    fn a_superseded_bios_shows_the_hint_and_badge_and_switch_opens_settings_with_it() {
+        use crate::firmware_choices::{self as fw, Slot};
+        let Some(store) = crate::library_test_support::FirmwareStore::new(true) else {
+            return;
+        };
+        let image = crate::image_settings::tests::open_image(&store);
+        let source = pc_image::revision::Source::open(&store.store, &image.descriptor).unwrap();
+        let old = fw::entry("unemu-at-bios-1.0.2-unemu.2").unwrap();
+        let mut tables = source.machine().clone();
+        let mut bios = fw::rom_table(&tables, Slot::System).unwrap().clone();
+        bios.insert("sha256".into(), old.sha256.into());
+        fw::replace(&mut tables, Slot::System, bios).unwrap();
+
+        let mut machine = row("dos-games", "DOS games", "unused", &["open-at:1.0.0"]);
+        machine.listing.machine.image = image.descriptor.clone();
+        machine.listing.machine.settings = Some(tables.clone());
+        let newer = machine.newer();
+        assert_eq!(newer.len(), 1);
+        let text = "System BIOS 1.0.2-unemu.2 is superseded by 1.0.2-unemu.3 (clears memory above 1 MiB on POST: XMS after Ctrl+Alt+Del)";
+        assert_eq!(newer[0].text(), text);
+        assert!(
+            machine.cells()[2].ends_with(" · ↑ newer BIOS"),
+            "{:?}",
+            machine.cells()
+        );
+        assert_eq!(
+            machine.hints()[2].as_deref(),
+            Some(format!("{text}.").as_str())
+        );
+        assert!(machine
+            .own_firmware()
+            .iter()
+            .any(|own| own.entry.id == old.id));
+        // A machine on current firmware has neither.
+        let mut current = machine.clone();
+        current.listing.machine.settings = None;
+        assert!(current.newer().is_empty());
+        assert!(!current.cells()[2].contains("newer BIOS"));
+
+        let mut view = LibraryView::new(None);
+        view.set_machines(vec![machine]);
+        view.query.filter = Filter::Machines;
+        view.machine = Some("dos-games".into());
+        view.selected = Some(image.clone());
+        let (texts, _) = drawn(&mut view);
+        assert!(
+            texts
+                .iter()
+                .any(|t| t == &format!("Newer version available. {text}.")),
+            "{texts:?}"
+        );
+        assert!(texts.iter().any(|t| t == "Switch to 1.0.2-unemu.3…"));
+        assert!(texts.iter().any(|t| t.ends_with("· ↑ newer BIOS")));
+
+        // Switch to…: the sheet opens on the Firmware tab with the choice made.
+        view.switch_firmware(Slot::System, "unemu-at-bios-1.0.2-unemu.3");
+        let tags = crate::save_image::local_tags(&store.store).unwrap();
+        view.on_event(crate::library_worker::Event::MachineSettingsOpened(Ok(
+            Box::new((
+                "dos-games".into(),
+                "DOS games".into(),
+                image,
+                source,
+                tables,
+                tags,
+            )),
+        )));
+        let settings = view.image_settings.as_ref().unwrap();
+        assert_eq!(settings.tab, assembly::capabilities::Group::Firmware);
+        assert_eq!(
+            settings.firmware(Slot::System).unwrap().id,
+            old.id,
+            "packages not read yet"
+        );
+        view.on_event(crate::library_worker::Event::Packages(Ok(store.choices())));
+        let settings = view.image_settings.as_ref().unwrap();
+        assert_eq!(
+            settings.firmware(Slot::System).unwrap().id,
+            "unemu-at-bios-1.0.2-unemu.3"
+        );
+        assert!(settings.unsaved(), "nothing is applied before OK");
+        assert_eq!(
+            settings.cmos_line(),
+            Some(crate::image_settings::CmosLine::Same(Some(
+                assembly::CmosLayout::OpenAtBios
+            )))
+        );
     }
 
     /// Recently played lists machines run before, the last run first;

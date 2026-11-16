@@ -691,7 +691,7 @@ read (the other machines list normally).
 | Duplicate | Copies the session pin and every journal (never locks, the desktop's record, publication staging or journal temporaries) into a new workspace, with the record's settings, pending inserts and labels, on the same image. Not the favourite or last run. The copies are independent. Refused while a publication is pending. |
 | Reset to image | Discards the workspace contents under its lock (§3.1 discard), drops the settings and pending inserts, and pins the workspace again. Name, id, favourite, labels and last run stay. |
 | Delete machine | Removes the workspace, then the record. The image and its tags stay. A crash between the two leaves a record without a workspace, which starts again from its image. |
-| Settings | Checks the hardware tables as a revision of the image's (`revision`: drive slots rebound, defaults frozen) and keeps them as the machine's overlay from its next Start; tables that lower to the image's machine, or an explicit clear, drop the overlay. The record is written first and goes back if the CMOS journal write then fails; a SETUP field that cannot be derived keeps the stored bytes, with a note. A field AT SETUP records in CMOS (memory, drives, equipment) is recomputed as Settings on an image recomputes it (§2, revision): only that field and the checksum change, written into the machine's CMOS journal when the image journals CMOS; a stored CMOS image without a journal is recomputed at every Start; derived CMOS follows the configuration. The image never changes. |
+| Settings | Checks the hardware tables as a revision of the image's (`revision`: firmware and drive slots rebound, defaults frozen) and keeps them as the machine's overlay from its next Start; a firmware choice binds the ROM of a firmware package in the local store at every Start and in Save as new image…; the overlay records each such ROM's package digest and layer descriptor (`bound_firmware`, never shown as a hardware table), so the ROM still binds by digest after the package loses its tag; a system BIOS of another CMOS layout, or an unlisted one, resets the machine's stored CMOS to the bytes derived from its configuration (`SettingsChange::cmos_reset`; the same layout keeps it), announced by `media/cmos-reset.pending` before the record changes, which Start (and Save as new image…) finishes after an interruption; current tables that no longer bind fall back to the image's machine with an unknown layout, so clearing always works; tables that lower to the image's machine, or an explicit clear, drop the overlay. The record is written first and goes back if the CMOS journal write then fails; a SETUP field that cannot be derived keeps the stored bytes, with a note. A field AT SETUP records in CMOS (memory, drives, equipment) is recomputed as Settings on an image recomputes it (§2, revision): only that field and the checksum change, written into the machine's CMOS journal when the image journals CMOS; a stored CMOS image without a journal is recomputed at every Start; derived CMOS follows the configuration. The image never changes. |
 | Save as new image | Offline whole-machine publication (§4) of the journals with the overlay as the new configuration, titled with the machine name by default. By default the machine moves onto the new image with fresh, empty journals and no overlay; with *keep on old image* the publication intent records it, the workspace keeps its image, journals and overlay, and the new image stands alone. Writes to disks inserted from installation sets are never part of the image; the command line warns about them, and moving onto the new image starts their journals afresh too. |
 | Start | Two steps. `prepare` opens the workspace's session on the pinned image (the session pin wins over the record, so a rebind from elsewhere is honoured) with the overlay and puts each pending insert into its floppy drive (chosen disk first, then the set's others when all join; journals named `<set hex>-<medium id>.upfj` as a live insert from the library names them); it changes no record. `confirm`, called once the machine has assembled, records the last run and the pinned image and drops the inserts the launch put in, so a failed assembly keeps both. A pending insert lasts until that Start; afterwards the image's catalogue applies again. |
 
@@ -2263,7 +2263,26 @@ Actions open **classic modal dialogs** over the application window:
   revision 2) edits a draft of the stopped image's flattened hardware tables;
   a running image opens read-only. Each edit goes through the capabilities
   API and is written into those tables at once, so the review shows exactly
-  what was validated. Firmware stays as stored. Diskette drives can be added
+  what was validated. Firmware is chosen on the Firmware tab (approved
+  [firmware-settings mock-up](mockups/firmware-settings.html)): a System BIOS
+  and, for a card with a BIOS of its own, a Video BIOS, among the catalogue
+  entries that fit the board, grouped by family (one CMOS layout per family,
+  `FirmwareEntry::cmos_layout`); an entry that cannot be chosen says why (the
+  validator's reason, or "not in your store" with Import ROM folder…). A
+  superseded entry is marked, follows the releases of its family, is never
+  preselected and offers "Use <replacement>"; the catalogue stores its
+  replacement and a short reason (`FirmwareEntry::superseded_by`). A choice
+  writes the ROM table of a firmware package in the local store (asset names
+  from the bytes' SHA-256); lowering binds the package's ROM blob by digest,
+  marked as an image marks it, with the source archive that travels with an
+  open copyleft ROM. Another CMOS layout replaces a stored CMOS image by the
+  bytes derived from the revision's configuration (the clock, status
+  registers and shutdown byte stay); the same layout keeps it. Publish
+  revision asks for a new tag and never overwrites one, `latest` included:
+  the next minor version for your own repository, the source version with a
+  local suffix (`1.1.0-local.1`) for an official template, whose revision
+  stays in the local store; taking user-supplied firmware makes the revision
+  user-supplied, which the review says. Diskette drives can be added
   (with an empty catalogue) or changed only while their catalogue is empty;
   a drive with media keeps its type and cannot be removed, and no fixed disk is
   added or removed here. **Review changes…** opens *Publish new image
@@ -2274,8 +2293,11 @@ Actions open **classic modal dialogs** over the application window:
   that binds every disk, firmware, catalogue medium, metadata and artwork blob
   of the source again; the source image and its tags never change, and its
   workspaces keep running it. The manifest keeps the source's annotations
-  (title, `unemu.firmware.sources`, others) and records
-  `org.opencontainers.image.base.digest`. CMOS: a stored image keeps every
+  (title and others) and records `org.opencontainers.image.base.digest`;
+  `unemu.firmware.sources` is written again from the packages the new
+  closure's ROMs come from (a source package whose ROM left the closure goes,
+  the package of a newly bound ROM joins; one no tag names any more stays as
+  recorded). CMOS: a stored image keeps every
   byte except the SETUP fields whose value derived from the machine changes —
   diskette types (10h), fixed-disk types (12h, 19h–1Ah), the equipment byte's
   diskette, coprocessor and display bits (14h), base memory (15h–16h),
@@ -2305,8 +2327,9 @@ Actions open **classic modal dialogs** over the application window:
   The store itself refuses to move a version tag, and records deleted version
   tags so such a name can later name only its old digest. A store refusal
   rereads the tags and asks again. The saved manifest keeps the source's
-  annotations (dropping per-build ones such as `created`), may replace the
-  title, and records the source as its base; a save without changes is the
+  annotations (dropping per-build ones such as `created`, and writing
+  `unemu.firmware.sources` again when the machine's settings chose other
+  firmware), may replace the title, and records the source as its base; a save without changes is the
   source manifest itself, so its tag aliases the same digest. An interrupted
   save is offered as *Finish saving <tag>* with its own tag and expected
   digest. The form starts from the image the workspace's session pins. New

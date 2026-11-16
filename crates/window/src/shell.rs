@@ -1786,7 +1786,8 @@ impl Shell {
                 }
                 Command::DeleteTag => {
                     self.presenter.is_none()
-                        && self.image_library.selected.is_some()
+                        && (self.image_library.selected.is_some()
+                            || self.image_library.can_delete_package())
                         && self.image_library.machine.is_none()
                         && !self.image_library.busy
                 }
@@ -2948,7 +2949,9 @@ impl Shell {
     fn disabled_reason(&self, command: Command) -> Option<&'static str> {
         use Command::*;
         let machine = self.image_library.machine.is_some();
-        let image = self.image_library.selected.is_some();
+        // Delete tag… also takes the selected firmware package.
+        let image = self.image_library.selected.is_some()
+            || (command == DeleteTag && self.image_library.can_delete_package());
         let running = self.presenter.is_some();
         Some(match command {
             Rename | Duplicate | DeleteMachine | ResetMachine | ShowSource if !machine => {

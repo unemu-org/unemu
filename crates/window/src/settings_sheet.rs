@@ -6,11 +6,13 @@
 //! explanations come from assembly capabilities; this module only lays them out.
 
 use crate::{
-    image_settings::ImageSettings,
+    firmware_choices::{self as fw, Slot},
+    image_settings::{CmosLine, FirmwareChoice, ImageSettings},
     save_image::{self, TagLevel, Target},
     settings_model::SettingsModel,
 };
 use assembly::capabilities::{self as caps, Domain, Draft, Severity, Value};
+use assembly::CmosLayout;
 
 /// What a field control needs from its settings model.
 pub(crate) trait Sheet {
@@ -207,6 +209,295 @@ pub(crate) enum ImageAction {
     /// Settings… on a machine: keep the draft as its settings; `true`
     /// closes the sheet afterwards (OK), `false` keeps it open (Apply).
     Apply(bool),
+    /// Import ROM folder… for a ROM that is not in the store, over the sheet.
+    ImportRoms,
+}
+
+/// An edit the Firmware tab asked for.
+pub(crate) enum FirmwareEdit {
+    Set(Slot, &'static str),
+    ImportRoms,
+}
+
+/// What the catalogue's status means, as the Firmware tab says it.
+fn status_text(entry: &assembly::FirmwareEntry) -> &'static str {
+    match entry.status {
+        assembly::FirmwareStatus::Tested => "Tested: run by the project's golden tests",
+        assembly::FirmwareStatus::Listed => "Listed: identified, not yet run by a golden test",
+        assembly::FirmwareStatus::Superseded => {
+            "Superseded: kept so that machines made with it still start"
+        }
+    }
+}
+
+fn choice_label(choice: &FirmwareChoice) -> String {
+    format!(
+        "{}{} — {}",
+        fw::name(choice.entry),
+        if choice.entry.superseded_by.is_some() {
+            " (superseded)"
+        } else {
+            ""
+        },
+        match (&choice.reason, choice.open) {
+            (Some(_), _) => "unavailable",
+            (None, true) => "open",
+            (None, false) => "user-supplied",
+        }
+    )
+}
+
+fn notice(ui: &mut egui::Ui, text: impl Into<String>) {
+    ui.add(
+        egui::Label::new(egui::RichText::new(text.into()).color(ui.visuals().warn_fg_color)).wrap(),
+    );
+}
+
+/// The Firmware tab: a System BIOS choice, a Video BIOS choice for a card
+/// with a BIOS of its own, and the option ROMs, which follow their cards.
+/// Every choice is a catalogue entry that fits the board; an entry that
+/// cannot be chosen says why.
+pub(crate) fn firmware_tab(
+    ui: &mut egui::Ui,
+    model: &mut ImageSettings,
+    machine: bool,
+) -> Option<FirmwareEdit> {
+    let mut edit = None;
+    for slot in Slot::ALL {
+        ui.strong(slot.label());
+        if slot == Slot::Video && !model.has_video_bios() {
+            ui.horizontal(|ui| {
+                ui.add_sized([170.0, 20.0], egui::Label::new(slot.label()));
+                ui.label("None");
+            });
+            hint(
+                ui,
+                "The card has no BIOS of its own; the system BIOS drives it.",
+            );
+            continue;
+        }
+        let choices = model.firmware_choices(slot);
+        let current = model.firmware(slot);
+        ui.add_enabled_ui(!model.read_only && model.packages_read(), |ui| {
+            ui.horizontal(|ui| {
+                ui.add_sized([170.0, 20.0], egui::Label::new(slot.label()));
+                let selected = current.map_or_else(
+                    || {
+                        if fw::rom_table(model.machine(), slot).is_some() {
+                            "An unlisted ROM".to_owned()
+                        } else {
+                            "None".to_owned()
+                        }
+                    },
+                    |entry| {
+                        choices
+                            .iter()
+                            .find(|c| c.entry.id == entry.id)
+                            .map_or_else(|| fw::name(entry), choice_label)
+                    },
+                );
+                egui::ComboBox::from_id_salt(("firmware-choice", slot))
+                    .width(320.0)
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        let mut family = None;
+                        for choice in &choices {
+                            if slot == Slot::System && family != Some(choice.entry.cmos_layout) {
+                                family = Some(choice.entry.cmos_layout);
+                                ui.label(
+                                    egui::RichText::new(fw::family(choice.entry.cmos_layout))
+                                        .strong(),
+                                );
+                            }
+                            let chosen = current.is_some_and(|c| c.id == choice.entry.id);
+                            if ui
+                                .add_enabled(
+                                    choice.reason.is_none(),
+                                    egui::Button::selectable(chosen, choice_label(choice)),
+                                )
+                                .clicked()
+                                && !chosen
+                            {
+                                edit = Some(FirmwareEdit::Set(slot, choice.entry.id));
+                            }
+                        }
+                    });
+            });
+        });
+        if let Some(entry) = current {
+            let rights = choices
+                .iter()
+                .find(|c| c.entry.id == entry.id)
+                .map_or_else(|| fw::catalogue_open(entry), |c| c.open);
+            let licence = match entry.distribution {
+                assembly::FirmwareDistribution::Open { license, .. } if rights => {
+                    format!("open, {license}, with its source archive")
+                }
+                _ => "user-supplied".into(),
+            };
+            hint(
+                ui,
+                format!(
+                    "{} · {licence} · {} KiB · SHA-256 {}…{}",
+                    status_text(entry),
+                    entry.size / 1024,
+                    &entry.sha256[..8],
+                    &entry.sha256[entry.sha256.len() - 4..]
+                ),
+            );
+            if let Some(rom) = choices
+                .iter()
+                .find(|c| c.entry.id == entry.id)
+                .and_then(|c| c.rom.as_ref())
+            {
+                hint(ui, format!("In your store: {}.", rom.package.reference));
+            }
+            if let Some((by, reason)) = fw::replacement(entry) {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Superseded by {} ({reason}).",
+                            fw::release(by)
+                        ))
+                        .small()
+                        .color(ui.visuals().warn_fg_color),
+                    );
+                    let usable = choices
+                        .iter()
+                        .any(|c| c.entry.id == by.id && c.reason.is_none());
+                    if ui
+                        .add_enabled(
+                            usable && !model.read_only,
+                            egui::Link::new(format!("Use {}", fw::release(by))),
+                        )
+                        .clicked()
+                    {
+                        edit = Some(FirmwareEdit::Set(slot, by.id));
+                    }
+                });
+            }
+        }
+        if slot == Slot::System {
+            match model.cmos_line() {
+                None => (),
+                Some(CmosLine::Same(layout)) => hint(ui, format!(
+                    "✓ Same CMOS layout ({}): {} CMOS stays as it is.",
+                    layout.map_or("unlisted", CmosLayout::label),
+                    if machine { "this machine's" } else { "the image's" }
+                )),
+                Some(CmosLine::Derived(layout)) => hint(ui, format!(
+                    "Another CMOS layout ({}). This image derives its CMOS from the configuration at every start, so nothing is reset.",
+                    layout.map_or("unlisted", CmosLayout::label)
+                )),
+                Some(CmosLine::Reset { from, to }) => notice(ui, format!(
+                    "⚠ CMOS settings are reset at the next start. {} {}",
+                    match (from, to) {
+                        (Some(from), Some(to)) => format!(
+                            "The {} uses the {} CMOS layout, the {} the {} one.",
+                            fw::name(to),
+                            to.cmos_layout.map_or("unlisted", CmosLayout::label),
+                            fw::name(from),
+                            from.cmos_layout.map_or("unlisted", CmosLayout::label),
+                        ),
+                        (from, to) => format!(
+                            "The CMOS layout of {} is not known, so the {} cannot read what {} wrote.",
+                            if from.is_none() { "the current BIOS, which the catalogue does not list," } else { "the new BIOS, which the catalogue does not list," },
+                            to.map_or_else(|| "new BIOS".to_owned(), fw::name),
+                            from.map_or_else(|| "the current BIOS".to_owned(), |e| format!("the {}", fw::name(e))),
+                        ),
+                    },
+                    if machine {
+                        "This machine's CMOS is replaced by the bytes derived from its configuration, as on a new machine; set the SETUP choices again in the guest. The date and time come from Start every session."
+                    } else {
+                        "The revision stores the bytes derived from its configuration instead of the image's CMOS."
+                    }
+                )),
+            }
+        }
+        let image = model.image_firmware(slot);
+        if image.map(|e| e.id) != current.map(|e| e.id) {
+            let was = image.map_or_else(|| "None".to_owned(), fw::name);
+            if machine {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("Image: {was} · ● differs from the image"))
+                            .small(),
+                    );
+                    if let Some(image) = image {
+                        if ui
+                            .add_enabled(!model.read_only, egui::Link::new("Use the image's value"))
+                            .clicked()
+                        {
+                            edit = Some(FirmwareEdit::Set(slot, image.id));
+                        }
+                    }
+                });
+            } else {
+                hint(ui, format!("Was: {was}"));
+            }
+        }
+        let unavailable: Vec<&FirmwareChoice> =
+            choices.iter().filter(|c| c.reason.is_some()).collect();
+        if !unavailable.is_empty() && model.packages_read() {
+            hint(ui, "Fit this board but cannot be chosen now:");
+            for choice in unavailable {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} — {}",
+                            fw::name(choice.entry),
+                            choice.reason.as_deref().unwrap_or_default()
+                        ))
+                        .small(),
+                    );
+                    if choice.rom.is_none()
+                        && ui
+                            .add_enabled(!model.read_only, egui::Link::new("Import ROM folder…"))
+                            .clicked()
+                    {
+                        edit = Some(FirmwareEdit::ImportRoms);
+                    }
+                });
+            }
+        }
+    }
+    ui.strong("Option ROMs");
+    let options = fw::option_roms(model.machine());
+    ui.horizontal(|ui| {
+        ui.add_sized([170.0, 20.0], egui::Label::new("Option ROM"));
+        ui.label(if options.is_empty() {
+            "None".to_owned()
+        } else {
+            options.join(", ")
+        });
+    });
+    if !options.is_empty() {
+        hint(
+            ui,
+            "Follows the disk adapter that serves C: (Storage tab); not chosen here.",
+        );
+    }
+    let users = model.new_user_supplied();
+    if !users.is_empty() {
+        let names = users
+            .iter()
+            .map(|e| fw::name(e))
+            .collect::<Vec<_>>()
+            .join(" and the ");
+        notice(
+            ui,
+            if machine {
+                format!("user-supplied: with the {names}, a later Save as new image… from this machine makes a user-supplied image, which can be pushed only to a namespace marked private.")
+            } else {
+                format!("user-supplied: with the {names}, this revision is user-supplied: it can be pushed only to a namespace marked private, never to unemu/.")
+            },
+        );
+    }
+    hint(ui, format!(
+        "The choices are the firmware catalogue entries that fit the {} board, grouped by family; the entries in one group share a CMOS layout. A superseded entry is never preselected.",
+        model.board_label()
+    ));
+    edit
 }
 
 fn title_bar(ui: &mut egui::Ui, title: &str, classic: bool) -> bool {
@@ -271,7 +562,7 @@ pub(crate) fn show_image(
                 }
                 None => {
                     ui.strong("Changes create a new image revision; disks are shared.");
-                    hint(ui, format!("The image {digest} itself never changes. Its disks, firmware and media are reused as they are; only the configuration is new."));
+                    hint(ui, format!("The image {digest} itself never changes. Its disks and media are reused as they are; a firmware change binds other ROM blobs, and the rest of the new revision is its configuration."));
                 }
             });
         });
@@ -307,26 +598,24 @@ pub(crate) fn show_image(
         let validation = model.validation();
         let mut edit = None;
         let mut floppy = None;
+        let mut firmware_edit = None;
         let response = egui::Frame::group(ui.style()).corner_radius(0).show(ui, |ui| {
             ui.set_min_height(180.0);
             egui::ScrollArea::vertical().id_salt("image-settings-fields").max_height(260.0).show(ui, |ui| {
                 let mut heading = String::new();
                 let mut fields: Vec<_> = caps::fields(&model.draft)
                     .into_iter()
-                    .filter(|field| field.group == model.tab && !field.path.contains(".drives[unit="))
+                    .filter(|field| {
+                        field.group == model.tab
+                            && field.group != caps::Group::Firmware
+                            && !field.path.contains(".drives[unit=")
+                    })
                     .collect();
                 fields.sort_by_key(|field| (field.heading.clone(), !field.path.ends_with(".enabled")));
                 for field in fields {
                     if field.heading != heading {
                         ui.strong(&field.heading);
                         heading = field.heading.clone();
-                    }
-                    if field.group == caps::Group::Firmware {
-                        ui.horizontal(|ui| {
-                            ui.add_sized([170.0, 20.0], egui::Label::new(&field.label));
-                            ui.label(caps::value_label(&model.draft, &field.path, &field.value));
-                        });
-                        continue;
                     }
                     if let Some(value) = field_control(ui, model, &field) {
                         edit = Some((field.path.clone(), value));
@@ -374,7 +663,7 @@ pub(crate) fn show_image(
                     hint(ui, "Disk contents are shared and cannot change here; use Disk layers… on a running workspace.");
                 }
                 if model.tab == caps::Group::Firmware {
-                    hint(ui, "Firmware stays as the image stores it; the revision binds the same ROM blobs.");
+                    firmware_edit = firmware_tab(ui, model, machine.is_some());
                 }
             });
         });
@@ -386,6 +675,11 @@ pub(crate) fn show_image(
         }
         if let Some((unit, kind)) = floppy {
             model.set_floppy(unit, kind.as_deref());
+        }
+        match firmware_edit {
+            Some(FirmwareEdit::Set(slot, id)) => model.set_firmware(slot, id),
+            Some(FirmwareEdit::ImportRoms) => action = ImageAction::ImportRoms,
+            None => (),
         }
         if let Some(diagnostic) = model
             .validation()
@@ -514,6 +808,13 @@ pub(crate) fn show_review(
     let reference = model.row.reference.clone();
     let digest = model.row.descriptor.digest.clone();
     let stores_cmos = model.stores_cmos();
+    let official = model.official_template();
+    let repository = model.row.repository().to_owned();
+    let users: Vec<String> = model
+        .new_user_supplied()
+        .iter()
+        .map(|e| fw::name(e))
+        .collect();
     let Some(review) = &mut model.review else {
         return action;
     };
@@ -523,9 +824,27 @@ pub(crate) fn show_review(
         if title_bar(ui, "Publish new image revision", classic) {
             action = ReviewAction::Cancel;
         }
-        ui.label(format!("From {reference} {} · stopped", save_image::short(&digest)));
+        ui.label(format!(
+            "From {reference} {} · stopped{}",
+            save_image::short(&digest),
+            if official { format!(" · official template from unemu/{repository}") } else { String::new() }
+        ));
         ui.strong("New revision");
         save_image::form(ui, &mut review.save);
+        hint(ui, if review.save.local_suffix() {
+            format!("Suggested: the source version with a local suffix, so that no later official release of {repository} can clash with it. Or name your own repository, which starts at 1.0.0.")
+        } else {
+            "Suggested: the next minor version. A revision never overwrites a tag; version tags never move.".to_owned()
+        });
+        if official {
+            notice(ui, format!("{repository} comes from unemu/ on {}, which is read-only for you. The revision is written to your local store only; Push… can send it to a namespace of your own.", image_registry::DEFAULT_REGISTRY));
+        }
+        if !users.is_empty() {
+            notice(ui, format!(
+                "user-supplied: with the {}, this revision is user-supplied: it can be pushed only to a namespace marked private, never to unemu/.",
+                users.join(" and the ")
+            ));
+        }
         // Scrolled content takes the full height at once; offered the rest of
         // last frame's dialog, it would grow the modal frame by frame.
         egui::ScrollArea::vertical().id_salt("image-revision-review").max_height(330.0).min_scrolled_height(330.0).show(ui, |ui| {
@@ -548,6 +867,9 @@ pub(crate) fn show_review(
                     }
                     preview_pane(ui, "image-revision-diff", &diff, 120.0);
                     ui.strong("CMOS bytes recomputed, as SETUP would");
+                    if plan.cmos_reset {
+                        notice(ui, "Another CMOS layout: the stored CMOS image is replaced by the bytes derived from the revision's configuration, as a new machine starts.");
+                    }
                     if let Some(note) = &plan.cmos_note {
                         ui.add(egui::Label::new(note).wrap());
                     } else if plan.cmos_changes.is_empty() {

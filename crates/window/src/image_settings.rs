@@ -6,15 +6,25 @@
 //! The draft is the image's flattened hardware tables. Every option, limit and
 //! reason comes from the capabilities API over those tables; each edit is
 //! written into them at once and described again, so what the review shows and
-//! Publish writes is exactly what was validated. Disks, firmware and media are
-//! never edited here: the revision binds them again by digest.
+//! Publish writes is exactly what was validated. Disks and media are never
+//! edited here: the revision binds them again by digest. Firmware is chosen
+//! among the catalogue entries that fit the board
+//! (`backlog/docs/design/mockups/firmware-settings.html`): a choice writes the
+//! ROM table of a firmware package in the local store, which the revision or
+//! the machine binds by digest.
 //!
 //! The model never touches the store: the library worker reads the source
 //! image and checks the revision, and the model only describes and edits.
 
-use crate::{library_view::ImageRow, save_image::SaveAsImage};
+use crate::{
+    firmware_choices::{self as fw, Slot},
+    library_view::ImageRow,
+    save_image::SaveAsImage,
+};
 use assembly::capabilities::{self as caps, Draft, Value};
+use assembly::{CmosLayout, FirmwareEntry};
 use image_store::Digest;
+use pc_image::create::{Package, PackageRom};
 use pc_image::revision::{Plan, Source};
 use std::{cell::RefCell, collections::BTreeMap};
 use toml::Table;
@@ -36,6 +46,36 @@ pub(crate) struct PlanRequest {
 
 /// Diskette choices per drive position: (type, reason it is unavailable).
 type FloppyChoices = Vec<(Option<String>, Option<String>)>;
+
+/// A catalogue entry offered for a firmware slot.
+#[derive(Clone, Debug)]
+pub(crate) struct FirmwareChoice {
+    pub entry: &'static FirmwareEntry,
+    /// The ROM of a firmware package in the local store with these bytes.
+    pub rom: Option<PackageRom>,
+    /// Every blob open (from its package, else the catalogue's distribution).
+    pub open: bool,
+    /// Why it cannot be chosen now; `None` when it can, and for the current one.
+    pub reason: Option<String>,
+}
+
+/// What a system BIOS change does to the CMOS that the current BIOS wrote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CmosLine {
+    /// The same layout: the CMOS stays as it is.
+    Same(Option<CmosLayout>),
+    /// Another layout, but the image stores no CMOS: Start derives it from
+    /// the configuration every time, so nothing is reset.
+    Derived(Option<CmosLayout>),
+    /// Another layout, or a BIOS the catalogue does not list (`None`), whose
+    /// layout nobody knows: the stored CMOS is reset to the bytes derived from
+    /// the configuration (a machine at its next start, a revision when
+    /// published).
+    Reset {
+        from: Option<&'static FirmwareEntry>,
+        to: Option<&'static FirmwareEntry>,
+    },
+}
 
 pub(crate) struct ImageSettings {
     pub row: ImageRow,
@@ -62,6 +102,10 @@ pub(crate) struct ImageSettings {
     applied: Table,
     /// OK pressed: close once the store has kept the tables.
     pub close_after_apply: bool,
+    /// Firmware packages of the local store; `None` until the worker reads them.
+    packages: Option<Vec<Package>>,
+    /// "Switch to …": the firmware choice to make once the packages are read.
+    pending_switch: Option<(Slot, String)>,
 }
 
 /// Describe hardware tables through the same lowering as a machine file.
@@ -129,7 +173,7 @@ fn apply(machine: &mut Table, draft: &Draft) -> Result<(), String> {
                 .into(),
             );
         } else if path.starts_with("firmware.") {
-            return Err("Firmware stays as the image stores it; Settings on an image changes hardware only.".into());
+            return Err("Firmware is chosen on the Firmware tab, among the catalogue entries that fit the board.".into());
         } else if let Some(tail) = path.strip_prefix("card[") {
             let (name, suffix) = tail.split_once("].").ok_or("invalid card field")?;
             if suffix == "enabled" {
@@ -211,6 +255,8 @@ impl ImageSettings {
             applied,
             machine_of: None,
             close_after_apply: false,
+            packages: None,
+            pending_switch: None,
         })
     }
 
@@ -405,9 +451,46 @@ impl ImageSettings {
         }
     }
 
+    /// The source is an official template: a repository of the official
+    /// namespace, pulled into the store under its template name, with the
+    /// template's title. `unemu/` is read-only for the user, so a revision of
+    /// it is written to the local store only.
+    pub fn official_template(&self) -> bool {
+        let repo = self.row.repository();
+        pc_image::template::TEMPLATES.iter().any(|t| t.name == repo)
+    }
+    /// The release a local revision of the source takes its suffix after:
+    /// the source's own version tag, else the repository's newest version
+    /// (a source tagged only `latest`), else 1.0.0, each without an earlier
+    /// `-local.N`.
+    fn source_version(&self) -> String {
+        let prefix = format!("{}:", self.row.repository());
+        let release = |tag: &str| -> String {
+            match tag.split_once("-local.") {
+                Some((release, n)) if n.chars().all(|c| c.is_ascii_digit()) => release.into(),
+                _ => tag.into(),
+            }
+        };
+        let versions = |own: bool| {
+            self.tags
+                .iter()
+                .filter(move |(_, digest)| !own || *digest == self.row.descriptor.digest)
+                .filter_map(|(name, _)| name.strip_prefix(&prefix))
+                .filter(|tag| image_store::Store::is_version_tag(tag))
+                .map(release)
+                .max_by_key(|tag| pc_image::template::precedence(tag))
+        };
+        versions(true)
+            .or_else(|| versions(false))
+            .unwrap_or_else(|| "1.0.0".into())
+    }
+
     /// Open the review step; the worker checks the revision with the real ROM
-    /// bytes and answers through [`Self::planned`].
+    /// bytes and answers through [`Self::planned`]. The name is a new tag:
+    /// the next minor version, or for an official template its version with
+    /// a local suffix.
     pub fn begin_review(&mut self) -> PlanRequest {
+        let official = self.official_template().then(|| self.source_version());
         self.review = Some(Review {
             plan: None,
             save: SaveAsImage::new(
@@ -415,7 +498,8 @@ impl ImageSettings {
                 self.row.descriptor.digest.clone(),
                 self.tags.clone(),
             )
-            .publishing(),
+            .publishing()
+            .official(official),
             error: None,
         });
         PlanRequest {
@@ -477,6 +561,242 @@ impl ImageSettings {
     /// Whether the source stores a CMOS image (otherwise Start derives it).
     pub fn stores_cmos(&self) -> bool {
         self.source.stores_cmos()
+    }
+
+    // ---- firmware ----------------------------------------------------------
+
+    /// The local store's firmware packages, as the worker read them. A
+    /// "Switch to …" waiting for them is made now.
+    pub fn set_packages(&mut self, packages: Vec<Package>) {
+        self.packages = Some(packages);
+        self.choices.clear();
+        self.try_switch();
+    }
+    pub fn packages_read(&self) -> bool {
+        self.packages.is_some()
+    }
+
+    /// "Switch to …" from a details pane: the Firmware tab with that choice
+    /// made, so the CMOS line and any conflict show before OK.
+    pub fn switch_to(&mut self, slot: Slot, id: &str) {
+        self.tab = caps::Group::Firmware;
+        self.pending_switch = Some((slot, id.to_owned()));
+        self.try_switch();
+    }
+    /// Make a waiting "Switch to …" once its ROM can be bound: at once, or
+    /// after Import ROM folder… brought it into the store, when its error goes.
+    fn try_switch(&mut self) {
+        let Some((slot, id)) = self.pending_switch.clone() else {
+            return;
+        };
+        if self.packages.is_none() {
+            return;
+        }
+        if self.firmware_available(slot, &id) {
+            self.pending_switch = None;
+            self.error = None;
+            self.set_firmware(slot, &id);
+        } else {
+            self.error = Some(format!(
+                "{} is not in your store: Import ROM folder… adds it, and the switch is made then.",
+                fw::entry(&id).map_or_else(|| id.clone(), fw::name)
+            ));
+        }
+    }
+    /// Whether an entry can be bound now: the image's or the applied tables
+    /// hold it, or a firmware package of the store does.
+    fn firmware_available(&self, slot: Slot, id: &str) -> bool {
+        [self.source.machine(), &self.applied]
+            .into_iter()
+            .any(|tables| fw::current(tables, slot).is_some_and(|e| e.id == id))
+            || fw::entry(id).is_some_and(|entry| {
+                fw::package_rom(self.packages.as_deref().unwrap_or_default(), entry, slot).is_some()
+            })
+    }
+
+    /// The draft's hardware tables.
+    pub fn machine(&self) -> &Table {
+        &self.machine
+    }
+    /// The board's name as the capabilities API labels it.
+    pub fn board_label(&self) -> String {
+        let board = self.draft.config.board;
+        caps::value_label(&self.draft, "board.model", &Value::Name(board.id().into()))
+    }
+
+    /// The entry the draft binds in a slot.
+    pub fn firmware(&self, slot: Slot) -> Option<&'static FirmwareEntry> {
+        fw::current(&self.machine, slot)
+    }
+    /// The entry the image binds in a slot.
+    pub fn image_firmware(&self, slot: Slot) -> Option<&'static FirmwareEntry> {
+        fw::current(self.source.machine(), slot)
+    }
+    /// The tables whose system BIOS wrote the CMOS: the machine's applied
+    /// tables, or the image's.
+    fn cmos_writer(&self) -> &Table {
+        if self.machine_of.is_some() {
+            &self.applied
+        } else {
+            self.source.machine()
+        }
+    }
+
+    /// Whether the machine's video card has a BIOS of its own: a
+    /// register-level VGA. A text-only card is driven by the system BIOS.
+    pub fn has_video_bios(&self) -> bool {
+        self.firmware(Slot::Video).is_some()
+            || self
+                .draft
+                .config
+                .devices
+                .iter()
+                .any(|d| matches!(d.kind, assembly::DeviceKind::VgaRegisters(_)))
+    }
+
+    /// The capabilities path of a slot in this draft.
+    fn firmware_path(&self, slot: Slot) -> String {
+        match slot {
+            Slot::System => "firmware.bios".into(),
+            Slot::Video => caps::canonical_field_path(&self.draft, "firmware.video"),
+        }
+    }
+
+    /// The catalogue entries that fit the board for a slot, each with the
+    /// package ROM of the store that holds it and why it cannot be chosen
+    /// now. System BIOS entries come grouped by family (one CMOS layout per
+    /// family); a superseded entry follows the releases of its family.
+    pub fn firmware_choices(&mut self, slot: Slot) -> Vec<FirmwareChoice> {
+        let board = self.draft.config.board;
+        let current = self.firmware(slot).map(|e| e.id);
+        let path = self.firmware_path(slot);
+        let verdicts = self.choices(&path).to_vec();
+        let packages = self.packages.as_deref().unwrap_or_default();
+        let mut list: Vec<(usize, FirmwareChoice)> = fw::catalogue()
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.kind == slot.kind() && e.boards.contains(&board.id()))
+            .map(|(index, entry)| {
+                let rom = fw::package_rom(packages, entry, slot);
+                let open = rom
+                    .as_ref()
+                    .map_or_else(|| fw::catalogue_open(entry), fw::rom_open);
+                let reason = if Some(entry.id) == current {
+                    None
+                } else if self.packages.is_none() {
+                    Some("the firmware packages of your store are being read.".into())
+                } else if rom.is_none() {
+                    Some(if fw::catalogue_open(entry) {
+                        "not in your store: Import ROM folder… adds it from a folder you choose.".to_owned()
+                    } else {
+                        "not in your store; user-supplied ROMs are never downloaded, so Import ROM folder… adds your own dump.".to_owned()
+                    })
+                } else {
+                    verdicts
+                        .iter()
+                        .find(|c| c.value == Value::Name(entry.id.into()))
+                        .filter(|c| !c.enabled)
+                        .and_then(|c| c.reason.clone())
+                };
+                (
+                    index,
+                    FirmwareChoice {
+                        entry,
+                        rom,
+                        open,
+                        reason,
+                    },
+                )
+            })
+            .collect();
+        list.sort_by_key(|(index, c)| {
+            (c.entry.cmos_layout, c.entry.superseded_by.is_some(), *index)
+        });
+        list.into_iter().map(|(_, c)| c).collect()
+    }
+
+    /// Choose a catalogue entry for a slot. The image's (or, on a machine,
+    /// the applied) table comes back as it was; another entry takes the ROM
+    /// table of its package in the store.
+    pub fn set_firmware(&mut self, slot: Slot, id: &str) {
+        if self.read_only {
+            return;
+        }
+        let kept = [self.source.machine(), &self.applied]
+            .into_iter()
+            .find_map(|tables| {
+                fw::rom_table(tables, slot)
+                    .filter(|_| fw::current(tables, slot).is_some_and(|e| e.id == id))
+                    .cloned()
+            });
+        let table = match kept {
+            Some(table) => Ok(table),
+            None => {
+                let rom = fw::entry(id).and_then(|entry| {
+                    fw::package_rom(self.packages.as_deref().unwrap_or_default(), entry, slot)
+                });
+                match rom {
+                    Some(rom) => fw::package_table(&rom),
+                    None => Err(format!(
+                        "{} is not in your store; import its ROM folder first.",
+                        fw::entry(id).map_or_else(|| id.to_owned(), fw::name)
+                    )),
+                }
+            }
+        };
+        let mut machine = self.machine.clone();
+        match table.and_then(|table| fw::replace(&mut machine, slot, table)) {
+            Ok(()) => self.commit(machine),
+            Err(error) => self.error = Some(error),
+        }
+    }
+
+    /// What the draft's system BIOS does to the CMOS the current one wrote;
+    /// `None` while it is the same BIOS.
+    pub fn cmos_line(&self) -> Option<CmosLine> {
+        let sha256 = |tables: &Table| {
+            fw::rom_table(tables, Slot::System)
+                .and_then(|rom| rom.get("sha256"))
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned)
+        };
+        let writer = self.cmos_writer();
+        if sha256(writer) == sha256(&self.machine) {
+            return None;
+        }
+        let (from, to) = (
+            fw::current(writer, Slot::System),
+            self.firmware(Slot::System),
+        );
+        let layout = |entry: Option<&FirmwareEntry>| entry.and_then(|e| e.cmos_layout);
+        // An unlisted BIOS keeps CMOS in a layout nobody knows: as pc-image
+        // does, only two catalogued BIOSes of one layout keep it.
+        let same = from.is_some() && to.is_some() && layout(from) == layout(to);
+        Some(if same {
+            CmosLine::Same(layout(to))
+        } else if !self.stores_cmos() {
+            CmosLine::Derived(layout(to))
+        } else {
+            CmosLine::Reset { from, to }
+        })
+    }
+
+    /// User-supplied firmware the draft takes that the image does not have:
+    /// a later image of it (Save as new image… or this revision) can be
+    /// pushed only to a private namespace.
+    pub fn new_user_supplied(&self) -> Vec<&'static FirmwareEntry> {
+        let packages = self.packages.as_deref().unwrap_or_default();
+        Slot::ALL
+            .into_iter()
+            .filter_map(|slot| {
+                let entry = self.firmware(slot)?;
+                let open = fw::package_rom(packages, entry, slot)
+                    .as_ref()
+                    .map_or_else(|| fw::catalogue_open(entry), fw::rom_open);
+                (!open && self.image_firmware(slot).is_none_or(|e| e.id != entry.id))
+                    .then_some(entry)
+            })
+            .collect()
     }
 }
 
@@ -582,6 +902,476 @@ pub(crate) mod tests {
         model.planned(request.revision, plan, tags);
     }
 
+    fn bios_sha(machine: &assembly::MachineConfig) -> String {
+        machine
+            .images
+            .iter()
+            .find_map(|image| match &image.source {
+                assembly::ImageSource::Inline(bytes)
+                    if image.base + bytes.len() as u64 == 0x100000 =>
+                {
+                    Some(image_store::Digest::of(bytes).hex().to_owned())
+                }
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn the_firmware_tab_offers_fitting_entries_by_family_and_binds_a_package_rom() {
+        let Some(store) = FirmwareStore::new(true) else {
+            return;
+        };
+        let row = open_image(&store);
+        let mut model = opened(&store, row, false);
+        // Until the packages are read, only the current entry can be chosen.
+        assert!(model
+            .firmware_choices(Slot::System)
+            .iter()
+            .all(|c| c.reason.is_some() == (c.entry.id != "unemu-at-bios-1.0.2-unemu.3")));
+        model.set_packages(store.choices().0);
+        let choices = model.firmware_choices(Slot::System);
+        let ids: Vec<&str> = choices.iter().map(|c| c.entry.id).collect();
+        assert_eq!(
+            ids,
+            [
+                "unemu-at-bios-1.0.2-unemu.3",
+                "unemu-at-bios-1.0.2-unemu.2",
+                "kiselev-xi8088-1.0.2",
+                "kiselev-xi8088-1.0.2-atreset",
+                "ibm-5170-bios-1984-01-10",
+                "ibm-5170-bios-1985-06-10",
+                "ibm-5170-bios-1985-11-15",
+                "landmark-rom-post-at-1.2.0",
+            ],
+            "grouped by family, a superseded release after the one replacing it"
+        );
+        let reason = |id: &str| {
+            choices
+                .iter()
+                .find(|c| c.entry.id == id)
+                .unwrap()
+                .reason
+                .clone()
+        };
+        assert_eq!(reason("unemu-at-bios-1.0.2-unemu.3"), None);
+        assert!(reason("unemu-at-bios-1.0.2-unemu.2")
+            .unwrap()
+            .contains("not in your store"));
+        assert!(reason("ibm-5170-bios-1985-06-10")
+            .unwrap()
+            .contains("never downloaded"));
+        assert_eq!(
+            reason("kiselev-xi8088-1.0.2"),
+            None,
+            "a package of the store"
+        );
+        let videos: Vec<&str> = model
+            .firmware_choices(Slot::Video)
+            .iter()
+            .map(|c| c.entry.id)
+            .collect();
+        assert_eq!(
+            videos,
+            [
+                "ibm-vga-bios-1987-32k",
+                "vgabios-0.9d-unemu.1-std",
+                "vgabios-0.8a-unemu.1-std"
+            ]
+        );
+        assert!(model.has_video_bios());
+
+        // Another family: this image derives its CMOS, so nothing is reset;
+        // the user-supplied package makes later images user-supplied.
+        model.set_firmware(Slot::System, "kiselev-xi8088-1.0.2");
+        assert_eq!(
+            model.firmware(Slot::System).unwrap().id,
+            "kiselev-xi8088-1.0.2"
+        );
+        assert_eq!(
+            model.image_firmware(Slot::System).unwrap().id,
+            "unemu-at-bios-1.0.2-unemu.3"
+        );
+        assert!(model.dirty() && model.can_review());
+        assert_eq!(
+            model.cmos_line(),
+            Some(CmosLine::Derived(Some(CmosLayout::KiselevXi8088)))
+        );
+        let users: Vec<&str> = model.new_user_supplied().iter().map(|e| e.id).collect();
+        assert_eq!(users, ["kiselev-xi8088-1.0.2"]);
+        assert!(model
+            .changes()
+            .iter()
+            .any(|(field, _)| field.group == caps::Group::Firmware));
+        // The revision binds the package's ROM blob by digest.
+        reviewed(&mut model, &store.store);
+        let plan = model.review.as_ref().unwrap().plan.as_ref().unwrap();
+        let plan = plan.as_ref().unwrap();
+        assert!(plan
+            .added
+            .iter()
+            .any(|d| d.decoded_media_type() == image_store::media_type::FIRMWARE));
+        // The image's own entry brings its table back exactly.
+        model.set_firmware(Slot::System, "unemu-at-bios-1.0.2-unemu.3");
+        assert!(!model.dirty());
+        assert_eq!(model.cmos_line(), None);
+        // An entry that is not in the store cannot be chosen.
+        model.set_firmware(Slot::System, "ibm-5170-bios-1985-06-10");
+        assert!(model
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("not in your store"));
+        assert!(!model.dirty());
+    }
+
+    #[test]
+    fn a_machine_firmware_choice_applies_at_its_next_start() {
+        let Some(store) = FirmwareStore::new(true) else {
+            return;
+        };
+        let row = open_image(&store);
+        let id = pc_image::machine::create(
+            &store.store,
+            &row.descriptor,
+            "open-at:1.0.0",
+            Some("Firmware"),
+            None,
+        )
+        .unwrap();
+        let tables = pc_image::machine::settings(&store.store, &id)
+            .unwrap()
+            .machine;
+        let mut model =
+            opened(&store, row, false).for_machine(id.clone(), "Firmware".into(), tables);
+        model.set_packages(store.choices().0);
+        model.set_firmware(Slot::System, "kiselev-xi8088-1.0.2");
+        let (machine, table) = model.apply_request(true).unwrap();
+        let change =
+            pc_image::machine::change_settings(&store.store, &machine, table, true).unwrap();
+        assert!(!change.cmos_reset, "the image derives its CMOS");
+        model.applied();
+        assert!(!model.unsaved());
+        let owner = pc_image::machine::own(&store.store, &id).unwrap();
+        let prepared = pc_image::machine::prepare(&owner).unwrap();
+        assert_eq!(
+            bios_sha(&prepared.session.machine),
+            fw::entry("kiselev-xi8088-1.0.2").unwrap().sha256
+        );
+    }
+
+    #[test]
+    fn switch_to_opens_the_firmware_tab_with_the_choice_made_once_packages_are_read() {
+        let Some(store) = FirmwareStore::new(true) else {
+            return;
+        };
+        let row = open_image(&store);
+        let mut model = opened(&store, row, false);
+        model.switch_to(Slot::System, "kiselev-xi8088-1.0.2");
+        assert_eq!(model.tab, caps::Group::Firmware);
+        assert_eq!(
+            model.firmware(Slot::System).unwrap().id,
+            "unemu-at-bios-1.0.2-unemu.3",
+            "nothing changes before the packages are read"
+        );
+        model.set_packages(store.choices().0);
+        assert_eq!(
+            model.firmware(Slot::System).unwrap().id,
+            "kiselev-xi8088-1.0.2"
+        );
+        // With the packages read, the choice is made at once.
+        model.switch_to(Slot::System, "unemu-at-bios-1.0.2-unemu.3");
+        assert!(!model.dirty());
+    }
+
+    /// Every text a frame of `draw` paints in a central panel.
+    fn painted_ui(mut draw: impl FnMut(&mut egui::Ui)) -> Vec<String> {
+        let ctx = egui::Context::default();
+        let mut texts = Vec::new();
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| draw(ui));
+            });
+            output.textures_delta.clear();
+            texts = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                    _ => None,
+                })
+                .collect();
+        }
+        texts
+    }
+    /// Every text a frame of `draw` paints.
+    fn painted(draw: impl FnMut(&egui::Context)) -> Vec<String> {
+        let ctx = egui::Context::default();
+        let mut draw = draw;
+        let mut texts = Vec::new();
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| draw(ui.ctx()));
+            output.textures_delta.clear();
+            texts = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                    _ => None,
+                })
+                .collect();
+        }
+        texts
+    }
+
+    #[test]
+    fn a_revision_of_an_official_template_stays_local_under_a_local_suffix_tag() {
+        let Some(store) = FirmwareStore::new(true) else {
+            return;
+        };
+        let template = &pc_image::template::TEMPLATES[1];
+        let mut image = open_new_image(&store, 1024);
+        image.title = Some(template.title.into());
+        let reference = format!("{}:1.1.0", template.name);
+        let descriptor = pc_image::create::create(&store.store, &image, &reference, None).unwrap();
+        pc_image::create::create(
+            &store.store,
+            &image,
+            &format!("{}:latest", template.name),
+            None,
+        )
+        .unwrap();
+        let row = ImageRow {
+            reference: reference.clone(),
+            aliases: Vec::new(),
+            descriptor,
+            summary: None,
+            failure: None,
+        };
+        let mut model = opened(&store, row, false);
+        assert!(model.official_template());
+        model.set_packages(store.choices().0);
+        // A user-supplied ROM makes the open template's revision user-supplied.
+        model.set_firmware(Slot::System, "kiselev-xi8088-1.0.2");
+        reviewed(&mut model, &store.store);
+        let review = model.review.as_mut().unwrap();
+        assert_eq!(
+            review.save.reference(),
+            format!("{}:1.1.0-local.1", template.name)
+        );
+        assert!(review.plan.as_ref().unwrap().is_ok());
+        // Every existing tag is refused, latest included.
+        for taken in ["1.1.0", "latest"] {
+            review.save.set_tag(taken.into());
+            assert_eq!(
+                review.save.check().level,
+                crate::save_image::TagLevel::Bad,
+                "{taken}"
+            );
+            assert_eq!(review.save.submit(), None, "{taken}");
+            review.save.dismiss();
+        }
+        review.save.set_tag("1.1.0-local.1".into());
+        let texts = painted(|ctx| {
+            let _ = crate::settings_sheet::show_review(ctx, &mut model, false, true);
+        });
+        assert!(
+            texts.iter().any(|t| t.contains(
+                "which is read-only for you. The revision is written to your local store only"
+            )),
+            "{texts:?}"
+        );
+        assert!(texts
+            .iter()
+            .any(|t| t.starts_with("user-supplied: with the Kiselev")));
+        assert!(texts
+            .iter()
+            .any(|t| t.starts_with("Suggested: the source version with a local suffix")));
+        // An image of your own repository is no template.
+        let mut image = open_new_image(&store, 1024);
+        image.title = Some(template.title.into());
+        let descriptor =
+            pc_image::create::create(&store.store, &image, "my-at:1.0.0", None).unwrap();
+        let own = opened(
+            &store,
+            ImageRow {
+                reference: "my-at:1.0.0".into(),
+                aliases: Vec::new(),
+                descriptor,
+                summary: None,
+                failure: None,
+            },
+            false,
+        );
+        assert!(!own.official_template());
+    }
+
+    /// An image with an unlisted system BIOS and a stored CMOS: switching to
+    /// the open AT BIOS resets the CMOS, as pc-image does, since nobody knows
+    /// the unlisted BIOS's layout.
+    #[test]
+    fn an_unlisted_bios_switched_to_the_open_at_bios_shows_the_cmos_reset() {
+        let Some(firmware) = FirmwareStore::new(true) else {
+            return;
+        };
+        let fixture = crate::library_test_support::Fixture::new();
+        let source = Source::open(&fixture.store, &fixture.row.descriptor).unwrap();
+        assert!(source.stores_cmos());
+        let tags = crate::save_image::local_tags(&fixture.store).unwrap();
+        let mut model = ImageSettings::new(fixture.row.clone(), source, tags, false).unwrap();
+        assert_eq!(model.firmware(Slot::System), None, "the BIOS is unlisted");
+        model.set_packages(firmware.choices().0);
+        model.set_firmware(Slot::System, "unemu-at-bios-1.0.2-unemu.3");
+        let open_at = fw::entry("unemu-at-bios-1.0.2-unemu.3").unwrap();
+        assert_eq!(
+            model.cmos_line(),
+            Some(CmosLine::Reset {
+                from: None,
+                to: Some(open_at)
+            })
+        );
+        let texts = painted_ui(|ui| {
+            let _ = crate::settings_sheet::firmware_tab(ui, &mut model, false);
+        });
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.starts_with("⚠ CMOS settings are reset at the next start.")),
+            "{texts:?}"
+        );
+    }
+
+    /// A package's claim of a catalogue id never stands in for the
+    /// catalogue's bytes: SHA-256 and size decide.
+    #[test]
+    fn a_package_rom_fits_an_entry_only_with_its_bytes() {
+        let Some(store) = FirmwareStore::new(true) else {
+            return;
+        };
+        let packages = store.choices().0;
+        let old = fw::entry("unemu-at-bios-1.0.2-unemu.2").unwrap();
+        let current = fw::entry("unemu-at-bios-1.0.2-unemu.3").unwrap();
+        // A package of other bytes claiming the superseded release's id.
+        let mut liar = packages
+            .iter()
+            .find(|p| {
+                p.config
+                    .roms
+                    .iter()
+                    .any(|r| r.catalogue_id.is_none() && r.role == "system-bios")
+            })
+            .unwrap()
+            .clone();
+        for rom in &mut liar.config.roms {
+            rom.catalogue_id = Some(old.id.into());
+        }
+        assert!(fw::package_rom(std::slice::from_ref(&liar), old, Slot::System).is_none());
+        let found = fw::package_rom(&packages, current, Slot::System).unwrap();
+        assert_eq!(found.rom().unwrap().sha256, current.sha256);
+    }
+
+    /// "Switch to …" for a ROM that is not in the store says so, and is made
+    /// once Import ROM folder… brought it in.
+    #[test]
+    fn a_switch_waits_for_its_rom_and_is_made_after_an_import() {
+        let Some(store) = FirmwareStore::new(true) else {
+            return;
+        };
+        let row = open_image(&store);
+        let mut model = opened(&store, row, false);
+        let all = store.choices().0;
+        let kiselev = fw::entry("kiselev-xi8088-1.0.2").unwrap();
+        let without: Vec<Package> = all
+            .iter()
+            .filter(|p| !p.config.roms.iter().any(|r| r.sha256 == kiselev.sha256))
+            .cloned()
+            .collect();
+        model.set_packages(without);
+        model.switch_to(Slot::System, kiselev.id);
+        assert!(model
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("Import ROM folder"));
+        assert_eq!(
+            model.firmware(Slot::System).unwrap().id,
+            "unemu-at-bios-1.0.2-unemu.3"
+        );
+        // The import's package refresh makes the switch and clears the error.
+        model.set_packages(all);
+        assert_eq!(model.error, None);
+        assert_eq!(model.firmware(Slot::System).unwrap().id, kiselev.id);
+    }
+
+    /// Official templates are known by their bare name; a revision of a
+    /// local revision takes the next local number, and a source tagged only
+    /// `latest` takes the repository's newest version.
+    #[test]
+    fn local_revision_tags_follow_the_template_release_without_doubling_the_suffix() {
+        let Some(store) = FirmwareStore::new(true) else {
+            return;
+        };
+        let template = pc_image::template::TEMPLATES[1].name;
+        let tag_image = |tag: &str, kib: u32| {
+            let mut image = open_new_image(&store, kib);
+            image.title = Some("Not the template's title".into());
+            let reference = format!("{template}:{tag}");
+            let descriptor =
+                pc_image::create::create(&store.store, &image, &reference, None).unwrap();
+            ImageRow {
+                reference,
+                aliases: Vec::new(),
+                descriptor,
+                summary: None,
+                failure: None,
+            }
+        };
+        tag_image("1.1.0", 1024);
+        let local = tag_image("1.1.0-local.1", 2048);
+        let latest = tag_image("latest", 3072);
+        let mut model = opened(&store, local, false);
+        assert!(model.official_template(), "the bare name decides");
+        model.set("memory.extended_kib", Value::Integer(4096));
+        reviewed(&mut model, &store.store);
+        assert_eq!(
+            model.review.as_ref().unwrap().save.reference(),
+            format!("{template}:1.1.0-local.2")
+        );
+        let mut model = opened(&store, latest, false);
+        model.set("memory.extended_kib", Value::Integer(4096));
+        reviewed(&mut model, &store.store);
+        assert_eq!(
+            model.review.as_ref().unwrap().save.reference(),
+            format!("{template}:1.1.0-local.2")
+        );
+    }
+
+    /// A VGA whose tables bind no video ROM shows None for its Video BIOS.
+    #[test]
+    fn a_vga_without_a_video_rom_shows_none() {
+        let Some(store) = FirmwareStore::new(true) else {
+            return;
+        };
+        let row = open_image(&store);
+        let model = opened(&store, row, false);
+        let mut tables = model.machine().clone();
+        tables["firmware"]
+            .as_table_mut()
+            .unwrap()
+            .get_mut("option_roms")
+            .and_then(toml::Value::as_array_mut)
+            .unwrap()
+            .retain(|rom| rom.get("base").and_then(toml::Value::as_integer) != Some(0xC0000));
+        let mut model = model.for_machine("vga".into(), "VGA".into(), tables);
+        model.set_packages(store.choices().0);
+        assert!(model.has_video_bios() && model.firmware(Slot::Video).is_none());
+        let texts = painted_ui(|ui| {
+            let _ = crate::settings_sheet::firmware_tab(ui, &mut model, true);
+        });
+        assert!(texts.iter().any(|t| t == "None"), "{texts:?}");
+        assert!(!texts.iter().any(|t| t == "An unlisted ROM"));
+    }
+
     #[test]
     fn closing_with_edits_asks_first_and_a_stale_check_is_ignored() {
         let Some(store) = FirmwareStore::new(false) else {
@@ -637,9 +1427,9 @@ pub(crate) mod tests {
         // Reverting the memory leaves nothing to review.
         model.set("memory.extended_kib", Value::Integer(1024));
         assert!(!model.dirty());
-        // Firmware is not edited here.
+        // Firmware is chosen on its own tab, never as a raw field.
         model.set("firmware.bios", Value::Disconnected);
-        assert!(model.error.as_deref().unwrap().contains("Firmware"));
+        assert!(model.error.as_deref().unwrap().contains("Firmware tab"));
     }
 
     #[test]
@@ -706,7 +1496,9 @@ pub(crate) mod tests {
             "disks, firmware and metadata are shared"
         );
         assert_ne!(plan.machine.0, plan.machine.1);
-        assert_eq!(review.save.reference(), "open-at:1.1.0");
+        // open-at is the official template's name: a revision of it takes the
+        // source version with a local suffix.
+        assert_eq!(review.save.reference(), "open-at:1.0.0-local.1");
         // Another edit drops the review: it described the old draft.
         model.set("memory.extended_kib", Value::Integer(4096));
         assert!(model.review.is_none());

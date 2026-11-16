@@ -217,6 +217,14 @@ pub(crate) struct SaveAsImage {
     confirmed: Option<Digest>,
     /// Who asks before a move, in the check text.
     asks: &'static str,
+    /// Publish revision (Settings… on an image): every existing tag is
+    /// refused, `latest` and other tags that are not versions included; the
+    /// Move tag? question stays only for Save as new image….
+    never_moves: bool,
+    /// The source is an official template: its own repository suggests the
+    /// source version with a local suffix (`1.1.0-local.1`), so no later
+    /// official release can clash with the revision.
+    official: Option<String>,
 }
 
 impl SaveAsImage {
@@ -243,6 +251,8 @@ impl SaveAsImage {
             prompt: None,
             confirmed: None,
             asks: "Saving will ask",
+            never_moves: false,
+            official: None,
         };
         form.tag = form.suggested();
         form
@@ -258,10 +268,30 @@ impl SaveAsImage {
         self.flatten = Some(false);
         self
     }
-    /// Publishing a Settings revision asks before a move, too.
+    /// Publish revision of Settings… on an image: a new tag only. It never
+    /// overwrites one, `latest` included, so it asks no Move tag? question.
     pub fn publishing(mut self) -> Self {
         self.asks = "Publishing will ask";
+        self.never_moves = true;
+        self.tag = self.suggested();
         self
+    }
+    /// The source is an official template whose own version is `version`:
+    /// a revision in its repository takes that version with a local suffix.
+    pub fn official(mut self, version: Option<String>) -> Self {
+        self.official = version;
+        if !self.tag_edited {
+            self.tag = self.suggested();
+        }
+        self
+    }
+    /// Whether the suggestion is the official template's local suffix.
+    pub fn local_suffix(&self) -> bool {
+        self.official.is_some() && self.repo.trim() == self.source_repo()
+    }
+    fn tag_taken(&self, tag: &str) -> bool {
+        let name = format!("{}:{tag}", self.repo.trim());
+        self.tags.iter().any(|(t, _)| t == &name)
     }
     fn source_repo(&self) -> &str {
         repository_of(&self.source)
@@ -278,6 +308,13 @@ impl SaveAsImage {
     }
     /// The default version tag of the current repository name.
     pub fn suggested(&self) -> String {
+        if let (true, Some(version)) = (self.local_suffix(), &self.official) {
+            let mut n = 1;
+            while self.tag_taken(&format!("{version}-local.{n}")) {
+                n += 1;
+            }
+            return format!("{version}-local.{n}");
+        }
         let repo = self.repo.trim();
         let start = self
             .source_version
@@ -292,8 +329,12 @@ impl SaveAsImage {
         }
         format!("{}.{}.{}", version.0, version.1, version.2)
     }
-    /// Version bumps and `latest`, offered beside the tag field.
+    /// Version bumps and `latest`, offered beside the tag field. A revision
+    /// offers only free tags: `latest` and taken versions never.
     pub fn chips(&self) -> Vec<String> {
+        if self.local_suffix() {
+            return vec![self.suggested()];
+        }
         let repo = self.repo.trim();
         let mut chips = match versions(repo, &self.tags).map(|(v, _)| v).max() {
             Some((major, minor, patch)) => vec![
@@ -307,7 +348,11 @@ impl SaveAsImage {
         if !chips.contains(&suggested) {
             chips.insert(0, suggested);
         }
-        chips.push("latest".into());
+        if self.never_moves {
+            chips.retain(|chip| !self.tag_taken(chip));
+        } else {
+            chips.push("latest".into());
+        }
         chips
     }
     pub fn set_repo(&mut self, repo: String) {
@@ -330,9 +375,32 @@ impl SaveAsImage {
         format!("{}:{}", self.repo.trim(), self.tag.trim())
     }
     pub fn check(&self) -> TagCheck {
-        check_tag(&self.repo, &self.tag, &self.tags, self.asks, || {
+        let check = check_tag(&self.repo, &self.tag, &self.tags, self.asks, || {
             self.suggested()
-        })
+        });
+        match &check.moving {
+            Some(digest) if self.never_moves => TagCheck {
+                level: TagLevel::Bad,
+                text: format!(
+                    "{} already names {}. A new image revision never overwrites a tag, so choose a new one; {} is free.",
+                    self.reference(),
+                    short(digest),
+                    self.suggested()
+                ),
+                fix: Some(self.suggested()),
+                moving: None,
+                taken: None,
+            },
+            _ if self.never_moves && check.level == TagLevel::Ok => TagCheck {
+                text: format!(
+                    "{}{}",
+                    check.text,
+                    " No other tag moves, latest included."
+                ),
+                ..check
+            },
+            _ => check,
+        }
     }
     fn target(&self, expected: Option<Digest>) -> Target {
         Target {
@@ -589,6 +657,68 @@ mod tests {
         form.set_repo("open-at".into());
         assert_eq!(form.tag, "latest", "an edited tag stays");
         let form = SaveAsImage::new("other:custom", digest("z"), self::tags());
+        assert_eq!(form.tag, "1.0.0");
+    }
+
+    #[test]
+    fn a_revision_never_overwrites_a_tag_latest_included() {
+        let mut form = SaveAsImage::new("open-at:1.0.0", digest("a"), tags()).publishing();
+        assert_eq!(
+            form.tag, "1.1.0",
+            "the next free minor version after the source's"
+        );
+        let chips = form.chips();
+        assert!(!chips.contains(&"latest".to_owned()), "{chips:?}");
+        assert!(
+            chips.iter().all(|c| c != "1.0.0" && c != "2.0.0"),
+            "{chips:?}"
+        );
+        assert_eq!(form.check().level, TagLevel::Ok);
+        assert!(form
+            .check()
+            .text
+            .ends_with("No other tag moves, latest included."));
+        for taken in ["latest", "1.0.0", "2.0.0"] {
+            form.set_tag(taken.into());
+            let check = form.check();
+            assert_eq!(check.level, TagLevel::Bad, "{taken}");
+            assert_eq!(check.moving, None, "{taken} is never moved");
+            assert_eq!(form.submit(), None, "{taken}");
+            assert!(!matches!(form.prompt, Some(Prompt::Move(_))), "{taken}");
+            form.dismiss();
+        }
+        // Save as new image… keeps its Move tag? question.
+        let mut save = SaveAsImage::new("open-at:1.0.0", digest("a"), tags());
+        save.set_tag("latest".into());
+        assert_eq!(save.check().level, TagLevel::Warn);
+        assert!(save.chips().contains(&"latest".to_owned()));
+    }
+
+    #[test]
+    fn an_official_template_revision_takes_the_source_version_with_a_local_suffix() {
+        let mut tags = vec![
+            ("open-at-games:1.1.0".to_owned(), digest("t")),
+            ("open-at-games:1.1.1".to_owned(), digest("u")),
+            ("open-at-games:latest".to_owned(), digest("u")),
+        ];
+        let form = SaveAsImage::new("open-at-games:1.1.0", digest("t"), tags.clone())
+            .publishing()
+            .official(Some("1.1.0".into()));
+        assert_eq!(form.tag, "1.1.0-local.1");
+        assert!(form.local_suffix());
+        assert_eq!(form.chips(), ["1.1.0-local.1"]);
+        assert_eq!(form.check().level, TagLevel::Ok);
+        tags.push(("open-at-games:1.1.0-local.1".to_owned(), digest("v")));
+        let mut form = SaveAsImage::new("open-at-games:1.1.0", digest("t"), tags)
+            .publishing()
+            .official(Some("1.1.0".into()));
+        assert_eq!(
+            form.tag, "1.1.0-local.2",
+            "a local revision is never overwritten"
+        );
+        // A repository of your own starts at 1.0.0.
+        form.set_repo("dos-games-base".into());
+        assert!(!form.local_suffix());
         assert_eq!(form.tag, "1.0.0");
     }
 

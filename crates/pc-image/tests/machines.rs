@@ -16,7 +16,7 @@ use std::fs;
 use toml::{Table, Value};
 #[path = "support/workspace.rs"]
 mod fixture;
-use fixture::Fixture;
+use fixture::{fixtures, Fixture};
 
 /// Start a machine as a frontend does once it has assembled: prepare, then
 /// confirm.
@@ -862,4 +862,359 @@ fn pending_disks_change_one_drive_at_a_time() {
     );
     assert!(machine::set_pending_insert(store, &id, "C:", None).is_err());
     assert!(machine::set_pending_insert(store, &id, "A:", Some(insert("B:", "disk-1"))).is_err());
+}
+
+/// Import the fixture ROMs `files` (vendor paths) as firmware packages of the
+/// store, as Import ROM folder… does; `None` when a fixture is missing.
+fn import_roms(fixture: &Fixture, files: &[&str]) -> Option<Vec<Vec<u8>>> {
+    let folder = fixture.path.join("roms");
+    fs::create_dir_all(&folder).unwrap();
+    let mut roms = Vec::new();
+    for (i, file) in files.iter().enumerate() {
+        let bytes = fixtures::fixture(file)?;
+        fs::write(folder.join(format!("rom-{i}.bin")), &bytes).unwrap();
+        roms.push(bytes);
+    }
+    let catalogue = pc_image::firmware::catalogue();
+    let scan = pc_image::firmware_import::scan(&[folder], catalogue).unwrap();
+    assert_eq!(scan.candidates.len(), files.len(), "{:?}", scan.issues);
+    for candidate in &scan.candidates {
+        pc_image::firmware_import::publish(&fixture.store, candidate, &[], catalogue).unwrap();
+    }
+    Some(roms)
+}
+/// The machine's tables with the system BIOS bound to `bytes` instead.
+fn with_bios(machine: &Table, bytes: &[u8]) -> Table {
+    let mut machine = machine.clone();
+    let sha256 = image_store::Digest::of(bytes).hex().to_owned();
+    let bios = machine["firmware"]["bios"].as_table().unwrap().clone();
+    let mut bios = bios;
+    bios.insert(
+        "image".into(),
+        format!("assets/firmware-{}.bin", &sha256[..16]).into(),
+    );
+    bios.insert("sha256".into(), sha256.into());
+    machine
+        .get_mut("firmware")
+        .and_then(Value::as_table_mut)
+        .unwrap()
+        .insert("bios".into(), bios.into());
+    machine
+}
+fn bios_bytes(machine: &assembly::MachineConfig) -> Vec<u8> {
+    machine
+        .images
+        .iter()
+        .find_map(|image| match &image.source {
+            assembly::ImageSource::Inline(bytes) if image.base + bytes.len() as u64 == 0x100000 => {
+                Some(bytes.clone())
+            }
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[test]
+fn a_firmware_change_applies_at_the_next_start_and_keeps_or_resets_the_cmos() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let Some(roms) = import_roms(
+        &fixture,
+        &[
+            "kiselev-bios/bios-xi8088-atreset.bin",
+            "unemu-at-bios/bios-unemu-at.bin",
+        ],
+    ) else {
+        return;
+    };
+    let (atreset, open_at) = (&roms[0], &roms[1]);
+    let store = &fixture.store;
+    let id = machine::create_from_tag(store, "test:source", Some("Firmware"), None).unwrap();
+    // The guest's own SETUP choice, kept in the machine's CMOS journal.
+    fixture.changed_from(&id, "test:source", 0x5A);
+    let before = cmos(&fixture, &id);
+    assert_eq!(before[32], 0x5A);
+    let image_tables = machine::settings(store, &id).unwrap().image;
+
+    // A ROM that no package of the store holds cannot be chosen.
+    let error = machine::change_settings(store, &id, with_bios(&image_tables, &[0; 32768]), false)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no firmware package"), "{error}");
+
+    // The same CMOS layout (Kiselev Xi 8088 to its AT-reset build): the
+    // machine's CMOS stays, and the new ROM runs from the next start.
+    let change =
+        machine::change_settings(store, &id, with_bios(&image_tables, atreset), true).unwrap();
+    assert!(!change.cmos_reset);
+    assert_eq!(cmos(&fixture, &id), before);
+    assert!(machine::get(store, &id).unwrap().machine.settings.is_some());
+    {
+        let owner = store.workspace(&id).unwrap();
+        let started = start(&owner, None);
+        assert_eq!(&bios_bytes(&started.session.machine), atreset);
+    }
+    // The image never changes.
+    let resolved = pc_image::resolve(store, "test:source", &fixture.path.join("s")).unwrap();
+    assert_ne!(&bios_bytes(&resolved), atreset);
+
+    // Another layout (the open AT BIOS): the CMOS is reset to the bytes the
+    // configuration derives, as on a new machine, and the guest's choice is
+    // gone.
+    let change =
+        machine::change_settings(store, &id, with_bios(&image_tables, open_at), true).unwrap();
+    assert!(change.cmos_reset);
+    assert_eq!(change.cmos_layout, Some(assembly::CmosLayout::OpenAtBios));
+    let reset = cmos(&fixture, &id);
+    assert_ne!(reset, before);
+    let derived = {
+        let owner = store.workspace(&id).unwrap();
+        let started = start(&owner, None);
+        assert_eq!(&bios_bytes(&started.session.machine), open_at);
+        assembly::derive_cmos_config(&started.session.machine).unwrap()
+    };
+    // Configuration RAM is the derived bytes; the clock, the status
+    // registers and the shutdown byte stay the RTC's own.
+    assert_eq!(reset[0x10..], derived[0x10..]);
+    assert_eq!(reset[0x0E], derived[0x0E]);
+    assert_eq!(reset[..0x0E], before[..0x0E]);
+    assert_ne!(reset[32], 0x5A);
+
+    // Save as new image… binds the chosen ROM in the new image.
+    machine::commit(store, &id, "test:open-at", None, None, true).unwrap();
+    let saved = pc_image::resolve(store, "test:open-at", &fixture.path.join("t")).unwrap();
+    assert_eq!(&bios_bytes(&saved), open_at);
+
+    // Back to the image's own firmware: the overlay goes, and the CMOS is
+    // reset again for the image's layout.
+    let change = machine::change_settings(store, &id, image_tables, true).unwrap();
+    assert!(change.cmos_reset);
+    assert_eq!(
+        change.cmos_layout,
+        Some(assembly::CmosLayout::KiselevXi8088)
+    );
+    assert!(machine::get(store, &id).unwrap().machine.settings.is_none());
+}
+
+#[test]
+fn a_stored_cmos_copied_at_every_start_is_reset_for_another_layout() {
+    let Some(fixture) = Fixture::without_cmos_journal() else {
+        return;
+    };
+    let Some(roms) = import_roms(&fixture, &["unemu-at-bios/bios-unemu-at.bin"]) else {
+        return;
+    };
+    let store = &fixture.store;
+    let id = machine::create_from_tag(store, "test:source", Some("Stored"), None).unwrap();
+    let tables = machine::settings(store, &id).unwrap().image;
+    let change = machine::change_settings(store, &id, with_bios(&tables, &roms[0]), true).unwrap();
+    assert!(change.cmos_reset);
+    assert_eq!(change.cmos_layout, Some(assembly::CmosLayout::OpenAtBios));
+    let nvram = |machine: &assembly::MachineConfig| {
+        machine
+            .devices
+            .iter()
+            .find_map(|d| match &d.kind {
+                assembly::DeviceKind::Rtc(rtc) => match rtc.nvram {
+                    assembly::NvramSource::Image(bytes) => Some(bytes),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap()
+    };
+    for _ in 0..2 {
+        let owner = store.workspace(&id).unwrap();
+        let started = start(&owner, None);
+        let bytes = nvram(&started.session.machine);
+        let derived = assembly::derive_cmos_config(&started.session.machine).unwrap();
+        assert_eq!(bytes[0x10..], derived[0x10..], "every start");
+    }
+    // A later change within the layout keeps resetting from the image's bytes.
+    let change = machine::change_settings(
+        store,
+        &id,
+        with_extended(&with_bios(&tables, &roms[0]), 2048),
+        true,
+    )
+    .unwrap();
+    assert!(!change.cmos_reset, "the machine's layout stays");
+    // The bytes it reports are those every start now copies: the image's
+    // stored bytes reset for the open AT BIOS, not recomputed SETUP fields.
+    let owner = store.workspace(&id).unwrap();
+    let started = start(&owner, None);
+    let bytes = nvram(&started.session.machine);
+    let stored = [0u8; 64];
+    let changed: Vec<usize> = (0..64).filter(|&i| bytes[i] != stored[i]).collect();
+    let reported: Vec<usize> = change.cmos_changes.iter().map(|c| c.offset).collect();
+    assert_eq!(reported, changed);
+    assert!(change.cmos_changes.iter().all(|c| c.new == bytes[c.offset]));
+}
+
+/// The firmware package of `bytes` in the store: its tag and manifest digest.
+fn package_of(store: &Store, bytes: &[u8]) -> (String, image_store::Digest) {
+    let sha256 = image_store::Digest::of(bytes);
+    pc_image::create::packages(store)
+        .unwrap()
+        .into_iter()
+        .find(|p| {
+            p.config
+                .roms
+                .iter()
+                .any(|r| r.blob.as_ref() == Some(&sha256))
+        })
+        .map(|p| (p.reference, p.descriptor.digest))
+        .unwrap()
+}
+
+#[test]
+fn a_machine_keeps_its_chosen_firmware_after_the_package_loses_its_tag() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let Some(roms) = import_roms(&fixture, &["unemu-at-bios/bios-unemu-at.bin"]) else {
+        return;
+    };
+    let open_at = &roms[0];
+    let store = &fixture.store;
+    let id = machine::create_from_tag(store, "test:source", Some("Chosen"), None).unwrap();
+    let image_tables = machine::settings(store, &id).unwrap().image;
+    machine::change_settings(store, &id, with_bios(&image_tables, open_at), true).unwrap();
+    // The record keeps the binding; the sheet's tables never show it.
+    let record = machine::get(store, &id).unwrap().machine.settings.unwrap();
+    assert!(record.contains_key(pc_image::revision::BOUND_FIRMWARE));
+    let blobs = pc_image::revision::bound_blobs(&record);
+    assert_eq!(blobs.len(), 1);
+    assert_eq!(
+        blobs[0].decoded_digest().unwrap(),
+        image_store::Digest::of(open_at)
+    );
+    let shown = machine::settings(store, &id).unwrap().machine;
+    assert!(!shown.contains_key(pc_image::revision::BOUND_FIRMWARE));
+
+    // Delete the package's only tag, as Delete tag… in the Firmware
+    // collection does; the blobs stay in the store.
+    let (tag, package) = package_of(store, open_at);
+    store.remove_tag(&tag, &package).unwrap();
+    assert!(pc_image::create::packages(store)
+        .unwrap()
+        .iter()
+        .all(|p| p.descriptor.digest != package));
+
+    // Start still binds the chosen ROM by digest.
+    {
+        let owner = store.workspace(&id).unwrap();
+        let started = start(&owner, None);
+        assert_eq!(&bios_bytes(&started.session.machine), open_at);
+    }
+    // Save as new image… carries it, and names the package it came from.
+    machine::commit(store, &id, "test:chosen", None, None, true).unwrap();
+    let saved = pc_image::resolve(store, "test:chosen", &fixture.path.join("t")).unwrap();
+    assert_eq!(&bios_bytes(&saved), open_at);
+    let annotations = store
+        .resolve("test:chosen", &pc_image::PcProvider)
+        .unwrap()
+        .manifest
+        .annotations;
+    assert!(
+        annotations["unemu.firmware.sources"].contains(&package.to_string()),
+        "{annotations:?}"
+    );
+    // Settings… OK with the sheet's tables (no bindings in them) works.
+    machine::change_settings(
+        store,
+        &id,
+        with_extended(&with_bios(&image_tables, open_at), 2048),
+        true,
+    )
+    .unwrap();
+    {
+        let owner = store.workspace(&id).unwrap();
+        let started = start(&owner, None);
+        assert_eq!(&bios_bytes(&started.session.machine), open_at);
+    }
+    // Clearing goes back to the image's firmware.
+    let change = machine::clear_settings(store, &id).unwrap();
+    assert!(change.cmos_reset, "back to the Kiselev layout");
+    assert!(machine::get(store, &id).unwrap().machine.settings.is_none());
+}
+
+#[test]
+fn settings_that_no_longer_bind_can_still_be_cleared_with_a_cmos_reset() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let Some(roms) = import_roms(&fixture, &["unemu-at-bios/bios-unemu-at.bin"]) else {
+        return;
+    };
+    let store = &fixture.store;
+    let id = machine::create_from_tag(store, "test:source", Some("Orphan"), None).unwrap();
+    let image_tables = machine::settings(store, &id).unwrap().image;
+    machine::change_settings(store, &id, with_bios(&image_tables, &roms[0]), true).unwrap();
+    // A record without its bindings, whose package then loses its tag: its
+    // tables name a ROM nothing binds any more.
+    store
+        .edit_machines(|machines| {
+            let machine = machines.get_mut(&id).unwrap();
+            if let Some(settings) = &mut machine.settings {
+                settings.remove(pc_image::revision::BOUND_FIRMWARE);
+            }
+            Ok(())
+        })
+        .unwrap();
+    let (tag, package) = package_of(store, &roms[0]);
+    store.remove_tag(&tag, &package).unwrap();
+    let error = machine::prepare(&store.workspace(&id).unwrap())
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("no firmware package"), "{error}");
+    // The image's own firmware always comes back, and the CMOS of a layout
+    // nobody can tell now is reset.
+    let change = machine::change_settings(store, &id, image_tables, true).unwrap();
+    assert!(change.cmos_reset);
+    assert!(machine::get(store, &id).unwrap().machine.settings.is_none());
+    let owner = store.workspace(&id).unwrap();
+    start(&owner, None);
+}
+
+#[test]
+fn an_interrupted_cmos_reset_is_finished_at_the_next_start() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let Some(roms) = import_roms(&fixture, &["unemu-at-bios/bios-unemu-at.bin"]) else {
+        return;
+    };
+    let store = &fixture.store;
+    let id = machine::create_from_tag(store, "test:source", Some("Crash"), None).unwrap();
+    fixture.changed_from(&id, "test:source", 0x5A);
+    let image_tables = machine::settings(store, &id).unwrap().image;
+    // The process dies once the record holds the new BIOS, before the CMOS
+    // journal is reset.
+    let crashed = machine::change_settings_with_hook(
+        store,
+        &id,
+        with_bios(&image_tables, &roms[0]),
+        true,
+        |step| match step {
+            machine::SettingsStep::Recorded => Err(pc_image::Error::Invalid("crash".into())),
+        },
+    );
+    assert!(crashed.is_err());
+    assert!(machine::get(store, &id).unwrap().machine.settings.is_some());
+    assert_eq!(cmos(&fixture, &id)[32], 0x5A, "the old layout's bytes");
+    assert!(machine::cmos_reset_pending(store, &id).unwrap());
+    // Start finishes the reset before the new BIOS boots.
+    let derived = {
+        let owner = store.workspace(&id).unwrap();
+        let started = start(&owner, None);
+        assert_eq!(bios_bytes(&started.session.machine), roms[0]);
+        assembly::derive_cmos_config(&started.session.machine).unwrap()
+    };
+    let bytes = cmos(&fixture, &id);
+    assert_eq!(bytes[0x10..], derived[0x10..]);
+    assert_ne!(bytes[32], 0x5A);
+    assert!(!machine::cmos_reset_pending(store, &id).unwrap());
 }

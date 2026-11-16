@@ -381,10 +381,22 @@ pub(crate) fn publish_machine(
     let image = resolved.image;
     let mut config = resolved.config;
     let mut overlay_cmos = None;
+    let mut descriptors = image.manifest.layers.clone();
+    let packages = crate::revision::Packages::new(store);
+    let mut bound = Vec::new();
     if let Some(machine) = settings {
-        let overlay = crate::revision::overlay(store, &config, &image.manifest.layers, machine)?;
+        let overlay =
+            crate::revision::overlay(&packages, &config, &image.manifest.layers, machine)?;
+        // Firmware the machine's settings chose from a package of the store
+        // joins the new image's closure.
+        for d in overlay.firmware() {
+            if !descriptors.iter().any(|known| known.digest == d.digest) {
+                descriptors.push(d);
+            }
+        }
         config = overlay.config;
         overlay_cmos = overlay.cmos;
+        bound = overlay.bound;
     }
     let bases = resolved.bases;
     if old.machine != image.manifest.config.digest {
@@ -393,7 +405,6 @@ pub(crate) fn publish_machine(
     let scratch = workspace.path().join("publication");
     fs::create_dir_all(&scratch)?;
     let _staging = Staging(scratch.clone());
-    let mut descriptors = image.manifest.layers.clone();
     let mut locks = Vec::new();
     // Retain all journal locks until the tag and workspace pointers are durable.
     // This also refuses a writer that bypassed the workspace API.
@@ -589,12 +600,18 @@ pub(crate) fn publish_machine(
             .as_bytes(),
         &mut hook,
     )?);
+    let sources = crate::revision::firmware_sources(&packages, &image.manifest, &layers, &bound)?;
     let mut manifest = Manifest::new_with_types(
         "ibm-pc-at",
         configuration,
         layers,
         PcProvider.payload_types(),
     )?;
+    if let Some(sources) = sources {
+        manifest
+            .annotations
+            .insert(crate::revision::FIRMWARE_SOURCES.into(), sources);
+    }
     derive_annotations(&mut manifest, &image.manifest, &old.image.digest, title)?;
     let proposed = store.import_manifest_with_types(&manifest, PcProvider.payload_types())?;
     hook(PublicationStep::BlobStored(proposed.digest.clone()))?;

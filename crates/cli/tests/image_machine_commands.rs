@@ -610,3 +610,75 @@ fn a_damaged_workspace_is_reported_and_reserved_ids_are_never_handed_out() {
         );
     }
 }
+
+/// A machine whose image stores its CMOS: `image machine settings` says when
+/// a system BIOS of another CMOS layout resets it.
+#[test]
+fn settings_say_when_another_bios_layout_resets_the_cmos() {
+    let (Some(bios), Some(open_at)) = (
+        fixtures::fixture("kiselev-bios/bios-xi8088.bin"),
+        fixtures::fixture("unemu-at-bios/bios-unemu-at.bin"),
+    ) else {
+        return;
+    };
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let root = std::env::temp_dir().join(format!(
+        "machine-cmos-reset-test-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(root.join("roms")).unwrap();
+    let _cleanup = RemoveDir(root.clone());
+    std::fs::write(root.join("bios.bin"), bios).unwrap();
+    std::fs::write(root.join("roms/open-at.bin"), &open_at).unwrap();
+    std::fs::write(root.join("cmos.bin"), [0; 64]).unwrap();
+    let file = root.join("machine.toml");
+    std::fs::write(
+        &file,
+        "schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='bios.bin'\n[board.rtc.nvram]\nimage='cmos.bin'\nwrite='journal'\njournal='source-cmos.upfj'\n",
+    )
+    .unwrap();
+    let store_root = root.join("store");
+    let ok = |list: &[&str]| {
+        let mut list = args(list);
+        list.extend(["--store".into(), store_root.clone().into_os_string()]);
+        let (code, output, errors) = run(&list);
+        assert_eq!(code, 0, "{list:?}: {errors}");
+        output
+    };
+    ok(&[
+        "image",
+        "import",
+        file.to_str().unwrap(),
+        "--tag",
+        "test:cmos",
+        "--create",
+    ]);
+    let store = image_store::Store::open_existing(&store_root).unwrap();
+    let catalogue = pc_image::firmware::catalogue();
+    let scan = pc_image::firmware_import::scan(&[root.join("roms")], catalogue).unwrap();
+    pc_image::firmware_import::publish(&store, &scan.candidates[0], &[], catalogue).unwrap();
+    ok(&["image", "machine", "new", "test:cmos", "--name", "Chosen"]);
+    let sha256 = image_store::Digest::of(&open_at).hex().to_owned();
+    let output = ok(&[
+        "image",
+        "machine",
+        "settings",
+        "chosen",
+        "--set",
+        &format!("firmware.bios.sha256={sha256}"),
+        "--set",
+        &format!("firmware.bios.image=assets/firmware-{}.bin", &sha256[..16]),
+    ]);
+    assert!(output.contains("cmos-reset:open AT BIOS"), "{output}");
+    // Another setting within the layout keeps the CMOS.
+    let output = ok(&[
+        "image",
+        "machine",
+        "settings",
+        "chosen",
+        "--set",
+        "memory.extended_kib=1024",
+    ]);
+    assert!(!output.contains("cmos-reset:"), "{output}");
+}

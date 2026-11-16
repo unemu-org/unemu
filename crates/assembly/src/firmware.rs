@@ -227,6 +227,54 @@ pub enum FirmwareStatus {
     Superseded,
 }
 
+/// The CMOS RAM layout a system BIOS reads and writes: which bytes of the
+/// 64-byte RTC RAM it gives which meaning, and which range its checksum
+/// covers. Builds of one layout read each other's SETUP choices; a machine
+/// moving to another layout cannot keep its CMOS bytes. See
+/// `backlog/docs/design/firmware-and-machine-classes.md` §3.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CmosLayout {
+    /// The open AT BIOS (unemu-at-bios): the IBM AT fields, with the checksum
+    /// over 10h–2Dh at 2Eh–2Fh and the expansion memory POST found at
+    /// 30h–31h (IBM Personal Computer AT Technical Reference, Real-Time
+    /// Clock/CMOS RAM Information), but its own defaults and checks (errors
+    /// 161–164); see the firmware design §2.1.
+    OpenAtBios,
+    /// Kiselev 8088_bios Xi 8088 builds: its own NVRAM layout, whose
+    /// checksum covers only 10h–20h. Kiselev 8088_bios `rtc.inc`,
+    /// rtc_init/nvram_save.
+    KiselevXi8088,
+    /// IBM PC/AT BIOS: IBM Personal Computer AT Technical Reference,
+    /// Real-Time Clock/CMOS RAM Information, CMOS RAM Address Map.
+    IbmAt,
+    /// Landmark ROM POST: a diagnostic that tests the RTC and its RAM
+    /// directly. Landmark Research International, ROM POST User's Manual
+    /// v1.2, pp. 16–36.
+    LandmarkRomPost,
+}
+
+impl CmosLayout {
+    /// The layout's name as the settings sheet says it.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::OpenAtBios => "open AT BIOS",
+            Self::KiselevXi8088 => "Kiselev Xi 8088",
+            Self::IbmAt => "IBM AT",
+            Self::LandmarkRomPost => "Landmark ROM POST",
+        }
+    }
+}
+
+/// What replaces a superseded entry, and why, as data the library shows
+/// next to every machine and image that still uses the old release.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Supersession {
+    /// Catalogue id of the release that replaces the entry.
+    pub by: &'static str,
+    /// A short reason, written to follow "superseded by" and the release.
+    pub reason: &'static str,
+}
+
 /// One reviewed firmware build. Its services override an omitted declaration;
 /// a nonempty restatement must name the same set; see `backlog/docs/design/machine-config.md` §Firmware catalogue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -264,6 +312,12 @@ pub struct FirmwareEntry {
     pub parts: &'static [&'static [KnownPart]],
     /// Execution evidence.
     pub status: FirmwareStatus,
+    /// The CMOS layout of a system BIOS; `None` for video and option ROMs,
+    /// which keep nothing in CMOS.
+    pub cmos_layout: Option<CmosLayout>,
+    /// The release that replaces a [`FirmwareStatus::Superseded`] entry;
+    /// `None` for every other status.
+    pub superseded_by: Option<Supersession>,
 }
 
 impl FirmwareEntry {
@@ -287,6 +341,8 @@ impl FirmwareEntry {
         distribution: FirmwareDistribution::UserSupplied,
         parts: &[],
         status: FirmwareStatus::Tested,
+        cmos_layout: None,
+        superseded_by: None,
     };
 
     /// Open standard-VGA video BIOS: the unemu fork of the LGPL VGABIOS 0.9d,
@@ -323,6 +379,8 @@ impl FirmwareEntry {
         },
         parts: &[],
         status: FirmwareStatus::Tested,
+        cmos_layout: None,
+        superseded_by: None,
     };
 
     /// The open VGA BIOS before [`Self::VGABIOS_0_9D_UNEMU_1_STD`], based on
@@ -341,6 +399,10 @@ impl FirmwareEntry {
             source_archive_sha256: Some(VGABIOS_0_8A_UNEMU_3_SOURCE_ARCHIVE),
         },
         status: FirmwareStatus::Superseded,
+        superseded_by: Some(Supersession {
+            by: Self::VGABIOS_0_9D_UNEMU_1_STD.id,
+            reason: "teletype BEL sounds the speaker",
+        }),
         ..Self::VGABIOS_0_9D_UNEMU_1_STD
     };
 
@@ -391,6 +453,8 @@ impl FirmwareEntry {
         },
         parts: &[],
         status: FirmwareStatus::Listed,
+        cmos_layout: None,
+        superseded_by: None,
     };
 }
 
@@ -427,6 +491,8 @@ pub const KISELEV_XI8088: FirmwareEntry = FirmwareEntry {
     },
     parts: &[],
     status: FirmwareStatus::Tested,
+    cmos_layout: Some(CmosLayout::KiselevXi8088),
+    superseded_by: None,
 };
 
 /// Xi 8088 with AT diskette reset semantics, built by the same pinned recipe.
@@ -471,6 +537,7 @@ pub const UNEMU_AT_BIOS_1_0_2_UNEMU_3: FirmwareEntry = FirmwareEntry {
         source_archive_sha256: Some(UNEMU_AT_BIOS_SOURCE_ARCHIVE),
     },
     status: FirmwareStatus::Tested,
+    cmos_layout: Some(CmosLayout::OpenAtBios),
     ..KISELEV_XI8088
 };
 
@@ -488,6 +555,10 @@ pub const UNEMU_AT_BIOS_1_0_2_UNEMU_2: FirmwareEntry = FirmwareEntry {
         source_archive_sha256: Some(UNEMU_AT_BIOS_1_0_2_UNEMU_2_SOURCE_ARCHIVE),
     },
     status: FirmwareStatus::Superseded,
+    superseded_by: Some(Supersession {
+        by: UNEMU_AT_BIOS_1_0_2_UNEMU_3.id,
+        reason: "clears memory above 1 MiB on POST: XMS after Ctrl+Alt+Del",
+    }),
     ..UNEMU_AT_BIOS_1_0_2_UNEMU_3
 };
 
@@ -1224,6 +1295,8 @@ pub const IBM_5170_1984_01_10: FirmwareEntry = FirmwareEntry {
     boards: &["ibm-5170"],
     distribution: FirmwareDistribution::UserSupplied,
     status: FirmwareStatus::Listed,
+    cmos_layout: Some(CmosLayout::IbmAt),
+    superseded_by: None,
     parts: &[
         &[
             KnownPart {
@@ -1306,6 +1379,8 @@ pub const IBM_5170_1985_06_10: FirmwareEntry = FirmwareEntry {
     boards: &["ibm-5170"],
     distribution: FirmwareDistribution::UserSupplied,
     status: FirmwareStatus::Listed,
+    cmos_layout: Some(CmosLayout::IbmAt),
+    superseded_by: None,
     parts: &[&[
         KnownPart {
             label: "U27",
@@ -1352,6 +1427,8 @@ pub const IBM_5170_1985_11_15: FirmwareEntry = FirmwareEntry {
     boards: &["ibm-5170"],
     distribution: FirmwareDistribution::UserSupplied,
     status: FirmwareStatus::Listed,
+    cmos_layout: Some(CmosLayout::IbmAt),
+    superseded_by: None,
     parts: &[&[
         KnownPart {
             label: "U27",
@@ -1418,6 +1495,8 @@ pub const LANDMARK_ROM_POST_AT_1_2_0: FirmwareEntry = FirmwareEntry {
         },
     ]],
     status: FirmwareStatus::Listed,
+    cmos_layout: Some(CmosLayout::LandmarkRomPost),
+    superseded_by: None,
 };
 
 #[cfg(test)]
@@ -1531,6 +1610,8 @@ mod tests {
                     },
                 ]],
                 status: FirmwareStatus::Listed,
+                cmos_layout: Some(CmosLayout::LandmarkRomPost),
+                superseded_by: None,
             }
         );
     }
@@ -2155,6 +2236,80 @@ mod tests {
     }
 
     #[test]
+    fn every_system_bios_names_its_cmos_layout_and_no_other_rom_has_one() {
+        let layout = |id: &str| {
+            BoardModel::Ibm5170
+                .firmware_catalogue()
+                .iter()
+                .find(|entry| entry.id == id)
+                .unwrap_or_else(|| panic!("{id} is catalogued"))
+                .cmos_layout
+        };
+        for (id, expected) in [
+            ("unemu-at-bios-1.0.2-unemu.3", CmosLayout::OpenAtBios),
+            ("unemu-at-bios-1.0.2-unemu.2", CmosLayout::OpenAtBios),
+            ("kiselev-xi8088-1.0.2", CmosLayout::KiselevXi8088),
+            ("kiselev-xi8088-1.0.2-atreset", CmosLayout::KiselevXi8088),
+            ("ibm-5170-bios-1984-01-10", CmosLayout::IbmAt),
+            ("ibm-5170-bios-1985-06-10", CmosLayout::IbmAt),
+            ("ibm-5170-bios-1985-11-15", CmosLayout::IbmAt),
+            ("landmark-rom-post-at-1.2.0", CmosLayout::LandmarkRomPost),
+        ] {
+            assert_eq!(layout(id), Some(expected), "{id}");
+        }
+        for entry in BoardModel::Ibm5170.firmware_catalogue() {
+            assert_eq!(
+                entry.cmos_layout.is_some(),
+                entry.kind == FirmwareKind::SystemBios,
+                "{}",
+                entry.id
+            );
+        }
+        assert_eq!(CmosLayout::OpenAtBios.label(), "open AT BIOS");
+        assert_eq!(CmosLayout::KiselevXi8088.label(), "Kiselev Xi 8088");
+        assert_eq!(CmosLayout::IbmAt.label(), "IBM AT");
+        assert_eq!(CmosLayout::LandmarkRomPost.label(), "Landmark ROM POST");
+    }
+
+    #[test]
+    fn a_superseded_entry_names_a_current_replacement_of_its_kind_and_why() {
+        let catalogue = BoardModel::Ibm5170.firmware_catalogue();
+        for entry in catalogue {
+            assert_eq!(
+                entry.superseded_by.is_some(),
+                entry.status == FirmwareStatus::Superseded,
+                "{}",
+                entry.id
+            );
+            let Some(supersession) = entry.superseded_by else {
+                continue;
+            };
+            let by = catalogue
+                .iter()
+                .find(|e| e.id == supersession.by)
+                .unwrap_or_else(|| panic!("{} names an uncatalogued replacement", entry.id));
+            assert_ne!(by.status, FirmwareStatus::Superseded, "{}", entry.id);
+            assert_eq!(by.kind, entry.kind, "{}", entry.id);
+            assert_eq!(by.cmos_layout, entry.cmos_layout, "{}", entry.id);
+            assert!(!supersession.reason.trim().is_empty(), "{}", entry.id);
+        }
+        assert_eq!(
+            UNEMU_AT_BIOS_1_0_2_UNEMU_2.superseded_by,
+            Some(Supersession {
+                by: "unemu-at-bios-1.0.2-unemu.3",
+                reason: "clears memory above 1 MiB on POST: XMS after Ctrl+Alt+Del",
+            })
+        );
+        assert_eq!(
+            FirmwareEntry::VGABIOS_0_8A_UNEMU_1_STD.superseded_by,
+            Some(Supersession {
+                by: "vgabios-0.9d-unemu.1-std",
+                reason: "teletype BEL sounds the speaker",
+            })
+        );
+    }
+
+    #[test]
     fn open_entries_pin_the_source_archive_their_fetch_script_builds() {
         let catalogue = BoardModel::Ibm5170.firmware_catalogue();
         let scripts = fetch_script_source_pins();
@@ -2354,6 +2509,7 @@ mod tests {
                 sha256: UNEMU_AT_BIOS_1_0_2_UNEMU_3.sha256,
                 distribution: UNEMU_AT_BIOS_1_0_2_UNEMU_3.distribution,
                 status: UNEMU_AT_BIOS_1_0_2_UNEMU_3.status,
+                superseded_by: UNEMU_AT_BIOS_1_0_2_UNEMU_3.superseded_by,
                 ..old
             },
             UNEMU_AT_BIOS_1_0_2_UNEMU_3
@@ -2391,6 +2547,7 @@ mod tests {
                 sha256: current.sha256,
                 distribution: current.distribution,
                 status: current.status,
+                superseded_by: current.superseded_by,
                 ..old
             },
             current

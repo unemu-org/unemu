@@ -412,7 +412,27 @@ fn locked(rom: &Rom) -> bool {
             .iter()
             .any(|p| crate::firmware::proprietary(catalogue, &p.sha256, p.size).is_some())
 }
-fn rom_blobs(rom: &Rom) -> Vec<Digest> {
+/// The layer descriptor of one blob (`digest`) of a package ROM as an image
+/// binds it: marked user-supplied when the catalogue lists the bytes as
+/// proprietary, and linked to the package's source archive only when that
+/// archive travels with the ROM ([`Package::source_archive`]).
+pub(crate) fn rom_blob(package: &Package, rom: &Rom, digest: &Digest) -> Result<Descriptor> {
+    let mut d = package
+        .manifest
+        .layers
+        .iter()
+        .find(|d| d.names(digest) && d.decoded_media_type() == mt::FIRMWARE)
+        .ok_or_else(|| invalid("firmware package lacks a ROM blob"))?
+        .clone();
+    if locked(rom) {
+        license::mark(&mut d, None);
+    }
+    if package.source_archive(rom).is_none() {
+        d.annotations.remove(license::SOURCE);
+    }
+    Ok(d)
+}
+pub(crate) fn rom_blobs(rom: &Rom) -> Vec<Digest> {
     rom.blob
         .iter()
         .cloned()
@@ -644,27 +664,10 @@ fn plan(image: &NewImage) -> Result<Plan> {
         let package_rom = rom.rom()?;
         let archive = rom.package.source_archive(package_rom).cloned();
         for (name, digest) in rom.names(index)? {
-            let mut d = rom
-                .package
-                .manifest
-                .layers
-                .iter()
-                .find(|d| d.names(&digest) && d.decoded_media_type() == mt::FIRMWARE)
-                .ok_or_else(|| invalid("firmware package lacks a ROM blob"))?
-                .clone();
-            if locked(package_rom) {
-                license::mark(&mut d, None);
+            descriptors.push(rom_blob(&rom.package, package_rom, &digest)?);
+            if let Some(a) = &archive {
+                archives.insert(name.clone(), a.decoded_digest()?);
             }
-            // The ROM keeps its package's link only when its archive travels too.
-            match &archive {
-                Some(a) => {
-                    archives.insert(name.clone(), a.decoded_digest()?);
-                }
-                None => {
-                    d.annotations.remove(license::SOURCE);
-                }
-            }
-            descriptors.push(d);
             names.insert(name, digest);
         }
         if let Some(a) = archive {

@@ -486,7 +486,8 @@ fn the_firmware_and_media_panes_lay_out_at_every_width() {
             &library(&mut view, width),
             &[
                 "Name",
-                "Role summary",
+                "Role",
+                "Status",
                 "Fits",
                 "Version / date",
                 "Redistribution",
@@ -1108,4 +1109,190 @@ fn every_pane_footer_note_is_in_view_or_scrolls_into_view_at_the_first_height() 
         }
     }
     assert!(scrolled > 0, "no pane was taller than its first height");
+}
+
+/// A firmware layer of the superseded open AT BIOS, as an image's summary
+/// lists it, in place of the image's own system BIOS.
+fn with_superseded_bios(summary: &mut image_store::summary::ImageSummary) {
+    let old = crate::firmware_choices::entry("unemu-at-bios-1.0.2-unemu.2").unwrap();
+    summary
+        .storage_blobs
+        .retain(|d| d.decoded_media_type() != image_store::media_type::FIRMWARE);
+    summary.storage_blobs.push(image_store::Descriptor::new(
+        image_store::media_type::FIRMWARE,
+        format!("sha256:{}", old.sha256).parse().unwrap(),
+        old.size,
+    ));
+}
+
+/// The "newer version available" hint in the machine pane, from the
+/// machine's own firmware choice, at every width: nothing overlaps or is
+/// cut, and its Switch button is drawn whole.
+#[test]
+fn the_newer_version_hint_lays_out_in_the_machine_pane_at_every_width() {
+    let (_f, mut view) = machine_view();
+    let old = crate::firmware_choices::entry("unemu-at-bios-1.0.2-unemu.2").unwrap();
+    let mut rows = view.machines.as_ref().clone();
+    rows[0].listing.machine.settings = Some(
+        toml::from_str(&format!(
+            "[firmware.bios]\nimage='assets/firmware-0.bin'\nsha256='{}'\n",
+            old.sha256
+        ))
+        .unwrap(),
+    );
+    view.set_machines(rows);
+    for width in WINDOW_WIDTHS {
+        let (texts, _) = pane(&mut view, width);
+        assert_laid_out("machine pane with the hint", width, &texts);
+        assert_type_sizes("machine pane with the hint", &texts);
+        assert!(texts.iter().any(|t| t
+            .text
+            .starts_with("Newer version available. System BIOS 1.0.2-unemu.2")));
+        assert!(whole(at(&texts, "Switch to 1.0.2-unemu.3…")));
+        assert!(texts
+            .iter()
+            .any(|t| t.text.starts_with("Switching changes only this machine")));
+        at(&texts, "· this machine's choice");
+    }
+}
+
+/// The hint in the image pane, with the link to a newer tag of the same
+/// repository that already uses the replacement, at every width; the list
+/// row carries the quiet badge after the name.
+#[test]
+fn the_newer_version_hint_lays_out_in_the_image_pane_with_its_newer_tag() {
+    let Some(store) = crate::library_test_support::FirmwareStore::new(false) else {
+        return;
+    };
+    // Three images of one repository on the current open AT BIOS; the newest
+    // version carries `latest` too.
+    let image = |kib: u32, tag: &str| {
+        pc_image::create::create(
+            &store.store,
+            &crate::image_settings::tests::open_new_image(&store, kib),
+            tag,
+            None,
+        )
+        .unwrap()
+    };
+    let old = image(1024, "open-at:1.0.0");
+    image(2048, "open-at:1.1.0");
+    let newest = image(3072, "open-at:1.2.0");
+    store
+        .store
+        .update_tag("open-at:latest", &newest, None, &pc_image::PcProvider)
+        .unwrap();
+    let cache = firmware::tests::warm(&store.store);
+    // The group is closed and a search hides every image: the link still
+    // comes from the whole store.
+    let query = Query {
+        text: "nothing matches this".into(),
+        ..Query::default()
+    };
+    let snapshot = snapshot(&cache, &query);
+    assert!(snapshot.rows.is_empty());
+    let mut selected = snapshot
+        .replacements
+        .iter()
+        .find(|r| r.descriptor.digest == old.digest)
+        .unwrap()
+        .clone();
+    // The selected image as one on the superseded release would read.
+    with_superseded_bios(selected.summary.as_mut().unwrap());
+    let mut view = LibraryView::new(None);
+    view.query.filter = Filter::All;
+    view.snapshot = Arc::new(snapshot);
+    view.selected = Some(selected.clone());
+    let current = crate::firmware_choices::entry("unemu-at-bios-1.0.2-unemu.3").unwrap();
+    let tag = view.newer_tag(&selected, current).unwrap();
+    assert_eq!(
+        tag.reference, "open-at:1.2.0",
+        "the newest version, not latest"
+    );
+    assert_eq!(tag.descriptor.digest, newest.digest);
+    let row = ViewRow {
+        image: selected.clone(),
+        group: None,
+        child: false,
+    };
+    assert!(row_cells(&row, 0)[0].ends_with("↑ newer BIOS"));
+    for width in WINDOW_WIDTHS {
+        let (texts, _) = pane(&mut view, width);
+        assert_laid_out("image pane with the hint", width, &texts);
+        assert_type_sizes("image pane with the hint", &texts);
+        assert!(texts.iter().any(|t| t
+            .text
+            .starts_with("Newer version available. System BIOS 1.0.2-unemu.2")));
+        assert!(whole(at(&texts, "open-at:1.2.0")));
+        assert!(whole(at(&texts, "Switch to 1.0.2-unemu.3…")));
+    }
+}
+
+/// The settings sheet's Firmware tab on a machine and on an image, at every
+/// window width: the choices, the CMOS line, the unavailable entries with
+/// their reasons and the notes never overlap or get cut.
+#[test]
+fn the_settings_sheet_firmware_tab_lays_out_at_every_width() {
+    let Some(store) = crate::library_test_support::FirmwareStore::new(true) else {
+        return;
+    };
+    let row = crate::image_settings::tests::open_image(&store);
+    for machine in [false, true] {
+        let mut model = crate::image_settings::tests::opened(&store, row.clone(), false);
+        if machine {
+            let tables = model.machine().clone();
+            model = model.for_machine("firmware".into(), "Firmware".into(), tables);
+        }
+        model.set_packages(store.choices().0);
+        model.tab = assembly::capabilities::Group::Firmware;
+        model.set_firmware(
+            crate::firmware_choices::Slot::System,
+            "kiselev-xi8088-1.0.2",
+        );
+        let what = if machine {
+            "machine sheet"
+        } else {
+            "image sheet"
+        };
+        // The sheet at every window width: what shows of its scrolled tab
+        // never overlaps or gets cut, and the sheet stays in the window.
+        for width in WINDOW_WIDTHS {
+            let output = frames(width, |ui| {
+                let _ = crate::settings_sheet::show_image(ui.ctx(), &mut model, true);
+            });
+            let (texts, _) = drawn(&output);
+            assert_laid_out(what, width, &texts);
+            assert!(
+                texts.iter().all(|t| t.rect.right() <= width + 1.0),
+                "{what} at {width}"
+            );
+            assert!(texts.iter().any(|t| t.text == "System BIOS"), "{what}");
+        }
+        // The whole tab at the sheet's width, unscrolled.
+        let output = frames(660.0, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                let _ = crate::settings_sheet::firmware_tab(ui, &mut model, machine);
+            });
+        });
+        let (texts, _) = drawn(&output);
+        assert_laid_out(what, 660.0, &texts);
+        for heading in ["System BIOS", "Video BIOS", "Option ROMs"] {
+            assert!(texts.iter().any(|t| t.text == heading), "{what}: {heading}");
+        }
+        assert!(texts
+            .iter()
+            .any(|t| t.text.starts_with("Another CMOS layout (Kiselev Xi 8088)")));
+        assert!(texts
+            .iter()
+            .any(|t| t.text == "Fit this board but cannot be chosen now:"));
+        assert!(texts.iter().any(|t| t.text == "Import ROM folder…"));
+        assert!(texts
+            .iter()
+            .any(|t| t.text.starts_with("user-supplied: with the Kiselev")));
+        assert!(texts.iter().any(|t| t.text.starts_with(if machine {
+            "Image: unemu AT BIOS 1.0.2-unemu.3 · ● differs from the image"
+        } else {
+            "Was: unemu AT BIOS 1.0.2-unemu.3"
+        })));
+    }
 }

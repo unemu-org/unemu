@@ -43,6 +43,7 @@ use winit::{
 
 mod app_menu;
 mod drive_chips;
+mod firmware_choices;
 mod host_audio;
 mod image_settings;
 mod layers_dialog;

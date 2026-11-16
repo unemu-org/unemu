@@ -1013,6 +1013,7 @@ pub fn reset(store: &Store, id: &str) -> Result<()> {
     let (owner, machine) = owner(store, id)?;
     let image = pinned(&owner, &machine)?;
     owner.clear()?;
+    reset_done(owner.path())?;
     edit(store, id, |m| {
         m.settings = None;
         m.pending.clear();
@@ -1044,13 +1045,16 @@ fn pretty(table: &Table) -> Result<String> {
     toml::to_string_pretty(table).map_err(|e| invalid(e.to_string()))
 }
 
-/// Read a machine's settings without taking its lock.
+/// Read a machine's settings without taking its lock. The firmware bindings
+/// its overlay records ([`revision::BOUND_FIRMWARE`]) are not hardware
+/// tables and are left out.
 pub fn settings(store: &Store, id: &str) -> Result<Settings> {
     let machine = record(store, id)?;
     let image = pinned_image(store, id)?;
     let source = revision::Source::open(store, &image)?;
     let image = source.machine().clone();
-    let current = machine.settings.unwrap_or_else(|| image.clone());
+    let mut current = machine.settings.unwrap_or_else(|| image.clone());
+    revision::take_bound(&mut current)?;
     Ok(Settings {
         diff: revision::line_diff(&pretty(&image)?, &pretty(&current)?),
         image,
@@ -1071,6 +1075,63 @@ pub struct SettingsChange {
     /// Why stored CMOS bytes are kept as they are, when SETUP values cannot
     /// be derived for this machine.
     pub cmos_note: Option<String>,
+    /// The new system BIOS keeps CMOS in another layout (or either BIOS is
+    /// unlisted), so the machine's stored CMOS is reset to the bytes derived
+    /// from its configuration: the SETUP choices stored there are lost, while
+    /// the date and time come from Start every session. `false` when the CMOS
+    /// stays or the image stores none.
+    pub cmos_reset: bool,
+    /// The CMOS layout of the system BIOS the machine runs afterwards; `None`
+    /// for an unlisted BIOS.
+    pub cmos_layout: Option<assembly::CmosLayout>,
+}
+
+/// A step of [`change_settings_with_hook`] after which a fault-injection
+/// test may stop it, as a crash would.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsStep {
+    /// The record holds the new settings; the CMOS journal is not written yet.
+    Recorded,
+}
+
+/// The file beside the machine's CMOS journal that says the journal must be
+/// reset to the bytes derived from its configuration: written before a change
+/// of CMOS layout reaches the record and removed once the journal holds those
+/// bytes. Start finishes a reset an interruption left behind. It lives with
+/// the journals, so Duplicate… copies it and Reset to image… drops it.
+const CMOS_RESET: &str = "media/cmos-reset.pending";
+
+/// Whether the machine's CMOS waits for a reset its last settings change could
+/// not finish.
+pub fn cmos_reset_pending(store: &Store, id: &str) -> Result<bool> {
+    Ok(store.workspace_path(id)?.join(CMOS_RESET).is_file())
+}
+
+fn reset_pending(workspace: &Path) -> bool {
+    workspace.join(CMOS_RESET).is_file()
+}
+
+/// Announce a CMOS reset durably, before the record names the new BIOS.
+fn announce_reset(workspace: &Path) -> Result<()> {
+    let path = workspace.join(CMOS_RESET);
+    if let Some(directory) = path.parent() {
+        fs::create_dir_all(directory)?;
+    }
+    fs::write(&path, b"schema = 1\n")?;
+    fs::File::open(&path)?.sync_all()?;
+    if let Some(directory) = path.parent() {
+        fs::File::open(directory)?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn reset_done(workspace: &Path) -> Result<()> {
+    match fs::remove_file(workspace.join(CMOS_RESET)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Check `machine` as the stopped machine's hardware tables and, with
@@ -1084,13 +1145,26 @@ pub fn change_settings(
     machine: Table,
     apply: bool,
 ) -> Result<SettingsChange> {
-    settings_change(store, id, Some(machine), apply)
+    settings_change(store, id, Some(machine), apply, |_| Ok(()))
+}
+
+/// [`change_settings`] with a hook after each step, which may stop it there
+/// as a crash would; fault-injection tests use it.
+#[doc(hidden)]
+pub fn change_settings_with_hook(
+    store: &Store,
+    id: &str,
+    machine: Table,
+    apply: bool,
+    hook: impl FnMut(SettingsStep) -> Result<()>,
+) -> Result<SettingsChange> {
+    settings_change(store, id, Some(machine), apply, hook)
 }
 
 /// Return a stopped machine to its image's settings: the overlay goes and the
 /// CMOS fields it changed are recomputed back.
 pub fn clear_settings(store: &Store, id: &str) -> Result<SettingsChange> {
-    settings_change(store, id, None, true)
+    settings_change(store, id, None, true, |_| Ok(()))
 }
 
 fn settings_change(
@@ -1098,23 +1172,58 @@ fn settings_change(
     id: &str,
     machine: Option<Table>,
     apply: bool,
+    mut hook: impl FnMut(SettingsStep) -> Result<()>,
 ) -> Result<SettingsChange> {
     let (owner, record) = owner(store, id)?;
     require_settled(&owner)?;
     let image = pinned(&owner, &record)?;
     let source = revision::Source::open(store, &image)?;
     let layers = &source.manifest.layers;
+    let packages = revision::Packages::new(store);
     let current = record
         .settings
         .clone()
         .unwrap_or_else(|| source.config.machine.clone());
     let clear = machine.is_none();
-    let wanted = machine.unwrap_or_else(|| source.config.machine.clone());
-    let (_, before, _) = revision::lower_revision(store, &source.config, layers, current)?;
-    let (revised, after, image_machine) =
-        revision::lower_revision(store, &source.config, layers, wanted)?;
-    let settings = (!clear && revised.machine != source.config.machine && after != image_machine)
-        .then(|| revised.machine.clone());
+    let mut wanted = machine.unwrap_or_else(|| source.config.machine.clone());
+    // Tables from a sheet carry no bindings: the ones the machine recorded
+    // still bind its chosen ROMs, also after their package lost its tag.
+    if !wanted.contains_key(revision::BOUND_FIRMWARE) {
+        if let Some(recorded) = current.get(revision::BOUND_FIRMWARE) {
+            wanted.insert(revision::BOUND_FIRMWARE.into(), recorded.clone());
+        }
+    }
+    // The machine's current tables may no longer bind (a ROM no record or
+    // package holds); clearing them and going back to the image's firmware
+    // must still work, so the image's machine stands in, with an unknown
+    // CMOS layout.
+    let before = revision::lower_revision(&packages, &source.config, layers, current)
+        .ok()
+        .map(|lowered| lowered.machine);
+    let revised = revision::lower_revision(&packages, &source.config, layers, wanted)?;
+    let (after, image_machine) = (&revised.machine, &revised.source);
+    let settings =
+        match (!clear && revised.config.machine != source.config.machine && after != image_machine)
+            .then(|| revised.config.machine.clone())
+        {
+            Some(mut table) => {
+                revision::record_bound(&mut table, &revised.bound)?;
+                Some(table)
+            }
+            None => None,
+        };
+    // The CMOS was written by the system BIOS the machine runs now; one of
+    // another layout cannot read it, so the machine starts from the bytes
+    // derived from its configuration, as a new machine does. A reset an
+    // interrupted change left pending is finished now, too.
+    let pending = reset_pending(owner.path());
+    let layout = revision::cmos_layout(after);
+    let reset = pending
+        || before
+            .as_ref()
+            .is_none_or(|before| revision::cmos_layout_changes(before, after));
+    let before = before.as_ref().unwrap_or(image_machine);
+    let cmos_reset = reset && source.cmos.is_some();
     let kept = |error: crate::Error| {
         Some(format!(
             "The stored CMOS bytes are kept as they are: SETUP values cannot be derived for this machine ({error})."
@@ -1127,7 +1236,12 @@ fn settings_change(
             let current = current_cmos(owner.path(), base)?.ok_or_else(|| {
                 invalid("the CMOS journal needs recovery; start the machine once")
             })?;
-            match revision::recompute_cmos(&current, &before, &after) {
+            let recomputed = if reset {
+                revision::reset_cmos(&current, after)
+            } else {
+                revision::recompute_cmos(&current, before, after)
+            };
+            match recomputed {
                 Ok((bytes, changes)) => {
                     if !changes.is_empty() {
                         journal_bytes = Some((*base, bytes));
@@ -1140,7 +1254,14 @@ fn settings_change(
                 }
             }
         }
-        (Some(_), Some(base)) => match revision::recompute_cmos(base, &image_machine, &after) {
+        // A stored CMOS image is copied afresh at every Start: Start resets
+        // it whenever the machine's BIOS keeps another layout than the
+        // image's, which these are the bytes of.
+        (Some(_), Some(base)) => match if revision::cmos_layout_changes(image_machine, after) {
+            revision::reset_cmos(base, after)
+        } else {
+            revision::recompute_cmos(base, image_machine, after)
+        } {
             Ok((_, changes)) => changes,
             Err(error) => {
                 cmos_note = kept(error);
@@ -1151,7 +1272,7 @@ fn settings_change(
             let derive = |m: &assembly::MachineConfig| {
                 assembly::derive_cmos_config(m).map_err(|e| invalid(e.to_string()))
             };
-            let (old, new) = (derive(&before)?, derive(&after)?);
+            let (old, new) = (derive(before)?, derive(after)?);
             (0..64)
                 .filter(|&i| old[i] != new[i])
                 .map(|offset| revision::CmosChange {
@@ -1168,6 +1289,14 @@ fn settings_change(
         None => Vec::new(),
     };
     if apply {
+        // A reset of the journal is announced before the record changes: if
+        // the process dies between the two, Start finishes the reset instead
+        // of booting the new BIOS over bytes of another layout.
+        let journaled =
+            matches!(&source.config.nvram, Some(n) if matches!(n.mode, NvramMode::Journal));
+        if reset && journaled {
+            announce_reset(owner.path())?;
+        }
         // The record first: if the journal write then fails, the record goes
         // back, so CMOS is never recomputed for settings the machine lacks.
         let previous = record.settings.clone();
@@ -1175,18 +1304,51 @@ fn settings_change(
             m.settings = settings;
             m.image = image.clone();
         })?;
+        hook(SettingsStep::Recorded)?;
         if let Some((base, bytes)) = journal_bytes {
             if let Err(error) = write_cmos(owner.path(), &base, &bytes) {
                 let _ = edit(store, id, |m| m.settings = previous);
+                if !pending {
+                    let _ = reset_done(owner.path());
+                }
                 return Err(error);
             }
         }
+        reset_done(owner.path())?;
     }
     Ok(SettingsChange {
         diff,
         cmos_changes,
         cmos_note,
+        cmos_reset,
+        cmos_layout: layout,
     })
+}
+
+/// Finish a CMOS reset an interrupted settings change left pending: the
+/// machine's CMOS journal takes the bytes derived from the configuration the
+/// session runs, before the session opens it.
+fn finish_cmos_reset(owner: &Workspace<'_>, session: &workspace::PreparedSession) -> Result<()> {
+    if !reset_pending(owner.path()) {
+        return Ok(());
+    }
+    let base = session.machine.devices.iter().find_map(|d| match &d.kind {
+        assembly::DeviceKind::Rtc(rtc) => match &rtc.nvram {
+            assembly::NvramSource::Journal { image, .. } => Some(image.clone()),
+            _ => None,
+        },
+        _ => None,
+    });
+    if let Some(base) = base {
+        let base = fs::read(base)?;
+        let current = current_cmos(owner.path(), &base)?
+            .ok_or_else(|| invalid("the CMOS journal needs recovery before its pending reset"))?;
+        let (bytes, changes) = revision::reset_cmos(&current, &session.machine)?;
+        if !changes.is_empty() {
+            write_cmos(owner.path(), &base, &bytes)?;
+        }
+    }
+    reset_done(owner.path())
 }
 
 /// Write the CMOS image `bytes` into the machine's CMOS journal over `base`.
@@ -1242,6 +1404,12 @@ pub fn commit_with_hook(
     let (owner, machine) = owner(store, id)?;
     let image = pinned(&owner, &machine)?;
     workspace::pin(&owner, &image)?;
+    // A CMOS reset an interrupted settings change left pending is finished
+    // first, so the new image never takes bytes of the old layout.
+    if reset_pending(owner.path()) {
+        let session = workspace::prepare_machine(&owner, &image, machine.settings.as_ref())?;
+        finish_cmos_reset(&owner, &session)?;
+    }
     let published = workspace::publish_machine(
         &owner,
         tag,
@@ -1382,6 +1550,7 @@ pub fn resume_copy(copy: &Workspace<'_>) -> Result<Prepared> {
         .map(|image| identity(&image))
         .ok_or_else(|| invalid("the copy was never started"))?;
     let mut session = workspace::prepare_machine(copy, &image, record.settings.as_ref())?;
+    finish_cmos_reset(copy, &session)?;
     for insert in &record.pending {
         insert_medium(copy.store(), copy, &mut session, insert)?;
     }
@@ -1501,6 +1670,7 @@ pub fn prepare(owner: &Workspace<'_>) -> Result<Prepared> {
     }
     let image = pinned(owner, &machine)?;
     let mut session = workspace::prepare_machine(owner, &image, machine.settings.as_ref())?;
+    finish_cmos_reset(owner, &session)?;
     for insert in &machine.pending {
         insert_medium(store, owner, &mut session, insert)?;
     }

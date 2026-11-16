@@ -255,24 +255,53 @@ pub(super) fn rows(
 }
 
 /// The Firmware list's columns, as the firmware mock-up lists packages.
-pub(super) const COLUMNS: super::Columns<5> = super::Columns {
+pub(super) const COLUMNS: super::Columns<6> = super::Columns {
     labels: [
         "Name",
-        "Role summary",
+        "Role",
+        "Status",
         "Fits",
         "Version / date",
         "Redistribution",
     ],
-    widths: [240.0, 140.0, 140.0, 200.0, 200.0],
+    widths: [240.0, 140.0, 150.0, 140.0, 200.0, 200.0],
     cells: [
         super::Cell::Text,
         super::Cell::Text,
         super::Cell::Text,
         super::Cell::Text,
         super::Cell::Text,
+        super::Cell::Text,
     ],
-    samples: ["", "", "", "", "User-supplied"],
+    samples: ["", "", "", "", "", "User-supplied"],
 };
+
+/// A package's catalogue status, as the firmware-settings mock-up's Status
+/// column says it: a superseded release names the release that replaces
+/// it; a package of several ROMs is Tested only when every ROM is.
+fn status(f: &FirmwareSummary) -> String {
+    let entries: Vec<&assembly::FirmwareEntry> = f
+        .catalogue_ids
+        .iter()
+        .filter_map(|id| crate::firmware_choices::entry(id))
+        .collect();
+    if let Some((by, _)) = entries
+        .iter()
+        .find_map(|e| crate::firmware_choices::replacement(e))
+    {
+        return format!("Superseded by {}", crate::firmware_choices::release(by));
+    }
+    if entries.is_empty() {
+        "Not catalogued".into()
+    } else if entries
+        .iter()
+        .all(|e| e.status == assembly::FirmwareStatus::Tested)
+    {
+        "Tested".into()
+    } else {
+        "Listed".into()
+    }
+}
 
 fn roles(f: &FirmwareSummary) -> String {
     f.roles
@@ -319,10 +348,10 @@ pub(super) fn lead(row: &FirmwareRow) -> super::Lead {
 
 /// A package's cells; a package without its summary says why in the role
 /// column.
-pub(super) fn cells(row: &FirmwareRow) -> [String; 5] {
+pub(super) fn cells(row: &FirmwareRow) -> [String; 6] {
     let name = row.image.name().to_owned();
     let Some(f) = row.firmware() else {
-        let mut cells: [String; 5] = Default::default();
+        let mut cells: [String; 6] = Default::default();
         cells[0] = name;
         cells[1] = if row.image.failure.is_some() {
             "Unavailable"
@@ -335,6 +364,7 @@ pub(super) fn cells(row: &FirmwareRow) -> [String; 5] {
     [
         name,
         roles(f),
+        status(f),
         fits(f),
         version_date(f),
         if row.source_missing {
@@ -434,11 +464,14 @@ pub(super) fn guard_notice(license: &str) -> String {
 /// The selected-package pane, drawn from the summary, plus what the worker
 /// read for it (`package`: the README text and the guard's Config and Push
 /// lines). A firmware package has no launch action, so it never offers Start.
+/// `machines` names the machines whose own settings choose one of the
+/// package's ROMs: they use it as well as the images in `row.used_by`.
 pub(super) fn details(
     ui: &mut egui::Ui,
     row: &FirmwareRow,
     package: Option<&Result<PackageDetails, String>>,
     can_edit: bool,
+    machines: &[String],
 ) -> PaneAction {
     let action = std::cell::Cell::new(PaneAction::None);
     let image = &row.image;
@@ -466,6 +499,23 @@ pub(super) fn details(
         }
         None => {
             super::pane::meta(ui, "No description.");
+        }
+    }
+    // A superseded package says what replaces it, as a machine's hint does,
+    // without a Switch button: packages never change.
+    for (slot, entry) in f
+        .catalogue_ids
+        .iter()
+        .filter_map(|id| crate::firmware_choices::entry(id))
+        .filter_map(|e| {
+            let slot = crate::firmware_choices::Slot::ALL
+                .into_iter()
+                .find(|s| s.kind() == e.kind)?;
+            Some((slot, e))
+        })
+    {
+        for newer in crate::firmware_choices::newer_of(&[(slot, entry)]) {
+            super::pane::meta(ui, format!("{}.", newer.text()));
         }
     }
     ui.horizontal_wrapped(|ui| {
@@ -621,11 +671,14 @@ pub(super) fn details(
                 layout.label(format!("Requires: {device}"));
             }
             layout.strong("Used by — machines in this library");
-            if row.used_by.is_empty() {
+            if row.used_by.is_empty() && machines.is_empty() {
                 layout.label("No local machine image embeds these ROMs.");
             }
             for reference in &row.used_by {
                 layout.label(reference);
+            }
+            for name in machines {
+                layout.label(format!("{name} — its own firmware choice"));
             }
         },
         |extras| {
@@ -1950,6 +2003,7 @@ pub(crate) mod tests {
             [
                 "Synthetic two-chip BIOS",
                 "System BIOS",
+                "Not catalogued",
                 "ibm-5170 · AT",
                 "Version unknown / 1985-06-10",
                 "User-supplied",
@@ -1958,8 +2012,25 @@ pub(crate) mod tests {
         assert!(split.used_by.is_empty());
         let open = row("synthetic-open-bios");
         let cells = super::cells(open);
-        assert_eq!(cells[3], "Version unknown / date unknown");
-        assert_eq!(cells[4], "Open · MIT");
+        assert_eq!(cells[4], "Version unknown / date unknown");
+        assert_eq!(cells[5], "Open · MIT");
+        // The Status column: a superseded package names its replacement.
+        for (id, expected) in [
+            ("unemu-at-bios-1.0.2-unemu.2", "Superseded by 1.0.2-unemu.3"),
+            ("vgabios-0.8a-unemu.1-std", "Superseded by 0.9d-unemu.1"),
+            ("unemu-at-bios-1.0.2-unemu.3", "Tested"),
+            ("ibm-5170-bios-1985-06-10", "Listed"),
+        ] {
+            let mut package = open.clone();
+            package
+                .image
+                .summary
+                .as_mut()
+                .and_then(|s| s.firmware.as_mut())
+                .unwrap()
+                .catalogue_ids = vec![id.into()];
+            assert_eq!(super::cells(&package)[2], expected, "{id}");
+        }
         assert_eq!(open.used_by, ["test:source"]);
         assert_eq!(
             result.facets["Role"],
@@ -2015,7 +2086,7 @@ pub(crate) mod tests {
             );
         }
         let mut sorted = query(Filter::Firmware, "");
-        sorted.firmware_sort = 4;
+        sorted.firmware_sort = 5;
         assert_eq!(names(&snapshot(&cache, &sorted))[0], "synthetic-open-bios");
         sorted.firmware_descending = true;
         assert_eq!(
@@ -2084,7 +2155,7 @@ pub(crate) mod tests {
         let mut shown = Vec::new();
         for row in &result.firmware_rows {
             let output = frame(&ctx, size, 0.0, vec![], |ui| {
-                egui::CentralPanel::default().show(ui, |ui| details(ui, row, None, false));
+                egui::CentralPanel::default().show(ui, |ui| details(ui, row, None, false, &[]));
             });
             shown.extend(texts(&output).into_iter().map(|(t, _)| t));
         }

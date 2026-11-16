@@ -142,7 +142,7 @@ impl ImageRow {
             .filter(|s| !s.is_empty())
             .unwrap_or(&self.reference)
     }
-    fn repository(&self) -> &str {
+    pub(crate) fn repository(&self) -> &str {
         self.reference
             .rsplit_once(':')
             .map_or(self.reference.as_str(), |(r, _)| r)
@@ -260,6 +260,10 @@ pub(super) struct Snapshot {
     /// The library's firmware package names by the raw identity of each ROM
     /// and chip they hold, for naming the ROMs of an image.
     rom_names: BTreeMap<Digest, String>,
+    /// Every machine image, whatever the collection, search or open groups,
+    /// that binds a release replacing a superseded one: the "newer version
+    /// available" hint links to one of them.
+    replacements: Vec<ImageRow>,
 }
 
 fn facets_for(filter: &Filter) -> Facets {
@@ -361,6 +365,13 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
         }
         if let Some(s) = s.filter(|_| firmware_mode) {
             machine_roms.add(&row.references(), s);
+        }
+        if s.is_some_and(|s| {
+            crate::firmware_choices::in_summary(s)
+                .iter()
+                .any(|(_, e)| crate::firmware_choices::replaces_any(e))
+        }) {
+            result.replacements.push(row.row(cache));
         }
         if let Some(s) = s {
             if counted.insert(s.image.clone()) {
@@ -502,12 +513,26 @@ const IMAGE_MACHINES_COLUMN: usize = 3;
 const DETAILS_HEIGHT: f32 = 420.0;
 const DETAILS_MIN_HEIGHT: f32 = 120.0;
 const LIST_MIN_HEIGHT: f32 = 160.0;
-/// An image row's cells; `machines` counts the machines made from it.
+/// The superseded firmware an image binds, read from its library summary.
+fn image_newer(image: &ImageRow) -> Vec<crate::firmware_choices::Newer> {
+    image
+        .summary
+        .as_ref()
+        .map(|s| crate::firmware_choices::newer_of(&crate::firmware_choices::in_summary(s)))
+        .unwrap_or_default()
+}
+/// An image row's cells; `machines` counts the machines made from it. A
+/// superseded firmware puts the quiet "↑ newer BIOS" badge after the name.
 fn row_cells(row: &ViewRow, machines: usize) -> [String; 6] {
     let image = &row.image;
     let summary = image.summary.as_ref();
+    let mut name = image.name().to_owned();
+    if !image_newer(image).is_empty() {
+        name.push_str("  ");
+        name.push_str(crate::firmware_choices::BADGE);
+    }
     [
-        image.name().to_owned(),
+        name,
         image.references(),
         pane::short_digest(image.descriptor.digest.hex()),
         machines.to_string(),
@@ -743,6 +768,21 @@ fn draw_cells<const N: usize>(
     striped: bool,
     lead: Lead,
 ) -> (bool, bool) {
+    draw_cells_with_hints(ui, cells, widths, kinds, selected, striped, lead, &[])
+}
+/// [`draw_cells`] where a cell's tooltip may say more than its text, as the
+/// quiet "↑ newer BIOS" badge's hint does.
+#[allow(clippy::too_many_arguments)]
+fn draw_cells_with_hints<const N: usize>(
+    ui: &mut egui::Ui,
+    cells: &[String; N],
+    widths: &[f32; N],
+    kinds: &[Cell; N],
+    selected: bool,
+    striped: bool,
+    lead: Lead,
+    hints: &[Option<String>],
+) -> (bool, bool) {
     let mut clicked = false;
     let mut double = false;
     let fill = if selected {
@@ -763,7 +803,8 @@ fn draw_cells<const N: usize>(
                 } else {
                     cell(ui, text, width, kinds[column], selected_text)
                 };
-                let response = response.on_hover_text(text);
+                let hint = hints.get(column).and_then(Option::as_deref).unwrap_or(text);
+                let response = response.on_hover_text(hint);
                 clicked |= response.clicked();
                 double |= response.double_clicked();
             }
@@ -1001,6 +1042,10 @@ enum ImageAction {
     Labels,
     /// Show a machine made from the image, by its id.
     Open(String),
+    /// "Switch to …": Settings… with that firmware choice made.
+    Switch(crate::firmware_choices::Slot, &'static str),
+    /// Select another image: the newer tag the hint links to.
+    ShowImage(Box<ImageRow>),
 }
 
 pub(super) struct LibraryView {
@@ -1063,6 +1108,10 @@ pub(super) struct LibraryView {
     clear_file_selection: bool,
     /// Settings on an image while it is open.
     pub image_settings: Option<crate::image_settings::ImageSettings>,
+    /// Delete tag… of the selected firmware package, apart from an image's.
+    delete_package: Option<ImageRow>,
+    /// "Switch to …": the firmware choice the next Settings sheet opens with.
+    settings_switch: Option<(crate::firmware_choices::Slot, String)>,
     /// Image › Push… while it is open.
     pub push: Option<crate::registry_transfer::PushDialog>,
     /// Image › Pull… while it is open.
@@ -1143,6 +1192,8 @@ impl LibraryView {
             running_drives: Vec::new(),
             new_machine: None,
             firmware_import_wanted: false,
+            settings_switch: None,
+            delete_package: None,
             clear_file_selection: false,
             image_settings: None,
             push: None,
@@ -1386,7 +1437,7 @@ impl LibraryView {
                 }
                 // An import can change the local marks the pane's Push line reads.
                 self.refresh_package();
-                if self.new_machine.is_some() {
+                if self.new_machine.is_some() || self.image_settings.is_some() {
                     self.send(Request::FirmwarePackages);
                 }
             }
@@ -1465,10 +1516,7 @@ impl LibraryView {
                     });
                     crate::image_settings::ImageSettings::new(row, source, tags, running)
                 });
-                match opened {
-                    Ok(settings) => self.image_settings = Some(settings),
-                    Err(error) => self.error = Some(error),
-                }
+                self.settings_opened(opened);
             }
             Event::Planned(revision, plan, tags) => {
                 if let Some(settings) = &mut self.image_settings {
@@ -1487,6 +1535,16 @@ impl LibraryView {
             }
             Event::Deleted(reference) => {
                 self.busy = false;
+                // A deleted package's pane goes; the list follows with the
+                // next snapshot.
+                if self
+                    .firmware_selected
+                    .as_ref()
+                    .is_some_and(|row| row.image.reference == reference)
+                {
+                    self.firmware_selected = None;
+                    self.firmware_package = None;
+                }
                 self.refresh_package();
                 // The row stays while another tag still names its manifest.
                 if let Some(row) = &mut self.selected {
@@ -1532,6 +1590,11 @@ impl LibraryView {
                     match result {
                         Ok(choices) => wizard.set_store(choices),
                         Err(error) => wizard.error = Some(error),
+                    }
+                } else if let Some(settings) = &mut self.image_settings {
+                    match result {
+                        Ok((packages, _, _)) => settings.set_packages(packages),
+                        Err(error) => settings.error = Some(error),
                     }
                 }
             }
@@ -1721,10 +1784,7 @@ impl LibraryView {
                     crate::image_settings::ImageSettings::new(row, source, tags, running)
                         .map(|settings| settings.for_machine(id, name, machine))
                 });
-                match opened {
-                    Ok(settings) => self.image_settings = Some(settings),
-                    Err(error) => self.error = Some(error),
-                }
+                self.settings_opened(opened);
             }
             Event::MachineSettingsApplied(result) => {
                 self.busy = false;
@@ -1739,9 +1799,17 @@ impl LibraryView {
                         let mut status = format!(
                             "Settings of \u{201c}{name}\u{201d} saved; they apply at its next start"
                         );
-                        if !change.cmos_changes.is_empty() {
+                        if change.cmos_reset {
+                            status.push_str(&format!(
+                                ", with its CMOS reset for the {} layout",
+                                change
+                                    .cmos_layout
+                                    .map_or("new BIOS's", assembly::CmosLayout::label)
+                            ));
+                        } else if !change.cmos_changes.is_empty() {
                             status.push_str("; its CMOS bytes were recomputed");
                         }
+                        status.push_str(". C: and its disk layers are unchanged");
                         if let Some(note) = &change.cmos_note {
                             status.push_str("; ");
                             status.push_str(note);
@@ -2000,6 +2068,31 @@ impl LibraryView {
         }
         self.open_image_settings();
     }
+    /// "Switch to …" in a details pane: Settings… on the selected machine or
+    /// image, on the Firmware tab with that choice already made. Nothing
+    /// changes until OK, or Review changes… and Publish revision.
+    pub fn switch_firmware(&mut self, slot: crate::firmware_choices::Slot, id: &str) {
+        self.settings_switch = Some((slot, id.to_owned()));
+        self.open_settings();
+    }
+    /// A Settings sheet the worker read: it takes a waiting "Switch to …"
+    /// and reads the store's firmware packages for its Firmware tab.
+    fn settings_opened(
+        &mut self,
+        opened: std::result::Result<crate::image_settings::ImageSettings, String>,
+    ) {
+        let switch = self.settings_switch.take();
+        match opened {
+            Ok(mut settings) => {
+                if let Some((slot, id)) = switch {
+                    settings.switch_to(slot, &id);
+                }
+                self.image_settings = Some(settings);
+                self.send(Request::FirmwarePackages);
+            }
+            Err(error) => self.error = Some(error),
+        }
+    }
     /// Image › Settings…: a new revision of the selected image, or of the
     /// selected machine's source image.
     pub fn open_image_settings(&mut self) {
@@ -2015,6 +2108,10 @@ impl LibraryView {
         else {
             return;
         };
+        self.select_image(row);
+    }
+    /// Select an image in the Images collection.
+    fn select_image(&mut self, row: ImageRow) {
         self.machine = None;
         self.machine_settings = None;
         self.query.filter = Filter::All;
@@ -2112,11 +2209,48 @@ impl LibraryView {
         if self.machine.is_some() {
             return;
         }
+        self.delete_package = None;
+        if self.query.filter.is_firmware() {
+            self.delete_package = self
+                .firmware_selected
+                .as_ref()
+                .filter(|_| self.active.is_none())
+                .map(|row| row.image.clone());
+            self.delete = self
+                .delete_package
+                .as_ref()
+                .map(|row| row.reference.clone());
+            return;
+        }
         self.delete = self
             .selected
             .as_ref()
             .filter(|_| self.active.is_none())
             .map(|row| row.reference.clone());
+    }
+    /// Delete tag… applies to the selected firmware package now.
+    pub fn can_delete_package(&self) -> bool {
+        self.query.filter.is_firmware()
+            && self.firmware_selected.is_some()
+            && self.active.is_none()
+            && !self.busy
+    }
+    /// The machines whose own settings choose a ROM of a firmware package:
+    /// they keep the ROM by digest, so they use the package as images do.
+    fn package_machines(&self, row: &firmware::FirmwareRow) -> Vec<String> {
+        let Some(f) = row.image.summary.as_ref().and_then(|s| s.firmware.as_ref()) else {
+            return Vec::new();
+        };
+        self.machines
+            .iter()
+            .filter(|m| {
+                m.listing.machine.settings.as_ref().is_some_and(|settings| {
+                    let hashes = crate::firmware_choices::rom_hashes(settings);
+                    f.roms.iter().any(|rom| hashes.contains(&rom.sha256))
+                })
+            })
+            .map(|m| m.name().to_owned())
+            .collect()
     }
     pub fn has_dialog(&self) -> bool {
         self.layers.is_some()
@@ -2616,7 +2750,10 @@ impl LibraryView {
                                                 .selected
                                                 .as_ref()
                                                 .is_some_and(|r| r.same(image));
-                                            let (clicked, double) = draw_cells(
+                                            let hints = [crate::firmware_choices::badge_tooltip(
+                                                &image_newer(image),
+                                            )];
+                                            let (clicked, double) = draw_cells_with_hints(
                                                 ui,
                                                 &cells,
                                                 &widths,
@@ -2624,6 +2761,7 @@ impl LibraryView {
                                                 selected,
                                                 index % 2 == 0,
                                                 image_lead(row),
+                                                &hints,
                                             );
                                             if (clicked || double) && !selected {
                                                 self.pending_launch = None;
@@ -2688,11 +2826,13 @@ impl LibraryView {
         if self.query.filter.is_firmware() {
             match self.firmware_selected.clone() {
                 Some(row) => {
+                    let machines = self.package_machines(&row);
                     let action = firmware::details(
                         ui,
                         &row,
                         self.package_details(),
                         self.can_edit_firmware(),
+                        &machines,
                     );
                     self.pane_action(&row, action);
                 }
@@ -2804,7 +2944,45 @@ impl LibraryView {
                     self.show_machine(id, image);
                 }
             }
+            ImageAction::Switch(slot, id) => self.switch_firmware(slot, id),
+            ImageAction::ShowImage(image) => self.select_image(*image),
         }
+    }
+
+    /// A newer tag of the image's repository, listed now, that already binds
+    /// `by`: the hint links to it, so new machines can start from it.
+    /// The hint names the image by its newest version tag, and links to the
+    /// image of the newest version among several. The search covers every
+    /// image of the store, so a closed group, a search or a facet never hides
+    /// the link.
+    fn newer_tag(&self, image: &ImageRow, by: &assembly::FirmwareEntry) -> Option<ImageRow> {
+        let best = |row: &ImageRow| {
+            std::iter::once(&row.reference)
+                .chain(&row.aliases)
+                .filter_map(|reference| {
+                    let tag = reference.rsplit_once(':')?.1;
+                    Some((pc_image::template::precedence(tag), reference.clone()))
+                })
+                .max()
+        };
+        self.snapshot
+            .replacements
+            .iter()
+            .filter(|r| {
+                r.repository() == image.repository()
+                    && r.descriptor.digest != image.descriptor.digest
+                    && r.summary.as_ref().is_some_and(|s| {
+                        crate::firmware_choices::in_summary(s)
+                            .iter()
+                            .any(|(_, e)| e.id == by.id)
+                    })
+            })
+            .filter_map(|r| Some((best(r)?, r)))
+            .max_by(|(a, _), (b, _)| a.cmp(b))
+            .map(|((_, reference), row)| ImageRow {
+                reference,
+                ..row.clone()
+            })
     }
 
     /// The details pane of a selected image, as the machines mock-up draws
@@ -2895,6 +3073,21 @@ impl LibraryView {
                 }
             }
         });
+        for newer in image_newer(&row) {
+            let tag = self.newer_tag(&row, newer.by);
+            let hint = pane::newer_hint(
+                ui,
+                &newer,
+                "Switching publishes a new image revision under a new tag; this image and its machines stay as they are.",
+                tag.as_ref().map(|t| t.reference.as_str()),
+            );
+            if hint.switch {
+                actions.push(ImageAction::Switch(newer.slot, newer.by.id));
+            }
+            if let (true, Some(tag)) = (hint.newer_tag, tag) {
+                actions.push(ImageAction::ShowImage(Box::new(tag)));
+            }
+        }
         let labels = &mut self.labels;
         pane::split(
             ui,
@@ -2991,7 +3184,7 @@ impl LibraryView {
                 });
             },
             |ui| {
-                pane::firmware_section(ui, image_facts, false);
+                pane::firmware_section(ui, image_facts, None);
                 pane::section(ui, format!("Machines from this image ({})", made.len()));
                 if made.is_empty() {
                     pane::meta(
@@ -3123,6 +3316,11 @@ impl LibraryView {
                 match crate::settings_sheet::show_image(ctx, settings, classic) {
                     crate::settings_sheet::ImageAction::None => (),
                     crate::settings_sheet::ImageAction::Cancel => self.image_settings = None,
+                    // The Firmware library's import opens over the sheet; the
+                    // sheet rereads the packages once it imported.
+                    crate::settings_sheet::ImageAction::ImportRoms => {
+                        self.firmware_import_wanted = true
+                    }
                     crate::settings_sheet::ImageAction::Apply(close) => {
                         match settings.apply_request(close) {
                             Some((id, table)) => {
@@ -3165,13 +3363,22 @@ impl LibraryView {
         }
         if let Some(mut chosen) = self.delete.clone() {
             let mut close = false;
+            let target = self
+                .delete_package
+                .clone()
+                .or_else(|| self.selected.clone());
+            let package_users = self
+                .firmware_selected
+                .clone()
+                .filter(|_| self.delete_package.is_some())
+                .map(|row| (row.used_by.clone(), self.package_machines(&row)));
             egui::Modal::new(egui::Id::unique("delete-tag")).show(ctx, |ui| {
                 if classic {
                     crate::shell::gradient_title(ui, "Delete tag?");
                 } else {
                     ui.heading("Delete tag?");
                 }
-                if let Some(row) = &self.selected {
+                if let Some(row) = &target {
                     let tags: Vec<&String> = std::iter::once(&row.reference)
                         .chain(&row.aliases)
                         .collect();
@@ -3190,6 +3397,25 @@ impl LibraryView {
                         .filter(|tag| ***tag != chosen)
                         .map(|tag| tag.as_str())
                         .collect();
+                    if let Some((images, machines)) = &package_users {
+                        for name in machines {
+                            ui.add(
+                                egui::Label::new(format!(
+                                    "The machine \u{201c}{name}\u{201d} chooses this firmware in its own settings. It keeps the ROM by digest, so it still starts, saves and resets without this tag."
+                                ))
+                                .wrap(),
+                            );
+                        }
+                        if !images.is_empty() {
+                            ui.add(
+                                egui::Label::new(format!(
+                                    "Images that embed these ROMs keep them: {}.",
+                                    images.join(", ")
+                                ))
+                                .wrap(),
+                            );
+                        }
+                    }
                     let machines = self.machines_of(&row.descriptor.digest).len();
                     if machines > 0 {
                         ui.add(
@@ -3224,6 +3450,9 @@ impl LibraryView {
                 }
             });
             self.delete = (!close).then_some(chosen);
+            if close {
+                self.delete_package = None;
+            }
         }
         if self.layers.is_none() {
             if let Some(record) = self
@@ -5025,6 +5254,10 @@ pub(super) mod tests {
             .review
             .as_mut()
             .unwrap();
+        // open-at is the official template's name, so the suggestion is a
+        // local revision; a version of your own choice is taken as typed.
+        assert_eq!(review.save.reference(), "open-at:1.0.0-local.1");
+        review.save.set_tag("1.1.0".into());
         let target = review.save.submit().unwrap();
         assert_eq!(target.reference, "open-at:1.1.0");
         let plan = review.plan.clone().unwrap().unwrap();
@@ -5072,7 +5305,7 @@ pub(super) mod tests {
             .review
             .as_mut()
             .unwrap();
-        assert_eq!(review.save.reference(), "open-at:1.2.0");
+        assert_eq!(review.save.reference(), "open-at:1.0.0-local.1");
         review.save.set_tag("1.1.0".into());
         assert!(review.save.submit().is_none());
         assert!(matches!(
@@ -5121,8 +5354,11 @@ pub(super) mod tests {
         assert_eq!(form.title.as_deref(), Some("Open AT workbench"));
     }
 
+    /// A revision never moves a tag, `latest` included; a new tag another
+    /// program takes before Publish reaches the store is refused, and the
+    /// review asks again with the store's tags.
     #[test]
-    fn a_refused_revision_asks_again_with_the_digest_another_program_moved_the_tag_to() {
+    fn a_revision_never_moves_a_tag_and_a_tag_taken_meanwhile_is_asked_again() {
         let Some(firmware) = crate::library_test_support::FirmwareStore::new(false) else {
             return;
         };
@@ -5147,27 +5383,24 @@ pub(super) mod tests {
         let settings = view.image_settings.as_mut().unwrap();
         let review = settings.review.as_mut().unwrap();
         review.save.set_tag("latest".into());
+        assert_eq!(review.save.check().level, crate::save_image::TagLevel::Bad);
         assert!(review.save.submit().is_none());
-        let target = review.save.confirm_move().unwrap();
-        assert_eq!(target.expected, Some(row.descriptor.digest.clone()));
+        assert!(
+            review.save.confirm_move().is_none(),
+            "no Move tag? question"
+        );
+        review.save.set_tag("1.1.0".into());
+        let target = review.save.submit().unwrap();
+        assert_eq!(target.expected, None);
         let plan = review.plan.clone().unwrap().unwrap();
-        // Another program moves latest before Publish reaches the store.
+        // Another program takes open-at:1.1.0 before Publish reaches the store.
         let other = pc_image::create::create(
             &firmware.store,
             &crate::image_settings::tests::open_new_image(&firmware, 2048),
-            "open-at:other",
+            "open-at:1.1.0",
             None,
         )
         .unwrap();
-        firmware
-            .store
-            .update_tag(
-                "open-at:latest",
-                &other,
-                Some(&row.descriptor.digest),
-                &pc_image::PcProvider,
-            )
-            .unwrap();
         view.busy = true;
         view.send(Request::PublishRevision(Box::new(plan), target));
         until_view(&mut view, |view| !view.busy);
@@ -5181,17 +5414,133 @@ pub(super) mod tests {
         assert!(review.error.is_some());
         assert_eq!(
             review.save.prompt,
-            Some(crate::save_image::Prompt::Move(other.digest.clone())),
-            "the question returns with the current digest"
+            Some(crate::save_image::Prompt::Refuse(other.digest.clone())),
+            "the refusal names the image the tag names now"
         );
+        // A tag that is no version, taken meanwhile, is refused the same way.
+        let settings = view.image_settings.as_mut().unwrap();
+        let review = settings.review.as_mut().unwrap();
+        review.save.dismiss();
+        review.save.set_tag("workbench".into());
+        let target = review.save.submit().unwrap();
+        let plan = review.plan.clone().unwrap().unwrap();
+        let taken = pc_image::create::create(
+            &firmware.store,
+            &crate::image_settings::tests::open_new_image(&firmware, 3072),
+            "open-at:workbench",
+            None,
+        )
+        .unwrap();
+        view.busy = true;
+        view.send(Request::PublishRevision(Box::new(plan), target));
+        until_view(&mut view, |view| !view.busy);
+        let review = view
+            .image_settings
+            .as_ref()
+            .unwrap()
+            .review
+            .as_ref()
+            .unwrap();
+        assert!(review.error.is_some());
+        assert_eq!(review.save.check().level, crate::save_image::TagLevel::Bad);
+        assert!(!matches!(
+            review.save.prompt,
+            Some(crate::save_image::Prompt::Move(_))
+        ));
+        for (tag, digest) in [
+            ("open-at:1.1.0", &other.digest),
+            ("open-at:latest", &row.descriptor.digest),
+            ("open-at:workbench", &taken.digest),
+        ] {
+            assert_eq!(
+                &firmware.store.tag_descriptor(tag).unwrap().digest,
+                digest,
+                "{tag} never moved"
+            );
+        }
+    }
+
+    /// A machine whose own settings choose a package's ROM is one of the
+    /// package's users: its pane lists it, and Delete tag… names it.
+    #[test]
+    fn a_machine_choosing_a_package_rom_is_named_in_used_by_and_delete() {
+        let Some(firmware) = crate::library_test_support::FirmwareStore::new(true) else {
+            return;
+        };
+        let cache = firmware::tests::warm(&firmware.store);
+        let query = Query {
+            filter: Filter::Firmware,
+            ..Query::default()
+        };
+        let snap = snapshot(&cache, &query);
+        let kiselev = crate::firmware_choices::entry("kiselev-xi8088-1.0.2").unwrap();
+        let package = snap
+            .firmware_rows
+            .iter()
+            .find(|r| {
+                r.image
+                    .summary
+                    .as_ref()
+                    .and_then(|s| s.firmware.as_ref())
+                    .is_some_and(|f| f.roms.iter().any(|rom| rom.sha256 == kiselev.sha256))
+            })
+            .unwrap()
+            .clone();
+        let mut machine = machines::tests::row("chooser", "Chooser", "unused", &["open-at:1.0.0"]);
+        machine.listing.machine.settings = Some(
+            toml::from_str(&format!(
+                "[firmware.bios]\nimage='assets/firmware-0.bin'\nsha256='{}'\n",
+                kiselev.sha256
+            ))
+            .unwrap(),
+        );
+        let mut view = LibraryView::new(None);
+        view.set_machines(vec![machine]);
+        view.query = query;
+        view.snapshot = Arc::new(snap);
+        view.firmware_selected = Some(package.clone());
+        assert_eq!(view.package_machines(&package), ["Chooser"]);
+        let ctx = egui::Context::default();
+        let draw = |view: &mut LibraryView, time: f64| {
+            let output =
+                firmware::tests::frame(&ctx, egui::vec2(1400.0, 1200.0), time, vec![], |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        let mut commands = Vec::new();
+                        view.details_pane(ui, &[], &mut None, &mut commands);
+                    });
+                    let _ = view.modals(&ui.ctx().clone(), None, Vec::new(), false, false);
+                });
+            firmware::tests::texts(&output)
+                .into_iter()
+                .map(|(t, _)| t)
+                .collect::<Vec<_>>()
+        };
+        let shown = draw(&mut view, 0.0);
+        assert!(
+            shown
+                .iter()
+                .any(|t| t == "Chooser — its own firmware choice"),
+            "{shown:?}"
+        );
+        assert!(view.can_delete_package());
+        view.begin_delete();
         assert_eq!(
-            firmware
-                .store
-                .tag_descriptor("open-at:latest")
-                .unwrap()
-                .digest,
-            other.digest
+            view.delete.as_deref(),
+            Some(package.image.reference.as_str())
         );
+        let mut shown = Vec::new();
+        for frame in 1..20 {
+            shown = draw(&mut view, f64::from(frame) * 0.05);
+        }
+        assert!(
+            shown.iter().any(|t| t.starts_with(
+                "The machine \u{201c}Chooser\u{201d} chooses this firmware in its own settings."
+            )),
+            "{shown:?}"
+        );
+        assert!(shown
+            .iter()
+            .any(|t| t == &format!("Deletes {}", package.image.reference)));
     }
 
     #[test]

@@ -75,6 +75,9 @@ fn stored() -> Option<Stored> {
     cmos[0x0A] = 0x26;
     cmos[0x0B] = 0x02;
     cmos[0x0D] = 0x80;
+    // A shutdown status byte POST left behind (IBM AT Technical Reference,
+    // CMOS RAM Address Map, 0Fh): RTC state no revision may rewrite.
+    cmos[0x0F] = 0x0A;
     cmos[0x10] = 0x10;
     cmos[0x11] = 0x5A;
     cmos[0x13] = 0x33;
@@ -635,4 +638,133 @@ fn save_as_new_image_keeps_title_and_firmware_sources_and_can_retitle() {
     .unwrap_err()
     .to_string();
     assert!(error.contains("version tags never move"), "{error}");
+}
+
+/// Import the fixture ROMs `files` (vendor paths) as firmware packages, with
+/// the source archive `sources` names for an open copyleft one.
+fn import_roms(fixture: &Stored, files: &[(&str, Option<&str>)]) -> Option<Vec<Vec<u8>>> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let catalogue = pc_image::firmware::catalogue();
+    let mut roms = Vec::new();
+    for (i, (file, source)) in files.iter().enumerate() {
+        let bytes = fixtures::fixture(file)?;
+        if let Some(source) = source {
+            fixtures::fixture(source)?;
+        }
+        let folder = fixture.path.join(format!("roms-{i}"));
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("rom.bin"), &bytes).unwrap();
+        let scan = pc_image::firmware_import::scan(&[folder], catalogue).unwrap();
+        let statement = pc_image::firmware_import::Statement {
+            source: source.map(|s| root.join("vendor").join(s)),
+            ..Default::default()
+        };
+        pc_image::firmware_import::publish_with(
+            &fixture.store,
+            &scan.candidates[0],
+            &[],
+            &statement,
+            catalogue,
+        )
+        .unwrap();
+        roms.push(bytes);
+    }
+    Some(roms)
+}
+fn with_bios(source: &Source, bytes: &[u8]) -> Table {
+    let mut machine = source.machine().clone();
+    let sha256 = Digest::of(bytes).hex().to_owned();
+    let bios = table(table(&mut machine, "firmware"), "bios");
+    bios.insert(
+        "image".into(),
+        format!("assets/firmware-{}.bin", &sha256[..16]).into(),
+    );
+    bios.insert("sha256".into(), sha256.into());
+    machine
+}
+
+#[test]
+fn a_firmware_revision_binds_the_package_rom_and_resets_cmos_only_across_layouts() {
+    let Some(fixture) = stored() else {
+        return;
+    };
+    let Some(roms) = import_roms(
+        &fixture,
+        &[
+            ("kiselev-bios/bios-xi8088-atreset.bin", None),
+            (
+                "unemu-at-bios/bios-unemu-at.bin",
+                Some("unemu-at-bios/unemu-at-bios-1.0.2-unemu.3-src.tar"),
+            ),
+        ],
+    ) else {
+        return;
+    };
+    let source = Source::open(&fixture.store, &fixture.image).unwrap();
+    let firmware = |plan: &revision::Plan| -> Vec<Digest> {
+        plan.added
+            .iter()
+            .filter(|d| {
+                d.media_type != CMOS && d.decoded_media_type() != image_store::media_type::CONFIG
+            })
+            .map(|d| d.digest.clone())
+            .collect()
+    };
+
+    // The same layout: the stored CMOS stays byte for byte.
+    let plan = revision::plan(&fixture.store, &source, with_bios(&source, &roms[0])).unwrap();
+    assert!(!plan.cmos_reset);
+    assert!(plan.cmos_changes.is_empty());
+    assert_eq!(firmware(&plan).len(), 1, "the new ROM blob");
+    revision::publish(&fixture.store, &plan, "stored:1.1.0", None).unwrap();
+    assert_eq!(cmos_blob(&fixture.store, "stored:1.1.0"), fixture.cmos);
+
+    // Another layout: the revision stores the bytes its configuration
+    // derives, and the open ROM travels with its source archive.
+    let plan = revision::plan(&fixture.store, &source, with_bios(&source, &roms[1])).unwrap();
+    assert!(plan.cmos_reset);
+    assert_eq!(firmware(&plan).len(), 2, "the ROM and its source archive");
+    revision::publish(&fixture.store, &plan, "stored:2.0.0", None).unwrap();
+    let machine =
+        pc_image::resolve(&fixture.store, "stored:2.0.0", &fixture.path.join("s")).unwrap();
+    let bios = machine
+        .images
+        .iter()
+        .find_map(|image| match &image.source {
+            assembly::ImageSource::Inline(bytes) if image.base + bytes.len() as u64 == 0x100000 => {
+                Some(bytes.clone())
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(bios, roms[1]);
+    let derived = assembly::derive_cmos_config(&machine).unwrap();
+    let bytes = cmos_blob(&fixture.store, "stored:2.0.0");
+    assert_eq!(bytes[0x10..], derived[0x10..]);
+    assert_eq!(&bytes[..0x0E], &fixture.cmos[..0x0E], "the clock is kept");
+    assert_eq!(bytes[0x0F], 0x0A, "the shutdown byte is kept");
+    // The new revision names the package its new ROM came from.
+    let sources = annotations(&fixture.store, "stored:2.0.0")
+        .remove("unemu.firmware.sources")
+        .unwrap();
+    let package = pc_image::create::packages(&fixture.store)
+        .unwrap()
+        .into_iter()
+        .find(|p| {
+            p.config
+                .roms
+                .iter()
+                .any(|r| r.blob.as_ref() == Some(&Digest::of(&roms[1])))
+        })
+        .unwrap();
+    assert!(
+        sources.contains(&package.descriptor.digest.to_string()),
+        "{sources}"
+    );
+    // The source and its tag never change.
+    assert_eq!(cmos_blob(&fixture.store, "stored:1.0.0"), fixture.cmos);
+    assert_eq!(
+        fixture.store.tag_descriptor("stored:1.0.0").unwrap().digest,
+        fixture.image.digest
+    );
 }

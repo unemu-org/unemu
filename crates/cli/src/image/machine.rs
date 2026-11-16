@@ -302,9 +302,10 @@ pub fn execute(
             dry_run,
         } => {
             let current = machine::settings(&store, &id)?;
-            let (diff, cmos, note) = if clear && !dry_run {
+            let (diff, cmos, note, reset) = if clear && !dry_run {
                 let change = machine::clear_settings(&store, &id)?;
-                (change.diff, change.cmos_changes, change.cmos_note)
+                let reset = change.cmos_reset.then_some(change.cmos_layout);
+                (change.diff, change.cmos_changes, change.cmos_note, reset)
             } else if clear || !set.is_empty() {
                 let mut table = if clear {
                     current.image
@@ -315,9 +316,10 @@ pub fn execute(
                     set_path(&mut table, &path, value(&text))?;
                 }
                 let change = machine::change_settings(&store, &id, table, !dry_run)?;
-                (change.diff, change.cmos_changes, change.cmos_note)
+                let reset = change.cmos_reset.then_some(change.cmos_layout);
+                (change.diff, change.cmos_changes, change.cmos_note, reset)
             } else {
-                (current.diff, Vec::new(), None)
+                (current.diff, Vec::new(), None, None)
             };
             for line in diff {
                 match line {
@@ -337,6 +339,15 @@ pub fn execute(
             }
             if let Some(note) = note {
                 writeln!(output, "cmos-note:{note}")?;
+            }
+            // A system BIOS of another CMOS layout resets the stored CMOS to
+            // the bytes derived from the configuration.
+            if let Some(layout) = reset {
+                writeln!(
+                    output,
+                    "cmos-reset:{}",
+                    layout.map_or("unlisted BIOS", assembly::CmosLayout::label)
+                )?;
             }
         }
         Action::Commit {

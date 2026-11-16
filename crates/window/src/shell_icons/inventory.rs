@@ -36,8 +36,9 @@ pub(super) enum Place {
 }
 
 /// Characters the mock-ups use as typography, not as icons: dashes, quotes,
-/// separators and prose arrows. They need glyphs too.
-pub(super) const TYPOGRAPHY: &str = "·—–’“”…›‹→≈′µ";
+/// separators, prose arrows and the no-break space of grouped numbers. They
+/// need glyphs too.
+pub(super) const TYPOGRAPHY: &str = "·—–’“”…›‹→≈′µ\u{a0}";
 
 const MAIN: &str = "main-window.html";
 const LIBRARY: &str = "library.html";
@@ -50,6 +51,7 @@ const SAVE: &str = "save-as-image.html";
 const ACCOUNTS: &str = "registry-accounts.html";
 const TEMPLATES: &str = "get-templates.html";
 const PICKER: &str = "media-picker.html";
+const FIRMWARE_SETTINGS: &str = "firmware-settings.html";
 
 const TOOLBAR_ONLY_MACHINE: &str =
     "the app has one toolbar, the main-window mock-up's machine toolbar; \
@@ -214,6 +216,26 @@ pub(super) const INVENTORY: &[Entry] = &[
     glyph(PICKER, '⇧', "the macOS Shift key", Place::Text("macOS menu shortcuts")),
     glyph(PICKER, '×', "close", Place::Text(CLOSE)),
     glyph(PICKER, '□', "maximise", Place::Missing(SYSTEM_TITLE_BAR)),
+    // firmware-settings.html.
+    svg(FIRMWARE_SETTINGS, "fill=\"#c9d6e8\" stroke=\"#0b1a33\"", "application", Place::Painted(Icon::App, "classic title strip")),
+    svg(FIRMWARE_SETTINGS, "M4 2l10 6-10 6z", "Start", Place::Painted(Icon::Play, "toolbar Start")),
+    svg(FIRMWARE_SETTINGS, "M8 1v3M8 12v3", "Settings", Place::Painted(Icon::Settings, "toolbar Settings")),
+    svg(FIRMWARE_SETTINGS, "M8 1.5l6 3-6 3-6-3z\" fill=\"#4b79c1\"", "Save as new image", Place::Missing(TOOLBAR_ONLY_MACHINE)),
+    svg(FIRMWARE_SETTINGS, "M8 7v5M5.5 9.5h5", "Create image", Place::Missing(TOOLBAR_ONLY_MACHINE)),
+    svg(FIRMWARE_SETTINGS, "M5 14h6M8 11v3", "a machine", Place::Painted(Icon::Machine, "tree Machines, machine rows, the machine details heading")),
+    svg(FIRMWARE_SETTINGS, "M8 1.5l6 3-6 3-6-3z\" fill=\"none\"", "an image", Place::Painted(Icon::Image, "tree Images, image rows, the image details heading")),
+    svg(FIRMWARE_SETTINGS, "x=\"2.5\" y=\"1.5\" width=\"11\" height=\"13\"", "an installation media set", Place::Painted(Icon::Media, "tree Installation media, media set rows")),
+    svg(FIRMWARE_SETTINGS, "M6 1v2.5M10 1v2.5", "a firmware package", Place::Painted(Icon::Firmware, "tree Firmware, firmware package rows")),
+    svg(FIRMWARE_SETTINGS, "M5 7h6M5 9.5h6M5 12h4", "a machine file", Place::Painted(Icon::MachineFile, "tree Machine files, machine file rows")),
+    glyph(FIRMWARE_SETTINGS, '↑', "a newer version of the firmware", Place::Text("the Newer version available hint and the quiet newer BIOS badge of machine and image rows")),
+    glyph(FIRMWARE_SETTINGS, 'ⓘ', "settings of a machine or a new image revision", Place::Painted(Icon::Info, "the banner of Settings… on a machine or an image")),
+    glyph(FIRMWARE_SETTINGS, '⚠', "CMOS settings are reset", Place::Text("the Firmware tab's CMOS line for another CMOS layout")),
+    glyph(FIRMWARE_SETTINGS, '✓', "the same CMOS layout, a free tag", Place::Text("the Firmware tab's CMOS line, the revision's tag check")),
+    glyph(FIRMWARE_SETTINGS, '●', "a setting that differs from the image", Place::Text("Settings… tab labels and the differing field's hint")),
+    glyph(FIRMWARE_SETTINGS, '★', "a favourite", Place::Text("after a favourite machine's or image's name in its row and its details heading")),
+    glyph(FIRMWARE_SETTINGS, '−', "an expanded repository group", Place::Text("repository group rows")),
+    glyph(FIRMWARE_SETTINGS, '×', "close", Place::Text(CLOSE)),
+    glyph(FIRMWARE_SETTINGS, '□', "maximise", Place::Missing(SYSTEM_TITLE_BAR)),
 ];
 
 /// Characters the app paints instead of writing, because no font has them.
@@ -241,7 +263,7 @@ mod tests {
             .filter(|path| path.extension().is_some_and(|e| e == "html"))
             .collect();
         files.sort();
-        assert_eq!(files.len(), 11, "the approved mock-ups in {dir:?}");
+        assert_eq!(files.len(), 12, "the approved mock-ups in {dir:?}");
         files
             .into_iter()
             .map(|path| {
