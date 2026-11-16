@@ -32,7 +32,7 @@ use crate::{
     save_image::{self, SaveAsImage, TagLevel, Target},
 };
 use assembly::{DriveKind, FloppyGeometry};
-use egui::{text::LayoutJob, Color32, RichText, TextFormat};
+use egui::{text::LayoutJob, RichText, TextFormat};
 use image_store::Digest;
 use pc_image::inspection::{ImageDetails, MediumDetails};
 
@@ -538,11 +538,7 @@ fn tree_box(ui: &mut egui::Ui, lines: &[Line], classic: bool) {
 /// The mock-up's notice: its warning colour on its warning ground
 /// (`.notice`), with the skin's corners.
 fn notice(ui: &mut egui::Ui, text: &str, classic: bool) {
-    let ground = if ui.visuals().dark_mode {
-        Color32::from_rgb(62, 51, 32)
-    } else {
-        Color32::from_rgb(255, 243, 204)
-    };
+    let ground = pane::warn_ground(ui.visuals());
     egui::Frame::new()
         .fill(ground)
         .corner_radius(if classic { 0 } else { 6 })

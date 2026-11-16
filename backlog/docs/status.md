@@ -5,6 +5,43 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — The Insert media picker looks like its mock-up:** the
+  picker takes the approved media-picker mock-up's size, 1040 by about
+  640, inside the window's content area with room around it; below 720
+  wide or a 240-high body its content scrolls inside the window rather
+  than squeezing. The body takes the height the rows above it and the
+  footer leave, measured in the same pass, never from the frame before,
+  so the picker never grows and the footer stays inside it when the Into
+  row wraps. The Into row shows the drives as toggle buttons ("A: 1.2M ·
+  empty", what a drive holds cut to one line) and when the disk goes in;
+  the From row shows the sources as tabs and greys a tab per configured
+  registry, the default first, until after the MVP; the search field spans
+  the picker. The facets, results and details panes sit on the field
+  colour inside the library panes' inset outline. Facets are flat sections
+  under small uppercase headings, one line per value with its check box
+  and a right-aligned muted count. A result is a full-width row: a cover
+  whose title breaks between words and stays clipped inside it, the title
+  with its edition in muted text, the subtitle, and the disks, extras and
+  licence mark at the right; selection fills the whole row, and the line
+  of a selected set that does not fit stays readable on it. The details
+  pane has the cover, title and reference with the licence mark, "Disk to
+  insert" and "When a program writes to the disk" group boxes with compact
+  one-line radios ("1. Boot disk and installer · 1.2M": the label without
+  a file name such as "(x86BOOT.img)", which goes in the tooltip, while
+  "(1.2M)" or "(v2.0)" stay), the catalogue check box and the extras line;
+  it scrolls on its own for a long set. The footer right-aligns the
+  summary on one line, which names the disk as its radio button does,
+  shows the keys with key caps, and frames Browse for an image file…,
+  Insert (the default) and Cancel at the right in that order. Classic and
+  modern skins, light and dark. Not yet shown: the set's one-line
+  description, which the library's set summaries do not carry. Behaviour
+  and keys are unchanged; every control answers a click in a window test.
+  Evidence: window tests for the size at a big and two small windows, the
+  panes' fixed height across frames, the footer under wrapped top rows,
+  single-line facet values, covers clipped and broken between words, the
+  radio column, the framed right-aligned footer buttons, the label rules,
+  the registry tabs and a click on every control; the layout tests fail
+  on the previous picker.
 - **2026-11-16 — Library details panes start both columns at the top:**
   in every collection whose details pane has sections side by side
   (machines, images, installation media, firmware), the pane's head (the

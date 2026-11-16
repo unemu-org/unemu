@@ -294,7 +294,7 @@ pub(super) fn fact_text(ui: &mut Ui, label: &str, value: impl Into<egui::WidgetT
 }
 
 /// The mock-ups' colour for an open mark.
-pub(super) fn good_colour(visuals: &egui::Visuals) -> Color32 {
+pub(crate) fn good_colour(visuals: &egui::Visuals) -> Color32 {
     if visuals.dark_mode {
         Color32::from_rgb(143, 214, 160)
     } else {
@@ -355,7 +355,7 @@ fn face_colour(visuals: &egui::Visuals) -> Color32 {
 
 /// The mock-ups' second face colour: a repository's group row in a list,
 /// and the details pane's ground.
-pub(super) fn group_colour(visuals: &egui::Visuals) -> Color32 {
+pub(crate) fn group_colour(visuals: &egui::Visuals) -> Color32 {
     if visuals.dark_mode {
         Color32::from_rgb(62, 64, 69)
     } else {
@@ -364,11 +364,20 @@ pub(super) fn group_colour(visuals: &egui::Visuals) -> Color32 {
 }
 
 /// The mock-ups' shadow colour: the thin inset outline of a mini table.
-fn shadow_colour(visuals: &egui::Visuals) -> Color32 {
+pub(crate) fn shadow_colour(visuals: &egui::Visuals) -> Color32 {
     if visuals.dark_mode {
         Color32::from_rgb(31, 32, 35)
     } else {
         Color32::from_rgb(141, 138, 131)
+    }
+}
+
+/// The mock-ups' warning ground (`warn-bg`) under a notice.
+pub(crate) fn warn_ground(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        Color32::from_rgb(62, 51, 32)
+    } else {
+        Color32::from_rgb(255, 243, 204)
     }
 }
 

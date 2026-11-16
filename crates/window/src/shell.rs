@@ -1505,13 +1505,12 @@ impl Shell {
             return;
         }
         self.insert_dialog = None;
-        self.picker = Some(crate::media_picker::Picker::new(
-            targets,
-            at,
-            unit,
-            sets,
-            set.as_ref(),
-        ));
+        let mut picker = crate::media_picker::Picker::new(targets, at, unit, sets, set.as_ref());
+        // The configured registries, which the picker greys until remotes come.
+        if let Ok((config, default)) = self.registry_accounts().settings() {
+            picker.remotes = crate::media_picker::remotes(&config, &default);
+        }
+        self.picker = Some(picker);
     }
 
     fn picker_modal(&mut self, ctx: &egui::Context) {

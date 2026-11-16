@@ -13,7 +13,9 @@
 //! the existing media path for a running machine, or as a pending insert of a
 //! stopped machine in the store.
 
+use crate::library_view::pane::{good_colour, group_colour, shadow_colour, warn_ground};
 use assembly::FloppyGeometry;
+use egui::{Align, Color32, Layout, RichText, Stroke, TextStyle};
 use image_store::{Descriptor, Digest};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -304,6 +306,9 @@ pub(crate) struct Picker {
     pub journal: bool,
     pub sets: Vec<SetEntry>,
     pub remote_preview: bool,
+    /// The configured registries, each with "default" or "private" when it
+    /// is, as the From row greys them until after the MVP.
+    pub remotes: Vec<(String, String)>,
     focus: bool,
 }
 
@@ -337,6 +342,7 @@ impl Picker {
             journal: true,
             sets,
             remote_preview: false,
+            remotes: Vec::new(),
             focus: true,
         };
         if !picker.machine().drives.iter().any(|d| d.unit == unit) {
@@ -592,16 +598,17 @@ impl Picker {
         let what = match self.choice {
             Some(Choice::Set(index)) => {
                 let set = &self.sets[index];
-                let disk = &set.disks[self.chosen_disk()];
+                // The disk as its radio button names it, without the number.
+                let chosen = self.chosen_disk();
+                let disk = disk_name(&set.disks[chosen].label, chosen + 1);
                 if set.disks.len() > 1 && self.all {
                     format!(
-                        "{} — {} (all {} disks join the catalogue)",
+                        "{} — {disk} (all {} disks join the catalogue)",
                         set.title,
-                        disk.label,
                         set.disks.len()
                     )
                 } else {
-                    format!("{} — {}", set.title, disk.label)
+                    format!("{} — {disk}", set.title)
                 }
             }
             Some(Choice::Entry(unit, index)) => self
@@ -684,40 +691,287 @@ pub(crate) fn drive_name(unit: u8) -> String {
     format!("{}:", char::from(b'A' + unit))
 }
 
+/// The registries the From row greys: the default registry first, then the
+/// other configured ones, each marked default or private where it is.
+pub(crate) fn remotes(
+    config: &image_registry::config::RegistryConfig,
+    default: &str,
+) -> Vec<(String, String)> {
+    let mut remotes = vec![(default.to_owned(), "default".to_owned())];
+    for entry in &config.registries {
+        if entry.host != default {
+            let note = if entry.private { "private" } else { "" };
+            remotes.push((entry.host.clone(), note.to_owned()));
+        }
+    }
+    remotes
+}
+
 // ---- rendering -------------------------------------------------------------
 
-fn small(ui: &mut egui::Ui, text: impl Into<String>) {
-    ui.add(egui::Label::new(egui::RichText::new(text.into()).small()).wrap());
+/// The picker's outer size in a big window: the mock-up's dialog.
+const SIZE: egui::Vec2 = egui::vec2(1040.0, 640.0);
+/// The narrowest the picker lays out its content. In a narrower window the
+/// content scrolls sideways inside the window rather than squeezing.
+const MIN_WIDTH: f32 = 720.0;
+/// Room kept between the picker and each edge of the window's content area,
+/// as the mock-up's dialog keeps 12 px from the page.
+const GUTTER: f32 = 12.0;
+/// The room the separator above the footer takes.
+const SEPARATOR: f32 = 6.0;
+/// The room under the footer, inside the picker's frame.
+const BOTTOM: i8 = 4;
+/// The least height of the body. In a shorter window the picker's content
+/// scrolls inside the window instead.
+const BODY_MIN: f32 = 240.0;
+/// The facets pane's width, as the mock-up's body grid sets it.
+const FACETS_WIDTH: f32 = 178.0;
+/// The details pane's width, as the mock-up's body grid sets it; the
+/// results pane takes the rest.
+const DETAILS_WIDTH: f32 = 300.0;
+/// The widest a drive's toggle button grows; what the drive holds is cut
+/// short beyond it.
+const SEGMENT_WIDTH: f32 = 260.0;
+/// The mock-up's gap between the body's panes.
+const PANE_GAP: f32 = 3.0;
+/// The mock-up's 11 px meta text beside its 12 px body text.
+const SMALL_SIZE: f32 = 11.0;
+/// A result row: the mock-up's 36 × 48 cover with 6 px above and below.
+const ROW_HEIGHT: f32 = 60.0;
+/// The cover of a result row.
+const ROW_COVER: egui::Vec2 = egui::vec2(36.0, 48.0);
+/// The details pane's cover: the mock-up's 60 px wide 3:4 tile.
+const DETAILS_COVER: egui::Vec2 = egui::vec2(60.0, 80.0);
+/// The cover placeholder's colour at its top; it fades to near black.
+const COVER_COLOUR: Color32 = Color32::from_rgb(0x2b, 0x3a, 0x55);
+/// A catalogue disk's cover: the mock-up's plain grey tile.
+const ENTRY_COVER_COLOUR: Color32 = Color32::from_rgb(0x55, 0x55, 0x55);
+
+/// The mock-ups' hover colour (`hover`) under a result row.
+fn hover_colour(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        Color32::from_rgb(47, 58, 77)
+    } else {
+        Color32::from_rgb(223, 230, 242)
+    }
+}
+
+/// Muted small text, wrapped: the mock-up's hints.
+fn hint(ui: &mut egui::Ui, text: impl Into<String>) {
+    ui.add(egui::Label::new(RichText::new(text.into()).small().weak()).wrap());
+}
+
+/// A hint under a check box or radio button, in line with its text.
+fn hint_under(ui: &mut egui::Ui, text: impl Into<String>) {
+    let spacing = ui.spacing();
+    let indent = (spacing.icon_width + spacing.icon_spacing - spacing.item_spacing.x).max(0.0);
+    ui.horizontal_top(|ui| {
+        ui.add_space(indent);
+        hint(ui, text);
+    });
+}
+
+/// A label in the body style, strong when `strong`, followed by meta text
+/// in the small muted style, as one text.
+fn label_and_meta(ui: &egui::Ui, label: &str, strong: bool, meta: &str) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let mut label = RichText::new(label);
+    if strong {
+        label = label.strong();
+    }
+    let font = egui::FontSelection::Default;
+    label.append_to(&mut job, ui.style(), font.clone(), Align::Center);
+    RichText::new(meta)
+        .small()
+        .weak()
+        .append_to(&mut job, ui.style(), font, Align::Center);
+    job
+}
+
+/// A title and the edition in parentheses after it, as the mock-up sets
+/// them apart: "FreeDOS 1.4 (Floppy Edition, 1.2M)" is the title
+/// "FreeDOS 1.4" and the edition "(Floppy Edition, 1.2M)". The edition is
+/// the outermost parenthesis that ends the title.
+fn title_parts(title: &str) -> (&str, &str) {
+    if !title.ends_with(')') {
+        return (title, "");
+    }
+    let mut depth = 0usize;
+    for (at, c) in title.char_indices().rev() {
+        match c {
+            ')' => depth += 1,
+            '(' => {
+                depth -= 1;
+                if depth == 0 {
+                    let head = title[..at].trim_end();
+                    return if head.is_empty() || head.len() == at {
+                        (title, "")
+                    } else {
+                        (head, &title[at..])
+                    };
+                }
+            }
+            _ => (),
+        }
+    }
+    (title, "")
+}
+
+/// Whether `name` is a file name: a stem, a dot and an extension of one to
+/// four letters and digits that starts with a letter, with no spaces.
+fn is_file_name(name: &str) -> bool {
+    match name.rsplit_once('.') {
+        Some((stem, extension)) => {
+            !stem.is_empty()
+                && !name.contains(char::is_whitespace)
+                && (1..=4).contains(&extension.len())
+                && extension.chars().all(|c| c.is_ascii_alphanumeric())
+                && extension.starts_with(|c: char| c.is_ascii_alphabetic())
+        }
+        None => false,
+    }
+}
+
+/// A disk's label without a file name in parentheses at its end, and that
+/// file name: "Disk 1 of 8 - packages (x86DSK01.img)" is "Disk 1 of 8 -
+/// packages" from "x86DSK01.img". Other parentheses, as "(1.2M)" or
+/// "(v2.0)", stay in the label.
+fn label_without_file(label: &str) -> (&str, Option<&str>) {
+    if let Some(rest) = label.strip_suffix(')') {
+        if let Some(at) = rest.rfind(" (") {
+            let file = &rest[at + 2..];
+            if at > 0 && is_file_name(file) {
+                return (&label[..at], Some(file));
+            }
+        }
+    }
+    (label, None)
+}
+
+/// A disk by its label, as its radio button names it after its number and
+/// the summary names it: the label without the file name, and without a
+/// leading "Disk N of M -" that only repeats the number. A first word in
+/// lower case then starts with a capital.
+fn disk_name(label: &str, number: usize) -> String {
+    let (label, _) = label_without_file(label);
+    let rest = label
+        .strip_prefix(&format!("Disk {number} of "))
+        .map(|rest| rest.trim_start_matches(|c: char| c.is_ascii_digit()))
+        .and_then(|rest| {
+            [" - ", " – ", " — ", ": ", ", "]
+                .iter()
+                .find_map(|separator| rest.strip_prefix(separator))
+        })
+        .filter(|rest| !rest.is_empty());
+    let Some(rest) = rest else {
+        return label.to_owned();
+    };
+    let first = rest.split_whitespace().next().unwrap_or_default();
+    if first.chars().all(|c| c.is_ascii_lowercase()) {
+        let mut chars = rest.chars();
+        chars
+            .next()
+            .map(|c| c.to_ascii_uppercase().to_string() + chars.as_str())
+            .unwrap_or_default()
+    } else {
+        rest.to_owned()
+    }
+}
+
+/// A cover's title in lines no wider than `width`: whole words packed onto
+/// each line, at most `rows` lines. A word wider than the cover keeps a
+/// line of its own, unbroken; the cover's clip cuts it.
+fn cover_lines(
+    painter: &egui::Painter,
+    text: &str,
+    font: &egui::FontId,
+    width: f32,
+    rows: usize,
+) -> Vec<String> {
+    let fits = |line: &str| {
+        painter
+            .layout_no_wrap(line.to_owned(), font.clone(), Color32::WHITE)
+            .size()
+            .x
+            <= width
+    };
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        if let Some(last) = lines.last_mut() {
+            let longer = format!("{last} {word}");
+            if fits(&longer) {
+                *last = longer;
+                continue;
+            }
+        }
+        if lines.len() == rows {
+            break;
+        }
+        lines.push(word.to_owned());
+    }
+    lines
 }
 
 /// A cover placeholder: the set's short title on a dark tile, as the mock-up
-/// draws it until covers come with the registry catalogue.
-fn cover(ui: &mut egui::Ui, title: &str, size: egui::Vec2) {
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    ui.painter()
-        .rect_filled(rect, 2.0, egui::Color32::from_rgb(0x2b, 0x3a, 0x55));
-    let short: String = title.chars().take(10).collect();
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        short,
-        egui::FontId::proportional(9.0),
-        egui::Color32::WHITE,
-    );
+/// draws it until covers come with the registry catalogue. The title breaks
+/// between words into at most three centred lines; a line wider than the
+/// tile starts at its left edge, so its start stays readable, and the tile
+/// clips it.
+fn paint_cover(painter: &egui::Painter, rect: egui::Rect, text: &str, top: Color32, size: f32) {
+    let painter = painter.with_clip_rect(rect);
+    let bottom = Color32::from_rgb(0x0b, 0x0b, 0x0b);
+    let mut mesh = egui::Mesh::default();
+    for (pos, colour) in [
+        (rect.left_top(), top),
+        (rect.right_top(), top),
+        (rect.right_bottom(), bottom),
+        (rect.left_bottom(), bottom),
+    ] {
+        mesh.colored_vertex(pos, colour);
+    }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    painter.add(mesh);
+    let font = egui::FontId::monospace(size);
+    let room = rect.width() - 4.0;
+    let galleys: Vec<_> = cover_lines(&painter, text, &font, room, 3)
+        .into_iter()
+        .map(|line| painter.layout_no_wrap(line, font.clone(), Color32::WHITE))
+        .collect();
+    let height: f32 = galleys.iter().map(|g| g.size().y).sum();
+    let mut y = (rect.center().y - height / 2.0).max(rect.top() + 2.0);
+    for galley in galleys {
+        let width = galley.size().x;
+        let x = if width > room {
+            rect.left() + 2.0
+        } else {
+            rect.center().x - width / 2.0
+        };
+        let line_height = galley.size().y;
+        painter.galley(egui::pos2(x, y), galley, Color32::WHITE);
+        y += line_height;
+    }
 }
 
-/// The height of the picker's body: the facets, results and details columns.
-const BODY_HEIGHT: f32 = 300.0;
-
-/// One column of the body, `width` wide, scrolling inside the body's height.
-fn column(ui: &mut egui::Ui, width: f32, id: &str, content: impl FnOnce(&mut egui::Ui)) {
-    ui.vertical(|ui| {
-        ui.set_width(width);
-        egui::ScrollArea::vertical()
-            .id_salt(id)
-            .max_height(BODY_HEIGHT)
-            .show(ui, content);
-    });
+/// The picker's text sizes and control outlines: the mock-up's 11 px meta
+/// text, and an outline on resting buttons, boxes and fields where the skin
+/// draws none, so every button reads as a framed button and every check
+/// box as a box, as in the library's panes.
+fn style(ui: &mut egui::Ui) {
+    let style = ui.style_mut();
+    if let Some(font) = style.text_styles.get_mut(&TextStyle::Small) {
+        font.size = SMALL_SIZE;
+    }
+    let visuals = &mut style.visuals;
+    if visuals.widgets.inactive.bg_stroke.is_empty() {
+        let outline = visuals
+            .widgets
+            .noninteractive
+            .fg_stroke
+            .color
+            .gamma_multiply(0.45);
+        visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, outline);
+    }
 }
 
 /// Draw the picker; returns what the user chose to do.
@@ -774,89 +1028,54 @@ pub(crate) fn show(ctx: &egui::Context, picker: &mut Picker, classic: bool) -> O
     let machine_name = picker.machine().name.clone();
     let mut double = false;
     egui::Modal::new(egui::Id::unique("media-picker")).show(ctx, |ui| {
-        ui.set_width(760.0);
-        let title = format!("Insert disk — {machine_name}");
-        if classic {
-            crate::shell::gradient_title(ui, &title);
-        } else {
-            ui.heading(title);
-        }
-        target_row(ui, picker);
-        ui.separator();
-        source_row(ui, picker);
-        ui.horizontal(|ui| {
-            let mut query = picker.query.clone();
-            let response = ui.add_enabled(
-                picker.source == Source::Library,
-                egui::TextEdit::singleline(&mut query)
-                    .id(search)
-                    .desired_width(420.0)
-                    .hint_text(if picker.source == Source::Library {
-                        "Search title, publisher, year…  (publisher:apogee, format:720k)"
-                    } else {
-                        "Search works on This library"
-                    }),
-            );
-            if std::mem::take(&mut picker.focus) {
-                response.request_focus();
-            }
-            picker.set_query(query);
-            let chips: Vec<(String, String)> = picker
-                .facets
-                .iter()
-                .flat_map(|(name, values)| values.iter().map(move |v| (name.clone(), v.clone())))
-                .collect();
-            for (name, value) in chips {
-                if ui.small_button(format!("{name}: {value} ×")).clicked() {
-                    picker.toggle_facet(&name, &value);
+        style(ui);
+        // The mock-up's size, inside the window's content area with room
+        // around it. The body takes what the rows above it, laid out this
+        // pass at that width, and the footer leave, never what was laid out
+        // the frame before: a modal lays its content out inside the size it
+        // measured last frame, and a body sized from that would grow the
+        // picker frame by frame. Below the least size the content keeps its
+        // size and scrolls inside the window. The scroll area is offered that
+        // whole size, as the modal offers only last frame's size, and egui's
+        // small default size on the first frame.
+        let margin = egui::Frame::popup(ui.style()).total_margin().sum();
+        let room = ui.ctx().content_rect().size() - egui::Vec2::splat(2.0 * GUTTER);
+        let view = (room.min(SIZE) - margin).max(egui::Vec2::ZERO);
+        let width = view.x.max(MIN_WIDTH - margin.x);
+        egui::ScrollArea::both()
+            .id_salt("media-picker-scroll")
+            .max_width(view.x)
+            .max_height(view.y)
+            .min_scrolled_width(view.x)
+            .min_scrolled_height(view.y)
+            .show(ui, |ui| {
+                ui.set_width(width);
+                let top = ui.cursor().top();
+                let title = format!("Insert disk — {machine_name}");
+                if classic {
+                    crate::shell::gradient_title(ui, &title);
+                } else {
+                    ui.heading(title);
                 }
-            }
-        });
-        // The facets, results and details share one fixed height, as the
-        // mock-up's body does, and each scrolls inside it. A vertical
-        // separator takes all the height on offer, and a modal offers the
-        // height it measured last frame: in a row without a bound the
-        // separators would grow the modal by its footer's height every frame.
-        let body = egui::vec2(ui.available_width(), BODY_HEIGHT);
-        ui.allocate_ui_with_layout(body, egui::Layout::left_to_right(egui::Align::Min), |ui| {
-            ui.set_min_height(BODY_HEIGHT);
-            column(ui, 170.0, "picker-facets", |ui| facets(ui, picker));
-            ui.separator();
-            column(ui, 300.0, "picker-results", |ui| {
-                results(ui, picker, &mut double);
+                egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        left: 6,
+                        right: 6,
+                        top: 4,
+                        bottom: BOTTOM,
+                    })
+                    .show(ui, |ui| {
+                        target_row(ui, picker, classic);
+                        source_row(ui, picker, classic);
+                        search_row(ui, picker, search);
+                        let above = ui.cursor().top() - top;
+                        let body_height = (view.y - above - footer_height(ui)).max(BODY_MIN);
+                        body(ui, picker, classic, body_height, &mut double);
+                        if let Some(chosen) = footer(ui, picker) {
+                            outcome = Some(chosen);
+                        }
+                    });
             });
-            ui.separator();
-            column(ui, 250.0, "picker-details", |ui| details(ui, picker));
-        });
-        ui.separator();
-        let problem = picker.problem();
-        let summary = picker.summary();
-        if problem.is_some() {
-            ui.colored_label(ui.visuals().warn_fg_color, summary);
-        } else {
-            ui.label(summary);
-        }
-        small(
-            ui,
-            "Type to search · ↑↓ choose · Enter inserts · Alt+A Alt+B drive · Esc closes",
-        );
-        ui.horizontal(|ui| {
-            let unit = picker.unit;
-            if ui.button("Browse for an image file…").clicked() {
-                outcome = Some(Outcome::Browse(unit));
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Cancel").clicked() {
-                    outcome = Some(Outcome::Cancel);
-                }
-                if ui
-                    .add_enabled(problem.is_none(), egui::Button::new("Insert"))
-                    .clicked()
-                {
-                    outcome = picker.insert();
-                }
-            });
-        });
         // Escape closes an open drop-down first, then the picker.
         if !egui::Popup::is_any_open(ui.ctx()) && ui.input_mut(crate::shell::escape_pressed) {
             outcome = Some(Outcome::Cancel);
@@ -869,9 +1088,43 @@ pub(crate) fn show(ctx: &egui::Context, picker: &mut Picker, classic: bool) -> O
     outcome
 }
 
-fn target_row(ui: &mut egui::Ui, picker: &mut Picker) {
+/// A row's muted label, Into or From, in the mock-up's 50 px column.
+fn row_label(ui: &mut egui::Ui, text: &str) {
+    let height = ui.spacing().interact_size.y;
+    ui.allocate_ui_with_layout(
+        egui::vec2(50.0, height),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            ui.set_min_width(50.0);
+            ui.label(RichText::new(text).weak());
+        },
+    );
+}
+
+/// One button of the mock-up's segmented control (`.seg`): framed at rest,
+/// and sunken on the field colour when chosen.
+fn segment(
+    ui: &mut egui::Ui,
+    chosen: bool,
+    text: impl Into<egui::WidgetText>,
+    classic: bool,
+) -> egui::Response {
+    let mut button = egui::Button::new(text);
+    if chosen {
+        button = button.fill(ui.visuals().text_edit_bg_color());
+    }
+    let response = ui.add(button);
+    if chosen && classic && ui.is_rect_visible(response.rect) {
+        crate::shell::bevel(ui, response.rect, true);
+    }
+    response
+}
+
+/// The mock-up's Into row: the machine, its drives as toggle buttons, and
+/// when the disk goes in.
+fn target_row(ui: &mut egui::Ui, picker: &mut Picker, classic: bool) {
     ui.horizontal_wrapped(|ui| {
-        ui.strong("Into");
+        row_label(ui, "Into");
         let stopped = picker.machine().when == When::AtStart && picker.machine().id.is_some();
         let current = picker.target;
         let label = |t: &Target| match t.when {
@@ -903,65 +1156,98 @@ fn target_row(ui: &mut egui::Ui, picker: &mut Picker) {
             .map(|d| {
                 (
                     d.unit,
-                    format!(
-                        "{} {} · {}",
-                        drive_name(d.unit),
-                        format_name(d.geometry),
-                        d.holds
-                    ),
+                    format!(" {} · {}", format_name(d.geometry), d.holds),
                 )
             })
             .collect();
-        for (unit, text) in drives {
-            if ui
-                .selectable_label(picker.unit == unit, text)
-                .on_hover_text(format!("Alt+{}", char::from(b'A' + unit)))
-                .clicked()
-            {
-                picker.switch_drive(unit);
+        ui.scope(|ui| {
+            // The drives sit side by side as one segmented control, each on
+            // one line: what a drive holds is cut short when long, and its
+            // tooltip says it whole.
+            ui.spacing_mut().item_spacing.x = 0.0;
+            for (unit, rest) in drives {
+                let chosen = picker.unit == unit;
+                let name = drive_name(unit);
+                let mut text = label_and_meta(ui, &name, chosen, &rest);
+                text.wrap = egui::text::TextWrapping {
+                    max_width: SEGMENT_WIDTH,
+                    max_rows: 1,
+                    break_anywhere: true,
+                    overflow_character: Some('…'),
+                };
+                let text = ui.painter().layout_job(text);
+                let key = format!("Alt+{}", char::from(b'A' + unit));
+                let tip = if text.elided {
+                    format!("{name}{rest}\n{key}")
+                } else {
+                    key
+                };
+                if segment(ui, chosen, text, classic)
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    picker.switch_drive(unit);
+                }
             }
-        }
-        let when = match picker.machine().when {
-            When::Now => "Running: goes in now",
-            When::Halted => "Halted: goes in now, then Ctrl+Alt+Del boots from it",
-            When::AtStart => "Stopped: goes in at the next Start",
+        });
+        let when = picker.machine().when;
+        let (text, colour) = match when {
+            When::Now => ("Running: goes in now", good_colour(ui.visuals())),
+            When::Halted => (
+                "Halted: goes in now, then Ctrl+Alt+Del boots from it",
+                good_colour(ui.visuals()),
+            ),
+            When::AtStart => (
+                "Stopped: goes in at the next Start",
+                ui.visuals().weak_text_color(),
+            ),
         };
-        ui.strong(when);
+        ui.label(RichText::new(text).small().color(colour));
     });
 }
 
-fn source_row(ui: &mut egui::Ui, picker: &mut Picker) {
+/// The mock-up's From row: the sources as tabs, the remotes greyed until
+/// after the MVP, and the remote preview link.
+fn source_row(ui: &mut egui::Ui, picker: &mut Picker, classic: bool) {
     ui.horizontal_wrapped(|ui| {
-        ui.strong("From");
+        row_label(ui, "From");
         let in_machine: usize = picker
             .machine()
             .drives
             .iter()
             .map(|d| d.catalogue.len())
             .sum();
-        if ui
-            .selectable_label(
-                picker.source == Source::Machine,
-                format!("This machine ({in_machine})"),
-            )
-            .clicked()
-        {
-            picker.set_source(Source::Machine);
-        }
-        if ui
-            .selectable_label(
-                picker.source == Source::Library,
-                format!("This library ({})", picker.sets.len()),
-            )
-            .clicked()
-        {
-            picker.set_source(Source::Library);
-        }
-        ui.add_enabled(
-            false,
-            egui::Button::selectable(false, "Remotes · after the MVP"),
-        )
-        .on_disabled_hover_text("Remotes come after the MVP");
+        let sources = [
+            (Source::Machine, "This machine", in_machine),
+            (Source::Library, "This library", picker.sets.len()),
+        ];
+        ui.scope(|ui| {
+            // The sources sit side by side as one segmented control.
+            ui.spacing_mut().item_spacing.x = 0.0;
+            for (source, name, count) in sources {
+                let chosen = picker.source == source;
+                let text = label_and_meta(ui, name, chosen, &format!(" ({count})"));
+                if segment(ui, chosen, text, classic).clicked() {
+                    picker.set_source(source);
+                }
+            }
+            // The configured registries, greyed until after the MVP.
+            let remotes = if picker.remotes.is_empty() {
+                vec![("Remotes".to_owned(), String::new())]
+            } else {
+                picker.remotes.clone()
+            };
+            for (host, note) in remotes {
+                let meta = if note.is_empty() {
+                    " · after the MVP".to_owned()
+                } else {
+                    format!(" {note} · after the MVP")
+                };
+                let text = label_and_meta(ui, &host, false, &meta);
+                ui.add_enabled(false, egui::Button::new(text))
+                    .on_disabled_hover_text("Remotes come after the MVP");
+            }
+        });
         if ui
             .link(if picker.remote_preview {
                 "Hide the remote preview"
@@ -975,99 +1261,475 @@ fn source_row(ui: &mut egui::Ui, picker: &mut Picker) {
     });
 }
 
+/// The search field across the picker, with a chip per chosen facet value
+/// after it. The field takes the row but for the chips, which keeps it first
+/// for Tab; the chips' width comes from the pass before, and when it changes,
+/// egui lays the frame out again.
+fn search_row(ui: &mut egui::Ui, picker: &mut Picker, search: egui::Id) {
+    let chips: Vec<(String, String)> = picker
+        .facets
+        .iter()
+        .flat_map(|(name, values)| values.iter().map(move |v| (name.clone(), v.clone())))
+        .collect();
+    let id = egui::Id::unique("media-picker-chips-width");
+    let known = ui.data(|data| data.get_temp::<f32>(id)).unwrap_or(0.0);
+    ui.horizontal(|ui| {
+        let mut query = picker.query.clone();
+        let response = ui.add_enabled(
+            picker.source == Source::Library,
+            egui::TextEdit::singleline(&mut query)
+                .id(search)
+                .margin(egui::Margin::symmetric(8, 4))
+                .desired_width((ui.available_width() - known).max(120.0))
+                .hint_text(if picker.source == Source::Library {
+                    "Search title, publisher, year…  (publisher:apogee, format:720k)"
+                } else {
+                    "Search works on This library"
+                }),
+        );
+        if std::mem::take(&mut picker.focus) {
+            response.request_focus();
+        }
+        picker.set_query(query);
+        let mut width = 0.0;
+        for (name, value) in chips {
+            let chip = ui.small_button(format!("{name}: {value} ×"));
+            width += chip.rect.width() + ui.spacing().item_spacing.x;
+            if chip.clicked() {
+                picker.toggle_facet(&name, &value);
+            }
+        }
+        if (known - width).abs() > 0.5 {
+            ui.data_mut(|data| data.insert_temp(id, width));
+            ui.ctx()
+                .request_discard("the media picker measured its facet chips");
+        }
+    });
+}
+
+/// The body: the facets, results and details panes side by side, each on
+/// the field colour inside the inset outline, as the library's panes, and
+/// each scrolling inside the body's fixed height.
+fn body(ui: &mut egui::Ui, picker: &mut Picker, classic: bool, height: f32, double: &mut bool) {
+    ui.add_space(2.0);
+    let width = ui.available_width();
+    let results_width = (width - FACETS_WIDTH - DETAILS_WIDTH - 2.0 * PANE_GAP).max(0.0);
+    let (_, rect) = ui.allocate_space(egui::vec2(width, height));
+    let at = |left: f32, width: f32| {
+        egui::Rect::from_min_size(egui::pos2(left, rect.top()), egui::vec2(width, height))
+    };
+    let results_left = rect.left() + FACETS_WIDTH + PANE_GAP;
+    let details_left = results_left + results_width + PANE_GAP;
+    pane(
+        ui,
+        at(rect.left(), FACETS_WIDTH),
+        classic,
+        "picker-facets",
+        4,
+        |ui| facets(ui, picker),
+    );
+    pane(
+        ui,
+        at(results_left, results_width),
+        classic,
+        "picker-results",
+        0,
+        |ui| results(ui, picker, double),
+    );
+    pane(
+        ui,
+        at(details_left, DETAILS_WIDTH),
+        classic,
+        "picker-details",
+        8,
+        |ui| details(ui, picker, classic),
+    );
+}
+
+/// One pane of the body at `rect`: the field colour inside the inset
+/// outline, `padding` in from it, and what `add` draws scrolling inside.
+fn pane(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    classic: bool,
+    id: &str,
+    padding: i8,
+    add: impl FnOnce(&mut egui::Ui),
+) {
+    let mut ui = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt(id)
+            .max_rect(rect)
+            .layout(Layout::top_down(Align::Min)),
+    );
+    crate::library_view::pane::sunken(&mut ui, classic, padding, |ui| {
+        let inner = ui.available_size();
+        ui.set_min_size(inner);
+        egui::ScrollArea::vertical()
+            .id_salt(id)
+            .max_height(inner.y)
+            .auto_shrink([false, false])
+            .show(ui, add);
+    });
+}
+
+/// The facets: flat sections under the mock-up's small uppercase headings,
+/// one line per value with its check box and its count.
 fn facets(ui: &mut egui::Ui, picker: &mut Picker) {
     if picker.source != Source::Library {
-        small(ui, "Filters apply to This library.");
+        hint(ui, "Filters apply to This library.");
         return;
     }
-    ui.strong("Filters");
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
     let unit = drive_name(picker.unit);
     let mut toggled = None;
-    for name in FACETS {
+    for (index, name) in FACETS.into_iter().enumerate() {
+        if index > 0 {
+            ui.add_space(6.0);
+        }
+        ui.label(
+            RichText::new(name.to_uppercase())
+                .small()
+                .color(ui.visuals().weak_text_color())
+                .extra_letter_spacing(0.3),
+        );
         let values = picker.facet_values(name);
-        egui::CollapsingHeader::new(name)
-            .id_salt(("picker-facet", name))
-            .default_open(matches!(name, "Format" | "Genre"))
-            .show(ui, |ui| {
-                if values.is_empty() {
-                    ui.weak("none here");
-                }
-                for (value, count, fits) in values {
-                    let mut on = picker.facets.get(name).is_some_and(|v| v.contains(&value));
-                    let label = if fits {
-                        format!("{value} ({count})")
-                    } else {
-                        format!("{value} · doesn't fit {unit} ({count})")
-                    };
-                    if ui
-                        .add_enabled(count > 0 || on, egui::Checkbox::new(&mut on, label))
-                        .changed()
-                    {
-                        toggled = Some((name, value));
-                    }
-                }
-            });
+        if values.is_empty() {
+            hint(ui, "none here");
+        }
+        for (value, count, fits) in values {
+            let mut on = picker.facets.get(name).is_some_and(|v| v.contains(&value));
+            let label = if fits {
+                RichText::new(value.clone())
+            } else {
+                RichText::new(format!("{value} · doesn't fit {unit}")).weak()
+            };
+            let enabled = count > 0 || on;
+            if facet_value(ui, &mut on, enabled, label, count) {
+                toggled = Some((name, value));
+            }
+        }
     }
     if let Some((name, value)) = toggled {
         picker.toggle_facet(name, &value);
     }
 }
 
+/// One facet value on one line: its check box with the value, cut short
+/// when long, and the count right-aligned in muted text. True when the box
+/// was toggled.
+fn facet_value(
+    ui: &mut egui::Ui,
+    on: &mut bool,
+    enabled: bool,
+    label: RichText,
+    count: usize,
+) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        let count = RichText::new(count.to_string()).small().weak();
+        let count_width = egui::WidgetText::from(count.clone())
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                TextStyle::Small,
+            )
+            .size()
+            .x;
+        let room = (ui.available_width() - count_width - ui.spacing().item_spacing.x).max(0.0);
+        ui.scope(|ui| {
+            ui.set_max_width(room);
+            changed = ui
+                .add_enabled(enabled, egui::Checkbox::new(on, label))
+                .changed();
+        });
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.label(count);
+        });
+    });
+    changed
+}
+
+/// What a result row shows: the mock-up's cover, title and subtitle at the
+/// left, and its meta on the first line at the right.
+struct RowView<'a> {
+    /// The row's name for assistive technology: the whole title.
+    name: &'a str,
+    cover: &'a str,
+    cover_colour: Color32,
+    title: &'a str,
+    edition: &'a str,
+    subtitle: String,
+    meta: Vec<Meta>,
+    selected: bool,
+    misfit: bool,
+}
+
+/// One item of a result row's meta.
+enum Meta {
+    /// The disks, as "2 × 1.2M", in strong text.
+    Disks(String),
+    /// Plain text, as "1 extra".
+    Text(String),
+    /// A framed mark: the licence (open or private), or the drives whose
+    /// catalogues hold the set.
+    Badge(String, Option<bool>),
+}
+
+/// A result row across the results pane, as the mock-up's `.res`: hovered
+/// and selected rows take the hover and selection colours across the whole
+/// row, and a row that does not fit is faded. `fit` draws the line under the
+/// title of a row that does not fit. A click or double-click anywhere on the
+/// row answers through the returned response.
+fn result_row(
+    ui: &mut egui::Ui,
+    view: &RowView<'_>,
+    fit: Option<&mut dyn FnMut(&mut egui::Ui)>,
+) -> egui::Response {
+    let width = ui.available_width();
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::Role::ListBoxOption, true, view.selected, view.name)
+    });
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let visuals = ui.visuals().clone();
+    let mut painter = ui.painter().clone();
+    if view.misfit {
+        painter.multiply_opacity(if view.selected { 0.8 } else { 0.55 });
+    }
+    if view.selected {
+        painter.rect_filled(rect, 0.0, visuals.selection.bg_fill);
+    } else if response.hovered() {
+        painter.rect_filled(rect, 0.0, hover_colour(&visuals));
+    }
+    painter.hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        Stroke::new(1.0, visuals.panel_fill),
+    );
+    let inner = rect.shrink2(egui::vec2(8.0, 6.0));
+    let cover = egui::Rect::from_min_size(inner.min, ROW_COVER);
+    paint_cover(&painter, cover, view.cover, view.cover_colour, 10.0);
+    let selected_ink = visuals.selection.stroke.color;
+    let (ink, strong, muted) = if view.selected {
+        (selected_ink, selected_ink, selected_ink)
+    } else {
+        (
+            visuals.text_color(),
+            visuals.strong_text_color(),
+            visuals.weak_text_color(),
+        )
+    };
+    let small = TextStyle::Small.resolve(ui.style());
+    let body = TextStyle::Body.resolve(ui.style());
+    // The meta, right to left along the first line.
+    let mut right = inner.right();
+    let line = egui::Rect::from_min_size(inner.min, egui::vec2(inner.width(), 16.0));
+    for meta in view.meta.iter().rev() {
+        let (text, colour, framed) = match meta {
+            Meta::Disks(text) => (text, strong, false),
+            Meta::Text(text) => (text, ink, false),
+            Meta::Badge(text, open) => (
+                text,
+                match open {
+                    Some(true) => good_colour(&visuals),
+                    Some(false) => visuals.warn_fg_color,
+                    None => visuals.text_color(),
+                },
+                true,
+            ),
+        };
+        let galley = painter.layout_no_wrap(text.clone(), small.clone(), colour);
+        let pad = if framed { 4.0 } else { 0.0 };
+        let size = galley.size() + egui::vec2(2.0 * pad, 0.0);
+        let at = egui::Rect::from_min_size(
+            egui::pos2(right - size.x, line.center().y - size.y / 2.0),
+            size,
+        );
+        if framed {
+            painter.rect_filled(at, 0.0, visuals.panel_fill);
+            painter.rect_stroke(
+                at,
+                0.0,
+                Stroke::new(1.0, shadow_colour(&visuals)),
+                egui::StrokeKind::Inside,
+            );
+        }
+        painter.galley(at.min + egui::vec2(pad, 0.0), galley, colour);
+        right = at.left() - 5.0;
+    }
+    // The title and the subtitle, cut short before the meta.
+    let left = cover.right() + 10.0;
+    let text_width = (right - 5.0 - left).max(0.0);
+    let one_line = |job: &mut egui::text::LayoutJob| {
+        job.wrap = egui::text::TextWrapping {
+            max_width: text_width,
+            max_rows: 1,
+            break_anywhere: true,
+            overflow_character: Some('…'),
+        };
+    };
+    let mut title = egui::text::LayoutJob::default();
+    title.append(
+        view.title,
+        0.0,
+        egui::TextFormat::simple(body.clone(), strong),
+    );
+    if !view.edition.is_empty() {
+        title.append(
+            view.edition,
+            4.0,
+            egui::TextFormat::simple(body, if view.selected { ink } else { muted }),
+        );
+    }
+    one_line(&mut title);
+    let title = painter.layout_job(title);
+    let subtitle_top = inner.top() + title.size().y + 1.0;
+    painter.galley(egui::pos2(left, inner.top()), title, ink);
+    let mut subtitle = egui::text::LayoutJob::single_section(
+        view.subtitle.clone(),
+        egui::TextFormat::simple(small, muted),
+    );
+    one_line(&mut subtitle);
+    let subtitle = painter.layout_job(subtitle);
+    let fit_top = subtitle_top + subtitle.size().y + 2.0;
+    painter.galley(egui::pos2(left, subtitle_top), subtitle, muted);
+    if let Some(fit) = fit {
+        let area = egui::Rect::from_min_max(egui::pos2(left, fit_top), inner.right_bottom());
+        let mut line = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(response.id)
+                .max_rect(area)
+                .layout(Layout::left_to_right(Align::Min)),
+        );
+        if view.misfit {
+            line.multiply_opacity(if view.selected { 0.8 } else { 0.55 });
+        }
+        if view.selected {
+            // Muted text on the selection would all but vanish.
+            line.visuals_mut().override_text_color = Some(ink);
+            line.visuals_mut().weak_text_color = Some(ink);
+        }
+        line.spacing_mut().item_spacing.x = 4.0;
+        fit(&mut line);
+    }
+    response
+}
+
+/// A group row of the results, as the mock-up's `.pk-group`: small muted
+/// text on the second face colour, across the pane.
+fn group_row(ui: &mut egui::Ui, text: impl Into<String>) {
+    egui::Frame::new()
+        .fill(group_colour(ui.visuals()))
+        .inner_margin(egui::Margin {
+            left: 8,
+            right: 8,
+            top: 6,
+            bottom: 3,
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(text.into()).small().strong());
+        });
+}
+
+/// Muted text in the results pane, with room around it.
+fn padded(ui: &mut egui::Ui, padding: i8, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new()
+        .inner_margin(egui::Margin::same(padding))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui);
+        });
+}
+
 /// The result list; `insert` is set when a row is double-clicked.
 fn results(ui: &mut egui::Ui, picker: &mut Picker, insert: &mut bool) {
+    let spacing = ui.spacing().item_spacing;
+    // The rows sit edge to edge, each with a rule under it.
+    ui.spacing_mut().item_spacing.y = 0.0;
     let mut chosen = None;
     let mut switch = None;
     let mut toggle = false;
     if picker.source == Source::Machine {
         let drives = picker.machine().drives.clone();
-        let geometry = picker.drive().map(|d| d.geometry);
+        let target = picker.drive().map(|d| (d.unit, d.geometry));
         for drive in &drives {
-            ui.strong(format!(
-                "{} {} — catalogue",
-                drive_name(drive.unit),
-                format_name(drive.geometry)
-            ));
+            group_row(
+                ui,
+                format!(
+                    "{} {} — catalogue",
+                    drive_name(drive.unit),
+                    format_name(drive.geometry)
+                ),
+            );
             if drive.catalogue.is_empty() {
-                ui.weak("Empty");
+                padded(ui, 8, |ui| {
+                    ui.weak("Empty");
+                });
             }
             for entry in &drive.catalogue {
-                let fits = geometry.is_some_and(|g| g.accepted_media().contains(&entry.format));
-                let selected = picker.choice == Some(Choice::Entry(drive.unit, entry.index));
-                let text = format!(
-                    "{} · {} · {}{}{}",
-                    entry.name,
-                    format_name(entry.format),
-                    entry.write,
-                    if entry.inserted {
-                        format!(" · in {} now", drive_name(drive.unit))
-                    } else {
-                        String::new()
-                    },
+                let fits = target.is_some_and(|(_, g)| g.accepted_media().contains(&entry.format));
+                let choice = Choice::Entry(drive.unit, entry.index);
+                let name = drive_name(drive.unit);
+                let view = RowView {
+                    name: &entry.name,
+                    cover: &name,
+                    cover_colour: ENTRY_COVER_COLOUR,
+                    title: &entry.name,
+                    edition: "",
+                    subtitle: format!(
+                        "{} · {}{}",
+                        format_name(entry.format),
+                        entry.write,
+                        if entry.inserted {
+                            format!(" · in {name} now")
+                        } else {
+                            String::new()
+                        }
+                    ),
+                    meta: Vec::new(),
+                    selected: picker.choice == Some(choice),
+                    misfit: !fits,
+                };
+                let unit = target.map_or(0, |(unit, _)| unit);
+                let mut line = |ui: &mut egui::Ui| {
+                    ui.label(
+                        RichText::new(format!("Doesn't fit {}", drive_name(unit)))
+                            .small()
+                            .weak(),
+                    );
+                };
+                let response = result_row(
+                    ui,
+                    &view,
                     if fits {
-                        String::new()
+                        None
                     } else {
-                        format!(" — doesn't fit {}", drive_name(picker.unit))
-                    }
+                        Some(&mut line as &mut dyn FnMut(&mut egui::Ui))
+                    },
                 );
-                let response = ui.selectable_label(selected, text);
                 if response.clicked() {
-                    chosen = Some(Choice::Entry(drive.unit, entry.index));
+                    chosen = Some(choice);
                 }
                 if response.double_clicked() {
-                    chosen = Some(Choice::Entry(drive.unit, entry.index));
+                    chosen = Some(choice);
                     *insert = true;
                 }
             }
             if let Some(note) = &drive.catalogue_note {
-                small(ui, note.clone());
+                padded(ui, 8, |ui| hint(ui, note.clone()));
             }
         }
-        small(ui, "This machine lists the disks already in its drives' catalogues, the quick way to swap disks.");
     } else {
         let results = picker.results();
         let drive = picker.drive().cloned();
         for &index in &results.fit {
-            let response = set_row(ui, picker, index, false);
+            let response = set_row(ui, picker, index, false, &mut switch);
             if response.clicked() {
                 chosen = Some(Choice::Set(index));
             }
@@ -1077,87 +1739,69 @@ fn results(ui: &mut egui::Ui, picker: &mut Picker, insert: &mut bool) {
             }
         }
         if results.fit.is_empty() {
-            ui.weak(match &drive {
-                Some(d) if !results.misfit.is_empty() => format!(
-                    "Nothing that fits {} ({}) matches.",
-                    drive_name(d.unit),
-                    format_name(d.geometry)
-                ),
-                _ => "Nothing matches. Clear the search or a filter.".to_owned(),
+            padded(ui, 18, |ui| {
+                ui.weak(match &drive {
+                    Some(d) if !results.misfit.is_empty() => format!(
+                        "Nothing that fits {} ({}) matches.",
+                        drive_name(d.unit),
+                        format_name(d.geometry)
+                    ),
+                    _ => "Nothing matches. Clear the search or a filter.".to_owned(),
+                });
             });
         }
         if !results.misfit.is_empty() {
             if let Some(d) = &drive {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(format!(
-                        "{} don't fit {} ({}: takes {})",
-                        results.misfit.len(),
-                        drive_name(d.unit),
-                        format_name(d.geometry),
-                        d.geometry
-                            .accepted_media()
-                            .into_iter()
-                            .map(format_name)
-                            .collect::<Vec<_>>()
-                            .join(" and ")
-                    ));
-                    toggle = ui
-                        .link(if picker.show_misfits { "Hide" } else { "Show" })
-                        .clicked();
+                padded(ui, 8, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "{} don't fit {} ({}: takes {})",
+                                results.misfit.len(),
+                                drive_name(d.unit),
+                                format_name(d.geometry),
+                                d.geometry
+                                    .accepted_media()
+                                    .into_iter()
+                                    .map(format_name)
+                                    .collect::<Vec<_>>()
+                                    .join(" and ")
+                            ))
+                            .weak(),
+                        );
+                        toggle = ui
+                            .link(if picker.show_misfits { "Hide" } else { "Show" })
+                            .clicked();
+                    });
                 });
             }
             if picker.show_misfits {
                 for &index in &results.misfit {
-                    let response = set_row(ui, picker, index, true);
+                    let response = set_row(ui, picker, index, true, &mut switch);
                     if response.clicked() {
                         chosen = Some(Choice::Set(index));
-                    }
-                    let set = &picker.sets[index];
-                    match (picker.other_drive(set), &set.problem) {
-                        (_, Some(problem)) => small(ui, problem.clone()),
-                        (Some(other), None) => {
-                            let unit = other.unit;
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "Fits {} ({}) —",
-                                        drive_name(unit),
-                                        format_name(other.geometry)
-                                    ))
-                                    .small(),
-                                );
-                                if ui
-                                    .link(format!(
-                                        "switch to {} or Alt+{}",
-                                        drive_name(unit),
-                                        char::from(b'A' + unit)
-                                    ))
-                                    .clicked()
-                                {
-                                    switch = Some(unit);
-                                }
-                            });
-                        }
-                        (None, None) => small(
-                            ui,
-                            format!(
-                                "No drive in {} takes {}",
-                                picker.machine().name,
-                                set.format().map_or_else(|| "CD".to_owned(), format_name)
-                            ),
-                        ),
                     }
                 }
             }
         }
         if picker.remote_preview {
-            ui.separator();
-            ui.weak("From a remote · preview — after the MVP");
-            ui.add_enabled_ui(false, |ui| {
-                ui.label("A set not in this library: its download size and Pull and insert.");
-                let _ = ui.button("Pull and insert");
+            padded(ui, 8, |ui| {
+                ui.spacing_mut().item_spacing = spacing;
+                egui::Frame::new()
+                    .stroke(Stroke::new(1.0, ui.visuals().weak_text_color()))
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.weak("From a remote · preview — after the MVP");
+                        ui.add_enabled_ui(false, |ui| {
+                            ui.label(
+                                "A set not in this library: its download size and Pull and insert.",
+                            );
+                            let _ = ui.button("Pull and insert");
+                        });
+                        hint(ui, "Pull and insert pulls the set by digest into this library, verifies every byte, then inserts it like a local set. A private remote first asks for a login.");
+                    });
             });
-            small(ui, "Pull and insert pulls the set by digest into this library, verifies every byte, then inserts it like a local set. A private remote first asks for a login.");
         }
     }
     if toggle {
@@ -1171,9 +1815,16 @@ fn results(ui: &mut egui::Ui, picker: &mut Picker, insert: &mut bool) {
     }
 }
 
-fn set_row(ui: &mut egui::Ui, picker: &Picker, index: usize, misfit: bool) -> egui::Response {
+/// A set's result row; a set that does not fit says under its title where
+/// it would, and its switch link sets `switch`.
+fn set_row(
+    ui: &mut egui::Ui,
+    picker: &Picker,
+    index: usize,
+    misfit: bool,
+    switch: &mut Option<u8>,
+) -> egui::Response {
     let set = &picker.sets[index];
-    let selected = picker.choice == Some(Choice::Set(index));
     let in_drives: Vec<String> = picker
         .machine()
         .drives
@@ -1185,62 +1836,211 @@ fn set_row(ui: &mut egui::Ui, picker: &Picker, index: usize, misfit: bool) -> eg
         })
         .map(|d| drive_name(d.unit))
         .collect();
-    let response = ui
-        .horizontal(|ui| {
-            cover(ui, &set.title, egui::vec2(28.0, 36.0));
-            ui.vertical(|ui| {
-                let mut title = egui::RichText::new(&set.title).strong();
-                if misfit {
-                    title = title.weak();
-                }
-                ui.label(title);
-                let year = set.year.map(|y| y.to_string()).unwrap_or_default();
-                ui.label(
-                    egui::RichText::new(
-                        [set.publisher.as_str(), year.as_str(), set.genre.as_str()]
-                            .into_iter()
-                            .filter(|s| !s.is_empty())
-                            .collect::<Vec<_>>()
-                            .join(" · "),
-                    )
-                    .small(),
-                );
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} · {} · {}{}",
-                        set.disks_label(),
-                        match set.extras {
-                            0 => "no extras".to_owned(),
-                            1 => "1 extra".to_owned(),
-                            n => format!("{n} extras"),
-                        },
-                        if set.open { "open" } else { "private" },
-                        if in_drives.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" · in {}", in_drives.join(", "))
-                        }
+    let (title, edition) = title_parts(&set.title);
+    let year = set.year.map(|y| y.to_string()).unwrap_or_default();
+    let mut meta = vec![
+        Meta::Disks(set.disks_label()),
+        Meta::Text(match set.extras {
+            0 => "no extras".to_owned(),
+            1 => "1 extra".to_owned(),
+            n => format!("{n} extras"),
+        }),
+        Meta::Badge(
+            if set.open { "open" } else { "private" }.to_owned(),
+            Some(set.open),
+        ),
+    ];
+    if !in_drives.is_empty() {
+        meta.push(Meta::Badge(format!("in {}", in_drives.join(", ")), None));
+    }
+    let view = RowView {
+        name: &set.title,
+        cover: title,
+        cover_colour: COVER_COLOUR,
+        title,
+        edition,
+        subtitle: [set.publisher.as_str(), year.as_str(), set.genre.as_str()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · "),
+        meta,
+        selected: picker.choice == Some(Choice::Set(index)),
+        misfit,
+    };
+    let other = picker.other_drive(set).map(|d| (d.unit, d.geometry));
+    let name = picker.machine().name.clone();
+    let problem = set.problem.clone();
+    let format = set.format().map_or_else(|| "CD".to_owned(), format_name);
+    let mut line = |ui: &mut egui::Ui| match (other, &problem) {
+        (_, Some(problem)) => {
+            ui.label(RichText::new(problem.clone()).small().weak());
+        }
+        (Some((unit, geometry)), None) => {
+            ui.label(
+                RichText::new(format!(
+                    "Fits {} ({}) —",
+                    drive_name(unit),
+                    format_name(geometry)
+                ))
+                .small()
+                .weak(),
+            );
+            if ui
+                .link(
+                    RichText::new(format!(
+                        "switch to {} or Alt+{}",
+                        drive_name(unit),
+                        char::from(b'A' + unit)
                     ))
                     .small(),
-                );
-            });
-        })
-        .response;
-    let response = response.interact(egui::Sense::click());
-    if selected {
-        ui.painter().rect_stroke(
-            response.rect,
-            2.0,
-            egui::Stroke::new(2.0, ui.visuals().selection.bg_fill),
-            egui::StrokeKind::Inside,
-        );
-    }
-    response
+                )
+                .clicked()
+            {
+                *switch = Some(unit);
+            }
+        }
+        (None, None) => {
+            ui.label(
+                RichText::new(format!("No drive in {name} takes {format}"))
+                    .small()
+                    .weak(),
+            );
+        }
+    };
+    result_row(
+        ui,
+        &view,
+        if misfit {
+            Some(&mut line as &mut dyn FnMut(&mut egui::Ui))
+        } else {
+            None
+        },
+    )
 }
 
-fn details(ui: &mut egui::Ui, picker: &mut Picker) {
+/// A group box, as the mock-up's fieldset: a thin outline in the shadow
+/// colour with its legend set into the top edge.
+fn group_box(ui: &mut egui::Ui, legend: &str, classic: bool, add: impl FnOnce(&mut egui::Ui)) {
+    let galley = egui::WidgetText::from(legend).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        ui.available_width() - 24.0,
+        TextStyle::Body,
+    );
+    let half = (galley.size().y / 2.0).round();
+    ui.add_space(4.0 + half);
+    let frame = egui::Frame::new()
+        .stroke(Stroke::new(1.0, shadow_colour(ui.visuals())))
+        .corner_radius(if classic { 0 } else { 6 })
+        .inner_margin(egui::Margin {
+            left: 10,
+            right: 8,
+            top: half as i8 + 4,
+            bottom: 6,
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui);
+        });
+    let rect = frame.response.rect;
+    let at = egui::pos2(rect.left() + 8.0, rect.top() - half);
+    let behind = egui::Rect::from_min_size(at, galley.size()).expand2(egui::vec2(3.0, 0.0));
+    let painter = ui.painter();
+    painter.rect_filled(behind, 0.0, ui.visuals().text_edit_bg_color());
+    painter.galley(at, galley, ui.visuals().text_color());
+}
+
+/// A notice on the mock-up's warning ground, with the skin's corners.
+/// `add` gets the warning colour for its text; a link in it keeps the link
+/// colour.
+fn notice(ui: &mut egui::Ui, classic: bool, add: impl FnOnce(&mut egui::Ui, Color32)) {
+    let visuals = ui.visuals().clone();
+    egui::Frame::new()
+        .fill(warn_ground(&visuals))
+        .corner_radius(if classic { 0 } else { 6 })
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui, visuals.warn_fg_color);
+        });
+}
+
+/// The details pane's head: the cover, the title, and the reference with
+/// the disks and the licence mark.
+fn details_head(ui: &mut egui::Ui, set: &SetEntry) {
+    let (title, edition) = title_parts(&set.title);
+    ui.horizontal_top(|ui| {
+        let (rect, _) = ui.allocate_exact_size(DETAILS_COVER, egui::Sense::hover());
+        if ui.is_rect_visible(rect) {
+            paint_cover(ui.painter(), rect, title, COVER_COLOUR, 11.0);
+        }
+        ui.add_space(2.0);
+        ui.vertical(|ui| {
+            let mut job = egui::text::LayoutJob::default();
+            let font = egui::FontSelection::Default;
+            RichText::new(title).size(13.0).strong().append_to(
+                &mut job,
+                ui.style(),
+                font.clone(),
+                Align::Min,
+            );
+            if !edition.is_empty() {
+                RichText::new(format!(" {edition}"))
+                    .size(13.0)
+                    .weak()
+                    .append_to(&mut job, ui.style(), font, Align::Min);
+            }
+            ui.add(egui::Label::new(job).wrap());
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.label(
+                    RichText::new(&set.reference)
+                        .monospace()
+                        .size(SMALL_SIZE)
+                        .weak(),
+                );
+                ui.label(
+                    RichText::new(format!(" · {} · ", set.disks_label()))
+                        .small()
+                        .weak(),
+                );
+                let colour = if set.open {
+                    good_colour(ui.visuals())
+                } else {
+                    ui.visuals().warn_fg_color
+                };
+                // One allocation, so the mark moves to the next line whole
+                // rather than wrapping inside itself.
+                let text = if set.open { "open" } else { "private" };
+                let galley = ui.painter().layout_no_wrap(
+                    text.to_owned(),
+                    TextStyle::Small.resolve(ui.style()),
+                    colour,
+                );
+                let (rect, _) = ui.allocate_exact_size(
+                    galley.size() + egui::vec2(8.0, 0.0),
+                    egui::Sense::hover(),
+                );
+                let painter = ui.painter();
+                painter.rect_filled(rect, 0.0, ui.visuals().panel_fill);
+                painter.rect_stroke(
+                    rect,
+                    0.0,
+                    Stroke::new(1.0, shadow_colour(ui.visuals())),
+                    egui::StrokeKind::Inside,
+                );
+                painter.galley(rect.min + egui::vec2(4.0, 0.0), galley, colour);
+            });
+        });
+    });
+}
+
+/// The details pane: the chosen set's head, the disk to insert, the
+/// catalogue choice and the write setting; or the chosen catalogue disk.
+fn details(ui: &mut egui::Ui, picker: &mut Picker, classic: bool) {
     let Some(choice) = picker.choice else {
-        small(ui, "Choose a set.");
+        hint(ui, "Choose a set.");
         return;
     };
     let unit = picker.unit;
@@ -1250,8 +2050,8 @@ fn details(ui: &mut egui::Ui, picker: &mut Picker) {
             let Some(entry) = picker.entry(from, index).cloned() else {
                 return;
             };
-            ui.strong(&entry.name);
-            small(
+            ui.label(RichText::new(&entry.name).size(13.0).strong());
+            hint(
                 ui,
                 format!(
                     "In {}'s catalogue · {}",
@@ -1260,33 +2060,27 @@ fn details(ui: &mut egui::Ui, picker: &mut Picker) {
                 ),
             );
             if picker.problem().is_none() {
-                ui.label(format!(
-                    "Insert puts it into {}. It keeps its own write setting: {}.",
-                    drive_name(unit),
-                    entry.write
-                ));
+                ui.add(
+                    egui::Label::new(format!(
+                        "Insert puts it into {}. It keeps its own write setting: {}.",
+                        drive_name(unit),
+                        entry.write
+                    ))
+                    .wrap(),
+                );
             }
+            hint(
+                ui,
+                "This machine lists the disks already in its drives' catalogues, the quick way to swap disks.",
+            );
         }
         Choice::Set(index) => {
             let set = picker.sets[index].clone();
-            ui.horizontal(|ui| {
-                cover(ui, &set.title, egui::vec2(44.0, 56.0));
-                ui.vertical(|ui| {
-                    ui.strong(&set.title);
-                    small(
-                        ui,
-                        format!(
-                            "{} · {} · {}",
-                            set.reference,
-                            set.disks_label(),
-                            if set.open { "open" } else { "private" }
-                        ),
-                    );
-                });
-            });
+            details_head(ui, &set);
             let Some(drive) = picker.drive().cloned() else {
                 return;
             };
+            ui.add_space(4.0);
             if !set.fits(drive.geometry) {
                 let accepted: Vec<String> = drive
                     .geometry
@@ -1294,57 +2088,80 @@ fn details(ui: &mut egui::Ui, picker: &mut Picker) {
                     .into_iter()
                     .map(format_name)
                     .collect();
-                ui.add(
-                    egui::Label::new(format!(
-                        "Doesn't fit {}: it takes {} disks.",
-                        drive_name(unit),
-                        accepted.join(" and ")
-                    ))
-                    .wrap(),
-                );
-                if let Some(other) = picker.other_drive(&set) {
-                    let other_unit = other.unit;
-                    if ui
-                        .link(format!(
-                            "Switch to {} ({})",
-                            drive_name(other_unit),
-                            format_name(other.geometry)
-                        ))
-                        .clicked()
-                    {
-                        picker.switch_drive(other_unit);
-                    }
-                } else {
-                    small(
-                        ui,
-                        format!(
-                            "No drive in {name} takes {}.",
-                            set.format().map_or_else(|| "CD".to_owned(), format_name)
-                        ),
+                let other = picker.other_drive(&set).map(|d| (d.unit, d.geometry));
+                let mut switch = None;
+                notice(ui, classic, |ui, warn| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!(
+                                "Doesn't fit {}, which takes {} disks.",
+                                drive_name(unit),
+                                accepted.join(" and ")
+                            ))
+                            .color(warn),
+                        )
+                        .wrap(),
                     );
+                    match other {
+                        Some((other_unit, geometry)) => {
+                            if ui
+                                .link(format!(
+                                    "Switch to {} ({})",
+                                    drive_name(other_unit),
+                                    format_name(geometry)
+                                ))
+                                .clicked()
+                            {
+                                switch = Some(other_unit);
+                            }
+                        }
+                        None => {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(format!(
+                                        "No drive in {name} takes {}.",
+                                        set.format().map_or_else(|| "CD".to_owned(), format_name)
+                                    ))
+                                    .color(warn),
+                                )
+                                .wrap(),
+                            );
+                        }
+                    }
+                });
+                if let Some(other_unit) = switch {
+                    picker.switch_drive(other_unit);
                 }
                 return;
             }
-            ui.strong("Disk to insert");
-            let mut disk = picker.chosen_disk();
-            for (i, d) in set.disks.iter().enumerate() {
-                if ui
-                    .radio_value(
-                        &mut disk,
-                        i,
-                        format!(
-                            "{}. {} · {}",
-                            i + 1,
-                            d.label,
-                            d.format.map_or_else(|| "CD".to_owned(), format_name)
-                        ),
-                    )
-                    .clicked()
-                {
-                    picker.pick_disk(i);
+            let chosen = picker.chosen_disk();
+            let mut picked = None;
+            group_box(ui, "Disk to insert", classic, |ui| {
+                // One line per disk, its name cut short when long: the
+                // radio buttons stay in one column.
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                for (i, d) in set.disks.iter().enumerate() {
+                    let format = d.format.map_or_else(|| "CD".to_owned(), format_name);
+                    let shown = format!("{}. {}", i + 1, disk_name(&d.label, i + 1));
+                    let text = label_and_meta(ui, &shown, false, &format!(" · {format}"));
+                    let response = ui.add(egui::RadioButton::new(chosen == i, text));
+                    let response = if label_without_file(&d.label).1.is_some()
+                        || !shown.ends_with(d.label.as_str())
+                    {
+                        response.on_hover_text(&d.label)
+                    } else {
+                        response
+                    };
+                    if response.clicked() {
+                        picked = Some(i);
+                    }
                 }
+            });
+            if let Some(i) = picked {
+                picker.pick_disk(i);
             }
             if set.disks.len() > 1 {
+                ui.add_space(4.0);
                 ui.checkbox(
                     &mut picker.all,
                     format!(
@@ -1353,7 +2170,7 @@ fn details(ui: &mut egui::Ui, picker: &mut Picker) {
                         drive_name(unit)
                     ),
                 );
-                small(
+                hint_under(
                     ui,
                     format!(
                         "When a program asks for the next disk, use Media › Next disk ({}).",
@@ -1370,7 +2187,7 @@ fn details(ui: &mut egui::Ui, picker: &mut Picker) {
                 .iter()
                 .any(|e| e.set.as_ref().is_some_and(|(s, _)| *s == set.image.digest))
             {
-                small(
+                hint(
                     ui,
                     format!(
                         "Already in {}'s catalogue; those disks keep their own write setting.",
@@ -1378,32 +2195,136 @@ fn details(ui: &mut egui::Ui, picker: &mut Picker) {
                     ),
                 );
             }
-            ui.strong("When a program writes to the disk");
             let unavailable = picker.machine().journal_unavailable.clone();
-            ui.add_enabled_ui(unavailable.is_none(), |ui| {
-                ui.radio_value(
-                    &mut picker.journal,
-                    true,
-                    format!("Keep the changes in {name}"),
+            group_box(ui, "When a program writes to the disk", classic, |ui| {
+                ui.add_enabled_ui(unavailable.is_none(), |ui| {
+                    ui.radio_value(
+                        &mut picker.journal,
+                        true,
+                        format!("Keep the changes in {name}"),
+                    );
+                });
+                match &unavailable {
+                    Some(reason) => hint_under(ui, reason.clone()),
+                    None => hint_under(
+                        ui,
+                        "Saved with the machine. The disk in the library never changes.",
+                    ),
+                }
+                ui.radio_value(&mut picker.journal, false, "Write-protected");
+                hint_under(
+                    ui,
+                    "Like a disk with its write-protect tab set: a program that tries to write gets an error.",
                 );
             });
-            match unavailable {
-                Some(reason) => small(ui, reason),
-                None => small(
-                    ui,
-                    "Saved with the machine. The disk in the library never changes.",
-                ),
-            }
-            ui.radio_value(&mut picker.journal, false, "Write-protected");
-            small(ui, "Like a disk with its write-protect tab set: a program that tries to write gets an error.");
             if set.extras > 0 {
-                small(
+                ui.add_space(4.0);
+                hint(
                     ui,
                     "Extras stay in the library; open them from the set's details.",
                 );
             }
         }
     }
+}
+
+/// A key cap, as the mock-up's `kbd`: the key in small monospace on the
+/// field colour, in a thin outline.
+fn key_cap(ui: &mut egui::Ui, key: &str) {
+    egui::Frame::new()
+        .fill(ui.visuals().text_edit_bg_color())
+        .stroke(Stroke::new(1.0, shadow_colour(ui.visuals())))
+        .corner_radius(3)
+        .inner_margin(egui::Margin::symmetric(3, 0))
+        .show(ui, |ui| {
+            ui.label(RichText::new(key).monospace().size(10.5));
+        });
+}
+
+/// The height the footer takes under the body: the separator, the summary
+/// line and the row of keys and buttons, the room between them, and the
+/// room under them. It follows from the style alone, so the body's height
+/// never waits on the footer's layout.
+fn footer_height(ui: &egui::Ui) -> f32 {
+    let spacing = ui.spacing();
+    let line = spacing.interact_size.y;
+    let buttons =
+        line.max(ui.text_style_height(&TextStyle::Button) + 2.0 * spacing.button_padding.y);
+    3.0 * spacing.item_spacing.y + SEPARATOR + line + buttons + f32::from(BOTTOM)
+}
+
+/// The picker's keys, as the mock-up's footer lists them with key caps.
+fn key_hints(ui: &mut egui::Ui) {
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        let text = |ui: &mut egui::Ui, text: &str| {
+            ui.label(RichText::new(text).small().weak());
+        };
+        text(ui, "Type to search ·");
+        key_cap(ui, "↑");
+        key_cap(ui, "↓");
+        text(ui, "choose ·");
+        key_cap(ui, "Enter");
+        text(ui, "inserts ·");
+        key_cap(ui, "Alt+A");
+        key_cap(ui, "Alt+B");
+        text(ui, "drive ·");
+        key_cap(ui, "Esc");
+        text(ui, "closes");
+    });
+}
+
+/// The footer: what goes where and when, right-aligned on one line and cut
+/// short when long; then the keys, and the framed buttons at the right in the
+/// mock-up's order for the eye and for Tab: Browse for an image file…, Insert
+/// (the default) and Cancel. The buttons' width comes from the pass before;
+/// when it changes, egui lays the frame out again.
+fn footer(ui: &mut egui::Ui, picker: &Picker) -> Option<Outcome> {
+    let mut outcome = None;
+    ui.add(egui::Separator::default().spacing(SEPARATOR));
+    let problem = picker.problem();
+    let summary = RichText::new(picker.summary());
+    let summary = if problem.is_some() {
+        summary.color(ui.visuals().warn_fg_color)
+    } else {
+        summary.strong()
+    };
+    let width = ui.available_width();
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, ui.spacing().interact_size.y),
+        Layout::right_to_left(Align::Center),
+        |ui| {
+            ui.add(egui::Label::new(summary).truncate());
+        },
+    );
+    let id = egui::Id::unique("media-picker-footer-buttons");
+    let known = ui.data(|data| data.get_temp::<f32>(id));
+    ui.horizontal(|ui| {
+        key_hints(ui);
+        // Unmeasured, the buttons follow the keys, so they never push the
+        // picker wider while egui measures them.
+        ui.add_space(known.map_or(0.0, |width| (ui.available_width() - width).max(0.0)));
+        let unit = picker.unit;
+        let browse = ui.button("Browse for an image file…");
+        if browse.clicked() {
+            outcome = Some(Outcome::Browse(unit));
+        }
+        let insert = crate::library_view::pane::primary(ui, "Insert");
+        if ui.add_enabled(problem.is_none(), insert).clicked() {
+            outcome = picker.insert();
+        }
+        let cancel = ui.button("Cancel");
+        if cancel.clicked() {
+            outcome = Some(Outcome::Cancel);
+        }
+        let width = browse.rect.union(cancel.rect).width();
+        if known.is_none_or(|known| (known - width).abs() > 0.5) {
+            ui.data_mut(|data| data.insert_temp(id, width));
+            ui.ctx()
+                .request_discard("the media picker footer measured its buttons");
+        }
+    });
+    outcome
 }
 
 #[cfg(test)]
@@ -1895,5 +2816,795 @@ pub(crate) mod tests {
             matches!(outcome, Some(Outcome::Set { unit: 1, .. })),
             "{outcome:?}"
         );
+    }
+
+    /// A widget as egui reported it to AccessKit.
+    struct Widget {
+        role: egui::accesskit::Role,
+        label: String,
+        rect: egui::Rect,
+    }
+
+    /// A painted text: where its glyphs are, the clip it was painted under,
+    /// and its first section's font size and colour.
+    struct Text {
+        text: String,
+        /// Each row's characters, as the galley broke them.
+        rows: Vec<String>,
+        glyphs: egui::Rect,
+        clip: egui::Rect,
+        size: f32,
+        monospace: bool,
+        colour: egui::Color32,
+    }
+
+    /// What one frame of the picker showed: the modal's area, its widgets,
+    /// and every painted text and rectangle with the clip it was painted under.
+    struct Shown {
+        modal: egui::Rect,
+        widgets: Vec<Widget>,
+        texts: Vec<Text>,
+        rects: Vec<(egui::epaint::RectShape, egui::Rect)>,
+    }
+
+    impl Shown {
+        fn of(output: &egui::FullOutput, modal: egui::Rect) -> Self {
+            let widgets = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .map(|update| {
+                    update
+                        .nodes
+                        .iter()
+                        .filter_map(|(_, node)| {
+                            let area = node.bounds()?;
+                            Some(Widget {
+                                role: node.role(),
+                                label: node.label().or(node.value()).unwrap_or_default().to_owned(),
+                                rect: egui::Rect::from_min_max(
+                                    egui::pos2(area.x0 as f32, area.y0 as f32),
+                                    egui::pos2(area.x1 as f32, area.y1 as f32),
+                                ),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            fn walk(shape: &egui::Shape, clip: egui::Rect, shown: &mut Shown) {
+                match shape {
+                    egui::Shape::Text(text) => {
+                        let glyphs = text
+                            .galley
+                            .rows
+                            .iter()
+                            .filter(|row| !row.glyphs.is_empty())
+                            .map(|row| row.rect_without_leading_space())
+                            .reduce(|a, b| a.union(b))
+                            .unwrap_or(text.galley.rect)
+                            .translate(text.pos.to_vec2());
+                        let format = text.galley.job.sections.first().map(|s| &s.format);
+                        shown.texts.push(Text {
+                            text: text.galley.text().to_owned(),
+                            rows: text
+                                .galley
+                                .rows
+                                .iter()
+                                .map(|row| row.glyphs.iter().map(|g| g.chr).collect())
+                                .collect(),
+                            glyphs,
+                            clip,
+                            size: format.map_or(0.0, |f| f.font_id.size),
+                            monospace: format
+                                .is_some_and(|f| f.font_id.family == egui::FontFamily::Monospace),
+                            colour: format.map_or(egui::Color32::TRANSPARENT, |f| f.color),
+                        });
+                    }
+                    egui::Shape::Rect(rect) => shown.rects.push((rect.clone(), clip)),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            walk(shape, clip, shown);
+                        }
+                    }
+                    _ => (),
+                }
+            }
+            let mut shown = Self {
+                modal,
+                widgets,
+                texts: Vec::new(),
+                rects: Vec::new(),
+            };
+            for clipped in &output.shapes {
+                walk(&clipped.shape, clipped.clip_rect, &mut shown);
+            }
+            shown
+        }
+        fn widgets(&self, role: egui::accesskit::Role) -> impl Iterator<Item = &Widget> {
+            self.widgets.iter().filter(move |w| w.role == role)
+        }
+        fn widget(&self, role: egui::accesskit::Role, label: &str) -> &Widget {
+            self.widgets(role)
+                .find(|w| w.label == label)
+                .unwrap_or_else(|| {
+                    let labels: Vec<_> = self.widgets(role).map(|w| &w.label).collect();
+                    panic!("no {role:?} {label:?} in {labels:?}")
+                })
+        }
+    }
+
+    /// The picker in a window `size` large, in one skin and theme, for
+    /// `count` frames, each as it was shown.
+    fn shown_frames(
+        picker: &mut Picker,
+        size: egui::Vec2,
+        classic: bool,
+        dark: bool,
+        count: usize,
+    ) -> Vec<Shown> {
+        let ctx = egui::Context::default();
+        crate::shell::configure_context(&ctx);
+        ctx.set_visuals(crate::shell::skin_visuals(classic, dark));
+        ctx.enable_accesskit();
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        (0..count)
+            .map(|_| {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(viewport),
+                        ..Default::default()
+                    },
+                    |ui| assert_eq!(show(ui.ctx(), picker, classic), None),
+                );
+                output.textures_delta.clear();
+                let modal = ctx
+                    .memory(|m| m.area_rect(egui::Id::unique("media-picker")))
+                    .expect("the picker is shown");
+                Shown::of(&output, modal)
+            })
+            .collect()
+    }
+
+    /// The picker as its fifth frame shows it.
+    fn shown(picker: &mut Picker, size: egui::Vec2, classic: bool, dark: bool) -> Shown {
+        shown_frames(picker, size, classic, dark, 5)
+            .pop()
+            .expect("frames")
+    }
+
+    /// Every skin and theme: classic and modern, light and dark.
+    const LOOKS: [(bool, bool); 4] = [(true, false), (true, true), (false, false), (false, true)];
+
+    /// A big window, where the picker takes the mock-up's size.
+    const BIG: egui::Vec2 = egui::vec2(1600.0, 1000.0);
+
+    /// In a big window the picker is the mock-up's 1040 wide and about 640
+    /// tall, with the search field across it; in a smaller one it stays
+    /// inside the window's content area, with room around it.
+    #[test]
+    fn the_picker_takes_the_mock_ups_size_inside_the_window() {
+        for (classic, dark) in LOOKS {
+            let what = format!("classic {classic}, dark {dark}");
+            let mut picker = Picker::new(vec![machine(None, When::Now)], 0, 0, library(), None);
+            let big = shown(&mut picker, BIG, classic, dark);
+            assert!(
+                (big.modal.width() - 1040.0).abs() <= 1.0,
+                "{what}: {:?}",
+                big.modal
+            );
+            assert!(
+                (big.modal.height() - 640.0).abs() <= 24.0,
+                "{what}: {:?}",
+                big.modal
+            );
+            let search = big
+                .widgets(egui::accesskit::Role::TextInput)
+                .next()
+                .expect("the search field");
+            assert!(
+                search.rect.width() >= big.modal.width() - 40.0,
+                "{what}: the search field is {:?} in {:?}",
+                search.rect,
+                big.modal
+            );
+            for size in [egui::vec2(900.0, 600.0), egui::vec2(700.0, 460.0)] {
+                let small = shown(&mut picker, size, classic, dark);
+                let area = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                assert!(
+                    area.shrink(8.0).contains_rect(small.modal),
+                    "{what}: {:?} in a {size:?} window",
+                    small.modal
+                );
+            }
+        }
+    }
+
+    /// The facets, results and details panes sit on the field colour and
+    /// share one fixed height, the same frame after frame from the first
+    /// one shown: nothing grows. The modal fades in over its first frames,
+    /// so the colour is checked once it has.
+    #[test]
+    fn the_body_panes_keep_one_height_on_the_field() {
+        for (classic, dark) in LOOKS {
+            let what = format!("classic {classic}, dark {dark}");
+            let field = crate::shell::skin_visuals(classic, dark).text_edit_bg_color();
+            let mut picker = Picker::new(vec![machine(None, When::Now)], 0, 0, library(), None);
+            picker.show_misfits = true;
+            let frames = shown_frames(&mut picker, BIG, classic, dark, 12);
+            let panes = |frame: &Shown| -> Vec<(egui::Rect, egui::Color32)> {
+                frame
+                    .rects
+                    .iter()
+                    .filter(|(r, _)| {
+                        r.fill.a() > 0
+                            && r.rect.height() > 200.0
+                            && r.rect.width() < frame.modal.width() - 40.0
+                    })
+                    .map(|(r, _)| (r.rect, r.fill))
+                    .collect()
+            };
+            let mut heights = Vec::new();
+            for frame in &frames[1..] {
+                let panes = panes(frame);
+                assert_eq!(panes.len(), 3, "{what}: {panes:?}");
+                assert!(
+                    panes.iter().all(|(p, _)| p.height() == panes[0].0.height()),
+                    "{what}: {panes:?}"
+                );
+                heights.push(panes[0].0.height());
+            }
+            assert!(
+                heights.iter().all(|h| *h == heights[0]),
+                "{what}: {heights:?}"
+            );
+            assert!(heights[0] >= 440.0, "{what}: {heights:?}");
+            let last = panes(frames.last().expect("frames"));
+            assert!(
+                last.iter().all(|(_, fill)| *fill == field),
+                "{what}: {last:?} on {field:?}"
+            );
+        }
+    }
+
+    /// Every facet value is one line: a check box with the value, the
+    /// count right-aligned beside it; formats the drive does not take say
+    /// so. The facets are flat sections under uppercase headings.
+    #[test]
+    fn facet_values_are_single_lines_with_a_check_box() {
+        for (classic, dark) in LOOKS {
+            let what = format!("classic {classic}, dark {dark}");
+            let mut picker = Picker::new(vec![machine(None, When::Now)], 0, 0, library(), None);
+            let shown = shown(&mut picker, BIG, classic, dark);
+            for heading in ["FORMAT", "PLATFORM", "GENRE", "YEAR", "PUBLISHER"] {
+                assert!(
+                    shown.texts.iter().any(|t| t.text == heading),
+                    "{what}: {heading}"
+                );
+            }
+            for name in ["Format", "Platform", "Genre", "Year", "Publisher"] {
+                for (value, count, fits) in picker.facet_values(name) {
+                    let label = if fits {
+                        value.clone()
+                    } else {
+                        format!("{value} · doesn't fit A:")
+                    };
+                    let check = shown.widget(egui::accesskit::Role::CheckBox, &label);
+                    assert!(
+                        check.rect.height() <= 22.0,
+                        "{what}: {label} is {:?}",
+                        check.rect
+                    );
+                    let count = count.to_string();
+                    assert!(
+                        shown.texts.iter().any(|t| t.text == count
+                            && (t.glyphs.center().y - check.rect.center().y).abs() < 3.0
+                            && t.glyphs.left() > check.rect.left() + 100.0),
+                        "{what}: no count {count} beside {label} at {:?}",
+                        check.rect
+                    );
+                }
+            }
+        }
+    }
+
+    /// A result row's cover placeholder keeps its text inside the cover: a
+    /// long title is clipped, never painted over the row, and its lines
+    /// break between words, never inside one.
+    #[test]
+    fn a_result_cover_clips_its_text_inside_the_cover() {
+        let mut sets = library();
+        sets.push(set(
+            "Supercalifragilistic Expedition",
+            "Apogee Software",
+            1992,
+            "platformer",
+            M12(),
+            1,
+        ));
+        let words: BTreeSet<&str> = sets
+            .iter()
+            .flat_map(|s| s.title.split_whitespace())
+            .collect();
+        for (classic, dark) in LOOKS {
+            let what = format!("classic {classic}, dark {dark}");
+            let mut picker = Picker::new(vec![machine(None, When::Now)], 0, 0, sets.clone(), None);
+            picker.show_misfits = true;
+            let shown = shown(&mut picker, BIG, classic, dark);
+            let covers: Vec<&Text> = shown
+                .texts
+                .iter()
+                .filter(|t| {
+                    t.monospace
+                        && t.size <= 10.5
+                        && t.colour == egui::Color32::WHITE
+                        && !t.text.is_empty()
+                })
+                .collect();
+            for cover in &covers {
+                assert!(
+                    cover.clip.width() <= 36.5 && cover.clip.height() <= 48.5,
+                    "{what}: {:?} painted under {:?}",
+                    cover.text,
+                    cover.clip
+                );
+                for row in &cover.rows {
+                    assert!(
+                        row.split_whitespace().all(|word| words.contains(word)),
+                        "{what}: {:?} breaks a word in {:?}",
+                        row,
+                        cover.rows
+                    );
+                }
+            }
+            assert!(covers.len() >= 6, "{what}: {} cover lines", covers.len());
+            // A word wider than the cover keeps its line, cut by the clip.
+            assert!(
+                covers.iter().any(|t| t.text == "Supercalifragilistic"),
+                "{what}"
+            );
+        }
+    }
+
+    /// The disks to insert are compact radios in one column, one line each,
+    /// named by their label without the file name; with two disks every
+    /// part of the details pane shows without scrolling.
+    #[test]
+    fn disk_radios_share_one_column_one_line_each() {
+        let mut floppy = set(
+            "FreeDOS 1.4 (Floppy Edition, 1.2M)",
+            "The FreeDOS Project",
+            2025,
+            "operating system",
+            M12(),
+            8,
+        );
+        for (i, disk) in floppy.disks.iter_mut().enumerate() {
+            disk.label = if i == 0 {
+                "Disk 1 of 8 - boot disk and installer (x86BOOT.img)".into()
+            } else {
+                format!("Disk {} of 8 - packages (x86DSK0{i}.img)", i + 1)
+            };
+        }
+        for (classic, dark) in LOOKS {
+            let what = format!("classic {classic}, dark {dark}");
+            let digest = floppy.image.digest.clone();
+            let mut picker = Picker::new(
+                vec![machine(None, When::Now)],
+                0,
+                0,
+                vec![floppy.clone()],
+                Some(&digest),
+            );
+            let eight = shown(&mut picker, BIG, classic, dark);
+            let mut radios: Vec<&Widget> = eight
+                .widgets(egui::accesskit::Role::RadioButton)
+                .filter(|w| w.label.starts_with(|c: char| c.is_ascii_digit()))
+                .collect();
+            radios.sort_by(|a, b| a.rect.top().total_cmp(&b.rect.top()));
+            assert_eq!(radios.len(), 8, "{what}");
+            assert!(
+                radios[0].label.starts_with("1. Boot disk and installer"),
+                "{what}: {}",
+                radios[0].label
+            );
+            for radio in &radios {
+                assert!(
+                    (radio.rect.left() - radios[0].rect.left()).abs() < 0.5,
+                    "{what}: {} at {:?}",
+                    radio.label,
+                    radio.rect
+                );
+                assert!(radio.rect.height() <= 22.0, "{what}: {:?}", radio.rect);
+                assert!(!radio.label.contains(".img"), "{what}: {}", radio.label);
+            }
+            // The summary names the disk as its radio button does.
+            assert_eq!(
+                picker.summary(),
+                "Insert FreeDOS 1.4 (Floppy Edition, 1.2M) — Boot disk and installer (all 8 disks join the catalogue) into A: of DOS games — now.",
+                "{what}"
+            );
+            // Two disks: the write setting and the extras line show unscrolled.
+            let mut picker = Picker::new(vec![machine(None, When::Now)], 0, 0, library(), None);
+            let two = shown(&mut picker, BIG, classic, dark);
+            let details = two
+                .rects
+                .iter()
+                .filter(|(r, _)| {
+                    r.fill.a() > 0
+                        && r.rect.height() > 200.0
+                        && r.rect.width() < two.modal.width() - 40.0
+                })
+                .map(|(r, _)| r.rect)
+                .max_by(|a, b| a.left().total_cmp(&b.left()))
+                .expect("the details pane");
+            for label in ["Write-protected", "Keep the changes in DOS games"] {
+                let radio = two.widget(egui::accesskit::Role::RadioButton, label);
+                assert!(
+                    details.shrink(2.0).contains_rect(radio.rect),
+                    "{what}: {label} at {:?} outside the details pane {details:?}",
+                    radio.rect
+                );
+            }
+            let extras = two
+                .texts
+                .iter()
+                .find(|t| t.text.starts_with("Extras stay in the library"))
+                .unwrap_or_else(|| panic!("{what}: no extras line"));
+            assert!(
+                extras.clip.contains_rect(extras.glyphs),
+                "{what}: the extras line is cut: {:?} under {:?}",
+                extras.glyphs,
+                extras.clip
+            );
+        }
+    }
+
+    /// The footer: the summary right-aligned on one line, then framed
+    /// buttons at the right, Browse for an image file…, Insert and Cancel.
+    #[test]
+    fn the_footer_buttons_are_framed_buttons_at_the_right() {
+        for (classic, dark) in LOOKS {
+            let what = format!("classic {classic}, dark {dark}");
+            let mut picker = Picker::new(vec![machine(None, When::Now)], 0, 0, library(), None);
+            let shown = shown(&mut picker, BIG, classic, dark);
+            let [browse, insert, cancel] = ["Browse for an image file…", "Insert", "Cancel"]
+                .map(|label| shown.widget(egui::accesskit::Role::Button, label).rect);
+            assert!(
+                browse.right() < insert.left() && insert.right() < cancel.left(),
+                "{what}: {browse:?} {insert:?} {cancel:?}"
+            );
+            for rect in [browse, insert] {
+                assert!((rect.center().y - cancel.center().y).abs() < 1.0, "{what}");
+            }
+            assert!(browse.left() > shown.modal.center().x, "{what}: {browse:?}");
+            assert!(
+                shown.modal.right() - cancel.right() < 24.0,
+                "{what}: {cancel:?}"
+            );
+            let window = crate::shell::skin_visuals(classic, dark).window_fill;
+            for (label, rect) in [("Browse", browse), ("Insert", insert), ("Cancel", cancel)] {
+                assert!(
+                    shown.rects.iter().any(|(r, _)| {
+                        (r.rect.min - rect.min).length() <= 2.0
+                            && (r.rect.max - rect.max).length() <= 2.0
+                            && ((r.stroke.width >= 1.0 && r.stroke.color.a() > 0)
+                                || (r.fill != window && r.fill.a() > 0))
+                    }),
+                    "{what}: {label} has no frame at {rect:?}"
+                );
+            }
+            let summary = shown
+                .texts
+                .iter()
+                .find(|t| t.text.starts_with("Insert FreeDOS 1.3"))
+                .unwrap_or_else(|| panic!("{what}: no summary"));
+            assert!(
+                summary.glyphs.height() <= 20.0,
+                "{what}: {:?}",
+                summary.glyphs
+            );
+            assert!(
+                (summary.glyphs.right() - cancel.right()).abs() <= 6.0,
+                "{what}: the summary ends at {:?}, Cancel at {cancel:?}",
+                summary.glyphs
+            );
+            assert!(summary.glyphs.bottom() <= cancel.top(), "{what}");
+        }
+    }
+
+    /// When the Into row wraps, for a long machine name or a drive holding a
+    /// disk with a long name, the body gives up the room: the footer stays
+    /// inside the picker. What a drive holds is cut to one line.
+    #[test]
+    fn the_footer_stays_inside_when_the_top_rows_wrap() {
+        for (classic, dark) in LOOKS {
+            for (name, holds) in [
+                (
+                    "Open AT 286 for games",
+                    "Commander Keen 4: Secret of the Oracle — Disk 1 (shareware 1.4)",
+                ),
+                (
+                    "Open AT 286 for games with a long name",
+                    "Keen 4 — Shareware v1.4 installation",
+                ),
+            ] {
+                for size in [BIG, egui::vec2(1040.0, 700.0)] {
+                    let what = format!("classic {classic}, dark {dark}, {name:?} at {size:?}");
+                    let mut target = machine(None, When::Halted);
+                    target.name = name.into();
+                    target.drives[1].holds = holds.into();
+                    let mut picker = Picker::new(vec![target], 0, 0, library(), None);
+                    let shown = shown(&mut picker, size, classic, dark);
+                    let cancel = shown.widget(egui::accesskit::Role::Button, "Cancel").rect;
+                    assert!(
+                        shown.modal.contains_rect(cancel),
+                        "{what}: Cancel at {cancel:?} in {:?}",
+                        shown.modal
+                    );
+                    let area = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                    assert!(area.contains_rect(shown.modal), "{what}: {:?}", shown.modal);
+                    let b = shown
+                        .widgets(egui::accesskit::Role::Button)
+                        .find(|w| w.label.starts_with("B:"))
+                        .expect("the B: toggle");
+                    assert!(b.rect.height() <= 22.0, "{what}: B: is {:?}", b.rect);
+                    assert!(
+                        b.rect.width() <= SEGMENT_WIDTH + 20.0,
+                        "{what}: B: is {:?}",
+                        b.rect
+                    );
+                }
+            }
+        }
+    }
+
+    /// A disk label loses only a real file name at its end; a disk's name
+    /// drops a "Disk N of M -" that repeats its number and capitalises a
+    /// first word in lower case only; an edition is the outermost trailing
+    /// parenthesis.
+    #[test]
+    fn labels_lose_only_a_file_name_and_a_repeated_number() {
+        assert_eq!(
+            label_without_file("Disk 1 of 8 - boot disk and installer (x86BOOT.img)"),
+            ("Disk 1 of 8 - boot disk and installer", Some("x86BOOT.img"))
+        );
+        assert_eq!(
+            label_without_file("Docs (README.TXT)"),
+            ("Docs", Some("README.TXT"))
+        );
+        for kept in [
+            "Boot disk (1.2M)",
+            "Install (v2.0)",
+            "Tools (.img)",
+            "Setup (disk.image1)",
+            "Data (my disk.img)",
+            "Plain",
+        ] {
+            assert_eq!(label_without_file(kept), (kept, None), "{kept}");
+        }
+        assert_eq!(
+            disk_name("Disk 1 of 8 - boot disk and installer (x86BOOT.img)", 1),
+            "Boot disk and installer"
+        );
+        assert_eq!(
+            disk_name("Disk 3 of 8 - packages (x86DSK02.img)", 3),
+            "Packages"
+        );
+        assert_eq!(disk_name("Disk 2 of 3: x86 tools", 2), "x86 tools");
+        assert_eq!(disk_name("Disk 2 of 3 - dBase files", 2), "dBase files");
+        assert_eq!(disk_name("Disk 2 of 3 - über disk", 2), "über disk");
+        assert_eq!(disk_name("Disk 2", 2), "Disk 2");
+        assert_eq!(disk_name("Disk 2 of 3 - tools", 1), "Disk 2 of 3 - tools");
+        assert_eq!(disk_name("Boot disk (1.2M)", 1), "Boot disk (1.2M)");
+        assert_eq!(
+            title_parts("FreeDOS 1.4 (Floppy Edition, 1.2M)"),
+            ("FreeDOS 1.4", "(Floppy Edition, 1.2M)")
+        );
+        assert_eq!(title_parts("Foo (a (b))"), ("Foo", "(a (b))"));
+        assert_eq!(title_parts("Foo(bar)"), ("Foo(bar)", ""));
+        assert_eq!(title_parts("(bar)"), ("(bar)", ""));
+        assert_eq!(title_parts("Commander Keen 4"), ("Commander Keen 4", ""));
+    }
+
+    /// One context driven by a pointer, frame by frame, in one skin and theme.
+    struct Pointer {
+        ctx: egui::Context,
+        time: f64,
+        classic: bool,
+    }
+
+    impl Pointer {
+        fn new(classic: bool, dark: bool) -> Self {
+            let ctx = egui::Context::default();
+            crate::shell::configure_context(&ctx);
+            ctx.set_visuals(crate::shell::skin_visuals(classic, dark));
+            ctx.enable_accesskit();
+            Self {
+                ctx,
+                time: 0.0,
+                classic,
+            }
+        }
+        fn frame(
+            &mut self,
+            picker: &mut Picker,
+            events: Vec<egui::Event>,
+        ) -> (Option<Outcome>, Shown) {
+            self.time += 1.0 / 60.0;
+            let mut outcome = None;
+            let classic = self.classic;
+            let mut output = self.ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, BIG)),
+                    time: Some(self.time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| outcome = show(ui.ctx(), picker, classic),
+            );
+            output.textures_delta.clear();
+            let modal = self
+                .ctx
+                .memory(|m| m.area_rect(egui::Id::unique("media-picker")))
+                .expect("the picker is shown");
+            (outcome, Shown::of(&output, modal))
+        }
+        /// Clicks `count` times on the widget `label` of `role`, as the
+        /// picker shows it once settled, and moves the pointer away;
+        /// returns what the picker asked for meanwhile.
+        fn click(
+            &mut self,
+            picker: &mut Picker,
+            role: egui::accesskit::Role,
+            label: &str,
+            count: usize,
+        ) -> Option<Outcome> {
+            let mut shown = None;
+            for _ in 0..5 {
+                shown = Some(self.frame(picker, Vec::new()).1);
+            }
+            let at = shown.expect("frames").widget(role, label).rect.center();
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            self.time += 1.0;
+            let mut outcome = self.frame(picker, vec![egui::Event::PointerMoved(at)]).0;
+            for _ in 0..count {
+                for pressed in [true, false] {
+                    outcome = outcome.or(self.frame(picker, vec![button(pressed)]).0);
+                }
+            }
+            let away = egui::Event::PointerMoved(egui::pos2(1.0, 1.0));
+            outcome.or(self.frame(picker, vec![away]).0)
+        }
+    }
+
+    /// Every control of the picker answers a click, in every skin and
+    /// theme: rows (a double-click inserts), facet boxes and their chips,
+    /// Show, the switch link of a set that fits the other drive, the disk
+    /// radios, the catalogue box, the write radios, the drive toggles, the
+    /// sources, the remote preview link, Insert, Browse… and Cancel.
+    #[test]
+    fn every_control_answers_a_click() {
+        use egui::accesskit::Role;
+        let on_b = || Picker::new(vec![machine(None, When::Now)], 0, 1, library(), None);
+        for (classic, dark) in LOOKS {
+            let what = format!("classic {classic}, dark {dark}");
+            let mut run = Pointer::new(classic, dark);
+            let mut picker = on_b();
+            assert_eq!(
+                run.click(&mut picker, Role::ListBoxOption, "Duke Nukem II", 1),
+                None
+            );
+            assert_eq!(picker.choice, Some(Choice::Set(1)), "{what}");
+            let outcome = run.click(&mut picker, Role::ListBoxOption, "Commander Keen 4", 2);
+            assert!(
+                matches!(outcome, Some(Outcome::Set { unit: 1, .. })),
+                "{what}: {outcome:?}"
+            );
+            let mut picker = on_b();
+            run.click(&mut picker, Role::CheckBox, "platformer", 1);
+            assert!(
+                picker
+                    .facets
+                    .get("Genre")
+                    .is_some_and(|v| v.contains("platformer")),
+                "{what}"
+            );
+            run.click(&mut picker, Role::Button, "Genre: platformer ×", 1);
+            assert!(
+                picker.facets.get("Genre").is_none_or(|v| v.is_empty()),
+                "{what}"
+            );
+            run.click(&mut picker, Role::Link, "Show", 1);
+            assert!(picker.show_misfits, "{what}");
+            run.click(&mut picker, Role::Link, "switch to A: or Alt+A", 1);
+            assert_eq!(picker.unit, 0, "{what}");
+            run.click(&mut picker, Role::ListBoxOption, "FreeDOS 1.3", 1);
+            run.click(&mut picker, Role::RadioButton, "2. Disk 2 · 1.2M", 1);
+            assert_eq!(picker.chosen_disk(), 1, "{what}");
+            run.click(
+                &mut picker,
+                Role::CheckBox,
+                "Put all 2 disks in A:'s catalogue, in order",
+                1,
+            );
+            assert!(!picker.all, "{what}");
+            run.click(&mut picker, Role::RadioButton, "Write-protected", 1);
+            assert!(!picker.journal, "{what}");
+            run.click(
+                &mut picker,
+                Role::RadioButton,
+                "Keep the changes in DOS games",
+                1,
+            );
+            assert!(picker.journal, "{what}");
+            run.click(&mut picker, Role::Button, "B: 1.44M · empty", 1);
+            assert_eq!(picker.unit, 1, "{what}");
+            run.click(&mut picker, Role::Button, "A: 1.2M · empty", 1);
+            assert_eq!(picker.unit, 0, "{what}");
+            // Switching the drive went back to the default disk.
+            assert_eq!(picker.chosen_disk(), 0, "{what}");
+            run.click(&mut picker, Role::RadioButton, "2. Disk 2 · 1.2M", 1);
+            let outcome = run.click(&mut picker, Role::Button, "Insert", 1);
+            assert!(
+                matches!(
+                    outcome,
+                    Some(Outcome::Set {
+                        unit: 0,
+                        first: 1,
+                        all: false,
+                        journal: true,
+                        ..
+                    })
+                ),
+                "{what}: {outcome:?}"
+            );
+            let outcome = run.click(&mut picker, Role::Button, "Browse for an image file…", 1);
+            assert_eq!(outcome, Some(Outcome::Browse(0)), "{what}");
+            let outcome = run.click(&mut picker, Role::Button, "Cancel", 1);
+            assert_eq!(outcome, Some(Outcome::Cancel), "{what}");
+            run.click(&mut picker, Role::Button, "This machine (0)", 1);
+            assert_eq!(picker.source, Source::Machine, "{what}");
+            run.click(&mut picker, Role::Button, "This library (4)", 1);
+            assert_eq!(picker.source, Source::Library, "{what}");
+            run.click(
+                &mut picker,
+                Role::Link,
+                "What will a remote result look like?",
+                1,
+            );
+            assert!(picker.remote_preview, "{what}");
+        }
+    }
+
+    /// The From row greys a tab per configured registry, the default first.
+    #[test]
+    fn the_from_row_greys_each_configured_registry() {
+        let config = image_registry::config::RegistryConfig::from_toml(
+            "[[registries]]\nhost = \"nas.example:5000\"\nprivate = true\n",
+        )
+        .unwrap();
+        let mut picker = Picker::new(vec![machine(None, When::Now)], 0, 0, library(), None);
+        picker.remotes = remotes(&config, "registry.example");
+        assert_eq!(
+            picker.remotes,
+            [
+                ("registry.example".to_owned(), "default".to_owned()),
+                ("nas.example:5000".to_owned(), "private".to_owned()),
+            ]
+        );
+        for (classic, dark) in LOOKS {
+            let shown = shown(&mut picker, BIG, classic, dark);
+            for label in [
+                "registry.example default · after the MVP",
+                "nas.example:5000 private · after the MVP",
+            ] {
+                shown.widget(egui::accesskit::Role::Button, label);
+            }
+        }
     }
 }
