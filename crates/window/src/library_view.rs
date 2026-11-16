@@ -628,34 +628,84 @@ fn tree_icon(filter: &Filter) -> Option<Icon> {
     }
 }
 
-/// Sortable column headers; a click on the sorted column reverses it. The
-/// `plain` columns are headers only: their list cannot sort by them.
+/// A list header cell's height.
+const HEADER_HEIGHT: f32 = 22.0;
+/// The room the library mock-up's list header keeps beside each label. Its
+/// 3 px above and below are what centring the label in [`HEADER_HEIGHT`]
+/// leaves.
+const HEADER_INSET: f32 = 6.0;
+
+/// A list's column headers as the library mock-up's list header draws them:
+/// cells edge to edge on the face colour, each inside the skin's raised
+/// outline and sunk while pressed, labels left-aligned and truncated with an
+/// ellipsis. Each cell starts where its column's cells start and reaches the
+/// next column, so the gap the rows keep between two columns belongs to the
+/// cell before it; the last one runs on over the scroll bar's room to the
+/// list's edge. A click sorts by a column, and on the sorted column reverses
+/// it. The `plain` columns are headers only: their list cannot sort by them,
+/// so they look the same but take no click.
 fn sort_header<const N: usize>(
     ui: &mut egui::Ui,
     labels: &[&str; N],
     widths: &[f32; N],
     plain: &[usize],
+    classic: bool,
     sort: &mut usize,
     descending: &mut bool,
 ) -> bool {
+    // The rows' gap between columns, taken before the header drops it.
+    let gap = ui.spacing().item_spacing.x;
     let mut changed = false;
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
         for (column, label) in labels.iter().enumerate() {
-            let label = if *sort == column {
+            let sortable = !plain.contains(&column);
+            let width = if column + 1 < N {
+                widths[column] + gap
+            } else {
+                ui.available_width().max(widths[column] + SCROLL_ROOM)
+            };
+            let sense = if sortable {
+                egui::Sense::click()
+            } else {
+                egui::Sense::hover()
+            };
+            let (rect, response) = ui.allocate_exact_size(egui::vec2(width, HEADER_HEIGHT), sense);
+            let text = if sortable && *sort == column {
                 format!("{label} {}", if *descending { "▼" } else { "▲" })
             } else {
-                (*label).into()
+                (*label).to_owned()
             };
-            let button = egui::Button::new(egui::RichText::new(label)).truncate();
-            if plain.contains(&column) {
-                ui.add_sized(
-                    [widths[column], 22.0],
-                    egui::Label::new(egui::RichText::new(*labels.get(column).unwrap_or(&"")))
-                        .truncate(),
-                );
-                continue;
+            let role = if sortable {
+                egui::Role::Button
+            } else {
+                egui::Role::Label
+            };
+            response.widget_info(|| egui::WidgetInfo::labeled(role, ui.is_enabled(), &text));
+            // A plain header keeps a resting header's text colour, so it
+            // reads like the others.
+            let ink = if sortable {
+                ui.style().interact(&response).text_color()
+            } else {
+                ui.visuals().widgets.inactive.text_color()
+            };
+            let truncated = header_face(ui, rect, &text, ink);
+            if classic && response.is_pointer_button_down_on() {
+                pane::inset(ui, rect, true);
+            } else if classic || column == 0 {
+                pane::outset(ui, rect, classic);
+            } else {
+                // The mock-up draws the modern line outside each cell, so
+                // neighbours share one line: this cell's starts on the last
+                // pixel of the cell before it.
+                pane::outset(ui, rect.with_min_x(rect.left() - 1.0), classic);
             }
-            if ui.add_sized([widths[column], 22.0], button).clicked() {
+            let response = if truncated {
+                response.on_hover_text(&text)
+            } else {
+                response
+            };
+            if response.clicked() {
                 if *sort == column {
                     *descending = !*descending;
                 } else {
@@ -667,6 +717,31 @@ fn sort_header<const N: usize>(
         }
     });
     changed
+}
+
+/// A header cell's ground in the face colour and its label in the mock-up's
+/// padding, left-aligned and truncated with an ellipsis to the cell. Returns
+/// whether the label was truncated.
+fn header_face(ui: &egui::Ui, rect: egui::Rect, text: &str, ink: egui::Color32) -> bool {
+    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    painter.rect_filled(rect, 0.0, ui.visuals().panel_fill);
+    let mut job = egui::text::LayoutJob::single_section(
+        text.to_owned(),
+        egui::TextFormat::simple(egui::TextStyle::Button.resolve(ui.style()), ink),
+    );
+    job.wrap =
+        egui::text::TextWrapping::truncate_at_width((rect.width() - 2.0 * HEADER_INSET).max(0.0));
+    let galley = ui.painter().layout_job(job);
+    let truncated = galley.elided;
+    painter.galley(
+        egui::pos2(
+            rect.left() + HEADER_INSET,
+            rect.center().y - galley.size().y / 2.0,
+        ),
+        galley,
+        ink,
+    );
+    truncated
 }
 
 /// Room a list keeps beside its columns for the vertical scroll bar.
@@ -705,8 +780,8 @@ fn cell_font(ui: &egui::Ui, cell: Cell) -> egui::FontId {
 /// Room a badge adds around its text.
 const BADGE_PADDING: f32 = 10.0;
 
-/// The narrowest each column may get: its header with the sort mark and the
-/// button's padding, and its sample value whole.
+/// The narrowest each column may get: its header with the sort mark in the
+/// header cell's padding, and its sample value whole.
 fn column_floors<const N: usize>(ui: &egui::Ui, columns: &Columns<N>) -> [f32; N] {
     let width = |text: &str, font: egui::FontId| {
         ui.painter()
@@ -715,7 +790,7 @@ fn column_floors<const N: usize>(ui: &egui::Ui, columns: &Columns<N>) -> [f32; N
             .x
     };
     let button = egui::TextStyle::Button.resolve(ui.style());
-    let padding = 2.0 * ui.spacing().button_padding.x + 2.0;
+    let padding = 2.0 * HEADER_INSET;
     std::array::from_fn(|i| {
         let header = width(&format!("{}{SORT_MARK}", columns.labels[i]), button.clone()) + padding;
         let sample = width(columns.samples[i], cell_font(ui, columns.cells[i]))
@@ -2729,6 +2804,7 @@ impl LibraryView {
                         &IMAGE_COLUMNS.labels,
                         &widths,
                         &[IMAGE_MACHINES_COLUMN],
+                        classic,
                         &mut self.query.sort,
                         &mut self.query.descending,
                     );

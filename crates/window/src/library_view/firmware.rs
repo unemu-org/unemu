@@ -1039,6 +1039,7 @@ impl LibraryView {
                     &COLUMNS.labels,
                     &widths,
                     &[],
+                    self.classic,
                     &mut self.query.firmware_sort,
                     &mut self.query.firmware_descending,
                 );

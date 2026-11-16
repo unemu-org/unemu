@@ -787,6 +787,7 @@ impl LibraryView {
                     &COLUMNS.labels,
                     &widths,
                     &[],
+                    self.classic,
                     &mut self.query.media_sort,
                     &mut self.query.media_descending,
                 );

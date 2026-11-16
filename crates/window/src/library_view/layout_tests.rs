@@ -1379,14 +1379,48 @@ impl<T> Item<T> {
 /// A line segment's end points and stroke.
 type Line = ([egui::Pos2; 2], egui::Stroke);
 
-/// The rectangles and line segments a frame paints, in paint order.
+/// A widget as egui reported it to AccessKit: its role, its label and the
+/// area it was given.
+struct Widget {
+    role: egui::accesskit::Role,
+    label: String,
+    rect: egui::Rect,
+}
+
+/// The rectangles and line segments a frame paints, in paint order, with
+/// its texts and, where AccessKit is on, its widgets.
 struct Painted {
     rects: Vec<Item<egui::epaint::RectShape>>,
     lines: Vec<Item<Line>>,
+    texts: Vec<Drawn>,
+    widgets: Vec<Widget>,
 }
 
 impl Painted {
     fn of(output: &egui::FullOutput) -> Self {
+        let widgets = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .map(|update| {
+                update
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| {
+                        let area = node.bounds()?;
+                        Some(Widget {
+                            role: node.role(),
+                            // egui gives a label its text as the node's value.
+                            label: node.label().or(node.value()).unwrap_or_default().to_owned(),
+                            rect: egui::Rect::from_min_max(
+                                egui::pos2(area.x0 as f32, area.y0 as f32),
+                                egui::pos2(area.x1 as f32, area.y1 as f32),
+                            ),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         fn walk(shape: &egui::Shape, clip: egui::Rect, painted: &mut Painted, order: &mut usize) {
             *order += 1;
             match shape {
@@ -1409,6 +1443,8 @@ impl Painted {
         let mut painted = Painted {
             rects: Vec::new(),
             lines: Vec::new(),
+            texts: drawn(output).0,
+            widgets,
         };
         let mut order = 0;
         for clipped in &output.shapes {
@@ -1477,6 +1513,16 @@ impl Painted {
     }
 }
 
+/// A context in the classic or the modern skin, light or dark, that reports
+/// its widgets to AccessKit, so a frame tells where each widget lies.
+fn skinned_context(classic: bool, dark: bool) -> egui::Context {
+    let ctx = egui::Context::default();
+    crate::shell::configure_context(&ctx);
+    ctx.set_visuals(crate::shell::skin_visuals(classic, dark));
+    ctx.enable_accesskit();
+    ctx
+}
+
 /// The library `view` in the classic or the modern skin, light or dark, in a
 /// window `size` large, as its second frame paints it. With `status_bar`, a
 /// 20 px status bar under it takes the window's bottom, as the shell's does.
@@ -1489,9 +1535,7 @@ fn paint_library(
     status_bar: bool,
 ) -> (Painted, egui::Rect) {
     view.classic = classic;
-    let ctx = egui::Context::default();
-    crate::shell::configure_context(&ctx);
-    ctx.set_visuals(crate::shell::skin_visuals(classic, dark));
+    let ctx = skinned_context(classic, dark);
     let mut area = egui::Rect::NOTHING;
     let mut draw = |ui: &mut egui::Ui| {
         if status_bar {
@@ -1864,4 +1908,315 @@ fn text_stripes_and_the_selection_read_on_the_pane_grounds() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The Machines list's column headers; every one of them sorts.
+const MACHINE_HEADERS: [&str; 5] = ["Name", "Source image", "State", "Last run", "Changes"];
+/// The room the library mock-up's list header keeps beside each label
+/// (`.ghead button`, 6 px).
+const HEADER_INSET: f32 = 6.0;
+
+/// The Images collection of a store with three images, one tag each, so
+/// every row is an image row under the list's header.
+fn images_list() -> (assembly::test_support::TempDir, LibraryView) {
+    let (temp, store, _) = tests::catalogue(3);
+    let cache = firmware::tests::warm(&store);
+    let mut view = LibraryView::new(None);
+    view.query.filter = Filter::All;
+    view.snapshot = Arc::new(snapshot(&cache, &view.query));
+    (temp, view)
+}
+
+/// A list's header cells, by `labels`, and the cells of its first row that
+/// fills every column, each left to right, from the list pane of a
+/// [`paint_library`] frame. A sorted column's header adds its sort mark.
+fn header_and_row<'a>(
+    painted: &'a Painted,
+    labels: &[&str],
+    what: &str,
+) -> (Vec<&'a Widget>, Vec<&'a Widget>) {
+    let in_list = |w: &&Widget| w.rect.left() >= TREE_WIDTH && w.rect.top() < WINDOW_HEIGHT / 2.0;
+    let header: Vec<&Widget> = labels
+        .iter()
+        .map(|label| {
+            painted
+                .widgets
+                .iter()
+                .filter(in_list)
+                .filter(|w| w.label == *label || w.label.starts_with(&format!("{label} ")))
+                .min_by(|a, b| a.rect.top().total_cmp(&b.rect.top()))
+                .unwrap_or_else(|| panic!("{what}: no {label:?} header"))
+        })
+        .collect();
+    let cell = |w: &&Widget| {
+        w.role == egui::accesskit::Role::Label && w.rect.top() >= header[0].rect.bottom()
+    };
+    let mut tops: Vec<f32> = painted
+        .widgets
+        .iter()
+        .filter(in_list)
+        .filter(cell)
+        .map(|w| w.rect.top())
+        .collect();
+    tops.sort_by(f32::total_cmp);
+    tops.dedup();
+    let row = tops
+        .into_iter()
+        .find_map(|top| {
+            let mut cells: Vec<&Widget> = painted
+                .widgets
+                .iter()
+                .filter(in_list)
+                .filter(cell)
+                .filter(|w| w.rect.top() == top)
+                .collect();
+            cells.sort_by(|a, b| a.rect.left().total_cmp(&b.rect.left()));
+            (cells.len() == labels.len()).then_some(cells)
+        })
+        .unwrap_or_else(|| {
+            let listed: Vec<_> = painted
+                .widgets
+                .iter()
+                .filter(in_list)
+                .map(|w| (w.role, &w.label, w.rect))
+                .collect();
+            panic!("{what}: no row fills every column in {listed:?}")
+        });
+    (header, row)
+}
+
+/// The library mock-up's list header (`.ghead`), in both skins and both
+/// themes, over the Machines list, whose columns all sort, and the Images
+/// list, whose Machines column is a plain header: the cells sit edge to edge
+/// in one row, each starts where its column's cells start and reaches the
+/// next column, so the gap between two columns belongs to the cell before
+/// it, and the last runs on over the scroll bar's room without leaving the
+/// pane. Every label, the plain one included, sits left-aligned in the
+/// mock-up's 6 px padding.
+#[test]
+fn list_headers_sit_edge_to_edge_over_their_columns() {
+    let (_f, machines) = machine_view();
+    let (_temp, images) = images_list();
+    let lists: [(&str, LibraryView, &[&str]); 2] = [
+        ("Machines", machines, &MACHINE_HEADERS),
+        ("Images", images, &IMAGE_COLUMNS.labels),
+    ];
+    let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+    let mut failures = Vec::new();
+    for (collection, mut view, labels) in lists {
+        for classic in [false, true] {
+            for dark in [false, true] {
+                let what = format!("{collection}, classic {classic}, dark {dark}");
+                let size = egui::vec2(GROUNDS_WIDTH, WINDOW_HEIGHT);
+                let (painted, _) = paint_library(&mut view, classic, dark, size, false);
+                let (header, row) = header_and_row(&painted, labels, &what);
+                let first = header[0].rect;
+                for (i, cell) in header.iter().enumerate() {
+                    let (rect, column, name) = (cell.rect, row[i].rect, &cell.label);
+                    if !near(rect.top(), first.top()) || !near(rect.bottom(), first.bottom()) {
+                        failures.push(format!(
+                            "{what}: {name:?} {rect:?} is off the row {first:?}"
+                        ));
+                    }
+                    if !near(rect.left(), column.left()) {
+                        failures.push(format!(
+                            "{what}: {name:?} starts at {}, its column at {}",
+                            rect.left(),
+                            column.left()
+                        ));
+                    }
+                    match (header.get(i + 1), row.get(i + 1)) {
+                        (Some(next), Some(next_column)) => {
+                            if !near(next.rect.left(), rect.right()) {
+                                failures.push(format!(
+                                    "{what}: {:?} starts at {}, {name:?} ends at {}",
+                                    next.label,
+                                    next.rect.left(),
+                                    rect.right()
+                                ));
+                            }
+                            if !near(rect.right(), next_column.rect.left()) {
+                                failures.push(format!(
+                                    "{what}: {name:?} ends at {}, the next column starts at {}",
+                                    rect.right(),
+                                    next_column.rect.left()
+                                ));
+                            }
+                        }
+                        _ => {
+                            if rect.right() < column.right() + SCROLL_ROOM - 0.01 {
+                                failures.push(format!(
+                                    "{what}: {name:?} ends at {}, short of the scroll bar's \
+                                     room after its column's end {}",
+                                    rect.right(),
+                                    column.right()
+                                ));
+                            }
+                            if rect.right() > GROUNDS_WIDTH - PANE_GAP {
+                                failures.push(format!(
+                                    "{what}: {name:?} ends at {}, past the pane",
+                                    rect.right()
+                                ));
+                            }
+                        }
+                    }
+                    let Some(text) = painted
+                        .texts
+                        .iter()
+                        .find(|t| t.text == *name && rect.intersects(t.rect))
+                    else {
+                        failures.push(format!("{what}: no label drawn in {name:?}"));
+                        continue;
+                    };
+                    let room = rect.shrink2(egui::vec2(HEADER_INSET, 0.0));
+                    if (text.rect.left() - room.left()).abs() > 0.5
+                        || !room.expand(0.5).contains_rect(text.rect)
+                    {
+                        failures.push(format!(
+                            "{what}: {name:?} is drawn at {:?}, not left-aligned in {room:?}",
+                            text.rect
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Each header cell sits on the face colour inside the skin's raised outline
+/// (`--out`), in both themes, the Images list's plain header included. The
+/// classic skin draws the raised two-pixel bevel: highlight and second face
+/// along the top and left, dark shadow and shadow along the bottom and right.
+/// The modern skin draws the flat 1 px line in the shadow colour, on square
+/// corners. The mock-up draws that line outside each cell, so neighbours
+/// share one line: each later cell's line starts on the last pixel of the
+/// cell before it. Every outline is painted over its cell's ground.
+#[test]
+fn list_header_cells_wear_the_skins_raised_outline() {
+    let (_temp, mut view) = images_list();
+    let mut failures = Vec::new();
+    for classic in [false, true] {
+        for dark in [false, true] {
+            let theme = usize::from(dark);
+            let what = format!("classic {classic}, dark {dark}");
+            let size = egui::vec2(GROUNDS_WIDTH, WINDOW_HEIGHT);
+            let (painted, _) = paint_library(&mut view, classic, dark, size, false);
+            let (header, _) = header_and_row(&painted, &IMAGE_COLUMNS.labels, &what);
+            for (i, cell) in header.iter().enumerate() {
+                let (rect, name) = (cell.rect, &cell.label);
+                let Some(ground) = painted
+                    .rects
+                    .iter()
+                    .find(|r| r.shape.fill == FACE[theme] && r.shape.rect == rect)
+                else {
+                    failures.push(format!("{what}: {name:?} is not on the face colour"));
+                    continue;
+                };
+                if classic {
+                    let raised = [
+                        painted.ring_colours(rect),
+                        painted.ring_colours(rect.shrink(1.0)),
+                    ];
+                    let expected = [
+                        [HI, HI, DK, DK].map(|c| Some(c[theme])),
+                        [FACE_2, FACE_2, LO, LO].map(|c| Some(c[theme])),
+                    ];
+                    if raised != expected {
+                        failures.push(format!(
+                            "{what}: {name:?} has the bevel {raised:?}, not {expected:?}"
+                        ));
+                    }
+                    let over = painted
+                        .ring(rect)
+                        .into_iter()
+                        .chain(painted.ring(rect.shrink(1.0)))
+                        .all(|edge| edge.is_some_and(|line| line.order > ground.order));
+                    if !over {
+                        failures.push(format!("{what}: {name:?}'s bevel is under its ground"));
+                    }
+                } else {
+                    let outline = if i == 0 {
+                        rect
+                    } else {
+                        rect.with_min_x(rect.left() - 1.0)
+                    };
+                    let found = painted.rects.iter().any(|r| {
+                        r.shape.rect == outline
+                            && r.shape.stroke == egui::Stroke::new(1.0, LO[theme])
+                            && r.shape.stroke_kind == egui::StrokeKind::Inside
+                            && r.shape.corner_radius == egui::CornerRadius::ZERO
+                            && r.order > ground.order
+                    });
+                    if !found {
+                        failures.push(format!(
+                            "{what}: {name:?} has no square 1 px shadow-coloured outline on \
+                             {outline:?} over its ground"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A header cell pressed in the classic skin sinks into the mock-up's inset
+/// bevel (`--in`), in both themes; its click sorts the Machines list by its
+/// column, and a second click reverses the order.
+#[test]
+fn a_pressed_header_cell_sinks_and_its_click_sorts_the_list() {
+    for dark in [false, true] {
+        let theme = usize::from(dark);
+        let what = format!("dark {dark}");
+        let (_f, mut view) = machine_view();
+        view.classic = true;
+        let ctx = skinned_context(true, dark);
+        let size = egui::vec2(GROUNDS_WIDTH, WINDOW_HEIGHT);
+        let mut time = 0.0;
+        let mut pass = |view: &mut LibraryView, events: Vec<egui::Event>| {
+            time += 0.1;
+            let output = firmware::tests::frame(&ctx, size, time, events, |ui| {
+                view.show(ui, &[], &mut None);
+            });
+            Painted::of(&output)
+        };
+        pass(&mut view, Vec::new());
+        let painted = pass(&mut view, Vec::new());
+        let at = header_and_row(&painted, &MACHINE_HEADERS, &what).0[1]
+            .rect
+            .center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let painted = pass(&mut view, vec![egui::Event::PointerMoved(at), button(true)]);
+        let rect = header_and_row(&painted, &MACHINE_HEADERS, &what).0[1].rect;
+        assert_eq!(
+            [
+                painted.ring_colours(rect),
+                painted.ring_colours(rect.shrink(1.0))
+            ],
+            [
+                [LO, LO, HI, HI].map(|c| Some(c[theme])),
+                [DK, DK, FACE_2, FACE_2].map(|c| Some(c[theme])),
+            ],
+            "{what}: the pressed cell does not sink"
+        );
+        pass(&mut view, vec![button(false)]);
+        assert_eq!(
+            (view.query.machine_sort, view.query.machine_descending),
+            (1, false),
+            "{what}: the click does not sort by the column"
+        );
+        pass(&mut view, vec![button(true)]);
+        pass(&mut view, vec![button(false)]);
+        assert_eq!(
+            (view.query.machine_sort, view.query.machine_descending),
+            (1, true),
+            "{what}: a second click does not reverse the order"
+        );
+    }
 }

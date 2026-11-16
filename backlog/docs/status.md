@@ -5,6 +5,23 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — Library list headers sit edge to edge, labels on the left:**
+  the column headers of the Machines, Images, Installation media and
+  Firmware lists now follow the library mock-up's list header instead of a
+  row of separate centred buttons. The cells sit edge to edge on the face
+  colour with no gap between them: each starts where its column's cells
+  start and reaches the next column, and the last runs on over the scroll
+  bar's room to the list's edge. Labels are left-aligned in the mock-up's
+  6 px padding and truncated with an ellipsis; a truncated label shows in
+  full on hover. In the classic skin each cell is a raised two-pixel bevel
+  (highlight and second face at the top and left, dark shadow and shadow at
+  the bottom and right) that sinks into the inset bevel while pressed; in
+  the modern skin each cell has a flat 1 px line in the shadow colour on
+  square corners, neighbours sharing one line. The Images list's Machines
+  header, which cannot sort, looks the same but takes no click. Sort marks
+  and clicks are unchanged. A column's narrowest width now keeps the
+  header's 12 px of padding rather than 10 px, so on a narrow window a
+  column may be 2 px wider. Rows are unchanged.
 - **2026-11-16 — The project is renamed unemupc:** the name unemupc98 no
   longer fits a line that may end with an optional Windows XP phase, and a
   later NEC PC-98 emulator in the family would collide with it; the logo has

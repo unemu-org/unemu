@@ -455,6 +455,37 @@ pub(super) fn inset(ui: &Ui, rect: egui::Rect, classic: bool) {
     }
 }
 
+/// The mock-ups' raised outline (`--out`) just inside `rect`, on the square
+/// corners of their list header cells. The classic skin draws their raised
+/// two-pixel bevel: the highlight and the second face along the top and left
+/// edges, the dark shadow and the shadow along the bottom and right ones. The
+/// modern skin draws their flat 1 px line in the shadow colour.
+pub(super) fn outset(ui: &Ui, rect: egui::Rect, classic: bool) {
+    let visuals = ui.visuals();
+    let painter = ui.painter();
+    if classic {
+        crate::shell::bevel_ring(
+            painter,
+            rect,
+            highlight_colour(visuals),
+            dark_shadow_colour(visuals),
+        );
+        crate::shell::bevel_ring(
+            painter,
+            rect.shrink(1.0),
+            group_colour(visuals),
+            shadow_colour(visuals),
+        );
+    } else {
+        painter.rect_stroke(
+            rect,
+            0.0,
+            Stroke::new(1.0, shadow_colour(visuals)),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
 /// The face colour under the library's panels, which shows in the gaps
 /// between their panes: nothing else paints the window there.
 pub(super) fn backdrop(ui: &Ui) {

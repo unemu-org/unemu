@@ -618,6 +618,7 @@ impl LibraryView {
                     &COLUMNS.labels,
                     &widths,
                     &[],
+                    self.classic,
                     &mut self.query.machine_sort,
                     &mut self.query.machine_descending,
                 ) {
