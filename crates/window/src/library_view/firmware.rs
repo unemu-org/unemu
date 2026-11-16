@@ -62,14 +62,14 @@ fn redistribution_label(open: bool) -> &'static str {
 }
 
 /// A ROM layer, stored raw or as a `+zstd` frame (machine-images §2).
-fn is_rom(descriptor: &Descriptor) -> bool {
+pub(super) fn is_rom(descriptor: &Descriptor) -> bool {
     descriptor.decoded_media_type() == media_type::FIRMWARE
 }
 /// The raw identity that configs and ROM pins use, whether stored raw or compressed.
 fn decoded_identity(descriptor: &Descriptor) -> Option<Digest> {
     descriptor.decoded_digest().ok()
 }
-fn pin(sha256: &str) -> Option<Digest> {
+pub(super) fn pin(sha256: &str) -> Option<Digest> {
     format!("sha256:{sha256}").parse().ok()
 }
 
@@ -254,18 +254,25 @@ pub(super) fn rows(
     rows
 }
 
-pub(super) const COLUMNS: [&str; 9] = [
-    "Name",
-    "Roles",
-    "Chips",
-    "Vendor",
-    "Version / date",
-    "Fits",
-    "Catalogue id",
-    "Redistribution",
-    "Size",
-];
-const WIDTHS: [f32; 9] = [210.0, 110.0, 90.0, 100.0, 160.0, 120.0, 170.0, 150.0, 80.0];
+/// The Firmware list's columns, as the firmware mock-up lists packages.
+pub(super) const COLUMNS: super::Columns<5> = super::Columns {
+    labels: [
+        "Name",
+        "Role summary",
+        "Fits",
+        "Version / date",
+        "Redistribution",
+    ],
+    widths: [240.0, 140.0, 140.0, 200.0, 200.0],
+    cells: [
+        super::Cell::Text,
+        super::Cell::Text,
+        super::Cell::Text,
+        super::Cell::Text,
+        super::Cell::Text,
+    ],
+    samples: ["", "", "", "", "User-supplied"],
+};
 
 fn roles(f: &FirmwareSummary) -> String {
     f.roles
@@ -273,13 +280,6 @@ fn roles(f: &FirmwareSummary) -> String {
         .map(|r| role_label(r))
         .collect::<Vec<_>>()
         .join(", ")
-}
-fn chips(rom: &Rom) -> String {
-    if rom.parts.is_empty() {
-        "single image".into()
-    } else {
-        format!("{} chips", rom.parts.len())
-    }
 }
 fn version_date(f: &FirmwareSummary) -> String {
     format!(
@@ -317,12 +317,14 @@ pub(super) fn lead(row: &FirmwareRow) -> super::Lead {
     }
 }
 
-pub(super) fn cells(row: &FirmwareRow) -> [String; 9] {
+/// A package's cells; a package without its summary says why in the role
+/// column.
+pub(super) fn cells(row: &FirmwareRow) -> [String; 5] {
     let name = row.image.name().to_owned();
     let Some(f) = row.firmware() else {
-        let mut cells: [String; 9] = Default::default();
+        let mut cells: [String; 5] = Default::default();
         cells[0] = name;
-        cells[8] = if row.image.failure.is_some() {
+        cells[1] = if row.image.failure.is_some() {
             "Unavailable"
         } else {
             "Pending"
@@ -333,11 +335,8 @@ pub(super) fn cells(row: &FirmwareRow) -> [String; 9] {
     [
         name,
         roles(f),
-        f.roms.iter().map(chips).collect::<Vec<_>>().join(" + "),
-        f.vendor.clone().unwrap_or_else(|| "Unknown".into()),
-        version_date(f),
         fits(f),
-        f.catalogue_ids.join(", "),
+        version_date(f),
         if row.source_missing {
             format!("{} {NO_SOURCE_BADGE}", row.redistribution.label())
         } else if !f.sources.is_empty() {
@@ -345,25 +344,14 @@ pub(super) fn cells(row: &FirmwareRow) -> [String; 9] {
         } else {
             row.redistribution.label()
         },
-        row.image
-            .summary
-            .as_ref()
-            .map(|s| human_size(s.stored_size))
-            .unwrap_or_default(),
     ]
 }
 fn sort_value(row: &FirmwareRow, column: usize) -> String {
-    match column {
-        8 => format!(
-            "{:020}",
-            row.image.summary.as_ref().map_or(0, |s| s.stored_size)
-        ),
-        column => cells(row)
-            .get(column)
-            .cloned()
-            .unwrap_or_default()
-            .to_lowercase(),
-    }
+    cells(row)
+        .get(column)
+        .cloned()
+        .unwrap_or_default()
+        .to_lowercase()
 }
 
 fn lower_first(text: &str) -> String {
@@ -452,7 +440,7 @@ pub(super) fn details(
     package: Option<&Result<PackageDetails, String>>,
     can_edit: bool,
 ) -> PaneAction {
-    let mut action = PaneAction::None;
+    let action = std::cell::Cell::new(PaneAction::None);
     let image = &row.image;
     let (Some(f), Some(summary)) = (row.firmware(), image.summary.as_ref()) else {
         ui.strong(image.name());
@@ -463,22 +451,21 @@ pub(super) fn details(
                 .clone()
                 .unwrap_or_else(|| "Reading package summary…".into()),
         );
-        return action;
+        return action.get();
     };
     let license = row.redistribution.licenses.join(", ");
     let warn = ui.visuals().warn_fg_color;
-    ui.strong(image.name());
-    ui.label(format!(
-        "{} · local package · {}",
-        roles(f),
-        image.references()
-    ));
+    super::pane::title(ui, crate::shell_icons::Icon::Firmware, image.name(), false);
+    super::pane::meta(
+        ui,
+        format!("{} · local package · {}", roles(f), image.references()),
+    );
     match &f.description {
         Some(description) => {
-            ui.add(egui::Label::new(description).wrap());
+            super::pane::text(ui, description.as_str());
         }
         None => {
-            ui.weak("No description.");
+            super::pane::meta(ui, "No description.");
         }
     }
     ui.horizontal_wrapped(|ui| {
@@ -493,12 +480,12 @@ pub(super) fn details(
     });
     if row.source_missing {
         egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.colored_label(warn, guard_notice(&license));
+            super::pane::text(ui, egui::RichText::new(guard_notice(&license)).color(warn));
             if ui
                 .add_enabled(can_edit, egui::Button::new("Add source archive…"))
                 .clicked()
             {
-                action = PaneAction::AddSource;
+                action.set(PaneAction::AddSource);
             }
         });
     }
@@ -507,247 +494,255 @@ pub(super) fn details(
         Some(Err(error)) => error.clone(),
         Some(Ok(details)) => line(details),
     };
-    ui.columns(3, |columns| {
-        let facts = &mut columns[0];
-        egui::Grid::new("firmware-facts")
-            .num_columns(2)
-            .show(facts, |ui| {
-                let digest = image.descriptor.digest.hex();
-                let redistribution = if row.source_missing {
-                    format!("{} {NO_SOURCE_BADGE}", row.redistribution.label())
-                } else {
-                    row.redistribution.label()
-                };
-                for (label, value, hover) in [
-                    (
-                        "Vendor",
-                        f.vendor.clone().unwrap_or_else(|| "Unknown".into()),
-                        None,
-                    ),
-                    ("Version / date", version_date(f), None),
-                    ("Catalogue id", f.catalogue_ids.join(", "), None),
-                    ("Package SHA-256", short(digest), Some(digest)),
-                    ("Redistribution", redistribution, None),
-                    (
-                        "Config",
-                        checked(|d| {
-                            if d.config_open {
-                                "Open — every layer is open".into()
-                            } else {
-                                "User-supplied — follows its user-supplied layers".into()
-                            }
-                        }),
-                        None,
-                    ),
-                    ("Push", checked(super::firmware_metadata::push_text), None),
-                    ("Stored", human_size(summary.stored_size), None),
-                ] {
-                    ui.weak(label);
-                    let response = ui.label(value);
-                    if let Some(hover) = hover {
-                        response.on_hover_text(hover);
-                    }
-                    ui.end_row();
-                }
-            });
-        facts.strong("Provenance");
-        egui::Grid::new("firmware-provenance")
-            .num_columns(2)
-            .show(facts, |ui| {
-                let [source, from, date] = provenance_lines(f.provenance.as_ref());
-                for (label, value) in [("Source", source), ("Details", from), ("Date", date)] {
-                    ui.weak(label);
-                    ui.add(egui::Label::new(value).wrap());
-                    ui.end_row();
-                }
-            });
-        facts.horizontal_wrapped(|ui| {
-            ui.add_enabled(false, egui::Button::new("Use in machine…"))
-                .on_disabled_hover_text(
-                    "Binding a package into a machine draft is not available yet.",
-                );
-            ui.add_enabled(false, egui::Button::new("Export"))
-                .on_disabled_hover_text("Package export is not available yet.");
-            if ui
-                .add_enabled(can_edit, egui::Button::new("Edit metadata…"))
-                .clicked()
-            {
-                action = PaneAction::EditMetadata;
-            }
-        });
-        facts.weak("Edit metadata… creates a new package revision; ROM blobs unchanged.");
-        facts.weak(
-            "A machine embeds its ROM blobs and records the source package digest. \
-             Source folders are not needed after import.",
-        );
-
-        let layout = &mut columns[1];
-        layout.strong("Chip layout");
-        for rom in &f.roms {
-            layout.horizontal_wrapped(|ui| {
-                if rom.parts.is_empty() {
-                    let title = match (&rom.position, &rom.part_number) {
-                        (Some(position), Some(number)) => format!("{position} · {number}"),
-                        (Some(label), None) | (None, Some(label)) => label.clone(),
-                        (None, None) => "Single image".into(),
+    super::pane::split3(
+        ui,
+        |facts| {
+            egui::Grid::new("firmware-facts")
+                .num_columns(2)
+                .show(facts, |ui| {
+                    let digest = image.descriptor.digest.hex();
+                    let redistribution = if row.source_missing {
+                        format!("{} {NO_SOURCE_BADGE}", row.redistribution.label())
+                    } else {
+                        row.redistribution.label()
                     };
-                    let license = rom
-                        .blob
-                        .as_ref()
-                        .and_then(|blob| layer_license(summary, blob));
-                    chip_box(
-                        ui,
-                        title,
-                        role_label(&rom.role).into(),
-                        rom.size,
-                        &rom.sha256,
-                        &layer_text(license.as_deref()),
-                    );
-                }
-                for part in &rom.parts {
-                    let title = [&part.position, &part.part_number]
-                        .into_iter()
-                        .flatten()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(" · ");
-                    chip_box(
-                        ui,
-                        if title.is_empty() {
-                            "Chip".into()
-                        } else {
-                            title
-                        },
-                        format!(
-                            "{} · {} @ {}",
-                            role_label(&rom.role),
-                            part.lane,
-                            part.offset
+                    for (label, value, hover) in [
+                        (
+                            "Vendor",
+                            f.vendor.clone().unwrap_or_else(|| "Unknown".into()),
+                            None,
                         ),
-                        part.size,
-                        &part.sha256,
-                        &layer_text(layer_license(summary, &part.blob).as_deref()),
+                        ("Version / date", version_date(f), None),
+                        ("Catalogue id", f.catalogue_ids.join(", "), None),
+                        ("Package SHA-256", short(digest), Some(digest)),
+                        ("Redistribution", redistribution, None),
+                        (
+                            "Config",
+                            checked(|d| {
+                                if d.config_open {
+                                    "Open — every layer is open".into()
+                                } else {
+                                    "User-supplied — follows its user-supplied layers".into()
+                                }
+                            }),
+                            None,
+                        ),
+                        ("Push", checked(super::firmware_metadata::push_text), None),
+                        ("Stored", human_size(summary.stored_size), None),
+                    ] {
+                        // The row with a hover is the digest, shown short.
+                        let value = match hover {
+                            Some(_) => super::pane::mono(value),
+                            None => egui::RichText::new(value),
+                        };
+                        super::pane::fact(ui, label, |ui| {
+                            let response = super::pane::text(ui, value);
+                            if let Some(hover) = hover {
+                                response.on_hover_text(hover);
+                            }
+                        });
+                    }
+                });
+            facts.strong("Provenance");
+            egui::Grid::new("firmware-provenance")
+                .num_columns(2)
+                .show(facts, |ui| {
+                    let [source, from, date] = provenance_lines(f.provenance.as_ref());
+                    for (label, value) in [("Source", source), ("Details", from), ("Date", date)] {
+                        super::pane::fact_text(ui, label, value);
+                    }
+                });
+        },
+        |layout| {
+            layout.strong("Chip layout");
+            for rom in &f.roms {
+                layout.horizontal_wrapped(|ui| {
+                    if rom.parts.is_empty() {
+                        let title = match (&rom.position, &rom.part_number) {
+                            (Some(position), Some(number)) => format!("{position} · {number}"),
+                            (Some(label), None) | (None, Some(label)) => label.clone(),
+                            (None, None) => "Single image".into(),
+                        };
+                        let license = rom
+                            .blob
+                            .as_ref()
+                            .and_then(|blob| layer_license(summary, blob));
+                        chip_box(
+                            ui,
+                            title,
+                            role_label(&rom.role).into(),
+                            rom.size,
+                            &rom.sha256,
+                            &layer_text(license.as_deref()),
+                        );
+                    }
+                    for part in &rom.parts {
+                        let title = [&part.position, &part.part_number]
+                            .into_iter()
+                            .flatten()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(" · ");
+                        chip_box(
+                            ui,
+                            if title.is_empty() {
+                                "Chip".into()
+                            } else {
+                                title
+                            },
+                            format!(
+                                "{} · {} @ {}",
+                                role_label(&rom.role),
+                                part.lane,
+                                part.offset
+                            ),
+                            part.size,
+                            &part.sha256,
+                            &layer_text(layer_license(summary, &part.blob).as_deref()),
+                        );
+                    }
+                });
+                layout.add(egui::Label::new(egui::RichText::new(assembly_hint(rom)).weak()).wrap());
+            }
+            layout.strong("Fits — boards, machine classes and required devices");
+            if f.boards.is_empty() && f.machine_classes.is_empty() {
+                layout.label("Unspecified (not universal)");
+            }
+            for board in &f.boards {
+                layout.label(format!("Board: {board}"));
+            }
+            for class in &f.machine_classes {
+                layout.label(format!("Machine class: {}", class.to_uppercase()));
+            }
+            let mut requires: Vec<&String> = f.roms.iter().flat_map(|r| &r.requires).collect();
+            requires.sort();
+            requires.dedup();
+            for device in requires {
+                layout.label(format!("Requires: {device}"));
+            }
+            layout.strong("Used by — machines in this library");
+            if row.used_by.is_empty() {
+                layout.label("No local machine image embeds these ROMs.");
+            }
+            for reference in &row.used_by {
+                layout.label(reference);
+            }
+        },
+        |extras| {
+            extras.strong("Documents (extras)");
+            if f.extras.is_empty() {
+                extras.label("No documents attached.");
+            }
+            for extra in &f.extras {
+                extras.label(&extra.filename);
+                extras.small(format!(
+                    "{} · {} · {}",
+                    super::firmware_metadata::extra_kind(extra.kind),
+                    layer_text(layer_license(summary, &extra.blob).as_deref()),
+                    human_size(extra.size)
+                ));
+            }
+            extras.strong("Source archive");
+            match f.sources.first() {
+                Some(source) => {
+                    extras.label(&source.filename);
+                    extras.small(format!(
+                        "Source archive · {} · {} · {}",
+                        source.format.as_str(),
+                        layer_text(layer_license(summary, &source.blob).as_deref()),
+                        human_size(source.size)
+                    ));
+                }
+                None if row.source_missing => {
+                    extras.label("No source archive");
+                    extras.colored_label(
+                        warn,
+                        format!(
+                            "Required to publish {license} firmware outside private registries."
+                        ),
                     );
+                    if extras
+                        .add_enabled(can_edit, egui::Button::new("Add source archive…"))
+                        .clicked()
+                    {
+                        action.set(PaneAction::AddSource);
+                    }
                 }
-            });
-            layout.add(egui::Label::new(egui::RichText::new(assembly_hint(rom)).weak()).wrap());
-        }
-        layout.strong("Fits — boards, machine classes and required devices");
-        if f.boards.is_empty() && f.machine_classes.is_empty() {
-            layout.label("Unspecified (not universal)");
-        }
-        for board in &f.boards {
-            layout.label(format!("Board: {board}"));
-        }
-        for class in &f.machine_classes {
-            layout.label(format!("Machine class: {}", class.to_uppercase()));
-        }
-        let mut requires: Vec<&String> = f.roms.iter().flat_map(|r| &r.requires).collect();
-        requires.sort();
-        requires.dedup();
-        for device in requires {
-            layout.label(format!("Requires: {device}"));
-        }
-        layout.strong("Used by — machines in this library");
-        if row.used_by.is_empty() {
-            layout.label("No local machine image embeds these ROMs.");
-        }
-        for reference in &row.used_by {
-            layout.label(reference);
-        }
-
-        let extras = &mut columns[2];
-        extras.strong("Documents (extras)");
-        if f.extras.is_empty() {
-            extras.label("No documents attached.");
-        }
-        for extra in &f.extras {
-            extras.label(&extra.filename);
-            extras.small(format!(
-                "{} · {} · {}",
-                super::firmware_metadata::extra_kind(extra.kind),
-                layer_text(layer_license(summary, &extra.blob).as_deref()),
-                human_size(extra.size)
-            ));
-        }
-        extras.strong("Source archive");
-        match f.sources.first() {
-            Some(source) => {
-                extras.label(&source.filename);
-                extras.small(format!(
-                    "Source archive · {} · {} · {}",
-                    source.format.as_str(),
-                    layer_text(layer_license(summary, &source.blob).as_deref()),
-                    human_size(source.size)
-                ));
-            }
-            None if row.source_missing => {
-                extras.label("No source archive");
-                extras.colored_label(
-                    warn,
-                    format!("Required to publish {license} firmware outside private registries."),
-                );
-                if extras
-                    .add_enabled(can_edit, egui::Button::new("Add source archive…"))
-                    .clicked()
-                {
-                    action = PaneAction::AddSource;
+                None if row.redistribution.open => {
+                    extras.weak(format!("None — optional for {license}."));
+                }
+                None => {
+                    extras.weak("None — not needed for user-supplied firmware.");
                 }
             }
-            None if row.redistribution.open => {
-                extras.weak(format!("None — optional for {license}."));
-            }
-            None => {
-                extras.weak("None — not needed for user-supplied firmware.");
-            }
-        }
-        extras.strong("README");
-        let text = match package {
-            Some(Ok(details)) => details.readme.as_deref(),
-            _ => None,
-        };
-        match (&f.readme, readme_layer(summary)) {
-            (Some(readme), layer) => {
-                extras.label("README.md");
-                extras.small(format!(
-                    "README · UTF-8 Markdown · {} · {}",
-                    layer_text(
-                        layer
-                            .and_then(license::open_license)
-                            .map(|l| l.as_str().to_owned())
-                            .as_deref()
-                    ),
-                    human_size(readme.size)
-                ));
-                if extras
-                    .add_enabled(text.is_some(), egui::Button::new("Open README"))
-                    .clicked()
-                {
-                    action = PaneAction::OpenReadme;
-                }
-                if let Some(text) = text {
-                    let mut lines: Vec<&str> = text.lines().take(9).collect();
-                    lines.push("…");
-                    extras.add(
-                        egui::Label::new(egui::RichText::new(lines.join("\n")).monospace().small())
+            extras.strong("README");
+            let text = match package {
+                Some(Ok(details)) => details.readme.as_deref(),
+                _ => None,
+            };
+            match (&f.readme, readme_layer(summary)) {
+                (Some(readme), layer) => {
+                    extras.label("README.md");
+                    extras.small(format!(
+                        "README · UTF-8 Markdown · {} · {}",
+                        layer_text(
+                            layer
+                                .and_then(license::open_license)
+                                .map(|l| l.as_str().to_owned())
+                                .as_deref()
+                        ),
+                        human_size(readme.size)
+                    ));
+                    if extras
+                        .add_enabled(text.is_some(), egui::Button::new("Open README"))
+                        .clicked()
+                    {
+                        action.set(PaneAction::OpenReadme);
+                    }
+                    if let Some(text) = text {
+                        let mut lines: Vec<&str> = text.lines().take(9).collect();
+                        lines.push("…");
+                        extras.add(
+                            egui::Label::new(
+                                egui::RichText::new(lines.join("\n")).monospace().small(),
+                            )
                             .wrap(),
+                        );
+                    }
+                }
+                (None, _) => {
+                    extras.label("No README layer");
+                    extras.small(
+                        "Imported by an earlier version, before README and source layers existed. \
+                     Edit metadata… adds one in a new revision.",
                     );
+                    extras.add_enabled(false, egui::Button::new("Open README"));
                 }
             }
-            (None, _) => {
-                extras.label("No README layer");
-                extras.small(
-                    "Imported by an earlier version, before README and source layers existed. \
-                     Edit metadata… adds one in a new revision.",
-                );
-                extras.add_enabled(false, egui::Button::new("Open README"));
-            }
+        },
+    );
+    if let Some(reason) = &image.failure {
+        super::pane::text(ui, egui::RichText::new(reason).color(warn));
+    }
+    super::pane::actions(ui, |ui| {
+        ui.add_enabled(false, egui::Button::new("Use in machine…"))
+            .on_disabled_hover_text("Binding a package into a machine draft is not available yet.");
+        ui.add_enabled(false, egui::Button::new("Export"))
+            .on_disabled_hover_text("Package export is not available yet.");
+        if ui
+            .add_enabled(can_edit, egui::Button::new("Edit metadata…"))
+            .clicked()
+        {
+            action.set(PaneAction::EditMetadata);
         }
     });
-    if let Some(reason) = &image.failure {
-        ui.colored_label(warn, reason);
-    }
-    action
+    super::pane::meta(
+        ui,
+        "Edit metadata… creates a new package revision; ROM blobs unchanged. A machine embeds \
+         its ROM blobs and records the source package digest. Source folders are not needed \
+         after import.",
+    );
+    action.get()
 }
 
 /// Which statement a picked source archive belongs to.
@@ -981,14 +976,16 @@ impl LibraryView {
         let mut changed = false;
         let snapshot = self.snapshot.clone();
         self.rows_built = 0;
+        let widths = super::fit_columns(ui, &COLUMNS);
         egui::ScrollArea::horizontal()
             .id_salt("firmware-columns")
             .show(ui, |ui| {
-                ui.set_min_width(WIDTHS.iter().sum::<f32>() + 64.0);
+                ui.set_min_width(super::table_width(ui, &widths));
                 changed |= super::sort_header(
                     ui,
-                    &COLUMNS,
-                    &WIDTHS,
+                    &COLUMNS.labels,
+                    &widths,
+                    &[],
                     &mut self.query.firmware_sort,
                     &mut self.query.firmware_descending,
                 );
@@ -1007,7 +1004,8 @@ impl LibraryView {
                             let (clicked, double) = super::draw_cells(
                                 ui,
                                 &cells(row),
-                                &WIDTHS,
+                                &widths,
+                                &COLUMNS.cells,
                                 selected,
                                 index % 2 == 0,
                                 lead(row),
@@ -1947,28 +1945,21 @@ pub(crate) mod tests {
                 .unwrap()
         };
         let split = row("synthetic-two-chip-bios");
-        let cells = cells(split);
         assert_eq!(
-            cells[..8],
+            cells(split),
             [
                 "Synthetic two-chip BIOS",
                 "System BIOS",
-                "2 chips",
-                "Example vendor",
-                "Version unknown / 1985-06-10",
                 "ibm-5170 · AT",
-                "synthetic-two-chip-bios",
+                "Version unknown / 1985-06-10",
                 "User-supplied",
             ]
         );
-        assert!(cells[8].ends_with("KiB"), "{}", cells[8]);
         assert!(split.used_by.is_empty());
         let open = row("synthetic-open-bios");
         let cells = super::cells(open);
-        assert_eq!(cells[2], "single image");
-        assert_eq!(cells[3], "Unknown");
-        assert_eq!(cells[4], "Version unknown / date unknown");
-        assert_eq!(cells[7], "Open · MIT");
+        assert_eq!(cells[3], "Version unknown / date unknown");
+        assert_eq!(cells[4], "Open · MIT");
         assert_eq!(open.used_by, ["test:source"]);
         assert_eq!(
             result.facets["Role"],
@@ -2024,7 +2015,7 @@ pub(crate) mod tests {
             );
         }
         let mut sorted = query(Filter::Firmware, "");
-        sorted.firmware_sort = 7;
+        sorted.firmware_sort = 4;
         assert_eq!(names(&snapshot(&cache, &sorted))[0], "synthetic-open-bios");
         sorted.firmware_descending = true;
         assert_eq!(
@@ -2292,7 +2283,8 @@ pub(crate) mod tests {
             v.snapshot.firmware_rows.len() == 1
                 && v.snapshot.firmware_rows[0].image.summary.is_some()
         });
-        assert_eq!(cells(&view.snapshot.firmware_rows[0])[2], "2 chips");
+        let package = view.snapshot.firmware_rows[0].firmware().unwrap();
+        assert_eq!(package.roms[0].parts.len(), 2);
         // Re-importing the same folder is idempotent.
         view.firmware_import = None;
         view.begin_firmware_import(folder, None);
@@ -2682,10 +2674,10 @@ pub(crate) mod tests {
             used_by: Vec::new(),
             source_missing: false,
         };
-        assert_eq!(cells(&row(None))[8], "Pending");
+        assert_eq!(cells(&row(None))[1], "Pending");
         assert!(!lead(&row(None)).warning);
         let failed = cells(&row(Some("missing blob")));
-        assert_eq!(failed[8], "Unavailable");
+        assert_eq!(failed[1], "Unavailable");
         assert_eq!(failed[0], "firmware/synthetic:1");
         let failed = lead(&row(Some("missing blob")));
         assert!(failed.warning);

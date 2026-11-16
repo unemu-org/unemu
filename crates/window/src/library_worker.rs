@@ -204,12 +204,12 @@ pub(super) struct Refused {
 pub(super) type OpenedSettings = (ImageRow, pc_image::revision::Source, Vec<(String, Digest)>);
 pub(super) enum Event {
     Snapshot(Arc<library_view::Snapshot>),
-    /// A readiness check, with the image's machine for floppies inserted
-    /// before Start.
+    /// A readiness check, with what the details panes name from the image's
+    /// manifest and configuration.
     Checked(
         Digest,
         Result<pc_image::inspection::ImageDetails>,
-        Option<Box<assembly::MachineConfig>>,
+        Option<Box<CheckedImage>>,
     ),
     Launched(
         Box<pc_image::workspace::SessionTransfer>,
@@ -354,13 +354,67 @@ impl Drop for Worker {
 pub(super) fn regular_name(image: &Digest) -> String {
     format!("regular-{}", &image.hex()[..56])
 }
-/// An image's machine with empty floppy catalogues, as Settings reads it:
-/// the drives a floppy inserted before Start goes into. Only the manifest
+/// What a readiness check reads beside an image's details, for the details
+/// panes and for floppies inserted before Start.
+#[derive(Clone, Debug, Default)]
+pub(super) struct CheckedImage {
+    /// The capabilities draft with empty floppy catalogues, as Settings reads
+    /// it: the drives a floppy goes into and the names of the hardware.
+    pub draft: Option<assembly::capabilities::Draft>,
+    /// Every card of the configuration by its id, with its kind.
+    pub cards: Vec<(String, String)>,
+    /// The manifest's description.
+    pub description: Option<String>,
+    /// The image this one was saved from, as the manifest records it.
+    pub base: Option<Digest>,
+}
+
+/// The OCI manifest annotations the details panes show.
+const DESCRIPTION: &str = "org.opencontainers.image.description";
+
+/// Read an image's draft, cards and manifest annotations. Only the manifest
 /// and configuration are read; no workspace is opened.
-fn floppy_machine(store: &Store, row: &ImageRow) -> Option<Box<assembly::MachineConfig>> {
+fn checked_image(store: &Store, row: &ImageRow) -> Option<Box<CheckedImage>> {
     let source = pc_image::revision::Source::open(store, &row.descriptor).ok()?;
-    let draft = crate::image_settings::describe(source.machine()).ok()?;
-    Some(Box::new(draft.config))
+    let cards = source
+        .machine()
+        .get("card")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|card| {
+            let kind = card.get("kind")?.as_str()?;
+            let id = card.get("id").and_then(toml::Value::as_str).unwrap_or(kind);
+            Some((id.to_owned(), kind.to_owned()))
+        })
+        .collect();
+    let annotations =
+        image_store::BlobSource::read_verified(store, &row.descriptor, image_store::MAX_SMALL_BLOB)
+            .ok()
+            .and_then(|bytes| image_store::Manifest::decode_for_summary(&bytes).ok())
+            .map(|manifest| manifest.annotations)
+            .unwrap_or_default();
+    Some(Box::new(CheckedImage {
+        draft: crate::image_settings::describe(source.machine()).ok(),
+        cards,
+        description: annotations
+            .get(DESCRIPTION)
+            .map(|d| d.trim().to_owned())
+            .filter(|d| !d.is_empty()),
+        base: annotations
+            .get(pc_image::workspace::BASE_DIGEST)
+            .and_then(|d| d.parse().ok()),
+    }))
+}
+
+/// Tests: the readiness answer the worker sends for `row`, without its
+/// sharing totals.
+#[cfg(test)]
+pub(super) fn checked(store: &Store, row: &ImageRow, workspace: Option<&str>) -> Event {
+    let result = pc_image::desktop::check(store, &row.descriptor, workspace, || false)
+        .map_err(|e| e.to_string());
+    let machine = result.is_ok().then(|| checked_image(store, row));
+    Event::Checked(row.descriptor.digest.clone(), result, machine.flatten())
 }
 
 pub(super) fn regular_workspace(store: &Store, image: &Digest) -> Result<String> {
@@ -1313,7 +1367,7 @@ fn run<B: Backend>(
                                 storage_details(&store, &cache, row, details, &cancelled)
                             });
                         if !cancelled() {
-                            let machine = result.is_ok().then(|| floppy_machine(&store, row));
+                            let machine = result.is_ok().then(|| checked_image(&store, row));
                             send(Event::Checked(
                                 row.descriptor.digest.clone(),
                                 result,

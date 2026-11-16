@@ -8,8 +8,12 @@
 
 pub(crate) mod firmware;
 pub(crate) mod firmware_metadata;
+mod hardware;
 pub(crate) mod install_media;
+#[cfg(test)]
+mod layout_tests;
 pub(crate) mod machines;
+mod pane;
 
 use crate::{
     layers_dialog::LayersDialog,
@@ -224,6 +228,7 @@ pub(super) fn listed(tags: &[Tag]) -> Vec<Listed<'_>> {
 #[derive(Clone)]
 struct ViewRow {
     image: ImageRow,
+    /// A repository's group row, with its number of images.
     group: Option<usize>,
     child: bool,
 }
@@ -252,6 +257,9 @@ pub(super) struct Snapshot {
     /// Every installation media set, whatever the collection, for the media
     /// picker.
     all_sets: Vec<install_media::MediaRow>,
+    /// The library's firmware package names by the raw identity of each ROM
+    /// and chip they hold, for naming the ROMs of an image.
+    rom_names: BTreeMap<Digest, String>,
 }
 
 fn facets_for(filter: &Filter) -> Facets {
@@ -279,16 +287,11 @@ fn facets_for(filter: &Filter) -> Facets {
 }
 fn sort_value(row: &ImageRow, column: usize) -> String {
     let s = row.summary.as_ref();
-    let title = s.and_then(|s| s.titles.first());
     match column {
         1 => row.reference.clone(),
-        2 => title.and_then(|t| t.platform.clone()).unwrap_or_default(),
-        3 => title.map(|t| t.genres.join(", ")).unwrap_or_default(),
-        4 => format!("{:020}", title.and_then(|t| t.year).unwrap_or_default()),
-        5 => title.map(|t| t.developers.join(", ")).unwrap_or_default(),
-        6 => s.and_then(|s| s.last_run.clone()).unwrap_or_default(),
-        7 => format!("{:020}", s.map_or(0, |s| s.stored_size)),
-        8 => s.map(|s| s.labels.join(", ")).unwrap_or_default(),
+        2 => row.descriptor.digest.hex().to_owned(),
+        4 => s.map(redistribution).unwrap_or_default().into(),
+        5 => format!("{:020}", s.map_or(0, |s| s.stored_size)),
         _ => row.name().to_lowercase(),
     }
 }
@@ -416,6 +419,22 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
         result.matched = result.media_rows.len();
     }
     result.all_sets = install_media::all_rows(cache, &sets);
+    for package in &packages {
+        let row = package.row(cache);
+        let Some(f) = row.summary.as_ref().and_then(|s| s.firmware.as_ref()) else {
+            continue;
+        };
+        for rom in &f.roms {
+            for sha256 in std::iter::once(&rom.sha256).chain(rom.parts.iter().map(|p| &p.sha256)) {
+                if let Some(digest) = firmware::pin(sha256) {
+                    result
+                        .rom_names
+                        .entry(digest)
+                        .or_insert_with(|| row.name().to_owned());
+                }
+            }
+        }
+    }
     let mut groups: Vec<_> = groups.into_values().collect();
     for images in &mut groups {
         images.sort_by_cached_key(|row| sort_value(row, q.sort));
@@ -432,14 +451,11 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
         if count > 1 {
             let first = images[0].clone();
             let expanded = q.expanded.contains(first.repository());
-            // The header counts tags; its children are one per manifest.
-            let tags = images
-                .iter()
-                .map(|image| 1 + image.aliases.len())
-                .sum::<usize>();
+            // The header counts the repository's images, one per manifest,
+            // as the machines mock-up's group rows do.
             result.rows.push(ViewRow {
                 image: first,
-                group: Some(tags),
+                group: Some(count),
                 child: false,
             });
             if !expanded {
@@ -455,34 +471,68 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
     result
 }
 
-const COLUMN_WIDTHS: [f32; 9] = [210.0, 90.0, 100.0, 120.0, 56.0, 130.0, 110.0, 100.0, 140.0];
+/// The Images list's columns, as the machines mock-up lists images.
+const IMAGE_COLUMNS: Columns<6> = Columns {
+    labels: [
+        "Name",
+        "Tags",
+        "Digest",
+        "Machines",
+        "Redistribution",
+        "Size",
+    ],
+    widths: [260.0, 220.0, 120.0, 80.0, 110.0, 90.0],
+    cells: [
+        Cell::Text,
+        Cell::Mono,
+        Cell::Mono,
+        Cell::Number,
+        Cell::Badge,
+        Cell::Number,
+    ],
+    samples: ["", "", "00000000…0000", "99", "user-supplied", "999.9 MiB"],
+};
+/// The store cannot count machines, so the list does not sort by them.
+const IMAGE_MACHINES_COLUMN: usize = 3;
 /// The details pane's first height, and the least either side of the split
 /// keeps: a few list rows with their header and footer, a few pane lines.
-const DETAILS_HEIGHT: f32 = 232.0;
+/// The first height shows a machine's or an image's whole pane, its actions
+/// at the bottom included, as the machines mock-up's pane does.
+const DETAILS_HEIGHT: f32 = 420.0;
 const DETAILS_MIN_HEIGHT: f32 = 120.0;
 const LIST_MIN_HEIGHT: f32 = 160.0;
-fn row_cells(row: &ViewRow) -> [String; 9] {
+/// An image row's cells; `machines` counts the machines made from it.
+fn row_cells(row: &ViewRow, machines: usize) -> [String; 6] {
     let image = &row.image;
     let summary = image.summary.as_ref();
-    let title = summary.and_then(|s| s.titles.first());
     [
         image.name().to_owned(),
-        image.tags(),
-        title.and_then(|t| t.platform.clone()).unwrap_or_default(),
-        title.map(|t| t.genres.join(", ")).unwrap_or_default(),
-        title
-            .and_then(|t| t.year)
-            .map(|y| y.to_string())
-            .unwrap_or_default(),
-        title.map(|t| t.developers.join(", ")).unwrap_or_default(),
+        image.references(),
+        pane::short_digest(image.descriptor.digest.hex()),
+        machines.to_string(),
         summary
-            .and_then(|s| s.last_run.clone())
-            .unwrap_or_else(|| "Never".into()),
+            .map(|s| redistribution(s).to_owned())
+            .unwrap_or_default(),
         summary
             .map(|s| human_size(s.stored_size))
             .unwrap_or_else(|| "Pending".into()),
-        summary.map(|s| s.labels.join(", ")).unwrap_or_default(),
     ]
+}
+/// An image's redistribution class, as the push guard judges a whole image:
+/// open only when its configuration and every layer are open. The summary's
+/// blobs also hold the manifest's own descriptor, which carries no mark.
+fn image_rights(summary: &ImageSummary) -> firmware::Redistribution {
+    firmware::Redistribution::of_payloads(summary, |d| {
+        d.media_type != image_store::media_type::MANIFEST
+    })
+}
+/// An image's redistribution class in the list's words.
+fn redistribution(summary: &ImageSummary) -> &'static str {
+    if image_rights(summary).open {
+        "open"
+    } else {
+        "user-supplied"
+    }
 }
 /// What a list row's name cell shows around the name, as the machines
 /// mock-up draws it: the row kind's icon before the name, a warning and a
@@ -528,11 +578,13 @@ fn tree_icon(filter: &Filter) -> Option<Icon> {
     }
 }
 
-/// Sortable column headers; a click on the sorted column reverses it.
+/// Sortable column headers; a click on the sorted column reverses it. The
+/// `plain` columns are headers only: their list cannot sort by them.
 fn sort_header<const N: usize>(
     ui: &mut egui::Ui,
     labels: &[&str; N],
     widths: &[f32; N],
+    plain: &[usize],
     sort: &mut usize,
     descending: &mut bool,
 ) -> bool {
@@ -544,10 +596,16 @@ fn sort_header<const N: usize>(
             } else {
                 (*label).into()
             };
-            if ui
-                .add_sized([widths[column], 22.0], egui::Button::new(label))
-                .clicked()
-            {
+            let button = egui::Button::new(egui::RichText::new(label)).truncate();
+            if plain.contains(&column) {
+                ui.add_sized(
+                    [widths[column], 22.0],
+                    egui::Label::new(egui::RichText::new(*labels.get(column).unwrap_or(&"")))
+                        .truncate(),
+                );
+                continue;
+            }
+            if ui.add_sized([widths[column], 22.0], button).clicked() {
                 if *sort == column {
                     *descending = !*descending;
                 } else {
@@ -560,10 +618,125 @@ fn sort_header<const N: usize>(
     });
     changed
 }
+
+/// Room a list keeps beside its columns for the vertical scroll bar.
+const SCROLL_ROOM: f32 = 12.0;
+/// The sort mark a header adds after its label.
+const SORT_MARK: &str = " ▼";
+
+/// How a list cell draws its text, as the mock-ups' tables do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Cell {
+    Text,
+    /// Digests, tags and ids in the code style.
+    Mono,
+    /// Counts and sizes, right-aligned.
+    Number,
+    /// The open or user-supplied chip.
+    Badge,
+}
+
+/// A list's columns: headers, designed widths, how cells draw, and a value
+/// each column always shows whole (a size, a count, a mark).
+pub(super) struct Columns<const N: usize> {
+    pub labels: [&'static str; N],
+    pub widths: [f32; N],
+    pub cells: [Cell; N],
+    pub samples: [&'static str; N],
+}
+
+fn cell_font(ui: &egui::Ui, cell: Cell) -> egui::FontId {
+    match cell {
+        Cell::Mono => egui::TextStyle::Monospace.resolve(ui.style()),
+        _ => egui::TextStyle::Body.resolve(ui.style()),
+    }
+}
+
+/// Room a badge adds around its text.
+const BADGE_PADDING: f32 = 10.0;
+
+/// The narrowest each column may get: its header with the sort mark and the
+/// button's padding, and its sample value whole.
+fn column_floors<const N: usize>(ui: &egui::Ui, columns: &Columns<N>) -> [f32; N] {
+    let width = |text: &str, font: egui::FontId| {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), font, egui::Color32::WHITE)
+            .size()
+            .x
+    };
+    let button = egui::TextStyle::Button.resolve(ui.style());
+    let padding = 2.0 * ui.spacing().button_padding.x + 2.0;
+    std::array::from_fn(|i| {
+        let header = width(&format!("{}{SORT_MARK}", columns.labels[i]), button.clone()) + padding;
+        let sample = width(columns.samples[i], cell_font(ui, columns.cells[i]))
+            + if columns.cells[i] == Cell::Badge {
+                BADGE_PADDING
+            } else {
+                4.0
+            };
+        header.max(sample).ceil()
+    })
+}
+
+/// A list's column widths for the room the list has. Each column gets at
+/// least its floor, so headers, counts, sizes and marks never truncate; the
+/// room left is shared out by the designed widths, so the table fills its
+/// area as the mock-ups' tables do. With less room than the floors take,
+/// the list keeps them and scrolls sideways in its own area.
+fn fit_columns<const N: usize>(ui: &egui::Ui, columns: &Columns<N>) -> [f32; N] {
+    let floors = column_floors(ui, columns);
+    let gaps = ui.spacing().item_spacing.x * (N.saturating_sub(1)) as f32;
+    let room = ui.available_width() - gaps - SCROLL_ROOM;
+    let needed: f32 = floors.iter().sum();
+    if room <= needed {
+        return floors;
+    }
+    let designed: f32 = columns.widths.iter().sum();
+    std::array::from_fn(|i| (floors[i] + (room - needed) * columns.widths[i] / designed).floor())
+}
+
+/// The width a row of `widths` takes, with the gaps between its cells.
+fn table_width<const N: usize>(ui: &egui::Ui, widths: &[f32; N]) -> f32 {
+    widths.iter().sum::<f32>() + ui.spacing().item_spacing.x * (N.saturating_sub(1)) as f32
+}
+
+/// A repository's group row, as wide as the table: the machines mock-up's
+/// bold title with the repository and its image count after it. Returns
+/// whether it was clicked, which opens or closes the group.
+fn group_row(ui: &mut egui::Ui, open: bool, title: &str, detail: &str, width: f32) -> bool {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 20.0), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), title));
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+        painter.rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let ink = ui.visuals().strong_text_color();
+        let mut job = egui::text::LayoutJob::default();
+        job.append(
+            &format!("{} {title}", if open { "−" } else { "+" }),
+            0.0,
+            egui::TextFormat::simple(font.clone(), ink),
+        );
+        job.append(
+            &format!("  {detail}"),
+            0.0,
+            egui::TextFormat::simple(font, ui.visuals().weak_text_color()),
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 8.0).max(0.0));
+        let galley = ui.painter().layout_job(job);
+        painter.galley(
+            egui::pos2(rect.left() + 4.0, rect.center().y - galley.size().y / 2.0),
+            galley,
+            ink,
+        );
+    }
+    response.clicked()
+}
 fn draw_cells<const N: usize>(
     ui: &mut egui::Ui,
     cells: &[String; N],
     widths: &[f32; N],
+    kinds: &[Cell; N],
     selected: bool,
     striped: bool,
     lead: Lead,
@@ -586,17 +759,7 @@ fn draw_cells<const N: usize>(
                 let response = if column == 0 {
                     name_cell(ui, text, width, selected_text, lead)
                 } else {
-                    let rich = egui::RichText::new(text);
-                    let rich = match selected_text {
-                        Some(color) => rich.color(color),
-                        None => rich,
-                    };
-                    ui.add_sized(
-                        [width, 20.0],
-                        egui::Label::new(rich)
-                            .truncate()
-                            .sense(egui::Sense::click()),
-                    )
+                    cell(ui, text, width, kinds[column], selected_text)
                 };
                 let response = response.on_hover_text(text);
                 clicked |= response.clicked();
@@ -605,6 +768,57 @@ fn draw_cells<const N: usize>(
         });
     });
     (clicked, double)
+}
+
+/// One list cell, painted left-aligned, numbers right-aligned, digests in
+/// the code style and marks as the mock-ups' chip, truncated to the column.
+fn cell(
+    ui: &mut egui::Ui,
+    text: &str,
+    width: f32,
+    kind: Cell,
+    selected_text: Option<egui::Color32>,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 20.0), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), text));
+    if text.is_empty() || !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let ink = selected_text.unwrap_or_else(|| match kind {
+        Cell::Badge if text == "open" => pane::good_colour(ui.visuals()),
+        Cell::Badge => ui.visuals().warn_fg_color,
+        _ => ui.style().interact(&response).text_color(),
+    });
+    let room = rect.shrink2(egui::vec2(2.0, 0.0));
+    let inner = if kind == Cell::Badge {
+        room.width() - BADGE_PADDING
+    } else {
+        room.width()
+    };
+    let mut job = egui::text::LayoutJob::single_section(
+        text.to_owned(),
+        egui::TextFormat::simple(cell_font(ui, kind), ink),
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(inner.max(0.0));
+    let galley = ui.painter().layout_job(job);
+    let size = galley.size();
+    let left = match kind {
+        Cell::Number => room.right() - size.x,
+        Cell::Badge => room.left() + BADGE_PADDING / 2.0,
+        _ => room.left(),
+    };
+    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    let at = egui::pos2(left, rect.center().y - size.y / 2.0);
+    if kind == Cell::Badge {
+        painter.rect_stroke(
+            egui::Rect::from_min_size(at, size).expand2(egui::vec2(BADGE_PADDING / 2.0 - 1.0, 0.0)),
+            0.0,
+            egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            egui::StrokeKind::Inside,
+        );
+    }
+    painter.galley(at, galley, ink);
+    response
 }
 
 /// The name cell as the machines mock-up draws it: left-aligned, the row's
@@ -778,6 +992,15 @@ fn last_run_utc(seconds: u64) -> String {
     )
 }
 
+/// What a selected image's pane asks for.
+enum ImageAction {
+    Command(Command),
+    Favourite(bool),
+    Labels,
+    /// Show a machine made from the image, by its id.
+    Open(String),
+}
+
 pub(super) struct LibraryView {
     pub root: Option<PathBuf>,
     worker: Option<Worker>,
@@ -785,9 +1008,13 @@ pub(super) struct LibraryView {
     query: Query,
     pub selected: Option<ImageRow>,
     pub readiness: Option<Result<pc_image::inspection::ImageDetails>>,
-    /// The machine of the image a check last read, by digest: the drives a
-    /// floppy inserted before Start goes into.
-    checked_machine: Option<(Digest, Box<assembly::MachineConfig>)>,
+    /// What the last check read from the image's manifest and configuration,
+    /// by digest: the drives a floppy inserted before Start goes into, and
+    /// the names and annotations the details panes show.
+    checked: Option<(Digest, Box<crate::library_worker::CheckedImage>)>,
+    /// The selected image's hardware, drives and firmware as the details
+    /// panes name them, by digest; made once per check and snapshot.
+    facts: Option<(Digest, hardware::ImageFacts)>,
     pub active: Option<(ImageRow, String, WorkspaceKind)>,
     pub layers: Option<LayersDialog>,
     pub busy: bool,
@@ -883,7 +1110,8 @@ impl LibraryView {
             },
             selected: None,
             readiness: None,
-            checked_machine: None,
+            checked: None,
+            facts: None,
             active: None,
             layers: None,
             busy: false,
@@ -1059,6 +1287,7 @@ impl LibraryView {
                     }
                 }
                 self.snapshot = snapshot;
+                self.refresh_facts();
             }
             Event::MediaSources(pick, result) => {
                 self.busy = false;
@@ -1167,7 +1396,8 @@ impl LibraryView {
                 {
                     let ready = result.is_ok();
                     self.readiness = Some(result);
-                    self.checked_machine = machine.map(|machine| (id.clone(), machine));
+                    self.checked = machine.map(|checked| (id.clone(), checked));
+                    self.refresh_facts();
                     if self
                         .pending_launch
                         .as_ref()
@@ -1414,8 +1644,15 @@ impl LibraryView {
                                     self.recheck();
                                 } else {
                                     selected.reference = row.reference;
+                                    // A listing can carry the summary the
+                                    // selection lacked; the pane names its
+                                    // firmware from it.
+                                    if row.summary.is_some() {
+                                        selected.summary = row.summary;
+                                    }
                                 }
                             }
+                            self.refresh_facts();
                         }
                         None if !self.busy => {
                             self.machine = None;
@@ -1574,10 +1811,46 @@ impl LibraryView {
     }
     /// The machine of image `digest`, once a check has read it.
     pub fn selected_machine(&self, digest: &Digest) -> Option<&assembly::MachineConfig> {
-        self.checked_machine
+        self.checked
             .as_ref()
             .filter(|(id, _)| id == digest)
-            .map(|(_, machine)| machine.as_ref())
+            .and_then(|(_, checked)| checked.draft.as_ref())
+            .map(|draft| &draft.config)
+    }
+    /// Name the selected image's hardware, drives and firmware again, after a
+    /// check or a snapshot that may name its firmware packages.
+    fn refresh_facts(&mut self) {
+        let (Some(row), Some(Ok(details))) = (&self.selected, &self.readiness) else {
+            return;
+        };
+        let digest = row.descriptor.digest.clone();
+        let facts = hardware::ImageFacts::new(
+            details,
+            self.checked_image(),
+            row.summary.as_ref(),
+            &self.snapshot.rom_names,
+        );
+        self.facts = Some((digest, facts));
+    }
+    /// What the selected image's check read from its manifest and
+    /// configuration.
+    pub(super) fn checked_image(&self) -> Option<&crate::library_worker::CheckedImage> {
+        let digest = &self.selected.as_ref()?.descriptor.digest;
+        self.checked
+            .as_ref()
+            .filter(|(id, _)| id == digest)
+            .map(|(_, checked)| checked.as_ref())
+    }
+    /// The selected image's facts, while its check stands.
+    pub(super) fn image_facts(&self) -> Option<&hardware::ImageFacts> {
+        let digest = &self.selected.as_ref()?.descriptor.digest;
+        if !matches!(self.readiness, Some(Ok(_))) {
+            return None;
+        }
+        self.facts
+            .as_ref()
+            .filter(|(id, _)| id == digest)
+            .map(|(_, facts)| facts)
     }
     pub fn ready(&self) -> bool {
         !self.busy && matches!(self.readiness, Some(Ok(_)))
@@ -2132,298 +2405,7 @@ impl LibraryView {
                     .id_salt("selected-image-details")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        if self.query.filter.is_firmware() {
-                            match self.firmware_selected.clone() {
-                                Some(row) => {
-                                    let action = firmware::details(
-                                        ui,
-                                        &row,
-                                        self.package_details(),
-                                        self.can_edit_firmware(),
-                                    );
-                                    self.pane_action(&row, action);
-                                }
-                                None => {
-                                    ui.label("Select a firmware package for details.");
-                                }
-                            }
-                        } else if self.query.filter.is_media() {
-                            match &self.media_selected {
-                                Some(row) => {
-                                    match install_media::details(
-                                        ui,
-                                        row,
-                                        &self.running_drives,
-                                        &self.machines,
-                                    ) {
-                                        Some(install_media::SetAction::Insert(unit)) => {
-                                            commands.push(Command::InsertSet(unit))
-                                        }
-                                        Some(install_media::SetAction::InsertInto(machine, unit)) => {
-                                            self.picker_wanted = Some((
-                                                machine,
-                                                unit,
-                                                row.image.descriptor.digest.clone(),
-                                            ));
-                                        }
-                                        None => (),
-                                    }
-                                }
-                                None => {
-                                    ui.label("Select an installation set for details.");
-                                }
-                            }
-                        } else if self.query.filter.is_machines() {
-                            self.machine_details(ui, &mut commands);
-                        } else if let Some(row) = self.selected.clone() {
-                            let name_hint = self.default_machine_name(&row);
-                            ui.columns(3, |columns| {
-                                egui::Frame::new()
-                                    .fill(egui::Color32::from_rgb(28, 60, 116))
-                                    .inner_margin(12.0)
-                                    .show(&mut columns[0], |ui| {
-                                        ui.set_min_height(120.0);
-                                        ui.label(
-                                            egui::RichText::new(row.name())
-                                                .strong()
-                                                .color(egui::Color32::WHITE),
-                                        );
-                                    });
-                                columns[0].label(row.references());
-                                columns[0].monospace(&row.descriptor.digest.hex()[..12]);
-                                let meta = &mut columns[1];
-                                // The machines mock-up heads an image's details
-                                // with its icon, and a favourite with its star.
-                                meta.horizontal(|ui| {
-                                    crate::shell_icons::show(ui, Icon::Image);
-                                    ui.strong(row.name());
-                                    if row.summary.as_ref().is_some_and(|s| s.favorite) {
-                                        ui.colored_label(crate::shell_icons::STAR_GOLD, "★");
-                                    }
-                                });
-                                if let Some(summary) = &row.summary {
-                                    if let Some(title) = summary.titles.first() {
-                                        for (label, value) in [
-                                            (
-                                                "Platform",
-                                                title
-                                                    .platform
-                                                    .clone()
-                                                    .unwrap_or_else(|| summary.platform.clone()),
-                                            ),
-                                            ("Genre", title.genres.join(", ")),
-                                            ("Developer", title.developers.join(", ")),
-                                            ("Publisher", title.publishers.join(", ")),
-                                            (
-                                                "Year",
-                                                title
-                                                    .year
-                                                    .map(|y| y.to_string())
-                                                    .unwrap_or_default(),
-                                            ),
-                                            ("Series", title.series.clone().unwrap_or_default()),
-                                        ] {
-                                            if !value.is_empty() {
-                                                meta.label(format!("{label}: {value}"));
-                                            }
-                                        }
-                                    }
-                                    meta.label(format!(
-                                        "Stored: {}",
-                                        human_size(summary.stored_size)
-                                    ));
-                                }
-                                match &self.readiness {
-                                    Some(Ok(details)) => {
-                                        meta.label("Ready · firmware verified");
-                                        for hardware in &details.hardware {
-                                            meta.label(hardware);
-                                        }
-                                        for medium in details.media.iter().take(3) {
-                                            let chain = medium
-                                                .chain
-                                                .iter()
-                                                .map(|member| match member.blank_bytes {
-                                                    Some(bytes) => {
-                                                        format!("zero base {}", human_size(bytes))
-                                                    }
-                                                    None => member.digest.hex()[..8].to_owned(),
-                                                })
-                                                .collect::<Vec<_>>()
-                                                .join(" → ");
-                                            meta.label(format!(
-                                                "{}: {chain} → working",
-                                                medium.drive
-                                            ));
-                                        }
-                                        meta.label(format!(
-                                            "Exclusive: {} · dedup savings: {}",
-                                            human_size(details.exclusive_bytes),
-                                            human_size(details.dedup_bytes)
-                                        ));
-                                    }
-                                    Some(Err(reason)) => {
-                                        meta.add(egui::Label::new(reason).wrap());
-                                    }
-                                    None => {
-                                        meta.label("Checking image…");
-                                    }
-                                }
-                                let actions = &mut columns[2];
-                                actions.strong("Titles in this image");
-                                if let Some(summary) = &row.summary {
-                                    egui::ScrollArea::vertical()
-                                        .id_salt("image-titles")
-                                        .max_height(70.0)
-                                        .show_rows(
-                                            actions,
-                                            20.0,
-                                            summary.titles.len(),
-                                            |ui, range| {
-                                                for i in range {
-                                                    ui.label(&summary.titles[i].title);
-                                                }
-                                            },
-                                        );
-                                    let mut favorite = summary.favorite;
-                                    if actions.checkbox(&mut favorite, "Favourite").changed() {
-                                        self.send(Request::Edit(
-                                            row.descriptor.digest.clone(),
-                                            favorite,
-                                            summary.labels.clone(),
-                                        ));
-                                    }
-                                    actions.label("Labels (comma separated)");
-                                    actions.text_edit_singleline(&mut self.labels);
-                                    if actions.button("Apply labels").clicked() {
-                                        self.send(Request::Edit(
-                                            row.descriptor.digest.clone(),
-                                            favorite,
-                                            self.labels
-                                                .split(',')
-                                                .map(str::trim)
-                                                .filter(|s| !s.is_empty())
-                                                .map(str::to_owned)
-                                                .collect(),
-                                        ));
-                                    }
-                                }
-                                let made = self.machines_of(&row.descriptor.digest);
-                                let count = made.len();
-                                actions.strong(format!("Machines from this image ({count})"));
-                                let mut open = None;
-                                if made.is_empty() {
-                                    actions.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(format!(
-                                                "None yet. Start creates one named \u{201c}{}\u{201d} and starts it; New machine from image… asks for the name first.",
-                                                name_hint
-                                            ))
-                                            .small(),
-                                        )
-                                        .wrap(),
-                                    );
-                                }
-                                for machine in &made {
-                                    actions.horizontal_wrapped(|ui| {
-                                        if ui.link(machine.name()).clicked() {
-                                            open = Some((machine.id().to_owned(), machine.image_row()));
-                                        }
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "— {} · last run {}",
-                                                machine.listing.state,
-                                                machine.last_run()
-                                            ))
-                                            .small(),
-                                        );
-                                    });
-                                }
-                                actions.label(
-                                    egui::RichText::new("Machines keep this image by its digest, also after its tags move or are deleted.")
-                                        .small(),
-                                );
-                                actions.horizontal_wrapped(|ui| {
-                                    if ui
-                                        .add_enabled(
-                                            self.ready(),
-                                            egui::Button::new(if count > 0 { "Start…" } else { "Start" }),
-                                        )
-                                        .clicked()
-                                    {
-                                        commands.push(Command::Start);
-                                    }
-                                    if ui.button("New machine from image…").clicked() {
-                                        commands.push(Command::NewFromImage);
-                                    }
-                                    if ui
-                                        .add_enabled(self.ready(), egui::Button::new("Gaming mode"))
-                                        .clicked()
-                                    {
-                                        commands.push(Command::GamingMode);
-                                    }
-                                    if ui
-                                        .button("Settings…")
-                                        .on_hover_text("Changes create a new image revision; disks are shared.")
-                                        .clicked()
-                                    {
-                                        commands.push(Command::Settings);
-                                    }
-                                    if ui.button("Layers…").clicked() {
-                                        commands.push(Command::Layers);
-                                    }
-                                    if ui.button("Push…").clicked() {
-                                        commands.push(Command::Push);
-                                    }
-                                    if ui.button("Delete tag…").clicked() {
-                                        commands.push(Command::DeleteTag);
-                                    }
-                                });
-                                actions.label(
-                                    egui::RichText::new("Settings… on an image publishes a new image revision; machines from this image keep running this one. To change one machine only, use Settings… on that machine.")
-                                        .small(),
-                                );
-                                if let Some((id, row)) = open {
-                                    self.show_machine(id, row);
-                                }
-                            });
-                        } else if let Some(entry) = selected_file.and_then(|i| files.get(i)) {
-                            ui.columns(2, |columns| {
-                                columns[0].strong(&entry.name);
-                                for (name, value) in &entry.details {
-                                    columns[0].label(format!("{name}: {value}"));
-                                }
-                                columns[0].label(&entry.ems);
-                                if let Some(warning) = &entry.warning {
-                                    columns[1].add(egui::Label::new(warning).wrap());
-                                    columns[1].label(entry.hint());
-                                }
-                                columns[1].horizontal_wrapped(|ui| {
-                                    if ui
-                                        .add_enabled(
-                                            entry.checked && entry.warning.is_none(),
-                                            egui::Button::new("Start"),
-                                        )
-                                        .clicked()
-                                    {
-                                        commands.push(Command::Start);
-                                    }
-                                    if ui.button("Settings…").clicked() {
-                                        commands.push(Command::Settings);
-                                    }
-                                    if ui.button("Layers…").clicked() {
-                                        commands.push(Command::Layers);
-                                    }
-                                    if entry.hint().contains("Create blank disk")
-                                        && ui.button("Create blank disk…").clicked()
-                                    {
-                                        commands.push(Command::CreateBlank);
-                                    }
-                                });
-                            });
-                        } else {
-                            ui.label("Select an image tag or machine file for details.");
-                        }
+                        self.details_pane(ui, files, selected_file, &mut commands);
                     });
             });
         egui::CentralPanel::default().show(ui, |ui| {
@@ -2541,24 +2523,23 @@ impl LibraryView {
             if empty && visible_files.is_empty() {
                 return;
             }
+            let widths = fit_columns(ui, &IMAGE_COLUMNS);
+            let machines = self.machines.clone();
+            let made = |digest: &Digest| {
+                machines
+                    .iter()
+                    .filter(|m| m.listing.machine.image.digest == *digest)
+                    .count()
+            };
             egui::ScrollArea::horizontal()
                 .id_salt("library-columns")
                 .show(ui, |ui| {
-                    ui.set_min_width(COLUMN_WIDTHS.iter().sum::<f32>() + 64.0);
+                    ui.set_min_width(table_width(ui, &widths));
                     changed |= sort_header(
                         ui,
-                        &[
-                            "Name",
-                            "Tag",
-                            "Platform",
-                            "Genre",
-                            "Year",
-                            "Developer",
-                            "Last run",
-                            "Size",
-                            "Labels",
-                        ],
-                        &COLUMN_WIDTHS,
+                        &IMAGE_COLUMNS.labels,
+                        &widths,
+                        &[IMAGE_MACHINES_COLUMN],
                         &mut self.query.sort,
                         &mut self.query.descending,
                     );
@@ -2581,14 +2562,12 @@ impl LibraryView {
                                             String::new(),
                                             String::new(),
                                             String::new(),
-                                            "Never".into(),
-                                            String::new(),
-                                            String::new(),
                                         ];
                                         let (clicked, double) = draw_cells(
                                             ui,
                                             &cells,
-                                            &COLUMN_WIDTHS,
+                                            &widths,
+                                            &[Cell::Text; 6],
                                             self.selected.is_none() && *selected_file == Some(i),
                                             index % 2 == 0,
                                             Lead {
@@ -2610,26 +2589,13 @@ impl LibraryView {
                                     {
                                         if let Some(count) = row.group {
                                             let repo = row.image.repository().to_owned();
-                                            let mut cells = row_cells(row);
-                                            cells[0] = format!(
-                                                "{} {} ({count} tags)",
-                                                if self.query.expanded.contains(&repo) {
-                                                    "−"
-                                                } else {
-                                                    "+"
-                                                },
-                                                row.image.name()
-                                            );
-                                            if draw_cells(
+                                            if group_row(
                                                 ui,
-                                                &cells,
-                                                &COLUMN_WIDTHS,
-                                                false,
-                                                index % 2 == 0,
-                                                Lead::default(),
-                                            )
-                                            .0
-                                            {
+                                                self.query.expanded.contains(&repo),
+                                                row.image.name(),
+                                                &format!("{repo} · {count} images"),
+                                                table_width(ui, &widths),
+                                            ) {
                                                 if !self.query.expanded.remove(&repo) {
                                                     self.query.expanded.insert(repo);
                                                 }
@@ -2638,7 +2604,8 @@ impl LibraryView {
                                         } else {
                                             let image = &row.image;
                                             let summary = image.summary.as_ref();
-                                            let cells = row_cells(row);
+                                            let cells =
+                                                row_cells(row, made(&image.descriptor.digest));
                                             let selected = self
                                                 .selected
                                                 .as_ref()
@@ -2646,7 +2613,8 @@ impl LibraryView {
                                             let (clicked, double) = draw_cells(
                                                 ui,
                                                 &cells,
-                                                &COLUMN_WIDTHS,
+                                                &widths,
+                                                &IMAGE_COLUMNS.cells,
                                                 selected,
                                                 index % 2 == 0,
                                                 image_lead(row),
@@ -2700,6 +2668,399 @@ impl LibraryView {
             self.send(Request::Query(self.query.clone()));
         }
         commands
+    }
+    /// The details pane of the selection: a firmware package, an
+    /// installation set, a machine, an image or a machine file.
+    pub(super) fn details_pane(
+        &mut self,
+        ui: &mut egui::Ui,
+        files: &[LibraryEntry],
+        selected_file: &mut Option<usize>,
+        commands: &mut Vec<Command>,
+    ) {
+        pane::style(ui);
+        if self.query.filter.is_firmware() {
+            match self.firmware_selected.clone() {
+                Some(row) => {
+                    let action = firmware::details(
+                        ui,
+                        &row,
+                        self.package_details(),
+                        self.can_edit_firmware(),
+                    );
+                    self.pane_action(&row, action);
+                }
+                None => {
+                    ui.label("Select a firmware package for details.");
+                }
+            }
+        } else if self.query.filter.is_media() {
+            match &self.media_selected {
+                Some(row) => {
+                    match install_media::details(ui, row, &self.running_drives, &self.machines) {
+                        Some(install_media::SetAction::Insert(unit)) => {
+                            commands.push(Command::InsertSet(unit))
+                        }
+                        Some(install_media::SetAction::InsertInto(machine, unit)) => {
+                            self.picker_wanted =
+                                Some((machine, unit, row.image.descriptor.digest.clone()));
+                        }
+                        None => (),
+                    }
+                }
+                None => {
+                    ui.label("Select an installation set for details.");
+                }
+            }
+        } else if self.query.filter.is_machines() {
+            self.machine_details(ui, commands);
+        } else if let Some(row) = self.selected.take() {
+            self.image_details(ui, row, commands);
+        } else if let Some(entry) = selected_file.and_then(|i| files.get(i)) {
+            pane::title(ui, Icon::MachineFile, &entry.name, false);
+            pane::facts(ui, "machine-file-facts", |ui| {
+                for (name, value) in &entry.details {
+                    pane::fact_text(ui, name, value.as_str());
+                }
+            });
+            pane::text(ui, entry.ems.as_str());
+            if let Some(warning) = &entry.warning {
+                pane::text(
+                    ui,
+                    egui::RichText::new(warning).color(ui.visuals().warn_fg_color),
+                );
+                pane::meta(ui, entry.hint());
+            }
+            pane::actions(ui, |ui| {
+                if ui
+                    .add_enabled(
+                        entry.checked && entry.warning.is_none(),
+                        pane::primary(ui, "Start"),
+                    )
+                    .clicked()
+                {
+                    commands.push(Command::Start);
+                }
+                if ui.button("Settings…").clicked() {
+                    commands.push(Command::Settings);
+                }
+                if ui.button("Layers…").clicked() {
+                    commands.push(Command::Layers);
+                }
+                if entry.hint().contains("Create blank disk")
+                    && ui.button("Create blank disk…").clicked()
+                {
+                    commands.push(Command::CreateBlank);
+                }
+            });
+        } else {
+            ui.label("Select an image tag or machine file for details.");
+        }
+    }
+
+    /// Carry out what a selected image's pane asked for.
+    fn image_pane_action(
+        &mut self,
+        row: &ImageRow,
+        action: ImageAction,
+        commands: &mut Vec<Command>,
+    ) {
+        let favourite = row.summary.as_ref().is_some_and(|s| s.favorite);
+        let labels = || {
+            row.summary
+                .as_ref()
+                .map(|s| s.labels.clone())
+                .unwrap_or_default()
+        };
+        match action {
+            ImageAction::Command(command) => commands.push(command),
+            ImageAction::Favourite(favourite) => self.send(Request::Edit(
+                row.descriptor.digest.clone(),
+                favourite,
+                labels(),
+            )),
+            ImageAction::Labels => {
+                let labels = self
+                    .labels
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                self.send(Request::Edit(
+                    row.descriptor.digest.clone(),
+                    favourite,
+                    labels,
+                ));
+            }
+            ImageAction::Open(id) => {
+                if let Some(image) = self.machine_row(&id).map(machines::MachineRow::image_row) {
+                    self.show_machine(id, image);
+                }
+            }
+        }
+    }
+
+    /// The details pane of a selected image, as the machines mock-up draws
+    /// it: the kind tile beside the title, tags, digest and size and the
+    /// description; hardware, drives and the image's facts beside its
+    /// firmware and the machines made from it; then the actions in one row
+    /// and the note under them. `row` is the selection, taken for the frame
+    /// and put back before the pane's actions run.
+    fn image_details(&mut self, ui: &mut egui::Ui, row: ImageRow, commands: &mut Vec<Command>) {
+        let name_hint = self.default_machine_name(&row);
+        let summary = row.summary.as_ref();
+        let rights = summary.map(image_rights);
+        let ready = self.ready();
+        let digest = &row.descriptor.digest;
+        // The pane reads these while it edits the labels field; they go back
+        // before anything the pane asks for runs.
+        let readiness = self.readiness.take();
+        let facts = self.facts.take();
+        let checked = self.checked.take();
+        let image_facts = facts
+            .as_ref()
+            .filter(|(id, _)| id == digest && matches!(readiness, Some(Ok(_))))
+            .map(|(_, facts)| facts);
+        let checked_image = checked
+            .as_ref()
+            .filter(|(id, _)| id == digest)
+            .map(|(_, checked)| checked.as_ref());
+        let base = checked_image.and_then(|c| c.base.as_ref()).map(|base| {
+            self.snapshot
+                .tags
+                .iter()
+                .find(|(_, d)| d == base)
+                .map_or_else(
+                    || format!("sha256:{}", pane::short_digest(base.hex())),
+                    |(tag, _)| tag.clone(),
+                )
+        });
+        let made: Vec<(String, String, String)> = self
+            .machines_of(digest)
+            .into_iter()
+            .map(|m| {
+                (
+                    m.id().to_owned(),
+                    m.name().to_owned(),
+                    format!("— {} · last run {}", m.listing.state, m.last_run()),
+                )
+            })
+            .collect();
+        let mut actions = Vec::new();
+        let mut open = None;
+        let tile = pane::Tile {
+            title: row.name(),
+            kind: "IMAGE",
+            user_supplied: rights.as_ref().is_some_and(|r| !r.open),
+        };
+        pane::head(ui, &tile, |ui| {
+            pane::title(
+                ui,
+                Icon::Image,
+                row.name(),
+                summary.is_some_and(|s| s.favorite),
+            );
+            ui.horizontal_wrapped(|ui| {
+                ui.label(pane::mono(row.references()));
+                ui.label(pane::mono(format!(
+                    "sha256:{}",
+                    pane::short_digest(digest.hex())
+                )));
+                if let Some(summary) = summary {
+                    ui.label(egui::RichText::new(human_size(summary.stored_size)).weak());
+                }
+            });
+            if let Some(description) = checked_image.and_then(|c| c.description.as_deref()) {
+                pane::text(ui, description);
+            }
+            match &readiness {
+                Some(Ok(_)) => {
+                    pane::meta(ui, "Ready · firmware verified");
+                }
+                Some(Err(reason)) => {
+                    pane::text(
+                        ui,
+                        egui::RichText::new(reason).color(ui.visuals().warn_fg_color),
+                    );
+                }
+                None => {
+                    pane::meta(ui, "Checking image…");
+                }
+            }
+        });
+        let labels = &mut self.labels;
+        pane::split(
+            ui,
+            0.55,
+            |ui| {
+                pane::facts(ui, "image-facts", |ui| {
+                    pane::fact(ui, "Hardware", |ui| match image_facts {
+                        Some(facts) => {
+                            pane::text(ui, facts.hardware.as_str());
+                        }
+                        None => {
+                            pane::meta(ui, "Checking image…");
+                        }
+                    });
+                    pane::fact(ui, "Drives", |ui| match image_facts {
+                        Some(facts) => {
+                            for drive in &facts.drives {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.strong(&drive.drive);
+                                    ui.add(egui::Label::new(&drive.described).wrap());
+                                });
+                            }
+                        }
+                        None => {
+                            pane::meta(ui, "Checking image…");
+                        }
+                    });
+                    if let Some(title) = summary.and_then(|s| s.titles.first()) {
+                        for (label, value) in [
+                            ("Platform", title.platform.clone().unwrap_or_default()),
+                            ("Genre", title.genres.join(", ")),
+                            ("Developer", title.developers.join(", ")),
+                            ("Publisher", title.publishers.join(", ")),
+                            (
+                                "Year",
+                                title.year.map(|y| y.to_string()).unwrap_or_default(),
+                            ),
+                            ("Series", title.series.clone().unwrap_or_default()),
+                        ] {
+                            if !value.is_empty() {
+                                pane::fact_text(ui, label, value);
+                            }
+                        }
+                    }
+                    if let Some(summary) = summary {
+                        if !summary.titles.is_empty() {
+                            let titles: Vec<&str> =
+                                summary.titles.iter().map(|t| t.title.as_str()).collect();
+                            pane::fact_text(ui, "Titles", titles.join(", "));
+                        }
+                    }
+                    pane::fact(ui, "Base image", |ui| match &base {
+                        Some(base) => {
+                            pane::text(ui, pane::mono(base.as_str()));
+                        }
+                        None => {
+                            pane::text(ui, "—");
+                        }
+                    });
+                    if let Some(Ok(details)) = &readiness {
+                        pane::fact_text(
+                            ui,
+                            "Storage",
+                            format!(
+                                "{} only in this image · {} shared with other images",
+                                human_size(details.exclusive_bytes),
+                                human_size(details.dedup_bytes)
+                            ),
+                        );
+                    }
+                    if let Some(rights) = &rights {
+                        pane::fact(ui, "Redistribution", |ui| {
+                            ui.horizontal_wrapped(|ui| pane::rights(ui, rights.open));
+                        });
+                    }
+                    if let Some(summary) = summary {
+                        pane::fact(ui, "Labels", |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                let mut favourite = summary.favorite;
+                                if ui.checkbox(&mut favourite, "Favourite").changed() {
+                                    actions.push(ImageAction::Favourite(favourite));
+                                }
+                                ui.add(
+                                    egui::TextEdit::singleline(labels)
+                                        .hint_text("labels, comma separated")
+                                        .desired_width(ui.available_width().clamp(80.0, 180.0)),
+                                );
+                                if ui.button("Apply labels").clicked() {
+                                    actions.push(ImageAction::Labels);
+                                }
+                            });
+                        });
+                    }
+                });
+            },
+            |ui| {
+                pane::firmware_section(ui, image_facts, false);
+                pane::section(ui, format!("Machines from this image ({})", made.len()));
+                if made.is_empty() {
+                    pane::meta(
+                        ui,
+                        format!(
+                            "None yet. Start creates one named \u{201c}{name_hint}\u{201d} and starts it; New machine from image… asks for the name first."
+                        ),
+                    );
+                }
+                for (id, name, state) in &made {
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.link(name).clicked() {
+                            open = Some(ImageAction::Open(id.clone()));
+                        }
+                        ui.label(egui::RichText::new(state).weak());
+                    });
+                }
+                pane::meta(
+                    ui,
+                    "Machines keep this image by its digest, also after its tags move or are deleted.",
+                );
+            },
+        );
+        actions.extend(open);
+        let count = made.len();
+        pane::actions(ui, |ui| {
+            for (label, enabled, command, hover) in [
+                (
+                    if count > 0 { "Start…" } else { "Start" },
+                    ready,
+                    Command::Start,
+                    "",
+                ),
+                ("New machine from image…", true, Command::NewFromImage, ""),
+                ("Gaming mode", ready, Command::GamingMode, ""),
+                (
+                    "Settings…",
+                    true,
+                    Command::Settings,
+                    "Changes create a new image revision; disks are shared.",
+                ),
+                ("Layers…", true, Command::Layers, ""),
+                ("Push…", true, Command::Push, ""),
+                ("Delete tag…", true, Command::DeleteTag, ""),
+            ] {
+                let button = if command == Command::Start {
+                    pane::primary(ui, label)
+                } else {
+                    egui::Button::new(label)
+                };
+                let mut response = ui.add_enabled(enabled, button);
+                if !hover.is_empty() {
+                    response = response.on_hover_text(hover);
+                }
+                if response.clicked() {
+                    actions.push(ImageAction::Command(command));
+                }
+            }
+        });
+        pane::meta(
+            ui,
+            "Settings… on an image publishes a new image revision; machines from this image keep running this one. To change one machine only, use Settings… on that machine.",
+        );
+        self.readiness = readiness;
+        self.facts = facts;
+        self.checked = checked;
+        self.selected = Some(row);
+        if actions.is_empty() {
+            return;
+        }
+        if let Some(row) = self.selected.clone() {
+            for action in actions {
+                self.image_pane_action(&row, action, commands);
+            }
+        }
     }
     pub fn modals(
         &mut self,
@@ -3041,7 +3402,7 @@ pub(super) mod tests {
         BlobSource, ConfigValidator, Manifest,
     };
 
-    struct Provider;
+    pub(super) struct Provider;
     impl ConfigValidator for Provider {
         fn platform(&self) -> &str {
             "synthetic"
@@ -3459,15 +3820,16 @@ pub(super) mod tests {
         let rows: Vec<_> = machines
             .rows
             .iter()
-            .map(|row| (row.group, row.child, row_cells(row)[1].clone()))
+            .map(|row| (row.group, row.child, row_cells(row, 0)[1].clone()))
             .collect();
-        // The header counts the repository's three tags over two rows.
+        // The header counts the repository's two images, one per manifest,
+        // over its three tags.
         assert_eq!(
             rows,
             [
-                (Some(3), false, String::from("1.0.0")),
-                (None, true, String::from("1.0.0")),
-                (None, true, String::from("2.0.0, latest")),
+                (Some(2), false, String::from("dos-lab:1.0.0")),
+                (None, true, String::from("dos-lab:1.0.0")),
+                (None, true, String::from("dos-lab:2.0.0, latest")),
             ]
         );
         let revision = &machines.rows[2].image;
@@ -3619,7 +3981,9 @@ pub(super) mod tests {
         };
         // The pane's second line, under the package name, and its last facts line.
         let top = "System BIOS · local package · firmware/synthetic-two-chip-bios:1";
-        let last = "Edit metadata… creates a new package revision; ROM blobs unchanged.";
+        let last = "Edit metadata… creates a new package revision; ROM blobs unchanged. A machine \
+                    embeds its ROM blobs and records the source package digest. Source folders \
+                    are not needed after import.";
         let y = |shown: &[(String, egui::Rect)], text: &str| {
             shown
                 .iter()
@@ -5042,7 +5406,15 @@ pub(super) mod tests {
                 let ctx = egui::Context::default();
                 ctx.set_visuals(visuals);
                 let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                    draw_cells(ui, &cells, &[80.0; 9], true, false, Lead::default());
+                    draw_cells(
+                        ui,
+                        &cells,
+                        &[80.0; 9],
+                        &[Cell::Text; 9],
+                        true,
+                        false,
+                        Lead::default(),
+                    );
                     ui.add(egui::Button::selectable(true, "selected item"));
                 });
                 output.textures_delta.clear();
@@ -5117,7 +5489,7 @@ pub(super) mod tests {
             }
         );
         // The name cell carries the name alone; the icon and badges are drawn.
-        assert_eq!(row_cells(&row)[0], "games:1");
+        assert_eq!(row_cells(&row, 0)[0], "games:1");
     }
 
     /// The name cell draws the icon before the name, set in under a group,
@@ -5133,7 +5505,15 @@ pub(super) mod tests {
         };
         let visuals = egui::Visuals::light();
         let shapes = painted(|ui| {
-            draw_cells(ui, &cells, &[200.0; 9], false, false, lead);
+            draw_cells(
+                ui,
+                &cells,
+                &[200.0; 9],
+                &[Cell::Text; 9],
+                false,
+                false,
+                lead,
+            );
         });
         let name = shapes
             .iter()
@@ -5163,7 +5543,7 @@ pub(super) mod tests {
         );
         // Selected, the icon and badges turn to the selection text colour.
         let shapes = painted(|ui| {
-            draw_cells(ui, &cells, &[200.0; 9], true, false, lead);
+            draw_cells(ui, &cells, &[200.0; 9], &[Cell::Text; 9], true, false, lead);
         });
         let selected = egui::Visuals::light().selection.stroke.color;
         let name = shapes

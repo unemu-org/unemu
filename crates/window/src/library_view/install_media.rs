@@ -333,31 +333,26 @@ pub(super) fn picker_set(row: &MediaRow) -> Option<crate::media_picker::SetEntry
     })
 }
 
-pub(super) const COLUMNS: [&str; 9] = [
-    "Set",
-    "Tag",
-    "Platform",
-    "Disks",
-    "Extras",
-    "Size stored / decoded",
-    "Redistribution",
-    "Labels",
-    "Availability",
-];
-const WIDTHS: [f32; 9] = [240.0, 70.0, 80.0, 110.0, 70.0, 170.0, 120.0, 110.0, 240.0];
+/// The Installation media list's columns, as the installation media
+/// mock-up lists sets; availability names the drive of the running machine.
+pub(super) const COLUMNS: super::Columns<5> = super::Columns {
+    labels: ["Set", "Tag", "Platform", "Format", "Availability"],
+    widths: [280.0, 90.0, 100.0, 140.0, 300.0],
+    cells: [
+        super::Cell::Text,
+        super::Cell::Mono,
+        super::Cell::Text,
+        super::Cell::Text,
+        super::Cell::Text,
+    ],
+    samples: ["", "", "", "", ""],
+};
 
 /// "Example Adventure (4 x 1.44M)", as rows and the details pane name a set.
 pub(super) fn set_name(row: &MediaRow) -> String {
     match row.image.summary.as_ref().filter(|_| row.set().is_some()) {
         Some(summary) => format!("{} ({})", row.image.name(), disks_label(&formats(summary))),
         None => row.image.name().into(),
-    }
-}
-fn extras_label(count: usize) -> String {
-    match count {
-        0 => "—".into(),
-        1 => "1 file".into(),
-        n => format!("{n} files"),
     }
 }
 fn sizes(summary: &ImageSummary) -> String {
@@ -377,11 +372,13 @@ pub(super) fn lead(row: &MediaRow) -> super::Lead {
     }
 }
 
-pub(super) fn cells(row: &MediaRow, drives: &[(u8, FloppyGeometry)]) -> [String; 9] {
-    let (Some(summary), Some(set)) = (row.image.summary.as_ref(), row.set()) else {
-        let mut cells: [String; 9] = Default::default();
+/// A set's cells; a set without its summary says why in the availability
+/// column.
+pub(super) fn cells(row: &MediaRow, drives: &[(u8, FloppyGeometry)]) -> [String; 5] {
+    let (Some(summary), Some(_)) = (row.image.summary.as_ref(), row.set()) else {
+        let mut cells: [String; 5] = Default::default();
         cells[0] = row.image.name().to_owned();
-        cells[5] = if row.image.failure.is_some() {
+        cells[4] = if row.image.failure.is_some() {
             "Unavailable"
         } else {
             "Pending"
@@ -395,10 +392,6 @@ pub(super) fn cells(row: &MediaRow, drives: &[(u8, FloppyGeometry)]) -> [String;
         row.image.tags(),
         title.and_then(|t| t.platform.clone()).unwrap_or_default(),
         disks_label(&formats(summary)),
-        extras_label(set.extras.len()),
-        sizes(summary),
-        row.redistribution.label(),
-        summary.labels.join(", "),
         availability(summary, drives).row_text(),
     ]
 }
@@ -412,11 +405,6 @@ fn sort_value(row: &MediaRow, column: usize) -> String {
             "{:020} {}",
             set.map_or(0, |s| s.media.len()),
             cells(row, &[])[3].to_lowercase()
-        ),
-        4 => format!("{:020}", set.map_or(0, |s| s.extras.len())),
-        5 => format!(
-            "{:020}",
-            row.image.summary.as_ref().map_or(0, |s| s.stored_size)
         ),
         column => cells(row, &[])
             .get(column)
@@ -509,213 +497,224 @@ pub(super) fn details(
     let available = availability(summary, drives);
     let title = summary.titles.first();
     let unknown = || "Unknown".to_owned();
-    ui.columns(3, |columns| {
-        let facts = &mut columns[0];
-        facts.strong(set_name(row));
-        facts.label(format!("{} · private library", image.references()));
-        egui::Grid::new("media-set-facts")
-            .num_columns(2)
-            .show(facts, |ui| {
-                let digest = image.descriptor.digest.hex();
-                let machine = if summary.platform == PLATFORM {
-                    "PC AT"
-                } else {
-                    summary.platform.as_str()
-                };
-                let redistribution = if row.redistribution.open {
-                    row.redistribution.label()
-                } else {
-                    format!("{} · private store and export", row.redistribution.label())
-                };
-                for (label, value, hover) in [
-                    (
-                        "Platform",
-                        format!(
-                            "{machine} / {}",
-                            title
-                                .and_then(|t| t.platform.clone())
-                                .unwrap_or_else(unknown)
+    super::pane::title(ui, crate::shell_icons::Icon::Media, &set_name(row), false);
+    super::pane::meta(ui, format!("{} · private library", image.references()));
+    super::pane::split3(
+        ui,
+        |facts| {
+            egui::Grid::new("media-set-facts")
+                .num_columns(2)
+                .show(facts, |ui| {
+                    let digest = image.descriptor.digest.hex();
+                    let machine = if summary.platform == PLATFORM {
+                        "PC AT"
+                    } else {
+                        summary.platform.as_str()
+                    };
+                    let redistribution = if row.redistribution.open {
+                        row.redistribution.label()
+                    } else {
+                        format!("{} · private store and export", row.redistribution.label())
+                    };
+                    for (label, value, hover) in [
+                        (
+                            "Platform",
+                            format!(
+                                "{machine} / {}",
+                                title
+                                    .and_then(|t| t.platform.clone())
+                                    .unwrap_or_else(unknown)
+                            ),
+                            None,
                         ),
-                        None,
-                    ),
-                    (
-                        "Publisher",
-                        title
-                            .map(|t| t.publishers.join(", "))
-                            .filter(|p| !p.is_empty())
-                            .unwrap_or_else(unknown),
-                        None,
-                    ),
-                    (
-                        "Year / genre",
-                        format!(
-                            "{} / {}",
+                        (
+                            "Publisher",
                             title
-                                .and_then(|t| t.year)
-                                .map_or_else(unknown, |y| y.to_string()),
-                            title
-                                .map(|t| t.genres.join(", "))
-                                .filter(|g| !g.is_empty())
-                                .unwrap_or_else(unknown)
+                                .map(|t| t.publishers.join(", "))
+                                .filter(|p| !p.is_empty())
+                                .unwrap_or_else(unknown),
+                            None,
                         ),
-                        None,
-                    ),
-                    ("Redistribution", redistribution, None),
-                    ("Stored / decoded", sizes(summary), None),
-                    ("Set SHA-256", super::firmware::short(digest), Some(digest)),
-                ] {
-                    ui.weak(label);
-                    let response = ui.label(value);
-                    if let Some(hover) = hover {
-                        response.on_hover_text(hover);
+                        (
+                            "Year / genre",
+                            format!(
+                                "{} / {}",
+                                title
+                                    .and_then(|t| t.year)
+                                    .map_or_else(unknown, |y| y.to_string()),
+                                title
+                                    .map(|t| t.genres.join(", "))
+                                    .filter(|g| !g.is_empty())
+                                    .unwrap_or_else(unknown)
+                            ),
+                            None,
+                        ),
+                        ("Redistribution", redistribution, None),
+                        ("Stored / decoded", sizes(summary), None),
+                        ("Set SHA-256", super::firmware::short(digest), Some(digest)),
+                    ] {
+                        // The row with a hover is the digest, shown short.
+                        let value = match hover {
+                            Some(_) => super::pane::mono(value),
+                            None => egui::RichText::new(value),
+                        };
+                        super::pane::fact(ui, label, |ui| {
+                            let response = super::pane::text(ui, value);
+                            if let Some(hover) = hover {
+                                response.on_hover_text(hover);
+                            }
+                        });
                     }
-                    ui.end_row();
-                }
-            });
-        facts.horizontal_wrapped(|ui| {
-            let response = ui.add_enabled(
-                matches!(available, Availability::Ready(_)),
-                egui::Button::new("Insert"),
-            );
-            if let Some(reason) = available.reason() {
-                response.clone().on_disabled_hover_text(reason);
+                });
+        },
+        |media| {
+            media.strong("Media in catalogue order");
+            for (index, medium) in set.media.iter().enumerate() {
+                media.label(format!("{}. {}", index + 1, medium.label));
+                let hex = medium.blob.hex();
+                media
+                    .small(format!(
+                        "{} · SHA-256 {}",
+                        format_detail(summary, medium),
+                        super::firmware::short(hex)
+                    ))
+                    .on_hover_text(hex);
             }
-            if response.clicked() {
-                if let Availability::Ready(unit) = available {
-                    insert = Some(SetAction::Insert(unit));
-                }
+            if let Availability::Unavailable(reason) = &available {
+                media.colored_label(media.visuals().warn_fg_color, reason);
             }
-            let entry = picker_set(row);
-            let (fit, misfit) = entry
-                .as_ref()
-                .map(|set| fitting(set, machines))
-                .unwrap_or_default();
-            let reason = insert_reason(entry.as_ref(), image.failure.is_some(), !fit.is_empty());
-            ui.add_enabled_ui(reason.is_none(), |ui| {
-                ui.menu_button("Insert into… ▾", |ui| {
-                    ui.add_enabled(
-                        false,
-                        egui::Label::new(
-                            "Choose a drive. The picker opens on it with this set selected.",
-                        ),
-                    );
-                    for (machine, unit, geometry) in &fit {
-                        let letter = crate::media_picker::drive_name(*unit);
-                        let pending = machine
-                            .listing
-                            .machine
-                            .pending
-                            .iter()
-                            .find(|p| p.drive == letter);
-                        let label = format!(
-                            "{} · {letter} ({}){} — at Start",
-                            machine.name(),
-                            crate::media_picker::format_name(*geometry),
-                            pending.map_or_else(String::new, |p| format!(
-                                " — holds {}",
-                                super::machines::pending_name(p)
-                            ))
-                        );
-                        if ui.button(label).clicked() {
-                            insert = Some(SetAction::InsertInto(machine.id().to_owned(), *unit));
-                            ui.close();
-                        }
-                    }
-                    if !misfit.is_empty() {
-                        ui.separator();
-                        let format = entry
-                            .as_ref()
-                            .and_then(|set| set.format())
-                            .map_or_else(String::new, crate::media_picker::format_name);
-                        for name in &misfit {
-                            ui.add_enabled(
-                                false,
-                                egui::Label::new(format!("{name}: no drive takes {format}")),
+        },
+        |extras| {
+            extras.strong("Extras");
+            if set.extras.is_empty() {
+                extras.label("No extras in this set.");
+            }
+            for extra in &set.extras {
+                let blob = summary
+                    .storage_blobs
+                    .iter()
+                    .find(|d| d.decoded_digest().ok().as_ref() == Some(&extra.blob));
+                let rights = blob
+                    .and_then(image_store::license::open_license)
+                    .map_or_else(|| "user-supplied".into(), |l| format!("open · {l}"));
+                let dos = extra.dos_name.as_ref().map_or_else(
+                    || "DOS name assigned on transfer".into(),
+                    |name| format!("DOS name {name}"),
+                );
+                extras.label(&extra.filename);
+                extras.small(format!(
+                    "{} · {} · {dos} · {rights}",
+                    kind_label(extra.kind),
+                    human_size(extra.size)
+                ));
+                extras.horizontal(|ui| {
+                    if extra.kind == ExtraKind::Document {
+                        ui.add_enabled(false, egui::Button::new("Open"))
+                            .on_disabled_hover_text(
+                                "Opening documents on the host is not available yet.",
                             );
-                        }
+                    } else {
+                        ui.add_enabled(false, egui::Button::new("Export…"))
+                            .on_disabled_hover_text(
+                                "Saving extras is not available yet. Archives and executables are \
+                             never opened or run on the host.",
+                            );
                     }
                 });
-            })
-            .response
-            .on_disabled_hover_text(reason.clone().unwrap_or_default());
-            // Adding a set to a drive's catalogue as stored machine state
-            // needs machine catalogues in the store and in Save as new
-            // image…, which the store does not keep yet.
-            ui.add_enabled(false, egui::Button::new("Add to machine…"))
-                .on_disabled_hover_text(reason.unwrap_or_else(|| "Not available yet".into()));
-            ui.add_enabled(false, egui::Button::new("Make transfer media…"))
-                .on_disabled_hover_text(if set.extras.is_empty() {
-                    "Make transfer media: this set has no extras."
-                } else {
-                    "Making transfer media from extras is not available yet."
-                });
-            ui.add_enabled(false, egui::Button::new("Export"))
-                .on_disabled_hover_text("Set export is not available yet.");
-        });
-        facts.weak(
-            "Stored media and extras stay read-only. Installer writes use the selected \
-             workspace's journal.",
+            }
+        },
+    );
+    if let Some(reason) = &image.failure {
+        super::pane::text(
+            ui,
+            egui::RichText::new(reason).color(ui.visuals().warn_fg_color),
         );
-
-        let media = &mut columns[1];
-        media.strong("Media in catalogue order");
-        for (index, medium) in set.media.iter().enumerate() {
-            media.label(format!("{}. {}", index + 1, medium.label));
-            let hex = medium.blob.hex();
-            media
-                .small(format!(
-                    "{} · SHA-256 {}",
-                    format_detail(summary, medium),
-                    super::firmware::short(hex)
-                ))
-                .on_hover_text(hex);
+    }
+    super::pane::actions(ui, |ui| {
+        let response = ui.add_enabled(
+            matches!(available, Availability::Ready(_)),
+            egui::Button::new("Insert"),
+        );
+        if let Some(reason) = available.reason() {
+            response.clone().on_disabled_hover_text(reason);
         }
-        if let Availability::Unavailable(reason) = &available {
-            media.colored_label(media.visuals().warn_fg_color, reason);
+        if response.clicked() {
+            if let Availability::Ready(unit) = available {
+                insert = Some(SetAction::Insert(unit));
+            }
         }
-
-        let extras = &mut columns[2];
-        extras.strong("Extras");
-        if set.extras.is_empty() {
-            extras.label("No extras in this set.");
-        }
-        for extra in &set.extras {
-            let blob = summary
-                .storage_blobs
-                .iter()
-                .find(|d| d.decoded_digest().ok().as_ref() == Some(&extra.blob));
-            let rights = blob
-                .and_then(image_store::license::open_license)
-                .map_or_else(|| "user-supplied".into(), |l| format!("open · {l}"));
-            let dos = extra.dos_name.as_ref().map_or_else(
-                || "DOS name assigned on transfer".into(),
-                |name| format!("DOS name {name}"),
-            );
-            extras.label(&extra.filename);
-            extras.small(format!(
-                "{} · {} · {dos} · {rights}",
-                kind_label(extra.kind),
-                human_size(extra.size)
-            ));
-            extras.horizontal(|ui| {
-                if extra.kind == ExtraKind::Document {
-                    ui.add_enabled(false, egui::Button::new("Open"))
-                        .on_disabled_hover_text(
-                            "Opening documents on the host is not available yet.",
+        let entry = picker_set(row);
+        let (fit, misfit) = entry
+            .as_ref()
+            .map(|set| fitting(set, machines))
+            .unwrap_or_default();
+        let reason = insert_reason(entry.as_ref(), image.failure.is_some(), !fit.is_empty());
+        ui.add_enabled_ui(reason.is_none(), |ui| {
+            ui.menu_button("Insert into… ▾", |ui| {
+                ui.add_enabled(
+                    false,
+                    egui::Label::new(
+                        "Choose a drive. The picker opens on it with this set selected.",
+                    ),
+                );
+                for (machine, unit, geometry) in &fit {
+                    let letter = crate::media_picker::drive_name(*unit);
+                    let pending = machine
+                        .listing
+                        .machine
+                        .pending
+                        .iter()
+                        .find(|p| p.drive == letter);
+                    let label = format!(
+                        "{} · {letter} ({}){} — at Start",
+                        machine.name(),
+                        crate::media_picker::format_name(*geometry),
+                        pending.map_or_else(String::new, |p| format!(
+                            " — holds {}",
+                            super::machines::pending_name(p)
+                        ))
+                    );
+                    if ui.button(label).clicked() {
+                        insert = Some(SetAction::InsertInto(machine.id().to_owned(), *unit));
+                        ui.close();
+                    }
+                }
+                if !misfit.is_empty() {
+                    ui.separator();
+                    let format = entry
+                        .as_ref()
+                        .and_then(|set| set.format())
+                        .map_or_else(String::new, crate::media_picker::format_name);
+                    for name in &misfit {
+                        ui.add_enabled(
+                            false,
+                            egui::Label::new(format!("{name}: no drive takes {format}")),
                         );
-                } else {
-                    ui.add_enabled(false, egui::Button::new("Export…"))
-                        .on_disabled_hover_text(
-                            "Saving extras is not available yet. Archives and executables are \
-                             never opened or run on the host.",
-                        );
+                    }
                 }
             });
-        }
+        })
+        .response
+        .on_disabled_hover_text(reason.clone().unwrap_or_default());
+        // Adding a set to a drive's catalogue as stored machine state
+        // needs machine catalogues in the store and in Save as new
+        // image…, which the store does not keep yet.
+        ui.add_enabled(false, egui::Button::new("Add to machine…"))
+            .on_disabled_hover_text(reason.unwrap_or_else(|| "Not available yet".into()));
+        ui.add_enabled(false, egui::Button::new("Make transfer media…"))
+            .on_disabled_hover_text(if set.extras.is_empty() {
+                "Make transfer media: this set has no extras."
+            } else {
+                "Making transfer media from extras is not available yet."
+            });
+        ui.add_enabled(false, egui::Button::new("Export"))
+            .on_disabled_hover_text("Set export is not available yet.");
     });
-    if let Some(reason) = &image.failure {
-        ui.colored_label(ui.visuals().warn_fg_color, reason);
-    }
+    super::pane::meta(
+        ui,
+        "Stored media and extras stay read-only. Installer writes use the selected workspace's \
+         journal.",
+    );
     insert
 }
 
@@ -778,14 +777,16 @@ impl LibraryView {
         let snapshot = self.snapshot.clone();
         let drives = self.running_drives.clone();
         self.rows_built = 0;
+        let widths = super::fit_columns(ui, &COLUMNS);
         egui::ScrollArea::horizontal()
             .id_salt("media-set-columns")
             .show(ui, |ui| {
-                ui.set_min_width(WIDTHS.iter().sum::<f32>() + 64.0);
+                ui.set_min_width(super::table_width(ui, &widths));
                 changed |= super::sort_header(
                     ui,
-                    &COLUMNS,
-                    &WIDTHS,
+                    &COLUMNS.labels,
+                    &widths,
+                    &[],
                     &mut self.query.media_sort,
                     &mut self.query.media_descending,
                 );
@@ -804,7 +805,8 @@ impl LibraryView {
                             let (clicked, double) = super::draw_cells(
                                 ui,
                                 &cells(row, &drives),
-                                &WIDTHS,
+                                &widths,
+                                &COLUMNS.cells,
                                 selected,
                                 index % 2 == 0,
                                 lead(row),
@@ -1872,32 +1874,32 @@ pub(crate) mod tests {
         };
         let adventure = cells(row("example-adventure:1.0"), &[]);
         assert_eq!(
-            adventure[..5],
+            adventure,
             [
                 "Example Adventure (2 x 1.44M)",
                 "1.0",
                 "",
                 "2 x 1.44M",
-                "2 files",
+                "Fits a 1.44M drive",
             ]
         );
-        assert!(adventure[5].contains(" / 2.8 MiB"), "{}", adventure[5]);
-        assert_eq!(adventure[6], "User-supplied");
-        assert_eq!(adventure[8], "Fits a 1.44M drive");
         assert_eq!(
-            cells(row("example-adventure:1.0"), &DRIVE_A)[8],
+            row("example-adventure:1.0").redistribution.label(),
+            "User-supplied"
+        );
+        assert_eq!(
+            cells(row("example-adventure:1.0"), &DRIVE_A)[4],
             "Ready to insert into A:"
         );
         let atlas = cells(row("sample-atlas:1.0"), &DRIVE_A);
         assert_eq!(atlas[0], "Sample Atlas (1 x 1.2M)");
-        assert_eq!(atlas[4], "—");
         assert_eq!(
-            atlas[8],
+            atlas[4],
             "1.2M disks; drive A: is 1.44M, which takes 1.44M or 720K"
         );
         let disc = cells(row("moonlit-archive:1.0"), &DRIVE_A);
         assert_eq!(disc[3], "1 x ISO-2048");
-        assert_eq!(disc[8], "CD-ROM emulation not available yet");
+        assert_eq!(disc[4], "CD-ROM emulation not available yet");
         assert_eq!(
             result.media_facets["Format"],
             BTreeSet::from(["1.2M".into(), "1.44M".into(), "iso-2048".into()])
@@ -2001,7 +2003,7 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>()
         };
         mark(&mut row, Some("MIT"));
-        assert_eq!(cells(&row, &[])[6], "Open · MIT");
+        assert_eq!(row.redistribution.label(), "Open · MIT");
         let shown = pane(&row);
         assert!(shown
             .iter()
@@ -2011,7 +2013,7 @@ pub(crate) mod tests {
         // as the push guard counts it.
         for license in [None, Some("not a licence")] {
             mark(&mut row, license);
-            assert_eq!(cells(&row, &[])[6], "User-supplied", "{license:?}");
+            assert_eq!(row.redistribution.label(), "User-supplied", "{license:?}");
             let shown = pane(&row);
             assert!(
                 shown
@@ -2236,10 +2238,20 @@ pub(crate) mod tests {
             .unwrap();
         for (drives, expected) in [(&DRIVE_A[..], Some(0)), (&[][..], None)] {
             let ctx = egui::Context::default();
-            let output = frame(&ctx, egui::vec2(1400.0, 1000.0), 0.0, vec![], |ui| {
-                egui::CentralPanel::default().show(ui, |ui| details(ui, row, drives, &[]));
-            });
-            let (_, rect) = texts(&output)
+            // The second frame lays the pane out from the first one's sizes.
+            let mut output = None;
+            for time in [0.0, 0.5] {
+                output = Some(frame(
+                    &ctx,
+                    egui::vec2(1400.0, 1000.0),
+                    time,
+                    vec![],
+                    |ui| {
+                        egui::CentralPanel::default().show(ui, |ui| details(ui, row, drives, &[]));
+                    },
+                ));
+            }
+            let (_, rect) = texts(&output.unwrap())
                 .into_iter()
                 .find(|(t, _)| t == "Insert")
                 .unwrap();
@@ -2774,10 +2786,10 @@ pub(crate) mod tests {
             },
             redistribution: Redistribution::default(),
         };
-        assert_eq!(cells(&row(None), &[])[5], "Pending");
+        assert_eq!(cells(&row(None), &[])[4], "Pending");
         assert!(!lead(&row(None)).warning);
         let failed = cells(&row(Some("missing blob")), &[]);
-        assert_eq!(failed[5], "Unavailable");
+        assert_eq!(failed[4], "Unavailable");
         assert_eq!(failed[0], "synthetic-set:1.0");
         let failed = lead(&row(Some("missing blob")));
         assert!(failed.warning);

@@ -5,6 +5,36 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — Library machine and image panes and the library lists
+  follow the approved mock-ups:** the machine and image details panes have
+  the machines mock-up's kind tile beside the title, label and value rows,
+  sections side by side on a wide pane and stacked under 720 px, and the
+  actions as framed buttons in one wrapping row at the bottom with Start as
+  the default; the details pane opens 420 px tall so they show. A machine's
+  Media per drive is a table: header row, drives by letter (A:, B:, C:) with
+  their type and media, a CMOS row, changed rows tinted with "61 030 sectors
+  written · 29.8 MiB"-style lines and pending inserts. Firmware rows name the
+  System BIOS, Video BIOS and Option ROM from the board catalogue or the
+  library's firmware packages, with their open or user-supplied mark (a ROM
+  in chips is open only when every chip is); the hardware line reads as the
+  mock-up ("IBM 5170-class board · Intel 80286, 6 MHz (8/13) · 640 KiB + 1
+  MiB · ATA at 1F0h"). The image pane adds the manifest's description and
+  its base image. Controller keys (`ide:0`), medium ids, firmware keys and
+  the board id no longer reach these panes. An image's redistribution mark
+  (list, pane, tile) covers its configuration and every layer, as the push
+  guard does, so an open BIOS with a user-supplied disk is user-supplied. The
+  Machines, Images, Firmware and Installation media lists use their mock-ups'
+  columns; each column keeps at least its header and a typical value whole,
+  the rest of the area is shared out, and a list narrower than that scrolls
+  sideways in its own area; digests and tags are monospace, counts and sizes
+  right-aligned, the Images redistribution a chip. The Firmware and
+  Installation media panes use the same type sizes and draw without overlap
+  or truncated text. Headless tests draw the panes and lists in 760, 1000,
+  1400 and 2000 px windows and check overlap, cut or truncated text, raw ids,
+  type sizes, the drive table, the action row and the list headers. Not
+  shown yet: an image's origin (pull source) and an official-template mark,
+  which the store does not record.
+
 - **2026-11-15 — `image media import` reproduces the official FreeDOS sets:**
   the command line could not express three fields the template build gives
   the FreeDOS 1.4 Floppy Edition sets, so a set imported by hand was always
@@ -18,7 +48,6 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   published sets' digests. Without the flags nothing changes; the shareware
   import commands give the same digests as before. The commands are in
   [commands](commands.md) (`image media import`).
-
 - **2026-11-15 — FreeDOS keeps its XMS after Ctrl+Alt+Del: open AT BIOS
   `v1.0.2-unemu.3`, open VGA BIOS `v0.8a-unemu.3`, templates 1.1.1:** with
   FreeDOS 1.4 loaded high over FDXMS286, a restart through guest

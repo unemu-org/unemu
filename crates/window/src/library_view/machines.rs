@@ -8,7 +8,10 @@
 //! store checks them (1–64 characters, unique ignoring case), so a dialog
 //! says why before the store refuses.
 
-use super::{human_size, Filter, ImageRow, Lead, LibraryView};
+use super::{
+    hardware::{self, DriveFact, ImageFacts},
+    human_size, pane, Filter, ImageRow, Lead, LibraryView,
+};
 use crate::{
     library_worker::{MachineJob, Recovery, Request},
     save_image::{self, SaveAsImage, TagLevel, Target},
@@ -233,8 +236,18 @@ pub(super) fn visible<'a>(
     shown
 }
 
-const COLUMNS: [&str; 5] = ["Name", "Source image", "State", "Last run", "Changes"];
-const WIDTHS: [f32; 5] = [220.0, 300.0, 240.0, 150.0, 90.0];
+const COLUMNS: super::Columns<5> = super::Columns {
+    labels: ["Name", "Source image", "State", "Last run", "Changes"],
+    widths: [220.0, 300.0, 240.0, 150.0, 90.0],
+    cells: [
+        super::Cell::Text,
+        super::Cell::Mono,
+        super::Cell::Text,
+        super::Cell::Text,
+        super::Cell::Number,
+    ],
+    samples: ["", "", "", "", "999.9 MiB"],
+};
 
 /// Why a machine name cannot be used: the store's rules, checked before it
 /// refuses. `taken` lists the other machines' names.
@@ -537,14 +550,16 @@ impl LibraryView {
             self.query.machine_sort,
             self.query.machine_descending,
         );
+        let widths = super::fit_columns(ui, &COLUMNS);
         egui::ScrollArea::horizontal()
             .id_salt("machine-columns")
             .show(ui, |ui| {
-                ui.set_min_width(WIDTHS.iter().sum::<f32>() + 40.0);
+                ui.set_min_width(super::table_width(ui, &widths));
                 if super::sort_header(
                     ui,
-                    &COLUMNS,
-                    &WIDTHS,
+                    &COLUMNS.labels,
+                    &widths,
+                    &[],
                     &mut self.query.machine_sort,
                     &mut self.query.machine_descending,
                 ) {
@@ -568,7 +583,8 @@ impl LibraryView {
                             let (clicked, double) = super::draw_cells(
                                 ui,
                                 &row.cells(),
-                                &WIDTHS,
+                                &widths,
+                                &COLUMNS.cells,
                                 selected,
                                 index % 2 == 0,
                                 row.lead(),
@@ -644,7 +660,10 @@ impl LibraryView {
         }
     }
 
-    /// The details pane of the selected machine.
+    /// The details pane of the selected machine, as the machines mock-up
+    /// draws it: the kind tile beside the name, the facts and the labels,
+    /// media per drive beside the settings, firmware and hardware, then the
+    /// actions in one row and the note under them.
     pub(super) fn machine_details(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
         let Some(row) = self.selected_machine_row().cloned() else {
             ui.label(if self.machine.is_some() {
@@ -655,68 +674,188 @@ impl LibraryView {
             return;
         };
         let mut actions = Vec::new();
+        let facts = self.image_facts().cloned();
+        let readiness = self.readiness.clone();
         let running = self.machine_running(row.id());
         let machine = &row.listing.machine;
-        ui.horizontal(|ui| {
-            crate::shell_icons::show(ui, Icon::Machine);
-            ui.strong(row.name());
-            if machine.favorite {
-                ui.colored_label(crate::shell_icons::STAR_GOLD, "★");
-            }
-        });
-        let created = match (&machine.created, machine.origin) {
-            (Some(at), image_store::machine::Origin::Duplicate) => {
-                format!(" · created {at} as a duplicate")
-            }
-            (Some(at), _) => format!(" · created {at}"),
-            (None, image_store::machine::Origin::Migration) => " · created at migration".into(),
-            (None, _) => String::new(),
+        let user_supplied = row
+            .summary
+            .as_ref()
+            .is_some_and(|s| !super::image_rights(s).open);
+        let tile = pane::Tile {
+            title: row.title.as_deref().unwrap_or(row.name()),
+            kind: "MACHINE",
+            user_supplied,
         };
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(format!(
+        pane::head(ui, &tile, |ui| {
+            pane::title(ui, Icon::Machine, row.name(), machine.favorite);
+            let created = match (&machine.created, machine.origin) {
+                (Some(at), image_store::machine::Origin::Duplicate) => {
+                    format!(" · created {at} as a duplicate")
+                }
+                (Some(at), _) => format!(" · created {at}"),
+                (None, image_store::machine::Origin::Migration) => " · created at migration".into(),
+                (None, _) => String::new(),
+            };
+            pane::meta(
+                ui,
+                format!(
                     "Machine · workspace id {} (command line: image machine run {}){created}",
                     row.id(),
                     row.id()
-                ))
-                .small(),
-            )
-            .wrap(),
-        );
-        if machine.origin == image_store::machine::Origin::Migration {
-            ui.label(
-                egui::RichText::new(
+                ),
+            );
+            if machine.origin == image_store::machine::Origin::Migration {
+                pane::meta(
+                    ui,
                     "Made from this image's earlier desktop session when machines arrived; its changes were kept.",
-                )
-                .small(),
+                );
+            }
+            if let Some(problem) = &row.listing.problem {
+                pane::text(
+                    ui,
+                    egui::RichText::new(format!("⚠ {problem}")).color(ui.visuals().warn_fg_color),
+                );
+            }
+            pane::facts(ui, "machine-facts", |ui| {
+                pane::fact(ui, "Source image", |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.link(row.source_label()).clicked() {
+                            actions.push(Action::ShowImage);
+                        }
+                        ui.label(format!("— {}", row.title.as_deref().unwrap_or("untitled")));
+                        ui.label(pane::mono(format!(
+                            "sha256:{}",
+                            pane::short_digest(machine.image.digest.hex())
+                        )));
+                        for badge in row.source_badges() {
+                            ui.colored_label(ui.visuals().warn_fg_color, badge);
+                        }
+                    });
+                });
+                pane::fact_text(ui, "State", row.state_text());
+                pane::fact_text(ui, "Last run", row.last_run());
+                pane::fact_text(
+                    ui,
+                    "Changes",
+                    format!(
+                        "{} in journals beside the image",
+                        human_size(row.listing.change_bytes)
+                    ),
+                );
+                pane::fact(ui, "Labels", |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        let mut favourite = machine.favorite;
+                        if ui.checkbox(&mut favourite, "Favourite").changed() {
+                            actions.push(Action::Favorite(favourite));
+                        }
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.machine_labels)
+                                .hint_text("labels, comma separated")
+                                .desired_width(ui.available_width().clamp(80.0, 180.0)),
+                        );
+                        if ui.button("Apply labels").clicked() {
+                            actions.push(Action::Labels);
+                        }
+                    });
+                });
+            });
+        });
+        if row.listing.moved_to.is_some() {
+            pane::text(
+                ui,
+                egui::RichText::new(format!(
+                    "Created from {}, which now names another image. This machine stays on sha256:{}: a machine never follows a tag. For the newer image, start a new machine from it.",
+                    machine.source,
+                    pane::short_digest(machine.image.digest.hex())
+                ))
+                .color(ui.visuals().warn_fg_color),
             );
         }
-        if let Some(problem) = &row.listing.problem {
-            ui.colored_label(ui.visuals().warn_fg_color, format!("⚠ {problem}"));
+        if row.listing.detached() {
+            pane::text(
+                ui,
+                egui::RichText::new(
+                    "No tag names this machine's image any more (detached). The image stays in the store for this machine; Save as new image… gives its state a name again.",
+                )
+                .color(ui.visuals().warn_fg_color),
+            );
         }
+        pane::split(
+            ui,
+            0.55,
+            |ui| {
+                pane::section(ui, "Media per drive");
+                self.media_per_drive(ui, &row, facts.as_ref(), &readiness);
+            },
+            |ui| {
+                pane::section(ui, "Settings that differ from the image");
+                match self
+                    .machine_settings
+                    .as_ref()
+                    .filter(|(id, _)| id == row.id())
+                    .and_then(|(_, diffs)| diffs.as_ref())
+                {
+                    None => {
+                        pane::meta(ui, "Reading settings…");
+                    }
+                    Some(Err(error)) => {
+                        pane::text(ui, error.as_str());
+                    }
+                    Some(Ok(diffs)) if diffs.is_empty() => {
+                        pane::meta(ui, "None — this machine uses the image's settings.");
+                    }
+                    Some(Ok(diffs)) => {
+                        let rows: Vec<pane::Row> = diffs
+                            .iter()
+                            .map(|(setting, mine, image)| pane::Row {
+                                head: setting.clone(),
+                                cells: vec![
+                                    vec![(mine.clone(), pane::Tone::Body)],
+                                    vec![(image.clone(), pane::Tone::Body)],
+                                ],
+                                changed: true,
+                            })
+                            .collect();
+                        pane::table(
+                            ui,
+                            "machine-settings-diff",
+                            &["Setting", "This machine", "Image"],
+                            &rows,
+                        );
+                        pane::meta(ui, "Applied at every start of this machine. Save as new image… writes them into the new image's configuration.");
+                    }
+                }
+                pane::firmware_section(ui, facts.as_ref(), true);
+                pane::section(ui, "Hardware, from the image");
+                match (&readiness, &facts) {
+                    (Some(Ok(_)), Some(facts)) => {
+                        pane::text(ui, facts.hardware.as_str());
+                    }
+                    (Some(Err(reason)), _) => {
+                        pane::text(ui, reason.as_str());
+                    }
+                    _ => {
+                        pane::meta(ui, "Checking image…");
+                    }
+                }
+            },
+        );
         let ready = self.ready();
-        ui.horizontal_wrapped(|ui| {
-            let stopped = !running;
-            for (label, enabled, command) in [
-                ("Start", stopped && ready, Command::Start),
-                ("Gaming mode", stopped && ready, Command::GamingMode),
-                ("Settings…", true, Command::Settings),
+        let stopped = !running;
+        pane::actions(ui, |ui| {
+            for (label, enabled, command, reason) in [
+                ("Start", stopped && ready, Command::Start, ""),
+                ("Gaming mode", stopped && ready, Command::GamingMode, ""),
+                ("Settings…", true, Command::Settings, ""),
                 (
                     "Insert media…",
                     stopped && !row.drives.is_empty(),
                     Command::Insert(0),
+                    "",
                 ),
-                ("Save as new image…", true, Command::SaveImage),
-                ("Disk layers…", true, Command::Layers),
-            ] {
-                if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
-                    actions.push(Action::Command(command));
-                }
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
-            let stopped = !running;
-            for (label, enabled, command, reason) in [
+                ("Save as new image…", true, Command::SaveImage, ""),
+                ("Disk layers…", true, Command::Layers, ""),
                 (
                     "Duplicate…",
                     stopped,
@@ -737,7 +876,12 @@ impl LibraryView {
                     "Stop the machine first.",
                 ),
             ] {
-                let response = ui.add_enabled(enabled, egui::Button::new(label));
+                let button = if command == Command::Start {
+                    pane::primary(ui, label)
+                } else {
+                    egui::Button::new(label)
+                };
+                let response = ui.add_enabled(enabled, button);
                 if !reason.is_empty() {
                     response.clone().on_disabled_hover_text(reason);
                 }
@@ -746,136 +890,9 @@ impl LibraryView {
                 }
             }
         });
-        ui.columns(3, |columns| {
-            let ui = &mut columns[0];
-egui::Grid::new("machine-facts")
-                .num_columns(2)
-                .show(ui, |ui| {
-                    ui.weak("Source image");
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.link(row.source_label()).clicked() {
-                            actions.push(Action::ShowImage);
-                        }
-                        ui.label(format!(
-                            "— {} · sha256:{}",
-                            row.title.as_deref().unwrap_or("untitled"),
-                            &machine.image.digest.hex()[..12]
-                        ));
-                        for badge in row.source_badges() {
-                            ui.colored_label(ui.visuals().warn_fg_color, badge);
-                        }
-                    });
-                    ui.end_row();
-                    ui.weak("State");
-                    ui.label(row.state_text());
-                    ui.end_row();
-                    ui.weak("Last run");
-                    ui.label(row.last_run());
-                    ui.end_row();
-                    ui.weak("Changes");
-                    ui.label(format!(
-                        "{} in journals beside the image",
-                        human_size(row.listing.change_bytes)
-                    ));
-                    ui.end_row();
-                    ui.weak("Labels");
-                    ui.horizontal(|ui| {
-                        let mut favourite = machine.favorite;
-                        if ui.checkbox(&mut favourite, "Favourite").changed() {
-                            actions.push(Action::Favorite(favourite));
-                        }
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.machine_labels)
-                                .hint_text("labels, comma separated")
-                                .desired_width(110.0),
-                        );
-                        if ui.button("Apply labels").clicked() {
-                            actions.push(Action::Labels);
-                        }
-                    });
-                    ui.end_row();
-                });
-            if row.listing.moved_to.is_some() {
-                ui.add(
-                    egui::Label::new(format!(
-                        "Created from {}, which now names another image. This machine stays on sha256:{}: a machine never follows a tag. For the newer image, start a new machine from it.",
-                        machine.source,
-                        &machine.image.digest.hex()[..12]
-                    ))
-                    .wrap(),
-                );
-            }
-            if row.listing.detached() {
-                ui.add(
-                    egui::Label::new(
-                        "No tag names this machine's image any more (detached). The image stays in the store for this machine; Save as new image… gives its state a name again.",
-                    )
-                    .wrap(),
-                );
-            }
-            columns[1].strong("Media per drive");
-            self.media_per_drive(&mut columns[1], &row);
-            columns[2].strong("Settings that differ from the image");
-            match self
-                .machine_settings
-                .as_ref()
-                .filter(|(id, _)| id == row.id())
-                .and_then(|(_, diffs)| diffs.as_ref())
-            {
-                None => {
-                    columns[2].label("Reading settings…");
-                }
-                Some(Err(error)) => {
-                    columns[2].add(egui::Label::new(error).wrap());
-                }
-                Some(Ok(diffs)) if diffs.is_empty() => {
-                    columns[2].label("None — this machine uses the image's settings.");
-                }
-                Some(Ok(diffs)) => {
-                    egui::Grid::new("machine-settings-diff")
-                        .num_columns(3)
-                        .striped(true)
-                        .show(&mut columns[2], |ui| {
-                            ui.strong("Setting");
-                            ui.strong("This machine");
-                            ui.strong("Image");
-                            ui.end_row();
-                            for (setting, mine, image) in diffs {
-                                ui.label(setting);
-                                ui.label(mine);
-                                ui.label(image);
-                                ui.end_row();
-                            }
-                        });
-                    columns[1].label(
-                        egui::RichText::new("Applied at every start of this machine. Save as new image… writes them into the new image's configuration.")
-                            .small(),
-                    );
-                }
-            }
-            columns[1].strong("Hardware, from the image");
-            match &self.readiness {
-                Some(Ok(details)) => {
-                    for line in &details.hardware {
-                        columns[1].label(line);
-                    }
-                    for line in &details.firmware {
-                        columns[1].label(egui::RichText::new(line).small());
-                    }
-                }
-                Some(Err(reason)) => {
-                    columns[1].add(egui::Label::new(reason).wrap());
-                }
-                None => {
-                    columns[1].label("Checking image…");
-                }
-            }
-        });
-        ui.label(
-            egui::RichText::new(
-                "Gaming mode plays a disposable copy of this machine as it is now; this machine does not change. Reset to image… throws its changes away and keeps the machine; Delete machine… removes both, never the image.",
-            )
-            .small(),
+        pane::meta(
+            ui,
+            "Gaming mode plays a disposable copy of this machine as it is now; this machine does not change. Reset to image… throws its changes away and keeps the machine; Delete machine… removes both, never the image.",
         );
         for action in actions {
             match action {
@@ -902,85 +919,29 @@ egui::Grid::new("machine-facts")
         }
     }
 
-    /// The image's drives beside what this machine changed in them.
-    fn media_per_drive(&self, ui: &mut egui::Ui, row: &MachineRow) {
-        let media = match &self.readiness {
-            Some(Ok(details)) => details.media.clone(),
-            _ => Vec::new(),
-        };
-        let mut drives: Vec<(String, Vec<String>)> = Vec::new();
-        for medium in &media {
-            let name = if medium.name.is_empty() {
-                medium.id.clone()
-            } else {
-                medium.name.clone()
+    /// The image's drives by letter beside what this machine changed in
+    /// them: the mock-up's Media per drive table, CMOS last.
+    fn media_per_drive(
+        &self,
+        ui: &mut egui::Ui,
+        row: &MachineRow,
+        facts: Option<&ImageFacts>,
+        readiness: &Option<Result<pc_image::inspection::ImageDetails, String>>,
+    ) {
+        let Some(facts) = facts else {
+            match readiness {
+                Some(Err(reason)) => pane::text(ui, reason.as_str()),
+                _ => pane::meta(ui, "Checking image…"),
             };
-            match drives.iter_mut().find(|(drive, _)| *drive == medium.drive) {
-                Some((_, names)) => names.push(name),
-                None => drives.push((medium.drive.clone(), vec![name])),
-            }
-        }
-        for insert in &row.listing.machine.pending {
-            if !drives.iter().any(|(drive, _)| *drive == insert.drive) {
-                drives.push((insert.drive.clone(), Vec::new()));
-            }
-        }
-        if drives.is_empty() {
-            ui.label(if self.readiness.is_none() {
-                "Checking image…"
-            } else {
-                "No drive information"
-            });
-        }
-        egui::Grid::new("machine-media")
-            .num_columns(3)
-            .striped(true)
-            .show(ui, |ui| {
-                ui.strong("Drive");
-                ui.strong("In the image");
-                ui.strong("In this machine");
-                ui.end_row();
-                for (drive, names) in &drives {
-                    ui.label(drive);
-                    ui.label(if names.is_empty() {
-                        "empty catalogue".to_owned()
-                    } else {
-                        names.join(", ")
-                    });
-                    ui.vertical(|ui| {
-                        let written: Vec<String> = row
-                            .listing
-                            .changes
-                            .iter()
-                            .filter(|change| change.drive == *drive)
-                            .map(|change| {
-                                change.sectors.map_or_else(
-                                    || "changes of unknown size".into(),
-                                    |n| format!("{n} sectors written"),
-                                )
-                            })
-                            .collect();
-                        if written.is_empty() {
-                            ui.weak("As in the image");
-                        } else {
-                            ui.label(written.join(", "));
-                        }
-                        for insert in row
-                            .listing
-                            .machine
-                            .pending
-                            .iter()
-                            .filter(|insert| insert.drive == *drive)
-                        {
-                            ui.label(format!(
-                                "Pending: {} — in the drive at the next Start",
-                                self.pending_label(insert)
-                            ));
-                        }
-                    });
-                    ui.end_row();
-                }
-            });
+            return;
+        };
+        let rows = drive_rows(&facts.drives, row, |insert| self.pending_label(insert));
+        pane::table(
+            ui,
+            "machine-media",
+            &["Drive", "In the image", "In this machine"],
+            &rows,
+        );
     }
 
     // ---- actions -----------------------------------------------------------
@@ -1659,6 +1620,130 @@ egui::Grid::new("machine-facts")
             _ => self.error = Some(error),
         }
     }
+}
+
+/// Bytes in a journal sector: a 512-byte disk sector.
+const SECTOR_BYTES: u64 = 512;
+
+/// A count with its thousands grouped by a no-break space, as the mock-ups
+/// write sector counts: "61 030".
+fn grouped(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push('\u{a0}');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// The Media per drive rows of a machine: each drive of its image by
+/// letter, what this machine wrote there and the disk waiting for its next
+/// Start; media inserted from installation sets follow the image's drives.
+fn drive_rows(
+    drives: &[DriveFact],
+    row: &MachineRow,
+    pending: impl Fn(&image_store::machine::PendingInsert) -> String,
+) -> Vec<pane::Row> {
+    let written = |drive: &str| -> Vec<String> {
+        row.listing
+            .changes
+            .iter()
+            .filter(|change| change.drive == drive)
+            .map(|change| {
+                change.sectors.map_or_else(
+                    || "changes of unknown size".into(),
+                    |n| {
+                        format!(
+                            "{} sectors written · {}",
+                            grouped(n),
+                            human_size(n as u64 * SECTOR_BYTES)
+                        )
+                    },
+                )
+            })
+            .collect()
+    };
+    let pending_lines = |drive: &str| -> Vec<(String, pane::Tone)> {
+        row.listing
+            .machine
+            .pending
+            .iter()
+            .filter(|insert| insert.drive == drive)
+            .map(|insert| {
+                (
+                    format!(
+                        "Pending: {} — in the drive at the next Start",
+                        pending(insert)
+                    ),
+                    pane::Tone::Pending,
+                )
+            })
+            .collect()
+    };
+    let cmos_changed = matches!(
+        row.listing.state,
+        pc_image::machine::State::Changed { cmos: true, .. }
+    );
+    let mut rows: Vec<pane::Row> = drives
+        .iter()
+        .map(|drive| {
+            let lines = written(&drive.drive);
+            let cmos = drive.drive == hardware::CMOS && cmos_changed;
+            let mut cell = if !lines.is_empty() {
+                vec![
+                    ("Written by this machine".to_owned(), pane::Tone::Body),
+                    (lines.join(", "), pane::Tone::Change),
+                ]
+            } else if cmos {
+                vec![
+                    ("Changed by this machine".to_owned(), pane::Tone::Body),
+                    (
+                        "CMOS bytes differ from the image".to_owned(),
+                        pane::Tone::Change,
+                    ),
+                ]
+            } else {
+                vec![("As in the image".to_owned(), pane::Tone::Muted)]
+            };
+            cell.extend(pending_lines(&drive.drive));
+            pane::Row {
+                head: drive.drive.clone(),
+                cells: vec![vec![(drive.described.clone(), pane::Tone::Body)], cell],
+                changed: !lines.is_empty() || cmos,
+            }
+        })
+        .collect();
+    let inserted = written(pc_image::machine::INSERTED);
+    if !inserted.is_empty() {
+        rows.push(pane::Row {
+            head: "Inserted".into(),
+            cells: vec![
+                vec![("Media from installation sets".to_owned(), pane::Tone::Body)],
+                vec![
+                    ("Written by this machine".to_owned(), pane::Tone::Body),
+                    (inserted.join(", "), pane::Tone::Change),
+                ],
+            ],
+            changed: true,
+        });
+    }
+    // A pending disk for a drive the image does not list still shows.
+    for insert in &row.listing.machine.pending {
+        if !drives.iter().any(|drive| drive.drive == insert.drive) {
+            rows.push(pane::Row {
+                head: insert.drive.clone(),
+                cells: vec![
+                    vec![("Not in the image".to_owned(), pane::Tone::Muted)],
+                    pending_lines(&insert.drive),
+                ],
+                changed: false,
+            });
+        }
+    }
+    rows
 }
 
 /// A pending insert as the details pane and the drive chips name it.

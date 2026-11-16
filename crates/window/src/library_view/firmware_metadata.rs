@@ -2394,7 +2394,7 @@ mod tests {
         assert!(crafted.source_missing);
         assert!(!row("firmware/legacy-rom:1").source_missing);
         assert_eq!(
-            cells(&crafted)[7],
+            cells(&crafted)[4],
             "Open · GPL-2.0-only ⚠ No source · private only"
         );
         let read = read_package(&store, tag, &crafted.image.descriptor.digest, &[]).unwrap();
@@ -2485,7 +2485,7 @@ mod tests {
             .unwrap();
         assert!(!revised.source_missing);
         assert_eq!(
-            cells(revised)[7],
+            cells(revised)[4],
             "Open · GPL-2.0-only · with source archive"
         );
         let read = read_package(
