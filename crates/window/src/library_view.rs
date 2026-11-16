@@ -4765,11 +4765,14 @@ pub(super) mod tests {
         let mut wizard = crate::new_machine::Wizard::new();
         wizard.set_store(choices.unwrap());
         wizard.edit(|s| s.hardware.disks[0] = Some(pc_image::create::Chs::new(1024, 16, 63)));
-        wizard.title = "Open AT workbench".into();
+        wizard.set_title("Open AT workbench".into());
         wizard.go(crate::new_machine::SUMMARY);
         assert!(wizard.private_notice().is_none());
         let (image, reference, expected) = wizard.request().unwrap();
-        assert_eq!((reference.as_str(), &expected), ("open-at:1.0.0", &None));
+        assert_eq!(
+            (reference.as_str(), &expected),
+            ("open-at-workbench:1.0.0", &None)
+        );
         worker
             .send
             .send(Request::CreateImage(

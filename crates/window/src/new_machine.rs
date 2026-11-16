@@ -138,7 +138,9 @@ pub(crate) struct Wizard {
     pub repo: String,
     repo_edited: bool,
     pub tag: String,
-    pub title: String,
+    /// The image title; [`Self::set_title`] keeps an untouched repository
+    /// name following it.
+    title: String,
     /// Also create a machine from the image (on by default; the Name and
     /// tag step offers to opt out).
     pub make_machine: bool,
@@ -171,6 +173,76 @@ pub(crate) struct Wizard {
     /// Import ROM folder… is possible now (a stopped machine, an idle store).
     pub can_import_roms: bool,
     cache: RefCell<Cache>,
+}
+
+/// The longest repository name a title suggests, well inside the store's
+/// 255-character limit with a numeric suffix added.
+const SLUG_LIMIT: usize = 64;
+
+/// `title` as a repository name: its letters and digits in lowercase ASCII,
+/// Latin letters with diacritics spelled without them ("Gra Żółw" gives
+/// `gra-zolw`), every other run of characters one `-`; empty when nothing
+/// is left. Combining accents, which some keyboards type after the letter,
+/// are dropped with no separator.
+fn repository_slug(title: &str) -> String {
+    let mut slug = String::new();
+    for c in title.chars().flat_map(char::to_lowercase) {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c);
+        } else if let Some(ascii) = latin_ascii(c) {
+            slug.push_str(ascii);
+        } else if ('\u{300}'..='\u{36f}').contains(&c) {
+            continue;
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.truncate(SLUG_LIMIT);
+    slug.truncate(slug.trim_end_matches('-').len());
+    slug
+}
+
+/// The ASCII spelling of a lowercase Latin letter with a diacritic, such as
+/// the Polish and the Western European ones; `None` for anything else.
+fn latin_ascii(c: char) -> Option<&'static str> {
+    Some(match c {
+        'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => "a",
+        'æ' => "ae",
+        'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => "c",
+        'ð' | 'ď' | 'đ' => "d",
+        'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => "e",
+        'ĝ' | 'ğ' | 'ġ' | 'ģ' => "g",
+        'ĥ' | 'ħ' => "h",
+        'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' => "i",
+        'ĵ' => "j",
+        'ķ' => "k",
+        'ĺ' | 'ļ' | 'ľ' | 'ł' => "l",
+        'ñ' | 'ń' | 'ņ' | 'ň' => "n",
+        'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => "o",
+        'œ' => "oe",
+        'ŕ' | 'ŗ' | 'ř' => "r",
+        'ś' | 'ŝ' | 'ş' | 'š' => "s",
+        'ß' => "ss",
+        'ţ' | 'ť' | 'ŧ' => "t",
+        'þ' => "th",
+        'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => "u",
+        'ŵ' => "w",
+        'ý' | 'ÿ' | 'ŷ' => "y",
+        'ź' | 'ż' | 'ž' => "z",
+        _ => return None,
+    })
+}
+
+/// The repository an untitled machine with user-supplied firmware is named
+/// after: the first word of the BIOS vendor, slugged as a title is, then
+/// `-at`. A vendor with no usable letter or digit reads as no vendor.
+fn vendor_repo(vendor: Option<&str>) -> String {
+    let name = vendor
+        .and_then(|v| v.split_whitespace().next())
+        .map(repository_slug)
+        .filter(|slug| !slug.is_empty())
+        .unwrap_or_else(|| "custom".into());
+    format!("{name}-at")
 }
 
 fn errors_in(diagnostics: &[caps::Diagnostic]) -> Vec<caps::Diagnostic> {
@@ -227,7 +299,7 @@ impl Wizard {
             ide_port: assembly::descriptors::IDE_PORTS[0],
             disks: [Some(create::BLANK_DISKS[0]), None],
         };
-        Self {
+        let mut wizard = Self {
             step: 0,
             visited: 0,
             selection: Selection {
@@ -241,7 +313,7 @@ impl Wizard {
             video_touched: false,
             filter: String::new(),
             show_incompatible: [false; 3],
-            repo: "open-at".into(),
+            repo: String::new(),
             repo_edited: false,
             tag: "1.0.0".into(),
             title: String::new(),
@@ -263,7 +335,9 @@ impl Wizard {
             move_prompt: false,
             can_import_roms: true,
             cache: RefCell::new(Cache::default()),
-        }
+        };
+        wizard.suggest_repo();
+        wizard
     }
 
     pub fn selection(&self) -> &Selection {
@@ -290,6 +364,56 @@ impl Wizard {
         self.tag = tag;
         self.confirmed_move = None;
     }
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+    /// Set the image title; an untouched repository name follows it.
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
+        self.suggest_repo();
+    }
+    /// Follow the default repository name until the user types one.
+    fn suggest_repo(&mut self) {
+        if !self.repo_edited {
+            self.repo = self.default_repo();
+        }
+    }
+    /// The repository New machine… suggests: the title as a lowercase slug,
+    /// or while untitled the firmware's name (`open-at` for open firmware,
+    /// the BIOS vendor's otherwise). The library treats a repository named
+    /// like an official template as that template, so a revision of it gets
+    /// a local-only tag; the user's own machine must not look like one. So
+    /// the suggestion is never a template's name nor a repository the store
+    /// already has: it takes the first free `-2`, `-3`, … suffix instead.
+    fn default_repo(&self) -> String {
+        let base = Some(repository_slug(&self.title))
+            .filter(|slug| !slug.is_empty())
+            .unwrap_or_else(|| self.firmware_repo());
+        let taken = |name: &str| {
+            pc_image::template::TEMPLATES
+                .iter()
+                .any(|template| template.name == name)
+                || self
+                    .tags
+                    .iter()
+                    .any(|(tag, _)| tag.rsplit_once(':').is_some_and(|(repo, _)| repo == name))
+        };
+        let mut repo = base.clone();
+        let mut n = 2;
+        while taken(&repo) {
+            repo = format!("{base}-{n}");
+            n += 1;
+        }
+        repo
+    }
+    /// The repository an untitled machine is named after: its firmware.
+    fn firmware_repo(&self) -> String {
+        match self.bios_rom() {
+            Some(b) if self.open(&b) => "open-at".into(),
+            Some(b) => vendor_repo(b.package.config.vendor.as_deref()),
+            None => "at".into(),
+        }
+    }
 
     /// Install the store's packages and tags. The BIOS defaults are applied
     /// only when no chosen BIOS exists (first load, or it disappeared); a
@@ -311,6 +435,8 @@ impl Wizard {
         if self.bios_rom().is_none() {
             self.choose_board(self.selection.hardware.board);
         }
+        // Fresh tags may name the suggested repository.
+        self.suggest_repo();
     }
 
     pub fn go(&mut self, step: usize) {
@@ -817,25 +943,7 @@ impl Wizard {
             self.default_offer(Slot::OptionRom, None)
         };
         self.edit(|s| s.option_rom = option);
-        if !self.repo_edited {
-            self.repo = match &bios {
-                Some(b) if self.open(b) => "open-at".into(),
-                Some(b) => format!(
-                    "{}-at",
-                    b.package
-                        .config
-                        .vendor
-                        .as_deref()
-                        .and_then(|v| v.split_whitespace().next())
-                        .unwrap_or("custom")
-                        .to_lowercase()
-                        .chars()
-                        .filter(|c| c.is_ascii_alphanumeric())
-                        .collect::<String>()
-                ),
-                None => "at".into(),
-            };
-        }
+        self.suggest_repo();
         self.sanitize();
     }
     /// Replace selections the validator now refuses by the first allowed one.
@@ -1370,7 +1478,8 @@ mod tests {
         // The default is the open package, so the image stays redistributable.
         let open = fits.iter().find(|o| o.open).unwrap();
         assert_eq!(wizard.selection().bios.as_ref(), Some(&open.rom));
-        assert_eq!(wizard.repo, "open-at");
+        // Named after the open firmware, but not as the official template.
+        assert_eq!(wizard.repo, "open-at-2");
         let reasons = |name: &str| {
             misfits
                 .iter()
@@ -1632,6 +1741,7 @@ mod tests {
             return;
         };
         let mut wizard = wizard(&store);
+        wizard.set_repo("open-at".into());
         let image = Digest::of(b"existing");
         wizard.tags.push(("open-at:1.0.0".into(), image.clone()));
         wizard.tags.push(("open-at:latest".into(), image.clone()));
@@ -1680,7 +1790,7 @@ mod tests {
         assert_eq!(wizard.private_notice(), None);
         assert!(wizard
             .full_reference()
-            .contains("registry.unemu.dev/unemu/open-at:1.0.0"));
+            .contains("registry.unemu.dev/unemu/open-at-2:1.0.0"));
         let private = wizard
             .offers(Slot::Bios)
             .0
@@ -1972,6 +2082,174 @@ mod tests {
                         let _ = crate::new_machine_view::show(ctx, &mut wizard, classic);
                     });
                 }
+            }
+        }
+    }
+
+    /// A machine rebuilt from each official template, open firmware and the
+    /// template's hardware, gets a repository of its own: named after its
+    /// title, or after its firmware while untitled, but never an official
+    /// template's name, which would give the user's image a template's
+    /// local-only treatment, and never a repository the store already has.
+    #[test]
+    fn the_default_repository_is_never_a_template_or_a_local_repository() {
+        let Some(store) = FirmwareStore::new(false) else {
+            return;
+        };
+        let templates: Vec<&str> = pc_image::template::TEMPLATES
+            .iter()
+            .map(|t| t.name)
+            .collect();
+        for template in &pc_image::template::TEMPLATES {
+            let mut wizard = wizard(&store);
+            let hardware = template.hardware().unwrap();
+            wizard.edit(|s| s.hardware = hardware);
+            assert!(wizard.open(&wizard.bios_rom().unwrap()));
+            let name = template.name;
+            // Untitled, the open firmware names it, as the plain template is named.
+            assert_eq!(wizard.repo, "open-at-2", "{name}");
+            // The template's own title, as a lowercase slug.
+            wizard.set_title(template.title.into());
+            assert_eq!(
+                wizard.repo,
+                template.title.to_lowercase().replace(' ', "-"),
+                "{name}"
+            );
+            // A title that spells the template's name.
+            wizard.set_title(name.replace('-', " ").to_uppercase());
+            assert_eq!(wizard.repo, format!("{name}-2"));
+            assert!(!templates.contains(&wizard.repo.as_str()));
+            // Repositories the store already has are skipped too.
+            let (packages, mut tags, marks) = store.choices();
+            tags.push((format!("{name}-2:1.0.0"), Digest::of(b"mine")));
+            tags.push((format!("{name}-3:latest"), Digest::of(b"mine")));
+            wizard.set_store((packages, tags, marks));
+            assert_eq!(wizard.repo, format!("{name}-4"));
+            assert_eq!(wizard.tag_check().level, TagLevel::Ok);
+            // The user may still type any name, a template's included, and
+            // the title no longer renames it.
+            wizard.set_repo(name.into());
+            wizard.set_title("Lab bench".into());
+            assert_eq!(wizard.repo, name);
+        }
+    }
+
+    /// A title becomes a valid repository name: letters with diacritics
+    /// lose them, every other run of characters is one `-`, nothing leads
+    /// or trails, and the name stops at 64 characters. A title with nothing
+    /// usable gives no name, and the wizard falls back to the firmware's.
+    #[test]
+    fn titles_slug_to_valid_repository_names() {
+        for (title, slug) in [
+            ("", ""),
+            ("   ", ""),
+            ("日本語 — ✓", ""),
+            ("Open AT 286", "open-at-286"),
+            ("a -- b", "a-b"),
+            ("a_b.c", "a-b-c"),
+            ("  --Open AT--  ", "open-at"),
+            ("Gra Żółw", "gra-zolw"),
+            ("ĄĆĘŁŃÓŚŹŻ ąćęłńóśźż", "acelnoszz-acelnoszz"),
+            ("Café Crème à Noël", "cafe-creme-a-noel"),
+            ("Straße Ölmühle", "strasse-olmuhle"),
+            ("Ærø Œuvre Façade", "aero-oeuvre-facade"),
+            ("Ñandú Ìle Ÿ", "nandu-ile-y"),
+            // A letter and a combining accent, as some keyboards type them.
+            ("Cafe\u{301} 286", "cafe-286"),
+        ] {
+            assert_eq!(repository_slug(title), slug, "{title:?}");
+        }
+        let long = repository_slug(&"Long title ".repeat(10));
+        assert!(long.len() <= SLUG_LIMIT, "{long}");
+        assert!(long.starts_with("long-title-long-title"), "{long}");
+        let at_a_separator = repository_slug(&format!("{} b", "a".repeat(SLUG_LIMIT)));
+        assert_eq!(at_a_separator, "a".repeat(SLUG_LIMIT));
+        let cut_before_a_separator = repository_slug(&format!("{} b", "a".repeat(SLUG_LIMIT - 1)));
+        assert_eq!(cut_before_a_separator, "a".repeat(SLUG_LIMIT - 1));
+        for title in [
+            "Open AT 286",
+            "a -- b",
+            "Gra Żółw",
+            "Straße Ölmühle",
+            "Ærø Œuvre Façade",
+            "  --Open AT--  ",
+            &"Long title ".repeat(10),
+            &format!("{} b", "a".repeat(SLUG_LIMIT - 1)),
+        ] {
+            let slug = repository_slug(title);
+            assert!(!slug.is_empty(), "{title:?}");
+            Store::validate_tag_name(&format!("{slug}:1.0.0"))
+                .unwrap_or_else(|e| panic!("{title:?} gives {slug:?}: {e}"));
+        }
+    }
+
+    /// An untitled machine with user-supplied firmware is named after the
+    /// first word of the BIOS vendor, slugged as titles are; a vendor with
+    /// no usable letter reads as no vendor.
+    #[test]
+    fn the_firmware_name_is_always_a_valid_repository() {
+        for (vendor, repo) in [
+            (None, "custom-at"),
+            (Some("IBM Corporation"), "ibm-at"),
+            (Some("Phoenix"), "phoenix-at"),
+            (Some("Żółw Systems"), "zolw-at"),
+            (Some("Ελληνικά BIOS"), "custom-at"),
+            (Some("—"), "custom-at"),
+            (Some(""), "custom-at"),
+        ] {
+            assert_eq!(vendor_repo(vendor), repo, "{vendor:?}");
+            Store::validate_tag_name(&format!("{repo}:1.0.0")).unwrap();
+        }
+    }
+
+    /// The Name and tag step never offers an official template's name as an
+    /// example repository: the user's own image is not the template.
+    #[test]
+    fn the_name_step_never_suggests_a_template_name() {
+        let mut wizard = Wizard::new();
+        wizard.set_store(Default::default());
+        wizard.go(NAME);
+        let ctx = egui::Context::default();
+        let mut pass = || {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1040.0, 900.0),
+                )),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                let _ = crate::new_machine_view::show(ui.ctx(), &mut wizard, false);
+            });
+            output.textures_delta.clear();
+            output
+        };
+        // A new modal settles over its first frames.
+        pass();
+        pass();
+        let output = pass();
+        fn texts(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| texts(s, out)),
+                _ => (),
+            }
+        }
+        let mut shown = Vec::new();
+        for clipped in &output.shapes {
+            texts(&clipped.shape, &mut shown);
+        }
+        assert!(
+            shown.iter().any(|text| text.contains("Repository name")),
+            "{shown:?}"
+        );
+        for text in &shown {
+            for word in text.split_whitespace() {
+                let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+                assert!(
+                    pc_image::template::TEMPLATES.iter().all(|t| t.name != word),
+                    "{text:?} names the template {word:?}"
+                );
             }
         }
     }

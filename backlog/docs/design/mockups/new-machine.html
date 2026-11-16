@@ -711,7 +711,7 @@ function pageName() {
   const bios = biosPkg();
   return '<h2>Name and tag</h2><p class="sub">The image is stored as <code>repository:tag</code>. The machine configuration itself holds no name.</p><div class="form">' +
     '<label for="repo">Repository name</label><input type="text" id="repo" value="' + esc(S.repo) + '" autocomplete="off" spellcheck="false">' +
-    '<span class="hint">Lowercase letters and digits, separated by . _ or -; for example open-at, then open-at-dos once DOS is installed.</span>' +
+    '<span class="hint">Lowercase letters and digits, separated by . _ or -; for example my-at-286, then my-at-286-dos once DOS is installed.</span>' +
     '<label for="tag">Tag</label><input type="text" id="tag" value="' + esc(S.tag) + '" autocomplete="off" spellcheck="false">' +
     '<span class="chips col2" id="tagChips">' + chipsHtml(hardwareTag()) + '</span>' +
     '<span class="col2" id="tagCheck">' + renderTagCheck(check) + '</span>' +

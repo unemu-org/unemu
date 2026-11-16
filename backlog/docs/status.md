@@ -5,6 +5,36 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — The modern skin takes the mock-ups' colours; New machine…
+  never suggests a template's repository name:** as in the approved
+  mock-ups, the modern skin now shares the classic skin's colours and differs
+  only in its rounded corners and flat outlines. Panels, dialogs and resting
+  buttons take the face colour (#34363a dark, #d6d3cb light); hovered buttons
+  and buttons with an open menu the second face colour, which also fills the
+  boxes of check boxes and radio buttons; text takes the ink and muted
+  colours, selected rows the selection colour with white text, links the
+  link colour, and dialogs, menus, separators and resting controls a 1 px
+  outline in the shadow colour. Main-toolbar buttons have no frame at rest
+  and show that outline only on hover; the classic skin keeps its bevel.
+  Text fields are no longer lighter than the panels in the dark theme. In
+  the modern skin's light and dark themes, every widget state's text on its
+  fills, and plain, weak, strong, link and error text on the face, fields
+  and stripes, read at 4.5:1 or more; so do warnings on fields and stripes,
+  while on the face they take the mock-ups' warn colour, which reads 4.23:1
+  there in the light theme. Both skins take the mock-ups' warn and error
+  colours, and in both a focused text field is outlined in its own text
+  colour, at 3:1 or more against the field, as the mock-ups' focus rule
+  draws it (egui's white outline vanished on the light field). The guest
+  screen keeps its black surround. New machine… names the image's
+  repository after its title, as a lowercase slug in which letters with
+  diacritics lose them ("Gra Żółw" gives `gra-zolw`), and after its firmware
+  while it has none (`open-at` for open firmware). The suggestion is never an
+  official template's name, which made the user's own image look like the
+  template (a `-local.N` tag suggestion and the local-only note), nor a
+  repository the store already has: it takes the first free `-2`, `-3`, …
+  suffix (`open-at-2`). The user can still type any name; the Name and tag
+  step's example now reads `my-at-286`, in the app and in the new-machine
+  mock-up.
 - **2026-11-16 — Exchange and read-modify-write instructions on memory-mapped
   devices:** the CPU core pin moves to x86jit `80b54f8a`. `XCHG` with a memory
   operand on a memory-mapped window (video memory included), with or without a

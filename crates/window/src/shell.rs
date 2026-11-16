@@ -3293,7 +3293,7 @@ impl Shell {
             ] {
                 let response = ui
                     .add_enabled_ui(self.command_allowed(command), |ui| {
-                        crate::shell_icons::button(ui, label, icon)
+                        toolbar_button(ui, self.classic, label, icon)
                     })
                     .inner;
                 if self.classic {
@@ -4287,6 +4287,7 @@ impl eframe::App for Shell {
             };
             events.pixels_per_point = ctx.pixels_per_point();
         }
+        outline_focused_field(&ctx);
         self.cursor(&ctx);
         self.window_close(&ctx);
     }
@@ -4301,6 +4302,40 @@ impl eframe::App for Shell {
 /// dialog stacked beneath cannot close on the same press.
 pub(crate) fn escape_pressed(input: &mut egui::InputState) -> bool {
     input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+}
+
+/// Outlines the focused text field in its own text colour, as the mock-ups
+/// outline a focused control (`:focus-visible`: 1 px in `currentColor`), in
+/// every skin. egui outlines it in the selection stroke, which stays white so
+/// that selected glyphs read on the selection fill; white all but vanishes on
+/// the light field. Called once a pass after everything is drawn, it paints
+/// over egui's outline in the field's own layer, clipped as the field is.
+pub(crate) fn outline_focused_field(ctx: &egui::Context) {
+    let Some(id) = ctx.memory(|memory| memory.focused()) else {
+        return;
+    };
+    if egui::TextEdit::load_state(ctx, id).is_none() {
+        return;
+    }
+    let Some(field) = ctx.read_response(id) else {
+        return;
+    };
+    let style = ctx.global_style();
+    let visuals = &style.visuals;
+    let outline = Stroke::new(
+        visuals.selection.stroke.width,
+        visuals
+            .override_text_color
+            .unwrap_or(visuals.widgets.inactive.text_color()),
+    );
+    ctx.layer_painter(field.layer_id)
+        .with_clip_rect(field.interact_rect)
+        .rect_stroke(
+            field.rect,
+            visuals.widgets.active.corner_radius,
+            outline,
+            egui::StrokeKind::Inside,
+        );
 }
 
 pub(super) fn configure_context(ctx: &egui::Context) {
@@ -4453,10 +4488,14 @@ fn drive_tooltip(ui: &mut egui::Ui, view: &crate::drive_chips::DriveView, lit: b
 /// text in the selection stroke colour on the selection fill, so every skin
 /// keeps that pair legible.
 ///
-/// Both skins take the mock-ups' field colour for text fields, mini tables
-/// and scroll tracks, and their stripe colour for striped rows: egui's dark
-/// field is near black and reads as a hole in the pane, and its stripe is
-/// all but invisible.
+/// Both skins take the mock-ups' face colour for panels and dialogs, their
+/// field colour for text fields, mini tables and scroll tracks, and their
+/// stripe colour for striped rows: egui's dark field is near black and reads
+/// as a hole in the pane, and its stripe is all but invisible. Warnings and
+/// errors take the mock-ups' warn and bad colours: egui's orange and red
+/// fade on the light face. In the mock-ups the modern skin shares every
+/// colour with the classic one and changes only the corners and the
+/// outlines; see `modern_colours`.
 pub(crate) fn skin_visuals(classic: bool, dark: bool) -> egui::Visuals {
     let mut visuals = if dark {
         egui::Visuals::dark()
@@ -4468,14 +4507,25 @@ pub(crate) fn skin_visuals(classic: bool, dark: bool) -> egui::Visuals {
     } else {
         (Color32::WHITE, Color32::from_rgb(243, 241, 234))
     };
+    (visuals.warn_fg_color, visuals.error_fg_color) = if dark {
+        (
+            Color32::from_rgb(255, 207, 115),
+            Color32::from_rgb(255, 157, 146),
+        )
+    } else {
+        (
+            Color32::from_rgb(138, 83, 0),
+            Color32::from_rgb(155, 28, 28),
+        )
+    };
+    let face = if dark {
+        Color32::from_rgb(52, 54, 58)
+    } else {
+        Color32::from_rgb(214, 211, 203)
+    };
+    visuals.panel_fill = face;
+    visuals.window_fill = face;
     if classic {
-        let face = if dark {
-            Color32::from_rgb(52, 54, 58)
-        } else {
-            Color32::from_rgb(214, 211, 203)
-        };
-        visuals.panel_fill = face;
-        visuals.window_fill = face;
         visuals.window_corner_radius = egui::CornerRadius::ZERO;
         visuals.menu_corner_radius = egui::CornerRadius::ZERO;
         for widget in [
@@ -4493,8 +4543,95 @@ pub(crate) fn skin_visuals(classic: bool, dark: bool) -> egui::Visuals {
         // egui draws selected text in the selection stroke colour; the
         // light theme's dark blue would vanish on the classic navy fill.
         visuals.selection.stroke.color = Color32::WHITE;
+    } else {
+        modern_colours(&mut visuals, face, dark);
     }
     visuals
+}
+
+/// The modern skin's colours from the mock-ups' tokens, on egui's rounded
+/// corners. Its flat 1 px outlines take the mock-ups' shadow colour (`lo`):
+/// around dialogs and menus, along separators, and around resting buttons,
+/// fields and check boxes, as the mock-ups outline every control in the
+/// modern skin. egui's own grey all but vanishes on the face colour, and a
+/// resting check box would be hard to find on it without its outline.
+///
+/// Buttons rest on the face colour, as the mock-ups' `.btn` does, and turn
+/// to the second face colour (`face-2`) when hovered or while their menu is
+/// open, as the mock-ups' chips do; pressed ones stay on the face. The boxes
+/// of check boxes and radio buttons and the rails of sliders take the second
+/// face colour at rest, so they stand apart from the face, and hovered ones
+/// go halfway from it to the highlight (`hi`). Text takes the ink colour and
+/// weak text the muted one. Strong text, egui's stand-in for the mock-ups'
+/// bold, as no bold face is loaded, and the text of hovered and pressed
+/// widgets go one step past the ink, to white or black. Selected rows take
+/// the selection colour with white text, links the link colour.
+fn modern_colours(visuals: &mut egui::Visuals, face: Color32, dark: bool) {
+    let rgb = Color32::from_rgb;
+    let (face_2, highlight, outline, ink, strong, muted, selection, link) = if dark {
+        (
+            rgb(62, 64, 69),
+            rgb(92, 95, 102),
+            rgb(31, 32, 35),
+            rgb(230, 228, 223),
+            Color32::WHITE,
+            rgb(169, 166, 160),
+            rgb(60, 100, 176),
+            rgb(169, 198, 255),
+        )
+    } else {
+        (
+            rgb(231, 228, 220),
+            Color32::WHITE,
+            rgb(141, 138, 131),
+            rgb(29, 28, 26),
+            Color32::BLACK,
+            rgb(91, 88, 82),
+            rgb(34, 70, 138),
+            rgb(27, 74, 150),
+        )
+    };
+    let hovered_box = face_2.lerp_to_gamma(highlight, 0.5);
+    visuals.window_stroke.color = outline;
+    visuals.weak_text_color = Some(muted);
+    visuals.hyperlink_color = link;
+    visuals.selection.bg_fill = selection;
+    visuals.selection.stroke.color = Color32::WHITE;
+    let widgets = &mut visuals.widgets;
+    // Per state: the ground of buttons (`weak_bg_fill`), the box of check
+    // boxes and radio buttons and the rail of sliders (`bg_fill`), the text.
+    for (widget, button, boxes, text) in [
+        (&mut widgets.noninteractive, face, face, ink),
+        (&mut widgets.inactive, face, face_2, ink),
+        (&mut widgets.hovered, face_2, hovered_box, strong),
+        (&mut widgets.active, face, face, strong),
+        (&mut widgets.open, face_2, face_2, ink),
+    ] {
+        widget.weak_bg_fill = button;
+        widget.bg_fill = boxes;
+        widget.fg_stroke.color = text;
+    }
+    widgets.noninteractive.bg_stroke.color = outline;
+    widgets.inactive.bg_stroke = Stroke::new(1.0, outline);
+}
+
+/// One main-toolbar button. The classic skin frames it, and the toolbar
+/// bevels it. The modern skin draws it as the main-window mock-up does: no
+/// frame at rest, and on hover only the skin's 1 px outline, without a fill.
+/// It changes the hover look of the `Ui` it is given, so it gets one of its
+/// own, as the toolbar's `add_enabled_ui` does.
+fn toolbar_button(
+    ui: &mut egui::Ui,
+    classic: bool,
+    label: &str,
+    icon: Option<crate::shell_icons::Icon>,
+) -> egui::Response {
+    if !classic {
+        let widgets = &mut ui.visuals_mut().widgets;
+        widgets.hovered.weak_bg_fill = Color32::TRANSPARENT;
+        widgets.hovered.bg_stroke = widgets.inactive.bg_stroke;
+    }
+    crate::shell_icons::button(ui, label, icon, classic)
 }
 
 pub(crate) fn bevel(ui: &egui::Ui, rect: egui::Rect, pressed: bool) {
@@ -10838,6 +10975,354 @@ kind='mda'
                 assert_eq!(visuals.extreme_bg_color, field, "{skin}");
                 assert_eq!(visuals.text_edit_bg_color(), field, "{skin}");
                 assert_eq!(visuals.faint_bg_color, stripe, "{skin}");
+            }
+        }
+    }
+
+    /// The mock-ups' colour tokens of one theme, from the CSS at the top of
+    /// `backlog/docs/design/mockups/machines.html`.
+    struct MockUp {
+        face: Color32,
+        face_2: Color32,
+        ink: Color32,
+        muted: Color32,
+        sel: Color32,
+        link: Color32,
+        lo: Color32,
+        warn: Color32,
+        /// `--bad`, the error colour of the mock-ups that show errors, such
+        /// as `new-machine.html`.
+        bad: Color32,
+    }
+    fn mock_up(dark: bool) -> MockUp {
+        let rgb = |hex: u32| Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8);
+        if dark {
+            MockUp {
+                face: rgb(0x34363a),
+                face_2: rgb(0x3e4045),
+                ink: rgb(0xe6e4df),
+                muted: rgb(0xa9a6a0),
+                sel: rgb(0x3c64b0),
+                link: rgb(0xa9c6ff),
+                lo: rgb(0x1f2023),
+                warn: rgb(0xffcf73),
+                bad: rgb(0xff9d92),
+            }
+        } else {
+            MockUp {
+                face: rgb(0xd6d3cb),
+                face_2: rgb(0xe7e4dc),
+                ink: rgb(0x1d1c1a),
+                muted: rgb(0x5b5852),
+                sel: rgb(0x22468a),
+                link: rgb(0x1b4a96),
+                lo: rgb(0x8d8a83),
+                warn: rgb(0x8a5300),
+                bad: rgb(0x9b1c1c),
+            }
+        }
+    }
+
+    /// Warnings and errors take the mock-ups' warn and bad colours in both
+    /// skins, which share every colour token.
+    #[test]
+    fn every_skin_takes_the_mock_up_warn_and_error_colours() {
+        for classic in [false, true] {
+            for dark in [false, true] {
+                let token = mock_up(dark);
+                let visuals = skin_visuals(classic, dark);
+                let skin = format!("classic {classic}, dark {dark}");
+                assert_eq!(visuals.warn_fg_color, token.warn, "{skin}");
+                assert_eq!(visuals.error_fg_color, token.bad, "{skin}");
+            }
+        }
+    }
+
+    /// The mock-ups' modern skin shares every colour with the classic one and
+    /// changes only the corners and the outlines: panels, dialogs and resting
+    /// buttons take the face colour, hovered and open buttons and the boxes
+    /// of check boxes the second face colour, text the ink and muted
+    /// colours, while corners stay rounded and outlines flat.
+    #[test]
+    fn the_modern_skin_takes_the_mock_up_colours_and_keeps_its_shape() {
+        for dark in [false, true] {
+            let token = mock_up(dark);
+            let visuals = skin_visuals(false, dark);
+            let widgets = &visuals.widgets;
+            let theme = format!("dark {dark}");
+            assert_eq!(visuals.panel_fill, token.face, "{theme}");
+            assert_eq!(visuals.window_fill, token.face, "{theme}");
+            assert_eq!(widgets.noninteractive.bg_fill, token.face, "{theme}");
+            // `.btn` rests on the face and turns to the second face on hover
+            // and while its menu is open, as `.chip:hover` and
+            // `.chip[aria-expanded]` do.
+            for (state, fill) in [
+                ("inactive", widgets.inactive.weak_bg_fill),
+                ("active", widgets.active.weak_bg_fill),
+            ] {
+                assert_eq!(fill, token.face, "{theme}: {state}");
+            }
+            for (state, fill) in [
+                ("hovered", widgets.hovered.weak_bg_fill),
+                ("open", widgets.open.weak_bg_fill),
+            ] {
+                assert_eq!(fill, token.face_2, "{theme}: {state}");
+            }
+            // Check boxes, radio buttons and slider rails stay findable.
+            assert_eq!(widgets.inactive.bg_fill, token.face_2, "{theme}");
+            assert_eq!(visuals.text_color(), token.ink, "{theme}");
+            assert_eq!(visuals.widgets.inactive.text_color(), token.ink, "{theme}");
+            assert_eq!(visuals.weak_text_color(), token.muted, "{theme}");
+            assert_eq!(visuals.selection.bg_fill, token.sel, "{theme}");
+            assert_eq!(visuals.selection.stroke.color, Color32::WHITE, "{theme}");
+            assert_eq!(visuals.hyperlink_color, token.link, "{theme}");
+            // Rounded corners and 1 px flat outlines in the mock-up's shadow colour.
+            assert_ne!(visuals.window_corner_radius, egui::CornerRadius::ZERO);
+            assert_ne!(visuals.menu_corner_radius, egui::CornerRadius::ZERO);
+            assert_ne!(
+                visuals.widgets.inactive.corner_radius,
+                egui::CornerRadius::ZERO
+            );
+            assert_eq!(visuals.window_stroke, Stroke::new(1.0, token.lo), "{theme}");
+            for outline in [
+                visuals.widgets.noninteractive.bg_stroke,
+                visuals.widgets.inactive.bg_stroke,
+            ] {
+                assert_eq!(outline, Stroke::new(1.0, token.lo), "{theme}");
+            }
+        }
+    }
+
+    /// WCAG 2.x contrast ratio between two opaque sRGB colours.
+    fn contrast(a: Color32, b: Color32) -> f64 {
+        let luminance = |c: Color32| {
+            let channel = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+        };
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    /// Every widget state of the modern skin keeps its text and its marks
+    /// (check marks, icons, slider grabs, all drawn in the text colour)
+    /// legible on its own fills, and plain, weak, strong and link text on
+    /// the panels, fields and stripes: at least 4.5:1, the WCAG 2.x AA ratio
+    /// for body text. Warnings and errors reach it on fields and stripes,
+    /// errors on the face too. A warning on the face takes the mock-ups' own
+    /// warn colour instead, which reads 4.23:1 there in the light theme.
+    /// A hovered widget also stands apart from a resting one.
+    #[test]
+    fn every_modern_widget_state_reads_on_its_fill() {
+        const AA: f64 = 4.5;
+        let mut failures = Vec::new();
+        for dark in [false, true] {
+            let visuals = skin_visuals(false, dark);
+            if visuals.warn_fg_color != mock_up(dark).warn {
+                failures.push(format!(
+                    "dark {dark}: warning {:?} on the face is not the mock-ups' warn colour",
+                    visuals.warn_fg_color
+                ));
+            }
+            let widgets = &visuals.widgets;
+            let mut pairs = Vec::new();
+            for (state, widget) in [
+                ("noninteractive", &widgets.noninteractive),
+                ("inactive", &widgets.inactive),
+                ("hovered", &widgets.hovered),
+                ("active", &widgets.active),
+                ("open", &widgets.open),
+            ] {
+                pairs.push((state, "bg_fill", widget.fg_stroke.color, widget.bg_fill));
+                pairs.push((
+                    state,
+                    "weak_bg_fill",
+                    widget.fg_stroke.color,
+                    widget.weak_bg_fill,
+                ));
+            }
+            for (ground, fill) in [
+                ("panel", visuals.panel_fill),
+                ("window", visuals.window_fill),
+                ("field", visuals.text_edit_bg_color()),
+                ("stripe", visuals.faint_bg_color),
+            ] {
+                pairs.push(("text", ground, visuals.text_color(), fill));
+                pairs.push(("weak text", ground, visuals.weak_text_color(), fill));
+                pairs.push(("strong text", ground, visuals.strong_text_color(), fill));
+                pairs.push(("link", ground, visuals.hyperlink_color, fill));
+                pairs.push(("error", ground, visuals.error_fg_color, fill));
+            }
+            for (ground, fill) in [
+                ("field", visuals.text_edit_bg_color()),
+                ("stripe", visuals.faint_bg_color),
+            ] {
+                pairs.push(("warning", ground, visuals.warn_fg_color, fill));
+            }
+            pairs.push((
+                "selection",
+                "bg_fill",
+                visuals.selection.stroke.color,
+                visuals.selection.bg_fill,
+            ));
+            for (what, ground, ink, fill) in pairs {
+                let ratio = contrast(ink, fill);
+                if !ink.is_opaque() || !fill.is_opaque() {
+                    failures.push(format!(
+                        "dark {dark}: {what} {ink:?} on {ground} {fill:?} is translucent"
+                    ));
+                } else if ratio < AA {
+                    failures.push(format!(
+                        "dark {dark}: {what} {ink:?} on {ground} {fill:?} is {ratio:.2}:1"
+                    ));
+                }
+            }
+            if widgets.hovered.weak_bg_fill == widgets.inactive.weak_bg_fill {
+                failures.push(format!("dark {dark}: hovering a button changes nothing"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// Every rectangle a pass painted, nested shapes included.
+    fn painted_rects(output: &egui::FullOutput) -> Vec<egui::epaint::RectShape> {
+        fn walk(shape: &egui::Shape, out: &mut Vec<egui::epaint::RectShape>) {
+            match shape {
+                egui::Shape::Rect(rect) => out.push(rect.clone()),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, out)),
+                _ => (),
+            }
+        }
+        let mut rects = Vec::new();
+        for clipped in &output.shapes {
+            walk(&clipped.shape, &mut rects);
+        }
+        rects
+    }
+
+    /// A focused text field keeps a visible outline in every skin and theme,
+    /// at least 3:1 against the field, the WCAG 2.x ratio for the boundary
+    /// of a control. egui outlines it in the selection stroke, which stays
+    /// white so that selected glyphs read on the selection fill; the outline
+    /// that shows is the last one painted on the field's edge.
+    #[test]
+    fn a_focused_text_field_keeps_a_visible_outline_in_every_skin() {
+        for classic in [false, true] {
+            for dark in [false, true] {
+                let visuals = skin_visuals(classic, dark);
+                let field = visuals.text_edit_bg_color();
+                let ctx = egui::Context::default();
+                configure_context(&ctx);
+                ctx.set_visuals(visuals);
+                let id = egui::Id::unique("focused-field");
+                let mut text = String::from("text");
+                let mut pass = || {
+                    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                        ui.add(egui::TextEdit::singleline(&mut text).id(id));
+                        outline_focused_field(ui.ctx());
+                    });
+                    output.textures_delta.clear();
+                    output
+                };
+                pass();
+                ctx.memory_mut(|memory| memory.request_focus(id));
+                pass();
+                let output = pass();
+                assert!(ctx.memory(|memory| memory.has_focus(id)));
+                let rects = painted_rects(&output);
+                let ground = rects
+                    .iter()
+                    .find(|rect| rect.fill == field)
+                    .unwrap_or_else(|| panic!("no field in {rects:?}"))
+                    .rect;
+                let outline = rects
+                    .iter()
+                    .rev()
+                    .find(|r| {
+                        r.rect.min.distance(ground.min) < 0.5
+                            && r.rect.max.distance(ground.max) < 0.5
+                            && r.stroke.width > 0.0
+                    })
+                    .unwrap_or_else(|| panic!("no outline in {rects:?}"))
+                    .stroke;
+                let ratio = contrast(outline.color, field);
+                assert!(
+                    outline.width >= 1.0 && outline.color.is_opaque() && ratio >= 3.0,
+                    "classic {classic}, dark {dark}: focus outline {outline:?} on {field:?} is {ratio:.2}:1"
+                );
+            }
+        }
+    }
+
+    /// The modern skin's main-toolbar buttons follow the main-window
+    /// mock-up: no frame at rest, and on hover only a 1 px outline in the
+    /// shadow colour, without a fill. The classic skin keeps its framed
+    /// button, which the toolbar bevels.
+    #[test]
+    fn modern_toolbar_buttons_show_only_an_outline_on_hover() {
+        for classic in [false, true] {
+            for dark in [false, true] {
+                let visuals = skin_visuals(classic, dark);
+                let skin = format!("classic {classic}, dark {dark}");
+                let ctx = egui::Context::default();
+                configure_context(&ctx);
+                ctx.set_visuals(visuals.clone());
+                let button = std::cell::Cell::new(egui::Rect::NOTHING);
+                let pass = |events: Vec<egui::Event>| {
+                    let input = egui::RawInput {
+                        events,
+                        ..Default::default()
+                    };
+                    let mut output = ctx.run_ui(input, |ui| {
+                        button.set(
+                            toolbar_button(
+                                ui,
+                                classic,
+                                "Settings",
+                                Some(crate::shell_icons::Icon::Settings),
+                            )
+                            .rect,
+                        );
+                    });
+                    output.textures_delta.clear();
+                    painted_rects(&output)
+                };
+                pass(Vec::new());
+                let rest = pass(Vec::new());
+                let frame_of = |rects: &[egui::epaint::RectShape]| {
+                    rects
+                        .iter()
+                        .filter(|r| {
+                            r.rect.center().distance(button.get().center()) < 1.0
+                                && (r.fill != Color32::TRANSPARENT
+                                    || (r.stroke.width > 0.0
+                                        && r.stroke.color != Color32::TRANSPARENT))
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                };
+                let at_rest = frame_of(&rest);
+                let centre = button.get().center();
+                pass(vec![egui::Event::PointerMoved(centre)]);
+                let hovered = frame_of(&pass(vec![egui::Event::PointerMoved(centre)]));
+                if classic {
+                    assert!(!at_rest.is_empty(), "{skin}: no frame at rest");
+                    continue;
+                }
+                assert!(at_rest.is_empty(), "{skin}: framed at rest: {at_rest:?}");
+                assert_eq!(hovered.len(), 1, "{skin}: {hovered:?}");
+                assert_eq!(hovered[0].fill, Color32::TRANSPARENT, "{skin}");
+                assert_eq!(
+                    hovered[0].stroke,
+                    Stroke::new(1.0, mock_up(dark).lo),
+                    "{skin}"
+                );
             }
         }
     }

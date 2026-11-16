@@ -1075,7 +1075,7 @@ fn page_name(ui: &mut egui::Ui, wizard: &mut Wizard) {
     if repo != wizard.repo {
         wizard.set_repo(repo);
     }
-    small(ui, "Lowercase letters and digits, separated by . _ or -; for example open-at, then open-at-dos once DOS is installed.");
+    small(ui, "Lowercase letters and digits, separated by . _ or -; for example my-at-286, then my-at-286-dos once DOS is installed.");
     let mut tag = wizard.tag.clone();
     ui.horizontal(|ui| {
         ui.add_sized([150.0, 20.0], egui::Label::new("Tag"));
@@ -1112,10 +1112,14 @@ fn page_name(ui: &mut egui::Ui, wizard: &mut Wizard) {
     if tag != wizard.tag {
         wizard.set_tag(tag);
     }
+    let mut title = wizard.title().to_owned();
     ui.horizontal(|ui| {
         ui.add_sized([150.0, 20.0], egui::Label::new("Title (optional)"));
-        ui.add(egui::TextEdit::singleline(&mut wizard.title).hint_text("Open AT workbench"));
+        ui.add(egui::TextEdit::singleline(&mut title).hint_text("Open AT workbench"));
     });
+    if title != wizard.title() {
+        wizard.set_title(title);
+    }
     small(ui, "Shown in the library; stored as the image's title.");
     small(ui, "The image is the immutable recipe: configuration, firmware, blank disks, empty media catalogues.");
     ui.separator();
@@ -1125,10 +1129,10 @@ fn page_name(ui: &mut egui::Ui, wizard: &mut Wizard) {
     ui.add_enabled_ui(wizard.make_machine, |ui| {
         ui.horizontal(|ui| {
             ui.add_sized([150.0, 20.0], egui::Label::new("Machine name"));
-            let hint = if wizard.title.trim().is_empty() {
+            let hint = if wizard.title().trim().is_empty() {
                 "the image's title".to_owned()
             } else {
-                wizard.title.trim().to_owned()
+                wizard.title().trim().to_owned()
             };
             ui.add(egui::TextEdit::singleline(&mut wizard.machine_name).hint_text(hint));
         });

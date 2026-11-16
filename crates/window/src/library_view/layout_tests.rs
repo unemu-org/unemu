@@ -851,14 +851,52 @@ fn a_narrow_mini_table_keeps_every_cell_inside_its_outline() {
                 );
                 assert!(whole(text), "{what}: {:?} cut", text.text);
             }
+            // The rules are 1 px lines in the face colour; the panel behind
+            // the table is face-coloured too in every skin.
             for rect in rects.iter().filter(|r| {
-                r.fill == FACE[usize::from(dark)] || r.fill == CHANGED_TINT[usize::from(dark)]
+                (r.fill == FACE[usize::from(dark)] && r.rect.height() <= 1.5)
+                    || r.fill == CHANGED_TINT[usize::from(dark)]
             }) {
                 assert!(
                     ground.rect.contains_rect(rect.rect),
                     "{what}: {rect:?} outside the outline {ground:?}"
                 );
             }
+        }
+    }
+}
+
+/// A pane's buttons and fields keep one outline colour with the rest of the
+/// window: the modern skin's own shadow-coloured outline stays, and only
+/// the classic skin, which outlines no resting control, gets the pane's
+/// outline from its text colour.
+#[test]
+fn pane_controls_keep_the_skins_outline() {
+    for classic in [false, true] {
+        for dark in [false, true] {
+            let visuals = crate::shell::skin_visuals(classic, dark);
+            let expected = if classic {
+                egui::Stroke::new(
+                    1.0,
+                    visuals
+                        .widgets
+                        .noninteractive
+                        .fg_stroke
+                        .color
+                        .gamma_multiply(0.45),
+                )
+            } else {
+                visuals.widgets.inactive.bg_stroke
+            };
+            let ctx = egui::Context::default();
+            ctx.set_visuals(visuals);
+            let mut outline = egui::Stroke::NONE;
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                pane::style(ui);
+                outline = ui.visuals().widgets.inactive.bg_stroke;
+            });
+            output.textures_delta.clear();
+            assert_eq!(outline, expected, "classic {classic}, dark {dark}");
         }
     }
 }

@@ -388,8 +388,9 @@ pub(crate) fn mark(glyph: &'static str) -> egui::Atom<'static> {
 
 /// A toolbar button as the main-window mock-up draws it: the icon, then the
 /// label. Without an icon the label is code-styled text, as the mock-up sets
-/// Ctrl+Alt+Del.
-pub(super) fn button(ui: &mut Ui, label: &str, icon: Option<Icon>) -> Response {
+/// Ctrl+Alt+Del. Without `framed` its frame shows only while it is hovered,
+/// pressed or focused.
+pub(super) fn button(ui: &mut Ui, label: &str, icon: Option<Icon>, framed: bool) -> Response {
     let font = match icon {
         Some(_) => egui::TextStyle::Button.resolve(ui.style()),
         None => FontId::monospace(11.0),
@@ -402,7 +403,10 @@ pub(super) fn button(ui: &mut Ui, label: &str, icon: Option<Icon>) -> Response {
     } else {
         (8.0, 16.0)
     };
-    let response = ui.add_sized([galley.size().x + extra, 26.0], egui::Button::new(""));
+    let response = ui.add_sized(
+        [galley.size().x + extra, 26.0],
+        egui::Button::new("").frame_when_inactive(framed),
+    );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
     let color = ui.style().interact(&response).fg_stroke.color;
     if let Some(icon) = icon {

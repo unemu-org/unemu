@@ -28,7 +28,9 @@ const BAND: f32 = 16.0;
 
 /// Scope the pane's text styles and widget outlines. Buttons and text
 /// fields get a visible outline, so every action reads as a framed button
-/// and the labels field as a field in every skin and theme.
+/// and the labels field as a field in every skin and theme. A skin that
+/// already outlines resting controls keeps its outline, so the pane draws
+/// the same outline colour as the rest of the window.
 pub(super) fn style(ui: &mut Ui) {
     let style = ui.style_mut();
     for (text, size) in [
@@ -41,6 +43,9 @@ pub(super) fn style(ui: &mut Ui) {
         }
     }
     let visuals = &mut style.visuals;
+    if !visuals.widgets.inactive.bg_stroke.is_empty() {
+        return;
+    }
     let outline = visuals
         .widgets
         .noninteractive
