@@ -6,6 +6,7 @@
 //! `backlog/docs/design/machine-images.md` §7.
 
 use crate::{
+    file_dialog,
     shell_model::{self, Command, Enablement, LibraryEntry, State},
     Args, Presenter,
 };
@@ -375,6 +376,48 @@ struct Shell {
     transfer_prompt: Option<&'static str>,
     /// The opt-in keyboard tap that hands macOS system shortcuts to the guest.
     system_keys: crate::system_keys::SystemKeys,
+    /// The host file dialog, which answers on a later frame. It is no shell
+    /// dialog: a running machine keeps running while it is open.
+    file_dialogs: file_dialog::FileDialogs<FileFor>,
+}
+
+/// Who asked for the host file dialog; the answer goes back there on a later
+/// frame. Each variant says when its answer is dropped instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FileFor {
+    /// Browse… of the Insert floppy dialog of a drive. Dropped unless that
+    /// dialog is still open for the same drive.
+    InsertImage(u8),
+    /// Save as… for the separate journal in the Insert floppy dialog of a
+    /// drive. Dropped unless that dialog is still open for the same drive.
+    InsertJournal(u8),
+    /// Browse… of Create blank disk. Dropped once that dialog has closed.
+    BlankDisk,
+    /// Browse for an image file… of a drive's media picker, for the session
+    /// or stopped machine it was asked in. Dropped, with a status message,
+    /// when another one is current or another shell dialog is open.
+    DriveImage(u8, DriveOwner),
+    /// File › Import ROM folder…. Dropped, with a status message, when the
+    /// command is no longer allowed.
+    RomImport,
+    /// The source archive of a firmware package, with the package Edit
+    /// metadata… was open for when asked. For Edit, dropped with a status
+    /// message unless that dialog is still open for the same package; for an
+    /// import, the import dialog ignores it once closed.
+    FirmwareSource(crate::library_view::firmware::SourceTarget, Option<String>),
+    /// Import installation media…, which ignores it once closed.
+    InstallMedia(crate::library_view::install_media::Pick),
+    /// Browse… of the ROM folders dialog. Dropped once that dialog has closed.
+    RomFolder,
+}
+
+/// Whose drives a picked image goes into.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DriveOwner {
+    /// The running machine, by session number; each start and stop counts.
+    Session(u64),
+    /// The stopped machine whose drives hold floppies for its next Start.
+    Stopped(crate::media_dialog::PendingOwner),
 }
 
 /// A shell action that would end a running session, held while the user
@@ -603,6 +646,17 @@ impl Shell {
         }
     }
 
+    /// Whose drives `floppy_slot` reads now: the session, or the stopped
+    /// machine holding floppies for Start.
+    fn drive_owner(&self) -> Option<DriveOwner> {
+        match &self.presenter {
+            Some(_) => Some(DriveOwner::Session(self.session)),
+            None => Some(DriveOwner::Stopped(
+                self.pending_media.as_ref()?.owner.clone(),
+            )),
+        }
+    }
+
     /// Floppies inserted before Start belong to the selected machine: another
     /// selection drops them, and Start takes them into the session.
     fn sync_pending_media(&mut self) {
@@ -798,6 +852,7 @@ impl Shell {
         let mut insert = false;
         let mut cancel = false;
         let mut open_library = false;
+        let mut asked = None;
         let journal_place = match &self.image_library.active {
             Some((_, _, kind)) if kind.disposable() => {
                 "Journal in this Gaming-mode workspace; Discard removes it"
@@ -839,14 +894,7 @@ impl Shell {
                 });
                 if let Some(index) = selected { draft.select(Some(index)); }
                 if ui.button("Browse…").clicked() {
-                    let picker = rfd::FileDialog::new().set_title("Choose a floppy image").add_filter("Disk images", &["img", "ima", "dsk"]);
-                    let picker = if let Some(window) = &self.window { picker.set_parent(window.as_ref()) } else { picker };
-                    if let Some(path) = picker.pick_file() {
-                        match crate::media_dialog::browse(&path, draft.slot.geometry) {
-                            Ok(entry) => draft.add_browsed(entry),
-                            Err(error) => draft.error = Some(error.to_string()),
-                        }
-                    }
+                    asked = Some(FileFor::InsertImage(draft.unit));
                 }
                 } else if let Some(entry) = draft.selected.and_then(|index| draft.slot.entries.get(index)) {
                     ui.strong(&entry.medium.name);
@@ -876,10 +924,7 @@ impl Shell {
                                 let directory = base.parent().unwrap_or(std::path::Path::new("."));
                                 ui.label(format!("Relative paths use {}", directory.display()));
                                 if ui.button("Save as…").clicked() {
-                                    let path = crate::media_dialog::resolve_input(directory, &draft.journal_path);
-                                    let picker = rfd::FileDialog::new().set_title("Choose a separate journal").set_directory(if draft.journal_path.trim().is_empty() { directory } else { path.parent().unwrap_or(directory) }).set_file_name(crate::media_dialog::filename(&path));
-                                    let picker = if let Some(window) = &self.window { picker.set_parent(window.as_ref()) } else { picker };
-                                    if let Some(path) = picker.save_file() { draft.journal_path = path.to_string_lossy().into_owned(); }
+                                    asked = Some(FileFor::InsertJournal(draft.unit));
                                 }
                             }
                             ui.label(format!("Retains {} closed generations. The base remains immutable.", draft.slot.journal_retention));
@@ -927,10 +972,7 @@ impl Shell {
                 ui.text_edit_singleline(&mut form.output);
                 ui.label(format!("Relative paths use {}", form.directory.display()));
                 if ui.button("Browse…").clicked() {
-                    let path = crate::media_dialog::resolve_input(&form.directory, &form.output);
-                    let picker = rfd::FileDialog::new().set_title("Create blank disk").set_directory(if form.output.trim().is_empty() { form.directory.as_path() } else { path.parent().unwrap_or(&form.directory) }).set_file_name(if form.output.trim().is_empty() { "disk.img".into() } else { crate::media_dialog::filename(&path) });
-                    let picker = if let Some(window) = &self.window { picker.set_parent(window.as_ref()) } else { picker };
-                    if let Some(path) = picker.save_file() { form.output = path.to_string_lossy().into_owned(); }
+                    asked = Some(FileFor::BlankDisk);
                 }
                 if let Some(error) = &form.error { ui.add(egui::Label::new(error).wrap()); }
                 ui.horizontal(|ui| {
@@ -954,6 +996,190 @@ impl Shell {
                 }
             }
         }
+        if let Some(asker) = asked {
+            self.ask_file(asker);
+        }
+    }
+
+    /// Open the host file dialog for `asker` and return at once; the answer
+    /// reaches [`Self::file_chosen`] on a later frame. While one file dialog
+    /// is open another is refused, and the status bar says which one.
+    fn ask_file(&mut self, asker: FileFor) {
+        let Some(request) = self.file_request(&asker) else {
+            return;
+        };
+        if self
+            .file_dialogs
+            .open(asker, &request, self.window.as_deref())
+            .is_err()
+        {
+            self.message = format!(
+                "{} did not open: another file dialog was open",
+                request.title
+            );
+        }
+    }
+
+    /// The title, filter, start folder and file name each asker's dialog
+    /// opens with, from the dialog state it was asked in.
+    fn file_request(&self, asker: &FileFor) -> Option<file_dialog::Request> {
+        use crate::library_view::{firmware::SourceTarget, install_media::Pick};
+        use file_dialog::{Kind, Request};
+        Some(match asker {
+            FileFor::InsertImage(_) | FileFor::DriveImage(..) => {
+                Request::new(Kind::File, "Choose a floppy image")
+                    .filter("Disk images", &["img", "ima", "dsk"])
+            }
+            FileFor::InsertJournal(unit) => {
+                let draft = self.insert_dialog.as_ref().filter(|d| d.unit == *unit)?;
+                let entry = draft
+                    .selected
+                    .and_then(|index| draft.slot.entries.get(index))?;
+                let assembly::ImageSource::File(base) = &entry.medium.image else {
+                    return None;
+                };
+                // Relative journal paths resolve against the base image's folder.
+                let directory = base.parent().unwrap_or(std::path::Path::new("."));
+                let path = crate::media_dialog::resolve_input(directory, &draft.journal_path);
+                Request::new(Kind::Save, "Choose a separate journal")
+                    .directory(if draft.journal_path.trim().is_empty() {
+                        directory
+                    } else {
+                        path.parent().unwrap_or(directory)
+                    })
+                    .file_name(crate::media_dialog::filename(&path))
+            }
+            FileFor::BlankDisk => {
+                let form = self.blank_disk.as_ref()?;
+                let path = crate::media_dialog::resolve_input(&form.directory, &form.output);
+                let empty = form.output.trim().is_empty();
+                Request::new(Kind::Save, "Create blank disk")
+                    .directory(if empty {
+                        form.directory.as_path()
+                    } else {
+                        path.parent().unwrap_or(&form.directory)
+                    })
+                    .file_name(if empty {
+                        "disk.img".into()
+                    } else {
+                        crate::media_dialog::filename(&path)
+                    })
+            }
+            FileFor::RomImport => Request::new(Kind::Folder, "Import ROM folder"),
+            FileFor::FirmwareSource(target, _) => {
+                let request = Request::new(Kind::File, "Choose the source archive (zip or tar)");
+                match target {
+                    SourceTarget::Import(_, folder) => request.directory(folder),
+                    SourceTarget::Edit => request,
+                }
+            }
+            FileFor::InstallMedia(Pick::Files) => {
+                Request::new(Kind::Files, "Choose installation images")
+            }
+            FileFor::InstallMedia(Pick::Folder) => {
+                Request::new(Kind::Folder, "Choose a folder of installation images")
+            }
+            FileFor::InstallMedia(Pick::Extras) => {
+                Request::new(Kind::Files, "Choose extras to store with the set")
+            }
+            FileFor::RomFolder => Request::new(Kind::Folder, "Locate firmware folder"),
+        })
+    }
+
+    /// Take a closed file dialog's answer to the place that asked for it.
+    fn poll_file_dialog(&mut self, ctx: &egui::Context) {
+        if let Some((asker, answer)) = self.file_dialogs.poll(ctx) {
+            self.file_chosen(asker, answer);
+        }
+    }
+
+    /// Do with the chosen path what each asker did when the dialog returned
+    /// it directly. An asker whose dialog closed meanwhile gets nothing.
+    fn file_chosen(&mut self, asker: FileFor, answer: file_dialog::Answer) {
+        let path = answer.as_ref().and_then(|paths| paths.first().cloned());
+        match asker {
+            FileFor::InsertImage(unit) => {
+                let draft = self.insert_dialog.as_mut().filter(|d| d.unit == unit);
+                if let (Some(path), Some(draft)) = (path, draft) {
+                    match crate::media_dialog::browse(&path, draft.slot.geometry) {
+                        Ok(entry) => draft.add_browsed(entry),
+                        Err(error) => draft.error = Some(error.to_string()),
+                    }
+                }
+            }
+            FileFor::InsertJournal(unit) => {
+                let draft = self.insert_dialog.as_mut().filter(|d| d.unit == unit);
+                if let (Some(path), Some(draft)) = (path, draft) {
+                    draft.journal_path = path.to_string_lossy().into_owned();
+                }
+            }
+            FileFor::BlankDisk => {
+                if let (Some(path), Some(form)) = (path, &mut self.blank_disk) {
+                    form.output = path.to_string_lossy().into_owned();
+                }
+            }
+            FileFor::DriveImage(unit, owner) => {
+                let Some(path) = path else {
+                    return;
+                };
+                // The image would go into another machine's drive, or its
+                // Insert floppy step would replace the dialog now open.
+                if self.drive_owner() != Some(owner) {
+                    self.message = "The chosen image was not inserted: the machine changed while the file dialog was open".into();
+                } else if self.has_dialog() {
+                    self.message =
+                        "The chosen image was not inserted: another dialog is open".into();
+                } else {
+                    self.browse_into(unit, &path);
+                }
+            }
+            FileFor::RomImport => {
+                let Some(folder) = path else {
+                    return;
+                };
+                if self.command_allowed(Command::ImportFirmware) {
+                    self.image_library
+                        .begin_firmware_import(folder, self.firmware_cache.clone());
+                } else {
+                    self.message = if self.presenter.is_some() {
+                        "ROM folder not imported: stop the machine first"
+                    } else {
+                        "ROM folder not imported: the image library cannot import now"
+                    }
+                    .into();
+                }
+            }
+            FileFor::FirmwareSource(target, package) => {
+                use crate::library_view::firmware::SourceTarget;
+                // Edit metadata… may have been closed and opened for another
+                // package. An import's answer goes to the draft of the same
+                // catalogue set, which is the set it was picked for.
+                let reopened = target == SourceTarget::Edit
+                    && self.image_library.firmware_edit_tag() != package.as_deref();
+                match (reopened, path) {
+                    (false, path) => self.image_library.firmware_source_picked(target, path),
+                    (true, Some(_)) => {
+                        self.message = "The chosen source archive was not used: Edit metadata closed or shows another package".into();
+                    }
+                    (true, None) => {}
+                }
+            }
+            FileFor::InstallMedia(pick) => {
+                self.image_library
+                    .media_picked(pick, answer.unwrap_or_default());
+            }
+            FileFor::RomFolder => {
+                let open = self
+                    .dialog
+                    .as_ref()
+                    .is_some_and(|(title, _)| *title == "ROM folders");
+                if let Some(path) = path.filter(|_| open) {
+                    if let Err(error) = self.preferences_draft.add_folder(&path) {
+                        self.message = format!("ROM folder: {error}");
+                    }
+                }
+            }
+        }
     }
 
     fn speed_status(&self) -> String {
@@ -962,10 +1188,14 @@ impl Shell {
             .map_or_else(|| "Speed 100%".into(), |p| p.speed_status())
     }
 
-    fn status(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
-        let drives = self.drive_views();
-        let now = self.elapsed();
-        let message = if self.presenter.as_ref().is_some_and(|p| p.mouse.captured()) {
+    /// The status bar's message cell. An open file dialog answers later, so
+    /// the cell says the shell waits for it until then, unless a second file
+    /// dialog was refused meanwhile.
+    fn status_message(&self) -> &str {
+        // A refused second dialog says so instead, while the first waits.
+        if self.file_dialogs.is_open() && !self.file_dialogs.refused() {
+            "Waiting for the file dialog…"
+        } else if self.presenter.as_ref().is_some_and(|p| p.mouse.captured()) {
             if self.macos_shortcuts {
                 "Pointer captured — ⌘G releases"
             } else {
@@ -973,7 +1203,13 @@ impl Shell {
             }
         } else {
             &self.message
-        };
+        }
+    }
+
+    fn status(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
+        let drives = self.drive_views();
+        let now = self.elapsed();
+        let message = self.status_message();
         let entry = self.selected.and_then(|index| self.library.get(index));
         // The speaker stands for the word "Audio", as in the main-window
         // mock-up's "🔊 SB16" cell, so the cell's text keeps its width.
@@ -1375,27 +1611,16 @@ impl Shell {
             }
             // The system file dialog at once, then the chosen file's own
             // Insert floppy step.
-            Outcome::Browse(unit) => match self.floppy_slot(unit) {
-                Some(_) => {
-                    let picker = rfd::FileDialog::new()
-                        .set_title("Choose a floppy image")
-                        .add_filter("Disk images", &["img", "ima", "dsk"]);
-                    let picker = if let Some(window) = &self.window {
-                        picker.set_parent(window.as_ref())
-                    } else {
-                        picker
-                    };
-                    if let Some(path) = picker.pick_file() {
-                        self.browse_into(unit, &path);
-                    }
-                }
-                None if self.image_library.machine.is_some() => {
+            Outcome::Browse(unit) => match (self.floppy_slot(unit), self.drive_owner()) {
+                (Some(_), Some(owner)) => self.ask_file(FileFor::DriveImage(unit, owner)),
+                (None, _) if self.image_library.machine.is_some() => {
                     self.dialog = Some((
                         "Insert disk",
                         "A disk image file goes into a running machine or a machine file. For a stopped machine, choose a set of this library; Import installation media… adds an image file to it.".into(),
                     ))
                 }
-                None => {}
+                // A drive with a catalogue always has an owner.
+                _ => {}
             },
         }
     }
@@ -1752,6 +1977,7 @@ impl Shell {
             restore_input: None,
             transfer_prompt: None,
             system_keys: crate::system_keys::SystemKeys::platform(),
+            file_dialogs: file_dialog::FileDialogs::native(),
         }
     }
 
@@ -2819,9 +3045,7 @@ impl Shell {
             DeleteTag => { self.release(); self.image_library.begin_delete(); },
             ImportFirmware => {
                 self.release();
-                let picker = rfd::FileDialog::new().set_title("Import ROM folder");
-                let picker = if let Some(window) = &self.window { picker.set_parent(window.as_ref()) } else { picker };
-                if let Some(folder) = picker.pick_folder() { self.image_library.begin_firmware_import(folder, self.firmware_cache.clone()); }
+                self.ask_file(FileFor::RomImport);
             },
             StoreFolder => { self.release(); self.store_path_input = self.image_library.root.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(); self.dialog = Some(("Image store folder", "Local store directory".into())); },
             Pause => { self.release_pointer(); if let Some(presenter) = &mut self.presenter { presenter.pacing.resync(elapsed, presenter.assembled.machine.clock().0); } self.paused = !self.paused; self.message = if self.paused { "Paused" } else { "Running" }.into(); },
@@ -3393,42 +3617,15 @@ impl Shell {
     /// The host picker for a firmware package's source archive; the library
     /// checks its signature and hash on the worker, never its name.
     fn pick_firmware_source(&mut self, target: crate::library_view::firmware::SourceTarget) {
-        use crate::library_view::firmware::SourceTarget;
         self.release();
-        let picker = rfd::FileDialog::new().set_title("Choose the source archive (zip or tar)");
-        let picker = match &target {
-            SourceTarget::Import(_, folder) => picker.set_directory(folder),
-            SourceTarget::Edit => picker,
-        };
-        let picker = if let Some(window) = &self.window {
-            picker.set_parent(window.as_ref())
-        } else {
-            picker
-        };
-        let path = picker.pick_file();
-        self.image_library.firmware_source_picked(target, path);
+        let package = self.image_library.firmware_edit_tag().map(str::to_owned);
+        self.ask_file(FileFor::FirmwareSource(target, package));
     }
 
     /// The host picker for Import installation media…; the worker lists the result.
     fn pick_media(&mut self, pick: crate::library_view::install_media::Pick) {
-        use crate::library_view::install_media::Pick;
         self.release();
-        let title = match pick {
-            Pick::Files => "Choose installation images",
-            Pick::Folder => "Choose a folder of installation images",
-            Pick::Extras => "Choose extras to store with the set",
-        };
-        let picker = rfd::FileDialog::new().set_title(title);
-        let picker = if let Some(window) = &self.window {
-            picker.set_parent(window.as_ref())
-        } else {
-            picker
-        };
-        let paths = match pick {
-            Pick::Folder => picker.pick_folder().into_iter().collect(),
-            Pick::Files | Pick::Extras => picker.pick_files().unwrap_or_default(),
-        };
-        self.image_library.media_picked(pick, paths);
+        self.ask_file(FileFor::InstallMedia(pick));
     }
 
     fn welcome(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
@@ -3972,6 +4169,9 @@ fn firmware_progress(
 
 impl eframe::App for Shell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Before anything draws: a file dialog opened later in this frame
+        // then already wakes the shell with its answer.
+        self.poll_file_dialog(ctx);
         self.poll_images(ctx);
         self.poll_readiness(ctx);
         self.sync_pending_media();
@@ -4020,6 +4220,7 @@ impl eframe::App for Shell {
         let mut rescan_firmware = false;
         let mut recheck_firmware = false;
         let mut cancel_firmware = false;
+        let mut browse_rom_folder = false;
         let show_firmware_progress = self.visible_discovery() || self.discovery_finished;
         if let Some((title, text)) = &self.dialog {
             egui::Modal::new(egui::Id::unique("shell-dialog")).show(&ctx, |ui| {
@@ -4086,17 +4287,7 @@ impl eframe::App for Shell {
                             }
                         }
                         if ui.button("Browse…").clicked() {
-                            let picker = rfd::FileDialog::new().set_title("Locate firmware folder");
-                            let picker = if let Some(window) = &self.window {
-                                picker.set_parent(window.as_ref())
-                            } else {
-                                picker
-                            };
-                            if let Some(path) = picker.pick_folder() {
-                                if let Err(error) = self.preferences_draft.add_folder(&path) {
-                                    self.message = format!("ROM folder: {error}");
-                                }
-                            }
+                            browse_rom_folder = true;
                         }
                     });
                     ui.separator();
@@ -4269,6 +4460,9 @@ impl eframe::App for Shell {
         }
         if cancel_firmware {
             self.cancel_firmware();
+        }
+        if browse_rom_folder {
+            self.ask_file(FileFor::RomFolder);
         }
         if close_dialog {
             if self
@@ -4915,6 +5109,9 @@ mod tests {
             restore_input: None,
             transfer_prompt: None,
             system_keys: crate::system_keys::fake::system_keys().0,
+            file_dialogs: file_dialog::FileDialogs::with_host(
+                file_dialog::fake::Host::default().boxed(),
+            ),
         }
     }
 
@@ -5224,6 +5421,693 @@ mod tests {
             .unwrap(),
         );
         shell
+    }
+
+    /// A shell whose file dialogs are scripted by the returned host.
+    fn file_dialog_shell() -> (Shell, file_dialog::fake::Host) {
+        let mut shell = media_shell();
+        let host = file_dialog::fake::Host::default();
+        shell.file_dialogs = file_dialog::FileDialogs::with_host(host.boxed());
+        (shell, host)
+    }
+
+    fn floppy_image(temp: &assembly::test_support::TempDir, name: &str) -> std::path::PathBuf {
+        let path = temp.path().join(name);
+        std::fs::write(&path, vec![0; 1_474_560]).unwrap();
+        path.canonicalize().unwrap()
+    }
+
+    /// Each file dialog keeps the kind, title, filter, start folder and file
+    /// name the synchronous dialog at its call site had.
+    #[test]
+    fn every_file_dialog_opens_with_its_former_title_filter_and_folder() {
+        use crate::library_view::{firmware::SourceTarget, install_media::Pick};
+        use file_dialog::Kind;
+        use std::path::Path;
+        type Filters = &'static [(&'static str, &'static [&'static str])];
+        /// Kind, title, filters, start folder and file name, as the call
+        /// site's synchronous dialog had them.
+        type Former<'a> = (Kind, &'a str, Filters, Option<&'a Path>, Option<&'a str>);
+        const DISK_IMAGES: Filters = &[("Disk images", &["img", "ima", "dsk"])];
+        const SOURCE: &str = "Choose the source archive (zip or tar)";
+        let check = |shell: &Shell,
+                     asker: FileFor,
+                     (kind, title, filters, directory, file_name): Former| {
+            let request = shell.file_request(&asker).unwrap();
+            let former: Vec<(String, Vec<String>)> = filters
+                .iter()
+                .map(|(name, extensions)| {
+                    let extensions = extensions.iter().map(|&e| e.to_owned()).collect();
+                    ((*name).to_owned(), extensions)
+                })
+                .collect();
+            assert_eq!(request.kind, kind, "{asker:?}");
+            assert_eq!(request.title, title, "{asker:?}");
+            assert_eq!(request.filters, former, "{asker:?}");
+            assert_eq!(request.directory.as_deref(), directory, "{asker:?}");
+            assert_eq!(request.file_name.as_deref(), file_name, "{asker:?}");
+        };
+        let ctx = egui::Context::default();
+        let temp = assembly::test_support::TempDir::new("file-dialog-requests");
+        let base = floppy_image(&temp, "extra.img");
+        let folder = base.parent().unwrap().to_path_buf();
+        let folder_name = folder.file_name().unwrap().to_str().unwrap().to_owned();
+        let (mut shell, _host) = file_dialog_shell();
+        let table: [(FileFor, Former); 9] = [
+            (
+                FileFor::InsertImage(1),
+                (Kind::File, "Choose a floppy image", DISK_IMAGES, None, None),
+            ),
+            (
+                FileFor::DriveImage(0, DriveOwner::Session(0)),
+                (Kind::File, "Choose a floppy image", DISK_IMAGES, None, None),
+            ),
+            (
+                FileFor::RomImport,
+                (Kind::Folder, "Import ROM folder", &[], None, None),
+            ),
+            (
+                FileFor::FirmwareSource(
+                    SourceTarget::Import("set".into(), "/roms/set".into()),
+                    None,
+                ),
+                (Kind::File, SOURCE, &[], Some(Path::new("/roms/set")), None),
+            ),
+            (
+                FileFor::FirmwareSource(SourceTarget::Edit, Some("package".into())),
+                (Kind::File, SOURCE, &[], None, None),
+            ),
+            (
+                FileFor::InstallMedia(Pick::Files),
+                (Kind::Files, "Choose installation images", &[], None, None),
+            ),
+            (
+                FileFor::InstallMedia(Pick::Folder),
+                (
+                    Kind::Folder,
+                    "Choose a folder of installation images",
+                    &[],
+                    None,
+                    None,
+                ),
+            ),
+            (
+                FileFor::InstallMedia(Pick::Extras),
+                (
+                    Kind::Files,
+                    "Choose extras to store with the set",
+                    &[],
+                    None,
+                    None,
+                ),
+            ),
+            (
+                FileFor::RomFolder,
+                (Kind::Folder, "Locate firmware folder", &[], None, None),
+            ),
+        ];
+        for (asker, former) in table {
+            check(&shell, asker, former);
+        }
+        // The journal's Save as… opens where the typed path points, relative
+        // to the base image's folder; with nothing typed, in that folder.
+        // Proposing the folder's own name as the file name there is a quirk
+        // the synchronous dialog had; it is kept as it was.
+        shell.command(Command::InsertFile(0), &ctx);
+        let draft = shell.insert_dialog.as_mut().unwrap();
+        draft
+            .slot
+            .entries
+            .push(crate::media_dialog::browse(&base, draft.slot.geometry).unwrap());
+        draft.select(Some(draft.slot.entries.len() - 1));
+        for (typed, directory, file_name) in [
+            ("", folder.clone(), folder_name.as_str()),
+            ("journals/extra.upfj", folder.join("journals"), "extra.upfj"),
+            ("/elsewhere/extra.upfj", "/elsewhere".into(), "extra.upfj"),
+        ] {
+            shell.insert_dialog.as_mut().unwrap().journal_path = typed.into();
+            let former = (
+                Kind::Save,
+                "Choose a separate journal",
+                &[] as Filters,
+                Some(directory.as_path()),
+                Some(file_name),
+            );
+            check(&shell, FileFor::InsertJournal(0), former);
+        }
+        // Create blank disk proposes disk.img in its folder until a path is typed.
+        for (typed, directory, file_name) in [
+            ("", "/machines", "disk.img"),
+            ("images/new.img", "/machines/images", "new.img"),
+            ("/elsewhere/new.img", "/elsewhere", "new.img"),
+        ] {
+            shell.blank_disk = Some(crate::media_dialog::BlankDisk {
+                directory: "/machines".into(),
+                output: typed.into(),
+                ..Default::default()
+            });
+            let former = (
+                Kind::Save,
+                "Create blank disk",
+                &[] as Filters,
+                Some(Path::new(directory)),
+                Some(file_name),
+            );
+            check(&shell, FileFor::BlankDisk, former);
+        }
+        assert!(shell.stop());
+    }
+
+    #[test]
+    fn browse_from_a_drive_picker_returns_at_once_and_the_machine_keeps_running() {
+        let ctx = egui::Context::default();
+        let temp = assembly::test_support::TempDir::new("file-dialog-browse");
+        let image = floppy_image(&temp, "extra.img");
+        let (mut shell, host) = file_dialog_shell();
+        shell.apply_picker(crate::media_picker::Outcome::Browse(0));
+        let asked = host.requests.borrow().clone();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].title, "Choose a floppy image");
+        assert!(shell.file_dialogs.is_open());
+        assert!(shell.insert_dialog.is_none(), "nothing is chosen yet");
+        assert_eq!(shell.status_message(), "Waiting for the file dialog…");
+        // The open file dialog is no shell dialog: frames keep coming and
+        // the machine keeps running.
+        assert!(!shell.has_dialog());
+        shell.tick(&ctx, false, std::time::Duration::from_millis(10));
+        assert!(!shell.modal_paused);
+        let presenter = shell.presenter.as_ref().unwrap();
+        assert!(
+            presenter.occluded_since.is_none(),
+            "no pause, unlike a shell dialog"
+        );
+        shell.poll_file_dialog(&ctx);
+        assert!(shell.file_dialogs.is_open(), "the user has not answered");
+        host.answer(Some(vec![image.clone()]));
+        shell.poll_file_dialog(&ctx);
+        assert!(!shell.file_dialogs.is_open());
+        assert_ne!(shell.status_message(), "Waiting for the file dialog…");
+        // The chosen file's own Insert floppy step, as before.
+        let draft = shell.insert_dialog.as_ref().unwrap();
+        assert_eq!(draft.unit, 0);
+        assert!(draft.browsed_only);
+        let entry = &draft.slot.entries[draft.selected.unwrap()];
+        assert_eq!(entry.medium.image, assembly::ImageSource::File(image));
+        assert!(shell.stop());
+    }
+
+    #[test]
+    fn a_second_file_dialog_is_refused_while_one_is_open() {
+        let ctx = egui::Context::default();
+        let temp = assembly::test_support::TempDir::new("file-dialog-busy");
+        let image = floppy_image(&temp, "extra.img");
+        let (mut shell, host) = file_dialog_shell();
+        shell.apply_picker(crate::media_picker::Outcome::Browse(0));
+        assert_eq!(shell.status_message(), "Waiting for the file dialog…");
+        shell.pick_media(crate::library_view::install_media::Pick::Files);
+        assert_eq!(
+            shell.status_message(),
+            "Choose installation images did not open: another file dialog was open"
+        );
+        // The source archive picker that Edit metadata… opens by itself once
+        // the package is read takes the same way, and says so too.
+        shell.image_library.firmware_source_pick =
+            Some(crate::library_view::firmware::SourceTarget::Edit);
+        let target = shell.image_library.firmware_source_pick.take().unwrap();
+        shell.pick_firmware_source(target);
+        assert_eq!(
+            shell.status_message(),
+            "Choose the source archive (zip or tar) did not open: another file dialog was open"
+        );
+        assert_eq!(
+            host.requests.borrow().len(),
+            1,
+            "only the first dialog opens"
+        );
+        host.answer(Some(vec![image]));
+        shell.poll_file_dialog(&ctx);
+        assert_eq!(shell.insert_dialog.as_ref().map(|d| d.unit), Some(0));
+        assert!(!shell.file_dialogs.refused());
+        // The next dialog opens once the first has answered.
+        shell.insert_dialog = None;
+        shell.pick_media(crate::library_view::install_media::Pick::Folder);
+        assert_eq!(host.requests.borrow().len(), 2);
+        assert_eq!(
+            host.requests.borrow()[1].title,
+            "Choose a folder of installation images"
+        );
+        assert!(shell.stop());
+    }
+
+    /// The frame's logic step, which runs before anything draws, takes the
+    /// answer: the shell needs no other call to receive it.
+    #[test]
+    fn the_frame_logic_delivers_the_answer_before_drawing() {
+        let ctx = egui::Context::default();
+        let temp = assembly::test_support::TempDir::new("file-dialog-frame");
+        let image = floppy_image(&temp, "extra.img");
+        let (mut shell, host) = file_dialog_shell();
+        let mut frame = eframe::Frame::_new_kittest();
+        shell.apply_picker(crate::media_picker::Outcome::Browse(0));
+        eframe::App::logic(&mut shell, &ctx, &mut frame);
+        assert!(shell.file_dialogs.is_open(), "the user has not answered");
+        host.answer(Some(vec![image.clone()]));
+        eframe::App::logic(&mut shell, &ctx, &mut frame);
+        assert!(!shell.file_dialogs.is_open());
+        let draft = shell.insert_dialog.as_ref().expect("the answer arrived");
+        assert!(draft.browsed_only);
+        assert_eq!(
+            draft.slot.entries[draft.selected.unwrap()].medium.image,
+            assembly::ImageSource::File(image)
+        );
+        assert!(shell.stop());
+    }
+
+    /// Files and library state the delivery rows share.
+    struct Delivery {
+        temp: assembly::test_support::TempDir,
+        image: std::path::PathBuf,
+        second: std::path::PathBuf,
+        library: crate::library_test_support::Fixture,
+        cache: image_store::summary::SummaryCache,
+    }
+
+    impl Delivery {
+        fn new() -> Self {
+            let temp = assembly::test_support::TempDir::new("file-dialog-delivery");
+            let library = crate::library_test_support::Fixture::new();
+            crate::library_view::firmware::tests::publish_open_package(&library);
+            let cache = crate::library_view::firmware::tests::warm(&library.store);
+            Self {
+                image: floppy_image(&temp, "extra.img"),
+                second: floppy_image(&temp, "second.img"),
+                temp,
+                library,
+                cache,
+            }
+        }
+
+        fn folder(&self) -> std::path::PathBuf {
+            self.temp.path().canonicalize().unwrap()
+        }
+
+        /// The image library on its synthetic worker, over the shared store.
+        fn library(&self, shell: &mut Shell) {
+            shell.image_library =
+                crate::library_view::LibraryView::synthetic(self.library.store.root().to_owned());
+        }
+
+        /// Edit metadata… open and read for the store's open package.
+        fn edit_package(&self, shell: &mut Shell) {
+            self.library(shell);
+            shell
+                .image_library
+                .select_first_package(&self.cache, &mut shell.selected);
+            shell.image_library.begin_firmware_edit(false);
+            crate::library_view::firmware::tests::poll_until(&mut shell.image_library, |v| {
+                v.firmware_edit_source().is_some()
+            });
+        }
+    }
+
+    fn insert_dialog_for(shell: &mut Shell, unit: u8) {
+        let slot = shell.floppy_slot(0).unwrap();
+        shell.insert_dialog = Some(crate::media_dialog::InsertDialog::new(unit, slot));
+    }
+
+    /// Drive A's Insert floppy dialog with the image selected and a
+    /// separate journal path typed.
+    fn journal_dialog(shell: &mut Shell, env: &Delivery) {
+        insert_dialog_for(shell, 0);
+        let draft = shell.insert_dialog.as_mut().unwrap();
+        let entry = crate::media_dialog::browse(&env.image, draft.slot.geometry).unwrap();
+        draft.add_browsed(entry);
+        draft.journal = true;
+        draft.journal_path = "typed.upfj".into();
+    }
+
+    fn has_image(shell: &Shell, image: &std::path::Path) -> bool {
+        shell.insert_dialog.as_ref().is_some_and(|draft| {
+            draft
+                .slot
+                .entries
+                .iter()
+                .any(|entry| entry.medium.image == assembly::ImageSource::File(image.to_path_buf()))
+        })
+    }
+
+    /// Who still receives a file dialog's answer: asker × what changed while
+    /// the dialog was open × answer → effect. Every row starts from a
+    /// running machine with drive A's catalogue and a scripted dialog; `ask`
+    /// opens the dialog the way its call site does.
+    #[test]
+    fn a_file_dialog_answer_reaches_only_an_asker_still_there() {
+        use crate::library_view::{firmware::SourceTarget, install_media::Pick};
+        type Step = fn(&mut Shell, &Delivery);
+        type Answer = fn(&Delivery) -> file_dialog::Answer;
+        type Effect = fn(&mut Shell, &Delivery, &str);
+        type Row = (&'static str, Step, Step, Answer, Effect);
+        fn unchanged(_: &mut Shell, _: &Delivery) {}
+        fn image(env: &Delivery) -> file_dialog::Answer {
+            Some(vec![env.image.clone()])
+        }
+        fn cancel(_: &Delivery) -> file_dialog::Answer {
+            None
+        }
+        fn folder(env: &Delivery) -> file_dialog::Answer {
+            Some(vec![env.folder()])
+        }
+        fn archive(env: &Delivery) -> file_dialog::Answer {
+            Some(vec![env.temp.path().join("source.zip")])
+        }
+        const MACHINE_CHANGED: &str =
+            "The chosen image was not inserted: the machine changed while the file dialog was open";
+        const SOURCE_DROPPED: &str =
+            "The chosen source archive was not used: Edit metadata closed or shows another package";
+        let rows: &[Row] = &[
+            (
+                "insert image, same drive",
+                |shell, _| {
+                    insert_dialog_for(shell, 0);
+                    shell.ask_file(FileFor::InsertImage(0));
+                },
+                unchanged,
+                image,
+                |shell, env, row| assert!(has_image(shell, &env.image), "{row}"),
+            ),
+            (
+                "insert image, dialog now for drive B",
+                |shell, _| {
+                    insert_dialog_for(shell, 0);
+                    shell.ask_file(FileFor::InsertImage(0));
+                },
+                |shell, _| insert_dialog_for(shell, 1),
+                image,
+                |shell, env, row| assert!(!has_image(shell, &env.image), "{row}"),
+            ),
+            (
+                "insert image, dialog closed",
+                |shell, _| {
+                    insert_dialog_for(shell, 0);
+                    shell.ask_file(FileFor::InsertImage(0));
+                },
+                |shell, _| shell.insert_dialog = None,
+                image,
+                |shell, _, row| {
+                    assert!(
+                        shell.insert_dialog.is_none() && shell.dialog.is_none(),
+                        "{row}"
+                    )
+                },
+            ),
+            (
+                "journal, same drive",
+                |shell, env| {
+                    journal_dialog(shell, env);
+                    shell.ask_file(FileFor::InsertJournal(0));
+                },
+                unchanged,
+                |env| Some(vec![env.temp.path().join("extra.upfj")]),
+                |shell, env, row| {
+                    let typed = &shell.insert_dialog.as_ref().unwrap().journal_path;
+                    assert_eq!(
+                        typed,
+                        &env.temp.path().join("extra.upfj").to_string_lossy(),
+                        "{row}"
+                    );
+                },
+            ),
+            (
+                "journal, dialog now for drive B",
+                |shell, env| {
+                    journal_dialog(shell, env);
+                    shell.ask_file(FileFor::InsertJournal(0));
+                },
+                |shell, _| insert_dialog_for(shell, 1),
+                |env| Some(vec![env.temp.path().join("extra.upfj")]),
+                |shell, _, row| {
+                    assert_eq!(
+                        shell.insert_dialog.as_ref().unwrap().journal_path,
+                        "",
+                        "{row}"
+                    )
+                },
+            ),
+            (
+                "journal, cancelled",
+                |shell, env| {
+                    journal_dialog(shell, env);
+                    shell.ask_file(FileFor::InsertJournal(0));
+                },
+                unchanged,
+                cancel,
+                |shell, _, row| {
+                    let typed = &shell.insert_dialog.as_ref().unwrap().journal_path;
+                    assert_eq!(typed, "typed.upfj", "{row}");
+                },
+            ),
+            (
+                "blank disk, open",
+                |shell, _| {
+                    shell.blank_disk = Some(Default::default());
+                    shell.ask_file(FileFor::BlankDisk);
+                },
+                unchanged,
+                |env| Some(vec![env.temp.path().join("new.img")]),
+                |shell, env, row| {
+                    let output = &shell.blank_disk.as_ref().unwrap().output;
+                    assert_eq!(
+                        output,
+                        &env.temp.path().join("new.img").to_string_lossy(),
+                        "{row}"
+                    );
+                },
+            ),
+            (
+                "ROM folders, open",
+                |shell, _| {
+                    shell.dialog = Some(("ROM folders", String::new()));
+                    shell.ask_file(FileFor::RomFolder);
+                },
+                unchanged,
+                folder,
+                |shell, env, row| {
+                    assert_eq!(shell.preferences_draft.rom_dirs, [env.folder()], "{row}")
+                },
+            ),
+            (
+                "ROM folders, closed",
+                |shell, _| {
+                    shell.dialog = Some(("ROM folders", String::new()));
+                    shell.ask_file(FileFor::RomFolder);
+                },
+                |shell, _| shell.dialog = None,
+                folder,
+                |shell, _, row| assert!(shell.preferences_draft.rom_dirs.is_empty(), "{row}"),
+            ),
+            (
+                "ROM folders, replaced by another dialog",
+                |shell, _| {
+                    shell.dialog = Some(("ROM folders", String::new()));
+                    shell.ask_file(FileFor::RomFolder);
+                },
+                |shell, _| shell.dialog = Some(("Missing firmware", String::new())),
+                folder,
+                |shell, _, row| assert!(shell.preferences_draft.rom_dirs.is_empty(), "{row}"),
+            ),
+            (
+                "ROM import, still allowed",
+                |shell, env| {
+                    assert!(shell.stop());
+                    env.library(shell);
+                    shell.command(Command::ImportFirmware, &egui::Context::default());
+                },
+                unchanged,
+                folder,
+                |shell, _, row| {
+                    assert!(shell.image_library.busy, "{row}");
+                    assert_eq!(
+                        shell.image_library.status.as_deref(),
+                        Some("Scanning ROM folder…"),
+                        "{row}"
+                    );
+                },
+            ),
+            (
+                "ROM import, library busy meanwhile",
+                |shell, env| {
+                    assert!(shell.stop());
+                    env.library(shell);
+                    shell.command(Command::ImportFirmware, &egui::Context::default());
+                },
+                |shell, _| shell.image_library.busy = true,
+                folder,
+                |shell, _, row| {
+                    assert_eq!(shell.image_library.status, None, "{row}");
+                    assert_eq!(
+                        shell.message,
+                        "ROM folder not imported: the image library cannot import now",
+                        "{row}"
+                    );
+                },
+            ),
+            (
+                "ROM import, machine running meanwhile",
+                |shell, env| {
+                    env.library(shell);
+                    shell.ask_file(FileFor::RomImport);
+                },
+                unchanged,
+                folder,
+                |shell, _, row| {
+                    assert!(!shell.image_library.busy, "{row}");
+                    assert_eq!(
+                        shell.message, "ROM folder not imported: stop the machine first",
+                        "{row}"
+                    );
+                },
+            ),
+            (
+                "installation media, every chosen file",
+                |shell, env| {
+                    env.library(shell);
+                    shell.image_library.begin_media_import();
+                    shell.pick_media(Pick::Files);
+                },
+                unchanged,
+                |env| Some(vec![env.image.clone(), env.second.clone()]),
+                |shell, env, row| {
+                    crate::library_view::firmware::tests::poll_until(
+                        &mut shell.image_library,
+                        |v| v.reviewed_media().is_some_and(|files| !files.is_empty()),
+                    );
+                    assert_eq!(
+                        shell.image_library.reviewed_media(),
+                        Some(vec![env.image.clone(), env.second.clone()]),
+                        "{row}"
+                    );
+                },
+            ),
+            (
+                "source archive, same package",
+                |shell, env| {
+                    env.edit_package(shell);
+                    shell.pick_firmware_source(SourceTarget::Edit);
+                },
+                unchanged,
+                archive,
+                |shell, env, row| {
+                    let source = env.temp.path().join("source.zip");
+                    assert_eq!(
+                        shell.image_library.firmware_edit_source(),
+                        Some(Some(source.as_path())),
+                        "{row}"
+                    );
+                },
+            ),
+            (
+                "source archive, asked for another package",
+                |shell, env| {
+                    env.edit_package(shell);
+                    let other = FileFor::FirmwareSource(SourceTarget::Edit, Some("other:1".into()));
+                    shell.ask_file(other);
+                },
+                unchanged,
+                archive,
+                |shell, _, row| {
+                    assert_eq!(
+                        shell.image_library.firmware_edit_source(),
+                        Some(None),
+                        "{row}"
+                    );
+                    assert_eq!(shell.message, SOURCE_DROPPED, "{row}");
+                },
+            ),
+            (
+                "source archive, Edit metadata closed",
+                |shell, env| {
+                    env.edit_package(shell);
+                    shell.pick_firmware_source(SourceTarget::Edit);
+                },
+                |shell, _| shell.image_library.close_dialogs(),
+                archive,
+                |shell, _, row| assert_eq!(shell.message, SOURCE_DROPPED, "{row}"),
+            ),
+            (
+                "drive image, same session",
+                |shell, _| shell.apply_picker(crate::media_picker::Outcome::Browse(0)),
+                unchanged,
+                image,
+                |shell, env, row| {
+                    assert!(has_image(shell, &env.image), "{row}");
+                    assert!(shell.insert_dialog.as_ref().unwrap().browsed_only, "{row}");
+                },
+            ),
+            (
+                "drive image, machine stopped meanwhile",
+                |shell, _| shell.apply_picker(crate::media_picker::Outcome::Browse(0)),
+                |shell, _| assert!(shell.stop()),
+                image,
+                |shell, _, row| {
+                    assert!(shell.insert_dialog.is_none(), "{row}");
+                    assert_eq!(shell.message, MACHINE_CHANGED, "{row}");
+                },
+            ),
+            (
+                "drive image, another session",
+                |shell, _| shell.apply_picker(crate::media_picker::Outcome::Browse(0)),
+                |shell, _| shell.session = shell.session.wrapping_add(1),
+                image,
+                |shell, _, row| {
+                    assert!(shell.insert_dialog.is_none(), "{row}");
+                    assert_eq!(shell.message, MACHINE_CHANGED, "{row}");
+                },
+            ),
+            (
+                "drive image, another dialog open",
+                |shell, _| shell.apply_picker(crate::media_picker::Outcome::Browse(0)),
+                |shell, _| shell.dialog = Some(("About unemupc", String::new())),
+                image,
+                |shell, _, row| {
+                    assert!(shell.insert_dialog.is_none(), "{row}");
+                    assert_eq!(
+                        shell.dialog.as_ref().map(|(title, _)| *title),
+                        Some("About unemupc"),
+                        "{row}"
+                    );
+                    assert_eq!(
+                        shell.message, "The chosen image was not inserted: another dialog is open",
+                        "{row}"
+                    );
+                },
+            ),
+            (
+                "drive image, cancelled",
+                |shell, _| shell.apply_picker(crate::media_picker::Outcome::Browse(0)),
+                unchanged,
+                cancel,
+                |shell, _, row| {
+                    assert!(shell.insert_dialog.is_none(), "{row}");
+                    assert_eq!(shell.message, "", "{row}");
+                },
+            ),
+        ];
+        let env = Delivery::new();
+        let ctx = egui::Context::default();
+        for (row, ask, meanwhile, answer, effect) in rows {
+            let (mut shell, host) = file_dialog_shell();
+            ask(&mut shell, &env);
+            assert!(shell.file_dialogs.is_open(), "{row}: no dialog opened");
+            meanwhile(&mut shell, &env);
+            host.answer(answer(&env));
+            shell.poll_file_dialog(&ctx);
+            assert!(!shell.file_dialogs.is_open(), "{row}");
+            effect(&mut shell, &env, row);
+            shell.image_library.shutdown();
+            if shell.presenter.is_some() {
+                assert!(shell.stop(), "{row}");
+            }
+        }
     }
 
     #[test]

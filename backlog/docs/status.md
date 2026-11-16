@@ -5,6 +5,37 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — File dialogs no longer abort the app on macOS:** with a
+  machine running, opening a file dialog ended the process. Each dialog
+  was synchronous: it ran its own modal event loop inside the frame that
+  opened it, that loop dispatched winit's queued events while winit was
+  still handling the frame, and winit aborted. A running machine wakes the
+  event loop all the time, which is likely why it happened nearly every
+  time with one running. Every file dialog of the desktop app (the eight
+  Browse…, Save as… and Import pickers) now goes through one helper that
+  starts rfd's asynchronous dialog and returns at once: a sheet on the
+  window on macOS, the XDG desktop portal on Linux as before. The shell
+  polls it each frame without blocking, and the chosen path reaches the
+  place that asked on a later frame. Insert floppy's Browse… and Save as…
+  answer only while that dialog is open for the same drive; Create blank
+  disk and ROM folders only while open. A media picker's Browse for an
+  image file… inserts only into the same running session or stopped
+  machine and only while no other dialog is open; a source archive for
+  Edit metadata… goes only to the same package; Import ROM folder… starts
+  only while the import is still allowed. Those last three say in the
+  status bar why a chosen path was not used. Import installation media…
+  and a firmware import's source archive ignore answers once their
+  dialog has closed. While a file dialog is open the status bar says
+  "Waiting for the file dialog…", a running machine keeps running, and a
+  second file dialog is refused with a status message naming it, also
+  when Edit metadata… opens its source archive picker by itself. Titles,
+  filters, start folders and proposed file names are unchanged. Headless
+  tests pin them per call site in a table, cover each delivery rule in a
+  second table, drive the answer through the frame's logic step, and
+  check the helper's request, answer, cancel and refusal steps with a
+  scripted dialog. The real dialog cannot run headless and still needs a
+  check on macOS with a running machine. The app shows no message boxes,
+  so no other modal path was affected.
 - **2026-11-16 — Disk layers follows its approved mock-up:** the dialog
   is one sunken tree in the code font, inside the classic bevel or the
   modern 1 px outline the library's panes draw. Each fixed disk goes by

@@ -1851,6 +1851,16 @@ pub(crate) mod tests {
                 .clone();
             self.select_media(&row, selected_file);
         }
+        /// The disk files the Import installation media… review lists once
+        /// the worker has listed the last pick; `None` while it lists or with
+        /// the dialog closed.
+        pub(crate) fn reviewed_media(&self) -> Option<Vec<PathBuf>> {
+            let dialog = self.media_import.as_ref()?;
+            dialog
+                .waiting
+                .is_none()
+                .then(|| dialog.disks.iter().map(|disk| disk.path.clone()).collect())
+        }
     }
 
     #[test]

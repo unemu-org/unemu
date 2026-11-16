@@ -883,6 +883,13 @@ impl LibraryView {
         ));
         self.send(super::Request::OpenFirmwareEdit(row.image.reference));
     }
+    /// The package Edit metadata… is open for, by tag. A source archive
+    /// picked for one package must not reach a dialog reopened for another.
+    pub fn firmware_edit_tag(&self) -> Option<&str> {
+        self.firmware_edit
+            .as_ref()
+            .map(|dialog| dialog.tag.as_str())
+    }
     /// The host picker's answer for a source archive.
     pub fn firmware_source_picked(&mut self, target: SourceTarget, path: Option<PathBuf>) {
         let Some(path) = path else {
@@ -1896,6 +1903,12 @@ pub(crate) mod tests {
             self.snapshot = Arc::new(snapshot(cache, &self.query));
             let row = self.snapshot.firmware_rows[0].clone();
             self.select_firmware(&row, selected_file);
+        }
+        /// The source archive Edit metadata… states, once the package is
+        /// read; `None` until then or with the dialog closed.
+        pub(crate) fn firmware_edit_source(&self) -> Option<Option<&Path>> {
+            let draft = self.firmware_edit.as_ref()?.draft.as_ref()?;
+            Some(draft.fields.source.as_deref())
         }
     }
     /// A synthetic machine plus a described two-chip package with a document
