@@ -6,8 +6,9 @@
 /// the full licence texts are.
 pub fn licence_notice() -> String {
     format!(
-        "licence: AGPL-3.0-or-later\nsource: {}\n{}",
+        "licence: AGPL-3.0-or-later\nsource: {}\n{}{}",
         source_pointer(option_env!("UNEMUPC_SOURCE_REV")),
+        commit_line(option_env!("UNEMUPC_SOURCE_COMMIT")),
         concat!(
             "full licence texts: LICENSE, and THIRD-PARTY-LICENSES.md for the components\n",
             "and Rust crates inside, both shipped with the binaries; in the source,\n",
@@ -24,6 +25,16 @@ fn source_pointer(revision: Option<&str>) -> String {
     match revision.filter(|revision| !revision.is_empty()) {
         Some(revision) => format!("{repository}/tree/{revision}"),
         None => format!("{repository}, version {}", env!("CARGO_PKG_VERSION")),
+    }
+}
+
+/// The full commit a release build was made from, from `UNEMUPC_SOURCE_COMMIT`
+/// at compile time: a tag can be moved, a commit cannot, so a pipeline that
+/// pins this binary can compare the commit. Empty for other builds.
+fn commit_line(commit: Option<&str>) -> String {
+    match commit.filter(|commit| !commit.is_empty()) {
+        Some(commit) => format!("commit: {commit}\n"),
+        None => String::new(),
     }
 }
 
@@ -54,5 +65,13 @@ mod tests {
         assert_eq!(source_pointer(None), unnamed);
         assert_eq!(source_pointer(Some("")), unnamed);
         assert!(licence_notice().contains("source: https://github.com/unemu-org/unemupc"));
+    }
+
+    #[test]
+    fn a_release_build_names_its_full_commit() {
+        let commit = "55d8a8c0123456789abcdef0123456789abcdef0";
+        assert_eq!(commit_line(Some(commit)), format!("commit: {commit}\n"));
+        assert_eq!(commit_line(None), "");
+        assert_eq!(commit_line(Some("")), "");
     }
 }

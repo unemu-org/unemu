@@ -119,6 +119,9 @@ jobs:
           # The unit-separated form keeps each flag whole whatever the paths hold.
           CARGO_ENCODED_RUSTFLAGS=$(IFS=$'\x1f'; printf '%s' "${flags[*]}")
           export CARGO_ENCODED_RUSTFLAGS
+          # --version names the full commit too: a tag can move, a commit cannot.
+          UNEMUPC_SOURCE_COMMIT=$(git rev-parse HEAD)
+          export UNEMUPC_SOURCE_COMMIT
           export CFLAGS="-ffile-prefix-map=$GITHUB_WORKSPACE=/build/unemupc -ffile-prefix-map=$cargo_home/registry/src=/cargo/registry/src -ffile-prefix-map=$cargo_home/git/checkouts=/cargo/git/checkouts"
           cargo build --locked --release --target "$TARGET" \
             -p cli -p window --bin upcli --bin unemupc
