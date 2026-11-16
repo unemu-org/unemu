@@ -106,8 +106,8 @@ The forces on the design:
 | SeaBIOS 1.17.0 (2025-06-10), QEMU `isapc` config (128 KiB, `PCIBIOS=n`, `USB=n`, `ACPI=n`) | LGPL-3.0-only | **386** (32-bit flat POST) | ISA-only 486-class PC (QEMU `isapc`) | Yes (READ: §3.6), including E801h/E820h; RAM size from CMOS without fw_cfg | Built-in ATA PIO, floppy | SeaVGABIOS through fw_cfg, or SERCON configured by fw_cfg (§3.6) | ASSUMED yes | gcc + binutils | [seabios.org](https://www.seabios.org/), QEMU `roms/config.seabios-128k` |
 | SeaBIOS 1.17.0, QEMU `pc` config | LGPL-3.0-only | 386 | i440FX + PIIX3/PIIX4, Q35 | Yes, including E801h/E820h; also PCI BIOS and ACPI | ATA, AHCI, USB, … | SeaVGABIOS: std VGA, Cirrus, Bochs VBE | ASSUMED yes | gcc | as above |
 | SeaVGABIOS / LGPL VGABIOS (video option ROMs) | LGPL-3.0 / LGPL-2.1 | ASSUMED 386 | Video option ROM | — | — | VGA; VBE with Bochs VBE | — | gcc / bcc | SeaBIOS `vgasrc/`, Bochs |
-| unemu-at-bios, the unemu fork of Kiselev `8088_bios` (`v1.0.2-unemu.3`, `MACHINE_UNEMU_AT`) | GPL-3.0-or-later | **286** (block move and memory sizing in protected mode) | IBM 5170-class: 2×8259, **two** 8237s, 8042, MC146818 | **Yes**: INT 15h 87h, 88h; CMOS shutdown-byte resume (04h, 05h, 09h, 0Ah); extended memory measured into CMOS 30h–31h, and the memory found above 1 MiB cleared on every POST; A20 through the 8042, off after POST; IBM CMOS checks (161–164) | None; through an option ROM (XUB) as Kiselev | As Kiselev; display switch read with the IBM polarity | **Yes** (MEASURED, goldens) | NASM via Nix | `unemu-org/unemu-at-bios` on this project's forge; `vendor/unemu-at-bios/README.md` |
-| LGPL VGABIOS, unemu fork `v0.8a-unemu.3` (std build) | LGPL-2.1-or-later | **286** (fork's 286 check) | Video option ROM, 32 KiB at C0000h | — | — | Standard VGA, no VBE | **Yes** with the Kiselev and the unemu AT BIOS (MEASURED, goldens; §Video ROM placement) | bcc/as86 (dev86) via Nix | `unemu-org/vgabios` on this project's forge; `vendor/vgabios/README.md` |
+| unemu-at-bios, the unemu fork of Kiselev `8088_bios` (`v1.0.2-unemu.3`, `MACHINE_UNEMU_AT`) | GPL-3.0-or-later | **286** (block move and memory sizing in protected mode) | IBM 5170-class: 2×8259, **two** 8237s, 8042, MC146818 | **Yes**: INT 15h 87h, 88h; CMOS shutdown-byte resume (04h, 05h, 09h, 0Ah); extended memory measured into CMOS 30h–31h, and the memory found above 1 MiB cleared on every POST; A20 through the 8042, off after POST; IBM CMOS checks (161–164) | None; through an option ROM (XUB) as Kiselev | As Kiselev; display switch read with the IBM polarity | **Yes** (MEASURED, goldens) | NASM via Nix | <https://github.com/unemu-org/at-bios> (renamed from `unemu-at-bios`); `vendor/unemu-at-bios/README.md` |
+| LGPL VGABIOS, unemu fork `v0.9d-unemu.1` (std build, upstream 0.9d; teletype BEL sounds the speaker) | LGPL-2.1-or-later | **286** (fork's 286 check) | Video option ROM, 32 KiB at C0000h | — | — | Standard VGA, no VBE | **Yes** with the unemu AT BIOS (MEASURED, goldens; §Video ROM placement); the 0.8a-based ROM was also measured with the Kiselev AT-reset BIOS | bcc/as86 (dev86) via Nix | <https://github.com/unemu-org/vgabios>; `vendor/vgabios/README.md` |
 | fysnet i440fx BIOS 1.0 (2025-02-10) | **Freeware, not open source** | — | i440FX / 440BX | — | — | — | — | NBASM | [fysnet.github.io/i440fx](https://fysnet.github.io/i440fx); excluded on license grounds |
 | IBM 5150/5160/5170 ROMs; AMI/Award/Phoenix board BIOSes | Proprietary | per board | per board | per board | per board | per board | per board | — | **User-supplied only.** Hashes are listed, the images are never shipped |
 
@@ -244,7 +244,8 @@ and retains 386-only INT 15h AH=87h and disk paths. Reject it for `ibm-5170`.
 8042 A20, protected-mode services, CMOS and boot qualification; see [deferred work](../deferred.md#open-at-class-80286-system-bios).
 
 **Outcome (2026-11-15): unemu-at-bios.** Instead of a port, the project forked
-the Kiselev BIOS (`unemu-org/unemu-at-bios`, GPL-3.0-or-later; Sergey
+the Kiselev BIOS (<https://github.com/unemu-org/at-bios>, renamed from
+`unemu-at-bios`, a GitHub fork of `skiselev/8088_bios`; GPL-3.0-or-later; Sergey
 Kiselev's history kept, the unemu changes behind defines) and added a
 `MACHINE_UNEMU_AT` configuration for this board. Release `v1.0.2-unemu.3`
 (revision `4548c176`, ROM SHA-256 `6938dc8b…ef2442`, catalogue id
@@ -1104,33 +1105,51 @@ Only this container is listed. A plain 24 KiB representation needs its own
 measured SHA-256 and a second catalogue entry with size 24576 and offset zero;
 the full-file hash cannot identify a cropped dump.
 
-`FirmwareEntry::VGABIOS_0_8A_UNEMU_1_STD` (`vgabios-0.8a-unemu.1-std`) is the
-open counterpart: the unemu fork of the LGPL VGABIOS 0.8a, std build, release
-`v0.8a-unemu.3` (source revision `72bf5d988f2188a0118416d88a8c90e58c648b06`),
-LGPL-2.1-or-later. The id keeps the name of `v0.8a-unemu.1`, the release that
-first built these bytes; `v0.8a-unemu.2` and `v0.8a-unemu.3` build the same
-image.
-`vendor/vgabios/fetch.sh` builds it with Nix and pins the raw 32 KiB image,
-SHA-256
-`7570ef9c66fd386450bb35fd2b6c91aba6f8ec69a565a1d7747e6e6716ea5389`, header
+`FirmwareEntry::VGABIOS_0_9D_UNEMU_1_STD` (`vgabios-0.9d-unemu.1-std`) is the
+open counterpart: the unemu fork of the LGPL VGABIOS, based on upstream 0.9d,
+std build, release `v0.9d-unemu.1` (source revision
+`40522278d5b703e637271696783721f4b5ea541f`, <https://github.com/unemu-org/vgabios>),
+LGPL-2.1-or-later. Unlike upstream, its teletype output (INT 10h AH=0Eh and
+AH=13h) sounds the speaker for BEL (07h), as the IBM PC/AT BIOS does: PIT
+counter 2 in mode 3 with divisor 1331 (about 896 Hz) for 31/64 s, timed by
+counting the port 61h bit 4 refresh toggles, with interrupts enabled during
+the tone and port 61h and IF restored. `vendor/vgabios/fetch.sh` builds it
+with Nix and pins the raw 32 KiB image, SHA-256
+`b867f3846f44be63b1b10febc1ce79c9435f5d1233c67a0b63164ab48359a582`, header
 `55 AA 40`, byte sum zero. It has no container offset, fills C0000h–C7FFFh and
 requires the register-level `vga`. `machines/at-games-open.toml` maps it with
 the open AT BIOS (unemu-at-bios, §2.4; the Kiselev AT-reset BIOS before
 2026-11-15) and XTIDE at C8000h. The entry is **Tested**:
-**MEASURED at CPU `fe240a56ac2040e3deaebb2537e642137ee02c71`**, Kiselev POST
-calls the ROM, prints its sign-on and reports "EGA/VGA (Video BIOS Present)",
-and FreeDOS reaches `A:\>`; the fork's INT 10h probe floppy reports all 32
-checks `ok` and `fails:0000`; a synthetic boot sector sets mode 0Dh through
-INT 10h, then panning (AX=1000h), page 1 (AH=05h) and a CRTC byte start, and
-each scanned-out frame matches a decode of planar memory pixel for pixel; it
-then sets mode 13h, and that frame matches the chain-4 byte stream, one BIOS
-pixel and the default 256-colour DAC palette with one AX=1010h entry.
+**MEASURED at CPU `060d446a883a9b2fc94b3ef91258cb4e6e98d916`** (2026-11-16), the
+open AT BIOS POST calls the ROM, prints its sign-on ("Bochs VGABios
+0.9d-unemu") and reports "EGA/VGA (Video BIOS Present)", and FreeDOS reaches
+`A:\>`; the fork's INT 10h probe floppy reports all 33 checks `ok`, `tty.bel`
+among them, and `fails:0000`; the headless speaker trace sees one tone from
+the video BIOS (C000h) for that BEL, mode 3, divisor 1331, ending after
+577,819 PIT clocks (0.484267 s; 31/64 s is 0.484375 s); a synthetic boot
+sector sets mode 0Dh through INT 10h, then panning (AX=1000h), page 1
+(AH=05h) and a CRTC byte start, and each scanned-out frame matches a decode of
+planar memory pixel for pixel; it then sets mode 13h, and that frame matches
+the chain-4 byte stream, one BIOS pixel and the default 256-colour DAC palette
+with one AX=1010h entry.
+
+`FirmwareEntry::VGABIOS_0_8A_UNEMU_1_STD` (`vgabios-0.8a-unemu.1-std`, the
+fork's 0.8a-based ROM, `7570ef9c…5389`, last built by release `v0.8a-unemu.3`)
+stays catalogued as **Superseded**, superseded by 0.9d-unemu.1: teletype BEL
+sounds the speaker. It keeps the board contract and the source archive pin of
+its own release (`vgabios-0.8a-unemu.3-src.tar`), so machines and images made
+with it still start. Its `fetch` names `vendor/vgabios/fetch.sh` at revision
+`4f73f3d06e120b42a93bbbc0f857f3fb9a1cb0ea` of this repository, the last one
+that pinned `v0.8a-unemu.3`; that checkout rebuilds its ROM and archive.
+New machine… lists it under its package name but never chooses it by
+default, and the capabilities and settings sheet labels it "(superseded)".
 
 | Open pinned result (`at_games.rs`, `open_vga_golden.rs`) | Value |
 |---|---|
-| FreeDOS prompt | `RetiredCapReached`, `15,241,264` retired, text SHA-256 `41ff081e1227af8f1a053df1b627b734de4032963cc0357c488cbbe67e01469e` |
-| INT 10h probe | `Halted`, `0000:880A`, `10,240,119` retired (`10,239,957` with the Kiselev AT-reset BIOS), text SHA-256 `567884f1a7356b91a49dc8be47861cd093db45402007cd48a0e5656788ff20ca` |
-| Mode 0Dh scroll, then mode 13h | `Halted`, `10,730,617` retired (`10,730,615` with the Kiselev AT-reset BIOS); five frame SHA-256 values pinned in the test, unchanged |
+| FreeDOS prompt | `RetiredCapReached`, `15,216,991` retired, text SHA-256 `41ff081e1227af8f1a053df1b627b734de4032963cc0357c488cbbe67e01469e` |
+| INT 10h probe | `Halted`, `0000:88A9`, `10,524,099` retired (`10,240,139` with the 0.8a-based ROM and its probe), text SHA-256 `df1f232b9cd4b8be1c849998ee11b844576611b05f9282a2094bbc70cb8a86d8` |
+| Teletype BEL | one speaker start at C000:5866, mode 3, divisor 1331; off at C000:588F after 577,819 PIT clocks, within 1% of 31/64 s |
+| Mode 0Dh scroll, then mode 13h | `Halted`, `10,688,267` retired (`10,730,175` with the 0.8a-based ROM); five frame SHA-256 values pinned in the test, unchanged |
 
 The synthetic CLI POST test loads an offset-2000h container through the machine
 file, proves FAR CALL/RETF with POST 10h/11h/20h, pins a RAM marker and checks

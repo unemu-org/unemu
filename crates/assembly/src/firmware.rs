@@ -166,7 +166,11 @@ impl std::fmt::Display for FirmwareCapability {
 pub enum FirmwareDistribution {
     /// Rebuilt by a repository fixture script; no ROM bytes are distributed.
     Open {
-        /// Repository-relative fetch script.
+        /// Repository-relative fetch script. A superseded entry names it as
+        /// `<script> at unemupc98 <revision>`: the last revision of this
+        /// repository whose script pinned the entry's release. Check out that
+        /// revision and run the script there to rebuild its ROM and source
+        /// archive; the current script builds a later release.
         fetch: &'static str,
         /// SPDX licence of the upstream firmware.
         license: &'static str,
@@ -189,11 +193,14 @@ pub enum FirmwareDistribution {
 const KISELEV_SOURCE_ARCHIVE: &str =
     "ced63707661747fc045d1e6e565a5cc9be73f95a9c944accedd77b19467fb5f9";
 const UNEMU_AT_BIOS_SOURCE_ARCHIVE: &str =
-    "59d3d92178d8839b0e38ce3d878a99e947ae7f6f1275ce0bcdb032f84e199d67";
+    "b928cee48fb7be8bf3da0808ed31a2ad283ae4d57e73241e59a61b1ddde932ee";
 /// `unemu-at-bios-1.0.2-unemu.2-src.tar`, which that release's fetch script built.
 const UNEMU_AT_BIOS_1_0_2_UNEMU_2_SOURCE_ARCHIVE: &str =
     "6c7aaace8c2bc35661ced2596bcad2fd26e77778985aab45742cee560e0fa47e";
 const VGABIOS_SOURCE_ARCHIVE: &str =
+    "0f0890b6fc95156177c37725329ca8111b889abce33de73aeeaf2fc99ce86c48";
+/// `vgabios-0.8a-unemu.3-src.tar`, which that release's fetch script built.
+const VGABIOS_0_8A_UNEMU_3_SOURCE_ARCHIVE: &str =
     "2d93fcaaa87ac0f310af097ef184d94932a0c9cb255b9e8f991cee511a1cf8eb";
 const XTIDE_SOURCE_ARCHIVE: &str =
     "7bbd5de269f4e1d52ae30b52531fcda842709b9ae49166ac249f9b37187b91e8";
@@ -282,18 +289,22 @@ impl FirmwareEntry {
         status: FirmwareStatus::Tested,
     };
 
-    /// Open standard-VGA video BIOS: the unemu fork of the LGPL VGABIOS 0.8a,
+    /// Open standard-VGA video BIOS: the unemu fork of the LGPL VGABIOS 0.9d,
     /// built for ISA VGA with 80286 instructions only (no VBE or PCI header).
     ///
     /// IBM VGA/XGA Technical Reference, Video BIOS: INT 10h services for the
     /// register-level card. IBM Personal Computer AT Technical Reference,
     /// "Adapters with System-Accessible ROM Modules": the raw 32 KiB image
     /// starts with 55AAh and length byte 40h and fills the whole C0000h–C7FFFh
-    /// video-ROM window. See `vendor/vgabios/README.md` for the release pin.
-    pub const VGABIOS_0_8A_UNEMU_1_STD: Self = Self {
-        id: "vgabios-0.8a-unemu.1-std",
+    /// video-ROM window. Unlike upstream, teletype output (AH=0Eh and AH=13h)
+    /// sounds the speaker for BEL (07h) as the IBM PC/AT BIOS does: PIT
+    /// counter 2 in mode 3 with divisor 1331 for about 31/64 s (System Board,
+    /// Speaker; Intel 8254 datasheet, Mode 3). See `vendor/vgabios/README.md`
+    /// for the release pin.
+    pub const VGABIOS_0_9D_UNEMU_1_STD: Self = Self {
+        id: "vgabios-0.9d-unemu.1-std",
         kind: FirmwareKind::VideoBios,
-        sha256: "7570ef9c66fd386450bb35fd2b6c91aba6f8ec69a565a1d7747e6e6716ea5389",
+        sha256: "b867f3846f44be63b1b10febc1ce79c9435f5d1233c67a0b63164ab48359a582",
         size: 32768,
         base: FirmwareBase::Suggested(0xC0000),
         scan_window: None,
@@ -307,11 +318,30 @@ impl FirmwareEntry {
         distribution: FirmwareDistribution::Open {
             fetch: "vendor/vgabios/fetch.sh",
             license: "LGPL-2.1-or-later",
-            provenance: "unemu-org/vgabios v0.8a-unemu.3, 72bf5d988f2188a0118416d88a8c90e58c648b06 (std build)",
+            provenance: "unemu-org/vgabios v0.9d-unemu.1, 40522278d5b703e637271696783721f4b5ea541f (std build)",
             source_archive_sha256: Some(VGABIOS_SOURCE_ARCHIVE),
         },
         parts: &[],
         status: FirmwareStatus::Tested,
+    };
+
+    /// The open VGA BIOS before [`Self::VGABIOS_0_9D_UNEMU_1_STD`], based on
+    /// the LGPL VGABIOS 0.8a, with the same board contract; its teletype
+    /// output ignored BEL. Superseded by 0.9d-unemu.1: teletype BEL sounds
+    /// the speaker. Kept so machines made before it still start. Release
+    /// 0.8a-unemu.1 first built these bytes; 0.8a-unemu.3, whose source
+    /// archive it pins, builds them unchanged.
+    pub const VGABIOS_0_8A_UNEMU_1_STD: Self = Self {
+        id: "vgabios-0.8a-unemu.1-std",
+        sha256: "7570ef9c66fd386450bb35fd2b6c91aba6f8ec69a565a1d7747e6e6716ea5389",
+        distribution: FirmwareDistribution::Open {
+            fetch: "vendor/vgabios/fetch.sh at unemupc98 4f73f3d06e120b42a93bbbc0f857f3fb9a1cb0ea",
+            license: "LGPL-2.1-or-later",
+            provenance: "unemu-org/vgabios v0.8a-unemu.3, 72bf5d988f2188a0118416d88a8c90e58c648b06 (std build)",
+            source_archive_sha256: Some(VGABIOS_0_8A_UNEMU_3_SOURCE_ARCHIVE),
+        },
+        status: FirmwareStatus::Superseded,
+        ..Self::VGABIOS_0_9D_UNEMU_1_STD
     };
 
     /// XTIDE Universal BIOS XT+ build configured for primary 16-bit ATA.
@@ -437,7 +467,7 @@ pub const UNEMU_AT_BIOS_1_0_2_UNEMU_3: FirmwareEntry = FirmwareEntry {
     distribution: FirmwareDistribution::Open {
         fetch: "vendor/unemu-at-bios/fetch.sh",
         license: "GPL-3.0-or-later",
-        provenance: "unemu-org/unemu-at-bios v1.0.2-unemu.3, 4548c1769aed67323979d5fa8eff52eed266b64b (unemu-at build); fork of skiselev/8088_bios 1.0.2 by Sergey Kiselev",
+        provenance: "unemu-org/at-bios v1.0.2-unemu.3, 4548c1769aed67323979d5fa8eff52eed266b64b (unemu-at build); fork of skiselev/8088_bios 1.0.2 by Sergey Kiselev",
         source_archive_sha256: Some(UNEMU_AT_BIOS_SOURCE_ARCHIVE),
     },
     status: FirmwareStatus::Tested,
@@ -452,9 +482,9 @@ pub const UNEMU_AT_BIOS_1_0_2_UNEMU_2: FirmwareEntry = FirmwareEntry {
     id: "unemu-at-bios-1.0.2-unemu.2",
     sha256: "f8ecd4a2ad4906eb94a7595ede755019f545f40111725819eeb80e423adc8db6",
     distribution: FirmwareDistribution::Open {
-        fetch: "vendor/unemu-at-bios/fetch.sh",
+        fetch: "vendor/unemu-at-bios/fetch.sh at unemupc98 bcb375e6410b18266bd5f99533624b768d067867",
         license: "GPL-3.0-or-later",
-        provenance: "unemu-org/unemu-at-bios v1.0.2-unemu.2, a2cf362d05ee6cf78ef03cd3cc383ba3a19c40bd (unemu-at build); fork of skiselev/8088_bios 1.0.2 by Sergey Kiselev",
+        provenance: "unemu-org/at-bios v1.0.2-unemu.2, a2cf362d05ee6cf78ef03cd3cc383ba3a19c40bd (unemu-at build); fork of skiselev/8088_bios 1.0.2 by Sergey Kiselev",
         source_archive_sha256: Some(UNEMU_AT_BIOS_1_0_2_UNEMU_2_SOURCE_ARCHIVE),
     },
     status: FirmwareStatus::Superseded,
@@ -1395,7 +1425,7 @@ mod tests {
     use super::*;
     use crate::{assemble, assemble_with_options, AssemblyError, ImageSource};
 
-    const KNOWN: &str = "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.3 (open, vendor/unemu-at-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.2 (open, vendor/unemu-at-bios/fetch.sh), ibm-5170-bios-1984-01-10 (user-supplied: U27 6181028 even, U47 6181029 odd or U17 6181024 even@0, U37 6181026 odd@0, U27 6181025 even@32768, U47 6181027 odd@32768; see vendor/user-roms/README.md), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; see vendor/user-roms/README.md), ibm-5170-bios-1985-11-15 (user-supplied: U27 61X9266 even, U47 61X9265 odd; see vendor/user-roms/README.md), landmark-rom-post-at-1.2.0 (user-supplied: U27 27256 even, U47 27256 odd; see vendor/user-roms/README.md)";
+    const KNOWN: &str = "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.3 (open, vendor/unemu-at-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.2 (open, vendor/unemu-at-bios/fetch.sh at unemupc98 bcb375e6410b18266bd5f99533624b768d067867), ibm-5170-bios-1984-01-10 (user-supplied: U27 6181028 even, U47 6181029 odd or U17 6181024 even@0, U37 6181026 odd@0, U27 6181025 even@32768, U47 6181027 odd@32768; see vendor/user-roms/README.md), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; see vendor/user-roms/README.md), ibm-5170-bios-1985-11-15 (user-supplied: U27 61X9266 even, U47 61X9265 odd; see vendor/user-roms/README.md), landmark-rom-post-at-1.2.0 (user-supplied: U27 27256 even, U47 27256 odd; see vendor/user-roms/README.md)";
 
     fn config() -> MachineConfig {
         crate::bios(vec![0; 32768], Some(vec![0; 1_474_560]))
@@ -1837,8 +1867,8 @@ mod tests {
 
     #[test]
     fn open_vga_catalogue_entry_matches_recipe_and_fixture() {
-        let entry = FirmwareEntry::VGABIOS_0_8A_UNEMU_1_STD;
-        assert_eq!(entry.id, "vgabios-0.8a-unemu.1-std");
+        let entry = FirmwareEntry::VGABIOS_0_9D_UNEMU_1_STD;
+        assert_eq!(entry.id, "vgabios-0.9d-unemu.1-std");
         assert_eq!(entry.kind, FirmwareKind::VideoBios);
         assert_eq!(entry.size, 32768);
         assert_eq!(entry.base, FirmwareBase::Suggested(0xC0000));
@@ -2041,10 +2071,22 @@ mod tests {
         ]
     }
 
+    /// `<base>-unemu.<n>` at the start of `text`, as `(base, n)`.
+    fn unemu_release(text: &str) -> Option<(&str, u32)> {
+        let at = text.find("-unemu.")?;
+        let number = &text[at + "-unemu.".len()..];
+        let end = number
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(number.len());
+        Some((&text[..at], number[..end].parse().ok()?))
+    }
+
     /// Every open entry the fetch script builds pins that script's source
-    /// archive. A superseded entry pins the archive of its own release
-    /// instead: a well-formed hash other than the script's, with a provenance
-    /// that names the release its id carries.
+    /// archive. A superseded entry names that script at the last revision of
+    /// this repository that pinned its release, and pins the archive of that
+    /// release: a well-formed hash other than the current script's. The
+    /// release tag its provenance names is the release in its id, or a later
+    /// release of the same upstream base that built the same ROM bytes.
     fn source_archive_pin_problems(
         catalogue: &[FirmwareEntry],
         scripts: &[(&str, String)],
@@ -2060,31 +2102,49 @@ mod tests {
             else {
                 continue;
             };
-            let Some((_, expected)) = scripts.iter().find(|(script, _)| *script == fetch) else {
+            let (script, revision) = match fetch.split_once(" at unemupc98 ") {
+                Some((script, revision)) => (script, Some(revision)),
+                None => (fetch, None),
+            };
+            let Some((_, expected)) = scripts.iter().find(|(known, _)| *known == script) else {
                 problems.push(format!("{}: unknown fetch script {fetch}", entry.id));
                 continue;
             };
             if entry.status != FirmwareStatus::Superseded {
-                if source_archive_sha256 != Some(expected.as_str()) {
-                    problems.push(format!("{}: pin differs from {fetch}", entry.id));
+                if revision.is_some() || source_archive_sha256 != Some(expected.as_str()) {
+                    problems.push(format!("{}: pin differs from {script}", entry.id));
                 }
                 continue;
             }
+            let hex = |text: &str, len: usize| {
+                text.len() == len
+                    && text
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            };
+            let well_formed = source_archive_sha256
+                .is_some_and(|pin| hex(pin, 64) && pin != expected)
+                && revision.is_some_and(|revision| hex(revision, 40));
+            // The release in the id, and the tag the provenance names.
             let release = entry
                 .id
                 .match_indices('-')
                 .find(|(at, _)| entry.id[at + 1..].starts_with(|c: char| c.is_ascii_digit()))
                 .map(|(at, _)| &entry.id[at + 1..]);
-            let well_formed = source_archive_sha256.is_some_and(|pin| {
-                pin.len() == 64
-                    && pin
-                        .bytes()
-                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                    && pin != expected
+            let tag = provenance.split_whitespace().find_map(|word| {
+                word.strip_prefix('v')
+                    .filter(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
             });
-            if !well_formed
-                || !release.is_some_and(|release| provenance.contains(&format!("v{release}")))
-            {
+            let names_release = match (release, tag) {
+                (Some(release), Some(tag)) => match (unemu_release(release), unemu_release(tag)) {
+                    (Some((base, first)), Some((tag_base, built))) => {
+                        base == tag_base && built >= first
+                    }
+                    _ => tag.trim_end_matches(',') == release,
+                },
+                _ => false,
+            };
+            if !well_formed || !names_release {
                 problems.push(format!(
                     "{}: a superseded entry pins its own release's archive",
                     entry.id
@@ -2106,13 +2166,16 @@ mod tests {
             .iter()
             .filter(|entry| matches!(entry.distribution, FirmwareDistribution::Open { .. }))
             .count();
-        assert_eq!(open, 7);
+        assert_eq!(open, 8);
         let superseded: Vec<_> = catalogue
             .iter()
             .filter(|entry| entry.status == FirmwareStatus::Superseded)
             .map(|entry| entry.id)
             .collect();
-        assert_eq!(superseded, ["unemu-at-bios-1.0.2-unemu.2"]);
+        assert_eq!(
+            superseded,
+            ["unemu-at-bios-1.0.2-unemu.2", "vgabios-0.8a-unemu.1-std"]
+        );
     }
 
     #[test]
@@ -2130,26 +2193,54 @@ mod tests {
             source_archive_pin_problems(&catalogue, &scripts),
             ["unemu-at-bios-1.0.2-unemu.3: pin differs from vendor/unemu-at-bios/fetch.sh"]
         );
-        // A superseded entry may not carry the current pin or a malformed one.
-        let mut catalogue = BoardModel::Ibm5170.firmware_catalogue().to_vec();
-        for pin in [UNEMU_AT_BIOS_SOURCE_ARCHIVE, "not-a-hash"] {
-            let old = catalogue
+        // A superseded entry may not carry the current pin or a malformed
+        // one, name the current script without the revision that built its
+        // release, or name an earlier release than its id.
+        let old = UNEMU_AT_BIOS_1_0_2_UNEMU_2.distribution;
+        let FirmwareDistribution::Open { provenance, .. } = old else {
+            unreachable!()
+        };
+        let earlier = provenance.replace("v1.0.2-unemu.2", "v1.0.2-unemu.1");
+        let earlier: &'static str = Box::leak(earlier.into_boxed_str());
+        for change in [
+            Change::Pin(UNEMU_AT_BIOS_SOURCE_ARCHIVE),
+            Change::Pin("not-a-hash"),
+            Change::Fetch("vendor/unemu-at-bios/fetch.sh"),
+            Change::Fetch("vendor/unemu-at-bios/fetch.sh at unemupc98 main"),
+            Change::Provenance(earlier),
+        ] {
+            let mut catalogue = BoardModel::Ibm5170.firmware_catalogue().to_vec();
+            let entry = catalogue
                 .iter_mut()
                 .find(|entry| entry.id == UNEMU_AT_BIOS_1_0_2_UNEMU_2.id)
                 .unwrap();
             let FirmwareDistribution::Open {
+                fetch,
+                provenance,
                 source_archive_sha256,
                 ..
-            } = &mut old.distribution
+            } = &mut entry.distribution
             else {
                 unreachable!()
             };
-            *source_archive_sha256 = Some(pin);
+            match change {
+                Change::Pin(pin) => *source_archive_sha256 = Some(pin),
+                Change::Fetch(text) => *fetch = text,
+                Change::Provenance(text) => *provenance = text,
+            }
             assert_eq!(
                 source_archive_pin_problems(&catalogue, &scripts),
-                ["unemu-at-bios-1.0.2-unemu.2: a superseded entry pins its own release's archive"]
+                ["unemu-at-bios-1.0.2-unemu.2: a superseded entry pins its own release's archive"],
+                "{change:?}"
             );
         }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Change {
+        Pin(&'static str),
+        Fetch(&'static str),
+        Provenance(&'static str),
     }
 
     #[test]
@@ -2280,6 +2371,55 @@ mod tests {
             scan_firmware_from(&config(), &catalogue).unwrap().id,
             old.id
         );
+    }
+
+    #[test]
+    fn a_superseded_open_vga_bios_still_identifies_its_rom() {
+        let old = FirmwareEntry::VGABIOS_0_8A_UNEMU_1_STD;
+        let current = FirmwareEntry::VGABIOS_0_9D_UNEMU_1_STD;
+        assert!(BoardModel::Ibm5170.firmware_catalogue().contains(&old));
+        assert_eq!(old.status, FirmwareStatus::Superseded);
+        assert_eq!(
+            old.sha256,
+            "7570ef9c66fd386450bb35fd2b6c91aba6f8ec69a565a1d7747e6e6716ea5389"
+        );
+        // The board contract is the current release's, so a machine made
+        // with the old ROM lowers and assembles as it did.
+        assert_eq!(
+            FirmwareEntry {
+                id: current.id,
+                sha256: current.sha256,
+                distribution: current.distribution,
+                status: current.status,
+                ..old
+            },
+            current
+        );
+        // The old ROM is not a fixture any more: synthetic bytes under its
+        // identity stand in for it at C0000h, beside the open AT BIOS.
+        let mut bytes = vec![0; 32768];
+        bytes[..3].copy_from_slice(&[0x55, 0xAA, 0x40]);
+        // The last byte makes the byte sum zero, as the real ROM's does.
+        bytes[32767] = 0u8.wrapping_sub(0x55u8.wrapping_add(0xAA).wrapping_add(0x40));
+        let listed = FirmwareEntry {
+            sha256: Box::leak(format!("{:x}", Sha256::digest(&bytes)).into_boxed_str()),
+            ..old
+        };
+        let mut config = config();
+        for device in &mut config.devices {
+            if matches!(device.kind, DeviceKind::Vga(_)) {
+                device.kind = DeviceKind::VgaRegisters(crate::VgaCfg {});
+            }
+        }
+        config.images.push(LoadImage {
+            base: 0xC0000,
+            source: ImageSource::Inline(bytes),
+            kind: ImageKind::Rom,
+            provides: Vec::new(),
+        });
+        let catalogue = [synthetic(), listed];
+        assert_eq!(matched_entry(&config.images[1], &catalogue), Some(&listed));
+        validate_option_roms_with_catalogue(&config, &catalogue).unwrap();
     }
 
     #[test]

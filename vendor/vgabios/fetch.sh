@@ -9,11 +9,9 @@
 #
 # Requires the host's Nix with flakes, git and GNU tar (both also in the flake
 # devShell).
-# The source repository lives next to this one, on the same forge and in the
-# same organization. Its location is derived at run time from this
-# repository's origin remote, so no forge address is written in this file.
-# An HTTPS origin without credentials (as in CI) works while that repository
-# is anonymously readable; a mirror of this repository must carry it too.
+# The default source is the fork's public repository,
+# https://github.com/unemu-org/vgabios (a GitHub fork of bochs-emu/VGABIOS),
+# fetched anonymously over HTTPS.
 #
 # Environment overrides, in order of precedence:
 #   UNEMU_VGABIOS_FLAKE     complete flake reference to build, without the
@@ -71,14 +69,15 @@ check_sha256() {
 # The flake preprocesses with unwrapped gcc 14.3.0 from its nixpkgs pin on
 # every system, without platform macros or system headers, then runs dev86
 # 1.0.1 bcc/as86; it also fixes the intermediate file names, which bcc's
-# output depends on. MEASURED on aarch64-darwin: this release gives the same
-# ROM and probe hashes as the releases before it. The fork's CI checks both
-# hashes on x86_64-linux with nix flake check.
-TAG="v0.8a-unemu.3"
-REVISION="72bf5d988f2188a0118416d88a8c90e58c648b06"
-ROM_SHA256="7570ef9c66fd386450bb35fd2b6c91aba6f8ec69a565a1d7747e6e6716ea5389"
-PROBE_SHA256="21b9dd1db3068bb73f3fde16058578368719f98b6d4335f45ec6681eb47beb58"
-SOURCE_ARCHIVE_SHA256="2d93fcaaa87ac0f310af097ef184d94932a0c9cb255b9e8f991cee511a1cf8eb"
+# output depends on. The release is based on upstream 0.9d and adds the
+# teletype BEL tone, so both outputs differ from the 0.8a-based releases
+# before it. The fork's CI checks both hashes on x86_64-linux with nix flake
+# check.
+TAG="v0.9d-unemu.1"
+REVISION="40522278d5b703e637271696783721f4b5ea541f"
+ROM_SHA256="b867f3846f44be63b1b10febc1ce79c9435f5d1233c67a0b63164ab48359a582"
+PROBE_SHA256="7c928cec8e49c04c91d1cb7194b5f508db3d86ac89be9867a7290eb04c11f1b4"
+SOURCE_ARCHIVE_SHA256="0f0890b6fc95156177c37725329ca8111b889abce33de73aeeaf2fc99ce86c48"
 QUERY="ref=refs/tags/$TAG&rev=$REVISION"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -87,50 +86,8 @@ PROBE_OUT="$HERE/int10-probe-1200.img"
 SOURCE_NAME="vgabios-${TAG#v}-src"
 SOURCE_OUT="$HERE/$SOURCE_NAME.tar"
 
-# Turn this repository's origin into the sibling repository's flake reference,
-# keeping the transport and the origin's own ".git" suffix convention, so the
-# same credentials and server layout reach both repositories.
-origin_flake() {
-	local origin suffix="" parent
-	origin="$(git -C "$HERE" remote get-url origin)" || {
-		echo "no origin remote: set UNEMU_VGABIOS_FLAKE or UNEMU_VGABIOS_CHECKOUT" >&2
-		exit 1
-	}
-	origin="${origin%/}"
-	case "$origin" in
-		*.git)
-			suffix=".git"
-			origin="${origin%.git}"
-			;;
-	esac
-	case "$origin" in
-		https://*/* | http://*/* | ssh://*/* | file://*/*)
-			echo "git+${origin%/*}/vgabios$suffix?$QUERY"
-			;;
-		*://*)
-			echo "unsupported origin remote scheme: set UNEMU_VGABIOS_FLAKE" >&2
-			exit 1
-			;;
-		/*)
-			echo "git+file://${origin%/*}/vgabios$suffix?$QUERY"
-			;;
-		*:*)
-			# scp-like "[user@]host:[path/]repository" is SSH. Forges resolve
-			# its path from their root, as an ssh:// URL does.
-			parent="${origin#*:}"
-			parent="${parent#/}"
-			case "$parent" in
-				*/*) parent="/${parent%/*}" ;;
-				*) parent="" ;;
-			esac
-			echo "git+ssh://${origin%%:*}$parent/vgabios$suffix?$QUERY"
-			;;
-		*)
-			echo "cannot derive the forge from the origin remote: set UNEMU_VGABIOS_FLAKE" >&2
-			exit 1
-			;;
-	esac
-}
+# The fork's public repository; UNEMU_VGABIOS_FLAKE names a mirror instead.
+REPOSITORY="https://github.com/unemu-org/vgabios"
 
 if [ -n "${UNEMU_VGABIOS_FLAKE:-}" ]; then
 	FLAKE="$UNEMU_VGABIOS_FLAKE"
@@ -140,8 +97,8 @@ elif [ -n "${UNEMU_VGABIOS_CHECKOUT:-}" ]; then
 	FLAKE="git+file://$CHECKOUT?$QUERY"
 	SOURCE="local checkout"
 else
-	FLAKE="$(origin_flake)"
-	SOURCE="origin"
+	FLAKE="git+$REPOSITORY?$QUERY"
+	SOURCE="public repository"
 fi
 
 if [ "${1:-}" = "--print-flake" ]; then
@@ -155,17 +112,17 @@ if [ "$SOURCE" = UNEMU_VGABIOS_FLAKE ]; then
 else
 	echo "building vgabios $TAG ($REVISION) from the $SOURCE"
 fi
-# A private repository behind an HTTPS origin must fail, not wait for a
-# password prompt; credential helpers still work.
+# An unreachable or renamed repository must fail, not wait for a password
+# prompt; credential helpers still work.
 export GIT_TERMINAL_PROMPT="${GIT_TERMINAL_PROMPT:-0}"
 build() {
 	# --no-link keeps result symlinks out of both repositories.
 	"${NIX[@]}" build --no-link --print-out-paths "$FLAKE#$1" || {
 		echo "cannot build vgabios #$1 from the $SOURCE." >&2
-		if [ "$SOURCE" = origin ]; then
-			echo "The default source is the vgabios repository next to this repository's origin (same host, transport and organization); it must be readable with the same credentials, or publicly over HTTPS." >&2
+		if [ "$SOURCE" = "public repository" ]; then
+			echo "The default source is $REPOSITORY, read anonymously over HTTPS; check the network and that it still carries tag $TAG at revision $REVISION." >&2
 		fi
-		echo "Set UNEMU_VGABIOS_FLAKE to another flake reference (a mirror that carries vgabios, or a work tree), or UNEMU_VGABIOS_CHECKOUT to a local clone; see vendor/vgabios/README.md." >&2
+		echo "Set UNEMU_VGABIOS_FLAKE to another flake reference (a mirror that carries the pinned revision, or a work tree), or UNEMU_VGABIOS_CHECKOUT to a local clone; see vendor/vgabios/README.md." >&2
 		exit 1
 	}
 }

@@ -349,14 +349,15 @@ const SOURCE_ARCHIVES: &[SourceArchive] = &[
         absent: &["8088_bios/binaries", "8088_bios/xtide_r625"],
     },
     SourceArchive {
-        relative: "vgabios/vgabios-0.8a-unemu.3-src.tar",
+        relative: "vgabios/vgabios-0.9d-unemu.1-src.tar",
         script: include_str!("../../../vendor/vgabios/fetch.sh"),
         entries: &["NOTICE", "vgabios"],
         copies: &[(
             "NOTICE",
             include_str!("../../../vendor/vgabios/source-notice.txt"),
         )],
-        marker: ("vgabios/README.unemu.md", "# vgabios (unemu fork)"),
+        // The fork's teletype BEL tone, which its 0.8a-based releases lacked.
+        marker: ("vgabios/vgabios.c", "static void vga_beep()"),
         absent: &["vgabios/.beads/config.yaml"],
     },
     SourceArchive {

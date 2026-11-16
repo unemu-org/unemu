@@ -5,6 +5,67 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — Open BIOS sources from their public GitHub repositories;
+  open VGA BIOS `v0.9d-unemu.1` sounds the teletype BEL; templates 1.2.0:**
+  `vendor/unemu-at-bios/fetch.sh` and `vendor/vgabios/fetch.sh` now build
+  from <https://github.com/unemu-org/at-bios> (renamed from `unemu-at-bios`,
+  a GitHub fork of `skiselev/8088_bios` with the same history, tags and
+  revisions) and <https://github.com/unemu-org/vgabios>, read anonymously over
+  HTTPS; deriving the address from this repository's `origin` is gone, and the
+  `*_FLAKE` and `*_CHECKOUT` overrides stay. Both source notices name the
+  public repositories. The AT BIOS keeps release `v1.0.2-unemu.3` and its ROM
+  (`6938dc8b…ef2442`); its source archive keeps its name and root directory,
+  and only its `NOTICE` changed: new pin `b928cee4…32ee` (from `59d3d921…9d67`).
+  The open VGA BIOS moves to vgabios `v0.9d-unemu.1` (signed tag, revision
+  `40522278`), based on upstream 0.9d: ROM `b867f384…a582`, INT 10h probe
+  `7c928cec…f1b4`, source archive `vgabios-0.9d-unemu.1-src.tar`
+  (`0f0890b6…6c48`). **MEASURED** on aarch64-darwin: three runs of each script
+  from GitHub and one from a local clone build byte-identical archives, the
+  extracted vgabios archive rebuilds both pinned files, and the staged AT BIOS
+  tree rebuilds its ROM. Teletype output (INT 10h AH=0Eh, and AH=13h) now
+  sounds the speaker for BEL: PIT counter 2 in mode 3, divisor 1331 (about
+  896 Hz), for 31/64 s timed by port 61h bit 4 refresh toggles, interrupts on
+  during the tone, port 61h and IF restored. **MEASURED headless** with the
+  speaker trace (`ObservationPolicy::speaker_trace`; the window's
+  `UNEMUPC98_TRACE_SPEAKER` prints the same events): on the open profile the
+  probe's AX=0E07h gives one start at C000:5866, mode 3, divisor 1331, and the
+  stop at C000:588F after 577,819 PIT clocks (0.484267 s; 31/64 s is
+  0.484375 s), and the probe reports `tty.bel ok`; the open AT BIOS's
+  power-on melody (five tones from F000h) is unchanged. The new ignored golden
+  `open_vga_bios_teletype_bel_sounds_the_speaker_for_31_64_seconds` pins this
+  within 1%; with the 0.8a-based ROM it fails (`tty.bel FAIL`, no tone).
+  Catalogue: new `vgabios-0.9d-unemu.1-std` (**Tested**);
+  `vgabios-0.8a-unemu.1-std` is **Superseded** ("superseded by 0.9d-unemu.1:
+  teletype BEL sounds the speaker") with its own archive pin
+  (`vgabios-0.8a-unemu.3-src.tar`, `2d93fcaa…f8eb`), so machines and images
+  made with it still start (**MEASURED**: `at-games-open.toml` pinned to the
+  0.8a ROM, with that ROM, loads without the unlisted-firmware option and
+  boots FreeDOS to `A:\>`); the catalogue self-test now accepts a superseded
+  entry whose provenance tag is its id's release or a later release of the
+  same upstream base (`v0.8a-unemu.3` for `vgabios-0.8a-unemu.1-std`), and
+  requires the revision in its `fetch`. The AT BIOS entries' provenance names
+  `unemu-org/at-bios`. `machines/at-games-open.toml` and the
+  templates use the 0.9d ROM. New machine… lists a superseded video BIOS
+  package under its package name but never chooses it by default; the
+  capabilities and settings sheet labels the entry "unemu VGA BIOS
+  0.8a-unemu.1 (std) (superseded)" (new tests for the video slot and the
+  label). A superseded entry's `fetch` now names its script at the last
+  revision of this repository that pinned its release (`4f73f3d0` for
+  vgabios `v0.8a-unemu.3`, `bcb375e6` for unemu-at-bios `v1.0.2-unemu.2`):
+  check out that revision and run it to rebuild the ROM and its archive.
+  Goldens re-measured: the INT 10h probe 10,524,099 retired (from
+  10,240,139), stop 0000:88A9 (from 880Ah), 14 screen lines with the BEL line,
+  text `df1f232b…`; the mode 0Dh/13h run 10,688,267 (from 10,730,175), frames
+  unchanged; the open FreeDOS boot and the 720K/360K run keep 15,216,991 and
+  23,463,925 retired, with new screen hashes `41ff081e…` and `b4e1ac64…`
+  (FreeCOM shows the time 12:00:21.30 instead of 12:00:20.98). The `at-ide`
+  and at-pm-test goldens carry no video BIOS and are unchanged. The official
+  templates and firmware packages move once, to version 1.2.0 (1.1.1 was
+  never published but may be in a local store): pinned digests in
+  `crates/pc-image/tests/template.rs`; the XTIDE package keeps its digest.
+  `image template build --dry-run` against a scratch store reports every tag
+  `new` and `guard:allowed`.
+
 - **2026-11-16 — Library panes take the mock-ups' colours:** text fields
   and mini tables use the mock-ups' field colour in both skins and themes
   (the dark field was near black), striped rows their stripe colour, and an

@@ -82,6 +82,7 @@ impl BoardModel {
                 crate::firmware::IBM_5170_1985_11_15,
                 crate::firmware::LANDMARK_ROM_POST_AT_1_2_0,
                 crate::FirmwareEntry::IBM_VGA_1987,
+                crate::FirmwareEntry::VGABIOS_0_9D_UNEMU_1_STD,
                 crate::FirmwareEntry::VGABIOS_0_8A_UNEMU_1_STD,
                 crate::FirmwareEntry::XUB_R638_AT,
                 crate::FirmwareEntry::XUB_R638_XTP_ATA1F0,

@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 
 /// The version tag of this template generation. Version tags never move, so
 /// a changed template needs a new version here.
-pub const VERSION: &str = "1.1.1";
+pub const VERSION: &str = "1.2.0";
 /// The moving tag that follows the newest version.
 pub const ALIAS: &str = "latest";
 /// The registry namespace every template lives in.
@@ -99,13 +99,13 @@ pub const FIRMWARE: [FirmwareSource; 3] = [
         labels: &["open-source", "pc-at", "system-bios"],
     },
     FirmwareSource {
-        catalogue_id: "vgabios-0.8a-unemu.1-std",
+        catalogue_id: "vgabios-0.9d-unemu.1-std",
         rom: "vgabios/vgabios-std.bin",
-        source_archive: "vgabios/vgabios-0.8a-unemu.3-src.tar",
-        title: "unemu VGA BIOS 0.8a-unemu.3, standard VGA",
-        description: "The video BIOS of the open AT templates: the unemu fork of the LGPL VGABIOS 0.8a, the video BIOS Bochs and QEMU use, in its standard ISA VGA build with no VBE, PCI, Cirrus or Banshee code and 80286 instructions only. The 32 KiB ROM fills the C0000h-C7FFFh video-ROM window of an IBM 5170-class board with a register-level VGA card. Release 0.8a-unemu.1 first built these bytes, and releases 0.8a-unemu.2 and 0.8a-unemu.3 build them unchanged. Licensed under LGPL-2.1-or-later; the package includes its corresponding source archive.",
+        source_archive: "vgabios/vgabios-0.9d-unemu.1-src.tar",
+        title: "unemu VGA BIOS 0.9d-unemu.1, standard VGA",
+        description: "The video BIOS of the open AT templates: the unemu fork of the LGPL VGABIOS 0.9d, the video BIOS Bochs and QEMU use, in its standard ISA VGA build with no VBE, PCI, Cirrus or Banshee code and 80286 instructions only. The 32 KiB ROM fills the C0000h-C7FFFh video-ROM window of an IBM 5170-class board with a register-level VGA card. Unlike upstream, teletype output sounds the PC speaker for BEL (07h): about 896 Hz for about 0.48 s, as the IBM PC/AT BIOS beeps. Licensed under LGPL-2.1-or-later; the package includes its corresponding source archive.",
         vendor: "unemu (fork of the LGPL VGABIOS project)",
-        version: "0.8a-unemu.3",
+        version: "0.9d-unemu.1",
         labels: &["open-source", "pc-at", "vga", "video-bios"],
     },
     FirmwareSource {
@@ -1029,7 +1029,7 @@ mod tests {
 
     #[test]
     fn names_follow_the_registry_grammar_and_the_pull_short_form() {
-        assert_eq!(local_tag("unemu/open-at", VERSION), "open-at:1.1.1");
+        assert_eq!(local_tag("unemu/open-at", VERSION), "open-at:1.2.0");
         assert_eq!(
             local_tag("unemu/firmware/xub-r638-xtp-ata1f0", ALIAS),
             "unemu/firmware/xub-r638-xtp-ata1f0:latest"

@@ -590,8 +590,12 @@ mod tests {
             "unemu AT BIOS 1.0.2-unemu.2 (superseded)"
         );
         assert_eq!(
+            firmware_label(&FirmwareEntry::VGABIOS_0_9D_UNEMU_1_STD),
+            "unemu VGA BIOS 0.9d-unemu.1 (std)"
+        );
+        assert_eq!(
             firmware_label(&FirmwareEntry::VGABIOS_0_8A_UNEMU_1_STD),
-            "unemu VGA BIOS 0.8a-unemu.1 (std)"
+            "unemu VGA BIOS 0.8a-unemu.1 (std) (superseded)"
         );
         assert_eq!(
             firmware_label(&crate::KISELEV_XI8088),

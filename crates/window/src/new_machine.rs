@@ -1400,7 +1400,7 @@ mod tests {
             .is_some_and(|r| r.entry().is_some_and(|e| e.id == "xub-r638-xtp-ata1f0")));
         assert_eq!(
             wizard.video_rom().and_then(|r| r.entry()).map(|e| e.id),
-            Some("vgabios-0.8a-unemu.1-std")
+            Some("vgabios-0.9d-unemu.1-std")
         );
         assert!(wizard.problems().is_empty(), "{:?}", wizard.problems());
     }
@@ -1445,6 +1445,44 @@ mod tests {
         // It stays a choice.
         wizard.choose_bios(fits[0].rom.clone());
         assert_eq!(wizard.selection().bios.as_ref(), Some(&fits[0].rom));
+    }
+
+    #[test]
+    fn a_superseded_video_bios_is_offered_but_never_the_default() {
+        let Some(store) = FirmwareStore::new(false) else {
+            return;
+        };
+        let (mut packages, tags, marks) = store.choices();
+        let current = "vgabios-0.9d-unemu.1-std";
+        let old = "vgabios-0.8a-unemu.1-std";
+        let package = packages
+            .iter()
+            .find(|p| p.config.roms[0].catalogue_id.as_deref() == Some(current))
+            .unwrap()
+            .clone();
+        // As for the system BIOS: the current package under the old id, whose
+        // name sorts first, so only the catalogue status tells them apart.
+        let mut superseded = package.clone();
+        superseded.config.name = old.into();
+        superseded.config.roms[0].catalogue_id = Some(old.into());
+        superseded.descriptor.digest = Digest::of(b"superseded video package");
+        packages.push(superseded);
+        let mut wizard = Wizard::new();
+        wizard.store = Some(store.store.clone());
+        wizard.set_store((packages, tags, marks));
+        let (fits, _) = wizard.offers(Slot::Video);
+        assert_eq!(offer_names(&fits), [old, current]);
+        assert_eq!(
+            fits.iter().map(|o| o.superseded).collect::<Vec<_>>(),
+            [true, false]
+        );
+        assert_eq!(
+            wizard.selection().video_bios.as_ref().map(|rom| &rom.0),
+            Some(&package.descriptor.digest),
+            "the default is the current release"
+        );
+        wizard.choose_video_bios(fits[0].rom.clone());
+        assert_eq!(wizard.selection().video_bios.as_ref(), Some(&fits[0].rom));
     }
 
     #[test]
@@ -1535,7 +1573,7 @@ mod tests {
         );
         // The open VGA BIOS states the register-level VGA it needs; it fits.
         let (fits, _) = wizard.offers(Slot::Video);
-        assert_eq!(offer_names(&fits), ["vgabios-0.8a-unemu.1-std"]);
+        assert_eq!(offer_names(&fits), ["vgabios-0.9d-unemu.1-std"]);
         wizard.edit(|s| s.video_bios = None);
         assert!(wizard
             .problems()
@@ -1726,7 +1764,7 @@ mod tests {
         let digest = Digest::of(&bytes);
         let config = image_store::firmware::Config::decode(
             format!(
-                "schema=1\nplatform='ibm-pc-at'\nname='VGA BIOS copy'\n[fits]\nboards=['ibm-5170']\n[[roms]]\nid='video-bios'\nrole='video-bios'\ncatalogue_id='vgabios-0.8a-unemu.1-std'\nsize=32768\nsha256='{}'\nblob='{digest}'\n",
+                "schema=1\nplatform='ibm-pc-at'\nname='VGA BIOS copy'\n[fits]\nboards=['ibm-5170']\n[[roms]]\nid='video-bios'\nrole='video-bios'\ncatalogue_id='vgabios-0.9d-unemu.1-std'\nsize=32768\nsha256='{}'\nblob='{digest}'\n",
                 digest.hex()
             )
             .as_bytes(),
@@ -1754,7 +1792,7 @@ mod tests {
         assert!(wizard.offers(Slot::Video).0.iter().all(|o| !o.open));
         let notice = wizard.private_notice().unwrap();
         assert!(
-            notice.contains("vgabios-0.8a-unemu.1-std") || notice.contains("VGA BIOS copy"),
+            notice.contains("vgabios-0.9d-unemu.1-std") || notice.contains("VGA BIOS copy"),
             "{notice}"
         );
     }
@@ -1795,7 +1833,7 @@ mod tests {
             .choices()
             .0
             .into_iter()
-            .find(|p| p.config.name == "vgabios-0.8a-unemu.1-std")
+            .find(|p| p.config.name == "vgabios-0.9d-unemu.1-std")
             .unwrap();
         // The stored blob may be a compressed frame named by its own digest.
         let decoded = vga.config.roms[0].blob.clone().unwrap();
@@ -1824,7 +1862,7 @@ mod tests {
         let draft = wizard.draft().unwrap();
         assert!(caps::choices(&draft, "firmware.video")
             .iter()
-            .any(|c| c.value == Value::Name("vgabios-0.8a-unemu.1-std".into()) && c.enabled));
+            .any(|c| c.value == Value::Name("vgabios-0.9d-unemu.1-std".into()) && c.enabled));
     }
 
     /// IBM Personal Computer AT Technical Reference, Fixed Disk Type Byte: the

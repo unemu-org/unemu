@@ -10,7 +10,9 @@
 //! firmware-and-machine-classes.md §Video ROM placement. CPU revision is
 //! pinned by Cargo.lock.
 
-use assembly::{AssemblyOptions, DeviceId, ObservationPolicy, ObservationRequest, OutputKind};
+use assembly::{
+    AssemblyOptions, DeviceId, ObservationPolicy, ObservationRequest, OutputKind, SpeakerTraceEvent,
+};
 use cpu::{Cpu, CpuReg};
 use machine::RunOutcome;
 
@@ -23,18 +25,24 @@ mod support;
 const CPU_REV: &str = "060d446a883a9b2fc94b3ef91258cb4e6e98d916";
 const FETCH_SCRIPT: &str = include_str!("../../../vendor/vgabios/fetch.sh");
 
-const PROBE_GOLDEN_STOP: (u64, u64) = (0x0000, 0x880A);
 // Both counts moved with the switch from the Kiselev AT-reset BIOS to the
 // open AT BIOS (from 10,239,957 and 10,730,615); screen and frames unchanged.
 // Both moved again by one instruction (from 10,240,119 and 10,730,617) when the
 // open profile gained its empty 1.44M B: drive; screen and frames unchanged.
 // They moved again (from 10,240,118 and 10,730,616) when the open AT BIOS
 // began clearing extended memory during POST; screen and frames unchanged.
-const PROBE_GOLDEN_RETIRED: u64 = 10_240_139;
+// The video BIOS based on upstream 0.9d moved them again (from 10,240,139 and
+// 10,730,175): the scroll run, whose frames are unchanged, by the new ROM
+// alone; the probe also by its BEL check, whose 31/64 s tone the BIOS spends
+// polling port 61h (about 356,000 instructions), and one more result line
+// (it stopped at 880Ah before).
+const PROBE_GOLDEN_STOP: (u64, u64) = (0x0000, 0x88A9);
+const PROBE_GOLDEN_LINES: usize = 14;
+const PROBE_GOLDEN_RETIRED: u64 = 10_524_099;
 const PROBE_GOLDEN_TEXT_SHA256: &str =
-    "567884f1a7356b91a49dc8be47861cd093db45402007cd48a0e5656788ff20ca";
+    "df1f232b9cd4b8be1c849998ee11b844576611b05f9282a2094bbc70cb8a86d8";
 // The mode 13h stage moved this from 10,396,703; the 0Dh frames are unchanged.
-const SCROLL_GOLDEN_RETIRED: u64 = 10_730_175;
+const SCROLL_GOLDEN_RETIRED: u64 = 10_688_267;
 const SCROLL_FRAME_SHA256: [&str; 5] = [
     "7723e850306f8e31a0fce846b020d7ad4969c9f34093f037a807f33744d44f54",
     "4cd1269be99016a508dd720dd327b6a0cf86f51608954f05582cbf0e6d4ffad8",
@@ -44,7 +52,7 @@ const SCROLL_FRAME_SHA256: [&str; 5] = [
 ];
 
 /// The probe's checks, in the order it logs them; each must report "ok".
-const PROBE_CHECKS: [&str; 32] = [
+const PROBE_CHECKS: [&str; 33] = [
     "mode3",
     "dcc",
     "egainfo",
@@ -58,6 +66,7 @@ const PROBE_CHECKS: [&str; 32] = [
     "tty.cur",
     "tty.cell",
     "rdchar",
+    "tty.bel",
     "scroll",
     "page1",
     "1C.save",
@@ -132,20 +141,25 @@ fn screen_rows(assembled: &mut assembly::AssembledMachine) -> Vec<String> {
     grid.rows_as_strings()
 }
 
-#[test]
-#[ignore = "slow: open AT BIOS/VGA/XTIDE POST, then the INT 10h probe floppy"]
-fn open_vga_bios_passes_the_int10_probe_floppy() {
+/// A finished probe run. Fields drop in order, so the machine closes its
+/// media before the profile's temporary files go.
+struct ProbeRun {
+    assembled: assembly::AssembledMachine,
+    outcome: RunOutcome,
+    rows: Vec<String>,
+    _profile: support::Profile,
+}
+
+/// Boot the INT 10h probe floppy on the open profile until it halts; `None`
+/// without the fixtures.
+fn run_probe(policy: &ObservationPolicy) -> Option<ProbeRun> {
     assert!(include_str!("../../../Cargo.lock").contains(CPU_REV));
-    let Some(probe) = fixtures::fixture("vgabios/int10-probe-1200.img") else {
-        return;
-    };
+    let probe = fixtures::fixture("vgabios/int10-probe-1200.img")?;
     let pin = fixtures::parse_pin(FETCH_SCRIPT, "PROBE_SHA256=\"").unwrap();
-    let Some(profile) = open_profile_booting("int10-probe-1200.img", &probe, Some(pin)) else {
-        return;
-    };
+    let profile = open_profile_booting("int10-probe-1200.img", &probe, Some(pin))?;
     let loaded =
         machine_file::load_for_assembly(&profile.file, AssemblyOptions::default()).unwrap();
-    let mut assembled = loaded.assemble(&policy()).unwrap();
+    let mut assembled = loaded.assemble(policy).unwrap();
     let outcome = assembled
         .run_session(&assembly::RunPolicy::natural(
             Some(100_000_000),
@@ -153,6 +167,37 @@ fn open_vga_bios_passes_the_int10_probe_floppy() {
         ))
         .unwrap();
     let rows = screen_rows(&mut assembled);
+    Some(ProbeRun {
+        assembled,
+        outcome,
+        rows,
+        _profile: profile,
+    })
+}
+
+/// The probe's checks that report "ok", in the order it logs them.
+fn reported_ok(text: &str) -> Vec<&str> {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .filter(|pair| pair[1] == "ok")
+        .map(|pair| pair[0])
+        .collect()
+}
+
+#[test]
+#[ignore = "slow: open AT BIOS/VGA/XTIDE POST, then the INT 10h probe floppy"]
+fn open_vga_bios_passes_the_int10_probe_floppy() {
+    // The profile binds first, so it drops after the machine.
+    let Some(ProbeRun {
+        _profile,
+        mut assembled,
+        outcome,
+        rows,
+    }) = run_probe(&policy())
+    else {
+        return;
+    };
     let text = rows.join("\n");
     let cpu = assembled.machine.cpu();
     let location = (cpu.code_segment(), cpu.reg(CpuReg::Rip));
@@ -169,21 +214,128 @@ fn open_vga_bios_passes_the_int10_probe_floppy() {
     assert_eq!(outcome, RunOutcome::Halted);
     let lines: Vec<_> = rows.iter().map(|row| row.trim_end()).collect();
     let used = lines.iter().rposition(|line| !line.is_empty()).unwrap() + 1;
-    assert_eq!(used, 13, "result screen lines:\n{text}");
+    assert_eq!(used, PROBE_GOLDEN_LINES, "result screen lines:\n{text}");
     assert_eq!(lines[0], "vgabios INT 10h probe");
     assert_eq!(lines[used - 1], "fails:0000");
     assert!(!text.contains("FAIL"), "{text}");
-    let reported: Vec<_> = text
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .windows(2)
-        .filter(|pair| pair[1] == "ok")
-        .map(|pair| pair[0])
-        .collect();
-    assert_eq!(reported, PROBE_CHECKS);
+    assert_eq!(reported_ok(&text), PROBE_CHECKS);
     assert_eq!(location, PROBE_GOLDEN_STOP);
     assert_eq!(retired, PROBE_GOLDEN_RETIRED);
     assert_eq!(hash, PROBE_GOLDEN_TEXT_SHA256);
+    assembled.finish_persistence().unwrap();
+}
+
+/// The tone a teletype BEL gives: IBM Personal Computer AT Technical
+/// Reference, System Board, Speaker (counter 2 sounds while port 61h bits 0
+/// and 1 are set), and Intel 8254 datasheet, Mode 3 (square wave at the input
+/// clock divided by the count). 1331 is the IBM PC BIOS beep's divisor, about
+/// 896 Hz.
+const BEL_MODE: u8 = 3;
+const BEL_DIVISOR: u32 = 1331;
+/// The video BIOS's own segment, where its port 61h writes run.
+const VIDEO_BIOS_SEGMENT: u16 = 0xC000;
+/// The video BIOS times the tone by counting port 61h bit 4 refresh toggles
+/// (one per 18 PIT clocks), 32085 of them, for 31/64 s: 577,530 PIT clocks,
+/// 417 short of 31/64 s. The run is deterministic, so the measured length is
+/// pinned: 577,819 PIT clocks, 289 longer than the count. Interrupts stay
+/// enabled during the tone; while the CPU serves a timer interrupt, bit 4 can
+/// flip twice unseen, so the loop misses toggles and counts its 32085 late.
+const BEL_GOLDEN_PIT_CLOCKS: u64 = 577_819;
+/// The tone's nominal length, and how close the pinned one must stay to it.
+const BEL_SECONDS: (u64, u64) = (31, 64);
+const BEL_TOLERANCE_PERCENT: u64 = 1;
+
+/// Teletype BEL (INT 10h AX=0E07h, which the probe's tty.bel check issues)
+/// sounds the speaker once, from the video BIOS, for 31/64 s of virtual time.
+/// The headless speaker trace sees what the window's trace would print.
+#[test]
+#[ignore = "slow: open AT BIOS/VGA/XTIDE POST, then the INT 10h probe floppy"]
+fn open_vga_bios_teletype_bel_sounds_the_speaker_for_31_64_seconds() {
+    let policy = ObservationPolicy {
+        speaker_trace: true,
+        ..policy()
+    };
+    // The profile binds first, so it drops after the machine.
+    let Some(ProbeRun {
+        _profile,
+        mut assembled,
+        outcome,
+        rows,
+    }) = run_probe(&policy)
+    else {
+        return;
+    };
+    let events = assembled
+        .observation
+        .take_speaker_trace(assembled.machine.clock());
+    for event in &events {
+        eprintln!("{event}");
+    }
+    assert_eq!(outcome, RunOutcome::Halted);
+    let text = rows.join("\n");
+    assert!(reported_ok(&text).contains(&"tty.bel"), "{text}");
+    // Every line was kept, so the counts below see every speaker event.
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, SpeakerTraceEvent::Suppressed { .. })),
+        "{events:#?}"
+    );
+    let speaker: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                SpeakerTraceEvent::On { .. }
+                    | SpeakerTraceEvent::Tone { .. }
+                    | SpeakerTraceEvent::Off { .. }
+            )
+        })
+        .collect();
+    let bel: Vec<_> = speaker
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| {
+            matches!(event, SpeakerTraceEvent::On { divisor, .. } if *divisor == BEL_DIVISOR)
+        })
+        .collect();
+    assert_eq!(bel.len(), 1, "one BEL tone: {speaker:#?}");
+    // The open AT BIOS plays its power-on melody from F000h; the video BIOS
+    // sounds nothing but the BEL.
+    let from_video_bios = speaker
+        .iter()
+        .filter(|event| {
+            matches!(event, SpeakerTraceEvent::On { stamp, .. } if stamp.cs == VIDEO_BIOS_SEGMENT)
+        })
+        .count();
+    assert_eq!(from_video_bios, 1, "{speaker:#?}");
+    let (at, on) = bel[0];
+    let SpeakerTraceEvent::On { stamp, mode, .. } = on else {
+        unreachable!()
+    };
+    assert_eq!(*mode, BEL_MODE);
+    assert_eq!(stamp.cs, VIDEO_BIOS_SEGMENT);
+    // The tone neither changes nor stops before the BIOS turns it off.
+    let Some(SpeakerTraceEvent::Off { stamp: off, after }) = speaker.get(at + 1) else {
+        panic!("the BEL tone never stopped: {speaker:#?}");
+    };
+    assert_eq!(off.cs, VIDEO_BIOS_SEGMENT);
+    let (numerator, denominator) = BEL_SECONDS;
+    let pit = device::clock::PIT_HZ;
+    let expected = u128::from(numerator)
+        * u128::from(pit.numerator())
+        * u128::from(device::clock::TICKS_PER_PIT_CLOCK)
+        / (u128::from(denominator) * u128::from(pit.denominator()));
+    let tolerance = expected * u128::from(BEL_TOLERANCE_PERCENT) / 100;
+    eprintln!("BEL tone: {after} ticks, expected {expected} +/- {tolerance}");
+    assert!(
+        u128::from(*after).abs_diff(expected) <= tolerance,
+        "BEL tone lasted {after} ticks, expected {expected} +/- {tolerance}"
+    );
+    assert_eq!(
+        *after,
+        BEL_GOLDEN_PIT_CLOCKS * device::clock::TICKS_PER_PIT_CLOCK
+    );
     assembled.finish_persistence().unwrap();
 }
 

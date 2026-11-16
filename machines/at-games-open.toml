@@ -33,7 +33,7 @@ provides = ["floppy"]
 # 32 KiB fills the C0000h-C7FFFh video-ROM window; XTIDE follows at C8000h.
 [[firmware.option_roms]]
 image = "../vendor/vgabios/vgabios-std.bin"
-sha256 = "7570ef9c66fd386450bb35fd2b6c91aba6f8ec69a565a1d7747e6e6716ea5389"
+sha256 = "b867f3846f44be63b1b10febc1ce79c9435f5d1233c67a0b63164ab48359a582"
 base = 0xC0000
 
 [[firmware.option_roms]]

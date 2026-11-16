@@ -1985,7 +1985,7 @@ as the source archive (`--license-text` and `--source` of §5.2). Each set goes
 through the guard of `unemu/` before its manifest is stored (rules 4 and 5
 pass: every medium and extra links both), tagged `unemu/media/<name>:1.4.0`
 and `latest`. The template machines' closure did not change with them, so
-their generation stayed `1.1.0` with its pins (it is `1.1.1` since, below); a
+their generation stayed `1.1.0` with its pins (it is `1.2.0` since, below); a
 separate test pins the three sets' digests. Each program's licence is read
 from its own notices (main source headers, licence files) and from the LSM
 only where those name no version; the narrowest grant of a package is listed.
@@ -2017,7 +2017,14 @@ system BIOS package with `unemu/firmware/unemu-at-bios-1.0.2-unemu.3`, the
 fix release whose POST clears extended memory (so FreeDOS keeps its XMS after
 Ctrl+Alt+Del), and moves the VGA BIOS package to the source archive of
 release `v0.8a-unemu.3`, with unchanged ROM bytes; the XTIDE package and the
-hardware are unchanged.
+hardware are unchanged. **Generation 1.2.0** replaces the VGA BIOS package
+with `unemu/firmware/vgabios-0.9d-unemu.1-std`, the fork's release based on
+upstream 0.9d whose teletype BEL sounds the PC speaker (the 0.8a entry stays
+catalogued as superseded), and moves the system BIOS package to the
+re-measured source archive of the same release, whose `NOTICE` now names the
+fork's public repository; the system BIOS ROM, the XTIDE package and the
+hardware are unchanged. Generation 1.1.1 was never published; it is replaced
+rather than re-pinned because a local store may already hold it.
 
 **Build.** `image template build` (commands.md, Official template images)
 imports the three packages from the fetched fixtures with their pinned source
@@ -2030,7 +2037,8 @@ provenance names) and labels through the same statement as the metadata flags
 of `image firmware import`, so its config and README carry them and its
 manifest carries the standard `org.opencontainers.image.title`, `.description`,
 `.vendor` and `.version` annotations that registry web UIs show. No source URL
-is stated: the forks' forge address stays out of the repository. Nothing
+is stated; each source archive's `NOTICE` names the fork's public repository
+(<https://github.com/unemu-org/at-bios>, <https://github.com/unemu-org/vgabios>). Nothing
 depends on the clock, the host or the fixture paths, so the same fixtures give
 the same manifests and digests on
 every run and host. Before any tag of an image is written, the build applies

@@ -2,10 +2,11 @@
 
 `fetch.sh` builds `bios-unemu-at.bin`, the system BIOS of the open AT
 machines, from **unemu-at-bios**, the unemu fork of Sergey Kiselev's
-[8088_bios](https://github.com/skiselev/8088_bios). The fork is the
-`unemu-at-bios` repository in the same forge organization as this repository
-(`unemu-org/unemu-at-bios`). It is pinned at release tag **`v1.0.2-unemu.3`**,
-source revision `4548c1769aed67323979d5fa8eff52eed266b64b`:
+[8088_bios](https://github.com/skiselev/8088_bios). The fork is public at
+<https://github.com/unemu-org/at-bios>, a GitHub fork of `skiselev/8088_bios`
+(renamed from `unemu-at-bios`; the same history, tags and revisions). It is
+pinned at release tag **`v1.0.2-unemu.3`**, source revision
+`4548c1769aed67323979d5fa8eff52eed266b64b`:
 
 | File | Flake output | Size | SHA-256 |
 |---|---|---|---|
@@ -88,7 +89,7 @@ vendor/unemu-at-bios/fetch.sh
 ```
 
 The script runs `nix build --no-link` for
-`<forge>/unemu-org/unemu-at-bios?ref=refs/tags/v1.0.2-unemu.3&rev=4548c176…#unemu-at`,
+`git+https://github.com/unemu-org/at-bios?ref=refs/tags/v1.0.2-unemu.3&rev=4548c176…#unemu-at`,
 checks the ROM's size, the far jump at the reset entry and the SHA-256 pin,
 and only then replaces the file here. The tag names the release; Nix checks
 out the pinned revision, so a moved tag cannot change the sources. The fork's
@@ -96,20 +97,17 @@ flake assembles the ROM with nasm from its nixpkgs pin, the same one this
 repository's devShell uses, and checks the same hash itself. Nix caches the
 fetched sources and the store paths, so a repeated run needs no network.
 
-`<forge>` is never written in a committed file. As for
-[`vendor/vgabios`](../vgabios/README.md), the script derives it from this
-repository's `origin` remote: the same host, transport and organization, with
-the repository name `unemu-at-bios` and the origin's own `.git` suffix
-convention. An SSH origin builds over SSH with the same keys; an HTTPS origin
-builds over HTTPS, anonymously unless a git credential helper supplies a
-login (terminal prompts are disabled, so a private repository fails instead
-of waiting). `file://` and absolute-path origins map to a sibling directory.
+The default source is that public repository, read anonymously over HTTPS
+whatever this repository's own remote is, so a clone from a mirror, or with
+no remote at all, builds from the same place. Terminal prompts are disabled,
+so an unreachable repository fails instead of waiting for a password; the
+message names the repository, the tag and the revision.
 `fetch.sh --print-flake` prints the reference it would build. Two overrides
 exist:
 
 - `UNEMU_AT_BIOS_FLAKE=<flake reference>` builds that reference as given,
-  without the `#output` suffix, for a mirror or a work tree under
-  development.
+  without the `#output` suffix, for a mirror that carries the pinned
+  revision or a work tree under development.
 - `UNEMU_AT_BIOS_CHECKOUT=<path>` builds the pinned revision from a local
   clone's object store. Its working tree and uncommitted changes are ignored.
 
@@ -120,10 +118,8 @@ Only `fetch.sh`, `source-notice.txt` and this README are committed in this
 directory. The ROM, the source archive and the temporary `build/` directory
 are gitignored.
 
-CI: the `fixtures` gate (`scripts/ci-gate.sh fixtures`) runs this script. From
-the checkout's credential-less HTTPS origin the build succeeds only while
-`unemu-at-bios` is anonymously readable next to this repository; otherwise
-the gate fails with the message above. The `goldens` gate sets
+CI: the `fixtures` gate (`scripts/ci-gate.sh fixtures`) runs this script; it
+needs HTTPS access to GitHub and no credentials. The `goldens` gate sets
 `UNEMUPC98_REQUIRE_FIXTURES=1`, so the tests that need the ROM fail when it is
 missing; without that variable they print a skip line and return. See
 `backlog/docs/commands.md`.
@@ -147,9 +143,9 @@ directory, `unemu-at-bios-1.0.2-unemu.3-src/`, holds:
   not build from the archive; the 32 KiB images do. Everything else is
   unchanged.
 - `NOTICE`: [`source-notice.txt`](source-notice.txt), unchanged. It names the
-  release, revision and licence, the ROM hash, the paths left out and the
-  `nix build` command that rebuilds the ROM. It names the repository
-  `unemu-org/unemu-at-bios` but no forge address.
+  public repository (<https://github.com/unemu-org/at-bios>), the release,
+  revision and licence, the ROM hash, the paths left out and the
+  `nix build` command that rebuilds the ROM.
 
 Before it writes the archive, the script builds `#unemu-at` from the staged
 tree itself (`nix build path:<staged tree>#unemu-at`) and checks the ROM hash,
@@ -163,12 +159,16 @@ SHA-256 is pinned in `fetch.sh`:
 
 | File | SHA-256 |
 |---|---|
-| `unemu-at-bios-1.0.2-unemu.3-src.tar` | `59d3d92178d8839b0e38ce3d878a99e947ae7f6f1275ce0bcdb032f84e199d67` |
+| `unemu-at-bios-1.0.2-unemu.3-src.tar` | `b928cee48fb7be8bf3da0808ed31a2ad283ae4d57e73241e59a61b1ddde932ee` |
 
-MEASURED on 2026-11-15 on aarch64-darwin with GNU tar 1.35: two runs with
-`UNEMU_AT_BIOS_CHECKOUT` and one from the origin write this same archive and
-the same ROM, and the staged tree rebuilds the pinned ROM hash. A Linux run
-has not been measured.
+MEASURED on 2026-11-16 on aarch64-darwin with GNU tar 1.35: three runs from
+the public repository (the first one measured the hash) and one with
+`UNEMU_AT_BIOS_CHECKOUT` build this same archive and the same ROM, and the
+staged tree rebuilds the pinned ROM hash. A Linux run has not been measured.
+The archive written until 2026-11-15 (`59d3d921…9d67`, the same file name)
+differs only in `NOTICE`, which named the repository without its address;
+the file name and the root directory stay. The catalogue and the templates
+from 1.2.0 on pin the new archive.
 
 ## Catalogue and machines
 
@@ -181,8 +181,13 @@ system BIOS package. `UNEMU_AT_BIOS_1_0_2_UNEMU_2` stays listed with the
 status `Superseded` and the source archive pin of its own release
 (`unemu-at-bios-1.0.2-unemu.2-src.tar`,
 `6c7aaace8c2bc35661ced2596bcad2fd26e77778985aab45742cee560e0fa47e`), so
-machines and images made with that ROM (templates 1.1.0) still start; this
-script no longer builds it.
+machines and images made with that ROM (templates 1.1.0) still start. This
+script no longer builds it: the entry's `fetch` names this script at
+revision `bcb375e6410b18266bd5f99533624b768d067867` of this repository, the
+last one that pinned `v1.0.2-unemu.2`; run it in a checkout of that revision
+to rebuild the ROM and its archive. That script derives its source from the
+checkout's `origin`; where that does not reach the fork, set
+`UNEMU_AT_BIOS_FLAKE` to the public repository at the pinned tag and revision.
 
 ## Later: registry artifacts
 

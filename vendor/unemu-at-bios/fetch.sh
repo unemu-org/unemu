@@ -10,11 +10,9 @@
 #
 # Requires the host's Nix with flakes, git and GNU tar (both also in the flake
 # devShell).
-# The source repository lives next to this one, on the same forge and in the
-# same organization. Its location is derived at run time from this
-# repository's origin remote, so no forge address is written in this file.
-# An HTTPS origin without credentials (as in CI) works while that repository
-# is anonymously readable; a mirror of this repository must carry it too.
+# The default source is the fork's public repository,
+# https://github.com/unemu-org/at-bios (a GitHub fork of skiselev/8088_bios),
+# fetched anonymously over HTTPS.
 #
 # Environment overrides, in order of precedence:
 #   UNEMU_AT_BIOS_FLAKE     complete flake reference to build, without the
@@ -77,7 +75,7 @@ check_sha256() {
 TAG="v1.0.2-unemu.3"
 REVISION="4548c1769aed67323979d5fa8eff52eed266b64b"
 ROM_SHA256="6938dc8b665fa120f33775163ab6bacc559389525db87adedf734416f9ef2442"
-SOURCE_ARCHIVE_SHA256="59d3d92178d8839b0e38ce3d878a99e947ae7f6f1275ce0bcdb032f84e199d67"
+SOURCE_ARCHIVE_SHA256="b928cee48fb7be8bf3da0808ed31a2ad283ae4d57e73241e59a61b1ddde932ee"
 QUERY="ref=refs/tags/$TAG&rev=$REVISION"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,50 +83,8 @@ ROM_OUT="$HERE/bios-unemu-at.bin"
 SOURCE_NAME="unemu-at-bios-${TAG#v}-src"
 SOURCE_OUT="$HERE/$SOURCE_NAME.tar"
 
-# Turn this repository's origin into the sibling repository's flake reference,
-# keeping the transport and the origin's own ".git" suffix convention, so the
-# same credentials and server layout reach both repositories.
-origin_flake() {
-	local origin suffix="" parent
-	origin="$(git -C "$HERE" remote get-url origin)" || {
-		echo "no origin remote: set UNEMU_AT_BIOS_FLAKE or UNEMU_AT_BIOS_CHECKOUT" >&2
-		exit 1
-	}
-	origin="${origin%/}"
-	case "$origin" in
-		*.git)
-			suffix=".git"
-			origin="${origin%.git}"
-			;;
-	esac
-	case "$origin" in
-		https://*/* | http://*/* | ssh://*/* | file://*/*)
-			echo "git+${origin%/*}/unemu-at-bios$suffix?$QUERY"
-			;;
-		*://*)
-			echo "unsupported origin remote scheme: set UNEMU_AT_BIOS_FLAKE" >&2
-			exit 1
-			;;
-		/*)
-			echo "git+file://${origin%/*}/unemu-at-bios$suffix?$QUERY"
-			;;
-		*:*)
-			# scp-like "[user@]host:[path/]repository" is SSH. Forges resolve
-			# its path from their root, as an ssh:// URL does.
-			parent="${origin#*:}"
-			parent="${parent#/}"
-			case "$parent" in
-				*/*) parent="/${parent%/*}" ;;
-				*) parent="" ;;
-			esac
-			echo "git+ssh://${origin%%:*}$parent/unemu-at-bios$suffix?$QUERY"
-			;;
-		*)
-			echo "cannot derive the forge from the origin remote: set UNEMU_AT_BIOS_FLAKE" >&2
-			exit 1
-			;;
-	esac
-}
+# The fork's public repository; UNEMU_AT_BIOS_FLAKE names a mirror instead.
+REPOSITORY="https://github.com/unemu-org/at-bios"
 
 if [ -n "${UNEMU_AT_BIOS_FLAKE:-}" ]; then
 	FLAKE="$UNEMU_AT_BIOS_FLAKE"
@@ -138,8 +94,8 @@ elif [ -n "${UNEMU_AT_BIOS_CHECKOUT:-}" ]; then
 	FLAKE="git+file://$CHECKOUT?$QUERY"
 	SOURCE="local checkout"
 else
-	FLAKE="$(origin_flake)"
-	SOURCE="origin"
+	FLAKE="git+$REPOSITORY?$QUERY"
+	SOURCE="public repository"
 fi
 
 if [ "${1:-}" = "--print-flake" ]; then
@@ -153,16 +109,16 @@ if [ "$SOURCE" = UNEMU_AT_BIOS_FLAKE ]; then
 else
 	echo "building unemu-at-bios $TAG ($REVISION) from the $SOURCE"
 fi
-# A private repository behind an HTTPS origin must fail, not wait for a
-# password prompt; credential helpers still work.
+# An unreachable or renamed repository must fail, not wait for a password
+# prompt; credential helpers still work.
 export GIT_TERMINAL_PROMPT="${GIT_TERMINAL_PROMPT:-0}"
 # --no-link keeps result symlinks out of both repositories.
 ROM_STORE="$("${NIX[@]}" build --no-link --print-out-paths "$FLAKE#unemu-at")" || {
 	echo "cannot build unemu-at-bios #unemu-at from the $SOURCE." >&2
-	if [ "$SOURCE" = origin ]; then
-		echo "The default source is the unemu-at-bios repository next to this repository's origin (same host, transport and organization); it must be readable with the same credentials, or publicly over HTTPS." >&2
+	if [ "$SOURCE" = "public repository" ]; then
+		echo "The default source is $REPOSITORY, read anonymously over HTTPS; check the network and that it still carries tag $TAG at revision $REVISION." >&2
 	fi
-	echo "Set UNEMU_AT_BIOS_FLAKE to another flake reference (a mirror that carries unemu-at-bios, or a work tree), or UNEMU_AT_BIOS_CHECKOUT to a local clone; see vendor/unemu-at-bios/README.md." >&2
+	echo "Set UNEMU_AT_BIOS_FLAKE to another flake reference (a mirror that carries the pinned revision, or a work tree), or UNEMU_AT_BIOS_CHECKOUT to a local clone; see vendor/unemu-at-bios/README.md." >&2
 	exit 1
 }
 

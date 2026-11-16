@@ -21,7 +21,7 @@ pub fn source_archive(candidate: &pc_image::firmware_import::Candidate) -> &'sta
             "vendor/unemu-at-bios/fetch.sh" => {
                 "vendor/unemu-at-bios/unemu-at-bios-1.0.2-unemu.3-src.tar"
             }
-            "vendor/vgabios/fetch.sh" => "vendor/vgabios/vgabios-0.8a-unemu.3-src.tar",
+            "vendor/vgabios/fetch.sh" => "vendor/vgabios/vgabios-0.9d-unemu.1-src.tar",
             "vendor/xtide-universal-bios/fetch.sh" => {
                 "vendor/xtide-universal-bios/xtide-universal-bios-r638-src.tar"
             }
@@ -52,7 +52,7 @@ impl Open {
         }
         for archive in [
             "unemu-at-bios/unemu-at-bios-1.0.2-unemu.3-src.tar",
-            "vgabios/vgabios-0.8a-unemu.3-src.tar",
+            "vgabios/vgabios-0.9d-unemu.1-src.tar",
             "xtide-universal-bios/xtide-universal-bios-r638-src.tar",
         ] {
             fixtures::fixture(archive)?;
@@ -114,7 +114,7 @@ impl Open {
             },
             firmware: vec![
                 self.rom("unemu-at-bios-1.0.2-unemu.3"),
-                self.rom("vgabios-0.8a-unemu.1-std"),
+                self.rom("vgabios-0.9d-unemu.1-std"),
                 self.rom("xub-r638-xtp-ata1f0"),
             ],
             title: Some("Open AT workbench".into()),

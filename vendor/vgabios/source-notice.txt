@@ -1,20 +1,21 @@
-vgabios-0.8a-unemu.3-src
+vgabios-0.9d-unemu.1-src
 
 Corresponding source for two files that the unemupc98 emulator project builds
 from the unemu fork of the LGPL VGABIOS, the video BIOS used by Bochs and
-QEMU, changed to run on an 80286 (repository unemu-org/vgabios):
+QEMU, changed to run on an 80286 (repository
+https://github.com/unemu-org/vgabios):
 
   vgabios-std.bin       flake output std, 32,768 bytes
-    SHA-256 7570ef9c66fd386450bb35fd2b6c91aba6f8ec69a565a1d7747e6e6716ea5389
+    SHA-256 b867f3846f44be63b1b10febc1ce79c9435f5d1233c67a0b63164ab48359a582
   int10-probe-1200.img  flake output int10-probe, 1,228,800 bytes
-    SHA-256 21b9dd1db3068bb73f3fde16058578368719f98b6d4335f45ec6681eb47beb58
+    SHA-256 7c928cec8e49c04c91d1cb7194b5f508db3d86ac89be9867a7290eb04c11f1b4
 
 Contents
 
-  vgabios/  the fork at release tag v0.8a-unemu.3, revision
-            72bf5d988f2188a0118416d88a8c90e58c648b06: the tree Nix builds
+  vgabios/  the fork at release tag v0.9d-unemu.1, revision
+            40522278d5b703e637271696783721f4b5ea541f: the tree Nix builds
             both files from, unchanged. README.unemu.md lists the changes
-            from upstream VGABIOS 0.8a.
+            from upstream VGABIOS 0.9d.
   NOTICE    this file.
 
 Licence

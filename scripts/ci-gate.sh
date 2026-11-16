@@ -33,8 +33,10 @@ case "$step" in
         ;;
     fixtures)
         # The goldens gate requires every fixture its tests read. vgabios and
-        # unemu-at-bios are built by Nix from the repositories next to this
-        # checkout's origin. The Kiselev, XTIDE, vgabios and unemu-at-bios
+        # unemu-at-bios are built by Nix from their public GitHub repositories
+        # over anonymous HTTPS (UNEMU_VGABIOS_FLAKE / UNEMU_VGABIOS_CHECKOUT and
+        # UNEMU_AT_BIOS_FLAKE / UNEMU_AT_BIOS_CHECKOUT override the source).
+        # The Kiselev, XTIDE, vgabios and unemu-at-bios
         # scripts also write the pinned source archives of their open
         # images. XTIDE runs after them: it exports its
         # source over the network with Subversion, which Nix supplies, so an

@@ -120,15 +120,15 @@ fn the_build_is_reproducible_all_open_for_unemu_and_its_dry_run_writes_nothing()
     assert_eq!(
         tags,
         [
-            "unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.1.1",
+            "unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.2.0",
             "unemu/firmware/unemu-at-bios-1.0.2-unemu.3:latest",
-            "unemu/firmware/vgabios-0.8a-unemu.1-std:1.1.1",
-            "unemu/firmware/vgabios-0.8a-unemu.1-std:latest",
-            "unemu/firmware/xub-r638-xtp-ata1f0:1.1.1",
+            "unemu/firmware/vgabios-0.9d-unemu.1-std:1.2.0",
+            "unemu/firmware/vgabios-0.9d-unemu.1-std:latest",
+            "unemu/firmware/xub-r638-xtp-ata1f0:1.2.0",
             "unemu/firmware/xub-r638-xtp-ata1f0:latest",
-            "open-at:1.1.1",
+            "open-at:1.2.0",
             "open-at:latest",
-            "open-at-games:1.1.1",
+            "open-at-games:1.2.0",
             "open-at-games:latest",
             "unemu/media/freedos-floppy-1.44m:1.4.0",
             "unemu/media/freedos-floppy-1.44m:latest",
@@ -230,7 +230,7 @@ fn a_store_that_records_an_open_rom_as_user_supplied_refuses_the_build() {
         let (code, output, errors) = build(&store, dry_run);
         assert_ne!(code, 0, "{output}");
         assert!(
-            errors.contains("unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.1.1 refused")
+            errors.contains("unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.2.0 refused")
                 && errors.contains("every blob must be open"),
             "{errors}"
         );
@@ -241,7 +241,7 @@ fn a_store_that_records_an_open_rom_as_user_supplied_refuses_the_build() {
     }
     let store = Store::open_existing(&store).unwrap();
     assert!(store
-        .tag_descriptor("unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.1.1")
+        .tag_descriptor("unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.2.0")
         .is_err());
     assert_eq!(store.list_tags(None, 10).unwrap().tags.len(), 1);
 }
@@ -254,7 +254,7 @@ fn both_templates_post_with_the_open_bios_and_xtide_finds_their_blank_disk() {
     let t = Temp::new("template-cli-post");
     let store = Store::open(t.0.join("store")).unwrap();
     cli::build_templates(&store, &vendor()).unwrap();
-    for tag in ["open-at:1.1.1", "open-at-games:1.1.1"] {
+    for tag in ["open-at:1.2.0", "open-at-games:1.2.0"] {
         post(&store, tag);
     }
 }
@@ -377,7 +377,7 @@ fn the_dry_run_names_a_version_conflict_and_what_latest_does() {
             .unwrap_or_else(|| panic!("{tag}: {output}"))
     };
 
-    // open-at:1.1.1 names another image before the first build.
+    // open-at:1.2.0 names another image before the first build.
     let path = t.0.join("conflict");
     let store = Store::open(&path).unwrap();
     let firmware_only = |reference: &str, _: &image_store::Manifest| {
@@ -391,19 +391,19 @@ fn the_dry_run_names_a_version_conflict_and_what_latest_does() {
     let other = pc_image::create::create(
         &store,
         &variant(&store, "Another AT"),
-        "open-at:1.1.1",
+        "open-at:1.2.0",
         None,
     )
     .unwrap();
     let (code, dry, errors) = build(&path, true);
     assert_eq!(code, 0, "{errors}");
     assert_eq!(
-        state(&dry, "open-at:1.1.1"),
+        state(&dry, "open-at:1.2.0"),
         format!("conflict:{}", other.digest)
     );
     assert_eq!(state(&dry, "open-at:latest"), "new");
     assert_eq!(
-        state(&dry, "unemu/firmware/xub-r638-xtp-ata1f0:1.1.1"),
+        state(&dry, "unemu/firmware/xub-r638-xtp-ata1f0:1.2.0"),
         "present"
     );
     let (code, _, errors) = build(&path, false);
@@ -431,7 +431,7 @@ fn the_dry_run_names_a_version_conflict_and_what_latest_does() {
         state(&dry, "open-at:latest"),
         format!("moves:{}", lower.digest)
     );
-    assert_eq!(state(&dry, "open-at:1.1.1"), "present");
+    assert_eq!(state(&dry, "open-at:1.2.0"), "present");
     let higher =
         pc_image::create::create(&store, &variant(&store, "Newer AT"), "open-at:2.0.0", None)
             .unwrap();

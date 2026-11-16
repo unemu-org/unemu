@@ -519,7 +519,7 @@ pub(crate) mod tests {
             },
             firmware: vec![
                 rom("unemu-at-bios-1.0.2-unemu.3"),
-                rom("vgabios-0.8a-unemu.1-std"),
+                rom("vgabios-0.9d-unemu.1-std"),
                 rom("xub-r638-xtp-ata1f0"),
             ],
             title: Some("Open AT workbench".into()),

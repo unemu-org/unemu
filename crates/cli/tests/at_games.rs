@@ -24,9 +24,16 @@ const CPU_REV: &str = "060d446a883a9b2fc94b3ef91258cb4e6e98d916";
 // VGA card and open video BIOS, and when the test began sampling POST. They
 // moved again (from 15,241,264 and 41ff081e…) when the open AT BIOS began
 // clearing extended memory during POST and its banner named the new release.
+// The video BIOS based on upstream 0.9d moved the screen hash (from
+// 39d92d28…). Its initialization takes a different time: sampled at the same
+// point, POST has finished the parallel-port line and begun the floppy line,
+// where with the 0.8a-based ROM it stood inside the parallel-port line. The
+// guest's clock origin differs with it, so FreeCOM prints 12:00:21.30 instead
+// of 12:00:20.98. The prompt still appears in the same poll window, so the
+// count stays.
 const OPEN_GOLDEN_RETIRED: u64 = 15_216_991;
 const OPEN_GOLDEN_TEXT_SHA256: &str =
-    "39d92d28ffaa57015ab79e09e693f8bd1aeda19203709963dcb8fa22ace82492";
+    "41ff081e1227af8f1a053df1b627b734de4032963cc0357c488cbbe67e01469e";
 // These values moved when extended memory went from 4 MiB to 1 MiB,
 // shortening the POST memory test.
 const GOLDEN_STOP: Option<(u64, u64)> = Some((0x05E3, 0x1E59));
@@ -107,7 +114,7 @@ fn shipped_game_profiles_pin_firmware_and_select_the_intended_displays() {
         } else {
             &[
                 (
-                    assembly::FirmwareEntry::VGABIOS_0_8A_UNEMU_1_STD.id,
+                    assembly::FirmwareEntry::VGABIOS_0_9D_UNEMU_1_STD.id,
                     0xC0000,
                 ),
                 ("xub-r638-xtp-ata1f0", 0xC8000),
@@ -756,7 +763,7 @@ fn open_game_profile_boots_freedos() {
     };
     eprintln!("at-games-open POST:\n{post_screen}");
     assert!(
-        post_screen.contains("Bochs VGABios 0.8a-unemu"),
+        post_screen.contains("Bochs VGABios 0.9d-unemu"),
         "{post_screen}"
     );
     // The open AT BIOS signs on and identifies the 80286 without the 8088
@@ -879,9 +886,13 @@ fn add_fat12_file(image: &mut [u8], name: &[u8; 11], cluster: u16, data: &[u8]) 
 // MEASURED with the CPU pin above when the open profile gained its empty B:,
 // and again (from 22,988,197 and b9e3a1cb…) when the open AT BIOS began
 // clearing extended memory during POST and its banner named the new release.
+// The video BIOS based on upstream 0.9d moved the screen hash again (from
+// 0bebf03e…): its POST takes a different time, so the guest's clock origin
+// differs and FreeCOM prints another time of day, as in the boot golden
+// above; the count stays.
 const MIXED_DENSITY_RETIRED: u64 = 23_463_925;
 const MIXED_DENSITY_TEXT_SHA256: &str =
-    "0bebf03ee8725b641ef5ce13995f39a26ae6f76237989c23439359b139afddf3";
+    "b4e1ac642b435d2d215d87ddd14c02ac22fae92a6b03da0f77b6b49ff237d83e";
 
 /// FreeDOS on the open profile reads a 720K disk inserted into the empty
 /// 1.44M B: (250 kbps) and a 360K disk swapped into the 1.2M A: (300 kbps,

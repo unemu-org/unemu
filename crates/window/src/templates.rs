@@ -961,17 +961,17 @@ mod tests {
     ) {
         let client = Client::new(entry, credentials).unwrap();
         for (local, remote) in [
-            ("open-at:1.1.1", "unemu/open-at:1.0.1"),
+            ("open-at:1.2.0", "unemu/open-at:1.0.1"),
             ("open-at:latest", "unemu/open-at:latest"),
-            ("open-at-games:1.1.1", "unemu/open-at:1.1.0"),
-            ("open-at-games:1.1.1", "unemu/open-at-games:1.0.1"),
-            ("open-at:1.1.1", "unemu/open-at-games:2.0.0-rc.1"),
+            ("open-at-games:1.2.0", "unemu/open-at:1.1.0"),
+            ("open-at-games:1.2.0", "unemu/open-at-games:1.0.1"),
+            ("open-at:1.2.0", "unemu/open-at-games:2.0.0-rc.1"),
             (
-                "unemu/firmware/xub-r638-xtp-ata1f0:1.1.1",
+                "unemu/firmware/xub-r638-xtp-ata1f0:1.2.0",
                 "unemu/firmware/xub-r638-xtp-ata1f0:1.0.1",
             ),
-            ("open-at:1.1.1", "unemu/test-live:1.0.1"),
-            ("open-at:1.1.1", "elsewhere/open-at:1.0.1"),
+            ("open-at:1.2.0", "unemu/test-live:1.0.1"),
+            ("open-at:1.2.0", "elsewhere/open-at:1.0.1"),
         ] {
             let target =
                 Reference::parse(&format!("{}/{remote}", registry.host()), "unused.example")
@@ -1108,7 +1108,7 @@ mod tests {
                 ("open-at-games", "1.0.1", "open-at-games:1.0.1")
             ]
         );
-        let open_at = built.store.tag_descriptor("open-at:1.1.1").unwrap();
+        let open_at = built.store.tag_descriptor("open-at:1.2.0").unwrap();
         let row = &dialog.rows[0];
         assert_eq!(row.digest, open_at.digest);
         assert_eq!(

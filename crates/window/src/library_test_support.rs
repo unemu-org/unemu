@@ -125,7 +125,7 @@ pub(crate) fn source_archive(candidate: &pc_image::firmware_import::Candidate) -
             "vendor/unemu-at-bios/fetch.sh" => {
                 "vendor/unemu-at-bios/unemu-at-bios-1.0.2-unemu.3-src.tar"
             }
-            "vendor/vgabios/fetch.sh" => "vendor/vgabios/vgabios-0.8a-unemu.3-src.tar",
+            "vendor/vgabios/fetch.sh" => "vendor/vgabios/vgabios-0.9d-unemu.1-src.tar",
             "vendor/xtide-universal-bios/fetch.sh" => {
                 "vendor/xtide-universal-bios/xtide-universal-bios-r638-src.tar"
             }
@@ -168,7 +168,7 @@ impl FirmwareStore {
         if sources {
             for archive in [
                 "unemu-at-bios/unemu-at-bios-1.0.2-unemu.3-src.tar",
-                "vgabios/vgabios-0.8a-unemu.3-src.tar",
+                "vgabios/vgabios-0.9d-unemu.1-src.tar",
                 "xtide-universal-bios/xtide-universal-bios-r638-src.tar",
             ] {
                 fixtures::fixture(archive)?;

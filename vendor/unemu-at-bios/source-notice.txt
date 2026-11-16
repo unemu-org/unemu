@@ -3,7 +3,7 @@ unemu-at-bios-1.0.2-unemu.3-src
 Corresponding source for the 32 KiB system BIOS that the unemupc98 emulator
 project builds from unemu-at-bios, the unemu fork of Sergey Kiselev's
 8088_bios adapted as the open AT BIOS of the unemu machines (repository
-unemu-org/unemu-at-bios), configuration MACHINE_UNEMU_AT:
+https://github.com/unemu-org/at-bios), configuration MACHINE_UNEMU_AT:
 
   bios-unemu-at.bin  flake output unemu-at, 32,768 bytes
     SHA-256 6938dc8b665fa120f33775163ab6bacc559389525db87adedf734416f9ef2442
