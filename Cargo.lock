@@ -262,7 +262,7 @@ checksum = "175571dd1d178ced59193a6fc02dde1b972eb0bc56c892cde9beeceac5bf0f6b"
 
 [[package]]
 name = "assembly"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "audio",
  "bus",
@@ -454,7 +454,7 @@ dependencies = [
 
 [[package]]
 name = "audio"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "device",
  "thiserror 1.0.69",
@@ -547,7 +547,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "bus"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "device",
  "thiserror 1.0.69",
@@ -646,7 +646,7 @@ dependencies = [
 
 [[package]]
 name = "chipset"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "device",
  "devices",
@@ -655,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "cli"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "assembly",
@@ -830,7 +830,7 @@ dependencies = [
 
 [[package]]
 name = "cpu"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "thiserror 1.0.69",
  "x86jit-core",
@@ -890,14 +890,14 @@ checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
 
 [[package]]
 name = "device"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "devices"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "device",
  "testkit",
@@ -1671,7 +1671,7 @@ dependencies = [
 
 [[package]]
 name = "image-registry"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "image-store",
  "rustls",
@@ -1685,7 +1685,7 @@ dependencies = [
 
 [[package]]
 name = "image-store"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "libc",
  "serde",
@@ -1907,7 +1907,7 @@ checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 
 [[package]]
 name = "machine"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "bus",
  "chipset",
@@ -1920,7 +1920,7 @@ dependencies = [
 
 [[package]]
 name = "machine-file"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "assembly",
  "image-store",
@@ -1935,7 +1935,7 @@ dependencies = [
 
 [[package]]
 name = "media"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "libc",
  "serde",
@@ -2559,7 +2559,7 @@ dependencies = [
 
 [[package]]
 name = "pc-image"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "assembly",
  "cpu",
@@ -3343,7 +3343,7 @@ dependencies = [
 
 [[package]]
 name = "testkit"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "cpu",
  "device",
@@ -3677,7 +3677,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "video"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "device",
 ]
@@ -4027,7 +4027,7 @@ dependencies = [
 
 [[package]]
 name = "window"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "assembly",
  "audio",

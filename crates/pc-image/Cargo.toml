@@ -13,15 +13,15 @@ description = "IBM PC/AT machine-file import and resolved OCI bundle provider."
 assembly.workspace = true
 machine-file.workspace = true
 media.workspace = true
-image-store = { path = "../image-store", version = "0.0.1" }
+image-store = { path = "../image-store", version = "0.0.2" }
 serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-image-registry = { path = "../registry", version = "0.0.1" }
+image-registry = { path = "../registry", version = "0.0.2" }
 media = { workspace = true, features = ["test-support"] }
-image-store = { path = "../image-store", version = "0.0.1", features = ["test-support"] }
+image-store = { path = "../image-store", version = "0.0.2", features = ["test-support"] }
 cpu.workspace = true
 machine.workspace = true
 

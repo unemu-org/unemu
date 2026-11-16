@@ -5,6 +5,11 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — Version 0.0.2, a preview release:** published tags of
+  installation media sets never move and the push preflight sees every
+  manifest type; `upcli --version` names the full commit of a release build;
+  the setup-upcli GitHub Action installs a pinned upcli release; the binaries
+  describe the project as an emulator of period IBM-compatible PCs.
 - **2026-11-16 — Published tags are safe before the first media push:** the
   push preflight and its final recheck ask for the tag with every manifest
   and index type in `Accept` (OCI image manifest and index, Docker schema 2
