@@ -79,12 +79,22 @@ cards, firmware and drives. `at-games-open.toml` is the open DOS games machine
   lets user-supplied (proprietary) content reach a public namespace; open
   content goes public only with its licence, and copyleft only with its source.
 - **Templates:** official open machine images (`unemu/open-at`,
-  `unemu/open-at-games`) and the public shareware sets of Commander Keen 4,
-  Wolfenstein 3-D episode 1 and Duke Nukem II episode 1. They, the open media
-  sets and the firmware packages appear on `registry.unemu.dev` with the first
-  release; until then, build them locally with the fixture fetch scripts and
-  `upcli image template build` (see
-  [`commands.md`](backlog/docs/commands.md)).
+  `unemu/open-at-games`) built from open firmware packages. The firmware
+  packages and the FreeDOS 1.4 Floppy Edition installation sets are on
+  `registry.unemu.dev` already:
+
+  ```sh
+  upcli image pull unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1 --store DIR --create
+  upcli image pull unemu/firmware/vgabios-0.9d-unemu.1-std:1 --store DIR
+  upcli image pull unemu/firmware/xub-r638-xtp-ata1f0:1 --store DIR
+  upcli image pull unemu/media/freedos:1.4 --store DIR        # 1.44M disks
+  upcli image pull unemu/media/freedos:1.4-1.2m --store DIR
+  upcli image pull unemu/media/freedos:1.4-720k --store DIR
+  ```
+
+  The template machines come with a later release; until then, build them
+  locally with the firmware fetch scripts and `upcli image template build`
+  (see [`commands.md`](backlog/docs/commands.md), Official template images).
 
 ### Applications
 

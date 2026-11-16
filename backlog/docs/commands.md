@@ -164,22 +164,27 @@ developers), lists joined with `, ` in the order given. A field not given adds
 no annotation, so a set without the flags keeps its digest; there is never a
 creation time.
 
-The command line reproduces the FreeDOS 1.4 Floppy Edition sets that
-`image template build` publishes (Official template images, below) byte for
-byte, with the same set digests; a test imports each set both ways and
-compares them. Fetch the fixtures with `bash vendor/freedos/fetch-floppy-1.4.sh`
-and import into a store that does not hold these tags yet (the command line
-never moves a tag). Each command states what the template states: the disks in
-installer order with their labels, the licence index and the source archive as
-extras with their DOS names, the title record with its version and edition,
-the set labels and the open statement. The floppy format is detected from the
-exact size and each extra's kind from its extension. The tags are the
-template's own, so `image push TAG` reaches `unemu/media/…`:
+The command line reproduces the FreeDOS 1.4 Floppy Edition sets that the
+unemu-media repository (<https://github.com/unemu-org/unemu-media>) builds and
+publishes as `unemu/media/freedos:1.4` (the edition's own 1.44M disks),
+`:1.4-1.2m` and `:1.4-720k`, byte for byte, with the same set digests: these
+are the arguments its publish step passes (`lib/manifest.py sets`), and
+`pc_image::template::build_media`, the local build the tests use, gives the
+same sets. A test imports each set both ways and compares them, and another
+pins the published digests. Fetch the fixtures with
+`bash vendor/freedos/fetch-floppy-1.4.sh` and import into a store that does
+not hold these tags yet (the command line never moves a tag). Each command
+states the disks in installer order with their labels and format, the licence
+index and the source archive as extras with their DOS names, the title record
+(the work's title, `FreeDOS`, with the release and edition in fields of their
+own), the set labels and the open statement. Each extra's kind comes from its
+extension. To use the published sets, pull them instead (Official template
+images, below).
 
 ```sh
-cargo run --offline -p cli -- image media import vendor/freedos/floppy-1.4/144m/x86BOOT.img vendor/freedos/floppy-1.4/144m/x86DSK01.img vendor/freedos/floppy-1.4/144m/x86DSK02.img vendor/freedos/floppy-1.4/144m/x86DSK03.img vendor/freedos/floppy-1.4/144m/x86DSK04.img vendor/freedos/floppy-1.4/144m/x86DSK05.img vendor/freedos/floppy-1.4/144m/x86DSK06.img --title "FreeDOS 1.4 (Floppy Edition, 1.44M)" --tag unemu/media/freedos-floppy-1.44m:1.4.0 --label '1=Disk 1 of 7 - boot disk and installer (x86BOOT.img)' --label '2=Disk 2 of 7 - packages (x86DSK01.img)' --label '3=Disk 3 of 7 - packages (x86DSK02.img)' --label '4=Disk 4 of 7 - packages (x86DSK03.img)' --label '5=Disk 5 of 7 - packages (x86DSK04.img)' --label '6=Disk 6 of 7 - packages (x86DSK05.img)' --label '7=Disk 7 of 7 - packages (x86DSK06.img)' --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher "The FreeDOS Project" --developer "The FreeDOS Project" --year 2025 --genre "operating system" --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on seven 3.5-inch 1.44M diskettes, unmodified: the boot disk with the floppy installer, then six disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition "Floppy Edition" --set-label freedos --set-label open-source --set-label operating-system --open --license "GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other" --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
-cargo run --offline -p cli -- image media import vendor/freedos/floppy-1.4/120m/x86BOOT.img vendor/freedos/floppy-1.4/120m/x86DSK01.img vendor/freedos/floppy-1.4/120m/x86DSK02.img vendor/freedos/floppy-1.4/120m/x86DSK03.img vendor/freedos/floppy-1.4/120m/x86DSK04.img vendor/freedos/floppy-1.4/120m/x86DSK05.img vendor/freedos/floppy-1.4/120m/x86DSK06.img vendor/freedos/floppy-1.4/120m/x86DSK07.img --title "FreeDOS 1.4 (Floppy Edition, 1.2M)" --tag unemu/media/freedos-floppy-1.2m:1.4.0 --label '1=Disk 1 of 8 - boot disk and installer (x86BOOT.img)' --label '2=Disk 2 of 8 - packages (x86DSK01.img)' --label '3=Disk 3 of 8 - packages (x86DSK02.img)' --label '4=Disk 4 of 8 - packages (x86DSK03.img)' --label '5=Disk 5 of 8 - packages (x86DSK04.img)' --label '6=Disk 6 of 8 - packages (x86DSK05.img)' --label '7=Disk 7 of 8 - packages (x86DSK06.img)' --label '8=Disk 8 of 8 - packages (x86DSK07.img)' --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher "The FreeDOS Project" --developer "The FreeDOS Project" --year 2025 --genre "operating system" --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on eight 5.25-inch 1.2M diskettes, unmodified: the boot disk with the floppy installer, then seven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition "Floppy Edition" --set-label freedos --set-label open-source --set-label operating-system --open --license "GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other" --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
-cargo run --offline -p cli -- image media import vendor/freedos/floppy-1.4/720k/x86BOOT.img vendor/freedos/floppy-1.4/720k/x86DSK01.img vendor/freedos/floppy-1.4/720k/x86DSK02.img vendor/freedos/floppy-1.4/720k/x86DSK03.img vendor/freedos/floppy-1.4/720k/x86DSK04.img vendor/freedos/floppy-1.4/720k/x86DSK05.img vendor/freedos/floppy-1.4/720k/x86DSK06.img vendor/freedos/floppy-1.4/720k/x86DSK07.img vendor/freedos/floppy-1.4/720k/x86DSK08.img vendor/freedos/floppy-1.4/720k/x86DSK09.img vendor/freedos/floppy-1.4/720k/x86DSK10.img vendor/freedos/floppy-1.4/720k/x86DSK11.img --title "FreeDOS 1.4 (Floppy Edition, 720K)" --tag unemu/media/freedos-floppy-720k:1.4.0 --label '1=Disk 1 of 12 - boot disk and installer (x86BOOT.img)' --label '2=Disk 2 of 12 - packages (x86DSK01.img)' --label '3=Disk 3 of 12 - packages (x86DSK02.img)' --label '4=Disk 4 of 12 - packages (x86DSK03.img)' --label '5=Disk 5 of 12 - packages (x86DSK04.img)' --label '6=Disk 6 of 12 - packages (x86DSK05.img)' --label '7=Disk 7 of 12 - packages (x86DSK06.img)' --label '8=Disk 8 of 12 - packages (x86DSK07.img)' --label '9=Disk 9 of 12 - packages (x86DSK08.img)' --label '10=Disk 10 of 12 - packages (x86DSK09.img)' --label '11=Disk 11 of 12 - packages (x86DSK10.img)' --label '12=Disk 12 of 12 - packages (x86DSK11.img)' --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher "The FreeDOS Project" --developer "The FreeDOS Project" --year 2025 --genre "operating system" --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on twelve 3.5-inch 720K diskettes, unmodified: the boot disk with the floppy installer, then eleven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition "Floppy Edition" --set-label freedos --set-label open-source --set-label operating-system --open --license "GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other" --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
+cargo run --offline -p cli -- image media import vendor/freedos/floppy-1.4/144m/x86BOOT.img vendor/freedos/floppy-1.4/144m/x86DSK01.img vendor/freedos/floppy-1.4/144m/x86DSK02.img vendor/freedos/floppy-1.4/144m/x86DSK03.img vendor/freedos/floppy-1.4/144m/x86DSK04.img vendor/freedos/floppy-1.4/144m/x86DSK05.img vendor/freedos/floppy-1.4/144m/x86DSK06.img --title FreeDOS --tag unemu/media/freedos:1.4 --label '1=Disk 1 of 7 - boot disk and installer (x86BOOT.img)' --format 1=1.44M --label '2=Disk 2 of 7 - packages (x86DSK01.img)' --format 2=1.44M --label '3=Disk 3 of 7 - packages (x86DSK02.img)' --format 3=1.44M --label '4=Disk 4 of 7 - packages (x86DSK03.img)' --format 4=1.44M --label '5=Disk 5 of 7 - packages (x86DSK04.img)' --format 5=1.44M --label '6=Disk 6 of 7 - packages (x86DSK05.img)' --format 6=1.44M --label '7=Disk 7 of 7 - packages (x86DSK06.img)' --format 7=1.44M --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher 'The FreeDOS Project' --developer 'The FreeDOS Project' --year 2025 --genre 'operating system' --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on seven 3.5-inch 1.44M diskettes, unmodified: the boot disk with the floppy installer, then six disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition 'Floppy Edition' --set-label freedos --set-label open-source --set-label operating-system --open --license 'GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other' --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
+cargo run --offline -p cli -- image media import vendor/freedos/floppy-1.4/120m/x86BOOT.img vendor/freedos/floppy-1.4/120m/x86DSK01.img vendor/freedos/floppy-1.4/120m/x86DSK02.img vendor/freedos/floppy-1.4/120m/x86DSK03.img vendor/freedos/floppy-1.4/120m/x86DSK04.img vendor/freedos/floppy-1.4/120m/x86DSK05.img vendor/freedos/floppy-1.4/120m/x86DSK06.img vendor/freedos/floppy-1.4/120m/x86DSK07.img --title FreeDOS --tag unemu/media/freedos:1.4-1.2m --label '1=Disk 1 of 8 - boot disk and installer (x86BOOT.img)' --format 1=1.2M --label '2=Disk 2 of 8 - packages (x86DSK01.img)' --format 2=1.2M --label '3=Disk 3 of 8 - packages (x86DSK02.img)' --format 3=1.2M --label '4=Disk 4 of 8 - packages (x86DSK03.img)' --format 4=1.2M --label '5=Disk 5 of 8 - packages (x86DSK04.img)' --format 5=1.2M --label '6=Disk 6 of 8 - packages (x86DSK05.img)' --format 6=1.2M --label '7=Disk 7 of 8 - packages (x86DSK06.img)' --format 7=1.2M --label '8=Disk 8 of 8 - packages (x86DSK07.img)' --format 8=1.2M --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher 'The FreeDOS Project' --developer 'The FreeDOS Project' --year 2025 --genre 'operating system' --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on eight 5.25-inch 1.2M diskettes, unmodified: the boot disk with the floppy installer, then seven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition 'Floppy Edition' --set-label freedos --set-label open-source --set-label operating-system --open --license 'GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other' --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
+cargo run --offline -p cli -- image media import vendor/freedos/floppy-1.4/720k/x86BOOT.img vendor/freedos/floppy-1.4/720k/x86DSK01.img vendor/freedos/floppy-1.4/720k/x86DSK02.img vendor/freedos/floppy-1.4/720k/x86DSK03.img vendor/freedos/floppy-1.4/720k/x86DSK04.img vendor/freedos/floppy-1.4/720k/x86DSK05.img vendor/freedos/floppy-1.4/720k/x86DSK06.img vendor/freedos/floppy-1.4/720k/x86DSK07.img vendor/freedos/floppy-1.4/720k/x86DSK08.img vendor/freedos/floppy-1.4/720k/x86DSK09.img vendor/freedos/floppy-1.4/720k/x86DSK10.img vendor/freedos/floppy-1.4/720k/x86DSK11.img --title FreeDOS --tag unemu/media/freedos:1.4-720k --label '1=Disk 1 of 12 - boot disk and installer (x86BOOT.img)' --format 1=720K --label '2=Disk 2 of 12 - packages (x86DSK01.img)' --format 2=720K --label '3=Disk 3 of 12 - packages (x86DSK02.img)' --format 3=720K --label '4=Disk 4 of 12 - packages (x86DSK03.img)' --format 4=720K --label '5=Disk 5 of 12 - packages (x86DSK04.img)' --format 5=720K --label '6=Disk 6 of 12 - packages (x86DSK05.img)' --format 6=720K --label '7=Disk 7 of 12 - packages (x86DSK06.img)' --format 7=720K --label '8=Disk 8 of 12 - packages (x86DSK07.img)' --format 8=720K --label '9=Disk 9 of 12 - packages (x86DSK08.img)' --format 9=720K --label '10=Disk 10 of 12 - packages (x86DSK09.img)' --format 10=720K --label '11=Disk 11 of 12 - packages (x86DSK10.img)' --format 11=720K --label '12=Disk 12 of 12 - packages (x86DSK11.img)' --format 12=720K --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher 'The FreeDOS Project' --developer 'The FreeDOS Project' --year 2025 --genre 'operating system' --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on twelve 3.5-inch 720K diskettes, unmodified: the boot disk with the floppy installer, then eleven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition 'Floppy Edition' --set-label freedos --set-label open-source --set-label operating-system --open --license 'GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other' --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
 ```
 
 A redistributable set (decision-26 amendment of 2026-11-15, for example a
@@ -636,43 +641,66 @@ cargo run --offline -p cli -- image template build --store /path/to/templates --
 cargo run --offline -p cli -- image template build --store /path/to/templates
 ```
 
-`image template build` is a command rather than a script around `image
-firmware import` and New machine…: the template machines come from the create
-API (`pc_image::create`), which has no command of its own, and the push guard
-must judge each manifest before its tags are written. It reads the open fixtures
-under `vendor/` in the working directory (`--vendor DIR` for another copy) and
+`image template build` builds the two template machines and nothing else. It
+is a command rather than a script around `image firmware import` and New
+machine…: the template machines come from the create API (`pc_image::create`),
+which has no command of its own, and the push guard must judge each manifest
+before its tags are written. It reads the open firmware fixtures under
+`vendor/` in the working directory (`--vendor DIR` for another copy) and
 writes into `--store` (created when missing), in this order (design:
 machine-images §5.5):
 
 | Local tags | Registry repository | Image |
 | --- | --- | --- |
-| `unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.2.0`, `:latest` | `unemu/firmware/unemu-at-bios-1.0.2-unemu.3` | unemu AT BIOS package (the unemu fork of Kiselev 8088_bios) with its source archive |
-| `unemu/firmware/vgabios-0.9d-unemu.1-std:1.2.0`, `:latest` | `unemu/firmware/vgabios-0.9d-unemu.1-std` | unemu LGPL VGA BIOS package with its source archive |
-| `unemu/firmware/xub-r638-xtp-ata1f0:1.2.0`, `:latest` | `unemu/firmware/xub-r638-xtp-ata1f0` | XTIDE Universal BIOS r638 package with its source archive |
 | `open-at:1.2.0`, `:latest` | `unemu/open-at` | IBM 5170-class 80286, the three ROMs, 640 KiB + 1 MiB, VGA, COM1 without a mouse, an empty 1.2M A: and an empty 1.44M B: drive, a blank zero-base 504 MiB (1024/16/63) ATA disk at 1F0h, no sound card |
 | `open-at-games:1.2.0`, `:latest` | `unemu/open-at-games` | `open-at` plus SB16 (220h, IRQ 5, DMA 1/5), a Microsoft mouse on COM1 and a 2 MiB Lo-tech EMS board (260h, frame D000h) |
 
-After the machines the build imports the FreeDOS 1.4 Floppy Edition
-installation sets (fixtures: `bash vendor/freedos/fetch-floppy-1.4.sh`, a
-script of its own; once its outputs match their pins it stops at once,
-without the network):
+**Firmware packages and installation sets.** The open firmware packages the
+templates bind and the FreeDOS 1.4 Floppy Edition installation sets are built
+and published by the unemu-media repository
+(<https://github.com/unemu-org/unemu-media>), not by this command. Pull them
+from the default registry (`--create` for a new store):
 
-| Local tags | Registry repository | Image |
-| --- | --- | --- |
-| `unemu/media/freedos-floppy-1.44m:1.4.0`, `:latest` | `unemu/media/freedos-floppy-1.44m` | the edition's seven 1.44M disks |
-| `unemu/media/freedos-floppy-1.2m:1.4.0`, `:latest` | `unemu/media/freedos-floppy-1.2m` | its eight 1.2M disks |
-| `unemu/media/freedos-floppy-720k:1.4.0`, `:latest` | `unemu/media/freedos-floppy-720k` | its twelve 720K disks |
+```sh
+upcli image pull unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1 --store /path/to/store
+upcli image pull unemu/firmware/vgabios-0.9d-unemu.1-std:1 --store /path/to/store
+upcli image pull unemu/firmware/xub-r638-xtp-ata1f0:1 --store /path/to/store
+upcli image pull unemu/media/freedos:1.4 --store /path/to/store
+upcli image pull unemu/media/freedos:1.4-1.2m --store /path/to/store
+upcli image pull unemu/media/freedos:1.4-720k --store /path/to/store
+```
 
-Each set holds the disks unmodified in installer order and, as extras,
-`LICENSES.TXT` (the licence index, its licence text) and the deterministic
-source archive, open under the conjunction of the programs' licences with both
-linked (machine-images §5.5). Its version tag is the release's (`1.4.0`), not
-`pc_image::template::VERSION`; its lines read `media`. The build checks every
-set fixture against the pin of `vendor/freedos/fetch-floppy-1.4.sh` before
-it writes the first tag of any image; another or a missing file stops it and
-names the script. `pc_image::template::build` (firmware and machines) and
-`build_media` (the sets) are separate, so the 1.2.0 template tests need only
-the firmware fixtures.
+| Local tag | Image |
+| --- | --- |
+| `unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1` | unemu AT BIOS package (the unemu fork of Kiselev 8088_bios) with its source archive |
+| `unemu/firmware/vgabios-0.9d-unemu.1-std:1` | unemu LGPL VGA BIOS package with its source archive |
+| `unemu/firmware/xub-r638-xtp-ata1f0:1` | XTIDE Universal BIOS r638 package with its source archive |
+| `unemu/media/freedos:1.4` | the edition's seven 1.44M disks |
+| `unemu/media/freedos:1.4-1.2m` | its eight 1.2M disks |
+| `unemu/media/freedos:1.4-720k` | its twelve 720K disks |
+
+A package's tag is its revision and a set's tag names the release and, unless
+it is the edition's own 1.44M, the floppy format; neither tag moves and
+neither has `latest`. Each set holds the disks unmodified in installer order
+and, as extras, `LICENSES.TXT` (the licence index, its licence text) and the
+deterministic source archive, open under the conjunction of the programs'
+licences with both linked; its title is the work's, `FreeDOS`, with the
+release and edition in their own fields (machine-images §5.5). The same
+images can be built locally from the fixtures:
+`pc_image::template::build_firmware` and `build_media` (fixtures of the sets:
+`bash vendor/freedos/fetch-floppy-1.4.sh`) give them under these tags, and
+their tests pin the published digests, so each pin checks that the two
+repositories still build the same image. `image media import` reproduces each
+set from the command line (Local machine images, above).
+
+`image template build` imports the three packages it binds from the firmware
+fixtures first, as local copies under the tags above: the same packages a
+pull gives, so a store that already holds them keeps them. They get no output
+line and no guard check of their own; the guard judges their ROMs and source
+archives inside each template, and the package tags stay in the store even
+when a template is refused. A package tag that names another image stops the
+build before any template, and the dry run too; remove or rename that tag, or
+build into a dedicated store. The installation-set fixtures are not read.
 
 The local tags are the short form `image pull` writes for each repository, so
 `image push TAG` without a reference reaches the repository in the table. Each
@@ -680,30 +708,30 @@ source archive must be the one the catalogue pins (its fetch script builds it);
 another archive, or a missing fixture, stops the build and names the script.
 No operating system goes into a template machine; installation sets, such as
 the FreeDOS ones above, are separate images. The output is one
-`TAG<TAB>DIGEST<TAB>firmware|machine|media<TAB>created|present|moved:OLD|kept:CURRENT`
-line per tag, written as soon as its image is built, then `guard:allowed`. A
-tag that already names the same image stays; a version tag naming another
-image stops the build (give a changed template a new version in
-`pc_image::template::VERSION`). `latest` moves by compare-and-swap, and only
+`TAG<TAB>DIGEST<TAB>machine<TAB>created|present|moved:OLD|kept:CURRENT`
+line per template tag, written as soon as its template is built, then
+`guard:allowed`. A tag that already names the same image stays; a version tag
+naming another image stops the build (give a changed template a new version
+in `pc_image::template::VERSION`). `latest` moves by compare-and-swap, and only
 away from an image that lower versions of the same repository name alone; it
 stays (`kept:`) on a higher version or on an image no version of the
 repository names. The same fixtures give the same digests on every run and
 host: nothing depends on the clock, the host or the fixture paths; a test pins
 the digests of the published generation.
 
-Before any tag of an image is written, the build applies the push guard for
+Before any tag of a template is written, the build applies the push guard for
 `unemu/` on the default registry, from the store's local marks and the firmware
 catalogue: every blob open, every copyleft ROM with its linked source archive.
 A refusal stops the build, for example in a store where another local tag
 records the same ROM bytes as user-supplied, so build into a dedicated store.
 The tag is written only for the manifest the guard judged. `--dry-run` builds
 in a scratch store under the system temporary directory, removes it, and
-reports what a build would do to each tag of `--store` (which is never written
-and need not exist): `new`, `present`, `conflict:DIGEST` (a version tag naming
-another image), `moves:DIGEST` or `kept:DIGEST` (the alias), then `dry run; no
-blobs or tag written`. When `--store` exists, the guard judges each image with
-its marks as well as the scratch store's, so a dry run refuses what the build
-would refuse.
+reports what a build would do to each template tag of `--store` (which is
+never written and need not exist): `new`, `present`, `conflict:DIGEST` (a
+version tag naming another image), `moves:DIGEST` or `kept:DIGEST` (the
+alias), then `dry run; no blobs or tag written`. When `--store` exists, the
+guard judges each template with its marks as well as the scratch store's, so a
+dry run refuses what the build would refuse.
 
 The build never pushes; publishing is the maintainer's step. Log in once
 (`image login registry.unemu.dev --user NAME`), review every dry run, then push
@@ -711,40 +739,15 @@ the version tags and the aliases:
 
 ```sh
 S=/path/to/templates
-cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.2.0 unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.2.0 --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.9d-unemu.1-std:1.2.0 unemu/firmware/vgabios-0.9d-unemu.1-std:1.2.0 --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:1.2.0 unemu/firmware/xub-r638-xtp-ata1f0:1.2.0 --store "$S" --dry-run
 cargo run --offline -p cli -- image push open-at:1.2.0 unemu/open-at:1.2.0 --store "$S" --dry-run
 cargo run --offline -p cli -- image push open-at-games:1.2.0 unemu/open-at-games:1.2.0 --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.44m:1.4.0 unemu/media/freedos-floppy-1.44m:1.4.0 --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.2m:1.4.0 unemu/media/freedos-floppy-1.2m:1.4.0 --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/media/freedos-floppy-720k:1.4.0 unemu/media/freedos-floppy-720k:1.4.0 --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.3:latest unemu/firmware/unemu-at-bios-1.0.2-unemu.3:latest --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.9d-unemu.1-std:latest unemu/firmware/vgabios-0.9d-unemu.1-std:latest --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:latest unemu/firmware/xub-r638-xtp-ata1f0:latest --store "$S" --dry-run
 cargo run --offline -p cli -- image push open-at:latest unemu/open-at:latest --store "$S" --dry-run
 cargo run --offline -p cli -- image push open-at-games:latest unemu/open-at-games:latest --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.44m:latest unemu/media/freedos-floppy-1.44m:latest --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.2m:latest unemu/media/freedos-floppy-1.2m:latest --store "$S" --dry-run
-cargo run --offline -p cli -- image push unemu/media/freedos-floppy-720k:latest unemu/media/freedos-floppy-720k:latest --store "$S" --dry-run
 
-cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.2.0 unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.2.0 --store "$S"
-cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.9d-unemu.1-std:1.2.0 unemu/firmware/vgabios-0.9d-unemu.1-std:1.2.0 --store "$S"
-cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:1.2.0 unemu/firmware/xub-r638-xtp-ata1f0:1.2.0 --store "$S"
 cargo run --offline -p cli -- image push open-at:1.2.0 unemu/open-at:1.2.0 --store "$S"
 cargo run --offline -p cli -- image push open-at-games:1.2.0 unemu/open-at-games:1.2.0 --store "$S"
-cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.44m:1.4.0 unemu/media/freedos-floppy-1.44m:1.4.0 --store "$S"
-cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.2m:1.4.0 unemu/media/freedos-floppy-1.2m:1.4.0 --store "$S"
-cargo run --offline -p cli -- image push unemu/media/freedos-floppy-720k:1.4.0 unemu/media/freedos-floppy-720k:1.4.0 --store "$S"
-
-cargo run --offline -p cli -- image push unemu/firmware/unemu-at-bios-1.0.2-unemu.3:latest unemu/firmware/unemu-at-bios-1.0.2-unemu.3:latest --store "$S"
-cargo run --offline -p cli -- image push unemu/firmware/vgabios-0.9d-unemu.1-std:latest unemu/firmware/vgabios-0.9d-unemu.1-std:latest --store "$S"
-cargo run --offline -p cli -- image push unemu/firmware/xub-r638-xtp-ata1f0:latest unemu/firmware/xub-r638-xtp-ata1f0:latest --store "$S"
 cargo run --offline -p cli -- image push open-at:latest unemu/open-at:latest --store "$S"
 cargo run --offline -p cli -- image push open-at-games:latest unemu/open-at-games:latest --store "$S"
-cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.44m:latest unemu/media/freedos-floppy-1.44m:latest --store "$S"
-cargo run --offline -p cli -- image push unemu/media/freedos-floppy-1.2m:latest unemu/media/freedos-floppy-1.2m:latest --store "$S"
-cargo run --offline -p cli -- image push unemu/media/freedos-floppy-720k:latest unemu/media/freedos-floppy-720k:latest --store "$S"
 ```
 
 Each dry run must end in `guard:allowed` with every blob `open`. A version tag

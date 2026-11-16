@@ -1960,18 +1960,31 @@ component), so catalogue ids such as `kiselev-xi8088-1.0.2-atreset` need no
 mapping. Each template generation has a semantic-version tag (`1.0.0`), which
 never moves, and `latest`, which follows the newest version. The local tags of
 a template build are the short forms a pull writes: `open-at:1.0.0` for
-`unemu/open-at`, and `unemu/firmware/<id>:1.0.0` for a package (two components
-remain after `unemu/`). Installation sets live under `unemu/media/<name>`
-with their release's own version tag (FreeDOS 1.4 is `1.4.0`, since version
-tags are `MAJOR.MINOR.PATCH`) and `latest`; their local tags keep the full
-name, `unemu/media/<name>:<version>`. Future software images get their own
-names when their licence decision is made.
+`unemu/open-at`. A firmware package's tag is its revision,
+`unemu/firmware/<id>:1` (two components remain after `unemu/`, so the local
+tag keeps the full name). Installation sets live under `unemu/media/<work>`,
+one repository per work, tagged with the release and, unless it is the
+edition's own format, the floppy format: `unemu/media/freedos:1.4`,
+`:1.4-1.2m`, `:1.4-720k`. Neither a package nor a set has `latest`, and
+neither tag moves. Future software images get their own names when their
+licence decision is made.
+
+**Who publishes what (2026-11-16).** The firmware packages and the
+installation sets are built and published by the unemu-media repository
+(<https://github.com/unemu-org/unemu-media>) with a pinned `upcli` release;
+`image template build` builds the template machines only.
+`pc_image::template::build_firmware` and `build_media` build the same images
+locally from this repository's fixtures, under the published tags and with
+the values `image firmware import` and `image media import` take there; their
+tests pin the published digests, so each pin cross-checks the two
+repositories. A template binds the packages by digest, so its digest does not
+depend on where the packages came from.
 
 **Installation sets (2026-11-15).** The templates describe the official
 **FreeDOS 1.4 Floppy Edition** (`vendor/freedos/fetch-floppy-1.4.sh`,
 `pc_image::template::MEDIA`) as one set per floppy format it ships:
-`freedos-floppy-1.44m` (7 disks), `freedos-floppy-1.2m` (8) and
-`freedos-floppy-720k` (12), each disk byte for byte the edition's, in
+`unemu/media/freedos:1.4` (the edition's 1.44M, 7 disks), `:1.4-1.2m` (8) and
+`:1.4-720k` (12), each disk byte for byte the edition's, in
 installer order (`x86BOOT.img`, then `x86DSK01.img`…), labelled "Disk N of M
 - boot disk and installer (x86BOOT.img)" or "… - packages (x86DSKnn.img)".
 Every set carries the same two extras: `LICENSES.TXT`, kind document, a
@@ -1986,17 +1999,18 @@ FDNET's DHCP, FDBANNER) and of the installer at its `FreeDOS-v1.4` tags
 builder). The release documents (`readme.txt`, `announce.html`,
 `changes.log`, `report.html`, `verify.txt`) state no licence of their own and
 are not carried; the edition's documentation travels inside its disks and
-the source tar under each package's licence. The title record states the title "FreeDOS 1.4 (Floppy Edition,
-1.44M)" (and so on), publisher and developer "The FreeDOS Project", year
-2025, platform DOS, genre "operating system", version 1.4, edition "Floppy
-Edition", a description, and labels `freedos`, `open-source`,
-`operating-system`; the manifest carries the OCI title, description, vendor
-and authors annotations from it. Every fixture is checked against its pin
-before an import, so other bytes at a fixture path are refused.
+the source tar under each package's licence. The title record states the
+work's title only, "FreeDOS" (the version, the edition and the format have
+fields and a tag of their own), publisher and developer "The FreeDOS
+Project", year 2025, platform DOS, genre "operating system", version 1.4,
+edition "Floppy Edition", a description, and labels `freedos`,
+`open-source`, `operating-system`; the manifest carries the OCI title,
+description, vendor and authors annotations from it. Every fixture is checked
+against its pin before an import, so other bytes at a fixture path are
+refused.
 
-`image template build` imports the three sets after the template machines
-(`pc_image::template::build_media`, separate from the firmware and machine
-build, after checking every set fixture before the first tag), open under the
+The sets are imported (locally by `pc_image::template::build_media`, which
+checks every set fixture before the first tag) open under the
 conjunction of their programs' licences, `GPL-1.0-only AND GPL-1.0-or-later
 AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND
 LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND
@@ -2006,10 +2020,10 @@ terms named together and quoted in `LICENSES.TXT`; a test keeps the code and
 the index equal), with `LICENSES.TXT` as the licence text and the source tar
 as the source archive (`--license-text` and `--source` of §5.2). Each set goes
 through the guard of `unemu/` before its manifest is stored (rules 4 and 5
-pass: every medium and extra links both), tagged `unemu/media/<name>:1.4.0`
-and `latest`. The template machines' closure did not change with them, so
+pass: every medium and extra links both), tagged with its own tag only. The
+template machines' closure did not change with them, so
 their generation stayed `1.1.0` with its pins (it is `1.2.0` since, below); a
-separate test pins the three sets' digests. Each program's licence is read
+separate test pins the three sets' published digests. Each program's licence is read
 from its own notices (main source headers, licence files) and from the LSM
 only where those name no version; the narrowest grant of a package is listed.
 Two parts are read closely and are inside the claim: the cpidos fonts ship as
@@ -2051,7 +2065,9 @@ rather than re-pinned because a local store may already hold it.
 
 **Build.** `image template build` (commands.md, Official template images)
 imports the three packages from the fetched fixtures with their pinned source
-archives, then creates each machine through the New machine create API
+archives (`pc_image::template::build_firmware`, as local copies of the
+published packages under their published tags, with no output line and no
+guard check of their own), then creates each machine through the New machine create API
 (§5.3, `pc_image::create`): zero-base blank disks, a generated configuration
 (CC0) and the packages' ROM and archive blobs bound by digest. Titles and
 descriptions are manifest annotations. Each package states its title,
@@ -2064,7 +2080,7 @@ is stated; each source archive's `NOTICE` names the fork's public repository
 (<https://github.com/unemu-org/at-bios>, <https://github.com/unemu-org/vgabios>). Nothing
 depends on the clock, the host or the fixture paths, so the same fixtures give
 the same manifests and digests on
-every run and host. Before any tag of an image is written, the build applies
+every run and host. Before any tag of a template is written, the build applies
 the push guard of `unemu/` on the default registry (every blob open, each
 copyleft ROM with its source archive in the closure) and stops on a refusal;
 only the judged manifest is tagged. Version tags never move; a changed template

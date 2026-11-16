@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `image template build` from the open fixtures: reproducible digests, dry
-//! runs, the push guard of the official namespace, a POST of the open-at
-//! template and `image media import` reproducing the installation sets;
+//! `image template build` from the open fixtures: the template machines
+//! only, reproducible digests, dry runs, the push guard of the official
+//! namespace, a POST of the open-at template, and `image media import`
+//! reproducing the installation sets the unemu-media repository publishes;
 //! machine-images §5.5. Nothing here reaches a network registry.
 #[path = "support/fixtures.rs"]
 mod fixtures;
@@ -38,8 +39,8 @@ fn vendor() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor")
 }
 
-/// The open firmware fixtures the templates need, or `None` when they are
-/// not fetched.
+/// The open firmware fixtures the templates need, the only fixtures
+/// `image template build` reads, or `None` when they are not fetched.
 fn fetched() -> Option<()> {
     for source in &pc_image::template::FIRMWARE {
         fixtures::fixture(source.rom)?;
@@ -48,12 +49,13 @@ fn fetched() -> Option<()> {
     Some(())
 }
 
-/// The fixtures `image template build` reads: the firmware and every
-/// installation set's disks and extras, which it checks before the first tag.
-fn command_fetched() -> Option<()> {
-    fetched()?;
-    media_fetched()
-}
+/// The local tags of both templates, in build order.
+const TEMPLATE_TAGS: [&str; 4] = [
+    "open-at:1.2.0",
+    "open-at:latest",
+    "open-at-games:1.2.0",
+    "open-at-games:latest",
+];
 
 fn run(args: &[&dyn AsRef<std::ffi::OsStr>]) -> (u8, String, String) {
     let args: Vec<OsString> = args.iter().map(|a| a.as_ref().to_owned()).collect();
@@ -108,7 +110,7 @@ fn rows(output: &str) -> Vec<(String, String, String, String)> {
 
 #[test]
 fn the_build_is_reproducible_all_open_for_unemu_and_its_dry_run_writes_nothing() {
-    if command_fetched().is_none() {
+    if fetched().is_none() {
         return;
     }
     let t = Temp::new("template-cli");
@@ -117,29 +119,23 @@ fn the_build_is_reproducible_all_open_for_unemu_and_its_dry_run_writes_nothing()
     assert!(first.ends_with("guard:allowed\n"), "{first}");
     let first = rows(&first);
     let tags: Vec<_> = first.iter().map(|r| r.0.as_str()).collect();
-    assert_eq!(
-        tags,
-        [
-            "unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.2.0",
-            "unemu/firmware/unemu-at-bios-1.0.2-unemu.3:latest",
-            "unemu/firmware/vgabios-0.9d-unemu.1-std:1.2.0",
-            "unemu/firmware/vgabios-0.9d-unemu.1-std:latest",
-            "unemu/firmware/xub-r638-xtp-ata1f0:1.2.0",
-            "unemu/firmware/xub-r638-xtp-ata1f0:latest",
-            "open-at:1.2.0",
-            "open-at:latest",
-            "open-at-games:1.2.0",
-            "open-at-games:latest",
-            "unemu/media/freedos-floppy-1.44m:1.4.0",
-            "unemu/media/freedos-floppy-1.44m:latest",
-            "unemu/media/freedos-floppy-1.2m:1.4.0",
-            "unemu/media/freedos-floppy-1.2m:latest",
-            "unemu/media/freedos-floppy-720k:1.4.0",
-            "unemu/media/freedos-floppy-720k:latest",
-        ]
+    assert_eq!(tags, TEMPLATE_TAGS);
+    assert!(
+        first.iter().all(|r| r.2 == "machine" && r.3 == "created"),
+        "{first:?}"
     );
-    assert!(first.iter().all(|r| r.3 == "created"), "{first:?}");
-    assert!(first[10..].iter().all(|r| r.2 == "media"), "{first:?}");
+    // The firmware packages the templates bind stay in the store under the
+    // tags `image pull` writes for the published packages, without a line.
+    let store = Store::open_existing(t.0.join("a")).unwrap();
+    for source in &pc_image::template::FIRMWARE {
+        let tag = pc_image::template::local_tag(
+            &source.repository(),
+            pc_image::template::FIRMWARE_REVISION,
+        );
+        assert!(tag.ends_with(":1"), "{tag}");
+        assert!(store.tag_descriptor(&tag).is_ok(), "{tag}");
+    }
+    drop(store);
     let digests = |rows: &[(String, String, String, String)]| {
         rows.iter()
             .map(|r| (r.0.clone(), r.1.clone(), r.2.clone()))
@@ -197,7 +193,7 @@ fn the_build_is_reproducible_all_open_for_unemu_and_its_dry_run_writes_nothing()
 
 #[test]
 fn a_store_that_records_an_open_rom_as_user_supplied_refuses_the_build() {
-    if command_fetched().is_none() {
+    if fetched().is_none() {
         return;
     }
     let t = Temp::new("template-cli-refused");
@@ -226,24 +222,45 @@ fn a_store_that_records_an_open_rom_as_user_supplied_refuses_the_build() {
     assert!(output.contains("kept user-supplied"), "{output}");
     let index = fs::read(store.join("images/index.json")).unwrap();
     // The dry run judges with the marks of the store it reports on as well.
+    // The template that binds the ROM is refused, not its package: the
+    // package is a local copy, never pushed by this command.
     for dry_run in [true, false] {
         let (code, output, errors) = build(&store, dry_run);
         assert_ne!(code, 0, "{output}");
         assert!(
-            errors.contains("unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.2.0 refused")
+            errors.contains("unemu/open-at:1.2.0 refused")
                 && errors.contains("every blob must be open"),
             "{errors}"
         );
         assert!(!output.contains("guard:allowed"), "{output}");
+        assert!(!output.contains("\tsha256:"), "{output}");
         if dry_run {
             assert_eq!(fs::read(store.join("images/index.json")).unwrap(), index);
         }
     }
     let store = Store::open_existing(&store).unwrap();
-    assert!(store
-        .tag_descriptor("unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.2.0")
-        .is_err());
-    assert_eq!(store.list_tags(None, 10).unwrap().tags.len(), 1);
+    for tag in TEMPLATE_TAGS {
+        assert!(store.tag_descriptor(tag).is_err(), "{tag}");
+    }
+    // The user's own import and the three local packages the build made
+    // before the template was refused; they stay.
+    let mut tags: Vec<_> = store
+        .list_tags(None, 10)
+        .unwrap()
+        .tags
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
+    tags.sort_unstable();
+    assert_eq!(
+        tags,
+        [
+            "firmware/unemu-at-bios-1.0.2-unemu.3:1",
+            "unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1",
+            "unemu/firmware/vgabios-0.9d-unemu.1-std:1",
+            "unemu/firmware/xub-r638-xtp-ata1f0:1",
+        ]
+    );
 }
 
 #[test]
@@ -365,7 +382,7 @@ fn variant(store: &Store, title: &str) -> pc_image::create::NewImage {
 
 #[test]
 fn the_dry_run_names_a_version_conflict_and_what_latest_does() {
-    if command_fetched().is_none() {
+    if fetched().is_none() {
         return;
     }
     let t = Temp::new("template-cli-states");
@@ -380,13 +397,8 @@ fn the_dry_run_names_a_version_conflict_and_what_latest_does() {
     // open-at:1.2.0 names another image before the first build.
     let path = t.0.join("conflict");
     let store = Store::open(&path).unwrap();
-    let firmware_only = |reference: &str, _: &image_store::Manifest| {
-        if reference.starts_with("unemu/firmware/") {
-            Ok(())
-        } else {
-            Err("machines later".to_owned())
-        }
-    };
+    // Only the packages the templates bind: every template is refused.
+    let firmware_only = |_: &str, _: &image_store::Manifest| Err("machines later".to_owned());
     assert!(pc_image::template::build(&store, &vendor(), &firmware_only, &mut |_| {}).is_err());
     let other = pc_image::create::create(
         &store,
@@ -402,10 +414,9 @@ fn the_dry_run_names_a_version_conflict_and_what_latest_does() {
         format!("conflict:{}", other.digest)
     );
     assert_eq!(state(&dry, "open-at:latest"), "new");
-    assert_eq!(
-        state(&dry, "unemu/firmware/xub-r638-xtp-ata1f0:1.2.0"),
-        "present"
-    );
+    // The report names the templates alone, never the packages they bind.
+    let reported: Vec<_> = rows(&dry).into_iter().map(|r| r.0).collect();
+    assert_eq!(reported, TEMPLATE_TAGS);
     let (code, _, errors) = build(&path, false);
     assert_ne!(code, 0);
     assert!(errors.contains("a version tag never moves"), "{errors}");
@@ -452,16 +463,59 @@ fn the_dry_run_names_a_version_conflict_and_what_latest_does() {
         store.tag_descriptor("open-at:latest").unwrap().digest,
         higher.digest
     );
+
+    // A package tag of the store names another package: the build refuses
+    // before any template, and so does the dry run, which reports no package.
+    let xub = pc_image::template::local_tag(
+        &pc_image::template::FIRMWARE[2].repository(),
+        pc_image::template::FIRMWARE_REVISION,
+    );
+    let bios = pc_image::template::local_tag(
+        &pc_image::template::FIRMWARE[0].repository(),
+        pc_image::template::FIRMWARE_REVISION,
+    );
+    let ours = store.tag_descriptor(&xub).unwrap();
+    let another = store.tag_descriptor(&bios).unwrap();
+    store
+        .update_tag(
+            &xub,
+            &another,
+            Some(&ours.digest),
+            &image_store::firmware::Validator(&pc_image::firmware::PcFirmwareRules(
+                pc_image::firmware::catalogue(),
+            )),
+        )
+        .unwrap();
+    let index = fs::read(path.join("images/index.json")).unwrap();
+    let conflict = format!(
+        "{xub} already names {}, not {}",
+        another.digest, ours.digest
+    );
+    for dry_run in [true, false] {
+        let (code, output, errors) = build(&path, dry_run);
+        assert_ne!(code, 0, "dry run {dry_run}: {output}");
+        assert!(
+            errors.contains(&conflict) && errors.contains("remove or rename that local tag"),
+            "dry run {dry_run}: {errors}"
+        );
+        assert!(!output.contains("\tsha256:"), "dry run {dry_run}: {output}");
+        assert!(
+            !output.contains("guard:allowed"),
+            "dry run {dry_run}: {output}"
+        );
+        assert_eq!(fs::read(path.join("images/index.json")).unwrap(), index);
+    }
 }
 
-/// Without the installation sets' fixtures the command refuses before it
-/// writes anything, so a missing set never leaves the templates half built.
+/// The build reads the firmware fixtures alone: the installation sets are
+/// not its images any more, so their fixtures are neither checked nor
+/// needed. Without a firmware fixture it stops and names the fetch script.
 #[test]
-fn a_missing_set_fixture_stops_the_build_before_the_first_tag() {
+fn the_build_needs_only_the_firmware_fixtures() {
     if fetched().is_none() {
         return;
     }
-    let t = Temp::new("template-cli-no-media");
+    let t = Temp::new("template-cli-firmware-only");
     let copy = t.0.join("vendor");
     for source in &pc_image::template::FIRMWARE {
         for relative in [source.rom, source.source_archive] {
@@ -470,28 +524,38 @@ fn a_missing_set_fixture_stops_the_build_before_the_first_tag() {
             fs::copy(vendor().join(relative), to).unwrap();
         }
     }
+    let empty = t.0.join("empty");
     let store = t.0.join("store");
-    for dry_run in [false, true] {
-        let mut args: Vec<&dyn AsRef<std::ffi::OsStr>> = vec![
-            &"image",
-            &"template",
-            &"build",
-            &"--store",
-            &store,
-            &"--vendor",
-            &copy,
-        ];
-        if dry_run {
-            args.push(&"--dry-run");
-        }
-        let (code, output, errors) = run(&args);
+    for dry_run in [true, false] {
+        let with = |vendor: &Path| {
+            let mut args: Vec<&dyn AsRef<std::ffi::OsStr>> = vec![
+                &"image",
+                &"template",
+                &"build",
+                &"--store",
+                &store,
+                &"--vendor",
+                &vendor,
+            ];
+            if dry_run {
+                args.push(&"--dry-run");
+            }
+            run(&args)
+        };
+        let (code, output, errors) = with(&copy);
+        assert_eq!(code, 0, "{errors}");
+        let tags: Vec<_> = rows(&output).into_iter().map(|r| r.0).collect();
+        assert_eq!(tags, TEMPLATE_TAGS, "{output}");
+        assert_eq!(store.exists(), !dry_run);
+
+        let (code, output, errors) = with(&empty);
         assert_ne!(code, 0, "{output}");
         assert!(
-            errors.contains("missing fixture") && errors.contains("fetch-floppy-1.4.sh"),
+            errors.contains("missing fixture") && errors.contains("vendor/unemu-at-bios/fetch.sh"),
             "{errors}"
         );
+        assert!(!errors.contains("freedos"), "{errors}");
         assert!(!output.contains("\tsha256:"), "{output}");
-        assert!(!store.exists(), "nothing is written");
     }
 }
 
@@ -505,18 +569,25 @@ fn media_fetched() -> Option<()> {
 }
 
 /// The `image media import` command line that imports one installation set
-/// of the templates into `store`, every value taken from the set and its
-/// release as the template build states them: disk labels, extras with their
-/// DOS names, the catalogue record with the set labels, version and edition,
-/// and the open statement. The floppy format is detected from the exact size
-/// and the extras' kinds from their extensions, as a recipe would leave them.
+/// into `store`, with the arguments the unemu-media repository's publish
+/// step passes it (`lib/manifest.py sets`): the disks, the title and tag,
+/// each disk's label and format, the extras with their DOS names, the
+/// catalogue record with its version, edition and set labels, and the open
+/// statement. Each extra's kind comes from its extension.
 fn media_import_args(source: &pc_image::template::MediaSource, store: &Path) -> Vec<OsString> {
     let release = source.release;
     let mut args: Vec<OsString> = vec!["image".into(), "media".into(), "import".into()];
     args.extend(source.disks.iter().map(|d| vendor().join(d.path).into()));
     let mut flag = |name: &str, value: OsString| args.extend([name.into(), value]);
+    let tag = pc_image::template::local_tag(&source.repository(), source.tag);
+    flag("--title", release.title.into());
+    flag("--tag", tag.into());
     for (index, disk) in source.disks.iter().enumerate() {
         flag("--label", format!("{}={}", index + 1, disk.name).into());
+        flag(
+            "--format",
+            format!("{}={}", index + 1, source.format).into(),
+        );
     }
     for (file, _) in release.extras {
         let mut extra = vendor().join(file.path).into_os_string();
@@ -524,9 +595,6 @@ fn media_import_args(source: &pc_image::template::MediaSource, store: &Path) -> 
         extra.push(file.name);
         flag("--extra", extra);
     }
-    let tag = pc_image::template::local_tag(&source.repository(), release.version);
-    flag("--title", source.title.into());
-    flag("--tag", tag.into());
     flag("--publisher", release.publisher.into());
     flag("--developer", release.publisher.into());
     flag("--year", release.year.to_string().into());
@@ -563,11 +631,12 @@ fn imported_digest(output: &str, tag: &str) -> String {
 }
 
 /// A media recipe imports the official installation sets with the command
-/// line alone: each set it imports is byte for byte the set the template
-/// build publishes, so the same manifest digest. Without the set labels,
-/// version and edition it would be another set.
+/// line alone: each set it imports is byte for byte the set the local build
+/// gives, so the same manifest digest, which the pc-image tests pin to the
+/// published one. Without the set labels, version and edition it would be
+/// another set.
 #[test]
-fn the_media_import_command_reproduces_each_installation_set_of_the_templates() {
+fn the_media_import_command_reproduces_each_installation_set() {
     if media_fetched().is_none() {
         return;
     }
@@ -577,7 +646,8 @@ fn the_media_import_command_reproduces_each_installation_set_of_the_templates() 
     let built = pc_image::template::build_media(&store, &vendor(), &allow, &mut |_| {}).unwrap();
     assert_eq!(built.len(), pc_image::template::MEDIA.len());
     for (source, set) in pc_image::template::MEDIA.iter().zip(&built) {
-        let tag = pc_image::template::local_tag(&source.repository(), source.release.version);
+        let tag = pc_image::template::local_tag(&source.repository(), source.tag);
+        assert_eq!(set.tags[0].0, tag);
         let args = media_import_args(source, &t.0.join("imported"));
         let (code, output, errors) = run_args(&args);
         assert_eq!(code, 0, "{tag}: {errors}");
@@ -589,7 +659,7 @@ fn the_media_import_command_reproduces_each_installation_set_of_the_templates() 
     }
 
     let source = &pc_image::template::MEDIA[0];
-    let tag = pc_image::template::local_tag(&source.repository(), source.release.version);
+    let tag = pc_image::template::local_tag(&source.repository(), source.tag);
     let mut args = media_import_args(source, &t.0.join("without"));
     let mut index = 0;
     while index < args.len() {

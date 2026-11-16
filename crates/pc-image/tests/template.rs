@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Official template builds from the open fixtures: determinism, the guard
-//! seam, machines that validate and lower, and the installation sets the
-//! templates describe; machine-images §5.5.
+//! seam, machines that validate and lower, and the local builds of the
+//! firmware packages and installation sets, pinned to the digests the
+//! unemu-media repository publishes; machine-images §5.5.
 use image_store::{media_type as mt, BlobSource, ConfigValidator, Manifest, Store, MAX_SMALL_BLOB};
 use pc_image::create::{NewImage, PackageRom};
-use pc_image::template::{self, Built, Kind, Outcome, VERSION};
+use pc_image::template::{self, Built, Kind, Outcome, FIRMWARE_REVISION, VERSION};
 use std::{
     cell::RefCell,
     fs,
@@ -113,13 +114,19 @@ fn two_builds_from_different_fixture_copies_give_identical_images() {
     assert_eq!(
         names,
         [
-            (Kind::Firmware, "unemu/firmware/unemu-at-bios-1.0.2-unemu.3"),
-            (Kind::Firmware, "unemu/firmware/vgabios-0.9d-unemu.1-std"),
-            (Kind::Firmware, "unemu/firmware/xub-r638-xtp-ata1f0"),
             (Kind::Machine, "unemu/open-at"),
             (Kind::Machine, "unemu/open-at-games"),
         ]
     );
+    // The packages the templates bind are local copies of the published
+    // ones, under their published tags.
+    for (source, (_, digest)) in template::FIRMWARE.iter().zip(&FIRMWARE_PINNED) {
+        let tag = template::local_tag(&source.repository(), FIRMWARE_REVISION);
+        assert_eq!(
+            first.tag_descriptor(&tag).unwrap().digest.to_string(),
+            *digest
+        );
+    }
     for built in &a {
         let tags: Vec<_> = built.tags.iter().map(|(tag, _)| tag.as_str()).collect();
         assert_eq!(built.version, VERSION);
@@ -138,7 +145,7 @@ fn two_builds_from_different_fixture_copies_give_identical_images() {
             );
         }
     }
-    assert_eq!(a[3].tags[0].0, "open-at:1.2.0");
+    assert_eq!(a[0].tags[0].0, "open-at:1.2.0");
     // A rebuild into the same store finds every tag in place.
     let again = template::build(&first, &vendor(), &allow, &mut |_| {}).unwrap();
     assert_eq!(identities(&again), identities(&a));
@@ -177,15 +184,10 @@ fn the_guard_sees_each_image_before_its_tags_and_a_refusal_tags_nothing_of_it() 
         error.contains("unemu/open-at-games:1.2.0 refused: synthetic refusal"),
         "{error}"
     );
+    // Only the templates: the packages they bind are not images of the build.
     assert_eq!(
         *seen.borrow(),
-        [
-            "unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.2.0",
-            "unemu/firmware/vgabios-0.9d-unemu.1-std:1.2.0",
-            "unemu/firmware/xub-r638-xtp-ata1f0:1.2.0",
-            "unemu/open-at:1.2.0",
-            "unemu/open-at-games:1.2.0",
-        ]
+        ["unemu/open-at:1.2.0", "unemu/open-at-games:1.2.0"]
     );
     assert!(store.tag_descriptor("open-at:1.2.0").is_ok());
     for tag in ["open-at-games:1.2.0", "open-at-games:latest"] {
@@ -331,19 +333,7 @@ fn template_machines_validate_lower_and_describe_themselves() {
 /// The digests of this template generation. Any change to the templates, or
 /// to what they are built from, changes them; version tags never move, so a
 /// changed template needs a new `pc_image::template::VERSION` and new pins.
-const PINNED: [(&str, &str); 5] = [
-    (
-        "unemu/firmware/unemu-at-bios-1.0.2-unemu.3",
-        "sha256:7a4d34f3e6d229d0857a592daf2f6412be33aa0dc385bdd605e28cf6eac6c64e",
-    ),
-    (
-        "unemu/firmware/vgabios-0.9d-unemu.1-std",
-        "sha256:fa521a4f878c77706f143079b996c7486aa71c1ee408cc5977601f51d419ebb0",
-    ),
-    (
-        "unemu/firmware/xub-r638-xtp-ata1f0",
-        "sha256:240d2d4f9ac64382cca85e53a174c6ea3b327867a6589d8222b63744f68789ec",
-    ),
+const PINNED: [(&str, &str); 2] = [
     (
         "unemu/open-at",
         "sha256:f6ba8ddfecb6140aaf65e3638601471250cdb5c625d21226d98daf5ee117e837",
@@ -351,6 +341,26 @@ const PINNED: [(&str, &str); 5] = [
     (
         "unemu/open-at-games",
         "sha256:d20998ce961a56a3ef378f55e3980efde93d99cd3c4c21652798a3831e378483",
+    ),
+];
+
+/// The firmware packages as the unemu-media repository publishes them
+/// (`recipes/*/firmware.toml`), read back anonymously from the registry. The
+/// local build must give these digests: a pin that fails means the two
+/// repositories no longer build the same package, and a package's tag never
+/// moves.
+const FIRMWARE_PINNED: [(&str, &str); 3] = [
+    (
+        "unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1",
+        "sha256:7a4d34f3e6d229d0857a592daf2f6412be33aa0dc385bdd605e28cf6eac6c64e",
+    ),
+    (
+        "unemu/firmware/vgabios-0.9d-unemu.1-std:1",
+        "sha256:fa521a4f878c77706f143079b996c7486aa71c1ee408cc5977601f51d419ebb0",
+    ),
+    (
+        "unemu/firmware/xub-r638-xtp-ata1f0:1",
+        "sha256:240d2d4f9ac64382cca85e53a174c6ea3b327867a6589d8222b63744f68789ec",
     ),
 ];
 
@@ -376,6 +386,66 @@ fn the_published_generation_keeps_its_pinned_digests() {
     );
 }
 
+/// Each local package build gives the published package under its published
+/// tag, and from another copy of the fixtures the same package.
+#[test]
+fn the_firmware_packages_are_the_published_ones() {
+    if !firmware_present(&template::FIRMWARE) {
+        return;
+    }
+    let t = Temp::new("template-firmware-pins");
+    let copy = t.0.join("fixtures");
+    for source in &template::FIRMWARE {
+        for relative in [source.rom, source.source_archive] {
+            let to = copy.join(relative);
+            fs::create_dir_all(to.parent().unwrap()).unwrap();
+            fs::copy(vendor().join(relative), to).unwrap();
+        }
+    }
+    let first = Store::open(t.0.join("first")).unwrap();
+    let second = Store::open(t.0.join("second")).unwrap();
+    let seen = RefCell::new(Vec::new());
+    let record = |reference: &str, _: &Manifest| {
+        seen.borrow_mut().push(reference.to_owned());
+        Ok(())
+    };
+    let a = template::build_firmware(&first, &vendor(), &record, &mut |_| {}).unwrap();
+    let b = template::build_firmware(&second, &copy, &allow, &mut |_| {}).unwrap();
+    assert_eq!(identities(&a), identities(&b));
+    let judged: Vec<_> = FIRMWARE_PINNED.iter().map(|(tag, _)| *tag).collect();
+    assert_eq!(*seen.borrow(), judged, "the guard judges each package");
+    let tagged: Vec<_> = a
+        .iter()
+        .map(|built| {
+            assert_eq!(built.kind, Kind::Firmware);
+            assert_eq!(built.version, FIRMWARE_REVISION);
+            assert_eq!(built.tags.len(), 1, "a package has no alias");
+            assert_eq!(built.tags[0].1, Outcome::Created);
+            (built.tags[0].0.clone(), built.descriptor.digest.to_string())
+        })
+        .collect();
+    let pinned: Vec<_> = FIRMWARE_PINNED
+        .iter()
+        .map(|(tag, digest)| (tag.to_string(), digest.to_string()))
+        .collect();
+    assert_eq!(
+        tagged, pinned,
+        "the local firmware packages are no longer the published ones"
+    );
+    for (tag, digest) in &pinned {
+        assert_eq!(
+            first.tag_descriptor(tag).unwrap().digest.to_string(),
+            *digest
+        );
+    }
+    let again = template::build_firmware(&first, &vendor(), &allow, &mut |_| {}).unwrap();
+    assert_eq!(identities(&again), identities(&a));
+    assert!(again
+        .iter()
+        .flat_map(|b| &b.tags)
+        .all(|(_, o)| *o == Outcome::Present));
+}
+
 /// The system BIOS package names the fork and its original author, so the
 /// generated README credits Sergey Kiselev outside the source layer too.
 #[test]
@@ -385,7 +455,7 @@ fn the_bios_package_readme_names_the_fork_and_its_original_author() {
     }
     let t = Temp::new("template-readme");
     let store = Store::open(t.0.join("store")).unwrap();
-    let built = template::build(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    let built = template::build_firmware(&store, &vendor(), &allow, &mut |_| {}).unwrap();
     let bios = &built[0];
     assert_eq!(
         bios.repository,
@@ -461,13 +531,8 @@ fn a_version_tag_that_names_another_image_refuses_the_build() {
     }
     let t = Temp::new("template-version-conflict");
     let store = Store::open(t.0.join("store")).unwrap();
-    let firmware_only = |reference: &str, _: &Manifest| {
-        if reference.starts_with("unemu/firmware/") {
-            Ok(())
-        } else {
-            Err("machines later".to_owned())
-        }
-    };
+    // Only the packages the templates bind: every template is refused.
+    let firmware_only = |_: &str, _: &Manifest| Err("machines later".to_owned());
     assert!(template::build(&store, &vendor(), &firmware_only, &mut |_| {}).is_err());
     let other = pc_image::create::create(
         &store,
@@ -499,8 +564,8 @@ fn latest_moves_only_away_from_lower_versions_of_its_repository() {
     let t = Temp::new("template-alias");
     let store = Store::open(t.0.join("store")).unwrap();
     let built = template::build(&store, &vendor(), &allow, &mut |_| {}).unwrap();
-    let ours = built[3].descriptor.clone();
-    let games = built[4].descriptor.clone();
+    let ours = built[0].descriptor.clone();
+    let games = built[1].descriptor.clone();
     let point = |to: &image_store::Descriptor| {
         let current = store.tag_descriptor("open-at:latest").unwrap().digest;
         store
@@ -595,9 +660,9 @@ fn only_the_judged_manifest_is_tagged() {
         "{error}"
     );
     assert!(store.tag_descriptor("judged/bios:1").is_err());
-    // The template's own package, under its version tag, is the judged one.
+    // The template's own package, under its published tag, is the judged one.
     let package = store
-        .tag_descriptor("unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1.2.0")
+        .tag_descriptor("unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1")
         .unwrap();
     assert_eq!(
         publish("judged/bios:1", &package.digest).unwrap().digest,
@@ -615,7 +680,7 @@ fn each_firmware_package_states_its_title_description_vendor_and_version() {
     }
     let t = Temp::new("template-metadata");
     let store = Store::open(t.0.join("store")).unwrap();
-    let built = template::build(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    let built = template::build_firmware(&store, &vendor(), &allow, &mut |_| {}).unwrap();
     assert!(template::FIRMWARE[0].description.contains("Sergey Kiselev"));
     for (source, package) in template::FIRMWARE.iter().zip(&built) {
         assert_eq!(package.repository, source.repository());
@@ -757,10 +822,12 @@ fn the_installation_sets_carry_the_edition_its_licence_index_and_its_source() {
             .iter()
             .all(|d| !license::source_missing(d, &closure)));
         assert!(license::terms_unlinked(&closure).is_empty());
-        // The catalogue record and the registry browser's annotations.
+        // The catalogue record and the registry browser's annotations: the
+        // work's title, with the release and edition in fields of their own.
         let metadata = Metadata::decode(&resolved.metadata, &resolved.manifest.layers).unwrap();
         let title = &metadata.titles[0];
-        assert_eq!(title.title, source.title);
+        assert_eq!(title.title, "FreeDOS");
+        assert_eq!(title.title, release.title);
         assert_eq!(title.publishers, [release.publisher]);
         assert_eq!(title.release_year, Some(2025));
         assert_eq!(title.platform.as_deref(), Some("DOS"));
@@ -770,7 +837,7 @@ fn the_installation_sets_carry_the_edition_its_licence_index_and_its_source() {
         assert_eq!(metadata.labels, release.labels);
         let annotations = &resolved.manifest.annotations;
         for (key, value) in [
-            ("title", source.title),
+            ("title", release.title),
             ("description", source.description),
             ("vendor", release.publisher),
             ("authors", release.publisher),
@@ -800,15 +867,13 @@ fn the_guard_judges_each_installation_set_before_its_tags() {
     let seen = RefCell::new(Vec::new());
     let guard = |reference: &str, manifest: &Manifest| {
         let (repository, tag) = reference.rsplit_once(':').unwrap();
-        if repository.starts_with("unemu/media/") {
-            assert_eq!(tag, template::FREEDOS_1_4.version);
-            assert_eq!(manifest.artifact_type(), mt::MEDIA_SET);
-            assert!(store
-                .tag_descriptor(&template::local_tag(repository, tag))
-                .is_err());
-            seen.borrow_mut().push(repository.to_owned());
-        }
-        if repository == "unemu/media/freedos-floppy-1.2m" {
+        assert_eq!(repository, "unemu/media/freedos");
+        assert_eq!(manifest.artifact_type(), mt::MEDIA_SET);
+        assert!(store
+            .tag_descriptor(&template::local_tag(repository, tag))
+            .is_err());
+        seen.borrow_mut().push(reference.to_owned());
+        if tag == "1.4-1.2m" {
             Err("synthetic refusal".to_owned())
         } else {
             Ok(())
@@ -818,23 +883,15 @@ fn the_guard_judges_each_installation_set_before_its_tags() {
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains("unemu/media/freedos-floppy-1.2m:1.4.0 refused: synthetic refusal"),
+        error.contains("unemu/media/freedos:1.4-1.2m refused: synthetic refusal"),
         "{error}"
     );
     assert_eq!(
         *seen.borrow(),
-        [
-            "unemu/media/freedos-floppy-1.44m",
-            "unemu/media/freedos-floppy-1.2m"
-        ]
+        ["unemu/media/freedos:1.4", "unemu/media/freedos:1.4-1.2m"]
     );
-    assert!(store
-        .tag_descriptor("unemu/media/freedos-floppy-1.44m:1.4.0")
-        .is_ok());
-    for tag in [
-        "unemu/media/freedos-floppy-1.2m:1.4.0",
-        "unemu/media/freedos-floppy-1.2m:latest",
-    ] {
+    assert!(store.tag_descriptor("unemu/media/freedos:1.4").is_ok());
+    for tag in ["unemu/media/freedos:1.4-1.2m", "unemu/media/freedos:latest"] {
         assert!(store.tag_descriptor(tag).is_err(), "{tag}");
     }
 }
@@ -881,26 +938,28 @@ fn another_file_at_a_media_fixture_path_is_refused_before_any_set_is_tagged() {
     assert_eq!(media_tags(&store), 0);
 }
 
-/// The digests of the installation sets. Any change to what they are built
-/// from changes them; a set's version tag never moves, so a changed set needs
-/// a new release version and new pins.
+/// The installation sets as the unemu-media repository publishes them
+/// (`recipes/freedos-1.4-floppy/media.toml`), read back anonymously from the
+/// registry. The local build must give these digests: a pin that fails means
+/// the two repositories no longer build the same set, and a set's tag never
+/// moves.
 const MEDIA_PINNED: [(&str, &str); 3] = [
     (
-        "unemu/media/freedos-floppy-1.44m",
-        "sha256:4c10c7a3e50b0313d5aa9619db5e11e8576d60664d4eee47779d10bf50280158",
+        "unemu/media/freedos:1.4",
+        "sha256:f0114238645cf823c3cfa998bb1a488e6872e56676a78b4fdd7308c319079b93",
     ),
     (
-        "unemu/media/freedos-floppy-1.2m",
-        "sha256:b76cb5c268e8812e458a2377003ecacb09f8cb457ec322bde39b7a03ff304356",
+        "unemu/media/freedos:1.4-1.2m",
+        "sha256:3f39b4d5993b843a265e522cededfe8f1ccc05865ab88d0f23c27ada3e0de89d",
     ),
     (
-        "unemu/media/freedos-floppy-720k",
-        "sha256:2ac1f98cc8ed70ec4f8f251f927e6b24697c5c4372fd67f5d4785aa72d55c42e",
+        "unemu/media/freedos:1.4-720k",
+        "sha256:1f789ef40eed3566c5fa84d792cf2acddaddb14cc5ae057d1278802b29341c5e",
     ),
 ];
 
 #[test]
-fn two_media_builds_from_different_fixture_copies_give_the_pinned_sets() {
+fn two_media_builds_from_different_fixture_copies_give_the_published_sets() {
     if !media_present() {
         return;
     }
@@ -912,21 +971,22 @@ fn two_media_builds_from_different_fixture_copies_give_the_pinned_sets() {
     let a = template::build_media(&first, &vendor(), &allow, &mut |_| {}).unwrap();
     let b = template::build_media(&second, &copy, &allow, &mut |_| {}).unwrap();
     assert_eq!(identities(&a), identities(&b));
-    for built in &a {
-        assert_eq!(built.version, template::FREEDOS_1_4.version);
-        assert!(built.tags.iter().all(|(_, o)| *o == Outcome::Created));
+    for (built, source) in a.iter().zip(&template::MEDIA) {
+        assert_eq!(built.version, source.tag);
+        assert_eq!(built.tags.len(), 1, "a set has no alias");
+        assert_eq!(built.tags[0].1, Outcome::Created);
     }
-    let digests: Vec<_> = a
+    let tagged: Vec<_> = a
         .iter()
-        .map(|b| (b.repository.clone(), b.descriptor.digest.to_string()))
+        .map(|b| (b.tags[0].0.clone(), b.descriptor.digest.to_string()))
         .collect();
     let pinned: Vec<_> = MEDIA_PINNED
         .iter()
-        .map(|(r, d)| (r.to_string(), d.to_string()))
+        .map(|(tag, digest)| (tag.to_string(), digest.to_string()))
         .collect();
     assert_eq!(
-        digests, pinned,
-        "the installation sets changed: their version tags never move; give them a new release version, then update these pins"
+        tagged, pinned,
+        "the local installation sets are no longer the published ones"
     );
     let again = template::build_media(&first, &vendor(), &allow, &mut |_| {}).unwrap();
     assert_eq!(identities(&again), identities(&a));

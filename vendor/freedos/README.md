@@ -132,9 +132,11 @@ and the release LiveCD, 294 MB, for the sources) plus four shallow git
 fetches; the LiveCD zip and its ISO are deleted once the package zips verify,
 which stay cached. A download is renamed into the cache only after its hash
 matches, and a bad response from the release directory falls back to the
-mirror. `pc_image::template::MEDIA` describes the sets and `image template
-build` imports them (commands.md, Official template images; machine-images
-§5.5).
+mirror. The unemu-media repository builds and publishes the sets
+(`unemu/media/freedos:1.4`, `:1.4-1.2m`, `:1.4-720k`; get them with
+`upcli image pull`); `pc_image::template::build_media` builds the same sets
+locally from these fixtures for tests, and the tests pin the published
+digests (commands.md, Official template images; machine-images §5.5).
 
 **The edition.** `FD14-FloppyEdition.zip` comes from
 `https://download.freedos.org/1.4/`, falling back to the ibiblio mirror
@@ -180,8 +182,8 @@ the other release media for it.
 
 The library offers one set per format, the disks in installer order, labelled
 "Disk N of M - boot disk and installer (x86BOOT.img)" and "Disk N of M -
-packages (x86DSKnn.img)": `freedos-floppy-1.44m` (7 disks),
-`freedos-floppy-1.2m` (8) and `freedos-floppy-720k` (12).
+packages (x86DSKnn.img)": `unemu/media/freedos:1.4` (the 1.44M disks, 7),
+`:1.4-1.2m` (8) and `:1.4-720k` (12).
 
 **Extras of every set**:
 

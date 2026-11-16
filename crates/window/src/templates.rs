@@ -971,7 +971,7 @@ mod tests {
             ("open-at-games:1.2.0", "unemu/open-at-games:1.0.1"),
             ("open-at:1.2.0", "unemu/open-at-games:2.0.0-rc.1"),
             (
-                "unemu/firmware/xub-r638-xtp-ata1f0:1.2.0",
+                "unemu/firmware/xub-r638-xtp-ata1f0:1",
                 "unemu/firmware/xub-r638-xtp-ata1f0:1.0.1",
             ),
             ("open-at:1.2.0", "unemu/test-live:1.0.1"),

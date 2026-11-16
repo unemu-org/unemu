@@ -10,7 +10,8 @@
 //! catalogue flags fill the set's one title record (machine-images §2.1), with
 //! the year and software-platform rules the shared import applies to the
 //! library's dialog too, and the set's own labels, so a recipe can state
-//! everything the template build states for an installation set.
+//! everything `pc_image::template::build_media` states for an installation
+//! set.
 
 use image_registry::guard;
 use image_store::{

@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `image template build`: the official template images and installation
-//! sets, built reproducibly from the fetched open fixtures; machine-images
-//! §5.5.
+//! `image template build`: the official template machines, built
+//! reproducibly from the fetched open fixtures; machine-images §5.5.
 //!
-//! The build runs [`pc_image::template::build`] and then
-//! [`pc_image::template::build_media`] with the push guard of the
-//! official namespace on the default registry: every image must be all open,
-//! each copyleft ROM or medium with its source archive, before any of its
-//! tags is written. It never pushes; publishing is the maintainer's step
-//! (commands.md, Official template images). Each image's lines are written as
-//! soon as it is built; every installation-set fixture is checked against its
-//! pin before the first tag. `--dry-run` builds into a scratch store under the
-//! system temporary directory, removes it, and reports what a build would do
-//! to the tags of `--store`, which is never written; when that store exists,
-//! its marks must pass the guard as well.
+//! The build runs [`pc_image::template::build`] with the push guard of the
+//! official namespace on the default registry: every template must be all
+//! open, each copyleft ROM with its source archive, before any of its tags is
+//! written. The firmware packages it binds are imported from the fixtures
+//! first, as local copies of the published packages under their published
+//! tags; they are neither judged nor reported apart from the templates. The
+//! firmware packages and the installation sets are published by the
+//! unemu-media repository; `image pull` fetches them. The build never pushes;
+//! publishing is the maintainer's step (commands.md, Official template
+//! images). Each template's lines are written as soon as it is built.
+//! `--dry-run` builds into a scratch store under the system temporary
+//! directory, removes it, and reports what a build would do to the template
+//! tags of `--store`, which is never written; when that store exists, its
+//! marks must pass the guard as well, and a package tag of it that names
+//! another image refuses the dry run as it would the build.
 
 use image_registry::{
     guard,
@@ -87,8 +90,8 @@ fn official_guard<'a>(
     }
 }
 
-/// Build every template (firmware packages and machines, not the
-/// installation sets) into `store`, refusing any image the official
+/// Build every template machine into `store`, with local copies of the
+/// firmware packages it binds, refusing any template the official
 /// namespace's push guard would refuse.
 pub fn build(store: &Store, vendor: &Path) -> anyhow::Result<Vec<Built>> {
     Ok(template::build(
@@ -148,9 +151,6 @@ fn report(
 }
 
 pub fn execute(command: TemplateCommand, output: &mut impl Write) -> anyhow::Result<()> {
-    // The installation sets' fixtures are checked before the first tag, so a
-    // missing set never leaves a build half written.
-    template::check_media_fixtures(&command.vendor)?;
     let mut failed: Option<anyhow::Error> = None;
     if !command.dry_run {
         let store = Store::open(&command.store)?;
@@ -164,7 +164,6 @@ pub fn execute(command: TemplateCommand, output: &mut impl Write) -> anyhow::Res
             }
         };
         template::build(&store, &command.vendor, &guard, &mut on_built)?;
-        template::build_media(&store, &command.vendor, &guard, &mut on_built)?;
         if let Some(error) = failed {
             return Err(error);
         }
@@ -186,9 +185,21 @@ pub fn execute(command: TemplateCommand, output: &mut impl Write) -> anyhow::Res
     // The marks of the store a real build would write count as well.
     let stores: Vec<&Store> = std::iter::once(&staging).chain(target.as_ref()).collect();
     let guard = official_guard(&stores);
+    let mut packages_checked = false;
     let mut on_built = |image: &Built| {
         if failed.is_some() {
             return;
+        }
+        // The packages are in the scratch store before the first template. A
+        // real build would stop at a package tag of the store that names
+        // another image before it writes any template, so the dry run stops
+        // there too, before its first line.
+        if let (false, Some(store)) = (packages_checked, &target) {
+            packages_checked = true;
+            if let Err(error) = template::check_package_tags(store, &staging) {
+                failed = Some(error.into());
+                return;
+            }
         }
         let planned = match &target {
             Some(store) => template::plan_tags(store, image).map_err(anyhow::Error::from),
@@ -200,7 +211,6 @@ pub fn execute(command: TemplateCommand, output: &mut impl Write) -> anyhow::Res
         };
     };
     template::build(&staging, &command.vendor, &guard, &mut on_built)?;
-    template::build_media(&staging, &command.vendor, &guard, &mut on_built)?;
     if let Some(error) = failed {
         return Err(error);
     }

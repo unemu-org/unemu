@@ -5,6 +5,29 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — `image template build` builds the templates only:** the
+  open firmware packages and the FreeDOS 1.4 Floppy Edition installation sets
+  are built and published by the unemu-media repository
+  (github.com/unemu-org/unemu-media); get them with `upcli image pull
+  unemu/firmware/<catalogue id>:1` and `upcli image pull
+  unemu/media/freedos:1.4` (`:1.4-1.2m`, `:1.4-720k`). The command's output,
+  dry-run report and guard checks cover `open-at` and `open-at-games` alone;
+  it still imports the three packages the templates bind from the firmware
+  fixtures, as local copies under the published tags (they stay even when a
+  template is refused), and no longer reads the installation-set fixtures. A
+  package tag of the store that names another image stops the build and its
+  dry run alike. The template digests are unchanged. The local
+  builders stay for tests: `pc_image::template::build_firmware` (packages
+  under `unemu/firmware/<catalogue id>:1`, no `latest`) and `build_media` (sets
+  under `unemu/media/freedos:1.4`, `:1.4-1.2m`, `:1.4-720k`, no `latest`,
+  titled "FreeDOS" with the release and edition in their own fields, as
+  unemu-media publishes them; formerly `unemu/media/freedos-floppy-*:1.4.0`).
+  Evidence: the pin tests give the six published digests (three packages,
+  three sets) from this repository's fixtures, and unemu-media's exact import
+  argument lists, run with this `upcli` in a scratch store, give the same six
+  digests; the narrowed command's tests fail when the old package and set
+  output is restored, and the dry-run package-tag test fails without its
+  check.
 - **2026-11-16 — The Insert media picker looks like its mock-up:** the
   picker takes the approved media-picker mock-up's size, 1040 by about
   640, inside the window's content area with room around it; below 720

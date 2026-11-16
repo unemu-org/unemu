@@ -2,21 +2,27 @@
 //! Official template images, built reproducibly from the fetched open
 //! fixtures; machine-images §5.5.
 //!
-//! A build imports the open firmware packages with the source archives their
-//! fetch scripts build (the archives the firmware catalogue pins) and a
-//! title, description, vendor, version and labels for each, then
-//! creates each template machine through [`crate::create`], never from a
-//! machine file. Nothing depends on the clock, the host or the fixture paths:
-//! the same fixtures give the same manifests and digests on every run and
-//! host. Each image is offered to a caller's guard before anything of it is
-//! tagged, so a build can refuse what the official namespace would refuse.
-//! A template holds firmware and blank zero-base disks only; operating
-//! systems on disk images need their own licence decision. Installation
-//! media come as their own images instead ([`MEDIA`], built by
-//! [`build_media`]): an official release's disks, one installation set per
+//! A build creates each template machine through [`crate::create`], never
+//! from a machine file, from the open firmware packages it binds. Nothing
+//! depends on the clock, the host or the fixture paths: the same fixtures
+//! give the same manifests and digests on every run and host. Each template
+//! is offered to a caller's guard before anything of it is tagged, so a
+//! build can refuse what the official namespace would refuse. A template
+//! holds firmware and blank zero-base disks only; operating systems on disk
+//! images need their own licence decision.
+//!
+//! The firmware packages ([`FIRMWARE`], [`build_firmware`]) and the
+//! installation sets ([`MEDIA`], [`build_media`]) are published by the
+//! unemu-media repository, not by this build. The local builders here make
+//! the same images from the same fixtures under the published names, and
+//! their tests pin the published digests, so each pin cross-checks the two
+//! repositories. A template build imports the packages it binds with
+//! [`build_firmware`], the same packages `image pull` gives. A package holds
+//! the source archive its fetch script builds (the archive the firmware
+//! catalogue pins) and states a title, description, vendor, version and
+//! labels. An installation set holds an official release's disks for one
 //! floppy format, unmodified, with a licence index and the source archive,
-//! open under the licences of its programs (machine-images §5.2). A set's
-//! version tag is the release it holds, not the template generation.
+//! open under the licences of its programs (machine-images §5.2).
 //!
 //! The machines are IBM 5170-class boards, as the IBM Personal Computer AT
 //! Technical Reference, System Board, describes: an 80286 with 640 KiB
@@ -30,7 +36,6 @@ use crate::media_import::{self, ExtraSource, OpenStatement, Request, Source};
 use crate::media_set::PcMediaFormats;
 use crate::{invalid, PcProvider, Result};
 use image_store::{
-    firmware::Validator,
     media_set::{ExtraKind, Validator as MediaValidator},
     metadata::Title,
     ConfigValidator, Descriptor, Digest, Manifest, Store,
@@ -44,6 +49,9 @@ pub const VERSION: &str = "1.2.0";
 pub const ALIAS: &str = "latest";
 /// The registry namespace every template lives in.
 pub const NAMESPACE: &str = "unemu";
+/// The tag of every firmware package: its first revision, numbered as
+/// `image firmware import` numbers them. A revision tag never moves.
+pub const FIRMWARE_REVISION: &str = "1";
 
 /// One open firmware package of the templates: the catalogue entry, the
 /// fixture files, relative to the vendor directory, that its fetch script
@@ -210,13 +218,16 @@ const fn file(path: &'static str, sha256: &'static str, name: &'static str) -> M
 
 /// An official operating-system release whose installation disks the
 /// templates describe, one installation set per floppy format, and what the
-/// sets share: the release's own version tag, its catalogue fields, its
-/// licence statement and the extras every set carries.
+/// sets share: the work's repository and title, the release's catalogue
+/// fields, its licence statement and the extras every set carries.
 #[derive(Clone, Copy, Debug)]
 pub struct MediaRelease {
-    /// The sets' version tag: the release they hold, not the template
-    /// generation ([`VERSION`]).
-    pub version: &'static str,
+    /// The repository name under `unemu/media/`: the work, whatever its
+    /// release or format, which the tag names.
+    pub work: &'static str,
+    /// The work's title only; the version, the edition and the floppy format
+    /// have fields and a tag of their own.
+    pub title: &'static str,
     /// The script that fetches and verifies the fixtures.
     pub fetch: &'static str,
     pub publisher: &'static str,
@@ -241,7 +252,8 @@ pub struct MediaRelease {
 /// packages of every program on the disks. The release documents are not
 /// carried: they state no licence of their own.
 pub const FREEDOS_1_4: MediaRelease = MediaRelease {
-    version: "1.4.0",
+    work: "freedos",
+    title: "FreeDOS",
     fetch: "vendor/freedos/fetch-floppy-1.4.sh",
     publisher: "The FreeDOS Project",
     year: 2025,
@@ -276,9 +288,9 @@ pub const FREEDOS_1_4: MediaRelease = MediaRelease {
 /// format, unmodified and in installer order.
 #[derive(Clone, Copy, Debug)]
 pub struct MediaSource {
-    /// The repository name under `unemu/media/`.
-    pub name: &'static str,
-    pub title: &'static str,
+    /// The set's tag in its work's repository: the release, then the floppy
+    /// format unless it is the edition's own. A set's tag never moves.
+    pub tag: &'static str,
     pub description: &'static str,
     /// The floppy format of every disk.
     pub format: &'static str,
@@ -287,18 +299,17 @@ pub struct MediaSource {
 }
 
 impl MediaSource {
-    /// `unemu/media/<name>`.
+    /// `unemu/media/<work>`.
     pub fn repository(&self) -> String {
-        format!("{NAMESPACE}/media/{}", self.name)
+        format!("{NAMESPACE}/media/{}", self.release.work)
     }
 }
 
-/// The FreeDOS 1.4 Floppy Edition in each format it ships: 3.5-inch 1.44M,
-/// 5.25-inch 1.2M and 3.5-inch 720K.
+/// The FreeDOS 1.4 Floppy Edition in each format it ships: its own 3.5-inch
+/// 1.44M, then 5.25-inch 1.2M and 3.5-inch 720K.
 pub const MEDIA: [MediaSource; 3] = [
     MediaSource {
-        name: "freedos-floppy-1.44m",
-        title: "FreeDOS 1.4 (Floppy Edition, 1.44M)",
+        tag: "1.4",
         description: "The official FreeDOS 1.4 Floppy Edition on seven 3.5-inch 1.44M diskettes, unmodified: the boot disk with the floppy installer, then six disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.",
         format: "1.44M",
         disks: &[
@@ -341,8 +352,7 @@ pub const MEDIA: [MediaSource; 3] = [
         release: &FREEDOS_1_4,
     },
     MediaSource {
-        name: "freedos-floppy-1.2m",
-        title: "FreeDOS 1.4 (Floppy Edition, 1.2M)",
+        tag: "1.4-1.2m",
         description: "The official FreeDOS 1.4 Floppy Edition on eight 5.25-inch 1.2M diskettes, unmodified: the boot disk with the floppy installer, then seven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.",
         format: "1.2M",
         disks: &[
@@ -390,8 +400,7 @@ pub const MEDIA: [MediaSource; 3] = [
         release: &FREEDOS_1_4,
     },
     MediaSource {
-        name: "freedos-floppy-720k",
-        title: "FreeDOS 1.4 (Floppy Edition, 720K)",
+        tag: "1.4-720k",
         description: "The official FreeDOS 1.4 Floppy Edition on twelve 3.5-inch 720K diskettes, unmodified: the boot disk with the floppy installer, then eleven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.",
         format: "720K",
         disks: &[
@@ -492,11 +501,13 @@ pub struct Built {
     pub kind: Kind,
     /// The registry repository, such as `unemu/open-at`.
     pub repository: String,
-    /// The version tag's version: [`VERSION`], or a media set's release.
+    /// The tag that never moves: [`VERSION`] for a template,
+    /// [`FIRMWARE_REVISION`] for a package, a media set's own tag.
     pub version: &'static str,
     pub descriptor: Descriptor,
-    /// The version tag, then the alias. Local tags are the short form a pull
-    /// of the repository writes, so `image push TAG` reaches the repository.
+    /// That tag, then a template's alias; a package or a set has no alias.
+    /// Local tags are the short form a pull of the repository writes, so
+    /// `image push TAG` reaches the repository.
     pub tags: Vec<(String, Outcome)>,
 }
 
@@ -563,32 +574,33 @@ pub fn precedence(tag: &str) -> Option<Precedence> {
     })
 }
 
-/// Asked with `repository:VERSION` and each image's manifest before the image
-/// is tagged; an error refuses the build.
+/// Asked with the image's reference and manifest before the image is tagged:
+/// `repository:VERSION` for a template, `repository:1`
+/// ([`FIRMWARE_REVISION`]) for a package, a set's own tag for a set. An error
+/// refuses the build.
 pub type Guard<'a> = &'a dyn Fn(&str, &Manifest) -> std::result::Result<(), String>;
 
-/// Build every firmware package and template machine from the open fixtures
-/// under `vendor` into `store`, in a fixed order, handing each image to
-/// `built` once its tags are written. A tag that already names the same image
-/// is kept; a version tag naming another image refuses the build. The alias
-/// moves by compare-and-swap, and only away from an image that lower versions
-/// of the repository name alone: never from a higher version, and never from
-/// an image the build did not version.
+/// Build every template machine into `store`, in a fixed order, handing each
+/// to `built` once its tags are written. The firmware packages it binds come
+/// first from the open fixtures under `vendor` through [`build_firmware`],
+/// as local copies of the published packages: neither `guard` nor `built`
+/// sees them, and the guard judges their ROMs and source archives inside
+/// each template. A tag that already names the same image is kept; a version
+/// tag naming another image refuses the build. The alias moves by
+/// compare-and-swap, and only away from an image that lower versions of the
+/// repository name alone: never from a higher version, and never from an
+/// image the build did not version.
 pub fn build(
     store: &Store,
     vendor: &Path,
     guard: Guard<'_>,
     built: &mut dyn FnMut(&Built),
 ) -> Result<Vec<Built>> {
-    let catalogue = crate::firmware::catalogue();
+    let packages: Vec<Digest> = build_firmware(store, vendor, &|_, _| Ok(()), &mut |_| {})?
+        .into_iter()
+        .map(|package| package.descriptor.digest)
+        .collect();
     let mut images = Vec::new();
-    let mut packages = Vec::new();
-    for source in &FIRMWARE {
-        let package = build_package(store, vendor, source, catalogue, guard)?;
-        packages.push(package.descriptor.digest.clone());
-        built(&package);
-        images.push(package);
-    }
     let stored = create::packages(store)?;
     let rom = |digest: &Digest, id: &str| -> Result<PackageRom> {
         let package = stored
@@ -621,10 +633,33 @@ pub fn build(
     Ok(images)
 }
 
+/// Build every firmware package of [`FIRMWARE`] from the fixtures under
+/// `vendor` into `store`, each under `unemu/firmware/<catalogue id>:1`
+/// ([`FIRMWARE_REVISION`]) and offered to `guard` before it is tagged, as
+/// [`build`] builds the templates. A package's tag never moves, so another
+/// package under it refuses the build.
+pub fn build_firmware(
+    store: &Store,
+    vendor: &Path,
+    guard: Guard<'_>,
+    built: &mut dyn FnMut(&Built),
+) -> Result<Vec<Built>> {
+    let catalogue = crate::firmware::catalogue();
+    let mut packages = Vec::new();
+    for source in &FIRMWARE {
+        let package = build_package(store, vendor, source, catalogue, guard)?;
+        built(&package);
+        packages.push(package);
+    }
+    Ok(packages)
+}
+
 /// Build every installation set of [`MEDIA`] from the fixtures under
-/// `vendor` into `store`, as [`build`] builds the templates. Every fixture of
-/// every set is checked against its pin first ([`check_media_fixtures`]), so
-/// a missing or changed file stops the build before any set is tagged.
+/// `vendor` into `store`, each under `unemu/media/<work>:<tag>` and offered
+/// to `guard` before it is tagged, as [`build`] builds the templates. Every
+/// fixture of every set is checked against its pin first
+/// ([`check_media_fixtures`]), so a missing or changed file stops the build
+/// before any set is tagged.
 pub fn build_media(
     store: &Store,
     vendor: &Path,
@@ -737,26 +772,24 @@ fn build_package(
     let statement = source.statement(archive);
     let repository = source.repository();
     let preview = firmware_import::preview_manifest_with(&candidate, &[], &statement, catalogue)?;
-    check(guard, &repository, VERSION, &preview.manifest)?;
+    check(guard, &repository, FIRMWARE_REVISION, &preview.manifest)?;
     let judged = Digest::of(&preview.manifest.encode()?);
-    let version = local_tag(&repository, VERSION);
-    let before = version_state(store, &version, &judged)?;
+    let revision = local_tag(&repository, FIRMWARE_REVISION);
+    let before = version_state(store, &revision, &judged, PACKAGE_CONFLICT)?;
     let descriptor = firmware_import::publish_as(
         store,
         &candidate,
         &[],
         &statement,
         catalogue,
-        &version,
+        &revision,
         Some(&judged),
     )?;
-    let rules = crate::firmware::PcFirmwareRules(catalogue);
-    let alias = alias(store, &repository, VERSION, &descriptor, &Validator(&rules))?;
     Ok(Built {
         kind: Kind::Firmware,
         repository,
-        version: VERSION,
-        tags: vec![(version, before), alias],
+        version: FIRMWARE_REVISION,
+        tags: vec![(revision, before)],
         descriptor,
     })
 }
@@ -772,7 +805,7 @@ fn build_machine(
     check(guard, &repository, VERSION, &manifest)?;
     let judged = Digest::of(&manifest.encode_with_types(PcProvider.payload_types())?);
     let version = local_tag(&repository, VERSION);
-    let before = version_state(store, &version, &judged)?;
+    let before = version_state(store, &version, &judged, TEMPLATE_CONFLICT)?;
     let descriptor = match before {
         Outcome::Present => store.tag_descriptor(&version)?,
         _ => create::create_judged(store, image, &version, None, &judged)?,
@@ -819,7 +852,7 @@ fn media_request(vendor: &Path, source: &MediaSource, tag: &str) -> Result<Reque
         })
         .collect::<Result<_>>()?;
     let title = Title {
-        title: source.title.into(),
+        title: release.title.into(),
         description: Some(source.description.into()),
         publishers: vec![release.publisher.into()],
         developers: vec![release.publisher.into()],
@@ -857,11 +890,11 @@ fn media_plan(vendor: &Path, source: &MediaSource, tag: &str) -> Result<media_im
         .map_err(|refusal| invalid(refusal.to_string()))
 }
 
-/// Import one installation set under its release's version tag. A new set is
-/// offered to the guard before its manifest is stored; a tag that already
-/// names it is compared without writing and offered as stored. The stored
-/// set must name the pinned bytes, so a fixture replaced between the check
-/// and the import is caught.
+/// Import one installation set under its own tag. A new set is offered to
+/// the guard before its manifest is stored; a tag that already names it is
+/// compared without writing and offered as stored. The stored set must name
+/// the pinned bytes, so a fixture replaced between the check and the import
+/// is caught.
 fn build_set(
     store: &Store,
     vendor: &Path,
@@ -870,7 +903,7 @@ fn build_set(
 ) -> Result<Built> {
     let repository = source.repository();
     let release = source.release;
-    let version = local_tag(&repository, release.version);
+    let version = local_tag(&repository, source.tag);
     let plan = media_plan(vendor, source, &version)?;
     let validator = MediaValidator(&PcMediaFormats);
     let before = match current(store, &version)? {
@@ -878,12 +911,12 @@ fn build_set(
             media_import::publish(store, &plan, &|_, _| {}, &|| false)
                 .map_err(|refusal| invalid(refusal.to_string()))?;
             let stored = store.resolve(&version, &validator)?;
-            check(guard, &repository, release.version, &stored.manifest)?;
+            check(guard, &repository, source.tag, &stored.manifest)?;
             Outcome::Present
         }
         None => {
             let judge = |manifest: &Manifest| {
-                check(guard, &repository, release.version, manifest).map_err(|e| e.to_string())
+                check(guard, &repository, source.tag, manifest).map_err(|e| e.to_string())
             };
             media_import::publish_checked(store, &plan, &|_, _| {}, &|| false, &judge)
                 .map_err(|refusal| invalid(refusal.to_string()))?;
@@ -911,12 +944,11 @@ fn build_set(
             release.fetch
         )));
     }
-    let alias = alias(store, &repository, release.version, &descriptor, &validator)?;
     Ok(Built {
         kind: Kind::Media,
         repository,
-        version: release.version,
-        tags: vec![(version, before), alias],
+        version: source.tag,
+        tags: vec![(version, before)],
         descriptor,
     })
 }
@@ -926,15 +958,35 @@ fn check(guard: Guard<'_>, repository: &str, version: &str, manifest: &Manifest)
         .map_err(|reason| invalid(format!("{repository}:{version} refused: {reason}")))
 }
 
+/// What to do when a template's version tag names another image.
+const TEMPLATE_CONFLICT: &str =
+    "a version tag never moves, so give the changed template a new version";
+/// What to do when a package's tag names another image: the build makes the
+/// published package, so the local tag is the one in the way.
+const PACKAGE_CONFLICT: &str =
+    "a package's tag never moves; remove or rename that local tag, or build into a dedicated store";
+
 /// Created when absent, Present when it names `digest`; another image under
-/// the version tag refuses the build.
-fn version_state(store: &Store, tag: &str, digest: &Digest) -> Result<Outcome> {
+/// the tag refuses the build, with `remedy`.
+fn version_state(store: &Store, tag: &str, digest: &Digest, remedy: &str) -> Result<Outcome> {
     match planned_version(store, tag, digest)? {
         Outcome::Conflict(current) => Err(invalid(format!(
-            "{tag} already names {current}, not {digest}; a version tag never moves, so give the changed template a new version"
+            "{tag} already names {current}, not {digest}; {remedy}"
         ))),
         outcome => Ok(outcome),
     }
+}
+
+/// Refuse, as [`build`] would, when a firmware package tag of `store` names
+/// another image than the package [`build`] made in `staging`. `store` is
+/// only read: a dry run's check of the tags it does not report.
+pub fn check_package_tags(store: &Store, staging: &Store) -> Result<()> {
+    for source in &FIRMWARE {
+        let tag = local_tag(&source.repository(), FIRMWARE_REVISION);
+        let digest = staging.tag_descriptor(&tag)?.digest;
+        version_state(store, &tag, &digest, PACKAGE_CONFLICT)?;
+    }
+    Ok(())
 }
 
 fn current(store: &Store, tag: &str) -> Result<Option<Digest>> {
@@ -1017,10 +1069,17 @@ pub fn plan_tags(store: &Store, built: &Built) -> Result<Vec<(String, Outcome)>>
     let digest = &built.descriptor.digest;
     let version = local_tag(&built.repository, built.version);
     let state = planned_version(store, &version, digest)?;
-    Ok(vec![
-        (version, state),
-        planned_alias(store, &built.repository, built.version, digest)?,
-    ])
+    let mut tags = vec![(version, state)];
+    // Only a template has an alias; a package or a set has its own tag alone.
+    if built.kind == Kind::Machine {
+        tags.push(planned_alias(
+            store,
+            &built.repository,
+            built.version,
+            digest,
+        )?);
+    }
+    Ok(tags)
 }
 
 #[cfg(test)]
@@ -1031,26 +1090,53 @@ mod tests {
     fn names_follow_the_registry_grammar_and_the_pull_short_form() {
         assert_eq!(local_tag("unemu/open-at", VERSION), "open-at:1.2.0");
         assert_eq!(
-            local_tag("unemu/firmware/xub-r638-xtp-ata1f0", ALIAS),
-            "unemu/firmware/xub-r638-xtp-ata1f0:latest"
+            local_tag("unemu/firmware/xub-r638-xtp-ata1f0", FIRMWARE_REVISION),
+            "unemu/firmware/xub-r638-xtp-ata1f0:1"
         );
-        for source in &FIRMWARE {
-            image_store::Store::validate_tag_name(&local_tag(&source.repository(), VERSION))
-                .unwrap();
-        }
         for template in &TEMPLATES {
             image_store::Store::validate_tag_name(&local_tag(&template.repository(), VERSION))
                 .unwrap();
         }
-        for source in &MEDIA {
-            let tag = local_tag(&source.repository(), source.release.version);
-            image_store::Store::validate_tag_name(&tag).unwrap();
-            assert!(tag.starts_with("unemu/media/freedos-floppy-"), "{tag}");
-            assert!(tag.ends_with(":1.4.0"), "{tag}");
-        }
-        assert!(image_store::Store::is_version_tag(FREEDOS_1_4.version));
         assert!(image_store::Store::is_version_tag(VERSION));
         assert!(!image_store::Store::is_version_tag(ALIAS));
+    }
+
+    /// The local builds take the names the unemu-media repository publishes
+    /// under, which are also the local tags `image pull` writes for them.
+    #[test]
+    fn packages_and_sets_take_their_published_names() {
+        let packages: Vec<_> = FIRMWARE
+            .iter()
+            .map(|source| local_tag(&source.repository(), FIRMWARE_REVISION))
+            .collect();
+        assert_eq!(
+            packages,
+            [
+                "unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1",
+                "unemu/firmware/vgabios-0.9d-unemu.1-std:1",
+                "unemu/firmware/xub-r638-xtp-ata1f0:1",
+            ]
+        );
+        let sets: Vec<_> = MEDIA
+            .iter()
+            .map(|source| local_tag(&source.repository(), source.tag))
+            .collect();
+        assert_eq!(
+            sets,
+            [
+                "unemu/media/freedos:1.4",
+                "unemu/media/freedos:1.4-1.2m",
+                "unemu/media/freedos:1.4-720k",
+            ]
+        );
+        for tag in packages.iter().chain(&sets) {
+            image_store::Store::validate_tag_name(tag).unwrap();
+        }
+        // Neither has a version tag, so neither has an alias to move.
+        assert!(!image_store::Store::is_version_tag(FIRMWARE_REVISION));
+        for source in &MEDIA {
+            assert!(!image_store::Store::is_version_tag(source.tag));
+        }
     }
 
     /// The statement in the code is the conjunction the licence index, the
@@ -1094,8 +1180,9 @@ mod tests {
         for (file, _) in release.extras {
             assert!(crate::media_set::valid_dos_name(file.name), "{}", file.name);
         }
+        assert!(image_store::media_set::valid_text(release.title));
         for (source, disks) in MEDIA.iter().zip([7, 8, 12]) {
-            assert_eq!(source.disks.len(), disks, "{}", source.name);
+            assert_eq!(source.disks.len(), disks, "{}", source.tag);
             assert!(crate::media_import::format_names().contains(&source.format));
             assert!(source.disks[0].path.ends_with("/x86BOOT.img"));
             for (index, disk) in source.disks.iter().enumerate() {
@@ -1108,7 +1195,6 @@ mod tests {
                     .name
                     .starts_with(&format!("Disk {} of {disks} - ", index + 1)));
             }
-            assert!(image_store::media_set::valid_text(source.title));
         }
     }
 
