@@ -9343,6 +9343,42 @@ kind='mda'
         assert!(shell.stop());
     }
 
+    /// The picker a drive chip's Insert… opens keeps one size frame after
+    /// frame, from This library and from This machine, so its rows stay
+    /// where the pointer is and Insert stays on screen.
+    #[test]
+    fn the_picker_from_a_drive_chip_keeps_its_size() {
+        let temp = assembly::test_support::TempDir::new("chip-picker-size");
+        let root = temp.path().canonicalize().unwrap();
+        let ctx = egui::Context::default();
+        let mut shell = media_shell();
+        // A store path that does not exist: the user's own store is never read.
+        shell.preferences.store_root = Some(root.join("no-store"));
+        shell.args.machine = root.join("machine.toml");
+        let pass = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        let chip = label_rect(&pass.text, "A: first.img · 1.44M · read-only").center();
+        click_status(&ctx, &mut shell, 1600.0, chip);
+        let menu = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        let insert = label_rect(&menu.text, "Insert…").center();
+        let commands = click_status(&ctx, &mut shell, 1600.0, insert);
+        assert_eq!(commands, [Command::Insert(0)]);
+        shell.command(Command::Insert(0), &ctx);
+        for source in [
+            crate::media_picker::Source::Library,
+            crate::media_picker::Source::Machine,
+        ] {
+            shell.picker.as_mut().unwrap().set_source(source);
+            crate::library_test_support::settled_modal(
+                egui::Id::unique("media-picker"),
+                Vec2::new(1040.0, 700.0),
+                |ctx| shell.picker_modal(ctx),
+            );
+            assert!(shell.picker.is_some(), "the picker stays open");
+        }
+        shell.picker = None;
+        assert!(shell.stop());
+    }
+
     #[test]
     fn a_set_chosen_in_the_picker_loads_into_the_running_drive_in_order() {
         let temp = assembly::test_support::TempDir::new("library-set-insert");

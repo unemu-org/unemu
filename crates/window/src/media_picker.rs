@@ -706,6 +706,20 @@ fn cover(ui: &mut egui::Ui, title: &str, size: egui::Vec2) {
     );
 }
 
+/// The height of the picker's body: the facets, results and details columns.
+const BODY_HEIGHT: f32 = 300.0;
+
+/// One column of the body, `width` wide, scrolling inside the body's height.
+fn column(ui: &mut egui::Ui, width: f32, id: &str, content: impl FnOnce(&mut egui::Ui)) {
+    ui.vertical(|ui| {
+        ui.set_width(width);
+        egui::ScrollArea::vertical()
+            .id_salt(id)
+            .max_height(BODY_HEIGHT)
+            .show(ui, content);
+    });
+}
+
 /// Draw the picker; returns what the user chose to do.
 pub(crate) fn show(ctx: &egui::Context, picker: &mut Picker, classic: bool) -> Option<Outcome> {
     let mut outcome = None;
@@ -798,24 +812,21 @@ pub(crate) fn show(ctx: &egui::Context, picker: &mut Picker, classic: bool) -> O
                 }
             }
         });
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(170.0);
-                facets(ui, picker);
+        // The facets, results and details share one fixed height, as the
+        // mock-up's body does, and each scrolls inside it. A vertical
+        // separator takes all the height on offer, and a modal offers the
+        // height it measured last frame: in a row without a bound the
+        // separators would grow the modal by its footer's height every frame.
+        let body = egui::vec2(ui.available_width(), BODY_HEIGHT);
+        ui.allocate_ui_with_layout(body, egui::Layout::left_to_right(egui::Align::Min), |ui| {
+            ui.set_min_height(BODY_HEIGHT);
+            column(ui, 170.0, "picker-facets", |ui| facets(ui, picker));
+            ui.separator();
+            column(ui, 300.0, "picker-results", |ui| {
+                results(ui, picker, &mut double);
             });
             ui.separator();
-            ui.vertical(|ui| {
-                ui.set_width(300.0);
-                egui::ScrollArea::vertical()
-                    .id_salt("picker-results")
-                    .max_height(300.0)
-                    .show(ui, |ui| results(ui, picker, &mut double));
-            });
-            ui.separator();
-            ui.vertical(|ui| {
-                ui.set_width(250.0);
-                details(ui, picker);
-            });
+            column(ui, 250.0, "picker-details", |ui| details(ui, picker));
         });
         ui.separator();
         let problem = picker.problem();
@@ -1723,6 +1734,46 @@ pub(crate) mod tests {
             });
             output.textures_delta.clear();
             assert_eq!(outcome, None);
+        }
+    }
+
+    /// The picker keeps one size frame after frame, in both sources, with
+    /// more sets than its list shows and every list part open, so its rows
+    /// stay where the pointer is and Insert stays on screen.
+    #[test]
+    fn the_picker_keeps_its_size_frame_after_frame() {
+        let mut sets = library();
+        for n in 0..20 {
+            sets.push(set(
+                &format!("Shareware {n}"),
+                "Apogee Software",
+                1990 + n,
+                "platformer",
+                M144(),
+                1,
+            ));
+        }
+        let mut target = machine(None, When::Now);
+        target.drives[1].catalogue = vec![CatalogueDisk {
+            name: "Blank work disk".into(),
+            format: M144(),
+            write: "changes kept in DOS games".into(),
+            inserted: true,
+            index: 0,
+            set: None,
+        }];
+        for source in [Source::Library, Source::Machine] {
+            for classic in [true, false] {
+                let mut picker = Picker::new(vec![target.clone()], 0, 1, sets.clone(), None);
+                picker.show_misfits = true;
+                picker.remote_preview = true;
+                picker.set_source(source);
+                crate::library_test_support::settled_modal(
+                    egui::Id::unique("media-picker"),
+                    egui::vec2(1040.0, 700.0),
+                    |ctx| assert_eq!(show(ctx, &mut picker, classic), None),
+                );
+            }
         }
     }
 

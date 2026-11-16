@@ -5,6 +5,18 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — The Insert disk picker keeps its size:** opened from a
+  drive chip's Insert…, the media picker grew taller every frame, about
+  63 px a frame, until its rows and buttons left the window and nothing
+  could be chosen. The vertical separators between its facets, results and
+  details columns took all the height on offer, and a modal offers the
+  height it measured the frame before, so the footer's height was added
+  again on every frame. The three columns now share one fixed 300 px body,
+  as the approved media-picker mock-up's body has, and each scrolls inside
+  it; the modal's rectangle holds from its third frame, from This library
+  and from This machine. Headless tests draw the picker for thirty frames,
+  directly and through the status bar's Insert…. The desktop app's other
+  modals were checked for the same pattern; none grows.
 - **2026-11-16 — Library list headers sit edge to edge, labels on the left:**
   the column headers of the Machines, Images, Installation media and
   Firmware lists now follow the library mock-up's list header instead of a
