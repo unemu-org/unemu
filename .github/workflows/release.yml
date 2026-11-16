@@ -50,8 +50,10 @@ jobs:
           # The oldest hosted Ubuntu sets the glibc the binaries need (2.35).
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
+          # Rust targets macOS 11 by default, so the runner's macOS version does
+          # not limit users; macos-15 arm64 runners were often unavailable.
           - target: aarch64-apple-darwin
-            runner: macos-15
+            runner: macos-14
     env:
       TARGET: ${{ matrix.target }}
       # `--about` names the exact source of the build: <repository>/tree/<tag>.
