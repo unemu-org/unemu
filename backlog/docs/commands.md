@@ -1660,6 +1660,43 @@ sha256sum --ignore-missing -c SHA256SUMS         # Linux
 shasum -a 256 --ignore-missing -c SHA256SUMS     # macOS
 ```
 
+### Using upcli in other repositories' CI
+
+The composite action `.github/actions/setup-upcli` installs a released
+`upcli` on a Linux X64 or macOS ARM64 runner, so the media and firmware
+repositories import and push with this project's own CLI and push guard.
+Its `README.md` has the inputs, the output and an example job. A consumer
+pins the action by commit and the binary by its archive's SHA-256:
+
+```yaml
+- uses: unemu-org/unemupc/.github/actions/setup-upcli@<unemupc commit SHA>
+  with:
+    version: v0.0.1
+    sha256: <SHA-256 of the runner's archive, from SHA256SUMS>
+    # commit: <40 hex>   # releases after v0.0.1: must match upcli --version
+```
+
+The action downloads the archive with curl, checks the SHA-256 before it
+unpacks anything, puts `upcli`, `LICENSE` and `THIRD-PARTY-LICENSES.md` in a
+new directory under `$RUNNER_TEMP` and on `PATH`, and prints `upcli
+--version`; its `path` output names the binary. Its inputs reach its script,
+`install.sh`, only through the environment. Registry credentials stay with
+the consumer: `UNEMU_REGISTRY_USER`, `UNEMU_REGISTRY_PASSWORD` and
+`UNEMU_REGISTRY_HOST`, on the push step only.
+
+`.github/workflows/setup-upcli.yml` tests the action when its files change:
+on `ubuntu-latest` and `macos-14` it checks that a wrong SHA-256 fails and
+installs nothing, then installs v0.0.1 and runs `upcli --version`. To run
+the script by hand, give it the inputs and the runner's variables:
+
+```sh
+mkdir -p /tmp/setup-upcli && : > /tmp/setup-upcli/path && : > /tmp/setup-upcli/output
+UPCLI_VERSION=v0.0.1 UPCLI_SHA256=<SHA-256 of the archive> RUNNER_OS=macOS RUNNER_ARCH=ARM64 \
+  RUNNER_TEMP=/tmp/setup-upcli GITHUB_PATH=/tmp/setup-upcli/path GITHUB_OUTPUT=/tmp/setup-upcli/output \
+  bash .github/actions/setup-upcli/install.sh
+gh run list --repo unemu-org/unemupc --workflow setup-upcli.yml
+```
+
 ## x86jit (CPU core)
 
 ```sh

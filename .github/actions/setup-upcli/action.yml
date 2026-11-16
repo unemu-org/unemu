@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Set up upcli
+description: >-
+  Install upcli, the command line of unemupc, from a GitHub release of
+  unemu-org/unemupc. The archive is checked against a pinned SHA-256 before
+  anything is unpacked, and upcli is added to PATH.
+
+inputs:
+  version:
+    description: Release tag to install, for example v0.0.1.
+    required: true
+  sha256:
+    description: >-
+      SHA-256 of the release archive for the runner's platform, as the
+      release's SHA256SUMS lists it (64 lowercase hex digits).
+    required: true
+  commit:
+    description: >-
+      Full commit (40 lowercase hex digits) the release was built from. When
+      set, the commit line of `upcli --version` must name it; a release that
+      prints no commit line then fails.
+    required: false
+    default: ''
+
+outputs:
+  path:
+    description: Absolute path of the installed upcli binary.
+    value: ${{ steps.install.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    # The inputs reach the script only through the environment, never pasted
+    # into the command, so no value can turn into shell code.
+    - name: Install upcli
+      id: install
+      shell: bash
+      env:
+        UPCLI_VERSION: ${{ inputs.version }}
+        UPCLI_SHA256: ${{ inputs.sha256 }}
+        UPCLI_COMMIT: ${{ inputs.commit }}
+      run: bash "$GITHUB_ACTION_PATH/install.sh"

@@ -5,6 +5,28 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — setup-upcli action:** `.github/actions/setup-upcli` is a
+  composite action that installs a released `upcli` in other repositories'
+  workflows (the open media pipeline and the firmware forks), so they import
+  and push with this project's CLI and push guard. Inputs: `version` (a
+  release tag), `sha256` (of the runner's archive) and an optional `commit`
+  that must match the `commit:` line of `upcli --version`. It supports Linux
+  X64 and macOS ARM64 runners, downloads with curl over HTTPS only, checks
+  the SHA-256 before unpacking, installs only `upcli` with `LICENSE` and
+  `THIRD-PARTY-LICENSES.md` under `$RUNNER_TEMP`, adds it to `PATH` and
+  outputs its `path`. It holds no secrets and uses no other actions; the
+  inputs reach its bash script only through the environment and are
+  validated first. Its README shows a media-set import and push with the
+  registry credentials on the push step only.
+  `.github/workflows/setup-upcli.yml` tests it on `ubuntu-latest` and
+  `macos-14` with v0.0.1, including a wrong SHA-256 that must fail.
+  Evidence: actionlint (with shellcheck), shellcheck of the script and
+  zizmor report nothing. On an Apple-silicon Mac the script installed v0.0.1
+  under bash 3.2 (with `sha256sum` and with `shasum`) and ran `upcli
+  --version`; it refused a wrong SHA-256 with nothing unpacked or added to
+  `PATH`, and refused malformed inputs, an unsupported platform and a
+  `commit` for a release without a commit line. The Linux archive hashed and
+  unpacked there too. The workflow's first GitHub run follows the push.
 - **2026-11-16 — Version 0.0.1, a preview release:** the workspace version
   moves to 0.0.1 for the first public preview on GitHub, so the release
   workflow publishes upcli and unemupc binaries (Linux x86-64, macOS on Apple
