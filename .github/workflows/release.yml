@@ -1,0 +1,288 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Release
+
+# Builds upcli and unemupc for each release platform and attaches them to the
+# GitHub release: one unemupc-<version>-<target>.tar.gz per platform and a
+# SHA256SUMS file. Publishing a release for a tag (v0.1.0) starts it; a manual
+# run with that tag builds again and replaces the release's assets. Nothing is
+# published to a package registry.
+#
+# The binaries are built outside Nix with rustup: a Nix build links libraries
+# from /nix/store, and the binary would not start on a machine without Nix.
+# Every action is pinned to a full commit SHA; the comment names its release.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of the published release to build, for example v0.1.0
+        required: true
+        type: string
+
+# Only the upload job writes, and only to the release.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+  # The Rust release of the devShell (the flake's stable toolchain), which
+  # rust-version in Cargo.toml names. The first step checks the two agree.
+  RUSTUP_TOOLCHAIN: 1.99.1
+  CARGO_TERM_COLOR: never
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest hosted Ubuntu sets the glibc the binaries need (2.35).
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-apple-darwin
+            runner: macos-15
+    env:
+      TARGET: ${{ matrix.target }}
+      # `--about` names the exact source of the build: <repository>/tree/<tag>.
+      UNEMUPC_SOURCE_REV: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      # The pinned CPU dependency is fetched anonymously. Do not leave the job
+      # token in .git/config next to the build.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+
+      - name: Check the tag and the toolchain
+        run: |
+          set -euo pipefail
+          workspace_field() {
+            sed -n "/^\[workspace.package\]/,/^\[/ s/^$1 = \"\(.*\)\"\$/\1/p" Cargo.toml
+          }
+          version=$(workspace_field version)
+          if [[ $TAG != "v$version" ]]; then
+            echo "::error::tag $TAG does not name the workspace version $version (expected v$version)"
+            exit 1
+          fi
+          rust_version=$(workspace_field rust-version)
+          if [[ $RUSTUP_TOOLCHAIN != "$rust_version" && $RUSTUP_TOOLCHAIN != "$rust_version".* ]]; then
+            echo "::error::RUSTUP_TOOLCHAIN $RUSTUP_TOOLCHAIN is not the rust-version $rust_version of Cargo.toml"
+            exit 1
+          fi
+
+      # cpal links ALSA, which it finds through pkg-config. The X11, Wayland,
+      # xkbcommon and EGL/GLX libraries of eframe and winit are opened at run
+      # time (dlopen), so the build needs no packages for them.
+      - name: Install build libraries
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev
+
+      - name: Install Rust
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+          rustc --version
+          cargo --version
+
+      # rustc records source paths in the binaries (panic locations, file!()).
+      # Rewrite every prefix that names the runner: the workspace (and target/
+      # inside it, where generated sources live), cargo's registry sources and
+      # git checkouts, and the toolchain. cc gets the same mapping for the C
+      # sources of ring and zstd, should a __FILE__ of theirs reach a binary.
+      - name: Build
+        run: |
+          set -euo pipefail
+          cargo_home=${CARGO_HOME:-$HOME/.cargo}
+          sysroot=$(rustc --print sysroot)
+          flags=(
+            "--remap-path-prefix=$GITHUB_WORKSPACE=/build/unemupc"
+            "--remap-path-prefix=$cargo_home/registry/src=/cargo/registry/src"
+            "--remap-path-prefix=$cargo_home/git/checkouts=/cargo/git/checkouts"
+            "--remap-path-prefix=$sysroot=/rust/sysroot"
+          )
+          # The unit-separated form keeps each flag whole whatever the paths hold.
+          CARGO_ENCODED_RUSTFLAGS=$(IFS=$'\x1f'; printf '%s' "${flags[*]}")
+          export CARGO_ENCODED_RUSTFLAGS
+          export CFLAGS="-ffile-prefix-map=$GITHUB_WORKSPACE=/build/unemupc -ffile-prefix-map=$cargo_home/registry/src=/cargo/registry/src -ffile-prefix-map=$cargo_home/git/checkouts=/cargo/git/checkouts"
+          cargo build --locked --release --target "$TARGET" \
+            -p cli -p window --bin upcli --bin unemupc
+
+      - name: Check the binaries
+        run: |
+          set -euo pipefail
+          cargo_home=${CARGO_HOME:-$HOME/.cargo}
+          sysroot=$(rustc --print sysroot)
+          failed=0
+          for bin in upcli unemupc; do
+            file=target/$TARGET/release/$bin
+            list=$RUNNER_TEMP/$bin.strings
+            # `-` scans every byte with both GNU and Apple strings; Apple's -a
+            # reads only the sections, not the symbol table.
+            strings - "$file" > "$list"
+            for path in "$HOME" "$GITHUB_WORKSPACE" "$cargo_home" "$sysroot"; do
+              # grep exits 1 when nothing matches; any other failure stops the step.
+              hits=$(grep -cF -- "$path" "$list") || [[ $? -eq 1 ]]
+              if (( hits > 0 )); then
+                echo "::error::$bin contains $path ($hits strings)"
+                grep -m 5 -F -- "$path" "$list"
+                failed=1
+              fi
+            done
+            # The rewritten prefix shows the scan saw the dependencies' paths.
+            if ! grep -qF /cargo/registry/src/ "$list"; then
+              echo "::error::$bin names no /cargo/registry/src/ path; was the remapping applied?"
+              failed=1
+            fi
+            case "$RUNNER_OS" in
+              macOS)
+                # Only the system's libraries and frameworks, never a path a
+                # package manager installed.
+                otool -L "$file"
+                if otool -L "$file" | tail -n +2 | awk '{ print $1 }' |
+                  grep -vE '^(/usr/lib/|/System/Library/)'; then
+                  echo "::error::$bin links a library outside the system"
+                  failed=1
+                fi
+                ;;
+              Linux)
+                readelf -d "$file" | grep NEEDED
+                echo "$bin needs glibc $(objdump -T "$file" | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -n 1)"
+                ;;
+            esac
+          done
+          exit "$failed"
+
+      # The archive holds the binaries, the licence, the README, the
+      # third-party licences generated for this target, and the repository's
+      # own notices those licences quote, under notices/ at their repository
+      # paths, with the standard licence texts of LICENSES/.
+      - name: Package
+        run: |
+          set -euo pipefail
+          name=unemupc-${TAG#v}-$TARGET
+          stage=dist/$name
+          mkdir -p "$stage/notices"
+          cp "target/$TARGET/release/upcli" "target/$TARGET/release/unemupc" LICENSE README.md "$stage/"
+          bash scripts/third-party-licenses.sh "$stage/THIRD-PARTY-LICENSES.md" "$TARGET"
+          # The headings of "Components in this repository" name those files;
+          # the licence texts between the fences are skipped.
+          awk '
+            /^`````/ { fenced = !fenced; next }
+            fenced { next }
+            /^## / { section = $0; next }
+            section == "## Components in this repository" && /^### `[^`]+`$/ {
+              print substr($0, 6, length($0) - 6)
+            }
+          ' "$stage/THIRD-PARTY-LICENSES.md" > "$RUNNER_TEMP/notices.txt"
+          if [[ ! -s $RUNNER_TEMP/notices.txt ]]; then
+            echo '::error::THIRD-PARTY-LICENSES.md names no notice files of this repository'
+            exit 1
+          fi
+          printf '%s\n' LICENSES/*.txt >> "$RUNNER_TEMP/notices.txt"
+          while IFS= read -r notice; do
+            mkdir -p "$stage/notices/$(dirname "$notice")"
+            cp "$notice" "$stage/notices/$notice"
+          done < "$RUNNER_TEMP/notices.txt"
+          # No owner names from the runner, and no macOS metadata files.
+          case "$RUNNER_OS" in
+            Linux) owner=(--owner=0 --group=0 --numeric-owner) ;;
+            macOS) owner=(--uid 0 --gid 0 --numeric-owner --no-mac-metadata) ;;
+          esac
+          tar "${owner[@]}" -czf "dist/$name.tar.gz" -C dist "$name"
+          tar -tvzf "dist/$name.tar.gz"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
+  upload:
+    name: upload
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # gh release upload and gh release edit
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -- *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      # --clobber lets a manual run replace the assets of an earlier one.
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      # Appended once: a manual run finds the marker and leaves the notes alone.
+      - name: Add download notes to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          marker='<!-- release workflow: download notes -->'
+          notes=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+          if [[ $notes == *"$marker"* ]]; then
+            echo 'the release notes already carry the download notes'
+            exit 0
+          fi
+          {
+            if [[ -n $notes ]]; then
+              printf '%s\n\n' "$notes"
+            fi
+            printf '%s\n' "$marker"
+            cat <<'NOTES'
+          ## Downloads
+
+          - Linux x86-64 (glibc 2.35 or newer): `unemupc-<version>-x86_64-unknown-linux-gnu.tar.gz`
+          - macOS on Apple silicon: `unemupc-<version>-aarch64-apple-darwin.tar.gz`
+
+          Each archive holds `unemupc` (the desktop app), `upcli` (the command
+          line), `LICENSE`, `README.md`, `THIRD-PARTY-LICENSES.md` and the
+          notices it quotes. Check a download against `SHA256SUMS`:
+
+          ```sh
+          sha256sum --ignore-missing -c SHA256SUMS         # Linux
+          shasum -a 256 --ignore-missing -c SHA256SUMS     # macOS
+          ```
+
+          The macOS binaries are not signed or notarized yet, so macOS refuses to
+          open them as downloaded. After unpacking, remove the quarantine flag in
+          the unpacked folder:
+
+          ```sh
+          xattr -d com.apple.quarantine unemupc upcli
+          ```
+
+          On Linux the desktop app needs ALSA (`libasound.so.2`) and an X11 or
+          Wayland session with OpenGL; the command line needs neither.
+          NOTES
+          } > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"

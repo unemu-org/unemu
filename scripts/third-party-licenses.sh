@@ -13,7 +13,7 @@
 #           crates that platform links. Without it, every platform's crates are
 #           listed.
 #
-# The release workflow runs it inside the devShell; the output is generated, so
+# The release workflow runs it with the runner's cargo and jq; the output is generated, so
 # it is gitignored rather than committed. It needs only cargo, jq and a SHA-256
 # tool (sha256sum or shasum). cargo-deny can list licence expressions but not
 # their texts, and cargo-about is not in the devShell. cargo metadata reads the

@@ -100,7 +100,10 @@ cards, firmware and drives. `at-games-open.toml` is the open DOS games machine
 
 ## Downloads
 
-Binaries come with the first release. Until then, build from source as below.
+Binaries for Linux x86-64 and macOS on Apple silicon are attached to each
+[release](https://github.com/unemu-org/unemupc/releases), with `SHA256SUMS`;
+the release notes say how to check them and how to open the unsigned macOS
+binaries. On other platforms, build from source as below.
 
 ## Getting started
 

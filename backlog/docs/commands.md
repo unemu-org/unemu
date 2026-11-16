@@ -1376,7 +1376,7 @@ a hit prints only the file and line.
 
 ### Third-party licences
 
-`bash scripts/third-party-licenses.sh [OUTPUT [TARGET]]`, run in the devShell,
+`bash scripts/third-party-licenses.sh [OUTPUT [TARGET]]` (in the devShell or with any cargo, jq and SHA-256 tool),
 writes `THIRD-PARTY-LICENSES.md` (gitignored) for the release binaries: the
 repository's own third-party components (Nuked-OPL3, the fonts, the logo) and
 every crate `unemupc` and `upcli` link for the exact `Cargo.lock`, with the
@@ -1616,6 +1616,49 @@ binary without dev-dependency feature unification; formatting uses `cargo fmt --
 saves the Cargo cache, uploads `ci-logs/` as a run artifact, and names failing
 steps in its final Gate summary step; any failed gate fails the job.
 See [`dev-setup.md`](dev-setup.md#ci) for the runner and cache setup.
+
+## Releases
+
+A release is a tag `v<version>` that matches `version` under
+`[workspace.package]` in `Cargo.toml`; bump that first. The maintainer pushes the
+tag and creates and publishes the GitHub release for it. Publishing starts
+`.github/workflows/release.yml`, which builds `upcli` and `unemupc` and
+attaches them to that release; nothing goes to a package registry.
+
+```sh
+git tag -s v0.1.0 -m 'unemupc 0.1.0' && git push origin v0.1.0
+gh release create v0.1.0 --repo unemu-org/unemupc --verify-tag --title 'unemupc 0.1.0' --notes-file NOTES.md
+gh run list --repo unemu-org/unemupc --workflow release.yml
+gh workflow run release.yml --repo unemu-org/unemupc -f tag=v0.1.0   # build again, replace the assets
+```
+
+The release gets `unemupc-<version>-x86_64-unknown-linux-gnu.tar.gz` (built
+on Ubuntu 22.04, so it needs glibc 2.35 or newer),
+`unemupc-<version>-aarch64-apple-darwin.tar.gz` (macOS on Apple silicon,
+unsigned) and `SHA256SUMS`. Each archive unpacks to
+`unemupc-<version>-<target>/` with both binaries, `LICENSE`, `README.md`,
+`THIRD-PARTY-LICENSES.md` from `scripts/third-party-licenses.sh` for that
+target, and `notices/`: the repository's own notices that file quotes and
+`LICENSES/`, at their repository paths. The workflow appends download notes
+to the release text once, including how to clear the macOS quarantine flag
+(`xattr -d com.apple.quarantine unemupc upcli`).
+
+The binaries are built outside Nix, with rustup at the devShell's Rust
+(`RUSTUP_TOOLCHAIN` in the workflow; a step checks it against
+`rust-version`), `--locked --release`, `--remap-path-prefix` for the
+workspace, cargo's registry sources and git checkouts and the toolchain, and
+`UNEMUPC_SOURCE_REV` set to the tag, so `--about` names
+`<repository>/tree/<tag>`. A check step fails the job when `strings` finds
+the runner's home, the workspace, cargo's home or the toolchain in a binary,
+or, on macOS, when `otool -L` lists a library outside `/usr/lib` and
+`/System/Library`.
+
+Verify a download in the folder that holds it and `SHA256SUMS`:
+
+```sh
+sha256sum --ignore-missing -c SHA256SUMS         # Linux
+shasum -a 256 --ignore-missing -c SHA256SUMS     # macOS
+```
 
 ## x86jit (CPU core)
 

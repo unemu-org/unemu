@@ -5,6 +5,24 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — Release binaries:** `.github/workflows/release.yml` builds
+  `upcli` and `unemupc` when a GitHub release is published (or by hand for a
+  tag) and attaches `unemupc-<version>-<target>.tar.gz` for
+  x86_64-unknown-linux-gnu (Ubuntu 22.04) and aarch64-apple-darwin (macOS 15),
+  plus `SHA256SUMS`. It builds outside Nix with rustup at the devShell's Rust,
+  `--locked --release`, path prefixes remapped and `UNEMUPC_SOURCE_REV` set to
+  the tag. A check step fails on the runner's home, workspace, cargo home or
+  toolchain in a binary (`strings`, whole file) and, on macOS, on a library
+  outside the system (`otool -L`). Each archive carries the licence, the
+  README, `THIRD-PARTY-LICENSES.md` for its target and the in-tree notices.
+  The macOS binaries are unsigned; the workflow appends how to clear the
+  quarantine flag to the release notes. Evidence: actionlint (with
+  shellcheck) and zizmor report nothing. A dry run of the macOS steps outside
+  Nix on an Apple-silicon Mac, on the tree with the release-readiness changes,
+  built both binaries with no home, workspace, user name or `/nix/store` path
+  in them, `otool -L` listing only `/usr/lib` and `/System/Library`, and an
+  archive whose `upcli --about` names `.../tree/v0.1.0`. The Linux leg and
+  the upload job have not run yet; the first GitHub release is their test.
 - **2026-11-16 — CI moves to GitHub Actions:** the repository moves to
   `github.com/unemu-org/unemupc`, and `.github/workflows/ci.yml` becomes the
   only CI; the Forgejo workflow is deleted. It runs the same
