@@ -1,5 +1,5 @@
 {
-  description = "unemupc98 — IBM PC/AT (80286) LLE emulator devShell (Rust + Backlog.md + tooling)";
+  description = "unemupc — IBM PC/AT (80286) LLE emulator devShell (Rust + Backlog.md + tooling)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

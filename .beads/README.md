@@ -1,6 +1,6 @@
 # .beads
 
-The beads (`bd`) issue database for unemupc98: issue prefix `upc`, embedded Dolt in
+The beads (`bd`) issue database for unemupc: issue prefix `upc`, embedded Dolt in
 `embeddeddolt/` (gitignored). It reaches other machines only through `bd dolt push` /
 `bd bootstrap` via `refs/dolt/data` on `origin`, not through git commits.
 

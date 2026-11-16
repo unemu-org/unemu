@@ -17,7 +17,7 @@
 //! with it. The machine is `machines/at-ide.toml` with the game profile's 1 MiB
 //! of extended memory: the same open AT BIOS, keyboard controller and XTIDE
 //! ROM, without the VGA BIOS, so a candidate system BIOS named by
-//! `UNEMUPC98_OPEN_AT_BIOS` can replace the pinned one. See machines/README.md
+//! `UNEMUPC_OPEN_AT_BIOS` can replace the pinned one. See machines/README.md
 //! §Playing DOS games. CPU revision is pinned by Cargo.lock.
 
 use assembly::{
@@ -211,7 +211,7 @@ fn no_vdisk_record_survives_a_restart() {
     }
     // A system BIOS build to try in place of the pinned one, such as a
     // release candidate of the open AT BIOS.
-    let candidate = std::env::var_os("UNEMUPC98_OPEN_AT_BIOS");
+    let candidate = std::env::var_os("UNEMUPC_OPEN_AT_BIOS");
     let mut image = vendor[3].1.clone();
     fat12::add_file(&mut image, b"PLANT   COM", &plant_program());
     fat12::add_file(&mut image, b"RESET   COM", &reset_program());

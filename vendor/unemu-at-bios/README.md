@@ -50,7 +50,7 @@ that change what the guest sees on these machines:
   10h–2Dh (upstream sums 10h–20h), the equipment byte against the drives,
   coprocessor and display, the memory sizes and the clock. Errors 161–164
   stop POST at "Press F1 to continue, F2 to run BIOS setup"; a consistent
-  CMOS, such as the one unemupc98 derives, prints nothing and adds no wait;
+  CMOS, such as the one unemupc derives, prints nothing and adds no wait;
 - POST identifies the 80286 without the 8088 interrupt warning and reports an
   80287 as "Intel 80287";
 - the display switch (8042 input port bit 6) is read with the IBM PC/AT
@@ -120,7 +120,7 @@ are gitignored.
 
 CI: the `fixtures` gate (`scripts/ci-gate.sh fixtures`) runs this script; it
 needs HTTPS access to GitHub and no credentials. The `goldens` gate sets
-`UNEMUPC98_REQUIRE_FIXTURES=1`, so the tests that need the ROM fail when it is
+`UNEMUPC_REQUIRE_FIXTURES=1`, so the tests that need the ROM fail when it is
 missing; without that variable they print a skip line and return. See
 `backlog/docs/commands.md`.
 

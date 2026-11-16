@@ -7,7 +7,7 @@ mod fixtures;
 
 #[test]
 fn fixture_probe() {
-    if let Some(relative) = std::env::var_os("UNEMUPC98_FIXTURE_PROBE") {
+    if let Some(relative) = std::env::var_os("UNEMUPC_FIXTURE_PROBE") {
         assert!(fixtures::fixture(relative.to_str().unwrap()).is_none());
     }
 }
@@ -31,10 +31,10 @@ fn missing_fixture_skips_unless_required() {
             let mut command = std::process::Command::new(std::env::current_exe().unwrap());
             command
                 .args(["--exact", "fixture_probe", "--nocapture"])
-                .env("UNEMUPC98_FIXTURE_PROBE", relative)
-                .env_remove("UNEMUPC98_REQUIRE_FIXTURES");
+                .env("UNEMUPC_FIXTURE_PROBE", relative)
+                .env_remove("UNEMUPC_REQUIRE_FIXTURES");
             if let Some(value) = required {
-                command.env("UNEMUPC98_REQUIRE_FIXTURES", value);
+                command.env("UNEMUPC_REQUIRE_FIXTURES", value);
             }
             let output = command.output().unwrap();
             let stderr = String::from_utf8(output.stderr).unwrap();

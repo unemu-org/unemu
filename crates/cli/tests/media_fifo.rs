@@ -14,7 +14,7 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!("unemupc98-media-fifo-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("unemupc-media-fifo-{}", std::process::id()));
         fs::create_dir(&dir).unwrap();
         let base = vec![0; 1024];
         fs::write(dir.join("base.img"), &base).unwrap();

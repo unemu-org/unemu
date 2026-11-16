@@ -557,8 +557,8 @@ fn mmio_shift_preserves_device_address_direction_and_value() {
 #[test]
 #[ignore = "requires BIOS/FreeDOS fixtures; informative machine wall times"]
 fn scheduler_engine_wall_times() {
-    if !std::env::var("UNEMUPC98_SCHEDULER_WALL_TIMES").is_ok_and(|value| value == "1") {
-        eprintln!("skipping scheduler wall times: set UNEMUPC98_SCHEDULER_WALL_TIMES=1");
+    if !std::env::var("UNEMUPC_SCHEDULER_WALL_TIMES").is_ok_and(|value| value == "1") {
+        eprintln!("skipping scheduler wall times: set UNEMUPC_SCHEDULER_WALL_TIMES=1");
         return;
     }
     for workload in [Workload::BiosPost, Workload::FreeDosPrompt] {
@@ -608,11 +608,11 @@ fn scheduler_engine_wall_times() {
 #[test]
 #[ignore = "requires firmware/media and an explicit stream reference directory"]
 fn scheduler_streams_unchanged() {
-    let Ok(directory) = std::env::var("UNEMUPC98_SCHEDULER_STREAMS") else {
-        eprintln!("skipping scheduler streams: UNEMUPC98_SCHEDULER_STREAMS is unset");
+    let Ok(directory) = std::env::var("UNEMUPC_SCHEDULER_STREAMS") else {
+        eprintln!("skipping scheduler streams: UNEMUPC_SCHEDULER_STREAMS is unset");
         return;
     };
-    let record = std::env::var("UNEMUPC98_RECORD_STREAMS").is_ok_and(|value| value == "1");
+    let record = std::env::var("UNEMUPC_RECORD_STREAMS").is_ok_and(|value| value == "1");
     for workload in scheduler::FAST_WORKLOADS.into_iter().chain([
         Workload::BiosPost,
         Workload::BiosFloppy,
@@ -719,7 +719,7 @@ fn scheduler_post_rig_rejects_one_byte_changed_bios() {
     let expected = assembly::ConfigError::FirmwareNotListed {
         sha256: "95e2791c710fdce0ebfc116efe2a187a178f6e33a072e7b75b05861ffdc4f402".into(),
         board: "ibm-5170",
-        known: "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.3 (open, vendor/unemu-at-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.2 (open, vendor/unemu-at-bios/fetch.sh at unemupc98 bcb375e6410b18266bd5f99533624b768d067867), ibm-5170-bios-1984-01-10 (user-supplied: U27 6181028 even, U47 6181029 odd or U17 6181024 even@0, U37 6181026 odd@0, U27 6181025 even@32768, U47 6181027 odd@32768; see vendor/user-roms/README.md), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; see vendor/user-roms/README.md), ibm-5170-bios-1985-11-15 (user-supplied: U27 61X9266 even, U47 61X9265 odd; see vendor/user-roms/README.md), landmark-rom-post-at-1.2.0 (user-supplied: U27 27256 even, U47 27256 odd; see vendor/user-roms/README.md)".into(),
+        known: "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.3 (open, vendor/unemu-at-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.2 (open, vendor/unemu-at-bios/fetch.sh at unemupc bcb375e6410b18266bd5f99533624b768d067867), ibm-5170-bios-1984-01-10 (user-supplied: U27 6181028 even, U47 6181029 odd or U17 6181024 even@0, U37 6181026 odd@0, U27 6181025 even@32768, U47 6181027 odd@32768; see vendor/user-roms/README.md), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; see vendor/user-roms/README.md), ibm-5170-bios-1985-11-15 (user-supplied: U27 61X9266 even, U47 61X9265 odd; see vendor/user-roms/README.md), landmark-rom-post-at-1.2.0 (user-supplied: U27 27256 even, U47 27256 odd; see vendor/user-roms/README.md)".into(),
     };
     assert_eq!(
         error.downcast_ref::<assembly::ConfigError>(),

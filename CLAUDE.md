@@ -1,4 +1,4 @@
-# CLAUDE.md — unemupc98
+# CLAUDE.md — unemupc
 
 Claude-specific entry point. Body lives in [`AGENTS.md`](AGENTS.md) — same canonical content is consumed by every other coding agent.
 

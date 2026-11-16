@@ -255,7 +255,7 @@ pub(super) fn run(args: Args, autostart: bool) -> Result<(), Box<dyn Error>> {
     }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("unemupc98")
+            .with_title("unemupc")
             .with_icon(crate::logo::icon()?)
             .with_inner_size([1040.0, 700.0])
             .with_min_inner_size([760.0, 500.0]),
@@ -265,7 +265,7 @@ pub(super) fn run(args: Args, autostart: bool) -> Result<(), Box<dyn Error>> {
         ..Default::default()
     };
     let app = eframe::create_native(
-        "unemupc98",
+        "unemupc",
         options,
         Box::new(move |cc| {
             configure_context(&cc.egui_ctx);
@@ -335,6 +335,9 @@ struct Shell {
     preferences: crate::preferences::Preferences,
     preferences_draft: crate::preferences::Preferences,
     preferences_path: Option<std::path::PathBuf>,
+    /// Why `preferences_path` is unset: no platform config directory, or the
+    /// copy from the project's former directory failed.
+    preferences_path_error: Option<String>,
     rom_folder_input: String,
     library_revision: u64,
     readiness: Option<ReadinessJob>,
@@ -1647,7 +1650,13 @@ impl Shell {
             .parent()
             .map(std::path::Path::to_path_buf)
             .unwrap_or_default();
-        let preferences_path = crate::preferences::config_path().ok();
+        // Finding the path may copy the file from the project's former
+        // directory. When that fails, the status bar says so: the shell then
+        // keeps defaults and saves nothing, so the old file is copied next time.
+        let (preferences_path, path_error) = match cli::preferences::path() {
+            Ok(path) => (Some(path), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
         let (preferences, preference_error) = match preferences_path
             .as_ref()
             .map(|path| crate::preferences::Preferences::load(path))
@@ -1663,7 +1672,7 @@ impl Shell {
             Ok(paths) => (paths, "Ready".into()),
             Err(error) => (Vec::new(), error.to_string()),
         };
-        if let Some(error) = preference_error {
+        if let Some(error) = path_error.clone().or(preference_error) {
             message = format!("Preferences: {error}");
         }
         let selected = Some(shell_model::select_machine(&mut paths, &args.machine));
@@ -1714,6 +1723,7 @@ impl Shell {
             preferences_draft: preferences.clone(),
             preferences,
             preferences_path,
+            preferences_path_error: path_error,
             rom_folder_input: String::new(),
             library_revision: 0,
             readiness: None,
@@ -2008,9 +2018,7 @@ impl Shell {
         self.preferences.send_system_shortcuts = on;
         self.preferences_draft.send_system_shortcuts = on;
         let saved = self
-            .preferences_path
-            .as_ref()
-            .ok_or_else(|| io::Error::other("platform config directory is unavailable"))
+            .preferences_file()
             .and_then(|path| self.preferences.save(path));
         // The option is on for this session even when saving failed, so it
         // asks for access either way.
@@ -2356,11 +2364,20 @@ impl Shell {
         self.message = "Rescanning ROM folders…".into();
     }
 
+    /// The preferences file, or the reason the shell has none.
+    fn preferences_file(&self) -> io::Result<&std::path::Path> {
+        self.preferences_path.as_deref().ok_or_else(|| {
+            io::Error::other(
+                self.preferences_path_error
+                    .clone()
+                    .unwrap_or_else(|| "platform config directory is unavailable".into()),
+            )
+        })
+    }
+
     fn save_preferences(&mut self) {
         let result = self
-            .preferences_path
-            .as_ref()
-            .ok_or_else(|| io::Error::other("platform config directory is unavailable"))
+            .preferences_file()
             .and_then(|path| self.preferences_draft.save(path));
         match result {
             Ok(()) => {
@@ -2697,9 +2714,9 @@ impl Shell {
         egui::Modal::new(egui::Id::unique("quit-during-transfer")).show(ctx, |ui| {
             ui.set_max_width(420.0);
             if self.classic {
-                gradient_title(ui, "unemupc98");
+                gradient_title(ui, "unemupc");
             } else {
-                ui.heading("unemupc98");
+                ui.heading("unemupc");
             }
             ui.add(egui::Label::new(format!("A {kind} is running. Cancel it and quit?")).wrap());
             ui.separator();
@@ -2723,16 +2740,16 @@ impl Shell {
     fn stop_prompt_modal(&self, ctx: &egui::Context, escape: bool) -> Option<bool> {
         self.stop_prompt?;
         let question = format!(
-            "unemupc98 is running {}. Stop it and continue?",
+            "unemupc is running {}. Stop it and continue?",
             self.session_name().unwrap_or("a machine")
         );
         let mut answer = None;
         egui::Modal::new(egui::Id::unique("stop-running-machine")).show(ctx, |ui| {
             ui.set_max_width(420.0);
             if self.classic {
-                gradient_title(ui, "unemupc98");
+                gradient_title(ui, "unemupc");
             } else {
-                ui.heading("unemupc98");
+                ui.heading("unemupc");
             }
             ui.add(egui::Label::new(question).wrap());
             ui.separator();
@@ -2862,7 +2879,7 @@ impl Shell {
             Minimize => { self.release(); ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); },
             Exit => self.request_exit(ctx),
             Shortcuts => self.dialog = Some(("Keyboard shortcuts", shortcuts_help(self.macos_shortcuts))),
-            About => self.dialog = Some(("About unemupc98", format!("unemupc98 {}\nIBM PC/AT emulator\nAGPL-3.0-or-later\nx86jit · egui / eframe · cpal\n\n{}\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), window::FONT_NOTICE, window::EGUI_FONT_NOTICE, window::SYMBOL_FONT_NOTICE))),
+            About => self.dialog = Some(("About unemupc", format!("unemupc {}\nIBM PC/AT emulator\nAGPL-3.0-or-later\nx86jit · egui / eframe · cpal\n\n{}\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), window::FONT_NOTICE, window::EGUI_FONT_NOTICE, window::SYMBOL_FONT_NOTICE))),
             Placeholder("Open machine file") => self.open_machine_dialog(),
             Placeholder("New machine") => { self.release(); self.image_library.begin_new_machine(); },
             Placeholder(title) => self.dialog = Some((title, "not yet available".into())),
@@ -3259,7 +3276,7 @@ impl Shell {
             });
             ui.menu_button("Help", |ui| {
                 self.item(ui, "Keyboard shortcuts", "F1", Shortcuts, commands);
-                self.item(ui, "About unemupc98", "", About, commands);
+                self.item(ui, "About unemupc", "", About, commands);
             });
         });
     }
@@ -3359,12 +3376,12 @@ impl Shell {
             ) {
                 // The machines mock-up names the machine and its image.
                 (Some((_, name)), Some((row, _, _))) => {
-                    format!("{name} — {} — unemupc98", row.reference)
+                    format!("{name} — {} — unemupc", row.reference)
                 }
-                _ => format!("{} — unemupc98", self.session_name().unwrap_or("Machine")),
+                _ => format!("{} — unemupc", self.session_name().unwrap_or("Machine")),
             }
         } else {
-            "unemupc98".into()
+            "unemupc".into()
         }
     }
 
@@ -4012,7 +4029,7 @@ impl eframe::App for Shell {
                 } else {
                     ui.heading(*title);
                 }
-                if *title == "About unemupc98" {
+                if *title == "About unemupc" {
                     if let Some(logo) = &self.logo {
                         logo.about(ui);
                     }
@@ -4128,7 +4145,7 @@ impl eframe::App for Shell {
                             ui.add(egui::Label::new(warning).wrap());
                         }
                     }
-                    ui.label("UNEMUPC98_USER_ROMS_DIR is searched as well when set.");
+                    ui.label("UNEMUPC_USER_ROMS_DIR is searched as well when set.");
                     if let Some(path) = &self.preferences_path {
                         ui.label(format!("Preferences file: {}", path.display()));
                     }
@@ -4724,7 +4741,7 @@ fn title_strip(ui: &mut egui::Ui, title: &str, icon: bool) {
 
 /// Shown in Preferences when the system-shortcut option is on without the
 /// Accessibility privilege.
-const ACCESS_NOTE: &str = "Allow unemupc98, or the terminal that started it, in System \
+const ACCESS_NOTE: &str = "Allow unemupc, or the terminal that started it, in System \
     Settings › Privacy & Security › Accessibility. Until then these shortcuts stay with macOS.";
 
 /// Hands the keys the keyboard tap takes from macOS to the window's key
@@ -4869,6 +4886,7 @@ mod tests {
             preferences: Default::default(),
             preferences_draft: Default::default(),
             preferences_path: None,
+            preferences_path_error: None,
             rom_folder_input: String::new(),
             library_revision: 0,
             readiness: None,
@@ -6122,9 +6140,28 @@ mod tests {
     }
 
     #[test]
+    fn a_save_without_a_preferences_file_gives_the_startup_reason() {
+        let mut shell = shell();
+        shell.save_preferences();
+        assert_eq!(
+            shell.dialog.as_ref().map(|(_, text)| text.as_str()),
+            Some("Cannot save preferences: platform config directory is unavailable")
+        );
+        let reason = "copying preferences from /a/preferences.toml to /b/preferences.toml: \
+                      permission denied";
+        shell.preferences_path_error = Some(reason.into());
+        shell.save_preferences();
+        assert_eq!(
+            shell.dialog.as_ref().map(|(_, text)| text.clone()),
+            Some(format!("Cannot save preferences: {reason}"))
+        );
+    }
+
+    #[test]
     fn a_failed_save_still_asks_for_access_and_reports_both() {
         let (mut shell, log) = system_keys_shell();
         shell.preferences_path = None;
+        shell.preferences_path_error = Some("copying preferences: permission denied".into());
         shell.open_preferences();
         shell.set_system_shortcuts(true);
         assert!(
@@ -6140,7 +6177,10 @@ mod tests {
             .note
             .clone()
             .unwrap();
-        assert!(note.starts_with("Cannot save preferences:"), "{note}");
+        assert!(
+            note.starts_with("Cannot save preferences: copying preferences: permission denied"),
+            "{note}"
+        );
         assert!(note.ends_with(ACCESS_NOTE), "{note}");
     }
 
@@ -7401,7 +7441,7 @@ mod tests {
             if !path.exists() {
                 let message = format!("missing fixture {} — run {fetch}", path.display());
                 assert!(
-                    std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref()
+                    std::env::var_os("UNEMUPC_REQUIRE_FIXTURES").as_deref()
                         != Some(std::ffi::OsStr::new("1")),
                     "{message}"
                 );
@@ -7567,6 +7607,40 @@ mod tests {
                 .len(),
             128
         );
+    }
+
+    #[test]
+    fn title_about_and_menu_name_the_project_unemupc() {
+        let former = cli::preferences::FORMER_DIRECTORY;
+        let mut shell = shell();
+        assert_eq!(shell.title(), "Machine — unemupc");
+        shell.presenter = None;
+        assert_eq!(shell.title(), "unemupc");
+        assert_eq!(crate::app_menu::APP_NAME, "unemupc");
+        let menu = format!("{:?}", crate::app_menu::application_menu());
+        assert!(menu.contains("\"About unemupc\"") && menu.contains("\"Quit unemupc\""));
+        assert!(!menu.to_ascii_lowercase().contains(former), "{menu}");
+        let ctx = egui::Context::default();
+        shell.command(Command::About, &ctx);
+        let (title, text) = shell.dialog.as_ref().unwrap();
+        assert_eq!(*title, "About unemupc");
+        assert!(
+            text.starts_with(&format!("unemupc {}\n", env!("CARGO_PKG_VERSION"))),
+            "{text}"
+        );
+        assert!(!text.to_ascii_lowercase().contains(former), "{text}");
+        // The help names the default machine file, whose path depends on
+        // where the source tree was checked out.
+        let checkout = crate::default_machine().display().to_string();
+        for option in ["--help", "--version", "--about"] {
+            let output = crate::informational_output(std::ffi::OsStr::new(option))
+                .unwrap()
+                .replace(&checkout, "machines/at-freedos.toml");
+            assert!(!output.to_ascii_lowercase().contains(former), "{output}");
+        }
+        assert!(crate::informational_output(std::ffi::OsStr::new("--help"))
+            .unwrap()
+            .starts_with("usage: unemupc [--machine FILE]"));
     }
 
     #[test]
@@ -7824,7 +7898,7 @@ kind='mda'
         ] {
             assert!(texts.iter().any(|t| t == entry), "{entry}: {texts:?}");
         }
-        assert!(!texts.iter().any(|t| t == "unemupc98"), "{texts:?}");
+        assert!(!texts.iter().any(|t| t == "unemupc"), "{texts:?}");
     }
 
     #[test]
@@ -8105,7 +8179,7 @@ kind='mda'
         assert_eq!(job.control.snapshot().files_read, 1);
         assert_eq!(job.control.snapshot().matches, 1);
         assert_eq!(entry.discovery_warnings.len(), 1);
-        assert!(entry.discovery_warnings[0].starts_with("<UNEMUPC98_USER_ROMS_DIR>: skipped"));
+        assert!(entry.discovery_warnings[0].starts_with("<UNEMUPC_USER_ROMS_DIR>: skipped"));
     }
 
     #[test]
@@ -8855,7 +8929,7 @@ kind='mda'
         assert_eq!(shell.library[0].name, "DOS games");
         assert!(shows(
             &text,
-            "unemupc98 is running DOS games. Stop it and continue?"
+            "unemupc is running DOS games. Stop it and continue?"
         ));
         assert!(shows(&text, "Stop machine"));
         assert!(shows(&text, "Cancel"));
@@ -10138,7 +10212,7 @@ kind='mda'
         let commands = pass(&ctx, Default::default(), |ctx| shell.visibility(ctx, true)).0;
         assert_eq!(
             shell.dialog.as_ref().map(|(title, _)| *title),
-            Some("About unemupc98")
+            Some("About unemupc")
         );
         assert!(commands.contains(&egui::ViewportCommand::Minimized(false)));
         assert!(commands.contains(&egui::ViewportCommand::Focus));
@@ -10148,7 +10222,7 @@ kind='mda'
         let commands = quit_pass(&mut shell, &ctx);
         assert_eq!(
             shell.dialog.as_ref().map(|(title, _)| *title),
-            Some("About unemupc98")
+            Some("About unemupc")
         );
         assert!(!commands.contains(&egui::ViewportCommand::Focus));
         // Quit closes the dialog and asks, exactly like File › Exit; a menu
@@ -10924,7 +10998,7 @@ kind='mda'
         let strip = |icon: bool| {
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 if icon {
-                    window_title(ui, "unemupc98");
+                    window_title(ui, "unemupc");
                 } else {
                     gradient_title(ui, "Settings");
                 }

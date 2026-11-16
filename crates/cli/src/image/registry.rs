@@ -183,27 +183,10 @@ pub fn parse(action: &str, args: &[OsString]) -> Result<RegistryCommand, &'stati
     }
 }
 
-/// Platform data directory of the shared preferences file.
-fn preferences_path() -> anyhow::Result<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let root = if cfg!(target_os = "macos") {
-        home.map(|h| h.join("Library/Application Support"))
-    } else if cfg!(windows) {
-        std::env::var_os("APPDATA").map(PathBuf::from)
-    } else {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .or_else(|| home.map(|h| h.join(".config")))
-    };
-    root.map(|r| r.join("unemupc98/preferences.toml"))
-        .context("platform config directory is unavailable")
-}
-
 fn load(options: &Common) -> anyhow::Result<(RegistryConfig, String)> {
     let path = match &options.config {
         Some(path) => path.clone(),
-        None => preferences_path()?,
+        None => crate::preferences::path()?,
     };
     let config = RegistryConfig::from_table(&config::read_preferences(&path)?)?;
     let env = std::env::var(DEFAULT_REGISTRY_ENV).ok();
@@ -483,7 +466,7 @@ fn execute_with(
         RegistryCommand::Login { host, user, config } => {
             let path = match config {
                 Some(path) => path,
-                None => preferences_path()?,
+                None => crate::preferences::path()?,
             };
             log_in(&path, &host, &user, &*secrets, read_secret, output)?;
         }
@@ -495,7 +478,7 @@ fn execute_with(
         } => {
             let path = match config {
                 Some(path) => path,
-                None => preferences_path()?,
+                None => crate::preferences::path()?,
             };
             set_privacy(&path, &host, private, &namespaces, output)?;
         }

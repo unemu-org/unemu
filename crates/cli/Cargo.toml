@@ -9,7 +9,7 @@ repository.workspace = true
 description = "Frontend and golden runners for deterministic Real16 PC/AT machines (§3.1)."
 
 [[bin]]
-name = "unemupc98"
+name = "upcli"
 path = "src/main.rs"
 
 [dependencies]

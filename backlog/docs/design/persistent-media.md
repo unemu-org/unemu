@@ -782,10 +782,10 @@ Parsing is dependency-free; the command layer and journal operations are library
 APIs tested without spawning the binary:
 
 ```text
-unemupc98 media generations --base disk.img --journal disk.img.upfj
-unemupc98 media verify --base disk.img --journal disk.img.upfj
-unemupc98 media verify --base disk.img --journal disk.img.upfj --repair-tail --backup before-repair.upfj
-unemupc98 media rollback --base disk.img --journal disk.img.upfj --to 7 --backup before-rollback.upfj
+upcli media generations --base disk.img --journal disk.img.upfj
+upcli media verify --base disk.img --journal disk.img.upfj
+upcli media verify --base disk.img --journal disk.img.upfj --repair-tail --backup before-repair.upfj
+upcli media rollback --base disk.img --journal disk.img.upfj --to 7 --backup before-rollback.upfj
 ```
 
 `generations` lists ids, closing reasons, end offsets, command/sector counts,
@@ -828,7 +828,7 @@ validates its target before printing the removal warning.
 Immutable export:
 
 ```text
-unemupc98 media commit --base disk.img --journal disk.img.upfj --to 7 --output restored.img
+upcli media commit --base disk.img --journal disk.img.upfj --to 7 --output restored.img
 ```
 
 `commit` (alias `compact`) reconstructs a selected closed generation into a
@@ -1380,7 +1380,7 @@ checked whenever those auxiliary fixtures exist initially. A missing, ambiguous
 or malformed output pin fails with a fixture-specific script-format diagnostic. It compares
 recursive vendor directory entries and each present fixture's resolved parent
 tree before/after every run, covering worktree symlinks and sidecars of any name.
-Missing boot/CPU inputs fail under `UNEMUPC98_REQUIRE_FIXTURES=1`, otherwise the
+Missing boot/CPU inputs fail under `UNEMUPC_REQUIRE_FIXTURES=1`, otherwise the
 test skips like other goldens. Auxiliary fixtures are not required by the CI
 fixture-fetch gate and are not silently fetched by this test. All present pins
 must remain readable and unchanged. Existing golden expectations stay unchanged.

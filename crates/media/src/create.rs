@@ -110,7 +110,7 @@ mod tests {
         for existing in [false, true] {
             for phase in 0..3 {
                 let dir = std::env::temp_dir().join(format!(
-                    "unemupc98-create-fault-{}-{}",
+                    "unemupc-create-fault-{}-{}",
                     std::process::id(),
                     NEXT.fetch_add(1, Ordering::Relaxed)
                 ));
@@ -134,8 +134,7 @@ mod tests {
 
     #[test]
     fn concurrent_destination_is_not_clobbered() {
-        let dir =
-            std::env::temp_dir().join(format!("unemupc98-create-race-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("unemupc-create-race-{}", std::process::id()));
         fs::create_dir(&dir).unwrap();
         let destination = dir.join("disk.img");
         struct RacingIo;

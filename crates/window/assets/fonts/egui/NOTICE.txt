@@ -1,5 +1,5 @@
 egui embedded default fonts (epaint_default_fonts 0.37.0)
-Font files are unmodified by unemupc98.
+Font files are unmodified by unemupc.
 
 Ubuntu Light: Copyright 2011 Canonical Ltd.
 Ubuntu Font Licence 1.0 (Ubuntu-font-1.0).

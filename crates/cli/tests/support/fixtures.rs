@@ -33,7 +33,7 @@ fn read_fixture(relative: &str, required_by_gate: bool) -> Option<Vec<u8>> {
             );
             assert!(
                 !required_by_gate
-                    || std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref()
+                    || std::env::var_os("UNEMUPC_REQUIRE_FIXTURES").as_deref()
                         != Some(std::ffi::OsStr::new("1")),
                 "{message}"
             );

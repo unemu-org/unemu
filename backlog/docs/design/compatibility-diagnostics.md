@@ -26,8 +26,8 @@ chip metadata and our verdicts, never ROM bytes or captured screen text.
 Tests run only when the matching user-supplied parts are present. Follow the
 separate lane established by `upc-x83.11` and
 [`vendor/user-roms/README.md`](../../../vendor/user-roms/README.md): absent
-dumps skip even when `UNEMUPC98_REQUIRE_FIXTURES=1`; only the explicit
-`UNEMUPC98_REQUIRE_USER_ROMS=1` lane requires them. This is not an open-fixture
+dumps skip even when `UNEMUPC_REQUIRE_FIXTURES=1`; only the explicit
+`UNEMUPC_REQUIRE_USER_ROMS=1` lane requires them. This is not an open-fixture
 download or a default firmware change. A catalogue identity alone does not
 qualify execution.
 

@@ -501,7 +501,7 @@ also belong to that machine-level snapshot.
 
 ### Observation and presentation
 
-The optional `window` crate remains a leaf frontend. Its `unemupc98-window`
+The optional `window` crate remains a leaf frontend. Its `unemupc`
 binary uses egui/eframe 0.37 with the glow renderer and the existing winit 0.30
 event loop. One client area switches between the machine library and a single
 nearest-filtered guest texture fitted at 4:3. Classic grey controls and a blue
@@ -570,7 +570,7 @@ supply exact image/chip lengths. Unknown pins scan only 512-byte ROM blocks from
 512 bytes through 1 MiB (or an exact declared length up to 1 MiB). Frontend scans
 stay inside each canonical root, skip unusable roots/entries with origin-labelled
 warnings and keep searching; the required-ROM test lane retains strict failures. The existing user-ROM test entry points are thin wrappers using
-the vendor directory and `UNEMUPC98_USER_ROMS_DIR`. No discovery runs while the
+the vendor directory and `UNEMUPC_USER_ROMS_DIR`. No discovery runs while the
 guest executes.
 
 `machine_file::load_for_assembly_with_rom_dirs` resolves missing or mismatched
@@ -583,8 +583,11 @@ repeatable `--rom-dir`; without explicit directories they perform no discovery,
 preserving ordinary path/hash diagnostics regardless of the environment.
 
 The shell stores host ROM folders in the platform config directory's
-`unemupc98/preferences.toml`. On macOS this is under Library/Application Support;
-on Linux it follows XDG_CONFIG_HOME, falling back to ~/.config. Preferences and
+`unemupc/preferences.toml`. On macOS this is under Library/Application Support;
+on Linux it follows XDG_CONFIG_HOME, falling back to ~/.config. The desktop and
+the command line both take that path from `cli::preferences`, which first
+copies the file from the directory named after the project's former name
+when the new file does not exist yet; the old file stays. Preferences and
 Locate firmware share native folder browsing (rfd) and text entry. Saves write and
 sync a temporary file in the same directory, rename it, then sync the directory
 on Unix. Unknown TOML fields round-trip. Save invalidates welcome readiness;

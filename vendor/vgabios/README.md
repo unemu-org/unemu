@@ -93,7 +93,7 @@ are gitignored.
 
 CI: the `fixtures` gate (`scripts/ci-gate.sh fixtures`) runs this script; it
 needs HTTPS access to GitHub and no credentials. The `goldens` gate sets
-`UNEMUPC98_REQUIRE_FIXTURES=1`, so the tests that need these files fail when
+`UNEMUPC_REQUIRE_FIXTURES=1`, so the tests that need these files fail when
 they are missing; they do not skip. Without that variable (a local run) they
 print a skip line and return. See `backlog/docs/commands.md`.
 

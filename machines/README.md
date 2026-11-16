@@ -24,7 +24,7 @@ and checks the completed listing, prompt instruction count, screen hashes
 and POST sequence. Run it with:
 
 ```sh
-UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test ide_freedos_golden -- --ignored --nocapture
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test ide_freedos_golden -- --ignored --nocapture
 ```
 
 Fetch the Kiselev BIOS images with `vendor/kiselev-bios/fetch.sh`, the open AT
@@ -84,7 +84,7 @@ defaults are in
 Start the desktop library from the repository root with:
 
 ```sh
-cargo run --offline -p window --bin unemupc98-window
+cargo run --offline -p window --bin unemupc
 ```
 
 The welcome screen lists machine files in `machines/` and `machines/local/`
@@ -130,7 +130,7 @@ version available" in the details pane, with Switch to …. See
 To start a specific machine immediately in the same shell:
 
 ```sh
-cargo run --offline -p window --bin unemupc98-window -- --machine machines/at-freedos.toml
+cargo run --offline -p window --bin unemupc -- --machine machines/at-freedos.toml
 ```
 
 To locate user-supplied firmware, open **Tools › Locate firmware…** (or
@@ -142,10 +142,12 @@ Start is enabled once firmware, media and the machine configuration pass
 validation. Remaining missing-media errors still need the local disks described
 below. No ROM files are copied into the repository and no machine file is edited.
 
-Folders persist in `~/Library/Application Support/unemupc98/preferences.toml`
-on macOS, `$XDG_CONFIG_HOME/unemupc98/preferences.toml` on Linux (default
-`~/.config/unemupc98/preferences.toml`), or the app's config directory on Windows.
-`UNEMUPC98_USER_ROMS_DIR`, when set, is searched as well. File names do not select
+Folders persist in `~/Library/Application Support/unemupc/preferences.toml`
+on macOS, `$XDG_CONFIG_HOME/unemupc/preferences.toml` on Linux (default
+`~/.config/unemupc/preferences.toml`), or the app's config directory on Windows.
+When that file does not exist yet, the first start copies it from the
+directory named after the project's former name; the old file stays.
+`UNEMUPC_USER_ROMS_DIR`, when set, is searched as well. File names do not select
 firmware: full-file SHA-256 pins do, including split chips and assembled ROMs.
 Correct existing machine-file paths take priority. Unavailable folders and entries
 produce warnings and do not block other folders. Discovery ignores symlinks that
@@ -154,9 +156,9 @@ hashing unrelated archives. Preferences are saved atomically and preserve unknow
 fields written by newer versions.
 
 The desktop keeps a local SHA-256 index at
-`~/Library/Caches/unemupc98/firmware-index.v2` on macOS,
-`$XDG_CACHE_HOME/unemupc98/firmware-index.v2` on Linux (default
-`~/.cache/unemupc98/firmware-index.v2`). Persistence is currently disabled on
+`~/Library/Caches/unemupc/firmware-index.v2` on macOS,
+`$XDG_CACHE_HOME/unemupc/firmware-index.v2` on Linux (default
+`~/.cache/unemupc/firmware-index.v2`). Persistence is currently disabled on
 Windows; discovery rehashes files there. The index contains the user's
 own canonical paths, lengths, timestamps, file identities where available and
 hashes, never ROM bytes; it stays local. Fresh metadata validates every hit.
@@ -204,8 +206,8 @@ and never advance guest time.
 The CLI accepts repeatable ROM directories for both validation and running:
 
 ```sh
-unemupc98 machine check machines/at-games.toml --rom-dir /path/to/roms
-unemupc98 run --machine machines/at-games.toml --rom-dir /path/to/roms --print vga
+upcli machine check machines/at-games.toml --rom-dir /path/to/roms
+upcli run --machine machines/at-games.toml --rom-dir /path/to/roms --print vga
 ```
 
 Without `--rom-dir`, the CLI performs no ROM discovery. The
@@ -254,10 +256,10 @@ unit = 0
 image = "images/work.img"      # replaces drive A and removes its inherited pin
 ```
 
-Run `unemupc98 machine check machines/local.toml` before booting with
-`unemupc98-window --machine machines/local.toml`. Unknown development firmware
+Run `upcli machine check machines/local.toml` before booting with
+`unemupc --machine machines/local.toml`. Unknown development firmware
 requires `--allow-unlisted-firmware` on either command. For a headless run, use
-`unemupc98 run --machine machines/local.toml --print mda`. Run limits and host
+`upcli run --machine machines/local.toml --print mda`. Run limits and host
 output selection stay outside the hardware description.
 
 ## Preparing disks
@@ -274,9 +276,9 @@ host tools or replace a base that still has a journal bound to it.
 Create a blank hard disk and a formatted data floppy without external tools:
 
 ```sh
-mkdir -p "$HOME/unemupc98-disks"
-unemupc98 media create hd --size 32MiB "$HOME/unemupc98-disks/disk.img"
-unemupc98 media create floppy --type 1.44M --format --label TRANSFER "$HOME/unemupc98-disks/transfer.img"
+mkdir -p "$HOME/unemupc-disks"
+upcli media create hd --size 32MiB "$HOME/unemupc-disks/disk.img"
+upcli media create floppy --type 1.44M --format --label TRANSFER "$HOME/unemupc-disks/transfer.img"
 ```
 
 Floppy types are `1.44M`, `1.2M`, `720K` and `360K`. Without `--format` every
@@ -310,7 +312,7 @@ location, put a symlink to the repository profile beside it. Replace the example
 repository path in this shell command:
 
 ```sh
-ln -s /path/to/unemupc98/machines/at-ide.toml "$HOME/unemupc98-disks/at-ide.toml"
+ln -s /path/to/unemupc/machines/at-ide.toml "$HOME/unemupc-disks/at-ide.toml"
 ```
 
 The relative `extends = "at-ide.toml"` below follows that link. The parent's
@@ -345,7 +347,7 @@ id = "fdc-765"
 [[card.drives]]
 unit = 0
 type = "1.2M"
-image = "/path/to/unemupc98/vendor/freedos/freedos-tools-1200.img"
+image = "/path/to/unemupc/vendor/freedos/freedos-tools-1200.img"
 sha256 = "8d91283a1c0d6fc5b5fdb5e40db5b66dd9fabbf014d37262b7892f3b150b6f63"
 write = "readonly"
 ```
@@ -355,7 +357,7 @@ a 1.2M drive 1.2M and 360K images, and 720K and 360K drives only their own
 format (see [Removable floppy media](#removable-floppy-media)). The tools floppy includes FDISK,
 FORMAT, SYS, XCOPY, EDIT, MEM and CTMOUSE; package versions, licences and CPU
 compatibility evidence are in [the fixture README](../vendor/freedos/README.md).
-Check the local file with `unemupc98 machine check FILE`, then boot it with the
+Check the local file with `upcli machine check FILE`, then boot it with the
 window frontend's `--machine FILE` option. Configure installation/data disks on
 B: before booting, or use the [media-list and swap controls](#removable-floppy-media)
 below. The single-image B: override below uses the inherited `fdc-765` card id.
@@ -506,12 +508,12 @@ Inspect the HDD's closed generation numbers, export the installed state as a
 new base, or roll back with a fresh backup path:
 
 ```sh
-cd "$HOME/unemupc98-disks"
-unemupc98 media generations --base disk.img --journal disk.upfj
-unemupc98 media verify --base disk.img --journal disk.upfj
+cd "$HOME/unemupc-disks"
+upcli media generations --base disk.img --journal disk.upfj
+upcli media verify --base disk.img --journal disk.upfj
 # Use a retained closed generation reported above (1 is an example).
-unemupc98 media commit --base disk.img --journal disk.upfj --to 1 --output disk-next.img
-unemupc98 media rollback --base disk.img --journal disk.upfj --to 1 --backup disk-before-rollback.upfj
+upcli media commit --base disk.img --journal disk.upfj --to 1 --output disk-next.img
+upcli media rollback --base disk.img --journal disk.upfj --to 1 --backup disk-before-rollback.upfj
 ```
 
 Choose an available closed generation from `generations`. Rollback backs up the
@@ -660,14 +662,14 @@ FreeDOS fixtures:
 ```sh
 vendor/freedos/fetch.sh
 mkdir -p machines/local
-unemupc98 media create hd --chs 615/4/17 machines/local/games.img
-unemupc98 media create floppy --type 1.2M --format --label TRANSFER machines/local/transfer-1200.img
-unemupc98 machine check machines/at-games.toml
-unemupc98-window --machine machines/at-games.toml
+upcli media create hd --chs 615/4/17 machines/local/games.img
+upcli media create floppy --type 1.2M --format --label TRANSFER machines/local/transfer-1200.img
+upcli machine check machines/at-games.toml
+unemupc --machine machines/at-games.toml
 # Open firmware, no user ROMs (also run vendor/unemu-at-bios/fetch.sh,
 # vendor/vgabios/fetch.sh and vendor/xtide-universal-bios/fetch.sh):
-# unemupc98 machine check machines/at-games-open.toml
-# unemupc98-window --machine machines/at-games-open.toml
+# upcli machine check machines/at-games-open.toml
+# unemupc --machine machines/at-games-open.toml
 ```
 
 The disk is blank, 21,411,840 bytes (about 20.42 MiB), IBM fixed-disk type 2.
@@ -689,7 +691,7 @@ switch Spaces instead. There are two ways to keep these keys in the guest:
 
 - **Preferences › General › Send macOS system shortcuts to the guest while
   it has the keyboard** (off by default). Turning it on asks macOS for
-  Accessibility access; allow unemupc98 (or the terminal that started it) in
+  Accessibility access; allow unemupc (or the terminal that started it) in
   System Settings › Privacy & Security › Accessibility. While a running guest
   has the keyboard, Ctrl with an arrow, Home/End/Page Up/Page Down, a digit,
   Space or a function key, and every function key go to the guest. Command
@@ -833,5 +835,5 @@ VGA BIOS, XTIDE and FreeDOS 1.2M images with temporary local media created by
 `media create`. The ignored `open_game_profile_boots_freedos` checks the open
 AT BIOS sign-on and its 80286 line on the POST screen and pins its FreeDOS A:
 prompt's retired count and VGA text hash. Missing open fixtures skip unless
-`UNEMUPC98_REQUIRE_FIXTURES=1`; this open-firmware boot does not qualify the
+`UNEMUPC_REQUIRE_FIXTURES=1`; this open-firmware boot does not qualify the
 IBM fixed-disk BIOS's C: operations.

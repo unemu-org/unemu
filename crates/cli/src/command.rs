@@ -11,54 +11,54 @@ use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-const USAGE: &str = "usage: unemupc98 --boot (Real16 timer demo)
-       unemupc98 --bios PATH [--allow-unlisted-firmware]
-       unemupc98 machine check FILE [--allow-unlisted-firmware] [--rom-dir DIR]...
-       unemupc98 run --machine FILE [--store DIR | --no-store] [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--print CARD] [--allow-unlisted-firmware]
-       unemupc98 image import FILE --store DIR --tag NAME:TAG [--create] [--no-compress] [--rom-dir DIR]... [--recover MEDIUM=tip|MEDIUM=generation:N]...
-       unemupc98 image compress NAME:TAG --store DIR --tag NAME:TAG
-       unemupc98 image ls --store DIR
-       unemupc98 image sweep --store DIR
-       unemupc98 image run NAME:TAG --store DIR --workspace NAME [--new] [--max-steps N]
-       unemupc98 image workspace ls --store DIR
-       unemupc98 image workspace discard NAME --store DIR --yes
-       unemupc98 image workspace abandon-publication NAME --store DIR
-       unemupc98 image publish --from-workspace NAME --store DIR --tag NAME:TAG [--flatten]
-       unemupc98 image machine ls --store DIR
-       unemupc98 image machine new NAME:TAG --store DIR [--name NAME]
-       unemupc98 image machine rename ID NAME --store DIR
-       unemupc98 image machine duplicate ID --store DIR [--name NAME]
-       unemupc98 image machine reset ID --store DIR --yes
-       unemupc98 image machine rm ID --store DIR --yes
-       unemupc98 image machine settings ID --store DIR [--set PATH=VALUE]... [--clear] [--dry-run]
-       unemupc98 image machine commit ID --store DIR --tag NAME:TAG [--title TITLE] [--keep-on-old-image]
-       unemupc98 image machine run ID --store DIR [--max-steps N]
-       unemupc98 image media import FILE...|DIR --title TITLE --tag NAME:TAG --store DIR [--create] [--dry-run] [--no-compress] [--label N=TEXT]... [--format N=FORMAT]... [--extra PATH[:DOSNAME]]... [--open --license LicenseRef-NAME --license-text EXTRA] [--open --license EXPRESSION --license-text EXTRA --source EXTRA] [SET-METADATA]
+const USAGE: &str = "usage: upcli --boot (Real16 timer demo)
+       upcli --bios PATH [--allow-unlisted-firmware]
+       upcli machine check FILE [--allow-unlisted-firmware] [--rom-dir DIR]...
+       upcli run --machine FILE [--store DIR | --no-store] [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--print CARD] [--allow-unlisted-firmware]
+       upcli image import FILE --store DIR --tag NAME:TAG [--create] [--no-compress] [--rom-dir DIR]... [--recover MEDIUM=tip|MEDIUM=generation:N]...
+       upcli image compress NAME:TAG --store DIR --tag NAME:TAG
+       upcli image ls --store DIR
+       upcli image sweep --store DIR
+       upcli image run NAME:TAG --store DIR --workspace NAME [--new] [--max-steps N]
+       upcli image workspace ls --store DIR
+       upcli image workspace discard NAME --store DIR --yes
+       upcli image workspace abandon-publication NAME --store DIR
+       upcli image publish --from-workspace NAME --store DIR --tag NAME:TAG [--flatten]
+       upcli image machine ls --store DIR
+       upcli image machine new NAME:TAG --store DIR [--name NAME]
+       upcli image machine rename ID NAME --store DIR
+       upcli image machine duplicate ID --store DIR [--name NAME]
+       upcli image machine reset ID --store DIR --yes
+       upcli image machine rm ID --store DIR --yes
+       upcli image machine settings ID --store DIR [--set PATH=VALUE]... [--clear] [--dry-run]
+       upcli image machine commit ID --store DIR --tag NAME:TAG [--title TITLE] [--keep-on-old-image]
+       upcli image machine run ID --store DIR [--max-steps N]
+       upcli image media import FILE...|DIR --title TITLE --tag NAME:TAG --store DIR [--create] [--dry-run] [--no-compress] [--label N=TEXT]... [--format N=FORMAT]... [--extra PATH[:DOSNAME]]... [--open --license LicenseRef-NAME --license-text EXTRA] [--open --license EXPRESSION --license-text EXTRA --source EXTRA] [SET-METADATA]
          SET-METADATA: [--publisher P]... [--developer D]... [--year YYYY] [--genre G]... [--platform PLATFORM] [--description TEXT] [--version V] [--edition E] [--set-label L]...
-       unemupc98 image firmware import FOLDER|FILES... [--store DIR] [--create] [--rescan] [--dry-run] [--for CATALOGUE-ID [EXTRAS] [METADATA]]
-       unemupc98 image firmware import FILE --unlisted ID --role ROLE [--store DIR] [--create] [--dry-run] [EXTRAS] [METADATA]
-       unemupc98 image firmware edit NAME:TAG [--to NAME:TAG] [--store DIR] [--regenerate-readme] METADATA
+       upcli image firmware import FOLDER|FILES... [--store DIR] [--create] [--rescan] [--dry-run] [--for CATALOGUE-ID [EXTRAS] [METADATA]]
+       upcli image firmware import FILE --unlisted ID --role ROLE [--store DIR] [--create] [--dry-run] [EXTRAS] [METADATA]
+       upcli image firmware edit NAME:TAG [--to NAME:TAG] [--store DIR] [--regenerate-readme] METADATA
          EXTRAS: [--extra PATH[:DOSNAME] [--extra-license SPDX]]...
          METADATA: [--title T] [--description T] [--notes T] [--vendor T] [--version T] [--date YYYY-MM-DD]
                    [--label L]... [--board B]... [--class C]... [--requires KIND]...
                    [--dumped-from T | --downloaded-from T | --built-from T] [--revision R] [--url U] [--provenance-date YYYY-MM-DD]
                    [--open [--license SPDX] | --user-supplied] [--source ARCHIVE.tar|.zip [--source-license SPDX]]
-       unemupc98 image firmware ls [--store DIR]
-       unemupc98 image firmware show NAME:TAG [--store DIR]
-       unemupc98 image media ls --store DIR
-       unemupc98 image media show NAME:TAG --store DIR
-       unemupc98 image push NAME:TAG [REFERENCE] --store DIR [--registry HOST] [--move] [--dry-run] [--config FILE]
-       unemupc98 image pull REFERENCE --store DIR [--tag NAME:TAG] [--create] [--registry HOST] [--config FILE]
-       unemupc98 image remote ls REPOSITORY|REGISTRY [--registry HOST] [--config FILE]
-       unemupc98 image login HOST --user NAME [--config FILE]
-       unemupc98 image registry set HOST [--private | --namespace NAME[:private|:public]...] [--config FILE]
-       unemupc98 image template build --store DIR [--vendor DIR] [--dry-run]
-       unemupc98 media create floppy --type 1.44M|1.2M|720K|360K OUT [--format] [--label NAME] [--force]
-       unemupc98 media create hd (--chs C/H/S | --size SIZE[MiB|GiB]) OUT [--force]
-       unemupc98 media generations --base IMG --journal J
-       unemupc98 media verify --base IMG --journal J [--repair-tail --backup PATH]
-       unemupc98 media rollback --base IMG --journal J --to N --backup PATH
-       unemupc98 media commit (alias compact) --base IMG --journal J --to N --output OUT
+       upcli image firmware ls [--store DIR]
+       upcli image firmware show NAME:TAG [--store DIR]
+       upcli image media ls --store DIR
+       upcli image media show NAME:TAG --store DIR
+       upcli image push NAME:TAG [REFERENCE] --store DIR [--registry HOST] [--move] [--dry-run] [--config FILE]
+       upcli image pull REFERENCE --store DIR [--tag NAME:TAG] [--create] [--registry HOST] [--config FILE]
+       upcli image remote ls REPOSITORY|REGISTRY [--registry HOST] [--config FILE]
+       upcli image login HOST --user NAME [--config FILE]
+       upcli image registry set HOST [--private | --namespace NAME[:private|:public]...] [--config FILE]
+       upcli image template build --store DIR [--vendor DIR] [--dry-run]
+       upcli media create floppy --type 1.44M|1.2M|720K|360K OUT [--format] [--label NAME] [--force]
+       upcli media create hd (--chs C/H/S | --size SIZE[MiB|GiB]) OUT [--force]
+       upcli media generations --base IMG --journal J
+       upcli media verify --base IMG --journal J [--repair-tail --backup PATH]
+       upcli media rollback --base IMG --journal J --to N --backup PATH
+       upcli media commit (alias compact) --base IMG --journal J --to N --output OUT
 DOS boot and interactive sessions: see crates/cli/tests/*dos*golden.rs\n";
 
 /// Host paths are supplied by the executable, never discovered by library tests.
@@ -736,6 +736,23 @@ fn display_dump(
 mod tests {
     use super::*;
     use assembly::DeviceId;
+
+    #[test]
+    fn usage_names_the_program_upcli() {
+        let mut output = Vec::new();
+        assert_eq!(run(&[], &mut output, &mut io::sink()), 0);
+        let usage = String::from_utf8(output).unwrap();
+        assert!(usage.starts_with("usage: upcli --boot"), "{usage}");
+        let commands = usage
+            .lines()
+            .skip(1)
+            .filter(|line| line.starts_with("       ") && !line.starts_with("        "));
+        for line in commands {
+            assert!(line.trim_start().starts_with("upcli "), "{line}");
+        }
+        let former = crate::preferences::FORMER_DIRECTORY;
+        assert!(!usage.to_ascii_lowercase().contains(former), "{usage}");
+    }
 
     #[test]
     fn text_dump_reports_graphics_mode_explicitly_and_preserves_text_bytes() {

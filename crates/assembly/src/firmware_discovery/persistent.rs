@@ -343,6 +343,10 @@ fn run_session<T>(
 }
 
 /// Platform cache path; callers choose whether to enable persistence explicitly.
+///
+/// The directory carries the project's current name. An index left under its
+/// former name is not copied: the index only saves rehashing, so the first
+/// discovery after the rename hashes the ROM folders again and writes a fresh one.
 pub fn firmware_cache_path() -> Option<PathBuf> {
     platform_path(
         std::env::var_os("HOME").map(PathBuf::from),
@@ -368,7 +372,7 @@ fn platform_path(
         xdg.filter(|path| path.is_absolute())
             .or_else(|| home.map(|home| home.join(".cache")))
     };
-    root.map(|root| root.join("unemupc98/firmware-index.v2"))
+    root.map(|root| root.join("unemupc/firmware-index.v2"))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -407,7 +411,7 @@ fn decode(text: &str) -> Option<HashCache> {
         return None;
     }
     let mut lines = text.lines();
-    if lines.next()? != "unemupc98-firmware-index 2" {
+    if lines.next()? != "unemupc-firmware-index 2" {
         return None;
     }
     let mut cache = HashCache::default();
@@ -509,7 +513,7 @@ fn save(path: &Path, cache: &HashCache) -> io::Result<()> {
             hashes.remove(&old);
         }
     }
-    let mut text = String::from("unemupc98-firmware-index 2\n");
+    let mut text = String::from("unemupc-firmware-index 2\n");
     for (key, hash) in &hashes {
         if cache.unpersistable.contains(&key.0) {
             continue;
@@ -780,8 +784,8 @@ mod tests {
         let path = temp.path().join("index");
         for text in [
             "corrupt",
-            "unemupc98-firmware-index 99\n",
-            "unemupc98-firmware-index 2\ninvalid\n",
+            "unemupc-firmware-index 99\n",
+            "unemupc-firmware-index 2\ninvalid\n",
         ] {
             fs::write(&path, text).unwrap();
             let control = DiscoveryControl::default();
@@ -868,7 +872,7 @@ mod tests {
         assert_eq!(load(&path).unwrap().hashes.len(), MAX_ENTRIES);
         assert_eq!(control.snapshot().results.len(), MAX_RESULTS);
         assert_eq!(control.snapshot().result_count, MAX_ENTRIES + 10);
-        fs::write(&path, format!("unemupc98-firmware-index 2\n{}\t4\t18446744073709551615\t4294967295\t+\t0\t0\t0\t0\t{}\n", hex(b"/synthetic"), "00".repeat(32))).unwrap();
+        fs::write(&path, format!("unemupc-firmware-index 2\n{}\t4\t18446744073709551615\t4294967295\t+\t0\t0\t0\t0\t{}\n", hex(b"/synthetic"), "00".repeat(32))).unwrap();
         assert!(load(&path).is_none());
     }
 
@@ -1089,7 +1093,7 @@ mod tests {
         let home = PathBuf::from("/synthetic-home");
         assert_eq!(
             platform_path(Some(home.clone()), None, None, true, false),
-            Some(home.join("Library/Caches/unemupc98/firmware-index.v2"))
+            Some(home.join("Library/Caches/unemupc/firmware-index.v2"))
         );
         assert_eq!(
             platform_path(
@@ -1099,9 +1103,7 @@ mod tests {
                 false,
                 false
             ),
-            Some(PathBuf::from(
-                "/synthetic-cache/unemupc98/firmware-index.v2"
-            ))
+            Some(PathBuf::from("/synthetic-cache/unemupc/firmware-index.v2"))
         );
         assert_eq!(
             platform_path(
@@ -1111,7 +1113,7 @@ mod tests {
                 false,
                 false
             ),
-            Some(home.join(".cache/unemupc98/firmware-index.v2"))
+            Some(home.join(".cache/unemupc/firmware-index.v2"))
         );
     }
 }

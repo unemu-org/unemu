@@ -104,7 +104,7 @@ the cache's test seams.
 Firmware and media fixtures are fetched or built by `vendor/*/fetch.sh` (or
 `build.sh`) and pinned by SHA-256 in those scripts; tests read the pins from
 the scripts, so a test and its fixture cannot disagree silently. A missing
-fixture skips its test unless `UNEMUPC98_REQUIRE_FIXTURES=1`, which the CI
+fixture skips its test unless `UNEMUPC_REQUIRE_FIXTURES=1`, which the CI
 `goldens` gate sets (see [`commands.md`](commands.md)).
 
 Every test that reads a vendor fixture goes through the fixture helper
@@ -119,7 +119,7 @@ The open GPL/LGPL firmware fixtures (Kiselev BIOS, XTIDE Universal BIOS, the
 VGA BIOS fork) also get a deterministic source archive each, pinned the same
 way. In `crates/cli/tests/media_fixtures.rs`, a default-suite test checks that
 every archive pin parses. An ignored test, run by the `goldens` gate with
-`UNEMUPC98_REQUIRE_FIXTURES=1` after the `fixtures` gate has built the
+`UNEMUPC_REQUIRE_FIXTURES=1` after the `fixtures` gate has built the
 archives, checks each archive's hash, its top-level entries, its `NOTICE` (the
 committed `source-notice.txt`), that it holds no prebuilt image (`.bin`,
 `.rom`) or excluded upstream path, and that no member carries host data

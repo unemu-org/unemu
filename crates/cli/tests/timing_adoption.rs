@@ -22,7 +22,7 @@ fn default_machine_counts_rep_iterations_and_stops_at_exact_cap() {
 
 #[test]
 fn binary_usage_names_the_remaining_demo_and_dos_goldens() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_unemupc98"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_upcli"))
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -38,7 +38,7 @@ fn unknown_or_extra_arguments_fail_with_usage_on_stderr() {
         vec!["image.bin"],
         vec!["--boot", "extra"],
     ] {
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_unemupc98"))
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_upcli"))
             .args(args)
             .output()
             .unwrap();

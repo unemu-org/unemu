@@ -23,7 +23,7 @@ needs `git` and `nasm`, both in the flake devShell) to produce `test386.bin`
 locally. The 65,536-byte image is checked against SHA-256
 `40cbbe1be2235cb0e43e28d8ae57dd6a4d3200ad6870d3b2ba31330e6760e7b8`.
 The integration test skips itself when the image is absent unless
-`UNEMUPC98_REQUIRE_FIXTURES=1`.
+`UNEMUPC_REQUIRE_FIXTURES=1`.
 
 ## Why it stops early here
 

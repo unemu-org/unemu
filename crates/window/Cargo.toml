@@ -56,5 +56,5 @@ assembly = { workspace = true, features = ["test-support"] }
 cpu.workspace = true
 
 [[bin]]
-name = "unemupc98-window"
+name = "unemupc"
 path = "src/main.rs"

@@ -1,4 +1,4 @@
-# unemupc98 specification
+# unemupc specification
 
 A growing, numbered specification for the emulator. Doc-comments in the source
 cross-reference these sections by number (`§3.2`), the way x86jit's own

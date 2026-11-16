@@ -11,7 +11,7 @@ use machine::RunOutcome;
 // A subprocess lets the parent kill and reap an unbounded CPU run on regression;
 // a detached watchdog thread would leave the spinning guest alive in the suite.
 fn with_watchdog(name: &str, run: impl FnOnce()) {
-    const CHILD_TEST: &str = "UNEMUPC98_QUANTUM_CHILD_TEST";
+    const CHILD_TEST: &str = "UNEMUPC_QUANTUM_CHILD_TEST";
     if std::env::var(CHILD_TEST).as_deref() == Ok(name) {
         run();
         return;

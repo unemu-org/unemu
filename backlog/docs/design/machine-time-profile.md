@@ -317,7 +317,7 @@ devShell loaded before each Cargo invocation:
 cargo test --offline --release -p cli --test dos_interactive_golden --no-run --target-dir "$OLD_TARGET"
 cargo test --offline --release -p cli --test dos_interactive_golden --no-run --target-dir "$NEW_TARGET"
 # Run the emitted test binaries directly, alternately, with these arguments.
-UNEMUPC98_REQUIRE_FIXTURES=1 "$BINARY" --ignored --exact freedos_runs_dir_from_the_keyboard --nocapture
+UNEMUPC_REQUIRE_FIXTURES=1 "$BINARY" --ignored --exact freedos_runs_dir_from_the_keyboard --nocapture
 ```
 
 | Pin | Run 1 (s) | Run 2 (s) | Run 3 (s) | Median (s) | Mean (s) |

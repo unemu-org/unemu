@@ -4838,7 +4838,7 @@ mod tests {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let message = "missing mformat — run this test in nix develop (mtools)";
                 assert!(
-                    std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref()
+                    std::env::var_os("UNEMUPC_REQUIRE_FIXTURES").as_deref()
                         != Some(std::ffi::OsStr::new("1")),
                     "{message}"
                 );

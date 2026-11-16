@@ -151,35 +151,6 @@ fn lock(path: &Path) -> io::Result<std::fs::File> {
     Ok(file)
 }
 
-pub(super) fn config_path() -> io::Result<PathBuf> {
-    platform_path(
-        std::env::var_os("HOME").map(PathBuf::from),
-        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
-        std::env::var_os("APPDATA").map(PathBuf::from),
-        cfg!(target_os = "macos"),
-        cfg!(windows),
-    )
-}
-
-fn platform_path(
-    home: Option<PathBuf>,
-    xdg: Option<PathBuf>,
-    appdata: Option<PathBuf>,
-    macos: bool,
-    windows: bool,
-) -> io::Result<PathBuf> {
-    let root = if macos {
-        home.map(|home| home.join("Library/Application Support"))
-    } else if windows {
-        appdata
-    } else {
-        xdg.filter(|path| path.is_absolute())
-            .or_else(|| home.map(|home| home.join(".config")))
-    };
-    root.map(|root| root.join("unemupc98/preferences.toml"))
-        .ok_or_else(|| io::Error::other("platform config directory is unavailable"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,27 +283,6 @@ mod tests {
             "the shell owns store_root"
         );
         assert_eq!(saved["registries"][0]["user"].as_str(), Some("new"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn config_directory_matches_platform_conventions() {
-        let home = PathBuf::from("/synthetic-home");
-        assert_eq!(
-            platform_path(Some(home.clone()), None, None, true, false).unwrap(),
-            home.join("Library/Application Support/unemupc98/preferences.toml")
-        );
-        assert_eq!(
-            platform_path(
-                Some(home),
-                Some(PathBuf::from("/synthetic-config")),
-                None,
-                false,
-                false
-            )
-            .unwrap(),
-            PathBuf::from("/synthetic-config/unemupc98/preferences.toml")
-        );
     }
 }
 

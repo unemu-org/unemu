@@ -167,7 +167,7 @@ pub enum FirmwareDistribution {
     /// Rebuilt by a repository fixture script; no ROM bytes are distributed.
     Open {
         /// Repository-relative fetch script. A superseded entry names it as
-        /// `<script> at unemupc98 <revision>`: the last revision of this
+        /// `<script> at unemupc <revision>`: the last revision of this
         /// repository whose script pinned the entry's release. Check out that
         /// revision and run the script there to rebuild its ROM and source
         /// archive; the current script builds a later release.
@@ -393,7 +393,7 @@ impl FirmwareEntry {
         id: "vgabios-0.8a-unemu.1-std",
         sha256: "7570ef9c66fd386450bb35fd2b6c91aba6f8ec69a565a1d7747e6e6716ea5389",
         distribution: FirmwareDistribution::Open {
-            fetch: "vendor/vgabios/fetch.sh at unemupc98 4f73f3d06e120b42a93bbbc0f857f3fb9a1cb0ea",
+            fetch: "vendor/vgabios/fetch.sh at unemupc 4f73f3d06e120b42a93bbbc0f857f3fb9a1cb0ea",
             license: "LGPL-2.1-or-later",
             provenance: "unemu-org/vgabios v0.8a-unemu.3, 72bf5d988f2188a0118416d88a8c90e58c648b06 (std build)",
             source_archive_sha256: Some(VGABIOS_0_8A_UNEMU_3_SOURCE_ARCHIVE),
@@ -549,7 +549,7 @@ pub const UNEMU_AT_BIOS_1_0_2_UNEMU_2: FirmwareEntry = FirmwareEntry {
     id: "unemu-at-bios-1.0.2-unemu.2",
     sha256: "f8ecd4a2ad4906eb94a7595ede755019f545f40111725819eeb80e423adc8db6",
     distribution: FirmwareDistribution::Open {
-        fetch: "vendor/unemu-at-bios/fetch.sh at unemupc98 bcb375e6410b18266bd5f99533624b768d067867",
+        fetch: "vendor/unemu-at-bios/fetch.sh at unemupc bcb375e6410b18266bd5f99533624b768d067867",
         license: "GPL-3.0-or-later",
         provenance: "unemu-org/at-bios v1.0.2-unemu.2, a2cf362d05ee6cf78ef03cd3cc383ba3a19c40bd (unemu-at build); fork of skiselev/8088_bios 1.0.2 by Sergey Kiselev",
         source_archive_sha256: Some(UNEMU_AT_BIOS_1_0_2_UNEMU_2_SOURCE_ARCHIVE),
@@ -1504,7 +1504,7 @@ mod tests {
     use super::*;
     use crate::{assemble, assemble_with_options, AssemblyError, ImageSource};
 
-    const KNOWN: &str = "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.3 (open, vendor/unemu-at-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.2 (open, vendor/unemu-at-bios/fetch.sh at unemupc98 bcb375e6410b18266bd5f99533624b768d067867), ibm-5170-bios-1984-01-10 (user-supplied: U27 6181028 even, U47 6181029 odd or U17 6181024 even@0, U37 6181026 odd@0, U27 6181025 even@32768, U47 6181027 odd@32768; see vendor/user-roms/README.md), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; see vendor/user-roms/README.md), ibm-5170-bios-1985-11-15 (user-supplied: U27 61X9266 even, U47 61X9265 odd; see vendor/user-roms/README.md), landmark-rom-post-at-1.2.0 (user-supplied: U27 27256 even, U47 27256 odd; see vendor/user-roms/README.md)";
+    const KNOWN: &str = "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.3 (open, vendor/unemu-at-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.2 (open, vendor/unemu-at-bios/fetch.sh at unemupc bcb375e6410b18266bd5f99533624b768d067867), ibm-5170-bios-1984-01-10 (user-supplied: U27 6181028 even, U47 6181029 odd or U17 6181024 even@0, U37 6181026 odd@0, U27 6181025 even@32768, U47 6181027 odd@32768; see vendor/user-roms/README.md), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; see vendor/user-roms/README.md), ibm-5170-bios-1985-11-15 (user-supplied: U27 61X9266 even, U47 61X9265 odd; see vendor/user-roms/README.md), landmark-rom-post-at-1.2.0 (user-supplied: U27 27256 even, U47 27256 odd; see vendor/user-roms/README.md)";
 
     fn config() -> MachineConfig {
         crate::bios(vec![0; 32768], Some(vec![0; 1_474_560]))
@@ -1990,7 +1990,7 @@ mod tests {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 assert!(
-                    std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref()
+                    std::env::var_os("UNEMUPC_REQUIRE_FIXTURES").as_deref()
                         != Some(std::ffi::OsStr::new("1")),
                     "missing fixture {}; run vendor/vgabios/fetch.sh",
                     path.display()
@@ -2183,7 +2183,7 @@ mod tests {
             else {
                 continue;
             };
-            let (script, revision) = match fetch.split_once(" at unemupc98 ") {
+            let (script, revision) = match fetch.split_once(" at unemupc ") {
                 Some((script, revision)) => (script, Some(revision)),
                 None => (fetch, None),
             };
@@ -2361,7 +2361,7 @@ mod tests {
             Change::Pin(UNEMU_AT_BIOS_SOURCE_ARCHIVE),
             Change::Pin("not-a-hash"),
             Change::Fetch("vendor/unemu-at-bios/fetch.sh"),
-            Change::Fetch("vendor/unemu-at-bios/fetch.sh at unemupc98 main"),
+            Change::Fetch("vendor/unemu-at-bios/fetch.sh at unemupc main"),
             Change::Provenance(earlier),
         ] {
             let mut catalogue = BoardModel::Ibm5170.firmware_catalogue().to_vec();
@@ -2423,7 +2423,7 @@ mod tests {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 assert!(
-                    std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref()
+                    std::env::var_os("UNEMUPC_REQUIRE_FIXTURES").as_deref()
                         != Some(std::ffi::OsStr::new("1")),
                     "missing fixture {}; run vendor/xtide-universal-bios/fetch.sh",
                     path.display()
@@ -2477,7 +2477,7 @@ mod tests {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 assert!(
-                    std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref()
+                    std::env::var_os("UNEMUPC_REQUIRE_FIXTURES").as_deref()
                         != Some(std::ffi::OsStr::new("1")),
                     "missing fixture {}; run vendor/kiselev-bios/fetch.sh",
                     path.display()
@@ -2630,7 +2630,7 @@ mod tests {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 assert!(
-                    std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref()
+                    std::env::var_os("UNEMUPC_REQUIRE_FIXTURES").as_deref()
                         != Some(std::ffi::OsStr::new("1")),
                     "missing fixture {}; run vendor/unemu-at-bios/fetch.sh",
                     path.display()
@@ -2659,7 +2659,7 @@ mod tests {
                     path.display()
                 );
                 assert!(
-                    std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref()
+                    std::env::var_os("UNEMUPC_REQUIRE_FIXTURES").as_deref()
                         != Some(std::ffi::OsStr::new("1")),
                     "{message}"
                 );
@@ -3159,7 +3159,7 @@ mod tests {
                     path.display()
                 );
                 assert!(
-                    std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref()
+                    std::env::var_os("UNEMUPC_REQUIRE_FIXTURES").as_deref()
                         != Some(std::ffi::OsStr::new("1")),
                     "{message}"
                 );

@@ -1,4 +1,4 @@
-# AGENTS.md — unemupc98
+# AGENTS.md — unemupc
 
 Repo-specific notes for coding agents (Claude Code, Cursor, Aider, Copilot, …). Generic software-engineering advice is out of scope.
 
@@ -6,7 +6,7 @@ Repo-specific notes for coding agents (Claude Code, Cursor, Aider, Copilot, …)
 
 ## What this is
 
-`unemupc98` is a **low-level emulator (LLE) of an IBM PC/AT-class (Intel 80286)
+`unemupc` is a **low-level emulator (LLE) of an IBM PC/AT-class (Intel 80286)
 computer**. The CPU core is the [`x86jit`](https://github.com/unemu-org/x86jit)
 x86 recompiler, consumed as a pinned git dependency (see below). It is a
 **research project**: the priorities are **testability**, **swappability**

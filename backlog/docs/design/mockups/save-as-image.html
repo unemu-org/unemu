@@ -171,7 +171,7 @@ code { font: 11px var(--code); overflow-wrap: anywhere; }
   <div class="btnrow"><button type="button" data-scenario="save">Save as new image…</button><button type="button" data-scenario="move">Sample: move “latest”</button><button type="button" data-scenario="refuse">Sample: version tag exists</button><button type="button" data-scenario="settings">Settings on an image…</button><button type="button" id="themeBtn">Theme: system</button></div>
 </div>
 <main class="app">
-  <div class="titlebar"><span class="t" id="winTitle">open-at:1.0.0 — workspace play-001 — unemupc98</span><span aria-hidden="true">_ □ ×</span></div>
+  <div class="titlebar"><span class="t" id="winTitle">open-at:1.0.0 — workspace play-001 — unemupc</span><span aria-hidden="true">_ □ ×</span></div>
   <nav class="menubar" aria-label="Main menu">
     <details class="menu"><summary><u>F</u>ile</summary><div class="menu-panel"><button type="button" data-view="library">Machine library</button></div></details>
     <details class="menu"><summary><u>M</u>achine</summary><div class="menu-panel"><button type="button" data-preview="stop">Stop</button><hr><button type="button" data-scenario="settings">Settings…</button><button type="button" data-preview="layers">Disk layers…</button><button type="button" data-scenario="save">Save as new image…</button></div></details>
@@ -381,7 +381,7 @@ function renderSave() {
 function openSave(repo, tag) {
   $('saveDialog').open && $('saveDialog').close();
   $('stoppedOverlay').hidden = true;
-  $('winTitle').textContent = 'open-at:1.0.0 — workspace play-001 — unemupc98';
+  $('winTitle').textContent = 'open-at:1.0.0 — workspace play-001 — unemupc';
   save.repo = repo || 'open-at';
   save.tag = tag || suggested(save.repo);
   save.tagEdited = !!tag;
@@ -413,7 +413,7 @@ function finishSave(moved) {
   store.sort((a, b) => a.repo < b.repo ? -1 : a.repo > b.repo ? 1 : 0);
   selected = store.indexOf(find(repo, tag));
   $('saveDialog').close();
-  $('winTitle').textContent = repo + ':' + tag + ' — workspace play-001 — unemupc98';
+  $('winTitle').textContent = repo + ':' + tag + ' — workspace play-001 — unemupc';
   $('stoppedOverlay').hidden = false;
   $('status').textContent = 'Preview only: saved ' + repo + ':' + tag + (moved ? ' (tag moved after confirmation)' : '') + ' · ' + $('savedTotal').textContent + ' new · the workspace now runs it with fresh journals';
   renderLibrary();

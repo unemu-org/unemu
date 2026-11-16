@@ -292,7 +292,7 @@ fn open_fixture(relative: &str, fetch: &str) -> Option<PathBuf> {
     }
     let message = format!("missing fixture {} — run {fetch}", path.display());
     assert!(
-        std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").as_deref() != Some(OsStr::new("1")),
+        std::env::var_os("UNEMUPC_REQUIRE_FIXTURES").as_deref() != Some(OsStr::new("1")),
         "{message}"
     );
     eprintln!("skipping: {message}");

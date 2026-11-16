@@ -1259,7 +1259,7 @@ mod tests {
             Ok(bytes) => Some(bytes),
             Err(error)
                 if error.kind() == io::ErrorKind::NotFound
-                    && std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES").is_none() =>
+                    && std::env::var_os("UNEMUPC_REQUIRE_FIXTURES").is_none() =>
             {
                 eprintln!("skipping open-firmware check: fetch {name}");
                 None

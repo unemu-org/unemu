@@ -3,13 +3,13 @@ name: backlog
 description: >-
   Docs and decision records with the Backlog.md CLI (`backlog doc`, `backlog decision`). Use when
   creating or listing a project doc or a decision under `backlog/`, or when reading the Done
-  history in `backlog/completed`. Not for open work: unemupc98 tracks tasks in beads (`bd`) since
+  history in `backlog/completed`. Not for open work: unemupc tracks tasks in beads (`bd`) since
   2026-11-09 — use `bd ready`, `bd show`, `bd create` for those.
 ---
 
 # Backlog.md
 
-> **unemupc98: tasks moved to beads (`bd`, prefix `upc`) on 2026-11-09.** Use this skill only for docs
+> **unemupc: tasks moved to beads (`bd`, prefix `upc`) on 2026-11-09.** Use this skill only for docs
 > (`backlog doc`) and decisions (`backlog decision`). Open work: `bd ready`, `bd show <id>`; see
 > `backlog/docs/working-on-tasks.md`. Never create a task with `backlog task create`.
 

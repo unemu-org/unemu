@@ -1,6 +1,6 @@
-<img src="assets/brand/unemupc-logo-512.png" width="128" alt="unemupc98 logo">
+<img src="assets/brand/unemupc-logo-512.png" width="128" alt="unemupc logo">
 
-# unemupc98
+# unemupc
 
 A deterministic, low-level emulator (LLE) of an **IBM PC/AT-class (Intel 80286)
 computer**, with an OCI-based library of machines, installation media and
@@ -82,12 +82,12 @@ cards, firmware and drives. `at-games-open.toml` is the open DOS games machine
 
 ### Applications
 
-- **Desktop app** (`unemupc98-window`, egui): machine, media and firmware
+- **Desktop app** (`unemupc`, egui): machine, media and firmware
   library; New machine… wizard; Settings on an image and Save as new image…;
   Get templates…; Push… and Pull…; status-bar drive chips with activity
   lights; Media menu with Insert from library…; speed controls; macOS
   application menu.
-- **Command line** (`unemupc98`): run machines headless, check machine files,
+- **Command line** (`upcli`): run machines headless, check machine files,
   and manage images, media sets, firmware packages, registries and media
   journals.
 
@@ -96,7 +96,7 @@ cards, firmware and drives. `at-games-open.toml` is the open DOS games machine
 ```sh
 nix develop                                   # toolchain and fixture tools (or let direnv load it)
 bash scripts/ci-gate.sh fixtures              # build the open firmware and fixture images
-cargo run --release -p window --bin unemupc98-window
+cargo run --release -p window --bin unemupc
 cargo run --release -p cli -- run --machine machines/at-freedos.toml --print mda
 cargo test --workspace                        # unit, golden and integration tests
 ```

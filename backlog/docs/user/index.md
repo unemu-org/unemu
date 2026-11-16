@@ -1,4 +1,4 @@
-# unemupc98 — user documentation
+# unemupc — user documentation
 
 End-user-facing docs. Tutorials, screenshots, feature walk-throughs. The coding-agent knowledge lives one level up in [`../`](../) (see the [`AGENTS.md`](../../../AGENTS.md) pointer table).
 

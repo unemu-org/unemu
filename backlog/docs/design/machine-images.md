@@ -2184,7 +2184,7 @@ the active emulator.
 | Media | Per-slot inserted names, Insert…, Next image in catalogue and Eject; absent drives and unsupported CD-ROM are disabled with reasons. |
 | View | Toolbar/status-bar visibility, scale, full screen and host audio mute. |
 | Tools | Image store folder…, Import ROM folder…, Media catalogue…, Locate firmware…, Create blank disk… and Preferences…. |
-| Help | Keyboard shortcuts and About unemupc98. |
+| Help | Keyboard shortcuts and About unemupc. |
 
 The toolbar repeats common Start, Pause, Stop, Send Ctrl+Alt+Del, floppy,
 Settings and Layers commands outside guest pixels. Enablement follows machine

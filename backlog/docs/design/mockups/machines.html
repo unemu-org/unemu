@@ -321,7 +321,7 @@ legend { padding: 0 5px; }
 </div>
 
 <main class="app" id="app">
-  <div class="titlebar"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="2" width="14" height="9" fill="#c9d6e8" stroke="#0b1a33"/><rect x="3" y="4" width="10" height="5" fill="#0b2a5a"/><rect x="5" y="12" width="6" height="2" fill="#c9d6e8" stroke="#0b1a33"/></svg><span class="t" id="winTitle">Machine library — unemupc98</span><button class="tbtn" type="button" aria-label="Minimize">_</button><button class="tbtn" type="button" aria-label="Maximize">□</button><button class="tbtn" type="button" aria-label="Close">×</button></div>
+  <div class="titlebar"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="2" width="14" height="9" fill="#c9d6e8" stroke="#0b1a33"/><rect x="3" y="4" width="10" height="5" fill="#0b2a5a"/><rect x="5" y="12" width="6" height="2" fill="#c9d6e8" stroke="#0b1a33"/></svg><span class="t" id="winTitle">Machine library — unemupc</span><button class="tbtn" type="button" aria-label="Minimize">_</button><button class="tbtn" type="button" aria-label="Maximize">□</button><button class="tbtn" type="button" aria-label="Close">×</button></div>
   <nav class="menubar" aria-label="Main menu">
     <details class="menu"><summary><u>F</u>ile</summary><div class="menu-panel">
       <button type="button" data-act="wizard" data-need="lib"><span>New machine…</span><span class="mk chg" title="Also creates a machine from the new image">changed</span><span class="key">Ctrl+N</span></button>
@@ -388,7 +388,7 @@ legend { padding: 0 5px; }
     </div></details>
     <details class="menu"><summary><u>H</u>elp</summary><div class="menu-panel">
       <button type="button" data-act="keys" data-need="any"><span>Keyboard shortcuts</span><span class="mk chg">changed</span><span class="key">F1</span></button>
-      <hr><button type="button" data-act="unchanged" data-need="any"><span>About unemupc98</span><span></span><span class="key"></span></button>
+      <hr><button type="button" data-act="unchanged" data-need="any"><span>About unemupc</span><span></span><span class="key"></span></button>
     </div></details>
   </nav>
   <div class="toolbar" role="toolbar" aria-label="Library">
@@ -890,9 +890,9 @@ function renderRun() {
 }
 function renderTitle() {
   const r = S.running;
-  if (!r) { $('winTitle').textContent = 'Machine library — unemupc98'; return; }
+  if (!r) { $('winTitle').textContent = 'Machine library — unemupc'; return; }
   const m = runMachine(), im = img(r.image);
-  $('winTitle').textContent = (m ? m.name : im.title) + (r.gaming ? ' (gaming copy)' : '') + ' — ' + ref(im) + ' — unemupc98';
+  $('winTitle').textContent = (m ? m.name : im.title) + (r.gaming ? ' (gaming copy)' : '') + ' — ' + ref(im) + ' — unemupc';
 }
 function renderStatus() {
   const r = S.running;

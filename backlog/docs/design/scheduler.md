@@ -96,7 +96,7 @@ stopping on an unsupported instruction. The golden asserts the marker, not
 the stop kind. The old per-clock oracle's second `0x42` came from executing the
 straddling bytes as if they were not faulting.
 
-Legacy-versus-corrected tests and `UNEMUPC98_SCHEDULER_AB` are deleted. Comparator
+Legacy-versus-corrected tests and the scheduler A/B switch are deleted. Comparator
 unit tests retain explicit instruction-start shifts and bounded cap endpoint
 normalization for reviewing migration evidence. They never shift INTA, discard
 accesses or normalize final state. The following old/new observations classify
@@ -205,7 +205,7 @@ assertions. The production one-million-step cadence captures DOS time
 `12:00:12.90 am`; polling/injection changes can move that clock-derived text.
 
 The informative release wall-time test requires
-`UNEMUPC98_SCHEDULER_WALL_TIMES=1`; otherwise it prints one skip line. It measures
+`UNEMUPC_SCHEDULER_WALL_TIMES=1`; otherwise it prints one skip line. It measures
 the two corrected engines outside execution, using medians of three. Phase
 profiling is separate from scheduler correctness.
 

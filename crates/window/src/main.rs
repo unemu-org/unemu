@@ -778,11 +778,11 @@ impl Presenter {
 fn informational_output(arg: &OsStr) -> Option<String> {
     if arg == "--help" {
         Some(format!(
-            "usage: unemupc98-window [--machine FILE] [--display CARD] [--rom-dir DIR]... [--allow-unlisted-firmware]\n\ndefault selection: {} (opens the machine library; --machine starts immediately)\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}", default_machine().display()
+            "usage: unemupc [--machine FILE] [--display CARD] [--rom-dir DIR]... [--allow-unlisted-firmware]\n\ndefault selection: {} (opens the machine library; --machine starts immediately)\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}", default_machine().display()
         ))
     } else if arg == "--version" || arg == "--about" {
         Some(format!(
-            "unemupc98-window {}\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}",
+            "unemupc {}\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}",
             env!("CARGO_PKG_VERSION")
         ))
     } else {
@@ -807,7 +807,7 @@ struct Args {
 /// Setting this to `1` makes the window print one stderr line per speaker
 /// start, tone change and CPU reset, with the guest CS:IP. It is read once
 /// at startup; any other value or its absence leaves the trace off.
-const SPEAKER_TRACE_VAR: &str = "UNEMUPC98_TRACE_SPEAKER";
+const SPEAKER_TRACE_VAR: &str = "UNEMUPC_TRACE_SPEAKER";
 
 fn speaker_trace_requested(value: Option<&OsStr>) -> bool {
     value == Some(OsStr::new("1"))
@@ -1582,7 +1582,7 @@ mod tests {
 
     #[test]
     fn machine_file_setup_equals_the_preset_without_opening_a_window() {
-        let required = std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES");
+        let required = std::env::var_os("UNEMUPC_REQUIRE_FIXTURES");
         let fixtures = [(BIOS_FIXTURE, BIOS_FETCH), (FLOPPY_FIXTURE, FLOPPY_FETCH)].map(
             |(relative, fetch)| {
                 let path = default_fixture(relative);
@@ -2340,7 +2340,7 @@ mod tests {
         for option in ["--help", "--version", "--about"] {
             let output = informational_output(OsStr::new(option)).unwrap();
             assert!(output.contains(FONT_NOTICE), "{option}");
-            assert!(output.contains("unemupc98-window"));
+            assert!(output.contains("unemupc"));
         }
         assert!(informational_output(OsStr::new("bios.bin")).is_none());
     }
@@ -3100,7 +3100,7 @@ mod tests {
                 *self.0.borrow_mut() = grid.to_dump();
             }
         }
-        let required = std::env::var_os("UNEMUPC98_REQUIRE_FIXTURES");
+        let required = std::env::var_os("UNEMUPC_REQUIRE_FIXTURES");
         let fixtures = [(BIOS_FIXTURE, BIOS_FETCH), (FLOPPY_FIXTURE, FLOPPY_FETCH)].map(
             |(relative, fetch)| {
                 let path = default_fixture(relative);

@@ -5,6 +5,38 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — The project is renamed unemupc:** the name unemupc98 no
+  longer fits a line that may end with an optional Windows XP phase, and a
+  later NEC PC-98 emulator in the family would collide with it; the logo has
+  shown "PC" since 2026-11-14. The desktop app's binary is now `unemupc`
+  (was `unemupc98-window`) and the command line's is `upcli` (was
+  `unemupc98`): `cargo run -p window --bin unemupc`, `cargo clippy -p cli
+  --bin upcli`, and the usage text says `upcli`. The window title, About
+  box, macOS application menu and messages say unemupc. Two effects reach
+  users: on macOS an Accessibility grant made to the old binary does not
+  carry over (started from a terminal, the grant belongs to the terminal),
+  and on Linux the window class and Wayland app id change to `unemupc`.
+  Every developer and CI environment variable drops the 98:
+  `UNEMUPC_REQUIRE_FIXTURES`, `UNEMUPC_USER_ROMS_DIR`,
+  `UNEMUPC_REQUIRE_USER_ROMS`, `UNEMUPC_OPEN_AT_BIOS`,
+  `UNEMUPC_TRACE_SPEAKER`, `UNEMUPC_SCHEDULER_WALL_TIMES`,
+  `UNEMUPC_SCHEDULER_STREAMS`, `UNEMUPC_RECORD_STREAMS`,
+  `UNEMUPC_FIXTURE_PROBE` and `UNEMUPC_QUANTUM_CHILD_TEST`; the old names
+  are no longer read. The shared preferences file moves from
+  `unemupc98/preferences.toml` to `unemupc/preferences.toml` in the platform
+  config directory. The first time the desktop or the command line asks for
+  it, and the new file does not exist yet, the old file is copied there
+  under the preferences lock before anything reads it; the old file stays.
+  Both frontends now take the path from one function, `cli::preferences`.
+  The firmware hash index moves to `<cache dir>/unemupc/firmware-index.v2`
+  and is rebuilt on first use rather than copied. Pinned fixture inputs keep
+  the old name where it is part of their bytes (the hard-disk fixture's
+  MARKER.TXT, the SeaBIOS version string, the source-archive notices and the
+  FreeDOS LICENSES.TXT), so no golden or digest moves and the guest sees no
+  change. Repository URLs still name unemupc98 until the remote repositories
+  are renamed. `scripts/publication-guard.sh` now fails on the old name
+  outside those places, the history records and the status entries from
+  this one down.
 - **2026-11-16 — The CPU core comes from its public GitHub repository:** x86jit
   is now published at github.com/unemu-org/x86jit, its primary forge, with its
   history rewritten (third-party binaries filtered out, every commit re-signed),
@@ -176,7 +208,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   896 Hz), for 31/64 s timed by port 61h bit 4 refresh toggles, interrupts on
   during the tone, port 61h and IF restored. **MEASURED headless** with the
   speaker trace (`ObservationPolicy::speaker_trace`; the window's
-  `UNEMUPC98_TRACE_SPEAKER` prints the same events): on the open profile the
+  `UNEMUPC_TRACE_SPEAKER` prints the same events): on the open profile the
   probe's AX=0E07h gives one start at C000:5866, mode 3, divisor 1331, and the
   stop at C000:588F after 577,819 PIT clocks (0.484267 s; 31/64 s is
   0.484375 s), and the probe reports `tty.bel ok`; the open AT BIOS's
@@ -303,7 +335,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   the open game profile and on `at-ide` with 1 MiB. The ignored golden
   `xms_warm_boot_golden` leaves the kernel's record at 1 MiB, restarts both
   ways and checks that it is gone
-  (it failed with `v1.0.2-unemu.2`); `UNEMUPC98_OPEN_AT_BIOS` runs it against
+  (it failed with `v1.0.2-unemu.2`); `UNEMUPC_OPEN_AT_BIOS` runs it against
   a candidate image instead. The open goldens moved with the BIOS:
   `open_game_profile_boots_freedos` 15,216,991 retired (from 15,241,264),
   `open_game_profile_reads_720k_in_b_and_360k_in_a` 23,463,925 (from
@@ -503,7 +535,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
       lists Machines from this image (N)).
 
 - **2026-11-15 — Speaker and CPU-reset trace (opt-in diagnostic):** with
-  `UNEMUPC98_TRACE_SPEAKER=1` in its environment (read once at startup; any
+  `UNEMUPC_TRACE_SPEAKER=1` in its environment (read once at startup; any
   other value leaves it off) the window prints one stderr line per event:
   `speaker on` / `speaker tone` / `speaker off` when port 61h GATE and data
   become both set, counter 2 is reprogrammed while they are, or one drops
@@ -512,8 +544,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   long the speaker was on. A `cpu reset` line carries its source (`reset-pulse`
   from the 8042 or port 92h, `cpu-shutdown`, or `host` for the halted-machine
   restart), CMOS byte 0Fh and the restart CS:IP. Run it with
-  `UNEMUPC98_TRACE_SPEAKER=1 nix develop --command cargo run --release
-  --offline -p window --bin unemupc98-window 2> ~/unemupc98-speaker.log`.
+  `UNEMUPC_TRACE_SPEAKER=1 nix develop --command cargo run --release
+  --offline -p window --bin unemupc 2> ~/unemupc-speaker.log`.
   `ObservationPolicy::speaker_trace` builds it in assembly; it only reads
   timer, CMOS and CPU state after guest port writes and around frontend
   resets (`AssembledMachine::reset_cpu`). With it off, assembly installs
@@ -2551,10 +2583,10 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
 ### User-supplied system ROM catalogue
 
 - **2026-11-11 — User-ROM test lane:** shared test-only SHA-256 discovery accepts
-  arbitrary filenames in `vendor/user-roms/` and optional `UNEMUPC98_USER_ROMS_DIR`,
+  arbitrary filenames in `vendor/user-roms/` and optional `UNEMUPC_USER_ROMS_DIR`,
   including nested chip layouts or assembled images. `ci-gate.sh user-roms` is a
   local opt-in lane; absent identities skip visibly unless
-  `UNEMUPC98_REQUIRE_USER_ROMS=1`. CI never calls it. Synthetic tests cover
+  `UNEMUPC_REQUIRE_USER_ROMS=1`. CI never calls it. Synthetic tests cover
   discovery and policy, including symlinks and loops, external-root configuration
   failures, partial-layout counts and downstream path redaction. External roots
   must be absolute folders of unpacked dumps. Proprietary firmware execution

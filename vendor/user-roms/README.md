@@ -15,7 +15,7 @@ You may store parts at the repository-relative path
 These are MAME-style names, for example
 `vendor/user-roms/ibm-5170-bios-1985-06-10/6480090.u27`.
 These filenames are optional labels. Tests search recursively in
-`vendor/user-roms/`, then in `UNEMUPC98_USER_ROMS_DIR` if set. Set that variable
+`vendor/user-roms/`, then in `UNEMUPC_USER_ROMS_DIR` if set. Set that variable
 to an absolute path to a folder of unpacked dumps, rather than a volume root or
 home directory. Dumps must be plain files: MAME `.zip` sets and other archives
 are not unpacked by discovery. Arbitrary names and nested directories work. Identity is
@@ -28,7 +28,7 @@ relative or non-directory external root is a configuration error, even if vendor
 firmware matches. An unreadable subdirectory aborts scanning with a redacted
 error instead of silently skipping.
 Discovery never prints contents or hashes of user files. Display names and
-discovery errors use `<UNEMUPC98_USER_ROMS_DIR>/relative/name` instead of the
+discovery errors use `<UNEMUPC_USER_ROMS_DIR>/relative/name` instead of the
 private root path. Incomplete or wrong layouts are absent, without per-file hash
 diagnostics from discovery. Partial layouts append only counts to the skip line,
 for example `; layout 0: 1 of 2 parts found`, with no paths or hashes.
@@ -122,11 +122,11 @@ prints the screen. Run all such tests with
 `bash scripts/ci-gate.sh user-roms`; CI never calls this lane and never has proprietary firmware. Missing dumps print:
 
 ```text
-SKIPPED: user-supplied firmware <entry id> not found (set UNEMUPC98_USER_ROMS_DIR or see vendor/user-roms/README.md)
+SKIPPED: user-supplied firmware <entry id> not found (set UNEMUPC_USER_ROMS_DIR or see vendor/user-roms/README.md)
 ```
 
-This also skips with `UNEMUPC98_REQUIRE_FIXTURES=1`. Set
-`UNEMUPC98_REQUIRE_USER_ROMS=1` to panic with the same text on absence.
+This also skips with `UNEMUPC_REQUIRE_FIXTURES=1`. Set
+`UNEMUPC_REQUIRE_USER_ROMS=1` to panic with the same text on absence.
 See `backlog/docs/commands.md` for the commands and shared test helper.
 
 Goldens for proprietary firmware may store hashes and our own interpretation:
@@ -139,7 +139,7 @@ in these goldens. All committed discovery tests use synthetic bytes.
 ## IBM Display Adapter video BIOS (ISA VGA, 1987)
 
 Catalogue id: `ibm-vga-bios-1987-32k`. Supply one **32768-byte EPROM file** in
-this ignored directory or under `UNEMUPC98_USER_ROMS_DIR`. Discovery is recursive
+this ignored directory or under `UNEMUPC_USER_ROMS_DIR`. Discovery is recursive
 and hash-based; an optional descriptive name is
 `ibm-vga-bios-1987-32k/ibm-vga-1987-32k.bin`. No separate socket or byte-lane
 parts are required; this is a single eight-bit EPROM, not an even/odd pair.
@@ -170,5 +170,5 @@ The supervisor qualified POST with this ROM and INT 10h modes 03h/13h on
 `ibm-5170`; all four regression pins are populated. See
 `backlog/docs/design/firmware-and-machine-classes.md` §Video ROM placement
 for the measured stop, retired count and capture SHA-256 values. Missing ROMs
-skip cleanly even when ordinary open fixtures are required, unless `UNEMUPC98_REQUIRE_USER_ROMS=1`.
+skip cleanly even when ordinary open fixtures are required, unless `UNEMUPC_REQUIRE_USER_ROMS=1`.
 No ROM is downloaded or distributed.

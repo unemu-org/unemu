@@ -244,7 +244,7 @@ tr[aria-selected="true"] .warnbadge { color: var(--sel-ink); }
 <div class="app" id="app">
   <div class="titlebar">
     <svg class="appicon" viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="2" width="14" height="9" fill="#c9d6e8" stroke="#0b1a33"/><rect x="3" y="4" width="10" height="5" fill="#0b2a5a"/><rect x="5" y="12" width="6" height="2" fill="#c9d6e8" stroke="#0b1a33"/></svg>
-    <span class="ttl" id="winTitle">unemupc98</span>
+    <span class="ttl" id="winTitle">unemupc</span>
     <button class="tbtn" type="button" aria-label="Minimize">_</button>
     <button class="tbtn" type="button" aria-label="Maximize">□</button>
     <button class="tbtn" type="button" aria-label="Close">×</button>
@@ -304,7 +304,7 @@ tr[aria-selected="true"] .warnbadge { color: var(--sel-ink); }
       <div class="menu" id="m-help" role="menu">
         <button type="button" data-act="keys"><span></span><span>Keyboard shortcuts</span><span class="key">F1</span></button>
         <hr>
-        <button type="button" data-act="about"><span></span><span>About unemupc98</span><span class="key"></span></button>
+        <button type="button" data-act="about"><span></span><span>About unemupc</span><span class="key"></span></button>
       </div>
     </div>
   </nav>
@@ -326,7 +326,7 @@ tr[aria-selected="true"] .warnbadge { color: var(--sel-ink); }
     <!-- Welcome / library -->
     <section class="view active" id="welcome" aria-label="Welcome">
       <div class="welcome-side">
-        <h1>Welcome to unemupc98</h1>
+        <h1>Welcome to unemupc</h1>
         <p>Pick a machine to start it, or set up a new one.</p>
         <div class="links">
           <button type="button" data-act="new">New machine…</button>
@@ -509,9 +509,9 @@ Settings       revision 4</div>
 
     <!-- About -->
     <div class="dlg" id="dlg-about" role="dialog" aria-modal="true" aria-labelledby="aboutTitle" hidden>
-      <div class="titlebar"><span class="ttl" id="aboutTitle">About unemupc98</span><button class="tbtn" type="button" data-close aria-label="Close">×</button></div>
+      <div class="titlebar"><span class="ttl" id="aboutTitle">About unemupc</span><button class="tbtn" type="button" data-close aria-label="Close">×</button></div>
       <div class="body">
-        <p style="margin:0 0 6px"><strong>unemupc98</strong> — IBM PC/AT emulator, deterministic and testable.</p>
+        <p style="margin:0 0 6px"><strong>unemupc</strong> — IBM PC/AT emulator, deterministic and testable.</p>
         <p style="margin:0;color:var(--muted)">CPU core x86jit · Sound: Nuked-OPL3 port · This screen is a design mock-up.</p>
       </div>
       <div class="foot"><button type="button" class="btn default" data-close>OK</button></div>
@@ -519,7 +519,7 @@ Settings       revision 4</div>
 
     <!-- Generic message -->
     <div class="dlg" id="dlg-msg" role="dialog" aria-modal="true" aria-labelledby="msgTitle" hidden>
-      <div class="titlebar"><span class="ttl" id="msgTitle">unemupc98</span><button class="tbtn" type="button" data-close aria-label="Close">×</button></div>
+      <div class="titlebar"><span class="ttl" id="msgTitle">unemupc</span><button class="tbtn" type="button" data-close aria-label="Close">×</button></div>
       <div class="body"><p style="margin:0" id="msgText"></p></div>
       <div class="foot"><button type="button" class="btn default" data-close>OK</button></div>
     </div>
@@ -607,7 +607,7 @@ Settings       revision 4</div>
 
   /* ---------- running ---------- */
   var bootLines = [
-    ['', 0], ['unemupc98 · ' , 0], ['', 300],
+    ['', 0], ['unemupc · ' , 0], ['', 300],
     ['Memory test: 4736 KiB OK', 500], ['', 200], ['Starting FreeDOS...', 900], ['', 100],
     ['FreeCom version 0.86', 400], ['', 0], ['Current date is Sat 11-13-2026', 200],
     ['Enter new date (mm-dd-[cc]yy):', 300], ['Current time is  2:20:41.07p', 200], ['Enter new time:', 300], ['', 0]
@@ -617,7 +617,7 @@ Settings       revision 4</div>
     if (!m.ok) { msg('This machine cannot start: its system BIOS is missing. Use Tools › Locate firmware…'); return; }
     state.running = true; state.paused = false;
     $('welcome').classList.remove('active'); $('running').classList.add('active');
-    $('winTitle').textContent = m.name + ' — unemupc98';
+    $('winTitle').textContent = m.name + ' — unemupc';
     try { history.replaceState(null, '', '#running'); } catch (e) {}
     boot();
     sync();
@@ -625,7 +625,7 @@ Settings       revision 4</div>
   function stop() {
     clearTimeout(state.booting); state.running = false; state.paused = false;
     $('running').classList.remove('active'); $('welcome').classList.add('active');
-    $('winTitle').textContent = 'unemupc98';
+    $('winTitle').textContent = 'unemupc';
     try { history.replaceState(null, '', '#welcome'); } catch (e) {}
     sync(); setStatus('Machine stopped. Disk changes are kept in the working layer.');
   }
@@ -633,7 +633,7 @@ Settings       revision 4</div>
     var crt = $('crt'), i = 0, text = '';
     clearTimeout(state.booting);
     crt.textContent = '';
-    bootLines[1][0] = 'unemupc98 · ' + current().name;
+    bootLines[1][0] = 'unemupc · ' + current().name;
     var a = find(state.ins.A);
     flash('A', 1200); setStatus('Booting from A: ' + (a ? a.t : '(empty)') + '…');
     function step() {

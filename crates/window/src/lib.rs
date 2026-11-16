@@ -91,7 +91,7 @@ pub const SYMBOL_FONT: &[u8] = include_bytes!("../assets/fonts/dejavu/DejaVuSans
 
 /// Attribution and the original licence text of [`SYMBOL_FONT`].
 pub const SYMBOL_FONT_NOTICE: &str = concat!(
-    "DejaVu Sans 2.37, subset to five symbols by unemupc98; outlines unmodified.\n",
+    "DejaVu Sans 2.37, subset to five symbols by unemupc; outlines unmodified.\n",
     "Fonts are (c) Bitstream; Arev glyphs (c) Tavmjong Bah; DejaVu changes are public domain.\n",
     "Bitstream Vera and Arev Fonts licences:\n\n",
     include_str!("../assets/fonts/dejavu/LICENSE.txt"),

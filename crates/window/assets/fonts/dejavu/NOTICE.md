@@ -9,7 +9,7 @@ License: Bitstream Vera Fonts licence and Arev Fonts licence (SPDX
 `Bitstream-Vera`); the full text is in [LICENSE.txt](LICENSE.txt), unmodified
 from the release.
 
-`DejaVuSans-UI-symbols.ttf` is a subset made by unemupc98. It keeps only the
+`DejaVuSans-UI-symbols.ttf` is a subset made by unemupc. It keeps only the
 five characters the desktop draws that egui's bundled fonts lack — U+2161 Ⅱ,
 U+232B ⌫, U+2713 ✓, U+2715 ✕ and U+2717 ✗ — and drops hinting and the layout
 tables. The glyph outlines are unchanged and the name table, with its

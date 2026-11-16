@@ -173,7 +173,7 @@ pub fn execute(command: TemplateCommand, output: &mut impl Write) -> anyhow::Res
     }
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let scratch = Scratch(std::env::temp_dir().join(format!(
-        "unemupc98-template-dry-run-{}-{}",
+        "unemupc-template-dry-run-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     )));

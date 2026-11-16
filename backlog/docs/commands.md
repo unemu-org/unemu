@@ -473,8 +473,9 @@ leave a private registry or to enter `unemu/`; the guard refuses it
 otherwise. Any user-supplied layer keeps a package in private registries
 outside `unemu/`.
 
-Registries are listed in the shared preferences file (`unemupc98/preferences.toml`
-in the platform config directory, or `--config FILE`):
+Registries are listed in the shared preferences file (`unemupc/preferences.toml`
+in the platform config directory, or `--config FILE`; a file left in the
+directory named after the project's former name is copied there once):
 
 ```toml
 [[registries]]
@@ -797,26 +798,26 @@ cargo run --offline -p cli -- --bios vendor/kiselev-bios/bios-xi8088.bin
 cargo run --offline -p cli -- --bios /path/to/bios.bin --allow-unlisted-firmware
 cargo run --offline -p cli -- machine check machines/at-freedos.toml
 cargo run --offline -p cli -- run --machine machines/at-freedos.toml --max-steps 12000000 --idle-limit 1000000 --print mda
-cargo run --offline -p window --bin unemupc98-window -- --machine machines/at-freedos.toml --display mda
+cargo run --offline -p window --bin unemupc -- --machine machines/at-freedos.toml --display mda
 cargo test --workspace                       # unit + golden + integration
 cargo test --release -p devices              # release-only device behaviour (CI runs it too)
 cargo test --workspace -- --ignored          # slow goldens: BIOS POST, FreeDOS boot, DOS sessions
-UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --workspace -- --include-ignored # CI goldens lane: every fixture test and the goldens; fail if a fixture is missing
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --workspace -- --include-ignored # CI goldens lane: every fixture test and the goldens; fail if a fixture is missing
 # Corrected per-clock oracle versus production deadlines (no environment gate):
-UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test scheduler_ab -- --include-ignored --nocapture
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test scheduler_ab -- --include-ignored --nocapture
 # Opt-in host timing only, BIOS POST and FreeDOS prompt, median of three per engine:
-UNEMUPC98_REQUIRE_FIXTURES=1 UNEMUPC98_SCHEDULER_WALL_TIMES=1 cargo test --offline --release -p cli --test scheduler_ab scheduler_engine_wall_times -- --ignored --nocapture
+UNEMUPC_REQUIRE_FIXTURES=1 UNEMUPC_SCHEDULER_WALL_TIMES=1 cargo test --offline --release -p cli --test scheduler_ab scheduler_engine_wall_times -- --ignored --nocapture
 # DOS sessions and their final console screens (requires fetched fixtures):
-UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_interactive_golden -- --ignored --nocapture
-UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_write_golden -- --ignored --nocapture
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_interactive_golden -- --ignored --nocapture
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_write_golden -- --ignored --nocapture
 # FreeDOS boots A: with the open AT BIOS and XT+ ROM, then lists readonly C:
-UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test ide_freedos_golden -- --ignored --nocapture
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test ide_freedos_golden -- --ignored --nocapture
 # Open AT protected-mode test floppy: INT 15h 88h/87h, PM entry, 8042/triple-fault resets, A20 (design/at-pm-test.md)
-UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test at_pm_test_golden -- --include-ignored --nocapture
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test at_pm_test_golden -- --include-ignored --nocapture
 cargo test -p devices                        # one crate's tests
-cargo build --offline -p window --bin unemupc98-window
-cargo run --offline -p window --bin unemupc98-window # default machines/at-freedos.toml
-cargo run --offline -p window --bin unemupc98-window -- --machine machines/local.toml --allow-unlisted-firmware
+cargo build --offline -p window --bin unemupc
+cargo run --offline -p window --bin unemupc # default machines/at-freedos.toml
+cargo run --offline -p window --bin unemupc -- --machine machines/local.toml --allow-unlisted-firmware
 cargo tree --offline -i window               # window is a leaf frontend
 ```
 
@@ -956,7 +957,7 @@ New machine remains a placeholder. Enter starts the selection when stopped.
 While a machine runs, File > Machine library, Open in File > Open machine
 file… (after a path is entered; closing that dialog changes nothing), Exit,
 ⌘Q, ⌘W and the window's close button pause it first and ask
-"unemupc98 is running <machine>. Stop it and continue?" with Stop machine and
+"unemupc is running <machine>. Stop it and continue?" with Stop machine and
 Cancel (Esc; Enter and Space do not answer). Cancel resumes the machine where
 it paused, without catch-up, and hands back guest keyboard focus and pointer
 capture if the guest had them; an explicit pause stays in effect. Exit, ⌘Q,
@@ -966,12 +967,12 @@ keep-or-discard question. One Escape closes only the top-most dialog. A
 stopped, halted or failed machine is not asked about, and Machine > Stop and
 Power cycle act at once. A Gaming-mode session asks Keep as new image or
 Discard after stopping instead. On macOS the global menu bar holds only the
-application menu: About unemupc98, Hide unemupc98 (⌘H), Hide Others (⌥⌘H),
-Show All and Quit unemupc98 (⌘Q). Quit and ⌘Q reach this question like Exit.
+application menu: About unemupc, Hide unemupc (⌘H), Hide Others (⌥⌘H),
+Show All and Quit unemupc (⌘Q). Quit and ⌘Q reach this question like Exit.
 Dock › Quit, logout, restart and shutdown wait for it as well: with no machine
 running they quit at once after persistence; Stop machine quits once the stop
 and persistence have finished; Cancel keeps the application running (logout
-reports that unemupc98 cancelled it). A stop that fails to finish its journals
+reports that unemupc cancelled it). A stop that fails to finish its journals
 also cancels them and keeps the error dialog up. While a file dialog is open
 they are cancelled; close the dialog and quit again.
 
@@ -1075,12 +1076,12 @@ The ignored set includes firmware/DOS goldens and corrected PerClock-vs-Deadline
 comparisons, including final RAM/register/device state. The per-clock engine is
 available through the non-default `reference-scheduler` feature enabled by CLI
 dev-dependencies, never through `MachineConfig`. Legacy comparisons and
-`UNEMUPC98_SCHEDULER_AB` are retired. Step budgets include REP iterations; the
+the scheduler A/B switch are retired. Step budgets include REP iterations; the
 command budget is calibrated to the final DOS file-write listing. No arguments
 print usage to stdout with status 0; unknown or extra arguments print usage to
 stderr with status 2. The informative
 `scheduler_engine_wall_times` test skips with one line unless
-`UNEMUPC98_SCHEDULER_WALL_TIMES=1` is set, including in ordinary slow/CI runs.
+`UNEMUPC_SCHEDULER_WALL_TIMES=1` is set, including in ordinary slow/CI runs.
 
 ## Offline persistent media
 
@@ -1225,11 +1226,11 @@ cargo run --offline --manifest-path "$demo/Cargo.toml" -- "$demo" 34
 cargo build --offline -p cli
 (
   cd "$demo"
-  "$repo_dir/target/debug/unemupc98" media generations --base disk.img --journal disk.upfj
-  "$repo_dir/target/debug/unemupc98" media verify --base disk.img --journal disk.upfj
-  "$repo_dir/target/debug/unemupc98" media rollback --base disk.img --journal disk.upfj --to 1 --backup before-rollback.upfj
-  "$repo_dir/target/debug/unemupc98" media commit --base disk.img --journal disk.upfj --to 1 --output restored.img
-  "$repo_dir/target/debug/unemupc98" media compact --base disk.img --journal disk.upfj --to 1 --output restored-alias.img
+  "$repo_dir/target/debug/upcli" media generations --base disk.img --journal disk.upfj
+  "$repo_dir/target/debug/upcli" media verify --base disk.img --journal disk.upfj
+  "$repo_dir/target/debug/upcli" media rollback --base disk.img --journal disk.upfj --to 1 --backup before-rollback.upfj
+  "$repo_dir/target/debug/upcli" media commit --base disk.img --journal disk.upfj --to 1 --output restored.img
+  "$repo_dir/target/debug/upcli" media compact --base disk.img --journal disk.upfj --to 1 --output restored-alias.img
 )
 ```
 
@@ -1276,7 +1277,7 @@ for the measured macOS/APFS behavior and storage assumptions.
 
 ```sh
 cargo clippy --all-targets --all-features -- -D warnings
-cargo clippy --locked -p cli --bin unemupc98 -- -D warnings # production, no reference-scheduler
+cargo clippy --locked -p cli --bin upcli -- -D warnings # production, no reference-scheduler
 cargo fmt --all
 cargo fmt --all -- --check                   # CI check
 cargo deny --all-features list               # inspect dependency licences
@@ -1323,7 +1324,7 @@ bash scripts/ci-gate.sh goldens                  # slow tests in the test profil
 ```
 
 Fixture-dependent tests print a skip message when a fetched vendor file is missing.
-Set `UNEMUPC98_REQUIRE_FIXTURES=1` to make a missing fixture fail with its path and
+Set `UNEMUPC_REQUIRE_FIXTURES=1` to make a missing fixture fail with its path and
 fetch script instead. The `goldens` gate always sets this variable, so a failed or
 incomplete fixture fetch cannot silently pass CI. The µPD765 FAT12 test follows
 the same policy when `mformat` is missing and points to `nix develop`.
@@ -1342,7 +1343,7 @@ These tests are `#[ignore]` with names starting with `user_rom_`. The shared
 `assembly::require_user_firmware!(entry_id, board.firmware_catalogue())` helper
 is available through assembly's `test-support` feature. It searches recursively
 in `vendor/user-roms/` first, then the optional directory
-`UNEMUPC98_USER_ROMS_DIR`. Set it to an absolute path to a folder of unpacked,
+`UNEMUPC_USER_ROMS_DIR`. Set it to an absolute path to a folder of unpacked,
 plain dump files, rather than a volume root or home directory. Archives such as
 MAME `.zip` sets are not unpacked. Names and subdirectories do not matter;
 catalogue SHA-256 identities select assembled
@@ -1359,14 +1360,14 @@ for downstream diagnostics that may embed paths.
 Missing, incomplete or wrong layouts print exactly one visible line:
 
 ```text
-SKIPPED: user-supplied firmware <entry id> not found (set UNEMUPC98_USER_ROMS_DIR or see vendor/user-roms/README.md)
+SKIPPED: user-supplied firmware <entry id> not found (set UNEMUPC_USER_ROMS_DIR or see vendor/user-roms/README.md)
 ```
 
 If some parts match, the same line appends counts for each partial layout, such
 as `; layout 0: 1 of 2 parts found`, without hashes or paths.
 
-`UNEMUPC98_REQUIRE_USER_ROMS=1` makes absence panic with that same text;
-other values leave skipping enabled. `UNEMUPC98_REQUIRE_FIXTURES` does not change
+`UNEMUPC_REQUIRE_USER_ROMS=1` makes absence panic with that same text;
+other values leave skipping enabled. `UNEMUPC_REQUIRE_FIXTURES` does not change
 this policy. Discovery I/O errors fail with redacted diagnostics instead of skipping.
 Require/skip panics point at the calling test.
 The ignored `user_rom_ibm_1985_identity` checks assembled identity, per-chip hashes
@@ -1390,7 +1391,7 @@ cargo test --offline -p cli --test landmark -- --ignored user_rom_landmark_at_re
 ```
 
 ```sh
-UNEMUPC98_REQUIRE_USER_ROMS=1 bash scripts/ci-gate.sh user-roms
+UNEMUPC_REQUIRE_USER_ROMS=1 bash scripts/ci-gate.sh user-roms
 ```
 
 See `vendor/user-roms/README.md` for catalogue hashes and the proprietary golden rule.
@@ -1445,17 +1446,17 @@ before exporting); without `svn` on `PATH` it runs it with
 parses. The ignored archive test checks each archive's hash, top-level
 entries, `NOTICE` text, absent prebuilt images (`.bin`, `.rom`) and excluded
 upstream paths, and host-free metadata; the `goldens` gate runs it with
-`UNEMUPC98_REQUIRE_FIXTURES=1`, so a missing archive fails there:
+`UNEMUPC_REQUIRE_FIXTURES=1`, so a missing archive fails there:
 
 ```sh
-UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test media_fixtures source_archive -- --include-ignored
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test media_fixtures source_archive -- --include-ignored
 ```
 
 The XTIDE Universal BIOS option-ROM fixtures:
 
 ```sh
 vendor/xtide-universal-bios/fetch.sh           # r638 AT binary, padded/checksummed to 8 KiB
-UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p assembly --lib xub
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p assembly --lib xub
 ```
 
 It checks both the download and output SHA-256, reusing
@@ -1472,7 +1473,7 @@ devShell) from the fork's public repository,
 ```sh
 vendor/vgabios/fetch.sh                        # vgabios-std.bin and int10-probe-1200.img
 UNEMU_VGABIOS_CHECKOUT=../vgabios vendor/vgabios/fetch.sh   # pinned revision from a local clone
-UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p assembly --lib open_vga
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p assembly --lib open_vga
 cargo test --offline -p cli --test open_vga_golden -- --include-ignored
 ```
 
@@ -1489,7 +1490,7 @@ teletype BEL tone from the headless speaker trace
 (`ObservationPolicy::speaker_trace`): one start from the video BIOS with
 counter 2 in mode 3 and divisor 1331, and its end 31/64 s later within 1%.
 The open VGA tests then do not skip: the `goldens` gate sets
-`UNEMUPC98_REQUIRE_FIXTURES=1`, so a missing ROM or probe fails them. Locally,
+`UNEMUPC_REQUIRE_FIXTURES=1`, so a missing ROM or probe fails them. Locally,
 without that variable, they print a skip line. See `vendor/vgabios/README.md`
 for pins, licence and the later registry delivery. `machines/at-games-open.toml`
 needs the ROM.
@@ -1501,12 +1502,12 @@ fork of `skiselev/8088_bios`, renamed from `unemu-at-bios`):
 ```sh
 vendor/unemu-at-bios/fetch.sh                  # bios-unemu-at.bin and its source archive
 UNEMU_AT_BIOS_CHECKOUT=../at-bios vendor/unemu-at-bios/fetch.sh   # pinned revision from a local clone
-UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline -p assembly --lib unemu_at_bios
-UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --offline --release -p cli --test xms_warm_boot_golden -- --ignored --nocapture
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p assembly --lib unemu_at_bios
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline --release -p cli --test xms_warm_boot_golden -- --ignored --nocapture
 ```
 
 The restart golden `xms_warm_boot_golden` boots the pinned ROM; with
-`UNEMUPC98_OPEN_AT_BIOS=/path/to/bios-unemu-at.bin` it boots that image instead,
+`UNEMUPC_OPEN_AT_BIOS=/path/to/bios-unemu-at.bin` it boots that image instead,
 so a release candidate of the BIOS can be checked before it is pinned.
 
 It builds release `v1.0.2-unemu.3` at its pinned revision (`#unemu-at`),

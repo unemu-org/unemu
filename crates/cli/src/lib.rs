@@ -14,6 +14,7 @@
 pub mod command;
 pub mod create;
 mod image;
+pub mod preferences;
 
 pub use image::{
     build_templates, push_plan, registry_client, registry_probe_client, with_image_providers,

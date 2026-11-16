@@ -59,7 +59,7 @@ fn child(
     home: &Path,
     credentials: Option<(Option<&str>, &str, &str)>,
 ) -> (i32, String, String) {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_unemupc98"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_upcli"));
     command
         .args(args)
         .env("HOME", home)

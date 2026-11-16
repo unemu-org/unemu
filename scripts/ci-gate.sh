@@ -19,7 +19,7 @@ case "$step" in
     clippy)
         gate_command+=(bash -euc '
             cargo clippy --locked --all-targets --all-features -- -D warnings
-            cargo clippy --locked -p cli --bin unemupc98 -- -D warnings
+            cargo clippy --locked -p cli --bin upcli -- -D warnings
         ')
         ;;
     deny) gate_command+=(cargo deny --all-features check advisories licenses bans sources) ;;
@@ -69,7 +69,7 @@ case "$step" in
     # The tests lane runs before the fixtures exist, so tests that read a
     # fixture skip there. This lane runs them again with every fixture
     # present, next to the slow ignored goldens.
-    goldens) gate_command+=(env UNEMUPC98_REQUIRE_FIXTURES=1 cargo test --locked --profile test --workspace -- --include-ignored) ;;
+    goldens) gate_command+=(env UNEMUPC_REQUIRE_FIXTURES=1 cargo test --locked --profile test --workspace -- --include-ignored) ;;
     # Local opt-in lane: CI never calls it and never has user-supplied firmware.
     user-roms) gate_command+=(cargo test --locked --profile test --workspace --no-fail-fast -- --ignored user_rom_) ;;
     *) usage ;;

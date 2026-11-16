@@ -33,7 +33,7 @@
  * version: 1.8
  */
 */
-// Translated to Rust for unemupc98, 2026-11-12; see
+// Translated to Rust for unemupc, 2026-11-12; see
 // backlog/docs/design/audio.md, OPL3, for the port scope and attribution.
 //! Yamaha YMF262 integer FM generator: Rust port of Nuked-OPL3 1.8 (Nuke.YKT),
 //! upstream commit 765ec962. Yamaha YMF262 datasheet, Register Map and FM Sound

@@ -18,7 +18,7 @@ impl RootOrigin {
         match self {
             Self::Preferences => "<preferences ROM folder>",
             Self::CommandLine => "<--rom-dir>",
-            Self::Environment => "<UNEMUPC98_USER_ROMS_DIR>",
+            Self::Environment => "<UNEMUPC_USER_ROMS_DIR>",
             Self::Vendor => "vendor/user-roms",
         }
     }
@@ -47,7 +47,7 @@ pub fn default_firmware_roots() -> Vec<FirmwareRoot> {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/user-roms"),
         RootOrigin::Vendor,
     )];
-    if let Some(path) = std::env::var_os("UNEMUPC98_USER_ROMS_DIR") {
+    if let Some(path) = std::env::var_os("UNEMUPC_USER_ROMS_DIR") {
         roots.push(FirmwareRoot::new(
             PathBuf::from(path),
             RootOrigin::Environment,
@@ -1103,7 +1103,7 @@ mod tests {
         assert_eq!(warnings.len(), 3);
         assert!(warnings[0].starts_with("<preferences ROM folder>"));
         assert!(warnings[1].starts_with("<--rom-dir>"));
-        assert!(warnings[2].starts_with("<UNEMUPC98_USER_ROMS_DIR>"));
+        assert!(warnings[2].starts_with("<UNEMUPC_USER_ROMS_DIR>"));
         assert!(warnings
             .iter()
             .all(|w| !w.contains(&temp.path().display().to_string())));

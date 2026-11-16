@@ -50,7 +50,7 @@ impl FoundUserFirmware {
     /// downstream diagnostic, including escaped paths in debug output.
     pub fn redact(&self, text: &str) -> String {
         self.redactions.iter().fold(text.to_owned(), |text, root| {
-            text.replace(root, "<UNEMUPC98_USER_ROMS_DIR>")
+            text.replace(root, "<UNEMUPC_USER_ROMS_DIR>")
         })
     }
 
@@ -94,7 +94,7 @@ pub enum UserFirmwareError {
     #[error("firmware entry {0} is not user-supplied")]
     NotUserSupplied(String),
     /// A configured external search root must be usable independently of matches.
-    #[error("<UNEMUPC98_USER_ROMS_DIR>: {0}")]
+    #[error("<UNEMUPC_USER_ROMS_DIR>: {0}")]
     ExternalRoot(&'static str),
     /// Inaccessible files must not be mistaken for absent firmware.
     #[error("cannot scan user-supplied firmware at {file}: {kind}")]
@@ -125,7 +125,7 @@ fn search_roots(repository: &Path, external: Option<OsString>) -> Vec<SearchRoot
     if let Some(path) = external {
         roots.push(SearchRoot {
             path: path.into(),
-            label: "<UNEMUPC98_USER_ROMS_DIR>",
+            label: "<UNEMUPC_USER_ROMS_DIR>",
             external: true,
         });
     }
@@ -637,7 +637,7 @@ pub(crate) fn find_test_firmware(
 /// always takes an explicit list and never changes the process environment.
 pub fn default_search_roots() -> Vec<PathBuf> {
     let mut roots = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/user-roms")];
-    if let Some(path) = std::env::var_os("UNEMUPC98_USER_ROMS_DIR") {
+    if let Some(path) = std::env::var_os("UNEMUPC_USER_ROMS_DIR") {
         roots.push(path.into());
     }
     roots
@@ -668,7 +668,7 @@ fn explicit_roots(paths: &[PathBuf]) -> Vec<SearchRoot> {
             label: if path == &vendor {
                 "vendor/user-roms"
             } else {
-                "<UNEMUPC98_USER_ROMS_DIR>"
+                "<UNEMUPC_USER_ROMS_DIR>"
             },
         })
         .collect()
@@ -801,7 +801,7 @@ fn finish_requirement(
     if discovery.found.is_some() {
         return discovery.found;
     }
-    let mut message = format!("SKIPPED: user-supplied firmware {entry_id} not found (set UNEMUPC98_USER_ROMS_DIR or see vendor/user-roms/README.md)");
+    let mut message = format!("SKIPPED: user-supplied firmware {entry_id} not found (set UNEMUPC_USER_ROMS_DIR or see vendor/user-roms/README.md)");
     if !discovery.incomplete.is_empty() {
         message.push_str(&format!("; {}", discovery.incomplete.join("; ")));
     }
@@ -828,7 +828,7 @@ pub fn required_user_firmware(
     finish_requirement(
         entry_id,
         discover_user_firmware(entry_id, catalogue),
-        std::env::var_os("UNEMUPC98_REQUIRE_USER_ROMS"),
+        std::env::var_os("UNEMUPC_REQUIRE_USER_ROMS"),
         &mut io::stdout().lock(),
     )
 }
@@ -1098,7 +1098,7 @@ mod tests {
                 &mut output
             )
             .is_none());
-            assert_eq!(String::from_utf8(output).unwrap(), "SKIPPED: user-supplied firmware synthetic not found (set UNEMUPC98_USER_ROMS_DIR or see vendor/user-roms/README.md)\n");
+            assert_eq!(String::from_utf8(output).unwrap(), "SKIPPED: user-supplied firmware synthetic not found (set UNEMUPC_USER_ROMS_DIR or see vendor/user-roms/README.md)\n");
         }
     }
 
@@ -1114,7 +1114,7 @@ mod tests {
             );
         }))
         .expect_err("require=1 must fail when absent");
-        assert_eq!(panic.downcast_ref::<String>().unwrap(), "SKIPPED: user-supplied firmware synthetic not found (set UNEMUPC98_USER_ROMS_DIR or see vendor/user-roms/README.md)");
+        assert_eq!(panic.downcast_ref::<String>().unwrap(), "SKIPPED: user-supplied firmware synthetic not found (set UNEMUPC_USER_ROMS_DIR or see vendor/user-roms/README.md)");
         assert!(output.is_empty());
     }
 
@@ -1217,7 +1217,7 @@ mod tests {
         assert!(found
             .files
             .iter()
-            .all(|name| name.starts_with("<UNEMUPC98_USER_ROMS_DIR>/")));
+            .all(|name| name.starts_with("<UNEMUPC_USER_ROMS_DIR>/")));
     }
 
     fn assert_root_configuration_failure(roots: &[SearchRoot], reason: &str) {
@@ -1228,7 +1228,7 @@ mod tests {
                 finish_requirement("synthetic", result, require, &mut output);
             }))
             .expect_err("invalid root must fail instead of skipping");
-            assert_eq!(panic.downcast_ref::<String>().unwrap(), &format!("invalid user-supplied firmware configuration: <UNEMUPC98_USER_ROMS_DIR>: {reason}"));
+            assert_eq!(panic.downcast_ref::<String>().unwrap(), &format!("invalid user-supplied firmware configuration: <UNEMUPC_USER_ROMS_DIR>: {reason}"));
             assert!(output.is_empty());
         }
     }
@@ -1268,7 +1268,7 @@ mod tests {
         let roots = search_roots(repository.path(), None);
         write(&roots[0].path, "secret-part-name", &[1, 3]);
         write(&roots[0].path, "other-secret-name", &[2]);
-        let expected = "SKIPPED: user-supplied firmware synthetic not found (set UNEMUPC98_USER_ROMS_DIR or see vendor/user-roms/README.md); layout 0: 1 of 2 parts found; layout 1: 1 of 4 parts found";
+        let expected = "SKIPPED: user-supplied firmware synthetic not found (set UNEMUPC_USER_ROMS_DIR or see vendor/user-roms/README.md); layout 0: 1 of 2 parts found; layout 1: 1 of 4 parts found";
         let mut output = Vec::new();
         let discovery = find_in_roots("synthetic", &catalogue(), &roots, &mut HashCache::default());
         assert!(finish_requirement("synthetic", discovery, None, &mut output).is_none());
@@ -1299,7 +1299,7 @@ mod tests {
                 format!("could not load {:?}", root.join("chip")),
             ] {
                 let redacted = found.redact(&message);
-                assert!(redacted.contains("<UNEMUPC98_USER_ROMS_DIR>/chip"));
+                assert!(redacted.contains("<UNEMUPC_USER_ROMS_DIR>/chip"));
                 assert!(!redacted.contains(&root.display().to_string()));
                 let panic = std::panic::catch_unwind(|| {
                     found.expect_redacted(Err::<(), _>(message.clone()), "loading firmware");
@@ -1325,7 +1325,7 @@ mod tests {
         .expect_err("unexpected success must not print private values");
         assert_eq!(
             panic.downcast_ref::<String>().unwrap(),
-            "loading <UNEMUPC98_USER_ROMS_DIR>: expected an error"
+            "loading <UNEMUPC_USER_ROMS_DIR>: expected an error"
         );
     }
 
@@ -1341,7 +1341,7 @@ mod tests {
                 dumps.path().display().to_string(),
             ),
         );
-        assert_eq!(error.to_string(), "cannot scan user-supplied firmware at <UNEMUPC98_USER_ROMS_DIR>/nested/chip: permission denied");
+        assert_eq!(error.to_string(), "cannot scan user-supplied firmware at <UNEMUPC_USER_ROMS_DIR>/nested/chip: permission denied");
         let mut cache = HashCache::default();
         assert!(matches!(
             find_in_roots("typo", &catalogue(), &roots, &mut cache),

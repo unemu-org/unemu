@@ -45,7 +45,7 @@ impl Drop for Files {
     }
 }
 fn command(args: &[&str], path: &Path, extra: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_unemupc98"))
+    Command::new(env!("CARGO_BIN_EXE_upcli"))
         .args(args)
         .arg(path)
         .args(extra)
@@ -91,7 +91,7 @@ fn machine_check_has_valid_invalid_and_usage_exit_codes() {
             "18446744073709551616",
         ],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_unemupc98"))
+        let output = Command::new(env!("CARGO_BIN_EXE_upcli"))
             .args(args)
             .output()
             .unwrap();
@@ -259,7 +259,7 @@ fn journal_run(fail: bool) {
             "stopped: unsupported instruction: unsupported cpu system operation LegacyPrivilegeTransition"
         ));
     }
-    let verify = Command::new(env!("CARGO_BIN_EXE_unemupc98"))
+    let verify = Command::new(env!("CARGO_BIN_EXE_upcli"))
         .args(["media", "verify", "--base"])
         .arg(&base)
         .arg("--journal")
@@ -282,7 +282,7 @@ fn journal_run(fail: bool) {
         .unwrap()
         .contains("session end"));
     let exported = files.0.join("export.img");
-    let export = Command::new(env!("CARGO_BIN_EXE_unemupc98"))
+    let export = Command::new(env!("CARGO_BIN_EXE_upcli"))
         .args(["media", "commit", "--base"])
         .arg(&base)
         .arg("--journal")
@@ -397,7 +397,7 @@ fn rom_discovery_requires_explicit_flags_and_reports_skipped_roots() {
     files.write("bios.bin", vec![0; 32768]);
     files.write("machine.toml", "schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='bios.bin'\nsha256='d7da9668c2e0720cf257c00882bf495ca672e7a4d972b4b124b6b853e7ac9668'\n[[card]]\nkind='mda'\n");
     for args in [vec!["machine", "check"], vec!["run", "--machine"]] {
-        let output = Command::new(env!("CARGO_BIN_EXE_unemupc98"))
+        let output = Command::new(env!("CARGO_BIN_EXE_upcli"))
             .args(&args)
             .arg(files.machine())
             .args(if args.first() == Some(&"run") {
@@ -406,7 +406,7 @@ fn rom_discovery_requires_explicit_flags_and_reports_skipped_roots() {
                 &[]
             })
             .arg("--allow-unlisted-firmware")
-            .env("UNEMUPC98_USER_ROMS_DIR", &dumps)
+            .env("UNEMUPC_USER_ROMS_DIR", &dumps)
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(1));
@@ -416,7 +416,7 @@ fn rom_discovery_requires_explicit_flags_and_reports_skipped_roots() {
             stderr(&output)
         );
     }
-    let output = Command::new(env!("CARGO_BIN_EXE_unemupc98"))
+    let output = Command::new(env!("CARGO_BIN_EXE_upcli"))
         .args(["machine", "check"])
         .arg(files.machine())
         .arg("--allow-unlisted-firmware")
