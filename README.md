@@ -2,10 +2,9 @@
 
 # unemupc
 
-A deterministic, low-level emulator (LLE) of an **IBM PC/AT-class (Intel 80286)
-computer**, with an OCI-based library of machines, installation media and
-firmware. The CPU core is the `x86jit` x86 recompiler, consumed as a pinned git
-dependency.
+A deterministic, low-level emulator (LLE) of **period IBM-compatible PCs**,
+with an OCI-based library of machines, installation media and firmware. The
+CPU core is the `x86jit` x86 recompiler, consumed as a pinned git dependency.
 
 The 286 AT is the first machine profile on a longer road: a period PC that runs
 DOS games now, and Windows 98 SE games on an emulated 3dfx Voodoo later

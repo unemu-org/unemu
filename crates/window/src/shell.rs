@@ -3104,7 +3104,7 @@ impl Shell {
             Minimize => { self.release(); ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); },
             Exit => self.request_exit(ctx),
             Shortcuts => self.dialog = Some(("Keyboard shortcuts", shortcuts_help(self.macos_shortcuts))),
-            About => self.dialog = Some(("About unemupc", format!("unemupc {}\nIBM PC/AT emulator\n{}\nx86jit · egui / eframe · cpal\n\n{}\n\n{}\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), cli::about::licence_notice(), window::FONT_NOTICE, window::EGUI_FONT_NOTICE, window::SYMBOL_FONT_NOTICE, devices::OPL3_NOTICE))),
+            About => self.dialog = Some(("About unemupc", format!("unemupc {}\nemulator of period IBM-compatible PCs\n{}\nx86jit · egui / eframe · cpal\n\n{}\n\n{}\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), cli::about::licence_notice(), window::FONT_NOTICE, window::EGUI_FONT_NOTICE, window::SYMBOL_FONT_NOTICE, devices::OPL3_NOTICE))),
             Placeholder("Open machine file") => self.open_machine_dialog(),
             Placeholder("New machine") => { self.release(); self.image_library.begin_new_machine(); },
             Placeholder(title) => self.dialog = Some((title, "not yet available".into())),

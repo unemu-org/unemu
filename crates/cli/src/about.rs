@@ -30,7 +30,7 @@ fn source_pointer(revision: Option<&str>) -> String {
 /// `upcli --version` and `upcli --about`.
 pub fn upcli_notice() -> String {
     format!(
-        "upcli {}\nIBM PC/AT emulator, command line\n{}\n\nthird-party components:\n\n{}\n",
+        "upcli {}\nemulator of period IBM-compatible PCs, command line\n{}\n\nthird-party components:\n\n{}\n",
         env!("CARGO_PKG_VERSION"),
         licence_notice(),
         devices::OPL3_NOTICE,
