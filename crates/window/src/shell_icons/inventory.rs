@@ -52,12 +52,14 @@ const ACCOUNTS: &str = "registry-accounts.html";
 const TEMPLATES: &str = "get-templates.html";
 const PICKER: &str = "media-picker.html";
 const FIRMWARE_SETTINGS: &str = "firmware-settings.html";
+const REMOTES: &str = "remotes.html";
 
 const TOOLBAR_ONLY_MACHINE: &str =
     "the app has one toolbar, the main-window mock-up's machine toolbar; \
      this command is not on it (it is in the menus and the details pane)";
 const SYSTEM_TITLE_BAR: &str =
     "a window button; the system title bar draws it (the classic title strip has none)";
+const REMOTES_LATER: &str = "the Remotes section of the library is not built yet";
 const CLOSE: &str =
     "dialog close buttons where the app's dialogs have one (Settings, Preferences, New machine, Edit metadata)";
 
@@ -236,6 +238,31 @@ pub(super) const INVENTORY: &[Entry] = &[
     glyph(FIRMWARE_SETTINGS, '−', "an expanded repository group", Place::Text("repository group rows")),
     glyph(FIRMWARE_SETTINGS, '×', "close", Place::Text(CLOSE)),
     glyph(FIRMWARE_SETTINGS, '□', "maximise", Place::Missing(SYSTEM_TITLE_BAR)),
+    // The Remotes mock-up: browsing configured registries from the library.
+    svg(REMOTES, "fill=\"#c9d6e8\" stroke=\"#0b1a33\"", "application", Place::Painted(Icon::App, "classic title strip")),
+    svg(REMOTES, "M4 2l10 6-10 6z", "Start", Place::Painted(Icon::Play, "toolbar Start")),
+    svg(REMOTES, "M8 3v10M4 9l4 4 4-4", "Pull", Place::Missing(REMOTES_LATER)),
+    svg(REMOTES, "M13 8a5 5 0 1 1-1.5-3.6", "Refresh a registry listing", Place::Missing(REMOTES_LATER)),
+    svg(REMOTES, "M5 4.5h1M5 11.5h1", "a registry", Place::Missing(REMOTES_LATER)),
+    svg(REMOTES, "M5 14h6M8 11v3", "a machine", Place::Painted(Icon::Machine, "tree Machines, machine rows, the machine details heading")),
+    svg(REMOTES, "M8 1.5l6 3-6 3-6-3z\" fill=\"none\"", "an image", Place::Painted(Icon::Image, "tree Images, image rows, the image details heading")),
+    svg(REMOTES, "x=\"2.5\" y=\"1.5\" width=\"11\" height=\"13\"", "an installation media set", Place::Painted(Icon::Media, "tree Installation media, media set rows")),
+    svg(REMOTES, "M6 1v2.5M10 1v2.5", "a firmware package", Place::Painted(Icon::Firmware, "tree Firmware, firmware package rows")),
+    svg(REMOTES, "M3 1.5h7l3 3v10H3z", "a machine file", Place::Painted(Icon::MachineFile, "tree Machine files, machine file rows")),
+    svg(REMOTES, "M1.5 3.5h5l1.5 1.5h6.5v8.5h-13z", "a registry namespace", Place::Missing(REMOTES_LATER)),
+    svg(REMOTES, "class=\"ico lock\"", "a private namespace before login", Place::Missing(REMOTES_LATER)),
+    svg(REMOTES, "M13 13l14 14M27 13L13 27", "a registry that cannot be reached", Place::Missing(REMOTES_LATER)),
+    svg(REMOTES, "M14 18v-5a6 6 0 0 1 12 0v5", "a registry that asks for a login", Place::Missing(REMOTES_LATER)),
+    svg(REMOTES, "M4 12h12l3 3h17v19H4z", "an empty registry namespace", Place::Missing(REMOTES_LATER)),
+    svg(REMOTES, "M20 10v10l7 4", "a registry listing in progress", Place::Missing(REMOTES_LATER)),
+    glyph(REMOTES, '⚠', "a registry or tag that needs attention", Place::Missing(REMOTES_LATER)),
+    glyph(REMOTES, '✓', "a pulled tag", Place::Missing(REMOTES_LATER)),
+    glyph(REMOTES, '−', "an expanded repository group", Place::Text("repository group rows")),
+    glyph(REMOTES, '▲', "sorted ascending", Place::Text("sortable column headers")),
+    glyph(REMOTES, '▼', "sorted descending", Place::Text("sortable column headers")),
+    glyph(REMOTES, '⌘', "the macOS Command key", Place::Text("macOS menu shortcuts")),
+    glyph(REMOTES, '×', "close", Place::Text(CLOSE)),
+    glyph(REMOTES, '□', "maximise", Place::Missing(SYSTEM_TITLE_BAR)),
 ];
 
 /// Characters the app paints instead of writing, because no font has them.
@@ -263,7 +290,7 @@ mod tests {
             .filter(|path| path.extension().is_some_and(|e| e == "html"))
             .collect();
         files.sort();
-        assert_eq!(files.len(), 12, "the approved mock-ups in {dir:?}");
+        assert_eq!(files.len(), 13, "the approved mock-ups in {dir:?}");
         files
             .into_iter()
             .map(|path| {

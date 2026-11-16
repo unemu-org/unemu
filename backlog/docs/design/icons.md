@@ -76,6 +76,7 @@ icons are the project's own mock-up artwork, under the project licence.
 | firmware-settings | application monitor, Start, Settings, machine, image, media set, firmware, machine file | the same places as in the machines mock-up |
 | firmware-settings | ↑ | the Newer version available hint and the quiet "↑ newer BIOS" badge of machine and image rows |
 | firmware-settings | ⓘ ⚠ ✓ ● | the Settings… banner, the Firmware tab's CMOS line (⚠ another layout, ✓ the same) and changed tab labels |
+| remotes | application monitor, Start, machine, image, media set, firmware, machine file | the same places as in the machines mock-up; − ▲ ▼ ⌘ as in the library lists and menus |
 
 The name column of the library lists is now left-aligned: a centred egui label
 drops the space the icon and a group's indent need, and the mock-ups'
@@ -96,6 +97,10 @@ name cells are left-aligned. Child rows of a repository group are set in by
 - **View menu ✓ and ●**: egui's check boxes (Toolbar, Status bar) and selection
   highlight (scale modes) show the state; Mute audio says Unmute audio instead.
   Their accessibility state ("toggled") comes from those widgets.
+- **remotes.html** registry, namespace, lock, Pull, Refresh and the four
+  full-pane message pictures (unreachable, login, empty, listing), the ⚠ of a
+  registry or tag that needs attention and the ✓ of a pulled tag: the Remotes
+  section of the library is not built yet.
 - **A drive menu's ● write mode**: the drive menu names the write mode as text
   (a departure accepted on 2026-11-15).
 - **library.html ★ rating**: the app has no rating field.
