@@ -4449,11 +4449,21 @@ fn drive_tooltip(ui: &mut egui::Ui, view: &crate::drive_chips::DriveView, lit: b
 /// The visuals of one skin in one theme. Selected rows and items draw their
 /// text in the selection stroke colour on the selection fill, so every skin
 /// keeps that pair legible.
+///
+/// Both skins take the mock-ups' field colour for text fields, mini tables
+/// and scroll tracks, and their stripe colour for striped rows: egui's dark
+/// field is near black and reads as a hole in the pane, and its stripe is
+/// all but invisible.
 pub(crate) fn skin_visuals(classic: bool, dark: bool) -> egui::Visuals {
     let mut visuals = if dark {
         egui::Visuals::dark()
     } else {
         egui::Visuals::light()
+    };
+    (visuals.extreme_bg_color, visuals.faint_bg_color) = if dark {
+        (Color32::from_rgb(38, 40, 43), Color32::from_rgb(44, 46, 50))
+    } else {
+        (Color32::WHITE, Color32::from_rgb(243, 241, 234))
     };
     if classic {
         let face = if dark {
@@ -10801,6 +10811,32 @@ kind='mda'
             .iter()
             .any(|shape| matches!(shape, egui::Shape::Rect(rect) if rect.fill == screen)));
         assert_eq!(text_left(&dialog), 7.0);
+    }
+
+    /// Text fields and mini tables take the mock-ups' field colour and lists
+    /// their stripe colour in both skins: egui's own dark field is near black.
+    #[test]
+    fn every_skin_takes_the_mock_up_field_and_stripe_colours() {
+        for classic in [false, true] {
+            for (dark, field, stripe) in [
+                (
+                    false,
+                    Color32::from_rgb(0xff, 0xff, 0xff),
+                    Color32::from_rgb(0xf3, 0xf1, 0xea),
+                ),
+                (
+                    true,
+                    Color32::from_rgb(0x26, 0x28, 0x2b),
+                    Color32::from_rgb(0x2c, 0x2e, 0x32),
+                ),
+            ] {
+                let visuals = skin_visuals(classic, dark);
+                let skin = format!("classic {classic}, dark {dark}");
+                assert_eq!(visuals.extreme_bg_color, field, "{skin}");
+                assert_eq!(visuals.text_edit_bg_color(), field, "{skin}");
+                assert_eq!(visuals.faint_bg_color, stripe, "{skin}");
+            }
+        }
     }
 
     #[test]

@@ -5,6 +5,25 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — Library panes take the mock-ups' colours:** text fields
+  and mini tables use the mock-ups' field colour in both skins and themes
+  (the dark field was near black), striped rows their stripe colour, and an
+  Images group row its own ground. Media per drive and the settings table
+  draw as the mock-up's mini table: a thin outline, a muted header, a first
+  column in the strong text colour (the mock-up's bold; no bold face is
+  loaded) that wraps only past 35 % of the table, a 1 px rule under every
+  row instead of stripes, and changed rows tinted across the table; on a
+  narrow pane every cell stays inside the outline. The kind tile wraps its
+  title between words ("Open AT" / "286"). A details pane taller than its
+  area shows its scroll bar at rest, so the note under the actions reads as
+  further down rather than cut off. Text fields, striped grids (the
+  firmware import review, the installation media import tables, the
+  firmware metadata editor's layer grid, Preferences › Registries, the push
+  dialog's tables), scroll-bar troughs and progress bars take the same
+  field and stripe colours. Headless tests check the colours, the table's
+  rules, tint and narrow widths, the tile's word breaks, and that every
+  pane's note is in view at the first height or scrolls into view.
+
 - **2026-11-16 — Library machine and image panes and the library lists
   follow the approved mock-ups:** the machine and image details panes have
   the machines mock-up's kind tile beside the title, label and value rows,

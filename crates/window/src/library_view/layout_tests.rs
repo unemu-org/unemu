@@ -31,6 +31,10 @@ struct Drawn {
     /// The galley keeps the whole text; a truncated one lays out an ellipsis
     /// the text does not have.
     truncated: bool,
+    /// What each laid-out row shows.
+    lines: Vec<String>,
+    /// The colour of the first section, as painted.
+    colour: egui::Color32,
 }
 impl Drawn {
     fn visible(&self) -> egui::Rect {
@@ -66,7 +70,26 @@ fn drawn(output: &egui::FullOutput) -> (Vec<Drawn>, Vec<egui::epaint::RectShape>
                     .flat_map(|row| row.glyphs.iter().map(|g| g.chr))
                     .collect();
                 let ellipses = |t: &str| t.matches('…').count();
+                let section = text
+                    .galley
+                    .job
+                    .sections
+                    .first()
+                    .map_or(egui::Color32::PLACEHOLDER, |s| s.format.color);
                 texts.push(Drawn {
+                    lines: text
+                        .galley
+                        .rows
+                        .iter()
+                        .map(|row| row.glyphs.iter().map(|g| g.chr).collect())
+                        .collect(),
+                    colour: text.override_text_color.unwrap_or(
+                        if section == egui::Color32::PLACEHOLDER {
+                            text.fallback_color
+                        } else {
+                            section
+                        },
+                    ),
                     truncated: ellipses(&shown) > ellipses(text.galley.text()),
                     text: text.galley.text().to_owned(),
                     rect: rows
@@ -653,4 +676,436 @@ fn an_open_rom_with_a_user_supplied_disk_makes_the_image_user_supplied() {
     }
     assert!(image_rights(summary).open);
     assert_eq!(redistribution(summary), "open");
+}
+
+/// The mock-up's chg-bg, the tint of a changed row, light and dark.
+const CHANGED_TINT: [egui::Color32; 2] = [
+    egui::Color32::from_rgb(0xff, 0xf8, 0xe0),
+    egui::Color32::from_rgb(0x3a, 0x33, 0x24),
+];
+/// The mock-up's face, the rule under every row of a mini table.
+const FACE: [egui::Color32; 2] = [
+    egui::Color32::from_rgb(0xd6, 0xd3, 0xcb),
+    egui::Color32::from_rgb(0x34, 0x36, 0x3a),
+];
+/// The mock-up's field, the ground of text fields and mini tables.
+const FIELD: [egui::Color32; 2] = [
+    egui::Color32::from_rgb(0xff, 0xff, 0xff),
+    egui::Color32::from_rgb(0x26, 0x28, 0x2b),
+];
+
+/// The mini table's test rows: four drives, the third changed, with a long
+/// head, under the Media per drive header.
+const TABLE_HEADS: [&str; 4] = ["A:", "B:", "Extended memory", "D:"];
+const TABLE_HEADER: [&str; 3] = ["Drive", "In the image", "In this machine"];
+
+/// A [`pane::table`] of the test rows `width` wide in the modern skin, light
+/// or dark, as drawn on the second frame, with its field-coloured ground.
+fn mini_table(
+    dark: bool,
+    width: f32,
+) -> (
+    Vec<Drawn>,
+    Vec<egui::epaint::RectShape>,
+    egui::epaint::RectShape,
+) {
+    let rows: Vec<pane::Row> = TABLE_HEADS
+        .iter()
+        .enumerate()
+        .map(|(i, head)| pane::Row {
+            head: (*head).into(),
+            cells: vec![
+                vec![("1.44M · a disk in the drive".into(), pane::Tone::Body)],
+                vec![("As in the image".into(), pane::Tone::Muted)],
+            ],
+            changed: i == 2,
+        })
+        .collect();
+    let ctx = egui::Context::default();
+    crate::shell::configure_context(&ctx);
+    ctx.set_visuals(crate::shell::skin_visuals(false, dark));
+    let mut draw = |ui: &mut egui::Ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
+            let layout = egui::Layout::top_down(egui::Align::Min);
+            ui.allocate_ui_with_layout(egui::vec2(width, 0.0), layout, |ui| {
+                pane::table(ui, "rules", &TABLE_HEADER, &rows);
+            });
+        });
+    };
+    let size = egui::vec2(800.0, 600.0);
+    firmware::tests::frame(&ctx, size, 0.0, vec![], &mut draw);
+    let output = firmware::tests::frame(&ctx, size, 1.0, vec![], &mut draw);
+    let (texts, rects) = drawn(&output);
+    let ground = rects
+        .iter()
+        .find(|r| r.fill == FIELD[usize::from(dark)])
+        .unwrap_or_else(|| panic!("dark {dark}: no field-coloured table in {rects:?}"))
+        .clone();
+    (texts, rects, ground)
+}
+
+/// The mini table as the mock-up's `.mini`: the field colour inside a thin
+/// outline, a muted header, a first column in the strong text colour (egui
+/// has no bold face loaded) that does not wrap while it fits, a 1 px
+/// face-coloured rule under the header and under every row instead of
+/// stripes, and a changed row tinted across the whole table.
+#[test]
+fn the_mini_table_rules_every_row_and_tints_changed_ones_without_stripes() {
+    let heads = TABLE_HEADS;
+    let header = TABLE_HEADER;
+    for dark in [false, true] {
+        let theme = usize::from(dark);
+        let visuals = crate::shell::skin_visuals(false, dark);
+        let (texts, rects, ground) = mini_table(dark, 420.0);
+        // The table's ground: the field colour in an outline, holding every cell.
+        assert!(
+            ground.stroke.width >= 1.0 && ground.stroke.color.a() > 0,
+            "dark {dark}: the table has no outline: {ground:?}"
+        );
+        for text in &texts {
+            assert!(
+                ground.rect.contains_rect(text.rect),
+                "dark {dark}: {:?} outside the table",
+                text.text
+            );
+        }
+        // One rule under the header and under each row, across the table.
+        let rules: Vec<&egui::epaint::RectShape> = rects
+            .iter()
+            .filter(|r| r.fill == FACE[theme] && r.rect.height() <= 1.5)
+            .collect();
+        assert_eq!(
+            rules.len(),
+            heads.len() + 1,
+            "dark {dark}: rules {rules:?} in {rects:?}"
+        );
+        let lines: Vec<&Drawn> = std::iter::once(header[0])
+            .chain(heads)
+            .map(|t| at(&texts, t))
+            .collect();
+        for (rule, line) in rules.iter().zip(&lines) {
+            assert!(
+                rule.rect.width() >= ground.rect.width() - 4.0,
+                "dark {dark}: a rule short of the table: {rule:?}"
+            );
+            assert!(
+                rule.rect.top() >= line.rect.bottom(),
+                "dark {dark}: {line:?}"
+            );
+        }
+        for (rule, next) in rules.iter().zip(&lines[1..]) {
+            assert!(
+                rule.rect.bottom() <= next.rect.top(),
+                "dark {dark}: {next:?}"
+            );
+        }
+        // No stripes: the only fill between the rules is the changed row's.
+        assert!(
+            !rects
+                .iter()
+                .any(|r| r.fill == visuals.faint_bg_color && ground.rect.intersects(r.rect)),
+            "dark {dark}: a striped row"
+        );
+        let tint: Vec<&egui::epaint::RectShape> = rects
+            .iter()
+            .filter(|r| r.fill == CHANGED_TINT[theme])
+            .collect();
+        assert_eq!(tint.len(), 1, "dark {dark}: {rects:?}");
+        let changed = at(&texts, "Extended memory");
+        assert!(tint[0].rect.contains_rect(changed.rect));
+        assert!(tint[0].rect.width() >= ground.rect.width() - 4.0);
+        // A muted header, a strong first column on one line.
+        let weak = visuals.weak_text_color();
+        for label in header {
+            assert_eq!(at(&texts, label).colour, weak, "dark {dark}: {label}");
+        }
+        for head in heads {
+            let head = at(&texts, head);
+            assert_eq!(head.colour, visuals.strong_text_color(), "{head:?}");
+            assert_eq!(head.lines.len(), 1, "dark {dark}: {head:?} wraps");
+        }
+    }
+}
+
+/// On a narrow pane the first column takes at most its share and wraps, so
+/// every cell, rule and tint stays inside the table's outline, whole.
+#[test]
+fn a_narrow_mini_table_keeps_every_cell_inside_its_outline() {
+    for width in [200.0, 260.0] {
+        for dark in [false, true] {
+            let what = format!("{width} px, dark {dark}");
+            let (texts, rects, ground) = mini_table(dark, width);
+            assert!(ground.rect.width() <= width + 0.5, "{what}: {ground:?}");
+            let inside = ground.rect.shrink(ground.stroke.width - 0.5);
+            for label in TABLE_HEADER.iter().chain(&TABLE_HEADS) {
+                at(&texts, label);
+            }
+            for text in &texts {
+                assert!(!text.truncated, "{what}: {:?} truncated", text.text);
+                assert!(
+                    inside.contains_rect(text.rect),
+                    "{what}: {:?} at {:?} outside the outline {inside:?}",
+                    text.text,
+                    text.rect
+                );
+                assert!(whole(text), "{what}: {:?} cut", text.text);
+            }
+            for rect in rects.iter().filter(|r| {
+                r.fill == FACE[usize::from(dark)] || r.fill == CHANGED_TINT[usize::from(dark)]
+            }) {
+                assert!(
+                    ground.rect.contains_rect(rect.rect),
+                    "{what}: {rect:?} outside the outline {ground:?}"
+                );
+            }
+        }
+    }
+}
+
+/// A repository's group row keeps the mock-up's second face colour as its
+/// ground, apart from the list's stripes.
+#[test]
+fn group_rows_keep_their_own_ground_apart_from_the_stripes() {
+    let ground = [
+        egui::Color32::from_rgb(0xe7, 0xe4, 0xdc),
+        egui::Color32::from_rgb(0x3e, 0x40, 0x45),
+    ];
+    for dark in [false, true] {
+        let visuals = crate::shell::skin_visuals(false, dark);
+        let ctx = egui::Context::default();
+        crate::shell::configure_context(&ctx);
+        ctx.set_visuals(visuals.clone());
+        let output = firmware::tests::frame(&ctx, egui::vec2(600.0, 200.0), 0.0, vec![], |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                group_row(ui, true, "synthetic-0", "2 images", 300.0);
+            });
+        });
+        let (_, rects) = drawn(&output);
+        let row = rects
+            .iter()
+            .find(|r| r.rect.width() == 300.0)
+            .unwrap_or_else(|| panic!("dark {dark}: no group row in {rects:?}"));
+        assert_eq!(row.fill, ground[usize::from(dark)], "dark {dark}");
+        assert_ne!(row.fill, visuals.faint_bg_color, "dark {dark}");
+    }
+}
+
+/// The kind tile wraps its title between words, as the mock-up's cover
+/// does; only a word wider than the tile breaks inside, and nothing is cut.
+#[test]
+fn the_kind_tile_wraps_its_title_between_words() {
+    for title in [
+        "Open AT 286",
+        "Open AT 286 for games",
+        "Supercalifragilistic",
+    ] {
+        let output = frames(400.0, |ui| {
+            pane::head(
+                ui,
+                &pane::Tile {
+                    title,
+                    kind: "MACHINE",
+                    user_supplied: false,
+                },
+                |_| {},
+            );
+        });
+        let (texts, _) = drawn(&output);
+        let tile = at(&texts, title);
+        assert!(
+            tile.lines.len() > 1,
+            "{title:?} on one row: {:?}",
+            tile.lines
+        );
+        assert!(!tile.truncated, "{tile:?}");
+        if title == "Open AT 286" {
+            let rows: Vec<&str> = tile.lines.iter().map(|l| l.trim()).collect();
+            assert_eq!(rows, ["Open AT", "286"], "{title:?}");
+        }
+        if title.contains(' ') {
+            let words: Vec<&str> = tile
+                .lines
+                .iter()
+                .flat_map(|l| l.split_whitespace())
+                .collect();
+            assert_eq!(
+                words,
+                title.split(' ').collect::<Vec<_>>(),
+                "{title:?} breaks inside a word: {:?}",
+                tile.lines
+            );
+        } else {
+            assert_eq!(tile.lines.concat(), title);
+        }
+    }
+}
+
+/// The note under the installation media pane's actions.
+const MEDIA_NOTE: &str = "Stored media and extras stay read-only. Installer writes use the \
+                          selected workspace's journal.";
+
+/// The window height the footer checks use, where the details pane opens at
+/// its first height.
+const WINDOW_HEIGHT: f32 = 1000.0;
+
+/// One frame of the whole library in a `width` × [`WINDOW_HEIGHT`] window.
+fn library_frame(
+    ctx: &egui::Context,
+    view: &mut LibraryView,
+    width: f32,
+    time: &mut f64,
+    events: Vec<egui::Event>,
+) -> (Vec<Drawn>, Vec<egui::epaint::RectShape>) {
+    *time += 0.1;
+    let size = egui::vec2(width, WINDOW_HEIGHT);
+    let output = firmware::tests::frame(ctx, size, *time, events, |ui| {
+        view.show(ui, &[], &mut None);
+    });
+    drawn(&output)
+}
+
+/// Every laid-out row of `text` inside its visible area.
+fn whole(text: &Drawn) -> bool {
+    text.rows
+        .iter()
+        .all(|row| text.clip.expand(0.5).contains_rect(*row))
+}
+
+/// The panes the footer check visits, each with the note under its actions;
+/// the machine is one made at migration, as the one the window was reported
+/// with, so its pane carries that line too.
+fn panes_with_notes() -> Vec<(
+    &'static str,
+    Box<dyn std::any::Any>,
+    LibraryView,
+    &'static str,
+)> {
+    let (f, mut machine) = machine_view();
+    let mut rows = (*machine.machines).clone();
+    rows[0].listing.machine.origin = image_store::machine::Origin::Migration;
+    machine.set_machines(rows);
+    let (g, image) = image_view();
+    let (h, firmware_cache) = firmware::tests::library();
+    let mut firmware = LibraryView::new(None);
+    firmware.select_first_package(&firmware_cache, &mut None);
+    let (m, media_cache) = install_media::tests::library();
+    let mut media = LibraryView::new(None);
+    media.set_filter(Filter::Media, &mut None);
+    media.snapshot = Arc::new(snapshot(&media_cache, &media.query));
+    let row = media.snapshot.media_rows[0].clone();
+    media.select_media(&row, &mut None);
+    vec![
+        (
+            "machine",
+            Box::new(f),
+            machine,
+            "Gaming mode plays a disposable copy of this machine as it is now; this machine does not change. Reset to image… throws its changes away and keeps the machine; Delete machine… removes both, never the image.",
+        ),
+        (
+            "image",
+            Box::new(g),
+            image,
+            "Settings… on an image publishes a new image revision; machines from this image keep running this one. To change one machine only, use Settings… on that machine.",
+        ),
+        (
+            "firmware",
+            Box::new((h, firmware_cache)),
+            firmware,
+            "Edit metadata… creates a new package revision; ROM blobs unchanged. A machine embeds its ROM blobs and records the source package digest. Source folders are not needed after import.",
+        ),
+        ("media", Box::new((m, media_cache)), media, MEDIA_NOTE),
+    ]
+}
+
+/// The note under every pane's actions can be read at the details pane's
+/// first height: it is whole in view, or the pane, taller than its area,
+/// shows its scroll bar at rest and scrolling to its end brings the whole
+/// note into view.
+#[test]
+fn every_pane_footer_note_is_in_view_or_scrolls_into_view_at_the_first_height() {
+    let mut scrolled = 0;
+    for (what, _fixture, mut view, note) in panes_with_notes() {
+        for width in WINDOW_WIDTHS {
+            let ctx = egui::Context::default();
+            crate::shell::configure_context(&ctx);
+            let mut time = 0.0;
+            let mut shown = library_frame(&ctx, &mut view, width, &mut time, vec![]);
+            for _ in 0..3 {
+                shown = library_frame(&ctx, &mut view, width, &mut time, vec![]);
+            }
+            if shown.0.iter().any(|t| t.text == note && whole(t)) {
+                continue;
+            }
+            // The pane's visible area: where its texts are clipped, under the list.
+            let area = shown
+                .0
+                .iter()
+                .map(|t| t.clip)
+                .filter(|c| {
+                    c.left() >= TREE_WIDTH - 1.0
+                        && c.top() > WINDOW_HEIGHT / 2.0
+                        && c.bottom() > WINDOW_HEIGHT - 10.0
+                })
+                .max_by(|a, b| a.height().total_cmp(&b.height()))
+                .unwrap_or_else(|| panic!("{what} at {width}: no details pane"));
+            // An opaque bar at the pane's right edge, as tall as it at most,
+            // that stays put frame after frame with the pointer away: shown at
+            // rest, not faded in on hover.
+            let bars = |rects: &[egui::epaint::RectShape]| -> Vec<egui::epaint::RectShape> {
+                rects
+                    .iter()
+                    .filter(|r| {
+                        r.fill.a() == u8::MAX
+                            && r.rect.left() >= area.right() - 12.0
+                            && r.rect.right() <= width
+                            && r.rect.top() >= area.top() - 1.0
+                            && r.rect.bottom() <= area.bottom() + 1.0
+                            && r.rect.width() <= 12.0
+                            && r.rect.height() >= 12.0
+                    })
+                    .cloned()
+                    .collect()
+            };
+            let before = bars(&shown.1);
+            let after = bars(&library_frame(&ctx, &mut view, width, &mut time, vec![]).1);
+            assert!(
+                before.iter().any(|bar| after.contains(bar)),
+                "{what} at {width}: the note is cut off in {area:?} and no scroll bar shows \
+                 at rest ({before:?} then {after:?})"
+            );
+            let pointer = area.center();
+            library_frame(
+                &ctx,
+                &mut view,
+                width,
+                &mut time,
+                vec![
+                    egui::Event::PointerMoved(pointer),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        phase: egui::TouchPhase::Move,
+                        source: egui::MouseWheelSource::Unknown,
+                        delta: egui::vec2(0.0, -12000.0),
+                        modifiers: egui::Modifiers::default(),
+                    },
+                ],
+            );
+            for _ in 0..30 {
+                shown = library_frame(
+                    &ctx,
+                    &mut view,
+                    width,
+                    &mut time,
+                    vec![egui::Event::PointerMoved(pointer)],
+                );
+            }
+            let text = shown.0.iter().find(|t| t.text == note);
+            assert!(
+                text.is_some_and(whole),
+                "{what} at {width}: scrolled to its end, the note is {text:?}"
+            );
+            scrolled += 1;
+        }
+    }
+    assert!(scrolled > 0, "no pane was taller than its first height");
 }

@@ -127,10 +127,12 @@ fn tile(ui: &mut Ui, tile: &Tile<'_>) {
         tile.title.to_owned(),
         egui::TextFormat::simple(font.clone(), Color32::WHITE),
     );
+    // Break between words, as the cover's text does; egui still breaks a
+    // word wider than the tile, so a long one is never cut.
     job.wrap = egui::text::TextWrapping {
         max_width: rect.width() - 8.0,
         max_rows: 4,
-        break_anywhere: true,
+        break_anywhere: false,
         overflow_character: Some('…'),
     };
     job.halign = Align::Center;
@@ -290,81 +292,156 @@ pub(super) enum Tone {
     Pending,
 }
 
-/// One row of a [`table`]: its bold head cell, its other cells as lines,
-/// and whether it shows a change, which tints it.
+/// One row of a [`table`]: its head cell, its other cells as lines, and
+/// whether it shows a change, which tints it.
 pub(super) struct Row {
     pub head: String,
     pub cells: Vec<Vec<(String, Tone)>>,
     pub changed: bool,
 }
 
-/// The mock-up's mini table: a muted header row, a bold first column, row
-/// separators by striping and changed rows tinted, every cell wrapped.
+/// The mock-ups' face colour: the rule under every mini-table row.
+fn face_colour(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        Color32::from_rgb(52, 54, 58)
+    } else {
+        Color32::from_rgb(214, 211, 203)
+    }
+}
+
+/// The mock-ups' second face colour: a repository's group row in a list.
+pub(super) fn group_colour(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        Color32::from_rgb(62, 64, 69)
+    } else {
+        Color32::from_rgb(231, 228, 220)
+    }
+}
+
+/// The mock-ups' shadow colour: the thin inset outline of a mini table.
+fn shadow_colour(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        Color32::from_rgb(31, 32, 35)
+    } else {
+        Color32::from_rgb(141, 138, 131)
+    }
+}
+
+/// The mock-ups' tint of a changed mini-table row.
+fn changed_colour(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        Color32::from_rgb(58, 51, 36)
+    } else {
+        Color32::from_rgb(255, 248, 224)
+    }
+}
+
+/// A mini-table cell's padding: the mock-up's 6 px beside and 4 px above
+/// and below its text.
+const CELL_PAD: Vec2 = Vec2::new(6.0, 4.0);
+/// The most of a mini table's width its first column takes, so the other
+/// columns keep room on a narrow pane.
+const FIRST_SHARE: f32 = 0.35;
+
+/// The mock-up's mini table: the field colour inside a thin inset outline,
+/// a muted header row, a first column in the strong text colour, a 1 px rule
+/// in the face colour under the header and every row, and changed rows
+/// tinted across the table. The mock-up's first column is bold; egui has no
+/// bold face loaded, so the strong colour marks it instead. The first column
+/// is as wide as its widest cell up to a share of the table and wraps only
+/// beyond that; the other columns share the rest of the width, their cells
+/// wrapped, so every cell stays inside the outline.
 pub(super) fn table(ui: &mut Ui, id: &str, header: &[&str], rows: &[Row]) {
-    let field = ui.visuals().text_edit_bg_color();
+    let visuals = ui.visuals().clone();
+    let head = |text: &str| RichText::new(text).strong();
+    let muted = |text: &str| RichText::new(text).weak();
+    let measure = |text: RichText| {
+        egui::WidgetText::from(text)
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                f32::INFINITY,
+                TextStyle::Body,
+            )
+            .size()
+            .x
+    };
+    let first = rows
+        .iter()
+        .map(|row| measure(head(&row.head)))
+        .chain(header.first().map(|label| measure(muted(label))))
+        .fold(0.0, f32::max)
+        .ceil();
     egui::Frame::new()
-        .fill(field)
-        .stroke(Stroke::new(
-            1.0,
-            ui.visuals().widgets.noninteractive.bg_stroke.color,
-        ))
-        .inner_margin(egui::Margin::same(4))
+        .fill(visuals.text_edit_bg_color())
+        .stroke(Stroke::new(1.0, shadow_colour(&visuals)))
         .show(ui, |ui| {
-            let spacing = 12.0;
-            let columns = header.len().max(2) as f32;
-            let head = 44.0;
-            let cell = ((ui.available_width() - head - spacing * (columns - 1.0))
-                / (columns - 1.0))
-                .max(48.0);
-            let tint = if ui.visuals().dark_mode {
-                Color32::from_rgb(58, 51, 36)
-            } else {
-                Color32::from_rgb(255, 248, 224)
-            };
-            let changed: Vec<bool> = std::iter::once(false)
-                .chain(rows.iter().map(|r| r.changed))
-                .collect();
-            egui::Grid::new(id)
-                .num_columns(header.len())
-                .spacing([spacing, 6.0])
-                .min_col_width(head.min(cell))
-                .max_col_width(cell)
-                .with_row_color(move |row, style| {
-                    if changed.get(row).copied().unwrap_or(false) {
-                        Some(tint)
-                    } else if row > 0 && row % 2 == 0 {
-                        Some(style.visuals.faint_bg_color)
-                    } else {
-                        None
-                    }
-                })
-                .show(ui, |ui| {
-                    for label in header {
-                        ui.add(egui::Label::new(RichText::new(*label).weak()).wrap());
-                    }
-                    ui.end_row();
-                    for row in rows {
-                        ui.add(egui::Label::new(RichText::new(&row.head).strong()).extend());
-                        for cell in &row.cells {
-                            ui.vertical(|ui| {
-                                for (line, tone) in cell {
-                                    let rich = RichText::new(line);
-                                    let rich = match tone {
-                                        Tone::Body => rich,
-                                        Tone::Muted => rich.weak(),
-                                        Tone::Change => {
-                                            rich.small().color(ui.visuals().warn_fg_color)
-                                        }
-                                        Tone::Pending => rich.small().italics(),
-                                    };
-                                    ui.add(egui::Label::new(rich).wrap());
-                                }
-                            });
-                        }
-                        ui.end_row();
+            ui.push_id(id, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let width = ui.available_width();
+                ui.set_width(width);
+                let others = header.len().max(2) - 1;
+                let gaps = 2.0 * CELL_PAD.x * (others + 1) as f32;
+                let room = (width - gaps).max(0.0);
+                let first = first.min((room * FIRST_SHARE).floor());
+                let cell = ((room - first) / others as f32).floor();
+                let widths: Vec<f32> = std::iter::once(first)
+                    .chain(std::iter::repeat_n(cell, others))
+                    .collect();
+                let rule = face_colour(&visuals);
+                table_line(ui, &widths, None, rule, |ui, column| {
+                    if let Some(label) = header.get(column) {
+                        ui.add(egui::Label::new(muted(label)).wrap());
                     }
                 });
+                for row in rows {
+                    debug_assert_eq!(row.cells.len() + 1, header.len(), "{}", row.head);
+                    let tint = row.changed.then(|| changed_colour(&visuals));
+                    table_line(ui, &widths, tint, rule, |ui, column| {
+                        if column == 0 {
+                            ui.add(egui::Label::new(head(&row.head)).wrap());
+                            return;
+                        }
+                        for (line, tone) in row.cells.get(column - 1).into_iter().flatten() {
+                            let rich = RichText::new(line);
+                            let rich = match tone {
+                                Tone::Body => rich,
+                                Tone::Muted => rich.weak(),
+                                Tone::Change => rich.small().color(ui.visuals().warn_fg_color),
+                                Tone::Pending => rich.small().italics(),
+                            };
+                            ui.add(egui::Label::new(rich).wrap());
+                        }
+                    });
+                }
+            });
         });
+}
+
+/// One line of a [`table`], its header or a row: the cells side by side at
+/// `widths`, the tint behind them, and the rule under them.
+fn table_line(
+    ui: &mut Ui,
+    widths: &[f32],
+    tint: Option<Color32>,
+    rule: Color32,
+    mut cell: impl FnMut(&mut Ui, usize),
+) {
+    let width = ui.available_width();
+    egui::Frame::new()
+        .fill(tint.unwrap_or(Color32::TRANSPARENT))
+        .inner_margin(egui::Margin::symmetric(CELL_PAD.x as i8, CELL_PAD.y as i8))
+        .show(ui, |ui| {
+            ui.set_width((width - 2.0 * CELL_PAD.x).max(0.0));
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(2.0 * CELL_PAD.x, 2.0);
+                for (index, cell_width) in widths.iter().enumerate() {
+                    column(ui, *cell_width, |ui| cell(ui, index));
+                }
+            });
+        });
+    let (line, _) = ui.allocate_exact_size(Vec2::new(width.max(0.0), 1.0), egui::Sense::hover());
+    ui.painter().rect_filled(line, 0.0, rule);
 }
 
 /// The default action of a pane, as the mock-ups' default button: bold,

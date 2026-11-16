@@ -496,8 +496,9 @@ const IMAGE_COLUMNS: Columns<6> = Columns {
 const IMAGE_MACHINES_COLUMN: usize = 3;
 /// The details pane's first height, and the least either side of the split
 /// keeps: a few list rows with their header and footer, a few pane lines.
-/// The first height shows a machine's or an image's whole pane, its actions
-/// at the bottom included, as the machines mock-up's pane does.
+/// On a wide window the first height shows a machine's or an image's whole
+/// pane, its actions at the bottom included, as the machines mock-up's pane
+/// does; a taller pane scrolls with its scroll bar shown.
 const DETAILS_HEIGHT: f32 = 420.0;
 const DETAILS_MIN_HEIGHT: f32 = 120.0;
 const LIST_MIN_HEIGHT: f32 = 160.0;
@@ -708,7 +709,8 @@ fn group_row(ui: &mut egui::Ui, open: bool, title: &str, detail: &str, width: f3
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), title));
     if ui.is_rect_visible(rect) {
         let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-        painter.rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
+        // The mock-up's group row has its own ground, apart from the stripes.
+        painter.rect_filled(rect, 0.0, pane::group_colour(ui.visuals()));
         let font = egui::TextStyle::Body.resolve(ui.style());
         let ink = ui.visuals().strong_text_color();
         let mut job = egui::text::LayoutJob::default();
@@ -2401,6 +2403,10 @@ impl LibraryView {
             .default_size(DETAILS_HEIGHT)
             .size_range(DETAILS_MIN_HEIGHT..=details_max)
             .show(ui, |ui| {
+                // A pane taller than its area keeps its scroll bar in view, so
+                // what lies below, the note under the actions included, reads
+                // as further down rather than cut off.
+                ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
                 egui::ScrollArea::vertical()
                     .id_salt("selected-image-details")
                     .auto_shrink([false, false])
