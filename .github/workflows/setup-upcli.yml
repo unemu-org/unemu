@@ -2,8 +2,8 @@
 name: setup-upcli
 
 # Tests the setup-upcli action of this checkout on both platforms the releases
-# cover: it installs the v0.0.1 release and runs upcli, and it refuses an
-# archive that does not match the pinned SHA-256. Every action is pinned to a
+# cover: it installs the v0.0.1 release and runs upcli, and it refuses a
+# release that does not exist. Every action is pinned to a
 # full commit SHA; the comment names its release.
 on:
   push:
@@ -37,11 +37,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # SHA-256 of each v0.0.1 archive, as the release's SHA256SUMS lists it.
           - runner: ubuntu-latest
-            sha256: c4944264e6e9624e23339a57853387c9ed1cd25792902dd2e4613a84cde82a7e
           - runner: macos-latest
-            sha256: d00c7178dc4fb67f3e20263a52db447e944af5db04ce866c08f2068942c9c4ac
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,36 +46,34 @@ jobs:
 
       # First, so that the check below also shows a failed install leaves no
       # upcli on PATH.
-      - name: Install upcli with a wrong SHA-256
+      - name: Install upcli from a release that does not exist
         id: wrong_hash
         continue-on-error: true
         uses: ./.github/actions/setup-upcli
         with:
-          version: v0.0.1
-          sha256: '0000000000000000000000000000000000000000000000000000000000000000'
+          version: v0.0.0-missing
 
-      - name: Check that the wrong SHA-256 was refused
+      - name: Check that the missing release was refused
         env:
           OUTCOME: ${{ steps.wrong_hash.outcome }}
           INSTALLED: ${{ steps.wrong_hash.outputs.path }}
         run: |
           set -euo pipefail
           if [[ $OUTCOME != failure ]]; then
-            echo "::error::the action with a wrong SHA-256 ended in $OUTCOME, not failure"
+            echo "::error::the action with a missing release ended in $OUTCOME, not failure"
             exit 1
           fi
           if [[ -n $INSTALLED ]] || command -v upcli; then
-            echo '::error::the action with a wrong SHA-256 installed upcli'
+            echo '::error::the action with a missing release installed upcli'
             exit 1
           fi
-          echo 'the wrong SHA-256 was refused and nothing was installed'
+          echo 'the missing release was refused and nothing was installed'
 
       - name: Install upcli v0.0.1
         id: setup
         uses: ./.github/actions/setup-upcli
         with:
           version: v0.0.1
-          sha256: ${{ matrix.sha256 }}
 
       - name: Run upcli
         env:

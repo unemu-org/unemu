@@ -6,8 +6,9 @@ so another repository's workflow can import images and media sets and push
 them with the same CLI and the same publication guard.
 
 The action downloads `unemupc-<version>-<target>.tar.gz` from the release
-with curl (HTTPS only, with retries, no token), checks its SHA-256 against the
-`sha256` input before unpacking anything, and unpacks only `upcli`, `LICENSE`
+with curl (HTTPS only, with retries, no token), checks it against the
+release's own `SHA256SUMS` before unpacking anything (a check of the download,
+not a pin), and unpacks only `upcli`, `LICENSE`
 and `THIRD-PARTY-LICENSES.md` into a new directory under `$RUNNER_TEMP`. It
 adds that directory to `PATH` and prints `upcli --version`. It uses no other
 actions and no secrets.
@@ -18,39 +19,26 @@ Runners: Linux X64 (`x86_64-unknown-linux-gnu`, glibc 2.35 or newer, such as
 
 ## Usage
 
-Pin the action to a full commit of unemupc, and the release by its SHA-256:
+Pin the action to a full commit of unemupc and name the release:
 
 ```yaml
 - uses: unemu-org/unemupc/.github/actions/setup-upcli@<unemupc commit SHA>
   with:
-    version: v0.0.1
-    sha256: c4944264e6e9624e23339a57853387c9ed1cd25792902dd2e4613a84cde82a7e
+    version: v0.0.2
 ```
 
-The commit pins the action's own code; `version` and `sha256` pin the binary
-it installs, independently of that commit. The SHA-256 is that of the archive
-for the runner's platform, as the release's `SHA256SUMS` lists it:
-
-```sh
-gh release download v0.0.1 --repo unemu-org/unemupc --pattern SHA256SUMS --output -
-```
-
-For v0.0.1 that is
-`c4944264e6e9624e23339a57853387c9ed1cd25792902dd2e4613a84cde82a7e` on Linux
-X64 and `d00c7178dc4fb67f3e20263a52db447e944af5db04ce866c08f2068942c9c4ac`
-on macOS ARM64. A job with both runners in a matrix passes the matching value
-from the matrix.
+The commit pins the action's own code; `version` names the release whose
+binary it installs, for the runner's platform.
 
 ## Inputs
 
 | Input | Required | Description |
 | --- | --- | --- |
 | `version` | yes | Release tag, such as `v0.0.1`; it must match `^v[0-9][0-9A-Za-z.+-]*$`. |
-| `sha256` | yes | SHA-256 of the archive for the runner's platform: 64 lowercase hex digits. |
 | `commit` | no | Full commit (40 lowercase hex digits) the release was built from. When set, the `commit:` line of `upcli --version` must name it, and the step fails on another commit or on no commit line. Release builds print that line from the release after v0.0.1 on; leave `commit` empty for v0.0.1. |
 
-A tag can be moved, a commit cannot: `commit` checks that the binary that
-passed the SHA-256 check was built from the source you reviewed. Find a
+A tag can be moved, a commit cannot: `commit` checks that the installed
+binary was built from the source you expect. Find a
 release's commit with `gh api repos/unemu-org/unemupc/commits/<tag> --jq .sha`.
 
 ## Outputs
@@ -79,8 +67,7 @@ jobs:
 
       - uses: unemu-org/unemupc/.github/actions/setup-upcli@<unemupc commit SHA>
         with:
-          version: v0.0.1
-          sha256: c4944264e6e9624e23339a57853387c9ed1cd25792902dd2e4613a84cde82a7e
+          version: v0.0.2
 
       - name: Import the media set
         run: |
@@ -119,10 +106,11 @@ ones only with its source archive in the same set. There is no override;
 
 Version tags never move: once `unemu/media/example:1.0.0` names an image on
 the registry, a push of other bytes under it is refused (a push of the same
-image again changes nothing). Other tags, such as `latest`, move only with
-`--move`, after a refusal has shown both digests. `image media import` never
-moves a tag in the store either. Publish a changed media set under a new
-version.
+image again changes nothing). From v0.0.2 on, the tags of installation media
+sets (such as `freedos:1.4` or `1.4-720k`) never move either, not even with
+`--move`; publish a changed set under a new revision such as `1.4-r2`.
+Aliases such as `latest` move only with `--move`, after a refusal has shown
+both digests. `image media import` never moves a tag in the store either.
 
 See `backlog/docs/commands.md` in unemupc for the image, media-set and
 registry commands.

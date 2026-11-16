@@ -2,17 +2,12 @@
 name: Set up upcli
 description: >-
   Install upcli, the command line of unemupc, from a GitHub release of
-  unemu-org/unemupc. The archive is checked against a pinned SHA-256 before
-  anything is unpacked, and upcli is added to PATH.
+  unemu-org/unemupc. The archive is checked against the release's SHA256SUMS
+  before anything is unpacked, and upcli is added to PATH.
 
 inputs:
   version:
     description: Release tag to install, for example v0.0.1.
-    required: true
-  sha256:
-    description: >-
-      SHA-256 of the release archive for the runner's platform, as the
-      release's SHA256SUMS lists it (64 lowercase hex digits).
     required: true
   commit:
     description: >-
@@ -37,6 +32,5 @@ runs:
       shell: bash
       env:
         UPCLI_VERSION: ${{ inputs.version }}
-        UPCLI_SHA256: ${{ inputs.sha256 }}
         UPCLI_COMMIT: ${{ inputs.commit }}
       run: bash "$GITHUB_ACTION_PATH/install.sh"
