@@ -48,4 +48,4 @@ wildcards = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = ["https://git.lab.mikolajczyk.org/unemu-org/x86jit"]
+allow-git = ["https://github.com/unemu-org/x86jit"]

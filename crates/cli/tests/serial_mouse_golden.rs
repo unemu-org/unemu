@@ -4,7 +4,7 @@
 //! protocol requirements; PC16550D datasheet §8.1–8.8; Intel 8259A,
 //! Interrupt Sequence. See observation.md § Host input.
 //!
-//! CPU pin: x86jit-core 80b54f8a1b89814f96b0bc8ba32b6d6c72c78957 (Cargo.lock).
+//! CPU pin: x86jit-core ae12d43e7ec21dbed3e6c128a63c566a428a3054 (Cargo.lock).
 //! The ROM uses no BIOS pointing services. It echoes each received byte through
 //! the UART's independent TX sink; IRQ entry requires the real PIC and CPU path.
 

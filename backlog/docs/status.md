@@ -5,6 +5,14 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — The CPU core comes from its public GitHub repository:** x86jit
+  is now published at github.com/unemu-org/x86jit, its primary forge, with its
+  history rewritten (third-party binaries filtered out, every commit re-signed),
+  so every revision hash changed. The pin moves to `ae12d43e`, the public commit
+  whose source tree is identical to the previous pin `80b54f8a`; Cargo.toml,
+  Cargo.lock, the cargo-deny git allow list and every golden's CPU revision
+  follow. No behaviour changes: every golden, the slow ignored set and the
+  user-ROM goldens keep their retired counts and traces.
 - **2026-11-16 — Library panes on the field and the second face, in an inset
   outline:** as in the approved library mock-ups, the library's tree and list
   panes now sit on the field colour (#ffffff light, #26282b dark) and the

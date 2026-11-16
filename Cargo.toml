@@ -48,7 +48,7 @@ cpal = "=0.18.2"
 # Every build and golden trace runs against a known CPU. A bare path dependency breaks
 # nix build and CI. To develop against a local x86jit checkout, add a gitignored
 # [patch] override instead of editing this line.
-x86jit-core = { version = "0.3", git = "https://git.lab.mikolajczyk.org/unemu-org/x86jit", rev = "80b54f8a1b89814f96b0bc8ba32b6d6c72c78957" }
+x86jit-core = { version = "0.3", git = "https://github.com/unemu-org/x86jit", rev = "ae12d43e7ec21dbed3e6c128a63c566a428a3054" }
 
 # Internal crates share the workspace version.
 assembly = { path = "crates/assembly", version = "0.1.0" }
