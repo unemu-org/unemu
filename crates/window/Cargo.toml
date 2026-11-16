@@ -12,11 +12,11 @@ publish.workspace = true
 description = "Windowed presenter: draws text frames in a host window (§9)."
 
 [dependencies]
-image-store = { path = "../image-store", version = "0.1.0" }
-image-registry = { path = "../registry", version = "0.1.0" }
-pc-image = { path = "../pc-image", version = "0.1.0" }
+image-store = { path = "../image-store", version = "0.0.1" }
+image-registry = { path = "../registry", version = "0.0.1" }
+pc-image = { path = "../pc-image", version = "0.0.1" }
 image = { version = "=0.25.10", default-features = false, features = ["png", "gif"] }
-cli = { path = "../cli", version = "0.1.0" }
+cli = { path = "../cli", version = "0.0.1" }
 media.workspace = true
 sha2.workspace = true
 rfd = { version = "=0.18.0", default-features = false, features = ["xdg-portal"] }
@@ -49,10 +49,10 @@ objc2-core-graphics = { version = "0.3.2", default-features = false, features = 
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["CGRemoteOperation"] }
 
 [dev-dependencies]
-image-store = { path = "../image-store", version = "0.1.0", features = ["test-support"] }
-image-registry = { path = "../registry", version = "0.1.0", features = ["test-support"] }
+image-store = { path = "../image-store", version = "0.0.1", features = ["test-support"] }
+image-registry = { path = "../registry", version = "0.0.1", features = ["test-support"] }
 media = { workspace = true, features = ["test-support"] }
-pc-image = { path = "../pc-image", version = "0.1.0", features = ["test-support"] }
+pc-image = { path = "../pc-image", version = "0.0.1", features = ["test-support"] }
 assembly = { workspace = true, features = ["test-support"] }
 cpu.workspace = true
 

@@ -5,6 +5,12 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — Version 0.0.1, a preview release:** the workspace version
+  moves to 0.0.1 for the first public preview on GitHub, so the release
+  workflow publishes upcli and unemupc binaries (Linux x86-64, macOS on Apple
+  silicon) that other projects, such as the open media pipeline, can download
+  instead of building. The official templates, media sets and firmware
+  packages are not on registry.unemu.dev yet; they come with a later release.
 - **2026-11-16 — Release binaries:** `.github/workflows/release.yml` builds
   `upcli` and `unemupc` when a GitHub release is published (or by hand for a
   tag) and attaches `unemupc-<version>-<target>.tar.gz` for

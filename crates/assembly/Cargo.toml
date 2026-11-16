@@ -11,7 +11,7 @@ description = "Declarative machine-configuration data model, validation, and the
 
 [dependencies]
 thiserror.workspace = true
-media = { path = "../media", version = "0.1.0" }
+media = { path = "../media", version = "0.0.1" }
 sha2.workspace = true
 # The seams whose types the configuration names. The config is declarative data
 # about these crates' hardware; the assembler (a later task) turns it into the
@@ -34,4 +34,4 @@ reference-scheduler = ["machine/reference-scheduler"]
 
 [dev-dependencies]
 testkit.workspace = true
-media = { path = "../media", version = "0.1.0", features = ["test-support"] }
+media = { path = "../media", version = "0.0.1", features = ["test-support"] }

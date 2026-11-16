@@ -22,7 +22,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 rust-version = "1.99"
@@ -54,18 +54,18 @@ cpal = "=0.18.2"
 x86jit-core = { version = "0.3", git = "https://github.com/unemu-org/x86jit", rev = "ae12d43e7ec21dbed3e6c128a63c566a428a3054" }
 
 # Internal crates share the workspace version.
-assembly = { path = "crates/assembly", version = "0.1.0" }
-device = { path = "crates/device", version = "0.1.0" }
-bus = { path = "crates/bus", version = "0.1.0" }
-chipset = { path = "crates/chipset", version = "0.1.0" }
-cpu = { path = "crates/cpu", version = "0.1.0" }
-machine = { path = "crates/machine", version = "0.1.0" }
-machine-file = { path = "crates/machine-file", version = "0.1.0" }
-media = { path = "crates/media", version = "0.1.0" }
-devices = { path = "crates/devices", version = "0.1.0" }
-video = { path = "crates/video", version = "0.1.0" }
-audio = { path = "crates/audio", version = "0.1.0" }
-testkit = { path = "crates/testkit", version = "0.1.0" }
+assembly = { path = "crates/assembly", version = "0.0.1" }
+device = { path = "crates/device", version = "0.0.1" }
+bus = { path = "crates/bus", version = "0.0.1" }
+chipset = { path = "crates/chipset", version = "0.0.1" }
+cpu = { path = "crates/cpu", version = "0.0.1" }
+machine = { path = "crates/machine", version = "0.0.1" }
+machine-file = { path = "crates/machine-file", version = "0.0.1" }
+media = { path = "crates/media", version = "0.0.1" }
+devices = { path = "crates/devices", version = "0.0.1" }
+video = { path = "crates/video", version = "0.0.1" }
+audio = { path = "crates/audio", version = "0.0.1" }
+testkit = { path = "crates/testkit", version = "0.0.1" }
 
 # Keep hardware preconditions and arithmetic checked even in optimized dev/test code.
 [profile.dev]
