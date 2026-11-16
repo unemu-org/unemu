@@ -5,6 +5,22 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — Published tags are safe before the first media push:** the
+  push preflight and its final recheck ask for the tag with every manifest
+  and index type in `Accept` (OCI image manifest and index, Docker schema 2
+  manifest and manifest list), so a tag that another tool pointed at an image
+  index is no longer taken for a new tag and replaced without `--move`; pull
+  still asks for the OCI image manifest only. Tags of installation media sets
+  that start with a digit (`1.4`, `1.4-720k`, `1.4-registered-720k-r2`) are
+  now immutable like version tags, in the local store and on push, even with
+  `--move`, whichever side the set is on; the refusal suggests the next `-rN`
+  revision. Aliases (tags that do not start with a digit, `latest` included)
+  still move with confirmation, and machine images and firmware packages keep
+  the version-tag rule alone. A deleted set tag is not remembered locally as a
+  deleted version tag is. Evidence: mock-registry tests for an image index, a
+  Docker manifest and a Docker manifest list hidden from the narrow `Accept`,
+  and for set tags with and without `--move`, plus a store test; each fails
+  when its change is reverted.
 - **2026-11-16 — setup-upcli action:** `.github/actions/setup-upcli` is a
   composite action that installs a released `upcli` in other repositories'
   workflows (the open media pipeline and the firmware forks), so they import

@@ -3,16 +3,18 @@
 //! opt-in live round trip. Synthetic images only; no emulator or guest data.
 
 use crate::{
-    client::{AnonymousAccess, Client},
+    client::{AnonymousAccess, Client, ACCEPT_ANY_MANIFEST},
     config::Namespace,
     credentials::{Anonymous, CredentialSource, Credentials, EnvCredentials, HostCredentials},
     guard::{MarkSource, Redistribution, Refusal},
+    http::{Body, Method},
     pull, push,
     push::{BlobOutcome, PushOptions, PushProgress, TagOutcome, UploadSessions, MIN_CHUNK_SIZE},
     test_support::{BlobFault, MockRegistry, PatchFault, Policy, RangeSupport},
     Error, Reference, RegistryEntry,
 };
 use image_store::{
+    media_set::{self, MediaFormats},
     media_type as mt, BlobSource, ConfigValidator, Descriptor, Digest, Manifest, Store,
     MAX_SMALL_BLOB,
 };
@@ -131,6 +133,55 @@ pub(crate) fn image(
 
 fn open_image(store: &Store, tag: &str, label: &[u8]) -> Descriptor {
     image(store, tag, &[(label, Some("open"))], Some("open"))
+}
+
+/// Neutral installation media: every medium is a floppy.
+struct Floppies;
+impl MediaFormats for Floppies {
+    fn platform(&self) -> &str {
+        "synthetic"
+    }
+    fn validate_name(&self, _: &str) -> image_store::Result<()> {
+        Ok(())
+    }
+    fn validate_format(&self, _: &toml::Table, _: u64) -> image_store::Result<&'static str> {
+        Ok(mt::FLOPPY)
+    }
+}
+const MEDIA_SETS: media_set::Validator<'static> = media_set::Validator(&Floppies);
+
+/// Tag an open installation media set of one floppy holding `label`.
+fn open_media_set(store: &Store, tag: &str, label: &[u8]) -> Descriptor {
+    let medium = marked(store, mt::FLOPPY, label, Some("open"));
+    let config = media_set::Config {
+        schema: 1,
+        platform: "synthetic".into(),
+        media: vec![media_set::Medium {
+            id: "disk-1".into(),
+            label: "Disk 1".into(),
+            format: toml::Table::new(),
+            blob: medium.digest.clone(),
+        }],
+        extras: Vec::new(),
+    };
+    let config = marked(
+        store,
+        mt::MEDIA_SET_CONFIG,
+        &config.encode().unwrap(),
+        Some("open"),
+    );
+    let metadata = marked(
+        store,
+        mt::METADATA,
+        br#"{"schema":1,"platform":"synthetic","titles":[]}"#,
+        Some("open"),
+    );
+    let manifest = Manifest::new_media_set("synthetic", config, vec![medium, metadata]).unwrap();
+    let descriptor = store.import_manifest(&manifest).unwrap();
+    store
+        .update_tag(tag, &descriptor, None, &MEDIA_SETS)
+        .unwrap();
+    descriptor
 }
 
 fn client(entry: &RegistryEntry, credentials: impl CredentialSource + 'static) -> Client {
@@ -496,6 +547,175 @@ fn version_tags_are_immutable_and_other_tags_move_only_when_confirmed() {
     );
     assert_eq!(registry.tag_digest("o/lab", "latest"), Some(second.digest));
     assert_eq!(registry.tag_digest("o/lab", "1.0.0"), Some(first.digest));
+}
+
+/// A registry may answer `404` for a tag whose manifest type the request does
+/// not accept, as distribution/registry does for an OCI image index. The push
+/// preflight and its final recheck accept every manifest and index type, so a
+/// tag another tool pointed at an index or a Docker manifest is never taken for
+/// a new tag and replaced without confirmation.
+#[test]
+fn a_tag_naming_an_index_or_a_docker_manifest_moves_only_when_confirmed() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let image = open_image(&store, "lab:2.0.0", b"image");
+    let registry = MockRegistry::start(open_policy());
+    let entry = registry.entry(false);
+    let client = client(&entry, Anonymous);
+    let moving = PushOptions {
+        allow_move: true,
+        ..PushOptions::default()
+    };
+    for (i, media_type) in [
+        mt::INDEX,
+        "application/vnd.docker.distribution.manifest.v2+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let tag = format!("other-{i}");
+        let body = format!(r#"{{"schemaVersion":2,"mediaType":"{media_type}"}}"#);
+        let foreign = registry.seed_manifest_as("o/lab", &tag, media_type, body.as_bytes());
+        let reference = || target(&registry, &format!("o/lab:{tag}"));
+        let refused = push_with(
+            &store,
+            "lab:2.0.0",
+            reference(),
+            &entry,
+            &client,
+            &PushOptions::default(),
+        );
+        assert!(
+            matches!(&refused, Err(Error::TagMoveNeedsConfirmation { current, new, .. })
+                if *current == foreign && *new == image.digest),
+            "{media_type}: {refused:?}"
+        );
+        assert_eq!(registry.tag_digest("o/lab", &tag), Some(foreign.clone()));
+        // Only the Accept header decides whether the registry shows the tag.
+        let path = format!("/v2/o/lab/manifests/{tag}");
+        let head = |accept: &str| {
+            let headers = [("Accept", accept.to_owned())];
+            client
+                .send(Method::Head, &path, &headers, &Body::Empty)
+                .unwrap()
+                .status
+        };
+        assert_eq!(head(mt::MANIFEST), 404, "{media_type}");
+        assert_eq!(head(ACCEPT_ANY_MANIFEST), 200, "{media_type}");
+        let moved = push_with(&store, "lab:2.0.0", reference(), &entry, &client, &moving).unwrap();
+        assert_eq!(
+            moved.tag,
+            TagOutcome::Moved { from: foreign },
+            "{media_type}"
+        );
+        assert_eq!(
+            registry.tag_digest("o/lab", &tag),
+            Some(image.digest.clone())
+        );
+    }
+    // A version tag naming an index never moves, as any version tag.
+    let foreign = registry.seed_manifest_as("o/lab", "1.0.0", mt::INDEX, br#"{"schemaVersion":2}"#);
+    let refused = push_with(
+        &store,
+        "lab:2.0.0",
+        target(&registry, "o/lab:1.0.0"),
+        &entry,
+        &client,
+        &moving,
+    );
+    assert!(
+        matches!(&refused, Err(Error::ImmutableTag { current, .. }) if *current == foreign),
+        "{refused:?}"
+    );
+    assert_eq!(registry.tag_digest("o/lab", "1.0.0"), Some(foreign));
+}
+
+/// Tags of installation media sets (`<upstream version>[-<edition>]
+/// [-<format>][-rN]`) never move once they name a set, not even with
+/// `--move`, whichever side the set is on; an alias such as `latest` moves
+/// when confirmed, and machine images keep the version-tag rule.
+#[test]
+fn media_set_tags_never_move_on_the_registry_but_aliases_and_machine_tags_do() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let first = open_media_set(&store, "sets:1.4", b"first set");
+    let second = open_media_set(&store, "sets:1.4-r2", b"second set");
+    let machine = open_image(&store, "lab:1.4", b"machine");
+    let other = open_image(&store, "lab:1.5", b"other machine");
+    let registry = MockRegistry::start(open_policy());
+    let entry = registry.entry(true);
+    let client = client(&entry, Anonymous);
+    let providers: [&dyn ConfigValidator; 2] = [&Synthetic, &MEDIA_SETS];
+    let send =
+        |local: &str, path: &str, options: &PushOptions| -> crate::Result<push::PushReport> {
+            let plan = push::plan(&store, local, target(&registry, path), Some(&entry))?;
+            push::push(&store, &plan, &providers, &client, options, &mut |_, _| {})
+        };
+    let plain = PushOptions::default();
+    let moving = PushOptions {
+        allow_move: true,
+        ..PushOptions::default()
+    };
+    for path in ["private/sets:1.4", "private/sets:latest"] {
+        send("sets:1.4", path, &plain).unwrap();
+    }
+    // Neither another set nor a machine image takes the set's tag; the
+    // refusal offers the next revision tag.
+    for (local, new) in [("sets:1.4-r2", &second), ("lab:1.4", &machine)] {
+        for options in [&plain, &moving] {
+            let refused = send(local, "private/sets:1.4", options);
+            assert!(
+                matches!(&refused, Err(Error::ImmutableMediaSetTag { current, new: pushed, .. })
+                    if *current == first.digest && pushed == &new.digest),
+                "{local}: {refused:?}"
+            );
+            let message = refused.unwrap_err().to_string();
+            assert!(message.contains("such as 1.4-r2"), "{message}");
+        }
+    }
+    assert_eq!(
+        registry.tag_digest("private/sets", "1.4"),
+        Some(first.digest.clone())
+    );
+    // Nor does a set take a fixed tag that names another image.
+    send("lab:1.4", "private/sets:1.4-720k", &plain).unwrap();
+    let refused = send("sets:1.4-r2", "private/sets:1.4-720k", &moving);
+    assert!(
+        matches!(&refused, Err(Error::ImmutableMediaSetTag { current, .. }) if *current == machine.digest),
+        "{refused:?}"
+    );
+    // The alias moves, and only when confirmed.
+    let unconfirmed = send("sets:1.4-r2", "private/sets:latest", &plain);
+    assert!(
+        matches!(unconfirmed, Err(Error::TagMoveNeedsConfirmation { .. })),
+        "{unconfirmed:?}"
+    );
+    let moved = send("sets:1.4-r2", "private/sets:latest", &moving).unwrap();
+    assert_eq!(
+        moved.tag,
+        TagOutcome::Moved {
+            from: first.digest.clone()
+        }
+    );
+    // A machine image's tag of the same shape moves when confirmed.
+    send("lab:1.4", "private/lab:1.4", &plain).unwrap();
+    let unconfirmed = send("lab:1.5", "private/lab:1.4", &plain);
+    assert!(
+        matches!(unconfirmed, Err(Error::TagMoveNeedsConfirmation { .. })),
+        "{unconfirmed:?}"
+    );
+    let moved = send("lab:1.5", "private/lab:1.4", &moving).unwrap();
+    assert_eq!(
+        moved.tag,
+        TagOutcome::Moved {
+            from: machine.digest.clone()
+        }
+    );
+    assert_eq!(
+        registry.tag_digest("private/lab", "1.4"),
+        Some(other.digest)
+    );
 }
 
 #[test]

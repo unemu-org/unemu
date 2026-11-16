@@ -37,7 +37,7 @@ use image_registry::{
     reference::{is_version_tag, OFFICIAL_NAMESPACE},
     Error, Reference, DEFAULT_REGISTRY,
 };
-use image_store::{media_type as mt, ConfigValidator, Descriptor, Digest, Store};
+use image_store::{media_set, media_type as mt, ConfigValidator, Descriptor, Digest, Store};
 use std::{
     collections::BTreeSet,
     path::PathBuf,
@@ -202,6 +202,9 @@ pub(crate) struct PlanData {
     pub local_tag: String,
     pub image: Descriptor,
     pub closure: Vec<ClosureEntry>,
+    /// The image is an installation media set, whose tags other than aliases
+    /// never move on the registry.
+    pub media_set: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -320,6 +323,7 @@ fn plan(
                 local_tag: tag.into(),
                 image: plan.image().clone(),
                 closure: plan.closure().to_vec(),
+                media_set: plan.manifest().artifact_type() == mt::MEDIA_SET,
             })
         }
         None => None,
@@ -468,6 +472,10 @@ fn push_failure(error: Error, closure: &[ClosureEntry]) -> PushFailure {
         }
         Error::ImmutableTag { tag, current, new } => PushFailure::Failed(format!(
             "Version tag {tag} already names {current} on the registry, and this image is {new}. Version tags never move: push this image under a new version."
+        )),
+        Error::ImmutableMediaSetTag { tag, current, new } => PushFailure::Failed(format!(
+            "Tag {tag} already names {current} on the registry, and this image is {new}. Tags of installation media sets never move, not even with confirmation: push a changed set under a new revision tag such as {}.",
+            media_set::next_revision(&tag)
         )),
         Error::RemoteTagChanged { tag, .. } => PushFailure::Failed(format!(
             "Tag {tag} changed on the registry during the push, so nothing was published. Push again to see the image it names now."
@@ -987,6 +995,11 @@ impl PushDialog {
                     if is_version_tag(&tag) {
                         format!(
                             "{tag} is a version tag: once it names an image on the registry it never moves. The manifest and the tag are written after every blob"
+                        )
+                    } else if plan.media_set && !media_set::is_alias_tag(&tag) {
+                        format!(
+                            "{tag} is a tag of an installation media set: once it names a set on the registry it never moves, not even with confirmation; push a changed set under a new revision tag such as {}. The manifest and the tag are written after every blob",
+                            media_set::next_revision(&tag)
                         )
                     } else {
                         format!(
@@ -2268,6 +2281,104 @@ pub(crate) mod tests {
         assert!(message.contains("Version tags never move"), "{message}");
         assert!(message.contains(&lab.f.row.descriptor.digest.to_string()));
         assert!(message.contains(&second.to_string()));
+    }
+
+    /// Tag `tag` as an installation media set of one 360K floppy filled with `byte`.
+    fn installation_set(f: &Fixture, tag: &str, byte: u8) -> Descriptor {
+        use pc_image::media_import::{plan, publish, Request, Source};
+        let disk = f.temp.path().join(format!("set-{byte}.img"));
+        std::fs::write(&disk, vec![byte; 368_640]).unwrap();
+        let request = Request {
+            tag: tag.into(),
+            title: image_store::metadata::Title {
+                title: "Synthetic set".into(),
+                ..Default::default()
+            },
+            labels: Vec::new(),
+            media: vec![Source {
+                path: disk,
+                label: None,
+                format: None,
+            }],
+            extras: Vec::new(),
+            compress: false,
+        };
+        publish(&f.store, &plan(&request).unwrap(), &|_, _| {}, &|| false)
+            .unwrap()
+            .descriptor()
+            .clone()
+    }
+
+    /// The dry run's note on whether the destination tag can move.
+    fn tag_note(dialog: &PushDialog) -> String {
+        let evaluation = dialog.evaluate();
+        evaluation
+            .checks
+            .iter()
+            .find(|c| c.mark == Mark::Note && c.text.contains("written after every blob"))
+            .unwrap_or_else(|| panic!("{evaluation:?}"))
+            .text
+            .clone()
+    }
+
+    #[test]
+    fn the_dry_run_says_a_set_tag_never_moves_while_aliases_and_machine_tags_move_when_confirmed() {
+        let mut lab = Lab::new(true);
+        let host = lab.host();
+        installation_set(&lab.f, "sets:1.4", 1);
+        let dialog = lab.open_push("sets:1.4");
+        dialog.destination = format!("{host}/private/sets:1.4");
+        let note = tag_note(dialog);
+        assert!(
+            note.starts_with("1.4 is a tag of an installation media set")
+                && note.contains("never moves, not even with confirmation")
+                && note.contains("such as 1.4-r2"),
+            "{note}"
+        );
+        dialog.destination = format!("{host}/private/sets:latest");
+        let note = tag_note(dialog);
+        assert!(
+            note.starts_with("latest is not a version") && note.contains("you confirm the move"),
+            "{note}"
+        );
+        // A machine image's tag of the same shape is not a set's tag.
+        let dialog = lab.open_push("test:source");
+        dialog.destination = format!("{host}/private/test:1.4");
+        let note = tag_note(dialog);
+        assert!(
+            note.starts_with("1.4 is not a version") && note.contains("you confirm the move"),
+            "{note}"
+        );
+    }
+
+    #[test]
+    fn a_set_pushed_onto_a_taken_set_tag_fails_without_a_move_confirmation() {
+        let mut lab = Lab::new(true);
+        let host = lab.host();
+        let first = installation_set(&lab.f, "sets:1.4", 1);
+        let second = installation_set(&lab.f, "sets:changed", 2);
+        lab.push_through("sets:1.4", &format!("{host}/private/sets:1.4"));
+        let dialog = lab.open_push("sets:changed");
+        dialog.destination = format!("{host}/private/sets:1.4");
+        let request = dialog.push().unwrap();
+        lab.view.send(Request::Transfer(request));
+        lab.view.pump_until(push_settled);
+        let PushState::Finished { ok, message, .. } = &lab.view.push.as_ref().unwrap().state else {
+            panic!("{:?}", lab.view.push.as_ref().unwrap().state)
+        };
+        assert!(!ok);
+        assert!(
+            message
+                .contains("Tags of installation media sets never move, not even with confirmation")
+                && message.contains("such as 1.4-r2")
+                && message.contains(&first.digest.to_string())
+                && message.contains(&second.digest.to_string()),
+            "{message}"
+        );
+        assert_eq!(
+            lab.registry.tag_digest("private/sets", "1.4"),
+            Some(first.digest)
+        );
     }
 
     #[test]

@@ -134,6 +134,32 @@ pub fn valid_id(id: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
 }
 
+/// Whether a tag of an installation media set is an alias that may move.
+///
+/// Set tags follow `<upstream version>[-<edition>][-<format>][-rN]` (`1.4`,
+/// `1.4-720k`, `1.4-r2`, `1.4-registered-720k-r2`), so each starts with a digit
+/// of the upstream version and names one set forever, even when it is not a
+/// semantic version. A tag whose first character is not an ASCII digit
+/// (`latest`, `stable`) is an alias and moves with the usual confirmation;
+/// machine-images §5.2.
+pub fn is_alias_tag(tag: &str) -> bool {
+    !tag.starts_with(|c: char| c.is_ascii_digit())
+}
+
+/// The revision tag to offer when a set's tag already names another set: a
+/// trailing `-rN` counts up, and a tag without one gets `-r2`.
+pub fn next_revision(tag: &str) -> String {
+    let next = tag.rsplit_once("-r").and_then(|(base, number)| {
+        let number = number
+            .bytes()
+            .all(|b| b.is_ascii_digit())
+            .then(|| number.parse::<u64>().ok())
+            .flatten()?;
+        Some(format!("{base}-r{}", number.checked_add(1)?))
+    });
+    next.unwrap_or_else(|| format!("{tag}-r2"))
+}
+
 /// Adapter reuses store closure, full-blob verification and CAS publication.
 pub struct Validator<'a>(pub &'a dyn MediaFormats);
 impl ConfigValidator for Validator<'_> {
@@ -307,5 +333,25 @@ mod review_tests {
             config.encode().is_ok(),
             "guest device names are provider-owned"
         );
+    }
+
+    #[test]
+    fn set_tags_starting_with_a_digit_are_fixed_and_others_are_aliases() {
+        for tag in ["1.4", "1.4-720k", "1.4-r2", "1.4-registered-720k-r2", "6"] {
+            assert!(!is_alias_tag(tag), "{tag}");
+        }
+        for tag in ["latest", "stable", "v1.4", "_1"] {
+            assert!(is_alias_tag(tag), "{tag}");
+        }
+        for (tag, next) in [
+            ("1.4", "1.4-r2"),
+            ("1.4-720k", "1.4-720k-r2"),
+            ("1.4-r2", "1.4-r3"),
+            ("1.4-registered-720k-r9", "1.4-registered-720k-r10"),
+            ("1.4-registered", "1.4-registered-r2"),
+            ("1.4-r", "1.4-r-r2"),
+        ] {
+            assert_eq!(next_revision(tag), next, "{tag}");
+        }
     }
 }

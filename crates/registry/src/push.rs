@@ -4,7 +4,9 @@
 //!
 //! Order: guard (run again on the plan's own target and closure, so a plan's
 //! earlier verdict is never trusted), local closure verification,
-//! anonymous-read probe for restricted content, remote tag preflight, `HEAD`
+//! anonymous-read probe for restricted content, remote tag preflight (which
+//! accepts every manifest and index type, so a tag naming another tool's image
+//! index is not taken for a new one), `HEAD`
 //! per blob with upload of the missing ones, a second `HEAD` of every blob
 //! (some registries accept manifests whose blobs are absent), a final tag
 //! recheck, then the manifest `PUT`. Blobs up to one chunk use a single `PUT`; larger blobs use chunked
@@ -27,7 +29,8 @@ use crate::{
     Client, Error, Reference, RegistryEntry, Result,
 };
 use image_store::{
-    BlobSource, ConfigValidator, Descriptor, Digest, Manifest, Store, MAX_SMALL_BLOB,
+    media_set, media_type, BlobSource, ConfigValidator, Descriptor, Digest, Manifest, Store,
+    MAX_SMALL_BLOB,
 };
 use std::{
     collections::BTreeSet,
@@ -41,7 +44,9 @@ pub const MIN_CHUNK_SIZE: u64 = 8 * 1024 * 1024;
 pub const DEFAULT_CHUNK_SIZE: u64 = 64 * 1024 * 1024;
 
 /// Transfer settings. `allow_move` is the explicit confirmation for moving a
-/// non-version tag; version tags never move.
+/// non-version tag; version tags never move, nor do the tags of installation
+/// media sets other than aliases ([`media_set::is_alias_tag`]), whether the
+/// set is the image pushed or the one the tag names now.
 #[derive(Clone, Debug)]
 pub struct PushOptions {
     pub chunk_size: u64,
@@ -288,6 +293,17 @@ pub fn push_cancellable(
     let reference = plan.target.manifest_reference();
     let preflight = client.manifest_digest(repository, &reference)?;
     let new = || plan.image.digest.clone();
+    let set_tag = match (&plan.target.digest, &plan.target.tag, preflight.as_ref()) {
+        (None, Some(tag), Some(current))
+            if current != &plan.image.digest
+                && !is_version_tag(tag)
+                && !media_set::is_alias_tag(tag) =>
+        {
+            plan.manifest.artifact_type() == media_type::MEDIA_SET
+                || names_media_set(client, repository, current)?
+        }
+        _ => false,
+    };
     let tag = match (&plan.target.digest, &plan.target.tag, preflight.as_ref()) {
         (_, _, Some(current)) if current == &plan.image.digest => {
             return Ok(PushReport {
@@ -300,6 +316,13 @@ pub fn push_cancellable(
         (None, Some(_), None) => TagOutcome::Created,
         (None, Some(tag), Some(current)) if is_version_tag(tag) => {
             return Err(Error::ImmutableTag {
+                tag: tag.clone(),
+                current: current.clone(),
+                new: new(),
+            })
+        }
+        (None, Some(tag), Some(current)) if set_tag => {
+            return Err(Error::ImmutableMediaSetTag {
                 tag: tag.clone(),
                 current: current.clone(),
                 new: new(),
@@ -327,6 +350,16 @@ pub fn push_cancellable(
         cancelled,
     };
     finish(store, plan, client, options, &mut watch, tag, preflight)
+}
+
+/// Whether the registry's manifest `digest` is an installation media set. A
+/// manifest this client cannot fetch or read as an OCI image manifest, such
+/// as an image index, is not one.
+fn names_media_set(client: &Client, repository: &str, digest: &Digest) -> Result<bool> {
+    Ok(client
+        .manifest(repository, &digest.to_string())?
+        .and_then(|fetched| Manifest::decode_for_summary(&fetched.bytes).ok())
+        .is_some_and(|manifest| manifest.artifact_type() == media_type::MEDIA_SET))
 }
 
 /// What a running push reports, and asks whether to stop.

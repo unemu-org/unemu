@@ -4,7 +4,9 @@
 //! Models the OCI Distribution Specification 1.1 endpoints this client uses:
 //! `/v2/`, blob `HEAD`/`GET`, upload sessions (`POST`, `PATCH` with
 //! `Content-Range`, status `GET`, `PUT ?digest=`), cross-repository mount,
-//! manifest `HEAD`/`GET`/`PUT`/`DELETE`, `tags/list` and `_catalog` with `n`,
+//! manifest `HEAD`/`GET`/`PUT`/`DELETE` (a manifest whose media type the
+//! `Accept` header leaves out is not found, as distribution/registry answers
+//! for an OCI image index), `tags/list` and `_catalog` with `n`,
 //! `last` and `Link` paging, or a registry without a catalog. Basic
 //! authentication follows RFC 7617; a policy can answer with Bearer
 //! challenges instead. Blob downloads honour
@@ -249,11 +251,23 @@ impl MockRegistry {
 
     /// Point a tag at a manifest, as another client would.
     pub fn seed_manifest(&self, repository: &str, tag: &str, bytes: &[u8]) -> Digest {
+        self.seed_manifest_as(repository, tag, image_store::media_type::MANIFEST, bytes)
+    }
+
+    /// Point a tag at a manifest of another media type, such as an OCI image
+    /// index or a Docker manifest list, as another tool would.
+    pub fn seed_manifest_as(
+        &self,
+        repository: &str,
+        tag: &str,
+        media_type: &str,
+        bytes: &[u8],
+    ) -> Digest {
         let digest = Digest::of(bytes);
         let mut state = self.state();
         state.manifests.insert(
             (repository.into(), digest.to_string()),
-            (image_store::media_type::MANIFEST.into(), bytes.to_vec()),
+            (media_type.into(), bytes.to_vec()),
         );
         state
             .tags
@@ -835,11 +849,13 @@ fn manifest(state: &mut State, request: &Request, repository: &str, reference: &
                 .get(&key(&d))
                 .map(|m| (d.clone(), m.clone()))
         }) {
-            Some((digest, (media_type, bytes))) => Response::new(200)
-                .header("Content-Type", media_type)
-                .header("Docker-Content-Digest", digest)
-                .body(bytes),
-            None => Response::error(404, "MANIFEST_UNKNOWN"),
+            Some((digest, (media_type, bytes))) if accepts(request, &media_type) => {
+                Response::new(200)
+                    .header("Content-Type", media_type)
+                    .header("Docker-Content-Digest", digest)
+                    .body(bytes)
+            }
+            _ => Response::error(404, "MANIFEST_UNKNOWN"),
         },
         "PUT" => {
             let digest = Digest::of(&request.body).to_string();
@@ -886,6 +902,17 @@ fn manifest(state: &mut State, request: &Request, repository: &str, reference: &
         }
         _ => Response::error(405, "UNSUPPORTED"),
     }
+}
+
+/// Content negotiation as distribution/registry applies it to an OCI image
+/// index: a manifest whose media type the `Accept` header leaves out is not
+/// found. A request without `Accept` takes any type.
+fn accepts(request: &Request, media_type: &str) -> bool {
+    request.header("accept").is_none_or(|accept| {
+        accept
+            .split(',')
+            .any(|range| range.split(';').next().unwrap_or_default().trim() == media_type)
+    })
 }
 
 fn page(

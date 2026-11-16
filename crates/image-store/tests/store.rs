@@ -1547,6 +1547,127 @@ fn version_tags_never_move_and_other_tags_move_only_from_the_confirmed_digest() 
     );
 }
 
+/// Neutral installation media: every medium is a floppy.
+struct Floppies;
+impl image_store::media_set::MediaFormats for Floppies {
+    fn platform(&self) -> &str {
+        "zx-spectrum"
+    }
+    fn validate_name(&self, _: &str) -> Result<()> {
+        Ok(())
+    }
+    fn validate_format(&self, _: &toml::Table, _: u64) -> Result<&'static str> {
+        Ok(mt::FLOPPY)
+    }
+}
+
+/// Store an installation media set of one floppy holding `label`, untagged.
+fn media_set(store: &Store, label: &[u8]) -> Descriptor {
+    use image_store::media_set::{Config, Medium};
+    let medium = put(store, mt::FLOPPY, label);
+    let config = Config {
+        schema: 1,
+        platform: "zx-spectrum".into(),
+        media: vec![Medium {
+            id: "disk-1".into(),
+            label: "Disk 1".into(),
+            format: toml::Table::new(),
+            blob: medium.digest.clone(),
+        }],
+        extras: Vec::new(),
+    };
+    let config = put(store, mt::MEDIA_SET_CONFIG, &config.encode().unwrap());
+    let metadata = put(
+        store,
+        mt::METADATA,
+        br#"{"schema":1,"platform":"zx-spectrum","titles":[]}"#,
+    );
+    let manifest = Manifest::new_media_set("zx-spectrum", config, vec![medium, metadata]).unwrap();
+    store.import_manifest(&manifest).unwrap()
+}
+
+#[test]
+fn media_set_tags_never_move_unless_they_are_aliases() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let sets = image_store::media_set::Validator(&Floppies);
+    let first = media_set(&store, b"first set");
+    let second = media_set(&store, b"second set");
+    for tag in ["sets:1.4", "sets:1.4-registered-720k-r2", "sets:latest"] {
+        store.update_tag(tag, &first, None, &sets).unwrap();
+    }
+    // Not even the confirmed current digest moves a set's tag, and the
+    // refusal offers the next revision.
+    for (tag, revision) in [
+        ("sets:1.4", "sets:1.4-r2"),
+        ("sets:1.4-registered-720k-r2", "sets:1.4-registered-720k-r3"),
+    ] {
+        let error = store
+            .update_tag(tag, &second, Some(&first.digest), &sets)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("never move") && error.contains(revision),
+            "{error}"
+        );
+        for expected in [None, Some(&first.digest)] {
+            let error = store
+                .check_tag_target(tag, expected, None)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("never move"), "{error}");
+        }
+        assert_eq!(store.tag_descriptor(tag).unwrap().digest, first.digest);
+        // Writing the same digest again is not a move.
+        store
+            .update_tag(tag, &first, Some(&first.digest), &sets)
+            .unwrap();
+    }
+    // An alias moves from the confirmed digest.
+    store
+        .check_tag_target("sets:latest", Some(&first.digest), None)
+        .unwrap();
+    store
+        .update_tag("sets:latest", &second, Some(&first.digest), &sets)
+        .unwrap();
+    assert_eq!(
+        store.tag_descriptor("sets:latest").unwrap().digest,
+        second.digest
+    );
+    // A machine image keeps the version-tag rule: a tag of the same shape
+    // moves from the confirmed digest.
+    let provider = Provider("zx-spectrum");
+    let (machine, _) = fixture(&store, b"machine");
+    let (other, _) = fixture(&store, b"other machine");
+    let machine = publish(&store, &machine, "lab:1.4");
+    let other = store.import_manifest(&other).unwrap();
+    store
+        .check_tag_target("lab:1.4", Some(&machine.digest), None)
+        .unwrap();
+    store
+        .update_tag("lab:1.4", &other, Some(&machine.digest), &provider)
+        .unwrap();
+    // But no set takes its tag, and it takes no set's tag.
+    let error = store
+        .update_tag("lab:1.4", &second, Some(&other.digest), &sets)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("never move"), "{error}");
+    let error = store
+        .update_tag("sets:1.4", &other, Some(&first.digest), &provider)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("never move"), "{error}");
+    assert_eq!(
+        store.tag_descriptor("lab:1.4").unwrap().digest,
+        other.digest
+    );
+    assert_eq!(
+        store.tag_descriptor("sets:1.4").unwrap().digest,
+        first.digest
+    );
+}
+
 #[test]
 fn a_deleted_version_tag_can_name_only_its_old_digest_again() {
     let dir = Temp::new();

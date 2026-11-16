@@ -548,24 +548,27 @@ impl Store {
                 .flatten()
                 .is_some_and(|d| tag_name(&d) == Some(name))
         });
-        let current = position
+        let current_image = position
             .map(|i| {
                 local_descriptor(&index.manifests[i])
                     .and_then(|d| d.ok_or_else(|| invalid("invalid local tag")))
             })
-            .transpose()?
-            .map(|d| d.digest);
+            .transpose()?;
+        let current = current_image.as_ref().map(|d| d.digest.clone());
         if current.as_ref() != expected {
             return Err(Error::Conflict { current });
         }
         // Even a caller that confirmed the current digest cannot move a version
-        // tag, nor bind a deleted one to another image.
+        // tag, nor bind a deleted one to another image, nor move a set's tag.
         let retired = self.read_retired_inner()?;
         refuse_version_move(
             name,
             current.as_ref().or(retired.tags.get(name)),
             Some(&manifest.digest),
         )?;
+        if let Some(current) = current_image.filter(|d| d.digest != manifest.digest) {
+            self.refuse_media_set_move(name, &current, Some(manifest))?;
+        }
         let mut descriptor = manifest.clone();
         descriptor
             .annotations
@@ -1163,6 +1166,38 @@ fn refuse_version_move(
     }
 }
 
+impl Store {
+    /// A tag of an installation media set names one set forever unless it is
+    /// an alias ([`crate::media_set::is_alias_tag`]), even when it is not a
+    /// semantic version: sets are pulled by tag, and a moved tag would hand
+    /// different media out under a name already in use. The tag cannot move
+    /// away from a set, and no set can take a tag that names another image.
+    /// Caller holds the store lease.
+    fn refuse_media_set_move(
+        &self,
+        name: &str,
+        current: &Descriptor,
+        replacement: Option<&Descriptor>,
+    ) -> Result<()> {
+        let (repository, tag) = name.rsplit_once(':').unwrap_or(("", name));
+        if crate::media_set::is_alias_tag(tag) {
+            return Ok(());
+        }
+        let is_set = |image: &Descriptor| -> Result<bool> {
+            let bytes = self.read_inner(image, MAX_SMALL_BLOB)?;
+            Ok(Manifest::decode_for_summary(&bytes)?.artifact_type() == media_type::MEDIA_SET)
+        };
+        if is_set(current)? || replacement.map(is_set).transpose()? == Some(true) {
+            return Err(invalid(format!(
+                "{name} already names {}; tags of installation media sets never move; tag the changed set with a new revision such as {repository}:{}",
+                current.digest,
+                crate::media_set::next_revision(tag)
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// OCI Distribution Specification, Pulling Manifests: repository components are
 /// `[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*` and tags are
 /// `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}`.
@@ -1276,8 +1311,9 @@ impl Store {
     }
 
     /// Reject a tag update before an expensive ingest: an occupied version tag
-    /// never moves, and any other occupied tag moves only from the digest the
-    /// user confirmed (`expected`). An absent tag needs `expected = None`.
+    /// never moves, nor does an occupied tag of an installation media set that
+    /// is not an alias, and any other occupied tag moves only from the digest
+    /// the user confirmed (`expected`). An absent tag needs `expected = None`.
     /// Publication still uses compare-and-swap to catch concurrent changes.
     /// A deleted version tag still refuses any digest other than `replacement`
     /// (`None` when the new image is not known yet).
@@ -1288,20 +1324,22 @@ impl Store {
         replacement: Option<&Digest>,
     ) -> Result<()> {
         validate_tag(name)?;
-        let current = match self.tag_descriptor(name) {
-            Ok(current) => Some(current.digest),
+        let current_image = match self.tag_descriptor(name) {
+            Ok(current) => Some(current),
             Err(Error::TagNotFound(_)) => None,
             Err(error) => return Err(error),
         };
-        let retired = {
-            let _lease = self.lease()?;
-            self.read_retired_inner()?
-        };
+        let current = current_image.as_ref().map(|d| d.digest.clone());
+        let _lease = self.lease()?;
+        let retired = self.read_retired_inner()?;
         refuse_version_move(
             name,
             current.as_ref().or(retired.tags.get(name)),
             replacement.filter(|_| current.is_none()),
         )?;
+        if let Some(current) = &current_image {
+            self.refuse_media_set_move(name, current, None)?;
+        }
         if current.as_ref() != expected {
             return Err(Error::Conflict { current });
         }

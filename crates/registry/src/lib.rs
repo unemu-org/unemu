@@ -106,6 +106,15 @@ pub enum Error {
         current: Digest,
         new: Digest,
     },
+    #[error(
+        "tag {tag} already names {current}; tags of installation media sets never move, even with --move; publish {new} under a new revision tag such as {}",
+        image_store::media_set::next_revision(.tag)
+    )]
+    ImmutableMediaSetTag {
+        tag: String,
+        current: Digest,
+        new: Digest,
+    },
     #[error("tag {tag} names {current}; moving it to {new} needs confirmation (--move)")]
     TagMoveNeedsConfirmation {
         tag: String,

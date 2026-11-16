@@ -464,6 +464,15 @@ reference uses the local tag. `pull` tags locally in short form (no host, no
 `unemu/`), or `--tag`; a digest pull needs `--tag`. `--create` initializes a
 missing store.
 
+`push` leaves a tag that already names the image alone and never moves a
+version tag. Nor does it move a tag of an installation media set that starts
+with a digit (`1.4`, `1.4-720k`, `1.4-registered-720k-r2`), even with
+`--move`: push the changed set under the revision tag the refusal suggests
+(`1.4-r2`). Any other tag that names another image, `latest` included, moves
+only with `--move`; without it the refusal shows both digests. A tag counts
+as taken whatever manifest or index type it names, an image index pushed by
+another tool included.
+
 Firmware packages (`firmware/<catalogue-id>:1`) push and pull like machine
 images and media sets; a pulled package lists in `image firmware ls`. A
 package whose layers are all open may go to any configured registry,

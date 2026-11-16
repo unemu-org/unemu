@@ -180,7 +180,17 @@ pub struct Client {
     authorization: Mutex<Option<String>>,
 }
 
+/// The OCI image manifest, the only manifest type this client decodes.
 const ACCEPT_MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
+/// Every manifest and index type a tag may name: OCI image manifest and image
+/// index (OCI Image Format 1.1, "Media Types"), Docker Image Manifest V2
+/// Schema 2 and its manifest list. A registry may answer `404` for a tag whose
+/// manifest type the `Accept` header leaves out, or substitute one platform's
+/// manifest for a list, so asking which digest a tag names accepts them all.
+pub(crate) const ACCEPT_ANY_MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json, \
+     application/vnd.oci.image.index.v1+json, \
+     application/vnd.docker.distribution.manifest.v2+json, \
+     application/vnd.docker.distribution.manifest.list.v2+json";
 const MAX_REDIRECTS: usize = 5;
 
 impl Client {
@@ -475,10 +485,13 @@ impl Client {
         }
     }
 
-    /// The digest a manifest reference names, or `None` when absent.
+    /// The digest a manifest reference names, or `None` when absent. Any OCI
+    /// or Docker manifest or index type counts, so a tag that names an image
+    /// index or a Docker manifest list is present: push decides from this
+    /// whether a tag is new.
     pub fn manifest_digest(&self, repository: &str, reference: &str) -> Result<Option<Digest>> {
         let target = format!("/v2/{repository}/manifests/{reference}");
-        let accept = [("Accept", ACCEPT_MANIFEST.to_owned())];
+        let accept = [("Accept", ACCEPT_ANY_MANIFEST.to_owned())];
         let response = self.send(Method::Head, &target, &accept, &Body::Empty)?;
         match response.status {
             200 => match response.header("docker-content-digest") {
@@ -486,18 +499,31 @@ impl Client {
                     .parse()
                     .map(Some)
                     .map_err(|_| Error::Protocol("invalid Docker-Content-Digest".into())),
-                None => Ok(self.manifest(repository, reference)?.map(|m| m.digest)),
+                None => Ok(self
+                    .fetch_manifest(repository, reference, ACCEPT_ANY_MANIFEST)?
+                    .map(|m| m.digest)),
             },
             404 => Ok(None),
             _ => Err(self.status_error(Method::Head, &target, response)),
         }
     }
 
-    /// Fetch a manifest of at most 1 MiB and hash its exact bytes. A digest
-    /// reference or a `Docker-Content-Digest` header must match those bytes.
+    /// Fetch an OCI image manifest of at most 1 MiB and hash its exact bytes.
+    /// A digest reference or a `Docker-Content-Digest` header must match those
+    /// bytes. Only the OCI image manifest type is accepted, so a reference that
+    /// names another manifest or index type may be `None`.
     pub fn manifest(&self, repository: &str, reference: &str) -> Result<Option<FetchedManifest>> {
+        self.fetch_manifest(repository, reference, ACCEPT_MANIFEST)
+    }
+
+    fn fetch_manifest(
+        &self,
+        repository: &str,
+        reference: &str,
+        accept: &str,
+    ) -> Result<Option<FetchedManifest>> {
         let target = format!("/v2/{repository}/manifests/{reference}");
-        let accept = [("Accept", ACCEPT_MANIFEST.to_owned())];
+        let accept = [("Accept", accept.to_owned())];
         let response = self.send(Method::Get, &target, &accept, &Body::Empty)?;
         match response.status {
             200 => {}

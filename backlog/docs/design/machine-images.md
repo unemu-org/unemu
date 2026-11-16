@@ -957,8 +957,15 @@ the manifest and tag last. The transport implementation must:
 - `HEAD` every referenced blob before the manifest `PUT`: zot does not verify
   blob existence for manifests with custom config media types.
 - Check the target tag digest before the manifest `PUT`: skip the same digest
-  and refuse a different digest for version tags. Moving aliases follow the
-  explicit-force policy below.
+  and refuse a different digest for immutable tags (version tags, and the
+  fixed tags of installation media sets). Moving aliases follow the
+  explicit-force policy below. This check and its repeat just before the
+  `PUT` send every manifest and index type in `Accept` (OCI image manifest and
+  image index, Docker schema 2 manifest and manifest list): a registry may
+  answer `404` for a tag whose type the request leaves out (distribution
+  does so for an OCI image index) or substitute one platform's manifest for a
+  list, and a push would then take an occupied tag for a new one. Pull, which
+  decodes the manifest, still asks for the OCI image manifest only.
 - Write deterministic manifest bytes without a created timestamp, including
   `org.opencontainers.image.created`.
 - Always pass `n` when listing repositories or tags and follow pagination
@@ -1036,10 +1043,14 @@ publishing proprietary bytes by accident:
   desktop page share one accounts implementation and one preferences lock, so
   with a system store a login in one is visible in the other. Secrets are not
   wiped from process memory after use; that is out of scope for now.
-- **Version tags are immutable.** If a tag of semantic-version shape already
-  names another image digest, refuse the push even with force; retrying the same
-  digest is idempotent. Any other tag moves only after an explicit confirmation
-  showing the old and the new digest. OCI has no tag compare-and-swap:
+- **Version tags are immutable, and so are the fixed tags of installation
+  media sets.** If a tag of semantic-version shape already names another image
+  digest, refuse the push even with force; retrying the same digest is
+  idempotent. A tag of an installation media set that is not an alias (§5.2)
+  is refused the same way, whether the set is the image pushed or the one the
+  tag names now, and the refusal suggests the next revision tag. Any other tag
+  moves only after an explicit confirmation showing the old and the new
+  digest. OCI has no tag compare-and-swap:
   preflight-read the current digest, but do not claim this closes a remote race.
   Enable registry-side version-tag immutability where available; a client
   preflight alone cannot enforce it against concurrent writers.
@@ -1358,8 +1369,20 @@ machines and tags. Record source manifest digests in the machine manifest's
 set digests in first-use order. This is provenance only: loading the machine
 never fetches a source set or needs its tag. It pins the embedded media, not a
 mutable external reference. §5.1 push/pull, private-registry rules, version-tag
-policy, upload resumption, complete-closure verification and tag-last publication
-apply unchanged to sets. Private OCI archives carry the same verified closure.
+policy (extended by the tag rule below), upload resumption, complete-closure
+verification and tag-last publication apply to sets. Private OCI archives carry the same verified closure.
+
+**Tags.** Set tags follow `<upstream version>[-<edition>][-<format>][-rN]`
+(`freedos:1.4`, `1.4-720k`, `1.4-r2`, `1.4-registered-720k-r2`), which is not
+semantic versioning, yet they are immutable too: once a tag whose first
+character is an ASCII digit names a set, neither the local store nor a push
+moves it, not even with `--move` or a confirmed current digest, and no set
+takes such a tag from another image. The refusal suggests the next revision
+(`1.4-r2`, then `1.4-r3`). A tag that does not start with a digit, `latest`
+included, is an alias and moves after the usual confirmation. Machine images
+and firmware packages keep the version-tag rule alone. Unlike a version tag,
+a deleted set tag is not remembered in the local store; the registry still
+refuses to move it.
 
 **Import and library.** Import installation media… accepts a folder or an
 explicit file list. A folder preview enumerates candidate image files in stable
