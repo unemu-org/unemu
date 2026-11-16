@@ -409,10 +409,7 @@ pub(super) struct BlankDisk {
 impl Default for BlankDisk {
     fn default() -> Self {
         Self {
-            directory: crate::default_machine()
-                .parent()
-                .unwrap_or(Path::new("."))
-                .to_path_buf(),
+            directory: crate::machines_dir().unwrap_or_else(|| PathBuf::from(".")),
             output: String::new(),
             format: 0,
             chs: "615/4/17".into(),

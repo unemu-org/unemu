@@ -816,7 +816,7 @@ UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test ide_freedos_golden
 UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test at_pm_test_golden -- --include-ignored --nocapture
 cargo test -p devices                        # one crate's tests
 cargo build --offline -p window --bin unemupc
-cargo run --offline -p window --bin unemupc # default machines/at-freedos.toml
+cargo run --offline -p window --bin unemupc # lists machines/, selects at-freedos.toml
 cargo run --offline -p window --bin unemupc -- --machine machines/local.toml --allow-unlisted-firmware
 cargo tree --offline -i window               # window is a leaf frontend
 ```
@@ -1061,16 +1061,31 @@ For machine files the dialog offers Import image…. Edit > Delete tag… confir
 removal of that tag only; shared bases remain. These menu commands have no new
 key chords; existing shell shortcuts retain their platform mapping.
 
-The window loads `machines/at-freedos.toml` from the workspace recorded by
-`CARGO_MANIFEST_DIR` at build time, independently of the current directory.
+The window lists the machine files of the library's machines directory and
+selects its `at-freedos.toml` when that file exists (a fresh install selects
+nothing): `UNEMUPC_MACHINES_DIR` when set; else, when cargo started the program,
+the tree's `machines/` (cargo names the crate's directory in
+`CARGO_MANIFEST_DIR` at run time, so nothing of the tree is compiled in); else
+`unemupc/machines` in the platform data directory (`~/Library/Application
+Support` on macOS, `$XDG_DATA_HOME` or `~/.local/share` on Linux,
+`%LOCALAPPDATA%` on Windows). `--help` prints the directory in use. The
+desktop's ROM folders are its preferences, `--rom-dir`, `UNEMUPC_USER_ROMS_DIR`
+and, under cargo, the tree's `vendor/user-roms`. A machine file outside any
+`machines` directory keeps its Settings… child in the `local/` folder of the
+library's machines directory; with no data directory and no
+`UNEMUPC_MACHINES_DIR`, Settings refuses with a message instead of writing into
+the working directory.
 `--machine FILE` is relative to the current directory; image and inheritance
-paths inside it are relative to their defining file. A missing default file is
-an error naming that path. Running without the build workspace needs an explicit `--machine`.
+paths inside it are relative to their defining file. A machine named with
+`--machine` that does not exist is listed and selected, so its error shows.
 `--display CARD` chooses a display by id; the default is the first display in
 file order (MDA in the shipped machine). Positional BIOS/floppy paths are removed;
 use an extending file as shown in `machines/README.md`. From outside the
 workspace, Cargo also needs `--manifest-path /path/to/workspace/Cargo.toml`.
-`--help`, `--version` and `--about` include the embedded fonts' attribution.
+`--help`, `--version` and `--about` include the embedded fonts' attribution and
+the Nuked-OPL3 notice; `--version` and `--about` also print the licence, the
+source URL and where the full licence texts are. `upcli --version` (or
+`--about`) prints the same for the command line.
 On Linux the window requires the host's X11 or Wayland client libraries at run
 time; a bare Nix devShell may not put them on the dynamic loader's search path.
 
@@ -1331,6 +1346,42 @@ fetch script instead. The `goldens` gate always sets this variable, so a failed 
 incomplete fixture fetch cannot silently pass CI. The µPD765 FAT12 test follows
 the same policy when `mformat` is missing and points to `nix develop`.
 
+### Publication guard
+
+`bash scripts/publication-guard.sh` (the `guard` gate and a pre-commit hook)
+scans tracked and untracked, non-ignored text with plain bash, grep, sed and
+awk. It fails on private filesystem paths (home directories, macOS volumes and
+temporary directories, Windows user profiles, the root user's home and mounts
+under mnt; the script lists the exact forms), e-mail addresses outside
+`example.org`, `example.com`, `.example`
+hosts and the maintainer's and agent trailer addresses (an SSH login such as
+`git@github.com:org/repo` is not an address), RFC 1918 and carrier-grade NAT
+IPv4 addresses outside the registry tests' `10.0.0.1` (CIDR ranges are not
+addresses), `Cargo.lock` sources other than crates.io and github.com git
+repositories, LGPL headers outside the OPL3 port and the project's former name.
+Private hostnames never appear in the repository: list them, comma-separated,
+in `PUBLICATION_GUARD_PRIVATE_HOSTS`, for example
+`PUBLICATION_GUARD_PRIVATE_HOSTS=nas.example,lab.example bash scripts/publication-guard.sh`.
+That check runs only locally, where someone sets the variable, never in CI, and
+a hit prints only the file and line.
+
+### Third-party licences
+
+`bash scripts/third-party-licenses.sh [OUTPUT [TARGET]]`, run in the devShell,
+writes `THIRD-PARTY-LICENSES.md` (gitignored) for the release binaries: the
+repository's own third-party components (Nuked-OPL3, the fonts, the logo) and
+every crate `unemupc` and `upcli` link for the exact `Cargo.lock`, with the
+licence files of each published crate (and, for a git dependency, of its
+repository root), identical texts written once. A crate that publishes no
+licence file is listed with its `authors` as copyright holders, and the
+standard texts of its licences come from `LICENSES/` (MIT, Apache-2.0, Zlib).
+`OUTPUT` is relative to the calling directory. `TARGET` (a target triple)
+limits the crates to one platform's build; without it every platform's crates
+are listed. It needs only cargo and jq; set `CARGO_NET_OFFLINE=true` to read
+the dependency sources from cargo's cache only. The release build sets
+`UNEMUPC_SOURCE_REV` to its tag or commit, so `--about` names the exact source
+(`<repository>/tree/<rev>`); without it, the repository and the version.
+
 ### User-supplied ROM tests
 
 This local opt-in lane is never called by CI; CI never has proprietary firmware:
@@ -1344,7 +1395,8 @@ cargo test --locked --profile test --workspace --no-fail-fast -- --ignored user_
 These tests are `#[ignore]` with names starting with `user_rom_`. The shared
 `assembly::require_user_firmware!(entry_id, board.firmware_catalogue())` helper
 is available through assembly's `test-support` feature. It searches recursively
-in `vendor/user-roms/` first, then the optional directory
+in `vendor/user-roms/` first (found from the `CARGO_MANIFEST_DIR` that `cargo
+test` sets), then the optional directory
 `UNEMUPC_USER_ROMS_DIR`. Set it to an absolute path to a folder of unpacked,
 plain dump files, rather than a volume root or home directory. Archives such as
 MAME `.zip` sets are not unpacked. Names and subdirectories do not matter;

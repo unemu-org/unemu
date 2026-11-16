@@ -12,6 +12,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 const USAGE: &str = "usage: upcli --boot (Real16 timer demo)
+       upcli --version | --about (licence, source and third-party notices)
        upcli --bios PATH [--allow-unlisted-firmware]
        upcli machine check FILE [--allow-unlisted-firmware] [--rom-dir DIR]...
        upcli run --machine FILE [--store DIR | --no-store] [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--print CARD] [--allow-unlisted-firmware]
@@ -81,6 +82,8 @@ pub enum FirmwareStore {
 pub enum Command {
     Image(crate::image::ImageCommand),
     Usage,
+    /// `--version` or `--about`: the licence and third-party notices.
+    About,
     Boot,
     Bios {
         path: PathBuf,
@@ -126,6 +129,11 @@ pub fn parse(args: &[OsString]) -> Result<Command, &'static str> {
     }
     if args.first().is_some_and(|arg| arg == "image") {
         return crate::image::parse(&args[1..]).map(Command::Image);
+    }
+    if let [arg] = args {
+        if arg == "--version" || arg == "--about" {
+            return Ok(Command::About);
+        }
     }
     let mut options = assembly::AssemblyOptions::default();
     let mut frontend = Vec::new();
@@ -480,6 +488,10 @@ pub fn run_with_firmware_sources(
             .write_all(USAGE.as_bytes())
             .map(|_| 0)
             .map_err(ToolError::from),
+        Command::About => output
+            .write_all(crate::about::upcli_notice().as_bytes())
+            .map(|_| 0)
+            .map_err(ToolError::from),
         Command::Boot => crate::run_boot(crate::BOOT_PROGRAM)
             .map_err(|e| ToolError::Io(io::Error::other(e.to_string())))
             .and_then(|serial| {
@@ -752,6 +764,34 @@ mod tests {
         }
         let former = crate::preferences::FORMER_DIRECTORY;
         assert!(!usage.to_ascii_lowercase().contains(former), "{usage}");
+    }
+
+    #[test]
+    fn version_and_about_name_the_licence_source_and_third_party_notices() {
+        for option in ["--version", "--about"] {
+            let mut output = Vec::new();
+            let mut errors = Vec::new();
+            assert_eq!(
+                run(&[option.into()], &mut output, &mut errors),
+                0,
+                "{option}"
+            );
+            assert!(errors.is_empty(), "{option}");
+            let text = String::from_utf8(output).unwrap();
+            assert!(
+                text.starts_with(&format!("upcli {}\n", env!("CARGO_PKG_VERSION"))),
+                "{text}"
+            );
+            for expected in [
+                "AGPL-3.0-or-later",
+                "https://github.com/unemu-org/unemupc",
+                "Nuked-OPL3",
+                "LGPL-2.1-or-later",
+                "THIRD-PARTY-LICENSES.md",
+            ] {
+                assert!(text.contains(expected), "{option}: {expected}");
+            }
+        }
     }
 
     #[test]

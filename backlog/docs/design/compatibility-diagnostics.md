@@ -449,7 +449,6 @@ above, not from the websites' descriptions.
 - [XTRAMTEST source](https://github.com/ki3v/xtramtest).
 - NASM [`asm/nasm.c`](https://github.com/netwide-assembler/nasm/blob/master/asm/nasm.c)
   (`__DATE__` handling inspected in the spike).
-- WinWorld [IBM PC Diagnostics AT 2.x catalogue](https://winworldpc.com/product/ibm-pc-diagnostics/at-2x).
 - x86jit [`x86jit-core/src/lift/mod.rs` at 8979fc9](https://github.com/unemu-org/x86jit/blob/8979fc95cd81d73763d50d1d627b40ded3f8f284/x86jit-core/src/lift/mod.rs).
 
 ## IBM 5170 POST measurement

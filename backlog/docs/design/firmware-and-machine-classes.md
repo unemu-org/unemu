@@ -945,7 +945,7 @@ are read (assembly already validates file lengths after reading). The lowered
 | 3 | The CPU model is a socket option of the board | `CpuNotOnBoard` | `board "ibm-5160" takes cpu 8088 or v20, not "80286"` |
 | 4 | The CPU model is implemented by the core | `CpuModelUnavailable` | `cpu model "8088" is reserved: the CPU core does not model it yet (x86jit xj-50w.2)` |
 | 5 | The board model is not reserved | `BoardUnavailable` | `board "ibm-5160" is reserved until an XT-class CPU model exists` |
-| 6 | The firmware hash is in the board's catalogue | `FirmwareNotListed` | `bios image (sha256 6d50…) is not a known image for board "ibm-5170"; known: kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; see vendor/user-roms/README.md)` |
+| 6 | The firmware hash is in the board's catalogue | `FirmwareNotListed` | `bios image (sha256 6d50…) is not a known image for board "ibm-5170"; known: kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; add its ROM folder in Preferences or Import ROM folder…, or pass --rom-dir)` |
 | 7 | The catalogue entry fits this board | `FirmwareBoardMismatch` | `firmware "glabios-0.4.3-5160" is built for ibm-5160, not ibm-5170` |
 | 8 | The CPU meets the firmware minimum | `FirmwareNeedsCpu` | `firmware "seabios-1.17.0-isapc" needs an 80386 or later; cpu is 80286` |
 | 9 | The firmware's required parts are present | `FirmwareRequiresDevice` | `firmware "bochs-rombios-legacy" requires a video-bios option ROM at 0xC0000; none is configured` |

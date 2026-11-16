@@ -6,7 +6,13 @@ use crate::{invalid, Result, Store};
 use std::path::{Path, PathBuf};
 
 pub fn default_store_root() -> Result<PathBuf> {
-    platform_store_root(
+    Ok(data_directory()?.join("unemu"))
+}
+/// The platform data directory the store and other host data live under:
+/// `%LOCALAPPDATA%` on Windows, Application Support on macOS, otherwise an
+/// absolute `XDG_DATA_HOME` or `~/.local/share`.
+pub fn data_directory() -> Result<PathBuf> {
+    platform_data_directory(
         std::env::var_os("HOME").map(PathBuf::from),
         std::env::var_os("XDG_DATA_HOME").map(PathBuf::from),
         std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
@@ -14,7 +20,7 @@ pub fn default_store_root() -> Result<PathBuf> {
         cfg!(windows),
     )
 }
-fn platform_store_root(
+fn platform_data_directory(
     home: Option<PathBuf>,
     xdg: Option<PathBuf>,
     local: Option<PathBuf>,
@@ -31,7 +37,7 @@ fn platform_store_root(
             .or_else(|| home.map(|p| p.join(".local/share")))
             .ok_or_else(|| invalid("data directory is unavailable"))?
     };
-    Ok(root.join("unemu"))
+    Ok(root)
 }
 /// Machine-file sessions do not have an image workspace.
 pub fn machine_media_dir(machine: &Path) -> std::io::Result<PathBuf> {
@@ -86,22 +92,27 @@ mod tests {
     #[test]
     fn review_platform_defaults_use_data_directories() {
         assert_eq!(
-            platform_store_root(Some("/data/user".into()), None, None, true, false).unwrap(),
-            Path::new("/data/user/Library/Application Support/unemu")
+            platform_data_directory(Some("/data/user".into()), None, None, true, false).unwrap(),
+            Path::new("/data/user/Library/Application Support")
         );
         assert_eq!(
-            platform_store_root(None, Some("/data/xdg".into()), None, false, false).unwrap(),
-            Path::new("/data/xdg/unemu")
+            platform_data_directory(None, Some("/data/xdg".into()), None, false, false).unwrap(),
+            Path::new("/data/xdg")
         );
         for xdg in [None, Some(PathBuf::new()), Some("relative".into())] {
             assert_eq!(
-                platform_store_root(Some("/data/user".into()), xdg, None, false, false).unwrap(),
-                Path::new("/data/user/.local/share/unemu")
+                platform_data_directory(Some("/data/user".into()), xdg, None, false, false)
+                    .unwrap(),
+                Path::new("/data/user/.local/share")
             );
         }
         assert_eq!(
-            platform_store_root(None, None, Some("C:/Data".into()), false, true).unwrap(),
-            Path::new("C:/Data/unemu")
+            platform_data_directory(None, None, Some("C:/Data".into()), false, true).unwrap(),
+            Path::new("C:/Data")
+        );
+        assert_eq!(
+            default_store_root().unwrap(),
+            data_directory().unwrap().join("unemu")
         );
     }
 }

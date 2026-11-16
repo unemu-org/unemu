@@ -39,6 +39,16 @@ pub(crate) struct SettingsModel {
 
 impl SettingsModel {
     pub fn open(path: &Path, read_only: bool) -> Result<Self, String> {
+        Self::open_with_library(path, read_only, crate::machines_dir())
+    }
+
+    /// [`Self::open`] with the library's machines directory given, which holds
+    /// the custom layer of a file outside any `machines` directory.
+    fn open_with_library(
+        path: &Path,
+        read_only: bool,
+        library: Option<PathBuf>,
+    ) -> Result<Self, String> {
         let parent = fs::canonicalize(path).map_err(|e| e.to_string())?;
         let (document, origins) = machine_file::resolve(&parent).map_err(|e| e.to_string())?;
         let mut draft = document
@@ -52,12 +62,23 @@ impl SettingsModel {
                 .to_string_lossy()
                 .into_owned()
         });
+        // A file outside any `machines` directory keeps its custom layer in the
+        // directory the library lists, which need not exist until the first save.
+        // Without one (no data directory), nothing may land in the working directory.
         let root = parent
             .ancestors()
             .find(|path| path.file_name().is_some_and(|name| name == "machines"))
             .map(Path::to_path_buf)
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines"));
-        let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
+            .or(library)
+            .ok_or(
+                "Settings cannot save a custom machine here: the host has no data directory. \
+                 Set UNEMUPC_MACHINES_DIR to a folder for machine files.",
+            )?;
+        let root = match fs::canonicalize(&root) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => std::path::absolute(&root),
+            result => result,
+        }
+        .map_err(|e| e.to_string())?;
         let raw = fs::read_to_string(&parent).map_err(|error| error.to_string())?;
         let existing_layer = if parent
             .extension()
@@ -736,6 +757,38 @@ mod tests {
         fs::write(&parent, "schema=1\nname='Example'\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='bios.bin'\nprovides=['floppy']\n[[card]]\nkind='sb16'\n[[card]]\nkind='lotech-ems'\nframe=0xD000\n").unwrap();
         let model = SettingsModel::open(&parent, false).unwrap();
         (temp, model)
+    }
+
+    /// A machine file outside any `machines` directory keeps its custom layer
+    /// in the library's machines directory, never in the tree the program was
+    /// built in, and with no such directory Settings refuses instead of
+    /// writing into the working directory.
+    #[test]
+    fn custom_layer_of_a_file_outside_machines_stays_out_of_the_build_tree() {
+        let temp = assembly::test_support::TempDir::new("settings-outside-machines");
+        fs::write(temp.path().join("bios.bin"), vec![0xF4; 32768]).unwrap();
+        let parent = temp.path().join("example.toml");
+        fs::write(&parent, "schema=1\nname='Example'\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='bios.bin'\nprovides=['floppy']\n").unwrap();
+        // The release environment: no switch and no cargo, a data directory.
+        let library = crate::machines_dir_from(None, None, Some(temp.path().join("data")));
+        let model = SettingsModel::open_with_library(&parent, false, library).unwrap();
+        let expected = std::path::absolute(temp.path().join("data/unemupc/machines/local"))
+            .unwrap()
+            .join("example-custom.toml");
+        assert_eq!(model.target, expected);
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        assert!(
+            !model.target.starts_with(&root),
+            "{}",
+            model.target.display()
+        );
+        let refused = SettingsModel::open_with_library(&parent, false, None)
+            .err()
+            .unwrap();
+        assert!(refused.contains("UNEMUPC_MACHINES_DIR"), "{refused}");
     }
 
     #[test]

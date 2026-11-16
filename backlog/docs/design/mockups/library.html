@@ -181,7 +181,7 @@ button, input, select { font: inherit; color: inherit; }
     <span class="cell grow" id="status">Ready</span>
     <span class="cell" id="countCell"></span>
     <span class="cell">Store 412 GiB · shared 131 GiB saved</span>
-    <span class="cell">Registry: nas-zot (private)</span>
+    <span class="cell">Registry: nas.example (private)</span>
   </div>
 
   <div class="scrim" id="scrim">
@@ -218,7 +218,7 @@ button, input, select { font: inherit; color: inherit; }
     </div>
 
     <div class="dlg" id="dlgReg" role="dialog" aria-modal="true" aria-labelledby="rT" hidden>
-      <div class="titlebar"><span class="t" id="rT">Browse registry — nas-zot (private)</span><button class="tbtn" type="button" data-close aria-label="Close">×</button></div>
+      <div class="titlebar"><span class="t" id="rT">Browse registry — nas.example (private)</span><button class="tbtn" type="button" data-close aria-label="Close">×</button></div>
       <div class="bd">
         <div class="form" style="margin-bottom:8px"><label for="rFind">Search</label><input id="rFind" type="search" placeholder="repository name…"></div>
         <div class="reglist"><table><thead><tr><th>Repository</th><th>Tags</th><th>Title</th><th>Size</th><th></th></tr></thead><tbody id="regRows"></tbody></table></div>
@@ -301,7 +301,7 @@ button, input, select { font: inherit; color: inherit; }
       group('year', 'Decade', (function () { var m = {}; images.forEach(function (i) { var d = decade(i.year); m[d] = (m[d] || 0) + 1; }); return Object.keys(m).sort().map(function (k) { return [k, m[k]]; }); })(), 'year') +
       group('dev', 'Developer', facet('dev'), 'dev') +
       group('series', 'Series', facet('series'), 'series') +
-      '<li><div class="node" data-kind="registry" tabindex="0"><span class="tw blank"></span>Registry: nas-zot…</div></li>' +
+      '<li><div class="node" data-kind="registry" tabindex="0"><span class="tw blank"></span>Registry: nas.example…</div></li>' +
       '</ul>';
     $('tree').innerHTML = html;
   }

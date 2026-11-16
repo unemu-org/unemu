@@ -9,7 +9,9 @@ pub enum RootOrigin {
     Preferences,
     CommandLine,
     Environment,
-    Vendor,
+    /// The source tree's `vendor/user-roms` of a program cargo started; it is
+    /// skipped silently when missing.
+    SourceTree,
 }
 
 impl RootOrigin {
@@ -19,7 +21,7 @@ impl RootOrigin {
             Self::Preferences => "<preferences ROM folder>",
             Self::CommandLine => "<--rom-dir>",
             Self::Environment => "<UNEMUPC_USER_ROMS_DIR>",
-            Self::Vendor => "vendor/user-roms",
+            Self::SourceTree => "vendor/user-roms",
         }
     }
 }
@@ -40,20 +42,31 @@ impl FirmwareRoot {
     }
 }
 
-/// Environment/vendor defaults for the GUI and legacy required-ROM test lane.
-/// The command-line frontend deliberately uses only explicitly supplied roots.
+/// The GUI's ROM folders beyond its preferences and `--rom-dir`: the
+/// `UNEMUPC_USER_ROMS_DIR` switch, then the source tree's `vendor/user-roms`
+/// when cargo started the program. Nothing of the build tree is compiled in,
+/// so a release binary has only the switch. The command-line frontend
+/// deliberately uses only explicitly supplied roots.
 pub fn default_firmware_roots() -> Vec<FirmwareRoot> {
-    let mut roots = vec![FirmwareRoot::new(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/user-roms"),
-        RootOrigin::Vendor,
-    )];
-    if let Some(path) = std::env::var_os("UNEMUPC_USER_ROMS_DIR") {
-        roots.push(FirmwareRoot::new(
-            PathBuf::from(path),
-            RootOrigin::Environment,
-        ));
-    }
-    roots
+    default_firmware_roots_from(
+        std::env::var_os("UNEMUPC_USER_ROMS_DIR"),
+        std::env::var_os("CARGO_MANIFEST_DIR"),
+    )
+}
+
+/// [`default_firmware_roots`] for a given environment.
+fn default_firmware_roots_from(
+    switch: Option<OsString>,
+    crate_dir: Option<OsString>,
+) -> Vec<FirmwareRoot> {
+    switch
+        .map(|path| FirmwareRoot::new(PathBuf::from(path), RootOrigin::Environment))
+        .into_iter()
+        .chain(
+            source_tree_user_roms(crate_dir)
+                .map(|path| FirmwareRoot::new(path, RootOrigin::SourceTree)),
+        )
+        .collect()
 }
 
 impl FirmwarePin {
@@ -249,11 +262,11 @@ fn collect_candidates(
         let canonical_root = match root.path.canonicalize() {
             Ok(path) if path.is_dir() => Some(path),
             result => {
-                let missing_vendor = root.origin == RootOrigin::Vendor
+                let missing_tree = root.origin == RootOrigin::SourceTree
                     && result
                         .as_ref()
                         .is_err_and(|error| error.kind() == io::ErrorKind::NotFound);
-                if !missing_vendor {
+                if !missing_tree {
                     let reason = match result {
                         Ok(_) => "not a directory".into(),
                         Err(error) => error.kind().to_string(),
@@ -272,6 +285,7 @@ fn collect_candidates(
                 root: SearchRoot {
                     path: root.path.clone(),
                     label: root.origin.label(),
+                    #[cfg(any(test, feature = "test-support"))]
                     external: false,
                 },
                 canonical_root,
@@ -1087,7 +1101,7 @@ mod tests {
             FirmwareRoot::new(temp.path().join("unmounted"), RootOrigin::Preferences),
             FirmwareRoot::new(&file, RootOrigin::CommandLine),
             FirmwareRoot::new(temp.path().join("absent"), RootOrigin::Environment),
-            FirmwareRoot::new(temp.path().join("optional"), RootOrigin::Vendor),
+            FirmwareRoot::new(temp.path().join("optional"), RootOrigin::SourceTree),
             FirmwareRoot::new(good, RootOrigin::Preferences),
         ];
         let mut warnings = Vec::new();
@@ -1107,6 +1121,35 @@ mod tests {
         assert!(warnings
             .iter()
             .all(|w| !w.contains(&temp.path().display().to_string())));
+    }
+
+    /// A release binary runs far from the tree it was built in, so its default
+    /// ROM folders are only the user's switch. `cargo test` names the crate in
+    /// CARGO_MANIFEST_DIR at run time, so the release environment is passed in.
+    #[test]
+    fn default_firmware_roots_do_not_point_into_the_build_tree() {
+        assert_eq!(default_firmware_roots_from(None, None), []);
+        assert_eq!(
+            default_firmware_roots_from(Some("/roms".into()), None),
+            [FirmwareRoot::new("/roms", RootOrigin::Environment)]
+        );
+    }
+
+    #[test]
+    fn a_program_cargo_started_also_searches_the_source_tree_after_the_switch() {
+        let crate_dir = || Some(OsString::from("/src/tree/crates/window"));
+        let tree = || {
+            FirmwareRoot::new(
+                "/src/tree/crates/window/../../vendor/user-roms",
+                RootOrigin::SourceTree,
+            )
+        };
+        assert_eq!(default_firmware_roots_from(None, crate_dir()), [tree()]);
+        assert_eq!(
+            default_firmware_roots_from(Some("/roms".into()), crate_dir()),
+            [FirmwareRoot::new("/roms", RootOrigin::Environment), tree()]
+        );
+        assert_eq!(default_firmware_roots_from(None, Some("".into())), []);
     }
 
     #[cfg(unix)]

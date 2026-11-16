@@ -1128,7 +1128,7 @@ impl FirmwareEntry {
             .collect::<Vec<_>>()
             .join(" or ");
         format!(
-            "{} (user-supplied: {}; see vendor/user-roms/README.md)",
+            "{} (user-supplied: {}; add its ROM folder in Preferences or Import ROM folder…, or pass --rom-dir)",
             self.id, layouts
         )
     }
@@ -1504,7 +1504,7 @@ mod tests {
     use super::*;
     use crate::{assemble, assemble_with_options, AssemblyError, ImageSource};
 
-    const KNOWN: &str = "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.3 (open, vendor/unemu-at-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.2 (open, vendor/unemu-at-bios/fetch.sh at unemupc bcb375e6410b18266bd5f99533624b768d067867), ibm-5170-bios-1984-01-10 (user-supplied: U27 6181028 even, U47 6181029 odd or U17 6181024 even@0, U37 6181026 odd@0, U27 6181025 even@32768, U47 6181027 odd@32768; see vendor/user-roms/README.md), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; see vendor/user-roms/README.md), ibm-5170-bios-1985-11-15 (user-supplied: U27 61X9266 even, U47 61X9265 odd; see vendor/user-roms/README.md), landmark-rom-post-at-1.2.0 (user-supplied: U27 27256 even, U47 27256 odd; see vendor/user-roms/README.md)";
+    const KNOWN: &str = "kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh), kiselev-xi8088-1.0.2-atreset (open, vendor/kiselev-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.3 (open, vendor/unemu-at-bios/fetch.sh), unemu-at-bios-1.0.2-unemu.2 (open, vendor/unemu-at-bios/fetch.sh at unemupc bcb375e6410b18266bd5f99533624b768d067867), ibm-5170-bios-1984-01-10 (user-supplied: U27 6181028 even, U47 6181029 odd or U17 6181024 even@0, U37 6181026 odd@0, U27 6181025 even@32768, U47 6181027 odd@32768; add its ROM folder in Preferences or Import ROM folder…, or pass --rom-dir), ibm-5170-bios-1985-06-10 (user-supplied: U27 6480090 even, U47 6480091 odd; add its ROM folder in Preferences or Import ROM folder…, or pass --rom-dir), ibm-5170-bios-1985-11-15 (user-supplied: U27 61X9266 even, U47 61X9265 odd; add its ROM folder in Preferences or Import ROM folder…, or pass --rom-dir), landmark-rom-post-at-1.2.0 (user-supplied: U27 27256 even, U47 27256 odd; add its ROM folder in Preferences or Import ROM folder…, or pass --rom-dir)";
 
     fn config() -> MachineConfig {
         crate::bios(vec![0; 32768], Some(vec![0; 1_474_560]))

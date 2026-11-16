@@ -2,7 +2,9 @@
 //! Host-only SHA-256 discovery before assembly; no guest device or clock is used.
 //! Files remain in place. See `backlog/docs/design/firmware-and-machine-classes.md` §3.5.
 
-use crate::{FirmwareDistribution, FirmwareEntry, ImagePart, ImageSource, KnownPart};
+#[cfg(any(test, feature = "test-support"))]
+use crate::KnownPart;
+use crate::{FirmwareDistribution, FirmwareEntry, ImagePart, ImageSource};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -112,6 +114,8 @@ pub enum UserFirmwareError {
 struct SearchRoot {
     path: PathBuf,
     label: &'static str,
+    /// Only the test lane tells the source tree's root from external ones.
+    #[cfg(any(test, feature = "test-support"))]
     external: bool,
 }
 
@@ -132,6 +136,7 @@ fn search_roots(repository: &Path, external: Option<OsString>) -> Vec<SearchRoot
     roots
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn validate_external_roots(roots: &[SearchRoot]) -> Result<Vec<String>, UserFirmwareError> {
     let mut redactions = Vec::new();
     for root in roots.iter().filter(|root| root.external) {
@@ -175,6 +180,7 @@ impl SearchRoot {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn error(&self, path: &Path, error: io::Error) -> UserFirmwareError {
         UserFirmwareError::Scan {
             file: self.name(path),
@@ -344,6 +350,7 @@ struct Candidate {
     hash: String,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn scan(
     root: &SearchRoot,
     path: &Path,
@@ -397,6 +404,7 @@ fn scan(
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn matching_parts<'a>(
     layout: &'a [KnownPart],
     candidates: &'a [Candidate],
@@ -416,6 +424,7 @@ fn matching_parts<'a>(
         .collect()
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn matched(entry: &FirmwareEntry, candidates: &[Candidate]) -> Option<FoundUserFirmware> {
     if let Some(image) = candidates
         .iter()
@@ -454,12 +463,14 @@ fn matched(entry: &FirmwareEntry, candidates: &[Candidate]) -> Option<FoundUserF
     None
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct Discovery {
     found: Option<FoundUserFirmware>,
     incomplete: Vec<String>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn find_in_roots(
     entry_id: &str,
     catalogue: &[FirmwareEntry],
@@ -593,6 +604,7 @@ pub fn find_catalogue_in_roots(
                                     SearchRoot {
                                         path: root.path.clone(),
                                         label: root.origin.label(),
+                                        #[cfg(any(test, feature = "test-support"))]
                                         external: true,
                                     }
                                     .name(path)
@@ -633,14 +645,29 @@ pub(crate) fn find_test_firmware(
     find_in_roots(entry_id, catalogue, &roots, &mut cache).map(|discovery| discovery.found)
 }
 
-/// Default host roots for frontends and the legacy test wrapper. Discovery itself
-/// always takes an explicit list and never changes the process environment.
+/// Roots of the user-ROM test lane: the source tree's `vendor/user-roms` and
+/// `UNEMUPC_USER_ROMS_DIR`. Discovery itself always takes an explicit list and
+/// never changes the process environment.
+#[cfg(any(test, feature = "test-support"))]
 pub fn default_search_roots() -> Vec<PathBuf> {
-    let mut roots = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/user-roms")];
+    let mut roots: Vec<PathBuf> = source_tree_user_roms(std::env::var_os("CARGO_MANIFEST_DIR"))
+        .into_iter()
+        .collect();
     if let Some(path) = std::env::var_os("UNEMUPC_USER_ROMS_DIR") {
         roots.push(path.into());
     }
     roots
+}
+
+/// The source tree's `vendor/user-roms` of a program cargo started, from the
+/// value of `CARGO_MANIFEST_DIR` at run time: `cargo run` and `cargo test`
+/// name the running crate's directory there, and every workspace crate sits
+/// two levels below the root. Nothing of the build tree is compiled in, so a
+/// binary started outside cargo has no such root.
+fn source_tree_user_roms(crate_dir: Option<OsString>) -> Option<PathBuf> {
+    crate_dir
+        .filter(|crate_dir| !crate_dir.is_empty())
+        .map(|crate_dir| Path::new(&crate_dir).join("../../vendor/user-roms"))
 }
 
 fn shared_cache() -> &'static Mutex<HashCache> {
@@ -658,18 +685,22 @@ fn shared_scan() -> Result<std::sync::MutexGuard<'static, HashCache>, UserFirmwa
     Ok(cache)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn explicit_roots(paths: &[PathBuf]) -> Vec<SearchRoot> {
-    let vendor = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/user-roms");
+    let vendor = source_tree_user_roms(std::env::var_os("CARGO_MANIFEST_DIR"));
     paths
         .iter()
-        .map(|path| SearchRoot {
-            path: path.clone(),
-            external: path != &vendor,
-            label: if path == &vendor {
-                "vendor/user-roms"
-            } else {
-                "<UNEMUPC_USER_ROMS_DIR>"
-            },
+        .map(|path| {
+            let in_tree = vendor.as_ref() == Some(path);
+            SearchRoot {
+                path: path.clone(),
+                external: !in_tree,
+                label: if in_tree {
+                    "vendor/user-roms"
+                } else {
+                    "<UNEMUPC_USER_ROMS_DIR>"
+                },
+            }
         })
         .collect()
 }
@@ -778,6 +809,7 @@ pub fn locate_firmware(
     found
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn discover_user_firmware(
     entry_id: &str,
     catalogue: &[FirmwareEntry],
@@ -787,6 +819,7 @@ fn discover_user_firmware(
     find_in_roots(entry_id, catalogue, &roots, &mut cache)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[track_caller]
 fn finish_requirement(
     entry_id: &str,
@@ -820,6 +853,7 @@ fn finish_requirement(
 
 /// Shared skip/require policy. Use [`crate::require_user_firmware!`] to also
 /// return early from the test. Discovery errors always fail with redacted names.
+#[cfg(any(test, feature = "test-support"))]
 #[track_caller]
 pub fn required_user_firmware(
     entry_id: &str,

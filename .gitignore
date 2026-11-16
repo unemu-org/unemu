@@ -29,6 +29,8 @@ Thumbs.db
 
 # --- Rust ---
 target/
+# Generated for each release by scripts/third-party-licenses.sh.
+/THIRD-PARTY-LICENSES.md
 # Golden-test scratch / captured traces
 /tmp-golden/
 # User-created game disks, journals and machine-file overrides.

@@ -701,7 +701,14 @@ pub(crate) fn machine_paths(root: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-pub(crate) fn select_machine(paths: &mut Vec<PathBuf>, requested: &Path) -> usize {
+/// The library row selected at start. A machine named with `--machine`
+/// (`given`) is added even when missing, so its error shows; the default
+/// machine only when its file exists, so a fresh install selects nothing.
+pub(crate) fn select_machine(
+    paths: &mut Vec<PathBuf>,
+    requested: &Path,
+    given: bool,
+) -> Option<usize> {
     if let Some(index) = paths.iter().position(|path| {
         path == requested
             || path
@@ -710,10 +717,13 @@ pub(crate) fn select_machine(paths: &mut Vec<PathBuf>, requested: &Path) -> usiz
                 .zip(requested.canonicalize().ok())
                 .is_some_and(|(left, right)| left == right)
     }) {
-        return index;
+        return Some(index);
+    }
+    if !given && !requested.is_file() {
+        return None;
     }
     paths.push(requested.to_path_buf());
-    paths.len() - 1
+    Some(paths.len() - 1)
 }
 
 pub(crate) fn integer_size(
@@ -991,10 +1001,30 @@ mod tests {
     #[test]
     fn selection_keeps_a_missing_requested_machine_instead_of_starting_another() {
         let mut paths = vec![PathBuf::from("first.toml")];
-        assert_eq!(select_machine(&mut paths, Path::new("first.toml")), 0);
+        assert_eq!(
+            select_machine(&mut paths, Path::new("first.toml"), true),
+            Some(0)
+        );
         assert_eq!(paths.len(), 1);
-        let selected = select_machine(&mut paths, Path::new("missing.toml"));
+        let selected = select_machine(&mut paths, Path::new("missing.toml"), true).unwrap();
         assert_eq!(paths[selected], Path::new("missing.toml"));
+    }
+
+    /// A fresh install has no default machine file: the library starts with
+    /// nothing selected instead of a row for a file that does not exist.
+    #[test]
+    fn a_missing_default_machine_is_neither_listed_nor_selected() {
+        let temp = assembly::test_support::TempDir::new("default-machine-selection");
+        let mut paths = vec![PathBuf::from("first.toml")];
+        let missing = temp.path().join("at-freedos.toml");
+        assert_eq!(select_machine(&mut paths, &missing, false), None);
+        assert_eq!(paths, [PathBuf::from("first.toml")]);
+        assert_eq!(select_machine(&mut paths, Path::new(""), false), None);
+        assert_eq!(paths.len(), 1);
+        std::fs::write(&missing, "schema=1\n").unwrap();
+        assert_eq!(select_machine(&mut paths, &missing, false), Some(1));
+        assert_eq!(paths[1], missing);
+        assert_eq!(select_machine(&mut paths, &missing, false), Some(1));
     }
 
     #[test]

@@ -126,7 +126,7 @@ Full list in [`backlog/docs/commands.md`](backlog/docs/commands.md).
 ## Hard rules (don't violate)
 
 - **Never commit without explicit user request.** Even mid-task, after accepting a plan, stop and ask. Plan acceptance ≠ commit acceptance. `bd init` and the first `bd dolt push` make a git commit on their own — after any bd setup command, check `git log -1`.
-- **Write as if the repository were public.** Code, comments, docs, bead text and commit messages are English and publish-safe: never name a proprietary guest, a private host, a private path or anyone's personal setup. Push only to the configured `origin`; never create, mirror or publish a repository — publishing is the maintainer's step.
+- **Write as if the repository were public.** Code, comments, docs, bead text and commit messages are English and publish-safe. Never commit proprietary bytes: no proprietary firmware, guest software, manuals or screenshots of them — only hashes and our own observations. Open firmware, open fixtures and their licence texts may be committed. Naming real firmware and commercial titles is fine. Never name a private host, a private path, anyone's personal setup or the CPU core's other consumers. `scripts/publication-guard.sh` checks the mechanical part. Push only to the configured `origin`; never create, mirror or publish a repository — publishing is the maintainer's step.
 - **Don't add features, refactor, or introduce abstractions beyond what the task requires.** Bug fix = bug fix, not surrounding cleanup.
 - **Don't pre-empt later milestones.** Don't half-implement work a later bead or epic owns.
 - **All project docs live under `backlog/`.** Docs under `backlog/docs/`, decisions under `backlog/decisions/`; open work lives in beads, never in markdown.
@@ -134,4 +134,4 @@ Full list in [`backlog/docs/commands.md`](backlog/docs/commands.md).
 ## Code ownership
 
 Maintainer / sole deciding authority: **Mikołaj Mikołajczyk**
-(<mikolajczyk.mikolajm@gmail.com>).
+(<mikolaj@mikolajczyk.org>).

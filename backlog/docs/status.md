@@ -5,6 +5,43 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — Release readiness of the tree:** the binaries no longer carry
+  or use the path of the tree they were built in. The desktop's library lists
+  machine files from `UNEMUPC_MACHINES_DIR`; else, when cargo started it, the
+  tree's `machines/` (from `CARGO_MANIFEST_DIR` at run time, never compiled
+  in); else `unemupc/machines` in the platform data directory. `--help` prints
+  that directory, and a fresh install selects no machine instead of a missing
+  default. Its ROM folders are its preferences, `--rom-dir`,
+  `UNEMUPC_USER_ROMS_DIR` and, under cargo, the tree's `vendor/user-roms`. A
+  Settings… child of a machine file outside any `machines` directory goes to
+  the `local/` folder of the library's machines directory; with no data
+  directory Settings refuses with a message. The user-ROM test lane exists only
+  with `test-support`. Tests check that none of these defaults points into the
+  build tree. Panic locations of registry and git dependencies still name
+  cargo's cache in a release build; remapping them belongs to the release
+  build flags. `upcli --version` and `--about` now print the licence
+  (AGPL-3.0-or-later), the source of the build (the tag or commit a release
+  names in `UNEMUPC_SOURCE_REV`), the Nuked-OPL3 notice and where the full
+  licence texts are;
+  `unemupc --version`, `--about`, `--help` and the About dialog add the
+  Nuked-OPL3 notice next to the fonts. `scripts/third-party-licenses.sh`
+  writes `THIRD-PARTY-LICENSES.md` (generated, gitignored) from `cargo
+  metadata`, `cargo tree` and the crates' own licence files for the exact
+  `Cargo.lock`, with the standard MIT, Apache-2.0 and Zlib texts in
+  `LICENSES/` and the authors as copyright holders for crates that publish no
+  licence file. The workspace points at its public repository and no crate is
+  publishable to crates.io (`publish = false`). The publication rule is
+  relaxed: no proprietary firmware, software or manuals, but real firmware and
+  commercial titles may be named; private hosts, paths and personal setup stay
+  out. The publication guard also catches more private path forms, e-mail
+  addresses outside an allowlist, private and carrier-grade NAT IPv4
+  addresses, `Cargo.lock` sources other than crates.io and github.com, and
+  private hostnames given only through `PUBLICATION_GUARD_PRIVATE_HOSTS`
+  (local only; hits show file and line). Installed users missing a
+  user-supplied BIOS are pointed to Preferences or Import ROM folder… instead
+  of the source tree's ROM guide. Mock-ups use `nas.example`, scripts and
+  configuration files carry SPDX headers, and the README covers downloads,
+  building without Nix and the third-party components.
 - **2026-11-16 — File dialogs no longer abort the app on macOS:** with a
   machine running, opening a file dialog ended the process. Each dialog
   was synchronous: it ran its own modal event loop inside the frame that

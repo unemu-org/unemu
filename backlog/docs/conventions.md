@@ -36,6 +36,24 @@ Generic conventions that apply regardless of stack. Stack-specific rules (langua
 
 - Terse. Lowercase. No emoji in UI text or logs unless the project explicitly opts in.
 
+## Publication
+
+The repository is public. Everything committed (code, comments, docs, bead
+text, commit messages) follows the publication rule in `AGENTS.md`:
+
+- **No proprietary bytes.** Proprietary firmware, guest software, manuals,
+  scans and screenshots of them stay out of the tree; tests and docs keep
+  hashes and our own observations. Open firmware, open fixtures and their
+  licence texts (the FreeDOS licence index, say) may be committed.
+- **Names are fine.** Real firmware (an IBM BIOS, say) and commercial titles
+  may be named in code, docs and tests.
+- **Nothing private.** No private hosts, private paths or anyone's personal
+  setup, and the CPU core's other consumers stay unnamed. Examples use
+  `example.org`, `example.com` or `.example` hosts.
+
+`scripts/publication-guard.sh` checks the mechanical part on every commit and
+in CI; see [`commands.md` § CI](commands.md#ci).
+
 ## When in doubt
 
 - Read the relevant decision: `ls backlog/decisions/` (see [`decisions.md`](decisions.md)).

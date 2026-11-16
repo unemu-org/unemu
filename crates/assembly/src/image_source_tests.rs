@@ -328,7 +328,7 @@ fn parts_diagnose_swapped_lanes_and_each_wrong_chip() {
     let expected = format!(
         "bios image (sha256 {unknown_hash}) is not a known image for board \"ibm-5170\"; \
          known: synthetic-user-bios (user-supplied: U27 synthetic-even even, \
-         U47 synthetic-odd odd; see vendor/user-roms/README.md)"
+         U47 synthetic-odd odd; add its ROM folder in Preferences or Import ROM folder…, or pass --rom-dir)"
     );
     assert_eq!(error.to_string(), expected);
     let unknown = vec![
@@ -772,7 +772,7 @@ fn parts_layout_selection_filters_part_count_and_listing_shows_offsets() {
         concat!(
             "synthetic-two-layout-bios (user-supplied: U27 pair-even even, U47 pair-odd odd or ",
             "U17 low-even even@0, U37 low-odd odd@0, U27 high-even even@4, U47 high-odd odd@4; ",
-            "see vendor/user-roms/README.md)"
+            "add its ROM folder in Preferences or Import ROM folder…, or pass --rom-dir)"
         )
     );
 }

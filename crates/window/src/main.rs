@@ -23,12 +23,14 @@
 
 use assembly::{AssembledMachine, DeviceId, ObservationPolicy, ObservationRequest, OutputKind};
 use machine::RunOutcome;
+#[cfg(test)]
+use std::path::Path;
 use std::{
     error::Error,
     ffi::OsStr,
     io,
     num::{NonZeroU16, NonZeroU64},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -777,22 +779,68 @@ impl Presenter {
 }
 
 fn informational_output(arg: &OsStr) -> Option<String> {
+    let opl3 = devices::OPL3_NOTICE;
+    let shown = shown_path;
     if arg == "--help" {
         Some(format!(
-            "usage: unemupc [--machine FILE] [--display CARD] [--rom-dir DIR]... [--allow-unlisted-firmware]\n\ndefault selection: {} (opens the machine library; --machine starts immediately)\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}", default_machine().display()
+            "usage: unemupc [--machine FILE] [--display CARD] [--rom-dir DIR]... [--allow-unlisted-firmware]\n\ndefault selection: {} (opens the machine library; --machine starts immediately)\nmachine files: {} (set {MACHINES_DIR_VAR} to use another directory)\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}\n\n{opl3}", shown(default_machine()), shown(machines_dir())
         ))
     } else if arg == "--version" || arg == "--about" {
         Some(format!(
-            "unemupc {}\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}",
-            env!("CARGO_PKG_VERSION")
+            "unemupc {}\n{}\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}\n\n{opl3}",
+            env!("CARGO_PKG_VERSION"),
+            cli::about::licence_notice(),
         ))
     } else {
         None
     }
 }
 
-fn default_machine() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml")
+/// A default path for `--help`, or why there is none.
+fn shown_path(path: Option<PathBuf>) -> String {
+    path.map_or_else(
+        || "none (the host has no data directory)".into(),
+        |path| path.display().to_string(),
+    )
+}
+
+/// Names the directory of machine files the library lists. A release binary
+/// knows nothing of the tree it was built from; see [`machines_dir`].
+const MACHINES_DIR_VAR: &str = "UNEMUPC_MACHINES_DIR";
+
+/// The directory of machine files: [`MACHINES_DIR_VAR`] when set; else the
+/// source tree's `machines` when cargo started the program (`cargo run` names
+/// the crate's directory in `CARGO_MANIFEST_DIR` at run time); else
+/// `unemupc/machines` in the platform data directory. None when the host has
+/// no data directory either.
+fn machines_dir() -> Option<PathBuf> {
+    machines_dir_from(
+        std::env::var_os(MACHINES_DIR_VAR),
+        std::env::var_os("CARGO_MANIFEST_DIR"),
+        image_store::location::data_directory().ok(),
+    )
+}
+
+/// [`machines_dir`] for a given environment. Every workspace crate sits two
+/// levels below the root, so `crate_dir/../..` is the source tree.
+fn machines_dir_from(
+    switch: Option<std::ffi::OsString>,
+    crate_dir: Option<std::ffi::OsString>,
+    data: Option<PathBuf>,
+) -> Option<PathBuf> {
+    switch
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            crate_dir
+                .filter(|path| !path.is_empty())
+                .map(|crate_dir| PathBuf::from(crate_dir).join("../../machines"))
+        })
+        .or_else(|| data.map(|data| data.join("unemupc").join("machines")))
+}
+
+fn default_machine() -> Option<PathBuf> {
+    machines_dir().map(|directory| directory.join("at-freedos.toml"))
 }
 
 #[derive(Debug)]
@@ -816,7 +864,9 @@ fn speaker_trace_requested(value: Option<&OsStr>) -> bool {
 
 fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Args, &'static str> {
     let mut result = Args {
-        machine: default_machine(),
+        // Without a data directory there is no default; the library then
+        // selects nothing, and starting needs --machine.
+        machine: default_machine().unwrap_or_default(),
         rom_dirs: Vec::new(),
         display: None,
         options: assembly::AssemblyOptions::default(),
@@ -907,8 +957,12 @@ fn setup_with_rom_dirs(
     roots: &[PathBuf],
     warnings: &mut impl io::Write,
 ) -> Result<Presenter, Box<dyn Error>> {
-    let loaded =
-        load_machine_with_rom_dirs(&args.machine, &default_machine(), args.options, roots)?;
+    let loaded = load_machine_with_rom_dirs(
+        &args.machine,
+        &default_machine().unwrap_or_default(),
+        args.options,
+        roots,
+    )?;
     setup_loaded(args, &loaded, warnings)
 }
 
@@ -1598,18 +1652,13 @@ mod tests {
         let [Some(rom), Some(floppy)] = fixtures else {
             return;
         };
-        let loaded = machine_file::load_for_assembly(
-            default_machine(),
-            assembly::AssemblyOptions::default(),
-        )
-        .unwrap();
+        let machine = default_fixture("machines/at-freedos.toml");
+        let loaded =
+            machine_file::load_for_assembly(&machine, assembly::AssemblyOptions::default())
+                .unwrap();
         assert_eq!(loaded.config, assembly::bios(rom, Some(floppy)));
-        let args = parse_args([]).unwrap();
-        assert!(args.machine.is_absolute());
-        assert_eq!(
-            args.machine,
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml")
-        );
+        let args = parse_args(["--machine".into(), machine.clone().into_os_string()]).unwrap();
+        assert_eq!(args.machine, machine);
         let presenter = setup(&args, &mut io::sink()).unwrap();
         assert_eq!(presenter.display, DeviceId::Mda);
         assert!(presenter.window.is_none());
@@ -1677,7 +1726,7 @@ mod tests {
         let help = informational_output(OsStr::new("--help")).unwrap();
         assert!(help.contains(&format!(
             "default selection: {} (opens the machine library; --machine starts immediately)",
-            default_machine().display()
+            shown_path(default_machine())
         )));
     }
 
@@ -2344,6 +2393,87 @@ mod tests {
             assert!(output.contains("unemupc"));
         }
         assert!(informational_output(OsStr::new("bios.bin")).is_none());
+    }
+
+    #[test]
+    fn version_and_about_name_the_licence_source_and_opl3_notice() {
+        for option in ["--version", "--about"] {
+            let output = informational_output(OsStr::new(option)).unwrap();
+            for expected in [
+                "AGPL-3.0-or-later",
+                "https://github.com/unemu-org/unemupc",
+                "Nuked-OPL3",
+                "LGPL-2.1-or-later",
+                "THIRD-PARTY-LICENSES.md",
+            ] {
+                assert!(output.contains(expected), "{option}: {expected}");
+            }
+        }
+    }
+
+    #[test]
+    fn machine_files_come_from_the_switch_then_cargo_then_the_platform_data_directory() {
+        let data = || Some(PathBuf::from("/data/user"));
+        let crate_dir = || Some(std::ffi::OsString::from("/src/tree/crates/window"));
+        let from_cargo = PathBuf::from("/src/tree/crates/window/../../machines");
+        let from_data = PathBuf::from("/data/user/unemupc/machines");
+        assert_eq!(
+            machines_dir_from(Some("/srv/machines".into()), crate_dir(), data()),
+            Some(PathBuf::from("/srv/machines"))
+        );
+        for switch in [None, Some("".into())] {
+            assert_eq!(
+                machines_dir_from(switch.clone(), crate_dir(), data()),
+                Some(from_cargo.clone())
+            );
+            assert_eq!(
+                machines_dir_from(switch.clone(), Some("".into()), data()),
+                Some(from_data.clone())
+            );
+            assert_eq!(
+                machines_dir_from(switch, None, data()),
+                Some(from_data.clone())
+            );
+        }
+        assert_eq!(machines_dir_from(None, None, None), None);
+        assert_eq!(
+            default_machine(),
+            machines_dir().map(|directory| directory.join("at-freedos.toml"))
+        );
+        let help = informational_output(OsStr::new("--help")).unwrap();
+        assert!(help.contains(&format!(
+            "machine files: {} (set UNEMUPC_MACHINES_DIR to use another directory)",
+            shown_path(machines_dir())
+        )));
+        assert_eq!(shown_path(None), "none (the host has no data directory)");
+    }
+
+    /// A release binary runs far from the tree it was built in, so neither the
+    /// default machine nor the notices may point into that tree. `cargo test`
+    /// names the crate in CARGO_MANIFEST_DIR at run time, so the release
+    /// environment is passed in without it.
+    #[test]
+    fn default_machine_does_not_point_into_the_build_tree() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest.join("../..").canonicalize().unwrap();
+        let inside = |path: &Path| {
+            path.starts_with(manifest)
+                || path.starts_with(&root)
+                || path
+                    .canonicalize()
+                    .is_ok_and(|path| path.starts_with(&root))
+        };
+        // Without any data directory there is no default at all.
+        let data = image_store::location::data_directory().ok();
+        if let Some(released) = machines_dir_from(None, None, data) {
+            assert!(!inside(&released), "{}", released.display());
+            assert!(!inside(&released.join("at-freedos.toml")));
+        }
+        for option in ["--version", "--about"] {
+            let output = informational_output(OsStr::new(option)).unwrap();
+            assert!(!output.contains(env!("CARGO_MANIFEST_DIR")), "{option}");
+            assert!(!output.contains(&*root.to_string_lossy()), "{option}");
+        }
     }
 
     #[test]
@@ -3116,14 +3246,13 @@ mod tests {
         let [Some(rom), Some(floppy)] = fixtures else {
             return;
         };
-        let loaded = machine_file::load_for_assembly(
-            default_machine(),
-            assembly::AssemblyOptions::default(),
-        )
-        .unwrap();
+        let machine = default_fixture("machines/at-freedos.toml");
+        let loaded =
+            machine_file::load_for_assembly(&machine, assembly::AssemblyOptions::default())
+                .unwrap();
         assert_eq!(loaded.config, assembly::bios(rom, Some(floppy)));
         let config = loaded.config;
-        let args = parse_args([]).unwrap();
+        let args = parse_args(["--machine".into(), machine.into_os_string()]).unwrap();
         let mut presenter = setup(&args, &mut io::sink()).unwrap();
         let assembled = &mut presenter.assembled;
         let delivered = Rc::new(RefCell::new(String::new()));

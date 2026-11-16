@@ -16,8 +16,11 @@ DOS games now, and Windows 98 SE games on an emulated 3dfx Voodoo later
 **MVP feature complete (2026-11-15)**: an AT 286 DOS games machine with a stable
 OCI image ecosystem. The project is now in a **feature freeze**: work goes into
 fixes, stability, tests and documentation, not new features. What works, in
-detail and with evidence, is in [`backlog/docs/status.md`](backlog/docs/status.md);
-open work is tracked in beads (`bd ready --exclude-type epic`).
+detail and with evidence, is in [`backlog/docs/status.md`](backlog/docs/status.md).
+Open work is tracked in [beads](https://github.com/steveyegge/beads), whose
+database travels with the repository: after cloning, install `bd` (1.3.1 or
+newer), run `bd bootstrap`, then `bd ready --exclude-type epic`; see
+[`backlog/docs/dev-setup.md`](backlog/docs/dev-setup.md#beads-bd).
 
 Priorities, in order: **testability** (every device tested in isolation on a
 mock bus, every machine-level feature behind a deterministic golden test),
@@ -78,7 +81,11 @@ cards, firmware and drives. `at-games-open.toml` is the open DOS games machine
   content goes public only with its licence, and copyleft only with its source.
 - **Templates:** official open machine images (`unemu/open-at`,
   `unemu/open-at-games`) and the public shareware sets of Commander Keen 4,
-  Wolfenstein 3-D episode 1 and Duke Nukem II episode 1.
+  Wolfenstein 3-D episode 1 and Duke Nukem II episode 1. They, the open media
+  sets and the firmware packages appear on `registry.unemu.dev` with the first
+  release; until then, build them locally with the fixture fetch scripts and
+  `upcli image template build` (see
+  [`commands.md`](backlog/docs/commands.md)).
 
 ### Applications
 
@@ -90,6 +97,10 @@ cards, firmware and drives. `at-games-open.toml` is the open DOS games machine
 - **Command line** (`upcli`): run machines headless, check machine files,
   and manage images, media sets, firmware packages, registries and media
   journals.
+
+## Downloads
+
+Binaries come with the first release. Until then, build from source as below.
 
 ## Getting started
 
@@ -104,6 +115,22 @@ cargo test --workspace                        # unit, golden and integration tes
 The full command reference is in [`backlog/docs/commands.md`](backlog/docs/commands.md);
 the toolchain in [`backlog/docs/dev-setup.md`](backlog/docs/dev-setup.md);
 playing DOS games in [`machines/README.md`](machines/README.md#playing-dos-games).
+Under `cargo run` the desktop app lists the tree's `machines/` and searches
+`vendor/user-roms`; an installed binary uses `unemupc/machines` in the platform
+data directory, or `UNEMUPC_MACHINES_DIR`, and the ROM folders set in Preferences.
+
+### Building without Nix
+
+- Rust 1.99 or newer (`rust-version` in `Cargo.toml`), for example through
+  rustup, and a C compiler.
+- On Linux, `pkg-config` and the ALSA development files (`libasound2-dev` on
+  Debian and Ubuntu, `alsa-lib-devel` on Fedora). The X11 or Wayland libraries
+  are loaded at run time.
+- `cargo build --release --bin unemupc --bin upcli`.
+
+The firmware and disk fixtures that the tests and templates use are built by
+the scripts under `vendor/`, which expect the devShell's tools (`nasm`,
+`mtools`, `curl`, `unzip`).
 
 ## Documentation
 
@@ -119,6 +146,22 @@ The CPU is not vendored. `x86jit` lives in its own repository with its own
 tracker and gates; this project depends on it as a git dependency pinned to an
 exact revision of its `main`, and golden traces are valid only against that
 revision. Real-mode and 286 support live there under `CpuMode::Real16`.
+
+## Third-party components
+
+- **Ultimate Oldschool PC Font Pack** by VileR: the MDA and VGA bitmap fonts,
+  CC BY-SA 4.0 ([notice](crates/window/assets/fonts/NOTICE.md)).
+- **DejaVu Sans** 2.37: a five-symbol subset for the desktop app, Bitstream
+  Vera and Arev licences ([notice](crates/window/assets/fonts/dejavu/NOTICE.md)).
+- **egui's default fonts** (Ubuntu Light, Hack, Noto Emoji, emoji-icon-font):
+  Ubuntu Font Licence 1.0, MIT, OFL 1.1
+  ([notice](crates/window/assets/fonts/egui/NOTICE.txt)).
+- **Nuked-OPL3** 1.8 by Nuke.YKT: the OPL3 FM generator is a Rust translation,
+  LGPL-2.1-or-later ([licence](crates/devices/src/opl3/LICENSE)).
+- **The unemupc logo**: CC0 1.0 ([notice](assets/brand/README.md)).
+- **Rust crates**: `scripts/third-party-licenses.sh` writes their licences
+  for the exact `Cargo.lock` into `THIRD-PARTY-LICENSES.md`, which ships with
+  the release binaries. `upcli --about` and `unemupc --about` print the notices.
 
 ## License
 

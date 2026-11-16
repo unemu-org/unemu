@@ -4,7 +4,8 @@ Open work is tracked in **beads** (`bd`, a Dolt-backed issue tracker; issue pref
 — design, decisions, guides — stays as markdown under `backlog/`; a bead links to a doc section and
 never copies it. Roles, the path from a bead to `main`, review and the worker rules are beads
 memories (`bd memories`, keys `roles`, `bead-to-main`, `bead-conventions`, `worker-prompts`,
-`sandbox-workers`, `publication-rule`); this page is the day-to-day reference. `bd <cmd> --help`
+`sandbox-workers`, `publication-rule`; the publication rule is also in
+[`conventions.md` § Publication](conventions.md#publication)); this page is the day-to-day reference. `bd <cmd> --help`
 gives the flags. `bd prime` prints the tool's generic workflow; where it differs from these docs and
 the beads memories (who claims and closes, what goes into `bd remember` — see
 `bd recall bead-conventions` — pushing), these docs and the memories win.

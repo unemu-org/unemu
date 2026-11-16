@@ -39,6 +39,16 @@ pub mod xt_dma;
 pub mod xt_nmi;
 pub mod xt_system_ppi;
 
+/// Attribution for the OPL3 FM generator, a Rust translation of Nuked-OPL3.
+/// Binaries that contain the Sound Blaster 16 print it with their notices.
+pub const OPL3_NOTICE: &str = concat!(
+    "Nuked-OPL3 1.8 (upstream commit 765ec962), translated to Rust\n",
+    "(c) 2013-2020 Nuke.YKT\n",
+    "LGPL-2.1-or-later: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html\n",
+    "source: https://github.com/nukeykt/Nuked-OPL3\n",
+    "licence text: crates/devices/src/opl3/LICENSE in the source",
+);
+
 pub use a20::A20Line;
 pub use ata::{Ata, AtaConfigError, AtaDrive, AtaGeometry};
 pub use cmos_rtc::{CmosConfig, CmosRtc};

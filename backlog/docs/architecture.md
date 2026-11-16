@@ -570,8 +570,11 @@ supply exact image/chip lengths. Unknown pins scan only 512-byte ROM blocks from
 512 bytes through 1 MiB (or an exact declared length up to 1 MiB). Frontend scans
 stay inside each canonical root, skip unusable roots/entries with origin-labelled
 warnings and keep searching; the required-ROM test lane retains strict failures. The existing user-ROM test entry points are thin wrappers using
-the vendor directory and `UNEMUPC_USER_ROMS_DIR`. No discovery runs while the
-guest executes.
+the vendor directory and `UNEMUPC_USER_ROMS_DIR`; they find the source tree at
+run time from the `CARGO_MANIFEST_DIR` that `cargo test` sets, so no build path
+is compiled into a binary; the lane exists only with `test-support`. The
+desktop's default roots are `UNEMUPC_USER_ROMS_DIR` and, when cargo started
+it, the tree's `vendor/user-roms`. No discovery runs while the guest executes.
 
 `machine_file::load_for_assembly_with_rom_dirs` resolves missing or mismatched
 firmware paths in the in-memory resolved document before ordinary lowering.

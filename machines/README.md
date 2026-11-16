@@ -87,9 +87,15 @@ Start the desktop library from the repository root with:
 cargo run --offline -p window --bin unemupc
 ```
 
-The welcome screen lists machine files in `machines/` and `machines/local/`
-(located at build time), independently of the working directory. It selects
-`at-freedos.toml` initially. Select a ready machine and press Start, Enter, or
+The welcome screen lists machine files in the library's machines directory
+and its `local/` subdirectory, and selects `at-freedos.toml` there initially
+when that file exists. The directory is `UNEMUPC_MACHINES_DIR` when set
+(relative to the working directory); else, under `cargo run`, this tree's
+`machines/`; else `unemupc/machines` in the platform data directory:
+`~/Library/Application Support/unemupc/machines` on macOS,
+`$XDG_DATA_HOME/unemupc/machines` on Linux (default
+`~/.local/share/unemupc/machines`), `%LOCALAPPDATA%\unemupc\machines` on
+Windows. `unemupc --help` prints the directory in use. Select a ready machine and press Start, Enter, or
 double-click its name. Missing firmware or invalid media shows the existing
 validator diagnostic and disables Start. File › Open machine file… accepts a
 TOML/YAML path. Machine › Settings… (⌘, on macOS; Ctrl+, elsewhere outside guest focus) opens the
@@ -147,7 +153,8 @@ on macOS, `$XDG_CONFIG_HOME/unemupc/preferences.toml` on Linux (default
 `~/.config/unemupc/preferences.toml`), or the app's config directory on Windows.
 When that file does not exist yet, the first start copies it from the
 directory named after the project's former name; the old file stays.
-`UNEMUPC_USER_ROMS_DIR`, when set, is searched as well. File names do not select
+`UNEMUPC_USER_ROMS_DIR`, when set, is searched as well, and under `cargo run`
+also this tree's `vendor/user-roms`. File names do not select
 firmware: full-file SHA-256 pins do, including split chips and assembled ROMs.
 Correct existing machine-file paths take priority. Unavailable folders and entries
 produce warnings and do not block other folders. Discovery ignores symlinks that

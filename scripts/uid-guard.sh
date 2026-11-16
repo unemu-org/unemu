@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # uid-guard — pre-commit hook that refuses to sign when user.email has no
 # matching UID on user.signingkey. Vendored from the home-manager template
 # so the repo carries its own copy independent of any contributor's host.

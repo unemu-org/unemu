@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Pre-commit configuration.
 #
 # Generic hooks only — language/stack-specific hooks (eslint, tsc, ruff,

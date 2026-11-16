@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # skills-bootstrap — mirror vendored skills into .claude/skills/ for Claude Code auto-discovery.
 #
 # Skills are vendored (committed) under .agents/skills/<name>/. Claude Code scans

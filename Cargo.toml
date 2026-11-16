@@ -26,7 +26,10 @@ version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 rust-version = "1.99"
-repository = "https://github.com/mikolajmikolajczyk/unemupc98"
+repository = "https://github.com/unemu-org/unemupc"
+# Workspace crate names (cpu, bus, device, machine, cli, window, ...) collide
+# with unrelated crates on crates.io; nothing here is published there.
+publish = false
 
 [workspace.dependencies]
 libc = "0.2"

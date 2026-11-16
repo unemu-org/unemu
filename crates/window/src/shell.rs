@@ -272,6 +272,7 @@ pub(super) fn run(args: Args, autostart: bool) -> Result<(), Box<dyn Error>> {
             configure_context(&cc.egui_ctx);
             let mut shell = Shell::new(
                 args,
+                autostart,
                 shell_events,
                 shell_errors,
                 cc.winit_window().cloned(),
@@ -1864,17 +1865,16 @@ impl Shell {
         }
     }
 
+    /// `machine_given`: the command line named the machine with `--machine`.
     fn new(
         args: Args,
+        machine_given: bool,
         events: Rc<RefCell<Events>>,
         errors: Rc<RefCell<Option<String>>>,
         window: Option<Arc<Window>>,
         default_firmware_roots: Vec<assembly::firmware_discovery::FirmwareRoot>,
     ) -> Self {
-        let root = crate::default_machine()
-            .parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_default();
+        let root = crate::machines_dir();
         // Finding the path may copy the file from the project's former
         // directory. When that fails, the status bar says so: the shell then
         // keeps defaults and saves nothing, so the old file is copied next time.
@@ -1893,14 +1893,15 @@ impl Shell {
                 Some(error.to_string()),
             ),
         };
-        let (mut paths, mut message) = match shell_model::machine_paths(&root) {
-            Ok(paths) => (paths, "Ready".into()),
-            Err(error) => (Vec::new(), error.to_string()),
-        };
+        let (mut paths, mut message) =
+            match root.as_deref().map(shell_model::machine_paths).transpose() {
+                Ok(paths) => (paths.unwrap_or_default(), "Ready".into()),
+                Err(error) => (Vec::new(), error.to_string()),
+            };
         if let Some(error) = path_error.clone().or(preference_error) {
             message = format!("Preferences: {error}");
         }
-        let selected = Some(shell_model::select_machine(&mut paths, &args.machine));
+        let selected = shell_model::select_machine(&mut paths, &args.machine, machine_given);
         let library = paths.into_iter().map(LibraryEntry::pending).collect();
         let discovery_roots = preferences.roots(&args.rom_dirs, &default_firmware_roots);
         Self {
@@ -3103,7 +3104,7 @@ impl Shell {
             Minimize => { self.release(); ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); },
             Exit => self.request_exit(ctx),
             Shortcuts => self.dialog = Some(("Keyboard shortcuts", shortcuts_help(self.macos_shortcuts))),
-            About => self.dialog = Some(("About unemupc", format!("unemupc {}\nIBM PC/AT emulator\nAGPL-3.0-or-later\nx86jit · egui / eframe · cpal\n\n{}\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), window::FONT_NOTICE, window::EGUI_FONT_NOTICE, window::SYMBOL_FONT_NOTICE))),
+            About => self.dialog = Some(("About unemupc", format!("unemupc {}\nIBM PC/AT emulator\n{}\nx86jit · egui / eframe · cpal\n\n{}\n\n{}\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), cli::about::licence_notice(), window::FONT_NOTICE, window::EGUI_FONT_NOTICE, window::SYMBOL_FONT_NOTICE, devices::OPL3_NOTICE))),
             Placeholder("Open machine file") => self.open_machine_dialog(),
             Placeholder("New machine") => { self.release(); self.image_library.begin_new_machine(); },
             Placeholder(title) => self.dialog = Some((title, "not yet available".into())),
@@ -8513,13 +8514,15 @@ mod tests {
             "{text}"
         );
         assert!(!text.to_ascii_lowercase().contains(former), "{text}");
-        // The help names the default machine file, whose path depends on
-        // where the source tree was checked out.
-        let checkout = crate::default_machine().display().to_string();
+        // The help names the default machine file and its directory, whose
+        // paths depend on the host's data directory, cargo or a developer's switch.
+        let default = crate::shown_path(crate::default_machine());
+        let directory = crate::shown_path(crate::machines_dir());
         for option in ["--help", "--version", "--about"] {
             let output = crate::informational_output(std::ffi::OsStr::new(option))
                 .unwrap()
-                .replace(&checkout, "machines/at-freedos.toml");
+                .replace(&default, "machines/at-freedos.toml")
+                .replace(&directory, "machines");
             assert!(!output.to_ascii_lowercase().contains(former), "{output}");
         }
         assert!(crate::informational_output(std::ffi::OsStr::new("--help"))
@@ -8536,10 +8539,13 @@ mod tests {
         assert!(text.contains(window::FONT_NOTICE));
         assert!(text.contains(window::EGUI_FONT_NOTICE));
         assert!(text.contains(window::SYMBOL_FONT_NOTICE));
+        assert!(text.contains(devices::OPL3_NOTICE));
+        assert!(text.contains(&cli::about::licence_notice()));
         for option in ["--help", "--about", "--version"] {
             let output = crate::informational_output(std::ffi::OsStr::new(option)).unwrap();
             assert!(output.contains(window::EGUI_FONT_NOTICE));
             assert!(output.contains(window::SYMBOL_FONT_NOTICE));
+            assert!(output.contains(devices::OPL3_NOTICE));
         }
         for credit in [
             "Ubuntu-font-1.0",

@@ -6,7 +6,8 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-description = "Concrete emulated chips. M1: the 16550 UART (serial) (§7.2)."
+publish.workspace = true
+description = "Concrete emulated chips (§7)."
 
 [dependencies]
 thiserror.workspace = true
