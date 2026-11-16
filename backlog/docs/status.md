@@ -5,6 +5,21 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — Exchange and read-modify-write instructions on memory-mapped
+  devices:** the CPU core pin moves to x86jit `80b54f8a`. `XCHG` with a memory
+  operand on a memory-mapped window (video memory included), with or without a
+  segment override, now does one device read and then one device write; before,
+  the core stopped with "unsupported instruction" (a game swapping bytes with
+  video memory, `XCHG ES:[DI], AL`, stopped right after its title screen). The
+  same holds for `XADD`, `CMPXCHG` and their `LOCK` forms, and every
+  read-modify-write form on a device window (ALU operations, `INC`/`DEC`/`NOT`/
+  `NEG`, shifts and rotates) now does exactly one read and one write, without
+  the second read after the write. A locked operand that lies partly in RAM and
+  partly in a device window still stops with the instruction bytes. The pin also
+  brings the faster RAM/ROM region lookup. A CPU adapter test pins one read and
+  one write for `XCHG` and for a word `ADD` on video memory; it fails at the
+  previous pin. Every golden, the slow ignored set and the user-ROM goldens
+  keep their retired counts and traces.
 - **2026-11-16 — Firmware is editable in Settings… on machines and images;
   "newer version available" for superseded firmware:** implements the approved
   [firmware-settings mock-up](design/mockups/firmware-settings.html) (now in

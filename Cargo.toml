@@ -43,12 +43,12 @@ winit = "0.30"
 egui = { version = "=0.37.0", default-features = false, features = ["default_fonts"] }
 eframe = { version = "=0.37.0", default-features = false, features = ["accesskit", "default_fonts", "glow", "x11", "wayland"] }
 cpal = "=0.18.2"
-# CPU core: one dispatcher for real-mode and machine execution, and data accesses that
-# span adjacent RAM and ROM regions.
+# CPU core: one device read and one device write for exchange and read-modify-write
+# instructions on memory-mapped devices, and RAM/ROM lookups off the hot memory path.
 # Every build and golden trace runs against a known CPU. A bare path dependency breaks
 # nix build and CI. To develop against a local x86jit checkout, add a gitignored
 # [patch] override instead of editing this line.
-x86jit-core = { version = "0.3", git = "https://git.lab.mikolajczyk.org/unemu-org/x86jit", rev = "060d446a883a9b2fc94b3ef91258cb4e6e98d916" }
+x86jit-core = { version = "0.3", git = "https://git.lab.mikolajczyk.org/unemu-org/x86jit", rev = "80b54f8a1b89814f96b0bc8ba32b6d6c72c78957" }
 
 # Internal crates share the workspace version.
 assembly = { path = "crates/assembly", version = "0.1.0" }

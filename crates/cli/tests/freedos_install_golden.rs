@@ -232,7 +232,7 @@ fn polling_rejects_a_nonadvancing_clock() {
 #[ignore = "slow: open FreeDOS partition, format, system transfer and hard disk boot"]
 fn freedos_installs_and_boots_from_a_blank_hard_disk() {
     assert!(
-        include_str!("../../../Cargo.lock").contains("#060d446a883a9b2fc94b3ef91258cb4e6e98d916")
+        include_str!("../../../Cargo.lock").contains("#80b54f8a1b89814f96b0bc8ba32b6d6c72c78957")
     );
     for path in [
         "unemu-at-bios/bios-unemu-at.bin",

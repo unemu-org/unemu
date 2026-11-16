@@ -1159,6 +1159,48 @@ mod tests {
         );
     }
 
+    /// Games swap bytes with video memory (`XCHG ES:[DI], AL`), and a device
+    /// register must see exactly one read and one write for an exchange or a
+    /// read-modify-write, never a second read after the write.
+    #[test]
+    fn exchange_and_read_modify_write_on_mmio_read_once_and_write_once() {
+        // XCHG ES:[DI], AL; HLT
+        let mut cpu = real_mode_cpu(&[0x26, 0x86, 0x05, 0xF4]);
+        cpu.set_reg(CpuReg::Rdi, 0x10);
+        cpu.set_reg(CpuReg::Rax, 0x5A);
+        let addr = VIDEO_BASE + 0x10;
+        assert_eq!(cpu.run(None).unwrap(), CpuStop::MmioRead { addr, size: 1 });
+        cpu.complete_mmio_read(0x33);
+        assert_eq!(
+            cpu.run(None).unwrap(),
+            CpuStop::MmioWrite {
+                addr,
+                size: 1,
+                value: 0x5A,
+            }
+        );
+        cpu.complete_mmio_write();
+        assert_eq!(cpu.run(None).unwrap(), CpuStop::Halt);
+        assert_eq!(cpu.reg(CpuReg::Rax) & 0xFF, 0x33);
+
+        // ADD WORD ES:[DI], 1; HLT
+        let mut cpu = real_mode_cpu(&[0x26, 0x83, 0x05, 0x01, 0xF4]);
+        cpu.set_reg(CpuReg::Rdi, 0x20);
+        let addr = VIDEO_BASE + 0x20;
+        assert_eq!(cpu.run(None).unwrap(), CpuStop::MmioRead { addr, size: 2 });
+        cpu.complete_mmio_read(0x1234);
+        assert_eq!(
+            cpu.run(None).unwrap(),
+            CpuStop::MmioWrite {
+                addr,
+                size: 2,
+                value: 0x1235,
+            }
+        );
+        cpu.complete_mmio_write();
+        assert_eq!(cpu.run(None).unwrap(), CpuStop::Halt);
+    }
+
     #[test]
     fn completed_steps_survives_error_exits_and_zero_budget_calls() {
         for unsupported in [false, true] {
