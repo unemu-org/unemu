@@ -507,10 +507,11 @@ const IMAGE_COLUMNS: Columns<6> = Columns {
 const IMAGE_MACHINES_COLUMN: usize = 3;
 /// The details pane's first height, and the least either side of the split
 /// keeps: a few list rows with their header and footer, a few pane lines.
-/// On a wide window the first height shows a machine's or an image's whole
-/// pane, its actions at the bottom included, as the machines mock-up's pane
-/// does; a taller pane scrolls with its scroll bar shown.
-const DETAILS_HEIGHT: f32 = 420.0;
+/// On a window 1280 px wide or wider the first height shows the whole pane
+/// of a machine or an image without hints or warnings, its actions and the
+/// note under them included; a longer pane, such as one with a newer
+/// firmware hint, scrolls with its scroll bar shown.
+const DETAILS_HEIGHT: f32 = 460.0;
 const DETAILS_MIN_HEIGHT: f32 = 120.0;
 const LIST_MIN_HEIGHT: f32 = 160.0;
 /// The mock-ups' gap between the library's panes and around them.
@@ -3123,9 +3124,10 @@ impl LibraryView {
 
     /// The details pane of a selected image, as the machines mock-up draws
     /// it: the kind tile beside the title, tags, digest and size and the
-    /// description; hardware, drives and the image's facts beside its
-    /// firmware and the machines made from it; then the actions in one row
-    /// and the note under them. `row` is the selection, taken for the frame
+    /// description, then hardware, drives and the image's facts, in the first
+    /// column; its firmware and the machines made from it beside them from
+    /// the top of the pane; then the actions in one row and the note under
+    /// them. `row` is the selection, taken for the frame
     /// and put back before the pane's actions run.
     fn image_details(&mut self, ui: &mut egui::Ui, row: ImageRow, commands: &mut Vec<Command>) {
         let name_hint = self.default_machine_name(&row);
@@ -3174,60 +3176,73 @@ impl LibraryView {
             kind: "IMAGE",
             user_supplied: rights.as_ref().is_some_and(|r| !r.open),
         };
-        pane::head(ui, &tile, |ui| {
-            pane::title(
-                ui,
-                Icon::Image,
-                row.name(),
-                summary.is_some_and(|s| s.favorite),
-            );
-            ui.horizontal_wrapped(|ui| {
-                ui.label(pane::mono(row.references()));
-                ui.label(pane::mono(format!(
-                    "sha256:{}",
-                    pane::short_digest(digest.hex())
-                )));
-                if let Some(summary) = summary {
-                    ui.label(egui::RichText::new(human_size(summary.stored_size)).weak());
-                }
-            });
-            if let Some(description) = checked_image.and_then(|c| c.description.as_deref()) {
-                pane::text(ui, description);
-            }
-            match &readiness {
-                Some(Ok(_)) => {
-                    pane::meta(ui, "Ready · firmware verified");
-                }
-                Some(Err(reason)) => {
-                    pane::text(
-                        ui,
-                        egui::RichText::new(reason).color(ui.visuals().warn_fg_color),
-                    );
-                }
-                None => {
-                    pane::meta(ui, "Checking image…");
-                }
-            }
-        });
-        for newer in image_newer(&row) {
-            let tag = self.newer_tag(&row, newer.by);
-            let hint = pane::newer_hint(
-                ui,
-                &newer,
-                "Switching publishes a new image revision under a new tag; this image and its machines stay as they are.",
-                tag.as_ref().map(|t| t.reference.as_str()),
-            );
-            if hint.switch {
-                actions.push(ImageAction::Switch(newer.slot, newer.by.id));
-            }
-            if let (true, Some(tag)) = (hint.newer_tag, tag) {
-                actions.push(ImageAction::ShowImage(Box::new(tag)));
-            }
-        }
+        // The newer tag each superseded firmware's hint links to, read before
+        // the pane borrows the labels field. The hints sit under the head;
+        // what they ask for runs first among the pane's actions.
+        let newer: Vec<_> = image_newer(&row)
+            .into_iter()
+            .map(|newer| {
+                let tag = self.newer_tag(&row, newer.by);
+                (newer, tag)
+            })
+            .collect();
+        let mut hinted = Vec::new();
         let labels = &mut self.labels;
         pane::split(
             ui,
             0.55,
+            |ui| {
+                pane::head(ui, &tile, |ui| {
+                    pane::title(
+                        ui,
+                        Icon::Image,
+                        row.name(),
+                        summary.is_some_and(|s| s.favorite),
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(pane::mono(row.references()));
+                        ui.label(pane::mono(format!(
+                            "sha256:{}",
+                            pane::short_digest(digest.hex())
+                        )));
+                        if let Some(summary) = summary {
+                            ui.label(egui::RichText::new(human_size(summary.stored_size)).weak());
+                        }
+                    });
+                    if let Some(description) = checked_image.and_then(|c| c.description.as_deref())
+                    {
+                        pane::text(ui, description);
+                    }
+                    match &readiness {
+                        Some(Ok(_)) => {
+                            pane::meta(ui, "Ready · firmware verified");
+                        }
+                        Some(Err(reason)) => {
+                            pane::text(
+                                ui,
+                                egui::RichText::new(reason).color(ui.visuals().warn_fg_color),
+                            );
+                        }
+                        None => {
+                            pane::meta(ui, "Checking image…");
+                        }
+                    }
+                });
+                for (newer, tag) in newer {
+                    let hint = pane::newer_hint(
+                        ui,
+                        &newer,
+                        "Switching publishes a new image revision under a new tag; this image and its machines stay as they are.",
+                        tag.as_ref().map(|t| t.reference.as_str()),
+                    );
+                    if hint.switch {
+                        hinted.push(ImageAction::Switch(newer.slot, newer.by.id));
+                    }
+                    if let (true, Some(tag)) = (hint.newer_tag, tag) {
+                        hinted.push(ImageAction::ShowImage(Box::new(tag)));
+                    }
+                }
+            },
             |ui| {
                 pane::facts(ui, "image-facts", |ui| {
                     pane::fact(ui, "Hardware", |ui| match image_facts {
@@ -3306,8 +3321,12 @@ impl LibraryView {
                                 if ui.checkbox(&mut favourite, "Favourite").changed() {
                                     actions.push(ImageAction::Favourite(favourite));
                                 }
+                                // A fixed id keeps the field's focus while the
+                                // pane's columns stack or part as the window
+                                // is resized.
                                 ui.add(
                                     egui::TextEdit::singleline(labels)
+                                        .id(egui::Id::unique("image-labels"))
                                         .hint_text("labels, comma separated")
                                         .desired_width(ui.available_width().clamp(80.0, 180.0)),
                                 );
@@ -3344,6 +3363,7 @@ impl LibraryView {
                 );
             },
         );
+        actions.splice(0..0, hinted);
         actions.extend(open);
         let count = made.len();
         pane::actions(ui, |ui| {
@@ -4341,7 +4361,9 @@ pub(super) mod tests {
         let mut selected_file = None;
         view.select_first_package(&cache, &mut selected_file);
         let ctx = egui::Context::default();
-        let size = egui::vec2(1400.0, 1000.0);
+        // Too narrow for the package's three columns side by side, so the
+        // pane at its first height is shorter than the package.
+        let size = egui::vec2(1000.0, 1000.0);
         let mut time = 0.0;
         let mut draw = |view: &mut LibraryView, events: Vec<egui::Event>| {
             time += 0.05;
@@ -4393,12 +4415,12 @@ pub(super) mod tests {
             &mut draw,
             &mut view,
             default - margin,
-            default - margin - 400.0,
+            default - margin - 300.0,
         );
         let mut shown = draw(&mut view, vec![]);
         let taller = y(&shown, top).expect("the pane still shows the package");
         assert!(
-            (default - taller - 400.0).abs() < 2.0,
+            (default - taller - 300.0).abs() < 2.0,
             "{default} → {taller}"
         );
         assert!(y(&shown, last).is_some(), "the taller pane shows it all");

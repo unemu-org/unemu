@@ -158,6 +158,7 @@ input:not([type="checkbox"]):not([type="radio"]), select { background: var(--fie
 dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 12px; margin: 6px 0; }
 dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
 .detail-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; }
+.detail-grid > div > h3:first-child { margin-top: 0; }
 .mini { width: 100%; border-collapse: collapse; background: var(--field); box-shadow: var(--thin-in); }
 .mini th, .mini td { text-align: left; padding: 4px 6px; vertical-align: top; border-bottom: 1px solid var(--face); }
 .mini thead th { font-weight: 400; color: var(--muted); }
@@ -223,6 +224,7 @@ legend { padding: 0 5px; }
   .body { grid-template-columns: 1fr; min-height: 0; }
   .tree { max-height: 240px; }
   .detail-grid { grid-template-columns: 1fr; gap: 4px; }
+  .detail-grid > div > h3:first-child { margin-top: 10px; }
 }
 @media (max-width: 600px) {
   body { padding: 10px 8px 20px; }
@@ -249,7 +251,7 @@ legend { padding: 0 5px; }
 <body>
 
 <div class="note">
-  <p><strong>Design mock-up — approved by the maintainer on 2026-11-15, all “please confirm” items included.</strong> Machines as named, local instances of images: the image vs machine split in the library, its details panes, dialogs and menus. Sample data only: digests, sizes, sector counts and dates are illustrative. Actions are previews: nothing runs, saves, deletes or publishes. Built on the approved library, main-window, new-machine, save-as-image and firmware mock-ups; everything not shown here stays as they show it.</p>
+  <p><strong>Design mock-up — approved by the maintainer on 2026-11-15, all “please confirm” items included.</strong> Machines as named, local instances of images: the image vs machine split in the library, its details panes, dialogs and menus. Sample data only: digests, sizes, sector counts and dates are illustrative. Actions are previews: nothing runs, saves, deletes or publishes. Built on the approved library, main-window, new-machine, save-as-image and firmware mock-ups; everything not shown here stays as they show it.<br>Details panes: the right column starts at the top beside the head (maintainer, 2026-11-16).</p>
   <div class="ctrls"><button type="button" id="skinBtn">Skin: classic</button><button type="button" id="themeBtn">Theme: system</button></div>
 </div>
 
@@ -833,7 +835,7 @@ function machineDetails(m) {
     : '<p class="hint">None — this machine uses the image’s settings.</p>';
   const moved = src.moved ? '<p class="notice">Created from <code>' + esc(m.from) + '</code>, which now names <button type="button" class="link" data-act="goto-image" data-id="' + src.moved.to.id + '">' + esc(ref(src.moved.to)) + '</button> <code>' + esc(src.moved.to.digest) + '</code>. This machine stays on <code>' + esc(im.digest) + '</code>: a machine never follows a tag. For the newer image, start a new machine from it.</p>' : '';
   const detached = src.detached ? '<p class="notice">No tag names this machine’s image any more (detached). The image stays in the store for this machine; Save as new image… gives its state a name again.</p>' : '';
-  return '<div class="dhead">' + cover(im, true) + '<div><h2>' + ICON_M + esc(m.name) + (m.fav ? ' <span class="star" aria-label="favourite">★</span>' : '') + '</h2>' +
+  return '<div class="detail-grid"><div><div class="dhead">' + cover(im, true) + '<div><h2>' + ICON_M + esc(m.name) + (m.fav ? ' <span class="star" aria-label="favourite">★</span>' : '') + '</h2>' +
     '<p class="sub">Machine · workspace id <code>' + esc(m.id) + '</code> (command line: <code>image run ' + esc(ref(im)) + ' --workspace ' + esc(m.id) + '</code>) · created ' + esc(m.created) + '</p>' +
     (m.migrated ? '<p class="hint">Made from this image’s earlier desktop session when machines arrived; its changes were kept.</p>' : '') +
     '<dl><dt>Source image</dt><dd><button type="button" class="link" data-act="goto-image" data-id="' + im.id + '">' + esc(src.label) + '</button> — ' + esc(im.title) + ' <code>sha256:' + esc(im.digest) + '</code>' + markerHtml(src) + '</dd>' +
@@ -841,7 +843,7 @@ function machineDetails(m) {
     '<dt>Changes</dt><dd>' + fmt(changeBytes(m)) + ' in journals beside the image</dd>' +
     '<dt>Labels</dt><dd>' + (m.labels.length ? m.labels.map(l => '<span class="label-chip">' + esc(l) + '</span>').join(' ') : '—') + '</dd></dl></div></div>' +
     moved + detached +
-    '<div class="detail-grid"><div><h3>Media per drive</h3>' + media + '</div><div><h3>Settings that differ from the image</h3>' + settings +
+    '<h3>Media per drive</h3>' + media + '</div><div><h3>Settings that differ from the image</h3>' + settings +
     '<h3>Hardware, from the image</h3><p style="margin-top:0">' + esc(im.hw) + '</p><p class="hint">' + esc(im.fw) + '</p></div></div>' +
     '<div class="btnrow">' + btn('start', 'Start', 'machine-stopped', true) + btn('gaming', 'Gaming mode', 'machine-stopped') + btn('settings', 'Settings…', 'machine') + btn('insert', 'Insert media…', 'machine-stopped') + btn('save', 'Save as new image…', 'machine') + btn('layers', 'Disk layers…', 'machine') + '</div>' +
     '<div class="btnrow">' + btn('duplicate', 'Duplicate…', 'machine-stopped') + btn('rename', 'Rename…', 'machine') + btn('reset', 'Reset to image…', 'machine-stopped') + btn('delete', 'Delete machine…', 'machine-stopped') + '</div>' +
@@ -853,11 +855,11 @@ function imageDetails(im) {
     ? '<ul class="mlist">' + ms.map(m => '<li><button type="button" class="link" data-act="goto-machine" data-id="' + m.id + '">' + esc(m.name) + '</button> <span class="hint">— ' + esc(stateOf(m).text) + ' · last run ' + esc(m.lastRun) + '</span></li>').join('') + '</ul>'
     : '<p class="hint" style="margin-top:0">None yet. Start creates one named “' + esc(uniqueName(im.title)) + '” and starts it; New machine from image… asks for the name first.</p>';
   const others = IMAGES.filter(x => x.repo === im.repo && x !== im);
-  return '<div class="dhead">' + cover(im, false) + '<div><h2>' + ICON_I + esc(im.title) + '</h2>' +
+  return '<div class="detail-grid"><div><div class="dhead">' + cover(im, false) + '<div><h2>' + ICON_I + esc(im.title) + '</h2>' +
     '<p class="sub"><code>' + esc(im.tags.length ? im.repo + ':' + im.tags.join(', ') : im.repo + ' (no tag)') + '</code> · <code>sha256:' + esc(im.digest) + '</code> · ' + fmt(im.size) + (im.base ? ' new; the rest is shared with ' + esc(im.base) : '') + '</p>' +
     '<p>' + esc(im.desc) + '</p></div></div>' +
     (im.tags.length ? '' : '<p class="notice">No tag names this image any more (detached). It stays in the store while its machines use it.</p>') +
-    '<div class="detail-grid"><div><dl><dt>Hardware</dt><dd>' + esc(im.hw) + '</dd><dt>Firmware</dt><dd>' + esc(im.fw) + '</dd>' +
+    '<dl><dt>Hardware</dt><dd>' + esc(im.hw) + '</dd><dt>Firmware</dt><dd>' + esc(im.fw) + '</dd>' +
     '<dt>Drives</dt><dd>' + im.drives.map(d => '<strong>' + esc(d[0]) + '</strong> ' + esc(d[1])).join('<br>') + '</dd>' +
     '<dt>Base image</dt><dd>' + (im.base ? '<code>' + esc(im.base) + '</code>' : '—') + '</dd><dt>Origin</dt><dd>' + esc(im.origin) + '</dd>' +
     '<dt>Redistribution</dt><dd><span class="badge ' + (im.rights === 'open' ? 'open">open' : 'user">user-supplied') + '</span></dd>' +

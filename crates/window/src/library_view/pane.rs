@@ -5,6 +5,11 @@
 //! that stack when the pane is narrow, mini tables, and the actions as framed
 //! buttons in one wrapping row at the bottom with a short note under them.
 //!
+//! The pane's head (the tile, the title and the facts under it) opens the
+//! first column rather than spanning the pane, so the other columns start at
+//! the top of the pane beside it and the room right of the head is not left
+//! empty. The actions and the note stay full width under the columns.
+//!
 //! A pane uses two text sizes: the body style, and the small style for meta
 //! lines at the mock-up's 11 px; digests and ids are monospace at that size.
 //! A pane's title is the mock-up's 15 px heading.
@@ -16,9 +21,9 @@ const META_SIZE: f32 = 11.0;
 /// The mock-up's pane title.
 const TITLE_SIZE: f32 = 15.0;
 /// Two sections sit side by side from this pane width; narrower, they stack.
-const SPLIT_WIDTH: f32 = 720.0;
+pub(super) const SPLIT_WIDTH: f32 = 720.0;
 /// Three sections sit side by side from this pane width.
-const SPLIT3_WIDTH: f32 = 1080.0;
+pub(super) const SPLIT3_WIDTH: f32 = 1080.0;
 /// Room between sections side by side.
 const GAP: f32 = 16.0;
 /// The kind tile: the mock-up's 3:4 cover, 84 px wide there.
@@ -70,9 +75,13 @@ pub(super) fn mono(text: impl Into<String>) -> RichText {
     RichText::new(text).monospace()
 }
 
-/// A section title: the mock-up's bold body-size heading.
+/// A section title: the mock-up's bold body-size heading, set off from
+/// what comes before it. A section that opens a column keeps no room above
+/// it, so it starts level with the column beside it.
 pub(super) fn section(ui: &mut Ui, title: impl Into<String>) {
-    ui.add_space(6.0);
+    if ui.cursor().top() > ui.max_rect().top() {
+        ui.add_space(6.0);
+    }
     ui.add(egui::Label::new(RichText::new(title).strong()).wrap());
 }
 
@@ -172,6 +181,27 @@ pub(super) fn head(ui: &mut Ui, kind: &Tile<'_>, body: impl FnOnce(&mut Ui)) {
     });
 }
 
+/// The scope of a pane's head and first column, the same in every layout.
+fn head_scope(ui: &Ui) -> egui::Id {
+    ui.scope_id().with("pane-head-column")
+}
+
+/// The head and the first column's sections in the [`head_scope`], so what
+/// they keep from frame to frame, such as a grid's column widths or the
+/// focus of the labels field, survives the pane crossing a width where its
+/// columns stack or part.
+fn head_column(
+    ui: &mut Ui,
+    scope: egui::Id,
+    head: impl FnOnce(&mut Ui),
+    first: impl FnOnce(&mut Ui),
+) {
+    ui.scope_builder(egui::UiBuilder::new().scope_id(scope), |ui| {
+        head(ui);
+        first(ui);
+    });
+}
+
 fn column(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) {
     ui.allocate_ui_with_layout(Vec2::new(width, 0.0), Layout::top_down(Align::Min), |ui| {
         ui.set_width(width);
@@ -179,17 +209,22 @@ fn column(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) {
     });
 }
 
-/// Two sections side by side, the first taking `share` of the width, as the
-/// mock-up's detail grid; stacked when the pane is narrow.
+/// A details pane's head and its sections in two columns, as the mock-up's
+/// detail grid, the first column taking `share` of the width: the `head`
+/// opens the first column with the `first` sections under it, and the
+/// `second` sections start beside the head at the top of the pane. On a
+/// narrow pane they stack: the head, the first sections, the second ones.
 pub(super) fn split(
     ui: &mut Ui,
     share: f32,
+    head: impl FnOnce(&mut Ui),
     first: impl FnOnce(&mut Ui),
     second: impl FnOnce(&mut Ui),
 ) {
     let width = ui.available_width();
+    let scope = head_scope(ui);
     if width < SPLIT_WIDTH {
-        first(ui);
+        head_column(ui, scope, head, first);
         second(ui);
         return;
     }
@@ -197,30 +232,34 @@ pub(super) fn split(
     let left = ((width - GAP) * share).floor();
     let right = width - GAP - left;
     ui.horizontal_top(|ui| {
-        column(ui, left, first);
+        column(ui, left, |ui| head_column(ui, scope, head, first));
         ui.add_space(GAP - spacing);
         column(ui, right, second);
     });
 }
 
-/// Three sections side by side on a wide pane; narrower, the first two side
-/// by side and the third under them, or all three stacked.
+/// A details pane's head and its sections in three columns on a wide pane,
+/// the head opening the first column and the other two starting beside it
+/// at the top of the pane; narrower, the first two columns as [`split`] lays
+/// them out and the third under them, or everything stacked.
 pub(super) fn split3(
     ui: &mut Ui,
+    head: impl FnOnce(&mut Ui),
     first: impl FnOnce(&mut Ui),
     second: impl FnOnce(&mut Ui),
     third: impl FnOnce(&mut Ui),
 ) {
     let width = ui.available_width();
     if width < SPLIT3_WIDTH {
-        split(ui, 0.5, first, second);
+        split(ui, 0.5, head, first, second);
         third(ui);
         return;
     }
     let spacing = ui.spacing().item_spacing.x;
     let each = ((width - 2.0 * GAP) / 3.0).floor();
+    let scope = head_scope(ui);
     ui.horizontal_top(|ui| {
-        column(ui, each, first);
+        column(ui, each, |ui| head_column(ui, scope, head, first));
         ui.add_space(GAP - spacing);
         column(ui, each, second);
         ui.add_space(GAP - spacing);

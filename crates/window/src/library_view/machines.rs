@@ -722,8 +722,9 @@ impl LibraryView {
 
     /// The details pane of the selected machine, as the machines mock-up
     /// draws it: the kind tile beside the name, the facts and the labels,
-    /// media per drive beside the settings, firmware and hardware, then the
-    /// actions in one row and the note under them.
+    /// then media per drive, in the first column; the settings, firmware and
+    /// hardware beside them from the top of the pane; then the actions in one
+    /// row and the note under them.
     pub(super) fn machine_details(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
         let Some(row) = self.selected_machine_row().cloned() else {
             ui.label(if self.machine.is_some() {
@@ -747,116 +748,131 @@ impl LibraryView {
             kind: "MACHINE",
             user_supplied,
         };
-        pane::head(ui, &tile, |ui| {
-            pane::title(ui, Icon::Machine, row.name(), machine.favorite);
-            let created = match (&machine.created, machine.origin) {
-                (Some(at), image_store::machine::Origin::Duplicate) => {
-                    format!(" · created {at} as a duplicate")
-                }
-                (Some(at), _) => format!(" · created {at}"),
-                (None, image_store::machine::Origin::Migration) => " · created at migration".into(),
-                (None, _) => String::new(),
-            };
-            pane::meta(
-                ui,
-                format!(
-                    "Machine · workspace id {} (command line: image machine run {}){created}",
-                    row.id(),
-                    row.id()
-                ),
-            );
-            if machine.origin == image_store::machine::Origin::Migration {
-                pane::meta(
-                    ui,
-                    "Made from this image's earlier desktop session when machines arrived; its changes were kept.",
-                );
-            }
-            if let Some(problem) = &row.listing.problem {
-                pane::text(
-                    ui,
-                    egui::RichText::new(format!("⚠ {problem}")).color(ui.visuals().warn_fg_color),
-                );
-            }
-            pane::facts(ui, "machine-facts", |ui| {
-                pane::fact(ui, "Source image", |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.link(row.source_label()).clicked() {
-                            actions.push(Action::ShowImage);
-                        }
-                        ui.label(format!("— {}", row.title.as_deref().unwrap_or("untitled")));
-                        ui.label(pane::mono(format!(
-                            "sha256:{}",
-                            pane::short_digest(machine.image.digest.hex())
-                        )));
-                        for badge in row.source_badges() {
-                            ui.colored_label(ui.visuals().warn_fg_color, badge);
-                        }
-                    });
-                });
-                pane::fact_text(ui, "State", row.state_text());
-                pane::fact_text(ui, "Last run", row.last_run());
-                pane::fact_text(
-                    ui,
-                    "Changes",
-                    format!(
-                        "{} in journals beside the image",
-                        human_size(row.listing.change_bytes)
-                    ),
-                );
-                pane::fact(ui, "Labels", |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        let mut favourite = machine.favorite;
-                        if ui.checkbox(&mut favourite, "Favourite").changed() {
-                            actions.push(Action::Favorite(favourite));
-                        }
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.machine_labels)
-                                .hint_text("labels, comma separated")
-                                .desired_width(ui.available_width().clamp(80.0, 180.0)),
-                        );
-                        if ui.button("Apply labels").clicked() {
-                            actions.push(Action::Labels);
-                        }
-                    });
-                });
-            });
-        });
-        for newer in row.newer() {
-            let after = format!(
-                "Switching changes only this machine, from its next start. C:, its disk layers and its inserted media stay{}",
-                if newer.slot == crate::firmware_choices::Slot::Video || newer.same_layout() {
-                    ", and so does its CMOS (same layout)."
-                } else {
-                    "; its CMOS is reset for the new layout."
-                }
-            );
-            if pane::newer_hint(ui, &newer, &after, None).switch {
-                actions.push(Action::Switch(newer.slot, newer.by.id));
-            }
-        }
-        if row.listing.moved_to.is_some() {
-            pane::text(
-                ui,
-                egui::RichText::new(format!(
-                    "Created from {}, which now names another image. This machine stays on sha256:{}: a machine never follows a tag. For the newer image, start a new machine from it.",
-                    machine.source,
-                    pane::short_digest(machine.image.digest.hex())
-                ))
-                .color(ui.visuals().warn_fg_color),
-            );
-        }
-        if row.listing.detached() {
-            pane::text(
-                ui,
-                egui::RichText::new(
-                    "No tag names this machine's image any more (detached). The image stays in the store for this machine; Save as new image… gives its state a name again.",
-                )
-                .color(ui.visuals().warn_fg_color),
-            );
-        }
+        // The pane edits the labels field while it reads the rest of the
+        // view; the field goes back before anything the pane asks for runs.
+        let mut labels = std::mem::take(&mut self.machine_labels);
         pane::split(
             ui,
             0.55,
+            |ui| {
+                pane::head(ui, &tile, |ui| {
+                    pane::title(ui, Icon::Machine, row.name(), machine.favorite);
+                    let created = match (&machine.created, machine.origin) {
+                        (Some(at), image_store::machine::Origin::Duplicate) => {
+                            format!(" · created {at} as a duplicate")
+                        }
+                        (Some(at), _) => format!(" · created {at}"),
+                        (None, image_store::machine::Origin::Migration) => {
+                            " · created at migration".into()
+                        }
+                        (None, _) => String::new(),
+                    };
+                    pane::meta(
+                        ui,
+                        format!(
+                            "Machine · workspace id {} (command line: image machine run {}){created}",
+                            row.id(),
+                            row.id()
+                        ),
+                    );
+                    if machine.origin == image_store::machine::Origin::Migration {
+                        pane::meta(
+                            ui,
+                            "Made from this image's earlier desktop session when machines arrived; its changes were kept.",
+                        );
+                    }
+                    if let Some(problem) = &row.listing.problem {
+                        pane::text(
+                            ui,
+                            egui::RichText::new(format!("⚠ {problem}"))
+                                .color(ui.visuals().warn_fg_color),
+                        );
+                    }
+                    pane::facts(ui, "machine-facts", |ui| {
+                        pane::fact(ui, "Source image", |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                if ui.link(row.source_label()).clicked() {
+                                    actions.push(Action::ShowImage);
+                                }
+                                ui.label(format!(
+                                    "— {}",
+                                    row.title.as_deref().unwrap_or("untitled")
+                                ));
+                                ui.label(pane::mono(format!(
+                                    "sha256:{}",
+                                    pane::short_digest(machine.image.digest.hex())
+                                )));
+                                for badge in row.source_badges() {
+                                    ui.colored_label(ui.visuals().warn_fg_color, badge);
+                                }
+                            });
+                        });
+                        pane::fact_text(ui, "State", row.state_text());
+                        pane::fact_text(ui, "Last run", row.last_run());
+                        pane::fact_text(
+                            ui,
+                            "Changes",
+                            format!(
+                                "{} in journals beside the image",
+                                human_size(row.listing.change_bytes)
+                            ),
+                        );
+                        pane::fact(ui, "Labels", |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                let mut favourite = machine.favorite;
+                                if ui.checkbox(&mut favourite, "Favourite").changed() {
+                                    actions.push(Action::Favorite(favourite));
+                                }
+                                // A fixed id keeps the field's focus while the
+                                // pane's columns stack or part as the window
+                                // is resized.
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut labels)
+                                        .id(egui::Id::unique("machine-labels"))
+                                        .hint_text("labels, comma separated")
+                                        .desired_width(ui.available_width().clamp(80.0, 180.0)),
+                                );
+                                if ui.button("Apply labels").clicked() {
+                                    actions.push(Action::Labels);
+                                }
+                            });
+                        });
+                    });
+                });
+                for newer in row.newer() {
+                    let after = format!(
+                        "Switching changes only this machine, from its next start. C:, its disk layers and its inserted media stay{}",
+                        if newer.slot == crate::firmware_choices::Slot::Video || newer.same_layout() {
+                            ", and so does its CMOS (same layout)."
+                        } else {
+                            "; its CMOS is reset for the new layout."
+                        }
+                    );
+                    if pane::newer_hint(ui, &newer, &after, None).switch {
+                        actions.push(Action::Switch(newer.slot, newer.by.id));
+                    }
+                }
+                if row.listing.moved_to.is_some() {
+                    pane::text(
+                        ui,
+                        egui::RichText::new(format!(
+                            "Created from {}, which now names another image. This machine stays on sha256:{}: a machine never follows a tag. For the newer image, start a new machine from it.",
+                            machine.source,
+                            pane::short_digest(machine.image.digest.hex())
+                        ))
+                        .color(ui.visuals().warn_fg_color),
+                    );
+                }
+                if row.listing.detached() {
+                    pane::text(
+                        ui,
+                        egui::RichText::new(
+                            "No tag names this machine's image any more (detached). The image stays in the store for this machine; Save as new image… gives its state a name again.",
+                        )
+                        .color(ui.visuals().warn_fg_color),
+                    );
+                }
+            },
             |ui| {
                 pane::section(ui, "Media per drive");
                 self.media_per_drive(ui, &row, facts.as_ref(), &readiness);
@@ -914,6 +930,7 @@ impl LibraryView {
                 }
             },
         );
+        self.machine_labels = labels;
         let ready = self.ready();
         let stopped = !running;
         pane::actions(ui, |ui| {

@@ -488,57 +488,6 @@ pub(super) fn details(
     };
     let license = row.redistribution.licenses.join(", ");
     let warn = ui.visuals().warn_fg_color;
-    super::pane::title(ui, crate::shell_icons::Icon::Firmware, image.name(), false);
-    super::pane::meta(
-        ui,
-        format!("{} · local package · {}", roles(f), image.references()),
-    );
-    match &f.description {
-        Some(description) => {
-            super::pane::text(ui, description.as_str());
-        }
-        None => {
-            super::pane::meta(ui, "No description.");
-        }
-    }
-    // A superseded package says what replaces it, as a machine's hint does,
-    // without a Switch button: packages never change.
-    for (slot, entry) in f
-        .catalogue_ids
-        .iter()
-        .filter_map(|id| crate::firmware_choices::entry(id))
-        .filter_map(|e| {
-            let slot = crate::firmware_choices::Slot::ALL
-                .into_iter()
-                .find(|s| s.kind() == e.kind)?;
-            Some((slot, e))
-        })
-    {
-        for newer in crate::firmware_choices::newer_of(&[(slot, entry)]) {
-            super::pane::meta(ui, format!("{}.", newer.text()));
-        }
-    }
-    ui.horizontal_wrapped(|ui| {
-        if f.labels.is_empty() {
-            ui.weak("No labels.");
-        }
-        for label in &f.labels {
-            egui::Frame::group(ui.style())
-                .inner_margin(egui::Margin::symmetric(4, 1))
-                .show(ui, |ui| ui.monospace(label));
-        }
-    });
-    if row.source_missing {
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            super::pane::text(ui, egui::RichText::new(guard_notice(&license)).color(warn));
-            if ui
-                .add_enabled(can_edit, egui::Button::new("Add source archive…"))
-                .clicked()
-            {
-                action.set(PaneAction::AddSource);
-            }
-        });
-    }
     let checked = |line: fn(&PackageDetails) -> String| match package {
         None => "Checking…".to_owned(),
         Some(Err(error)) => error.clone(),
@@ -546,6 +495,59 @@ pub(super) fn details(
     };
     super::pane::split3(
         ui,
+        |ui| {
+            super::pane::title(ui, crate::shell_icons::Icon::Firmware, image.name(), false);
+            super::pane::meta(
+                ui,
+                format!("{} · local package · {}", roles(f), image.references()),
+            );
+            match &f.description {
+                Some(description) => {
+                    super::pane::text(ui, description.as_str());
+                }
+                None => {
+                    super::pane::meta(ui, "No description.");
+                }
+            }
+            // A superseded package says what replaces it, as a machine's hint does,
+            // without a Switch button: packages never change.
+            for (slot, entry) in f
+                .catalogue_ids
+                .iter()
+                .filter_map(|id| crate::firmware_choices::entry(id))
+                .filter_map(|e| {
+                    let slot = crate::firmware_choices::Slot::ALL
+                        .into_iter()
+                        .find(|s| s.kind() == e.kind)?;
+                    Some((slot, e))
+                })
+            {
+                for newer in crate::firmware_choices::newer_of(&[(slot, entry)]) {
+                    super::pane::meta(ui, format!("{}.", newer.text()));
+                }
+            }
+            ui.horizontal_wrapped(|ui| {
+                if f.labels.is_empty() {
+                    ui.weak("No labels.");
+                }
+                for label in &f.labels {
+                    egui::Frame::group(ui.style())
+                        .inner_margin(egui::Margin::symmetric(4, 1))
+                        .show(ui, |ui| ui.monospace(label));
+                }
+            });
+            if row.source_missing {
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    super::pane::text(ui, egui::RichText::new(guard_notice(&license)).color(warn));
+                    if ui
+                        .add_enabled(can_edit, egui::Button::new("Add source archive…"))
+                        .clicked()
+                    {
+                        action.set(PaneAction::AddSource);
+                    }
+                });
+            }
+        },
         |facts| {
             egui::Grid::new("firmware-facts")
                 .num_columns(2)

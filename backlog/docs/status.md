@@ -5,6 +5,27 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — Library details panes start both columns at the top:**
+  in every collection whose details pane has sections side by side
+  (machines, images, installation media, firmware), the pane's head (the
+  kind tile, the title and the facts under it) now opens the first column,
+  and the other columns start beside it at the top of the pane instead of
+  under the head; the actions and the note under them stay full width below
+  the columns, and a narrow pane still stacks everything in one column.
+  Machine files keep their single column. The approved machines mock-up
+  shows the same layout now, at the maintainer's request. The details pane's
+  first height grows from 420 to 460 px, so on a window 1280 px wide or
+  wider the pane of a machine or an image without hints or warnings shows
+  whole, the note under its actions included; longer panes, such as a
+  machine's with a newer-firmware hint, scroll with their scroll bar shown,
+  in the smallest window too. The labels field of a machine or an image
+  keeps its focus while the window is resized across the width where the
+  columns stack. Evidence: headless layout tests for level column tops at
+  the pane's top on wide panes, the third column under the first two on a
+  middle-width pane and stacking on narrow ones, the whole note at the first
+  height on a 1280 px window, the note scrolled into view for a machine with
+  a hint and in the smallest window, and the labels field's focus across
+  the stacking width.
 - **2026-11-16 — Version 0.0.2, a preview release:** published tags of
   installation media sets never move and the push preflight sees every
   manifest type; `upcli --version` names the full commit of a release build;

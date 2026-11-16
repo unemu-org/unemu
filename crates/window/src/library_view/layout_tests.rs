@@ -979,6 +979,12 @@ fn the_kind_tile_wraps_its_title_between_words() {
     }
 }
 
+/// The note under the machine pane's actions.
+const MACHINE_NOTE: &str =
+    "Gaming mode plays a disposable copy of this machine as it is now; this \
+                            machine does not change. Reset to image… throws its changes away and \
+                            keeps the machine; Delete machine… removes both, never the image.";
+
 /// The note under the installation media pane's actions.
 const MEDIA_NOTE: &str = "Stored media and extras stay read-only. Installer writes use the \
                           selected workspace's journal.";
@@ -987,17 +993,36 @@ const MEDIA_NOTE: &str = "Stored media and extras stay read-only. Installer writ
 /// its first height.
 const WINDOW_HEIGHT: f32 = 1000.0;
 
-/// One frame of the whole library in a `width` × [`WINDOW_HEIGHT`] window.
+/// The smallest window the shell allows.
+const MIN_WINDOW: egui::Vec2 = egui::vec2(760.0, 500.0);
+/// Room the shell's menu bar and toolbar take above the library, rounded
+/// up, plus the 23 px title strip the classic skin draws over them outside
+/// macOS; and the status bar's room below the library.
+const CHROME_TOP: f32 = 64.0 + 23.0;
+const CHROME_BOTTOM: f32 = 24.0;
+
+/// One frame of the whole library in a `size` window; with `chrome`, under
+/// the shell's menu bar and toolbar and over its status bar.
 fn library_frame(
     ctx: &egui::Context,
     view: &mut LibraryView,
-    width: f32,
+    size: egui::Vec2,
+    chrome: bool,
     time: &mut f64,
     events: Vec<egui::Event>,
 ) -> (Vec<Drawn>, Vec<egui::epaint::RectShape>) {
     *time += 0.1;
-    let size = egui::vec2(width, WINDOW_HEIGHT);
     let output = firmware::tests::frame(ctx, size, *time, events, |ui| {
+        if chrome {
+            egui::Panel::top("chrome")
+                .exact_size(CHROME_TOP)
+                .show_separator_line(false)
+                .show(ui, |_| {});
+            egui::Panel::bottom("statusbar")
+                .exact_size(CHROME_BOTTOM)
+                .show_separator_line(false)
+                .show(ui, |_| {});
+        }
         view.show(ui, &[], &mut None);
     });
     drawn(&output)
@@ -1038,7 +1063,7 @@ fn panes_with_notes() -> Vec<(
             "machine",
             Box::new(f),
             machine,
-            "Gaming mode plays a disposable copy of this machine as it is now; this machine does not change. Reset to image… throws its changes away and keeps the machine; Delete machine… removes both, never the image.",
+            MACHINE_NOTE,
         ),
         (
             "image",
@@ -1056,6 +1081,106 @@ fn panes_with_notes() -> Vec<(
     ]
 }
 
+/// The note under a pane's actions can be read in a `size` window, with or
+/// without the shell's `chrome`: it is whole in view, or the pane, taller
+/// than its area, shows its scroll bar at rest and scrolling to its end
+/// brings the whole note into view. Returns whether the pane had to scroll.
+fn assert_note_reachable(
+    what: &str,
+    view: &mut LibraryView,
+    note: &str,
+    size: egui::Vec2,
+    chrome: bool,
+) -> bool {
+    let width = size.x;
+    let (top, bottom) = if chrome {
+        (CHROME_TOP, size.y - CHROME_BOTTOM)
+    } else {
+        (0.0, size.y)
+    };
+    let ctx = egui::Context::default();
+    crate::shell::configure_context(&ctx);
+    let mut time = 0.0;
+    let mut shown = library_frame(&ctx, view, size, chrome, &mut time, vec![]);
+    for _ in 0..3 {
+        shown = library_frame(&ctx, view, size, chrome, &mut time, vec![]);
+    }
+    if shown.0.iter().any(|t| t.text == note && whole(t)) {
+        return false;
+    }
+    // The pane's visible area: where its texts are clipped, under the list.
+    let area = shown
+        .0
+        .iter()
+        .map(|t| t.clip)
+        .filter(|c| {
+            c.left() >= TREE_WIDTH - 1.0
+                && c.top() > top + LIST_MIN_HEIGHT / 2.0
+                && c.bottom() > bottom - 10.0
+        })
+        .max_by(|a, b| a.height().total_cmp(&b.height()))
+        .unwrap_or_else(|| panic!("{what} at {size:?}: no details pane"));
+    // An opaque bar at the pane's right edge, as tall as it at most, that
+    // stays put frame after frame with the pointer away: shown at rest, not
+    // faded in on hover.
+    let bars = |rects: &[egui::epaint::RectShape]| -> Vec<egui::epaint::RectShape> {
+        rects
+            .iter()
+            .filter(|r| {
+                r.fill.a() == u8::MAX
+                    && r.rect.left() >= area.right() - 12.0
+                    && r.rect.right() <= width
+                    && r.rect.top() >= area.top() - 1.0
+                    && r.rect.bottom() <= area.bottom() + 1.0
+                    && r.rect.width() <= 12.0
+                    && r.rect.height() >= 12.0
+            })
+            .cloned()
+            .collect()
+    };
+    let before = bars(&shown.1);
+    let after = bars(&library_frame(&ctx, view, size, chrome, &mut time, vec![]).1);
+    assert!(
+        before.iter().any(|bar| after.contains(bar)),
+        "{what} at {size:?}: the note is cut off in {area:?} and no scroll bar shows \
+         at rest ({before:?} then {after:?})"
+    );
+    let pointer = area.center();
+    library_frame(
+        &ctx,
+        view,
+        size,
+        chrome,
+        &mut time,
+        vec![
+            egui::Event::PointerMoved(pointer),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+                delta: egui::vec2(0.0, -12000.0),
+                modifiers: egui::Modifiers::default(),
+            },
+        ],
+    );
+    for _ in 0..30 {
+        shown = library_frame(
+            &ctx,
+            view,
+            size,
+            chrome,
+            &mut time,
+            vec![egui::Event::PointerMoved(pointer)],
+        );
+    }
+    let text = shown.0.iter().find(|t| t.text == note);
+    assert!(
+        text.is_some_and(whole),
+        "{what} at {size:?}: scrolled to its end, the note is {text:?}"
+    );
+    true
+}
+
 /// The note under every pane's actions can be read at the details pane's
 /// first height: it is whole in view, or the pane, taller than its area,
 /// shows its scroll bar at rest and scrolling to its end brings the whole
@@ -1065,88 +1190,79 @@ fn every_pane_footer_note_is_in_view_or_scrolls_into_view_at_the_first_height() 
     let mut scrolled = 0;
     for (what, _fixture, mut view, note) in panes_with_notes() {
         for width in WINDOW_WIDTHS {
+            let size = egui::vec2(width, WINDOW_HEIGHT);
+            scrolled += usize::from(assert_note_reachable(what, &mut view, note, size, false));
+        }
+    }
+    assert!(scrolled > 0, "no pane was taller than its first height");
+}
+
+/// On a laptop-wide window and wider, the details pane's first height
+/// shows the whole pane of a machine or an image without hints or
+/// warnings, the note under its actions included: the note is never left
+/// cut off at the pane's bottom edge. A machine with a newer-firmware hint
+/// is longer; its note scrolls whole into view.
+#[test]
+fn the_first_height_shows_a_whole_machine_or_image_pane_on_a_laptop_wide_window() {
+    for (what, _fixture, mut view, note) in panes_with_notes() {
+        if !matches!(what, "machine" | "image") {
+            continue;
+        }
+        for width in [1280.0, 1400.0, 2000.0] {
+            let size = egui::vec2(width, 800.0);
             let ctx = egui::Context::default();
             crate::shell::configure_context(&ctx);
             let mut time = 0.0;
-            let mut shown = library_frame(&ctx, &mut view, width, &mut time, vec![]);
+            let mut shown = library_frame(&ctx, &mut view, size, true, &mut time, vec![]);
             for _ in 0..3 {
-                shown = library_frame(&ctx, &mut view, width, &mut time, vec![]);
-            }
-            if shown.0.iter().any(|t| t.text == note && whole(t)) {
-                continue;
-            }
-            // The pane's visible area: where its texts are clipped, under the list.
-            let area = shown
-                .0
-                .iter()
-                .map(|t| t.clip)
-                .filter(|c| {
-                    c.left() >= TREE_WIDTH - 1.0
-                        && c.top() > WINDOW_HEIGHT / 2.0
-                        && c.bottom() > WINDOW_HEIGHT - 10.0
-                })
-                .max_by(|a, b| a.height().total_cmp(&b.height()))
-                .unwrap_or_else(|| panic!("{what} at {width}: no details pane"));
-            // An opaque bar at the pane's right edge, as tall as it at most,
-            // that stays put frame after frame with the pointer away: shown at
-            // rest, not faded in on hover.
-            let bars = |rects: &[egui::epaint::RectShape]| -> Vec<egui::epaint::RectShape> {
-                rects
-                    .iter()
-                    .filter(|r| {
-                        r.fill.a() == u8::MAX
-                            && r.rect.left() >= area.right() - 12.0
-                            && r.rect.right() <= width
-                            && r.rect.top() >= area.top() - 1.0
-                            && r.rect.bottom() <= area.bottom() + 1.0
-                            && r.rect.width() <= 12.0
-                            && r.rect.height() >= 12.0
-                    })
-                    .cloned()
-                    .collect()
-            };
-            let before = bars(&shown.1);
-            let after = bars(&library_frame(&ctx, &mut view, width, &mut time, vec![]).1);
-            assert!(
-                before.iter().any(|bar| after.contains(bar)),
-                "{what} at {width}: the note is cut off in {area:?} and no scroll bar shows \
-                 at rest ({before:?} then {after:?})"
-            );
-            let pointer = area.center();
-            library_frame(
-                &ctx,
-                &mut view,
-                width,
-                &mut time,
-                vec![
-                    egui::Event::PointerMoved(pointer),
-                    egui::Event::MouseWheel {
-                        unit: egui::MouseWheelUnit::Point,
-                        phase: egui::TouchPhase::Move,
-                        source: egui::MouseWheelSource::Unknown,
-                        delta: egui::vec2(0.0, -12000.0),
-                        modifiers: egui::Modifiers::default(),
-                    },
-                ],
-            );
-            for _ in 0..30 {
-                shown = library_frame(
-                    &ctx,
-                    &mut view,
-                    width,
-                    &mut time,
-                    vec![egui::Event::PointerMoved(pointer)],
-                );
+                shown = library_frame(&ctx, &mut view, size, true, &mut time, vec![]);
             }
             let text = shown.0.iter().find(|t| t.text == note);
             assert!(
                 text.is_some_and(whole),
-                "{what} at {width}: scrolled to its end, the note is {text:?}"
+                "{what} at {size:?}: the note at the first height is {text:?}"
             );
-            scrolled += 1;
         }
     }
-    assert!(scrolled > 0, "no pane was taller than its first height");
+    let (_f, mut view) = machine_with_newer_hint();
+    for width in [1280.0, 1400.0, 2000.0] {
+        let size = egui::vec2(width, 800.0);
+        assert_note_reachable("machine with the hint", &mut view, MACHINE_NOTE, size, true);
+    }
+}
+
+/// In the smallest window the shell allows, under its menu bar and toolbar
+/// and over its status bar, the note under every pane's actions is whole in
+/// view or scrolls whole into view: the pane never cuts it off.
+#[test]
+fn every_pane_footer_note_reads_whole_in_the_smallest_window() {
+    let mut scrolled = 0;
+    for (what, _fixture, mut view, note) in panes_with_notes() {
+        scrolled += usize::from(assert_note_reachable(
+            what, &mut view, note, MIN_WINDOW, true,
+        ));
+    }
+    assert!(
+        scrolled > 0,
+        "no pane was taller than the smallest window's"
+    );
+}
+
+/// The test machine with its own choice of the superseded open AT BIOS, so
+/// its pane shows the "newer version available" hint.
+fn machine_with_newer_hint() -> (Fixture, LibraryView) {
+    let (f, mut view) = machine_view();
+    let old = crate::firmware_choices::entry("unemu-at-bios-1.0.2-unemu.2").unwrap();
+    let mut rows = view.machines.as_ref().clone();
+    rows[0].listing.machine.settings = Some(
+        toml::from_str(&format!(
+            "[firmware.bios]\nimage='assets/firmware-0.bin'\nsha256='{}'\n",
+            old.sha256
+        ))
+        .unwrap(),
+    );
+    view.set_machines(rows);
+    (f, view)
 }
 
 /// A firmware layer of the superseded open AT BIOS, as an image's summary
@@ -1168,17 +1284,7 @@ fn with_superseded_bios(summary: &mut image_store::summary::ImageSummary) {
 /// cut, and its Switch button is drawn whole.
 #[test]
 fn the_newer_version_hint_lays_out_in_the_machine_pane_at_every_width() {
-    let (_f, mut view) = machine_view();
-    let old = crate::firmware_choices::entry("unemu-at-bios-1.0.2-unemu.2").unwrap();
-    let mut rows = view.machines.as_ref().clone();
-    rows[0].listing.machine.settings = Some(
-        toml::from_str(&format!(
-            "[firmware.bios]\nimage='assets/firmware-0.bin'\nsha256='{}'\n",
-            old.sha256
-        ))
-        .unwrap(),
-    );
-    view.set_machines(rows);
+    let (_f, mut view) = machine_with_newer_hint();
     for width in WINDOW_WIDTHS {
         let (texts, _) = pane(&mut view, width);
         assert_laid_out("machine pane with the hint", width, &texts);
@@ -2217,6 +2323,184 @@ fn a_pressed_header_cell_sinks_and_its_click_sorts_the_list() {
             (view.query.machine_sort, view.query.machine_descending),
             (1, true),
             "{what}: a second click does not reverse the order"
+        );
+    }
+}
+
+/// The details pane alone as [`pane`] draws it, with the room its panel
+/// gives it and the bounds of every mesh it paints, the kind tile's among
+/// them.
+fn pane_in_room(view: &mut LibraryView, width: f32) -> (Vec<Drawn>, Vec<egui::Rect>, egui::Rect) {
+    fn meshes(shape: &egui::Shape, found: &mut Vec<egui::Rect>) {
+        match shape {
+            egui::Shape::Mesh(mesh) => found.push(mesh.calc_bounds()),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| meshes(s, found)),
+            _ => (),
+        }
+    }
+    let mut room = egui::Rect::NOTHING;
+    let output = frames(width, |ui| {
+        egui::Panel::left("tree")
+            .exact_size(TREE_WIDTH)
+            .show(ui, |_| {});
+        egui::CentralPanel::default().show(ui, |ui| {
+            room = ui.max_rect();
+            let mut commands = Vec::new();
+            view.details_pane(ui, &[], &mut None, &mut commands);
+        });
+    });
+    let mut found = Vec::new();
+    for clipped in &output.shapes {
+        meshes(&clipped.shape, &mut found);
+    }
+    (drawn(&output).0, found, room)
+}
+
+/// Every collection's details pane with sections side by side starts its
+/// columns level at the top of the pane on a wide window: the first column
+/// with the pane's head (the kind tile, the title and the facts under it),
+/// the others with their first section beside the head, not under it. A
+/// pane too narrow for three columns keeps two beside each other and stacks
+/// the third under them. On a narrow window the columns stack: the head,
+/// the first column's sections, then the others under them.
+#[test]
+fn details_columns_start_level_at_the_top_and_stack_when_narrow() {
+    // Each pane: the first text of every column after the first, and the
+    // last text of the first column.
+    let columns: [(&str, &[&str], &str); 4] = [
+        ("machine", &["Settings that differ from the image"], "CMOS"),
+        ("image", &["Firmware"], "Apply labels"),
+        (
+            "firmware",
+            &["Chip layout", "Documents (extras)"],
+            "Provenance",
+        ),
+        (
+            "media",
+            &["Media in catalogue order", "Extras"],
+            "Set SHA-256",
+        ),
+    ];
+    for ((what, _fixture, mut view, _), (name, others, last)) in
+        panes_with_notes().into_iter().zip(columns)
+    {
+        assert_eq!(what, name);
+        for width in WINDOW_WIDTHS {
+            let (texts, meshes, room) = pane_in_room(&mut view, width);
+            let firsts: Vec<&Drawn> = others.iter().map(|text| at(&texts, text)).collect();
+            if room.width() < pane::SPLIT_WIDTH {
+                for first in &firsts {
+                    assert!(
+                        (first.rect.left() - room.left()).abs() <= 1.0
+                            && first.rect.top() > at(&texts, last).rect.bottom(),
+                        "{what} at {width}: {:?} at {:?} does not stack under {last:?} in {room:?}",
+                        first.text,
+                        first.rect
+                    );
+                }
+                continue;
+            }
+            let beside = if room.width() >= pane::SPLIT3_WIDTH {
+                others.len()
+            } else {
+                1
+            };
+            // Too narrow for three columns, the third stacks under the first two.
+            for under in &firsts[beside..] {
+                assert!(
+                    (under.rect.left() - room.left()).abs() <= 1.0
+                        && under.rect.top() > at(&texts, last).rect.bottom(),
+                    "{what} at {width}: {:?} at {:?} does not stack under {last:?} in {room:?}",
+                    under.text,
+                    under.rect
+                );
+            }
+            let firsts = &firsts[..beside];
+            for first in firsts {
+                assert!(
+                    first.rect.left() > room.left() + 1.0
+                        && (first.rect.top() - room.top()).abs() <= 1.0,
+                    "{what} at {width}: {:?} at {:?}, not beside the first column at the \
+                     pane's top {}",
+                    first.text,
+                    first.rect,
+                    room.top()
+                );
+            }
+            // The first column: everything drawn left of the next one.
+            let split = firsts
+                .iter()
+                .map(|t| t.rect.left())
+                .fold(f32::INFINITY, f32::min);
+            let top = texts
+                .iter()
+                .filter(|t| t.visible().is_positive())
+                .map(|t| t.rect)
+                .chain(meshes.iter().copied())
+                .filter(|r| r.right() <= split)
+                .map(|r| r.top())
+                .fold(f32::INFINITY, f32::min);
+            assert!(
+                (top - room.top()).abs() <= 1.0,
+                "{what} at {width}: the first column starts at {top}, the pane at {}",
+                room.top()
+            );
+        }
+    }
+}
+
+/// The labels field of a machine's and of an image's pane keeps its focus
+/// while the window is resized across the width where the pane's columns
+/// stack, so typing goes on into the same field.
+#[test]
+fn the_labels_field_keeps_its_focus_when_the_columns_stack() {
+    for (what, _fixture, mut view, _) in panes_with_notes() {
+        let labels = match what {
+            "machine" => "games, testing",
+            "image" => "template",
+            _ => continue,
+        };
+        let ctx = egui::Context::default();
+        crate::shell::configure_context(&ctx);
+        let mut time = 0.0;
+        let mut draw = |view: &mut LibraryView, width: f32, events: Vec<egui::Event>| {
+            time += 0.1;
+            let size = egui::vec2(width, 2400.0);
+            let output = firmware::tests::frame(&ctx, size, time, events, |ui| {
+                egui::Panel::left("tree")
+                    .exact_size(TREE_WIDTH)
+                    .show(ui, |_| {});
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let mut commands = Vec::new();
+                    view.details_pane(ui, &[], &mut None, &mut commands);
+                });
+            });
+            drawn(&output).0
+        };
+        draw(&mut view, 1400.0, vec![]);
+        let texts = draw(&mut view, 1400.0, vec![]);
+        let field = at(&texts, labels).rect.center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos: field,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        draw(&mut view, 1400.0, vec![egui::Event::PointerMoved(field)]);
+        draw(&mut view, 1400.0, vec![button(true)]);
+        draw(&mut view, 1400.0, vec![button(false)]);
+        let focused = ctx.memory(|m| m.focused());
+        assert!(
+            focused.is_some(),
+            "{what}: a click does not focus the field"
+        );
+        for _ in 0..3 {
+            draw(&mut view, 760.0, vec![]);
+        }
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            focused,
+            "{what}: the field loses its focus when the columns stack"
         );
     }
 }

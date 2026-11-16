@@ -497,10 +497,12 @@ pub(super) fn details(
     let available = availability(summary, drives);
     let title = summary.titles.first();
     let unknown = || "Unknown".to_owned();
-    super::pane::title(ui, crate::shell_icons::Icon::Media, &set_name(row), false);
-    super::pane::meta(ui, format!("{} · private library", image.references()));
     super::pane::split3(
         ui,
+        |ui| {
+            super::pane::title(ui, crate::shell_icons::Icon::Media, &set_name(row), false);
+            super::pane::meta(ui, format!("{} · private library", image.references()));
+        },
         |facts| {
             egui::Grid::new("media-set-facts")
                 .num_columns(2)
