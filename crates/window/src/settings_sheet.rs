@@ -8,6 +8,7 @@
 use crate::{
     firmware_choices::{self as fw, Slot},
     image_settings::{CmosLine, FirmwareChoice, ImageSettings},
+    new_machine_view::why_disabled,
     save_image::{self, TagLevel, Target},
     settings_model::SettingsModel,
 };
@@ -253,6 +254,27 @@ fn notice(ui: &mut egui::Ui, text: impl Into<String>) {
     );
 }
 
+/// An entry that cannot be chosen now, with its reason, and Import ROM
+/// folder… when its ROM is not in the store; returns whether that was clicked.
+fn unavailable_line(ui: &mut egui::Ui, choice: &FirmwareChoice, read_only: bool) -> bool {
+    let mut import = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            egui::RichText::new(format!(
+                "{} — {}",
+                fw::name(choice.entry),
+                choice.reason.as_deref().unwrap_or_default()
+            ))
+            .small(),
+        );
+        import = choice.rom.is_none()
+            && ui
+                .add_enabled(!read_only, egui::Link::new("Import ROM folder…"))
+                .clicked();
+    });
+    import
+}
+
 /// The Firmware tab: a System BIOS choice, a Video BIOS choice for a card
 /// with a BIOS of its own, and the option ROMs, which follow their cards.
 /// Every choice is a catalogue entry that fits the board; an entry that
@@ -310,14 +332,11 @@ pub(crate) fn firmware_tab(
                                 );
                             }
                             let chosen = current.is_some_and(|c| c.id == choice.entry.id);
-                            if ui
-                                .add_enabled(
-                                    choice.reason.is_none(),
-                                    egui::Button::selectable(chosen, choice_label(choice)),
-                                )
-                                .clicked()
-                                && !chosen
-                            {
+                            let entry = ui.add_enabled(
+                                choice.reason.is_none(),
+                                egui::Button::selectable(chosen, choice_label(choice)),
+                            );
+                            if why_disabled(entry, choice.reason.as_deref()).clicked() && !chosen {
                                 edit = Some(FirmwareEdit::Set(slot, choice.entry.id));
                             }
                         }
@@ -353,6 +372,8 @@ pub(crate) fn firmware_tab(
                 hint(ui, format!("In your store: {}.", rom.package.reference));
             }
             if let Some((by, reason)) = fw::replacement(entry) {
+                let replacement = choices.iter().find(|c| c.entry.id == by.id);
+                let blocked = replacement.and_then(|c| c.reason.as_deref());
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
                         egui::RichText::new(format!(
@@ -362,19 +383,24 @@ pub(crate) fn firmware_tab(
                         .small()
                         .color(ui.visuals().warn_fg_color),
                     );
-                    let usable = choices
-                        .iter()
-                        .any(|c| c.entry.id == by.id && c.reason.is_none());
-                    if ui
-                        .add_enabled(
-                            usable && !model.read_only,
-                            egui::Link::new(format!("Use {}", fw::release(by))),
-                        )
-                        .clicked()
-                    {
+                    let usable = replacement.is_some_and(|c| c.reason.is_none());
+                    let link = ui.add_enabled(
+                        usable && !model.read_only,
+                        egui::Link::new(format!("Use {}", fw::release(by))),
+                    );
+                    if why_disabled(link, blocked).clicked() {
                         edit = Some(FirmwareEdit::Set(slot, by.id));
                     }
                 });
+                // Say why Use is greyed right under it: the list further down
+                // may be scrolled out of view.
+                if let Some(choice) =
+                    replacement.filter(|_| blocked.is_some() && model.packages_read())
+                {
+                    if unavailable_line(ui, choice, model.read_only) {
+                        edit = Some(FirmwareEdit::ImportRoms);
+                    }
+                }
             }
         }
         if slot == Slot::System {
@@ -436,28 +462,18 @@ pub(crate) fn firmware_tab(
                 hint(ui, format!("Was: {was}"));
             }
         }
-        let unavailable: Vec<&FirmwareChoice> =
-            choices.iter().filter(|c| c.reason.is_some()).collect();
+        // A superseded entry's replacement already says why under its line.
+        let explained = current.and_then(fw::replacement).map(|(by, _)| by.id);
+        let unavailable: Vec<&FirmwareChoice> = choices
+            .iter()
+            .filter(|c| c.reason.is_some() && Some(c.entry.id) != explained)
+            .collect();
         if !unavailable.is_empty() && model.packages_read() {
             hint(ui, "Fit this board but cannot be chosen now:");
             for choice in unavailable {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} — {}",
-                            fw::name(choice.entry),
-                            choice.reason.as_deref().unwrap_or_default()
-                        ))
-                        .small(),
-                    );
-                    if choice.rom.is_none()
-                        && ui
-                            .add_enabled(!model.read_only, egui::Link::new("Import ROM folder…"))
-                            .clicked()
-                    {
-                        edit = Some(FirmwareEdit::ImportRoms);
-                    }
-                });
+                if unavailable_line(ui, choice, model.read_only) {
+                    edit = Some(FirmwareEdit::ImportRoms);
+                }
             }
         }
     }
@@ -1047,6 +1063,297 @@ fn field_control(ui: &mut egui::Ui, model: &mut impl Sheet, field: &caps::Field)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::image_settings::tests::{open_image, open_new_image, opened};
+    use crate::library_test_support::{painted_at, FirmwareStore, Pointer};
+
+    /// A disabled entry of the open list says why on hover, and its line
+    /// under the slot says the same without hovering; an entry that can be
+    /// chosen says nothing.
+    #[test]
+    fn an_unavailable_firmware_entry_says_why_on_hover_and_in_its_line() {
+        let Some(store) = FirmwareStore::new(true) else {
+            return;
+        };
+        let mut model = opened(&store, open_image(&store), false);
+        model.set_packages(store.choices().0);
+        let choices = model.firmware_choices(Slot::System);
+        let choice = |id: &str| choices.iter().find(|c| c.entry.id == id).unwrap();
+        let current = choice("unemu-at-bios-1.0.2-unemu.3");
+        let blocked = choice("ibm-5170-bios-1985-06-10");
+        let reason = blocked.reason.as_deref().unwrap();
+        assert!(reason.contains("never downloaded"), "{reason}");
+        let available = choice("kiselev-xi8088-1.0.2");
+        assert_eq!(available.reason, None, "a package of the store");
+        let tooltip = crate::new_machine_view::capitalized(reason);
+        let pointer = Pointer::new(egui::vec2(1400.0, 1400.0));
+        let mut draw = |ui: &mut egui::Ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                let _ = firmware_tab(ui, &mut model, false);
+            });
+        };
+        pointer.frame(Vec::new(), &mut draw);
+        let shown = pointer.frame(Vec::new(), &mut draw);
+        painted_at(&shown, &format!("{} — {reason}", fw::name(blocked.entry)));
+        let available_line = format!("{} — ", fw::name(available.entry));
+        assert!(
+            !shown.iter().any(|(t, _)| t.starts_with(&available_line)),
+            "{shown:?}"
+        );
+        assert!(!shown.iter().any(|(t, _)| *t == tooltip));
+
+        pointer.click(
+            painted_at(&shown, &choice_label(current)).center(),
+            &mut draw,
+        );
+        pointer.frame(Vec::new(), &mut draw);
+        let popup = pointer.frame(Vec::new(), &mut draw);
+        let calm: Vec<&String> = popup.iter().map(|(t, _)| t).collect();
+        let hovered = pointer.hover(
+            painted_at(&popup, &choice_label(available)).center(),
+            &mut draw,
+        );
+        let extra: Vec<&String> = hovered
+            .iter()
+            .map(|(t, _)| t)
+            .filter(|t| !calm.contains(t))
+            .collect();
+        assert!(extra.is_empty(), "an available entry shows {extra:?}");
+        let hovered = pointer.hover(
+            painted_at(&popup, &choice_label(blocked)).center(),
+            &mut draw,
+        );
+        painted_at(&hovered, &tooltip);
+    }
+
+    /// The superseded open VGA BIOS, the release replacing it and why.
+    fn superseded_video() -> (
+        &'static assembly::FirmwareEntry,
+        &'static assembly::FirmwareEntry,
+        &'static str,
+    ) {
+        let old = fw::entry("vgabios-0.8a-unemu.1-std").unwrap();
+        let (by, why) = fw::replacement(old).unwrap();
+        (old, by, why)
+    }
+
+    /// Settings… on a machine whose video BIOS is the superseded release.
+    /// With `image_holds`, its image binds the replacement, as the fixture
+    /// image does; otherwise the image binds no video BIOS, so neither the
+    /// image nor the machine's applied tables hold the replacement. Packages
+    /// are not read yet.
+    fn machine_on_superseded_video(store: &FirmwareStore, image_holds: bool) -> ImageSettings {
+        let (old, by, _) = superseded_video();
+        let row = if image_holds {
+            open_image(store)
+        } else {
+            let mut image = open_new_image(store, 1024);
+            image
+                .firmware
+                .retain(|rom| rom.rom().is_ok_and(|r| r.sha256 != by.sha256));
+            let reference = "no-video-bios:1.0.0";
+            let descriptor =
+                pc_image::create::create(&store.store, &image, reference, None).unwrap();
+            crate::library_view::ImageRow {
+                reference: reference.into(),
+                aliases: Vec::new(),
+                descriptor,
+                summary: None,
+                failure: None,
+            }
+        };
+        let model = opened(store, row, false);
+        let rom = fw::package_rom(&store.choices().0, by, Slot::Video).unwrap();
+        let mut table = fw::package_table(&rom).unwrap();
+        table.insert("sha256".into(), old.sha256.into());
+        let mut tables = model.machine().clone();
+        fw::replace(&mut tables, Slot::Video, table).unwrap();
+        let model = model.for_machine("superseded".into(), "Superseded".into(), tables);
+        assert_eq!(model.firmware(Slot::Video).map(|e| e.id), Some(old.id));
+        assert_eq!(
+            model.image_firmware(Slot::Video).map(|e| e.id),
+            image_holds.then_some(by.id)
+        );
+        model
+    }
+
+    /// The store's packages without the one holding `entry`.
+    fn packages_without(
+        store: &FirmwareStore,
+        entry: &assembly::FirmwareEntry,
+    ) -> Vec<pc_image::create::Package> {
+        store
+            .choices()
+            .0
+            .into_iter()
+            .filter(|p| !p.config.roms.iter().any(|r| r.sha256 == entry.sha256))
+            .collect()
+    }
+
+    /// A machine on a superseded video BIOS whose replacement is not in the
+    /// store, and which neither its image nor its applied settings hold:
+    /// right under "Superseded by …", the replacement says why Use is
+    /// greyed, on hover and in a line with Import ROM folder…, which asks for
+    /// the sheet's own import.
+    #[test]
+    fn a_superseded_entry_says_why_its_replacement_cannot_be_chosen() {
+        let Some(store) = FirmwareStore::new(true) else {
+            return;
+        };
+        let (_, by, why) = superseded_video();
+        let mut model = machine_on_superseded_video(&store, false);
+        model.set_packages(packages_without(&store, by));
+        let reason = model
+            .firmware_choices(Slot::Video)
+            .into_iter()
+            .find(|c| c.entry.id == by.id)
+            .and_then(|c| c.reason)
+            .unwrap();
+        assert!(reason.contains("not in your store"), "{reason}");
+        let pointer = Pointer::new(egui::vec2(1400.0, 1400.0));
+        let mut edit = None;
+        let mut draw = |ui: &mut egui::Ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                if let Some(e) = firmware_tab(ui, &mut model, true) {
+                    edit = Some(e);
+                }
+            });
+        };
+        pointer.frame(Vec::new(), &mut draw);
+        let shown = pointer.frame(Vec::new(), &mut draw);
+        let superseded = painted_at(
+            &shown,
+            &format!("Superseded by {} ({why}).", fw::release(by)),
+        );
+        let line_text = format!("{} — {reason}", fw::name(by));
+        let line = painted_at(&shown, &line_text);
+        assert_eq!(
+            shown.iter().filter(|(t, _)| *t == line_text).count(),
+            1,
+            "said once"
+        );
+        let next = shown
+            .iter()
+            .filter(|(t, r)| {
+                r.top() > superseded.top()
+                    && (t.starts_with("Fit this board") || t.starts_with("Image: "))
+            })
+            .map(|(_, r)| r.top())
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            superseded.top() < line.top() && line.top() < next,
+            "the reason sits right under the superseded line: {shown:?}"
+        );
+        let import = shown
+            .iter()
+            .find(|(t, r)| {
+                t == "Import ROM folder…"
+                    && r.center().y > line.top()
+                    && r.center().y < line.bottom()
+            })
+            .map(|(_, r)| r.center())
+            .expect("Import ROM folder… on the reason's line");
+        let tooltip = crate::new_machine_view::capitalized(&reason);
+        assert!(!shown.iter().any(|(t, _)| *t == tooltip));
+        let hovered = pointer.hover(
+            painted_at(&shown, &format!("Use {}", fw::release(by))).center(),
+            &mut draw,
+        );
+        painted_at(&hovered, &tooltip);
+        pointer.click(import, &mut draw);
+        assert!(matches!(edit, Some(FirmwareEdit::ImportRoms)));
+    }
+
+    /// A replacement the machine's image already binds can be chosen with no
+    /// package in the store, as Use the image's value always could: it has
+    /// no reason and no line, and Use binds it.
+    #[test]
+    fn a_replacement_the_image_holds_can_be_chosen_without_a_package() {
+        let Some(store) = FirmwareStore::new(true) else {
+            return;
+        };
+        let (_, by, _) = superseded_video();
+        let mut model = machine_on_superseded_video(&store, true);
+        model.set_packages(Vec::new());
+        let choice = model
+            .firmware_choices(Slot::Video)
+            .into_iter()
+            .find(|c| c.entry.id == by.id)
+            .unwrap();
+        assert!(choice.rom.is_none(), "no package holds it");
+        assert_eq!(choice.reason, None);
+        let pointer = Pointer::new(egui::vec2(1400.0, 1400.0));
+        let mut edit = None;
+        let mut draw = |ui: &mut egui::Ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                if let Some(e) = firmware_tab(ui, &mut model, true) {
+                    edit = Some(e);
+                }
+            });
+        };
+        pointer.frame(Vec::new(), &mut draw);
+        let shown = pointer.frame(Vec::new(), &mut draw);
+        let line = format!("{} — ", fw::name(by));
+        assert!(
+            !shown.iter().any(|(t, _)| t.starts_with(&line)),
+            "{shown:?}"
+        );
+        let calm: Vec<&String> = shown.iter().map(|(t, _)| t).collect();
+        let at = painted_at(&shown, &format!("Use {}", fw::release(by))).center();
+        let hovered = pointer.hover(at, &mut draw);
+        let extra: Vec<&String> = hovered
+            .iter()
+            .map(|(t, _)| t)
+            .filter(|t| !calm.contains(t))
+            .collect();
+        assert!(extra.is_empty(), "Use shows {extra:?}");
+        pointer.click(at, &mut draw);
+        assert!(matches!(edit, Some(FirmwareEdit::Set(Slot::Video, id)) if id == by.id));
+        model.set_firmware(Slot::Video, by.id);
+        assert_eq!(model.error, None);
+        assert_eq!(model.firmware(Slot::Video).map(|e| e.id), Some(by.id));
+    }
+
+    /// Before the store's packages are read, no replacement line shows, and
+    /// the greyed Use says why on hover: the packages are being read.
+    #[test]
+    fn before_the_packages_are_read_use_says_they_are_being_read() {
+        let Some(store) = FirmwareStore::new(true) else {
+            return;
+        };
+        let (_, by, _) = superseded_video();
+        let mut model = machine_on_superseded_video(&store, false);
+        assert!(!model.packages_read());
+        let reason = model
+            .firmware_choices(Slot::Video)
+            .into_iter()
+            .find(|c| c.entry.id == by.id)
+            .and_then(|c| c.reason)
+            .unwrap();
+        assert!(reason.contains("being read"), "{reason}");
+        let pointer = Pointer::new(egui::vec2(1400.0, 1400.0));
+        let mut draw = |ui: &mut egui::Ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                let _ = firmware_tab(ui, &mut model, true);
+            });
+        };
+        pointer.frame(Vec::new(), &mut draw);
+        let shown = pointer.frame(Vec::new(), &mut draw);
+        let line = format!("{} — ", fw::name(by));
+        assert!(
+            !shown.iter().any(|(t, _)| t.starts_with(&line)),
+            "{shown:?}"
+        );
+        let tooltip = crate::new_machine_view::capitalized(&reason);
+        assert_eq!(
+            tooltip,
+            "The firmware packages of your store are being read."
+        );
+        let hovered = pointer.hover(
+            painted_at(&shown, &format!("Use {}", fw::release(by))).center(),
+            &mut draw,
+        );
+        painted_at(&hovered, &tooltip);
+    }
 
     #[test]
     fn every_tab_and_invalid_reason_render_without_a_window() {

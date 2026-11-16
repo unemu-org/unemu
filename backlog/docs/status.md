@@ -5,6 +5,25 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — An unavailable firmware entry says why:** in Settings ›
+  Firmware, on a machine or an image, an entry the list greys as
+  "unavailable" now shows its reason when hovered (not in your store,
+  user-supplied ROMs are never downloaded, or the validator's reason); egui
+  gives a disabled entry no hover text of its own, so the open list said
+  "unavailable" and nothing more. When the current entry is superseded and
+  its replacement cannot be chosen, the greyed Use link says why on hover,
+  including that the store's packages are still being read (the list itself
+  stays disabled until they are). Once they are read, a line right under
+  "Superseded by …" names the replacement with its reason and, when its ROM
+  is not in the store, Import ROM folder…, the sheet's existing import. That
+  line is not repeated in the "Fit this board but cannot be chosen now" list
+  further down, which may be scrolled out of view. An entry that the image or
+  the machine's applied settings already bind no longer claims to be "not in
+  your store": it can be chosen without a package, as Use the image's value
+  always could bind it. New machine…'s greyed options in its lists say why
+  on hover too; their lines under each field already did. Headless tests
+  open the lists, hover greyed and available entries and read the painted
+  tooltips and lines; each fails without the change.
 - **2026-11-16 — Get templates lists only template repositories:** a template
   is a repository one level under `unemu/` (`unemu/open-at`,
   `unemu/open-at-games`). Nested repositories (firmware packages under

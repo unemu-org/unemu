@@ -245,6 +245,15 @@ fn why(ui: &mut egui::Ui, text: impl Into<String>) {
     );
 }
 
+/// A disabled control says why on hover: egui gives a disabled widget no
+/// hover text of its own, so "unavailable" alone would leave the user guessing.
+pub(crate) fn why_disabled(response: egui::Response, reason: Option<&str>) -> egui::Response {
+    match reason {
+        Some(reason) => response.on_disabled_hover_text(capitalized(reason)),
+        None => response,
+    }
+}
+
 /// A field whose options and reasons are the capabilities API's choices.
 fn api_combo(
     ui: &mut egui::Ui,
@@ -278,13 +287,11 @@ fn api_combo(
                             " — unavailable"
                         }
                     );
-                    if ui
-                        .add_enabled(
-                            choice.enabled,
-                            egui::Button::selectable(choice.value == current, label),
-                        )
-                        .clicked()
-                    {
+                    let entry = ui.add_enabled(
+                        choice.enabled,
+                        egui::Button::selectable(choice.value == current, label),
+                    );
+                    if why_disabled(entry, choice.reason.as_deref()).clicked() {
                         edit = Some(choice.value.clone());
                     }
                 }
@@ -346,13 +353,11 @@ fn candidate_combo<T: Clone + PartialEq>(
                             ""
                         }
                     );
-                    if ui
-                        .add_enabled(
-                            reason.is_none(),
-                            egui::Button::selectable(value == current, text),
-                        )
-                        .clicked()
-                    {
+                    let entry = ui.add_enabled(
+                        reason.is_none(),
+                        egui::Button::selectable(value == current, text),
+                    );
+                    if why_disabled(entry, reason.as_deref()).clicked() {
                         edit = Some(value.clone());
                     }
                 }
@@ -484,7 +489,7 @@ fn page_class(ui: &mut egui::Ui, wizard: &mut Wizard) {
         "Anything outside this list needs a new project decision.",
     );
 }
-fn capitalized(text: &str) -> String {
+pub(crate) fn capitalized(text: &str) -> String {
     let mut chars = text.chars();
     chars
         .next()

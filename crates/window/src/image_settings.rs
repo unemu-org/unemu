@@ -685,7 +685,9 @@ impl ImageSettings {
                     None
                 } else if self.packages.is_none() {
                     Some("the firmware packages of your store are being read.".into())
-                } else if rom.is_none() {
+                } else if !self.firmware_available(slot, entry.id) {
+                    // Not when the image's or the applied tables hold the entry:
+                    // set_firmware binds it from them, so no package is needed.
                     Some(if fw::catalogue_open(entry) {
                         "not in your store: Import ROM folder… adds it from a folder you choose.".to_owned()
                     } else {
