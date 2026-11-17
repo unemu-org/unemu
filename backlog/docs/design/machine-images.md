@@ -2128,6 +2128,148 @@ they contact the registry, and quitting cancels them as in Pull…. Once every
 pull answered, the dialog sums up what was added and offers Close or Back to
 the list; the status bar names the templates added.
 
+### 5.6. Compatibility of published images
+
+Status: **accepted** in
+[decision-30](<../../decisions/decision-30 - Published images declare the oldest unemupc that runs them.md>)
+(design step of `upc-dfs.15`), accepted by the maintainer 2026-11-17;
+nothing is implemented yet.
+Published templates, installation sets and firmware packages stay on the
+registry for good, and older releases read them too. This section records
+what today's readers do with a newer image and defines a marker, so an
+older release lists such an image disabled, with "Needs unemupc X or newer",
+instead of failing to decode it or running it wrongly.
+
+**Today's readers.** Every codec fails closed, and annotations are open.
+The manifest envelope and its descriptors refuse unknown fields; every
+config (machine, set, firmware package, sealed layer, zero base) refuses
+unknown keys. Each vocabulary refuses values it does not know: board, CPU,
+FPU, card kind, drive type, controller, serial mouse, media format, extra
+kind, firmware role, fit board and class. So does an unlisted system BIOS
+or option ROM. The manifest codec checks only the values of
+`unemu.redistribution` and `org.opencontainers.image.base.digest` and
+requires `unemu.platform`; it ignores every other annotation. Metadata
+schema 1 is strict, and a newer schema is shown read-only (§2.1).
+
+| Reader | New config media type | New layer media type | New config key | New vocabulary value |
+| --- | --- | --- | --- | --- |
+| Library summaries | Unreadable row (⚠) with the decoder's reason | Row looks normal | Machine image: row looks normal (its config is not read); set or package: unreadable row | Machine image or package: row looks normal; set with a new format: "Unknown floppy geometry" |
+| Selecting a machine image, Start, `image run` | Refused | Refused | Refused with the decoder's message | Refused with the decoder's message |
+| Get templates | Repository left out without a word (only the offered tag is read) | Offered; Get is refused before any download | Offered; Get is refused after the download | Offered; Get is refused after the download |
+| Pull…, `image pull` | Refused before any blob | Refused before any blob | Refused after every blob is fetched; nothing tagged | Same |
+| New machine from image… | Refused | Refused | Machine made; it cannot start | Machine made; it cannot start |
+| Insert… and the media picker | Refused | Refused | Refused | Refused |
+| Firmware list of New machine… | Package skipped | Package skipped | Package skipped | Package offered; making the image is refused |
+| `image ls` | Kind `unknown` | Listed | Listed | Listed |
+
+Local records (`local/machines.toml`, a workspace's `session.toml`) are
+schema 1 with no unknown keys allowed. A newer file fails closed and stays
+untouched. A machine's settings overlay is checked again at Start. `image
+remote ls` lists names only.
+
+**Releases 0.0.1 and 0.0.2 (measured on 0.0.2).** A probe built from the
+v0.0.2 tag read synthetic images derived from a valid open-firmware machine.
+Release 0.0.1 reads images with the same code: between the two tags only
+the tag-move rules changed. The probe found:
+
+- Unknown annotations change nothing, whether on the manifest
+  (`unemu.min-version`, `dev.unemu.min-app`) or on the config descriptor.
+  Decode, summary, Start check, New machine from image… and `upcli image
+  pull` all succeed, and the pull writes the tag. Any other key behaves the
+  same way, because the codec checks only the two keys named above.
+- `application/vnd.unemu.machine.config.v2+toml`: `upcli image pull` fails
+  before any blob is fetched with "unsupported media type: …". In a shared
+  store the image is an unreadable row and `image ls` says `unknown`.
+- A new top-level config key, a new key in `machine.memory`, the reserved
+  card kind `adlib` and an unknown card kind `future-device`: the pull
+  fetches all 8 blobs and then fails. The messages are "unknown field
+  `min_version`", "unknown field `future_option`", "card kind `adlib` is
+  reserved, not implemented (schema 1)…" and "unknown variant
+  `future-device`…". No tag is written; the fetched blobs stay untagged. In
+  a shared store the row looks normal and New machine from image… succeeds,
+  but Start is refused.
+- A firmware package with an unknown role or an unknown catalogue id passes
+  the store codec. Its row looks normal, but the pull's final check refuses
+  it ("unknown PC firmware role", "unknown firmware catalogue id"). An
+  unknown key in a firmware or set config is refused by the codec. A set
+  format `tape` is refused by the PC provider.
+
+So 0.0.1 and 0.0.2 ignore any marker, never run an image whose config holds
+something new, and fail at pull or Start with a decoder message. Only a
+change in what an existing key or value means could make them run an image
+wrongly, and the proposal forbids that.
+
+**Proposal.**
+
+- **Marker.** The manifest annotation `unemu.min-app-version` holds a
+  SemVer release `MAJOR.MINOR.PATCH`: the oldest release of the program
+  providing `unemu.platform` that reads and runs the artifact. For
+  `ibm-pc-at` that program is unemupc; `unemupc` and `upcli` share its
+  version. Machine images, installation sets and firmware packages use the
+  same rule. Without the annotation there is no requirement, so the six
+  published sets and packages keep their digests. Like every annotation it
+  is a hint, not an authority: codecs stay strict. Media-type majors move
+  only for a decoder break. A release never changes what an existing key or
+  value means; it adds new ones.
+- **Value.** The shared store crate and the provider keep a per-feature
+  table: the release that first reads each optional key, vocabulary value,
+  payload media type, firmware catalogue entry and widened range. Writers
+  stamp the maximum over what the artifact uses. When the maximum is the
+  baseline 0.0.1, they leave the annotation out, so rebuilding something
+  older releases already read gives byte-identical manifests. A recipe of
+  `image template create`, or `--min-app-version` on the importing
+  commands, may raise the value, for an emulation fix a title needs, but
+  never lower it. Template creation and the push guard of `unemu/` compute
+  the value again and refuse a missing or lower marker. New catalogue
+  fields go into metadata schema 2, never into schema 1, so metadata never
+  raises the value.
+- **Reading.** The annotation is read leniently before the strict decode.
+  A requirement is met when it is no higher than the release's level: its
+  package version, or the newest version its own table names if that is
+  higher, so development builds read what they write. A value that does not
+  parse counts as unmet.
+- **Display.** The library rows of machine images, sets and packages, the
+  machines made from such an image, Remotes, Get templates, the media
+  picker and the command line say "Needs unemupc X or newer". They disable
+  Start, New machine from image…, Insert…, Use in machine…, `image run` and
+  `image machine new`; manifest details and Delete tag stay. Get templates
+  offers the newest version this release can run (`latest`'s version when
+  it can), notes which newer version needs which release, and dims a
+  repository with nothing runnable. **Pull refuses before fetching any
+  blob.** A tag is written only for a validated closure (§3.1), and a
+  release cannot validate a config it does not read.
+
+**Test plan.** All inputs are synthetic and go through today's decoder
+paths:
+
+1. A machine image, a set and a package, each carrying
+   `unemu.min-app-version = "99.0.0"` and an unknown annotation, decode in
+   strict, display and provider modes. This guards the property 0.0.2
+   relies on.
+2. The requirement reader handles an absent value, met and unmet values, a
+   development-build level, a malformed value, and a manifest with an
+   unknown artifact type or top-level field. For the last, the lenient read
+   still finds the marker.
+3. Each table row has a test image that carries the row's version. Tests
+   fail when a vocabulary value, optional key, payload type or catalogue
+   entry has no row. The pinned digests of the published sets, packages and
+   templates still match. A recipe may raise the value and may not lower
+   it. The push guard refuses a missing or lower marker.
+4. Library: marked images whose configs also hold an unknown key, card
+   kind, format or role become rows that show the requirement. They read no
+   config and record no failure, and their actions are disabled with the
+   reason.
+5. Pull from the mock registry: a marked image is refused with no blob
+   request and no tag. An unmarked image with an unknown card kind keeps
+   today's refusal, the fail-closed backstop.
+6. Get templates: when `latest` is marked 99.0.0 and an older version is
+   not, the older one is offered with the note. When every version is
+   marked, the repository is dimmed.
+
+Optionally, the unemu-media pipeline can also run the release a new
+template's marker names (its pinned `upcli`) against the built template.
+That tests the table against the real release.
+
 ## 6. Capabilities API sketch: validator-owned choices
 
 READ: `crates/assembly/src/validate.rs`, `validate_resolved`, resource checks,

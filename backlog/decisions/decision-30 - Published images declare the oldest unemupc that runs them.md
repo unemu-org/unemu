@@ -1,0 +1,150 @@
+---
+id: decision-30
+title: Published images declare the oldest unemupc that runs them
+date: 2026-11-17
+status: Accepted
+deciders: Mikołaj Mikołajczyk
+---
+
+# decision-30 - Published images declare the oldest unemupc that runs them
+
+## Status
+
+Accepted — 2026-11-17 by the maintainer. Design step of
+`upc-dfs.15`; it must be settled before `upcli image template create`
+(`upc-dfs.14`) publishes its first template. Builds on [[decision-25]]
+(machine images), [[decision-26]] (installation media sets) and
+[[decision-27]] (firmware packages). The survey of today's readers and the
+measured behaviour of release 0.0.2 are in
+`backlog/docs/design/machine-images.md` §5.6.
+
+## Context
+
+Templates, installation media sets and firmware packages published on
+`registry.unemu.dev` stay there for good, and every release reads them,
+older ones included. Nothing in an image says which release it needs.
+
+Every reader fails closed. Manifest and descriptor fields are strict, and so
+is each config codec: unknown keys are refused, and so are unknown board,
+CPU, card kind, drive type, media format and firmware role values, and system
+BIOS or option ROM bytes the release's firmware catalogue does not list.
+Unknown annotations are ignored. With a newer image, an older release
+therefore:
+
+- refuses it before downloading anything when a media type is new. The
+  message names the media type, not a release, and Get templates silently
+  leaves out the whole repository;
+- downloads the whole closure and then refuses it when a config key, a
+  device kind or a firmware catalogue entry is new. It tags nothing and
+  shows a decoder message such as "unknown variant `future-device`". In a
+  store a newer release shares, the library lists such a machine image as
+  if it were fine, and New machine from image… makes a machine that cannot
+  start;
+- would run it wrongly only if a later release changed what an existing key
+  or value means, or if the image depended on an emulation fix.
+
+Releases 0.0.1 and 0.0.2 are out and cannot change. They read images the
+same way. Six published artifacts must keep their digests: the three
+`unemu/media/freedos` sets (`1.4`, `1.4-1.2m`, `1.4-720k`) and the three
+firmware packages (`unemu-at-bios-1.0.2-unemu.3:1`,
+`vgabios-0.9d-unemu.1-std:1`, `xub-r638-xtp-ata1f0:1`).
+
+## Decision
+
+1. **The marker is a manifest annotation.** `unemu.min-app-version` holds a
+   SemVer 2.0.0 release version (`MAJOR.MINOR.PATCH`, with no pre-release or
+   build part). It names the oldest release of the program that provides the
+   manifest's `unemu.platform` and can read and run the artifact: unemupc for
+   `ibm-pc-at`, where the desktop `unemupc` and the command-line `upcli` share
+   one version. It follows the `unemu.*` keys already in use. The manifest
+   alone carries it, so Remotes and Get templates can grey out a row without
+   fetching a config. Machine images, installation media sets and firmware
+   packages all use the same rule.
+2. **No marker means no requirement.** The six published artifacts stay
+   as they are. Release 0.0.1 can read all of them.
+3. **The marker is a hint, never an authority** (machine-images §2, the
+   annotation rule). Readers stay strict and fail closed. The marker lets a
+   release refuse early and give a reason a person understands. It is not
+   a config field: the config is the machine's identity, and a corrected
+   marker must not change machine digests.
+4. **Media-type majors move only for a decoder break**, never for each new
+   feature. No release changes what an existing key or value means. It adds
+   a new key or value instead, which 0.0.1 and 0.0.2 refuse. A change they
+   would read silently and wrongly is not allowed.
+5. **A per-feature table computes the marker.** The shared store crate and
+   the provider record, for each feature they read, the release that first
+   reads it. Features include an optional config key, a vocabulary value
+   (board, CPU, FPU, card kind, drive type, controller, media format, extra
+   kind, firmware role, fit board or class), a payload media type, a
+   firmware catalogue entry and an accepted range that grows. Every writer
+   stamps the maximum over what the artifact uses: New machine…, Save as new
+   image…, import, media and firmware import, and template build and
+   create. When that maximum is the baseline 0.0.1, the writer leaves the
+   annotation out, so rebuilding an artifact that older releases already
+   read gives the same bytes and digest. A recipe, or `--min-app-version` on
+   the importing commands, may raise the value for behaviour the table
+   cannot see, such as an emulation fix a title needs. It may never lower
+   it: a stated value below the computed one is refused. Template creation
+   and the push guard of `unemu/` compute the value again and refuse a
+   missing or lower marker. Metadata never raises it: new catalogue fields
+   go into metadata schema 2, which older releases show read-only.
+6. **Readers check the marker first.** A lenient read of the manifest's
+   annotations comes before the strict decode, so a future envelope or
+   artifact type still produces the message. A release meets a requirement
+   when it is no higher than the release's level: its package version, or
+   the newest version in its own table if that is higher, so a development
+   build reads what it writes. A value that does not parse counts as unmet,
+   and the message is "needs a newer unemupc".
+7. **The image is disabled, not hidden.** These places all show the same
+   reason, "Needs unemupc X or newer": the library's machine images,
+   installation media and firmware packages, machines made from such an
+   image, Remotes, Get templates, the media picker and the command line.
+   They disable every action that needs the config: Start, New machine from
+   image…, Insert…, Use in machine…, run and machine new. Details from the
+   manifest and Delete tag stay. Get templates offers the newest version
+   this release can run, which is `latest`'s version when that one
+   qualifies, and says which newer version needs which release. A
+   repository with no version this release can run is dimmed. **Pull
+   refuses before it fetches a blob.** A local tag is written only for a
+   closure the release has validated (machine-images §3.1), and a release
+   cannot validate a config it does not read.
+8. **0.0.1 and 0.0.2 ignore the marker** (measured on 0.0.2 with unknown
+   annotation keys; 0.0.1 reads images with the same code). For them, an
+   image that needs a newer release still fails at pull, after the
+   download, with the decoder's message, and nothing is tagged. This is
+   accepted for preview releases. Templates are small. The untagged blobs
+   stay in the store until the planned GC, and a pull by a newer release
+   reuses them.
+
+## Consequences
+
+- Each new feature adds one table row in the change that introduces it.
+  Exhaustive matches over the vocabulary enums make a missing row a compile
+  error. Tests fail when an optional key, a firmware catalogue entry or a
+  payload type has no row.
+- The summary cache records the requirement and its schema moves up. An
+  older release that reads the newer cache rebuilds its own, as it already
+  does after any cache change.
+- The library and Get templates need a disabled-with-reason row state for
+  machine images and firmware packages. Media sets already have one
+  ("CD-ROM emulation not available yet").
+- Requiring a maximum version (dropping support for something) is out of
+  scope. It would be a media-type major with a migration.
+
+## Alternatives considered
+
+- **The writing release's own version.** Simple, but too strict, and it
+  breaks reproducibility. Every rebuild with a newer `upcli` changes the
+  manifest and its digest. The pinned digests of the published sets and
+  packages would no longer match, and an immutable tag would refuse the
+  rebuilt bytes.
+- **Media-type majors as the marker.** 0.0.2 already refuses a new config
+  major before it downloads anything. But the message names no release, and
+  0.0.2's Get templates hides the repository, older versions it could run
+  included. Using majors as feature levels would also give every new device
+  its own codec version, and every release would need to decode every one
+  of them.
+- **A config field.** 0.0.2 refuses an unknown config key only after the
+  download (measured: "unknown field `min_version`"). Remotes would have to
+  fetch every config, and the marker would become part of the machine
+  digest.
