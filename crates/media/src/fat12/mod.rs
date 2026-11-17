@@ -19,19 +19,24 @@
 //! serial is fixed, entries are ordered by the bytes of their host names, and
 //! clusters are allocated contiguously in that order. Images are built in
 //! memory; [`crate::create::image`] publishes them. Nothing is written for a
-//! request that does not fit.
+//! request that does not fit. [`HostItem`] and [`Survey`] split the same work
+//! for an editor: host items are read once, then laid out and planned for any
+//! top folder, format and label without reading the host again.
 
 mod layout;
 mod names;
 #[cfg(any(test, feature = "test-support"))]
 pub mod reader;
 mod split;
+mod survey;
 mod tree;
 
 #[cfg(test)]
 mod tests;
 
 pub use names::ShortName;
+pub use survey::Survey;
+pub use tree::HostItem;
 
 use std::fmt;
 use std::io;
@@ -320,7 +325,8 @@ pub struct Skipped {
 pub struct DiskPlan {
     /// Volume label written to the BPB and the root.
     pub label: Option<[u8; 11]>,
-    /// Files on this disk, in tree order.
+    /// Files on this disk, in folder order: a folder's own files before
+    /// its subfolders', each in host-name order.
     pub files: Vec<PlacedFile>,
     /// Data-area bytes in use, cluster rounding and folders included.
     pub used_bytes: u64,
@@ -477,8 +483,10 @@ pub fn plan(request: &Request) -> Result<Plan, BuildError> {
 }
 
 /// Plan as many disks of one format as the sources need. Items go greedily in
-/// tree order; every disk repeats the folders above its files, so copying each
-/// disk's tree onto one drive in turn rebuilds the whole tree. With a label and
+/// folder order (a folder's own files first, then its subfolders, each in
+/// host-name order); every disk repeats the folders above its files, so
+/// copying each disk's tree onto one drive in turn rebuilds the whole tree.
+/// Directory entries on each disk stay in host-name order. With a label and
 /// more than one disk, disk `k` is labelled `<LABEL> k`, the label shortened to
 /// fit eleven characters. A file that cannot fit on an empty disk is refused,
 /// never split.

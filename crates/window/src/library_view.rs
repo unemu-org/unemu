@@ -1250,6 +1250,13 @@ pub(super) struct LibraryView {
     /// Insert into… of the Installation media collection: the machine, the
     /// drive and the set the shell opens the media picker on.
     pub picker_wanted: Option<(String, u8, Digest)>,
+    /// Names and sizes of host files and folders the worker read for Create
+    /// from files…, for the shell to hand to the picker.
+    pub host_reads: Vec<(PathBuf, std::result::Result<media::fat12::HostItem, String>)>,
+    /// What the worker made of Create and insert, for the shell.
+    pub disks_created: Option<std::result::Result<Box<crate::created_media::Created>, String>>,
+    /// What the last Start left out, for the status bar once it runs.
+    pub start_notes: Vec<String>,
 }
 impl LibraryView {
     pub fn new(root: Option<PathBuf>) -> Self {
@@ -1315,7 +1322,15 @@ impl LibraryView {
             name_hint: None,
             started_from_image: None,
             picker_wanted: None,
+            host_reads: Vec::new(),
+            disks_created: None,
+            start_notes: Vec::new(),
         }
+    }
+    /// Whether the worker runs, to read host files and build disks for
+    /// Create from files….
+    pub fn can_read_host(&self) -> bool {
+        self.worker.is_some() && !self.worker_dead
     }
     /// Every installation media set of the library, as the media picker lists them.
     pub fn picker_sets(&self) -> Vec<crate::media_picker::SetEntry> {
@@ -1446,6 +1461,9 @@ impl LibraryView {
                 self.snapshot = snapshot;
                 self.refresh_facts();
             }
+            Event::HostRead(path, result) => self.host_reads.push((path, *result)),
+            Event::DisksCreated(result) => self.disks_created = Some(result),
+            Event::StartNotes(notes) => self.start_notes = notes,
             Event::MediaSources(pick, result) => {
                 self.busy = false;
                 if let Some(dialog) = &mut self.media_import {

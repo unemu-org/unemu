@@ -856,6 +856,7 @@ mod tests {
             alternates: Vec::new(),
             workspace_journal: None,
             origin: Some("Media set freedos:1.2.0 from the library · disk 1 of 2".into()),
+            verified: None,
         }
     }
 

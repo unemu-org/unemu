@@ -245,6 +245,8 @@ pub(crate) struct Target {
     /// Why writes cannot be kept in this target, which then takes disks
     /// write-protected only.
     pub journal_unavailable: Option<String>,
+    /// Why Create from files… cannot put disks into this target.
+    pub create_unavailable: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -288,7 +290,23 @@ pub(crate) enum Outcome {
     },
     /// Browse for an image file…: today's file flow for this drive.
     Browse(u8),
+    /// Add files… of Create from files…: the system dialog for several
+    /// files; the picker stays open.
+    AddFiles,
+    /// Add folder… of Create from files…: the system folder dialog; the
+    /// picker stays open.
+    AddFolder,
+    /// Create and insert: build the disks and put them into the drive.
+    Create(Box<crate::created_media::CreateOrder>),
     Cancel,
+}
+
+/// The picker's two views: searching for a disk, or creating one from host
+/// files and folders.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Mode {
+    Search,
+    Create,
 }
 
 pub(crate) struct Picker {
@@ -310,6 +328,12 @@ pub(crate) struct Picker {
     /// is, as the From row greys them until after the MVP.
     pub remotes: Vec<(String, String)>,
     focus: bool,
+    pub mode: Mode,
+    /// Create from files…: kept while the view switches back to search.
+    pub create: crate::media_create::Create,
+    /// The Create view just opened: Add folder… takes the focus, as the
+    /// mock-up does.
+    pub(crate) focus_add: bool,
 }
 
 /// The result rows: the sets that fit the drive, then those that do not.
@@ -344,6 +368,9 @@ impl Picker {
             remote_preview: false,
             remotes: Vec::new(),
             focus: true,
+            mode: Mode::Search,
+            create: crate::media_create::Create::default(),
+            focus_add: false,
         };
         if !picker.machine().drives.iter().any(|d| d.unit == unit) {
             picker.unit = picker.machine().drives.first().map_or(0, |d| d.unit);
@@ -362,6 +389,16 @@ impl Picker {
         }
         picker.keep_choice();
         picker
+    }
+    /// Create from files…: the Create view on the same target.
+    pub fn open_create(&mut self) {
+        self.mode = Mode::Create;
+        self.focus_add = true;
+    }
+    /// ‹ Back to search, with the search and the added items kept.
+    pub fn back_to_search(&mut self) {
+        self.mode = Mode::Search;
+        self.focus = true;
     }
     pub fn machine(&self) -> &Target {
         &self.targets[self.target.min(self.targets.len().saturating_sub(1))]
@@ -733,9 +770,9 @@ const DETAILS_WIDTH: f32 = 300.0;
 /// short beyond it.
 const SEGMENT_WIDTH: f32 = 260.0;
 /// The mock-up's gap between the body's panes.
-const PANE_GAP: f32 = 3.0;
+pub(crate) const PANE_GAP: f32 = 3.0;
 /// The mock-up's 11 px meta text beside its 12 px body text.
-const SMALL_SIZE: f32 = 11.0;
+pub(crate) const SMALL_SIZE: f32 = 11.0;
 /// A result row: the mock-up's 36 × 48 cover with 6 px above and below.
 const ROW_HEIGHT: f32 = 60.0;
 /// The cover of a result row.
@@ -757,12 +794,12 @@ fn hover_colour(visuals: &egui::Visuals) -> Color32 {
 }
 
 /// Muted small text, wrapped: the mock-up's hints.
-fn hint(ui: &mut egui::Ui, text: impl Into<String>) {
+pub(crate) fn hint(ui: &mut egui::Ui, text: impl Into<String>) {
     ui.add(egui::Label::new(RichText::new(text.into()).small().weak()).wrap());
 }
 
 /// A hint under a check box or radio button, in line with its text.
-fn hint_under(ui: &mut egui::Ui, text: impl Into<String>) {
+pub(crate) fn hint_under(ui: &mut egui::Ui, text: impl Into<String>) {
     let spacing = ui.spacing();
     let indent = (spacing.icon_width + spacing.icon_spacing - spacing.item_spacing.x).max(0.0);
     ui.horizontal_top(|ui| {
@@ -773,7 +810,12 @@ fn hint_under(ui: &mut egui::Ui, text: impl Into<String>) {
 
 /// A label in the body style, strong when `strong`, followed by meta text
 /// in the small muted style, as one text.
-fn label_and_meta(ui: &egui::Ui, label: &str, strong: bool, meta: &str) -> egui::text::LayoutJob {
+pub(crate) fn label_and_meta(
+    ui: &egui::Ui,
+    label: &str,
+    strong: bool,
+    meta: &str,
+) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
     let mut label = RichText::new(label);
     if strong {
@@ -984,7 +1026,10 @@ pub(crate) fn show(ctx: &egui::Context, picker: &mut Picker, classic: bool) -> O
     // button (Cancel, Browse…) or an open drop-down.
     let focused = ctx.memory(|m| m.focused());
     let popup = egui::Popup::is_any_open(ctx);
-    let enter_inserts = !popup && (focused.is_none() || focused == Some(search));
+    // The Create view has no list to walk and no Insert: arrows, Enter and
+    // typing stay with its fields.
+    let creating = picker.mode == Mode::Create;
+    let enter_inserts = !creating && !popup && (focused.is_none() || focused == Some(search));
     let (up, down, enter, alt_a, alt_b, typed) = ctx.input_mut(|input| {
         let alt_a = input.consume_key(egui::Modifiers::ALT, egui::Key::A);
         let alt_b = input.consume_key(egui::Modifiers::ALT, egui::Key::B);
@@ -998,8 +1043,8 @@ pub(crate) fn show(ctx: &egui::Context, picker: &mut Picker, classic: bool) -> O
             .iter()
             .any(|e| matches!(e, egui::Event::Text(_)));
         (
-            !popup && input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
-            !popup && input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+            !creating && !popup && input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+            !creating && !popup && input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
             enter_inserts && input.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
             alt_a,
             alt_b,
@@ -1007,8 +1052,21 @@ pub(crate) fn show(ctx: &egui::Context, picker: &mut Picker, classic: bool) -> O
         )
     });
     // Typing searches wherever the focus is, as the mock-up moves it back.
-    if typed && focused != Some(search) && !popup && picker.source == Source::Library {
+    if typed && focused != Some(search) && !popup && !creating && picker.source == Source::Library {
         picker.focus = true;
+    }
+    // Files and folders dropped while the Create view shows join its list.
+    if creating {
+        let dropped: Vec<std::path::PathBuf> = ctx.input(|input| {
+            input
+                .raw
+                .dropped_files
+                .iter()
+                .map(|file| file.path().to_owned())
+                .filter(|path| !path.as_os_str().is_empty())
+                .collect()
+        });
+        picker.create.add(dropped);
     }
     if up {
         picker.move_choice(-1);
@@ -1051,7 +1109,11 @@ pub(crate) fn show(ctx: &egui::Context, picker: &mut Picker, classic: bool) -> O
             .show(ui, |ui| {
                 ui.set_width(width);
                 let top = ui.cursor().top();
-                let title = format!("Insert disk — {machine_name}");
+                let title = if creating {
+                    format!("Create disk from files — {machine_name}")
+                } else {
+                    format!("Insert disk — {machine_name}")
+                };
                 if classic {
                     crate::shell::gradient_title(ui, &title);
                 } else {
@@ -1066,11 +1128,23 @@ pub(crate) fn show(ctx: &egui::Context, picker: &mut Picker, classic: bool) -> O
                     })
                     .show(ui, |ui| {
                         target_row(ui, picker, classic);
-                        source_row(ui, picker, classic);
-                        search_row(ui, picker, search);
+                        if creating {
+                            create_from_row(ui);
+                        } else {
+                            source_row(ui, picker, classic);
+                            search_row(ui, picker, search);
+                        }
                         let above = ui.cursor().top() - top;
                         let body_height = (view.y - above - footer_height(ui)).max(BODY_MIN);
-                        body(ui, picker, classic, body_height, &mut double);
+                        if creating {
+                            if let Some(chosen) =
+                                crate::media_create::body(ui, picker, classic, body_height)
+                            {
+                                outcome = Some(chosen);
+                            }
+                        } else {
+                            body(ui, picker, classic, body_height, &mut double);
+                        }
                         if let Some(chosen) = footer(ui, picker) {
                             outcome = Some(chosen);
                         }
@@ -1103,7 +1177,7 @@ fn row_label(ui: &mut egui::Ui, text: &str) {
 
 /// One button of the mock-up's segmented control (`.seg`): framed at rest,
 /// and sunken on the field colour when chosen.
-fn segment(
+pub(crate) fn segment(
     ui: &mut egui::Ui,
     chosen: bool,
     text: impl Into<egui::WidgetText>,
@@ -1203,6 +1277,14 @@ fn target_row(ui: &mut egui::Ui, picker: &mut Picker, classic: bool) {
             ),
         };
         ui.label(RichText::new(text).small().color(colour));
+    });
+}
+
+/// The Create view's From row: files and folders of this computer.
+fn create_from_row(ui: &mut egui::Ui) {
+    ui.horizontal_wrapped(|ui| {
+        row_label(ui, "From");
+        ui.label(RichText::new("Files and folders on this computer").strong());
     });
 }
 
@@ -1348,7 +1430,7 @@ fn body(ui: &mut egui::Ui, picker: &mut Picker, classic: bool, height: f32, doub
 
 /// One pane of the body at `rect`: the field colour inside the inset
 /// outline, `padding` in from it, and what `add` draws scrolling inside.
-fn pane(
+pub(crate) fn pane(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     classic: bool,
@@ -1921,7 +2003,12 @@ fn set_row(
 
 /// A group box, as the mock-up's fieldset: a thin outline in the shadow
 /// colour with its legend set into the top edge.
-fn group_box(ui: &mut egui::Ui, legend: &str, classic: bool, add: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn group_box(
+    ui: &mut egui::Ui,
+    legend: &str,
+    classic: bool,
+    add: impl FnOnce(&mut egui::Ui),
+) {
     let galley = egui::WidgetText::from(legend).into_galley(
         ui,
         Some(egui::TextWrapMode::Truncate),
@@ -1954,7 +2041,7 @@ fn group_box(ui: &mut egui::Ui, legend: &str, classic: bool, add: impl FnOnce(&m
 /// A notice on the mock-up's warning ground, with the skin's corners.
 /// `add` gets the warning colour for its text; a link in it keeps the link
 /// colour.
-fn notice(ui: &mut egui::Ui, classic: bool, add: impl FnOnce(&mut egui::Ui, Color32)) {
+pub(crate) fn notice(ui: &mut egui::Ui, classic: bool, add: impl FnOnce(&mut egui::Ui, Color32)) {
     let visuals = ui.visuals().clone();
     egui::Frame::new()
         .fill(warn_ground(&visuals))
@@ -2230,7 +2317,7 @@ fn details(ui: &mut egui::Ui, picker: &mut Picker, classic: bool) {
 
 /// A key cap, as the mock-up's `kbd`: the key in small monospace on the
 /// field colour, in a thin outline.
-fn key_cap(ui: &mut egui::Ui, key: &str) {
+pub(crate) fn key_cap(ui: &mut egui::Ui, key: &str) {
     egui::Frame::new()
         .fill(ui.visuals().text_edit_bg_color())
         .stroke(Stroke::new(1.0, shadow_colour(ui.visuals())))
@@ -2276,14 +2363,24 @@ fn key_hints(ui: &mut egui::Ui) {
 
 /// The footer: what goes where and when, right-aligned on one line and cut
 /// short when long; then the keys, and the framed buttons at the right in the
-/// mock-up's order for the eye and for Tab: Browse for an image file…, Insert
-/// (the default) and Cancel. The buttons' width comes from the pass before;
-/// when it changes, egui lays the frame out again.
-fn footer(ui: &mut egui::Ui, picker: &Picker) -> Option<Outcome> {
+/// mock-up's order for the eye and for Tab: Browse for an image file…,
+/// Create from files…, Insert (the default) and Cancel; in the Create view
+/// ‹ Back to search, Create and insert (the default) and Cancel. The
+/// buttons' width comes from the pass before; when it changes, egui lays the
+/// frame out again.
+fn footer(ui: &mut egui::Ui, picker: &mut Picker) -> Option<Outcome> {
     let mut outcome = None;
     ui.add(egui::Separator::default().spacing(SEPARATOR));
-    let problem = picker.problem();
-    let summary = RichText::new(picker.summary());
+    let creating = picker.mode == Mode::Create;
+    let (summary, problem) = if creating {
+        match crate::media_create::summary(picker) {
+            Ok(text) => (text, None),
+            Err(why) => (why.clone(), Some(why)),
+        }
+    } else {
+        (picker.summary(), picker.problem())
+    };
+    let summary = RichText::new(summary);
     let summary = if problem.is_some() {
         summary.color(ui.visuals().warn_fg_color)
     } else {
@@ -2297,27 +2394,55 @@ fn footer(ui: &mut egui::Ui, picker: &Picker) -> Option<Outcome> {
             ui.add(egui::Label::new(summary).truncate());
         },
     );
-    let id = egui::Id::unique("media-picker-footer-buttons");
+    let id = egui::Id::unique(if creating {
+        "media-picker-create-footer-buttons"
+    } else {
+        "media-picker-footer-buttons"
+    });
     let known = ui.data(|data| data.get_temp::<f32>(id));
     ui.horizontal(|ui| {
-        key_hints(ui);
+        if creating {
+            crate::media_create::key_hints(ui);
+        } else {
+            key_hints(ui);
+        }
         // Unmeasured, the buttons follow the keys, so they never push the
         // picker wider while egui measures them.
         ui.add_space(known.map_or(0.0, |width| (ui.available_width() - width).max(0.0)));
         let unit = picker.unit;
-        let browse = ui.button("Browse for an image file…");
-        if browse.clicked() {
-            outcome = Some(Outcome::Browse(unit));
-        }
-        let insert = crate::library_view::pane::primary(ui, "Insert");
-        if ui.add_enabled(problem.is_none(), insert).clicked() {
-            outcome = picker.insert();
-        }
+        let first = if creating {
+            let back = ui.button("‹ Back to search");
+            if back.clicked() {
+                picker.back_to_search();
+            }
+            let label = crate::media_create::create_label(&picker.create);
+            let create = crate::library_view::pane::primary(ui, &label);
+            if ui.add_enabled(problem.is_none(), create).clicked() {
+                outcome = picker
+                    .create
+                    .order(unit)
+                    .map(|order| Outcome::Create(Box::new(order)));
+            }
+            back
+        } else {
+            let browse = ui.button("Browse for an image file…");
+            if browse.clicked() {
+                outcome = Some(Outcome::Browse(unit));
+            }
+            if ui.button("Create from files…").clicked() {
+                picker.open_create();
+            }
+            let insert = crate::library_view::pane::primary(ui, "Insert");
+            if ui.add_enabled(problem.is_none(), insert).clicked() {
+                outcome = picker.insert();
+            }
+            browse
+        };
         let cancel = ui.button("Cancel");
         if cancel.clicked() {
             outcome = Some(Outcome::Cancel);
         }
-        let width = browse.rect.union(cancel.rect).width();
+        let width = first.rect.union(cancel.rect).width();
         if known.is_none_or(|known| (known - width).abs() > 0.5) {
             ui.data_mut(|data| data.insert_temp(id, width));
             ui.ctx()
@@ -2421,6 +2546,7 @@ pub(crate) mod tests {
             name: "DOS games".into(),
             when,
             journal_unavailable: None,
+            create_unavailable: None,
             drives: vec![
                 Drive {
                     unit: 0,
@@ -3578,6 +3704,383 @@ pub(crate) mod tests {
                 1,
             );
             assert!(picker.remote_preview, "{what}");
+        }
+    }
+
+    /// The picker on B: of a running DOS games with `paths` in its Create
+    /// view, read.
+    fn creating(paths: &[std::path::PathBuf]) -> Picker {
+        let mut picker = Picker::new(vec![machine(None, When::Now)], 0, 1, library(), None);
+        picker.open_create();
+        picker.create = crate::media_create::tests::listed(paths);
+        picker
+    }
+
+    /// Create from files… in the footer turns the picker into its Create
+    /// view on the same drive; ‹ Back to search returns with the search and
+    /// the added items kept.
+    #[test]
+    fn create_from_files_opens_the_create_view_and_back_keeps_both() {
+        use egui::accesskit::Role;
+        let temp =
+            crate::media_create::tests::host("picker-create-open", &[("game/play.exe", 900)]);
+        for (classic, dark) in LOOKS {
+            let what = format!("classic {classic}, dark {dark}");
+            let mut run = Pointer::new(classic, dark);
+            let mut picker = Picker::new(vec![machine(None, When::Now)], 0, 1, library(), None);
+            picker.set_query("keen".into());
+            assert_eq!(
+                run.click(&mut picker, Role::Button, "Create from files…", 1),
+                None
+            );
+            assert_eq!(picker.mode, Mode::Create, "{what}");
+            assert_eq!(picker.unit, 1, "{what}");
+            let (_, shown) = run.frame(&mut picker, Vec::new());
+            assert!(
+                shown
+                    .texts
+                    .iter()
+                    .any(|t| t.text == "Create disk from files — DOS games"),
+                "{what}"
+            );
+            assert!(shown
+                .texts
+                .iter()
+                .any(|t| t.text == "Files and folders on this computer"));
+            assert!(
+                shown.widgets(Role::TextInput).all(|w| w.label != "keen"),
+                "{what}: no search field"
+            );
+            picker.create.add([temp.path().join("game")]);
+            run.click(&mut picker, Role::Button, "‹ Back to search", 1);
+            assert_eq!(picker.mode, Mode::Search, "{what}");
+            assert_eq!(picker.query, "keen", "{what}");
+            assert_eq!(picker.create.items.len(), 1, "{what}");
+        }
+    }
+
+    /// The Create view opens with Add folder… focused, as the mock-up's
+    /// does: Enter asks for the folder dialog.
+    #[test]
+    fn the_create_view_opens_with_add_folder_focused() {
+        let ctx = egui::Context::default();
+        crate::shell::configure_context(&ctx);
+        let mut picker = Picker::new(vec![machine(None, When::Now)], 0, 1, library(), None);
+        picker.open_create();
+        let enter = egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        assert_eq!(
+            frame(&ctx, &mut picker, vec![enter]),
+            Some(Outcome::AddFolder)
+        );
+    }
+
+    /// The Create view keeps the picker's size frame after frame, empty,
+    /// with a long list and with a split, its two panes sharing the body's
+    /// fixed height.
+    #[test]
+    fn the_create_view_keeps_the_pickers_size_and_body_height() {
+        let mut files: Vec<(String, usize)> = (0..120)
+            .map(|n| (format!("azuramon/gfx/tile{n:03}.pcx"), 30_000))
+            .collect();
+        files.push(("azuramon/Azuramon Manual.txt".into(), 48_120));
+        files.push(("azuramon/.DS_Store".into(), 6_148));
+        let files: Vec<(&str, usize)> = files.iter().map(|(p, n)| (p.as_str(), *n)).collect();
+        let temp = crate::media_create::tests::host("picker-create-size", &files);
+        for paths in [Vec::new(), vec![temp.path().join("azuramon")]] {
+            for (classic, dark) in LOOKS {
+                let what = format!("classic {classic}, dark {dark}, {} items", paths.len());
+                let mut picker = creating(&paths);
+                let search = {
+                    let mut search =
+                        Picker::new(vec![machine(None, When::Now)], 0, 1, library(), None);
+                    shown(&mut search, BIG, classic, dark).modal
+                };
+                let frames = shown_frames(&mut picker, BIG, classic, dark, 12);
+                let panes = |frame: &Shown| -> Vec<egui::Rect> {
+                    frame
+                        .rects
+                        .iter()
+                        .filter(|(r, _)| {
+                            r.fill.a() > 0
+                                && r.rect.height() > 200.0
+                                && r.rect.width() < frame.modal.width() - 40.0
+                        })
+                        .map(|(r, _)| r.rect)
+                        .collect()
+                };
+                let mut heights = Vec::new();
+                for frame in &frames[1..] {
+                    assert_eq!(
+                        frame.modal, frames[1].modal,
+                        "{what}: the picker moved or grew"
+                    );
+                    let panes = panes(frame);
+                    assert_eq!(panes.len(), 2, "{what}: {panes:?}");
+                    assert!(
+                        panes.iter().all(|p| p.height() == panes[0].height()),
+                        "{what}"
+                    );
+                    heights.push(panes[0].height());
+                }
+                assert!(
+                    heights.iter().all(|h| *h == heights[0]),
+                    "{what}: {heights:?}"
+                );
+                assert!(heights[0] >= 440.0, "{what}: {heights:?}");
+                let modal = frames.last().unwrap().modal;
+                assert!(
+                    (modal.width() - search.width()).abs() <= 1.0,
+                    "{what}: {modal:?} {search:?}"
+                );
+                assert!(
+                    (modal.height() - search.height()).abs() <= 1.0,
+                    "{what}: {modal:?} {search:?}"
+                );
+                let cancel = frames
+                    .last()
+                    .unwrap()
+                    .widget(egui::accesskit::Role::Button, "Cancel")
+                    .rect;
+                assert!(modal.contains_rect(cancel), "{what}");
+            }
+        }
+    }
+
+    /// The footer says what Create and insert makes and where it goes, or
+    /// why it cannot run; a split names its disks on the button.
+    #[test]
+    fn the_create_footer_says_what_goes_where() {
+        let temp = crate::media_create::tests::host(
+            "picker-create-footer",
+            &[
+                ("small/a.exe", 1000),
+                ("small/b.dat", 1000),
+                ("galaxia/a.dat", 900_000),
+                ("galaxia/b.dat", 900_000),
+                ("big/whole.bin", 1_500_000),
+            ],
+        );
+        let mut picker = creating(&[temp.path().join("small")]);
+        let frame = shown(&mut picker, BIG, true, false);
+        assert_eq!(
+            crate::media_create::summary(&picker).unwrap(),
+            "Create a 1.44M disk from 2 files and insert it into B: of DOS games — now."
+        );
+        frame.widget(egui::accesskit::Role::Button, "Create and insert");
+        assert!(frame.texts.iter().any(|t| t.text == "Fits one 1.44M disk."));
+        let mut picker = creating(&[temp.path().join("galaxia")]);
+        let frame = shown(&mut picker, BIG, true, false);
+        assert_eq!(
+            crate::media_create::summary(&picker).unwrap(),
+            "Create 2 disks of 1.44M from 2 files and insert disk 1 into B: of DOS games — now. All 2 join B:'s catalogue."
+        );
+        frame.widget(egui::accesskit::Role::Button, "Create 2 disks and insert");
+        frame.widget(
+            egui::accesskit::Role::RadioButton,
+            "Split across 2 disks of 1.44M",
+        );
+        assert!(frame
+            .texts
+            .iter()
+            .any(|t| t.text == "XCOPY B:\\GALAXIA C:\\GALAXIA /S /E"));
+        let mut picker = creating(&[temp.path().join("big")]);
+        shown(&mut picker, BIG, true, false);
+        assert_eq!(
+            crate::media_create::summary(&picker).unwrap_err(),
+            "WHOLE.BIN is too large for any 1.44M disk."
+        );
+    }
+
+    /// Every control of the Create view answers a click, in every skin and
+    /// theme: Add files…, Add folder…, ×, the formats and the larger-format
+    /// link, the write radios, keeping in the library, Create and insert and
+    /// Cancel; a file too large for any disk leaves Create doing nothing.
+    #[test]
+    fn every_create_control_answers_a_click() {
+        use egui::accesskit::Role;
+        let temp = crate::media_create::tests::host(
+            "picker-create-clicks",
+            &[
+                ("nightfall/nightfal.exe", 400_000),
+                ("nightfall/intro.fli", 500_000),
+                ("loose.txt", 10),
+                ("big/whole.bin", 1_500_000),
+            ],
+        );
+        let folder = temp.path().join("nightfall");
+        for (classic, dark) in LOOKS {
+            let what = format!("classic {classic}, dark {dark}");
+            let mut run = Pointer::new(classic, dark);
+            let mut picker = creating(&[folder.clone(), temp.path().join("loose.txt")]);
+            assert_eq!(
+                run.click(&mut picker, Role::Button, "Add files…", 1),
+                Some(Outcome::AddFiles),
+                "{what}"
+            );
+            assert_eq!(
+                run.click(&mut picker, Role::Button, "Add folder…", 1),
+                Some(Outcome::AddFolder),
+                "{what}"
+            );
+            run.click(&mut picker, Role::Button, "Remove loose.txt", 1);
+            assert_eq!(picker.create.items.len(), 1, "{what}");
+            assert_eq!(
+                picker.create.top, "NIGHTFAL",
+                "{what}: a folder alone is the top folder"
+            );
+            run.click(&mut picker, Role::Button, "720K 730,112 bytes free", 1);
+            assert_eq!(
+                picker.create.format,
+                Some(media::fat12::FloppyFormat::Dd720),
+                "{what}"
+            );
+            run.click(&mut picker, Role::Link, "use 1.44M", 1);
+            assert_eq!(
+                picker.create.format,
+                Some(media::fat12::FloppyFormat::Hd144),
+                "{what}"
+            );
+            run.click(&mut picker, Role::RadioButton, "Write-protected", 1);
+            assert!(!picker.create.journal, "{what}");
+            run.click(
+                &mut picker,
+                Role::RadioButton,
+                "Keep the changes in DOS games",
+                1,
+            );
+            assert!(picker.create.journal, "{what}");
+            run.click(
+                &mut picker,
+                Role::CheckBox,
+                "Also keep in the library as an installation media set",
+                1,
+            );
+            assert!(picker.create.keep, "{what}");
+            let outcome = run.click(&mut picker, Role::Button, "Create and insert", 1);
+            let Some(Outcome::Create(order)) = outcome else {
+                panic!("{what}: {outcome:?}")
+            };
+            assert_eq!(order.unit, 1, "{what}");
+            assert_eq!(
+                order.top.map(|t| t.to_string()).as_deref(),
+                Some("NIGHTFAL")
+            );
+            assert!(!order.split && order.journal, "{what}");
+            assert_eq!(
+                order.keep,
+                Some(("nightfal:1.0".to_owned(), "NIGHTFAL".to_owned()))
+            );
+            assert_eq!(
+                run.click(&mut picker, Role::Button, "Cancel", 1),
+                Some(Outcome::Cancel),
+                "{what}"
+            );
+            let mut picker = creating(&[temp.path().join("big")]);
+            assert_eq!(
+                run.click(&mut picker, Role::Button, "Create and insert", 1),
+                None,
+                "{what}"
+            );
+        }
+    }
+
+    /// A file dropped on the Create view joins its list once; the search
+    /// view takes no drops.
+    #[test]
+    fn dropped_files_join_the_create_list() {
+        #[derive(Debug)]
+        struct Dropped(std::path::PathBuf);
+        impl egui::DroppedFile for Dropped {
+            fn path(&self) -> &std::path::Path {
+                &self.0
+            }
+            fn bytes(&self) -> Result<Vec<u8>, String> {
+                Err("not read".into())
+            }
+        }
+        let temp = crate::media_create::tests::host("picker-create-drop", &[("tq.exe", 100)]);
+        let ctx = egui::Context::default();
+        crate::shell::configure_context(&ctx);
+        let drop = |picker: &mut Picker| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    dropped_files: vec![std::sync::Arc::new(Dropped(temp.path().join("tq.exe")))],
+                    ..Default::default()
+                },
+                |ui| {
+                    show(ui.ctx(), picker, true);
+                },
+            );
+            output.textures_delta.clear();
+        };
+        let mut picker = Picker::new(vec![machine(None, When::Now)], 0, 1, library(), None);
+        drop(&mut picker);
+        assert!(picker.create.items.is_empty());
+        picker.open_create();
+        drop(&mut picker);
+        drop(&mut picker);
+        assert_eq!(picker.create.items.len(), 1);
+        assert_eq!(picker.create.items[0].path, temp.path().join("tq.exe"));
+    }
+
+    /// The Create view's texts stay inside their panes across the width, in
+    /// every skin and theme, with long names and a split: a table cuts a
+    /// long cell short rather than running past the pane.
+    #[test]
+    fn the_create_view_keeps_its_texts_inside_the_panes() {
+        let mut files: Vec<(String, usize)> = (0..40)
+            .map(|n| (format!("azuramon/gfx/tile{n:03}.pcx"), 30_000))
+            .collect();
+        files.push((
+            "azuramon/Azuramon Manual for the level editor.txt".into(),
+            48_120,
+        ));
+        files.push(("azuramon/level editor.exe".into(), 228_416));
+        files.push(("azuramon/.DS_Store".into(), 6_148));
+        files.push((
+            "azuramon/a rather long folder name/deeper still/+bonus.map".into(),
+            8_812,
+        ));
+        files.push(("A loose file with a very long name indeed.txt".into(), 10));
+        let files: Vec<(&str, usize)> = files.iter().map(|(p, n)| (p.as_str(), *n)).collect();
+        let temp = crate::media_create::tests::host("picker-create-inside", &files);
+        for (classic, dark) in LOOKS {
+            for paths in [
+                vec![temp.path().join("azuramon")],
+                vec![
+                    temp.path().join("azuramon"),
+                    temp.path()
+                        .join("A loose file with a very long name indeed.txt"),
+                ],
+            ] {
+                let what = format!("classic {classic}, dark {dark}, {} items", paths.len());
+                let mut picker = creating(&paths);
+                picker.create.set_format(media::fat12::FloppyFormat::Dd720);
+                let frame = shown(&mut picker, BIG, classic, dark);
+                assert!(
+                    frame
+                        .texts
+                        .iter()
+                        .any(|t| t.text.starts_with("Split across")),
+                    "{what}: no split"
+                );
+                for text in &frame.texts {
+                    assert!(
+                        text.glyphs.left() >= text.clip.left() - 0.5
+                            && text.glyphs.right() <= text.clip.right() + 0.5,
+                        "{what}: {:?} at {:?} runs past {:?}",
+                        text.text,
+                        text.glyphs,
+                        text.clip
+                    );
+                }
+            }
         }
     }
 

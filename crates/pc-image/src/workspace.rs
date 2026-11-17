@@ -278,6 +278,10 @@ pub fn abandon_publication(workspace: &Workspace<'_>) -> Result<()> {
     }
     Ok(())
 }
+/// The media folder's subfolder of disks the window created from host
+/// files: their read-only images and the machine's record of which drive
+/// takes them at its next Start.
+const CREATED: &str = "created";
 struct Staging(std::path::PathBuf);
 impl Drop for Staging {
     fn drop(&mut self) {
@@ -824,10 +828,18 @@ fn complete(
             },
         )?;
         hook(PublicationStep::SessionUpdated)?;
+        fs::create_dir_all(&media)?;
+        // Disks the window made from host files are no journals: they are
+        // read-only bases the machine owns, waiting for a drive, and stay
+        // with the machine on its new image. Their journals go with the rest.
+        let created = retired.join(CREATED);
+        if created.is_dir() && !media.join(CREATED).exists() {
+            fs::rename(&created, media.join(CREATED))?;
+            fs::File::open(&media)?.sync_all()?;
+        }
         if retired.exists() {
             fs::remove_dir_all(retired)?;
         }
-        fs::create_dir_all(&media)?;
         fs::File::open(workspace.path())?.sync_all()?;
         hook(PublicationStep::JournalsRetired)?;
     }

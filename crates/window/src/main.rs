@@ -44,6 +44,7 @@ use winit::{
 };
 
 mod app_menu;
+mod created_media;
 mod drive_chips;
 mod file_dialog;
 mod firmware_choices;
@@ -59,6 +60,7 @@ mod logo;
 mod macos_keys;
 #[cfg(target_os = "macos")]
 mod macos_menu;
+mod media_create;
 mod media_dialog;
 mod media_picker;
 mod new_machine;

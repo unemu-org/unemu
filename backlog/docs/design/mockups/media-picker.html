@@ -430,7 +430,7 @@ kbd { font: 10.5px var(--code); padding: 0 3px; box-shadow: var(--thin-in); back
       <li><strong>Where it starts.</strong> <em>Create from files…</em> sits in the picker’s footer beside <em>Browse for an image file…</em>, so every way into the picker reaches it: Media › Insert…, a drive chip’s Insert…, the toolbar’s A: and B:, Ctrl+Alt+I (Shift for B:), Machine › Insert media… and the collection’s Insert into…. Media › <em>Create from files…</em> under each drive’s Insert…, and the same item in a drive chip’s menu, open the picker straight in the Create view for that drive. Files dropped on the main window or on a drive chip do nothing yet (later).</li>
       <li><strong>A view of the picker, not a second dialog.</strong> The picker’s body becomes the Create view and the Into row stays, so the machine, the drive (also Alt+A / Alt+B) and when the disk goes in are chosen once, as for a set; the formats follow the drive. <em>‹ Back to search</em> returns with the search and the added items kept; Cancel or Esc closes. I chose this over a dialog of its own because that dialog would need the same target row again, and the shell shows one dialog at a time.</li>
       <li><strong>Adding.</strong> <em>Add files…</em> opens the system file dialog (several files at once), <em>Add folder…</em> the folder dialog; files and folders dropped on the list are added too. Each row shows where the item lands on the disk, its files and folders, and its size; × removes it. Adding the same item twice changes nothing. Until Create, only names and sizes are read, on the library worker.</li>
-      <li><strong>Layout on the disk.</strong> Everything goes into the top folder. A single added folder becomes the top folder, so its contents go in directly; several items each go into it. The default top folder is the single folder’s name cut to 8.3 (<code>nightfall</code> becomes NIGHTFAL, with no ~1, since nothing else at the root can clash), else empty, which puts everything at the root; it can be edited. Names become 8.3: upper case, characters DOS refuses replaced with _, and a name that does not fit cut to six characters plus ~1 (~2 on a clash). Names that change beyond upper case are listed under <em>DOS names</em>; no long names are written. Host junk is skipped and listed with its reason: <code>.DS_Store</code>, AppleDouble files (<code>._*</code>) and symbolic links.</li>
+      <li><strong>Layout on the disk.</strong> Everything goes into the top folder. A single added folder becomes the top folder, so its contents go in directly; several items each go into it. The default top folder is the single folder’s name cut to 8.3 (<code>nightfall</code> becomes NIGHTFAL, with no ~1, since nothing else at the root can clash), else empty, which puts everything at the root; it can be edited. Names become 8.3: upper case, spaces and characters DOS refuses replaced with _, and a name that does not fit cut to eight characters and an extension of three; a ~1 tail (~2, …) is added only when two names in a folder would clash. Names that change beyond upper case are listed under <em>DOS names</em>; no long names are written. Host junk is skipped and listed with its reason: <code>.DS_Store</code>, AppleDouble files (<code>._*</code>) and symbolic links.</li>
       <li><strong>Format and label.</strong> Only the formats the drive takes, the drive’s own first and chosen. The volume label defaults to the top folder name: up to 11 characters, empty writes none.</li>
       <li><strong>Fit meter.</strong> It counts what DOS counts: the free bytes of a freshly formatted disk (1.44M 1,457,664; 720K 730,112; 1.2M 1,213,952; 360K 362,496), each file rounded up to whole clusters (512 bytes on 1.44M and 1.2M, 1,024 on 720K and 360K), each folder’s own clusters, and the root folder’s fixed entries (224, or 112 on 720K and 360K; the label takes one). The bar shows the files, then the rounding and folders lighter.</li>
       <li><strong>Live states.</strong> <em>Fits one disk.</em> <em>Does not fit</em>, with the bytes it needs beyond one disk, and a link to a larger format the drive takes when that one fits. <em>A file too large for any disk</em>, named, which disables Create.</li>
@@ -1034,11 +1034,13 @@ function to83(host, taken) {
   if (base0.includes('.')) why.push('more than one dot');
   const bad = [...new Set((base0 + ext0).replace(/[\s.]/g, '').match(SFN_BAD) || [])];
   if (bad.length) why.push(bad.join(' ') + ' not allowed');
-  const base = base0.replace(/[\s.]/g, '').replace(SFN_BAD, '_'), ext = ext0.replace(/\s/g, '').replace(SFN_BAD, '_');
+  // Spaces and refused characters become _, the stem is cut to 8 and the
+  // extension to 3; a ~1 (~2, ...) tail only when the name is taken.
+  const base = base0.replace(/\./g, '').replace(SFN_BAD, '_') || '_', ext = ext0.replace(SFN_BAD, '_');
   if (base.length > 8) why.push('name over 8 characters');
   if (ext.length > 3) why.push('extension over 3 characters');
-  let out = base + (ext ? '.' + ext : '');
-  if (why.length || taken.has(out)) {
+  let out = base.slice(0, 8) + (ext ? '.' + ext.slice(0, 3) : '');
+  if (taken.has(out)) {
     if (!why.length) why.push('same name as another file');
     for (let n = 1; ; n++) { const t = '~' + n, c = base.slice(0, 8 - t.length) + t + (ext ? '.' + ext.slice(0, 3) : ''); if (!taken.has(c)) { out = c; break; } }
   }
@@ -1136,7 +1138,7 @@ function ckTag() { return ckTitle().toLowerCase().replace(/[^a-z0-9]+/g, '-').re
 // The default top folder: the single folder's name cut to 8.3. Nothing else is
 // at the root to clash with, so it needs no ~1 tail.
 function topDefault(host) {
-  const up = host.toUpperCase(), dot = up.lastIndexOf('.'), clean = s => s.replace(/[\s.]/g, '').replace(SFN_BAD, '_');
+  const up = host.toUpperCase(), dot = up.lastIndexOf('.'), clean = s => s.replace(/\./g, '').replace(SFN_BAD, '_');
   const base = clean(dot > 0 ? up.slice(0, dot) : up).slice(0, 8), ext = dot > 0 ? clean(up.slice(dot + 1)).slice(0, 3) : '';
   return base + (ext ? '.' + ext : '');
 }

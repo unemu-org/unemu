@@ -380,6 +380,9 @@ struct Shell {
     /// The host file dialog, which answers on a later frame. It is no shell
     /// dialog: a running machine keeps running while it is open.
     file_dialogs: file_dialog::FileDialogs<FileFor>,
+    /// Create and insert while the library worker builds the disks: whose
+    /// drives they go into once made.
+    creating: Option<DriveOwner>,
 }
 
 /// Who asked for the host file dialog; the answer goes back there on a later
@@ -410,6 +413,11 @@ enum FileFor {
     InstallMedia(crate::library_view::install_media::Pick),
     /// Browse… of the ROM folders dialog. Dropped once that dialog has closed.
     RomFolder,
+    /// Add files… of the media picker's Create view. Dropped unless the
+    /// picker still shows that view.
+    CreateFiles,
+    /// Add folder… of the media picker's Create view, as Add files….
+    CreateFolder,
 }
 
 /// Whose drives a picked image goes into.
@@ -441,6 +449,15 @@ struct ReadinessJob {
 impl Shell {
     fn poll_images(&mut self, ctx: &egui::Context) {
         self.image_library.poll(ctx);
+        let reads = std::mem::take(&mut self.image_library.host_reads);
+        if let Some(picker) = &mut self.picker {
+            for (path, result) in reads {
+                picker.create.read_done(&path, result);
+            }
+        }
+        if let Some(result) = self.image_library.disks_created.take() {
+            self.disks_created(result);
+        }
         if let Some(message) = self.image_library.status.take() {
             self.message = message;
         }
@@ -456,6 +473,7 @@ impl Shell {
             let prepared = match transfer.restore() {
                 Ok(prepared) => prepared,
                 Err(e) => {
+                    self.image_library.start_notes.clear();
                     self.image_library.finish_with_failure(false, true);
                     self.show_error(e.to_string());
                     return;
@@ -492,6 +510,11 @@ impl Shell {
                 Ok(mut presenter) => {
                     presenter.audio.open(&mut io::stderr());
                     self.started(presenter);
+                    // What the Start left out, once the machine runs.
+                    let notes = std::mem::take(&mut self.image_library.start_notes);
+                    if !notes.is_empty() {
+                        self.message = notes.join(" ");
+                    }
                     if self.image_library.active_machine.is_some() {
                         // The machine's record takes this run only now that
                         // it assembled: its pending disks are in its drives.
@@ -505,6 +528,7 @@ impl Shell {
                     }
                 }
                 Err(e) => {
+                    self.image_library.start_notes.clear();
                     self.image_library.finish_with_failure(false, true);
                     self.show_error(e);
                 }
@@ -1084,6 +1108,8 @@ impl Shell {
                 Request::new(Kind::Files, "Choose extras to store with the set")
             }
             FileFor::RomFolder => Request::new(Kind::Folder, "Locate firmware folder"),
+            FileFor::CreateFiles => Request::new(Kind::Files, "Add files to the disk"),
+            FileFor::CreateFolder => Request::new(Kind::Folder, "Add a folder to the disk"),
         })
     }
 
@@ -1168,6 +1194,13 @@ impl Shell {
             FileFor::InstallMedia(pick) => {
                 self.image_library
                     .media_picked(pick, answer.unwrap_or_default());
+            }
+            // The Create view's list stays with the picker, also after
+            // ‹ Back to search, so the answer joins it.
+            FileFor::CreateFiles | FileFor::CreateFolder => {
+                if let Some(picker) = &mut self.picker {
+                    picker.create.add(answer.unwrap_or_default());
+                }
             }
             FileFor::RomFolder => {
                 let open = self
@@ -1394,6 +1427,7 @@ impl Shell {
                     when: if halted { When::Halted } else { When::Now },
                     drives,
                     journal_unavailable: None,
+                    create_unavailable: None,
                 }],
                 0,
             );
@@ -1418,13 +1452,15 @@ impl Shell {
                     .map(|&(unit, geometry)| {
                         let letter = crate::media_picker::drive_name(unit);
                         let pending = row.listing.machine.pending.iter().find(|p| p.drive == letter);
+                        let created = row.created.iter().find(|c| c.drive == letter);
                         Drive {
                             unit,
                             geometry,
-                            holds: pending.map_or_else(
-                                || "as the image sets it".to_owned(),
-                                |p| format!("{} at Start", self.image_library.pending_label(p)),
-                            ),
+                            holds: match (pending, created) {
+                                (Some(p), _) => format!("{} at Start", self.image_library.pending_label(p)),
+                                (None, Some(c)) => format!("{} at Start", c.title),
+                                (None, None) => "as the image sets it".to_owned(),
+                            },
                             catalogue: Vec::new(),
                             current: pending.and_then(|p| {
                                 let set = sets.iter().find(|s| s.image.digest == p.set.digest)?;
@@ -1442,6 +1478,7 @@ impl Shell {
                     when: When::AtStart,
                     drives,
                     journal_unavailable: None,
+                    create_unavailable: None,
                 });
             }
             // The wanted machine is the target or there is none: a disk never
@@ -1483,6 +1520,11 @@ impl Shell {
                 journal_unavailable: image_owned.then(|| {
                     "Before Start a disk goes into an image write-protected: its changes would belong to the machine Start makes.".to_owned()
                 }),
+                // An image keeps no disks of its own before Start makes its
+                // machine, so a created disk would have nowhere to live.
+                create_unavailable: image_owned.then(|| {
+                    "A created disk goes into a machine: choose one of the library's machines, or start this image first.".to_owned()
+                }),
             }],
             0,
         )
@@ -1517,8 +1559,35 @@ impl Shell {
         let Some(picker) = &mut self.picker else {
             return;
         };
-        if let Some(outcome) = crate::media_picker::show(ctx, picker, self.classic) {
+        let outcome = crate::media_picker::show(ctx, picker, self.classic);
+        self.read_added_items();
+        if let Some(outcome) = outcome {
             self.apply_picker(outcome);
+        }
+    }
+
+    /// Hand the files and folders just added to the Create view to the
+    /// library worker, which reads their names and sizes.
+    fn read_added_items(&mut self) {
+        let Some(picker) = &mut self.picker else {
+            return;
+        };
+        let reads = picker.create.take_reads();
+        if reads.is_empty() {
+            return;
+        }
+        if !self.image_library.can_read_host() {
+            for path in reads {
+                picker.create.read_done(
+                    &path,
+                    Err("the image store is not open, so nothing can be read".into()),
+                );
+            }
+            return;
+        }
+        for path in reads {
+            self.image_library
+                .send(crate::library_worker::Request::ReadHost(path));
         }
     }
 
@@ -1542,9 +1611,19 @@ impl Shell {
     /// Do what the media picker chose, and close it.
     fn apply_picker(&mut self, outcome: crate::media_picker::Outcome) {
         use crate::media_picker::Outcome;
-        self.picker = None;
+        // Add files… and Add folder… keep the picker open behind the dialog.
         match outcome {
-            Outcome::Cancel => {}
+            Outcome::AddFiles => return self.ask_file(FileFor::CreateFiles),
+            Outcome::AddFolder => return self.ask_file(FileFor::CreateFolder),
+            _ => {}
+        }
+        let target = self
+            .picker
+            .take()
+            .and_then(|picker| picker.machine().id.clone());
+        match outcome {
+            Outcome::Cancel | Outcome::AddFiles | Outcome::AddFolder => {}
+            Outcome::Create(order) => self.create_disks(*order, target),
             Outcome::Pending { id, insert } => {
                 let Some(row) = self.image_library.machine_rows().iter().find(|r| r.id() == id).cloned() else {
                     self.dialog = Some(("Insert disk", "That machine is no longer in the library.".into()));
@@ -1622,6 +1701,139 @@ impl Shell {
                 // A drive with a catalogue always has an owner.
                 _ => {}
             },
+        }
+    }
+
+    /// Create and insert: the library worker builds the disks and stores
+    /// them as the machine's own. The stopped library machine `target`
+    /// takes them at its next Start; a running machine, or a stopped machine
+    /// file before its Start, takes them once they are made.
+    fn create_disks(&mut self, order: crate::created_media::CreateOrder, target: Option<String>) {
+        use crate::created_media::Place;
+        if !self.image_library.can_read_host() {
+            self.dialog = Some((
+                "Create from files",
+                "The disks were not created: the image store is not open.".into(),
+            ));
+            return;
+        }
+        let place = match target {
+            Some(id) => Place::Machine(id),
+            None => match self.library_media_dir() {
+                Ok(media) => Place::Folder(media),
+                Err(error) => {
+                    self.dialog = Some(("Create from files", error));
+                    return;
+                }
+            },
+        };
+        self.creating = self.drive_owner();
+        self.message = "Creating the disks from files…".into();
+        self.image_library
+            .send(crate::library_worker::Request::CreateDisks(
+                Box::new(order),
+                place,
+            ));
+    }
+
+    /// Insert what Create and insert made, into the machine that asked for
+    /// it; a stopped library machine already has it as a pending insert.
+    fn disks_created(&mut self, result: Result<Box<crate::created_media::Created>, String>) {
+        use crate::created_media::Place;
+        let owner = self.creating.take();
+        let created = match result {
+            Ok(created) => created,
+            Err(error) => {
+                self.message = "The disks were not created".into();
+                self.dialog = Some(("Create from files", error));
+                return;
+            }
+        };
+        let order = &created.order;
+        let unit = order.unit;
+        let count = created.disks.len();
+        let drive = crate::media_picker::drive_name(unit);
+        let what = if count > 1 {
+            format!("{} ({count} disks)", order.title)
+        } else {
+            order.title.clone()
+        };
+        let kept = match (&created.kept, &created.keep_failed) {
+            (Some(tag), _) => format!(" Also kept in the library as {tag}."),
+            (None, Some(why)) => format!(" It was not kept in the library: {why}"),
+            (None, None) => String::new(),
+        };
+        let all = if count > 1 {
+            format!("; all {count} disks join the catalogue")
+        } else {
+            String::new()
+        };
+        match &created.place {
+            Place::Machine(id) => {
+                let name = self
+                    .image_library
+                    .machine_rows()
+                    .iter()
+                    .find(|row| row.id() == id)
+                    .map_or_else(|| id.clone(), |row| row.name().to_owned());
+                self.message =
+                    format!("{what} goes into {drive} of {name} at its next Start{all}.{kept}");
+            }
+            Place::Folder(_) => {
+                // The disks go only into the drives of the machine that
+                // asked for them.
+                if owner.is_none() || self.drive_owner() != owner {
+                    self.message = format!(
+                        "{what} was created, but the machine changed meanwhile, so it was not inserted.{kept}"
+                    );
+                    return;
+                }
+                let Some(slot) = self.floppy_slot(unit) else {
+                    self.message = format!(
+                        "{what} was created, but {drive} is gone, so it was not inserted.{kept}"
+                    );
+                    return;
+                };
+                let entries = crate::created_media::entries(&created, slot.journal_retention);
+                let name = self.session_name().unwrap_or("the machine").to_owned();
+                if let Some(presenter) = &mut self.presenter {
+                    match crate::media_dialog::append_entries(
+                        &mut presenter.assembled,
+                        &mut presenter.media_config,
+                        &mut presenter.media_slots,
+                        unit,
+                        &entries,
+                    ) {
+                        Ok(indices) => {
+                            presenter
+                                .media_events
+                                .push((unit, assembly::FloppyAction::Insert(indices[0])));
+                            let next = if count > 1 {
+                                format!(
+                                    " {} swaps to the next disk.",
+                                    if unit == 0 {
+                                        "Ctrl+Alt+F"
+                                    } else {
+                                        "Ctrl+Alt+Shift+F"
+                                    }
+                                )
+                            } else {
+                                String::new()
+                            };
+                            self.message =
+                                format!("{what} is in {drive} of {name} now.{next}{kept}");
+                        }
+                        Err(error) => {
+                            self.message = "The created disks did not go in".into();
+                            self.dialog = Some(("Create from files", error));
+                        }
+                    }
+                } else if let Some(pending) = &mut self.pending_media {
+                    pending.insert(unit, entries, 0);
+                    self.message =
+                        format!("{what} goes into {drive} of {name} at its next Start{all}.{kept}");
+                }
+            }
         }
     }
 
@@ -1814,6 +2026,14 @@ impl Shell {
             Command::Insert(unit),
             commands,
         );
+        self.marked_item(
+            ui,
+            "",
+            "Create from files…",
+            "",
+            Command::CreateFromFiles(unit),
+            commands,
+        );
         if view.at_start {
             ui.add_enabled(
                 false,
@@ -1978,6 +2198,7 @@ impl Shell {
             transfer_prompt: None,
             system_keys: crate::system_keys::SystemKeys::platform(),
             file_dialogs: file_dialog::FileDialogs::native(),
+            creating: None,
         }
     }
 
@@ -2059,6 +2280,7 @@ impl Shell {
                             .is_some_and(|row| {
                                 let drive = crate::media_picker::drive_name(unit);
                                 row.listing.machine.pending.iter().any(|p| p.drive == drive)
+                                    || row.created.iter().any(|c| c.drive == drive)
                             })
                 }
                 _ => true,
@@ -3069,6 +3291,12 @@ impl Shell {
             // One Insert… per drive opens the media picker; it replaces the
             // catalogue dialog and From library….
             Insert(unit) => { self.release(); self.open_picker(unit, None, None); },
+            // Create from files… opens the picker straight in its Create view.
+            CreateFromFiles(unit) => {
+                self.release();
+                self.open_picker(unit, None, None);
+                if let Some(picker) = &mut self.picker { picker.open_create(); }
+            },
             InsertFile(unit) => if let Some(slot) = self.floppy_slot(unit) {
                 self.release();
                 self.insert_dialog = Some(crate::media_dialog::InsertDialog::new(unit, slot));
@@ -3371,6 +3599,14 @@ impl Shell {
                         "Insert…",
                         self.insert_shortcut(unit),
                         Insert(unit),
+                        commands,
+                    );
+                    self.marked_item(
+                        ui,
+                        "",
+                        "Create from files…",
+                        "",
+                        CreateFromFiles(unit),
                         commands,
                     );
                     self.marked_item(
@@ -4656,10 +4892,9 @@ fn machine_pending_views(
                 .machine
                 .pending
                 .iter()
-                .find(|p| p.drive == letter)?;
-            Some(crate::drive_chips::DriveView {
-                bay: crate::drive_chips::Bay::Floppy { unit, geometry },
-                medium: Some(crate::drive_chips::Medium {
+                .find(|p| p.drive == letter);
+            let medium = match insert {
+                Some(insert) => crate::drive_chips::Medium {
                     name: label(insert),
                     source: format!(
                         "Pending insert from {}, in the drive at the next Start of {}",
@@ -4674,7 +4909,35 @@ fn machine_pending_views(
                     },
                     fixed_by: Some("chosen in the media picker"),
                     format: None,
-                }),
+                },
+                // Created disks the machine owns wait in its workspace.
+                None => {
+                    let created = row.created.iter().find(|c| c.drive == letter)?;
+                    let count = created.disks.len();
+                    crate::drive_chips::Medium {
+                        name: if count > 1 {
+                            format!("{} (all {count} disks join the catalogue)", created.title)
+                        } else {
+                            created.title.clone()
+                        },
+                        source: format!(
+                            "Created from files, in the drive at the next Start of {}",
+                            row.name()
+                        ),
+                        sha256: None,
+                        write: if created.journal {
+                            assembly::WriteMode::journal(std::path::PathBuf::from(&created.title))
+                        } else {
+                            assembly::WriteMode::ReadOnly
+                        },
+                        fixed_by: Some("created in the media picker"),
+                        format: None,
+                    }
+                }
+            };
+            Some(crate::drive_chips::DriveView {
+                bay: crate::drive_chips::Bay::Floppy { unit, geometry },
+                medium: Some(medium),
                 from_image: true,
                 at_start: true,
             })
@@ -5112,6 +5375,7 @@ mod tests {
             file_dialogs: file_dialog::FileDialogs::with_host(
                 file_dialog::fake::Host::default().boxed(),
             ),
+            creating: None,
         }
     }
 
@@ -10229,6 +10493,190 @@ kind='mda'
         }
         assert!(failure.is_some(), "a missing store reports an error");
         shell.insert_dialog = None;
+        assert!(shell.stop());
+    }
+
+    /// Create from files… of a drive chip's menu, and of the Media menu
+    /// under each drive's Insert…, opens the media picker straight in its
+    /// Create view for that drive.
+    #[test]
+    fn create_from_files_in_the_menus_opens_the_create_view_on_that_drive() {
+        use crate::media_picker::Mode;
+        let ctx = egui::Context::default();
+        let mut shell = media_shell();
+        let pass = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        let chip = label_rect(&pass.text, "A: first.img · 1.44M · read-only").center();
+        click_status(&ctx, &mut shell, 1600.0, chip);
+        let menu = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        let create = label_rect(&menu.text, "Create from files…").center();
+        assert_eq!(
+            click_status(&ctx, &mut shell, 1600.0, create),
+            [Command::CreateFromFiles(0)]
+        );
+        shell.command(Command::CreateFromFiles(0), &ctx);
+        let picker = shell.picker.as_ref().expect("the media picker");
+        assert_eq!((picker.unit, picker.mode), (0, Mode::Create));
+        shell.picker = None;
+        assert!(shell.stop());
+
+        let temp = assembly::test_support::TempDir::new("shell-create-menu");
+        let (mut shell, _) = stopped_machine_file_shell(&temp);
+        let ctx = egui::Context::default();
+        let drawn = draw(&ctx, &mut shell, Vec::new());
+        click(&ctx, &mut shell, label_rect(&drawn.text, "Media").center());
+        let text = draw(&ctx, &mut shell, Vec::new()).text;
+        let rows = |label: &str| {
+            let mut rows: Vec<egui::Rect> = text
+                .iter()
+                .filter(|(shown, _)| shown == label)
+                .map(|(_, rect)| *rect)
+                .collect();
+            rows.sort_by(|a, b| a.top().total_cmp(&b.top()));
+            rows
+        };
+        let (inserts, creates) = (rows("Insert…"), rows("Create from files…"));
+        assert_eq!(creates.len(), 2, "one under each drive's Insert…");
+        for (insert, create) in inserts.iter().zip(&creates) {
+            assert!(create.top() > insert.top() && create.top() - insert.bottom() < 12.0);
+        }
+        assert_eq!(
+            click(&ctx, &mut shell, creates[1].center()),
+            [Command::CreateFromFiles(1)]
+        );
+        shell.command(Command::CreateFromFiles(1), &ctx);
+        let picker = shell.picker.as_ref().expect("the media picker");
+        assert_eq!((picker.unit, picker.mode), (1, Mode::Create));
+    }
+
+    /// Add files… and Add folder… answer on a later frame; the answer joins
+    /// the Create view's list even after ‹ Back to search, which keeps it.
+    #[test]
+    fn a_dialog_answer_after_back_to_search_joins_the_kept_list() {
+        let ctx = egui::Context::default();
+        let mut shell = media_shell();
+        shell.command(Command::CreateFromFiles(0), &ctx);
+        let picker = shell.picker.as_mut().unwrap();
+        assert_eq!(picker.mode, crate::media_picker::Mode::Create);
+        picker.back_to_search();
+        let path = std::path::PathBuf::from("/nonexistent/game");
+        shell.file_chosen(FileFor::CreateFolder, Some(vec![path.clone()]));
+        let picker = shell.picker.as_ref().unwrap();
+        assert_eq!(picker.create.items.len(), 1);
+        assert_eq!(picker.create.items[0].path, path);
+        shell.picker = None;
+        assert!(shell.stop());
+    }
+
+    /// Create and insert into a running machine: the disks are its own,
+    /// stored by SHA-256 in its media folder; disk 1 goes in and every disk
+    /// joins the drive's catalogue in order, so Next disk swaps them. Disks
+    /// made for a machine that stopped meanwhile go into no other one.
+    #[test]
+    fn created_disks_go_into_the_running_machine_in_order() {
+        use crate::created_media::{CreateOrder, Place};
+        use media::fat12::{volume_label, FloppyFormat, HostItem, ShortName};
+        let temp = assembly::test_support::TempDir::new("shell-create-running");
+        let root = temp.path().canonicalize().unwrap();
+        let game = root.join("galaxia");
+        std::fs::create_dir_all(&game).unwrap();
+        std::fs::write(game.join("a.dat"), vec![1; 900_000]).unwrap();
+        std::fs::write(game.join("b.dat"), vec![2; 900_000]).unwrap();
+        let store = image_store::Store::open(root.join("store")).unwrap();
+        let order = CreateOrder {
+            unit: 0,
+            items: vec![HostItem::read(&game).unwrap()],
+            top: ShortName::parse("GALAXIA"),
+            format: FloppyFormat::Hd144,
+            label: volume_label("GALAXIA").ok(),
+            split: true,
+            journal: true,
+            keep: None,
+            title: "GALAXIA".into(),
+        };
+        let ctx = egui::Context::default();
+        let mut shell = media_shell();
+        shell.args.machine = root.join("machine.toml");
+        let media = shell.library_media_dir().unwrap();
+        assert_eq!(
+            media,
+            image_store::location::machine_media_dir(&root.join("machine.toml")).unwrap()
+        );
+        let created =
+            crate::created_media::create(&store, order.clone(), Place::Folder(media.clone()))
+                .unwrap();
+        assert_eq!(created.disks.len(), 2);
+        shell.creating = shell.drive_owner();
+        // The worker hashed the images; the window does not read them again.
+        let hashed = media::data_passes(1_474_560);
+        shell.disks_created(Ok(Box::new(created.clone())));
+        assert_eq!(media::data_passes(1_474_560), hashed);
+        assert!(shell.dialog.is_none(), "{:?}", shell.dialog);
+        let name = shell.session_name().unwrap_or("the machine").to_owned();
+        assert_eq!(
+            shell.message,
+            format!("GALAXIA (2 disks) is in A: of {name} now. Ctrl+Alt+F swaps to the next disk.")
+        );
+        let presenter = shell.presenter.as_mut().unwrap();
+        assert_eq!(
+            presenter.media_events,
+            [(0, assembly::FloppyAction::Insert(2))]
+        );
+        let names: Vec<String> = presenter.media_slots[0]
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .map(|entry| entry.medium.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "first.img",
+                "second.img",
+                "GALAXIA — disk 1 of 2",
+                "GALAXIA — disk 2 of 2"
+            ]
+        );
+        let name = |shell: &mut Shell| {
+            shell
+                .presenter
+                .as_mut()
+                .unwrap()
+                .assembled
+                .floppy_name(assembly::DeviceId::Fdc, 0)
+        };
+        shell.tick(&ctx, false, std::time::Duration::ZERO);
+        assert_eq!(name(&mut shell), "GALAXIA — disk 1 of 2");
+        shell.command(Command::Next(0), &ctx);
+        shell.tick(&ctx, false, std::time::Duration::ZERO);
+        assert_eq!(name(&mut shell), "GALAXIA — disk 2 of 2");
+        assert_eq!(
+            std::fs::read_dir(media.join("created")).unwrap().count(),
+            2,
+            "each image once, by its SHA-256"
+        );
+        // Made for a drive the machine does not have: said, not left waiting.
+        let mut other = created.clone();
+        other.order.unit = 1;
+        shell.creating = shell.drive_owner();
+        shell.disks_created(Ok(Box::new(other)));
+        assert!(shell.message.contains("B: is gone"), "{}", shell.message);
+        // Made for a session that ended meanwhile: inserted nowhere.
+        shell.creating = Some(DriveOwner::Session(shell.session + 1));
+        shell.disks_created(Ok(Box::new(created)));
+        assert!(
+            shell.message.contains("was not inserted"),
+            "{}",
+            shell.message
+        );
+        assert_eq!(
+            shell.presenter.as_ref().unwrap().media_slots[0]
+                .as_ref()
+                .unwrap()
+                .entries
+                .len(),
+            4
+        );
         assert!(shell.stop());
     }
 

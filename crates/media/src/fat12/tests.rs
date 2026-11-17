@@ -227,16 +227,17 @@ fn every_format_reads_back_files_and_folders() {
                 .iter()
                 .map(|file| file.dos_path.as_str())
                 .collect::<Vec<_>>(),
+            // Folder order: the root's own files, then each folder's.
             [
                 "GAME.EXE",
+                "README.TXT",
                 "DATA\\EMPTY.TXT",
                 "DATA\\LEVEL1.DAT",
                 "DATA\\MAPS\\M1.MAP",
-                "README.TXT"
             ]
         );
-        assert_eq!(disk.files[2].host, scratch.path("data/level1.dat"));
-        assert_eq!(disk.files[2].bytes, 5000);
+        assert_eq!(disk.files[3].host, scratch.path("data/level1.dat"));
+        assert_eq!(disk.files[3].bytes, 5000);
         assert_eq!(disk.free_bytes as usize, volume.free_bytes());
         assert_eq!(disk.used_bytes + disk.free_bytes, format.data_bytes());
         assert!(plan.renames.is_empty(), "case changes are not renames");
@@ -830,9 +831,10 @@ fn split_sets_carry_the_full_path_on_every_disk() {
         ..request(vec![scratch.path("azura")], format)
     })
     .unwrap();
-    // 147 clusters per file: four fit beside three folders, the fifth does not.
+    // 147 clusters per file: the one-cluster README and four of them fit
+    // beside three folders, the sixth does not.
     let counts: Vec<_> = plan.disks.iter().map(|disk| disk.files.len()).collect();
-    assert_eq!(counts, [4, 3]);
+    assert_eq!(counts, [5, 2]);
     let mut found = Vec::new();
     for (index, (image, disk)) in images.iter().zip(&plan.disks).enumerate() {
         let label = format!("AZURA {}", index + 1);
@@ -867,7 +869,14 @@ fn split_sets_carry_the_full_path_on_every_disk() {
         .iter()
         .flat_map(|disk| disk.files.iter().map(|file| file.dos_path.clone()))
         .collect();
-    assert_eq!(in_order[3], "AZURA\\LEVEL2\\A.DAT", "greedy in tree order");
+    assert_eq!(
+        in_order[0], "AZURA\\README.TXT",
+        "a folder's own files first"
+    );
+    assert_eq!(
+        in_order[4], "AZURA\\LEVEL2\\A.DAT",
+        "greedy in folder order"
+    );
     let saves = Volume::open(&images[1])
         .unwrap()
         .list("AZURA\\SAVES")
@@ -939,4 +948,251 @@ fn volume_labels_reject_punctuation_and_overlength() {
     for bad in ["", " X", "TWELVE CHARS", "a/b", "caf\u{e9}"] {
         assert!(volume_label(bad).is_err(), "{bad:?}");
     }
+}
+
+fn read_items(paths: &[PathBuf]) -> Vec<HostItem> {
+    paths
+        .iter()
+        .map(|path| HostItem::read(path).unwrap())
+        .collect()
+}
+
+#[test]
+fn host_items_count_their_tree_and_what_was_left_out() {
+    let scratch = Scratch::new("items");
+    scratch.file("game/GAME.EXE", &pattern(1000, 1));
+    scratch.file("game/data/LEVEL1.DAT", &pattern(300, 2));
+    scratch.file("game/data/.DS_Store", b"junk");
+    scratch.folder("game/saves");
+    scratch.file("game/._GAME.EXE", b"junk");
+    let folder = HostItem::read(&scratch.path("game")).unwrap();
+    assert!(folder.is_folder());
+    assert_eq!(folder.host(), scratch.path("game"));
+    assert_eq!(
+        (
+            folder.files(),
+            folder.folders(),
+            folder.bytes(),
+            folder.skipped()
+        ),
+        (2, 2, 1300, 2)
+    );
+    let file = HostItem::read(&scratch.path("game/GAME.EXE")).unwrap();
+    assert!(!file.is_folder());
+    assert_eq!((file.files(), file.folders(), file.bytes()), (1, 0, 1000));
+    // A named source that cannot be copied is refused, as a request's is.
+    assert!(matches!(
+        HostItem::read(&scratch.path("game/._GAME.EXE")),
+        Err(BuildError::Refused {
+            reason: SkipReason::HostJunk,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn a_survey_plans_and_builds_what_a_request_builds() {
+    let scratch = Scratch::new("survey-same");
+    scratch.file("game/PLAY.EXE", &pattern(40_000, 3));
+    scratch.file("game/Level Data/one.dat", &pattern(9_000, 4));
+    let loose = scratch.file("Read Me.txt", &pattern(700, 5));
+    let sources = vec![scratch.path("game"), loose];
+    let top = ShortName::parse("mygame");
+    let label = Some(volume_label("MYGAME").unwrap());
+    for format in FloppyFormat::ALL {
+        let (image, plan) = build(&Request {
+            top,
+            label,
+            ..request(sources.clone(), format)
+        })
+        .unwrap();
+        let mut items = read_items(&sources);
+        let survey = Survey::new(&items, top, format, label).unwrap();
+        let surveyed = survey.plan().unwrap();
+        assert_eq!(surveyed.image(0).unwrap(), image, "{format}");
+        assert_eq!(surveyed.renames, plan.renames);
+        assert_eq!(survey.needed(), plan.disks[0].used_bytes, "{format}");
+        assert_eq!(
+            survey.landing(),
+            ["\\MYGAME\\GAME\\", "\\MYGAME\\READ_ME.TXT"]
+        );
+        // The order the items were added in does not matter.
+        items.reverse();
+        let reversed = Survey::new(&items, top, format, label).unwrap();
+        assert_eq!(reversed.plan().unwrap().image(0).unwrap(), image);
+        assert_eq!(
+            reversed.landing(),
+            ["\\MYGAME\\READ_ME.TXT", "\\MYGAME\\GAME\\"]
+        );
+    }
+}
+
+#[test]
+fn a_folder_added_alone_is_the_top_folder() {
+    let scratch = Scratch::new("survey-alone");
+    scratch.file("nightfall/nightfal.exe", &pattern(5_000, 6));
+    scratch.file("nightfall/readme.txt", &pattern(512, 7));
+    scratch.file("nightfall/.DS_Store", b"junk");
+    let items = read_items(&[scratch.path("nightfall")]);
+    let top = ShortName::from_host(OsStr::new("nightfall"));
+    assert_eq!(top.to_string(), "NIGHTFAL");
+    let survey = Survey::new(&items, Some(top), FloppyFormat::Hd144, None).unwrap();
+    assert_eq!(survey.landing(), ["\\NIGHTFAL\\"]);
+    assert_eq!(survey.skipped().len(), 1);
+    assert_eq!(
+        survey.skipped()[0].host,
+        scratch.path("nightfall/.DS_Store")
+    );
+    let image = survey.plan().unwrap().image(0).unwrap();
+    let volume = Volume::open(&image).unwrap();
+    let paths: Vec<_> = volume.walk().unwrap().into_iter().map(|(p, _)| p).collect();
+    assert_eq!(
+        paths,
+        ["NIGHTFAL", "NIGHTFAL\\NIGHTFAL.EXE", "NIGHTFAL\\README.TXT"]
+    );
+    // The command line makes the same disk from the folder alone, which it
+    // puts at \NIGHTFAL\ by its own name.
+    assert_eq!(
+        build(&request(
+            vec![scratch.path("nightfall")],
+            FloppyFormat::Hd144
+        ))
+        .unwrap()
+        .0,
+        image
+    );
+    // Without a top folder its members go to the root.
+    let root = Survey::new(&items, None, FloppyFormat::Hd144, None).unwrap();
+    assert_eq!(root.landing(), ["\\"]);
+    assert_eq!((root.folders(), root.root_entries()), (0, 2));
+    let image = root.plan().unwrap().image(0).unwrap();
+    let paths: Vec<_> = Volume::open(&image)
+        .unwrap()
+        .walk()
+        .unwrap()
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
+    assert_eq!(paths, ["NIGHTFAL.EXE", "README.TXT"]);
+}
+
+#[test]
+fn a_survey_counts_space_as_dos_does_and_plans_the_split() {
+    let scratch = Scratch::new("survey-space");
+    let format = FloppyFormat::Dd720;
+    let cluster = format.cluster_bytes();
+    scratch.file("big/a.dat", &pattern(400_000, 1));
+    scratch.file("big/b.dat", &pattern(400_000, 2));
+    scratch.file("big/c.txt", &pattern(10, 3));
+    let items = read_items(&[scratch.path("big")]);
+    let label = Some(volume_label("BIG").unwrap());
+    let survey = Survey::new(&items, ShortName::parse("big"), format, label).unwrap();
+    assert_eq!((survey.files(), survey.folders()), (3, 1));
+    assert_eq!(survey.file_bytes(), 800_010);
+    assert_eq!(
+        survey.file_space(),
+        2 * 400_000u64.div_ceil(cluster) * cluster + cluster
+    );
+    assert_eq!(survey.folder_space(), cluster);
+    assert_eq!(survey.root_entries(), 2, "the folder and the label");
+    match survey.plan() {
+        Err(BuildError::DoesNotFit { needed, .. }) => assert_eq!(needed, survey.needed()),
+        other => panic!("{other:?}"),
+    }
+    let split = survey.plan_split().unwrap();
+    assert_eq!(split.disks.len(), 2);
+    assert_eq!(split.disks[0].label, Some(volume_label("BIG 1").unwrap()));
+    assert_eq!(split.disks[1].files[0].dos_path, "BIG\\B.DAT");
+    // One file larger than a disk is named for every way of laying it out.
+    scratch.file(
+        "huge/whole.bin",
+        &pattern(format.data_bytes() as usize + 1, 8),
+    );
+    let huge = read_items(&[scratch.path("huge")]);
+    let survey = Survey::new(&huge, None, format, None).unwrap();
+    assert!(matches!(
+        survey.plan(),
+        Err(BuildError::FileTooLarge { .. })
+    ));
+    assert!(matches!(
+        survey.plan_split(),
+        Err(BuildError::FileTooLarge { .. })
+    ));
+    // Two items that reach one host entry are refused, as named sources are.
+    #[cfg(unix)]
+    {
+        let twice = read_items(&[scratch.path("big/a.dat"), scratch.path("big/../big/a.dat")]);
+        assert!(matches!(
+            Survey::new(&twice, None, format, None),
+            Err(BuildError::SameSource { .. })
+        ));
+    }
+    assert!(matches!(
+        Survey::new(&[], None, format, None),
+        Err(BuildError::NothingToAdd)
+    ));
+}
+
+#[test]
+fn a_split_puts_a_folders_own_files_before_its_subfolders() {
+    let scratch = Scratch::new("split-order");
+    // AAA sorts before the loose files, which still go first.
+    for (relative, length) in [
+        ("game/AAA/one.dat", 300_000),
+        ("game/AAA/two.dat", 300_000),
+        ("game/AAA/deep/three.dat", 300_000),
+        ("game/INSTALL.BAT", 100),
+        ("game/README.TXT", 2_000),
+        ("game/SETUP.EXE", 40_000),
+        ("game/ZZZ/last.dat", 300_000),
+    ] {
+        scratch.file(relative, &pattern(length, length as u8));
+    }
+    let format = FloppyFormat::Dd720;
+    let request = Request {
+        top: None,
+        ..request(vec![scratch.path("game")], format)
+    };
+    let (images, split) = build_split(&request).unwrap();
+    let files: Vec<Vec<&str>> = split
+        .disks
+        .iter()
+        .map(|disk| disk.files.iter().map(|f| f.dos_path.as_str()).collect())
+        .collect();
+    assert_eq!(
+        files,
+        [
+            vec![
+                "GAME\\INSTALL.BAT",
+                "GAME\\README.TXT",
+                "GAME\\SETUP.EXE",
+                "GAME\\AAA\\ONE.DAT",
+                "GAME\\AAA\\TWO.DAT",
+            ],
+            vec!["GAME\\AAA\\DEEP\\THREE.DAT", "GAME\\ZZZ\\LAST.DAT"],
+        ]
+    );
+    // On each disk the directory entries stay in host-name order.
+    let listed: Vec<String> = Volume::open(&images[0])
+        .unwrap()
+        .list("GAME")
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect();
+    assert_eq!(
+        listed,
+        [".", "..", "AAA", "INSTALL.BAT", "README.TXT", "SETUP.EXE"]
+    );
+    // One disk lists its files in the same order.
+    let one = plan(&Request {
+        format: FloppyFormat::Hd144,
+        ..request
+    })
+    .unwrap();
+    assert_eq!(one.disks[0].files[0].dos_path, "GAME\\INSTALL.BAT");
+    assert_eq!(
+        one.disks[0].files.last().unwrap().dos_path,
+        "GAME\\ZZZ\\LAST.DAT"
+    );
 }

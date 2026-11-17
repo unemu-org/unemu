@@ -32,6 +32,9 @@ pub(super) struct CatalogueEntry {
     /// The media set and disk position of a library disk, as the status
     /// bar's drive tooltip names its source.
     pub origin: Option<String>,
+    /// A disk Create from files… made, hashed in full off the window's
+    /// thread, so it goes into a running drive without hashing it again.
+    pub verified: Option<crate::created_media::Verified>,
 }
 
 impl CatalogueEntry {
@@ -116,6 +119,7 @@ impl FloppySlot {
                     alternates: Vec::new(),
                     workspace_journal: None,
                     origin: None,
+                    verified: None,
                 })
                 .collect();
             Some(Self {
@@ -246,6 +250,7 @@ pub(super) fn browse(path: &Path, drive: FloppyGeometry) -> io::Result<Catalogue
         alternates: Vec::new(),
         workspace_journal: None,
         origin: None,
+        verified: None,
     })
 }
 
@@ -1308,6 +1313,7 @@ impl LibraryInsert {
                 alternates: Vec::new(),
                 workspace_journal: Some(journal),
                 origin: Some(set_origin(&row.tag, index, config.media.len())),
+                verified: None,
             });
         }
         if self.journal {
@@ -1549,6 +1555,16 @@ pub(super) fn append_entries(
                             &entry.medium,
                             base,
                             entry.readonly_bytes.as_deref().map(Vec::as_slice),
+                        )
+                    } else if let Some(verified) = &entry.verified {
+                        let base = verified.base().map_err(|e| e.to_string())?;
+                        assembled.append_floppy_verified(
+                            key.0,
+                            unit,
+                            config,
+                            &entry.medium,
+                            base,
+                            None,
                         )
                     } else {
                         assembled.append_floppy(key.0, unit, config, &entry.medium)

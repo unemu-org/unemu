@@ -36,6 +36,9 @@ pub(crate) enum Command {
     PowerCycle,
     /// Insert… of a floppy drive: the media picker.
     Insert(u8),
+    /// Create from files… of a floppy drive: the media picker in its Create
+    /// view.
+    CreateFromFiles(u8),
     /// Browse for an image file… of the media picker: a disk image file on
     /// this computer, or a disk of the drive's catalogue, with its write mode.
     InsertFile(u8),
@@ -137,9 +140,10 @@ impl Enablement {
             | Command::Release
             | Command::Speed(_)
             | Command::FastForward => self.state != State::Stopped,
-            Command::Insert(unit) | Command::InsertFile(unit) | Command::Eject(unit) => {
-                self.floppy.get(unit as usize).copied().unwrap_or(false)
-            }
+            Command::Insert(unit)
+            | Command::CreateFromFiles(unit)
+            | Command::InsertFile(unit)
+            | Command::Eject(unit) => self.floppy.get(unit as usize).copied().unwrap_or(false),
             Command::InsertSet(unit) | Command::WriteMode(unit) | Command::Next(unit) => {
                 self.state != State::Stopped
                     && self.floppy.get(unit as usize).copied().unwrap_or(false)

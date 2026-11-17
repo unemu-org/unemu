@@ -1146,7 +1146,8 @@ characters, counting the leading backslash and `--top`. Identical trees give
 identical images: host-name order, 1980-01-01 dates, no host times. Without
 `--split` a misfit is an error naming the shortfall in bytes and nothing is
 written. `--split` writes `<stem>-1ofN.<ext>`, `<stem>-2ofN.<ext>`… beside `OUT`
-(or `OUT` itself when one disk is enough), labels them `LABEL 1`, `LABEL 2`…,
+(or `OUT` itself when one disk is enough), fills them in folder order (a
+folder's own files before its subfolders), labels them `LABEL 1`, `LABEL 2`…,
 repeats the folder path on every disk and refuses a single file larger than a
 disk. One line per disk gives its file count and free bytes. Outputs are never
 replaced without `--force`. To install a split set, everything must sit under

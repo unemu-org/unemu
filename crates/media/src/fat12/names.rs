@@ -74,6 +74,13 @@ impl ShortName {
         ))
     }
 
+    /// The name a host file or folder converts to when nothing beside it
+    /// can clash, so it needs no numeric tail: `nightfall` is `NIGHTFAL`.
+    pub fn from_host(name: &OsStr) -> Self {
+        let basis = basis(name);
+        Self::from_parts(&basis.stem, &basis.extension)
+    }
+
     fn from_parts(stem: &[u8], extension: &[u8]) -> Self {
         let mut name = [b' '; 11];
         name[..stem.len()].copy_from_slice(stem);

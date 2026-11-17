@@ -5,6 +5,49 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — Create from files… in the media picker:** the picker's
+  footer has **Create from files…** beside Browse for an image file…, and
+  Media › Create from files… under each drive's Insert… and the same item in
+  a drive chip's menu open the picker straight in its Create view, as revision
+  2 of the media-picker mock-up draws it. The view keeps the Into row; Add
+  files…, Add folder… (the asynchronous system dialogs) and files dropped on
+  it fill a list of where each item lands, its files, folders and size, with ×
+  to remove; the same item twice is one. The library worker reads only names
+  and sizes until Create; the window then lays the list out again for every
+  edit without reading the host, through a new `media::fat12::HostItem` and
+  `Survey` that share the command line's builder (a survey's images equal
+  `fat12::build`'s). A single folder becomes the top folder, cut to 8.3; the
+  label follows the top folder until edited; the formats are the drive's,
+  its own first. The space meter counts clusters, folders and root entries
+  and says live whether the files fit, need N bytes beyond one disk (with a
+  link to a larger format the drive takes that holds them) or hold a file too
+  large for any disk, which disables Create; DOS names and skipped files are
+  collapsible lists. Too big for one disk shows Split across N disks with its
+  plan (label, files, bytes used, first and last file), the Next disk note and
+  the XCOPY command, and Copy into C: greyed, "later". Create and insert
+  builds on the library worker and stores each image once, named by its
+  SHA-256, as a read-only base among the machine's own media (guest writes go
+  to its journals or are refused): a running or halted machine takes disk 1
+  at once with every disk in its catalogue in order; a stopped library machine
+  keeps the disks and their pending insert in its workspace
+  (`media/created/`), never in the store's machine list, which released
+  versions read with unknown fields refused; Start puts them in and the record
+  goes once the machine assembled; a record that cannot be read, or a disk
+  whose image is gone, stays out with a note and never stops the Start, and
+  the next Take out again or Insert replaces such a record. Take out again,
+  another Insert into the drive and Reset to image… drop them; Duplicate,
+  Gaming mode and Save as new image… with fresh journals keep them (the PC
+  provider's publication now carries `media/created/` to the new journals). A
+  running machine takes the images as the worker hashed them, without
+  hashing them again on the window's thread. "Also keep in the library" (on
+  for a split, off for one disk until changed) also publishes the disks as a
+  private installation media set. Splits, here and in `upcli media create
+  floppy --split`, now fill disks in folder order, as the mock-up draws it: a
+  folder's own files before its subfolders', so a game's loose SETUP.EXE and
+  README go on disk 1; directory entries stay sorted. The mock-up's DOS-name
+  sentence now states the builder's rule (cut to 8.3, a `~N` tail only on a
+  clash). machines/README.md § Create from files… in the window describes it,
+  with the XCOPY recipe and how to make the same disk on the command line.
 - **2026-11-17 — Pulled images keep their registry host:** an image pulled
   from any registry other than `registry.unemu.dev` gets the full reference
   as its local tag, Docker-style (`registry.lan.example/private/games/dune2:1.0.0`,

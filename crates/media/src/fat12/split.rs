@@ -2,6 +2,9 @@
 //! Fitting a scanned tree on one disk, or spreading it over several of one
 //! format. Costs count whole clusters for files and folders (a folder grows a
 //! cluster at a time as entries are added) and entries of the fixed root.
+//! Items are planned in folder order: a folder's own files first, then its
+//! subfolders, each in host-name order, so the loose files beside a program's
+//! folders (its EXE, SETUP and README) go on the first disk.
 
 use super::layout::{file_clusters, folder_clusters, members};
 use super::tree::Tree;
@@ -45,13 +48,33 @@ struct Item {
     file: Option<usize>,
 }
 
-fn items(tree: &Tree) -> Vec<Item> {
-    let mut has_members = vec![false; tree.nodes.len()];
-    for node in &tree.nodes {
-        if let Some(parent) = node.parent {
-            has_members[parent] = true;
+/// Files and folders without members in folder order: at every level the
+/// files first, then the folders, each in tree (host-name) order.
+fn order(tree: &Tree) -> Vec<usize> {
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); tree.nodes.len()];
+    let mut roots = Vec::new();
+    for (index, node) in tree.nodes.iter().enumerate() {
+        match node.parent {
+            Some(parent) => members[parent].push(index),
+            None => roots.push(index),
         }
     }
+    fn visit(tree: &Tree, members: &[Vec<usize>], level: &[usize], out: &mut Vec<usize>) {
+        out.extend(level.iter().filter(|&&i| tree.nodes[i].size.is_some()));
+        for &folder in level.iter().filter(|&&i| tree.nodes[i].size.is_none()) {
+            if members[folder].is_empty() {
+                out.push(folder);
+            } else {
+                visit(tree, members, &members[folder], out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    visit(tree, &members, &roots, &mut out);
+    out
+}
+
+fn items(tree: &Tree) -> Vec<Item> {
     let ancestors = |mut index: Option<usize>| {
         let mut chain = Vec::new();
         while let Some(at) = index {
@@ -61,19 +84,17 @@ fn items(tree: &Tree) -> Vec<Item> {
         chain.reverse();
         chain
     };
-    tree.nodes
-        .iter()
-        .enumerate()
-        .filter_map(|(index, node)| match node.size {
-            Some(_) => Some(Item {
-                chain: ancestors(node.parent),
+    order(tree)
+        .into_iter()
+        .map(|index| match tree.nodes[index].size {
+            Some(_) => Item {
+                chain: ancestors(tree.nodes[index].parent),
                 file: Some(index),
-            }),
-            None if !has_members[index] => Some(Item {
+            },
+            None => Item {
                 chain: ancestors(Some(index)),
                 file: None,
-            }),
-            None => None,
+            },
         })
         .collect()
 }
@@ -188,7 +209,7 @@ pub(super) fn single(
     Ok(finish(format, tree, vec![member], label))
 }
 
-/// Greedy in tree order: each item goes on the current disk if it fits, else
+/// Greedy in folder order: each item goes on the current disk if it fits, else
 /// it starts the next disk.
 pub(super) fn greedy(
     format: FloppyFormat,
@@ -263,6 +284,7 @@ fn finish(
     let renames = std::mem::take(&mut tree.renames);
     let skipped = std::mem::take(&mut tree.skipped);
     let count = members.len();
+    let planned = order(&tree);
     let disks = members
         .iter()
         .enumerate()
@@ -276,10 +298,9 @@ fn finish(
                         label
                     }
                 }),
-                files: tree
-                    .nodes
+                files: planned
                     .iter()
-                    .enumerate()
+                    .map(|&index| (index, &tree.nodes[index]))
                     .filter(|(index, node)| member[*index] && node.size.is_some())
                     .map(|(_, node)| PlacedFile {
                         host: node.host.clone().unwrap_or_default(),

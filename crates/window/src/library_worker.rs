@@ -138,6 +138,15 @@ pub(super) enum Request {
     CreateImage(Box<pc_image::create::NewImage>, String, Option<Digest>),
     /// Image › Push… and Image › Pull…: the dry run and the registry transfers.
     Transfer(crate::registry_transfer::TransferRequest),
+    /// Create from files…: read the names and sizes of a host file or
+    /// folder, never its contents.
+    ReadHost(PathBuf),
+    /// Create and insert: build the disks and store them where the place
+    /// says, a stopped machine's as its pending insert.
+    CreateDisks(
+        Box<crate::created_media::CreateOrder>,
+        crate::created_media::Place,
+    ),
     Shutdown,
 }
 /// What the library asks of the machines in the store; machine-images §3.2.
@@ -300,6 +309,16 @@ pub(super) enum Event {
     MachineSettingsApplied(Result<Box<pc_image::machine::SettingsChange>>),
     /// The store refused Save as new image… of a machine.
     CommitRefused(Refused),
+    /// A host file or folder read for Create from files…, or why not.
+    HostRead(
+        PathBuf,
+        Box<std::result::Result<media::fat12::HostItem, String>>,
+    ),
+    /// The disks Create and insert made, or why it failed.
+    DisksCreated(std::result::Result<Box<crate::created_media::Created>, String>),
+    /// What a Start left out and why, sent before its `Launched`: created
+    /// disks whose record or images could not be used.
+    StartNotes(Vec<String>),
 }
 pub(super) struct Worker {
     pub send: mpsc::Sender<Request>,
@@ -1045,10 +1064,20 @@ fn machine_row(
             })
             .clone(),
     };
+    let (created, created_problem) = match store
+        .workspace_path(&listing.id)
+        .map_err(|e| e.to_string())
+        .and_then(|workspace| crate::created_media::read_pending(&workspace))
+    {
+        Ok(created) => (created, None),
+        Err(error) => (Vec::new(), Some(error)),
+    };
     library_view::machines::MachineRow {
         summary: cache.summary(&image.digest).cloned(),
         title: pc_image::machine::image_title(store, &image).ok().flatten(),
         drives,
+        created,
+        created_problem,
         listing,
     }
 }
@@ -1186,6 +1215,16 @@ fn machine_job<B: Backend>(
                         format!("Took the pending disk out of {drive} of \u{201c}{name}\u{201d}")
                     }
                 };
+                // Created disks waiting for the drive leave it first, so the
+                // machine list stays as it was when their record cannot be
+                // changed. A record that cannot be read is replaced.
+                let workspace = store.workspace_path(&id).map_err(|e| e.to_string())?;
+                if crate::created_media::read_pending(&workspace)
+                    .map_or(true, |created| created.iter().any(|c| c.drive == drive))
+                {
+                    let owner = machine::own(store, &id).map_err(error)?;
+                    crate::created_media::set_pending(owner.path(), &drive, None)?;
+                }
                 machine::set_pending_insert(store, &id, &drive, insert.map(|insert| *insert))
                     .map_err(error)?;
                 Event::MachineNote(message)
@@ -1274,6 +1313,42 @@ fn machine_job<B: Backend>(
     result.unwrap_or_else(Event::Error)
 }
 
+/// A Gaming-mode copy of a machine plays with the machine's created disks
+/// pending, as with its other pending disks; the copy keeps them for every
+/// power cycle and the machine keeps them for its own Start.
+fn copied_disks(
+    copy: &Workspace<'_>,
+    session: &mut pc_image::workspace::PreparedSession,
+    send: &dyn Fn(Event),
+) -> Result<()> {
+    let listed: Vec<String> = pc_image::machine::copy_of(copy)
+        .map_err(|e| e.to_string())?
+        .map(|record| record.pending.into_iter().map(|p| p.drive).collect())
+        .unwrap_or_default();
+    note_start(
+        send,
+        crate::created_media::apply(session, copy.path(), &listed).notes,
+    );
+    Ok(())
+}
+
+/// What a Start left out goes to the log and, after the Start, to the
+/// status bar; the Start itself goes on.
+fn note_start(send: &dyn Fn(Event), notes: Vec<String>) {
+    if !notes.is_empty() {
+        for note in &notes {
+            eprintln!("unemupc: {note}");
+        }
+        send(Event::StartNotes(notes));
+    }
+}
+
+/// The names and sizes of a host file or folder, for Create from files….
+fn read_host(path: PathBuf) -> Event {
+    let read = media::fat12::HostItem::read(&path).map_err(|e| e.to_string());
+    Event::HostRead(path, Box::new(read))
+}
+
 /// Serve the library while a session runs, until the session finishes.
 /// `None` when the program shuts down first. `assembled` runs when the
 /// shell reports that the machine assembled.
@@ -1330,6 +1405,18 @@ fn serve_session<B: Backend>(
                 send(Event::Snapshot(Arc::new(library_view::snapshot(
                     cache, query,
                 ))));
+            }
+            // Create from files… into the running machine, or a stopped one.
+            Ok(Request::ReadHost(path)) => send(read_host(path)),
+            Ok(Request::CreateDisks(order, place)) => {
+                send(Event::DisksCreated(
+                    crate::created_media::create(store, *order, place).map(Box::new),
+                ));
+                cache.refresh(store).map_err(|e| e.to_string())?;
+                send(Event::Snapshot(Arc::new(library_view::snapshot(
+                    cache, query,
+                ))));
+                send(machine_listing(store, cache));
             }
             _ => (),
         }
@@ -1472,7 +1559,9 @@ fn run<B: Backend>(
                         let prepared = (|| -> Result<_> {
                             record.write(&owner)?;
                             let prepared = if record.machine.is_some() {
-                                backend.resume_copy(&owner)?.session
+                                let mut session = backend.resume_copy(&owner)?.session;
+                                copied_disks(&owner, &mut session, &send)?;
+                                session
                             } else {
                                 let prepared = backend.prepare(
                                     &owner,
@@ -1552,7 +1641,8 @@ fn run<B: Backend>(
                             };
                             let prepared = (|| -> Result<_> {
                                 record.write(&owner)?;
-                                let prepared = backend.prepare_copy(&source, &owner)?;
+                                let mut prepared = backend.prepare_copy(&source, &owner)?;
+                                copied_disks(&owner, &mut prepared.session, &send)?;
                                 prepared.session.into_transfer().map_err(|e| e.to_string())
                             })();
                             drop(source);
@@ -1596,8 +1686,17 @@ fn run<B: Backend>(
                         } else {
                             let owner =
                                 pc_image::machine::own(&store, &id).map_err(|e| e.to_string())?;
-                            let prepared = backend.prepare_machine(&owner)?;
+                            let mut prepared = backend.prepare_machine(&owner)?;
                             let inserted = prepared.inserted;
+                            let listed: Vec<String> =
+                                inserted.iter().map(|insert| insert.drive.clone()).collect();
+                            let applied = crate::created_media::apply(
+                                &mut prepared.session,
+                                owner.path(),
+                                &listed,
+                            );
+                            note_start(&send, applied.notes);
+                            let created = applied.done;
                             let transfer = prepared
                                 .session
                                 .into_transfer()
@@ -1617,6 +1716,11 @@ fn run<B: Backend>(
                                     Some(library_view::host_last_run()),
                                 ) {
                                     send(Event::Error(error.to_string()));
+                                }
+                                if let Err(error) =
+                                    crate::created_media::confirm(owner.path(), &created)
+                                {
+                                    send(Event::Error(error));
                                 }
                             };
                             let outcome = serve_session(
@@ -1884,6 +1988,13 @@ fn run<B: Backend>(
                     )),
                     Request::ImportMedia(request, control) => send(Event::MediaImported(
                         backend.import_media(&store, &request, &control),
+                    )),
+                    Request::ReadHost(path) => {
+                        send(read_host(path));
+                        quiet = true;
+                    }
+                    Request::CreateDisks(order, place) => send(Event::DisksCreated(
+                        crate::created_media::create(&store, *order, place).map(Box::new),
                     )),
                     Request::Finish(_) => (),
                 }
@@ -2844,6 +2955,417 @@ mod tests {
                 .pending;
             assert_eq!(pending.is_empty(), assembled, "assembled: {assembled}");
         }
+        w.shutdown();
+    }
+
+    /// Create from files… into a stopped machine: the disk is the machine's
+    /// own, waiting in its workspace, and replaces a set disk pending for
+    /// the drive; the machine list stays as released versions read it. At
+    /// Start the disk is in the drive, and it leaves the pending record once
+    /// the machine assembled. Take out again clears it; Keep in the library
+    /// publishes the disk as a set, once.
+    #[test]
+    fn a_created_disk_waits_in_a_stopped_machine_and_goes_in_at_start() {
+        use crate::created_media::{CreateOrder, Place};
+        use media::fat12::{volume_label, FloppyFormat, HostItem, ShortName};
+        let f = Fixture::new();
+        let set = f.import_set();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        pc_image::machine::set_pending_insert(&f.store, &id, "A:", Some(pending_a(&set))).unwrap();
+        let game = f.temp.path().join("host/game");
+        fs::create_dir_all(&game).unwrap();
+        fs::write(game.join("PLAY.EXE"), vec![0x90; 3000]).unwrap();
+        fs::write(game.join("readme.txt"), b"read me").unwrap();
+        let order = |keep: Option<(String, String)>| CreateOrder {
+            unit: 0,
+            items: vec![HostItem::read(&game).unwrap()],
+            top: ShortName::parse("GAME"),
+            format: FloppyFormat::Dd360,
+            label: volume_label("GAME").ok(),
+            split: false,
+            journal: true,
+            keep,
+            title: "GAME".into(),
+        };
+        let create = |w: &Worker, keep| {
+            w.send
+                .send(Request::CreateDisks(
+                    Box::new(order(keep)),
+                    Place::Machine(id.clone()),
+                ))
+                .unwrap();
+            let Event::DisksCreated(created) = until(w, |e| matches!(e, Event::DisksCreated(_)))
+            else {
+                unreachable!()
+            };
+            created.unwrap()
+        };
+        let created = create(&w, None);
+        let (image, digest, name) = created.disks[0].clone();
+        assert_eq!(name, "GAME");
+        let workspace = f.store.workspace_path(&id).unwrap();
+        assert!(image.starts_with(workspace.join("media/created")));
+        assert_eq!(
+            fs::read(&image).unwrap(),
+            media::fat12::Survey::new(
+                &order(None).items,
+                order(None).top,
+                FloppyFormat::Dd360,
+                order(None).label
+            )
+            .unwrap()
+            .plan()
+            .unwrap()
+            .image(0)
+            .unwrap(),
+            "the bytes the builder makes, as the command line writes them"
+        );
+        // The machine list keeps only what released versions know.
+        let text = fs::read_to_string(f.store.root().join("local/machines.toml")).unwrap();
+        let machines: image_store::machine::Machines = toml::from_str(&text).unwrap();
+        assert!(
+            machines.get(&id).unwrap().pending.is_empty(),
+            "the set disk was replaced"
+        );
+        assert_eq!(f.store.read_machines().unwrap(), machines);
+        let Event::Machines(Ok(rows)) = until(&w, |e| matches!(e, Event::Machines(_))) else {
+            unreachable!()
+        };
+        let row = rows.iter().find(|row| row.id() == id).unwrap();
+        assert_eq!(row.created.len(), 1);
+        assert_eq!(row.created[0].drive, "A:");
+        for assembled in [false, true] {
+            w.send
+                .send(Request::LaunchMachine(id.clone(), false))
+                .unwrap();
+            let Event::Launched(transfer, ..) = until(&w, |e| matches!(e, Event::Launched(..)))
+            else {
+                unreachable!()
+            };
+            let prepared = transfer.restore().unwrap();
+            let first = prepared
+                .machine
+                .drives
+                .iter()
+                .find(|d| d.unit == 0 && matches!(d.kind, assembly::DriveKind::Floppy { .. }))
+                .and_then(|d| d.media.as_ref())
+                .and_then(|list| list.entries.first())
+                .cloned()
+                .unwrap();
+            assert_eq!(first.image, assembly::ImageSource::File(image.clone()));
+            assert_eq!(first.expected_sha256, Some(digest));
+            assert!(matches!(
+                &first.write,
+                assembly::WriteMode::Journal { path, .. } if path.parent() == Some(&workspace.join("media"))
+            ));
+            drop(prepared);
+            if assembled {
+                w.send.send(Request::Assembled).unwrap();
+            }
+            w.send.send(Request::Finish(Finish::Retain)).unwrap();
+            until(&w, |e| matches!(e, Event::Finished));
+            assert_eq!(
+                crate::created_media::read_pending(&workspace)
+                    .unwrap()
+                    .is_empty(),
+                assembled,
+                "assembled: {assembled}"
+            );
+        }
+        // Take out again clears created disks waiting for the drive.
+        create(&w, None);
+        w.send
+            .send(Request::Machine(MachineJob::SetPending {
+                id: id.clone(),
+                drive: "A:".into(),
+                insert: None,
+            }))
+            .unwrap();
+        until(&w, |e| matches!(e, Event::MachineNote(_)));
+        assert!(crate::created_media::read_pending(&workspace)
+            .unwrap()
+            .is_empty());
+        // Kept in the library: one private set, the same tag the next time.
+        let keep = || Some(("game:1.0".to_owned(), "GAME".to_owned()));
+        assert_eq!(create(&w, keep()).kept.as_deref(), Some("game:1.0"));
+        assert_eq!(create(&w, keep()).kept.as_deref(), Some("game:1.0"));
+        assert!(f.store.tag_descriptor("game:1.0").is_ok());
+        w.shutdown();
+    }
+
+    /// A one-disk 360K GAME made from host files for drive A: of machine
+    /// `id`, through the worker, as Create and insert asks for it.
+    fn created_game(f: &Fixture, w: &Worker, id: &str) -> Box<crate::created_media::Created> {
+        use media::fat12::{FloppyFormat, HostItem, ShortName};
+        let game = f.temp.path().join("host/game");
+        fs::create_dir_all(&game).unwrap();
+        fs::write(game.join("PLAY.EXE"), vec![0x90; 3000]).unwrap();
+        let order = crate::created_media::CreateOrder {
+            unit: 0,
+            items: vec![HostItem::read(&game).unwrap()],
+            top: ShortName::parse("GAME"),
+            format: FloppyFormat::Dd360,
+            label: None,
+            split: false,
+            journal: true,
+            keep: None,
+            title: "GAME".into(),
+        };
+        w.send
+            .send(Request::CreateDisks(
+                Box::new(order),
+                crate::created_media::Place::Machine(id.into()),
+            ))
+            .unwrap();
+        let Event::DisksCreated(created) = until(w, |e| matches!(e, Event::DisksCreated(_))) else {
+            unreachable!()
+        };
+        created.unwrap()
+    }
+
+    /// The first medium drive A: of a prepared session starts with.
+    fn first_in_a(prepared: &pc_image::workspace::PreparedSession) -> assembly::FloppyMedium {
+        prepared
+            .machine
+            .drives
+            .iter()
+            .find(|d| d.unit == 0 && matches!(d.kind, assembly::DriveKind::Floppy { .. }))
+            .and_then(|d| d.media.as_ref())
+            .and_then(|list| list.entries.first())
+            .cloned()
+            .unwrap()
+    }
+
+    /// The next worker event that is not a listing, an error included.
+    fn next_answer(w: &Worker) -> Event {
+        loop {
+            let event = w
+                .receive
+                .recv_timeout(crate::test_wait::HANG_GUARD)
+                .unwrap();
+            if !matches!(event, Event::Snapshot(_) | Event::Machines(_)) {
+                return event;
+            }
+        }
+    }
+
+    /// A machine's created disks follow it as its pending disks do: a
+    /// Gaming-mode copy plays with them and the machine keeps them,
+    /// Duplicate copies them, Save as new image… with fresh journals keeps
+    /// them, and Reset to image… drops them.
+    #[test]
+    fn created_disks_follow_copies_saves_and_resets_of_the_machine() {
+        let f = Fixture::new();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        run_machine(&w, &f, &id, 7, true);
+        let created = created_game(&f, &w, &id);
+        let digest = created.disks[0].1;
+        let workspace = f.store.workspace_path(&id).unwrap();
+        // Gaming mode: the copy's drive starts with the disk, from the copy.
+        w.send
+            .send(Request::LaunchMachine(id.clone(), true))
+            .unwrap();
+        let Event::Launched(transfer, _, name, _) = until(&w, |e| matches!(e, Event::Launched(..)))
+        else {
+            unreachable!()
+        };
+        let prepared = transfer.restore().unwrap();
+        let first = first_in_a(&prepared);
+        assert_eq!(first.expected_sha256, Some(digest));
+        assert!(
+            matches!(&first.image, assembly::ImageSource::File(p) if p.starts_with(f.store.workspace_path(&name).unwrap())),
+            "{first:?}"
+        );
+        drop(prepared);
+        finish(&w, Finish::Discard);
+        assert_eq!(
+            crate::created_media::read_pending(&workspace)
+                .unwrap()
+                .len(),
+            1
+        );
+        // Duplicate copies the disk and its pending insert.
+        w.send
+            .send(Request::Machine(MachineJob::Duplicate(
+                id.clone(),
+                "DOS copy".into(),
+            )))
+            .unwrap();
+        let (_, select, _) = machine_done(&w);
+        let (copy, _) = select.unwrap();
+        let copied = f.store.workspace_path(&copy).unwrap();
+        assert_eq!(
+            crate::created_media::read_pending(&copied).unwrap(),
+            crate::created_media::read_pending(&workspace).unwrap()
+        );
+        assert!(copied
+            .join("media/created")
+            .join(format!(
+                "{}.img",
+                created.disks[0].0.file_stem().unwrap().to_string_lossy()
+            ))
+            .is_file());
+        // Save as new image… with fresh journals keeps the disk waiting.
+        w.send
+            .send(Request::Machine(MachineJob::Commit {
+                id: id.clone(),
+                target: target("saver:1.0.0", false),
+                keep: false,
+            }))
+            .unwrap();
+        let (message, _, _) = machine_done(&w);
+        assert!(message.contains("fresh, empty journals"), "{message}");
+        assert_eq!(
+            crate::created_media::read_pending(&workspace)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(created.disks[0].0.is_file());
+        w.send
+            .send(Request::LaunchMachine(id.clone(), false))
+            .unwrap();
+        let Event::Launched(transfer, ..) = until(&w, |e| matches!(e, Event::Launched(..))) else {
+            unreachable!()
+        };
+        assert_eq!(
+            first_in_a(&transfer.restore().unwrap()).expected_sha256,
+            Some(digest)
+        );
+        w.send.send(Request::Finish(Finish::Retain)).unwrap();
+        until(&w, |e| matches!(e, Event::Finished));
+        // Reset to image… drops it.
+        w.send
+            .send(Request::Machine(MachineJob::Reset(copy.clone())))
+            .unwrap();
+        machine_done(&w);
+        assert!(crate::created_media::read_pending(&copied)
+            .unwrap()
+            .is_empty());
+        assert!(!copied.join("media/created").exists());
+        w.shutdown();
+    }
+
+    /// A record of created disks that cannot be read never stops a Start:
+    /// the disks stay out and the Start says why, as it does for a disk
+    /// whose image is gone. Take out again and another Insert replace such
+    /// a record; when the record cannot be changed at all, the machine
+    /// list keeps its pending disk as it was.
+    #[test]
+    fn an_unreadable_created_record_never_stops_a_start() {
+        let f = Fixture::new();
+        let set = f.import_set();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        let workspace = f.store.workspace_path(&id).unwrap();
+        let record = workspace.join("media/created/pending.toml");
+        fs::create_dir_all(record.parent().unwrap()).unwrap();
+        fs::write(&record, "schema = 9\n[[insert]]\nwhatever = 1\n").unwrap();
+        w.send
+            .send(Request::Machine(MachineJob::Favorite(id.clone(), true)))
+            .unwrap();
+        until(&w, |e| matches!(e, Event::MachineNote(_)));
+        let Event::Machines(Ok(rows)) = until(&w, |e| matches!(e, Event::Machines(_))) else {
+            unreachable!()
+        };
+        let row = rows.iter().find(|row| row.id() == id).unwrap();
+        assert!(row.created_problem.is_some());
+        assert!(
+            row.state_text().contains("created disks unreadable"),
+            "{}",
+            row.state_text()
+        );
+        let start = |w: &Worker| -> Vec<String> {
+            w.send
+                .send(Request::LaunchMachine(id.clone(), false))
+                .unwrap();
+            let Event::StartNotes(notes) = until(w, |e| matches!(e, Event::StartNotes(_))) else {
+                unreachable!()
+            };
+            until(w, |e| matches!(e, Event::Launched(..)));
+            w.send.send(Request::Finish(Finish::Retain)).unwrap();
+            until(w, |e| matches!(e, Event::Finished));
+            notes
+        };
+        let notes = start(&w);
+        assert!(notes[0].contains("cannot be read"), "{notes:?}");
+        assert!(
+            record.exists(),
+            "the record stays for a version that reads it"
+        );
+        // Take out again replaces the record.
+        w.send
+            .send(Request::Machine(MachineJob::SetPending {
+                id: id.clone(),
+                drive: "A:".into(),
+                insert: None,
+            }))
+            .unwrap();
+        until(&w, |e| matches!(e, Event::MachineNote(_)));
+        assert!(!record.exists());
+        // A disk whose image is gone stays out with a note; the Start goes on.
+        let created = created_game(&f, &w, &id);
+        fs::remove_file(&created.disks[0].0).unwrap();
+        let notes = start(&w);
+        assert!(notes[0].starts_with("GAME did not go into A:"), "{notes:?}");
+        // Another Insert replaces an unreadable record too.
+        fs::write(&record, "not a record").unwrap();
+        w.send
+            .send(Request::Machine(MachineJob::SetPending {
+                id: id.clone(),
+                drive: "A:".into(),
+                insert: Some(Box::new(pending_a(&set))),
+            }))
+            .unwrap();
+        until(&w, |e| matches!(e, Event::MachineNote(_)));
+        assert!(!record.exists());
+        assert_eq!(
+            pc_image::machine::get(&f.store, &id)
+                .unwrap()
+                .machine
+                .pending,
+            [pending_a(&set)]
+        );
+        // A record that cannot be changed leaves the machine list as it was.
+        fs::create_dir_all(record.join("in-the-way")).unwrap();
+        w.send
+            .send(Request::Machine(MachineJob::SetPending {
+                id: id.clone(),
+                drive: "A:".into(),
+                insert: None,
+            }))
+            .unwrap();
+        assert!(matches!(next_answer(&w), Event::Error(_)));
+        assert_eq!(
+            pc_image::machine::get(&f.store, &id)
+                .unwrap()
+                .machine
+                .pending,
+            [pending_a(&set)]
+        );
         w.shutdown();
     }
 

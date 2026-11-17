@@ -31,6 +31,11 @@ pub(crate) struct MachineRow {
     pub title: Option<String>,
     /// The floppy drives the machine runs with, by unit.
     pub drives: Vec<(u8, assembly::FloppyGeometry)>,
+    /// Disks Create from files… made that its drives take at its next
+    /// Start, kept in its workspace.
+    pub created: Vec<crate::created_media::CreatedInsert>,
+    /// Why the record of those disks cannot be read, when it cannot.
+    pub created_problem: Option<String>,
 }
 
 fn repository(reference: &str) -> &str {
@@ -149,6 +154,20 @@ impl MachineRow {
         let mut text = self.listing.state.to_string();
         for insert in &self.listing.machine.pending {
             text.push_str(&format!(" · {} insert pending", insert.drive));
+        }
+        for insert in &self.created {
+            if !self
+                .listing
+                .machine
+                .pending
+                .iter()
+                .any(|p| p.drive == insert.drive)
+            {
+                text.push_str(&format!(" · {} insert pending", insert.drive));
+            }
+        }
+        if self.created_problem.is_some() {
+            text.push_str(" · created disks unreadable");
         }
         text
     }
@@ -464,6 +483,19 @@ fn change_lines(row: &MachineRow) -> Vec<String> {
         lines.push(format!(
             "Pending insert — {} in {}",
             insert.medium, insert.drive
+        ));
+    }
+    // A disk from the machine list for the same drive goes in instead.
+    for insert in row.created.iter().filter(|insert| {
+        !row.listing
+            .machine
+            .pending
+            .iter()
+            .any(|listed| listed.drive == insert.drive)
+    }) {
+        lines.push(format!(
+            "Pending insert — {} in {}, created from files",
+            insert.title, insert.drive
         ));
     }
     lines
@@ -1127,6 +1159,8 @@ impl LibraryView {
             let pending = &mut row.listing.machine.pending;
             pending.retain(|p| p.drive != drive);
             pending.extend(insert.clone());
+            // Another disk for the drive, or none, replaces created disks too.
+            row.created.retain(|c| c.drive != drive);
             self.machines = std::sync::Arc::new(rows);
             self.machines_revision += 1;
         }
@@ -1758,7 +1792,8 @@ fn drive_rows(
             .collect()
     };
     let pending_lines = |drive: &str| -> Vec<(String, pane::Tone)> {
-        row.listing
+        let listed: Vec<(String, pane::Tone)> = row
+            .listing
             .machine
             .pending
             .iter()
@@ -1768,6 +1803,22 @@ fn drive_rows(
                     format!(
                         "Pending: {} — in the drive at the next Start",
                         pending(insert)
+                    ),
+                    pane::Tone::Pending,
+                )
+            })
+            .collect();
+        if !listed.is_empty() {
+            return listed;
+        }
+        row.created
+            .iter()
+            .filter(|insert| insert.drive == drive)
+            .map(|insert| {
+                (
+                    format!(
+                        "Pending: {}, created from files — in the drive at the next Start",
+                        insert.title
                     ),
                     pane::Tone::Pending,
                 )
@@ -1885,6 +1936,8 @@ pub(crate) mod tests {
             summary: None,
             title: Some("Games".into()),
             drives: vec![(0, assembly::descriptors::FLOPPY_TYPES[0].geometry)],
+            created: Vec::new(),
+            created_problem: None,
         }
     }
 
@@ -1947,6 +2000,47 @@ pub(crate) mod tests {
         assert_eq!(machine.source_label(), "games (no tag)");
         assert_eq!(machine.source_badges(), ["⚑ 1.0.0 moved", "detached"]);
         assert!(machine.reference().starts_with("games@sha256:"));
+    }
+
+    /// Created disks waiting for a drive show in the State and in what
+    /// Reset to image… drops, unless a disk from the machine list goes into
+    /// the same drive instead; a record that cannot be read says so.
+    #[test]
+    fn created_pending_disks_show_unless_a_listed_disk_takes_the_drive() {
+        let mut machine = row("dos", "DOS", "a", &["games:1.0.0"]);
+        let created = |drive: &str| crate::created_media::CreatedInsert {
+            drive: drive.into(),
+            title: "GAME".into(),
+            disks: Vec::new(),
+            journal: true,
+        };
+        machine.created = vec![created("A:"), created("B:")];
+        machine
+            .listing
+            .machine
+            .pending
+            .push(image_store::machine::PendingInsert {
+                drive: "A:".into(),
+                set: image("set"),
+                reference: "keen4:1.4".into(),
+                medium: "disk-1".into(),
+                all: false,
+                journal: true,
+            });
+        assert_eq!(
+            machine.state_text(),
+            "Never started · A: insert pending · B: insert pending"
+        );
+        let lines = change_lines(&machine);
+        assert!(lines.contains(&"Pending insert — GAME in B:, created from files".to_owned()));
+        assert!(
+            !lines.iter().any(|line| line.contains("GAME in A:")),
+            "{lines:?}"
+        );
+        machine.created_problem = Some("unsupported created-disk record schema".into());
+        assert!(machine
+            .state_text()
+            .ends_with(" · created disks unreadable"));
     }
 
     /// A machine on the superseded open AT BIOS: the quiet badge in its

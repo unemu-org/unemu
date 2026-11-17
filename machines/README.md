@@ -587,7 +587,9 @@ every file and folder and the root folder's fixed entries (224 on 1.44M and 1.2M
 112 on 720K and 360K, one fewer with a label). Without `--split` a misfit is an
 error that names the shortfall in bytes and suggests `--split` (or, for 720K and
 360K, the drive's larger format), and a file larger than the disk is named.
-With `--split` the files go greedily, in sorted tree order, onto
+With `--split` the files go greedily, in folder order (a folder's own files
+first, then its subfolders, each in sorted order, so the loose `SETUP.EXE` or
+`README` beside a program's folders lands on disk 1), onto
 `<stem>-1ofN.<ext>`, `<stem>-2ofN.<ext>`… beside `OUT` (`big.img` gives
 `big-1of3.img`…); every disk repeats the folders above its files, and disk `k`
 is labelled `LABEL k` (the label shortened to fit eleven characters). When
@@ -609,6 +611,69 @@ XCOPY B:\BIGGAME C:\BIGGAME /S /E
 ```
 
 Run the XCOPY line once per disk.
+
+### Create from files… in the window
+
+The window builds the same disks without a command line. Every **Insert…** of
+a drive opens the media picker; **Create from files…** in its footer, beside
+**Browse for an image file…**, turns the picker into its Create view on the same
+machine and drive. **Media › Create from files…** under each drive's
+**Insert…**, and the same item in a drive chip's menu, open the picker straight
+in that view. **‹ Back to search** returns with the search and the added items
+kept; **Cancel** or Esc closes.
+
+**Add files…** (several at once) and **Add folder…** open the system dialogs;
+files and folders dropped on the Create view join the list too. Each row shows
+where the item lands on the disk, its files and folders and its size, and **×**
+takes it out; adding the same item again changes nothing. Until Create, only
+names and sizes are read. A single added folder becomes the **Top folder**, its
+name cut to 8.3 (`nightfall` becomes `NIGHTFAL`), so its contents go in
+directly; with several items the top folder starts empty and everything lands at
+the root. The **Volume label** follows the top folder until you edit it; empty
+writes none. The formats are the ones the drive takes, its own first.
+
+The space meter counts what DOS counts, as the command line does: the free bytes
+of a freshly formatted disk, whole clusters per file and folder, and the root
+folder's fixed entries. It says live whether everything fits one disk; does not
+fit, with the bytes needed beyond one disk and a link to a larger format the
+drive takes when that one holds everything; or holds a file too large for any
+disk, named, which leaves nothing to create. **DOS names** lists every name that
+changed beyond upper case, with why, and **Skipped** the host metadata and
+symbolic links left out.
+
+When the files do not fit one disk, **Split across N disks** lists each disk's
+label (`AZURAMON 1`, `AZURAMON 2`…), files, bytes used and first and last file,
+in folder order, each file whole on one disk. *Copy into C:* is shown greyed,
+*later*. To rebuild the tree on C:, run the command the view gives at the DOS
+prompt with each disk in turn, swapping with **Media › Next disk**:
+
+```bat
+XCOPY B:\AZURAMON C:\AZURAMON /S /E
+```
+
+On the first disk XCOPY may ask whether `C:\AZURAMON` is a file or a
+directory: answer `D`.
+
+**Create and insert** builds the images on the library worker with the same
+builder as `upcli media create floppy`, so the same files, top folder, label and
+format give the same bytes. One difference in how the sources are named: in the
+window a single added folder *is* the top folder, while `--add DIR --top NAME`
+nests `\NAME\DIR\`. To make the window's disk on the command line, give a
+single folder with its default top folder as `--add DIR` alone (it lands at
+`\DIR\` under its 8.3 name), and several items as one `--add` each with
+`--top NAME`. Each image is stored once, named by its SHA-256, as
+one of the machine's own disks in its media folder (a library machine's
+workspace, a running session's media folder, or a machine file's
+`<machine>.local/media`); it is a read-only base, and the guest's writes go to the
+machine's journal or are refused, as chosen. A running or halted machine takes
+disk 1 at once and every disk joins the drive's catalogue in order. A stopped
+machine takes the disks at its next Start: they wait in its workspace, not in
+the store's machine list, and leave once the started machine has assembled;
+**Take out again** drops them, and so does Reset to image…. **Also keep in the
+library as an installation media set**, on for a split and off for one disk
+until you change it, also adds the disks to Installation media as a private set
+(`azuramon:1.0`, titled `AZURAMON`) so every machine's **Insert…** lists them.
+Left off, the disks belong to that machine alone.
 
 ### Copying host files
 
