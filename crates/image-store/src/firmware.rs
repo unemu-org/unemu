@@ -413,7 +413,7 @@ impl ConfigValidator for Validator<'_> {
             .try_into()
             .map_err(|e: toml::de::Error| invalid(e.to_string()))?;
         config.validate()?;
-        if config.platform != self.platform() {
+        if !crate::platform::same(&config.platform, self.platform()) {
             return Err(invalid("firmware platform mismatch"));
         }
         let mut references = Vec::new();

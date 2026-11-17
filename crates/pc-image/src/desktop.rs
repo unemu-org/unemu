@@ -28,7 +28,7 @@ pub fn check(
     stop()?;
     let manifest =
         Manifest::decode_with_types(&store.read_verified(image, MAX_SMALL_BLOB)?, PAYLOAD_TYPES)?;
-    if manifest.platform()? != "ibm-pc-at" {
+    if !crate::is_pc(manifest.platform()?) {
         return Err(invalid("unsupported platform"));
     }
     stop()?;
@@ -37,7 +37,7 @@ pub fn check(
         toml::from_str(std::str::from_utf8(&bytes).map_err(|e| invalid(e.to_string()))?)
             .map_err(|e| invalid(format!("{e}")))?,
     )?;
-    if config.schema != 1 || config.platform != "ibm-pc-at" {
+    if config.schema != 1 || !crate::is_pc(&config.platform) {
         return Err(invalid("config version or platform mismatch"));
     }
     machine_file::parse_toml(

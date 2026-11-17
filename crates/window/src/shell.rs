@@ -9035,7 +9035,7 @@ kind='mda'
         let path = temp.path().join("source.bin");
         std::fs::write(&path, &bytes).unwrap();
         let digest = image_store::Digest::of(&bytes);
-        let config = image_store::firmware::Config::decode(format!("schema=1\nplatform='ibm-pc-at'\nname='Synthetic readiness'\n[[roms]]\nid='system-bios'\nrole='system-bios'\nsize=32768\nsha256='{}'\nblob='{}'\n",digest.hex(),digest).as_bytes()).unwrap();
+        let config = image_store::firmware::Config::decode(format!("schema=1\nplatform='ibm-pc'\nname='Synthetic readiness'\n[[roms]]\nid='system-bios'\nrole='system-bios'\nsize=32768\nsha256='{}'\nblob='{}'\n",digest.hex(),digest).as_bytes()).unwrap();
         let candidate = pc_image::firmware_import::Candidate {
             catalogue_id: "readiness".into(),
             config,

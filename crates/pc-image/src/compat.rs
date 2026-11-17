@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The IBM PC/AT rows of the compatibility table: for each feature this
-//! provider reads, the first release that reads it; machine-images §5.6.
+//! The IBM PC compatible rows of the compatibility table: for each feature
+//! this provider reads, the first release that reads it; machine-images §5.6.
 //!
 //! The shared rows (envelope media types, installation-set and
 //! firmware-package keys and their vocabularies) live in
@@ -11,8 +11,11 @@
 //! kind, drive type, controller, serial mouse, channel, write mode, chip lane,
 //! firmware service and role, fit board and class, media format) and the
 //! firmware catalogue entries. Vocabulary enums are matched exhaustively, so a
-//! new value does not compile without its row. Every row today is release
-//! 0.0.1, the baseline: releases 0.0.1 and 0.0.2 read the same images.
+//! new value does not compile without its row. Every row here is release
+//! 0.0.1, the baseline: releases 0.0.1 and 0.0.2 read the same images. The
+//! platform id itself is a shared row ([`image_store::compat::PLATFORMS`]):
+//! `ibm-pc`, which every writer writes, is first read by release 0.0.3, so
+//! every PC artifact written now declares 0.0.3.
 //! Accepted ranges (memory sizes, disk geometry, ROM placement) have not
 //! grown since 0.0.1; a release that widens one adds a row that rates a value
 //! outside the old range.
@@ -287,7 +290,8 @@ pub fn listed_packages<'a>(
 }
 
 fn machine_release(manifest: &Manifest, table: &toml::Table) -> image_store::Result<AppVersion> {
-    let mut release = compat::keys(table, &[MACHINE_KEYS], &[])?;
+    let mut release =
+        compat::keys(table, &[MACHINE_KEYS], &[])?.max(compat::config_platform(table));
     let config: crate::Config = crate::decode(table.clone()).map_err(store_error)?;
     let machine: schema::MachineFile = toml::Value::Table(config.machine.clone())
         .try_into()
@@ -321,7 +325,8 @@ fn machine_release(manifest: &Manifest, table: &toml::Table) -> image_store::Res
 }
 
 fn media_set_release(table: &toml::Table, config: &[u8]) -> image_store::Result<AppVersion> {
-    let mut release = compat::keys(table, &[MEDIA_SET_KEYS, EXTRA_KEYS, MEDIA_FORMAT_KEYS], &[])?;
+    let mut release = compat::keys(table, &[MEDIA_SET_KEYS, EXTRA_KEYS, MEDIA_FORMAT_KEYS], &[])?
+        .max(compat::config_platform(table));
     let config = media_set::Config::decode(config)?;
     release = release.max(compat::media_set_values(&config));
     for medium in &config.media {
@@ -342,7 +347,8 @@ pub fn media_set_config(config: &media_set::Config) -> image_store::Result<AppVe
 }
 
 fn firmware_release(table: &toml::Table, config: &[u8]) -> image_store::Result<AppVersion> {
-    let mut release = compat::keys(table, &[FIRMWARE_KEYS, EXTRA_KEYS, FIT_KEYS], &[])?;
+    let mut release = compat::keys(table, &[FIRMWARE_KEYS, EXTRA_KEYS, FIT_KEYS], &[])?
+        .max(compat::config_platform(table));
     let config = firmware::Config::decode(config)?;
     release = release.max(compat::firmware_values(&config));
     let fit = crate::firmware::Fit::decode(&config.fits)?;
@@ -863,6 +869,7 @@ mod tests {
             EXTRA_KEYS,
             FIRMWARE_KEYS,
             compat::REDISTRIBUTION,
+            compat::PLATFORMS,
         ]
         .iter()
         .flat_map(|rows| rows.iter().map(|(_, since)| *since))

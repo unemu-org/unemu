@@ -53,7 +53,8 @@ pub use reference::{Reference, DEFAULT_REGISTRY};
 
 use image_store::{ConfigValidator, Digest, Manifest};
 
-/// The provider whose artifact type and platform match `manifest`.
+/// The provider whose artifact type and platform match `manifest`; a retired
+/// platform id routes to the provider of the id that replaced it.
 pub fn select_provider<'a>(
     providers: &[&'a dyn ConfigValidator],
     manifest: &Manifest,
@@ -62,7 +63,10 @@ pub fn select_provider<'a>(
     providers
         .iter()
         .copied()
-        .find(|p| p.artifact_type() == manifest.artifact_type() && p.platform() == platform)
+        .find(|p| {
+            p.artifact_type() == manifest.artifact_type()
+                && image_store::platform::same(p.platform(), platform)
+        })
         .ok_or_else(|| {
             Error::Protocol(format!(
                 "no provider for {} on platform {platform}",

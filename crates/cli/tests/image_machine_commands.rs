@@ -791,7 +791,12 @@ fn an_image_that_needs_a_newer_release_is_refused_before_its_config_is_read() {
         line("newer:1.0.0").ends_with("\tmin-app-version:99.0.0\tNeeds unemupc 99.0.0 or newer"),
         "{listed}"
     );
-    assert!(!line("test:base").contains("min-app-version"), "{listed}");
+    // An image written now names the `ibm-pc` platform, which 0.0.3 first
+    // reads; this release meets that.
+    assert!(
+        line("test:base").ends_with("\tmin-app-version:0.0.3"),
+        "{listed}"
+    );
 
     let (code, _, errors) = lab.run(&[
         "image",
@@ -810,7 +815,11 @@ fn an_image_that_needs_a_newer_release_is_refused_before_its_config_is_read() {
 }
 
 /// `image import --min-app-version` raises the image's minimum release, never
-/// below what this release computes and never above this release.
+/// below what this release computes and never above this release. Every image
+/// written now declares 0.0.3, the first release that reads its platform id,
+/// and this release reads nothing newer, so the statement cannot raise an
+/// image above what it computes until a row for 0.0.4 exists; it is checked
+/// at 0.0.3, and the refusals on both sides.
 #[test]
 fn import_states_a_minimum_release_only_upwards() {
     use image_store::compat::{level, PACKAGE};
@@ -819,7 +828,9 @@ fn import_states_a_minimum_release_only_upwards() {
     };
     let file = lab.root.join("machine.toml");
     let file = file.to_str().unwrap();
-    let raised = PACKAGE.to_string();
+    let raised = level().to_string();
+    let newer =
+        format!("--min-app-version is newer than {raised}, the newest release this unemupc reads");
     lab.ok(&[
         "image",
         "import",
@@ -844,10 +855,12 @@ fn import_states_a_minimum_release_only_upwards() {
             "0.0.0",
             vec!["--min-app-version is lower than 0.0.1, the first release"],
         ),
+        // Refused when the image is planned: below what the image needs.
         (
-            "99.0.0",
-            vec!["--min-app-version is newer than this unemupc (upcli --version)"],
+            "0.0.2",
+            vec!["the stated minimum version 0.0.2 is lower than 0.0.3"],
         ),
+        ("99.0.0", vec![newer.as_str()]),
     ] {
         let (code, _, errors) = lab.run(&[
             "image",

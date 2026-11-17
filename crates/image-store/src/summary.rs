@@ -440,7 +440,7 @@ impl SummaryCache {
             &store.read_verified(descriptor, MAX_SMALL_BLOB)?,
             &manifest.layers,
         )?;
-        if metadata.platform != manifest.platform()? {
+        if !crate::platform::same(&metadata.platform, manifest.platform()?) {
             return Err(invalid("summary platform mismatch"));
         }
         let entry = self
@@ -483,7 +483,7 @@ impl SummaryCache {
             let config = crate::media_set::Config::decode(
                 &store.read_verified(&manifest.config, MAX_SMALL_BLOB)?,
             )?;
-            if config.platform != metadata.platform {
+            if !crate::platform::same(&config.platform, &metadata.platform) {
                 return Err(invalid("media-set summary platform mismatch"));
             }
             Some(MediaSetSummary {
@@ -551,7 +551,7 @@ impl SummaryCache {
         let config = crate::firmware::Config::decode(
             &store.read_verified(&manifest.config, MAX_SMALL_BLOB)?,
         )?;
-        if config.platform != manifest.platform()? {
+        if !crate::platform::same(&config.platform, manifest.platform()?) {
             return Err(invalid("firmware summary platform mismatch"));
         }
         let strings = |key: &str| {

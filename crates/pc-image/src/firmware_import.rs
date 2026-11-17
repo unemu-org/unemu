@@ -322,7 +322,7 @@ pub fn scan_with_limits(
             };
             let config = Config {
                 schema: 1,
-                platform: "ibm-pc-at".into(),
+                platform: crate::PLATFORM.into(),
                 name: entry.id.into(),
                 vendor: None,
                 version: None,
@@ -613,7 +613,7 @@ pub fn unlisted(
         catalogue_id: id.into(),
         config: Config {
             schema: 1,
-            platform: "ibm-pc-at".into(),
+            platform: crate::PLATFORM.into(),
             name: id.into(),
             vendor: None,
             version: None,
@@ -1718,6 +1718,9 @@ fn edit_plan(
         )));
     }
     let mut config = Config::decode(&image.config)?;
+    // A new revision names the platform by its current id, also when the
+    // package it edits names the retired one.
+    config.platform = crate::PLATFORM.into();
     if config.sources.len() > 1 {
         return Err(invalid(
             "a package with several source archives cannot be edited",
@@ -1883,12 +1886,14 @@ mod tests {
         result.is_ok_and(|(license, notes)| license.is_some() && notes.is_empty())
     }
 
-    /// A package that uses only what release 0.0.1 reads carries no marker;
-    /// a stated minimum release raises it, never below the computed one, and
-    /// an edit keeps the edited package's marker.
+    /// A package written now names the `ibm-pc` platform, which release
+    /// 0.0.3 first reads, so it declares 0.0.3; a stated minimum release
+    /// below the computed one is refused, and an edit keeps the edited
+    /// package's marker and never lowers it.
     #[test]
     fn a_stated_minimum_release_marks_a_package_and_an_edit_keeps_it() {
-        use image_store::compat::{AppVersion, Requirement, BASELINE, PACKAGE};
+        use image_store::compat::{level, AppVersion, Requirement, BASELINE, PACKAGE};
+        let computed = AppVersion::new(0, 0, 3);
         let root = std::env::temp_dir().join(format!(
             "pc-image-firmware-min-app-version-{}",
             std::process::id()
@@ -1919,28 +1924,32 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(requirement("firmware/plain:1"), Requirement::None);
-        let lower = AppVersion::new(0, 0, 0);
-        let refusal = publish_as(
-            &store,
-            &candidate,
-            &[],
-            &stated(lower),
-            &[],
-            "firmware/lower:1",
-            None,
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(
-            refusal.contains("0.0.0") && refusal.contains(&BASELINE.to_string()),
-            "{refusal}"
+        assert_eq!(
+            requirement("firmware/plain:1"),
+            Requirement::Release(computed)
         );
+        for lower in [AppVersion::new(0, 0, 0), BASELINE, PACKAGE] {
+            let refusal = publish_as(
+                &store,
+                &candidate,
+                &[],
+                &stated(lower),
+                &[],
+                "firmware/lower:1",
+                None,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                refusal.contains(&lower.to_string()) && refusal.contains(&computed.to_string()),
+                "{refusal}"
+            );
+        }
         publish_as(
             &store,
             &candidate,
             &[],
-            &stated(PACKAGE),
+            &stated(level()),
             &[],
             "firmware/raised:1",
             None,
@@ -1948,7 +1957,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             requirement("firmware/raised:1"),
-            Requirement::Release(PACKAGE)
+            Requirement::Release(level())
         );
         let renamed = Statement {
             title: Some("Renamed ROM".into()),
@@ -1964,7 +1973,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             requirement("firmware/raised:2"),
-            Requirement::Release(PACKAGE)
+            Requirement::Release(level())
         );
         // An edit may raise the value, never lower it.
         let refusal = edit(
@@ -1977,18 +1986,18 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(refusal.contains("only raises"), "{refusal}");
-        edit(
+        // The package already declares what this build reads at most, so
+        // stating it again changes nothing.
+        let refusal = edit(
             &store,
             "firmware/plain:1",
             "firmware/plain:2",
-            &stated(PACKAGE),
+            &stated(level()),
             &[],
         )
-        .unwrap();
-        assert_eq!(
-            requirement("firmware/plain:2"),
-            Requirement::Release(PACKAGE)
-        );
+        .unwrap_err()
+        .to_string();
+        assert!(refusal.contains("changes nothing"), "{refusal}");
         fs::remove_dir_all(&root).unwrap();
     }
 

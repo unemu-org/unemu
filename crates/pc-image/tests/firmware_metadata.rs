@@ -481,7 +481,7 @@ fn an_unlisted_rom_is_user_supplied_unless_the_user_names_its_licence() {
     assert!(class(layer(&manifest, mt::FIRMWARE)).is_none());
     // The README of a minimal package, byte for byte.
     let expected = format!(
-        "# plain-rom\n\n- Platform: ibm-pc-at\n- Vendor: not recorded\n- Version: not recorded\n\
+        "# plain-rom\n\n- Platform: IBM PC compatible\n- Vendor: not recorded\n- Version: not recorded\n\
          - Date: not recorded\n\n## Fits\n\n- Boards: unspecified\n- Machine classes: unspecified\n\
          - Not in the firmware catalogue: the fit and role claims are the user's and unverified.\n\n\
          ## ROM images\n\n### option-rom (Option ROM)\n\n- Size: 8192 bytes\n- SHA-256: {}\n\n\
@@ -847,7 +847,7 @@ fn old_package(
     config
         .annotations
         .insert(license::REDISTRIBUTION.into(), "user-supplied".into());
-    let manifest = Manifest::new_firmware("ibm-pc-at", config, vec![layer]).unwrap();
+    let manifest = Manifest::new_firmware("ibm-pc", config, vec![layer]).unwrap();
     let d = store.import_manifest(&manifest).unwrap();
     store
         .update_tag(

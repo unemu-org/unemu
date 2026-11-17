@@ -126,7 +126,7 @@ pub(crate) fn pin(workspace: &Workspace<'_>, image: &Descriptor) -> Result<()> {
         &image_store::BlobSource::read_verified(store, image, image_store::MAX_SMALL_BLOB)?,
         PAYLOAD_TYPES,
     )?;
-    if manifest.artifact_type() != mt::MACHINE || manifest.platform()? != "ibm-pc-at" {
+    if manifest.artifact_type() != mt::MACHINE || !crate::is_pc(manifest.platform()?) {
         return Err(invalid("not a PC machine image"));
     }
     write(
@@ -384,6 +384,9 @@ pub(crate) fn publish_machine(
     let resolved = crate::provider::load_pinned(store, &old.image, true, true)?;
     let image = resolved.image;
     let mut config = resolved.config;
+    // The new image names the platform by its current id, also when the image
+    // it derives from names the retired one.
+    config.platform = crate::PLATFORM.into();
     let mut overlay_cmos = None;
     let mut descriptors = image.manifest.layers.clone();
     let packages = crate::revision::Packages::new(store);
@@ -580,21 +583,23 @@ pub(crate) fn publish_machine(
             );
         }
     }
-    layers.extend(
-        image
-            .manifest
-            .layers
-            .iter()
-            .filter(|d| matches!(d.media_type.as_str(), mt::METADATA | mt::PNG | mt::JPEG))
-            // Metadata is generated catalogue data and stays open; artwork keeps its mark.
-            .map(|d| {
-                if d.media_type == mt::METADATA {
-                    crate::generated(d.clone())
-                } else {
-                    d.clone()
-                }
-            }),
-    );
+    // Metadata is generated catalogue data and stays open; artwork keeps its mark.
+    for d in image
+        .manifest
+        .layers
+        .iter()
+        .filter(|d| matches!(d.media_type.as_str(), mt::METADATA | mt::PNG | mt::JPEG))
+    {
+        layers.push(if d.media_type == mt::METADATA {
+            crate::generated(image_store::platform::current_metadata(
+                store,
+                d,
+                &image.manifest.layers,
+            )?)
+        } else {
+            d.clone()
+        });
+    }
     // The configuration is this program's own file: open, never re-marked.
     let config_bytes = toml::to_string(&config).map_err(|e| invalid(e.to_string()))?;
     let configuration = crate::generated(stored(
@@ -605,7 +610,7 @@ pub(crate) fn publish_machine(
     )?);
     let sources = crate::revision::firmware_sources(&packages, &image.manifest, &layers, &bound)?;
     let mut manifest = Manifest::new_with_types(
-        "ibm-pc-at",
+        crate::PLATFORM,
         configuration,
         layers,
         PcProvider.payload_types(),

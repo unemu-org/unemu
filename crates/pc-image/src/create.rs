@@ -460,7 +460,7 @@ pub fn packages(store: &Store) -> Result<Vec<Package>> {
                 let manifest = Manifest::decode(&bytes)?;
                 let config =
                     PackageConfig::decode(&store.read_verified(&manifest.config, MAX_SMALL_BLOB)?)?;
-                Ok((config.platform == "ibm-pc-at").then(|| Package {
+                Ok(crate::is_pc(&config.platform).then(|| Package {
                     reference: tag.name.clone(),
                     descriptor: tag.manifest.clone(),
                     manifest,
@@ -678,7 +678,7 @@ fn plan(image: &NewImage) -> Result<Plan> {
     }
     let mut config = Config {
         schema: 1,
-        platform: "ibm-pc-at".into(),
+        platform: crate::PLATFORM.into(),
         machine: Table::new(),
         firmware: Vec::new(),
         media: Vec::new(),
@@ -842,7 +842,7 @@ fn finish(mut plan: Plan, blobs: &dyn BlobSource, image: &NewImage) -> Result<(V
         EMPTY_METADATA.len() as u64,
     )));
     let mut manifest = Manifest::new_with_types(
-        "ibm-pc-at",
+        crate::PLATFORM,
         configuration,
         layers,
         PcProvider.payload_types(),

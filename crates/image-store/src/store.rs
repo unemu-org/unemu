@@ -812,8 +812,8 @@ impl Store {
             .filter(|p| valid_platform(p))
             .ok_or_else(|| invalid("missing or invalid config platform"))?;
         if table.get("schema").and_then(toml::Value::as_integer) != Some(1)
-            || platform != manifest.platform()?
-            || platform != validator.platform()
+            || !crate::platform::same(platform, manifest.platform()?)
+            || !crate::platform::same(platform, validator.platform())
         {
             return Err(invalid("config version or platform mismatch"));
         }
@@ -834,13 +834,13 @@ impl Store {
             crate::metadata::Metadata::new(platform)
         } else if require_artwork {
             let decoded = crate::metadata::Metadata::decode(&metadata, &manifest.layers)?;
-            if decoded.platform != platform {
+            if !crate::platform::same(&decoded.platform, platform) {
                 return Err(invalid("metadata version or platform mismatch"));
             }
             decoded
         } else {
             match crate::metadata::Metadata::decode_for_display(&metadata, &manifest.layers) {
-                Ok(decoded) if decoded.platform == platform => decoded,
+                Ok(decoded) if crate::platform::same(&decoded.platform, platform) => decoded,
                 _ => crate::metadata::Metadata::unavailable(platform),
             }
         };

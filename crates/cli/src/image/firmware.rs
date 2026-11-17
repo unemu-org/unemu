@@ -849,7 +849,8 @@ mod tests {
             format!(
                 "firmware/synthetic-first:1\t{}\t\"synthetic-first\"\tSome(FirmwareSummary {{ \
                  roles: [\"system-bios\"], boards: [\"ibm-5170\"], machine_classes: [\"at\"], \
-                 catalogue_ids: [\"synthetic-first\"], hashes: [\"{}\"] }})\n",
+                 catalogue_ids: [\"synthetic-first\"], hashes: [\"{}\"] }})\t\
+                 min-app-version:0.0.3\n",
                 package.digest, cat[0].sha256
             )
         );

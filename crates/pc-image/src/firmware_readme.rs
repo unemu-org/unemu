@@ -45,7 +45,10 @@ pub fn generate(config: &Config, marks: &Marks<'_>) -> String {
         line(description.trim_end());
         line("");
     }
-    line(&format!("- Platform: {}", config.platform));
+    line(&format!(
+        "- Platform: {}",
+        crate::platform_name(&config.platform)
+    ));
     line(&format!("- Vendor: {}", or_unknown(&config.vendor)));
     line(&format!("- Version: {}", or_unknown(&config.version)));
     line(&format!("- Date: {}", or_unknown(&config.date)));

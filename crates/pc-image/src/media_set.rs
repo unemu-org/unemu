@@ -75,7 +75,7 @@ pub fn format_name(table: &toml::Table) -> Result<&'static str> {
 }
 impl MediaFormats for PcMediaFormats {
     fn platform(&self) -> &str {
-        "ibm-pc-at"
+        crate::PLATFORM
     }
     fn validate_name(&self, name: &str) -> Result<()> {
         if valid_dos_name(name) {

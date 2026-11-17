@@ -40,7 +40,6 @@ pub(super) fn facet_label(kind: &str, value: &str) -> String {
     }
 }
 
-const PLATFORM: &str = "ibm-pc-at";
 const OPTICAL: &str = "iso-2048";
 const UNKNOWN: &str = "unknown format";
 
@@ -60,7 +59,7 @@ fn short_format(name: &str) -> &str {
 }
 /// The provider's name of a medium's format; other platforms stay unnamed.
 fn format_name(summary: &ImageSummary, medium: &Medium) -> String {
-    if summary.platform != PLATFORM {
+    if !pc_image::is_pc(&summary.platform) {
         return UNKNOWN.into();
     }
     pc_image::media_set::format_name(&medium.format).map_or_else(|_| UNKNOWN.into(), str::to_owned)
@@ -78,7 +77,7 @@ fn format_detail(summary: &ImageSummary, medium: &Medium) -> String {
         return "Optical · ISO-2048, 2048-byte sectors".into();
     }
     match pc_image::media_set::geometry(&medium.format) {
-        Ok(Some(g)) if summary.platform == PLATFORM => format!(
+        Ok(Some(g)) if pc_image::is_pc(&summary.platform) => format!(
             "Floppy · {name}, {} cylinders / {} heads / {} sectors",
             g.cylinders, g.heads, g.sectors_per_track
         ),
@@ -176,7 +175,7 @@ pub(crate) fn availability(
     let Some(set) = &summary.media_set else {
         return Availability::Unavailable("Reading set summary…".into());
     };
-    if summary.platform != PLATFORM {
+    if !pc_image::is_pc(&summary.platform) {
         return Availability::Unavailable(format!(
             "Platform {} is unavailable for this drive",
             summary.platform
@@ -314,7 +313,7 @@ pub(super) fn picker_set(row: &MediaRow) -> Option<crate::media_picker::SetEntry
             }
         })
         .collect();
-    if summary.platform != PLATFORM {
+    if !pc_image::is_pc(&summary.platform) {
         problem.get_or_insert(format!("Platform {} is unavailable", summary.platform));
     }
     Some(SetEntry {
@@ -513,11 +512,7 @@ pub(super) fn details(
                 .num_columns(2)
                 .show(facts, |ui| {
                     let digest = image.descriptor.digest.hex();
-                    let machine = if summary.platform == PLATFORM {
-                        "PC AT"
-                    } else {
-                        summary.platform.as_str()
-                    };
+                    let machine = pc_image::platform_name(&summary.platform);
                     let redistribution = if row.redistribution.open {
                         row.redistribution.label()
                     } else {
@@ -1483,7 +1478,7 @@ impl ImportDialog {
                 }
                 ui.end_row();
                 ui.label("Machine platform");
-                ui.label("PC AT");
+                ui.label(pc_image::PLATFORM_NAME);
                 ui.end_row();
                 ui.label("Software platform");
                 egui::ComboBox::from_id_salt("import-media-software-platform")
@@ -2166,7 +2161,7 @@ pub(crate) mod tests {
         for expected in [
             "Example Adventure (2 x 1.44M)",
             "example-adventure:1.0 · private library",
-            "PC AT / Unknown",
+            "IBM PC compatible / Unknown",
             "User-supplied · private store and export",
             "1. Disk 1 of 2 - Setup",
             "2. Disk 2 of 2 - World",

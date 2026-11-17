@@ -76,7 +76,7 @@ pub const PAYLOAD_TYPES: &[PayloadType] = &[
 pub struct PcProvider;
 impl ConfigValidator for PcProvider {
     fn platform(&self) -> &str {
-        "ibm-pc-at"
+        PLATFORM
     }
     fn validate_resolved(
         &self,
@@ -188,7 +188,7 @@ pub(crate) fn prepare(
     descriptors: &[Descriptor],
     blobs: &dyn BlobSource,
 ) -> Result<Prepared> {
-    if config.schema != 1 || config.platform != "ibm-pc-at" {
+    if config.schema != 1 || !is_pc(&config.platform) {
         return Err(invalid("unsupported PC config envelope"));
     }
     let mut hardware = config.machine.clone();
@@ -556,7 +556,7 @@ pub(crate) fn load_pinned(
     );
     impl ConfigValidator for Capture {
         fn platform(&self) -> &str {
-            "ibm-pc-at"
+            PLATFORM
         }
         fn payload_types(&self) -> &[PayloadType] {
             PAYLOAD_TYPES

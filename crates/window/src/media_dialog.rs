@@ -1148,10 +1148,10 @@ impl LibraryInsert {
                 let config = store::media_set::Config::decode(
                     &store.read_verified(&manifest.config, store::MAX_SMALL_BLOB)?,
                 )?;
-                if config.platform != manifest.platform()? {
+                if !store::platform::same(&config.platform, manifest.platform()?) {
                     return Err(store::Error::Invalid("config platform mismatch".into()));
                 }
-                if config.platform == "ibm-pc-at" {
+                if pc_image::is_pc(&config.platform) {
                     use store::ConfigValidator;
                     let table = toml::Table::try_from(&config)
                         .map_err(|e| store::Error::Invalid(e.to_string()))?;
@@ -1347,7 +1347,7 @@ pub(super) fn media_compatibility(
     drive: FloppyGeometry,
     unit: u8,
 ) -> Option<String> {
-    if platform != "ibm-pc-at" {
+    if !pc_image::is_pc(platform) {
         return Some(format!("Platform {platform} is unavailable for this drive"));
     }
     for medium in media {
@@ -1836,7 +1836,7 @@ mod media_set_tests {
     fn config(format: &str) -> Config {
         Config {
             schema: 1,
-            platform: "ibm-pc-at".into(),
+            platform: "ibm-pc".into(),
             media: vec![Medium {
                 id: "disk-1".into(),
                 label: "Disk one".into(),
@@ -2267,6 +2267,54 @@ mod review_tests {
             panic!("journal")
         };
         assert!(path.starts_with(owner.path().join("media")));
+    }
+    /// A set that names the retired PC platform id goes into a drive like one
+    /// that names `ibm-pc`, in this dialog and in the library's Insert; a set
+    /// of an unknown platform does not.
+    #[test]
+    fn a_set_that_names_the_retired_platform_id_goes_in_and_an_unknown_one_does_not() {
+        use crate::library_view::install_media::{availability, Availability};
+        use image_store::platform::{with_platform_id, ALIASES};
+        let (_temp, mut library, config) = fixture();
+        let store = image_store::Store::open_existing(&library.store_path).unwrap();
+        let set = store.tag_descriptor("review:set").unwrap();
+        let validator = image_store::media_set::Validator(&pc_image::media_set::PcMediaFormats);
+        let old = with_platform_id(&store, &set, &[], ALIASES[0].0).unwrap();
+        store
+            .update_tag("review:old", &old, None, &validator)
+            .unwrap();
+        let unknown = with_platform_id(&store, &set, &[], "ibm-pc-xt").unwrap();
+        assert!(store
+            .update_tag("review:unknown", &unknown, None, &validator)
+            .is_err());
+        store
+            .tag_as_newer_release("review:unknown", &unknown)
+            .unwrap();
+        library.refresh(FloppyGeometry::HD_1_44, 0).unwrap();
+        let index = |tag: &str| library.rows.iter().position(|r| r.tag == tag).unwrap();
+        assert_eq!(library.rows[index("review:old")].reason, None);
+        let reason = library.rows[index("review:unknown")].reason.clone();
+        assert_eq!(
+            reason.as_deref(),
+            Some("Platform ibm-pc-xt is unavailable for this drive")
+        );
+        library.selected = Some(index("review:old"));
+        let slots = FloppySlot::from_config(&config);
+        let (entries, _) = library.entries(slots[0].as_ref().unwrap(), 0).unwrap();
+        assert_eq!(entries.len(), 1);
+
+        let mut summaries = image_store::summary::SummaryCache::open(&store).unwrap();
+        while !summaries.pending().is_empty() {
+            summaries.rebuild(&store, 64, &[], &[]).unwrap();
+        }
+        let drives = [(0, FloppyGeometry::HD_1_44)];
+        let summary = summaries.summary(&old.digest).unwrap();
+        assert_eq!(availability(summary, &drives), Availability::Ready(0));
+        let summary = summaries.summary(&unknown.digest).unwrap();
+        assert_eq!(
+            availability(summary, &drives),
+            Availability::Unavailable("Platform ibm-pc-xt is unavailable for this drive".into())
+        );
     }
     #[test]
     fn library_disks_switch_between_write_protection_and_the_workspace_journal() {

@@ -236,7 +236,7 @@ mod tests {
         let digest = Digest::of(&rom);
         let config = firmware::Config {
             schema: 1,
-            platform: "ibm-pc-at".into(),
+            platform: pc_image::PLATFORM.into(),
             name: "Synthetic ROM".into(),
             vendor: None,
             version: None,
@@ -270,7 +270,7 @@ mod tests {
             d
         };
         let mut manifest = Manifest::new_firmware(
-            "ibm-pc-at",
+            pc_image::PLATFORM,
             open(Descriptor::new(
                 mt::FIRMWARE_CONFIG,
                 Digest::of(&bytes),
@@ -285,6 +285,12 @@ mod tests {
         .unwrap();
         let stores = [&store];
         let guard = official_guard(&stores);
+        // The platform id is first read by 0.0.3, so the bare manifest is
+        // refused until it declares that release.
+        let refusal = guard("unemu/firmware/synthetic:1", &manifest, &bytes).unwrap_err();
+        assert!(refusal.contains("unemu.min-app-version"), "{refusal}");
+        pc_image::compat::stamp(&mut manifest, &bytes, image_store::compat::BASELINE, None)
+            .unwrap();
         guard("unemu/firmware/synthetic:1", &manifest, &bytes).unwrap();
         manifest
             .annotations

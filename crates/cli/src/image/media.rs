@@ -326,10 +326,13 @@ pub fn execute(command: MediaCommand, output: &mut impl Write) -> anyhow::Result
 fn show(store: &Store, tag: &str, output: &mut impl Write) -> anyhow::Result<()> {
     let image = store.resolve(tag, &Validator(&PcMediaFormats))?;
     let config = Config::decode(&image.config)?;
+    // Machine-readable: the platform id, by the id it is written with today.
     writeln!(
         output,
         "{}\t{}\t{}",
-        tag, image.image.digest, config.platform
+        tag,
+        image.image.digest,
+        image_store::platform::canonical(&config.platform)
     )?;
     super::write_min_app_version(output, &image.manifest)?;
     for (index, m) in config.media.iter().enumerate() {

@@ -333,14 +333,17 @@ fn template_machines_validate_lower_and_describe_themselves() {
 /// The digests of this template generation. Any change to the templates, or
 /// to what they are built from, changes them; version tags never move, so a
 /// changed template needs a new `pc_image::template::VERSION` and new pins.
+/// The one exception: the rename of the platform id to `ibm-pc` moved every
+/// pin of this file once under the same tags, because the artifacts published
+/// before the first public release are replaced, not revised.
 const PINNED: [(&str, &str); 2] = [
     (
         "unemu/open-at",
-        "sha256:f6ba8ddfecb6140aaf65e3638601471250cdb5c625d21226d98daf5ee117e837",
+        "sha256:1c6667cf334a6b687fc369ad874c04c4e282ffbcf14e405c99db05f2c9528076",
     ),
     (
         "unemu/open-at-games",
-        "sha256:d20998ce961a56a3ef378f55e3980efde93d99cd3c4c21652798a3831e378483",
+        "sha256:df210c6193b99e1ec0dcf2b53f783010432b65114c755b9e42132b3d51a0875c",
     ),
 ];
 
@@ -352,15 +355,15 @@ const PINNED: [(&str, &str); 2] = [
 const FIRMWARE_PINNED: [(&str, &str); 3] = [
     (
         "unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1",
-        "sha256:7a4d34f3e6d229d0857a592daf2f6412be33aa0dc385bdd605e28cf6eac6c64e",
+        "sha256:61f098cd1b4419563575160964281921a6c4480a3001673ab95ab0f1ff14efe6",
     ),
     (
         "unemu/firmware/vgabios-0.9d-unemu.1-std:1",
-        "sha256:fa521a4f878c77706f143079b996c7486aa71c1ee408cc5977601f51d419ebb0",
+        "sha256:1cb3cf2b82afefd0c1453d88468b0ba432e9944415ac911bccf65d3dd4e75db0",
     ),
     (
         "unemu/firmware/xub-r638-xtp-ata1f0:1",
-        "sha256:240d2d4f9ac64382cca85e53a174c6ea3b327867a6589d8222b63744f68789ec",
+        "sha256:912d74c3b1c83d0439866304693efd25512be362598a45ee0fdd36df0d419d7a",
     ),
 ];
 
@@ -946,15 +949,15 @@ fn another_file_at_a_media_fixture_path_is_refused_before_any_set_is_tagged() {
 const MEDIA_PINNED: [(&str, &str); 3] = [
     (
         "unemu/media/freedos:1.4",
-        "sha256:f0114238645cf823c3cfa998bb1a488e6872e56676a78b4fdd7308c319079b93",
+        "sha256:137d9bbcfdfe2a6cfa5682ead5e1351a73c1249ddfde2031187efda44965b130",
     ),
     (
         "unemu/media/freedos:1.4-1.2m",
-        "sha256:3f39b4d5993b843a265e522cededfe8f1ccc05865ab88d0f23c27ada3e0de89d",
+        "sha256:1d77d11e7422b8164c21dc37b8dcbe160018ea2475b5c5afa136cb3489f58037",
     ),
     (
         "unemu/media/freedos:1.4-720k",
-        "sha256:1f789ef40eed3566c5fa84d792cf2acddaddb14cc5ae057d1278802b29341c5e",
+        "sha256:9ec1fea01076803aba5a27846c28143ebe21f63ab6fd163a6c57b1a6d373baa0",
     ),
 ];
 

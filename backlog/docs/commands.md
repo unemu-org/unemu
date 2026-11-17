@@ -8,7 +8,7 @@ Everyday commands for this project. Keep this file **flat and copy-pasteable** โ
 cargo run --offline -p cli -- image import machines/at-freedos.toml --store /path/to/store --tag dos-lab:1.0 --create
 cargo run --offline -p cli -- image import /path/to/machine.yaml --store /path/to/store --tag dos-lab:recovered --recover medium-0=tip
 cargo run --offline -p cli -- image import /path/to/machine.toml --store /path/to/store --tag dos-lab:checkpoint --recover medium-0=generation:1
-cargo run --offline -p cli -- image import /path/to/machine.toml --store /path/to/store --tag dos-lab:1.1 --min-app-version 0.0.2
+cargo run --offline -p cli -- image import /path/to/machine.toml --store /path/to/store --tag dos-lab:1.1 --min-app-version 0.0.3
 cargo run --offline -p cli -- image compress dos-lab:1.0 --tag dos-lab:compressed --store /path/to/store
 cargo run --offline -p cli -- image ls --store /path/to/store
 cargo run --offline -p cli -- image sweep --store /path/to/store
@@ -143,7 +143,7 @@ version and the edition: `--publisher P`, `--developer D` and `--genre G` may
 be repeated and keep the order given; `--year YYYY` is a whole number from 1 to
 9999; `--platform` is the software platform, spelled exactly as one of `DOS`,
 `Windows 3.x`, `Windows 9x`, `CP/M`, `MSX`, `ZX Spectrum`, `C64`,
-`Atari 8-bit`, `Atari ST` or `other` (not the machine platform `ibm-pc-at`);
+`Atari 8-bit`, `Atari ST` or `other` (not the machine platform `ibm-pc`);
 `--description TEXT` is free text; `--version V` and `--edition E` name the
 release the set holds and its edition, once each (the FreeDOS sets below: `1.4`
 and `Floppy Edition`). `--set-label L` may be repeated and gives the set its
@@ -172,7 +172,10 @@ publishes as `unemu/media/freedos:1.4` (the edition's own 1.44M disks),
 are the arguments its publish step passes (`lib/manifest.py sets`), and
 `pc_image::template::build_media`, the local build the tests use, gives the
 same sets. A test imports each set both ways and compares them, and another
-pins the published digests. Fetch the fixtures with
+pins the published digests. The sets published so far name the platform by
+its retired id `ibm-pc-at`; the pins are those of their `ibm-pc` rebuilds,
+which replace them under the same tags before the first public release
+(decision-32). Fetch the fixtures with
 `bash vendor/freedos/fetch-floppy-1.4.sh` and import into a store that does
 not hold these tags yet (the command line never moves a tag). Each command
 states the disks in installer order with their labels and format, the licence
@@ -458,13 +461,21 @@ so a fix stated on a package reaches every machine made with it. No writer
 puts a set's media into a machine image yet; when one does, it takes the
 set's value the same way.
 
+The PC platform id `ibm-pc` is itself a row: release 0.0.3 first reads it,
+because 0.0.1 and 0.0.2 compare platform ids exactly and know only the
+retired id `ibm-pc-at` (machine-images ยง1). Every PC writer writes `ibm-pc`,
+so everything written since declares 0.0.3. This build's level is therefore
+0.0.3 while its package version is still 0.0.2 (the release commit updates
+this sentence; see Releases). Artifacts that name `ibm-pc-at` carry no value
+and stay readable.
+
 `--min-app-version X.Y.Z` on `image import`, `image media import`,
 `image firmware import` (with `--for` or `--unlisted`) and `image firmware
 edit` raises the value, for behaviour the tables cannot see, such as an
 emulation fix a title needs. It never lowers it. A value below 0.0.1 or above
 this release is refused when the command line is read; one below what the
-tables compute is refused naming both (`the stated minimum version 0.0.1 is
-lower than 0.0.2, the oldest unemupc that reads this artifact`), and an edit
+tables compute is refused naming both (`the stated minimum version 0.0.2 is
+lower than 0.0.3, the oldest unemupc that reads this artifact`), and an edit
 refuses one below the package's own value. Re-importing a package's ROMs
 with another value names `image firmware edit`. `image import` computes the
 value only once its payloads are in the store (the config binds their
@@ -769,7 +780,10 @@ images can be built locally from the fixtures:
 `pc_image::template::build_firmware` and `build_media` (fixtures of the sets:
 `bash vendor/freedos/fetch-floppy-1.4.sh`) give them under these tags, and
 their tests pin the published digests, so each pin checks that the two
-repositories still build the same image. `image media import` reproduces each
+repositories still build the same image. The packages and sets published so
+far name the platform by its retired id `ibm-pc-at`, which this release reads
+as `ibm-pc`; the pins are those of their `ibm-pc` rebuilds, which replace them
+under the same tags before the first public release (decision-32). `image media import` reproduces each
 set from the command line (Local machine images, above).
 
 `image template build` imports the three packages it binds from the firmware
@@ -1750,7 +1764,9 @@ A release is a tag `v<version>` that matches `version` under
 `[workspace.package]` in `Cargo.toml`; bump that first. The same commit raises
 `NEXT_RELEASE` in `crates/image-store/src/compat.rs` past the new version
 (`next_release_is_above_the_package_version` fails until it does); rows already
-written for the release keep their literal version. The maintainer pushes the
+written for the release keep their literal version. The same commit updates
+the sentence in Minimum release of an image that names this build's level and
+package version. The maintainer pushes the
 tag and creates and publishes the GitHub release for it. Publishing starts
 `.github/workflows/release.yml`, which builds `upcli` and `unemupc` and
 attaches them to that release; nothing goes to a package registry.

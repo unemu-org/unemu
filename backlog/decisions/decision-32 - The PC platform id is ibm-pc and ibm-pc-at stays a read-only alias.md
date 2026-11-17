@@ -51,7 +51,8 @@ more expensive with every artifact published, so it is done now or never.
 3. **Every writer writes `ibm-pc`.** New machine, Save as new image, import,
    media set and firmware import, template build, compress and catalogue
    edits all write the new id, also when they derive from an `ibm-pc-at`
-   artifact.
+   artifact. No writer writes new bytes naming the alias; compress and
+   catalogue edits reuse the source's config, which may still name it.
 4. **The new id is a feature with a row** in the decision-30 table: it is
    first read by release 0.0.3, so every artifact written with it carries
    `unemu.min-app-version` 0.0.3 or higher. Releases 0.0.1 and 0.0.2 ignore

@@ -1741,7 +1741,7 @@ fn insert_medium(
         &image_store::media_set::Validator(&crate::media_set::PcMediaFormats),
     )?;
     let config = image_store::media_set::Config::decode(&resolved.config)?;
-    if config.platform != "ibm-pc-at" {
+    if !crate::is_pc(&config.platform) {
         return Err(invalid("installation media for another platform"));
     }
     let chosen = config

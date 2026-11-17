@@ -1115,7 +1115,7 @@ fn legacy_option_chip_package_does_not_replace_a_scalar_option_rom() {
     struct Legacy;
     impl image_store::firmware::FirmwareRules for Legacy {
         fn platform(&self) -> &str {
-            "ibm-pc-at"
+            "ibm-pc"
         }
         fn validate(
             &self,
@@ -1282,7 +1282,7 @@ fn split_package_presence_cannot_change_a_scalar_machine_image_digest() {
         }
         let config = Config {
             schema: 1,
-            platform: "ibm-pc-at".into(),
+            platform: "ibm-pc".into(),
             name: "Synthetic split representation".into(),
             vendor: None,
             version: None,

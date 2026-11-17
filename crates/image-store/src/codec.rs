@@ -387,9 +387,18 @@ impl Store {
     ) -> Result<Descriptor> {
         let image = self.resolve_descriptor(source, validator)?;
         let mut manifest = image.manifest;
+        let layers = manifest.layers.clone();
         for descriptor in &mut manifest.layers {
-            *descriptor = self.compress_payload(descriptor, validator.payload_types())?;
+            *descriptor = if descriptor.media_type == crate::media_type::METADATA {
+                crate::platform::current_metadata(self, descriptor, &layers)?
+            } else {
+                self.compress_payload(descriptor, validator.payload_types())?
+            };
         }
+        // The copy is written now, so its manifest and metadata name the
+        // platform by its current id; the config, and with it the machine
+        // digest, stays the source's.
+        manifest.canonicalize_platform()?;
         // The compressed payload types have rows of their own; the source's
         // marker stays as a floor.
         let required = validator.required_release(&manifest, &image.config)?;

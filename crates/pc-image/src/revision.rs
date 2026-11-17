@@ -45,7 +45,7 @@ impl Source {
             &store.read_verified(descriptor, MAX_SMALL_BLOB)?,
             PAYLOAD_TYPES,
         )?;
-        if manifest.artifact_type() != mt::MACHINE || manifest.platform()? != "ibm-pc-at" {
+        if manifest.artifact_type() != mt::MACHINE || !crate::is_pc(manifest.platform()?) {
             return Err(invalid("not a PC machine image"));
         }
         let text = String::from_utf8(store.read_verified(&manifest.config, MAX_SMALL_BLOB)?)
@@ -613,7 +613,7 @@ pub(crate) fn lower_revision(
     let (firmware, bound) = bind_firmware(packages, source, &recorded, &mut machine)?;
     let mut config = Config {
         schema: 1,
-        platform: "ibm-pc-at".into(),
+        platform: crate::PLATFORM.into(),
         machine,
         firmware,
         media: Vec::new(),
@@ -902,20 +902,22 @@ pub fn plan(store: &Store, source: &Source, machine: Table) -> Result<Plan> {
             );
         }
     }
-    layers.extend(
-        source
-            .manifest
-            .layers
-            .iter()
-            .filter(|d| matches!(d.media_type.as_str(), mt::METADATA | mt::PNG | mt::JPEG))
-            .map(|d| {
-                if d.media_type == mt::METADATA {
-                    generated(d.clone())
-                } else {
-                    d.clone()
-                }
-            }),
-    );
+    for d in source
+        .manifest
+        .layers
+        .iter()
+        .filter(|d| matches!(d.media_type.as_str(), mt::METADATA | mt::PNG | mt::JPEG))
+    {
+        layers.push(if d.media_type == mt::METADATA {
+            generated(image_store::platform::current_metadata(
+                store,
+                d,
+                &source.manifest.layers,
+            )?)
+        } else {
+            d.clone()
+        });
+    }
     let bytes = toml::to_string(&config)
         .map_err(|e| invalid(e.to_string()))?
         .into_bytes();
@@ -931,7 +933,8 @@ pub fn plan(store: &Store, source: &Source, machine: Table) -> Result<Plan> {
         bytes.len() as u64,
     ));
     let sources = firmware_sources(&packages, &source.manifest, &layers, &bound)?;
-    let mut manifest = Manifest::new_with_types("ibm-pc-at", configuration, layers, PAYLOAD_TYPES)?;
+    let mut manifest =
+        Manifest::new_with_types(crate::PLATFORM, configuration, layers, PAYLOAD_TYPES)?;
     if let Some(sources) = sources {
         manifest
             .annotations

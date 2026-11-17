@@ -286,7 +286,7 @@ fn row(
     let Ok(manifest) = Manifest::decode_for_summary(&fetched.bytes) else {
         return Ok(None);
     };
-    if manifest.artifact_type() != mt::MACHINE || manifest.platform().ok() != Some("ibm-pc-at") {
+    if manifest.artifact_type() != mt::MACHINE || !manifest.platform().is_ok_and(pc_image::is_pc) {
         return Ok(None);
     }
     // The pull fetches the very manifest the row describes.
@@ -1593,7 +1593,7 @@ mod tests {
         // can keep it off the list.
         let config = Descriptor::new(mt::CONFIG, Digest::of(b"config"), 6);
         let metadata = Descriptor::new(mt::METADATA, Digest::of(b"metadata"), 8);
-        let manifest = Manifest::new("ibm-pc-at", config, vec![metadata])
+        let manifest = Manifest::new("ibm-pc", config, vec![metadata])
             .unwrap()
             .encode()
             .unwrap();
@@ -1627,6 +1627,41 @@ mod tests {
                 "{skipped}: {log:?}"
             );
         }
+    }
+
+    /// A template that names the retired PC platform id is a PC machine like
+    /// one that names `ibm-pc`; a machine of another platform is not offered.
+    #[test]
+    fn a_template_naming_the_retired_platform_id_is_offered_and_another_platform_is_not() {
+        let registry = MockRegistry::start(Policy {
+            anonymous_read: vec!["*".into()],
+            ..Policy::default()
+        });
+        let manifest = |platform: &str| {
+            let config = Descriptor::new(mt::CONFIG, Digest::of(b"config"), 6);
+            let metadata = Descriptor::new(mt::METADATA, Digest::of(b"metadata"), 8);
+            Manifest::new(platform, config, vec![metadata])
+                .unwrap()
+                .encode()
+                .unwrap()
+        };
+        for (repository, platform) in [
+            ("unemu/open-at", image_store::platform::ALIASES[0].0),
+            ("unemu/open-at-games", pc_image::PLATFORM),
+            ("unemu/open-c64", "c64"),
+        ] {
+            registry.seed_manifest(repository, "1.0.0", &manifest(platform));
+        }
+        let target = assembly::test_support::TempDir::new("templates-platforms");
+        let view = listed(target.path(), accounts(target.path(), &registry.host()));
+        let dialog = view.templates.as_ref().unwrap();
+        assert!(
+            matches!(dialog.state, TemplatesState::Ready),
+            "{:?}",
+            dialog.state
+        );
+        let names: Vec<_> = dialog.rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["open-at", "open-at-games"]);
     }
 
     #[test]

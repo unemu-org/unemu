@@ -378,6 +378,15 @@ impl Manifest {
             .ok_or_else(|| invalid("missing or invalid unemu.platform"))
     }
 
+    /// Name the platform by its current id ([`crate::platform::canonical`]):
+    /// a writer that derives a manifest from one naming a retired id never
+    /// writes that id again.
+    pub fn canonicalize_platform(&mut self) -> Result<()> {
+        let current = crate::platform::canonical(self.platform()?).to_owned();
+        self.annotations.insert("unemu.platform".into(), current);
+        Ok(())
+    }
+
     fn validate(&self, types: &[PayloadType]) -> Result<()> {
         self.validate_policy(types, false)
     }

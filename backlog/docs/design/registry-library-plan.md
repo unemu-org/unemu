@@ -140,7 +140,7 @@ One entry per repository. It describes the **offered version** (the release
 {
   "repository": "unemu/keen4-shareware",
   "kind": "media-set",                    // machine | media-set | firmware
-  "platform": "ibm-pc-at",
+  "platform": "ibm-pc",
   "tag": "1.0.0",
   "manifest": "sha256:…",
   "size": 1474560,                        // manifest + distinct blobs, as Get templates shows

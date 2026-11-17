@@ -10,6 +10,13 @@ use image_store::{
 };
 use serde::{Deserialize, Serialize};
 
+/// The platform id of the IBM PC compatible family, from the PC and XT
+/// through the AT and PS/2 models to the 386, 486 and Pentium machines;
+/// machine-images §1. Its first id, `ibm-pc-at`, stays a read-only alias
+/// ([`image_store::platform`]), so ids are compared with
+/// [`image_store::platform::same`], never exactly.
+pub const PLATFORM: &str = "ibm-pc";
+
 /// PC board identities, including reserved models which remain storage-only.
 pub const BOARDS: &[&str] = &[
     "ibm-5170",
@@ -78,7 +85,7 @@ pub fn lane(s: &str) -> Result<Lane> {
 pub struct PcFirmwareRules<'a>(pub &'a [FirmwareEntry]);
 impl FirmwareRules for PcFirmwareRules<'_> {
     fn platform(&self) -> &str {
-        "ibm-pc-at"
+        PLATFORM
     }
     fn validate_name(&self, name: &str) -> Result<()> {
         if !crate::pc_names::valid_dos_name(name) {
@@ -252,9 +259,10 @@ pub(crate) fn resolve_document(
         .tags()
         .iter()
         .filter(|tag| {
-            cache
-                .summary(&tag.manifest.digest)
-                .is_some_and(|s| s.kind == ArtifactKind::Firmware && s.platform == "ibm-pc-at")
+            cache.summary(&tag.manifest.digest).is_some_and(|s| {
+                s.kind == ArtifactKind::Firmware
+                    && image_store::platform::same(&s.platform, PLATFORM)
+            })
         })
         .cloned()
         .collect::<Vec<_>>();

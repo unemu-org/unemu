@@ -5,6 +5,35 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — The PC platform id is `ibm-pc`; `ibm-pc-at` stays a
+  read-only alias:** the id names the IBM PC compatible family, from the PC
+  and XT through the AT to the 386 and later machines, and displays call it
+  "IBM PC compatible" (the installation-set details and import form, the
+  generated firmware README). Every writer writes `ibm-pc`: New machine…,
+  machine import, Save as new image…, a machine's Save, installation-set
+  and firmware import, firmware edits, compression, catalogue edits and the
+  template builds, also when they derive from an artifact that names
+  `ibm-pc-at`; compression and catalogue edits keep the source's config, so
+  the machine digest stays. Every reader treats both ids as one platform
+  through one function of the shared store crate (`image_store::platform`,
+  where the alias table lives so that comparisons without a provider at
+  hand agree): manifest annotation, config and metadata `platform` fields,
+  firmware packages offered to New machine and machine files, provider
+  routing for pull and push, and the media-set drive checks. An `ibm-pc-at`
+  image, set or package is read, listed, pulled unchanged, run and combined
+  with `ibm-pc` firmware and sets; a store that holds only `ibm-pc-at`
+  artifacts is read without a rewrite; any other id is still refused. The
+  new id has a row of its own: release 0.0.3 first reads it, so every
+  artifact written now declares `unemu.min-app-version` 0.0.3 and this
+  build reads 0.0.3; a stated `--min-app-version` below 0.0.3 is refused.
+  `image media show` prints the current id. A test scans every crate's
+  source for the comparison forms the code base uses (`==`, `!=`,
+  `matches!`, `.eq`/`.ne`, `starts_with`, `contains`, map lookups and match
+  arms on a platform operand or literal, continued lines joined); it catches
+  those forms, not every conceivable one. The pinned digests of the
+  templates, firmware packages and FreeDOS sets moved once under the same
+  tags: the six published `ibm-pc-at` artifacts are replaced by these
+  rebuilds before the first public release.
 - **2026-11-17 — Remotes in the library window (browse only), and where
   each local tag came from:** the sidebar lists Remotes under the Library
   group, as the approved remotes mock-up draws it: each registry of Tools ›

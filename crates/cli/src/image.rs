@@ -427,7 +427,15 @@ fn min_app_version(value: &OsString) -> Result<image_store::compat::AppVersion, 
         return Err("--min-app-version is lower than 0.0.1, the first release");
     }
     if version > level() {
-        return Err("--min-app-version is newer than this unemupc (upcli --version)");
+        // This build's level can be above its package version, so the message
+        // names it.
+        static NEWER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        return Err(NEWER.get_or_init(|| {
+            format!(
+                "--min-app-version is newer than {}, the newest release this unemupc reads",
+                level()
+            )
+        }));
     }
     Ok(version)
 }

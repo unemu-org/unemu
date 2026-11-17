@@ -418,11 +418,11 @@ impl Store {
         if source_metadata.is_read_only() {
             return Err(invalid("newer metadata is read-only"));
         }
-        if source_metadata.platform != resolved.manifest.platform()? {
+        if !crate::platform::same(&source_metadata.platform, resolved.manifest.platform()?) {
             return Err(invalid("metadata platform mismatch"));
         }
         let mut manifest = resolved.manifest;
-        let metadata = if entry.catalogue.has_fields() {
+        let mut metadata = if entry.catalogue.has_fields() {
             entry.catalogue.apply(&source_metadata)?
         } else {
             source_metadata
@@ -439,6 +439,11 @@ impl Store {
             }
             source.clone()
         } else {
+            // The new metadata and manifest name the platform by its current
+            // id; the config, and with it the machine digest, stays the
+            // source's.
+            metadata.platform = crate::platform::canonical(&metadata.platform).into();
+            manifest.canonicalize_platform()?;
             let mut available = self.clean_artwork(&entry.catalogue.artwork)?;
             available.extend(manifest.layers.clone());
             let bytes = metadata.encode(&available)?;

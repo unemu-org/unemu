@@ -43,7 +43,7 @@ fn firmware_host_guard_child() {
     let rom = root.join("store-source.bin");
     fs::write(&rom, &bytes).unwrap();
     let digest = image_store::Digest::of(&bytes);
-    let config = image_store::firmware::Config::decode(format!("schema=1\nplatform='ibm-pc-at'\nname='Synthetic guard'\n[[roms]]\nid='system-bios'\nrole='system-bios'\nsha256='{}'\nsize=32768\nblob='{}'\n",digest.hex(),digest).as_bytes()).unwrap();
+    let config = image_store::firmware::Config::decode(format!("schema=1\nplatform='ibm-pc'\nname='Synthetic guard'\n[[roms]]\nid='system-bios'\nrole='system-bios'\nsha256='{}'\nsize=32768\nblob='{}'\n",digest.hex(),digest).as_bytes()).unwrap();
     let candidate = pc_image::firmware_import::Candidate {
         catalogue_id: "guard".into(),
         config,

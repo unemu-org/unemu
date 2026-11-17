@@ -1435,7 +1435,7 @@ fn provider_declares_platform_payload_codecs_and_limits() {
     struct PcProvider;
     impl ConfigValidator for PcProvider {
         fn platform(&self) -> &str {
-            "ibm-pc-at"
+            "ibm-pc"
         }
         fn payload_types(&self) -> &[PayloadType] {
             &[PayloadType {
@@ -1449,26 +1449,26 @@ fn provider_declares_platform_payload_codecs_and_limits() {
             descriptors: &[Descriptor],
             blobs: &dyn BlobSource,
         ) -> Result<Vec<Digest>> {
-            Provider("ibm-pc-at").validate(config, descriptors, blobs)
+            Provider("ibm-pc").validate(config, descriptors, blobs)
         }
     }
     let dir = Temp::new();
     let store = dir.store();
     let payload = put(&store, CMOS, &[0; 64]);
-    let cfg = config(&store, "ibm-pc-at", &[&payload.digest]);
+    let cfg = config(&store, "ibm-pc", &[&payload.digest]);
     let metadata = put(
         &store,
         mt::METADATA,
-        br#"{"schema":1,"platform":"ibm-pc-at","titles":[]}"#,
+        br#"{"schema":1,"platform":"ibm-pc","titles":[]}"#,
     );
     assert!(Manifest::new(
-        "ibm-pc-at",
+        "ibm-pc",
         cfg.clone(),
         vec![payload.clone(), metadata.clone()]
     )
     .is_err());
     let manifest = Manifest::new_with_types(
-        "ibm-pc-at",
+        "ibm-pc",
         cfg,
         vec![payload, metadata],
         PcProvider.payload_types(),

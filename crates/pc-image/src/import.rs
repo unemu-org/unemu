@@ -658,7 +658,7 @@ pub fn import_machine(
     crate::defaults::materialize(&mut hardware, &effective)?;
     let mut config = Config {
         schema: 1,
-        platform: "ibm-pc-at".into(),
+        platform: crate::PLATFORM.into(),
         machine: hardware,
         firmware: Vec::new(),
         media: Vec::new(),
@@ -858,7 +858,7 @@ pub fn import_machine(
         }
     }
     let mut manifest = image_store::Manifest::new_with_types(
-        "ibm-pc-at",
+        crate::PLATFORM,
         configuration,
         layers,
         PcProvider.payload_types(),

@@ -609,7 +609,8 @@ fn an_open_statement_goes_together_and_names_a_licence_reference_and_an_extra() 
 fn a_set_imported_without_metadata_flags_keeps_its_manifest_bytes() {
     // The same inputs as the shared import's pinned set, so the command line's
     // default title is the shared default: measured before set-level metadata
-    // flags existed.
+    // flags existed, and moved once by the rename of the platform id to
+    // `ibm-pc`.
     let t = Temp::new();
     let p = &t.0;
     let disk = raw_disk(&p.join("disk.img"), 0x5a);
@@ -636,7 +637,7 @@ fn a_set_imported_without_metadata_flags_keeps_its_manifest_bytes() {
         format!(
             "media order:\n1\t\"disk.img\"\t{disk:?}\t360K\n\
              extra\t\"MANUAL.TXT\"\tSome(\"MANUAL.TXT\")\n\
-             test:pinned\tsha256:852615e645eac3a3bccfb7d3a30b026e4cec4bbb7fc5ee72f06ba2808b671dcf\n"
+             test:pinned\tsha256:6e6804aba2a89f2c56d6b8758b9abb575b04c272eaca415c63d5ef3d7df2f57e\n"
         )
     );
 }
@@ -1179,7 +1180,7 @@ fn an_open_set_shows_its_licence_and_terms_and_only_a_linked_closure_enters_unem
             }
         }
         let mut manifest =
-            Manifest::new_media_set("ibm-pc-at", image.manifest.config.clone(), layers).unwrap();
+            Manifest::new_media_set("ibm-pc", image.manifest.config.clone(), layers).unwrap();
         manifest.annotations.clone_from(&image.manifest.annotations);
         let descriptor = store.import_manifest(&manifest).unwrap();
         store
@@ -1356,7 +1357,7 @@ fn an_spdx_licensed_set_needs_its_source_and_only_a_linked_closure_enters_unemu(
     let mut layers = image.manifest.layers.clone();
     layers[0].annotations.remove(license::SOURCE);
     let mut manifest =
-        Manifest::new_media_set("ibm-pc-at", image.manifest.config.clone(), layers).unwrap();
+        Manifest::new_media_set("ibm-pc", image.manifest.config.clone(), layers).unwrap();
     manifest.annotations.clone_from(&image.manifest.annotations);
     let descriptor = store.import_manifest(&manifest).unwrap();
     store

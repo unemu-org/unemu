@@ -633,7 +633,7 @@ fn a_copyleft_rom_without_its_source_archive_keeps_a_new_image_private() {
             d
         })
         .collect();
-    let crafted = image_store::Manifest::new_firmware("ibm-pc-at", descriptor, layers).unwrap();
+    let crafted = image_store::Manifest::new_firmware("ibm-pc", descriptor, layers).unwrap();
     let crafted = open.store.import_manifest(&crafted).unwrap();
     let rules = pc_image::firmware::PcFirmwareRules(pc_image::firmware::catalogue());
     open.store

@@ -14,13 +14,14 @@
 //! A per-feature table records, for every feature a reader reads, the first
 //! release that reads it: artifact and payload media types, config keys,
 //! vocabulary values, firmware catalogue entries and accepted ranges. This
-//! module holds the shared rows (the envelope's media types and the keys and
-//! values of installation-set and firmware-package configs); the platform
-//! provider holds its own. Release 0.0.1 is the baseline: everything it reads
-//! has [`BASELINE`]. Writers stamp the maximum over what an artifact uses
-//! ([`stamp`]) and leave the annotation out at the baseline. Readers check the
-//! marker leniently before any strict decode ([`Requirement::read`]), so even
-//! a future envelope gets the message.
+//! module holds the shared rows (the envelope's media types, the platform ids
+//! of the alias table and the keys and values of installation-set and
+//! firmware-package configs); the platform provider holds its own. Release
+//! 0.0.1 is the baseline: everything it reads has [`BASELINE`]. Writers stamp
+//! the maximum over what an artifact uses ([`stamp`]) and leave the
+//! annotation out at the baseline. Readers check the marker leniently before
+//! any strict decode ([`Requirement::read`]), so even a future envelope gets
+//! the message.
 
 use crate::{
     artifact::NEUTRAL_TYPES, firmware, invalid, media_set, media_type, Error, Manifest, Result,
@@ -105,7 +106,7 @@ pub const NEXT_RELEASE: AppVersion = AppVersion::new(0, 0, 3);
 /// The newest version any row of this build's tables names, shared or
 /// provider-owned. A provider's tests pin it, so a development build that
 /// adds a row for the next release reads what it writes.
-pub const NEWEST_ROW: AppVersion = BASELINE;
+pub const NEWEST_ROW: AppVersion = AppVersion::new(0, 0, 3);
 /// This build's package version.
 pub const PACKAGE: AppVersion = AppVersion::new(
     decimal(env!("CARGO_PKG_VERSION_MAJOR")),
@@ -331,6 +332,30 @@ fn redistribution(manifest: &Manifest) -> Result<AppVersion> {
     Ok(release)
 }
 
+/// Platform ids of the alias table ([`crate::platform::ALIASES`]): a retired
+/// id is read since the release that first wrote it, the id that replaced it
+/// first by the release that renamed it, because older releases compare ids
+/// exactly. Every other id is its provider's to rate.
+pub const PLATFORMS: &[Row] = &[
+    ("ibm-pc-at", BASELINE),
+    ("ibm-pc", AppVersion::new(0, 0, 3)),
+];
+
+/// The release that first reads a platform id: its row in [`PLATFORMS`], the
+/// baseline for an id the alias table does not name.
+pub fn platform(id: &str) -> AppVersion {
+    lookup(&[PLATFORMS], id).unwrap_or(BASELINE)
+}
+
+/// The release the `platform` value of a config table needs; a missing or
+/// non-string value is the codec's to refuse.
+pub fn config_platform(config: &toml::Table) -> AppVersion {
+    config
+        .get("platform")
+        .and_then(toml::Value::as_str)
+        .map_or(BASELINE, platform)
+}
+
 /// The manifest artifact types the envelope reads.
 pub fn artifact(kind: &str) -> Option<AppVersion> {
     match kind {
@@ -526,16 +551,18 @@ pub fn firmware_values(config: &firmware::Config) -> AppVersion {
         .fold(BASELINE, AppVersion::max)
 }
 
-/// The newest release the manifest's artifact type and every payload media
-/// type need; `provider` holds the rows of provider-declared types. A media
-/// type without a row is refused.
+/// The newest release the manifest's artifact type, its platform and every
+/// payload media type need; `provider` holds the rows of provider-declared
+/// types. A media type without a row is refused.
 pub fn envelope(manifest: &Manifest, provider: &[Row]) -> Result<AppVersion> {
-    let mut release = artifact(manifest.artifact_type()).ok_or_else(|| {
-        invalid(format!(
-            "no compatibility row for artifact type {}",
-            manifest.artifact_type()
-        ))
-    })?;
+    let mut release = artifact(manifest.artifact_type())
+        .ok_or_else(|| {
+            invalid(format!(
+                "no compatibility row for artifact type {}",
+                manifest.artifact_type()
+            ))
+        })?
+        .max(platform(manifest.platform()?));
     for descriptor in std::iter::once(&manifest.config).chain(&manifest.layers) {
         let kind = descriptor.media_type.as_str();
         release = release.max(
@@ -547,33 +574,36 @@ pub fn envelope(manifest: &Manifest, provider: &[Row]) -> Result<AppVersion> {
     Ok(release.max(redistribution(manifest)?))
 }
 
-/// What the shared rows alone say an artifact needs: its envelope, and for an
-/// installation set or a firmware package the keys and values of its config
-/// that the store owns. Provider-declared payload types and the provider's
-/// tables are left to the provider, which overrides
+/// What the shared rows alone say an artifact needs: its envelope and
+/// platform, and for an installation set or a firmware package the keys and
+/// values of its config that the store owns. Provider-declared payload types
+/// and the provider's tables are left to the provider, which overrides
 /// [`crate::ConfigValidator::required_release`] with its own rows.
 pub fn shared_release(manifest: &Manifest, config: &[u8]) -> Result<AppVersion> {
-    let mut release = artifact(manifest.artifact_type()).ok_or_else(|| {
-        invalid(format!(
-            "no compatibility row for artifact type {}",
-            manifest.artifact_type()
-        ))
-    })?;
+    let mut release = artifact(manifest.artifact_type())
+        .ok_or_else(|| {
+            invalid(format!(
+                "no compatibility row for artifact type {}",
+                manifest.artifact_type()
+            ))
+        })?
+        .max(platform(manifest.platform()?));
     for descriptor in std::iter::once(&manifest.config).chain(&manifest.layers) {
         if let Some(since) = payload(&descriptor.media_type) {
             release = release.max(since);
         }
     }
     release = release.max(redistribution(manifest)?);
-    let table = || -> Result<toml::Table> {
+    // Every artifact's config is TOML with the routing `platform` key.
+    let table: toml::Table =
         toml::from_str(std::str::from_utf8(config).map_err(|e| invalid(e.to_string()))?)
-            .map_err(|e| invalid(e.to_string()))
-    };
+            .map_err(|e| invalid(e.to_string()))?;
+    release = release.max(config_platform(&table));
     match manifest.artifact_type() {
         media_type::MEDIA_SET => {
             release = release
                 .max(keys(
-                    &table()?,
+                    &table,
                     &[MEDIA_SET_KEYS, EXTRA_KEYS],
                     &["media.format"],
                 )?)
@@ -581,7 +611,7 @@ pub fn shared_release(manifest: &Manifest, config: &[u8]) -> Result<AppVersion> 
         }
         media_type::FIRMWARE => {
             release = release
-                .max(keys(&table()?, &[FIRMWARE_KEYS, EXTRA_KEYS], &["fits"])?)
+                .max(keys(&table, &[FIRMWARE_KEYS, EXTRA_KEYS], &["fits"])?)
                 .max(firmware_values(&firmware::Config::decode(config)?));
         }
         _ => {}
@@ -731,7 +761,7 @@ mod tests {
             Requirement::read(&bytes)
         );
         // A future envelope: an unknown artifact type and top-level field.
-        let future = br#"{"schemaVersion":3,"artifactType":"application/vnd.unemu.machine.v9","future":{"x":1},"annotations":{"unemu.platform":"ibm-pc-at","unemu.min-app-version":"7.1.0"}}"#;
+        let future = br#"{"schemaVersion":3,"artifactType":"application/vnd.unemu.machine.v9","future":{"x":1},"annotations":{"unemu.platform":"ibm-pc","unemu.min-app-version":"7.1.0"}}"#;
         assert!(Manifest::decode(future).is_err());
         assert_eq!(
             Requirement::read(future),
@@ -763,16 +793,15 @@ mod tests {
         stamp(&mut stamped, BASELINE, Some(BASELINE)).unwrap();
         assert_eq!(stamped.encode().unwrap(), plain.encode().unwrap());
 
-        // A build whose tables rate an artifact 0.0.3 writes 0.0.3. This
-        // build's level is lower, so writing it is the build's own mistake.
+        // A build whose tables rate an artifact 0.0.3 writes 0.0.3. A row
+        // above this build's level is the build's own mistake.
         let mut next = machine();
         set(&mut next, NEXT_RELEASE);
         assert_eq!(next.annotations[MIN_APP_VERSION], "0.0.3");
-        let mistake = stamp(&mut machine(), NEXT_RELEASE, None)
-            .unwrap_err()
-            .to_string();
+        let beyond = AppVersion::new(level().major, level().minor, level().patch + 1);
+        let mistake = stamp(&mut machine(), beyond, None).unwrap_err().to_string();
         assert!(mistake.contains("NEWEST_ROW"), "{mistake}");
-        let mistake = floor(&mut machine(), NEXT_RELEASE).unwrap_err().to_string();
+        let mistake = floor(&mut machine(), beyond).unwrap_err().to_string();
         assert!(mistake.contains("NEWEST_ROW"), "{mistake}");
 
         let mut raised = machine();
@@ -876,6 +905,46 @@ mod tests {
                 Requirement::Release(AppVersion::new(99, 0, 0))
             );
         }
+    }
+
+    /// The id that replaced a retired one is first read by the release that
+    /// renamed it, 0.0.3 for `ibm-pc`, whether the manifest or the config
+    /// names it; the retired id and any other id need nothing newer than the
+    /// baseline from the shared rows. Every id of the alias table has a row.
+    #[test]
+    fn a_renamed_platform_id_is_rated_by_the_release_that_renamed_it() {
+        for (retired, current) in crate::platform::ALIASES {
+            assert_eq!(lookup(&[PLATFORMS], retired), Some(BASELINE), "{retired}");
+            assert!(lookup(&[PLATFORMS], current).is_some(), "{current}");
+        }
+        assert_eq!(platform("ibm-pc"), AppVersion::new(0, 0, 3));
+        assert_eq!(platform("ibm-pc-at"), BASELINE);
+        assert_eq!(platform("synthetic"), BASELINE);
+        let rate = |manifest_platform: &str, config_platform: &str| {
+            let config = format!("schema = 1\nplatform = \"{config_platform}\"\n");
+            let metadata = Descriptor::new(media_type::METADATA, Digest::of(b"metadata"), 8);
+            let manifest = Manifest::new(
+                manifest_platform,
+                Descriptor::new(
+                    media_type::CONFIG,
+                    Digest::of(config.as_bytes()),
+                    config.len() as u64,
+                ),
+                vec![metadata],
+            )
+            .unwrap();
+            (
+                envelope(&manifest, &[]).unwrap(),
+                shared_release(&manifest, config.as_bytes()).unwrap(),
+            )
+        };
+        let next = AppVersion::new(0, 0, 3);
+        assert_eq!(rate("ibm-pc", "ibm-pc"), (next, next));
+        assert_eq!(rate("ibm-pc-at", "ibm-pc"), (BASELINE, next));
+        assert_eq!(rate("ibm-pc", "ibm-pc-at"), (next, next));
+        assert_eq!(rate("ibm-pc-at", "ibm-pc-at"), (BASELINE, BASELINE));
+        assert_eq!(rate("synthetic", "synthetic"), (BASELINE, BASELINE));
+        assert!(level() >= next, "this build reads what it writes");
     }
 
     /// The codec accepts exactly the redistribution values that have rows.
@@ -1002,9 +1071,15 @@ mod tests {
             .map(|(_, _, since)| *since)
             .chain(COMPRESSED.iter().map(|(_, since)| *since))
             .chain(
-                [MEDIA_SET_KEYS, EXTRA_KEYS, FIRMWARE_KEYS, REDISTRIBUTION]
-                    .iter()
-                    .flat_map(|rows| rows.iter().map(|(_, since)| *since)),
+                [
+                    MEDIA_SET_KEYS,
+                    EXTRA_KEYS,
+                    FIRMWARE_KEYS,
+                    REDISTRIBUTION,
+                    PLATFORMS,
+                ]
+                .iter()
+                .flat_map(|rows| rows.iter().map(|(_, since)| *since)),
             )
             .chain({
                 use firmware::{ArchiveFormat, ProvenanceKind};

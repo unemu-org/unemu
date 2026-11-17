@@ -1874,7 +1874,7 @@ mod tests {
         let digest = Digest::of(&bytes);
         let config = image_store::firmware::Config::decode(
             format!(
-                "schema=1\nplatform='ibm-pc-at'\nname='VGA BIOS copy'\n[fits]\nboards=['ibm-5170']\n[[roms]]\nid='video-bios'\nrole='video-bios'\ncatalogue_id='vgabios-0.9d-unemu.1-std'\nsize=32768\nsha256='{}'\nblob='{digest}'\n",
+                "schema=1\nplatform='ibm-pc'\nname='VGA BIOS copy'\n[fits]\nboards=['ibm-5170']\n[[roms]]\nid='video-bios'\nrole='video-bios'\ncatalogue_id='vgabios-0.9d-unemu.1-std'\nsize=32768\nsha256='{}'\nblob='{digest}'\n",
                 digest.hex()
             )
             .as_bytes(),

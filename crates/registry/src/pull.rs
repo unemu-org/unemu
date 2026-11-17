@@ -130,7 +130,7 @@ pub fn pull_cancellable(
     let validator = crate::select_provider(providers, &envelope)?;
     let manifest = Manifest::decode_with_types(&fetched.bytes, validator.payload_types())?;
     if manifest.artifact_type() != validator.artifact_type()
-        || manifest.platform()? != validator.platform()
+        || !image_store::platform::same(manifest.platform()?, validator.platform())
     {
         return Err(Error::Protocol(
             "manifest artifact type or platform does not match the provider".into(),

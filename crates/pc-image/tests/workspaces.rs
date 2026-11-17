@@ -461,9 +461,9 @@ fn missing_artwork_and_read_only_metadata_fail_before_intent() {
             .unwrap();
         let artwork = Descriptor::new(mt::PNG, png.digest.clone(), png.size);
         let metadata = if read_only {
-            br#"{"schema":2,"platform":"ibm-pc-at","labels":[],"titles":[]}"#.to_vec()
+            br#"{"schema":2,"platform":"ibm-pc","labels":[],"titles":[]}"#.to_vec()
         } else {
-            format!("{{\"schema\":1,\"platform\":\"ibm-pc-at\",\"labels\":[],\"titles\":[{{\"id\":\"test\",\"title\":\"synthetic\",\"cover\":\"{}\"}}]}}", png.digest).into_bytes()
+            format!("{{\"schema\":1,\"platform\":\"ibm-pc\",\"labels\":[],\"titles\":[{{\"id\":\"test\",\"title\":\"synthetic\",\"cover\":\"{}\"}}]}}", png.digest).into_bytes()
         };
         let descriptor = image_with_metadata(
             &fixture,
@@ -756,7 +756,7 @@ fn depth_limit_accepts_sixty_four_and_flatten_allows_further_publication() {
             .import(toml::to_string(&config).unwrap().as_bytes(), None)
             .unwrap();
         let manifest = image_store::Manifest::new_with_types(
-            "ibm-pc-at",
+            "ibm-pc",
             Descriptor::new(mt::CONFIG, config_blob.digest, config_blob.size),
             layers,
             pc_image::PAYLOAD_TYPES,
@@ -859,7 +859,7 @@ fn shared_result_cache_does_not_validate_an_unseen_invalid_head() {
         .import(toml::to_string(&config).unwrap().as_bytes(), None)
         .unwrap();
     let manifest = image_store::Manifest::new_with_types(
-        "ibm-pc-at",
+        "ibm-pc",
         Descriptor::new(mt::CONFIG, blob.digest, blob.size),
         layers,
         pc_image::PAYLOAD_TYPES,

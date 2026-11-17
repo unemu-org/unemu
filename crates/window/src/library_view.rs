@@ -4110,7 +4110,7 @@ pub(super) mod tests {
         let source = temp.path().join("synthetic.bin");
         std::fs::write(&source, &bytes).unwrap();
         let digest = Digest::of(&bytes);
-        let config = image_store::firmware::Config::decode(format!("schema=1\nplatform='ibm-pc-at'\nname='Synthetic firmware'\n[[roms]]\nid='system-bios'\nrole='system-bios'\nsize=32768\nsha256='{}'\nblob='{}'\n", digest.hex(), digest).as_bytes()).unwrap();
+        let config = image_store::firmware::Config::decode(format!("schema=1\nplatform='ibm-pc'\nname='Synthetic firmware'\n[[roms]]\nid='system-bios'\nrole='system-bios'\nsize=32768\nsha256='{}'\nblob='{}'\n", digest.hex(), digest).as_bytes()).unwrap();
         let candidate = pc_image::firmware_import::Candidate {
             catalogue_id: "synthetic".into(),
             config,
@@ -4263,7 +4263,7 @@ pub(super) mod tests {
         let source = temp.path().join("synthetic.bin");
         std::fs::write(&source, &bytes).unwrap();
         let digest = Digest::of(&bytes);
-        let config = image_store::firmware::Config::decode(format!("schema=1\nplatform='ibm-pc-at'\nname='Synthetic firmware'\n[[roms]]\nid='system-bios'\nrole='system-bios'\nsize=32768\nsha256='{}'\nblob='{}'\n", digest.hex(), digest).as_bytes()).unwrap();
+        let config = image_store::firmware::Config::decode(format!("schema=1\nplatform='ibm-pc'\nname='Synthetic firmware'\n[[roms]]\nid='system-bios'\nrole='system-bios'\nsize=32768\nsha256='{}'\nblob='{}'\n", digest.hex(), digest).as_bytes()).unwrap();
         let candidate = pc_image::firmware_import::Candidate {
             catalogue_id: "synthetic".into(),
             config,
@@ -4699,12 +4699,12 @@ pub(super) mod tests {
         let row = snapshot(&cache, &Query::default()).rows[0].image.clone();
         assert!(check_image(&store, &row, None).is_err());
         let future_config = store
-            .import(&b"schema=99\nplatform='ibm-pc-at'\n[machine]\n"[..], None)
+            .import(&b"schema=99\nplatform='ibm-pc'\n[machine]\n"[..], None)
             .unwrap();
-        let metadata = Metadata::new("ibm-pc-at").encode(&[]).unwrap();
+        let metadata = Metadata::new("ibm-pc").encode(&[]).unwrap();
         let metadata = store.import(metadata.as_slice(), None).unwrap();
         let manifest = Manifest::new(
-            "ibm-pc-at",
+            "ibm-pc",
             Descriptor::new(mt::CONFIG, future_config.digest, future_config.size),
             vec![Descriptor::new(
                 mt::METADATA,
@@ -4982,7 +4982,7 @@ pub(super) mod tests {
         let source = temp.path().join("synthetic.bin");
         std::fs::write(&source, &bytes).unwrap();
         let digest = Digest::of(&bytes);
-        let config = image_store::firmware::Config::decode(format!("schema=1\nplatform='ibm-pc-at'\nname='Synthetic firmware'\n[[roms]]\nid='system-bios'\nrole='system-bios'\nsize=32768\nsha256='{}'\nblob='{}'\n", digest.hex(), digest).as_bytes()).unwrap();
+        let config = image_store::firmware::Config::decode(format!("schema=1\nplatform='ibm-pc'\nname='Synthetic firmware'\n[[roms]]\nid='system-bios'\nrole='system-bios'\nsize=32768\nsha256='{}'\nblob='{}'\n", digest.hex(), digest).as_bytes()).unwrap();
         let candidate = pc_image::firmware_import::Candidate {
             catalogue_id: "synthetic".into(),
             config,
@@ -5280,7 +5280,7 @@ pub(super) mod tests {
         let (e, o, a) = (Digest::of(&even), Digest::of(&odd), Digest::of(&assembled));
         let config = image_store::firmware::Config::decode(
             format!(
-                "schema=1\nplatform='ibm-pc-at'\nname='Synthetic two-chip BIOS'\n[fits]\nboards=['ibm-5170']\nmachine_classes=['at']\n[[roms]]\nid='system-bios'\nrole='system-bios'\nsize=65536\nsha256='{}'\n[[roms.parts]]\nblob='{e}'\nsha256='{}'\nsize=32768\nposition='U27'\nlane='even'\n[[roms.parts]]\nblob='{o}'\nsha256='{}'\nsize=32768\nposition='U47'\nlane='odd'\n",
+                "schema=1\nplatform='ibm-pc'\nname='Synthetic two-chip BIOS'\n[fits]\nboards=['ibm-5170']\nmachine_classes=['at']\n[[roms]]\nid='system-bios'\nrole='system-bios'\nsize=65536\nsha256='{}'\n[[roms.parts]]\nblob='{e}'\nsha256='{}'\nsize=32768\nposition='U27'\nlane='even'\n[[roms.parts]]\nblob='{o}'\nsha256='{}'\nsize=32768\nposition='U47'\nlane='odd'\n",
                 a.hex(),
                 e.hex(),
                 o.hex()

@@ -237,7 +237,7 @@ impl FirmwareStore {
             ] {
                 let config = image_store::firmware::Config::decode(
                     format!(
-                        "schema=1\nplatform='ibm-pc-at'\nname='{name}'\nvendor='Synthetic vendor'\n[fits]\n{fits}[[roms]]\nid='system-bios'\nrole='system-bios'\n{catalogue_id}size=32768\nsha256='{}'\nblob='{}'\n",
+                        "schema=1\nplatform='ibm-pc'\nname='{name}'\nvendor='Synthetic vendor'\n[fits]\n{fits}[[roms]]\nid='system-bios'\nrole='system-bios'\n{catalogue_id}size=32768\nsha256='{}'\nblob='{}'\n",
                         digest.hex(),
                         digest
                     )

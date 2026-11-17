@@ -80,7 +80,22 @@ The store, registry client, metadata, library index, summary cache and classic
 shell widgets belong in shared crates. Store layout, tags, disk layers and image
 identities are platform-neutral. A required machine `platform` routes to an
 emulator provider; it identifies a machine family, not a host OS or CPU alone.
-Examples are `ibm-pc-at`, `zx-spectrum`, `c64` and `atari-800`; the list is extensible.
+Examples are `ibm-pc`, `zx-spectrum`, `c64` and `atari-800`; the list is extensible.
+
+The PC platform id is `ibm-pc`: the IBM PC compatible family unemupc emulates,
+from the PC and XT through the AT and PS/2 models to the 386, 486 and Pentium
+machines. Displays call it "IBM PC compatible". What a title needs from the
+family (a 386, VGA, a Sound Blaster) is a per-title statement, never the
+platform. Its first id, `ibm-pc-at`, is a read-only alias kept for good
+([decision-32](<../../decisions/decision-32 - The PC platform id is ibm-pc and ibm-pc-at stays a read-only alias.md>)):
+local stores keep the artifacts written under it, and they keep their bytes.
+Every reader treats the two ids as one platform, in the manifest annotation,
+the config and metadata `platform` fields, firmware fit statements and
+provider routing, through one normalising function of the shared store crate
+(`image_store::platform`); an exact comparison of platform ids is a bug. No
+writer writes new bytes naming the alias, also when it derives from an
+artifact that names it; compress and catalogue edits reuse the source's
+config, which may still name the alias.
 
 Each emulator supplies its machine-config schema, validator capabilities (§6),
 devices/core, supported media kinds and launch-command mechanics (§2.1). The PC
@@ -179,7 +194,8 @@ own OCI descriptor so an ordinary registry client can copy the complete image.
   ],
   "annotations": {
     "org.opencontainers.image.title": "DOS lab",
-    "unemu.platform": "ibm-pc-at",
+    "unemu.platform": "ibm-pc",
+    "unemu.min-app-version": "0.0.3",
     "org.opencontainers.image.base.digest": "<previous-machine-image>"
   }
 }
@@ -191,7 +207,7 @@ Annotations are string values and never bind hardware or media:
 |---|---|
 | `org.opencontainers.image.title` | On a descriptor: optional logical name for generic OCI tools. On the manifest: a preview title for registry browsing. Informational only. |
 | `org.opencontainers.image.base.digest` | Manifest only: image digest this image was derived from. Provenance; never needed to run and never a reason to download an older image. |
-| `unemu.platform` | Required on the manifest: machine platform, matching config and metadata; a routing hint for registry/library previews, never an independent authority. |
+| `unemu.platform` | Required on the manifest: machine platform, matching config and metadata (a retired id matches its replacement, §1 Platform neutrality); a routing hint for registry/library previews, never an independent authority. |
 | `unemu.redistribution` | `open` or `user-supplied`; absent evidence defaults to user-supplied. |
 | `unemu.license` | Reviewed SPDX licence expression for open content. |
 | `unemu.source` | On an open ROM, installation medium or installation-set extra: decoded digest of its corresponding source archive in the same closure (§5.3, §5.2). |
@@ -203,9 +219,10 @@ Annotations are string values and never bind hardware or media:
 
 The config is the single authority for bindings, slots, catalogue order and
 media heads; layer descriptors (§4) are the single authority for parents.
-The required config `platform` is the authority for routing. Its value must match
-the metadata envelope and `unemu.platform` annotation before local tag publication;
-a mismatch or missing platform is rejected. Metadata edits cannot change this
+The required config `platform` is the authority for routing. Its value must name
+the same platform as the metadata envelope and `unemu.platform` annotation before
+local tag publication (`ibm-pc-at` and `ibm-pc` name the same one, §1); a mismatch
+or missing platform is rejected. Metadata edits cannot change this
 identity field. The annotation is a preview hint, not permission to launch without
 validating the config.
 Identical bytes appear once in `layers`, however many bindings name them.
@@ -225,7 +242,7 @@ name, tag, history or catalogue metadata. This PC example uses:
 
 ```toml
 schema = 1
-platform = "ibm-pc-at"
+platform = "ibm-pc"
 
 [machine]
 # Resolved schema-1 machine fields; hardware details omitted in this sketch.
@@ -301,7 +318,7 @@ fetching payload bytes.
 
 ### Resolved hardware and media bindings
 
-For `platform = "ibm-pc-at"`, `config.machine` is a flattened schema-1 machine
+For `platform = "ibm-pc"` (or its alias `ibm-pc-at`), `config.machine` is a flattened schema-1 machine
 TOML, with no `extends` or host endpoints. Use the current resolver first,
 preserving board/card order, defaults, RTC start, CPU/FPU, memory, ROM
 addresses/services, split-chip assembly and drive geometry.
@@ -376,7 +393,7 @@ Publishing applies the overlay, verifies the new closure and creates the new
 image/tag; active workspaces still pin the same machine digest.
 
 The JSON envelope is
-`{"schema": 1, "platform": "ibm-pc-at", "labels": [...], "titles": [...]}`.
+`{"schema": 1, "platform": "ibm-pc", "labels": [...], "titles": [...]}`.
 The required top-level `platform` is the machine routing id from the config (§2),
 not a per-title software environment. `labels` are the image-level labels that
 travel with the image. A machine may contain zero, one or several titles; every
@@ -1182,7 +1199,7 @@ uses the PC provider's format vocabulary; shared code never owns CHS rules:
 
 ```toml
 schema = 1
-platform = "ibm-pc-at"
+platform = "ibm-pc"
 
 [[media]]
 id = "disk-1"
@@ -1526,7 +1543,7 @@ uses the existing IBM 5170 BIOS catalogue entry and the chip pins from
 
 ```toml
 schema = 1
-platform = "ibm-pc-at"
+platform = "ibm-pc"
 name = "IBM 5170 BIOS 1985-06-10 (2 chips)"
 vendor = "IBM"
 date = "1985-06-10"
@@ -2034,7 +2051,10 @@ locally from this repository's fixtures, under the published tags and with
 the values `image firmware import` and `image media import` take there; their
 tests pin the published digests, so each pin cross-checks the two
 repositories. A template binds the packages by digest, so its digest does not
-depend on where the packages came from.
+depend on where the packages came from. The packages and sets published so
+far name the retired id `ibm-pc-at` (§1); before the first public release
+they are replaced under the same tags by their `ibm-pc` rebuilds, whose
+digests the local builders' tests pin (decision-32).
 
 **Installation sets (2026-11-15).** The templates describe the official
 **FreeDOS 1.4 Floppy Edition** (`vendor/freedos/fetch-floppy-1.4.sh`,
@@ -2268,10 +2288,10 @@ wrongly, and the proposal forbids that.
 - **Marker.** The manifest annotation `unemu.min-app-version` holds a
   SemVer release `MAJOR.MINOR.PATCH`: the oldest release of the program
   providing `unemu.platform` that reads and runs the artifact. For
-  `ibm-pc-at` that program is unemupc; `unemupc` and `upcli` share its
-  version. Machine images, installation sets and firmware packages use the
-  same rule. Without the annotation there is no requirement, so the six
-  published sets and packages keep their digests. Like every annotation it
+  `ibm-pc` (and its alias `ibm-pc-at`) that program is unemupc; `unemupc`
+  and `upcli` share its version. Machine images, installation sets and
+  firmware packages use the same rule. Without the annotation there is no
+  requirement, so the six published sets and packages keep their digests. Like every annotation it
   is a hint, not an authority: codecs stay strict. Media-type majors move
   only for a decoder break. A release never changes what an existing key or
   value means; it adds new ones.
@@ -2287,6 +2307,12 @@ wrongly, and the proposal forbids that.
   the value again and refuse a missing or lower marker. New catalogue
   fields go into metadata schema 2, never into schema 1, so metadata never
   raises the value.
+- **Platform id.** The platform ids of the alias table are shared rows:
+  `ibm-pc-at` is the baseline and `ibm-pc` is first read by 0.0.3, because
+  0.0.1 and 0.0.2 compare platform ids exactly. Every PC writer writes
+  `ibm-pc`, so every PC artifact written since declares 0.0.3; releases 0.0.1
+  and 0.0.2 ignore the marker and refuse such an artifact at pull, after the
+  download (decision-32).
 - **Reading.** The annotation is read leniently before the strict decode.
   A requirement is met when it is no higher than the release's level: its
   package version, or the newest version its own table names if that is

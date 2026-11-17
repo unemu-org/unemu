@@ -1047,12 +1047,15 @@ mod tests {
         );
     }
 
-    /// A set that uses only what release 0.0.1 reads carries no marker; a
-    /// stated minimum release raises it, one below the computed release is
-    /// refused naming both, and a re-import must state the same one.
+    /// A set written now names the `ibm-pc` platform, which release 0.0.3
+    /// first reads, so it declares 0.0.3; a stated minimum release below the
+    /// computed one is refused naming both, and a re-import states the same
+    /// marker. This build reads nothing newer than 0.0.3, so no statement can
+    /// raise a PC set above it; the shared tables' tests raise one.
     #[test]
     fn a_stated_minimum_release_raises_the_marker_and_never_lowers_it() {
-        use image_store::compat::{Requirement, BASELINE, MIN_APP_VERSION, PACKAGE};
+        use image_store::compat::{level, Requirement, BASELINE, PACKAGE};
+        let computed = AppVersion::new(0, 0, 3);
         let temp = Temp::new("min-app-version");
         let disk = temp.0.join("disk.img");
         floppy(&disk, 7);
@@ -1064,31 +1067,32 @@ mod tests {
         let mut plain = request(std::slice::from_ref(&disk), "Plain set");
         plain.tag = "test:plain".into();
         let stored = publish(&store, &plan(&plain).unwrap(), &|_, _| {}, &|| false).unwrap();
-        assert!(!read(stored.descriptor())
-            .annotations
-            .contains_key(MIN_APP_VERSION));
+        assert_eq!(
+            Requirement::of(&read(stored.descriptor())),
+            Requirement::Release(computed)
+        );
 
         let mut raised = plan(&request(std::slice::from_ref(&disk), "Raised set")).unwrap();
-        let refusal = raised
-            .raise_min_app_version(AppVersion::new(0, 0, 0))
-            .unwrap_err()
-            .to_string();
-        assert!(
-            refusal.contains("0.0.0") && refusal.contains(&BASELINE.to_string()),
-            "{refusal}"
-        );
-        raised.raise_min_app_version(PACKAGE).unwrap();
+        for lower in [AppVersion::new(0, 0, 0), BASELINE, PACKAGE] {
+            let refusal = raised.raise_min_app_version(lower).unwrap_err().to_string();
+            assert!(
+                refusal.contains(&lower.to_string()) && refusal.contains(&computed.to_string()),
+                "{refusal}"
+            );
+        }
+        raised.raise_min_app_version(level()).unwrap();
         let stored = publish(&store, &raised, &|_, _| {}, &|| false).unwrap();
         assert_eq!(
             Requirement::of(&read(stored.descriptor())),
-            Requirement::Release(PACKAGE)
+            Requirement::Release(level())
         );
-        // The marker is part of what the tag names.
+        // The marker is part of what the tag names: the same request without
+        // a statement computes the same one.
         let same = plan(&request(std::slice::from_ref(&disk), "Raised set")).unwrap();
-        let refusal = publish(&store, &same, &|_, _| {}, &|| false)
-            .unwrap_err()
-            .to_string();
-        assert!(refusal.starts_with("tag conflict: test:set"), "{refusal}");
+        assert_eq!(
+            publish(&store, &same, &|_, _| {}, &|| false).unwrap(),
+            Outcome::AlreadyImported(stored.descriptor().clone())
+        );
         assert_eq!(
             publish(&store, &raised, &|_, _| {}, &|| false).unwrap(),
             Outcome::AlreadyImported(stored.descriptor().clone())
@@ -1495,7 +1499,8 @@ mod tests {
     #[test]
     fn a_set_imported_without_a_statement_keeps_its_manifest_bytes() {
         // Measured with the import as it was before open statements existed:
-        // the default marks, and so every set digest, are unchanged.
+        // the default marks, and so every set digest, are unchanged. The
+        // rename of the platform id to `ibm-pc` moved it once.
         let temp = Temp::new("pinned");
         let disk = temp.0.join("disk.img");
         floppy(&disk, 0x5a);
@@ -1512,6 +1517,20 @@ mod tests {
         let published = publish(&store, &plan(&set).unwrap(), &|_, _| {}, &|| false).unwrap();
         assert_eq!(
             published.descriptor().digest.to_string(),
+            "sha256:6e6804aba2a89f2c56d6b8758b9abb575b04c272eaca415c63d5ef3d7df2f57e"
+        );
+        // The test support that makes artifacts naming the retired id gives
+        // this set as releases before the rename wrote it, byte for byte: the
+        // pin of those releases.
+        let old = image_store::platform::with_platform_id(
+            &store,
+            published.descriptor(),
+            &[],
+            image_store::platform::ALIASES[0].0,
+        )
+        .unwrap();
+        assert_eq!(
+            old.digest.to_string(),
             "sha256:852615e645eac3a3bccfb7d3a30b026e4cec4bbb7fc5ee72f06ba2808b671dcf"
         );
     }
