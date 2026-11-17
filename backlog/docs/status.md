@@ -5,6 +5,34 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — Metadata schema 2: needs, requirements and the work:**
+  a title record may now state what it needs from its platform family
+  (`needs`: kinds of feature with alternatives, best first), the box's own
+  `requirements` text, and the work it is a release of (`work_id`,
+  `synopsis`, and `work_ids` in Wikidata, MobyGames or IGDB), as recipes
+  §6.4, §6.7 and §6.16 specify (machine-images §2.1). The writer uses schema
+  2 only when a title sets one of these, chosen from the new
+  decision-30 rows (`image_store::compat::TITLE_FIELDS` and
+  `METADATA_SCHEMAS`, both 0.0.3 for schema 2), so every schema-1 artifact
+  keeps its bytes and the pinned FreeDOS and firmware digests do not move;
+  metadata never raises `unemu.min-app-version`. Readers read schemas 1 and
+  2 strictly; a schema-1 blob naming a new field is refused and shown
+  read-only; release 0.0.2 shows a schema-2 catalogue read-only and still
+  runs the artifact (measured with its decoder and store). The provider seam
+  `image_store::needs::Vocabulary` is data (ordered, quantity and choice
+  kinds, `none` in every choice kind); `pc_image::needs::PcNeeds` holds the
+  accepted, append-only `ibm-pc` vocabulary, and an unknown kind or value is
+  refused when a set is planned, never at run time; a quantity states one
+  minimum. Providers reach the vocabulary through `ConfigValidator::needs`
+  and `MediaFormats::needs`. Readers likewise keep a work-id catalogue a
+  later release adds; only writers name just Wikidata, MobyGames and IGDB.
+  The manifest carries the needs as `unemu.needs`
+  (`cpu=286+;memory=640K;sound=sb,adlib,none`). `upcli image media import`
+  takes `--need`, `--requirements`, `--work` (which must equal the last
+  component of the tag's repository), `--synopsis` and `--work-id`, and
+  `image media show` prints them (commands.md). The summary cache moves to
+  schema 7, so rows an older build summarized read-only are rebuilt. The library's mismatch warning and template suggestion,
+  and editing the new fields in the library, are later work.
 - **2026-11-17 — Every layer of a set or package names its export file:**
   each layer descriptor of an installation set and of a firmware package
   carries `org.opencontainers.image.title` with the file it unpacks to

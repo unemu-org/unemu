@@ -11,6 +11,7 @@ use image_store::{
 };
 use serde_json::json;
 use std::{
+    collections::BTreeMap,
     fs,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
@@ -585,15 +586,16 @@ fn older_summary_caches_without_decoded_sizes_are_rebuilt() {
     let image = publish(&store, &catalogue(), "demo:one");
     let path = store.root().join("cache/summaries/index.json");
     // Schemas 3 and 4 (the firmware-package format) predate decoded sizes,
-    // and schema 5 predates firmware licences and labels.
-    for schema in [3, 4, 5] {
+    // schema 5 predates firmware licences and labels, and schema 6 read
+    // metadata schema 2 as a projection.
+    for schema in [3, 4, 5, 6] {
         let mut cache = SummaryCache::open(&store).unwrap();
         while !cache.pending().is_empty() {
             cache.rebuild(&store, 1, &[], &[]).unwrap();
         }
         let mut value: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema"], 6);
+        assert_eq!(value["schema"], 7);
         value["schema"] = schema.into();
         value["images"][image.digest.to_string()]
             .as_object_mut()
@@ -608,7 +610,7 @@ fn older_summary_caches_without_decoded_sizes_are_rebuilt() {
         let row = cache.summary(&image.digest).unwrap();
         assert_eq!(row.decoded_size, row.stored_size);
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["schema"], 6);
+        assert_eq!(saved["schema"], 7);
     }
 }
 
@@ -711,7 +713,7 @@ fn newer_metadata_can_be_summarized_but_overlay_publication_is_refused() {
     let temp = Temp::new();
     let store = temp.store();
     let config = put(&store, mt::CONFIG, b"schema=1\nplatform=\"c64\"\n");
-    let metadata=put(&store,mt::METADATA,br#"{"schema":2,"platform":"c64","unknown":true,"titles":[{"id":"a","title":"Future readable","description":"Searchable future text","new_field":12}]}"#);
+    let metadata=put(&store,mt::METADATA,br#"{"schema":3,"platform":"c64","unknown":true,"titles":[{"id":"a","title":"Future readable","description":"Searchable future text","new_field":12}]}"#);
     let manifest = Manifest::new("c64", config, vec![metadata]).unwrap();
     let image = store.import_manifest(&manifest).unwrap();
     store
@@ -1396,4 +1398,300 @@ fn a_published_catalogue_edit_is_rated_by_the_provider() {
     let manifest = store.resolve("demo:rated", &Rated).unwrap().manifest;
     assert_ne!(edited.digest, image.digest);
     assert_eq!(Requirement::of(&manifest), Requirement::Release(PACKAGE));
+}
+
+/// Schema-1 metadata exactly as the writer of release 0.0.2 encodes it
+/// (measured with that release's codec): no new field, so it keeps these
+/// bytes and every digest built over them.
+const SCHEMA_ONE: &str = r#"{"schema":1,"platform":"c64","labels":["travel"],"titles":[{"id":"alpha","title":"Alpha","sort_title":"Sort","series":"Saga","genres":["puzzle"],"developers":["Dev"],"publishers":["Pub"],"platform":"C64","release_year":1987,"players":{"min":1,"max":2},"languages":["English"],"regions":["Europe"],"description":"Moonlit","version":"1.0","edition":"Disk","source_media":"1 x disk","tags":["tag"],"launch":{"profile":"p"}}]}"#;
+
+/// One release of a work, in schema 2: the canonical bytes.
+const SCHEMA_TWO: &str = r#"{"schema":2,"platform":"c64","labels":["game"],"titles":[{"id":"probotector","title":"Probotector","regions":["Europe"],"description":"The Europe release.","needs":{"memory":["64K"],"sound":["chip","none"]},"requirements":"Commodore 64","work_id":"contra","synopsis":"A run-and-gun game.","work_ids":{"igdb":"contra","wikidata":"Q1"}}]}"#;
+
+fn schema_one() -> Metadata {
+    let mut metadata = Metadata::new("c64");
+    metadata.labels = vec!["travel".into()];
+    metadata.titles.push(Title {
+        title: "Alpha".into(),
+        sort_title: Some("Sort".into()),
+        series: Some("Saga".into()),
+        genres: vec!["puzzle".into()],
+        developers: vec!["Dev".into()],
+        publishers: vec!["Pub".into()],
+        platform: Some("C64".into()),
+        release_year: Some(1987),
+        players: Some(Players { min: 1, max: 2 }),
+        languages: vec!["English".into()],
+        regions: vec!["Europe".into()],
+        description: Some("Moonlit".into()),
+        version: Some("1.0".into()),
+        edition: Some("Disk".into()),
+        source_media: Some("1 x disk".into()),
+        tags: vec!["tag".into()],
+        launch: Some(serde_json::from_value(json!({"profile":"p"})).unwrap()),
+        ..title("alpha")
+    });
+    metadata
+}
+
+fn schema_two() -> Metadata {
+    let mut metadata = Metadata::new("c64");
+    metadata.labels = vec!["game".into()];
+    metadata.titles.push(Title {
+        title: "Probotector".into(),
+        regions: vec!["Europe".into()],
+        description: Some("The Europe release.".into()),
+        needs: BTreeMap::from([
+            ("sound".into(), vec!["chip".into(), "none".into()]),
+            ("memory".into(), vec!["64K".into()]),
+        ]),
+        requirements: Some("Commodore 64".into()),
+        work_id: Some("contra".into()),
+        synopsis: Some("A run-and-gun game.".into()),
+        work_ids: BTreeMap::from([
+            ("wikidata".into(), "Q1".into()),
+            ("igdb".into(), "contra".into()),
+        ]),
+        ..title("probotector")
+    });
+    metadata
+}
+
+#[test]
+fn metadata_without_the_schema_two_fields_keeps_schema_one_and_its_bytes() {
+    let metadata = schema_one();
+    let bytes = metadata.encode(&[]).unwrap();
+    assert_eq!(std::str::from_utf8(&bytes).unwrap(), SCHEMA_ONE);
+    let decoded = Metadata::decode(SCHEMA_ONE.as_bytes(), &[]).unwrap();
+    assert_eq!(decoded, metadata);
+    assert_eq!(decoded.schema(), 1);
+    assert!(!decoded.is_read_only());
+    assert_eq!(decoded.encode(&[]).unwrap(), bytes);
+    // Empty collections and blank text are fields left unknown, not fields
+    // in use.
+    let mut emptied = metadata.clone();
+    emptied.titles[0].needs.clear();
+    emptied.titles[0].work_ids.clear();
+    emptied.titles[0].requirements = Some(String::new());
+    emptied.titles[0].synopsis = Some(" ".into());
+    assert_eq!(emptied.encode(&[]).unwrap(), bytes);
+}
+
+#[test]
+fn a_schema_two_title_round_trips_and_each_new_field_alone_needs_schema_two() {
+    let metadata = schema_two();
+    let bytes = metadata.encode(&[]).unwrap();
+    assert_eq!(std::str::from_utf8(&bytes).unwrap(), SCHEMA_TWO);
+    let decoded = Metadata::decode(&bytes, &[]).unwrap();
+    assert_eq!(decoded.schema(), 2);
+    assert!(!decoded.is_read_only());
+    assert_eq!(decoded.labels, metadata.labels);
+    assert_eq!(decoded.titles, metadata.titles);
+    assert_eq!(decoded.encode(&[]).unwrap(), bytes);
+    let alone: [&dyn Fn(&mut Title); 5] = [
+        &|t| {
+            t.needs.insert("cpu".into(), vec!["fast+".into()]);
+        },
+        &|t| t.requirements = Some("Any".into()),
+        &|t| t.work_id = Some("work".into()),
+        &|t| t.synopsis = Some("What the work is.".into()),
+        &|t| {
+            t.work_ids.insert("mobygames".into(), "work".into());
+        },
+    ];
+    for edit in alone {
+        let mut one = Metadata::new("c64");
+        let mut record = title("a");
+        edit(&mut record);
+        one.titles.push(record);
+        let encoded = one.encode(&[]).unwrap();
+        assert!(encoded.starts_with(br#"{"schema":2,"#), "{one:?}");
+        assert_eq!(Metadata::decode(&encoded, &[]).unwrap().titles, one.titles);
+    }
+    // Without any new field the same title writes schema 1 again.
+    let mut back = decoded;
+    let record = &mut back.titles[0];
+    record.needs.clear();
+    record.requirements = None;
+    record.work_id = None;
+    record.synopsis = None;
+    record.work_ids.clear();
+    assert!(back.encode(&[]).unwrap().starts_with(br#"{"schema":1,"#));
+}
+
+#[test]
+fn schema_one_refuses_the_schema_two_fields_and_shows_them_read_only() {
+    let stated_one = SCHEMA_TWO.replacen(r#""schema":2"#, r#""schema":1"#, 1);
+    assert_eq!(
+        Metadata::decode(stated_one.as_bytes(), &[])
+            .unwrap_err()
+            .to_string(),
+        "invalid image: metadata schema 1 has no title field needs"
+    );
+    let shown = Metadata::decode_for_display(stated_one.as_bytes(), &[]).unwrap();
+    assert!(shown.is_read_only());
+    assert_eq!(shown.titles, schema_two().titles);
+    for field in [
+        json!({"needs":{}}),
+        json!({"work_ids":{}}),
+        json!({"requirements":"Any"}),
+        json!({"work_id":"work"}),
+        json!({"synopsis":"Text"}),
+    ] {
+        let mut record = json!({"id":"a","title":"A"});
+        for (key, value) in field.as_object().unwrap() {
+            record[key] = value.clone();
+        }
+        let bytes =
+            serde_json::to_vec(&json!({"schema":1,"platform":"c64","titles":[record]})).unwrap();
+        assert!(Metadata::decode(&bytes, &[]).is_err(), "accepted {field}");
+    }
+}
+
+#[test]
+fn schema_two_fields_are_checked_for_shape_and_never_against_a_vocabulary() {
+    for bad in [
+        json!({"id":"a","title":"A","needs":{"Video":["vga"]}}),
+        json!({"id":"a","title":"A","needs":{"tv-system":["pal"]}}),
+        json!({"id":"a","title":"A","needs":{"video":[]}}),
+        json!({"id":"a","title":"A","needs":{"video":["vga","vga"]}}),
+        json!({"id":"a","title":"A","needs":{"video":["v g a"]}}),
+        json!({"id":"a","title":"A","needs":{"video":["vga,ega"]}}),
+        json!({"id":"a","title":"A","needs":{"video":"vga"}}),
+        json!({"id":"a","title":"A","work_id":"Contra"}),
+        json!({"id":"a","title":"A","work_id":""}),
+        json!({"id":"a","title":"A","work_ids":{"Steam":"1"}}),
+        json!({"id":"a","title":"A","work_ids":{"moby-games":"1"}}),
+        json!({"id":"a","title":"A","work_ids":{"wikidata":" "}}),
+        json!({"id":"a","title":"A","work_ids":{"wikidata":"Q1\n"}}),
+        json!({"id":"a","title":"A","requirements":"640K\u{7}"}),
+        json!({"id":"a","title":"A","synopsis":"Line one\nline two"}),
+        json!({"id":"a","title":"A","work_ids":{"wikidata":1}}),
+        json!({"id":"a","title":"A","requirements":["Any"]}),
+        json!({"id":"a","title":"A","future_field":true}),
+    ] {
+        let bytes =
+            serde_json::to_vec(&json!({"schema":2,"platform":"c64","titles":[bad]})).unwrap();
+        assert!(Metadata::decode(&bytes, &[]).is_err(), "accepted {bad}");
+    }
+    // A kind and values no provider knows today are kept: readers never
+    // consult a vocabulary, so a value a later release adds still reads.
+    let later = json!({"schema":2,"platform":"c64","titles":[{"id":"a","title":"A","needs":{"tv_system":["pal","ntsc"]}}]});
+    let decoded = Metadata::decode(&serde_json::to_vec(&later).unwrap(), &[]).unwrap();
+    assert_eq!(decoded.titles[0].needs["tv_system"], ["pal", "ntsc"]);
+    // A writer asks the provider; one that states no vocabulary takes no needs.
+    assert!(Provider.needs().is_none());
+    assert!(image_store::needs::check_metadata(&decoded, Provider.needs()).is_err());
+    // So is a catalogue a later release adds to the work's ids: it reads and
+    // is shown, and only writing it is refused.
+    let later = json!({"schema":2,"platform":"c64","titles":[{"id":"a","title":"A","work_ids":{"lemon_amiga":"1","wikidata":"Q1"}}]});
+    let decoded = Metadata::decode(&serde_json::to_vec(&later).unwrap(), &[]).unwrap();
+    assert!(!decoded.is_read_only());
+    assert_eq!(decoded.titles[0].work_ids["lemon_amiga"], "1");
+    assert_eq!(
+        decoded.encode(&[]).unwrap_err().to_string(),
+        "invalid image: the work's id in catalogue \"lemon_amiga\": the catalogue is not one of wikidata, mobygames, igdb"
+    );
+    // The writer refuses what the reader refuses.
+    let mut metadata = Metadata::new("c64");
+    metadata.titles.push(Title {
+        needs: BTreeMap::from([("cpu".into(), Vec::new())]),
+        ..title("a")
+    });
+    assert!(metadata.encode(&[]).is_err());
+    metadata.titles[0].needs.clear();
+    metadata.titles[0].work_ids = BTreeMap::from([("steam".into(), "1".into())]);
+    assert!(metadata.encode(&[]).is_err());
+}
+
+#[test]
+fn a_future_schema_keeps_the_schema_two_fields_this_release_understands() {
+    let future = json!({"schema":3,"platform":"c64","titles":[{"id":"a","title":"A",
+        "needs":{"cpu":["fast"]},"requirements":"Kept","work_id":"Bad Id","synopsis":"Also kept",
+        "work_ids":{"wikidata":"Q1","steam":"9","Bad Name":"2"},"brand_new":1},
+        {"id":"b","title":"B","needs":{"cpu":[]}}]});
+    let decoded = Metadata::decode(&serde_json::to_vec(&future).unwrap(), &[]).unwrap();
+    assert!(decoded.is_read_only());
+    let [a, b] = &decoded.titles[..] else {
+        panic!("two titles: {decoded:?}");
+    };
+    assert_eq!(a.needs["cpu"], ["fast"]);
+    assert_eq!(a.requirements.as_deref(), Some("Kept"));
+    assert_eq!(a.work_id, None);
+    assert_eq!(a.synopsis.as_deref(), Some("Also kept"));
+    assert_eq!(
+        a.work_ids,
+        BTreeMap::from([
+            ("steam".to_owned(), "9".to_owned()),
+            ("wikidata".to_owned(), "Q1".to_owned()),
+        ])
+    );
+    assert!(b.needs.is_empty());
+}
+
+#[test]
+fn a_schema_two_catalogue_takes_local_edits_and_stays_schema_two() {
+    let temp = Temp::new();
+    let store = temp.store();
+    let image = publish(&store, &schema_two(), "work:europe");
+    store
+        .edit_library(&image.digest, |entry| {
+            let mut edit = TitleEdit::default();
+            edit.set("description", json!("Edited release text"))?;
+            entry.catalogue.titles.insert("probotector".into(), edit);
+            Ok(())
+        })
+        .unwrap();
+    let edited = store
+        .publish_overlay(&image, "work:edited", &Provider)
+        .unwrap();
+    let resolved = store.resolve("work:edited", &Provider).unwrap();
+    assert!(!resolved.metadata_read_only);
+    let decoded = Metadata::decode(&resolved.metadata, &resolved.manifest.layers).unwrap();
+    assert_eq!(decoded.schema(), 2);
+    let mut expected = schema_two().titles;
+    expected[0].description = Some("Edited release text".into());
+    assert_eq!(decoded.titles, expected);
+    // The summary reads schema 2 in full: writable, and its text searchable.
+    let mut cache = SummaryCache::open(&store).unwrap();
+    while !cache.pending().is_empty() {
+        cache.rebuild(&store, 8, &[], &[]).unwrap();
+    }
+    let row = cache.summary(&edited.digest).unwrap();
+    assert_eq!(row.metadata_schema, 2);
+    assert!(!row.metadata_is_read_only());
+    assert_eq!(cache.query("gun", &Facets::default()).len(), 2);
+}
+
+/// A summary cache an older build wrote read schema 2 as a read-only
+/// projection without the new fields; this build rebuilds its rows.
+#[test]
+fn summaries_an_older_build_cached_are_rebuilt() {
+    let temp = Temp::new();
+    let store = temp.store();
+    let image = publish(&store, &schema_two(), "work:europe");
+    let mut cache = SummaryCache::open(&store).unwrap();
+    while !cache.pending().is_empty() {
+        cache.rebuild(&store, 8, &[], &[]).unwrap();
+    }
+    assert_eq!(cache.query("gun", &Facets::default()).len(), 1);
+    // The row as release 0.0.2 cached it: its cache schema, and titles
+    // summarized without the synopsis.
+    let path = store.root().join("cache/summaries/index.json");
+    let mut file: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    file["schema"] = json!(6);
+    let row = &mut file["images"][image.digest.to_string()];
+    for title in row["titles"].as_array_mut().unwrap() {
+        title["tokens"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|t| t != "gun" && t != "run" && t != "and");
+    }
+    fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+    let mut cache = SummaryCache::open(&store).unwrap();
+    assert_eq!(cache.pending().len(), 1);
+    while !cache.pending().is_empty() {
+        cache.rebuild(&store, 8, &[], &[]).unwrap();
+    }
+    assert_eq!(cache.query("gun", &Facets::default()).len(), 1);
 }

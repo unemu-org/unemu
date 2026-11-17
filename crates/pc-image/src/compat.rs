@@ -870,6 +870,8 @@ mod tests {
             FIRMWARE_KEYS,
             compat::REDISTRIBUTION,
             compat::PLATFORMS,
+            compat::METADATA_SCHEMAS,
+            compat::TITLE_FIELDS,
         ]
         .iter()
         .flat_map(|rows| rows.iter().map(|(_, since)| *since))

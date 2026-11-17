@@ -110,6 +110,9 @@ impl ConfigValidator for PcProvider {
     ) -> image_store::Result<image_store::compat::AppVersion> {
         crate::compat::release(manifest, config)
     }
+    fn needs(&self) -> Option<&dyn image_store::needs::Vocabulary> {
+        Some(&crate::needs::PcNeeds)
+    }
 }
 fn store_error(e: Error) -> image_store::Error {
     image_store::Error::Invalid(e.to_string())

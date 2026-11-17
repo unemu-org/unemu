@@ -1,13 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Platform-neutral catalogue codec; machine-images §2.1. Software platforms are
 //! extensible strings, independent of the machine provider's routing platform.
+//!
+//! Schema 2 adds what a title needs from its platform ([`crate::needs`]), the
+//! box's own requirements text, and the work a release belongs to: its id,
+//! its synopsis and its ids in outside catalogues (recipes §6.4, §6.7, §6.16).
+//! The writer uses the oldest schema that holds every field a title sets
+//! ([`crate::compat::TITLE_FIELDS`]), so metadata without the new fields stays
+//! schema 1 with the same bytes, which every release reads. Release 0.0.2
+//! shows schema 2 read-only and still runs the artifact.
 
 use crate::{
-    artifact::valid_platform, invalid, media_type, Descriptor, Digest, Result, MAX_SMALL_BLOB,
+    artifact::valid_platform,
+    compat, invalid,
+    media_set::{valid_id, valid_text},
+    media_type,
+    needs::{self, Needs},
+    Descriptor, Digest, Result, MAX_SMALL_BLOB,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// The newest metadata schema this build reads and writes in full; a newer
+/// one is shown read-only.
+pub const SCHEMA: u32 = 2;
 
 /// Canonical software-environment choices. Stored strings remain extensible so
 /// a newer provider's vocabulary survives round trips and remains searchable.
@@ -23,6 +40,13 @@ pub const SOFTWARE_PLATFORMS: &[&str] = &[
     "Atari ST",
     "other",
 ];
+
+/// Catalogues outside this program whose ids a title's work may carry
+/// (recipes §6.8): ids are strings this program never interprets, and it
+/// never copies a catalogue's data. Writers state only these; readers keep
+/// any catalogue name of a valid shape, so one a later release adds still
+/// reads.
+pub const WORK_ID_KINDS: &[&str] = &["wikidata", "mobygames", "igdb"];
 
 /// Positive inclusive player-count range.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +99,28 @@ pub struct Title {
     pub screenshots: Vec<Digest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch: Option<serde_json::Map<String, Value>>,
+    /// Schema 2: what the title needs from its platform family, as kinds of
+    /// feature and their alternatives ([`crate::needs`]). A kind not stated
+    /// is unknown, not absent.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub needs: Needs,
+    /// Schema 2: the box's own words about the machine it wants ("IBM PC, XT,
+    /// AT; 640K; CGA, EGA or VGA"), shown beside the needs, never evaluated.
+    /// Blank text is not written.
+    #[serde(default, skip_serializing_if = "blank")]
+    pub requirements: Option<String>,
+    /// Schema 2: the id of the work this release belongs to, the last
+    /// component of its repository (recipes §6.16).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_id: Option<String>,
+    /// Schema 2: what the work is, shared by its releases; the description
+    /// says what this release is. Blank text is not written.
+    #[serde(default, skip_serializing_if = "blank")]
+    pub synopsis: Option<String>,
+    /// Schema 2: the work's ids in outside catalogues, keyed by the
+    /// catalogue's name, one of [`WORK_ID_KINDS`] when written.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub work_ids: BTreeMap<String, String>,
 }
 
 impl Title {
@@ -97,7 +143,54 @@ impl Title {
         }) {
             return Err(invalid("launch requires a profile string"));
         }
+        needs::shape(&self.needs)?;
+        for (field, text) in [
+            ("requirements", &self.requirements),
+            ("synopsis", &self.synopsis),
+        ] {
+            if text.as_deref().is_some_and(has_control) {
+                return Err(invalid(format!("{field}: no control characters")));
+            }
+        }
+        if let Some(work) = self.work_id.as_deref().filter(|id| !valid_id(id)) {
+            return Err(invalid(format!(
+                "work {work:?}: a work id is lowercase ASCII letters, digits, '.', '_' and '-', starting with a letter or digit, at most 64 characters"
+            )));
+        }
+        for (catalogue, id) in &self.work_ids {
+            // The shape of a catalogue name is the shape of a need kind.
+            if !needs::valid_kind(catalogue) {
+                return Err(invalid(format!(
+                    "the work's id in catalogue {catalogue:?}: a catalogue name is lowercase ASCII letters, digits and '_', starting with a letter, at most 32 characters"
+                )));
+            }
+            if !valid_text(id) {
+                return Err(invalid(format!(
+                    "the work's {catalogue} id: at most 128 characters, no control characters, not blank"
+                )));
+            }
+        }
         Ok(())
+    }
+
+    /// What only a writer refuses: a catalogue this release does not know.
+    fn check_written(&self) -> Result<()> {
+        for catalogue in self.work_ids.keys() {
+            if !WORK_ID_KINDS.contains(&catalogue.as_str()) {
+                return Err(invalid(format!(
+                    "the work's id in catalogue {catalogue:?}: the catalogue is not one of {}",
+                    WORK_ID_KINDS.join(", ")
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// The oldest metadata schema that holds every field this record sets.
+    fn schema(&self) -> Result<u32> {
+        let value = serde_json::to_value(self).map_err(|e| invalid(e.to_string()))?;
+        let fields = value.as_object().into_iter().flat_map(|o| o.keys());
+        compat::metadata_schema_for(fields.map(String::as_str))
     }
 
     pub(crate) fn artwork(&self) -> impl Iterator<Item = &Digest> {
@@ -105,7 +198,17 @@ impl Title {
     }
 }
 
-/// A schema-1 catalogue or a read-only display projection.
+/// Text the writer leaves out: absent or blank.
+fn blank(text: &Option<String>) -> bool {
+    text.as_deref().is_none_or(|t| t.trim().is_empty())
+}
+
+/// C0 control characters and DEL, as [`valid_text`] refuses them.
+fn has_control(text: &str) -> bool {
+    text.chars().any(|c| c <= '\u{1f}' || c == '\u{7f}')
+}
+
+/// A catalogue of schema 1 or 2, or a read-only display projection.
 /// Private schema/read-only state prevents rewriting damaged or future data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -133,11 +236,13 @@ impl Metadata {
         }
     }
 
+    /// The schema the metadata was read with, 1 for new metadata. The
+    /// writer picks its own: the oldest that holds the fields in use.
     pub fn schema(&self) -> u32 {
         self.schema
     }
     pub fn is_read_only(&self) -> bool {
-        self.schema != 1 || self.read_only
+        self.schema > SCHEMA || self.read_only
     }
 
     pub(crate) fn unavailable(platform: &str) -> Self {
@@ -155,8 +260,10 @@ impl Metadata {
         self.warnings.push(reason);
     }
 
-    /// Decode strict v1 or retain individually understood fields of future titles.
-    /// Artwork validation for future schemas remains owned by the manifest closure.
+    /// Decode strict schema 1 or 2, or retain individually understood fields of
+    /// future titles. A title field the stated schema does not hold is
+    /// refused, as an unknown field is. Artwork validation for future schemas
+    /// remains owned by the manifest closure.
     pub fn decode(bytes: &[u8], layers: &[Descriptor]) -> Result<Self> {
         if bytes.len() as u64 > MAX_SMALL_BLOB {
             return Err(invalid("metadata exceeds 1 MiB"));
@@ -171,10 +278,28 @@ impl Metadata {
         if envelope.schema == 0 || !valid_platform(&envelope.platform) {
             return Err(invalid("invalid metadata schema or platform"));
         }
-        if envelope.schema == 1 {
+        if envelope.schema <= SCHEMA {
             let metadata: Self =
                 serde_json::from_slice(bytes).map_err(|e| invalid(e.to_string()))?;
             metadata.validate(layers)?;
+            // The typed decode cannot tell a stated empty collection from an
+            // absent one, so the keys are read as written.
+            let value: Value = serde_json::from_slice(bytes).map_err(|e| invalid(e.to_string()))?;
+            for title in value
+                .get("titles")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                for field in title.as_object().into_iter().flat_map(|o| o.keys()) {
+                    if compat::metadata_schema_for([field.as_str()])? > envelope.schema {
+                        return Err(invalid(format!(
+                            "metadata schema {} has no title field {field}",
+                            envelope.schema
+                        )));
+                    }
+                }
+            }
             return Ok(metadata);
         }
         Self::project(bytes)
@@ -251,6 +376,11 @@ impl Metadata {
                     cover: field(value, "cover").unwrap_or_default(),
                     screenshots: field(value, "screenshots").unwrap_or_default(),
                     launch: field(value, "launch").unwrap_or_default(),
+                    needs: field(value, "needs").unwrap_or_default(),
+                    requirements: field(value, "requirements").unwrap_or_default(),
+                    work_id: field(value, "work_id").unwrap_or_default(),
+                    synopsis: field(value, "synopsis").unwrap_or_default(),
+                    work_ids: field(value, "work_ids").unwrap_or_default(),
                 };
                 if title
                     .players
@@ -266,19 +396,40 @@ impl Metadata {
                 }) {
                     title.launch = None;
                 }
+                if needs::shape(&title.needs).is_err() {
+                    title.needs.clear();
+                }
+                if title.work_id.as_deref().is_some_and(|id| !valid_id(id)) {
+                    title.work_id = None;
+                }
+                for text in [&mut title.requirements, &mut title.synopsis] {
+                    if text.as_deref().is_some_and(has_control) {
+                        *text = None;
+                    }
+                }
+                title
+                    .work_ids
+                    .retain(|catalogue, id| needs::valid_kind(catalogue) && valid_text(id));
                 metadata.titles.push(title);
             }
         }
         Ok(metadata)
     }
 
-    /// Canonical writer: fixed struct order and sorted object keys, no timestamps.
+    /// Canonical writer: fixed struct order and sorted object keys, no
+    /// timestamps, and the oldest schema that holds every field in use.
     pub fn encode(&self, layers: &[Descriptor]) -> Result<Vec<u8>> {
         if self.is_read_only() {
             return Err(invalid("newer metadata is read-only"));
         }
         self.validate(layers)?;
-        let bytes = serde_json::to_vec(self).map_err(|e| invalid(e.to_string()))?;
+        let mut written = self.clone();
+        written.schema = 1;
+        for title in &self.titles {
+            title.check_written()?;
+            written.schema = written.schema.max(title.schema()?);
+        }
+        let bytes = serde_json::to_vec(&written).map_err(|e| invalid(e.to_string()))?;
         if bytes.len() as u64 > MAX_SMALL_BLOB {
             return Err(invalid("metadata exceeds 1 MiB"));
         }

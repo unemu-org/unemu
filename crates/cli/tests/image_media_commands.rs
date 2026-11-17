@@ -415,14 +415,14 @@ fn review_schema_two_summary_is_discarded_and_rebuilt() {
     assert_eq!(code, 0, "{error}");
     let path = p.join("store/cache/summaries/index.json");
     let bytes = fs::read_to_string(&path).unwrap();
-    assert!(bytes.contains("\"schema\":6"));
-    fs::write(&path, bytes.replacen("\"schema\":6", "\"schema\":2", 1)).unwrap();
+    assert!(bytes.contains("\"schema\":7"));
+    fs::write(&path, bytes.replacen("\"schema\":7", "\"schema\":2", 1)).unwrap();
     let store = Store::open_existing(p.join("store")).unwrap();
     let mut cache = SummaryCache::open(&store).unwrap();
     assert_eq!(cache.pending().len(), 1);
     cache.rebuild(&store, 64, &[], &[]).unwrap();
     assert!(cache.pending().is_empty());
-    assert!(fs::read_to_string(path).unwrap().contains("\"schema\":6"));
+    assert!(fs::read_to_string(path).unwrap().contains("\"schema\":7"));
     let command = vec![
         "image".into(),
         "ls".into(),
@@ -1002,6 +1002,155 @@ fn set_labels_version_and_edition_land_in_the_metadata_in_order_and_show_prints_
     for key in ["version", "edition", "set-label"] {
         assert!(!shown.contains(&format!("\n{key}\t")), "{shown}");
     }
+}
+
+#[test]
+fn needs_requirements_and_the_work_land_in_metadata_schema_two_and_show_prints_them() {
+    use image_store::{metadata::Metadata, needs};
+    let t = Temp::new();
+    let p = &t.0;
+    let disk = raw_disk(&p.join("disk.img"), 9);
+    let import = |tag: &str, flags: &[&str]| {
+        let mut args = vec![
+            "import",
+            disk.to_str().unwrap(),
+            "--title",
+            "Synthetic work",
+            "--tag",
+            tag,
+            "--create",
+        ];
+        args.extend(flags);
+        run(p, &args)
+    };
+    let flags = [
+        "--need",
+        "video=vga",
+        "--need",
+        "sound=sb,adlib,pc-speaker,none",
+        "--need",
+        "cpu=286+",
+        "--need",
+        "memory=640K",
+        "--requirements",
+        "IBM AT or compatible; 640K; VGA",
+        "--work",
+        "synthetic-work",
+        "--synopsis",
+        "A synthetic work.",
+        "--work-id",
+        "wikidata=Q1",
+    ];
+    let lines = "requirements\t\"IBM AT or compatible; 640K; VGA\"\n\
+                 need\tcpu\t286+\n\
+                 need\tmemory\t640K\n\
+                 need\tsound\tsb,adlib,pc-speaker,none\n\
+                 need\tvideo\tvga\n\
+                 work\t\"synthetic-work\"\n\
+                 synopsis\t\"A synthetic work.\"\n\
+                 work-id\twikidata\t\"Q1\"\n";
+    let (code, preview, err) = import(
+        "synthetic-work:r1",
+        &[&flags[..], &["--dry-run"][..]].concat(),
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(preview.contains(lines), "{preview}");
+    assert_eq!(blob_count(p), 0, "a dry run writes no blobs");
+    let (code, out, err) = import("synthetic-work:r1", &flags);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains(lines), "{out}");
+
+    let store = Store::open_existing(p.join("store")).unwrap();
+    let image = store
+        .resolve("synthetic-work:r1", &Validator(&PcMediaFormats))
+        .unwrap();
+    let metadata = Metadata::decode(&image.metadata, &image.manifest.layers).unwrap();
+    assert_eq!(metadata.schema(), 2);
+    let [title] = &metadata.titles[..] else {
+        panic!("one title: {metadata:?}");
+    };
+    assert_eq!(title.needs["sound"], ["sb", "adlib", "pc-speaker", "none"]);
+    assert_eq!(title.work_id.as_deref(), Some("synthetic-work"));
+    assert_eq!(title.work_ids["wikidata"], "Q1");
+    assert_eq!(
+        image.manifest.annotations[needs::ANNOTATION],
+        "cpu=286+;memory=640K;sound=sb,adlib,pc-speaker,none;video=vga"
+    );
+    let (code, shown, err) = run(p, &["show", "synthetic-work:r1"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(shown.contains(lines), "{shown}");
+
+    // A set without the flags keeps schema 1 and shows none of these lines.
+    let (code, _, err) = import("test-plain:r1", &[]);
+    assert_eq!(code, 0, "{err}");
+    let plain = store
+        .resolve("test-plain:r1", &Validator(&PcMediaFormats))
+        .unwrap();
+    assert!(plain.metadata.starts_with(br#"{"schema":1,"#));
+    assert!(!plain.manifest.annotations.contains_key(needs::ANNOTATION));
+    let (code, shown, err) = run(p, &["show", "test-plain:r1"]);
+    assert_eq!(code, 0, "{err}");
+    for key in ["requirements", "need", "work", "synopsis", "work-id"] {
+        assert!(!shown.contains(&format!("\n{key}\t")), "{shown}");
+    }
+}
+
+#[test]
+fn an_unknown_need_or_work_id_is_refused_before_anything_is_written() {
+    let t = Temp::new();
+    let p = &t.0;
+    let disk = raw_disk(&p.join("disk.img"), 10);
+    for (flags, reason) in [
+        (
+            vec!["--need", "video=8514"],
+            "need video: \"8514\" is not one of mda, hercules, cga, ega, mcga, vga, svga, none",
+        ),
+        (
+            vec!["--need", "chipset=aga"],
+            "need kind \"chipset\" is not one of cpu, fpu, video, sound, memory, ems, xms, input",
+        ),
+        (vec!["--need", "memory=640"], "need memory: \"640\""),
+        (
+            vec!["--need", "memory=640K,1M"],
+            "need memory: a quantity is one minimum, not 2 values",
+        ),
+        (
+            vec!["--work-id", "steam=1"],
+            "the work's id in catalogue \"steam\": the catalogue is not one of wikidata, mobygames, igdb",
+        ),
+        (
+            vec!["--work", "synthetic-work"],
+            "work \"synthetic-work\": the releases of a work are tagged in the repository named after it, \
+             but the tag test-refused:r1 names the repository \"test-refused\", whose last component is \"test-refused\"",
+        ),
+    ] {
+        let mut args = vec![
+            "import",
+            disk.to_str().unwrap(),
+            "--title",
+            "Synthetic refused work",
+            "--tag",
+            "test-refused:r1",
+            "--create",
+        ];
+        args.extend(&flags);
+        let (code, _, err) = run(p, &args);
+        assert_eq!(code, 1, "{flags:?}: {err}");
+        assert!(err.contains(reason), "{flags:?}: {err}");
+        // The field and its rule, without the prefix of a damaged artifact.
+        assert!(!err.contains("invalid image"), "{flags:?}: {err}");
+        assert_eq!(
+            blob_count(p),
+            0,
+            "{flags:?}: a refused import writes no blobs"
+        );
+    }
+    // The usage names the schema-2 flags.
+    let (_, _, err) = run(p, &["import", "--need", "cpu"]);
+    assert!(
+        err.contains("[--need KIND=VALUE[,VALUE]...]... [--requirements TEXT] [--work ID] [--synopsis TEXT] [--work-id wikidata|mobygames|igdb=ID]..."),
+        "{err}"
+    );
 }
 
 #[test]

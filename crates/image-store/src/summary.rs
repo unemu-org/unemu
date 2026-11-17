@@ -150,7 +150,7 @@ pub struct ImageSummary {
 impl ImageSummary {
     /// Catalogue fields from newer schemas may be displayed but never edited.
     pub fn metadata_is_read_only(&self) -> bool {
-        self.metadata_schema != 1
+        self.metadata_schema > crate::metadata::SCHEMA
     }
 }
 
@@ -183,7 +183,7 @@ struct CacheFile {
 impl Default for CacheFile {
     fn default() -> Self {
         Self {
-            schema: 6,
+            schema: 7,
             images: BTreeMap::new(),
             failures: BTreeMap::new(),
             warnings: Vec::new(),
@@ -205,8 +205,9 @@ fn read_cache(store: &Store) -> Result<CacheFile> {
                 for (id, failure) in &mut cache.failures {
                     failure.image = id.clone();
                 }
-                // Schema 6 adds firmware licences and labels; older rows are rebuilt.
-                if cache.schema == 6
+                // Schema 7 reads metadata schema 2 in full, which older builds
+                // summarized as a read-only projection; older rows are rebuilt.
+                if cache.schema == 7
                     && cache.images.iter().all(|(id, row)| id == &row.image)
                     && cache.failures.iter().all(|(id, row)| id == &row.image)
                 {

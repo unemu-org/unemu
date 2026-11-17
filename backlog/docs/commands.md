@@ -34,6 +34,7 @@ cargo run --offline -p cli -- image machine rm dos-games --store /path/to/store 
 cargo run --offline -p cli -- image media import /path/to/disks --title "Installation set" --tag private/media/ibm-pc/install:1.0-r1 --store /path/to/store --create
 cargo run --offline -p cli -- image media import /path/to/disk1.img /path/to/disk2.img --title "Installation set" --tag private/media/ibm-pc/install:2.0-r1 --label '1=Setup' --extra /path/to/manual.txt:MANUAL.TXT --store /path/to/store
 cargo run --offline -p cli -- image media import /path/to/disc.iso --title "Optical set" --tag private/media/ibm-pc/optical:1.0-r1 --format 1=iso-2048 --store /path/to/store
+cargo run --offline -p cli -- image media import /path/to/game.img --title "Game" --tag private/media/ibm-pc/game:1.0-r1 --need cpu=286+ --need memory=640K --need video=ega,vga --need sound=adlib,pc-speaker,none --requirements "IBM AT or compatible; 640K; EGA or VGA" --work game --synopsis "What the game is." --work-id mobygames=game --store /path/to/store
 cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag private/media/ibm-pc/wolf3d-shareware:1.4-r1 --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1992 --genre "first-person shooter" --platform DOS --description 'Wolfenstein 3-D, episode 1, Escape from Wolfenstein, version 1.4, the shareware episode of a first-person shooter with texture-mapped VGA graphics by id Software, published by Apogee Software. As B.J. Blazkowicz the player escapes from Castle Wolfenstein through ten floors, one of them secret. It needs a 286 or better. The disk holds the files of the original Apogee shareware archive 1wolf14.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store --create
 cargo run --offline -p cli -- image media ls --store /path/to/store
 cargo run --offline -p cli -- image media show private/media/ibm-pc/install:1.0 --store /path/to/store
@@ -188,6 +189,38 @@ which registry web UIs show: `org.opencontainers.image.title`, `.description`
 developers), lists joined with `, ` in the order given. A field not given adds
 no annotation, so a set without the flags keeps its digest; there is never a
 creation time.
+
+Five more flags fill the fields of metadata schema 2
+([`design/machine-images.md`](design/machine-images.md) §2.1): `--need
+KIND=VALUE[,VALUE]...` states one kind of feature the title needs and its
+alternatives, best first (`--need cpu=286+ --need memory=640K --need
+sound=sb,adlib,pc-speaker,none --need video=vga`), may be repeated once per
+kind, and is checked against the `ibm-pc` needs vocabulary when the set is
+planned: an unknown kind or value is refused before anything is written,
+naming what is known (`cpu` `8088`, `286`, `386`, `486`, `pentium`, each with
+an optional `+` for "or later"; `fpu` `none`, `287`, `387`; `video` `mda`,
+`hercules`, `cga`, `ega`, `mcga`, `vga`, `svga`; `sound` `pc-speaker`,
+`tandy`, `adlib`, `sb`, `sbpro`, `sb16`, `gus`, `mt32`; `memory`, `ems` and
+`xms` as one minimum such as `640K` or `4M`; `input` `mouse`, `joystick`;
+`none` in every kind but `cpu` and the quantities). `--requirements TEXT` is
+the box's own words about the machine it wants, shown, never evaluated.
+`--work ID` names the work the set is a release of, and must equal the last
+component of the tag's repository (`--work contra` with
+`private/media/ibm-pc/contra:europe-r1`): the releases of a work are tagged in
+the repository named after it. `--synopsis TEXT` says what the work is, and
+`--work-id CATALOGUE=ID` gives the work's id in an outside catalogue,
+`wikidata`, `mobygames` or `igdb`, once per catalogue. Values are trimmed and
+must not be blank, except a need's, which take no spaces; the requirements and
+the synopsis take no control characters. A refusal names the field and its
+rule. Any of these makes the
+metadata schema 2, which release 0.0.2 shows read-only; without them the
+metadata stays schema 1 and the set digest is unchanged. The needs are also
+written to the manifest annotation `unemu.needs` in their compact form
+(`cpu=286+;memory=640K;sound=sb,adlib,pc-speaker,none;video=vga`), so a
+registry browser can warn without fetching the metadata. The preview and
+`image media show` print a `requirements` line, one `need KIND
+VALUE,VALUE` line per kind in kind order, `work` and `synopsis` lines and
+one `work-id KIND "ID"` line per kind, after `edition`.
 
 The command line reproduces the FreeDOS 1.4 Floppy Edition sets that the
 unemu-media repository (<https://github.com/unemu-org/unemu-media>) builds and

@@ -31,7 +31,7 @@ use image_store::{
     media_set::{valid_text, Config, Extra, ExtraKind, MediaFormats, Medium, Validator},
     media_type as mt,
     metadata::{Metadata, Title, SOFTWARE_PLATFORMS},
-    Descriptor, Digest, Manifest, Store,
+    needs, Descriptor, Digest, Manifest, Store,
 };
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
@@ -285,7 +285,8 @@ pub fn extra_kind(path: &Path) -> ExtraKind {
 #[derive(Clone, Debug)]
 pub struct Plan {
     tag: String,
-    /// The manifest's descriptive annotations, read from the title record.
+    /// The manifest's descriptive annotations and the compact copy of the
+    /// title's needs, read from the title record.
     annotations: BTreeMap<String, String>,
     config: Config,
     metadata: Metadata,
@@ -367,6 +368,7 @@ pub fn plan_with(request: &Request, open: Option<&OpenStatement>) -> Result<Plan
         format!("invalid title {:?}", request.title.title)
     })?;
     check_catalogue(&request.title)?;
+    check_work(&request.title, &request.tag)?;
     // Set labels obey the same text rule as every other label, whichever
     // front end built the request.
     for label in &request.labels {
@@ -464,10 +466,17 @@ pub fn plan_with(request: &Request, open: Option<&OpenStatement>) -> Result<Plan
         id: "title".into(),
         ..request.title.clone()
     });
-    metadata.encode(&[])?;
+    metadata.encode(&[]).map_err(catalogue)?;
+    // A need this provider does not know is refused here, when it is
+    // written, never when the set is used.
+    needs::check_metadata(&metadata, PcMediaFormats.needs()).map_err(catalogue)?;
+    let mut annotations = describe(&request.title);
+    if let Some(compact) = needs::annotation(&request.title.needs) {
+        annotations.insert(needs::ANNOTATION.into(), compact);
+    }
     Ok(Plan {
         tag: request.tag.clone(),
-        annotations: describe(&request.title),
+        annotations,
         config,
         metadata,
         media,
@@ -501,6 +510,33 @@ fn check_catalogue(title: &Title) -> Result<()> {
         })?;
     }
     Ok(())
+}
+
+/// The work is the repository (recipes §6.16): a set that names its work is
+/// tagged in the repository whose last component is the work id.
+fn check_work(title: &Title, tag: &str) -> Result<()> {
+    let Some(work) = &title.work_id else {
+        return Ok(());
+    };
+    let repository = tag
+        .rsplit_once(':')
+        .map_or(tag, |(repository, _)| repository);
+    let last = repository.rsplit('/').next().unwrap_or(repository);
+    ensure(work == last, || {
+        format!(
+            "work {work:?}: the releases of a work are tagged in the repository named after it, \
+             but the tag {tag} names the repository {repository:?}, whose last component is {last:?}"
+        )
+    })
+}
+
+/// A catalogue refusal in the field's own words, without the prefix the
+/// codec gives a damaged artifact.
+fn catalogue(error: image_store::Error) -> Refusal {
+    match error {
+        image_store::Error::Invalid(message) => Refusal(message),
+        other => other.into(),
+    }
 }
 
 /// The stated licence, checked, and the positions of the terms-text and
@@ -846,11 +882,11 @@ pub fn publish_checked(
 
 /// An existing tag is compared without writing anything. The stored set is
 /// resolved first; anything but an installation set, or a set whose metadata,
-/// descriptive annotations, disk count, labels, formats, extras, licence
-/// marks or file names differ, is refused before a source is read. Only then
-/// is each source's raw SHA-256 compared with the stored config's decoded
-/// digests, so how the set was stored (compressed or not) never decides the
-/// outcome.
+/// descriptive or needs annotations, disk count, labels, formats, extras,
+/// licence marks or file names differ, is refused before a source is read.
+/// Only then is each source's raw SHA-256 compared with the stored config's
+/// decoded digests, so how the set was stored (compressed or not) never
+/// decides the outcome.
 fn compare_existing(
     store: &Store,
     plan: &Plan,
@@ -901,6 +937,7 @@ fn compare_existing(
         || resolved.metadata != plan.metadata.encode(&[])?
         || DESCRIPTIVE
             .iter()
+            .chain([&needs::ANNOTATION])
             .any(|&key| resolved.manifest.annotations.get(key) != plan.annotations.get(key))
         || image_store::compat::Requirement::of(&resolved.manifest).release()? != release
     {
@@ -2028,6 +2065,130 @@ mod tests {
                 "{refusal}"
             );
         }
+    }
+
+    #[test]
+    fn needs_and_the_work_take_schema_two_and_the_manifest_repeats_the_needs() {
+        let temp = Temp::new("needs");
+        let disk = temp.0.join("disk.img");
+        floppy(&disk, 3);
+        let store = Store::open(temp.0.join("store")).unwrap();
+        let mut set = request(std::slice::from_ref(&disk), "Needy set");
+        set.title.needs = BTreeMap::from([
+            (
+                "sound".into(),
+                vec!["sb".into(), "adlib".into(), "none".into()],
+            ),
+            ("cpu".into(), vec!["286+".into()]),
+            ("video".into(), vec!["vga".into()]),
+        ]);
+        set.title.requirements = Some("IBM AT or compatible; VGA".into());
+        set.title.work_id = Some("test".into());
+        set.title.synopsis = Some("A synthetic work.".into());
+        set.title.work_ids = BTreeMap::from([("wikidata".into(), "Q1".into())]);
+        let compact = "cpu=286+;sound=sb,adlib,none;video=vga";
+        assert_eq!(plan(&set).unwrap().annotations[needs::ANNOTATION], compact);
+        let import = |set: &Request| publish(&store, &plan(set).unwrap(), &|_, _| {}, &|| false);
+        let published = import(&set).unwrap();
+        let resolved = store
+            .resolve_descriptor(published.descriptor(), &Validator(&PcMediaFormats))
+            .unwrap();
+        assert_eq!(resolved.manifest.annotations[needs::ANNOTATION], compact);
+        assert_eq!(
+            needs::parse_annotation(compact).as_ref(),
+            Some(&set.title.needs)
+        );
+        let metadata = Metadata::decode(&resolved.metadata, &resolved.manifest.layers).unwrap();
+        assert_eq!(metadata.schema(), 2);
+        assert!(!metadata.is_read_only());
+        assert_eq!(
+            metadata.titles,
+            [Title {
+                id: "title".into(),
+                ..set.title.clone()
+            }]
+        );
+        // Metadata never raises the marker: it is what the config computes.
+        assert_eq!(
+            image_store::compat::Requirement::of(&resolved.manifest)
+                .release()
+                .unwrap(),
+            crate::compat::media_set_config(&Config::decode(&resolved.config).unwrap()).unwrap()
+        );
+        assert_eq!(
+            import(&set).unwrap(),
+            Outcome::AlreadyImported(published.descriptor().clone())
+        );
+        // Other needs are another set.
+        let mut other = set.clone();
+        other
+            .title
+            .needs
+            .insert("memory".into(), vec!["640K".into()]);
+        let refusal = import(&other).unwrap_err().to_string();
+        assert!(refusal.starts_with("tag conflict"), "{refusal}");
+    }
+
+    #[test]
+    fn an_unknown_need_is_refused_when_the_set_is_planned() {
+        let temp = Temp::new("unknown-need");
+        let disk = temp.0.join("disk.img");
+        floppy(&disk, 4);
+        for (kind, value, message) in [
+            ("video", "8514", "need video: \"8514\" is not one of mda"),
+            ("chipset", "aga", "need kind \"chipset\" is not one of cpu"),
+            (
+                "cpu",
+                "286 ",
+                "need cpu: \"286 \": ASCII letters, digits, '+', '.', '_' and '-', starting with a letter or digit, at most 32 characters",
+            ),
+            (
+                "memory",
+                "640K,512K",
+                "need memory: a quantity is one minimum, not 2 values",
+            ),
+            ("sound", "sb+", "need sound: \"sb+\" is not one of"),
+        ] {
+            let mut set = request(std::slice::from_ref(&disk), "Needy set");
+            set.title.needs =
+                BTreeMap::from([(kind.into(), value.split(',').map(str::to_owned).collect())]);
+            // The refusal names the field and the rule, nothing else first.
+            let refusal = plan(&set).unwrap_err().to_string();
+            assert!(refusal.starts_with(message), "{kind}={value}: {refusal}");
+        }
+        // Without the new fields the metadata stays schema 1 and the manifest
+        // gains no annotation, so earlier sets keep their bytes.
+        let plain = plan(&request(std::slice::from_ref(&disk), "Plain set")).unwrap();
+        assert!(!plain.annotations.contains_key(needs::ANNOTATION));
+        assert!(plain
+            .metadata
+            .encode(&[])
+            .unwrap()
+            .starts_with(br#"{"schema":1,"#));
+    }
+
+    #[test]
+    fn a_work_is_the_repository_its_set_is_tagged_in() {
+        let temp = Temp::new("work-repository");
+        let disk = temp.0.join("disk.img");
+        floppy(&disk, 5);
+        let with = |tag: &str, work: &str| {
+            let mut set = request(std::slice::from_ref(&disk), "Work set");
+            set.tag = tag.into();
+            set.title.work_id = Some(work.into());
+            plan(&set)
+        };
+        assert!(with("private/media/ibm-pc/contra:europe-r1", "contra").is_ok());
+        assert!(with("nas.example:5000/private/media/ibm-pc/contra:r1", "contra").is_ok());
+        assert!(with("contra:r1", "contra").is_ok());
+        assert_eq!(
+            with("private/media/ibm-pc/probotector:europe-r1", "contra")
+                .unwrap_err()
+                .to_string(),
+            "work \"contra\": the releases of a work are tagged in the repository named after it, \
+             but the tag private/media/ibm-pc/probotector:europe-r1 names the repository \
+             \"private/media/ibm-pc/probotector\", whose last component is \"probotector\""
+        );
     }
 
     #[test]

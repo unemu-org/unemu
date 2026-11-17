@@ -997,7 +997,9 @@ Where needs are stored: the lock's metadata carries them (metadata schema 2,
 which older releases show read-only, decision-30 point 5), and the manifest
 carries a compact copy in the annotation `unemu.needs` so Remotes can warn
 from a manifest alone. Both are in the lock, so neither binds a later
-writer.
+writer. The metadata's form and the annotation's encoding are in
+machine-images §2.1 and §2; in the metadata a single value is written as
+an array of one.
 
 ### 6.8. `[ids]` and `[input.<id>]`
 
@@ -2046,6 +2048,18 @@ and template suggestion are *not* in this bead. The first vocabulary is
 the accepted one of §6.7. Depends on: nothing. Must prove:
 0.0.2 opens a schema-2 artifact read-only; a schema-1 artifact keeps its
 bytes when rebuilt; an unknown need is refused at check, not at run.
+Done on 2026-11-17 (`upc-5pw.113.2`): the title record's `needs`,
+`requirements`, `work_id`, `synopsis` and `work_ids` in metadata schema 2
+(machine-images §2.1), which a writer uses only when a title sets one of
+them; the compat rows of decision-30 rate schema 2 and each new field by
+0.0.3 and never raise the marker; the provider seam
+`image_store::needs::Vocabulary`, reached through `ConfigValidator::needs`
+and `MediaFormats::needs`, with the `ibm-pc` vocabulary in
+`pc_image::needs`; the import's check that the work id is the repository's
+last component; the annotation `unemu.needs` (machine-images §2); the
+flags of `upcli image media import` (commands.md). Release 0.0.2's decoder
+shows a schema-2 catalogue read-only, measured. The checks of B4 call the
+same vocabulary.
 
 **B3. FAT builder additions.**
 Scope: in `crates/media/src/fat12`: listed order, per-entry times, a

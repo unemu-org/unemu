@@ -265,6 +265,7 @@ Annotations are string values and never bind hardware or media:
 | `unemu.pull.registry` | Local only, on a tag's manifest descriptor in the store's `index.json`, never in a manifest: the registry host, port included, that a pull wrote the tag from (§3, §5.1). |
 | `unemu.made-here` | Local only, beside `unemu.pull.registry` and never with it: `true` when a write in this library, not a pull, made the tag (§3). |
 | `unemu.min-app-version` | Manifest only, optional: the oldest release of the program providing `unemu.platform` that reads and runs the artifact, a SemVer `MAJOR.MINOR.PATCH`. Absent means no requirement (release 0.0.1). A hint read before any strict decode, never an authority and never part of a config (§5.6). |
+| `unemu.needs` | Manifest only, optional: the `needs` of the artifact's one title (metadata schema 2, §2.1) in a compact form, so a registry browser can warn from the manifest alone ([recipes](recipes.md) §6.7). Each kind stated, in sorted order, as `kind=value,value`, the values in the title's order (best first), the kinds joined by `;`: `cpu=286+;memory=640K;sound=sb,adlib,pc-speaker,none;video=vga`. The value grammar of §2.1 keeps `=`, `,` and `;` out of every kind and value. Written by the installation-set import when the title states needs, absent otherwise, so a set without needs keeps its digest. A hint, never an authority: the metadata is. A reader ignores text that is not exactly what the writer writes for needs of a valid shape (`image_store::needs::parse_annotation`). |
 
 **Export file names (2026-11-17, decision-37 point 3 and its amendment).**
 Every layer of an installation set and of a firmware package names the plain
@@ -480,7 +481,10 @@ journaled workspace media offer crash recovery. Do not silently upgrade policy.
 
 Status: metadata codec, local overlay and summary cache implemented by
 `upc-5pw.12` in `crates/image-store`. Launch-profile compilation and input scripts,
-as well as GUI wiring, are not implemented here.
+as well as GUI wiring, are not implemented here. Schema 2 (below) implemented
+2026-11-17 by `upc-5pw.113.2`: the codec, the `ibm-pc` needs vocabulary, the
+`unemu.needs` annotation and the `image media import` flags; the library's
+warning on a mismatch and its template suggestion are later work.
 
 Rich catalogue metadata belongs in version 1, even for a purely local library.
 Each machine manifest lists one JSON blob of type
@@ -498,7 +502,8 @@ Publishing applies the overlay, verifies the new closure and creates the new
 image/tag; active workspaces still pin the same machine digest.
 
 The JSON envelope is
-`{"schema": 1, "platform": "ibm-pc", "labels": [...], "titles": [...]}`.
+`{"schema": 1, "platform": "ibm-pc", "labels": [...], "titles": [...]}`, with
+`"schema": 2` when a title uses a schema-2 field (below).
 The required top-level `platform` is the machine routing id from the config (§2),
 not a per-title software environment. `labels` are the image-level labels that
 travel with the image. A machine may contain zero, one or several titles; every
@@ -517,6 +522,56 @@ understands read-only and never rewrites that blob.
 | `tags` | Array of free-form tags that travel with the image. |
 | `cover`, `screenshots` | One artwork blob digest and an ordered array of them; each is listed in the manifest `layers`. |
 | `launch` | Optional provider-defined object selected by `profile`; the PC command profile uses a guest `program` path, `arguments` string array and `working_directory` path. |
+
+**Schema 2** adds five optional per-title fields ([recipes](recipes.md)
+§6.4, §6.7, §6.16). The work id and the synopsis are fields of their own by
+the maintainer's answer to Q7 (recipes §16), recorded in decision-39's
+Status and Consequences:
+
+| Per-title fields | Schema v2 form |
+|---|---|
+| `needs` | Object: a kind of feature the title needs from its platform family, mapped to a non-empty array of its alternatives, best first, none repeated (`{"cpu": ["286+"], "sound": ["sb", "adlib", "none"]}`). Every kind stated is required and any one of its values satisfies it; a kind not stated is unknown, not absent. A kind is lowercase ASCII letters, digits and `_`, starting with a letter; a value is ASCII letters, digits, `+`, `.`, `_` and `-`, starting with a letter or digit; each at most 32 characters. |
+| `requirements` | String without control characters: the box's own words about the machine it wants ("IBM PC, XT, AT; 640K; CGA, EGA or VGA"), shown beside the needs, never evaluated. Blank text is not written. |
+| `work_id` | String: the work this release belongs to, the last component of its repository, which the installation-set import checks; lowercase ASCII letters, digits, `.`, `_` and `-`, starting with a letter or digit, at most 64 characters. |
+| `synopsis` | String without control characters: what the work is, shared by its releases; `description` says what this release is. Blank text is not written. |
+| `work_ids` | Object: the work's ids in outside catalogues, keyed by the catalogue's name; each id a string of at most 128 characters, not blank, without control characters, never interpreted. Writers name only `wikidata`, `mobygames` or `igdb`; readers keep any name of a need kind's shape, so a catalogue a later release adds still reads and only rewriting it is refused. |
+
+A writer uses the oldest schema that holds every field a title sets. The
+choice is data: `image_store::compat::TITLE_FIELDS` rates each title field by
+the release that first reads it, and `METADATA_SCHEMAS` rates each schema
+(schema 1 by 0.0.1, schema 2 by 0.0.3), so a field without a row cannot be
+written. Metadata that sets none of the new fields, empty objects and blank
+text included, stays schema 1 with the same bytes, and every artifact built before keeps its
+digest. Readers read schemas 1 and 2 strictly: a schema-1 blob that names a
+schema-2 field, even as an empty object, is refused as an unknown field is,
+and shown read-only. A newer schema is shown read-only with the fields this
+release understands, a schema-2 field of an invalid shape left out. Release
+0.0.2 reads only schema 1: it shows a schema-2 catalogue read-only and still
+runs the artifact (measured with its decoder), so metadata never raises
+`unemu.min-app-version` (§5.6, decision-30 point 5). The local overlay edits
+the fields of schema 1 only; publishing an overlay of a schema-2 image keeps
+its schema-2 fields and schema.
+
+**Needs** are features, never machine models (recipes §6.7). The decoder
+checks only their shape, so a kind or value a later release adds still reads.
+Writers check the platform provider's vocabulary, which shared code knows only
+as data (`image_store::needs::Vocabulary`, reached through the provider traits
+as `ConfigValidator::needs` and `MediaFormats::needs`; a provider without one
+takes no needs): each kind is **ordered** (a point on the provider's scale; a
+trailing `+` means "this one or a later one"), a **quantity** (one value: a
+whole number of up to seven digits, no leading zero, then `K` or `M`, read as
+a minimum) or a **choice** (a name from the provider's list, or `none`, which
+every choice kind takes: the title also works without any feature of that
+kind). An unknown kind or value is refused when metadata is
+written, never when an artifact is used. The vocabulary is append-only: a kind
+or value keeps its name and meaning for good. The `ibm-pc` vocabulary,
+`pc_image::needs::PcNeeds`, is the one recipes §6.7 accepted on 2026-11-17:
+`cpu` ordered `8088`, `286`, `386`, `486`, `pentium`; `fpu` choice `none`,
+`287`, `387`; `video` choice `mda`, `hercules`, `cga`, `ega`, `mcga`, `vga`,
+`svga`; `sound` choice `pc-speaker`, `tandy`, `adlib`, `sb`, `sbpro`, `sb16`,
+`gus`, `mt32`, `none`; `memory` (conventional), `ems` and `xms` quantities;
+`input` choice `mouse`, `joystick`. The installation-set import checks it and
+writes the manifest's compact copy, `unemu.needs` (§2).
 
 Personal `user_rating` (optional integer 0–5) and free-text `notes` live only in
 `local/library.toml`, associated with the library entry and stable title id.

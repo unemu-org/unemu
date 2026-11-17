@@ -25,6 +25,7 @@ pub mod location;
 pub mod machine;
 pub mod media_set;
 pub mod metadata;
+pub mod needs;
 pub mod platform;
 mod store;
 pub mod summary;

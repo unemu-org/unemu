@@ -461,7 +461,7 @@ fn missing_artwork_and_read_only_metadata_fail_before_intent() {
             .unwrap();
         let artwork = Descriptor::new(mt::PNG, png.digest.clone(), png.size);
         let metadata = if read_only {
-            br#"{"schema":2,"platform":"ibm-pc","labels":[],"titles":[]}"#.to_vec()
+            br#"{"schema":3,"platform":"ibm-pc","labels":[],"titles":[]}"#.to_vec()
         } else {
             format!("{{\"schema\":1,\"platform\":\"ibm-pc\",\"labels\":[],\"titles\":[{{\"id\":\"test\",\"title\":\"synthetic\",\"cover\":\"{}\"}}]}}", png.digest).into_bytes()
         };

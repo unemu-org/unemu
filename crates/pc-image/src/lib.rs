@@ -17,6 +17,7 @@ pub mod inspection;
 pub mod machine;
 pub mod media_import;
 pub mod media_set;
+pub mod needs;
 mod provider;
 pub mod revision;
 pub mod template;

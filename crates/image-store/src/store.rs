@@ -85,6 +85,14 @@ pub trait ConfigValidator {
     fn required_release(&self, manifest: &Manifest, config: &[u8]) -> Result<AppVersion> {
         crate::compat::shared_release(manifest, config)
     }
+
+    /// The provider's needs vocabulary (machine-images §2.1), against which
+    /// writers of catalogue metadata check the needs they state
+    /// ([`crate::needs::check_metadata`]). `None`, the default, takes no
+    /// needs. Readers never consult it.
+    fn needs(&self) -> Option<&dyn crate::needs::Vocabulary> {
+        None
+    }
 }
 
 /// One local repository:tag reference and its immutable manifest descriptor.

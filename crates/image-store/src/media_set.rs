@@ -17,6 +17,11 @@ pub trait MediaFormats {
     fn validate_name(&self, name: &str) -> Result<()>;
     /// Return the declared payload type after validating the exact stored length.
     fn validate_format(&self, format: &toml::Table, size: u64) -> Result<&'static str>;
+    /// The needs vocabulary of the platform, as
+    /// [`ConfigValidator::needs`] states it.
+    fn needs(&self) -> Option<&dyn crate::needs::Vocabulary> {
+        None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -145,6 +150,9 @@ impl ConfigValidator for Validator<'_> {
     }
     fn payload_types(&self) -> &[crate::PayloadType] {
         crate::codec::MEDIA_PAYLOAD_TYPES
+    }
+    fn needs(&self) -> Option<&dyn crate::needs::Vocabulary> {
+        self.0.needs()
     }
     fn validate(
         &self,

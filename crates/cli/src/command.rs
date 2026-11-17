@@ -37,6 +37,7 @@ const USAGE: &str = "usage: upcli --boot (Real16 timer demo)
        upcli image machine run ID --store DIR [--max-steps N]
        upcli image media import FILE...|DIR --title TITLE --tag NAME:TAG --store DIR [--create] [--dry-run] [--no-compress] [--label N=TEXT]... [--format N=FORMAT]... [--extra PATH[:DOSNAME]]... [--open --license LicenseRef-NAME --license-text EXTRA] [--open --license EXPRESSION --license-text EXTRA --source EXTRA] [--min-app-version X.Y.Z] [SET-METADATA]
          SET-METADATA: [--publisher P]... [--developer D]... [--year YYYY] [--genre G]... [--platform PLATFORM] [--description TEXT] [--version V] [--edition E] [--set-label L]...
+                       [--need KIND=VALUE[,VALUE]...]... [--requirements TEXT] [--work ID] [--synopsis TEXT] [--work-id wikidata|mobygames|igdb=ID]...
        upcli image firmware import FOLDER|FILES... [--store DIR] [--create] [--rescan] [--dry-run] [--for CATALOGUE-ID [EXTRAS] [METADATA] [--min-app-version X.Y.Z]]
        upcli image firmware import FILE --unlisted ID --role ROLE [--store DIR] [--create] [--dry-run] [EXTRAS] [METADATA] [--min-app-version X.Y.Z]
        upcli image firmware edit NAME:TAG [--to NAME:TAG] [--store DIR] [--regenerate-readme] [METADATA] [--min-app-version X.Y.Z]

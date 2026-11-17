@@ -15,8 +15,11 @@
 //! release that reads it: artifact and payload media types, config keys,
 //! vocabulary values, firmware catalogue entries and accepted ranges. This
 //! module holds the shared rows (the envelope's media types, the platform ids
-//! of the alias table and the keys and values of installation-set and
-//! firmware-package configs); the platform provider holds its own. Release
+//! of the alias table, the keys and values of installation-set and
+//! firmware-package configs, and the metadata schemas and title fields); the
+//! platform provider holds its own. Metadata rows never raise the marker: a
+//! release that does not read a metadata schema shows the catalogue
+//! read-only and still runs the artifact. Release
 //! 0.0.1 is the baseline: everything it reads has [`BASELINE`]. Writers stamp
 //! the maximum over what an artifact uses ([`stamp`]) and leave the
 //! annotation out at the baseline. Readers check the marker leniently before
@@ -525,6 +528,69 @@ pub fn archive_format(format: firmware::ArchiveFormat) -> AppVersion {
     match format {
         Tar | Zip => BASELINE,
     }
+}
+
+/// Metadata schemas (machine-images §2.1), by number: the release that first
+/// reads each one in full. A release shows a schema it does not read
+/// read-only and still runs the artifact, so these rows never raise the
+/// marker; they decide which schema a writer needs ([`metadata_schema_for`])
+/// and which releases show a catalogue read-only. Release 0.0.2 reads only
+/// schema 1.
+pub const METADATA_SCHEMAS: &[Row] = &[("1", BASELINE), ("2", AppVersion::new(0, 0, 3))];
+
+/// Fields of a metadata title record: the release that first reads each. A
+/// writer uses the oldest schema whose release reads every field a title
+/// sets, so metadata without the newer fields keeps schema 1 and its bytes.
+pub const TITLE_FIELDS: &[Row] = &[
+    ("id", BASELINE),
+    ("title", BASELINE),
+    ("sort_title", BASELINE),
+    ("series", BASELINE),
+    ("genres", BASELINE),
+    ("developers", BASELINE),
+    ("publishers", BASELINE),
+    ("platform", BASELINE),
+    ("release_year", BASELINE),
+    ("players", BASELINE),
+    ("languages", BASELINE),
+    ("regions", BASELINE),
+    ("description", BASELINE),
+    ("version", BASELINE),
+    ("edition", BASELINE),
+    ("source_media", BASELINE),
+    ("tags", BASELINE),
+    ("cover", BASELINE),
+    ("screenshots", BASELINE),
+    ("launch", BASELINE),
+    ("needs", AppVersion::new(0, 0, 3)),
+    ("requirements", AppVersion::new(0, 0, 3)),
+    ("work_id", AppVersion::new(0, 0, 3)),
+    ("synopsis", AppVersion::new(0, 0, 3)),
+    ("work_ids", AppVersion::new(0, 0, 3)),
+];
+
+/// The release that first reads metadata `schema` in full; `None` for a
+/// schema no row names, which this build shows read-only.
+pub fn metadata_schema(schema: u32) -> Option<AppVersion> {
+    lookup(&[METADATA_SCHEMAS], &schema.to_string())
+}
+
+/// The oldest metadata schema whose release reads every one of `fields`,
+/// the keys of title records. A field without a row is refused, because no
+/// schema is known to hold it.
+pub fn metadata_schema_for<'a>(fields: impl IntoIterator<Item = &'a str>) -> Result<u32> {
+    let mut release = BASELINE;
+    for field in fields {
+        release = release.max(
+            lookup(&[TITLE_FIELDS], field)
+                .ok_or_else(|| invalid(format!("no compatibility row for title field {field}")))?,
+        );
+    }
+    METADATA_SCHEMAS
+        .iter()
+        .find(|(_, since)| *since >= release)
+        .and_then(|(schema, _)| schema.parse().ok())
+        .ok_or_else(|| invalid(format!("no metadata schema is read by {release}")))
 }
 
 /// The newest release the shared vocabulary of a set's config needs.
@@ -1050,6 +1116,53 @@ mod tests {
         }
     }
 
+    /// Every field of a title record has a row and every row names a field,
+    /// so a new catalogue field cannot ship without deciding its schema.
+    #[test]
+    fn every_title_field_has_a_row() {
+        let fields = struct_fields::<crate::metadata::Title>();
+        for field in fields {
+            assert!(
+                lookup(&[TITLE_FIELDS], field).is_some(),
+                "no row for {field}"
+            );
+        }
+        for (row, _) in TITLE_FIELDS {
+            assert!(fields.contains(row), "row {row} names no field");
+        }
+        assert_eq!(fields.len(), TITLE_FIELDS.len());
+    }
+
+    /// Schema 2 is the next release's: 0.0.2 shows it read-only, this build
+    /// reads it, and a title needs it only for a field schema 1 lacks.
+    #[test]
+    fn metadata_schema_two_is_read_from_0_0_3_and_needed_only_by_its_fields() {
+        let previous = AppVersion::new(0, 0, 2);
+        assert_eq!(metadata_schema(1), Some(BASELINE));
+        assert_eq!(metadata_schema(2), Some(AppVersion::new(0, 0, 3)));
+        assert_eq!(metadata_schema(crate::metadata::SCHEMA + 1), None);
+        assert!(Requirement::Release(metadata_schema(1).unwrap()).met_by(previous));
+        assert!(!Requirement::Release(metadata_schema(2).unwrap()).met_by(previous));
+        assert!(
+            Requirement::Release(metadata_schema(crate::metadata::SCHEMA).unwrap()).met_by(level())
+        );
+        assert_eq!(metadata_schema_for([]).unwrap(), 1);
+        for (field, since) in TITLE_FIELDS {
+            let schema = metadata_schema_for(["id", "title", field]).unwrap();
+            assert_eq!(schema, if *since == BASELINE { 1 } else { 2 }, "{field}");
+        }
+        assert_eq!(
+            metadata_schema_for(["title", "needs", "work_ids"]).unwrap(),
+            2
+        );
+        assert_eq!(
+            metadata_schema_for(["title", "future"])
+                .unwrap_err()
+                .to_string(),
+            "invalid image: no compatibility row for title field future"
+        );
+    }
+
     #[test]
     fn every_shared_payload_and_artifact_type_has_a_row() {
         for kind in crate::codec::MEDIA_PAYLOAD_TYPES
@@ -1077,6 +1190,8 @@ mod tests {
                     FIRMWARE_KEYS,
                     REDISTRIBUTION,
                     PLATFORMS,
+                    METADATA_SCHEMAS,
+                    TITLE_FIELDS,
                 ]
                 .iter()
                 .flat_map(|rows| rows.iter().map(|(_, since)| *since)),

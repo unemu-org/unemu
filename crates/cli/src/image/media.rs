@@ -11,7 +11,10 @@
 //! the year and software-platform rules the shared import applies to the
 //! library's dialog too, and the set's own labels, so a recipe can state
 //! everything `pc_image::template::build_media` states for an installation
-//! set.
+//! set. The flags of metadata schema 2 state the title's needs, checked
+//! against the PC vocabulary when the set is planned (recipes §6.7), the
+//! box's own requirements, and the work the set is a release of: its id, its
+//! synopsis and its ids in outside catalogues (recipes §6.16).
 
 use image_registry::guard;
 use image_store::{
@@ -184,6 +187,48 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
             Some("--edition") if action == "import" && command.title.edition.is_none() => {
                 command.title.edition = Some(catalogue_text(value)?)
             }
+            Some("--requirements")
+                if action == "import" && command.title.requirements.is_none() =>
+            {
+                command.title.requirements = Some(catalogue_text(value)?)
+            }
+            Some("--need") if action == "import" => {
+                let (kind, values) = value
+                    .to_str()
+                    .and_then(|s| s.split_once('='))
+                    .ok_or("--need expects KIND=VALUE[,VALUE]...")?;
+                let values: Vec<String> = values.split(',').map(str::to_owned).collect();
+                if kind.is_empty() || values.iter().any(String::is_empty) {
+                    return Err("--need expects KIND=VALUE[,VALUE]...");
+                }
+                if command.title.needs.insert(kind.into(), values).is_some() {
+                    return Err("--need names one kind twice");
+                }
+            }
+            Some("--work") if action == "import" && command.title.work_id.is_none() => {
+                command.title.work_id = Some(catalogue_text(value)?)
+            }
+            Some("--synopsis") if action == "import" && command.title.synopsis.is_none() => {
+                command.title.synopsis = Some(catalogue_text(value)?)
+            }
+            Some("--work-id") if action == "import" => {
+                let (kind, id) = value
+                    .to_str()
+                    .and_then(|s| s.split_once('='))
+                    .ok_or("--work-id expects CATALOGUE=ID")?;
+                let id = id.trim();
+                if kind.is_empty() || id.is_empty() {
+                    return Err("--work-id expects CATALOGUE=ID");
+                }
+                if command
+                    .title
+                    .work_ids
+                    .insert(kind.into(), id.into())
+                    .is_some()
+                {
+                    return Err("--work-id names one catalogue twice");
+                }
+            }
             Some("--set-label") if action == "import" => {
                 let label = catalogue_text(value)?;
                 // The dialog's rule for its Labels field and for disk labels.
@@ -252,7 +297,8 @@ fn catalogue_text(value: &OsString) -> Result<String, &'static str> {
 }
 
 /// The catalogue fields and labels a set states, one line per value in
-/// stated order; nothing for a field left unknown.
+/// stated order (needs and work ids by kind); nothing for a field left
+/// unknown.
 fn write_catalogue(
     output: &mut impl Write,
     title: &Title,
@@ -281,6 +327,21 @@ fn write_catalogue(
     }
     if let Some(edition) = &title.edition {
         writeln!(output, "edition\t{edition:?}")?;
+    }
+    if let Some(requirements) = &title.requirements {
+        writeln!(output, "requirements\t{requirements:?}")?;
+    }
+    for (kind, values) in &title.needs {
+        writeln!(output, "need\t{kind}\t{}", values.join(","))?;
+    }
+    if let Some(work) = &title.work_id {
+        writeln!(output, "work\t{work:?}")?;
+    }
+    if let Some(synopsis) = &title.synopsis {
+        writeln!(output, "synopsis\t{synopsis:?}")?;
+    }
+    for (kind, id) in &title.work_ids {
+        writeln!(output, "work-id\t{kind}\t{id:?}")?;
     }
     for label in labels {
         writeln!(output, "set-label\t{label:?}")?;
@@ -645,9 +706,98 @@ mod tests {
     }
 
     #[test]
+    fn the_schema_two_flags_fill_the_title_record() {
+        let command = parse_import(&[
+            "--need",
+            "sound=sb,adlib,none",
+            "--requirements",
+            " IBM AT; VGA ",
+            "--need",
+            "cpu=286+",
+            "--work",
+            "contra",
+            "--synopsis",
+            "A run-and-gun game.",
+            "--work-id",
+            "wikidata=Q1",
+            "--work-id",
+            "igdb= contra ",
+        ])
+        .unwrap();
+        assert_eq!(
+            command.title.needs,
+            BTreeMap::from([
+                ("cpu".to_owned(), vec!["286+".to_owned()]),
+                (
+                    "sound".to_owned(),
+                    vec!["sb".to_owned(), "adlib".to_owned(), "none".to_owned()]
+                ),
+            ])
+        );
+        assert_eq!(command.title.requirements.as_deref(), Some("IBM AT; VGA"));
+        assert_eq!(command.title.work_id.as_deref(), Some("contra"));
+        assert_eq!(
+            command.title.synopsis.as_deref(),
+            Some("A run-and-gun game.")
+        );
+        assert_eq!(
+            command.title.work_ids,
+            BTreeMap::from([
+                ("igdb".to_owned(), "contra".to_owned()),
+                ("wikidata".to_owned(), "Q1".to_owned()),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_malformed_or_repeated_schema_two_flag_is_refused() {
+        let need = "--need expects KIND=VALUE[,VALUE]...";
+        let work_id = "--work-id expects CATALOGUE=ID";
+        let duplicate = "unknown or duplicate media option";
+        for (flags, reason) in [
+            (vec!["--need", "cpu"], need),
+            (vec!["--need", "=286"], need),
+            (vec!["--need", "cpu="], need),
+            (vec!["--need", "sound=sb,,none"], need),
+            (vec!["--need", "sound=sb,"], need),
+            (
+                vec!["--need", "cpu=286", "--need", "cpu=386"],
+                "--need names one kind twice",
+            ),
+            (vec!["--requirements", " "], "blank set metadata value"),
+            (
+                vec!["--requirements", "A", "--requirements", "B"],
+                duplicate,
+            ),
+            (vec!["--work", "	"], "blank set metadata value"),
+            (vec!["--work", "a", "--work", "b"], duplicate),
+            (vec!["--synopsis", " "], "blank set metadata value"),
+            (vec!["--synopsis", "A", "--synopsis", "B"], duplicate),
+            (vec!["--work-id", "wikidata"], work_id),
+            (vec!["--work-id", "=Q1"], work_id),
+            (vec!["--work-id", "wikidata= "], work_id),
+            (
+                vec!["--work-id", "wikidata=Q1", "--work-id", "wikidata=Q2"],
+                "--work-id names one catalogue twice",
+            ),
+        ] {
+            assert_eq!(parse_import(&flags), Err(reason), "{flags:?}");
+        }
+    }
+
+    #[test]
     fn the_set_flags_belong_to_import_only() {
         for action in ["ls", "show"] {
-            for flag in ["--set-label", "--version", "--edition"] {
+            for flag in [
+                "--set-label",
+                "--version",
+                "--edition",
+                "--need",
+                "--requirements",
+                "--work",
+                "--synopsis",
+                "--work-id",
+            ] {
                 let mut args: Vec<OsString> = vec![action.into()];
                 if action == "show" {
                     args.push("test:set".into());

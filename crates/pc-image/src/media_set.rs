@@ -101,6 +101,9 @@ impl MediaFormats for PcMediaFormats {
             Err(Error::Invalid("media size differs from format".into()))
         }
     }
+    fn needs(&self) -> Option<&dyn image_store::needs::Vocabulary> {
+        Some(&crate::needs::PcNeeds)
+    }
 }
 
 /// PC guest names use canonical uppercase DOS 8.3 spelling.
