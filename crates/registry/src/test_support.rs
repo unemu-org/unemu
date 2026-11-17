@@ -13,7 +13,8 @@
 //! `Range: bytes=<start>-` (RFC 9110 §14) unless told to ignore or misreport
 //! it, and can redirect to another server. Fault injection drops connections
 //! mid-upload and mid-download, forgets sessions and corrupts blobs, and one
-//! request can be held until the test releases it. Empty
+//! request can be held until the test releases it, and requests can be
+//! answered with a server error status. Empty
 //! upload sessions report `Range: 0--1`, as zot does. A request log lets tests
 //! assert ordering. Never used outside tests.
 
@@ -43,6 +44,9 @@ pub struct Policy {
     pub bearer_challenge: bool,
     /// A registry without the optional catalog endpoint, which answers it `404`.
     pub no_catalog: bool,
+    /// The catalog answers an anonymous request with a challenge instead of
+    /// the anonymous view, as a registry without anonymous access does.
+    pub catalog_requires_login: bool,
 }
 
 /// Cut the next `GET` of `digest` after sending `keep` bytes of its body.
@@ -98,6 +102,9 @@ struct State {
     hold: Option<String>,
     /// A held request is waiting for [`MockRegistry::release`].
     holding: bool,
+    /// Requests whose `METHOD path` starts with this are answered with this
+    /// server error status.
+    failing: Option<(String, u16)>,
 }
 
 /// A running mock registry; dropping it stops the server.
@@ -205,6 +212,17 @@ impl MockRegistry {
     /// [`MockRegistry::release`]. Later requests are not held.
     pub fn hold_next(&self, prefix: &str) {
         self.state().hold = Some(prefix.into());
+    }
+
+    /// Answer every request whose `METHOD path` (as [`MockRegistry::log`]
+    /// shows it) starts with `prefix` with `status`, such as `500`, until
+    /// [`MockRegistry::stop_failing`]. The request is still logged.
+    pub fn fail_requests(&self, prefix: &str, status: u16) {
+        self.state().failing = Some((prefix.into(), status));
+    }
+
+    pub fn stop_failing(&self) {
+        self.state().failing = None;
     }
 
     /// A request is held now.
@@ -415,7 +433,15 @@ fn serve(stream: TcpStream, state: &Mutex<State>) -> io::Result<()> {
                 .authorized
                 .push(format!("{} {}", request.method, request.path));
         }
-        let outcome = route(&mut state, &request);
+        let failing = state
+            .failing
+            .as_ref()
+            .filter(|(prefix, _)| line.starts_with(prefix.as_str()))
+            .map(|(_, status)| *status);
+        let outcome = match failing {
+            Some(status) => Outcome::Reply(Response::error(status, "UNKNOWN")),
+            None => route(&mut state, &request),
+        };
         if matches!(&outcome, Outcome::Reply(r) if r.status == 401) {
             state.challenges += 1;
         }
@@ -462,6 +488,8 @@ fn reason(status: u16) -> &'static str {
         403 => "Forbidden",
         404 => "Not Found",
         416 => "Range Not Satisfiable",
+        500 => "Internal Server Error",
+        503 => "Service Unavailable",
         _ => "Status",
     }
 }
@@ -608,6 +636,9 @@ fn route(state: &mut State, request: &Request) -> Outcome {
     if rest == "_catalog" {
         return Outcome::Reply(if state.policy.no_catalog {
             Response::error(404, "UNSUPPORTED")
+        } else if state.policy.catalog_requires_login && authenticated(state, request) != Some(true)
+        {
+            challenge(state)
         } else {
             catalog(state, request)
         });

@@ -1971,6 +1971,9 @@ impl LibraryView {
                 self.busy = false;
                 self.commit_refused(refused.error, refused.tags);
             }
+            // The library sends no browsing request yet; Remotes takes these
+            // answers once the window draws it.
+            Event::Browse(_) => (),
             Event::Error(error) => {
                 self.busy = false;
                 self.pending_operation = false;

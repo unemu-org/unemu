@@ -5,6 +5,34 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — Browsing remotes, without drawing yet:** the library worker
+  can list a registry without pulling, for the Remotes group of the approved
+  mock-up, also while a machine runs. The roots are the configured
+  registries, the default one first, with `registry.unemu.dev` listed even
+  when not configured. A listing reads the catalog 50 repositories a page
+  (the next page on demand; an entry that names namespaces reads only
+  theirs), each repository's tags as the registry pages them, and the record
+  of the tag a row stands for: the newest SemVer release, else the newest
+  set tag (`1.4` before `1.4-720k`) or firmware revision, whatever order the
+  registry lists them in. Expanding a repository reads its other tags. A
+  record comes from the manifest and, for media sets and firmware packages,
+  the small config record: artifact type, title, version, a set's formats,
+  size and the raw `unemu.min-app-version`. Selecting a tag also reads its
+  small metadata record, for the edition and version; no other layer, cover,
+  disk or ROM, is fetched, and nothing is written to disk. Refresh replaces
+  the session's listing, and Stop takes effect before the next request. The
+  model has the mock-up's states (listing, stopped, unreachable, unreachable
+  with the earlier rows kept and marked stale, server error with status and
+  reason, login required with the registry's challenge, Log in… only for
+  Basic); a failed next page keeps the pages before it. A whole-registry
+  entry is grouped by first path component. Each tag is compared with the
+  library within its host-qualified local name: in library, not pulled (or
+  the same image under another tag), newer available, or local tag names
+  another image, again whenever the library changes. "Newer" follows the
+  artifact type: SemVer for machine images, `<version>[-variant][-rN]` within
+  one variant for media sets (`1.4` is newer than `1.3`, `1.4-r2` than
+  `1.4`, `1.4-720k` is a sibling), the revision number for firmware; aliases
+  never count. The window does not draw Remotes yet.
 - **2026-11-17 — Images declare the oldest unemupc that runs them (core
   and command line):** a manifest may carry `unemu.min-app-version`, the
   oldest release that reads and runs it. Writers compute it from per-feature

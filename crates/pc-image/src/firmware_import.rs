@@ -1597,6 +1597,18 @@ fn unjudged(judged: Option<&Digest>, digest: &Digest) -> Result<()> {
     }
 }
 
+/// How two firmware package tags compare as revisions: each tag is a plain
+/// revision number (`1`, `2`, `10`), numbered as [`next_revision`] counts,
+/// and a higher number is newer. `None` when either tag is not one.
+pub fn compare_revisions(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+    let revision = |tag: &str| {
+        (!tag.is_empty() && tag.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| tag.parse::<u64>().ok())
+            .flatten()
+    };
+    Some(revision(a)?.cmp(&revision(b)?))
+}
+
 /// The tag after `name:N`, for a tag whose version is a plain revision number.
 pub fn next_revision(tag: &str) -> Option<String> {
     let (name, revision) = tag.rsplit_once(':')?;
@@ -1978,5 +1990,17 @@ mod tests {
             Requirement::Release(PACKAGE)
         );
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn revision_tags_compare_by_number() {
+        use std::cmp::Ordering::*;
+        assert_eq!(compare_revisions("10", "2"), Some(Greater));
+        assert_eq!(compare_revisions("2", "10"), Some(Less));
+        assert_eq!(compare_revisions("1", "1"), Some(Equal));
+        assert_eq!(compare_revisions("1", "latest"), None);
+        assert_eq!(compare_revisions("1.0.0", "1"), None);
+        assert_eq!(compare_revisions("", "1"), None);
+        assert_eq!(next_revision("pkg:9").as_deref(), Some("pkg:10"));
     }
 }

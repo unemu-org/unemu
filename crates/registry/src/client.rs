@@ -178,6 +178,8 @@ pub struct Client {
     transport: Box<dyn Transport>,
     credentials: Box<dyn CredentialSource>,
     authorization: Mutex<Option<String>>,
+    /// The challenge of the last `401` this registry answered.
+    challenge: Mutex<Option<Challenge>>,
 }
 
 /// The OCI image manifest, the only manifest type this client decodes.
@@ -235,6 +237,7 @@ impl Client {
             transport: crate::http::transport(!entry.plain_http, timeouts)?,
             credentials,
             authorization: Mutex::new(None),
+            challenge: Mutex::new(None),
         })
     }
 
@@ -282,6 +285,16 @@ impl Client {
         Origin::of(url).as_ref() == Some(&self.origin)
     }
 
+    /// The challenge of the last `401` this registry answered, so that a
+    /// request ending in [`Error::AuthRequired`] or [`Error::Unauthorized`]
+    /// can say which login the registry asks for (RFC 7235 §4.1).
+    pub fn last_challenge(&self) -> Option<Challenge> {
+        self.challenge
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     fn current_authorization(&self) -> Option<String> {
         self.authorization
             .lock()
@@ -304,15 +317,16 @@ impl Client {
             if response.status != 401 || !self.same_origin(&response.url) {
                 return Ok(response);
             }
+            let challenge = response
+                .header("www-authenticate")
+                .map(Challenge::parse)
+                .unwrap_or(Challenge::Other("none".into()));
+            *self.challenge.lock().unwrap_or_else(|e| e.into_inner()) = Some(challenge.clone());
             if sent.is_some() {
                 return Err(Error::Unauthorized {
                     host: self.host.clone(),
                 });
             }
-            let challenge = response
-                .header("www-authenticate")
-                .map(Challenge::parse)
-                .unwrap_or(Challenge::Other("none".into()));
             sent = Some(self.authorize(&challenge)?);
         }
     }
@@ -455,6 +469,40 @@ impl Client {
             200 => Ok(response.into_reader()),
             _ => Err(self.status_error(Method::Get, &target, response)),
         }
+    }
+
+    /// Read a small blob, such as a config record, into memory: at most
+    /// [`MAX_SMALL_BLOB`] bytes, exactly the descriptor's length and digest.
+    /// Nothing reaches the store.
+    pub fn small_blob(&self, repository: &str, descriptor: &Descriptor) -> Result<Vec<u8>> {
+        if descriptor.size > MAX_SMALL_BLOB {
+            return Err(Error::Protocol(format!(
+                "blob {} has {} bytes, more than a small record",
+                descriptor.digest, descriptor.size
+            )));
+        }
+        let target = format!("/v2/{repository}/blobs/{}", descriptor.digest);
+        let response = self.send(Method::Get, &target, &[], &Body::Empty)?;
+        if response.status != 200 {
+            return Err(self.status_error(Method::Get, &target, response));
+        }
+        let bytes = response.bytes(descriptor.size)?;
+        if bytes.len() as u64 != descriptor.size {
+            return Err(Error::Protocol(format!(
+                "registry blob {} has {} bytes, expected {}",
+                descriptor.digest,
+                bytes.len(),
+                descriptor.size
+            )));
+        }
+        let actual = Digest::of(&bytes);
+        if actual != descriptor.digest {
+            return Err(Error::DigestMismatch {
+                expected: descriptor.digest.clone(),
+                actual,
+            });
+        }
+        Ok(bytes)
     }
 
     /// Continue a blob download at `offset` with `Range: bytes=<offset>-`
@@ -1073,6 +1121,7 @@ impl Client {
             confidential: true,
             credentials: Box::new(crate::credentials::Anonymous),
             authorization: Mutex::new(None),
+            challenge: Mutex::new(None),
         }
     }
 }
@@ -1226,6 +1275,7 @@ mod tests {
             transport: Box::new(Unused),
             credentials: Box::new(crate::credentials::Anonymous),
             authorization: Mutex::new(None),
+            challenge: Mutex::new(None),
         }
     }
 

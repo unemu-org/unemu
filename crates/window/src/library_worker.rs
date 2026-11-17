@@ -147,6 +147,9 @@ pub(super) enum Request {
         Box<crate::created_media::CreateOrder>,
         crate::created_media::Place,
     ),
+    /// Remotes: list and read a registry without pulling.
+    #[cfg_attr(not(test), expect(dead_code))]
+    Browse(crate::remote_browse::BrowseRequest),
     Shutdown,
 }
 /// What the library asks of the machines in the store; machine-images §3.2.
@@ -282,6 +285,9 @@ pub(super) enum Event {
     /// A scan or import job failed; only the import dialog shows it.
     FirmwareFailed(String),
     Transfer(crate::registry_transfer::TransferEvent),
+    /// What Remotes read of a registry, and local states.
+    #[cfg_attr(not(test), expect(dead_code))]
+    Browse(crate::remote_browse::BrowseEvent),
     /// Listed picks, or the refusal; only the media import dialog shows it.
     MediaSources(
         library_view::install_media::Pick,
@@ -1398,6 +1404,10 @@ fn serve_session<B: Backend>(
                     cache, query,
                 ))));
             }
+            // Browsing reads registries and local tags only; no session lock.
+            Ok(Request::Browse(job)) => {
+                crate::remote_browse::run(store, job, &|event| send(Event::Browse(event)))
+            }
             // Settings on another, stopped image.
             Ok(Request::PublishRevision(plan, target)) => {
                 send(Event::Revised(revise_image(backend, store, &plan, target)));
@@ -1891,6 +1901,11 @@ fn run<B: Backend>(
                             &|| wake.request_repaint(),
                         )
                     }),
+                    // Browsing reads registries only, so no snapshot follows.
+                    Request::Browse(job) => {
+                        crate::remote_browse::run(&store, job, &|event| send(Event::Browse(event)));
+                        quiet = true;
+                    }
                     Request::ScanFirmware(folder, index, control) => {
                         match library_view::firmware::scan_folder(
                             &store,
