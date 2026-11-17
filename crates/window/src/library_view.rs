@@ -1240,6 +1240,9 @@ pub(super) struct LibraryView {
     pub status: Option<String>,
     pub error: Option<String>,
     pub launched: Option<pc_image::workspace::SessionTransfer>,
+    /// The pending inserts of the machine's list that the launched session
+    /// put into its drives.
+    pub launched_inserts: Vec<image_store::machine::PendingInsert>,
     import: Option<(String, String)>,
     /// Delete tag… while it is open, with the tag it would remove.
     delete: Option<String>,
@@ -1356,6 +1359,7 @@ impl LibraryView {
             status: None,
             error: None,
             launched: None,
+            launched_inserts: Vec::new(),
             import: None,
             delete: None,
             labels: String::new(),
@@ -1416,6 +1420,58 @@ impl LibraryView {
             .all_sets
             .iter()
             .filter_map(install_media::picker_set)
+            .collect()
+    }
+    /// The set of manifest `digest` as the media picker lists it, without
+    /// listing every other set: drive names look one up every frame.
+    pub fn picker_set(&self, digest: &Digest) -> Option<crate::media_picker::SetEntry> {
+        self.snapshot
+            .all_sets
+            .iter()
+            .find(|row| row.image.descriptor.digest == *digest)
+            .and_then(install_media::picker_set)
+    }
+    /// The library sources of the disks `insert` put into its drive at
+    /// Start, each with its label, its place in the set and the set's count,
+    /// in the order they lead the drive's catalogue then: the chosen disk,
+    /// then the set's others when all join.
+    pub fn inserted_sources(
+        &self,
+        insert: &image_store::machine::PendingInsert,
+    ) -> Vec<(
+        image_store::media_set::CatalogueSource,
+        String,
+        usize,
+        usize,
+    )> {
+        let Some(set) = self
+            .snapshot
+            .all_sets
+            .iter()
+            .find(|row| row.image.descriptor.digest == insert.set.digest)
+            .and_then(|row| row.image.summary.as_ref()?.media_set.as_ref())
+        else {
+            return Vec::new();
+        };
+        let Some(chosen) = set.media.iter().position(|m| m.id == insert.medium) else {
+            return Vec::new();
+        };
+        let others = (0..set.media.len()).filter(|at| insert.all && *at != chosen);
+        std::iter::once(chosen)
+            .chain(others)
+            .map(|at| {
+                let medium = &set.media[at];
+                (
+                    image_store::media_set::CatalogueSource {
+                        set: insert.set.digest.clone(),
+                        medium_id: medium.id.clone(),
+                        blob: medium.blob.clone(),
+                    },
+                    medium.label.clone(),
+                    at,
+                    set.media.len(),
+                )
+            })
             .collect()
     }
     /// The name Start gives a new machine of `row`'s image, computed once per
@@ -1681,7 +1737,7 @@ impl LibraryView {
                     }
                 }
             }
-            Event::Launched(session, row, name, kind) => {
+            Event::Launched(session, row, name, kind, inserted) => {
                 let row = *row;
                 self.active_machine = (kind == WorkspaceKind::Machine).then(|| {
                     let title = self
@@ -1695,6 +1751,7 @@ impl LibraryView {
                 self.selected = Some(row.clone());
                 self.active = Some((row, name, kind));
                 self.launched = Some(*session);
+                self.launched_inserts = inserted;
                 self.pending_operation = false;
                 self.busy = false;
             }

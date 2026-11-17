@@ -5,6 +5,47 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — Media › Catalogue: every disk of a drive's catalogue one
+  click away:** each floppy drive in the Media menu, and its drive chip's
+  menu, has Catalogue ▸ after Create from files… and before Next disk, as
+  revision 3 of the approved media-picker mock-up draws it. The submenu
+  lists the drive's catalogue in order under a line with the drive and the
+  count, the disk in the drive marked ● and "in A:"; it lists the same disks
+  as the picker's This machine, and choosing one does what Insert there does:
+  running or halted it goes in now (halted, the status bar adds that
+  Ctrl+Alt+Del boots from it); on a stopped machine file it waits for the
+  next Start and says "at Start", and choosing the disk the drive holds at
+  power-on takes the waiting one out again; a waiting disk not in the
+  catalogue yet is named under the list. A stopped library machine and an
+  image know their own disks only at Start: their submenu lists the disks
+  waiting for it (a library set's disk, every disk of the set when all join,
+  the disks Create from files… made for the machine, or what an Insert put
+  into an image), the chosen one "at Start", with a line saying the image's
+  own disks join then; choosing another makes it the one that goes in (a
+  set's pending insert names that disk; created disks keep the chosen one in
+  their record, `first`, and it leads the drive at Start). With nothing
+  waiting the item is disabled as "Catalogue · known at Start". Past 12
+  disks the submenu lists 12, two before the disk in the drive (or the
+  waiting one) and nine after, then All N disks…, which opens Insert… on This
+  machine with the disk in the drive chosen and scrolled into view (on a
+  waiting list, Insert… with its set chosen); the menu never scrolls. With
+  one disk or none the item is disabled and says why ("Catalogue · one
+  disk", "Catalogue · empty"). The keyboard needs no new key: ↓ to
+  Catalogue, → or Enter opens it on the disk in the drive, ↑↓ choose, Enter
+  puts the disk in, ← or Escape go back; a drive chip's menu opens with Tab
+  and Enter. The submenu opens on the side with room, and in a drive chip's
+  menu it grows upward from the status bar, measured again when its lines
+  change. One short name now names a disk on the drive chip, the Media
+  menu's drive line, This machine, the submenu, a waiting disk's details
+  line and the picker's drive button: a disk of a set is "TITLE N of M"
+  (the title without its edition), with the disk's own name after a dash
+  when it says more than its number ("FreeDOS 1.4 · 1 of 8 — Packages"; a
+  title that ends in a number takes a middle dot; "Disk #2", "Diskette 2"
+  or "2/7" add nothing), a one-disk set its title, any other disk its own
+  name; the picker's disk buttons use the same rule. Create from files…
+  names a split's disks the same way ("AZURAMON 3 of 10", a parenthesis in
+  the title kept), and a library machine's set disks keep their short names
+  after Start, as the disks the Start put in lead its drive's catalogue.
 - **2026-11-17 — Repository paths carry the platform; sets and packages are
   tagged by release and revision:** media sets live under
   `unemu/media/<platform>/<work>` and firmware packages under

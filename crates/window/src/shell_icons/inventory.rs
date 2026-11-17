@@ -61,8 +61,6 @@ const SYSTEM_TITLE_BAR: &str =
     "a window button; the system title bar draws it (the classic title strip has none)";
 const CLOSE: &str =
     "dialog close buttons where the app's dialogs have one (Settings, Preferences, New machine, Edit metadata)";
-const CATALOGUE_LATER: &str =
-    "the Catalogue submenu of the Media menu and the drive chips' menus is not built yet";
 
 const fn svg(
     mockup: &'static str,
@@ -217,8 +215,8 @@ pub(super) const INVENTORY: &[Entry] = &[
     glyph(PICKER, '↓', "the picker's arrow keys, named in the mock-up's note", Place::Text("the media picker's key note")),
     glyph(PICKER, '⌘', "the macOS Command key", Place::Text("macOS menu shortcuts")),
     glyph(PICKER, '⇧', "the macOS Shift key", Place::Text("macOS menu shortcuts")),
-    glyph(PICKER, '▸', "a submenu: Catalogue under each floppy drive", Place::Missing(CATALOGUE_LATER)),
-    glyph(PICKER, '●', "the disk in the drive, in a Catalogue submenu", Place::Missing(CATALOGUE_LATER)),
+    glyph(PICKER, '▸', "a submenu: Catalogue under each floppy drive", Place::Egui("Catalogue under each floppy drive of the Media menu and a drive chip's menu: egui's submenu arrow")),
+    glyph(PICKER, '●', "the disk in the drive, in a Catalogue submenu", Place::Text("the Catalogue submenu's mark column, before the disk in the drive")),
     glyph(PICKER, '←', "the Left arrow key, named in the Catalogue notes", Place::Missing("only in the mock-up's notes")),
     glyph(PICKER, '×', "close", Place::Text(CLOSE)),
     glyph(PICKER, '□', "maximise", Place::Missing(SYSTEM_TITLE_BAR)),
@@ -424,6 +422,7 @@ mod tests {
         .map(crate::shell::machine_menu_mark);
         assert_eq!(marks, ["▶", "Ⅱ", "■", ""]);
         assert_eq!(crate::shell::EJECT_MARK, "⏏");
+        assert_eq!(crate::catalogue_menu::IN_DRIVE_MARK, "●");
         assert_eq!(crate::shell::audio_mark(true), "🔊");
         assert_eq!(crate::shell::audio_mark(false), "🔇");
         let listed = |ch: char| {
@@ -431,7 +430,8 @@ mod tests {
                 matches!(e.art, Art::Glyph(g) if g == ch) && matches!(e.place, Place::Text(_))
             })
         };
-        for mark in ["▶", "Ⅱ", "■", "⏏", "🔊", "🔇", "★", "⚠", "✓", "✗"] {
+        for mark in ["▶", "Ⅱ", "■", "⏏", "🔊", "🔇", "★", "⚠", "✓", "✗", "●"]
+        {
             assert!(listed(mark.chars().next().unwrap()), "{mark}");
         }
     }

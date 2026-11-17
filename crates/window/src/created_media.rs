@@ -46,8 +46,9 @@ pub(crate) struct CreatedDisk {
     pub name: String,
 }
 
-/// Created disks a stopped machine's drive takes at its next Start: disk 1
-/// goes in and every disk joins the catalogue in order.
+/// Created disks a stopped machine's drive takes at its next Start: the
+/// first disk goes in and every disk joins the catalogue, the others in
+/// order after it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CreatedInsert {
@@ -60,6 +61,18 @@ pub(crate) struct CreatedInsert {
     /// disks are write-protected.
     #[serde(default)]
     pub journal: bool,
+    /// The disk that goes in, by its place in `disks`, when it is not disk 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first: Option<usize>,
+}
+
+impl CreatedInsert {
+    /// The disk that goes in at Start: the chosen one, else disk 1.
+    pub fn first(&self) -> usize {
+        self.first
+            .filter(|first| *first < self.disks.len())
+            .unwrap_or(0)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -183,13 +196,18 @@ pub(crate) fn format_of(geometry: assembly::FloppyGeometry) -> Option<FloppyForm
         .and_then(|kind| FloppyFormat::from_name(kind.name))
 }
 
-/// Disk `index` of `count`, as its catalogue entry names it.
+/// Disk `index` of `count`, as its catalogue entry names it: the short name
+/// a disk of a set has, "AZURAMON 3 of 10".
 pub(crate) fn disk_name(title: &str, index: usize, count: usize) -> String {
-    if count > 1 {
-        format!("{title} — disk {} of {count}", index + 1)
-    } else {
-        title.to_owned()
-    }
+    crate::catalogue_menu::short_name(
+        Some(crate::catalogue_menu::SetDisk {
+            title,
+            number: index + 1,
+            count,
+            label: "",
+        }),
+        title,
+    )
 }
 
 /// Store `bytes` as a created image in `media`: its file, named by its
@@ -289,6 +307,21 @@ pub(crate) fn set_pending(
     write_pending(workspace, inserts)
 }
 
+/// Choose the created disk waiting for `drive` that goes in at the next
+/// Start, by its place; the others follow in order.
+pub(crate) fn set_first(workspace: &Path, drive: &str, first: usize) -> Result<()> {
+    let mut inserts = read_pending(workspace)?;
+    let insert = inserts
+        .iter_mut()
+        .find(|insert| insert.drive == drive)
+        .ok_or_else(|| format!("no created disks wait for {drive}"))?;
+    if first >= insert.disks.len() {
+        return Err(format!("{} has no disk {}", insert.title, first + 1));
+    }
+    insert.first = (first > 0).then_some(first);
+    write_pending(workspace, inserts)
+}
+
 /// Drop the pending inserts a launch put in, once its machine assembled.
 pub(crate) fn confirm(workspace: &Path, inserted: &[CreatedInsert]) -> Result<()> {
     let mut inserts = read_pending(workspace)?;
@@ -309,8 +342,9 @@ pub(crate) struct Applied {
 }
 
 /// Put each pending insert of created disks into its drive of a prepared
-/// session of the machine in `workspace`, before its first instruction: disk
-/// 1 first, then the others, ahead of the drive's own catalogue. A drive with
+/// session of the machine in `workspace`, before its first instruction: the
+/// chosen disk first, then the others in order, ahead of the drive's own
+/// catalogue. A drive with
 /// a pending insert of the machine list (`listed`) keeps that one. Nothing
 /// here stops the Start: a record that cannot be read, or an insert whose
 /// image is gone or changed, stays out with a note.
@@ -409,6 +443,11 @@ fn apply_one(
         });
     }
     session.bases.extend(bases);
+    // The chosen disk leads, so the drive starts with it.
+    if !media.is_empty() {
+        let first = media.remove(insert.first());
+        media.insert(0, first);
+    }
     match &mut drive.media {
         Some(list) => {
             list.entries
@@ -545,6 +584,7 @@ pub(crate) fn create(
                         })
                         .collect(),
                     journal: order.journal,
+                    first: None,
                 }),
             )?;
             drop(owner);
@@ -715,6 +755,7 @@ mod tests {
                 title: "GAME".into(),
                 disks: Vec::new(),
                 journal: false,
+                first: None,
             };
             set_pending(workspace, "B:", Some(insert.clone())).unwrap();
             assert_eq!(read_pending(workspace).unwrap(), [insert]);
@@ -735,6 +776,7 @@ mod tests {
                 name: title.into(),
             }],
             journal: true,
+            first: None,
         };
         assert!(read_pending(workspace).unwrap().is_empty());
         set_pending(workspace, "A:", Some(insert("A:", "ONE"))).unwrap();

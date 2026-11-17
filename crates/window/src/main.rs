@@ -44,6 +44,7 @@ use winit::{
 };
 
 mod app_menu;
+mod catalogue_menu;
 mod created_media;
 mod drive_chips;
 mod file_dialog;

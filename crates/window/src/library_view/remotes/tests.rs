@@ -2621,6 +2621,7 @@ fn pull_and_insert_says_what_it_replaces() {
         title: "Saved games".into(),
         disks: Vec::new(),
         journal: false,
+        first: None,
     });
     rig.view.machines = Arc::new(vec![games]);
     let mut screen = Screen::new(true, false, WIDE);

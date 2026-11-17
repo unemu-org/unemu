@@ -1174,30 +1174,41 @@ impl LibraryView {
         }));
     }
 
+    /// Which of the created disks waiting for `drive` of the stopped machine
+    /// `id` goes in at its next Start, by its place among them.
+    pub fn set_created_first(&mut self, id: &str, drive: &str, first: usize) {
+        let mut rows = (*self.machines).clone();
+        if let Some(insert) = rows
+            .iter_mut()
+            .find(|row| row.id() == id)
+            .and_then(|row| row.created.iter_mut().find(|c| c.drive == drive))
+        {
+            insert.first = (first > 0).then_some(first);
+            self.machines = std::sync::Arc::new(rows);
+            self.machines_revision += 1;
+        }
+        self.send(Request::Machine(MachineJob::SetCreatedFirst {
+            id: id.to_owned(),
+            drive: drive.to_owned(),
+            first,
+        }));
+    }
+
     /// A pending disk as the details pane, the chips and the picker name it:
-    /// the set's title and the disk's label, as the library lists the set.
+    /// the short name its drive's catalogue gives it.
     pub fn pending_label(&self, insert: &image_store::machine::PendingInsert) -> String {
-        let Some(set) = self
-            .picker_sets()
-            .into_iter()
-            .find(|set| set.image.digest == insert.set.digest)
-        else {
+        use crate::catalogue_menu::{set_disk, short_name};
+        let Some(set) = self.picker_set(&insert.set.digest) else {
             return pending_name(insert);
         };
-        let disk = set
-            .disks
-            .iter()
-            .find(|disk| disk.id == insert.medium)
-            .map_or(insert.medium.as_str(), |disk| disk.label.as_str())
-            .to_owned();
-        if insert.all && set.disks.len() > 1 {
-            format!(
-                "{} — {disk} (all {} disks join the catalogue)",
-                set.title,
-                set.disks.len()
-            )
+        let Some(disk) = set_disk(&set, &insert.medium) else {
+            return pending_name(insert);
+        };
+        let name = short_name(Some(disk), &insert.medium);
+        if insert.all && disk.count > 1 {
+            format!("{name} (all {} disks join the catalogue)", disk.count)
         } else {
-            format!("{} — {disk}", set.title)
+            name
         }
     }
 
@@ -2027,6 +2038,7 @@ pub(crate) mod tests {
             title: "GAME".into(),
             disks: Vec::new(),
             journal: true,
+            first: None,
         };
         machine.created = vec![created("A:"), created("B:")];
         machine

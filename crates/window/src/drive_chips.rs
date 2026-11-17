@@ -78,6 +78,9 @@ pub(crate) struct Medium {
     /// A floppy's own format, which may differ from its drive type's
     /// (a 720K disk in a 1.44M drive); `None` for a fixed disk.
     pub format: Option<FloppyGeometry>,
+    /// The library set and disk a floppy came from, by which the shell
+    /// gives it the short name its catalogue shows.
+    pub set: Option<image_store::media_set::CatalogueSource>,
 }
 
 /// One drive as the status bar and the Media menu show it.
@@ -438,6 +441,7 @@ fn floppy_medium(
         write: write.clone(),
         fixed_by: declared.then(|| origin.fixes_write_mode()),
         format,
+        set: entry.and_then(|entry| entry.source.clone()),
     }
 }
 
@@ -460,6 +464,7 @@ fn fixed_medium(drive: &DriveConfig, origin: &Origin) -> Medium {
         write: drive.write.clone(),
         fixed_by: Some(origin.fixes_write_mode()),
         format: None,
+        set: None,
     }
 }
 

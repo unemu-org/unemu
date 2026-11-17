@@ -72,7 +72,7 @@ icons are the project's own mock-up artwork, under the project licence.
 | media-picker | application monitor, Start, Stop, A: and B: floppy, machine, installation media set | the same places as above; ⌘ ⇧ in macOS menu shortcuts |
 | media-picker | ▾ | Installation media › Insert into… ▾ menu button |
 | media-picker | ↑ ↓ | the picker's key note (↑↓ choose) |
-| media-picker | ▸ ● | the Catalogue submenu under each floppy drive in the Media menu and a drive chip's menu (revision 3): ▸ the submenu, ● the disk in the drive; not built yet |
+| media-picker | ▸ ● | the Catalogue submenu under each floppy drive in the Media menu and a drive chip's menu (revision 3): egui's submenu arrow draws ▸, enabled or not, and the submenu's mark column writes ● before the disk in the drive |
 | registry-accounts, get-templates, firmware, save-as-image | ● ○ ✓ ✗ ⚠ ▲ ▼ ↑ ↓ └ ─ | already in the app's text; ✓ and ✗ are visible since the font subset |
 | firmware-settings | application monitor, Start, Settings, machine, image, media set, firmware, machine file | the same places as in the machines mock-up |
 | firmware-settings | ↑ | the Newer version available hint and the quiet "↑ newer BIOS" badge of machine and image rows |
@@ -109,7 +109,4 @@ name cells are left-aligned. Child rows of a repository group are set in by
 - **library.html ★ rating**: the app has no rating field.
 - **□ maximise in title bars**: the system title bar draws window buttons.
 - **library.html ▸**: only in the mock-up's explanatory note.
-- **media-picker.html ▸ and ● of the Catalogue submenu**: the submenu is not
-  built yet. When it is, egui's submenu button draws the arrow and the menu's
-  mark column writes ●.
 - **media-picker.html ←**: only in the Catalogue notes, naming the Left arrow key.

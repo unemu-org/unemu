@@ -111,8 +111,9 @@ cards, firmware and drives. `at-games-open.toml` is the open DOS games machine
   Remotes, which browse the configured registries and pull from them (File ›
   Get templates… shows the official templates there); Push… and Pull by
   reference…; status-bar drive chips with activity
-  lights; Media menu with Insert from library…; speed controls; macOS
-  application menu.
+  lights; Media menu with Insert…, Create from files… and a Catalogue
+  submenu per floppy drive, which a drive chip's menu has too; speed
+  controls; macOS application menu.
 - **Command line** (`upcli`): run machines headless, check machine files,
   and manage images, media sets, firmware packages, registries and media
   journals.

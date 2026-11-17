@@ -469,6 +469,7 @@ impl Shell {
             }
         }
         if let Some(transfer) = self.image_library.launched.take() {
+            let inserts = std::mem::take(&mut self.image_library.launched_inserts);
             self.selected = None;
             let prepared = match transfer.restore() {
                 Ok(prepared) => prepared,
@@ -510,6 +511,7 @@ impl Shell {
                 Ok(mut presenter) => {
                     presenter.audio.open(&mut io::stderr());
                     self.started(presenter);
+                    self.name_inserted_disks(&inserts);
                     // What the Start left out, once the machine runs.
                     let notes = std::mem::take(&mut self.image_library.start_notes);
                     if !notes.is_empty() {
@@ -1242,6 +1244,7 @@ impl Shell {
 
     fn status(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
         let drives = self.drive_views();
+        let inserted = self.floppy_inserted();
         let now = self.elapsed();
         let message = self.status_message();
         let entry = self.selected.and_then(|index| self.library.get(index));
@@ -1281,7 +1284,7 @@ impl Shell {
             );
             x += width;
             if index == 2 {
-                self.drive_chips(ui, cell, &drives, now, commands);
+                self.drive_chips(ui, cell, &drives, inserted, now, commands);
                 continue;
             }
             ui.scope_builder(
@@ -1335,6 +1338,7 @@ impl Shell {
                     ),
             ),
         };
+        use crate::catalogue_menu::{set_disk, short_name};
         if self.presenter.is_none() {
             if let Some(row) = self.image_library.selected_machine_row() {
                 return machine_pending_views(row, |insert| {
@@ -1342,13 +1346,23 @@ impl Shell {
                 });
             }
         }
-        match &mut self.presenter {
+        let mut views = match &mut self.presenter {
             Some(presenter) => presenter.drive_views(&origin),
             None => self
                 .pending_media
                 .as_ref()
                 .map_or_else(Vec::new, |pending| pending.drive_views(&origin)),
+        };
+        // A library disk takes the short name its catalogue gives it.
+        for medium in views.iter_mut().filter_map(|view| view.medium.as_mut()) {
+            let Some(source) = &medium.set else {
+                continue;
+            };
+            if let Some(set) = self.image_library.picker_set(&source.set) {
+                medium.name = short_name(set_disk(&set, &source.medium_id), &medium.name);
+            }
         }
+        views
     }
 
     /// The machines the media picker offers and the one it starts on: the
@@ -1360,17 +1374,9 @@ impl Shell {
         sets: &[crate::media_picker::SetEntry],
         machine: Option<&str>,
     ) -> (Vec<crate::media_picker::Target>, usize) {
-        use crate::media_picker::{CatalogueDisk, Drive, Target, When};
-        let words = |write: &assembly::WriteMode, name: &str| match write {
-            assembly::WriteMode::ReadOnly => "write-protected".to_owned(),
-            assembly::WriteMode::Journal { .. } => format!("changes kept in {name}"),
-            assembly::WriteMode::Volatile => "changes lost at Stop".to_owned(),
-        };
-        let place = |source: &Option<image_store::media_set::CatalogueSource>| {
-            let source = source.as_ref()?;
-            let set = sets.iter().find(|s| s.image.digest == source.set)?;
-            let disk = set.disks.iter().position(|d| d.id == source.medium_id)?;
-            Some((source.set.clone(), disk))
+        use crate::media_picker::{Drive, Target, When};
+        let find = |digest: &image_store::Digest| {
+            sets.iter().find(|set| set.image.digest == *digest).cloned()
         };
         let slot_drives = |slots: &[Option<crate::media_dialog::FloppySlot>; 2],
                            inserted: [Option<usize>; 2],
@@ -1380,25 +1386,7 @@ impl Shell {
                 .filter_map(|(unit, slot)| {
                     let slot = slot.as_ref()?;
                     let now = inserted[usize::from(unit)];
-                    let catalogue: Vec<CatalogueDisk> = slot
-                        .entries
-                        .iter()
-                        .filter(|e| e.reason.is_none())
-                        .filter_map(|e| {
-                            Some(CatalogueDisk {
-                                name: if e.medium.name.is_empty() {
-                                    "image".into()
-                                } else {
-                                    e.medium.name.clone()
-                                },
-                                format: e.geometry.unwrap_or(slot.geometry),
-                                write: words(&e.medium.write, name),
-                                inserted: e.index.is_some() && e.index == now,
-                                index: e.index?,
-                                set: place(&e.source),
-                            })
-                        })
-                        .collect();
+                    let catalogue = crate::catalogue_menu::slot_catalogue(slot, now, name, &find);
                     let current = catalogue.iter().find(|e| e.inserted);
                     Some(Drive {
                         unit,
@@ -1451,24 +1439,32 @@ impl Shell {
                     .iter()
                     .map(|&(unit, geometry)| {
                         let letter = crate::media_picker::drive_name(unit);
-                        let pending = row.listing.machine.pending.iter().find(|p| p.drive == letter);
+                        let pending = row
+                            .listing
+                            .machine
+                            .pending
+                            .iter()
+                            .find(|p| p.drive == letter);
                         let created = row.created.iter().find(|c| c.drive == letter);
                         Drive {
                             unit,
                             geometry,
                             holds: match (pending, created) {
-                                (Some(p), _) => format!("{} at Start", self.image_library.pending_label(p)),
+                                (Some(p), _) => {
+                                    format!("{} at Start", self.image_library.pending_label(p))
+                                }
                                 (None, Some(c)) => format!("{} at Start", c.title),
                                 (None, None) => "as the image sets it".to_owned(),
                             },
                             catalogue: Vec::new(),
                             current: pending.and_then(|p| {
                                 let set = sets.iter().find(|s| s.image.digest == p.set.digest)?;
-                                Some((p.set.digest.clone(), set.disks.iter().position(|d| d.id == p.medium)?))
+                                Some((
+                                    p.set.digest.clone(),
+                                    set.disks.iter().position(|d| d.id == p.medium)?,
+                                ))
                             }),
-                            catalogue_note: Some(
-                                "The image's own disks are in the drive at Start; Next disk swaps them once the machine runs.".into(),
-                            ),
+                            catalogue_note: Some(IMAGE_DISKS_AT_START.into()),
                         }
                     })
                     .collect();
@@ -1488,17 +1484,7 @@ impl Shell {
                 None => (Vec::new(), 0),
             };
         }
-        let name = self
-            .image_library
-            .selected
-            .as_ref()
-            .map(|row| row.name().to_owned())
-            .or_else(|| {
-                self.selected
-                    .and_then(|i| self.library.get(i))
-                    .map(|e| e.name.clone())
-            })
-            .unwrap_or_else(|| "the machine".into());
+        let name = self.stopped_name();
         let drives = self
             .pending_media
             .as_ref()
@@ -1528,6 +1514,346 @@ impl Shell {
             }],
             0,
         )
+    }
+
+    /// The selected image or machine file, as a stopped machine whose
+    /// floppies wait for Start is named.
+    fn stopped_name(&self) -> String {
+        self.image_library
+            .selected
+            .as_ref()
+            .map(|row| row.name().to_owned())
+            .or_else(|| {
+                self.selected
+                    .and_then(|i| self.library.get(i))
+                    .map(|e| e.name.clone())
+            })
+            .unwrap_or_else(|| "the machine".into())
+    }
+
+    /// The disk each floppy drive of the running machine holds now, by its
+    /// catalogue index.
+    fn floppy_inserted(&mut self) -> [Option<usize>; 2] {
+        match &mut self.presenter {
+            Some(presenter) => {
+                [0usize, 1].map(|unit| presenter.fdc().and_then(|fdc| fdc.inserted_medium(unit)))
+            }
+            None => [None, None],
+        }
+    }
+
+    /// Drive `unit`'s Catalogue submenu, from the catalogue the media
+    /// picker's This machine lists; `inserted` as [`Self::floppy_inserted`]
+    /// gives it. A stopped library machine and an image know their own disks
+    /// only at Start: their submenu lists the disks waiting for it. `None`
+    /// while the drive takes no disk.
+    fn catalogue(
+        &self,
+        unit: u8,
+        inserted: [Option<usize>; 2],
+    ) -> Option<crate::catalogue_menu::Catalogue> {
+        use crate::catalogue_menu::{
+            entry_name, slot_catalogue, waiting_catalogue, Catalogue, Pending,
+        };
+        if !self
+            .enablement()
+            .floppy
+            .get(usize::from(unit))
+            .copied()
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        let find = |digest: &image_store::Digest| self.image_library.picker_set(digest);
+        if let Some(presenter) = &self.presenter {
+            let slot = presenter.media_slots.get(usize::from(unit))?.as_ref()?;
+            let now = inserted[usize::from(unit)];
+            let name = self.session_name().unwrap_or("the machine");
+            return Some(Catalogue {
+                unit,
+                disks: slot_catalogue(slot, now, name, &find),
+                in_drive: now,
+                pending: None,
+                unknown: None,
+            });
+        }
+        let waiting =
+            |(disks, chosen): (Vec<crate::media_picker::CatalogueDisk>, Option<usize>)| Catalogue {
+                unit,
+                disks,
+                in_drive: None,
+                pending: chosen.map(Pending::Entry),
+                unknown: Some(IMAGE_DISKS_AT_START.into()),
+            };
+        if self.image_library.machine.is_some() {
+            let row = self.image_library.selected_machine_row();
+            return Some(waiting(row.map_or_else(
+                || (Vec::new(), None),
+                |row| self.machine_waiting(row, unit),
+            )));
+        }
+        let pending = self.pending_media.as_ref()?;
+        let slot = pending.slots.get(usize::from(unit))?.as_ref()?;
+        if matches!(pending.owner, crate::media_dialog::PendingOwner::Image(_)) {
+            let name = self.stopped_name();
+            return Some(waiting(pending.waiting(unit).map_or_else(
+                || (Vec::new(), None),
+                |(entries, chosen)| {
+                    let disks = waiting_catalogue(entries, slot.geometry, &name, &find);
+                    (disks, Some(chosen))
+                },
+            )));
+        }
+        let waiting = pending.chosen(unit).map(|entry| match entry.index {
+            Some(index) => Pending::Entry(index),
+            None => {
+                let set = entry.source.as_ref().and_then(|source| find(&source.set));
+                Pending::Joins(entry_name(entry, set.as_ref()))
+            }
+        });
+        Some(Catalogue {
+            unit,
+            disks: slot_catalogue(slot, None, &self.stopped_name(), &find),
+            in_drive: pending.power_on(unit),
+            pending: waiting,
+            unknown: None,
+        })
+    }
+
+    /// The disks waiting for drive `unit` of the stopped library machine
+    /// `row` at its next Start, and the place of the one that goes in: a
+    /// library set's disk (every disk of the set when all join), else the
+    /// disks Create from files… made for the machine.
+    fn machine_waiting(
+        &self,
+        row: &crate::library_view::machines::MachineRow,
+        unit: u8,
+    ) -> (Vec<crate::media_picker::CatalogueDisk>, Option<usize>) {
+        use crate::catalogue_menu::{set_disk, short_name};
+        use crate::media_picker::CatalogueDisk;
+        let letter = crate::media_picker::drive_name(unit);
+        let Some(&(_, geometry)) = row.drives.iter().find(|(u, _)| *u == unit) else {
+            return (Vec::new(), None);
+        };
+        let words = |journal: bool| {
+            if journal {
+                format!("changes kept in {}", row.name())
+            } else {
+                "write-protected".to_owned()
+            }
+        };
+        if let Some(insert) = row
+            .listing
+            .machine
+            .pending
+            .iter()
+            .find(|p| p.drive == letter)
+        {
+            let Some(set) = self.image_library.picker_set(&insert.set.digest) else {
+                let disk = CatalogueDisk {
+                    name: self.image_library.pending_label(insert),
+                    format: geometry,
+                    write: words(insert.journal),
+                    inserted: false,
+                    index: 0,
+                    set: None,
+                };
+                return (vec![disk], Some(0));
+            };
+            let disks: Vec<CatalogueDisk> = (0..set.disks.len())
+                .filter(|at| insert.all || set.disks[*at].id == insert.medium)
+                .enumerate()
+                .map(|(index, at)| {
+                    let disk = &set.disks[at];
+                    CatalogueDisk {
+                        name: short_name(set_disk(&set, &disk.id), &disk.id),
+                        format: disk.format.unwrap_or(geometry),
+                        write: words(insert.journal),
+                        inserted: false,
+                        index,
+                        set: Some((insert.set.digest.clone(), at)),
+                    }
+                })
+                .collect();
+            let chosen = disks.iter().position(|disk| {
+                disk.set
+                    .as_ref()
+                    .is_some_and(|(_, at)| set.disks[*at].id == insert.medium)
+            });
+            return (disks, chosen);
+        }
+        let Some(created) = row.created.iter().find(|c| c.drive == letter) else {
+            return (Vec::new(), None);
+        };
+        let disks = created
+            .disks
+            .iter()
+            .enumerate()
+            .map(|(index, disk)| CatalogueDisk {
+                name: disk.name.clone(),
+                format: geometry,
+                write: words(created.journal),
+                inserted: false,
+                index,
+                set: None,
+            })
+            .collect();
+        (disks, Some(created.first()))
+    }
+
+    /// A disk of drive `unit`'s Catalogue submenu, by its catalogue index:
+    /// what Insert of the picker's This machine does with it. Running or
+    /// halted, it goes in now; stopped, it waits for Start, and the disk
+    /// already in the drive takes a waiting one out, as Take out again does.
+    /// Of the disks waiting for a library machine's or an image's Start,
+    /// the chosen one goes in then instead.
+    fn choose_catalogue_disk(&mut self, unit: u8, index: usize) {
+        let inserted = self.floppy_inserted();
+        let Some(catalogue) = self.catalogue(unit, inserted) else {
+            return;
+        };
+        let Some(disk) = catalogue
+            .disks
+            .iter()
+            .find(|disk| disk.index == index)
+            .cloned()
+        else {
+            return;
+        };
+        let name = disk.name.clone();
+        let drive = crate::media_picker::drive_name(unit);
+        if let Some(presenter) = &self.presenter {
+            let halted = presenter.awaits_reset();
+            self.apply_picker(crate::media_picker::Outcome::Entry { unit, index });
+            self.message = if halted && unit == 0 {
+                format!("{drive} now holds {name}. Press Ctrl+Alt+Del to boot from it.")
+            } else {
+                format!("{drive} now holds {name}.")
+            };
+        } else if catalogue.unknown.is_some() {
+            let machine = match self.image_library.selected_machine_row().cloned() {
+                Some(row) if self.image_library.machine.is_some() => {
+                    let listed = row
+                        .listing
+                        .machine
+                        .pending
+                        .iter()
+                        .find(|p| p.drive == drive);
+                    if let Some(insert) = listed {
+                        let medium = disk.set.as_ref().and_then(|(digest, at)| {
+                            Some(
+                                self.image_library
+                                    .picker_set(digest)?
+                                    .disks
+                                    .get(*at)?
+                                    .id
+                                    .clone(),
+                            )
+                        });
+                        if let Some(medium) = medium.filter(|medium| *medium != insert.medium) {
+                            let insert = image_store::machine::PendingInsert {
+                                medium,
+                                ..insert.clone()
+                            };
+                            self.image_library
+                                .set_pending(row.id(), &drive, Some(insert));
+                        }
+                    } else if row
+                        .created
+                        .iter()
+                        .any(|c| c.drive == drive && c.first() != index)
+                    {
+                        self.image_library
+                            .set_created_first(row.id(), &drive, index);
+                    }
+                    row.name().to_owned()
+                }
+                _ => {
+                    if let Some(pending) = &mut self.pending_media {
+                        pending.choose(unit, index);
+                    }
+                    self.stopped_name()
+                }
+            };
+            self.message = format!("{name} goes into {drive} of {machine} at its next Start.");
+        } else if catalogue.in_drive == Some(index) {
+            self.message = if catalogue.pending.is_some() {
+                if let Some(pending) = &mut self.pending_media {
+                    pending.eject(unit);
+                }
+                format!("Took the pending disk out; {name} stays in {drive}.")
+            } else {
+                format!("{name} is in {drive} already.")
+            };
+        } else {
+            self.apply_picker(crate::media_picker::Outcome::Entry { unit, index });
+            self.message = format!(
+                "{name} goes into {drive} of {} at its next Start.",
+                self.stopped_name()
+            );
+        }
+    }
+
+    /// All N disks… of drive `unit`'s Catalogue submenu: Insert… on This
+    /// machine, with the disk in the drive chosen and scrolled into view;
+    /// while the drive knows only the disks waiting for Start, Insert… with
+    /// their set chosen.
+    fn open_catalogue_picker(&mut self, unit: u8) {
+        use crate::media_picker::{Choice, Source};
+        let inserted = self.floppy_inserted();
+        let Some(catalogue) = self.catalogue(unit, inserted) else {
+            return;
+        };
+        if catalogue.unknown.is_some() {
+            let set = catalogue
+                .disks
+                .iter()
+                .find_map(|disk| Some(disk.set.as_ref()?.0.clone()));
+            self.open_picker(unit, None, set);
+            return;
+        }
+        self.open_picker(unit, None, None);
+        if let Some(picker) = &mut self.picker {
+            picker.set_source(Source::Machine);
+            if let Some(index) = catalogue.in_drive {
+                picker.choose(Choice::Entry(unit, index));
+            }
+            picker.reveal = true;
+        }
+    }
+
+    /// Disks a library machine took at Start from sets of the library, by
+    /// the pending inserts that put them in: they lead their drives'
+    /// catalogues, chosen disk first, and keep the short names their sets
+    /// give them after Start too.
+    fn name_inserted_disks(&mut self, inserts: &[image_store::machine::PendingInsert]) {
+        for insert in inserts {
+            let unit = match insert.drive.as_str() {
+                "A:" => 0,
+                "B:" => 1,
+                _ => continue,
+            };
+            let sources = self.image_library.inserted_sources(insert);
+            let Some(slot) = self
+                .presenter
+                .as_mut()
+                .and_then(|presenter| presenter.media_slots.get_mut(unit)?.as_mut())
+            else {
+                continue;
+            };
+            for (entry, (source, label, at, count)) in slot.entries.iter_mut().zip(sources) {
+                // Only the disks the insert put in, by the names it gave them.
+                if entry.source.is_some() || entry.medium.name != label {
+                    break;
+                }
+                entry.source = Some(source);
+                entry.origin = Some(crate::media_dialog::set_origin(
+                    &insert.reference,
+                    at,
+                    count,
+                ));
+            }
+        }
     }
 
     /// Insert… of drive `unit`: the media picker, on `machine` when given
@@ -1845,6 +2171,7 @@ impl Shell {
         ui: &mut egui::Ui,
         area: egui::Rect,
         drives: &[crate::drive_chips::DriveView],
+        inserted: [Option<usize>; 2],
         now: std::time::Duration,
         commands: &mut Vec<Command>,
     ) {
@@ -1976,7 +2303,7 @@ impl Shell {
             } else {
                 response.on_hover_ui(|ui| drive_tooltip(ui, view, lit))
             };
-            egui::Popup::menu(&response).show(|ui| self.drive_menu(ui, view, commands));
+            egui::Popup::menu(&response).show(|ui| self.drive_menu(ui, view, inserted, commands));
         }
         if let Some(wait) = lights.and_then(|lights| lights.next_off(now)) {
             ui.ctx().request_repaint_after(wait);
@@ -1988,6 +2315,7 @@ impl Shell {
         &self,
         ui: &mut egui::Ui,
         view: &crate::drive_chips::DriveView,
+        inserted: [Option<usize>; 2],
         commands: &mut Vec<Command>,
     ) {
         ui.add_enabled(false, egui::Label::new(view.menu_label()));
@@ -2034,6 +2362,9 @@ impl Shell {
             Command::CreateFromFiles(unit),
             commands,
         );
+        // The chip's menu opens upward from the status bar, and so does the
+        // submenu.
+        crate::catalogue_menu::item(ui, self.catalogue(unit, inserted).as_ref(), true, commands);
         if view.at_start {
             ui.add_enabled(
                 false,
@@ -3336,6 +3667,8 @@ impl Shell {
                 let entry = self.selected.and_then(|index| self.library.get(index));
                 self.blank_disk = Some(crate::media_dialog::BlankDisk::for_machine(entry.map_or(self.args.machine.as_path(), |entry| entry.path.as_path()), entry.and_then(|entry| entry.warning.as_deref())));
             },
+            CatalogueDisk(unit, index) => self.choose_catalogue_disk(unit, index),
+            CatalogueAll(unit) => { self.release(); self.open_catalogue_picker(unit); },
             Next(unit) | Eject(unit) => if let Some(presenter) = &mut self.presenter {
                 presenter.media_events.push((unit, if matches!(command, Next(_)) { assembly::FloppyAction::Next } else { assembly::FloppyAction::Eject }));
             } else if let (Eject(_), Some(row)) = (command, self.image_library.selected_machine_row().cloned()) {
@@ -3598,6 +3931,7 @@ impl Shell {
             });
             ui.menu_button("Media", |ui| {
                 let drives = self.drive_views();
+                let in_drives = self.floppy_inserted();
                 for unit in 0..2 {
                     let drive = if unit == 0 { "A:" } else { "B:" };
                     let present = self.enablement().floppy[unit as usize];
@@ -3633,6 +3967,12 @@ impl Shell {
                         "Create from files…",
                         "",
                         CreateFromFiles(unit),
+                        commands,
+                    );
+                    crate::catalogue_menu::item(
+                        ui,
+                        self.catalogue(unit, in_drives).as_ref(),
+                        false,
                         commands,
                     );
                     self.marked_item(
@@ -4920,6 +5260,10 @@ pub(crate) fn audio_mark(audible: bool) -> &'static str {
 
 /// The eject mark of the Media menu and the drive menus.
 pub(crate) const EJECT_MARK: &str = "⏏";
+/// Why a stopped library machine lists no disk in its drives' catalogues:
+/// its image's own disks join them at Start.
+const IMAGE_DISKS_AT_START: &str =
+    "The image's own disks are in the drive at Start; Next disk swaps them once the machine runs.";
 
 fn eject_shortcut(unit: u8) -> &'static str {
     if unit == 0 {
@@ -4970,16 +5314,22 @@ fn machine_pending_views(
                     },
                     fixed_by: Some("chosen in the media picker"),
                     format: None,
+                    set: None,
                 },
                 // Created disks the machine owns wait in its workspace.
                 None => {
                     let created = row.created.iter().find(|c| c.drive == letter)?;
                     let count = created.disks.len();
+                    // The disk that goes in, by the name its catalogue gives it.
+                    let first = created
+                        .disks
+                        .get(created.first())
+                        .map_or_else(|| created.title.clone(), |disk| disk.name.clone());
                     crate::drive_chips::Medium {
                         name: if count > 1 {
-                            format!("{} (all {count} disks join the catalogue)", created.title)
+                            format!("{first} (all {count} disks join the catalogue)")
                         } else {
-                            created.title.clone()
+                            first
                         },
                         source: format!(
                             "Created from files, in the drive at the next Start of {}",
@@ -4993,6 +5343,7 @@ fn machine_pending_views(
                         },
                         fixed_by: Some("created in the media picker"),
                         format: None,
+                        set: None,
                     }
                 }
             };
@@ -10369,6 +10720,8 @@ kind='mda'
         commands: Vec<Command>,
         /// Texts cut short with an ellipsis; a galley keeps its whole text.
         elided: Vec<String>,
+        /// The label of the widget with the keyboard focus.
+        focused: Option<String>,
     }
 
     const AMBER: Color32 = Color32::from_rgb(255, 178, 31);
@@ -10412,10 +10765,9 @@ kind='mda'
                 _ => {}
             }
         }
-        let labels = output
-            .platform_output
-            .accesskit_update
-            .take()
+        let update = output.platform_output.accesskit_update.take();
+        let labels = update
+            .as_ref()
             .map(|update| {
                 update
                     .nodes
@@ -10424,6 +10776,14 @@ kind='mda'
                     .collect()
             })
             .unwrap_or_default();
+        let focused = ctx.memory(|memory| memory.focused()).and_then(|id| {
+            update
+                .as_ref()?
+                .nodes
+                .iter()
+                .find(|(node, _)| *node == id.accesskit_id())
+                .and_then(|(_, node)| node.label().map(str::to_owned))
+        });
         output.drop_without_applying_deltas();
         StatusPass {
             text,
@@ -10431,6 +10791,7 @@ kind='mda'
             labels,
             commands,
             elided,
+            focused,
         }
     }
 
@@ -10694,6 +11055,1061 @@ kind='mda'
         assert_eq!((picker.unit, picker.mode), (1, Mode::Create));
     }
 
+    fn key(key: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }
+    }
+
+    /// The texts of an open Catalogue submenu, from its heading on: the
+    /// submenu is the topmost layer, so its texts come last.
+    fn submenu_texts(text: &[(String, egui::Rect)]) -> Vec<String> {
+        let start = text
+            .iter()
+            .position(|(shown, _)| {
+                shown.contains("'s catalogue")
+                    || (shown.starts_with("For ") && shown.contains("at the next Start"))
+            })
+            .unwrap_or_else(|| panic!("no Catalogue submenu in {text:?}"));
+        text[start..]
+            .iter()
+            .map(|(shown, _)| shown.clone())
+            .collect()
+    }
+
+    /// The Catalogue items of the open menu, top to bottom.
+    fn catalogue_items(text: &[(String, egui::Rect)]) -> Vec<(String, egui::Rect)> {
+        let mut items: Vec<(String, egui::Rect)> = text
+            .iter()
+            .filter(|(shown, _)| shown.starts_with("Catalogue"))
+            .cloned()
+            .collect();
+        items.sort_by(|a, b| a.1.top().total_cmp(&b.1.top()));
+        items
+    }
+
+    /// Open the Media menu, then drive `unit`'s Catalogue submenu by
+    /// hovering its item; the frame that shows it.
+    fn media_catalogue(ctx: &egui::Context, shell: &mut Shell, unit: usize) -> Drawn {
+        egui::Popup::close_all(ctx);
+        let drawn = draw(ctx, shell, Vec::new());
+        click(ctx, shell, label_rect(&drawn.text, "Media").center());
+        let text = draw(ctx, shell, Vec::new()).text;
+        let at = catalogue_items(&text)[unit].1.center();
+        let mut drawn = draw(ctx, shell, vec![egui::Event::PointerMoved(at)]);
+        for _ in 0..3 {
+            drawn = draw(ctx, shell, vec![egui::Event::PointerMoved(at)]);
+        }
+        drawn
+    }
+
+    /// Media › Catalogue lists the drive's catalogue in order under a line
+    /// with the drive and the count, ● and "in A:" on the disk in the drive,
+    /// after Create from files… and before Next disk. A chosen disk goes in
+    /// now, as This machine's Insert puts it in, and the status bar says so;
+    /// while halted it adds that Ctrl+Alt+Del boots from it.
+    #[test]
+    fn media_catalogue_puts_a_disk_into_the_running_drive_as_this_machine_does() {
+        let ctx = egui::Context::default();
+        let mut shell = media_shell();
+        let drawn = media_catalogue(&ctx, &mut shell, 0);
+        assert_eq!(
+            submenu_texts(&drawn.text),
+            [
+                "A:'s catalogue, in order · 2 disks",
+                "●",
+                "first.img",
+                "in A:",
+                "second.img"
+            ]
+        );
+        assert!(drawn.toggled.contains(&("first.img".to_owned(), true)));
+        assert!(drawn.toggled.contains(&("second.img".to_owned(), false)));
+        let items = catalogue_items(&drawn.text);
+        assert_eq!(items[0].0, "Catalogue");
+        let top = |label: &str| {
+            let mut rows: Vec<f32> = drawn
+                .text
+                .iter()
+                .filter(|(shown, _)| shown == label)
+                .map(|(_, rect)| rect.top())
+                .collect();
+            rows.sort_by(f32::total_cmp);
+            rows[0]
+        };
+        assert!(top("Create from files…") < items[0].1.top());
+        assert!(items[0].1.top() < top("Next disk in catalogue"));
+        let second = label_rect(&drawn.text, "second.img").center();
+        assert_eq!(
+            click(&ctx, &mut shell, second),
+            [Command::CatalogueDisk(0, 1)]
+        );
+        shell.command(Command::CatalogueDisk(0, 1), &ctx);
+        let chosen = std::mem::take(&mut shell.presenter.as_mut().unwrap().media_events);
+        assert_eq!(chosen, [(0, assembly::FloppyAction::Insert(1))]);
+        assert_eq!(shell.message, "A: now holds second.img.");
+        // Insert of This machine lists the same disks and asks for the same.
+        shell.command(Command::Insert(0), &ctx);
+        let picker = shell.picker.as_mut().unwrap();
+        picker.set_source(crate::media_picker::Source::Machine);
+        let names: Vec<String> = picker.machine().drives[0]
+            .catalogue
+            .iter()
+            .map(|disk| disk.name.clone())
+            .collect();
+        assert_eq!(names, ["first.img", "second.img"]);
+        picker.choose(crate::media_picker::Choice::Entry(0, 1));
+        let outcome = picker.insert().unwrap();
+        shell.apply_picker(outcome);
+        assert_eq!(shell.presenter.as_ref().unwrap().media_events, chosen);
+        shell.presenter.as_mut().unwrap().media_events.clear();
+        shell.presenter.as_mut().unwrap().halted = true;
+        shell.command(Command::CatalogueDisk(0, 1), &ctx);
+        assert_eq!(
+            shell.message,
+            "A: now holds second.img. Press Ctrl+Alt+Del to boot from it."
+        );
+        assert_eq!(shell.presenter.as_ref().unwrap().media_events, chosen);
+        shell.presenter.as_mut().unwrap().halted = false;
+        assert!(shell.stop());
+    }
+
+    /// A stopped shell with one machine file selected: its 1.44M A: holds
+    /// `one.img` at power-on and `two.img` too in its catalogue; its B:
+    /// starts empty, with no disk in its catalogue.
+    fn stopped_two_disk_shell(temp: &assembly::test_support::TempDir) -> Shell {
+        std::fs::write(temp.path().join("bios.bin"), vec![0xF4; 32768]).unwrap();
+        for name in ["one.img", "two.img"] {
+            std::fs::write(temp.path().join(name), vec![0; 1_474_560]).unwrap();
+        }
+        let path = temp.path().join("machine.toml");
+        std::fs::write(&path, "schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='bios.bin'\nprovides=['floppy']\n[[card]]\nkind='mda'\n[[card]]\nkind='fdc-765'\n[[card.drives]]\nunit=0\ntype='1.44M'\n[[card.drives.media]]\nimage='one.img'\nwrite='readonly'\n[[card.drives.media]]\nimage='two.img'\nwrite='readonly'\n[[card.drives]]\nunit=1\ntype='1.44M'\nempty=true\n").unwrap();
+        let mut shell = shell();
+        shell.presenter = None;
+        shell.args.options.allow_unlisted_firmware = true;
+        // A store path that does not exist: the user's own store is never read.
+        shell.preferences.store_root = Some(temp.path().join("no-store"));
+        shell.library = vec![LibraryEntry::inspect_with_rom_dirs(
+            path,
+            shell.args.options,
+            &[],
+        )];
+        shell.selected = Some(0);
+        shell.refresh_library();
+        finish_readiness(&mut shell);
+        shell.sync_pending_media();
+        shell
+    }
+
+    /// On a stopped machine the Catalogue submenu marks the disk its drive
+    /// holds at power-on. A chosen disk waits for the next Start, as This
+    /// machine makes it wait, and says "at Start"; choosing the disk in the
+    /// drive takes the waiting one out again. A waiting disk that is not in
+    /// the catalogue yet is named under the list. An empty catalogue
+    /// disables the item with the reason.
+    #[test]
+    fn a_stopped_machine_takes_a_catalogue_disk_at_its_next_start() {
+        let temp = assembly::test_support::TempDir::new("shell-catalogue-stopped");
+        let mut shell = stopped_two_disk_shell(&temp);
+        let name = shell.stopped_name();
+        let ctx = egui::Context::default();
+        let drawn = media_catalogue(&ctx, &mut shell, 0);
+        assert_eq!(
+            catalogue_items(&drawn.text)
+                .into_iter()
+                .map(|(shown, _)| shown)
+                .collect::<Vec<_>>(),
+            ["Catalogue", "Catalogue · empty"]
+        );
+        assert_eq!(
+            submenu_texts(&drawn.text),
+            [
+                "A:'s catalogue, in order · 2 disks",
+                "●",
+                "one.img",
+                "in A:",
+                "two.img"
+            ]
+        );
+        let two = label_rect(&drawn.text, "two.img").center();
+        assert_eq!(click(&ctx, &mut shell, two), [Command::CatalogueDisk(0, 1)]);
+        shell.command(Command::CatalogueDisk(0, 1), &ctx);
+        assert_eq!(
+            shell.message,
+            format!("two.img goes into A: of {name} at its next Start.")
+        );
+        let chips = |shell: &mut Shell| -> Vec<String> {
+            shell
+                .drive_views()
+                .iter()
+                .map(crate::drive_chips::DriveView::chip_text)
+                .collect()
+        };
+        assert_eq!(
+            chips(&mut shell),
+            ["A: two.img · 1.44M · read-only · at Start"]
+        );
+        let drawn = media_catalogue(&ctx, &mut shell, 0);
+        assert_eq!(
+            submenu_texts(&drawn.text),
+            [
+                "A:'s catalogue, in order · 2 disks",
+                "●",
+                "one.img",
+                "in A:",
+                "two.img",
+                "at Start"
+            ]
+        );
+        let one = label_rect(&drawn.text, "one.img").center();
+        assert_eq!(click(&ctx, &mut shell, one), [Command::CatalogueDisk(0, 0)]);
+        shell.command(Command::CatalogueDisk(0, 0), &ctx);
+        assert_eq!(
+            shell.message,
+            "Took the pending disk out; one.img stays in A:."
+        );
+        assert!(chips(&mut shell).is_empty());
+        shell.command(Command::CatalogueDisk(0, 0), &ctx);
+        assert_eq!(shell.message, "one.img is in A: already.");
+        // A file of this computer waits for Start outside the catalogue.
+        let other = temp.path().join("other.img");
+        std::fs::write(&other, vec![0; 737_280]).unwrap();
+        shell.command(Command::InsertFile(0), &ctx);
+        let draft = shell.insert_dialog.as_mut().unwrap();
+        let browsed = crate::media_dialog::browse(&other, draft.slot.geometry).unwrap();
+        draft.add_browsed(browsed);
+        shell.confirm_insert();
+        let drawn = media_catalogue(&ctx, &mut shell, 0);
+        let texts = submenu_texts(&drawn.text);
+        assert_eq!(
+            texts.last().map(String::as_str),
+            Some("At Start: other.img, which joins the catalogue then.")
+        );
+        assert!(!texts.iter().any(|text| text == "at Start"));
+        // Choosing a catalogue disk replaces the waiting file.
+        shell.command(Command::CatalogueDisk(0, 1), &ctx);
+        assert_eq!(
+            chips(&mut shell),
+            ["A: two.img · 1.44M · read-only · at Start"]
+        );
+    }
+
+    /// One disk or none disables the item, which says why.
+    #[test]
+    fn one_disk_or_none_disables_catalogue_with_the_reason() {
+        let temp = assembly::test_support::TempDir::new("shell-catalogue-one");
+        let (mut shell, _) = stopped_machine_file_shell(&temp);
+        let ctx = egui::Context::default();
+        let drawn = draw(&ctx, &mut shell, Vec::new());
+        click(&ctx, &mut shell, label_rect(&drawn.text, "Media").center());
+        let text = draw(&ctx, &mut shell, Vec::new()).text;
+        assert_eq!(
+            catalogue_items(&text)
+                .into_iter()
+                .map(|(shown, _)| shown)
+                .collect::<Vec<_>>(),
+            ["Catalogue · one disk", "Catalogue · empty"]
+        );
+        for (unit, why) in [
+            (0, "Only one disk in A:'s catalogue. Insert… adds more."),
+            (
+                1,
+                "B:'s catalogue is empty. Insert… and Create from files… add disks to it.",
+            ),
+        ] {
+            let catalogue = shell.catalogue(unit, [None, None]).unwrap();
+            assert_eq!(
+                catalogue.disabled().map(|(_, reason)| reason).as_deref(),
+                Some(why)
+            );
+        }
+        // A disabled item opens nothing.
+        let one = catalogue_items(&text)[0].1.center();
+        for _ in 0..3 {
+            let drawn = draw(&ctx, &mut shell, vec![egui::Event::PointerMoved(one)]);
+            assert!(!shows(&drawn.text, "'s catalogue"));
+        }
+        assert!(click(&ctx, &mut shell, one).is_empty());
+    }
+
+    /// A running machine with `count` disks in A:'s catalogue.
+    fn many_disk_shell(count: usize) -> Shell {
+        let mut shell = shell();
+        let mut config = assembly::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
+        config.drives[0].media = Some(assembly::FloppyMediaList {
+            empty: false,
+            entries: (1..=count)
+                .map(|number| assembly::FloppyMedium {
+                    image: assembly::ImageSource::Inline(vec![0; 1_474_560]),
+                    expected_sha256: None,
+                    write: assembly::WriteMode::ReadOnly,
+                    name: format!("AZURAMON {number} of {count}"),
+                })
+                .collect(),
+        });
+        shell.presenter = Some(
+            Presenter::new(
+                &config,
+                assembly::AssemblyOptions {
+                    allow_unlisted_firmware: true,
+                },
+                &mut io::sink(),
+            )
+            .unwrap(),
+        );
+        shell
+    }
+
+    /// Past twelve disks the submenu lists twelve, two before the disk in
+    /// the drive and the rest after it, and All N disks…, which opens Insert…
+    /// on This machine with that disk chosen and scrolled into view.
+    #[test]
+    fn a_long_catalogue_lists_twelve_disks_and_all_of_them_in_the_picker() {
+        use crate::media_picker::{Choice, Source};
+        let ctx = egui::Context::default();
+        let mut shell = many_disk_shell(13);
+        shell
+            .presenter
+            .as_mut()
+            .unwrap()
+            .assembled
+            .change_floppy(
+                assembly::DeviceId::Fdc,
+                0,
+                assembly::FloppyAction::Insert(5),
+            )
+            .unwrap();
+        let drawn = media_catalogue(&ctx, &mut shell, 0);
+        let texts = submenu_texts(&drawn.text);
+        assert_eq!(texts[0], "Disks 2–13 of 13 in A:'s catalogue");
+        let disks: Vec<&String> = texts.iter().filter(|t| t.starts_with("AZURAMON")).collect();
+        assert_eq!(disks.len(), 12);
+        assert_eq!(disks[0], "AZURAMON 2 of 13");
+        assert_eq!(disks[11], "AZURAMON 13 of 13");
+        let here = texts.iter().position(|t| t == "●").unwrap();
+        assert_eq!(texts[here + 1], "AZURAMON 6 of 13");
+        assert_eq!(
+            texts[texts.len() - 2..],
+            ["All 13 disks…", "Insert… › This machine"]
+        );
+        let all = label_rect(&drawn.text, "All 13 disks…").center();
+        assert_eq!(click(&ctx, &mut shell, all), [Command::CatalogueAll(0)]);
+        shell.command(Command::CatalogueAll(0), &ctx);
+        let picker = shell.picker.as_ref().expect("the media picker");
+        assert_eq!((picker.unit, picker.source), (0, Source::Machine));
+        assert_eq!(picker.choice, Some(Choice::Entry(0, 5)));
+        assert!(picker.reveal);
+        shell.picker = None;
+        assert!(shell.stop());
+    }
+
+    /// The keyboard reaches a drive's catalogue without a new key: ↓ to
+    /// Catalogue, → or Enter opens it on the disk in the drive, ↓ and Enter
+    /// put the next disk in. ← and Escape go back to the item with the menu
+    /// still open, and Escape there closes the menu.
+    #[test]
+    fn the_keyboard_reaches_the_catalogue_through_the_media_menu() {
+        use egui::Key::{ArrowDown, ArrowLeft, ArrowRight, Enter, Escape};
+        let ctx = egui::Context::default();
+        let mut shell = many_disk_shell(3);
+        // The disk in the drive is not the first, so → shows where it goes.
+        shell
+            .presenter
+            .as_mut()
+            .unwrap()
+            .assembled
+            .change_floppy(
+                assembly::DeviceId::Fdc,
+                0,
+                assembly::FloppyAction::Insert(1),
+            )
+            .unwrap();
+        let open = |shell: &mut Shell| {
+            egui::Popup::close_all(&ctx);
+            let drawn = draw(&ctx, shell, Vec::new());
+            click(&ctx, shell, label_rect(&drawn.text, "Media").center());
+            let mut drawn = draw(&ctx, shell, Vec::new());
+            for _ in 0..6 {
+                if drawn.focused.as_deref() == Some("Catalogue") {
+                    break;
+                }
+                draw(&ctx, shell, vec![key(ArrowDown)]);
+                drawn = draw(&ctx, shell, Vec::new());
+            }
+            assert_eq!(drawn.focused.as_deref(), Some("Catalogue"));
+        };
+        // A key, then two frames to settle; every command the three asked for.
+        let press = |shell: &mut Shell, pressed: egui::Key| {
+            let mut commands = draw(&ctx, shell, vec![key(pressed)]).commands;
+            commands.extend(draw(&ctx, shell, Vec::new()).commands);
+            let drawn = draw(&ctx, shell, Vec::new());
+            Drawn {
+                commands: [commands, drawn.commands].concat(),
+                ..drawn
+            }
+        };
+        let heading = "A:'s catalogue, in order · 3 disks";
+        open(&mut shell);
+        let drawn = press(&mut shell, ArrowRight);
+        assert!(shows(&drawn.text, heading));
+        assert_eq!(
+            drawn.focused.as_deref(),
+            Some("AZURAMON 2 of 3"),
+            "the disk in the drive"
+        );
+        let drawn = press(&mut shell, ArrowDown);
+        assert_eq!(drawn.focused.as_deref(), Some("AZURAMON 3 of 3"));
+        let drawn = press(&mut shell, Enter);
+        assert_eq!(drawn.commands, [Command::CatalogueDisk(0, 2)]);
+        assert!(!shows(&drawn.text, heading), "choosing closes the menus");
+        assert!(!shows(&drawn.text, "Next disk in catalogue"));
+        open(&mut shell);
+        press(&mut shell, ArrowRight);
+        let drawn = press(&mut shell, ArrowLeft);
+        assert_eq!(drawn.focused.as_deref(), Some("Catalogue"));
+        assert!(!shows(&drawn.text, heading));
+        assert!(shows(&drawn.text, "Next disk in catalogue"));
+        let drawn = press(&mut shell, Enter);
+        assert_eq!(drawn.focused.as_deref(), Some("AZURAMON 2 of 3"));
+        assert!(drawn.commands.is_empty());
+        let drawn = press(&mut shell, Escape);
+        assert_eq!(drawn.focused.as_deref(), Some("Catalogue"));
+        assert!(!shows(&drawn.text, heading));
+        assert!(
+            shows(&drawn.text, "Next disk in catalogue"),
+            "the menu stays open"
+        );
+        let drawn = press(&mut shell, Escape);
+        assert!(!shows(&drawn.text, "Next disk in catalogue"));
+        assert!(drawn.commands.is_empty());
+        assert!(shell.stop());
+    }
+
+    /// Open the chip of drive A: and its Catalogue submenu by hovering its
+    /// item, in a status bar `width` wide; the frames that follow, hovering.
+    fn chip_catalogue(
+        ctx: &egui::Context,
+        shell: &mut Shell,
+        width: f32,
+        frames: usize,
+    ) -> Vec<StatusPass> {
+        egui::Popup::close_all(ctx);
+        let pass = status_pass(ctx, shell, width, Vec::new());
+        let chip = text_starting(&pass, "A: ").expect("the A: chip").1.center();
+        click_status(ctx, shell, width, chip);
+        let menu = status_pass(ctx, shell, width, Vec::new());
+        let item = label_rect(&menu.text, "Catalogue").center();
+        (0..frames)
+            .map(|_| status_pass(ctx, shell, width, vec![egui::Event::PointerMoved(item)]))
+            .collect()
+    }
+
+    /// A drive chip's menu has the same Catalogue submenu as the Media menu,
+    /// with the same items, and a disk chosen there goes in the same way.
+    #[test]
+    fn the_chip_and_the_media_menu_show_the_same_catalogue() {
+        let ctx = egui::Context::default();
+        let mut shell = media_shell();
+        let media = submenu_texts(&media_catalogue(&ctx, &mut shell, 0).text);
+        let chip = chip_catalogue(&ctx, &mut shell, 1600.0, 4).pop().unwrap();
+        assert_eq!(submenu_texts(&chip.text), media);
+        let create = label_rect(&chip.text, "Create from files…");
+        let item = label_rect(&chip.text, "Catalogue");
+        assert!(create.top() < item.top() && item.top() - create.bottom() < 12.0);
+        let second = label_rect(&chip.text, "second.img").center();
+        assert_eq!(
+            click_status(&ctx, &mut shell, 1600.0, second),
+            [Command::CatalogueDisk(0, 1)]
+        );
+        assert!(shell.stop());
+    }
+
+    /// In every skin and theme the chip's Catalogue submenu grows upward
+    /// from the status bar, stays inside the window, shows the in-drive
+    /// mark, and keeps its place and size from frame to frame.
+    #[test]
+    fn the_chip_catalogue_holds_still_above_the_status_bar_in_every_look() {
+        for (classic, dark) in [(true, false), (true, true), (false, false), (false, true)] {
+            let what = format!("classic {classic}, dark {dark}");
+            let ctx = egui::Context::default();
+            ctx.set_visuals(skin_visuals(classic, dark));
+            let mut shell = media_shell();
+            shell.classic = classic;
+            let frames = chip_catalogue(&ctx, &mut shell, 1040.0, 8);
+            let submenu = |pass: &StatusPass| -> Vec<(String, egui::Rect)> {
+                let start = pass
+                    .text
+                    .iter()
+                    .position(|(shown, _)| shown.contains("'s catalogue"))
+                    .unwrap_or_else(|| panic!("{what}: no submenu in {:?}", pass.text));
+                pass.text[start..].to_vec()
+            };
+            let settled = submenu(&frames[2]);
+            for pass in &frames[2..] {
+                assert_eq!(submenu(pass), settled, "{what}: the submenu moves or grows");
+            }
+            let names: Vec<&str> = settled.iter().map(|(shown, _)| shown.as_str()).collect();
+            assert_eq!(
+                names,
+                [
+                    "A:'s catalogue, in order · 2 disks",
+                    "●",
+                    "first.img",
+                    "in A:",
+                    "second.img"
+                ],
+                "{what}"
+            );
+            let chip = text_starting(&frames[7], "A: first.img").unwrap().1;
+            let window = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1040.0, 400.0));
+            for (shown, rect) in &settled {
+                assert!(
+                    rect.bottom() <= chip.top(),
+                    "{what}: {shown} {rect:?} {chip:?}"
+                );
+                assert!(window.contains_rect(*rect), "{what}: {shown} {rect:?}");
+            }
+            let item = label_rect(&frames[7].text, "Catalogue");
+            let last = settled.last().unwrap().1;
+            assert!(
+                (last.bottom() - item.bottom()).abs() < 8.0 && settled[0].1.top() < item.top(),
+                "{what}: the submenu grows upward from its item: {settled:?} {item:?}"
+            );
+            assert!(shell.stop());
+        }
+    }
+
+    /// Import a three-disk 360K installation set titled "Win 3.1", tag
+    /// `win:3.1`, its first disk labelled "Disk 1 (Setup)"; its manifest.
+    fn import_win_set(f: &crate::library_test_support::Fixture) -> image_store::Descriptor {
+        let mut args: Vec<std::ffi::OsString> =
+            vec!["image".into(), "media".into(), "import".into()];
+        for number in 1..=3 {
+            let disk = f.temp.path().join(format!("win-{number}.img"));
+            let create: Vec<std::ffi::OsString> = vec![
+                "floppy".into(),
+                "--type".into(),
+                "360K".into(),
+                "--format".into(),
+                "--label".into(),
+                format!("WIN{number}").into(),
+                disk.clone().into_os_string(),
+            ];
+            cli::create::execute(cli::create::parse(&create).unwrap(), &mut std::io::sink())
+                .unwrap();
+            args.push(disk.into_os_string());
+        }
+        let root = f.store.root().to_string_lossy().into_owned();
+        for extra in [
+            "--store",
+            root.as_str(),
+            "--title",
+            "Win 3.1",
+            "--tag",
+            "win:3.1-r1",
+            "--label",
+            "1=Disk 1 (Setup)",
+            "--label",
+            "2=Disk 2",
+            "--label",
+            "3=Disk 3",
+        ] {
+            args.push(extra.into());
+        }
+        let mut errors = Vec::new();
+        assert_eq!(
+            cli::command::run(&args, &mut std::io::sink(), &mut errors),
+            0,
+            "{}",
+            String::from_utf8_lossy(&errors)
+        );
+        f.store.tag_descriptor("win:3.1").unwrap()
+    }
+
+    /// A stopped library machine knows its own disks only at Start: with
+    /// nothing waiting the item says so, never "empty". A set waiting for
+    /// Start lists its disks, the chosen one "at Start", and names the
+    /// image's own disks under them; choosing another rewrites the pending
+    /// insert. The chip, the Insert status and the picker's drive button
+    /// name the waiting disk as the submenu does.
+    #[test]
+    fn a_stopped_library_machine_lists_the_set_disks_waiting_for_start() {
+        use crate::catalogue_menu::OWN_DISKS_AT_START;
+        let f = crate::library_test_support::Fixture::new();
+        let set = import_win_set(&f);
+        let (mut shell, id) = machine_shell(&f);
+        shell
+            .image_library
+            .pump_until(|view| view.picker_set(&set.digest).is_some());
+        let ids: Vec<String> = shell
+            .image_library
+            .picker_set(&set.digest)
+            .unwrap()
+            .disks
+            .iter()
+            .map(|disk| disk.id.clone())
+            .collect();
+        assert_eq!(ids.len(), 3);
+        let ctx = egui::Context::default();
+        let drawn = draw(&ctx, &mut shell, Vec::new());
+        click(&ctx, &mut shell, label_rect(&drawn.text, "Media").center());
+        let text = draw(&ctx, &mut shell, Vec::new()).text;
+        assert_eq!(catalogue_items(&text)[0].0, "Catalogue · known at Start");
+        assert_eq!(
+            shell.catalogue(0, [None, None]).unwrap().disabled(),
+            Some((
+                "Catalogue · known at Start".into(),
+                IMAGE_DISKS_AT_START.into()
+            ))
+        );
+        let insert = |medium: &str| image_store::machine::PendingInsert {
+            drive: "A:".into(),
+            set: set.clone(),
+            reference: "win:3.1".into(),
+            medium: medium.into(),
+            all: true,
+            journal: false,
+        };
+        shell.apply_picker(crate::media_picker::Outcome::Pending {
+            id: id.clone(),
+            insert: insert(&ids[0]),
+        });
+        let waiting = "Win 3.1 · 1 of 3 — Setup (all 3 disks join the catalogue)";
+        assert_eq!(shell.image_library.pending_label(&insert(&ids[0])), waiting);
+        assert_eq!(
+            shell.message,
+            format!("{waiting} goes into A: of DOS at its next Start")
+        );
+        let chips = |shell: &mut Shell| -> Vec<String> {
+            shell
+                .drive_views()
+                .iter()
+                .map(crate::drive_chips::DriveView::chip_text)
+                .collect()
+        };
+        assert_eq!(
+            chips(&mut shell),
+            [format!("A: {waiting} · 360K · read-only · at Start")]
+        );
+        shell.command(Command::Insert(0), &ctx);
+        let picker = shell.picker.take().expect("the media picker");
+        assert_eq!(picker.drive().unwrap().holds, format!("{waiting} at Start"));
+        let drawn = media_catalogue(&ctx, &mut shell, 0);
+        assert_eq!(
+            submenu_texts(&drawn.text),
+            [
+                "For A: at the next Start, in order · 3 disks",
+                "Win 3.1 · 1 of 3 — Setup",
+                "at Start",
+                "Win 3.1 · 2 of 3",
+                "Win 3.1 · 3 of 3",
+                OWN_DISKS_AT_START
+            ]
+        );
+        let second = label_rect(&drawn.text, "Win 3.1 · 2 of 3").center();
+        assert_eq!(
+            click(&ctx, &mut shell, second),
+            [Command::CatalogueDisk(0, 1)]
+        );
+        shell.command(Command::CatalogueDisk(0, 1), &ctx);
+        assert_eq!(
+            shell.message,
+            "Win 3.1 · 2 of 3 goes into A: of DOS at its next Start."
+        );
+        assert_eq!(
+            chips(&mut shell),
+            ["A: Win 3.1 · 2 of 3 (all 3 disks join the catalogue) · 360K · read-only · at Start"]
+        );
+        // The record changes on the worker, and the listing after it agrees.
+        shell.image_library.pump_until(|view| {
+            pc_image::machine::get(&f.store, &id)
+                .unwrap()
+                .machine
+                .pending
+                == [insert(&ids[1])]
+                && view
+                    .selected_machine_row()
+                    .is_some_and(|row| row.listing.machine.pending == [insert(&ids[1])])
+        });
+        let drawn = media_catalogue(&ctx, &mut shell, 0);
+        let texts = submenu_texts(&drawn.text);
+        let marked = texts.iter().position(|text| text == "at Start").unwrap();
+        assert_eq!(texts[marked - 1], "Win 3.1 · 2 of 3");
+    }
+
+    /// Disks Create from files… made for a stopped library machine wait for
+    /// its Start the same way: listed, disk 1 "at Start" and on the chip,
+    /// and choosing another makes it the one that goes in.
+    #[test]
+    fn a_stopped_library_machine_lists_the_created_disks_waiting_for_start() {
+        use crate::created_media::{CreateOrder, Place};
+        use media::fat12::{volume_label, FloppyFormat, HostItem, ShortName};
+        let f = crate::library_test_support::Fixture::new();
+        let (mut shell, id) = machine_shell(&f);
+        let game = f.temp.path().join("host/game");
+        std::fs::create_dir_all(&game).unwrap();
+        std::fs::write(game.join("one.dat"), vec![1; 250_000]).unwrap();
+        std::fs::write(game.join("two.dat"), vec![2; 250_000]).unwrap();
+        shell
+            .image_library
+            .send(crate::library_worker::Request::CreateDisks(
+                Box::new(CreateOrder {
+                    unit: 0,
+                    items: vec![HostItem::read(&game).unwrap()],
+                    top: ShortName::parse("GAME"),
+                    format: FloppyFormat::Dd360,
+                    label: volume_label("GAME").ok(),
+                    split: true,
+                    journal: true,
+                    keep: None,
+                    title: "GAME".into(),
+                }),
+                Place::Machine(id.clone()),
+            ));
+        shell.image_library.pump_until(|view| {
+            view.machine_rows()
+                .iter()
+                .any(|row| row.id() == id && !row.created.is_empty())
+        });
+        let ctx = egui::Context::default();
+        let drawn = media_catalogue(&ctx, &mut shell, 0);
+        assert_eq!(
+            submenu_texts(&drawn.text),
+            [
+                "For A: at the next Start, in order · 2 disks",
+                "GAME 1 of 2",
+                "at Start",
+                "GAME 2 of 2",
+                crate::catalogue_menu::OWN_DISKS_AT_START
+            ]
+        );
+        let chips = |shell: &mut Shell| -> Vec<String> {
+            shell
+                .drive_views()
+                .iter()
+                .map(crate::drive_chips::DriveView::chip_text)
+                .collect()
+        };
+        assert_eq!(
+            chips(&mut shell),
+            ["A: GAME 1 of 2 (all 2 disks join the catalogue) · 360K · journal · at Start"]
+        );
+        shell.command(Command::CatalogueDisk(0, 1), &ctx);
+        assert_eq!(
+            chips(&mut shell),
+            ["A: GAME 2 of 2 (all 2 disks join the catalogue) · 360K · journal · at Start"]
+        );
+        let workspace = f.store.workspace_path(&id).unwrap();
+        shell.image_library.pump_until(|_| {
+            crate::created_media::read_pending(&workspace)
+                .is_ok_and(|inserts| inserts.first().is_some_and(|i| i.first == Some(1)))
+        });
+    }
+
+    /// An image's own disks are known only at Start too: with nothing
+    /// waiting the item says so; the disks one Insert put in for Start are
+    /// listed, and choosing another makes it the one that goes in.
+    #[test]
+    fn an_image_lists_the_disks_waiting_for_its_start() {
+        let temp = assembly::test_support::TempDir::new("shell-catalogue-image");
+        let mut shell = shell();
+        shell.stop();
+        // An image of the library is selected, and no machine of it.
+        let image =
+            crate::library_view::machines::tests::row("dos", "DOS", "a", &["games:1"]).image_row();
+        let config = assembly::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
+        shell.pending_media = Some(crate::media_dialog::PendingMedia::new(
+            crate::media_dialog::PendingOwner::Image(image.descriptor.digest.clone()),
+            config,
+        ));
+        shell.image_library.selected = Some(image);
+        let name = shell.stopped_name();
+        let catalogue = shell.catalogue(0, [None, None]).unwrap();
+        assert_eq!(
+            catalogue.disabled().map(|(label, _)| label).as_deref(),
+            Some("Catalogue · known at Start")
+        );
+        let entries: Vec<_> = ["a.img", "b.img"]
+            .into_iter()
+            .map(|name| {
+                let path = temp.path().join(name);
+                std::fs::write(&path, vec![0; 1_474_560]).unwrap();
+                crate::media_dialog::browse(&path, assembly::FloppyGeometry::HD_1_44).unwrap()
+            })
+            .collect();
+        shell.pending_media.as_mut().unwrap().insert(0, entries, 0);
+        let ctx = egui::Context::default();
+        let drawn = media_catalogue(&ctx, &mut shell, 0);
+        assert_eq!(
+            submenu_texts(&drawn.text),
+            [
+                "For A: at the next Start, in order · 2 disks",
+                "a.img",
+                "at Start",
+                "b.img",
+                crate::catalogue_menu::OWN_DISKS_AT_START
+            ]
+        );
+        shell.command(Command::CatalogueDisk(0, 1), &ctx);
+        assert_eq!(
+            shell.message,
+            format!("b.img goes into A: of {name} at its next Start.")
+        );
+        let chips: Vec<String> = shell
+            .drive_views()
+            .iter()
+            .map(crate::drive_chips::DriveView::chip_text)
+            .collect();
+        assert_eq!(chips, ["A: b.img · 1.44M · read-only · at Start"]);
+    }
+
+    /// After Start, the disks a library machine took from a set keep the
+    /// short names their set gives them: they lead the drive's catalogue,
+    /// the chosen disk first, and the chip, This machine and the submenu
+    /// name them as the set does.
+    #[test]
+    fn set_disks_put_in_at_start_keep_their_short_names() {
+        let f = crate::library_test_support::Fixture::new();
+        let set = import_win_set(&f);
+        let mut shell = media_shell();
+        shell.image_library =
+            crate::library_view::LibraryView::synthetic(f.store.root().to_owned());
+        shell
+            .image_library
+            .pump_until(|view| view.picker_set(&set.digest).is_some());
+        let ids: Vec<String> = shell
+            .image_library
+            .picker_set(&set.digest)
+            .unwrap()
+            .disks
+            .iter()
+            .map(|disk| disk.id.clone())
+            .collect();
+        let insert = image_store::machine::PendingInsert {
+            drive: "A:".into(),
+            set: set.clone(),
+            reference: "win:3.1".into(),
+            medium: ids[1].clone(),
+            all: true,
+            journal: false,
+        };
+        // The drive as the Start put the set in: disk 2, then 1 and 3, then
+        // its own disk.
+        let labels: Vec<String> = shell
+            .image_library
+            .inserted_sources(&insert)
+            .into_iter()
+            .map(|(_, label, _, _)| label)
+            .collect();
+        assert_eq!(labels, ["Disk 2", "Disk 1 (Setup)", "Disk 3"]);
+        let mut config = assembly::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
+        config.drives[0].media = Some(assembly::FloppyMediaList {
+            empty: false,
+            entries: labels
+                .iter()
+                .map(String::as_str)
+                .chain(["own.img"])
+                .map(|name| assembly::FloppyMedium {
+                    image: assembly::ImageSource::Inline(vec![0; 1_474_560]),
+                    expected_sha256: None,
+                    write: assembly::WriteMode::ReadOnly,
+                    name: name.into(),
+                })
+                .collect(),
+        });
+        shell.presenter = Some(
+            Presenter::new(
+                &config,
+                assembly::AssemblyOptions {
+                    allow_unlisted_firmware: true,
+                },
+                &mut io::sink(),
+            )
+            .unwrap(),
+        );
+        shell.name_inserted_disks(&[insert]);
+        let ctx = egui::Context::default();
+        let pass = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        assert!(
+            shows(&pass.text, "A: Win 3.1 · 2 of 3 · 1.44M · read-only"),
+            "{:?}",
+            pass.text
+        );
+        let drawn = media_catalogue(&ctx, &mut shell, 0);
+        assert_eq!(
+            submenu_texts(&drawn.text)[1..],
+            [
+                "●",
+                "Win 3.1 · 2 of 3",
+                "in A:",
+                "Win 3.1 · 1 of 3 — Setup",
+                "Win 3.1 · 3 of 3",
+                "own.img"
+            ]
+        );
+        egui::Popup::close_all(&ctx);
+        shell.command(Command::Insert(0), &ctx);
+        let picker = shell.picker.take().unwrap();
+        let names: Vec<&str> = picker.machine().drives[0]
+            .catalogue
+            .iter()
+            .map(|disk| disk.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "Win 3.1 · 2 of 3",
+                "Win 3.1 · 1 of 3 — Setup",
+                "Win 3.1 · 3 of 3",
+                "own.img"
+            ]
+        );
+        let tooltip = shell.drive_views()[0].tooltip(false);
+        assert!(tooltip.contains(&(
+            "Source",
+            "Media set win:3.1 from the library · disk 2 of 3".into()
+        )));
+        assert!(shell.stop());
+    }
+
+    /// Tab to a drive chip and Enter open its menu; the keyboard reaches its
+    /// Catalogue as it does the Media menu's.
+    #[test]
+    fn the_keyboard_reaches_the_catalogue_through_a_drive_chip() {
+        use egui::Key::{ArrowDown, ArrowRight, Enter, Tab};
+        let ctx = egui::Context::default();
+        let mut shell = many_disk_shell(3);
+        shell
+            .presenter
+            .as_mut()
+            .unwrap()
+            .assembled
+            .change_floppy(
+                assembly::DeviceId::Fdc,
+                0,
+                assembly::FloppyAction::Insert(1),
+            )
+            .unwrap();
+        let press = |shell: &mut Shell, pressed: egui::Key| {
+            let mut commands = status_pass(&ctx, shell, 1600.0, vec![key(pressed)]).commands;
+            commands.extend(status_pass(&ctx, shell, 1600.0, Vec::new()).commands);
+            let pass = status_pass(&ctx, shell, 1600.0, Vec::new());
+            StatusPass {
+                commands: [commands, pass.commands].concat(),
+                ..pass
+            }
+        };
+        status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        let pass = press(&mut shell, Tab);
+        assert!(
+            pass.focused
+                .as_deref()
+                .is_some_and(|label| label.starts_with("Drive A: AZURAMON 2 of 3")),
+            "{:?}",
+            pass.focused
+        );
+        let mut pass = press(&mut shell, Enter);
+        assert!(shows(&pass.text, "Create from files…"), "the chip's menu");
+        for _ in 0..6 {
+            if pass.focused.as_deref() == Some("Catalogue") {
+                break;
+            }
+            pass = press(&mut shell, ArrowDown);
+        }
+        assert_eq!(pass.focused.as_deref(), Some("Catalogue"));
+        let pass = press(&mut shell, ArrowRight);
+        assert_eq!(pass.focused.as_deref(), Some("AZURAMON 2 of 3"));
+        let pass = press(&mut shell, ArrowDown);
+        assert_eq!(pass.focused.as_deref(), Some("AZURAMON 3 of 3"));
+        let pass = press(&mut shell, Enter);
+        assert_eq!(pass.commands, [Command::CatalogueDisk(0, 2)]);
+        assert!(shell.stop());
+    }
+
+    /// Growing upward, the chip's submenu sits level with its item also in
+    /// the frame its catalogue changes: it is measured again at once.
+    #[test]
+    fn the_chip_catalogue_is_measured_again_when_it_changes() {
+        let ctx = egui::Context::default();
+        let mut shell = media_shell();
+        let frames = chip_catalogue(&ctx, &mut shell, 1040.0, 4);
+        let item = label_rect(&frames[3].text, "Catalogue");
+        let slot = shell.presenter.as_mut().unwrap().media_slots[0]
+            .as_mut()
+            .unwrap();
+        let mut third = slot.entries[1].clone();
+        third.index = Some(2);
+        third.medium.name = "third.img".into();
+        slot.entries.push(third);
+        let pass = status_pass(
+            &ctx,
+            &mut shell,
+            1040.0,
+            vec![egui::Event::PointerMoved(item.center())],
+        );
+        let last = label_rect(&pass.text, "third.img");
+        assert!(
+            (last.bottom() - item.bottom()).abs() < 8.0,
+            "{last:?} beside {item:?}"
+        );
+        assert!(shell.stop());
+    }
+
+    /// A library disk has one short name wherever its drive names it: the
+    /// drive chip, the Media menu's drive line, This machine in the picker
+    /// and the Catalogue submenu.
+    #[test]
+    fn a_library_disk_has_one_short_name_in_all_four_places() {
+        let f = crate::library_test_support::Fixture::new();
+        let set = f.import_set();
+        let ctx = egui::Context::default();
+        let mut shell = media_shell();
+        shell.image_library =
+            crate::library_view::LibraryView::synthetic(f.store.root().to_owned());
+        shell
+            .image_library
+            .pump_until(|view| view.picker_set(&set.digest).is_some());
+        let entry = shell.image_library.picker_set(&set.digest).unwrap();
+        let short = crate::catalogue_menu::short_name(
+            crate::catalogue_menu::set_disk(&entry, &entry.disks[0].id),
+            "first.img",
+        );
+        assert_eq!(short, entry.title, "a one-disk set is its title");
+        assert_ne!(short, "first.img");
+        let slot = shell.presenter.as_mut().unwrap().media_slots[0]
+            .as_mut()
+            .unwrap();
+        slot.entries[0].source = Some(image_store::media_set::CatalogueSource {
+            set: set.digest.clone(),
+            medium_id: entry.disks[0].id.clone(),
+            blob: image_store::Digest::of(b"disk"),
+        });
+        let pass = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+        assert!(shows(
+            &pass.text,
+            &format!("A: {short} · 1.44M · read-only")
+        ));
+        let drawn = media_catalogue(&ctx, &mut shell, 0);
+        assert!(shows(
+            &drawn.text,
+            &format!("Drive A: (1.44M) — {short} · read-only")
+        ));
+        assert_eq!(
+            submenu_texts(&drawn.text)[1..],
+            ["●", short.as_str(), "in A:", "second.img"]
+        );
+        egui::Popup::close_all(&ctx);
+        shell.command(Command::Insert(0), &ctx);
+        let picker = shell.picker.as_ref().unwrap();
+        assert_eq!(picker.machine().drives[0].catalogue[0].name, short);
+        shell.picker = None;
+        assert!(shell.stop());
+    }
+
     /// Add files… and Add folder… answer on a later frame; the answer joins
     /// the Create view's list even after ‹ Back to search, which keeps it.
     #[test]
@@ -10779,8 +12195,8 @@ kind='mda'
             [
                 "first.img",
                 "second.img",
-                "GALAXIA — disk 1 of 2",
-                "GALAXIA — disk 2 of 2"
+                "GALAXIA 1 of 2",
+                "GALAXIA 2 of 2"
             ]
         );
         let name = |shell: &mut Shell| {
@@ -10792,10 +12208,10 @@ kind='mda'
                 .floppy_name(assembly::DeviceId::Fdc, 0)
         };
         shell.tick(&ctx, false, std::time::Duration::ZERO);
-        assert_eq!(name(&mut shell), "GALAXIA — disk 1 of 2");
+        assert_eq!(name(&mut shell), "GALAXIA 1 of 2");
         shell.command(Command::Next(0), &ctx);
         shell.tick(&ctx, false, std::time::Duration::ZERO);
-        assert_eq!(name(&mut shell), "GALAXIA — disk 2 of 2");
+        assert_eq!(name(&mut shell), "GALAXIA 2 of 2");
         assert_eq!(
             std::fs::read_dir(media.join("created")).unwrap().count(),
             2,
@@ -11211,6 +12627,8 @@ kind='mda'
         /// Selectable items and whether each is marked as the current choice.
         toggled: Vec<(String, bool)>,
         commands: Vec<Command>,
+        /// The label of the widget with the keyboard focus.
+        focused: Option<String>,
     }
 
     /// Draw the menu bar above the toolbar, as the shell's chrome panel does.
@@ -11241,10 +12659,9 @@ kind='mda'
                 _ => None,
             })
             .collect();
-        let toggled = output
-            .platform_output
-            .accesskit_update
-            .take()
+        let update = output.platform_output.accesskit_update.take();
+        let toggled = update
+            .as_ref()
             .map(|update| {
                 update
                     .nodes
@@ -11258,11 +12675,20 @@ kind='mda'
                     .collect()
             })
             .unwrap_or_default();
+        let focused = ctx.memory(|memory| memory.focused()).and_then(|id| {
+            let update = update.as_ref()?;
+            update
+                .nodes
+                .iter()
+                .find(|(node, _)| *node == id.accesskit_id())
+                .and_then(|(_, node)| node.label().map(str::to_owned))
+        });
         output.drop_without_applying_deltas();
         Drawn {
             text,
             toggled,
             commands,
+            focused,
         }
     }
 

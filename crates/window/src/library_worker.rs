@@ -184,6 +184,13 @@ pub(super) enum MachineJob {
         drive: String,
         insert: Option<Box<image_store::machine::PendingInsert>>,
     },
+    /// Choose which of the created disks waiting for one drive of a stopped
+    /// machine goes in at its next Start, by its place among them.
+    SetCreatedFirst {
+        id: String,
+        drive: String,
+        first: usize,
+    },
     /// Finish an interrupted Save as new image… as it was chosen.
     FinishCommit(String),
     /// Read a machine's settings beside its image's, for its details pane.
@@ -238,11 +245,14 @@ pub(super) enum Event {
         Result<pc_image::inspection::ImageDetails>,
         Option<Box<CheckedImage>>,
     ),
+    /// A session to run, with the pending inserts of the machine's list
+    /// it put into their drives, by which the window names those disks.
     Launched(
         Box<pc_image::workspace::SessionTransfer>,
         Box<ImageRow>,
         String,
         WorkspaceKind,
+        Vec<image_store::machine::PendingInsert>,
     ),
     Finished,
     /// A workspace's media, the image its session pins for Save as new image…,
@@ -1260,6 +1270,14 @@ fn machine_job<B: Backend>(
                     .map_err(error)?;
                 Event::MachineNote(message)
             }
+            MachineJob::SetCreatedFirst { id, drive, first } => {
+                let name = machine_named(store, cache, &id)?.name().to_owned();
+                let owner = machine::own(store, &id).map_err(error)?;
+                crate::created_media::set_first(owner.path(), &drive, first)?;
+                Event::MachineNote(format!(
+                    "{drive} of \u{201c}{name}\u{201d} takes the disk at its next Start"
+                ))
+            }
             MachineJob::FinishCommit(id) => {
                 let tag = machine::pending_commit(store, &id)
                     .map_err(error)?
@@ -1629,6 +1647,7 @@ fn run<B: Backend>(
                             Box::new(row),
                             name,
                             kind,
+                            Vec::new(),
                         ));
                         let Some(outcome) = serve_session(
                             &backend,
@@ -1695,6 +1714,7 @@ fn run<B: Backend>(
                                 Box::new(row),
                                 name,
                                 WorkspaceKind::Disposable,
+                                Vec::new(),
                             ));
                             let Some(outcome) = serve_session(
                                 &backend,
@@ -1741,6 +1761,7 @@ fn run<B: Backend>(
                                 Box::new(row),
                                 id,
                                 WorkspaceKind::Machine,
+                                inserted.clone(),
                             ));
                             // The record takes the last run and drops the
                             // inserts only once the machine has assembled.
@@ -2100,7 +2121,7 @@ mod tests {
         w.send
             .send(Request::Launch(row.clone(), kind, None))
             .unwrap();
-        let Event::Launched(transfer, _, name, actual) =
+        let Event::Launched(transfer, _, name, actual, _) =
             until(w, |e| matches!(e, Event::Launched(..)))
         else {
             unreachable!()
@@ -2731,7 +2752,7 @@ mod tests {
         w.send
             .send(Request::LaunchMachine(id.into(), false))
             .unwrap();
-        let Event::Launched(transfer, row, name, kind) =
+        let Event::Launched(transfer, row, name, kind, _) =
             until(w, |e| matches!(e, Event::Launched(..)))
         else {
             unreachable!()
@@ -2809,7 +2830,7 @@ mod tests {
         w.send
             .send(Request::LaunchMachine(id.clone(), true))
             .unwrap();
-        let Event::Launched(transfer, _, name, kind) =
+        let Event::Launched(transfer, _, name, kind, _) =
             until(&w, |e| matches!(e, Event::Launched(..)))
         else {
             unreachable!()
@@ -2977,10 +2998,13 @@ mod tests {
             w.send
                 .send(Request::LaunchMachine(id.clone(), false))
                 .unwrap();
-            let Event::Launched(transfer, ..) = until(&w, |e| matches!(e, Event::Launched(..)))
+            let Event::Launched(transfer, _, _, _, inserted) =
+                until(&w, |e| matches!(e, Event::Launched(..)))
             else {
                 unreachable!()
             };
+            // The window names the disks the inserts put in by them.
+            assert_eq!(inserted, [pending_a(&set)]);
             let prepared = transfer.restore().unwrap();
             assert!(starts_with_set_disk(&f, &prepared));
             drop(prepared);
@@ -2995,6 +3019,82 @@ mod tests {
                 .pending;
             assert_eq!(pending.is_empty(), assembled, "assembled: {assembled}");
         }
+        w.shutdown();
+    }
+
+    /// Of created disks waiting for a stopped machine, the one chosen for
+    /// its Start goes in first and the others follow in order.
+    #[test]
+    fn a_created_disk_chosen_for_start_goes_in_first() {
+        use crate::created_media::{CreateOrder, Place};
+        use media::fat12::{volume_label, FloppyFormat, HostItem, ShortName};
+        let f = Fixture::new();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        let game = f.temp.path().join("host/game");
+        fs::create_dir_all(&game).unwrap();
+        fs::write(game.join("one.dat"), vec![1; 250_000]).unwrap();
+        fs::write(game.join("two.dat"), vec![2; 250_000]).unwrap();
+        w.send
+            .send(Request::CreateDisks(
+                Box::new(CreateOrder {
+                    unit: 0,
+                    items: vec![HostItem::read(&game).unwrap()],
+                    top: ShortName::parse("GAME"),
+                    format: FloppyFormat::Dd360,
+                    label: volume_label("GAME").ok(),
+                    split: true,
+                    journal: true,
+                    keep: None,
+                    title: "GAME".into(),
+                }),
+                Place::Machine(id.clone()),
+            ))
+            .unwrap();
+        let Event::DisksCreated(created) = until(&w, |e| matches!(e, Event::DisksCreated(_)))
+        else {
+            unreachable!()
+        };
+        assert_eq!(created.unwrap().disks.len(), 2);
+        w.send
+            .send(Request::Machine(MachineJob::SetCreatedFirst {
+                id: id.clone(),
+                drive: "A:".into(),
+                first: 1,
+            }))
+            .unwrap();
+        until(&w, |e| matches!(e, Event::MachineNote(_)));
+        let workspace = f.store.workspace_path(&id).unwrap();
+        assert_eq!(
+            crate::created_media::read_pending(&workspace).unwrap()[0].first,
+            Some(1)
+        );
+        w.send
+            .send(Request::LaunchMachine(id.clone(), false))
+            .unwrap();
+        let Event::Launched(transfer, ..) = until(&w, |e| matches!(e, Event::Launched(..))) else {
+            unreachable!()
+        };
+        let prepared = transfer.restore().unwrap();
+        let names: Vec<String> = prepared
+            .machine
+            .drives
+            .iter()
+            .find(|d| d.unit == 0 && matches!(d.kind, assembly::DriveKind::Floppy { .. }))
+            .and_then(|d| d.media.as_ref())
+            .map(|list| list.entries.iter().map(|m| m.name.clone()).collect())
+            .unwrap_or_default();
+        assert_eq!(names[..2], ["GAME 2 of 2", "GAME 1 of 2"]);
+        drop(prepared);
+        w.send.send(Request::Finish(Finish::Retain)).unwrap();
+        until(&w, |e| matches!(e, Event::Finished));
         w.shutdown();
     }
 
@@ -3221,7 +3321,8 @@ mod tests {
         w.send
             .send(Request::LaunchMachine(id.clone(), true))
             .unwrap();
-        let Event::Launched(transfer, _, name, _) = until(&w, |e| matches!(e, Event::Launched(..)))
+        let Event::Launched(transfer, _, name, _, _) =
+            until(&w, |e| matches!(e, Event::Launched(..)))
         else {
             unreachable!()
         };
@@ -3442,7 +3543,7 @@ mod tests {
         w.send
             .send(Request::LaunchMachine(id.clone(), true))
             .unwrap();
-        let Event::Launched(transfer, row, name, kind) =
+        let Event::Launched(transfer, row, name, kind, _) =
             until(&w, |e| matches!(e, Event::Launched(..)))
         else {
             unreachable!()

@@ -49,6 +49,12 @@ pub(crate) enum Command {
     WriteMode(u8),
     CreateBlank,
     Next(u8),
+    /// A disk of a floppy drive's Catalogue submenu, by its catalogue index:
+    /// what Insert of the media picker's This machine does with it.
+    CatalogueDisk(u8, usize),
+    /// All N disks… of a drive's Catalogue submenu: the media picker on This
+    /// machine, with the disk in the drive chosen.
+    CatalogueAll(u8),
     Eject(u8),
     Mute,
     Speed(crate::pacing::Speed),
@@ -150,6 +156,8 @@ impl Enablement {
             Command::Insert(unit)
             | Command::CreateFromFiles(unit)
             | Command::InsertFile(unit)
+            | Command::CatalogueDisk(unit, _)
+            | Command::CatalogueAll(unit)
             | Command::Eject(unit) => self.floppy.get(unit as usize).copied().unwrap_or(false),
             Command::InsertSet(unit) | Command::WriteMode(unit) | Command::Next(unit) => {
                 self.state != State::Stopped

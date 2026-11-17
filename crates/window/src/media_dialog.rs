@@ -1324,7 +1324,7 @@ impl LibraryInsert {
 }
 
 /// A library disk's source as the drive tooltip names it.
-fn set_origin(tag: &str, disk: usize, disks: usize) -> String {
+pub(super) fn set_origin(tag: &str, disk: usize, disks: usize) -> String {
     format!(
         "Media set {tag} from the library · disk {} of {disks}",
         disk + 1
@@ -1657,6 +1657,43 @@ impl PendingMedia {
 
     pub fn has_inserts(&self) -> bool {
         self.inserts.iter().any(Option::is_some)
+    }
+
+    /// The floppy that goes into drive `unit` at Start, when one waits.
+    pub fn chosen(&self, unit: u8) -> Option<&CatalogueEntry> {
+        let (entries, chosen) = self.waiting(unit)?;
+        entries.get(chosen)
+    }
+
+    /// The floppies one Insert put into drive `unit` for Start, all of which
+    /// join its catalogue then, and the place of the one that goes in.
+    pub fn waiting(&self, unit: u8) -> Option<(&[CatalogueEntry], usize)> {
+        let (entries, chosen) = self.inserts.get(usize::from(unit))?.as_ref()?;
+        Some((entries, *chosen))
+    }
+
+    /// Another of the floppies waiting for drive `unit` goes in at Start.
+    pub fn choose(&mut self, unit: u8, chosen: usize) {
+        if let Some(Some((entries, at))) = self.inserts.get_mut(usize::from(unit)) {
+            if chosen < entries.len() {
+                *at = chosen;
+            }
+        }
+    }
+
+    /// The catalogue index of the floppy drive `unit` holds at power-on
+    /// without a waiting one: the first of its catalogue, unless the machine
+    /// starts with the door open.
+    pub fn power_on(&self, unit: u8) -> Option<usize> {
+        let drive = self
+            .config
+            .drives
+            .iter()
+            .find(|drive| drive.controller == assembly::DeviceId::Fdc && drive.unit == unit)?;
+        match &drive.media {
+            Some(list) if list.empty || list.entries.is_empty() => None,
+            _ => Some(0),
+        }
     }
 
     /// The drives that hold a pending floppy, as the status bar shows them:

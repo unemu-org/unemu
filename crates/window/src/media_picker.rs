@@ -334,6 +334,10 @@ pub(crate) struct Picker {
     /// The Create view just opened: Add folder… takes the focus, as the
     /// mock-up does.
     pub(crate) focus_add: bool,
+    /// The list scrolls the chosen row into view once, as it does when a
+    /// drive's All N disks… opens the picker on the disk in the drive;
+    /// another source drops the request.
+    pub(crate) reveal: bool,
 }
 
 /// The result rows: the sets that fit the drive, then those that do not.
@@ -371,6 +375,7 @@ impl Picker {
             mode: Mode::Search,
             create: crate::media_create::Create::default(),
             focus_add: false,
+            reveal: false,
         };
         if !picker.machine().drives.iter().any(|d| d.unit == unit) {
             picker.unit = picker.machine().drives.first().map_or(0, |d| d.unit);
@@ -514,6 +519,7 @@ impl Picker {
     }
     pub fn set_source(&mut self, source: Source) {
         self.source = source;
+        self.reveal = false;
         self.choice = None;
         self.keep_choice();
     }
@@ -834,7 +840,7 @@ pub(crate) fn label_and_meta(
 /// them apart: "FreeDOS 1.4 (Floppy Edition, 1.2M)" is the title
 /// "FreeDOS 1.4" and the edition "(Floppy Edition, 1.2M)". The edition is
 /// the outermost parenthesis that ends the title.
-fn title_parts(title: &str) -> (&str, &str) {
+pub(crate) fn title_parts(title: &str) -> (&str, &str) {
     if !title.ends_with(')') {
         return (title, "");
     }
@@ -878,7 +884,7 @@ fn is_file_name(name: &str) -> bool {
 /// file name: "Disk 1 of 8 - packages (x86DSK01.img)" is "Disk 1 of 8 -
 /// packages" from "x86DSK01.img". Other parentheses, as "(1.2M)" or
 /// "(v2.0)", stay in the label.
-fn label_without_file(label: &str) -> (&str, Option<&str>) {
+pub(crate) fn label_without_file(label: &str) -> (&str, Option<&str>) {
     if let Some(rest) = label.strip_suffix(')') {
         if let Some(at) = rest.rfind(" (") {
             let file = &rest[at + 2..];
@@ -891,33 +897,12 @@ fn label_without_file(label: &str) -> (&str, Option<&str>) {
 }
 
 /// A disk by its label, as its radio button names it after its number and
-/// the summary names it: the label without the file name, and without a
-/// leading "Disk N of M -" that only repeats the number. A first word in
-/// lower case then starts with a capital.
-fn disk_name(label: &str, number: usize) -> String {
-    let (label, _) = label_without_file(label);
-    let rest = label
-        .strip_prefix(&format!("Disk {number} of "))
-        .map(|rest| rest.trim_start_matches(|c: char| c.is_ascii_digit()))
-        .and_then(|rest| {
-            [" - ", " – ", " — ", ": ", ", "]
-                .iter()
-                .find_map(|separator| rest.strip_prefix(separator))
-        })
-        .filter(|rest| !rest.is_empty());
-    let Some(rest) = rest else {
-        return label.to_owned();
-    };
-    let first = rest.split_whitespace().next().unwrap_or_default();
-    if first.chars().all(|c| c.is_ascii_lowercase()) {
-        let mut chars = rest.chars();
-        chars
-            .next()
-            .map(|c| c.to_ascii_uppercase().to_string() + chars.as_str())
-            .unwrap_or_default()
-    } else {
-        rest.to_owned()
-    }
+/// the summary names it: what the label says beyond the disk's place, by
+/// the one rule the drives' short names use, else the label without its
+/// file name.
+pub(crate) fn disk_name(label: &str, number: usize) -> String {
+    crate::catalogue_menu::own_name(label, number)
+        .unwrap_or_else(|| label_without_file(label).0.to_owned())
 }
 
 /// A cover's title in lines no wider than `width`: whole words packed onto
@@ -1795,6 +1780,12 @@ fn results(ui: &mut egui::Ui, picker: &mut Picker, insert: &mut bool) {
                         Some(&mut line as &mut dyn FnMut(&mut egui::Ui))
                     },
                 );
+                // Scrolled to once it is laid out where it shows: a pass that
+                // only sizes the picker does not use the request up.
+                if view.selected && picker.reveal && ui.is_visible() && !ui.is_sizing_pass() {
+                    response.scroll_to_me(Some(Align::Center));
+                    picker.reveal = false;
+                }
                 if response.clicked() {
                     chosen = Some(choice);
                 }
@@ -2754,6 +2745,60 @@ pub(crate) mod tests {
         );
         picker.switch_drive(0);
         assert_eq!(picker.insert(), Some(Outcome::Entry { unit: 0, index: 3 }));
+    }
+
+    /// All N disks… of a drive's Catalogue submenu opens This machine on
+    /// the disk in the drive: the list scrolls that row into view, where a
+    /// long catalogue would otherwise leave it below the pane.
+    #[test]
+    fn reveal_scrolls_the_chosen_catalogue_disk_into_view() {
+        let mut target = machine(None, When::Now);
+        target.drives[0].catalogue = (0..18)
+            .map(|index| CatalogueDisk {
+                name: format!("AZURAMON {} of 18", index + 1),
+                format: M12(),
+                write: "changes kept in DOS games".into(),
+                inserted: index == 15,
+                index,
+                set: None,
+            })
+            .collect();
+        // The row lies inside the list's visible part, which clips the rows'
+        // format lines; the details pane names the disk too. The list
+        // scrolls over a few frames.
+        let shows = |picker: &mut Picker| {
+            let last = shown_frames(picker, BIG, true, false, 40)
+                .pop()
+                .expect("frames");
+            let list = last
+                .texts
+                .iter()
+                .find(|t| t.text == "1.2M · changes kept in DOS games")
+                .expect("a row of the list")
+                .clip;
+            let row = last.widget(egui::accesskit::Role::ListBoxOption, "AZURAMON 16 of 18");
+            list.contains_rect(row.rect)
+        };
+        let mut picker = Picker::new(vec![target.clone()], 0, 0, library(), None);
+        picker.set_source(Source::Machine);
+        picker.choose(Choice::Entry(0, 15));
+        assert!(
+            !shows(&mut picker),
+            "without reveal the row stays below the pane"
+        );
+        let mut picker = Picker::new(vec![target], 0, 0, library(), None);
+        picker.set_source(Source::Machine);
+        picker.choose(Choice::Entry(0, 15));
+        picker.reveal = true;
+        assert!(shows(&mut picker));
+        assert!(
+            !picker.reveal,
+            "the request ends once the row is scrolled to"
+        );
+        // Another source drops a request the list has not used yet.
+        picker.reveal = true;
+        picker.set_source(Source::Library);
+        assert!(!picker.reveal);
     }
 
     /// The picker draws without a window, in every source.
