@@ -1,0 +1,21 @@
+# FreeDOS, the work: what every release and format of it shares.
+
+recipe = "0.1"
+
+[work]
+id = "freedos"
+
+[title]
+title = "FreeDOS"
+publishers = ["The FreeDOS Project"]
+developers = ["The FreeDOS Project"]
+genres = ["operating system"]
+software_platform = "DOS"
+labels = ["freedos", "open-source", "operating-system"]
+synopsis = "A free, open source operating system compatible with MS-DOS, by the FreeDOS Project."
+
+# ASSUMED: read off the sets' descriptions.
+[needs]
+cpu = "8088+"
+memory = "640K"
+video = ["vga", "ega"]

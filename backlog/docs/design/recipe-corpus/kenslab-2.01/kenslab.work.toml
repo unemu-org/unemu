@@ -1,0 +1,21 @@
+# Ken's Labyrinth, the work: what its releases share.
+
+recipe = "0.1"
+
+[work]
+id = "kenslab"
+
+[title]
+title = "Ken's Labyrinth"
+publishers = ["Epic MegaGames"]
+developers = ["Ken Silverman", "Andy Cotter"]
+genres = ["first-person shooter"]
+software_platform = "DOS"
+labels = ["game", "first-person-shooter"]
+synopsis = "Ken Silverman's first-person shooter of 1993: the aliens of the planet Zogar have taken your dog Sparky, and you go through their labyrinth in three episodes of ten levels."
+
+# ASSUMED.
+[needs]
+cpu = "286+"
+video = ["vga"]
+sound = ["sb", "adlib", "pc-speaker", "none"]
