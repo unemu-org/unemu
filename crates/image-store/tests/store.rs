@@ -889,9 +889,6 @@ fn invalid_local_tag_names_are_rejected_before_publication() {
         "a._b:1",
         "repo:.tag",
         "repo:-tag",
-        "registry.example/repo:1",
-        "localhost/repo:1",
-        "host:5000/repo:1",
     ] {
         assert!(
             store
@@ -908,6 +905,324 @@ fn invalid_local_tag_names_are_rejected_before_publication() {
             &Provider("zx-spectrum"),
         )
         .unwrap();
+}
+
+#[test]
+fn local_tags_may_start_with_a_registry_host() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let (manifest, _) = fixture(&store, b"firmware");
+    let image = store.import_manifest(&manifest).unwrap();
+    // A first component with a dot or a colon, or `localhost`, names a host,
+    // as in Docker references; the port is part of the host.
+    for (name, host) in [
+        (
+            "registry.lan.example/private/games/dune2:1.0.0",
+            "registry.lan.example",
+        ),
+        ("nas.example:5000/private/media/x:1.1", "nas.example:5000"),
+        ("localhost/lab:1", "localhost"),
+        ("localhost:5000/lab:1", "localhost:5000"),
+        ("127.0.0.1:5000/lab:2", "127.0.0.1:5000"),
+        ("[::1]:5000/lab:3", "[::1]:5000"),
+        (
+            "registry.unemu.dev/unemu/open-at:1.2.0",
+            "registry.unemu.dev",
+        ),
+    ] {
+        store
+            .update_tag(name, &image, None, &Provider("zx-spectrum"))
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(Store::tag_host(name), Some(host), "{name}");
+        assert_eq!(store.tag_descriptor(name).unwrap().digest, image.digest);
+    }
+    // A plain first component stays a repository component.
+    for name in [
+        "private/x:1",
+        "unemu/media/freedos:1.4",
+        "a.b:1",
+        "localhost:1",
+    ] {
+        Store::validate_tag_name(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(Store::tag_host(name), None, "{name}");
+    }
+    let listed: Vec<_> = store
+        .list_tags(None, 100)
+        .unwrap()
+        .tags
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
+    assert_eq!(listed.len(), 7, "{listed:?}");
+    // A bad host is refused with a message that names it as one.
+    for name in [
+        "NAS.example/x:1",
+        "nas.example:/x:1",
+        "nas.example:99999/x:1",
+        "nas.example:50a/x:1",
+        "nas..example/x:1",
+        "-nas.example/x:1",
+        "nas_box.example/x:1",
+        "[::1/x:1",
+        "[::g]:5000/x:1",
+    ] {
+        let error = Store::validate_tag_name(name).unwrap_err().to_string();
+        assert!(error.contains("registry host"), "{name}: {error}");
+        assert!(store
+            .update_tag(name, &image, None, &Provider("zx-spectrum"))
+            .is_err());
+    }
+    // So is a host without a valid repository after it.
+    for name in [
+        "nas.example:5000/:1",
+        "nas.example:5000/Repo:1",
+        "nas.example:5000/x",
+    ] {
+        assert!(Store::validate_tag_name(name).is_err(), "{name}");
+    }
+}
+
+#[test]
+fn a_tag_records_the_registry_a_pull_wrote_it_from() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let (manifest, _) = fixture(&store, b"firmware");
+    let image = publish(&store, &manifest, "made-here:1");
+    store
+        .update_pulled_tag(
+            "lab:latest",
+            &image,
+            None,
+            &Provider("zx-spectrum"),
+            "registry.unemu.dev",
+        )
+        .unwrap();
+    store
+        .update_pulled_tag(
+            "nas.example:5000/private/lab:latest",
+            &image,
+            None,
+            &Provider("zx-spectrum"),
+            "nas.example:5000",
+        )
+        .unwrap();
+    let sources = |store: &Store| -> Vec<(String, Option<String>)> {
+        store
+            .list_tags(None, 10)
+            .unwrap()
+            .tags
+            .iter()
+            .map(|t| (t.name.clone(), t.pulled_from().map(str::to_owned)))
+            .collect()
+    };
+    assert_eq!(
+        sources(&dir.store()),
+        [
+            ("lab:latest".into(), Some("registry.unemu.dev".into())),
+            ("made-here:1".into(), None),
+            (
+                "nas.example:5000/private/lab:latest".into(),
+                Some("nas.example:5000".into())
+            ),
+        ]
+    );
+    let index = fs::read_to_string(dir.0.join("images/index.json")).unwrap();
+    assert!(
+        index.contains(r#""unemu.pull.registry":"registry.unemu.dev""#),
+        "{index}"
+    );
+    // Rewriting the same image keeps the record; moving the tag to an image
+    // made here drops it.
+    store
+        .update_tag(
+            "lab:latest",
+            &image,
+            Some(&image.digest),
+            &Provider("zx-spectrum"),
+        )
+        .unwrap();
+    assert_eq!(sources(&store)[0].1.as_deref(), Some("registry.unemu.dev"));
+    let (other, _) = fixture(&store, b"made here");
+    let other = store.import_manifest(&other).unwrap();
+    store
+        .update_tag(
+            "lab:latest",
+            &other,
+            Some(&image.digest),
+            &Provider("zx-spectrum"),
+        )
+        .unwrap();
+    assert_eq!(sources(&store)[0], ("lab:latest".into(), None));
+    // Only a registry host is recorded.
+    for registry in ["", "not a host", "nas.example:5000/private"] {
+        assert!(store
+            .update_pulled_tag("x:1", &image, None, &Provider("zx-spectrum"), registry)
+            .is_err());
+    }
+}
+
+/// The pull record belongs to the tag a pull wrote. A descriptor read from
+/// that tag carries it, and handing that descriptor to any other write, a new
+/// tag, a move or a verified publication, must not copy it.
+#[test]
+fn a_pull_record_never_travels_to_a_tag_another_write_makes() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let (manifest, _) = fixture(&store, b"firmware");
+    let image = store.import_manifest(&manifest).unwrap();
+    store
+        .update_pulled_tag(
+            "lab:1.0.0",
+            &image,
+            None,
+            &Provider("zx-spectrum"),
+            "nas.example:5000",
+        )
+        .unwrap();
+    let pulled = store.tag_descriptor("lab:1.0.0").unwrap();
+    assert_eq!(
+        pulled
+            .annotations
+            .get(image_store::PULL_REGISTRY)
+            .map(String::as_str),
+        Some("nas.example:5000")
+    );
+    let (other, _) = fixture(&store, b"made here");
+    let other = publish(&store, &other, "moved:latest");
+    store
+        .update_tag("copy:1", &pulled, None, &Provider("zx-spectrum"))
+        .unwrap();
+    store
+        .update_tag(
+            "moved:latest",
+            &pulled,
+            Some(&other.digest),
+            &Provider("zx-spectrum"),
+        )
+        .unwrap();
+    let verified = store
+        .verify_publication(&pulled, &Provider("zx-spectrum"))
+        .unwrap();
+    store
+        .update_verified_tag("verified:1", &verified, None)
+        .unwrap();
+    let sources: Vec<_> = store
+        .list_tags(None, 10)
+        .unwrap()
+        .tags
+        .iter()
+        .map(|t| (t.name.clone(), t.pulled_from().map(str::to_owned)))
+        .collect();
+    assert_eq!(
+        sources,
+        [
+            ("copy:1".into(), None),
+            ("lab:1.0.0".into(), Some("nas.example:5000".into())),
+            ("moved:latest".into(), None),
+            ("verified:1".into(), None),
+        ]
+    );
+}
+
+/// One registry has one spelling in the library: a port with a leading
+/// zero, port 0, an over-long DNS label or a malformed IPv6 address would
+/// give the same registry a second name, or name none.
+#[test]
+fn a_registry_host_has_one_spelling() {
+    let label = "a".repeat(63);
+    for host in [
+        "nas.example:5000",
+        "localhost:1",
+        "localhost:65535",
+        "[::1]",
+        "[::]:5000",
+        "[fe80::1:2]",
+        "[1:2:3:4:5:6:7:8]:5000",
+        &format!("{label}.example"),
+    ] {
+        Store::validate_registry_host(host).unwrap_or_else(|e| panic!("{host}: {e}"));
+        Store::validate_tag_name(&format!("{host}/x:1")).unwrap_or_else(|e| panic!("{host}: {e}"));
+    }
+    for host in [
+        "nas.example:05000",
+        "nas.example:0",
+        "nas.example:00",
+        "nas.example:65536",
+        &format!("a{label}.example"),
+        "[:]",
+        "[::1::2]",
+        "[1:2:3:4:5:6:7]",
+        "[1:2:3:4:5:6:7:8:9]",
+        "[12345::1]",
+        "[::1",
+        "[::1]5000",
+    ] {
+        assert!(Store::validate_registry_host(host).is_err(), "{host}");
+        let error = Store::validate_tag_name(&format!("{host}/x:1"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("registry host"), "{host}: {error}");
+    }
+}
+
+#[test]
+fn a_host_qualified_name_over_255_characters_says_so() {
+    let host = "nas.example:5000/";
+    let fits = format!("{host}{}:1", "a".repeat(255 - host.len()));
+    Store::validate_tag_name(&fits).unwrap();
+    let long = format!("{host}{}:1", "a".repeat(256 - host.len()));
+    let error = Store::validate_tag_name(&long).unwrap_err().to_string();
+    assert!(error.contains("longer than 255 characters"), "{error}");
+}
+
+/// Tags written before pulls recorded their registry carry no record: they
+/// load and list as before, under the same names, and their source stays
+/// unknown.
+#[test]
+fn a_store_without_pull_records_loads_and_lists_unchanged() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let (manifest, _) = fixture(&store, b"firmware");
+    let image = store.import_manifest(&manifest).unwrap();
+    let path = dir.0.join("images/index.json");
+    let entry = |name: &str| {
+        format!(
+            r#"{{"mediaType":"{}","digest":"{}","size":{},"annotations":{{"org.opencontainers.image.ref.name":"{name}"}}}}"#,
+            mt::MANIFEST,
+            image.digest,
+            image.size
+        )
+    };
+    let old = format!(
+        r#"{{"schemaVersion":2,"mediaType":"{}","manifests":[{},{}]}}"#,
+        mt::INDEX,
+        entry("open-at:1.2.0"),
+        entry("private/media/x:1.1")
+    );
+    fs::write(&path, &old).unwrap();
+    let reopened = dir.store();
+    let tags = reopened.list_tags(None, 10).unwrap().tags;
+    let names: Vec<_> = tags.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["open-at:1.2.0", "private/media/x:1.1"]);
+    assert!(tags.iter().all(|t| t.pulled_from().is_none()));
+    reopened
+        .resolve("open-at:1.2.0", &Provider("zx-spectrum"))
+        .unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), old);
+    // A later pull adds its own tag and leaves the old entries as they were.
+    reopened
+        .update_pulled_tag(
+            "nas.example:5000/private/media/x:1.1",
+            &image,
+            None,
+            &Provider("zx-spectrum"),
+            "nas.example:5000",
+        )
+        .unwrap();
+    let after = fs::read_to_string(&path).unwrap();
+    for name in ["open-at:1.2.0", "private/media/x:1.1"] {
+        assert!(after.contains(&entry(name)), "{after}");
+    }
 }
 
 #[test]

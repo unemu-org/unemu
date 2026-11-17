@@ -87,16 +87,22 @@ impl Reference {
         }
     }
 
-    /// Local store tags keep the short form: no host, and no official namespace
-    /// when the remaining name is a single component. Digest-only references
-    /// have no local name.
+    /// The local tag a pull writes. From the family default registry
+    /// ([`DEFAULT_REGISTRY`]) it keeps the short form: no host, and no
+    /// official namespace when the remaining name is a single component
+    /// (`open-at:1.2.0`). From any other registry, a configured default one
+    /// included, it is the full reference with its host and port, Docker-style
+    /// (`nas.example:5000/private/x:1`), so one path on two registries never
+    /// shares a local name. A short form whose first component would read as
+    /// a host (`a.b/c`) keeps the host too. Digest-only references have no
+    /// local name.
     pub fn local_tag(&self) -> Option<String> {
         let tag = self.tag.as_ref()?;
-        let name = match self.repository.strip_prefix("unemu/") {
-            Some(rest) if !rest.contains('/') => rest,
-            _ => self.repository.as_str(),
-        };
-        Some(format!("{name}:{tag}"))
+        let short = format!("{}:{tag}", without_official_namespace(&self.repository));
+        if self.host == DEFAULT_REGISTRY && image_store::Store::tag_host(&short).is_none() {
+            return Some(short);
+        }
+        Some(format!("{}/{}:{tag}", self.host, self.repository))
     }
 
     /// The first path component, which owns access policy on shared registries.
@@ -105,6 +111,27 @@ impl Reference {
             .split('/')
             .next()
             .unwrap_or(&self.repository)
+    }
+}
+
+/// The family's short form of a local tag or repository: without its
+/// registry host, and without the official namespace when one component
+/// remains (`nas.example:5000/unemu/open-at:1.0.0` gives `open-at:1.0.0`).
+/// It is the name a pull of the same path from the family default registry
+/// writes, which is how official templates and the names suggested for
+/// images made here are recognised whatever registry a tag came from.
+pub fn short_name(name: &str) -> &str {
+    without_official_namespace(image_store::Store::without_host(name))
+}
+
+/// `unemu/open-at` gives `open-at`; `unemu/media/freedos` keeps its namespace.
+fn without_official_namespace(path: &str) -> &str {
+    match path
+        .strip_prefix(OFFICIAL_NAMESPACE)
+        .and_then(|rest| rest.strip_prefix('/'))
+    {
+        Some(rest) if !rest.contains('/') => rest,
+        _ => path,
     }
 }
 
@@ -158,54 +185,17 @@ fn is_host(component: &str) -> bool {
     component.contains('.') || component.contains(':') || component == "localhost"
 }
 
-/// Accept `name[:port]` or a bracketed IPv6 literal with an optional port.
+/// Accept `name[:port]` or a bracketed IPv6 literal with an optional port,
+/// in any case: the store's host rules after lowercasing
+/// ([`image_store::Store::validate_registry_host`]), so a host that parses
+/// here has exactly one local spelling.
 pub(crate) fn validate_host(host: &str) -> Result<()> {
-    let (name, port) = if let Some(inner) = host.strip_prefix('[') {
-        let (address, rest) = inner
-            .split_once(']')
-            .ok_or_else(|| bad("unterminated IPv6 host"))?;
-        if address.is_empty() || !address.bytes().all(|b| b.is_ascii_hexdigit() || b == b':') {
-            return Err(bad("invalid IPv6 host"));
-        }
-        (
-            "",
-            match rest {
-                "" => None,
-                rest => Some(
-                    rest.strip_prefix(':')
-                        .ok_or_else(|| bad("invalid host port"))?,
-                ),
-            },
-        )
-    } else {
-        match host.rsplit_once(':') {
-            Some((name, port)) => (name, Some(port)),
-            None => (host, None),
-        }
-    };
-    if !host.starts_with('[')
-        && (name.is_empty()
-            || name.len() > 253
-            || !name.split('.').all(|label| {
-                !label.is_empty()
-                    && !label.starts_with('-')
-                    && !label.ends_with('-')
-                    && label
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            }))
-    {
-        return Err(bad("invalid registry host"));
-    }
-    if let Some(port) = port {
-        if port.is_empty()
-            || !port.bytes().all(|b| b.is_ascii_digit())
-            || port.parse::<u16>().is_err()
-        {
-            return Err(bad("invalid registry port"));
-        }
-    }
-    Ok(())
+    image_store::Store::validate_registry_host(&host.to_ascii_lowercase()).map_err(|error| {
+        bad(match error {
+            image_store::Error::Invalid(why) => why,
+            other => other.to_string(),
+        })
+    })
 }
 
 fn validate_repository(repository: &str) -> Result<()> {
@@ -295,11 +285,87 @@ mod tests {
         let r = parse("nas.example:5000/private/games:1");
         assert_eq!(r.host, "nas.example:5000");
         assert_eq!(r.repository, "private/games");
-        assert_eq!(r.local_tag().as_deref(), Some("private/games:1"));
         assert_eq!(parse("localhost/lab").repository, "lab");
         assert_eq!(parse("127.0.0.1:5000/lab:2").host, "127.0.0.1:5000");
         let other_default = Reference::parse("lab:1", "nas.example").unwrap();
         assert_eq!(other_default.to_string(), "nas.example/unemu/lab:1");
+    }
+
+    #[test]
+    fn local_tags_are_short_only_for_the_family_default_registry() {
+        for (reference, local) in [
+            ("open-at:1.2.0", "open-at:1.2.0"),
+            ("unemu/media/freedos:1.4", "unemu/media/freedos:1.4"),
+            ("private/games/dune2:1.0.0", "private/games/dune2:1.0.0"),
+            ("registry.unemu.dev/private/x:1", "private/x:1"),
+            (
+                "registry.lan.example/private/games/dune2:1.0.0",
+                "registry.lan.example/private/games/dune2:1.0.0",
+            ),
+            (
+                "nas.example:5000/private/media/x:1.1",
+                "nas.example:5000/private/media/x:1.1",
+            ),
+            ("localhost:5000/lab:2", "localhost:5000/lab:2"),
+            ("127.0.0.1:5000/lab:2", "127.0.0.1:5000/lab:2"),
+            ("NAS.example:5000/lab:2", "nas.example:5000/lab:2"),
+        ] {
+            let tag = parse(reference).local_tag().unwrap();
+            assert_eq!(tag, local, "{reference}");
+            image_store::Store::validate_tag_name(&tag).unwrap();
+        }
+        // A short form whose first component would read as a host keeps it.
+        assert_eq!(
+            parse("registry.unemu.dev/a.b/c:1").local_tag().as_deref(),
+            Some("registry.unemu.dev/a.b/c:1")
+        );
+        // A configured default is a registry like any other; only the family
+        // default keeps the short names.
+        let other_default = Reference::parse("lab:1", "nas.example:5000").unwrap();
+        assert_eq!(
+            other_default.local_tag().as_deref(),
+            Some("nas.example:5000/unemu/lab:1")
+        );
+    }
+
+    #[test]
+    fn short_names_drop_the_host_then_the_official_namespace() {
+        for (name, short) in [
+            ("nas.example:5000/unemu/open-at:1.0.0", "open-at:1.0.0"),
+            ("nas.example:5000/unemu/open-at", "open-at"),
+            (
+                "registry.unemu.dev/unemu/media/freedos:1.4",
+                "unemu/media/freedos:1.4",
+            ),
+            ("nas.example:5000/private/x:1", "private/x:1"),
+            ("unemu/open-at:1.2.0", "open-at:1.2.0"),
+            ("open-at:1.2.0", "open-at:1.2.0"),
+            ("private/x", "private/x"),
+        ] {
+            assert_eq!(short_name(name), short, "{name}");
+        }
+    }
+
+    /// Hosts are lowercased, and every other spelling of one registry is
+    /// refused, so a reference names a registry one way.
+    #[test]
+    fn a_registry_host_parses_one_way() {
+        assert_eq!(parse("NAS.Example:5000/x:1").host, "nas.example:5000");
+        assert_eq!(parse("[FE80::1]:5000/x:1").host, "[fe80::1]:5000");
+        let label = "a".repeat(64);
+        for input in [
+            "nas.example:05000/x:1",
+            "nas.example:0/x:1",
+            &format!("{label}.example/x:1"),
+            "[:]/x:1",
+            "[::1::2]:5000/x:1",
+        ] {
+            assert!(
+                Reference::parse(input, DEFAULT_REGISTRY).is_err(),
+                "{input}"
+            );
+        }
+        assert!(Reference::parse("lab:1", "nas.example:05000").is_err());
     }
 
     #[test]

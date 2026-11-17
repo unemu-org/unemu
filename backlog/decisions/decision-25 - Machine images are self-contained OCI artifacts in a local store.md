@@ -165,3 +165,30 @@ approved registry-accounts mock-up shows, not only per registry:
    content only, whatever the entry says.
 3. When the public namespace moves, `private/` keeps its host; the entry for
    the new public host lists `unemu/` only.
+
+## Amendment 2026-11-16: pulled images keep their registry host
+
+With several registries attached, each with its own `private/` repositories,
+a short local tag such as `private/media/x:1.1` cannot say where it came
+from, and two registries collide. On 2026-11-16 the maintainer approved
+revision 1 of the Remotes mock-up and decided that local tags of pulled
+images carry the registry host, Docker-style; revision 2 of the mock-up
+applies that decision:
+
+1. A pull from `registry.unemu.dev` keeps the short local tags
+   (`open-at:1.2.0`, `unemu/media/freedos:1.4`). Only the family default
+   counts, not a default the user configures.
+2. A pull from any other registry writes the full reference as the local tag,
+   port included: `nas.example:5000/private/media/x:1.1`.
+3. Images made here are given no host. A person may still type a
+   host-qualified name, as with Docker; the pull record, not the name, says
+   where a tag came from.
+4. The store records the registry each pull wrote a tag from, so a short tag
+   pulled from the default registry can be told apart from one made here.
+   Existing tags are never renamed; without that record their source is
+   unknown.
+5. Push of a host-qualified tag goes to its own host unless a target is
+   given; namespace policy reads the path after the host.
+
+This replaces "Local store tags keep their short form" in the amendment on
+the default registry above.

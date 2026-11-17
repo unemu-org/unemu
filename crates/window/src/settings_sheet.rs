@@ -825,7 +825,12 @@ pub(crate) fn show_review(
     let digest = model.row.descriptor.digest.clone();
     let stores_cmos = model.stores_cmos();
     let official = model.official_template();
-    let repository = model.row.repository().to_owned();
+    // A template pulled from another registry keeps its host in the tag; the
+    // texts name the template and the registry it came from.
+    let repository = image_registry::reference::short_name(model.row.repository()).to_owned();
+    let registry = image_store::Store::tag_host(&reference)
+        .unwrap_or(image_registry::DEFAULT_REGISTRY)
+        .to_owned();
     let users: Vec<String> = model
         .new_user_supplied()
         .iter()
@@ -853,7 +858,7 @@ pub(crate) fn show_review(
             "Suggested: the next minor version. A revision never overwrites a tag; version tags never move.".to_owned()
         });
         if official {
-            notice(ui, format!("{repository} comes from unemu/ on {}, which is read-only for you. The revision is written to your local store only; Push… can send it to a namespace of your own.", image_registry::DEFAULT_REGISTRY));
+            notice(ui, format!("{repository} comes from unemu/ on {registry}, which is read-only for you. The revision is written to your local store only; Push… can send it to a namespace of your own."));
         }
         if !users.is_empty() {
             notice(ui, format!(

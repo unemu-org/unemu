@@ -9,6 +9,7 @@
 //! that shows the old digest, and the move is a compare-and-swap from that
 //! digest. New machine… applies the same rules.
 
+use image_registry::reference::short_name;
 use image_store::{Digest, Store};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -233,11 +234,13 @@ impl SaveAsImage {
     /// next minor version after the source's own version tag, else after the
     /// repository's newest version, else 1.0.0.
     pub fn new(source: &str, source_digest: Digest, tags: Vec<(String, Digest)>) -> Self {
-        let repo = repository_of(source).to_owned();
-        let source_version = versions(&repo, &tags)
+        let source_version = versions(repository_of(source), &tags)
             .filter(|(_, digest)| **digest == source_digest)
             .map(|(v, _)| v)
             .max();
+        // An image made here has no registry host, even when its source
+        // was pulled under one: it takes the family's short form.
+        let repo = short_name(repository_of(source)).to_owned();
         let mut form = Self {
             source: source.into(),
             source_digest,
@@ -296,7 +299,7 @@ impl SaveAsImage {
         self.tags.iter().any(|(t, _)| t == &name)
     }
     fn source_repo(&self) -> &str {
-        repository_of(&self.source)
+        short_name(repository_of(&self.source))
     }
     fn taken(&self, version: Version) -> bool {
         let name = format!(
@@ -792,6 +795,20 @@ mod tests {
         assert_eq!(form.prompt, Some(Prompt::Refuse(digest("raced"))));
         form.use_next();
         assert_eq!(form.tag, "1.2.0");
+    }
+
+    #[test]
+    fn a_save_from_a_pulled_image_drops_the_registry_host() {
+        let mut tags = tags();
+        tags.push(("nas.example:5000/private/x:1.0.0".into(), digest("p")));
+        let form = SaveAsImage::new("nas.example:5000/private/x:1.0.0", digest("p"), tags);
+        assert_eq!(form.repo, "private/x");
+        assert_eq!(
+            form.reference(),
+            "private/x:1.1.0",
+            "the next minor version after the source's"
+        );
+        assert_eq!(form.check().level, TagLevel::Ok);
     }
 
     #[test]

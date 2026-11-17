@@ -483,8 +483,9 @@ fn push_pull_and_list_through_a_private_registry() {
     ]);
     let (code, output, errors) = child(&pull, &dir.0, credentials);
     assert_eq!(code, 0, "{errors}");
+    // A registry other than the family default names its host in the local tag.
     assert!(
-        output.ends_with(&format!("pulled\tprivate/lab:1.0.0\t{digest}\n")),
+        output.ends_with(&format!("pulled\t{reference}\t{digest}\n")),
         "{output}"
     );
     let (code, listed, errors) = run(&os(&[&"image", &"ls", &"--store", &target]));
@@ -495,7 +496,7 @@ fn push_pull_and_list_through_a_private_registry() {
     let fields: Vec<_> = row.split('\t').collect();
     assert_eq!(
         fields[..3],
-        ["private/lab:1.0.0", digest.as_str(), "machine"]
+        [reference.as_str(), digest.as_str(), "machine"]
     );
     let size =
         |field: &str, key: &str| -> u64 { field.strip_prefix(key).unwrap().parse().unwrap() };
@@ -525,6 +526,40 @@ fn push_pull_and_list_through_a_private_registry() {
     );
     assert_eq!(code, 0, "{errors}");
     assert_eq!(output, format!("{host}/private/lab\n"));
+
+    // Push without a reference sends a host-qualified tag to its own host,
+    // not to the default registry.
+    let other = MockRegistry::start(Policy {
+        user: Some(("ci".into(), "synthetic-secret".into())),
+        ..Policy::default()
+    });
+    let other_host = other.host();
+    let both = dir.join("both.toml");
+    std::fs::write(
+        &both,
+        format!(
+            "rom_dirs = []\n[[registries]]\nhost = \"{host}\"\nprivate = true\nplain_http = true\n[[registries]]\nhost = \"{other_host}\"\nprivate = true\nplain_http = true\n"
+        ),
+    )
+    .unwrap();
+    let push_back = |destination: Option<&str>, host: &str| {
+        let mut args = os(&[&"image", &"push", &reference]);
+        args.extend(destination.map(OsString::from));
+        args.extend(os(&[&"--store", &target, &"--config", &both]));
+        child(&args, &dir.0, Some((Some(host), "ci", "synthetic-secret")))
+    };
+    let (code, output, errors) = push_back(None, &host);
+    assert_eq!(code, 0, "{errors}");
+    assert_eq!(output, format!("unchanged\t{reference}\t{digest}\n"));
+    assert!(other.log().is_empty(), "{:?}", other.log());
+    // An explicit reference still wins.
+    let elsewhere = format!("{other_host}/private/lab:1.0.0");
+    let (code, output, errors) = push_back(Some(&elsewhere), &other_host);
+    assert_eq!(code, 0, "{errors}");
+    assert!(
+        output.ends_with(&format!("pushed\t{elsewhere}\t{digest}\n")),
+        "{output}"
+    );
 }
 
 /// The open Xi8088 BIOS as a firmware package with the source archive its
@@ -740,18 +775,21 @@ fn an_open_firmware_package_round_trips_through_a_private_registry() {
     let target = pushed.dir.join("target");
     let (code, output, errors) = pushed.pull(&target, &[]);
     assert_eq!(code, 0, "{errors}");
+    // Pulled from a registry other than the family default, the local tag
+    // is the full reference.
+    let local = &pushed.reference;
     assert!(
-        output.ends_with(&format!("pulled\t{tag}\t{digest}\n")),
+        output.ends_with(&format!("pulled\t{local}\t{digest}\n")),
         "{output}"
     );
     assert_eq!(progress(&output, "fetched"), blobs);
-    assert_eq!(closure(&target, tag), (digest.clone(), blobs));
+    assert_eq!(closure(&target, local), (digest.clone(), blobs));
 
     let (code, listed, errors) = run(&os(&[&"image", &"firmware", &"ls", &"--store", &target]));
     assert_eq!(code, 0, "{errors}");
     let row = listed
         .lines()
-        .find(|l| l.starts_with(&format!("{tag}\t{digest}\t")))
+        .find(|l| l.starts_with(&format!("{local}\t{digest}\t")))
         .unwrap_or_else(|| panic!("{listed}"));
     let catalogue_ids = format!("catalogue_ids: [\"{}\"]", assembly::KISELEV_XI8088.id);
     for facet in [
@@ -769,14 +807,14 @@ fn an_open_firmware_package_round_trips_through_a_private_registry() {
     assert_eq!(code, 0, "{errors}");
     let (row, cache) = listed.split_once('\n').unwrap();
     assert!(
-        row.starts_with(&format!("{tag}\t{digest}\tfirmware\tstored:")),
+        row.starts_with(&format!("{local}\t{digest}\tfirmware\tstored:")),
         "{listed}"
     );
     assert_eq!(cache, "materialized:0\n");
     let (code, output, errors) = run(&os(&[
         &"image",
         &"run",
-        tag,
+        local,
         &"--store",
         &target,
         &"--workspace",
@@ -811,7 +849,7 @@ fn pulling_a_firmware_package_the_store_already_holds_fetches_nothing() {
     let (tag, digest) = (&pushed.tag, &pushed.digest);
     let before = closure(&pushed.source, tag);
     pushed.registry.clear_log();
-    let (code, output, errors) = pushed.pull(&pushed.source, &[]);
+    let (code, output, errors) = pushed.pull(&pushed.source, &["--tag", tag]);
     assert_eq!(code, 0, "{errors}");
     assert_eq!(output, format!("unchanged\t{tag}\t{digest}\n"));
     assert_eq!(closure(&pushed.source, tag), before);

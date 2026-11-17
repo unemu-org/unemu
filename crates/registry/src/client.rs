@@ -1027,6 +1027,56 @@ fn next_link(header: &str) -> Option<String> {
     })
 }
 
+/// Sends a TLS registry's requests to a loopback test registry over plain
+/// HTTP instead, so a test can pull "from" a registry name such as the family
+/// default without the network.
+#[cfg(test)]
+struct Routed {
+    from: String,
+    to: String,
+    inner: Box<dyn Transport>,
+}
+
+#[cfg(test)]
+impl Transport for Routed {
+    fn send(
+        &self,
+        method: Method,
+        url: &str,
+        headers: &[(&str, String)],
+        body: &Body<'_>,
+    ) -> std::io::Result<Response> {
+        let url = match url.strip_prefix(&self.from) {
+            Some(rest) => format!("{}{rest}", self.to),
+            None => url.to_owned(),
+        };
+        self.inner.send(method, &url, headers, body)
+    }
+}
+
+#[cfg(test)]
+impl Client {
+    /// An anonymous client for the TLS registry `host` whose requests reach
+    /// the loopback registry at `loopback`.
+    pub(crate) fn routed(host: &str, loopback: &str) -> Self {
+        let base = format!("https://{host}");
+        Self {
+            host: host.into(),
+            origin: Origin::of(&base).expect("valid registry host"),
+            transport: Box::new(Routed {
+                from: base.clone(),
+                to: format!("http://{loopback}"),
+                inner: crate::http::transport(false, Timeouts::TRANSFER).expect("plain transport"),
+            }),
+            base,
+            tls: true,
+            confidential: true,
+            credentials: Box::new(crate::credentials::Anonymous),
+            authorization: Mutex::new(None),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

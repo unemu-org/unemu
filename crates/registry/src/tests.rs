@@ -11,7 +11,7 @@ use crate::{
     pull, push,
     push::{BlobOutcome, PushOptions, PushProgress, TagOutcome, UploadSessions, MIN_CHUNK_SIZE},
     test_support::{BlobFault, MockRegistry, PatchFault, Policy, RangeSupport},
-    Error, Reference, RegistryEntry,
+    Error, Reference, RegistryEntry, DEFAULT_REGISTRY,
 };
 use image_store::{
     media_set::{self, MediaFormats},
@@ -851,6 +851,145 @@ fn pull_refuses_a_conflicting_local_tag_and_a_manifest_that_does_not_match_its_d
             matches!(mismatch, Err(Error::DigestMismatch { ref expected, .. }) if *expected == claimed),
             "{mismatch:?}"
         );
+    }
+}
+
+/// The registry a pull fetched a tag from, as the store records it on the
+/// tag's index descriptor; the name is part of the store format.
+fn pulled_from(store: &Store, tag: &str) -> Option<String> {
+    store
+        .tag_descriptor(tag)
+        .unwrap()
+        .annotations
+        .get("unemu.pull.registry")
+        .cloned()
+}
+
+#[test]
+fn a_pull_from_the_family_default_registry_keeps_the_short_tag_and_records_the_registry() {
+    let source = Temp::new();
+    let published = source.store();
+    let image = open_image(&published, "lab:1.0.0", b"official");
+    let registry = MockRegistry::start(open_policy());
+    let entry = registry.entry(false);
+    push_with(
+        &published,
+        "lab:1.0.0",
+        target(&registry, "unemu/lab:1.0.0"),
+        &entry,
+        &client(&entry, Anonymous),
+        &PushOptions::default(),
+    )
+    .unwrap();
+
+    let reference = Reference::parse("lab:1.0.0", DEFAULT_REGISTRY).unwrap();
+    let local = reference.local_tag().unwrap();
+    assert_eq!(local, "lab:1.0.0");
+    let fresh = Temp::new();
+    let store = fresh.store();
+    open_image(&store, "made-here:1.0.0", b"made here");
+    let default = Client::routed(DEFAULT_REGISTRY, &registry.host());
+    let report = pull::pull(&store, &default, &reference, &local, &PROVIDERS, &|_| {}).unwrap();
+    assert_eq!(report.outcome, pull::PullOutcome::Pulled);
+    assert_eq!(store.tag_descriptor(&local).unwrap().digest, image.digest);
+    assert_eq!(
+        pulled_from(&store, &local).as_deref(),
+        Some(DEFAULT_REGISTRY)
+    );
+    // A tag made here has no registry to record.
+    assert_eq!(pulled_from(&store, "made-here:1.0.0"), None);
+}
+
+#[test]
+fn pulls_from_other_registries_write_host_qualified_tags_that_never_collide() {
+    let registries = [
+        MockRegistry::start(open_policy()),
+        MockRegistry::start(open_policy()),
+    ];
+    let mut images = Vec::new();
+    for (registry, label) in registries.iter().zip([&b"first"[..], b"second"]) {
+        let dir = Temp::new();
+        let published = dir.store();
+        images.push(open_image(&published, "x:1.1", label));
+        let entry = registry.entry(false);
+        push_with(
+            &published,
+            "x:1.1",
+            target(registry, "private/media/x:1.1"),
+            &entry,
+            &client(&entry, Anonymous),
+            &PushOptions::default(),
+        )
+        .unwrap();
+    }
+    assert_ne!(images[0].digest, images[1].digest);
+
+    let dir = Temp::new();
+    let store = dir.store();
+    for (registry, image) in registries.iter().zip(&images) {
+        let reference = target(registry, "private/media/x:1.1");
+        let local = reference.local_tag().unwrap();
+        assert_eq!(local, format!("{}/private/media/x:1.1", registry.host()));
+        let client = client(&registry.entry(false), Anonymous);
+        let report = pull::pull(&store, &client, &reference, &local, &PROVIDERS, &|_| {}).unwrap();
+        assert_eq!(report.local_tag, local);
+        assert_eq!(report.outcome, pull::PullOutcome::Pulled);
+        assert_eq!(store.tag_descriptor(&local).unwrap().digest, image.digest);
+        assert_eq!(pulled_from(&store, &local), Some(registry.host()));
+    }
+    let names: Vec<_> = store
+        .list_tags(None, 10)
+        .unwrap()
+        .tags
+        .into_iter()
+        .map(|tag| tag.name)
+        .collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+}
+
+/// Namespace policy belongs to the repository path: the host of a local tag
+/// names the registry, never the namespace.
+#[test]
+fn the_push_guard_reads_the_namespace_after_the_host_of_a_local_tag() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let entry = RegistryEntry {
+        host: "nas.example:5000".into(),
+        private: false,
+        user: None,
+        plain_http: false,
+        namespaces: vec![
+            Namespace {
+                name: "unemu".into(),
+                private: false,
+            },
+            Namespace {
+                name: "private".into(),
+                private: true,
+            },
+        ],
+    };
+    for (local, allowed) in [
+        ("nas.example:5000/unemu/rom:1.0.0", false),
+        ("nas.example:5000/private/rom:1.0.0", true),
+    ] {
+        image(&store, local, &[(b"vendor rom", None)], Some("open"));
+        // Push without a reference sends the local tag to its own host.
+        let target = Reference::parse(local, DEFAULT_REGISTRY).unwrap();
+        assert_eq!(target.host, "nas.example:5000");
+        let plan = push::plan(&store, local, target, Some(&entry)).unwrap();
+        if allowed {
+            assert_eq!(plan.verdict(), &Ok(()), "{local}");
+        } else {
+            assert!(
+                matches!(
+                    plan.verdict(),
+                    Err(Refusal::OfficialNamespaceNeedsOpen { .. })
+                ),
+                "{local}: {:?}",
+                plan.verdict()
+            );
+        }
     }
 }
 

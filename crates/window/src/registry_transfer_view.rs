@@ -397,7 +397,7 @@ pub(crate) fn show_pull(ctx: &egui::Context, dialog: &mut PullDialog, classic: b
                     !running,
                     egui::TextEdit::singleline(&mut dialog.local_tag)
                         .desired_width(420.0)
-                        .hint_text("the short form of the reference"),
+                        .hint_text("from the reference"),
                 );
                 ui.end_row();
             });
@@ -1021,7 +1021,8 @@ pub(crate) mod tests {
         });
         let (_, shown) = draw(&mut pull, vec![]);
         assert!(
-            shows(&shown, "Fetched 1 blobs") && shows(&shown, "for private/test:1.0.0"),
+            shows(&shown, "Fetched 1 blobs")
+                && shows(&shown, &format!("for {host}/private/test:1.0.0")),
             "{shown:?}"
         );
         assert!(shows(&shown, "1.0 MiB of 4.0 MiB"), "{shown:?}");

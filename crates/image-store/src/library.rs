@@ -525,7 +525,7 @@ impl Store {
             library.images.insert(source.digest.clone(), from);
         }
         library.validate()?;
-        self.update_tag_locked(new_tag, &image, None)?;
+        self.update_tag_locked(new_tag, &image, None, None)?;
         if image.digest != source.digest {
             self.write_library_locked(&mut library)?;
         }

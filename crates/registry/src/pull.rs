@@ -12,7 +12,8 @@
 //! file and the running hash are kept, so the digest still covers every byte.
 //! A registry that answers the range with the whole blob restarts the blob
 //! from zero. The local tag is written by compare-and-swap only after the
-//! store has verified the complete closure. Compressed payload types are not
+//! store has verified the complete closure, and it records the registry it
+//! came from ([`image_store::PULL_REGISTRY`]). Compressed payload types are not
 //! supported yet, so only the stored bytes' digest is checked.
 //!
 //! A caller can cancel a pull ([`pull_cancellable`]): the check runs before
@@ -62,7 +63,9 @@ pub struct PullReport {
     pub outcome: PullOutcome,
 }
 
-/// Pull `source` and tag it locally as `local_tag`.
+/// Pull `source` and tag it locally as `local_tag`, which is usually
+/// [`Reference::local_tag`]: short from the family default registry,
+/// host-qualified from any other.
 pub fn pull(
     store: &Store,
     client: &Client,
@@ -172,7 +175,7 @@ pub fn pull_cancellable(
     }
     downloaded?;
     store.import(fetched.bytes.as_slice(), Some(&image.digest))?;
-    store.update_tag(local_tag, &image, None, validator)?;
+    store.update_pulled_tag(local_tag, &image, None, validator, &source.host)?;
     Ok(PullReport {
         local_tag: local_tag.into(),
         image,

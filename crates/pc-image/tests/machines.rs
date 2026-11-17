@@ -155,6 +155,37 @@ fn new_machines_take_the_image_title_then_a_number_and_a_slug_id() {
     assert_eq!(listing.machine.labels, ["games"]);
 }
 
+/// A machine made from an untitled image pulled under a host-qualified tag
+/// is named after that tag, and its id becomes a folder name: the host's
+/// dots, the port's colon and the path's slashes must not reach it.
+#[test]
+fn a_machine_from_a_host_qualified_tag_gets_a_plain_folder_name() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let store = &fixture.store;
+    let image = store.tag_descriptor("test:source").unwrap();
+    let tag = "nas.example:5000/private/x:1";
+    store
+        .update_pulled_tag(tag, &image, None, &PcProvider, "nas.example:5000")
+        .unwrap();
+    let id = machine::create_from_tag(store, tag, None, None).unwrap();
+    assert_eq!(id, "nas-example-5000-private-x-1");
+    let folder = store.workspace_path(&id).unwrap();
+    assert_eq!(folder.parent().unwrap(), store.root().join("workspaces"));
+    assert!(folder.is_dir());
+    let listing = machine::get(store, &id).unwrap();
+    assert_eq!(listing.machine.name, tag);
+    assert_eq!(listing.machine.source, tag);
+    // The machine pins the image, not the annotations of the tag it came by.
+    assert_eq!(listing.machine.image.digest, image.digest);
+    assert!(
+        listing.machine.image.annotations.is_empty(),
+        "{:?}",
+        listing.machine.image.annotations
+    );
+}
+
 #[test]
 fn state_shows_changed_drives_cmos_and_running() {
     let Some(fixture) = Fixture::new() else {

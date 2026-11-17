@@ -86,6 +86,30 @@ pub struct Tag {
     pub manifest: Descriptor,
 }
 
+/// Index annotation on a local tag's manifest descriptor: the registry host a
+/// pull wrote the tag from, port included, such as `registry.unemu.dev` or
+/// `nas.example:5000`. It tells a short tag pulled from the family default
+/// registry apart from one made in this library. The record, not the name,
+/// says where a tag came from: a person may type a host-qualified name for an
+/// image made here, as with Docker. It lives in `index.json` only, never in a
+/// manifest, so it is never pushed. Only a pull writes it, and a later write
+/// that moves the tag to another image drops it.
+pub const PULL_REGISTRY: &str = "unemu.pull.registry";
+
+impl Tag {
+    /// The registry a pull fetched this tag's image from ([`PULL_REGISTRY`]).
+    /// `None` for a tag made in this library, and also for one pulled before
+    /// pulls recorded their registry: the store cannot tell those apart and
+    /// never guesses.
+    pub fn pulled_from(&self) -> Option<&str> {
+        self.manifest
+            .annotations
+            .get(PULL_REGISTRY)
+            .map(String::as_str)
+            .filter(|host| check_host(host).is_ok())
+    }
+}
+
 /// Lexicographic page; pass `next_after` back as the next call's cursor.
 /// Pages are snapshots of individual index reads; callers may refresh after edits.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -526,19 +550,49 @@ impl Store {
         expected: Option<&Digest>,
         validator: &dyn ConfigValidator,
     ) -> Result<()> {
+        self.update_tag_from(name, manifest, expected, validator, None)
+    }
+
+    /// [`Store::update_tag`] for a pull: the tag also records `registry`, the
+    /// host it was pulled from ([`PULL_REGISTRY`]). Only a pull writes that
+    /// record; every other write leaves it off the tag it writes.
+    pub fn update_pulled_tag(
+        &self,
+        name: &str,
+        manifest: &Descriptor,
+        expected: Option<&Digest>,
+        validator: &dyn ConfigValidator,
+        registry: &str,
+    ) -> Result<()> {
+        Self::validate_registry_host(registry)?;
+        self.update_tag_from(name, manifest, expected, validator, Some(registry))
+    }
+
+    fn update_tag_from(
+        &self,
+        name: &str,
+        manifest: &Descriptor,
+        expected: Option<&Digest>,
+        validator: &dyn ConfigValidator,
+        pulled: Option<&str>,
+    ) -> Result<()> {
         validate_tag(name)?;
         let _lease = self.lease()?;
         self.resolve_image_inner(manifest, validator, true)?;
         let _index_lock = host::exclusive_lock(&self.root.join("locks/index.lock"))?;
-        self.update_tag_locked(name, manifest, expected)
+        self.update_tag_locked(name, manifest, expected, pulled)
     }
 
     /// Caller holds the store lease and index lock and has verified the closure.
+    /// `pulled` is the registry a pull fetched the image from; any other write
+    /// passes `None`. A descriptor read from another tag carries that tag's
+    /// pull record, which never travels to the tag written here.
     pub(crate) fn update_tag_locked(
         &self,
         name: &str,
         manifest: &Descriptor,
         expected: Option<&Digest>,
+        pulled: Option<&str>,
     ) -> Result<()> {
         validate_tag(name)?;
         let mut index = self.read_index()?;
@@ -573,6 +627,12 @@ impl Store {
         descriptor
             .annotations
             .insert("org.opencontainers.image.ref.name".into(), name.into());
+        descriptor.annotations.remove(PULL_REGISTRY);
+        if let Some(registry) = pulled {
+            descriptor
+                .annotations
+                .insert(PULL_REGISTRY.into(), registry.into());
+        }
         let replacement = to_raw_value(&descriptor).map_err(|e| invalid(e.to_string()))?;
         if let Some(position) = position {
             // Keep opaque OCI fields as raw JSON even when editing our own tag.
@@ -590,6 +650,10 @@ impl Store {
                 .map(|raw| decode_json(raw.get().as_bytes()))
                 .transpose()?
                 .unwrap_or_default();
+            // Where the old image came from says nothing about the new one.
+            if current.as_ref() != Some(&manifest.digest) {
+                annotations.remove(PULL_REGISTRY);
+            }
             if let Some(raw) = replacement.remove("annotations") {
                 annotations.extend(decode_json::<BTreeMap<String, Box<RawValue>>>(
                     raw.get().as_bytes(),
@@ -1198,13 +1262,120 @@ impl Store {
     }
 }
 
+/// Split a local tag or repository into its registry host, if it names one,
+/// and the rest. As in Docker references, a first component followed by `/`
+/// names a host when it contains a `.` or a `:` (a port), or is `localhost`.
+fn split_host(name: &str) -> (Option<&str>, &str) {
+    match name.split_once('/') {
+        Some((first, rest)) if first.contains(['.', ':']) || first == "localhost" => {
+            (Some(first), rest)
+        }
+        _ => (None, name),
+    }
+}
+
+/// A registry host as local tags write it: lowercase DNS labels of at most 63
+/// characters or an IPv4 address, or a bracketed IPv6 address (RFC 3986
+/// §3.2.2), with an optional decimal port from 1 to 65535 without leading
+/// zeros. Reference parsing lowercases hosts; with the port rules this gives
+/// one registry one spelling in the library.
+fn check_host(host: &str) -> std::result::Result<(), &'static str> {
+    let (name, port) = match host.strip_prefix('[') {
+        Some(inner) => {
+            let (address, rest) = inner
+                .split_once(']')
+                .ok_or("the IPv6 address has no closing ]")?;
+            if !ipv6_shaped(address) {
+                return Err("an IPv6 address is eight groups of one to four lowercase hexadecimal digits, or fewer around one ::");
+            }
+            let port = match rest {
+                "" => None,
+                rest => Some(rest.strip_prefix(':').ok_or("a port follows a colon")?),
+            };
+            (None, port)
+        }
+        None => match host.rsplit_once(':') {
+            Some((name, port)) => (Some(name), Some(port)),
+            None => (Some(host), None),
+        },
+    };
+    if let Some(name) = name {
+        let label = |label: &str| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        };
+        if name.is_empty() || name.len() > 253 || !name.split('.').all(label) {
+            return Err("a host name is dot-separated labels of up to 63 lowercase letters, digits and inner hyphens");
+        }
+    }
+    if let Some(port) = port {
+        if !port.bytes().all(|b| b.is_ascii_digit())
+            || port.starts_with('0')
+            || !matches!(port.parse::<u16>(), Ok(1..))
+        {
+            return Err("a port is a number from 1 to 65535 without leading zeros");
+        }
+    }
+    Ok(())
+}
+
+/// RFC 4291 §2.2 text form, lowercase and without an embedded IPv4 address:
+/// eight groups of one to four hexadecimal digits, or fewer with one `::`
+/// standing for the missing ones.
+fn ipv6_shaped(address: &str) -> bool {
+    if !address
+        .bytes()
+        .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f' | b':'))
+    {
+        return false;
+    }
+    let groups = |part: &str| -> Option<usize> {
+        if part.is_empty() {
+            return Some(0);
+        }
+        part.split(':').try_fold(0, |n, group| {
+            (1..=4).contains(&group.len()).then_some(n + 1)
+        })
+    };
+    match address.split_once("::") {
+        Some((head, tail)) => {
+            !tail.contains("::")
+                && matches!((groups(head), groups(tail)), (Some(a), Some(b)) if a + b <= 7)
+        }
+        None => groups(address) == Some(8),
+    }
+}
+
 /// OCI Distribution Specification, Pulling Manifests: repository components are
 /// `[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*` and tags are
-/// `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}`.
+/// `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}`. A registry host may come first
+/// ([`split_host`]): pulls from registries other than the family default write
+/// one, and a person may type one; the app never derives one for an image
+/// made here, and the name alone never says the tag was pulled
+/// ([`PULL_REGISTRY`]). The name, host included, is at most 255 characters,
+/// the limit clients put on a full reference.
 fn validate_tag(value: &str) -> Result<()> {
-    let (repository, tag) = value
+    let (name, tag) = value
         .rsplit_once(':')
         .ok_or_else(|| invalid("tag must be repository:tag"))?;
+    let (host, repository) = split_host(name);
+    if let Some(host) = host {
+        check_host(host).map_err(|why| {
+            invalid(format!(
+                "{value}: {host} is not a valid registry host: {why}, such as nas.example:5000"
+            ))
+        })?;
+    }
+    if name.len() > 255 {
+        return Err(invalid(format!(
+            "{value}: the name, registry host included, is longer than 255 characters"
+        )));
+    }
     fn component(mut bytes: &[u8]) -> bool {
         let alnum = |b: &u8| b.is_ascii_lowercase() || b.is_ascii_digit();
         loop {
@@ -1232,7 +1403,6 @@ fn validate_tag(value: &str) -> Result<()> {
         }
     }
     if repository.is_empty()
-        || repository.len() > 255
         || !repository.split('/').all(|part| component(part.as_bytes()))
         || tag.is_empty()
         || tag.len() > 128
@@ -1241,10 +1411,6 @@ fn validate_tag(value: &str) -> Result<()> {
         })
     {
         return Err(invalid("invalid local repository:tag"));
-    }
-    let first = repository.split('/').next().unwrap_or_default();
-    if repository.contains('/') && (first.contains('.') || first == "localhost") {
-        return Err(invalid("local tags cannot include a registry host"));
     }
     Ok(())
 }
@@ -1554,7 +1720,7 @@ impl Store {
             }
         }
         let _lock = host::exclusive_lock(&self.root.join("locks/index.lock"))?;
-        self.update_tag_locked(name, &image.image, expected)
+        self.update_tag_locked(name, &image.image, expected, None)
     }
 }
 
@@ -1595,6 +1761,24 @@ impl Store {
     /// Validate an import reference before reading sources or creating blobs.
     pub fn validate_tag_name(name: &str) -> Result<()> {
         validate_tag(name)
+    }
+    /// Check a registry host as local tags and pull records write it:
+    /// lowercase, with an optional port from 1 to 65535 without leading
+    /// zeros, so that one registry has one spelling.
+    pub fn validate_registry_host(host: &str) -> Result<()> {
+        check_host(host)
+            .map_err(|why| invalid(format!("{host} is not a valid registry host: {why}")))
+    }
+    /// The registry host a local tag or repository names first, port
+    /// included, such as `nas.example:5000` in
+    /// `nas.example:5000/private/x:1`; `None` for a name without one.
+    pub fn tag_host(name: &str) -> Option<&str> {
+        split_host(name).0
+    }
+    /// A local tag or repository without its registry host:
+    /// `private/x:1` for `nas.example:5000/private/x:1`.
+    pub fn without_host(name: &str) -> &str {
+        split_host(name).1
     }
     /// Semantic Versioning 2.0.0 §§2, 9–10: `MAJOR.MINOR.PATCH` without leading
     /// zeros, optionally followed by `-prerelease` and `+build` identifiers. Tags

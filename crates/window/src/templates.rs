@@ -1075,6 +1075,11 @@ mod tests {
         // A repository whose manifest does not match its digest is skipped.
         registry.forge_manifest("unemu/broken", "1.0.1", &Digest::of(b"claimed"), b"{}");
         let host = registry.host();
+        // Not the family default registry, so the local tags name the host.
+        let (at, games) = (
+            format!("{host}/unemu/open-at:1.0.1"),
+            format!("{host}/unemu/open-at-games:1.0.1"),
+        );
         registry.clear_log();
 
         let target = assembly::test_support::TempDir::new("templates-target");
@@ -1108,8 +1113,8 @@ mod tests {
         assert_eq!(
             shown,
             [
-                ("open-at", "1.0.1", "open-at:1.0.1"),
-                ("open-at-games", "1.0.1", "open-at-games:1.0.1")
+                ("open-at", "1.0.1", at.as_str()),
+                ("open-at-games", "1.0.1", games.as_str())
             ]
         );
         let open_at = built.store.tag_descriptor("open-at:1.2.0").unwrap();
@@ -1164,7 +1169,7 @@ mod tests {
             panic!("{:?}", dialog.state)
         };
         // The row's reference and the short digest, not the full digest.
-        let pulled = format!("Pulled {host}/unemu/open-at:1.0.1 as open-at:1.0.1 (");
+        let pulled = format!("Pulled {host}/unemu/open-at:1.0.1 as {at} (");
         assert!(
             matches!(&pulls[0].result, Some(Ok(message)) if message.starts_with(&pulled)),
             "{pulls:?}"
@@ -1179,21 +1184,18 @@ mod tests {
             Some(Summary {
                 complete: true,
                 heading: "Got the template.".into(),
-                text: "In the library as open-at:1.0.1. Start one as it is, or open Settings… first to change its hardware.".into(),
+                text: format!("In the library as {at}. Start one as it is, or open Settings… first to change its hardware."),
             })
         );
-        assert_eq!(dialog.pulled(), ["open-at:1.0.1"]);
-        assert_eq!(
-            store.tag_descriptor("open-at:1.0.1").unwrap().digest,
-            open_at.digest
-        );
-        assert!(store.tag_descriptor("open-at-games:1.0.1").is_err());
-        assert_eq!(view.status.as_deref(), Some("Got open-at:1.0.1"));
+        assert_eq!(dialog.pulled(), [at.as_str()]);
+        assert_eq!(store.tag_descriptor(&at).unwrap().digest, open_at.digest);
+        assert!(store.tag_descriptor(&games).is_err());
+        assert_eq!(view.status, Some(format!("Got {at}")));
 
         // Listed again, the pulled template is in the library and cannot be
         // chosen twice; a local tag that names another image blocks its row.
         store
-            .update_tag("open-at-games:1.0.1", &open_at, None, &pc_image::PcProvider)
+            .update_tag(&games, &open_at, None, &pc_image::PcProvider)
             .unwrap();
         let request = view.templates.as_mut().unwrap().relist().unwrap();
         view.send(Request::Transfer(request));
@@ -1244,7 +1246,7 @@ mod tests {
         assert_eq!(
             pulls[0].route(),
             format!(
-                "{host}/unemu/open-at:1.0.1 → open-at:1.0.1 · {}",
+                "{host}/unemu/open-at:1.0.1 → {host}/unemu/open-at:1.0.1 · {}",
                 human_size(pulls[0].size)
             )
         );
@@ -1283,8 +1285,12 @@ mod tests {
             "{:?}",
             registry.log()
         );
-        assert!(store.tag_descriptor("open-at:1.0.1").is_err());
-        assert!(store.tag_descriptor("open-at-games:1.0.1").is_err());
+        assert!(store
+            .tag_descriptor(&format!("{host}/unemu/open-at:1.0.1"))
+            .is_err());
+        assert!(store
+            .tag_descriptor(&format!("{host}/unemu/open-at-games:1.0.1"))
+            .is_err());
         assert_eq!(
             dialog.progress(),
             Some((1.0, "Done — 0 of 2 templates pulled".into()))
@@ -1354,12 +1360,15 @@ mod tests {
             Some(Summary {
                 complete: true,
                 heading: "Got all 2 templates.".into(),
-                text: "In the library as open-at:1.0.1 and open-at-games:1.0.1. Start one as it is, or open Settings… first to change its hardware.".into(),
+                text: format!("In the library as {host}/unemu/open-at:1.0.1 and {host}/unemu/open-at-games:1.0.1. Start one as it is, or open Settings… first to change its hardware."),
             })
         );
         assert_eq!(
             view.status.as_deref(),
-            Some("Got open-at:1.0.1, open-at-games:1.0.1")
+            Some(
+                format!("Got {host}/unemu/open-at:1.0.1, {host}/unemu/open-at-games:1.0.1")
+                    .as_str()
+            )
         );
     }
 

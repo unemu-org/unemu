@@ -256,7 +256,10 @@ blobs (four in parallel) through `Store::import` with the expected digest,
 continuing an interrupted body with up to three `Range` requests into the same
 staged file and hash (a whole-blob `200` restarts the blob), imports the
 manifest and sets the local tag by compare-and-swap after full closure
-verification. A local tag naming another digest is never rewritten. Listings
+verification, recording the source registry on it (`unemu.pull.registry`). The
+local tag is short from `registry.unemu.dev` and carries the registry host from
+any other registry (`Reference::local_tag`). A local tag naming another digest
+is never rewritten. Listings
 pass `n` and follow `Link` headers. An in-process mock registry (`test-support`)
 covers these paths over loopback HTTP.
 

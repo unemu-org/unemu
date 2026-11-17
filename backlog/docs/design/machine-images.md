@@ -197,6 +197,7 @@ Annotations are string values and never bind hardware or media:
 | `unemu.source` | On an open ROM, installation medium or installation-set extra: decoded digest of its corresponding source archive in the same closure (§5.3, §5.2). |
 | `unemu.terms` | On an open installation medium or extra: decoded digest of the vendor's terms-text extra in the same closure (§5.2). |
 | `unemu.provenance` | Publish-safe evidence supporting the open classification. |
+| `unemu.pull.registry` | Local only, on a tag's manifest descriptor in the store's `index.json`, never in a manifest: the registry host, port included, that a pull wrote the tag from (§3, §5.1). |
 
 The config is the single authority for bindings, slots, catalogue order and
 media heads; layer descriptors (§4) are the single authority for parents.
@@ -513,8 +514,31 @@ this optimization is not active now and does not change mutation checks.
 
 Tags are mutable references in `index.json`, using
 `org.opencontainers.image.ref.name` on manifest descriptors, for example
-`dos-lab:1.0`. A local reference is `repository:tag` without a registry host;
-which registry a repository is pushed to is host configuration (§5.1). Digests
+`dos-lab:1.0`. A local reference is `[host[:port]/]repository:tag`. As in a
+Docker reference, a first component followed by `/` names a registry host when
+it contains a `.` or a `:`, or is `localhost`; it is lowercase, with an
+optional port, or a bracketed IPv6 address. Images made here (template build,
+Save as new image, imports, media and firmware imports) and images pulled from
+the family default registry `registry.unemu.dev` are given no host; an image pulled
+from any other registry keeps its host, so one repository path on two
+registries never shares a local name (§5.1). A person may still type a
+host-qualified name for an image made here, as with Docker; the app never
+derives one, and the pull record below, not the name, says where a tag came
+from. A host has one spelling: lowercase, DNS labels of at most 63
+characters, and a port from 1 to 65535 without leading zeros. The name, host
+included, is at most 255 characters. Namespace policy reads the repository path after the
+host. Pull records its source registry on each tag it writes, as the
+`unemu.pull.registry` annotation of the tag's index descriptor, which tells a
+short tag pulled from the default registry apart from one made here. Tags
+written before pulls recorded it have no annotation: their source is unknown,
+never guessed, and they are never renamed. Only a pull writes the annotation:
+any other write leaves it off the tag it writes, even when it copies a pulled
+tag's descriptor, and drops it when it moves a tag to another image. Names
+suggested for images made from a pulled one (Save as new image, Publish
+revision) take the family short form, without the host and, when one
+component remains, without `unemu/`; an official template pulled from another
+registry is still revised under its `-local.N` suffix. Which registry a host-less repository is pushed to
+is host configuration (§5.1). Digests
 are immutable identities. Resolve a tag once at launch and pin the result for
 the session. Unpublished local tag replacement uses compare-and-swap under the
 index lock (§3.1). References tracking pushed version tags retain their published digest;
@@ -989,7 +1013,13 @@ publishing proprietary bytes by accident:
   resolution: `name:tag` is `registry.unemu.dev/unemu/name:tag`, `owner/name:tag`
   keeps its owner, and a first component with a dot, a colon or `localhost`
   names the host. Preferences, `--registry` and an environment variable override
-  the default host. Local tags keep the short form.
+  the default host. A pull from `registry.unemu.dev` writes the short local tag
+  (`open-at:1.2.0`, `unemu/media/freedos:1.4`); a pull from any other registry,
+  a configured default one included, writes the full reference with its host
+  and port (`registry.lan.example/private/games/dune2:1.0.0`,
+  `nas.example:5000/private/media/x:1.1`) and records the registry on the tag
+  (§3). Push of a host-qualified local tag goes to its own host unless a
+  target reference is given; push of a short tag goes to the default host.
 - The registries list in preferences holds entries of a host, an optional
   login user and its privacy, never a secret. Privacy is set for the whole
   registry with a `private` flag, or per namespace (the first path component
@@ -1959,8 +1989,8 @@ Both follow the OCI repository grammar (`[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*` per
 component), so catalogue ids such as `kiselev-xi8088-1.0.2-atreset` need no
 mapping. Each template generation has a semantic-version tag (`1.0.0`), which
 never moves, and `latest`, which follows the newest version. The local tags of
-a template build are the short forms a pull writes: `open-at:1.0.0` for
-`unemu/open-at`. A firmware package's tag is its revision,
+a template build are the short forms a pull from `registry.unemu.dev`
+writes: `open-at:1.0.0` for `unemu/open-at`. A firmware package's tag is its revision,
 `unemu/firmware/<id>:1` (two components remain after `unemu/`, so the local
 tag keeps the full name). Installation sets live under `unemu/media/<work>`,
 one repository per work, tagged with the release and, unless it is the

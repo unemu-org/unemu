@@ -543,6 +543,25 @@ fn refusal_text(refusal: &Refusal, closure: &[ClosureEntry]) -> String {
     }
 }
 
+/// A local tag the store refused, explained: its length, its registry host,
+/// or the grammar, which allows a host first.
+fn local_tag_problem(local: &str) -> String {
+    let name = local.rsplit_once(':').map_or(local, |(name, _)| name);
+    if name.len() > 255 {
+        return format!(
+            "Local tag “{local}” is too long: the name, registry host included, has at most 255 characters."
+        );
+    }
+    if let Some(Err(image_store::Error::Invalid(why))) =
+        Store::tag_host(local).map(Store::validate_registry_host)
+    {
+        return format!("Local tag “{local}” is not valid: {why}.");
+    }
+    format!(
+        "Local tag “{local}” is not valid: use name:tag, or host[:port]/name:tag, with the name in lowercase letters and digits and a tag that follows the registry tag grammar."
+    )
+}
+
 /// A reference the parser refused, explained; a bad tag gets the grammar.
 fn parse_problem(text: &str, default_host: &str, error: &Error) -> String {
     let named = text.split('@').next().unwrap_or(text);
@@ -1342,7 +1361,8 @@ pub(crate) struct PullDialog {
     config: RegistryConfig,
     pub default_host: String,
     pub reference: String,
-    /// Empty: the short form of the reference.
+    /// Empty: the reference's own local tag, short from the family default
+    /// registry and host-qualified from any other.
     pub local_tag: String,
     /// Preferences or the default registry could not be read.
     pub error: Option<String>,
@@ -1398,11 +1418,7 @@ impl PullDialog {
                 .ok_or("Pulling by digest needs a local tag.")?,
             typed => typed.to_owned(),
         };
-        Store::validate_tag_name(&local).map_err(|_| {
-            format!(
-                "Local tag “{local}” is not valid: use name:tag in lowercase letters and digits, with a tag that follows the registry tag grammar."
-            )
-        })?;
+        Store::validate_tag_name(&local).map_err(|_| local_tag_problem(&local))?;
         Ok((source, local))
     }
 
@@ -1742,6 +1758,25 @@ pub(crate) mod tests {
             })
         });
         events.into_inner().unwrap()
+    }
+
+    #[test]
+    fn a_refused_local_tag_says_what_is_wrong_with_it() {
+        let long = format!("nas.example:5000/{}:1", "a".repeat(240));
+        assert!(
+            local_tag_problem(&long)
+                .contains("too long: the name, registry host included, has at most 255 characters"),
+            "{}",
+            local_tag_problem(&long)
+        );
+        let port = local_tag_problem("nas.example:05000/x:1");
+        assert!(
+            port.contains("nas.example:05000 is not a valid registry host")
+                && port.contains("without leading zeros"),
+            "{port}"
+        );
+        let grammar = local_tag_problem("Lab:1");
+        assert!(grammar.contains("host[:port]/name:tag"), "{grammar}");
     }
 
     #[test]
@@ -2443,7 +2478,10 @@ pub(crate) mod tests {
         view.begin_pull(lab.accounts.clone());
         let dialog = view.pull.as_mut().unwrap();
         dialog.reference = format!("{host}/private/test:1.0.0");
-        assert_eq!(dialog.resolve().unwrap().1, "private/test:1.0.0");
+        assert_eq!(
+            dialog.resolve().unwrap().1,
+            format!("{host}/private/test:1.0.0")
+        );
         dialog.local_tag = "copy:1.0.0".into();
         let request = dialog.pull().unwrap();
         view.send(Request::Transfer(request));
@@ -2604,8 +2642,9 @@ pub(crate) mod tests {
         };
         assert!(!ok);
         assert_eq!(message, PULL_CANCELLED);
+        let local = format!("{host}/private/test:1.0.0");
         assert!(matches!(
-            store.tag_descriptor("private/test:1.0.0"),
+            store.tag_descriptor(&local),
             Err(image_store::Error::TagNotFound(_))
         ));
 
@@ -2619,7 +2658,7 @@ pub(crate) mod tests {
         };
         assert!(ok, "{message}");
         assert_eq!(
-            store.tag_descriptor("private/test:1.0.0").unwrap().digest,
+            store.tag_descriptor(&local).unwrap().digest,
             lab.f.row.descriptor.digest
         );
     }

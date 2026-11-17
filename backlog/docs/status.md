@@ -5,6 +5,20 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — Pulled images keep their registry host:** an image pulled
+  from any registry other than `registry.unemu.dev` gets the full reference
+  as its local tag, Docker-style (`registry.lan.example/private/games/dune2:1.0.0`,
+  `nas.example:5000/private/media/x:1.1`), so the same repository path on two
+  registries no longer collides. Pulls from `registry.unemu.dev` keep the
+  short tags (`open-at:1.2.0`, `unemu/media/freedos:1.4`), and images made
+  here get no host. The store's tag grammar accepts an optional lowercase
+  `host[:port]/` first component; each pull records its registry on the tag
+  (`unemu.pull.registry` in `index.json`), while older tags stay as they are,
+  unrenamed, with an unknown source. Push of a host-qualified tag goes to its
+  own host unless a reference is given, and namespace policy reads the path
+  after the host. Save as new image and Publish revision from a pulled image
+  suggest a name without the host. Browsing remotes and the library's Source
+  column come later.
 - **2026-11-16 — Floppies built from host files:** `upcli media create
   floppy --add PATH` builds a new FAT12 data floppy (360K, 720K, 1.2M or
   1.44M) from host files and whole folders, for DOS programs that come as

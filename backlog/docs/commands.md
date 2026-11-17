@@ -465,9 +465,16 @@ References resolve like Docker's against `registry.unemu.dev`: `name:tag` is
 component with a dot, a colon or `localhost` is a host, no tag means `latest`,
 and `@sha256:…` pins content. `--registry HOST`, then `UNEMU_REGISTRY`, then
 `default_registry` in preferences replace the default host. `push` without a
-reference uses the local tag. `pull` tags locally in short form (no host, no
-`unemu/`), or `--tag`; a digest pull needs `--tag`. `--create` initializes a
-missing store.
+reference uses the local tag: a host-qualified tag goes to its own host, a
+short one to the default host. `pull` from `registry.unemu.dev` tags locally in
+short form (no host, no `unemu/` when one name remains); from any other
+registry, a configured default one included, the local tag is the full
+reference with host and port, Docker-style:
+`pulled<TAB>nas.example:5000/private/media/x:1.1<TAB>DIGEST`. `--tag` names the
+local tag instead; a digest pull needs `--tag`. Each tag a pull writes records
+its registry (`unemu.pull.registry` in the store's `index.json`); tags made
+here, and tags pulled before that record existed, have none. `--create`
+initializes a missing store.
 
 `push` leaves a tag that already names the image alone and never moves a
 version tag. Nor does it move a tag of an installation media set that starts
@@ -582,8 +589,9 @@ The desktop shell's Image › Push… and Image › Pull… build the same push 
   reference. A non-version tag moves only after a confirmation that shows
   both digests, and only from the digest shown. A
   local tag that names another image than the reviewed one is not pushed.
-- Pull… writes the short form of the reference as the local tag unless
-  another one is typed.
+- Pull… writes the local tag `image pull` would (short from
+  `registry.unemu.dev`, host-qualified from any other registry) unless another
+  one is typed.
 - Cancel (or Escape, or closing the dialog) stops a transfer before the next
   blob or chunk. A cancelled push publishes no manifest; a cancelled pull
   writes no tag. Quitting during a transfer asks first.
@@ -702,7 +710,8 @@ when a template is refused. A package tag that names another image stops the
 build before any template, and the dry run too; remove or rename that tag, or
 build into a dedicated store. The installation-set fixtures are not read.
 
-The local tags are the short form `image pull` writes for each repository, so
+The local tags are the short form `image pull` writes for each repository
+from `registry.unemu.dev`, so
 `image push TAG` without a reference reaches the repository in the table. Each
 source archive must be the one the catalogue pins (its fetch script builds it);
 another archive, or a missing fixture, stops the build and names the script.

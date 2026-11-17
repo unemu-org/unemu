@@ -506,13 +506,14 @@ pub struct Built {
     pub version: &'static str,
     pub descriptor: Descriptor,
     /// That tag, then a template's alias; a package or a set has no alias.
-    /// Local tags are the short form a pull of the repository writes, so
-    /// `image push TAG` reaches the repository.
+    /// Local tags are the short form a pull of the repository from the
+    /// family default registry writes, so `image push TAG` reaches the
+    /// repository.
     pub tags: Vec<(String, Outcome)>,
 }
 
-/// The local tag a pull of `repository:tag` writes: without the official
-/// namespace when one name remains.
+/// The local tag a pull of `repository:tag` from the family default registry
+/// writes: no host, and without the official namespace when one name remains.
 pub fn local_tag(repository: &str, tag: &str) -> String {
     let name = match repository.strip_prefix(&format!("{NAMESPACE}/")) {
         Some(rest) if !rest.contains('/') => rest,

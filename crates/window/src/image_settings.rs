@@ -453,10 +453,11 @@ impl ImageSettings {
 
     /// The source is an official template: a repository of the official
     /// namespace, pulled into the store under its template name, with the
-    /// template's title. `unemu/` is read-only for the user, so a revision of
-    /// it is written to the local store only.
+    /// template's title, from whichever registry (its short form decides).
+    /// `unemu/` is read-only for the user, so a revision of it is written to
+    /// the local store only.
     pub fn official_template(&self) -> bool {
-        let repo = self.row.repository();
+        let repo = image_registry::reference::short_name(self.row.repository());
         pc_image::template::TEMPLATES.iter().any(|t| t.name == repo)
     }
     /// The release a local revision of the source takes its suffix after:
@@ -1504,5 +1505,32 @@ pub(crate) mod tests {
         // Another edit drops the review: it described the old draft.
         model.set("memory.extended_kib", Value::Integer(4096));
         assert!(model.review.is_none());
+    }
+
+    /// A template pulled from a registry other than the family default
+    /// keeps its host in the local tag, and is still the official template:
+    /// its revision takes the family short name with a local suffix.
+    #[test]
+    fn a_template_pulled_from_another_registry_is_revised_under_its_short_name() {
+        let Some(store) = FirmwareStore::new(false) else {
+            return;
+        };
+        let reference = "nas.example:5000/unemu/open-at:1.0.0";
+        let image = open_new_image(&store, 1024);
+        let descriptor = pc_image::create::create(&store.store, &image, reference, None).unwrap();
+        let row = ImageRow {
+            reference: reference.into(),
+            aliases: Vec::new(),
+            descriptor,
+            summary: None,
+            failure: None,
+        };
+        let mut model = opened(&store, row, false);
+        assert!(model.official_template());
+        model.set("memory.extended_kib", Value::Integer(2048));
+        reviewed(&mut model, &store.store);
+        let review = model.review.as_ref().unwrap();
+        assert_eq!(review.save.reference(), "open-at:1.0.0-local.1");
+        assert!(review.save.local_suffix());
     }
 }
