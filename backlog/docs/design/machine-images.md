@@ -6,6 +6,7 @@ resolution verifies decoded bytes by streaming and writes nothing; only mounted 
 media are decoded into the rebuildable materialized cache, which `image sweep` trims;
 imports and publication compress by default, `--no-compress` keeps raw fixtures, and
 `image compress` preserves the machine digest;
+**the encoder frozen as Zstandard profile 1 with test vectors** (§2), 2026-11-17;
 **desktop UX and toolkit accepted**, 2026-11-13 (decision-24);
 **installation media set codec/CLI/insert implemented**, 2026-11-14 (decision-26);
 **firmware package codec/import/resolution implemented; UI pending**, 2026-11-14 (decision-27).
@@ -157,6 +158,54 @@ SHA-256 before use. Compression never weakens full-base verification. Metadata
 stays uncompressed in version 1. OCI treats payloads as opaque bytes; filesystem
 inspection (for example FAT-aware tools), deduplication and compression belong
 only in the appropriate media tools.
+
+**Encoder profile 1 (frozen 2026-11-17).** A pinned recipe's lock names the
+stored digests of its `+zstd` payloads ([recipes](recipes.md) §3.8, §9 row 4),
+so the encoder's exact output binds like a decoded byte does. The `+zstd`
+suffix of the version-1 media types *is* encoder profile 1; no manifest byte
+names it otherwise (the maintainer's decision, decision-34). Profile 1 is:
+
+| Part | Profile 1 |
+|---|---|
+| Which payloads | a payload is encoded exactly when its provider declares the `+zstd` variant of its media type and it is at least 4 KiB (`MIN_COMPRESS_SIZE`) and at most that variant's declared decoded-size limit; otherwise it is stored raw. The limits: media sets (`codec::MEDIA_PAYLOAD_TYPES`) floppy 2880 KiB, optical 900 MiB, extra 2 GiB; firmware packages (`codec::FIRMWARE_PAYLOAD_TYPES`) ROM 16 MiB, extra 2 GiB, tar source archive 2 GiB; PC machine images (`pc_image::provider::PAYLOAD_TYPES`) firmware 16 MiB, disk base 16383×16×63×512 bytes, sector pack 16383×16×63×520 bytes, floppy 1440 KiB, tar source archive 2 GiB |
+| Library | crates `zstd` 0.13.5, `zstd-safe` 7.4.1 and `zstd-sys` 2.1.3, pinned with `=` in `crates/image-store/Cargo.toml`, default features off; `zstd-sys` builds the libzstd 1.5.7 C sources it bundles, not a system libzstd (`ZSTD_SYS_USE_PKG_CONFIG` stays unset) or another backend |
+| Level | 3, with libzstd's own level-3 parameters for the pledged size; no explicit window, strategy or block size, no long-distance matching |
+| Threads | one: no worker count is set, so libzstd encodes in the calling thread whether or not its multi-threaded encoder is built (Cargo feature unification could build it without any change to `Cargo.lock`) |
+| Frames | one frame per payload, written in one streaming pass with the exact decoded size pledged before the first byte and no flush before the end |
+| Frame header (RFC 8878 §3.1.1.1.1) | Content_Checksum_flag set (the frame ends with the low 32 bits of the decoded bytes' XXH64); Frame_Content_Size always written; Dictionary_ID_flag 0, no dictionary; reserved bit 0 |
+| Window (RFC 8878 §3.1.1.1.2) | 2 MiB (window log 21), shrunk by libzstd to the smallest power of two that holds a smaller payload: up to 2 MiB a single-segment frame without a Window_Descriptor, above it the descriptor byte for 2 MiB (`0x58`) |
+
+Test vectors pin it (`crates/image-store/tests/zstd_profile.rs`): seven
+synthetic payloads built by fixed rules, one per compressed kind (a floppy's
+boot sector, FATs and root directory; a tar source archive; a 64 KiB system
+ROM; the start of an ISO 9660 image; a sector pack; a text extra; a 3 MiB
+FAT16 disk base), sized to cover every row of libzstd's level-3 parameter
+table and both frame shapes, each with its frame's length and SHA-256, and
+the whole frame of the 244-byte floppy one. Boundary vectors go through the
+same import path: 4095 bytes stay raw and 4096 bytes become `+zstd` (frame
+pinned), and a media-set floppy of exactly 2880 KiB is encoded while one byte
+more stays raw; image-store's two payload-type tables and the threshold are
+compared by value. The same file checks the frame header fields above; shows
+that changing one setting (level 2 or 4, checksum or content size off, no
+pledge, an intermediate flush, window log 20 or 22, long-distance matching, a
+dictionary) moves at least one pinned digest; and compares the `Cargo.lock`
+entry of every crate named after zstd with the three above (name, version,
+crates.io source and checksum exactly; dependency names without version
+suffixes), so another version, source or backend fails `cargo test`, and any
+other crate named after zstd fails with a message asking for a review. The
+`compression` test `linked_zstd_is_the_pinned_release` fails only if another
+libzstd *release* is linked: a system libzstd 1.5.7 linked through
+`ZSTD_SYS_USE_PKG_CONFIG` passes it, and the vectors are the guard that
+catches any library whose frames differ.
+
+Profile 1 never changes. An encoder that writes other bytes for the same
+input (another libzstd release, level or option), or that encodes other
+payloads (another threshold or limit), is a new profile with its own marker
+beside `+zstd`, and every release keeps decoding all profiles.
+Failing vectors mean the encoder in use is no longer profile 1, never that the
+pins need updating. Decoding is not part of a profile: a conforming decoder
+reads every profile's frames, so profile 1 binds only code that writes `+zstd`
+payloads.
 
 This is an abbreviated schema sketch, not a copyable image. `<...>` stands for
 a full `sha256:` plus 64 lowercase hexadecimal characters; sizes are illustrative.

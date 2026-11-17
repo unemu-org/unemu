@@ -5,6 +5,26 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — The Zstandard encoder is frozen as profile 1:** the
+  encoder every `+zstd` payload is written with (zstd 0.13.5, zstd-safe
+  7.4.1, zstd-sys 2.1.3 building the bundled libzstd 1.5.7, level 3, one
+  thread, one frame with the size pledged, checksum and content size on, no
+  dictionary, libzstd's 2 MiB level-3 window), together with the rules
+  that choose which payloads it encodes (the 4 KiB threshold and each
+  payload type's size limit), is named encoder profile 1;
+  the `+zstd` suffix of the version-1 media types is its marker, so no
+  manifest byte changes, and a later encoder is a new profile beside it
+  (machine-images §2, the `image_store::codec` documentation).
+  `crates/image-store/tests/zstd_profile.rs` pins seven synthetic test
+  vectors, one per compressed payload kind (floppy, tar source archive,
+  ROM, optical, sector pack, extra, a 3 MiB disk base), by frame length and
+  SHA-256, plus payloads at the edges of the threshold and the floppy limit,
+  checks their frame headers, shows that changing any one encoder
+  setting moves a pinned digest, and fails if `Cargo.lock` resolves another
+  version, source or backend of the zstd crates or another crate named
+  after zstd. The three FreeDOS 1.4
+  installation sets and the three firmware packages still rebuild to their
+  pinned digests.
 - **2026-11-17 — Remotes: the details pane of a remote tag and Pull from
   the list; Get templates opens Remotes:** selecting a tag in Remotes shows,
   as the approved remotes mock-up draws it, the manifest's annotations,

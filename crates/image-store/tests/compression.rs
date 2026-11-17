@@ -191,12 +191,14 @@ fn zstd_round_trip_is_deterministic_and_records_both_identities() {
     assert_eq!(first.media_type, "application/vnd.unemu.disk.base.v1+zstd");
     assert_eq!(first, second);
     assert_eq!(first, third);
-    // Pinned output of the pinned zstd release at the fixed level; a codec
-    // update changes this blob digest but never the decoded identity below.
+    // One more frame of encoder profile 1 (the codec module documentation;
+    // its vectors are in zstd_profile.rs). An encoder that changes it writes
+    // a new profile, never a new pin; the decoded identity below never moves.
     assert_eq!(
         first.digest.to_string(),
         "sha256:fc20b8194fdf791bcc46de210ce6cf3db619ec12cea8dc6e935e59c9a3ef1e9c",
-        "compressed bytes changed; this is expected only after a zstd update"
+        "the encoder no longer writes Zstandard profile 1; an encoder that \
+         writes other bytes is a new profile, never a re-pin"
     );
     assert_eq!(first.decoded_digest().unwrap(), Digest::of(&bytes));
     assert_eq!(first.decoded_size().unwrap(), bytes.len() as u64);
@@ -226,7 +228,9 @@ fn zstd_round_trip_is_deterministic_and_records_both_identities() {
 #[test]
 fn linked_zstd_is_the_pinned_release() {
     // A system libzstd (ZSTD_SYS_USE_PKG_CONFIG) of another release would
-    // change stored frames; this makes that substitution fail loudly.
+    // change stored frames; this makes that substitution fail loudly. A
+    // system library of the same release passes here; the profile 1 vectors
+    // in zstd_profile.rs catch any library whose frames differ.
     assert_eq!(zstd::zstd_safe::version_number(), 1_05_07);
 }
 

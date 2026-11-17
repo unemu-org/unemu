@@ -10,9 +10,56 @@
 //! OCI `digest` and `size` name the stored (compressed) bytes. The decoded
 //! SHA-256 and length travel as descriptor annotations and stay the identity
 //! that configs, journals and layer parents use, so recompressing with another
-//! codec version changes blob and image digests but never a machine digest.
+//! encoder profile changes blob and image digests but never a machine digest.
 //! Which payloads may be compressed is declared by the platform provider as
 //! `+zstd` payload types; this module never infers it from a media type name.
+//!
+//! # Encoder profile 1
+//!
+//! A pinned recipe's lock names stored digests (recipes §3.8 and §9), so the
+//! exact bytes this encoder writes bind for good. The `+zstd` suffix of the
+//! version-1 payload media types names encoder profile 1; no other manifest
+//! field records it. Profile 1 is:
+//!
+//! - **Which payloads:** a payload is encoded exactly when its provider
+//!   declares the `+zstd` variant of its media type, and it is at least
+//!   [`MIN_COMPRESS_SIZE`] (4 KiB) and at most that variant's declared
+//!   decoded-size limit; otherwise it is stored raw. The threshold and the
+//!   limits decide stored digests too, so they are part of the profile:
+//!   [`MEDIA_PAYLOAD_TYPES`], [`FIRMWARE_PAYLOAD_TYPES`] and each platform
+//!   provider's own table (the PC provider's `pc_image::provider::PAYLOAD_TYPES`).
+//! - **Library:** the `zstd` 0.13.5, `zstd-safe` 7.4.1 and `zstd-sys` 2.1.3
+//!   crates, pinned exactly in this crate's manifest with default features
+//!   off. `zstd-sys` compiles the libzstd 1.5.7 C sources it bundles, not a
+//!   system libzstd or another backend. The `linked_zstd_is_the_pinned_release`
+//!   test catches only another libzstd release; the vectors below catch any
+//!   library whose frames differ.
+//! - **Level:** [`LEVEL`], 3, with libzstd's own level-3 parameters for the
+//!   pledged size and nothing else set: no explicit window, strategy or block
+//!   size, no long-distance matching, no dictionary.
+//! - **One thread:** no worker count is set, so libzstd encodes in the calling
+//!   thread whether or not its multi-threaded encoder is built (Cargo feature
+//!   unification could build it with no change to `Cargo.lock`).
+//! - **One frame per payload**, written in one streaming pass with the exact
+//!   decoded size pledged before the first byte and no flush before the end.
+//! - **Frame header** (RFC 8878 §3.1.1.1.1): Content_Checksum_flag set, so the
+//!   frame ends with the low 32 bits of the decoded bytes' XXH64;
+//!   Frame_Content_Size always written; Dictionary_ID_flag 0; reserved bit 0.
+//! - **Window** (RFC 8878 §3.1.1.1.2): level 3's 2 MiB (window log 21), which
+//!   libzstd shrinks to the smallest power of two that holds a smaller
+//!   payload. A payload of at most 2 MiB therefore gets a single-segment frame
+//!   without a Window_Descriptor; a larger one records the 2 MiB window.
+//!
+//! The test vectors in `tests/zstd_profile.rs` pin profile 1's output: one
+//! synthetic payload of each compressed kind with its frame's length and
+//! SHA-256, payloads at the edges of the threshold and a limit, and this
+//! crate's two tables by value. Profile 1 never changes. An encoder that
+//! writes other bytes for the same input, through another library release,
+//! level or option, or that encodes other payloads, is a new profile with a
+//! marker of its own beside `+zstd`, and readers keep decoding both; failing
+//! vectors mean the encoder in use is no longer profile 1, never that the pins
+//! need updating. Decoding is not part of a profile: any conforming decoder
+//! reads every profile's frames.
 //!
 //! Compressed blobs stay compressed in the store, so compression only ever
 //! saves local disk. Verification streams the decoded bytes through SHA-256
@@ -43,10 +90,11 @@ pub const DECODED_DIGEST: &str = "unemu.decoded.digest";
 pub const DECODED_SIZE: &str = "unemu.decoded.size";
 /// Media type suffix marking a Zstandard-encoded payload.
 pub const SUFFIX: &str = "+zstd";
-/// Shorter payloads stay raw: frame overhead outweighs any saving.
+/// Shorter payloads stay raw: frame overhead outweighs any saving. Part of
+/// encoder profile 1, like the payload-type limits below.
 pub const MIN_COMPRESS_SIZE: u64 = 4096;
-/// One fixed level, encoded single-threaded, so the same input always yields
-/// the same stored bytes for the pinned zstd version.
+/// Encoder profile 1's level, encoded single-threaded, so the same input
+/// always yields the same stored bytes; see the module documentation.
 pub const LEVEL: i32 = 3;
 /// Largest accepted decoder window, 8 MiB; level 3 never asks for more than 2 MiB.
 pub const WINDOW_LOG_MAX: u32 = 23;
@@ -172,9 +220,10 @@ impl<W: Write> Write for Hashing<W> {
     }
 }
 
-/// Encode exactly `size` bytes into one frame written to `output`, returning
-/// the decoded digest and the stored blob identity. A source that is shorter,
-/// longer or differs from `expected` is refused.
+/// Encode exactly `size` bytes into one encoder profile 1 frame written to
+/// `output`, returning the decoded digest and the stored blob identity. A
+/// source that is shorter, longer or differs from `expected` is refused. Any
+/// change here that alters the frame's bytes is a new profile, not an edit.
 fn encode(
     reader: &mut dyn Read,
     output: impl Write,

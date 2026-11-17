@@ -122,10 +122,14 @@ with no way to shard. Collections stay a separate, later feature.
   changes one shard and the registry deduplicates the rest.
 - Layers listed in shard index order. `shard_bits` is a pure function of the
   entry count: 0 below 2 000 entries, 4 up to 50 000, 8 above.
-- Compression uses the pinned zstd crates and the fixed level and window the
-  store already uses (`zstd =0.13.5`, `LEVEL 3`, `WINDOW_LOG_MAX 23`) [REPO].
-  Identity is checked on the **decoded** digest, so a different zstd version
-  cannot break verification, only deduplication.
+- Compression uses Zstandard encoder profile 1, the store's frozen encoder
+  (the `image_store::codec` documentation, machine-images §2,
+  `crates/image-store/tests/zstd_profile.rs`): the pinned zstd crates at level
+  3 with libzstd's 2 MiB level-3 window [REPO]. (`WINDOW_LOG_MAX 23` is the
+  decoder's cap, not the encoder's window.) Identity is checked on the
+  **decoded** digest, so verification does not depend on the encoder; the
+  stored bytes and the manifest digest do, which is why an encoder that writes
+  other bytes is a new profile, never an update of profile 1.
 - Result: the same registry state gives the same bytes and the same manifest
   digest on any host. Two publishers who rebuild from the same state converge
   on the same digest. A golden test pins the bytes.

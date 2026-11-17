@@ -82,9 +82,12 @@ packs, floppies, firmware, and media-set floppy/optical/extra payloads. Metadata
 sealed layer TOML, CMOS and tiny blobs stay raw. Add `--no-compress` to either
 import command for raw fixtures. Compressed descriptors carry
 `unemu.decoded.digest` and `unemu.decoded.size`; OCI `digest` and `size` name the
-compressed bytes, and frames record their content size. Output is deterministic
-for the pinned zstd version; a codec update may change blob and image digests,
-never machine digests.
+compressed bytes, and frames record their content size. The encoder, and the
+rules that choose which payloads it compresses, are frozen as Zstandard encoder
+profile 1 (the `image_store::codec` documentation, machine-images §2): the same
+input always gives the same stored bytes, and recipe locks pin them. An encoder
+that writes other bytes is a new profile beside it, never an update of profile
+1; it would change blob and image digests, never machine digests.
 
 Blobs stay compressed in the store, so compression only saves disk. Resolving an
 image (import, publication checks, `image compress`, Start, Insert) verifies the
@@ -106,9 +109,14 @@ The zstd crates are pinned exactly (`zstd`, `zstd-safe`, `zstd-sys`) and build
 the bundled libzstd 1.5.7. Setting `ZSTD_SYS_USE_PKG_CONFIG` in the environment
 makes `zstd-sys` link the system libzstd instead, and no Cargo setting can turn
 that off; do not set it. The `linked_zstd_is_the_pinned_release` test in
-`image-store` and the pinned compressed digest fail if another libzstd is
-linked. Media-set compression is limited by declared decoded size: floppies
-2880 KiB, optical images 900 MiB, extras 2 GiB; larger payloads stay raw.
+`image-store` fails if another libzstd release is linked; a system libzstd of
+the same release passes it. The real guard is the profile 1 test vectors in
+`crates/image-store/tests/zstd_profile.rs`, which fail for any library or
+setting whose frames differ, and also fail if `Cargo.lock` resolves another
+version or source of the three crates. Media-set compression is limited by
+declared decoded size: floppies 2880 KiB, optical images 900 MiB, extras 2 GiB;
+larger payloads stay raw. These limits and the 4 KiB threshold are part of
+profile 1.
 
 `image compress SOURCE --tag TARGET --store DIR` verifies the source and publishes
 a new manifest and tag with the declared payloads compressed, keeping the exact
