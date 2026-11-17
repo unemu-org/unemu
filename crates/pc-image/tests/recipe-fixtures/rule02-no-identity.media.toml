@@ -1,0 +1,5 @@
+# Rule 2: no identity table at all.
+recipe = "0.1"
+
+[title]
+title = "Demo"

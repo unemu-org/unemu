@@ -1,557 +1,1951 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "unemupc recipe 0.1: Mediafile, Firmwarefile or work file",
-  "description": "The shape of recipes.md section 6 (recipe = \"0.1\"), experimental. A TOML file is validated through the usual TOML-to-JSON mapping, in which a local date-time is a string. What this schema cannot say is listed in recipes.md section 4.6; upcli recipe check decides those rules. The ibm-pc vocabularies are included; other platforms get the shape only.",
-  "type": "object",
-  "if": {"properties": {"work": {"type": "object"}}, "required": ["work"]},
-  "then": {"$ref": "#/$defs/workFile"},
-  "else": {
-    "if": {"required": ["firmware"]},
-    "then": {"$ref": "#/$defs/firmwarefile"},
-    "else": {"$ref": "#/$defs/mediafile"}
-  },
   "$defs": {
-    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
-    "ref": {
-      "description": "A value name, or a value name and a member path after the first /.",
-      "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(/[^/\\\\\\u0000]+)*$"
-    },
-    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
-    "size": {"type": "integer", "minimum": 0},
-    "line": {
-      "type": "string",
-      "pattern": "^[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f][^\\u0000-\\u001f\\u007f]*$"
-    },
-    "line128": {"$ref": "#/$defs/line", "maxLength": 128},
-    "lines": {"type": "array", "items": {"$ref": "#/$defs/line"}},
-    "labels": {"type": "array", "items": {"$ref": "#/$defs/id"}, "uniqueItems": true},
-    "fileName": {
-      "allOf": [{"$ref": "#/$defs/line128"}, {"not": {"pattern": "[/\\\\]"}}, {"not": {"enum": [".", ".."]}}]
-    },
-    "dosName": {
-      "type": "string",
-      "pattern": "^[A-Z0-9!#$%&'()@^_`{}~-]{1,8}(\\.[A-Z0-9!#$%&'()@^_`{}~-]{1,3})?$"
-    },
-    "relPath": {
-      "type": "string",
-      "pattern": "^[^/\\\\\\u0000]+(/[^/\\\\\\u0000]+)*$",
-      "not": {"anyOf": [{"pattern": "(^|/)\\.\\.?(/|$)"}, {"pattern": "^[A-Za-z]:"}]}
-    },
-    "localTime": {
-      "description": "A local date-time with even seconds, years 1980 to 2107 (FAT and zip). TOML writes it unquoted; the JSON mapping makes it a string.",
-      "type": "string",
-      "pattern": "^(198[0-9]|199[0-9]|20[0-9][0-9]|210[0-7])-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][02468]$"
-    },
-    "identity": {
-      "type": "object",
+    "attachment.any": {
       "additionalProperties": false,
-      "required": ["name", "platform", "revision"],
       "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "extra": {
+          "items": {
+            "$ref": "#/$defs/extra.any"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "documentation"
+          ]
+        },
+        "title": {
+          "$ref": "#/$defs/line128"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "kind",
+        "extra"
+      ],
+      "type": "object"
+    },
+    "attachment.ibm-pc": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "extra": {
+          "items": {
+            "$ref": "#/$defs/extra.ibm-pc"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "documentation"
+          ]
+        },
+        "title": {
+          "$ref": "#/$defs/line128"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "kind",
+        "extra"
+      ],
+      "type": "object"
+    },
+    "crc32": {
+      "description": "8 lower-case hexadecimal digits",
+      "pattern": "^[0-9a-f]{8}$",
+      "type": "string"
+    },
+    "date": {
+      "description": "a calendar date YYYY-MM-DD",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$",
+      "type": "string"
+    },
+    "db-id": {
+      "additionalProperties": false,
+      "properties": {
+        "db": {
+          "enum": [
+            "no-intro",
+            "redump",
+            "tosec",
+            "mame"
+          ]
+        },
         "name": {
-          "type": "string",
-          "maxLength": 255,
-          "pattern": "^[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*(/[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*){3}$"
+          "$ref": "#/$defs/line"
         },
-        "platform": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
-        "release": {
-          "type": "string",
-          "pattern": "^[a-z0-9]+([._][a-z0-9]+)*(-[a-z0-9]+([._][a-z0-9]+)*)*$",
-          "not": {"pattern": "(^|-)r[0-9]+(-|$)"}
-        },
-        "revision": {"type": "integer", "minimum": 1},
-        "digest": {"$ref": "#/$defs/digest"},
-        "min_app_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"}
-      }
-    },
-    "softwarePlatform": {
-      "enum": ["DOS", "Windows 3.x", "Windows 9x", "CP/M", "MSX", "ZX Spectrum", "C64", "Atari 8-bit", "Atari ST", "other"]
-    },
-    "players": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["min", "max"],
-      "properties": {"min": {"type": "integer", "minimum": 1}, "max": {"type": "integer", "minimum": 1}}
-    },
-    "title": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "title": {"$ref": "#/$defs/line128"},
-        "sort_title": {"$ref": "#/$defs/line128"},
-        "series": {"$ref": "#/$defs/line128"},
-        "version": {"$ref": "#/$defs/line128"},
-        "edition": {"$ref": "#/$defs/line128"},
-        "source_media": {"$ref": "#/$defs/line"},
-        "description": {"type": "string", "minLength": 1},
-        "requirements": {"type": "string", "minLength": 1},
-        "year": {"type": "integer", "minimum": 1, "maximum": 9999},
-        "publishers": {"$ref": "#/$defs/lines"},
-        "developers": {"$ref": "#/$defs/lines"},
-        "genres": {"$ref": "#/$defs/lines"},
-        "languages": {"$ref": "#/$defs/lines"},
-        "regions": {"$ref": "#/$defs/lines"},
-        "software_platform": {"$ref": "#/$defs/softwarePlatform"},
-        "players": {"$ref": "#/$defs/players"},
-        "labels": {"$ref": "#/$defs/labels"}
-      }
-    },
-    "workTitle": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "title": {"$ref": "#/$defs/line128"},
-        "sort_title": {"$ref": "#/$defs/line128"},
-        "series": {"$ref": "#/$defs/line128"},
-        "software_platform": {"$ref": "#/$defs/softwarePlatform"},
-        "players": {"$ref": "#/$defs/players"},
-        "publishers": {"$ref": "#/$defs/lines"},
-        "developers": {"$ref": "#/$defs/lines"},
-        "genres": {"$ref": "#/$defs/lines"},
-        "labels": {"$ref": "#/$defs/labels"},
-        "synopsis": {"type": "string", "minLength": 1}
-      }
-    },
-    "ids": {
-      "type": "object",
-      "propertyNames": {"enum": ["wikidata", "mobygames", "igdb"]},
-      "additionalProperties": {"$ref": "#/$defs/line"}
-    },
-    "needValue": {
-      "oneOf": [
-        {"type": "string", "minLength": 1},
-        {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {"type": "string", "minLength": 1}
+        "set": {
+          "$ref": "#/$defs/line"
         }
-      ]
-    },
-    "needs": {
-      "type": "object",
-      "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"},
-      "additionalProperties": {"$ref": "#/$defs/needValue"}
-    },
-    "ibmPcNeeds": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "cpu": {"$ref": "#/$defs/ibmPcCpu"},
-        "fpu": {"$ref": "#/$defs/ibmPcFpu"},
-        "video": {"$ref": "#/$defs/ibmPcVideo"},
-        "sound": {"$ref": "#/$defs/ibmPcSound"},
-        "memory": {"$ref": "#/$defs/quantity"},
-        "ems": {"$ref": "#/$defs/quantity"},
-        "xms": {"$ref": "#/$defs/quantity"},
-        "input": {"$ref": "#/$defs/ibmPcInput"}
-      }
-    },
-    "quantity": {
-      "$ref": "#/$defs/oneOrMore",
-      "items": {"$ref": "#/$defs/quantityValue"},
-      "if": {"type": "string"},
-      "then": {"$ref": "#/$defs/quantityValue"}
-    },
-    "quantityValue": {"type": "string", "pattern": "^[0-9]+[KM]$"},
-    "oneOrMore": {"anyOf": [{"type": "string"}, {"type": "array", "minItems": 1, "uniqueItems": true}]},
-    "ibmPcCpu": {
-      "$ref": "#/$defs/oneOrMore",
-      "items": {"$ref": "#/$defs/ibmPcCpuValue"},
-      "if": {"type": "string"},
-      "then": {"$ref": "#/$defs/ibmPcCpuValue"}
-    },
-    "ibmPcCpuValue": {"type": "string", "pattern": "^(8088|286|386|486|pentium)\\+?$"},
-    "ibmPcFpu": {
-      "$ref": "#/$defs/oneOrMore",
-      "items": {"enum": ["none", "287", "387"]},
-      "if": {"type": "string"},
-      "then": {"enum": ["none", "287", "387"]}
-    },
-    "ibmPcVideo": {
-      "$ref": "#/$defs/oneOrMore",
-      "items": {"enum": ["mda", "hercules", "cga", "ega", "mcga", "vga", "svga", "none"]},
-      "if": {"type": "string"},
-      "then": {"enum": ["mda", "hercules", "cga", "ega", "mcga", "vga", "svga", "none"]}
-    },
-    "ibmPcSound": {
-      "$ref": "#/$defs/oneOrMore",
-      "items": {"enum": ["pc-speaker", "tandy", "adlib", "sb", "sbpro", "sb16", "gus", "mt32", "none"]},
-      "if": {"type": "string"},
-      "then": {"enum": ["pc-speaker", "tandy", "adlib", "sb", "sbpro", "sb16", "gus", "mt32", "none"]}
-    },
-    "ibmPcInput": {
-      "$ref": "#/$defs/oneOrMore",
-      "items": {"enum": ["mouse", "joystick", "none"]},
-      "if": {"type": "string"},
-      "then": {"enum": ["mouse", "joystick", "none"]}
-    },
-    "dbId": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["db", "set", "name"],
-      "properties": {
-        "db": {"enum": ["no-intro", "redump", "tosec", "mame"]},
-        "set": {"$ref": "#/$defs/line"},
-        "name": {"$ref": "#/$defs/line"}
-      }
-    },
-    "fileInput": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["name", "size", "sha256"],
-      "properties": {
-        "name": {"$ref": "#/$defs/fileName"},
-        "size": {"$ref": "#/$defs/size"},
-        "sha256": {"$ref": "#/$defs/sha256"},
-        "names": {"$ref": "#/$defs/lines"},
-        "crc32": {"type": "string", "pattern": "^[0-9a-f]{8}$"},
-        "md5": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
-        "sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-        "ids": {"type": "array", "items": {"$ref": "#/$defs/dbId"}},
-        "urls": {"type": "array", "items": {"type": "string", "pattern": "^https://\\S+$"}},
-        "bundle": {"type": "boolean"},
-        "disclosable": {"type": "boolean"}
       },
-      "allOf": [
-        {
-          "if": {"properties": {"bundle": {"const": true}}, "required": ["bundle"]},
-          "then": {"properties": {"size": {"maximum": 1048576}}}
+      "required": [
+        "db",
+        "set",
+        "name"
+      ],
+      "type": "object"
+    },
+    "digest": {
+      "description": "sha256: and 64 lower-case hexadecimal digits",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "extra.any": {
+      "additionalProperties": false,
+      "properties": {
+        "dos_name": {
+          "minLength": 1,
+          "type": "string"
         },
-        {
-          "if": {"properties": {"disclosable": {"const": true}}, "required": ["disclosable"]},
-          "then": {"properties": {"size": {"maximum": 255}}}
+        "file_name": {
+          "$ref": "#/$defs/file-name"
+        },
+        "from": {
+          "$ref": "#/$defs/reference"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "document",
+            "archive",
+            "executable",
+            "other"
+          ]
         }
-      ]
-    },
-    "fileSetEntry": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["path", "size", "sha256"],
-      "properties": {
-        "path": {"$ref": "#/$defs/relPath"},
-        "size": {"$ref": "#/$defs/size"},
-        "sha256": {"$ref": "#/$defs/sha256"},
-        "time": {"$ref": "#/$defs/localTime"},
-        "disclosable": {"type": "boolean"}
       },
-      "if": {"properties": {"disclosable": {"const": true}}, "required": ["disclosable"]},
-      "then": {"properties": {"size": {"maximum": 255}}}
+      "required": [
+        "id",
+        "file_name",
+        "kind",
+        "from"
+      ],
+      "type": "object"
     },
-    "fileSetInput": {
-      "type": "object",
+    "extra.ibm-pc": {
       "additionalProperties": false,
-      "required": ["name", "files"],
       "properties": {
-        "name": {"$ref": "#/$defs/fileName"},
-        "files": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 100000,
-          "items": {"$ref": "#/$defs/fileSetEntry"}
+        "dos_name": {
+          "minLength": 1,
+          "type": "string"
         },
-        "names": {"$ref": "#/$defs/lines"},
-        "ids": {"type": "array", "items": {"$ref": "#/$defs/dbId"}},
-        "urls": {"type": "array", "items": {"type": "string", "pattern": "^https://\\S+$"}}
-      }
-    },
-    "inputs": {
-      "type": "object",
-      "maxProperties": 4096,
-      "propertyNames": {"$ref": "#/$defs/id"},
-      "additionalProperties": {"oneOf": [{"$ref": "#/$defs/fileInput"}, {"$ref": "#/$defs/fileSetInput"}]}
-    },
-    "member": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["path"],
-      "properties": {
-        "path": {"$ref": "#/$defs/relPath"},
-        "size": {"$ref": "#/$defs/size"},
-        "sha256": {"$ref": "#/$defs/sha256"},
-        "time": {"$ref": "#/$defs/localTime"}
-      }
-    },
-    "unpackStep": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "unpack", "format", "members"],
-      "properties": {
-        "id": {"$ref": "#/$defs/id"},
-        "unpack": {"$ref": "#/$defs/ref"},
-        "format": {"const": "zip"},
-        "members": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/member"}},
-        "complete": {"type": "boolean"}
-      }
-    },
-    "fatStep": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "fat", "format"],
-      "properties": {
-        "id": {"$ref": "#/$defs/id"},
-        "fat": {"$ref": "#/$defs/ref"},
-        "format": {"type": "string", "minLength": 1},
-        "label": {"type": "string", "pattern": "^[A-Z0-9!#$%&'()@^_`{}~ -]{1,11}$"},
-        "serial": {"type": "integer", "minimum": 0, "maximum": 4294967295},
-        "order": {"enum": ["name", "listed"]},
-        "time": {"$ref": "#/$defs/localTime"},
-        "volumes": {"type": "integer", "minimum": 2}
-      }
-    },
-    "textStep": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "text", "eol"],
-      "properties": {"id": {"$ref": "#/$defs/id"}, "text": {"$ref": "#/$defs/ref"}, "eol": {"const": "crlf"}}
-    },
-    "steps": {
-      "type": "array",
-      "maxItems": 64,
-      "items": {
-        "oneOf": [{"$ref": "#/$defs/unpackStep"}, {"$ref": "#/$defs/fatStep"}, {"$ref": "#/$defs/textStep"}]
-      }
-    },
-    "medium": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "label", "format", "from"],
-      "properties": {
-        "id": {"$ref": "#/$defs/id"},
-        "label": {"$ref": "#/$defs/line128"},
-        "format": {"type": "string", "minLength": 1},
-        "file_name": {"$ref": "#/$defs/fileName"},
-        "from": {"$ref": "#/$defs/ref"}
-      }
-    },
-    "part": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["lane", "from"],
-      "properties": {
-        "position": {"$ref": "#/$defs/line"},
-        "part_number": {"$ref": "#/$defs/line"},
-        "lane": {"type": "string", "minLength": 1},
-        "offset": {"type": "integer", "minimum": 0},
-        "from": {"$ref": "#/$defs/ref"}
-      }
-    },
-    "rom": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "role"],
-      "properties": {
-        "id": {"$ref": "#/$defs/id"},
-        "role": {"type": "string", "minLength": 1},
-        "catalogue_id": {"$ref": "#/$defs/id"},
-        "from": {"$ref": "#/$defs/ref"},
-        "parts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/part"}},
-        "size": {"type": "integer", "minimum": 1},
-        "sha256": {"$ref": "#/$defs/sha256"}
+        "file_name": {
+          "$ref": "#/$defs/file-name"
+        },
+        "from": {
+          "$ref": "#/$defs/reference"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "document",
+            "archive",
+            "executable",
+            "other"
+          ]
+        }
       },
-      "oneOf": [
-        {
-          "required": ["from"],
-          "not": {"anyOf": [{"required": ["parts"]}, {"required": ["size"]}, {"required": ["sha256"]}]}
+      "required": [
+        "id",
+        "file_name",
+        "kind",
+        "from"
+      ],
+      "type": "object"
+    },
+    "fat-step.any": {
+      "additionalProperties": false,
+      "properties": {
+        "fat": {
+          "$ref": "#/$defs/reference"
         },
-        {"required": ["parts", "size", "sha256"], "not": {"required": ["from"]}}
-      ]
-    },
-    "extra": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "file_name", "kind", "from"],
-      "properties": {
-        "id": {"$ref": "#/$defs/id"},
-        "file_name": {"$ref": "#/$defs/fileName"},
-        "kind": {"enum": ["document", "archive", "executable", "other"]},
-        "dos_name": {"$ref": "#/$defs/dosName"},
-        "from": {"$ref": "#/$defs/ref"}
-      }
-    },
-    "attachment": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "title", "kind", "extra"],
-      "properties": {
-        "id": {"$ref": "#/$defs/id"},
-        "title": {"$ref": "#/$defs/line128"},
-        "kind": {"const": "documentation"},
-        "digest": {"$ref": "#/$defs/digest"},
-        "extra": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/extra"}}
-      }
-    },
-    "license": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["expression"],
-      "properties": {
-        "expression": {"type": "string", "maxLength": 256, "pattern": "^[A-Za-z0-9.()+ -]+$"},
-        "terms": {"$ref": "#/$defs/id"},
-        "source": {"$ref": "#/$defs/id"}
-      }
-    },
-    "mediafile": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["recipe", "media", "medium"],
-      "properties": {
-        "recipe": {"const": "0.1"},
-        "work": {"$ref": "#/$defs/id"},
-        "media": {"$ref": "#/$defs/identity"},
-        "title": {"$ref": "#/$defs/title"},
-        "license": {
-          "$ref": "#/$defs/license",
-          "required": ["terms"],
-          "if": {"properties": {"expression": {"not": {"pattern": "^LicenseRef-[A-Za-z0-9.-]+$"}}}},
-          "then": {"required": ["source"]}
+        "format": {
+          "minLength": 1,
+          "type": "string"
         },
-        "needs": {"$ref": "#/$defs/needs"},
-        "ids": {"$ref": "#/$defs/ids"},
-        "input": {"$ref": "#/$defs/inputs"},
-        "step": {"$ref": "#/$defs/steps"},
-        "medium": {"type": "array", "minItems": 1, "maxItems": 256, "items": {"$ref": "#/$defs/medium"}},
-        "extra": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/extra"}},
-        "attachment": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/attachment"}}
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "$ref": "#/$defs/line"
+        },
+        "order": {
+          "enum": [
+            "name",
+            "listed"
+          ]
+        },
+        "serial": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "time": {
+          "$ref": "#/$defs/local-time"
+        },
+        "volumes": {
+          "maximum": 9999,
+          "minimum": 2,
+          "type": "integer"
+        }
       },
-      "allOf": [
-        {
-          "if": {"not": {"required": ["work"]}},
-          "then": {"required": ["title"], "properties": {"title": {"required": ["title"]}}}
+      "required": [
+        "id",
+        "fat",
+        "format"
+      ],
+      "type": "object"
+    },
+    "fat-step.ibm-pc": {
+      "additionalProperties": false,
+      "properties": {
+        "fat": {
+          "$ref": "#/$defs/reference"
         },
-        {
-          "if": {"not": {"required": ["license"]}},
-          "then": {"properties": {"media": {"properties": {"name": {"not": {"pattern": "^unemu/"}}}}}}
+        "format": {
+          "enum": [
+            "1.44M",
+            "1.2M",
+            "720K",
+            "360K"
+          ]
         },
-        {
-          "properties": {"media": {"properties": {"name": {"pattern": "^[^/]+[/]media[/][^/]+[/][^/]+$"}}}}
+        "id": {
+          "$ref": "#/$defs/id"
         },
-        {
-          "if": {"properties": {"media": {"properties": {"platform": {"const": "ibm-pc"}}}}},
-          "then": {
-            "properties": {
-              "media": {"properties": {"name": {"pattern": "^[^/]+[/]media[/]ibm-pc[/]"}}},
-              "needs": {"$ref": "#/$defs/ibmPcNeeds"},
-              "medium": {
-                "items": {"properties": {"format": {"enum": ["1.44M", "1.2M", "720K", "360K", "iso-2048"]}}}
-              },
-              "step": {
-                "items": {
-                  "if": {"required": ["fat"]},
-                  "then": {"properties": {"format": {"enum": ["1.44M", "1.2M", "720K", "360K"]}}}
-                }
-              }
-            }
+        "label": {
+          "$ref": "#/$defs/line"
+        },
+        "order": {
+          "enum": [
+            "name",
+            "listed"
+          ]
+        },
+        "serial": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "time": {
+          "$ref": "#/$defs/local-time"
+        },
+        "volumes": {
+          "maximum": 9999,
+          "minimum": 2,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "fat",
+        "format"
+      ],
+      "type": "object"
+    },
+    "file-input": {
+      "additionalProperties": false,
+      "properties": {
+        "bundle": {
+          "type": "boolean"
+        },
+        "crc32": {
+          "$ref": "#/$defs/crc32"
+        },
+        "disclosable": {
+          "type": "boolean"
+        },
+        "ids": {
+          "items": {
+            "$ref": "#/$defs/db-id"
+          },
+          "type": "array"
+        },
+        "md5": {
+          "$ref": "#/$defs/md5"
+        },
+        "name": {
+          "$ref": "#/$defs/file-name"
+        },
+        "names": {
+          "items": {
+            "$ref": "#/$defs/line"
+          },
+          "type": "array"
+        },
+        "sha1": {
+          "$ref": "#/$defs/sha1"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "urls": {
+          "items": {
+            "$ref": "#/$defs/url"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "size",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "file-name": {
+      "description": "a file name of at most 128 characters, without '/' or '\\', not '.' or '..'",
+      "maxLength": 128,
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "[/\\\\]"
+          },
+          {
+            "enum": [
+              ".",
+              ".."
+            ]
           }
+        ]
+      },
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f][^\\u0000-\\u001f\\u007f]*$",
+      "type": "string"
+    },
+    "file-set-entry": {
+      "additionalProperties": false,
+      "properties": {
+        "disclosable": {
+          "type": "boolean"
+        },
+        "path": {
+          "$ref": "#/$defs/path"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "time": {
+          "$ref": "#/$defs/local-time"
         }
-      ]
+      },
+      "required": [
+        "path",
+        "size",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "file-set-input": {
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "items": {
+            "$ref": "#/$defs/file-set-entry"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "ids": {
+          "items": {
+            "$ref": "#/$defs/db-id"
+          },
+          "type": "array"
+        },
+        "name": {
+          "$ref": "#/$defs/file-name"
+        },
+        "names": {
+          "items": {
+            "$ref": "#/$defs/line"
+          },
+          "type": "array"
+        },
+        "urls": {
+          "items": {
+            "$ref": "#/$defs/url"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "files"
+      ],
+      "type": "object"
     },
     "firmwarefile": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["recipe", "firmware", "package", "rom"],
-      "properties": {
-        "recipe": {"const": "0.1"},
-        "firmware": {"$ref": "#/$defs/identity"},
-        "package": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["title"],
-          "properties": {
-            "title": {"$ref": "#/$defs/line128"},
-            "vendor": {"$ref": "#/$defs/line"},
-            "version": {"$ref": "#/$defs/line"},
-            "date": {"type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"},
-            "description": {"type": "string", "minLength": 1},
-            "notes": {"type": "string", "minLength": 1},
-            "labels": {"$ref": "#/$defs/labels"},
-            "fits": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "boards": {"type": "array", "items": {"$ref": "#/$defs/id"}},
-                "machine_classes": {"type": "array", "items": {"$ref": "#/$defs/id"}}
+      "else": {
+        "$ref": "#/$defs/firmwarefile.any"
+      },
+      "if": {
+        "properties": {
+          "firmware": {
+            "properties": {
+              "platform": {
+                "const": "ibm-pc"
               }
-            }
+            },
+            "required": [
+              "platform"
+            ]
           }
+        },
+        "required": [
+          "firmware"
+        ]
+      },
+      "then": {
+        "$ref": "#/$defs/firmwarefile.ibm-pc"
+      }
+    },
+    "firmwarefile.any": {
+      "additionalProperties": false,
+      "properties": {
+        "attachment": {
+          "items": {
+            "$ref": "#/$defs/attachment.any"
+          },
+          "type": "array"
+        },
+        "extra": {
+          "items": {
+            "$ref": "#/$defs/extra.any"
+          },
+          "type": "array"
+        },
+        "firmware": {
+          "$ref": "#/$defs/identity"
+        },
+        "ids": {
+          "additionalProperties": {
+            "$ref": "#/$defs/line128"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]{0,31}$",
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "input": {
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/file-set-input"
+              },
+              {
+                "$ref": "#/$defs/file-input"
+              }
+            ]
+          },
+          "maxProperties": 4096,
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "type": "object"
         },
         "license": {
-          "$ref": "#/$defs/license",
-          "if": {"properties": {"expression": {"pattern": "(^|[ (])(GPL|LGPL|AGPL|MPL)-"}}},
-          "then": {"required": ["source"]}
+          "$ref": "#/$defs/license"
         },
-        "ids": {"$ref": "#/$defs/ids"},
-        "input": {"$ref": "#/$defs/inputs"},
-        "step": {"$ref": "#/$defs/steps"},
-        "rom": {"type": "array", "minItems": 1, "maxItems": 256, "items": {"$ref": "#/$defs/rom"}},
-        "extra": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/extra"}},
-        "attachment": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/attachment"}}
-      },
-      "allOf": [
-        {
-          "if": {"not": {"required": ["license"]}},
-          "then": {"properties": {"firmware": {"properties": {"name": {"not": {"pattern": "^unemu/"}}}}}}
+        "package": {
+          "$ref": "#/$defs/package.any"
         },
-        {
-          "properties": {"firmware": {"properties": {"name": {"pattern": "^[^/]+[/]firmware[/][^/]+[/][^/]+$"}}}}
+        "recipe": {
+          "enum": [
+            "0.1"
+          ]
         },
-        {
-          "if": {"properties": {"firmware": {"properties": {"platform": {"const": "ibm-pc"}}}}},
-          "then": {
-            "properties": {
-              "firmware": {"properties": {"name": {"pattern": "^[^/]+[/]firmware[/]ibm-pc[/]"}}},
-              "package": {
-                "properties": {
-                  "fits": {
-                    "properties": {
-                      "boards": {
-                        "items": {
-                          "enum": ["ibm-5170", "ibm-5150", "ibm-5160", "compaq-deskpro", "tandy-1000", "generic-386-isa", "i440fx-piix3", "i440bx-piix4"]
-                        }
-                      },
-                      "machine_classes": {"items": {"enum": ["at", "xt"]}}
-                    }
-                  }
-                }
+        "rom": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/rom-parts.any"
               },
-              "rom": {
-                "items": {
-                  "properties": {
-                    "role": {
-                      "enum": ["system-bios", "option-rom", "video-bios", "keyboard-controller", "other"]
-                    },
-                    "parts": {"items": {"properties": {"lane": {"enum": ["even", "odd"]}}}}
-                  }
-                }
-              },
-              "step": {
-                "items": {
-                  "if": {"required": ["fat"]},
-                  "then": {"properties": {"format": {"enum": ["1.44M", "1.2M", "720K", "360K"]}}}
-                }
+              {
+                "$ref": "#/$defs/rom-file.any"
               }
-            }
-          }
+            ]
+          },
+          "type": "array"
+        },
+        "step": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/unpack-step"
+              },
+              {
+                "$ref": "#/$defs/fat-step.any"
+              },
+              {
+                "$ref": "#/$defs/text-step"
+              }
+            ]
+          },
+          "type": "array"
         }
+      },
+      "required": [
+        "recipe",
+        "firmware"
+      ],
+      "type": "object"
+    },
+    "firmwarefile.ibm-pc": {
+      "additionalProperties": false,
+      "properties": {
+        "attachment": {
+          "items": {
+            "$ref": "#/$defs/attachment.ibm-pc"
+          },
+          "type": "array"
+        },
+        "extra": {
+          "items": {
+            "$ref": "#/$defs/extra.ibm-pc"
+          },
+          "type": "array"
+        },
+        "firmware": {
+          "$ref": "#/$defs/identity"
+        },
+        "ids": {
+          "additionalProperties": {
+            "$ref": "#/$defs/line128"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]{0,31}$",
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "input": {
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/file-set-input"
+              },
+              {
+                "$ref": "#/$defs/file-input"
+              }
+            ]
+          },
+          "maxProperties": 4096,
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "type": "object"
+        },
+        "license": {
+          "$ref": "#/$defs/license"
+        },
+        "package": {
+          "$ref": "#/$defs/package.ibm-pc"
+        },
+        "recipe": {
+          "enum": [
+            "0.1"
+          ]
+        },
+        "rom": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/rom-parts.ibm-pc"
+              },
+              {
+                "$ref": "#/$defs/rom-file.ibm-pc"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "step": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/unpack-step"
+              },
+              {
+                "$ref": "#/$defs/fat-step.ibm-pc"
+              },
+              {
+                "$ref": "#/$defs/text-step"
+              }
+            ]
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "recipe",
+        "firmware"
+      ],
+      "type": "object"
+    },
+    "fits.any": {
+      "additionalProperties": false,
+      "properties": {
+        "boards": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "machine_classes": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "fits.ibm-pc": {
+      "additionalProperties": false,
+      "properties": {
+        "boards": {
+          "items": {
+            "enum": [
+              "ibm-5170",
+              "ibm-5150",
+              "ibm-5160",
+              "compaq-deskpro",
+              "tandy-1000",
+              "generic-386-isa",
+              "i440fx-piix3",
+              "i440bx-piix4"
+            ]
+          },
+          "type": "array"
+        },
+        "machine_classes": {
+          "items": {
+            "enum": [
+              "at",
+              "xt"
+            ]
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "id": {
+      "description": "an id: lower-case letters, digits, '.', '_' and '-', starting with a letter or digit, at most 64 characters",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+      "type": "string"
+    },
+    "identity": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "min_app_version": {
+          "$ref": "#/$defs/version"
+        },
+        "name": {
+          "$ref": "#/$defs/repository"
+        },
+        "platform": {
+          "$ref": "#/$defs/platform"
+        },
+        "release": {
+          "$ref": "#/$defs/release"
+        },
+        "revision": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "platform",
+        "revision"
+      ],
+      "type": "object"
+    },
+    "license": {
+      "additionalProperties": false,
+      "properties": {
+        "expression": {
+          "$ref": "#/$defs/spdx"
+        },
+        "source": {
+          "$ref": "#/$defs/id"
+        },
+        "terms": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "required": [
+        "expression"
+      ],
+      "type": "object"
+    },
+    "line": {
+      "description": "one line that is not blank, without control characters",
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f][^\\u0000-\\u001f\\u007f]*$",
+      "type": "string"
+    },
+    "line128": {
+      "description": "one line of at most 128 characters that is not blank, without control characters",
+      "maxLength": 128,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f][^\\u0000-\\u001f\\u007f]*$",
+      "type": "string"
+    },
+    "local-time": {
+      "description": "a local date-time with even seconds, years 1980 to 2107 (FAT and zip); TOML writes it unquoted, the JSON mapping makes it a string",
+      "pattern": "^(198[0-9]|199[0-9]|20[0-9][0-9]|210[0-7])-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][02468]$",
+      "type": "string"
+    },
+    "md5": {
+      "description": "32 lower-case hexadecimal digits",
+      "pattern": "^[0-9a-f]{32}$",
+      "type": "string"
+    },
+    "mediafile": {
+      "else": {
+        "$ref": "#/$defs/mediafile.any"
+      },
+      "if": {
+        "properties": {
+          "media": {
+            "properties": {
+              "platform": {
+                "const": "ibm-pc"
+              }
+            },
+            "required": [
+              "platform"
+            ]
+          }
+        },
+        "required": [
+          "media"
+        ]
+      },
+      "then": {
+        "$ref": "#/$defs/mediafile.ibm-pc"
+      }
+    },
+    "mediafile.any": {
+      "additionalProperties": false,
+      "properties": {
+        "attachment": {
+          "items": {
+            "$ref": "#/$defs/attachment.any"
+          },
+          "type": "array"
+        },
+        "extra": {
+          "items": {
+            "$ref": "#/$defs/extra.any"
+          },
+          "type": "array"
+        },
+        "ids": {
+          "additionalProperties": {
+            "$ref": "#/$defs/line128"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]{0,31}$",
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "input": {
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/file-set-input"
+              },
+              {
+                "$ref": "#/$defs/file-input"
+              }
+            ]
+          },
+          "maxProperties": 4096,
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "type": "object"
+        },
+        "license": {
+          "$ref": "#/$defs/license"
+        },
+        "media": {
+          "$ref": "#/$defs/identity"
+        },
+        "medium": {
+          "items": {
+            "$ref": "#/$defs/medium.any"
+          },
+          "type": "array"
+        },
+        "needs": {
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9+._-]{0,31}$",
+                "type": "string"
+              },
+              {
+                "items": {
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9+._-]{0,31}$",
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              }
+            ]
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]{0,31}$",
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "recipe": {
+          "enum": [
+            "0.1"
+          ]
+        },
+        "step": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/unpack-step"
+              },
+              {
+                "$ref": "#/$defs/fat-step.any"
+              },
+              {
+                "$ref": "#/$defs/text-step"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "title": {
+          "$ref": "#/$defs/title.any"
+        },
+        "work": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "required": [
+        "recipe",
+        "media"
+      ],
+      "type": "object"
+    },
+    "mediafile.ibm-pc": {
+      "additionalProperties": false,
+      "properties": {
+        "attachment": {
+          "items": {
+            "$ref": "#/$defs/attachment.ibm-pc"
+          },
+          "type": "array"
+        },
+        "extra": {
+          "items": {
+            "$ref": "#/$defs/extra.ibm-pc"
+          },
+          "type": "array"
+        },
+        "ids": {
+          "additionalProperties": {
+            "$ref": "#/$defs/line128"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]{0,31}$",
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "input": {
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/file-set-input"
+              },
+              {
+                "$ref": "#/$defs/file-input"
+              }
+            ]
+          },
+          "maxProperties": 4096,
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "type": "object"
+        },
+        "license": {
+          "$ref": "#/$defs/license"
+        },
+        "media": {
+          "$ref": "#/$defs/identity"
+        },
+        "medium": {
+          "items": {
+            "$ref": "#/$defs/medium.ibm-pc"
+          },
+          "type": "array"
+        },
+        "needs": {
+          "additionalProperties": false,
+          "properties": {
+            "cpu": {
+              "oneOf": [
+                {
+                  "pattern": "^(8088|286|386|486|pentium)\\+?$",
+                  "type": "string"
+                },
+                {
+                  "items": {
+                    "pattern": "^(8088|286|386|486|pentium)\\+?$",
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              ]
+            },
+            "ems": {
+              "oneOf": [
+                {
+                  "pattern": "^[1-9][0-9]{0,6}[KM]$",
+                  "type": "string"
+                },
+                {
+                  "items": {
+                    "pattern": "^[1-9][0-9]{0,6}[KM]$",
+                    "type": "string"
+                  },
+                  "maxItems": 1,
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              ]
+            },
+            "fpu": {
+              "oneOf": [
+                {
+                  "enum": [
+                    "none",
+                    "287",
+                    "387"
+                  ]
+                },
+                {
+                  "items": {
+                    "enum": [
+                      "none",
+                      "287",
+                      "387"
+                    ]
+                  },
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              ]
+            },
+            "input": {
+              "oneOf": [
+                {
+                  "enum": [
+                    "mouse",
+                    "joystick",
+                    "none"
+                  ]
+                },
+                {
+                  "items": {
+                    "enum": [
+                      "mouse",
+                      "joystick",
+                      "none"
+                    ]
+                  },
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              ]
+            },
+            "memory": {
+              "oneOf": [
+                {
+                  "pattern": "^[1-9][0-9]{0,6}[KM]$",
+                  "type": "string"
+                },
+                {
+                  "items": {
+                    "pattern": "^[1-9][0-9]{0,6}[KM]$",
+                    "type": "string"
+                  },
+                  "maxItems": 1,
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              ]
+            },
+            "sound": {
+              "oneOf": [
+                {
+                  "enum": [
+                    "pc-speaker",
+                    "tandy",
+                    "adlib",
+                    "sb",
+                    "sbpro",
+                    "sb16",
+                    "gus",
+                    "mt32",
+                    "none"
+                  ]
+                },
+                {
+                  "items": {
+                    "enum": [
+                      "pc-speaker",
+                      "tandy",
+                      "adlib",
+                      "sb",
+                      "sbpro",
+                      "sb16",
+                      "gus",
+                      "mt32",
+                      "none"
+                    ]
+                  },
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              ]
+            },
+            "video": {
+              "oneOf": [
+                {
+                  "enum": [
+                    "mda",
+                    "hercules",
+                    "cga",
+                    "ega",
+                    "mcga",
+                    "vga",
+                    "svga",
+                    "none"
+                  ]
+                },
+                {
+                  "items": {
+                    "enum": [
+                      "mda",
+                      "hercules",
+                      "cga",
+                      "ega",
+                      "mcga",
+                      "vga",
+                      "svga",
+                      "none"
+                    ]
+                  },
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              ]
+            },
+            "xms": {
+              "oneOf": [
+                {
+                  "pattern": "^[1-9][0-9]{0,6}[KM]$",
+                  "type": "string"
+                },
+                {
+                  "items": {
+                    "pattern": "^[1-9][0-9]{0,6}[KM]$",
+                    "type": "string"
+                  },
+                  "maxItems": 1,
+                  "minItems": 1,
+                  "type": "array",
+                  "uniqueItems": true
+                }
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "recipe": {
+          "enum": [
+            "0.1"
+          ]
+        },
+        "step": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/unpack-step"
+              },
+              {
+                "$ref": "#/$defs/fat-step.ibm-pc"
+              },
+              {
+                "$ref": "#/$defs/text-step"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "title": {
+          "$ref": "#/$defs/title.ibm-pc"
+        },
+        "work": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "required": [
+        "recipe",
+        "media"
+      ],
+      "type": "object"
+    },
+    "medium.any": {
+      "additionalProperties": false,
+      "properties": {
+        "file_name": {
+          "$ref": "#/$defs/file-name"
+        },
+        "format": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "from": {
+          "$ref": "#/$defs/reference"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "$ref": "#/$defs/line128"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "format",
+        "from"
+      ],
+      "type": "object"
+    },
+    "medium.ibm-pc": {
+      "additionalProperties": false,
+      "properties": {
+        "file_name": {
+          "$ref": "#/$defs/file-name"
+        },
+        "format": {
+          "enum": [
+            "1.44M",
+            "1.2M",
+            "720K",
+            "360K",
+            "iso-2048"
+          ]
+        },
+        "from": {
+          "$ref": "#/$defs/reference"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "$ref": "#/$defs/line128"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "format",
+        "from"
+      ],
+      "type": "object"
+    },
+    "member": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/path"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "time": {
+          "$ref": "#/$defs/local-time"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "package.any": {
+      "additionalProperties": false,
+      "properties": {
+        "date": {
+          "$ref": "#/$defs/date"
+        },
+        "description": {
+          "$ref": "#/$defs/text"
+        },
+        "fits": {
+          "$ref": "#/$defs/fits.any"
+        },
+        "labels": {
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "type": "array"
+        },
+        "notes": {
+          "$ref": "#/$defs/text"
+        },
+        "title": {
+          "$ref": "#/$defs/line128"
+        },
+        "vendor": {
+          "$ref": "#/$defs/line"
+        },
+        "version": {
+          "$ref": "#/$defs/line"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    },
+    "package.ibm-pc": {
+      "additionalProperties": false,
+      "properties": {
+        "date": {
+          "$ref": "#/$defs/date"
+        },
+        "description": {
+          "$ref": "#/$defs/text"
+        },
+        "fits": {
+          "$ref": "#/$defs/fits.ibm-pc"
+        },
+        "labels": {
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "type": "array"
+        },
+        "notes": {
+          "$ref": "#/$defs/text"
+        },
+        "title": {
+          "$ref": "#/$defs/line128"
+        },
+        "vendor": {
+          "$ref": "#/$defs/line"
+        },
+        "version": {
+          "$ref": "#/$defs/line"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    },
+    "part.any": {
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/reference"
+        },
+        "lane": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "part_number": {
+          "$ref": "#/$defs/line"
+        },
+        "position": {
+          "$ref": "#/$defs/line"
+        }
+      },
+      "required": [
+        "lane",
+        "from"
+      ],
+      "type": "object"
+    },
+    "part.ibm-pc": {
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/reference"
+        },
+        "lane": {
+          "enum": [
+            "even",
+            "odd"
+          ]
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "part_number": {
+          "$ref": "#/$defs/line"
+        },
+        "position": {
+          "$ref": "#/$defs/line"
+        }
+      },
+      "required": [
+        "lane",
+        "from"
+      ],
+      "type": "object"
+    },
+    "path": {
+      "description": "a relative path with '/' separators, without empty, '.' or '..' parts, '\\' or a drive",
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "(^|/)\\.\\.?(/|$)"
+          },
+          {
+            "pattern": "^[A-Za-z]:"
+          }
+        ]
+      },
+      "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f]+(/[^/\\\\\\u0000-\\u001f\\u007f]+)*$",
+      "type": "string"
+    },
+    "platform": {
+      "description": "a platform id: lower-case letters and digits, then also '-', '_' and '.', at most 64 characters",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+      "type": "string"
+    },
+    "players": {
+      "additionalProperties": false,
+      "properties": {
+        "max": {
+          "maximum": 9999,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "min": {
+          "maximum": 9999,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "min",
+        "max"
+      ],
+      "type": "object"
+    },
+    "reference": {
+      "description": "a value name, optionally followed by '/' and a member path",
+      "not": {
+        "pattern": "/\\.\\.?(/|$)"
+      },
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(/[^/\\\\\\u0000-\\u001f\\u007f]+)*$",
+      "type": "string"
+    },
+    "release": {
+      "description": "a release of at most 107 characters: parts of lower-case letters and digits joined by '-', '.' or '_', none of them r followed by digits",
+      "maxLength": 107,
+      "not": {
+        "pattern": "(^|-)r[0-9]+(-|$)"
+      },
+      "pattern": "^[a-z0-9]+([._][a-z0-9]+)*(-[a-z0-9]+([._][a-z0-9]+)*)*$",
+      "type": "string"
+    },
+    "repository": {
+      "description": "a repository of four components in the OCI grammar, such as unemu/media/ibm-pc/freedos",
+      "maxLength": 255,
+      "pattern": "^[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*(/[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*){3}$",
+      "type": "string"
+    },
+    "rom-file.any": {
+      "additionalProperties": false,
+      "properties": {
+        "catalogue_id": {
+          "$ref": "#/$defs/id"
+        },
+        "from": {
+          "$ref": "#/$defs/reference"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "role": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "role",
+        "from"
+      ],
+      "type": "object"
+    },
+    "rom-file.ibm-pc": {
+      "additionalProperties": false,
+      "properties": {
+        "catalogue_id": {
+          "$ref": "#/$defs/id"
+        },
+        "from": {
+          "$ref": "#/$defs/reference"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "role": {
+          "enum": [
+            "system-bios",
+            "option-rom",
+            "video-bios",
+            "keyboard-controller",
+            "other"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "role",
+        "from"
+      ],
+      "type": "object"
+    },
+    "rom-parts.any": {
+      "additionalProperties": false,
+      "properties": {
+        "catalogue_id": {
+          "$ref": "#/$defs/id"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "parts": {
+          "items": {
+            "$ref": "#/$defs/part.any"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "role": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "role",
+        "parts",
+        "size",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "rom-parts.ibm-pc": {
+      "additionalProperties": false,
+      "properties": {
+        "catalogue_id": {
+          "$ref": "#/$defs/id"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "parts": {
+          "items": {
+            "$ref": "#/$defs/part.ibm-pc"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "role": {
+          "enum": [
+            "system-bios",
+            "option-rom",
+            "video-bios",
+            "keyboard-controller",
+            "other"
+          ]
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "role",
+        "parts",
+        "size",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "sha1": {
+      "description": "40 lower-case hexadecimal digits",
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "sha256": {
+      "description": "64 lower-case hexadecimal digits",
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "spdx": {
+      "description": "an SPDX licence expression",
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f][^\\u0000-\\u001f\\u007f]*$",
+      "type": "string"
+    },
+    "text": {
+      "description": "text that is not blank, without control characters other than line breaks",
+      "pattern": "^[^\\u0000-\\u0009\\u000b-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f][^\\u0000-\\u0009\\u000b-\\u001f\\u007f]*$",
+      "type": "string"
+    },
+    "text-step": {
+      "additionalProperties": false,
+      "properties": {
+        "eol": {
+          "enum": [
+            "crlf"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "text": {
+          "$ref": "#/$defs/reference"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "eol"
+      ],
+      "type": "object"
+    },
+    "title.any": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "$ref": "#/$defs/text"
+        },
+        "developers": {
+          "items": {
+            "$ref": "#/$defs/line"
+          },
+          "type": "array"
+        },
+        "edition": {
+          "$ref": "#/$defs/line128"
+        },
+        "genres": {
+          "items": {
+            "$ref": "#/$defs/line"
+          },
+          "type": "array"
+        },
+        "labels": {
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "type": "array"
+        },
+        "languages": {
+          "items": {
+            "$ref": "#/$defs/line"
+          },
+          "type": "array"
+        },
+        "players": {
+          "$ref": "#/$defs/players"
+        },
+        "publishers": {
+          "items": {
+            "$ref": "#/$defs/line"
+          },
+          "type": "array"
+        },
+        "regions": {
+          "items": {
+            "$ref": "#/$defs/line"
+          },
+          "type": "array"
+        },
+        "requirements": {
+          "$ref": "#/$defs/line"
+        },
+        "series": {
+          "$ref": "#/$defs/line128"
+        },
+        "software_platform": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sort_title": {
+          "$ref": "#/$defs/line128"
+        },
+        "source_media": {
+          "$ref": "#/$defs/line"
+        },
+        "title": {
+          "$ref": "#/$defs/line128"
+        },
+        "version": {
+          "$ref": "#/$defs/line128"
+        },
+        "year": {
+          "maximum": 9999,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "title.ibm-pc": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "$ref": "#/$defs/text"
+        },
+        "developers": {
+          "items": {
+            "$ref": "#/$defs/line"
+          },
+          "type": "array"
+        },
+        "edition": {
+          "$ref": "#/$defs/line128"
+        },
+        "genres": {
+          "items": {
+            "$ref": "#/$defs/line"
+          },
+          "type": "array"
+        },
+        "labels": {
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "type": "array"
+        },
+        "languages": {
+          "items": {
+            "$ref": "#/$defs/line"
+          },
+          "type": "array"
+        },
+        "players": {
+          "$ref": "#/$defs/players"
+        },
+        "publishers": {
+          "items": {
+            "$ref": "#/$defs/line"
+          },
+          "type": "array"
+        },
+        "regions": {
+          "items": {
+            "$ref": "#/$defs/line"
+          },
+          "type": "array"
+        },
+        "requirements": {
+          "$ref": "#/$defs/line"
+        },
+        "series": {
+          "$ref": "#/$defs/line128"
+        },
+        "software_platform": {
+          "enum": [
+            "DOS",
+            "Windows 3.x",
+            "Windows 9x",
+            "CP/M",
+            "other"
+          ]
+        },
+        "sort_title": {
+          "$ref": "#/$defs/line128"
+        },
+        "source_media": {
+          "$ref": "#/$defs/line"
+        },
+        "title": {
+          "$ref": "#/$defs/line128"
+        },
+        "version": {
+          "$ref": "#/$defs/line128"
+        },
+        "year": {
+          "maximum": 9999,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "unpack-step": {
+      "additionalProperties": false,
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "format": {
+          "enum": [
+            "zip"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "members": {
+          "items": {
+            "$ref": "#/$defs/member"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "unpack": {
+          "$ref": "#/$defs/reference"
+        }
+      },
+      "required": [
+        "id",
+        "unpack",
+        "format",
+        "members"
+      ],
+      "type": "object"
+    },
+    "url": {
+      "description": "an https URL without white space",
+      "pattern": "^https://[^\\s\\u0000-\\u001f\\u007f]+$",
+      "type": "string"
+    },
+    "version": {
+      "description": "a version X.Y.Z",
+      "pattern": "^[0-9]{1,9}\\.[0-9]{1,9}\\.[0-9]{1,9}$",
+      "type": "string"
+    },
+    "work": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "work-file.any": {
+      "additionalProperties": false,
+      "properties": {
+        "ids": {
+          "additionalProperties": {
+            "$ref": "#/$defs/line128"
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]{0,31}$",
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "needs": {
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9+._-]{0,31}$",
+                "type": "string"
+              },
+              {
+                "items": {
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9+._-]{0,31}$",
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              }
+            ]
+          },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]{0,31}$",
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "recipe": {
+          "enum": [
+            "0.1"
+          ]
+        },
+        "title": {
+          "$ref": "#/$defs/work-title.any"
+        },
+        "work": {
+          "$ref": "#/$defs/work"
+        }
+      },
+      "required": [
+        "recipe",
+        "work"
+      ],
+      "type": "object"
+    },
+    "work-title.any": {
+      "additionalProperties": false,
+      "properties": {
+        "developers": {
+          "items": {
+            "$ref": "#/$defs/line"
+          },
+          "type": "array"
+        },
+        "genres": {
+          "items": {
+            "$ref": "#/$defs/line"
+          },
+          "type": "array"
+        },
+        "labels": {
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "type": "array"
+        },
+        "players": {
+          "$ref": "#/$defs/players"
+        },
+        "publishers": {
+          "items": {
+            "$ref": "#/$defs/line"
+          },
+          "type": "array"
+        },
+        "series": {
+          "$ref": "#/$defs/line128"
+        },
+        "software_platform": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sort_title": {
+          "$ref": "#/$defs/line128"
+        },
+        "synopsis": {
+          "$ref": "#/$defs/line"
+        },
+        "title": {
+          "$ref": "#/$defs/line128"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Generated from the key tables of the recipe crate and the vocabularies of its platform providers (recipes.md section 6, experimental). A TOML file is validated through the usual TOML-to-JSON mapping, in which a local date-time is a string. What a schema cannot say (TOML 1.1 syntax, references, uniqueness, sums, the licence rules, sizes against formats and the firmware catalogue) is decided by upcli recipe check.",
+  "else": {
+    "else": {
+      "$ref": "#/$defs/mediafile"
+    },
+    "if": {
+      "required": [
+        "firmware"
       ]
     },
-    "workFile": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["recipe", "work"],
-      "properties": {
-        "recipe": {"const": "0.1"},
-        "work": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["id"],
-          "properties": {"id": {"$ref": "#/$defs/id"}}
-        },
-        "title": {"$ref": "#/$defs/workTitle"},
-        "ids": {"$ref": "#/$defs/ids"},
-        "needs": {"$ref": "#/$defs/needs"}
-      }
+    "then": {
+      "$ref": "#/$defs/firmwarefile"
     }
-  }
+  },
+  "if": {
+    "properties": {
+      "work": {
+        "type": "object"
+      }
+    },
+    "required": [
+      "work"
+    ]
+  },
+  "then": {
+    "$ref": "#/$defs/work-file.any"
+  },
+  "title": "unemupc recipe 0.1: Mediafile, Firmwarefile or work file",
+  "type": "object"
 }

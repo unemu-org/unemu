@@ -24,6 +24,7 @@ image-store = { path = "../image-store", version = "0.0.2" }
 image-registry = { path = "../registry", version = "0.0.2" }
 # The platforms compiled in: their image providers and the licence notice.
 platforms = { path = "../platforms", version = "0.0.2" }
+recipe = { path = "../recipe", version = "0.0.2" }
 toml.workspace = true
 machine-file.workspace = true
 anyhow.workspace = true

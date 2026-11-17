@@ -1452,6 +1452,39 @@ path a crate source names outside its directory is mapped to that crate, and
 until every crate whose sources build paths from the repository root reads
 both `machines/` and `vendor/`.
 
+## Checking recipes
+
+`upcli recipe check` runs the static checks of a recipe
+([design/recipes.md](design/recipes.md) §6.11): it reads the recipe, the
+work file it names and whether its lock exists, and no input.
+
+```sh
+cargo run --offline -p cli -- recipe check backlog/docs/design/recipe-corpus
+cargo run --offline -p cli -- recipe check my.media.toml other.firmware.toml
+```
+
+A folder is checked with every `*.media.toml`, `*.firmware.toml`,
+`*.machine.toml` and `*.work.toml` below it (hidden files and folders and
+lock folders skipped); a file named on the command line is read whatever
+its name. Each finding is one line, `FILE:LINE:COLUMN:
+error[6.11.N] KEY.PATH: message`, with 1-based array indices
+(`step[1].members[2].path`); every finding is reported, each once. Then one
+line per file: `ok` or the number of findings, its kind, and for a recipe
+the split of rule 5 (`required inputs: …; optional inputs: …`, the inputs
+only an attachment uses). Exit status: 0 without findings, 1 with findings,
+2 on a usage error or a file that cannot be read. This build has the
+`ibm-pc` provider only: on the corpus the `ibm-pc` files pass and the NES
+and Amiga recipes each get the one rule-7 finding that no provider of
+their platform is in this build, with nothing behind it reported.
+
+The JSON Schema `design/recipe-schema-0.1.json` is written from the
+parser's key tables and the providers; a test in `pc-image` compares it.
+After a change to the format or a provider vocabulary, regenerate it:
+
+```sh
+UNEMUPC_WRITE_RECIPE_SCHEMA=1 cargo test --offline -p pc-image --test recipe_check
+```
+
 ## Creating disk images
 
 ```sh

@@ -21,6 +21,7 @@ members = [
     "crates/registry",
     "crates/pc-image",
     "crates/platforms",
+    "crates/recipe",
 ]
 
 [workspace.package]

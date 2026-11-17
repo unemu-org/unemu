@@ -56,6 +56,7 @@ const USAGE: &str = "usage: upcli --boot (Real16 timer demo)
        upcli image login HOST --user NAME [--config FILE]
        upcli image registry set HOST [--private | --namespace NAME[:private|:public]...] [--config FILE]
        upcli image template build --store DIR [--vendor DIR] [--dry-run]
+       upcli recipe check FILE|FOLDER... (the static checks of recipes and work files; exit 0 clean, 1 with findings)
        upcli media create floppy --type 1.44M|1.2M|720K|360K OUT [--format] [--label NAME] [--force]
        upcli media create floppy --type 1.44M|1.2M|720K|360K OUT --add PATH [--add PATH]... [--top NAME] [--label NAME] [--split] [--force]
          --add copies host files and folders (folders whole, symlinks never followed) onto a new FAT12 disk with 8.3 names;
@@ -481,6 +482,9 @@ pub fn run_with_firmware_sources(
     errors: &mut impl Write,
     sources: &FirmwareSources,
 ) -> u8 {
+    if args.first().is_some_and(|arg| arg == "recipe") {
+        return crate::recipe::run(&args[1..], output, errors);
+    }
     let command = match parse(args) {
         Ok(command) => command,
         Err(error) => {

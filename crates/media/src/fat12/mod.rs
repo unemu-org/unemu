@@ -55,7 +55,7 @@ mod volume_tests;
 pub use names::{NameFault, ShortName};
 pub use survey::Survey;
 pub use time::DosTime;
-pub use tree::HostItem;
+pub use tree::{HostItem, MAX_FOLDER_PATH};
 pub use volume::{plan_volumes, Entry, Order, Volume};
 
 use std::fmt;

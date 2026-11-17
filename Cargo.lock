@@ -696,6 +696,7 @@ dependencies = [
  "pc-harness",
  "pc-image",
  "platforms",
+ "recipe",
  "toml",
  "video",
 ]
@@ -2612,6 +2613,7 @@ dependencies = [
  "machine",
  "machine-file",
  "media",
+ "recipe",
  "serde",
  "thiserror 1.0.69",
  "toml",
@@ -2887,6 +2889,16 @@ dependencies = [
  "bytemuck",
  "font-types",
  "once_cell",
+]
+
+[[package]]
+name = "recipe"
+version = "0.0.2"
+dependencies = [
+ "image-store",
+ "serde_json",
+ "toml",
+ "toml_parser",
 ]
 
 [[package]]

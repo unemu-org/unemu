@@ -1,0 +1,13 @@
+# A work file of recipe version 0.2, which 0.1 does not know, with another
+# work's id, a release field and a need the platform does not know.
+recipe = "0.2"
+
+[work]
+id = "another"
+
+[title]
+year = 1990
+synopsis = "A work."
+
+[needs]
+video = ["8514"]

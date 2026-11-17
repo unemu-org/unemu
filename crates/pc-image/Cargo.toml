@@ -17,6 +17,7 @@ assembly.workspace = true
 machine-file.workspace = true
 media.workspace = true
 image-store = { path = "../image-store", version = "0.0.2" }
+recipe = { path = "../recipe", version = "0.0.2" }
 serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true

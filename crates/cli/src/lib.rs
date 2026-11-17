@@ -9,6 +9,7 @@
 pub mod about;
 pub mod command;
 mod image;
+mod recipe;
 /// The shared preferences file lives beside the store's other host locations.
 pub use image_store::location::preferences;
 /// Image creation lives with the PC provider, which the desktop calls too.

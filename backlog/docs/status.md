@@ -5,6 +5,23 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — Recipe crate and `upcli recipe check`:** the new
+  platform-neutral crate `recipe` reads Mediafiles, Firmwarefiles and work
+  files of recipe version 0.1 into a typed model and runs every static
+  check of design/recipes.md §6.11 without reading an input (B4): TOML 1.0
+  only (the TOML 1.1 forms the `toml` crate accepts are refused in a pass
+  over `toml_parser`'s events), unknown keys, types and values with their
+  key paths, the kind's tables, references and unused values, the open
+  statement, the provider's vocabularies, digests without a lock, the
+  limits, and sizes, formats, names and ROMs the provider refuses. Every
+  finding is reported with file, line, column, rule and key path.
+  `pc_image::recipe::PcRecipes` is the `ibm-pc` provider. `upcli recipe
+  check FILE|FOLDER...` passes the corpus's `ibm-pc` files; the NES and
+  Amiga recipes each get the one rule-7 finding that this build has no
+  provider for their platform, and with test providers for the two
+  platforms all 18 files pass (MEASURED). `design/recipe-schema-0.1.json` is now
+  written from the parser's key tables and the providers, and a test
+  compares it. Building, fetching and planning are later beads.
 - **2026-11-17 — A listing no longer reads another listing's probe as a
   running machine:** a machine's state probe took the workspace lock
   exclusively for an instant, so two listings at the same moment (the

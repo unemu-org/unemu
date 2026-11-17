@@ -1,0 +1,8 @@
+# A work file with nothing wrong.
+recipe = "0.1"
+
+[work]
+id = "good"
+
+[title]
+title = "Good"

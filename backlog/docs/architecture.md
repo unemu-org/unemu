@@ -17,7 +17,8 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 
 | Crate | Responsibility | Runtime dependencies | Test-only dependencies |
 | --- | --- | --- | --- |
-| `pc-image` | IBM PC/AT provider, resolved bundle-profile validation, machine-file import, disk-chain validation, isolated sessions and offline publication | `assembly`, `machine-file`, `media`, `image-store`, `serde`, `toml`, `thiserror` | `cpu`, `machine` |
+| `pc-image` | IBM PC/AT provider, resolved bundle-profile validation, machine-file import, disk-chain validation, isolated sessions and offline publication; the `ibm-pc` recipe provider (`pc_image::recipe::PcRecipes`) | `assembly`, `machine-file`, `media`, `image-store`, `recipe`, `serde`, `toml`, `thiserror` | `cpu`, `machine` |
+| `recipe` | Platform-neutral recipes ([design](design/recipes.md) §6): the typed model of Mediafiles, Firmwarefiles and work files, the TOML 1.0 parser with file, line, column and key path for every finding, the static checks of §6.11, the provider traits a platform implements (media formats and volume profiles, firmware rules, needs, software platforms, `[ids]` catalogues) and the JSON Schema written from the key tables and the providers. Builds nothing and reads no input | `image-store`, `serde_json`, `toml`, `toml_parser` | None |
 | `image-store` | Platform-neutral OCI Image Layout, streaming SHA-256/zstd blobs, deterministic machine/media-set/firmware manifests, provider-validated closure and atomic compare-and-swap local tags, stable workspace ownership | `serde`, `serde_json`, `toml`, `sha2`, `zstd`, `thiserror`, `libc` (Unix) | None |
 | `image-registry` | Platform-neutral OCI distribution client: Docker-style references against the default registry, preferences registries list, environment/Keychain credentials, anonymous-then-Basic authentication, resumable chunked push, parallel verified pull, push guard and paged listings | `image-store`, `ureq` (rustls, no default features), `rustls` (ring), `rustls-native-certs`, `serde`, `serde_json`, `toml`, `thiserror` | None |
 | `media` | Immutable sparse disk layers, chain sector sources, floppy journal encoding, streaming recovery/replay, retention-anchor validation, durable host sink and stable single-writer locks ([format](design/persistent-media.md#chosen-format-byte-layout)) | `sha2`, `serde`, `toml`, `thiserror`, `libc` (Unix) | None |
@@ -34,7 +35,7 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
 | `platforms` | The one place that names the platforms compiled into both programs: the image providers a transfer or listing uses (`with_image_providers`), the push plan bound to the PC firmware catalogue (`push_plan`) and the program's licence notice | `assembly`, `image-store`, `image-registry`, `pc-image` | None |
 | `pc-harness` | Machine runners for the PC/AT goldens and the command line: hand-encoded guest programs, key scripts, assembly/policy selection, output capture and stop diagnostics (`StopReason`). Its `tests/` hold the emulation goldens (BIOS POST, FreeDOS boots and sessions, floppy, IDE, VGA, EMS, sound, the scheduler A/B tests) and `tests/support/`, which other crates include with `#[path]` | `assembly`, `device`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow` | `bus`, `testkit`, `toml`, `machine-file`, `media/test-support`, `machine/reference-scheduler`, `assembly/reference-scheduler`, `assembly/test-support` |
-| `cli` | The `upcli` binary and its commands; `--boot`, `--bios` and `run` call the runners of `pc-harness`. Its `tests/` hold the command tests and the goldens that need the command line, the binary or the store | `pc-harness`, `assembly`, `device`, `cpu`, `machine`, `machine-file`, `media`, `devices`, `video`, `anyhow`, `pc-image`, `image-store`, `image-registry`, `platforms`, `toml` | `assembly/test-support`, `media/test-support`, `image-store/test-support`, `image-registry/test-support` |
+| `cli` | The `upcli` binary and its commands; `--boot`, `--bios` and `run` call the runners of `pc-harness`. Its `tests/` hold the command tests and the goldens that need the command line, the binary or the store | `pc-harness`, `assembly`, `device`, `cpu`, `machine`, `machine-file`, `media`, `devices`, `video`, `anyhow`, `pc-image`, `image-store`, `image-registry`, `platforms`, `recipe`, `toml` | `assembly/test-support`, `media/test-support`, `image-store/test-support`, `image-registry/test-support` |
 
 Each crate names its layer in its manifest (`[package.metadata.unemu] layer`),
 and `scripts/crate-boundaries.sh` keeps the layers apart
@@ -43,7 +44,7 @@ and `scripts/crate-boundaries.sh` keeps the layers apart
 | Layer | Crates | May depend on |
 | --- | --- | --- |
 | `contract` | none yet | nothing at all |
-| `neutral` | `media`, `image-store`, `image-registry` | `contract`, `neutral` |
+| `neutral` | `media`, `image-store`, `image-registry`, `recipe` | `contract`, `neutral` |
 | `emulation` | `device`, `bus`, `cpu`, `video`, `audio`, `devices`, `chipset`, `machine`, `testkit`, `assembly` | `contract`, `emulation` |
 | `pc` | `machine-file`, `pc-image`, `pc-harness` | `contract`, `neutral`, `emulation`, `pc` |
 | `application` | `cli`, `window`, `platforms` | anything |

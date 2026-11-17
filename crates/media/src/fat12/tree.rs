@@ -39,8 +39,9 @@ pub(super) struct Tree {
 /// MS-DOS keeps each drive's current directory in a 67-byte field of its
 /// current directory structure: the drive letter and colon, the path from its
 /// leading backslash, and a terminating NUL. A folder deeper than that could
-/// not be entered with CD, and XCOPY could not create it.
-pub(super) const MAX_FOLDER_PATH: usize = 64;
+/// not be entered with CD, and XCOPY could not create it. So a folder's path,
+/// from its leading backslash, has at most this many characters.
+pub const MAX_FOLDER_PATH: usize = 64;
 
 /// A host file or folder as it was read for a disk: its name and identity,
 /// and its length or, for a folder, its members in host-name order with the

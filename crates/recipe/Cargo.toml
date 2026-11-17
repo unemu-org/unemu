@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "recipe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Platform-neutral recipes: the typed model, the TOML 1.0 parser and the static checks of recipes.md §6."
+
+[package.metadata.unemu]
+layer = "neutral"
+
+[dependencies]
+image-store = { path = "../image-store", version = "0.0.2" }
+serde_json = "1.0.154"
+toml.workspace = true
+# The parser inside `toml`, at the version the lock already pins: its event
+# stream is where the TOML 1.1 forms that `toml` accepts are refused.
+toml_parser = "1.1.5"

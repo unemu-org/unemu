@@ -693,26 +693,27 @@ authority:
 A keyword beside `$ref` needs draft 2019-09 or later. Which editors read
 draft 2020-12 is ASSUMED, not tried.
 
-**Open after B1.** Decisions, not fixes.
+**After B1.** Five points needed a decision. The maintainer ruled on
+O1 to O4 on 2026-11-17, and B4 implemented them (§19.2); O5 stays open.
 
-- **O1. Software platforms of new platforms.** `software_platform` is
-  metadata schema 1's list (`image_store::metadata`), which the importer
-  enforces and the codec keeps open [REPO]. It has neither `NES` nor
-  `AmigaOS`, so `contra.work` and `amdemo` fail. Either the list grows,
-  append-only (§9, row 7), when a platform arrives, or each provider owns
-  its part of it. The keys of `[ids]` (`wikidata`, `mobygames`, `igdb` in
-  the checker) raise the same question.
-- **O2. Four more static checks**, as a rule 10 of §6.11: a stated size the
-  medium's format does not allow; a `fat` step whose format differs from
-  the medium it feeds; a name in a `fat` tree that the volume profile
-  refuses (§6.9 leaves it to the build, but the names are in the recipe);
-  a ROM whose size or hash differs from its catalogue entry. The checker
-  had all four; none fires on the corpus.
-- **O3. Who keeps the schema.** It holds provider vocabularies, so a copy
-  kept by hand drifts. Either `upcli` generates it from the providers (B4)
-  and the freeze publishes it (B17), or it is kept by hand.
-- **O4. A work file's version.** May a recipe of one version name a work
-  file of another? It matters from the second version on.
+- **O1. Software platforms of new platforms. Decided:** each platform
+  provider owns its list of software platforms and its `[ids]`
+  catalogues, append-only (§9, row 7). `ibm-pc` takes `DOS`,
+  `Windows 3.x`, `Windows 9x`, `CP/M` and `other`, and `wikidata`,
+  `mobygames` and `igdb`, within metadata schema 1's lists
+  (`image_store::metadata`). A provider for the NES or the Amiga brings
+  `NES` or `AmigaOS` with it.
+- **O2. Four more static checks. Decided:** they are rule 10 of §6.11: a
+  stated size the medium's format does not allow; a `fat` step whose
+  format differs from the medium it feeds; a name in a `fat` tree that the
+  volume profile refuses (§6.9 leaves the build to refuse it, but the names
+  are in the recipe), and a label it would change; a ROM whose size or
+  hash differs from its catalogue entry. None fires on the corpus.
+- **O3. Who keeps the schema. Decided:** it is generated from the
+  parser's key tables and the providers, never kept by hand; a test
+  compares the published file with it, and the freeze publishes it (B17).
+- **O4. A work file's version. Decided:** a recipe names a work file of
+  its own recipe version only.
 - **O5. A work whose releases differ in openness.** A shareware episode
   under `unemu/` and a registered version under `private/` are two
   repositories of one work, against "the work is the repository" (§6.16).
@@ -895,7 +896,7 @@ schema's own field names, and the image-level labels.
 | `requirements` | string | the box's own words ("IBM PC, XT, AT; 640K; CGA, EGA or VGA"): shown beside `[needs]`, never evaluated (metadata schema 2; from the earlier design) |
 | `year` | integer 1 to 9999 | `release_year` |
 | `publishers`, `developers`, `genres`, `languages`, `regions` | arrays of strings | the same fields |
-| `software_platform` | string from the schema's list (`DOS`, `Windows 3.x`, …) | the title's `platform` |
+| `software_platform` | string from the platform provider's list (`DOS`, `Windows 3.x`, … for `ibm-pc`; §4.6, O1) | the title's `platform` |
 | `players` | `{ min, max }` | `players` |
 | `labels` | array of ids | the envelope's `labels` |
 
@@ -1149,7 +1150,13 @@ of `[[extra]]`.
 8. `digest` without a lock, or a lock that disagrees with the recipe (§3.8,
    points 1 to 3);
 9. a bundled input over 1 MiB, or more than 4096 inputs, 64 steps, 256
-   outputs or 100,000 file-set entries.
+   outputs or 100,000 file-set entries;
+10. what the provider refuses of the platform's data (§4.6, O2): a stated
+    size the medium's format does not allow; a `fat` step whose format
+    differs from the medium it feeds; a name, a folder depth or a label in
+    a `fat` step that its volume profile refuses or would change; a ROM
+    whose size or SHA-256 differs from its catalogue entry, found by
+    `catalogue_id` or by its bytes.
 
 ### 6.12. Determinism
 
@@ -2138,10 +2145,98 @@ of §6, the parser over the `toml` crate with the restrictions B1 found, the
 static checks, and the provider traits it calls (formats, volume profiles,
 firmware rules, needs). `upcli recipe check`. Depends on: B1. Must prove:
 the whole corpus passes; one failing fixture per rule of §6.11.
+Done on 2026-11-17 (`upc-5pw.113.4`). The crate is `crates/recipe`
+(layer `neutral`): `spec` holds every table of §6 with its keys, types and
+required keys, and drives both rule 1 and the JSON Schema; `model` is the
+typed model, every value with its span and key path; `provider` holds the
+traits a platform implements (`Provider` with `MediaProfile`,
+`VolumeProfile` and `FirmwareProfile`, the needs `Vocabulary` of B2, the
+software platforms and the `[ids]` catalogues); `check_paths` runs §6.11
+and returns every finding, sorted and each once, with file, line, column,
+rule and key path (1-based indices, `step[1].members[2].path`). The
+`ibm-pc` side is `pc_image::recipe::PcRecipes`, over the importers'
+formats and sizes, the FAT12 builder's strict names and folder depth, the
+DOS names of extras, the ROM roles, lanes, boards and firmware catalogue
+and `pc_image::needs`. `upcli recipe check FILE|FOLDER...` prints the
+findings and a line per file with the split of rule 5; exit 0, 1 with
+findings, 2 on a usage error (commands.md, Checking recipes). Decisions
+taken while building it:
+- The corpus, MEASURED: the `ibm-pc` files pass; the five `nes` and
+  `amiga` recipes each get the one rule-7 finding that this build has no
+  provider for their platform, and nothing behind it; with test providers
+  for those two platforms, built from the corpus's ASSUMED words, all 18
+  files pass (a test in `pc-image`).
+- O1, as ruled: each provider owns its software platforms and `[ids]`
+  catalogues, append-only. `ibm-pc` takes `DOS`, `Windows 3.x`,
+  `Windows 9x`, `CP/M` and `other`, and `wikidata`, `mobygames` and
+  `igdb`; a test keeps both within what metadata writers accept. A work
+  file's title, ids and needs are checked against the provider of every
+  recipe that names it; the findings name the work file, once.
+- O2, as ruled, rule 10 is four checks: a size the medium's format does not
+  allow (from an input or a member that states it), a `fat` step whose
+  format differs from the medium it feeds (one volume or a volume of a
+  split), a name or folder depth the volume profile refuses (and the
+  `fat` step's label), a ROM whose size or SHA-256 differs from its
+  catalogue entry.
+- O3: the JSON Schema is written by a test, not by a command. The test in
+  `pc-image` (`recipe_check`) compares `recipe-schema-0.1.json` with what
+  `recipe::schema::render` writes from the key tables and `PcRecipes`,
+  and writes it with `UNEMUPC_WRITE_RECIPE_SCHEMA=1`. A test needs no
+  user-facing command before the freeze, and it fails on any drift; B17
+  can add a command when the schema is published. The generated schema
+  replaces the hand-written draft. It states every key, type and required
+  key, the closed lists, the string forms, one variant of an input, a step
+  and a ROM, and per platform the provider's vocabularies, needs included;
+  it leaves the licence rules, the `unemu/` rule, the components of
+  `name`, and the size limits of `bundle` and `disclosable` to the checker.
+  MEASURED with Python `jsonschema` 4.26: it passes the 2020-12
+  metaschema, accepts all 18 corpus files and refuses the shape faults of
+  the rule fixtures.
+- O4, as ruled: a recipe names a work file of its own recipe version only
+  (rule 3, at the recipe's `recipe` key). A work file whose `[work].id` is
+  not its file name's id is refused there too, and so is a recipe whose
+  repository's last component is not its work id (§6.16, taken from B5).
+  A file named as a work file that holds a recipe is refused (rule 2), and
+  the recipe's own missing title is still reported.
+- Where B1's other checks went: the kind and platform components of `name`,
+  and a title stated by neither the recipe nor its work file, are rule 2; a
+  missing work file, a path listed twice and a DOS name used twice are rule
+  3; `disclosable` on 256 bytes or more and `players.max` below `min` are
+  rule 1; a retired platform id (`ibm-pc-at`) and an extra's DOS name the
+  provider refuses are rule 7; `[license]` absent under `unemu/` is rule 6.
+- Cascades: a reference that fails marks the value it names as used, and
+  only a failed one does, so an input read only by an unused step is
+  reported with it and stays out of the split of rule 5; a step with two
+  verbs or none is one finding and makes nothing it names unused or
+  unknown; an input that is not a table is no file and no tree, so
+  references to it say nothing more; a work file that is not readable is
+  reported once; a retired platform id (`ibm-pc-at`) is reported once and
+  no rule that needs the provider runs after it.
+- The catalogue rules of 6 and 10 find a ROM by `catalogue_id`, or else
+  by its bytes (`FirmwareProfile::identify`): a ROM whose stated SHA-256
+  is a catalogue entry's, or one chip of which has an entry's chip SHA-256
+  and size. A user-supplied ROM known that way takes no `[license]`
+  (§6.6), and a whole ROM known by its hash has the entry's size.
+- Smaller rulings of the fix round: a time's second is at most 58 (FAT
+  and zip store no leap second); `[ids]` values are lines of at most 128
+  characters, as the metadata writer keeps them; a `release` is at most
+  107 characters, so that `<release>-rN` fits the 128 characters of an OCI
+  tag with the 19 digits of the largest revision; a `fat` label is stored
+  as written, so one the builder would upper-case is refused; in a
+  multi-line string a CR LF is one line break, so a recipe saved with
+  Windows line ends reads the same, and any other CR is refused; a folder
+  walk takes `*.media.toml`, `*.firmware.toml`, `*.machine.toml` and
+  `*.work.toml` and skips hidden files and folders, while a file named on
+  the command line is read whatever its name.
+- The volume profile judges names and labels only. The boot code and
+  geometries stay in `media::fat12` until B7 builds volumes through the
+  provider; `media::fat12::MAX_FOLDER_PATH` became public for the depth
+  check, with no change of behaviour.
 
 **B5. Work files.**
 Scope: `<id>.work.toml`, the merge rules of §6.16, `upcli recipe show`,
-and the check that the repository's last component is the work id.
+and the check that the repository's last component is the work id (done
+in B4).
 Depends on: B4, B2 (the work id and synopsis need schema 2). Must prove:
 the three corpus folders with work files show the same merged record the
 first-round recipes stated in full; each merge rule has a test, the label
