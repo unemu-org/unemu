@@ -254,7 +254,7 @@ Annotations are string values and never bind hardware or media:
 
 | Annotation | Meaning |
 |---|---|
-| `org.opencontainers.image.title` | On a descriptor: optional logical name for generic OCI tools. On the manifest: a preview title for registry browsing. Informational only. |
+| `org.opencontainers.image.title` | On a layer descriptor: the layer's export file name, the name a generic OCI client gives the pulled file; on every layer of an installation set or firmware package (Export file names, below), optional elsewhere. On the manifest: a preview title for registry browsing. Informational only. |
 | `org.opencontainers.image.base.digest` | Manifest only: image digest this image was derived from. Provenance; never needed to run and never a reason to download an older image. |
 | `unemu.platform` | Required on the manifest: machine platform, matching config and metadata (a retired id matches its replacement, §1 Platform neutrality); a routing hint for registry/library previews, never an independent authority. |
 | `unemu.redistribution` | `open` or `user-supplied`; absent evidence defaults to user-supplied. |
@@ -265,6 +265,62 @@ Annotations are string values and never bind hardware or media:
 | `unemu.pull.registry` | Local only, on a tag's manifest descriptor in the store's `index.json`, never in a manifest: the registry host, port included, that a pull wrote the tag from (§3, §5.1). |
 | `unemu.made-here` | Local only, beside `unemu.pull.registry` and never with it: `true` when a write in this library, not a pull, made the tag (§3). |
 | `unemu.min-app-version` | Manifest only, optional: the oldest release of the program providing `unemu.platform` that reads and runs the artifact, a SemVer `MAJOR.MINOR.PATCH`. Absent means no requirement (release 0.0.1). A hint read before any strict decode, never an authority and never part of a config (§5.6). |
+
+**Export file names (2026-11-17, decision-37 point 3 and its amendment).**
+Every layer of an installation set and of a firmware package names the plain
+file it unpacks to in `org.opencontainers.image.title`, the annotation ORAS
+names pulled files by ([recipes](recipes.md) §3.10), so a generic OCI client
+writes a set's disks and extras, or a package's ROM images, under their own
+names. A layer stored as one Zstandard frame (a `+zstd` media type) is titled
+with `.zst` after its file name, so plain `zstd -d` on the pulled file gives
+back the original file under its own name; a raw layer carries the plain
+name. The file names are:
+
+- a medium, ROM image or chip, source archive and extra: its input's file
+  name as given, without folders (`x86BOOT.img`, `bios-unemu-at.bin`,
+  `freedos-1.4-floppy-src.tar`, titled `x86BOOT.img.zst` and so on when
+  compressed); an extra's is its config `filename`; a disk that Create from
+  files keeps in the library is named after the top folder the image builder
+  used, `<top>-NN.img` with two digits (`AZURAMON-03.img`) or `<top>.img`
+  for one disk, else after the volume label the same way, else `disk-NN.img`;
+- an installation set's metadata layer: `metadata.json`; a firmware
+  package's README layer: `README.md`;
+- the config descriptor: none; an export writes it as `config.toml`.
+
+The importers and builders (`image media import`, `image firmware import` and
+`edit`, the window's imports and Create from files, the template and media
+builders) check the names before anything is stored
+(`image_store::export_name`). A name must be one file name that macOS, Linux
+and Windows all accept unchanged, with `.zst` after it too: not empty, `.` or
+`..`, at most 251 bytes (255 with `.zst`), without a control character or any
+of `/ \ : * ? " < > |`, without a trailing space or dot, and not a device name
+Windows reserves (`CON`, `CONIN$`, `CONOUT$`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9`,
+`COM¹`, `COM²`, `COM³`, `LPT0`–`LPT9`, `LPT¹`, `LPT²`, `LPT³`, with or without
+an extension, in any case). No input takes a name the export writes itself:
+`config.toml`, `metadata.json`, `manifest.json`, `SHA256SUMS` or
+`EXPORT-VERSION` (decision-37), nor, in a firmware package, `README.md`. Two
+layers of one artifact may not occupy names that are equal ignoring case, as
+the default file systems of macOS and Windows compare them, character by
+character in upper case; a compressed layer occupies its decoded name and its
+title, so `a.img` and a compressed `A.IMG` clash, as do `a.img.zst` and a
+compressed `a.img`. Names that differ only in Unicode normalization are not
+caught. A name that fails is refused with the inputs it came from, never
+replaced: an export gives the user's own names back. Identical bytes are one
+layer (above), named after the first input that holds them, so a file listed
+twice is two disks with one layer. The one name derived on its own:
+`image firmware edit` of a package written before ROM layers had names gives
+each ROM layer `<rom id>.bin`, or `<rom id>-<n>.bin` for its n-th chip, and
+`<rom id>-rom.bin` (`<rom id>-rom-<n>.bin`) when the first is no valid name or
+another layer has it; failing both, the edit is refused. A machine image's ROM
+and source layers keep the names of the package they come from. The names are
+manifest bytes: a set imported again from files with other names is another
+set, and the refusal says that only the names differ. Readers treat the
+annotation as informational and never refuse an artifact over it, and releases
+0.0.1 and 0.0.2 read sets and packages with a name on every layer: MEASURED on
+2026-11-17 with scratch builds of both tags reading titled copies of the
+artifacts each builds itself (manifest decode, store resolution and
+publication check, library summaries, a machine created from the named
+packages, a firmware edit, a set re-import comparison and a registry pull).
 
 The config is the single authority for bindings, slots, catalogue order and
 media heads; layer descriptors (§4) are the single authority for parents.
@@ -1922,8 +1978,10 @@ source archives, extras, README. The manifest carries the standard
 `.source` (the provenance address), `.revision` and, for an all-open package,
 `.licenses` (the conjunction of the layers' distinct licences, built from their
 parsed expressions and therefore not bound by the 256-byte limit of one
-licence statement); source, README and
-extra layers carry `org.opencontainers.image.title` with their file name. There
+licence statement); every layer carries `org.opencontainers.image.title` with
+its export file name: each ROM image or chip and the source archive and
+extras their input's file name, with `.zst` after it when stored compressed,
+the README `README.md` (§2, Export file names). There
 is no `.created`: no creation time is supplied and the host clock never enters
 a package. Two imports of the same inputs give byte-identical manifests, and the
 identity is known before anything is written.

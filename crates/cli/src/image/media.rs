@@ -477,6 +477,7 @@ fn import(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> 
                 path: path.clone(),
                 label: command.labels.get(&(index + 1)).cloned(),
                 format: command.formats.get(&(index + 1)).cloned(),
+                file_name: None,
             })
             .collect(),
         extras: command

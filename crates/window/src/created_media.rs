@@ -619,7 +619,14 @@ pub(crate) fn create(
         Place::Machine(_) => Vec::new(),
     };
     let (kept, keep_failed) = match &order.keep {
-        Some((tag, title)) => match keep(store, tag, title, order.format, &disks) {
+        Some((tag, title)) => match keep(
+            store,
+            tag,
+            title,
+            order.format,
+            &disks,
+            &export_names(order.top.as_ref(), order.label.as_ref(), disks.len()),
+        ) {
             Ok(tag) => (Some(tag), None),
             Err(error) => (None, Some(error)),
         },
@@ -635,14 +642,51 @@ pub(crate) fn create(
     })
 }
 
+/// The file names the disks of a kept set export to, rather than the names
+/// of their image files: the top folder the builder used, as
+/// `<top>-NN.img` with two digits (`AZURAMON-03.img`) or `<top>.img` for
+/// one disk; without a top folder, or when it gives no valid export file
+/// name, the volume label the same way; failing both, `disk-NN.img`.
+pub(crate) fn export_names(
+    top: Option<&ShortName>,
+    label: Option<&[u8; 11]>,
+    count: usize,
+) -> Vec<String> {
+    let named = |stem: &str| -> Vec<String> {
+        (1..=count)
+            .map(|n| {
+                if count == 1 {
+                    format!("{stem}.img")
+                } else {
+                    format!("{stem}-{n:02}.img")
+                }
+            })
+            .collect()
+    };
+    let label = label.map(|label| String::from_utf8_lossy(label).trim_end().to_owned());
+    top.map(ShortName::to_string)
+        .into_iter()
+        .chain(label)
+        .filter(|stem| !stem.is_empty())
+        .map(|stem| named(&stem))
+        .find(|names| {
+            names
+                .iter()
+                .all(|name| image_store::export_name::input_problem(name).is_none())
+        })
+        .unwrap_or_else(|| (1..=count).map(|n| format!("disk-{n:02}.img")).collect())
+}
+
 /// Publish the disks as a private installation media set under `tag`, or
-/// under the first free `.1`, `.2` … of its version when another set has it.
+/// under the first free `.1`, `.2` … of its version when another set has it,
+/// each disk exported under its name in `names`.
 fn keep(
     store: &image_store::Store,
     tag: &str,
     title: &str,
     format: FloppyFormat,
     disks: &[(PathBuf, [u8; 32], String)],
+    names: &[String],
 ) -> Result<String> {
     use pc_image::media_import;
     let count = disks.len();
@@ -665,7 +709,8 @@ fn keep(
             media: disks
                 .iter()
                 .enumerate()
-                .map(|(index, (path, _, _))| media_import::Source {
+                .zip(names)
+                .map(|((index, (path, _, _)), name)| media_import::Source {
                     path: path.clone(),
                     label: Some(if count > 1 {
                         format!("Disk {} of {count}", index + 1)
@@ -673,6 +718,7 @@ fn keep(
                         "Disk 1".into()
                     }),
                     format: Some(format.name().into()),
+                    file_name: Some(name.clone()),
                 })
                 .collect(),
             extras: Vec::new(),
@@ -790,5 +836,75 @@ mod tests {
         set_pending(workspace, "A:", None).unwrap();
         assert!(read_pending(workspace).unwrap().is_empty());
         assert!(!pending_path(workspace).exists());
+    }
+
+    /// A kept disk exports under its top folder's name, not under the
+    /// SHA-256 name of its image file.
+    #[test]
+    fn kept_disks_export_under_the_top_folder_numbered() {
+        let top = ShortName::parse("azuramon");
+        let label = media::fat12::volume_label("GAMES").ok();
+        assert_eq!(
+            export_names(top.as_ref(), label.as_ref(), 3),
+            ["AZURAMON-01.img", "AZURAMON-02.img", "AZURAMON-03.img"]
+        );
+        assert_eq!(
+            export_names(top.as_ref(), label.as_ref(), 1),
+            ["AZURAMON.img"]
+        );
+        assert_eq!(
+            export_names(None, label.as_ref(), 2),
+            ["GAMES-01.img", "GAMES-02.img"]
+        );
+        assert_eq!(export_names(None, None, 2), ["disk-01.img", "disk-02.img"]);
+        assert_eq!(export_names(None, None, 1), ["disk-01.img"]);
+        // A name Windows reserves for a device is no export file name.
+        let device = media::fat12::volume_label("CONIN$").ok();
+        assert_eq!(export_names(None, device.as_ref(), 1), ["disk-01.img"]);
+        assert_eq!(
+            export_names(None, device.as_ref(), 2),
+            ["CONIN$-01.img", "CONIN$-02.img"]
+        );
+
+        let temp = assembly::test_support::TempDir::new("created-keep-names");
+        let game = temp.path().join("galaxia");
+        fs::create_dir_all(&game).unwrap();
+        fs::write(game.join("a.dat"), vec![1; 900_000]).unwrap();
+        fs::write(game.join("b.dat"), vec![2; 900_000]).unwrap();
+        let store = image_store::Store::open(temp.path().join("store")).unwrap();
+        let order = CreateOrder {
+            unit: 0,
+            items: vec![HostItem::read(&game).unwrap()],
+            top: ShortName::parse("GALAXIA"),
+            format: FloppyFormat::Hd144,
+            label: media::fat12::volume_label("GALAXIA").ok(),
+            split: true,
+            journal: true,
+            keep: Some(("galaxia:1.0-r1".into(), "GALAXIA".into())),
+            title: "GALAXIA".into(),
+        };
+        let created = create(&store, order, Place::Folder(temp.path().join("media"))).unwrap();
+        assert_eq!(
+            created.kept.as_deref(),
+            Some("galaxia:1.0-r1"),
+            "{:?}",
+            created.keep_failed
+        );
+        let set = store
+            .resolve(
+                "galaxia:1.0-r1",
+                &image_store::media_set::Validator(&pc_image::media_set::PcMediaFormats),
+            )
+            .unwrap();
+        let titles: Vec<_> = set
+            .manifest
+            .layers
+            .iter()
+            .map(|d| image_store::export_name::of(d).unwrap_or("<none>"))
+            .collect();
+        assert_eq!(
+            titles,
+            ["GALAXIA-01.img.zst", "GALAXIA-02.img.zst", "metadata.json"]
+        );
     }
 }

@@ -612,7 +612,7 @@ fn a_set_imported_without_metadata_flags_keeps_its_manifest_bytes() {
     // The same inputs as the shared import's pinned set, so the command line's
     // default title is the shared default: measured before set-level metadata
     // flags existed, and moved once by the rename of the platform id to
-    // `ibm-pc`.
+    // `ibm-pc` and once by the layers' export file names.
     let t = Temp::new();
     let p = &t.0;
     let disk = raw_disk(&p.join("disk.img"), 0x5a);
@@ -639,7 +639,7 @@ fn a_set_imported_without_metadata_flags_keeps_its_manifest_bytes() {
         format!(
             "media order:\n1\t\"disk.img\"\t{disk:?}\t360K\n\
              extra\t\"MANUAL.TXT\"\tSome(\"MANUAL.TXT\")\n\
-             test-pinned:r1\tsha256:6e6804aba2a89f2c56d6b8758b9abb575b04c272eaca415c63d5ef3d7df2f57e\n"
+             test-pinned:r1\tsha256:889392e9bd24bf2f9cc5f9ca842d53b106233bbda0685d2e9816a785856b1cb1\n"
         )
     );
 }

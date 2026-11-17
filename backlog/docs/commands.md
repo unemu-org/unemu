@@ -138,7 +138,23 @@ or a tag (a missing store is not created). Label and format indices are one-base
 sizes require an explicit supported format with matching length. No padding or
 resizing occurs. Repeat `--extra PATH[:DOSNAME]` for loose files; DOS names require canonical uppercase
 8.3 spelling and cannot be reserved PC device names. Labels and filenames reject
-control characters and are limited to 128 characters. All inputs are checked
+control characters and are limited to 128 characters. Every layer carries its
+export file name in `org.opencontainers.image.title`, the name a generic OCI
+client such as ORAS gives the pulled file (design/machine-images.md §2, Export
+file names): each disk and extra its source's file name as given, without the
+folder, and the metadata `metadata.json`; a layer stored compressed has
+`.zst` after the name (`x86BOOT.img.zst`), so `zstd -d` on the pulled file
+gives back `x86BOOT.img`. A file name that macOS, Linux or Windows would not
+take as it is (a control character, one of `/ \ : * ? " < > |`, a trailing
+space or dot, a device name Windows reserves such as `CON.img`, more than 251
+bytes, which leaves room for `.zst`), a name the export writes itself
+(`config.toml`, `metadata.json`, `manifest.json`, `SHA256SUMS`,
+`EXPORT-VERSION`), or a name another file of the set already has, ignoring
+case (with or without `.zst`), is refused naming both files; rename the file.
+A file listed twice is two disks with one layer, and different files with
+identical bytes are one layer under the first file's name. A tag that holds
+the same files under other names, or without names as earlier releases stored
+sets, is a conflict that says so. All inputs are checked
 before streaming any source. Sources stay
 unchanged and every copy is streamed with full SHA-256. Existing tags fail before
 reading sources; final publication uses compare-and-swap. All descriptors default
@@ -183,9 +199,10 @@ are the arguments its publish step passes (`lib/manifest.py sets`), and
 same sets. A test imports each set both ways and compares them, and another
 pins the published digests. The sets published so far name the platform by
 its retired id `ibm-pc-at`, under `unemu/media/freedos` without the
-platform and with the first packaging as `:1.4`; the pins are those of their
-`ibm-pc` rebuilds, which replace them under the new names before the first
-public release (decision-32, decision-35, decision-38). Fetch the fixtures
+platform and with the first packaging as `:1.4`, and carry no export file
+names; the pins are those of their `ibm-pc` rebuilds with a file name on
+every layer, which replace them under the new names before the first
+public release (decision-32, decision-35, decision-37, decision-38). Fetch the fixtures
 with `bash vendor/freedos/fetch-floppy-1.4.sh` and import into a store that
 does not hold these tags yet (the command line never moves a tag; the store
 moves each release alias forward with its revision). Each command
@@ -279,6 +296,20 @@ previews without writing blobs/tags or creating a store. Extras require
 schema and DOS naming rules above, each optionally followed by
 `--extra-license SPDX` to mark that document open. Sources remain unchanged.
 
+Every layer carries its export file name in `org.opencontainers.image.title`
+(design/machine-images.md §2, Export file names): each ROM image or chip, the
+source archive and each extra under its file name as given, without the
+folder, with `.zst` after it when stored compressed (`bios-unemu-at.bin.zst`),
+and the README as `README.md`. A name that macOS, Linux or Windows would not
+take as it is, a name the export writes itself (`config.toml`,
+`manifest.json`, `SHA256SUMS`, …), or two layers whose names are equal
+ignoring case (an extra called `readme.md`, say), is refused before anything
+is written, naming both files. An edit keeps the names; the next revision of
+a package imported before ROM layers had names calls each ROM layer
+`<rom id>.bin` (`<rom id>-<n>.bin` per chip), or `<rom id>-rom.bin` when that
+name is taken. A folder import of the same ROM under another file name still
+finds the package already imported; with a statement, it is refused with a
+note that only the file names differ.
 Every layer carries an SPDX licence next to its redistribution mark; a layer
 without a valid licence counts as user-supplied. Rights follow the bytes: a ROM,
 chip, document or archive whose SHA-256 and length the catalogue lists as
@@ -836,9 +867,14 @@ their tests pin the published digests, so each pin checks that the two
 repositories still build the same image. The packages and sets published so
 far name the platform by its retired id `ibm-pc-at`, which this release reads
 as `ibm-pc`, under the old names (`unemu/firmware/<catalogue-id>:1`,
-`unemu/media/freedos:1.4`); the pins are those of their `ibm-pc` rebuilds,
+`unemu/media/freedos:1.4`), whose layers have no export file names except a
+package's source archive and README; the pins are those of their `ibm-pc`
+rebuilds with a file name on every layer (a pull names the files
+`x86BOOT.img.zst` …, `LICENSES.TXT.zst`, `freedos-1.4-floppy-src.tar.zst` and
+`metadata.json`, or `bios-unemu-at.bin.zst`, its source archive's `.tar.zst`
+and `README.md`, and `zstd -d` gives back each fixture under its own name),
 which replace them under the names above before the first public release
-(decision-32, decision-35, decision-38). `image media import` reproduces each
+(decision-32, decision-35, decision-37, decision-38). `image media import` reproduces each
 set from the command line (Local machine images, above).
 
 `image template build` imports the three packages it binds from the firmware

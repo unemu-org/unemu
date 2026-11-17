@@ -5,6 +5,44 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — Every layer of a set or package names its export file:**
+  each layer descriptor of an installation set and of a firmware package
+  carries `org.opencontainers.image.title` with the file it unpacks to
+  (decision-37 point 3 and its amendment, recipes.md §3.10 and §19.1 A3), so
+  an ORAS pull names the files: a disk, ROM image or chip, source archive or
+  extra its input's file name as given, with `.zst` after it on a layer
+  stored compressed (`x86BOOT.img.zst`, `bios-unemu-at.bin.zst`), so `zstd -d`
+  gives back the original file; a set's metadata `metadata.json`, a package's
+  README `README.md` as before, the config none (machine-images §2, Export
+  file names). Disks that Create from files keeps in the library export as
+  `<top folder>-NN.img` (`AZURAMON-03.img`). `image media import`,
+  `image firmware import` and `edit`, the window's imports and the template
+  and media builders refuse, before anything is stored and naming both
+  files, a name that one of macOS, Linux and Windows would not take
+  unchanged, a name the export writes itself (`config.toml`,
+  `metadata.json`, `manifest.json`, `SHA256SUMS`, `EXPORT-VERSION`), or two
+  files whose names are equal ignoring case (an extra called `readme.md`
+  beside a package's README, two `DISK.IMG` from two folders); nothing is
+  renamed. The next revision of a package imported before ROM layers had
+  names calls them `<rom id>.bin`, or `<rom id>-rom.bin` when that is taken.
+  A set or package stored without the names, or under other names, is
+  another one to a re-import with a statement, and the refusal says that
+  only the names differ. The names are manifest bytes, so every pin moved
+  once under the same tags: the three firmware packages
+  (`unemu-at-bios-1.0.2-unemu.3:r1` `e3c226ae…`,
+  `vgabios-0.9d-unemu.1-std:r1` `179a11db…`, `xub-r638-xtp-ata1f0:r1`
+  `7d42e80e…`), the three FreeDOS sets (`1.4-r1` `545f287b…`, `1.4-1.2m-r1`
+  `53e81e4e…`, `1.4-720k-r1` `29c2d9d2…`), the two templates, which carry
+  the packages' named ROM and source layers and their digests (`open-at`
+  `750981c2…`, `open-at-games` `01028f9c…`), and the pinned uncompressed
+  synthetic set of the import tests (`889392e9…`). The six published
+  artifacts keep their old digests until unemu-media pushes them again.
+  Releases 0.0.1 and 0.0.2 read sets and packages with a name on every
+  layer: measured with scratch builds of both tags reading titled copies of
+  the artifacts each builds itself (manifest decode, store resolution and
+  publication check, library summaries, a machine from the named packages,
+  a firmware edit, a set re-import and a registry pull), so the ASSUMED
+  point of recipes.md §3.10 holds.
 - **2026-11-17 — Text fields in the desktop window cut, copy and paste
   with the host clipboard:** the window keeps egui's built-in clipboard
   shortcuts off, and eframe was built without its `clipboard` feature, so

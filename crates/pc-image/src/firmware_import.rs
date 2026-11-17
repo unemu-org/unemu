@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Read-only ROM-folder matching, tag-last package import and metadata
-//! revisions; machine-images §5.3. Source names are local diagnostics only;
-//! exact hashes identify each chip. Every layer carries an SPDX licence next
+//! revisions; machine-images §5.3. Exact hashes identify each chip; a
+//! source's file name, without its folder, is only the name its layer
+//! exports to (recipes.md §3.10). Every layer carries an SPDX licence next
 //! to its redistribution mark; the generated README and the config are open
 //! only when every other layer is.
 
 use crate::firmware::{self, Fit, PcFirmwareRules};
 use crate::{invalid, Result};
 use image_store::{
+    export_name,
     firmware::{ArchiveFormat, Config, Part, Provenance, Readme, Rom, Source, Validator},
     license::{self, Expression},
     media_set::{Extra, ExtraKind, MediaFormats},
@@ -484,6 +486,17 @@ pub struct Statement {
     pub min_app_version: Option<image_store::compat::AppVersion>,
 }
 
+/// Record that a layer takes `name`, and with it `name.zst`, ignoring case.
+fn occupy(taken: &mut BTreeSet<String>, name: &str) {
+    taken.insert(export_name::key(name));
+    taken.insert(export_name::key(&format!("{name}{}", export_name::ZST)));
+}
+/// Whether neither `name` nor `name.zst` is taken, ignoring case.
+fn free(taken: &BTreeSet<String>, name: &str) -> bool {
+    !taken.contains(&export_name::key(name))
+        && !taken.contains(&export_name::key(&format!("{name}{}", export_name::ZST)))
+}
+
 /// The README a statement asks for.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum ReadmeChoice {
@@ -562,12 +575,20 @@ fn payload(path: &Path, kind: &str, digest: &Digest, size: u64) -> Result<Descri
     }
     Ok(d)
 }
+/// The name a ROM image, source archive or document is exported under: its
+/// file name as given, without the folder, refused unless it is a valid
+/// input name ([`export_name::input_problem`]).
 fn file_name(path: &Path) -> Result<String> {
-    Ok(path
+    let name = path
         .file_name()
         .and_then(|s| s.to_str())
-        .ok_or_else(|| invalid("file name must be UTF-8"))?
-        .to_owned())
+        .ok_or_else(|| invalid("file name must be UTF-8"))?;
+    if let Some(problem) = export_name::input_problem(name) {
+        return Err(invalid(format!(
+            "{path:?}: file name {name:?} {problem}; rename the file"
+        )));
+    }
+    Ok(name.to_owned())
 }
 /// A zip or POSIX tar archive, recognized by its signature (PKWARE APPNOTE
 /// §4.3.7 local file header or §4.3.16 end record; POSIX.1-2001 ustar magic
@@ -992,11 +1013,6 @@ fn apply(config: &mut Config, statement: &Statement) -> Result<()> {
     Ok(())
 }
 
-const TITLE: &str = "org.opencontainers.image.title";
-fn titled(descriptor: &mut Descriptor, name: &str) {
-    descriptor.annotations.insert(TITLE.into(), name.into());
-}
-
 /// A README written by hand, with CR LF and lone CR line ends turned into
 /// LF, as the generated text has.
 fn hand_written(text: &str) -> Result<String> {
@@ -1045,7 +1061,7 @@ fn assemble(
     if let (Some((archive, class)), Some(link)) = (source, link) {
         let mut d = archive.descriptor;
         license::mark(&mut d, class.as_ref());
-        titled(&mut d, &archive.filename);
+        export_name::assign(&mut d, &archive.filename);
         config.sources.push(Source {
             blob: link,
             filename: archive.filename,
@@ -1058,7 +1074,7 @@ fn assemble(
     let mut marks = Vec::new();
     for ((payload, mut d, license), extra) in extras.into_iter().zip(&config.extras) {
         license::mark(&mut d, license.as_ref());
-        titled(&mut d, &extra.filename);
+        export_name::assign(&mut d, &extra.filename);
         marks.push(license);
         pool.push((payload, d));
     }
@@ -1084,7 +1100,7 @@ fn assemble(
     let bytes = text.clone().into_bytes();
     let mut readme = Descriptor::new(mt::MARKDOWN, Digest::of(&bytes), bytes.len() as u64);
     license::mark(&mut readme, metadata.as_ref());
-    titled(&mut readme, "README.md");
+    export_name::assign(&mut readme, export_name::README);
     if hand.is_some() {
         readme
             .annotations
@@ -1113,11 +1129,19 @@ fn assemble(
             .ok_or_else(|| invalid("package payload missing from the plan"))?;
         payloads.push(pool.swap_remove(index));
     }
-    let mut manifest = Manifest::new_firmware(
-        &config.platform,
-        config_descriptor,
-        payloads.iter().map(|(_, d)| d.clone()).collect(),
-    )?;
+    // Every layer exports to its own file: a ROM image, the source archive or
+    // a document named like another layer, or like README.md, is refused,
+    // naming both inputs.
+    let layers: Vec<Descriptor> = payloads.iter().map(|(_, d)| d.clone()).collect();
+    export_name::check_with(&layers, &|index| match &payloads[index] {
+        (Payload::File(path), _) => format!("{path:?}"),
+        (Payload::Memory(_), _) => "the README".into(),
+        (Payload::Stored, d) => format!(
+            "the stored layer {:?}",
+            export_name::of(d).unwrap_or(&d.digest.to_string())
+        ),
+    })?;
+    let mut manifest = Manifest::new_firmware(&config.platform, config_descriptor, layers)?;
     annotate(&mut manifest, &config, all_open);
     Ok(Plan {
         manifest,
@@ -1179,7 +1203,7 @@ pub fn generated_readme(config: &Config, manifest: &Manifest) -> String {
 /// none is supplied and the host clock never enters a package.
 fn annotate(manifest: &mut Manifest, config: &Config, all_open: bool) {
     let annotations = &mut manifest.annotations;
-    annotations.insert(TITLE.into(), config.name.clone());
+    annotations.insert(export_name::TITLE.into(), config.name.clone());
     for (key, value) in [
         ("org.opencontainers.image.description", &config.description),
         ("org.opencontainers.image.vendor", &config.vendor),
@@ -1326,10 +1350,9 @@ fn plan(
     }
     let mut roms = Vec::new();
     for ((digest, size, kind), path) in bindings.into_iter().zip(&candidate.sources) {
-        roms.push((
-            Payload::File(path.clone()),
-            payload(path, kind, &digest, size)?,
-        ));
+        let mut d = payload(path, kind, &digest, size)?;
+        export_name::assign(&mut d, &file_name(path)?);
+        roms.push((Payload::File(path.clone()), d));
     }
     let mut extras = Vec::new();
     for (index, extra) in attachments.iter().enumerate() {
@@ -1619,10 +1642,25 @@ pub fn publish_as(
     unjudged(judged, &digest)?;
     if let Some(existing) = existing(store, tag, &plan.manifest, catalogue)? {
         if existing.digest != digest && *statement != Statement::default() {
+            let stored =
+                Manifest::decode(&store.read_verified(&existing, image_store::MAX_SMALL_BLOB)?)?;
+            if unnamed(&stored) == unnamed(&plan.manifest) {
+                let names: Vec<&str> = stored.layers.iter().filter_map(export_name::of).collect();
+                return Err(invalid(format!(
+                    "{tag} already holds this package with the same metadata, only under other \
+                     file names ({}); a package keeps the names it was imported with: rename \
+                     the files to match, or import without the statement to keep it",
+                    if names.is_empty() {
+                        "none, as earlier releases stored packages".to_owned()
+                    } else {
+                        names.join(", ")
+                    }
+                )));
+            }
             return Err(invalid(format!(
-                "{tag} already holds these ROMs with other metadata, licences or minimum \
-                 version; an edit (image firmware edit, or Edit metadata… in the library) \
-                 publishes them as a new revision"
+                "{tag} already holds these ROMs with other metadata, licences, minimum \
+                 version or file names; an edit (image firmware edit, or Edit metadata… in the \
+                 library) publishes them as a new revision"
             )));
         }
         // An earlier package with the same ROMs is kept as it is.
@@ -1630,6 +1668,14 @@ pub fn publish_as(
         return Ok(existing);
     }
     store_plan(store, plan, tag, catalogue, judged)
+}
+/// `manifest` without its layers' export file names.
+fn unnamed(manifest: &Manifest) -> Manifest {
+    let mut manifest = manifest.clone();
+    for layer in &mut manifest.layers {
+        layer.annotations.remove(export_name::TITLE);
+    }
+    manifest
 }
 /// Refuse a package other than the one the caller judged.
 fn unjudged(judged: Option<&Digest>, digest: &Digest) -> Result<()> {
@@ -1773,11 +1819,66 @@ fn edit_plan(
             .cloned()
             .ok_or_else(|| invalid("package layer missing"))
     };
+    // A ROM layer keeps the file name it was imported under. A package
+    // written before ROM layers had names gets `<rom id>.bin`, or
+    // `<rom id>-<n>.bin` for its n-th chip, since the original name is gone.
+    // When that is no valid input name or another layer's, it gets
+    // `<rom id>-rom.bin` (`<rom id>-rom-<n>.bin`); failing both, the edit is
+    // refused.
+    let mut blobs = Vec::new();
+    for rom in &config.roms {
+        blobs.extend(rom.blob.iter().map(|blob| (rom, None, blob)));
+        blobs.extend(
+            (rom.parts.iter().enumerate()).map(|(chip, part)| (rom, Some(chip), &part.blob)),
+        );
+    }
+    let stored = blobs
+        .iter()
+        .map(|(_, _, digest)| layer(digest))
+        .collect::<Result<Vec<_>>>()?;
+    let kept = |d: &Descriptor| {
+        export_name::decoded(d)
+            .or(export_name::of(d))
+            .map(str::to_owned)
+    };
+    let mut taken = BTreeSet::new();
+    let new_source = statement.source.as_deref().map(file_name).transpose()?;
+    let names = (config.extras.iter().map(|e| e.filename.clone()))
+        .chain(config.sources.iter().map(|s| s.filename.clone()))
+        .chain(new_source)
+        .chain([export_name::README.to_owned()])
+        .chain(stored.iter().filter_map(kept));
+    for name in names {
+        occupy(&mut taken, &name);
+    }
     let mut roms = Vec::new();
-    for (digest, _, kind) in config.payloads() {
-        if kind == mt::FIRMWARE {
-            roms.push((Payload::Stored, layer(&digest)?));
-        }
+    for ((rom, chip, _), mut d) in blobs.into_iter().zip(stored) {
+        let name = match kept(&d) {
+            Some(name) => name,
+            None => {
+                let chip = chip
+                    .map(|chip| format!("-{}", chip + 1))
+                    .unwrap_or_default();
+                let choices = [
+                    format!("{}{chip}.bin", rom.id),
+                    format!("{}-rom{chip}.bin", rom.id),
+                ];
+                let name = (choices.iter())
+                    .find(|name| export_name::input_problem(name).is_none() && free(&taken, name))
+                    .cloned()
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "ROM {}: the package stores it without a file name, and neither {:?} \
+                             nor {:?} can name it; import the ROM again from its file",
+                            rom.id, choices[0], choices[1]
+                        ))
+                    })?;
+                occupy(&mut taken, &name);
+                name
+            }
+        };
+        export_name::assign(&mut d, &name);
+        roms.push((Payload::Stored, d));
     }
     let current = current_rom_license(&config, &image.manifest);
     // A README written by hand stays unless the statement replaces it.

@@ -374,7 +374,12 @@ plain file (decision-37):
   for unmodified media, under its recorded file name;
 - each extra under its `file_name`;
 - `config.toml`, `metadata.json` and `manifest.json` as stored;
-- `SHA256SUMS` over all of them.
+- `SHA256SUMS` over all of them;
+- `EXPORT-VERSION`, the version of this layout.
+
+No medium, ROM chip, source archive or extra takes one of these five names,
+ignoring case, and in a firmware package none takes `README.md`, the name of
+its README layer.
 
 `--files` also writes the content of every built file system as a folder
 tree with the names and times the recipe pinned, with the volumes of a split
@@ -392,10 +397,16 @@ archive itself kept lists it as an extra.
 So that a script needs no `upcli`: every layer descriptor carries the
 annotation `org.opencontainers.image.title` with its export file name, the
 convention ORAS uses to name pulled files [SRC 11]. A layer whose media type
-ends in `+zstd` is one Zstandard frame; `zstd -d` gives the decoded bytes,
-and `unemu.decoded.digest` is their SHA-256 (machine-images §2 [REPO]).
-ASSUMED: releases 0.0.1 and 0.0.2 ignore an unknown descriptor annotation,
-as they ignore unknown manifest annotations; the checker step verifies it.
+ends in `+zstd` is one Zstandard frame titled with `.zst` after its file
+name (`x86BOOT.img.zst`); `zstd -d` on the pulled file gives the decoded
+bytes under the file name itself, and `unemu.decoded.digest` is their
+SHA-256 (machine-images §2, Export file names [REPO]; decision-37,
+amendment of point 3). The name rules and the uniqueness of names apply to
+the decoded name. MEASURED on 2026-11-17: releases 0.0.1 and 0.0.2 read sets
+and packages with a title on every layer; scratch builds of each tag read
+titled copies of the artifacts that release builds itself through its own
+decoding, store resolution, library summaries, New machine, firmware edit,
+set re-import and registry pull.
 
 ## 4. The syntax decision
 
@@ -1835,7 +1846,8 @@ None of these questions waits for a decision now; the corpus check left
 five points of its own, listed in §4.6. Two small readings are the
 author's and can be corrected without touching anything else: `none` stays
 a value of every choice kind in `[needs]` (§6.7), and the ASSUMED point of
-§3.10 is left to A3 (§19). The one of §6.1 was settled by the corpus check.
+§3.10 was left to A3 (§19), which measured it on 2026-11-17. The one of §6.1
+was settled by the corpus check.
 
 ## 17. Differences from the earlier design
 
@@ -2001,8 +2013,10 @@ descriptor, written by the importers and builders. decision-37 is
 accepted, so this is in the pre-push set: it changes manifest bytes, and
 landing it later would leave the six artifacts without file names until an
 `r2`. Depends on: nothing. Must prove: releases 0.0.1 and 0.0.2 read a
-manifest with the annotation (the ASSUMED point of §3.10); an ORAS pull
-names the files.
+manifest with the annotation (MEASURED 2026-11-17 with scratch builds of
+v0.0.1 and v0.0.2 reading titled artifacts, §3.10); an ORAS pull names the
+files (a test pulls each of the six artifacts by title and decodes the
+`.zst` files back to the fixtures).
 
 **A4. The push. [M] [um]**
 Not a bead of this repository: the maintainer deletes the six artifacts and

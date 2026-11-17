@@ -1332,6 +1332,7 @@ impl ImportDialog {
                     path: disk.path.clone(),
                     label: Some(disk.label.trim().into()),
                     format: disk.format.map(str::to_owned),
+                    file_name: None,
                 })
                 .collect(),
             extras: self
@@ -2060,6 +2061,7 @@ pub(crate) mod tests {
                 path: source,
                 label: None,
                 format: None,
+                file_name: None,
             }],
             extras: Vec::new(),
             compress: true,

@@ -546,9 +546,11 @@ fn a_copyleft_rom_is_open_only_with_its_source_archive_which_it_links() {
     assert_eq!(archive.media_type, "application/x-tar+zstd");
     assert_eq!(archive.decoded_size().unwrap(), 16 * 1024);
     assert_eq!(class(archive).as_deref(), Some("GPL-2.0-only"));
+    // Its export file name has `.zst` after the archive's, so `zstd -d`
+    // on the pulled file gives back `copyleft-src.tar`.
     assert_eq!(
         archive.annotations["org.opencontainers.image.title"],
-        "copyleft-src.tar"
+        "copyleft-src.tar.zst"
     );
     let rom = layer(&manifest, mt::FIRMWARE);
     assert_eq!(
@@ -935,12 +937,22 @@ fn packages_written_before_licences_stay_readable_and_user_supplied() {
     };
     let target = "private/firmware/ibm-pc/synthetic-open-bios:r2";
     firmware_import::edit(&store, &tag_of(&store, &candidate), target, &restated, &cat).unwrap();
-    let (manifest, _) = resolve(&store, target, &cat);
+    let (manifest, config) = resolve(&store, target, &cat);
     assert_eq!(
         class(layer(&manifest, mt::FIRMWARE)).as_deref(),
         Some("GPL-3.0-or-later")
     );
     assert!(manifest.layers.iter().any(|d| d.media_type == mt::MARKDOWN));
+    // The ROM's original file name is gone, so the revision names its layer
+    // after the ROM id. The new tar archive is stored compressed.
+    assert_eq!(
+        titles(&manifest),
+        [
+            format!("{}.bin", config.roms[0].id).as_str(),
+            "synthetic-src.tar.zst",
+            "README.md"
+        ]
+    );
     // A changed new package under a tag is still a conflict.
     let other = t.store("other");
     firmware_import::publish(&other, &candidate, &[], &cat).unwrap();
@@ -1361,4 +1373,271 @@ fn an_edit_keeps_a_hand_written_readme_unless_asked_to_generate_it() {
     assert!(!hand);
     assert_eq!(text, generated);
     assert!(text.contains("Another quirk."));
+}
+
+/// The export file name of every layer, in manifest order.
+fn titles(manifest: &Manifest) -> Vec<&str> {
+    manifest
+        .layers
+        .iter()
+        .map(|d| image_store::export_name::of(d).unwrap_or("<none>"))
+        .collect()
+}
+
+#[test]
+fn every_layer_names_the_file_it_exports_to() {
+    let t = Temp::new();
+    let cat = catalogue();
+    let store = t.store("store");
+    // A catalogue ROM found in a folder, its pinned source archive and a document.
+    let candidate = scanned(&t, OPEN_ROM, &cat);
+    let extras = [Attachment {
+        path: t.file("Manual (rev 2).pdf", b"synthetic manual"),
+        dos_name: None,
+    }];
+    let statement = with_source(t.file("synthetic-src.tar", &pinned()));
+    let preview =
+        firmware_import::preview_manifest_with(&candidate, &extras, &statement, &cat).unwrap();
+    // The ROM and the tar archive are stored compressed, so each title has
+    // `.zst` after the file name; the short document and the README are raw.
+    let names = [
+        "rom.bin.zst",
+        "synthetic-src.tar.zst",
+        "Manual (rev 2).pdf",
+        "README.md",
+    ];
+    assert_eq!(titles(&preview.manifest), names);
+    image_store::export_name::check(&preview.manifest.layers).unwrap();
+    firmware_import::publish_with(&store, &candidate, &extras, &statement, &cat).unwrap();
+    let (manifest, _) = resolve(&store, &tag_of(&store, &candidate), &cat);
+    assert_eq!(titles(&manifest), names);
+    assert_eq!(
+        image_store::export_name::of(&manifest.config),
+        None,
+        "the config is exported as config.toml without a name of its own"
+    );
+    // An edit keeps every name.
+    let target = "private/firmware/ibm-pc/synthetic-open-bios:r2";
+    let notes = Statement {
+        notes: Some("Edited.".into()),
+        ..Statement::default()
+    };
+    firmware_import::edit(&store, &tag_of(&store, &candidate), target, &notes, &cat).unwrap();
+    assert_eq!(titles(&resolve(&store, target, &cat).0), names);
+
+    // Each chip of a split ROM is named after its own file.
+    let folder = t.0.join("chips");
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(folder.join("U27 even.bin"), [EVEN_CHIP; 16384]).unwrap();
+    fs::write(folder.join("U47 odd.bin"), [ODD_CHIP; 16384]).unwrap();
+    let mut scan = firmware_import::scan(&[folder], &cat).unwrap();
+    let chips = scan.candidates.remove(0);
+    let preview = firmware_import::preview_manifest(&chips, &[]).unwrap();
+    assert_eq!(
+        titles(&preview),
+        ["U27 even.bin.zst", "U47 odd.bin.zst", "README.md"]
+    );
+
+    // A document named like the README or like a ROM image, ignoring case,
+    // is refused before anything is written, naming both inputs, as is a
+    // name that one of macOS, Linux or Windows would not take.
+    let before = store.list_tags(None, 100).unwrap().tags.len();
+    let rom_path = format!("{:?}", candidate.sources[0]);
+    for (name, other) in [
+        ("readme.MD", "the README"),
+        ("ROM.BIN", rom_path.as_str()),
+        ("rom.bin", rom_path.as_str()),
+        ("rom.bin.zst", rom_path.as_str()),
+    ] {
+        let folder = t.0.join(format!("clash-{}", name.to_lowercase()));
+        fs::create_dir_all(&folder).unwrap();
+        let path = folder.join(name);
+        fs::write(&path, format!("document {name}")).unwrap();
+        let extras = [Attachment {
+            path: path.clone(),
+            dos_name: None,
+        }];
+        let error = firmware_import::publish_with(&store, &candidate, &extras, &statement, &cat)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(other)
+                && error.contains(&format!("{path:?}"))
+                && error.contains("would both be exported as")
+                && error.contains("rename one"),
+            "{name}: {error}"
+        );
+    }
+    let error = firmware_import::publish_with(
+        &store,
+        &candidate,
+        &[Attachment {
+            path: t.file("SHA256SUMS", b"sums"),
+            dos_name: None,
+        }],
+        &statement,
+        &cat,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("the export writes itself"), "{error}");
+    let rom = t.file("aux.bin", &[0x55; 8192]);
+    let unsafe_rom = firmware_import::unlisted(&rom, "aux-rom", "option-rom", &cat).unwrap();
+    let error = firmware_import::preview_manifest(&unsafe_rom, &[])
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("\"aux.bin\"") && error.contains("device name"),
+        "{error}"
+    );
+    assert_eq!(store.list_tags(None, 100).unwrap().tags.len(), before);
+}
+
+/// The same ROM from a file of another name is this package under other
+/// file names: an import with a statement says so instead of naming other
+/// metadata.
+#[test]
+fn an_import_that_differs_only_in_file_names_says_so() {
+    let t = Temp::new();
+    let cat = catalogue();
+    let store = t.store("store");
+    let candidate = scanned(&t, OPEN_ROM, &cat);
+    let statement = with_source(t.file("synthetic-src.tar", &pinned()));
+    firmware_import::publish_with(&store, &candidate, &[], &statement, &cat).unwrap();
+    let folder = t.0.join("renamed");
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(folder.join("BIOS.BIN"), [OPEN_ROM; 32768]).unwrap();
+    let mut scan = firmware_import::scan(&[folder], &cat).unwrap();
+    let renamed = scan.candidates.remove(0);
+    let error = firmware_import::publish_with(&store, &renamed, &[], &statement, &cat)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains(
+            "only under other file names (rom.bin.zst, synthetic-src.tar.zst, README.md)"
+        ),
+        "{error}"
+    );
+    let other = Statement {
+        notes: Some("Other notes.".into()),
+        ..with_source(t.file("synthetic-src.tar", &pinned()))
+    };
+    let error = firmware_import::publish_with(&store, &renamed, &[], &other, &cat)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("other metadata, licences, minimum version or file names"),
+        "{error}"
+    );
+    // Without a statement the stored package is kept, whatever its names.
+    firmware_import::publish(&store, &renamed, &[], &cat).unwrap();
+}
+
+/// A package written before ROM layers had names, as releases 0.0.1 and
+/// 0.0.2 wrote one: every ROM payload raw and user-supplied, without a
+/// title, no README, and `extras` as documents named by their file names.
+fn unnamed_package(
+    store: &Store,
+    candidate: &Candidate,
+    extras: &[(&str, &[u8])],
+    cat: &[assembly::FirmwareEntry],
+) -> String {
+    let mut config = candidate.config.clone();
+    let mut layers = Vec::new();
+    for ((digest, size, kind), path) in candidate
+        .config
+        .payloads()
+        .into_iter()
+        .zip(&candidate.sources)
+    {
+        let blob = store
+            .import(fs::read(path).unwrap().as_slice(), None)
+            .unwrap();
+        assert_eq!(blob.digest, digest);
+        let mut d = Descriptor::new(kind, blob.digest, size);
+        license::mark(&mut d, None);
+        layers.push(d);
+    }
+    for (name, bytes) in extras {
+        let blob = store.import(*bytes, None).unwrap();
+        let mut d = Descriptor::new(mt::EXTRA, blob.digest.clone(), blob.size);
+        license::mark(&mut d, None);
+        image_store::export_name::assign(&mut d, name);
+        layers.push(d);
+        config.extras.push(image_store::media_set::Extra {
+            blob: blob.digest,
+            filename: (*name).into(),
+            size: blob.size,
+            kind: image_store::media_set::ExtraKind::Other,
+            dos_name: None,
+        });
+    }
+    let text = config.encode().unwrap();
+    let stored = store.import(text.as_slice(), None).unwrap();
+    let mut config = Descriptor::new(mt::FIRMWARE_CONFIG, stored.digest, stored.size);
+    license::mark(&mut config, None);
+    let manifest = Manifest::new_firmware("ibm-pc", config, layers).unwrap();
+    let d = store.import_manifest(&manifest).unwrap();
+    let tag = tag_of(store, candidate);
+    store
+        .update_tag(&tag, &d, None, &Validator(&PcFirmwareRules(cat)))
+        .unwrap();
+    tag
+}
+
+/// An edit of a package stored without ROM names names each chip after the
+/// ROM id and its position, and takes the `-rom` form when another layer
+/// has the plain one.
+#[test]
+fn an_edit_names_the_rom_layers_of_a_package_stored_without_names() {
+    let t = Temp::new();
+    let cat = catalogue();
+    let store = t.store("store");
+    let notes = Statement {
+        notes: Some("Edited.".into()),
+        ..Statement::default()
+    };
+    let folder = t.0.join("chips");
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(folder.join("U27 even.bin"), [EVEN_CHIP; 16384]).unwrap();
+    fs::write(folder.join("U47 odd.bin"), [ODD_CHIP; 16384]).unwrap();
+    let chips = firmware_import::scan(&[folder], &cat)
+        .unwrap()
+        .candidates
+        .remove(0);
+    let id = chips.config.roms[0].id.clone();
+    assert_eq!(chips.config.roms[0].parts.len(), 2);
+    let tag = unnamed_package(&store, &chips, &[], &cat);
+    let target = format!("private/firmware/ibm-pc/{}:r2", chips.catalogue_id);
+    firmware_import::edit(&store, &tag, &target, &notes, &cat).unwrap();
+    assert_eq!(
+        titles(&resolve(&store, &target, &cat).0),
+        [
+            format!("{id}-1.bin").as_str(),
+            format!("{id}-2.bin").as_str(),
+            "README.md"
+        ]
+    );
+
+    // A document already has the plain name, so the ROM takes the `-rom` one.
+    let rom = t.file("option.bin", &[0x66; 2048]);
+    let unlisted = firmware_import::unlisted(&rom, "synthetic-option", "option-rom", &cat).unwrap();
+    let id = unlisted.config.roms[0].id.clone();
+    let plain = format!("{id}.bin");
+    let tag = unnamed_package(
+        &store,
+        &unlisted,
+        &[(plain.as_str(), &b"a document"[..])],
+        &cat,
+    );
+    let target = "private/firmware/ibm-pc/synthetic-option:r2";
+    firmware_import::edit(&store, &tag, target, &notes, &cat).unwrap();
+    assert_eq!(
+        titles(&resolve(&store, target, &cat).0),
+        [
+            format!("{id}-rom.bin").as_str(),
+            plain.as_str(),
+            "README.md"
+        ]
+    );
 }

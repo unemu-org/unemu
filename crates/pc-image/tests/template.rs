@@ -333,39 +333,44 @@ fn template_machines_validate_lower_and_describe_themselves() {
 /// The digests of this template generation. Any change to the templates, or
 /// to what they are built from, changes them; version tags never move, so a
 /// changed template needs a new `pc_image::template::VERSION` and new pins.
-/// The one exception: the rename of the platform id to `ibm-pc` moved every
-/// pin of this file once under the same tags, because the artifacts published
-/// before the first public release are replaced, not revised.
+/// Two exceptions moved every pin of this file under the same tags, because
+/// the artifacts published before the first public release are replaced, not
+/// revised: the rename of the platform id to `ibm-pc`, and the export file
+/// names on every layer of the firmware packages. A template copies the
+/// packages' ROM and source layers with their names, and its manifest names
+/// the package digests in `unemu.firmware.sources`, so any change to a
+/// package moves these pins too.
 const PINNED: [(&str, &str); 2] = [
     (
         "unemu/open-at",
-        "sha256:1c6667cf334a6b687fc369ad874c04c4e282ffbcf14e405c99db05f2c9528076",
+        "sha256:750981c254e3107c46808f43c109ed2ca155f00204f3ccc0635d57c2ad3fd363",
     ),
     (
         "unemu/open-at-games",
-        "sha256:df210c6193b99e1ec0dcf2b53f783010432b65114c755b9e42132b3d51a0875c",
+        "sha256:01028f9cd51b45053ee70b38af5be29f591537fc719e48f7c8f5572c7ce23a1f",
     ),
 ];
 
-/// The firmware packages as the unemu-media repository publishes them
-/// (`recipes/*/firmware.toml`), read back anonymously from the registry, under
-/// the names they take when they are pushed again with the platform in the
-/// path and the revision tag: the names change no manifest byte. The local
-/// build must give these digests: a pin that fails means the two
-/// repositories no longer build the same package, and a package's revision
-/// tag never moves.
+/// The firmware packages as the unemu-media repository builds them
+/// (`recipes/*/firmware.toml`) for the push that replaces the published ones
+/// under the names with the platform in the path and the revision tag: the
+/// names change no manifest byte, but the export file name now on every
+/// layer does, so the packages read back from the registry before that push
+/// have other digests. The local build must give these digests: a pin that
+/// fails means the two repositories no longer build the same package, and a
+/// package's revision tag never moves.
 const FIRMWARE_PINNED: [(&str, &str); 3] = [
     (
         "unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1",
-        "sha256:61f098cd1b4419563575160964281921a6c4480a3001673ab95ab0f1ff14efe6",
+        "sha256:e3c226ae2cb8935ffacf9fb806124d1c1219388c8af4f0fb60ef5a96fbd86c58",
     ),
     (
         "unemu/firmware/ibm-pc/vgabios-0.9d-unemu.1-std:r1",
-        "sha256:1cb3cf2b82afefd0c1453d88468b0ba432e9944415ac911bccf65d3dd4e75db0",
+        "sha256:179a11dbd20741e1e3775388ed42bdf9de2b62e9136c0467271d34271b769d57",
     ),
     (
         "unemu/firmware/ibm-pc/xub-r638-xtp-ata1f0:r1",
-        "sha256:912d74c3b1c83d0439866304693efd25512be362598a45ee0fdd36df0d419d7a",
+        "sha256:7d42e80e6297cadbd2c08c1c26a19a4a68c33c9651aceec2c98053bf81f90547",
     ),
 ];
 
@@ -955,25 +960,26 @@ fn another_file_at_a_media_fixture_path_is_refused_before_any_set_is_tagged() {
     assert_eq!(media_tags(&store), 0);
 }
 
-/// The installation sets as the unemu-media repository publishes them
-/// (`recipes/freedos-1.4-floppy/media.toml`), read back anonymously from the
-/// registry, under the revision tags they take when they are pushed again
-/// with the platform in the path: the names change no manifest byte. The
-/// local build must give these digests: a pin that fails means the two
-/// repositories no longer build the same set, and a set's revision tag never
-/// moves.
+/// The installation sets as the unemu-media repository builds them
+/// (`recipes/freedos-1.4-floppy/media.toml`) for the push that replaces the
+/// published ones under the revision tags with the platform in the path: the
+/// names change no manifest byte, but the export file name now on every
+/// layer does, so the sets read back from the registry before that push have
+/// other digests. The local build must give these digests: a pin that fails
+/// means the two repositories no longer build the same set, and a set's
+/// revision tag never moves.
 const MEDIA_PINNED: [(&str, &str); 3] = [
     (
         "unemu/media/ibm-pc/freedos:1.4-r1",
-        "sha256:137d9bbcfdfe2a6cfa5682ead5e1351a73c1249ddfde2031187efda44965b130",
+        "sha256:545f287b5967093633426446465a48900b59d2049112666c2a4d509a0856de1f",
     ),
     (
         "unemu/media/ibm-pc/freedos:1.4-1.2m-r1",
-        "sha256:1d77d11e7422b8164c21dc37b8dcbe160018ea2475b5c5afa136cb3489f58037",
+        "sha256:53e81e4e4ef207feba6b32745157d1b1c8c2e6cbb4e9f69ce013ccee3e6e5924",
     ),
     (
         "unemu/media/ibm-pc/freedos:1.4-720k-r1",
-        "sha256:9ec1fea01076803aba5a27846c28143ebe21f63ab6fd163a6c57b1a6d373baa0",
+        "sha256:29c2d9d224ec41aae0b3b5efe228d53e41c3d4bffd1a912cbc6534c5cfc4d5dc",
     ),
 ];
 
@@ -1029,4 +1035,151 @@ fn two_media_builds_from_different_fixture_copies_give_the_published_sets() {
         .iter()
         .flat_map(|b| &b.tags)
         .all(|(_, o)| *o == Outcome::Present));
+}
+
+/// A minimal ORAS-style pull out of the local store: each layer's stored
+/// bytes written into the empty folder `to` under the layer's
+/// `org.opencontainers.image.title`, the way `oras pull` names the files it
+/// pulls. A layer without a name, a name that is not one plain file name and
+/// a name another layer already took, ignoring case as macOS and Windows do,
+/// fail the pull. Returns the names in manifest order.
+fn oras_pull(store: &Store, image: &image_store::Descriptor, to: &std::path::Path) -> Vec<String> {
+    use std::io::Write;
+    let manifest =
+        Manifest::decode_for_summary(&store.read_verified(image, MAX_SMALL_BLOB).unwrap()).unwrap();
+    image_store::export_name::check(&manifest.layers).unwrap();
+    fs::create_dir_all(to).unwrap();
+    let mut names: Vec<String> = Vec::new();
+    for layer in &manifest.layers {
+        let name = layer
+            .annotations
+            .get("org.opencontainers.image.title")
+            .unwrap_or_else(|| panic!("layer {} has no file name", layer.digest));
+        assert!(
+            !matches!(name.as_str(), "" | "." | "..") && !name.contains(['/', '\\']),
+            "{name:?} is not a plain file name"
+        );
+        assert!(
+            names
+                .iter()
+                .all(|n| n.to_lowercase() != name.to_lowercase()),
+            "{name:?} names two layers"
+        );
+        let bytes = fs::read(store.blob_file_path(&layer.digest, layer.size).unwrap()).unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(to.join(name))
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
+        assert_eq!(
+            image_store::Digest::of(&fs::read(to.join(name)).unwrap()),
+            layer.digest
+        );
+        names.push(name.clone());
+    }
+    names
+}
+
+/// The file name of a fixture path, without its folders.
+fn file_name(relative: &str) -> String {
+    std::path::Path::new(relative)
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// What `zstd -d` does to a pulled `NAME.zst` in `folder`: writes `NAME`
+/// beside it, the frame's decoded bytes, and returns them. The frame is
+/// decoded from the pulled file's own bytes, imported into an empty store
+/// for the layer `layer` they are.
+fn zstd_d(folder: &std::path::Path, name: &str, layer: &image_store::Descriptor) -> Vec<u8> {
+    let decoded_name = name
+        .strip_suffix(".zst")
+        .expect("a compressed layer's name ends in .zst");
+    let scratch = Store::open(folder.join(".decode")).unwrap();
+    scratch
+        .import(
+            fs::File::open(folder.join(name)).unwrap(),
+            Some(&layer.digest),
+        )
+        .unwrap();
+    let bytes = scratch.read_verified(layer, 1 << 30).unwrap();
+    fs::remove_dir_all(folder.join(".decode")).unwrap();
+    fs::write(folder.join(decoded_name), &bytes).unwrap();
+    bytes
+}
+
+/// Every layer of each package and set names its file, so a generic OCI
+/// client writes the fixtures' own file names: the ROM image, its source
+/// archive and the README of a package; the disks, the licence index, the
+/// source archive and the metadata of a set. A compressed layer's name has
+/// `.zst` after the fixture's, and decoding the pulled file gives the
+/// fixture byte for byte under its own name.
+#[test]
+fn an_oras_style_pull_writes_each_layer_under_its_fixture_file_name() {
+    if !firmware_present(&template::FIRMWARE) || !media_present() {
+        return;
+    }
+    let t = Temp::new("template-oras-pull");
+    let store = Store::open(t.0.join("store")).unwrap();
+    let pulled = t.0.join("pulled");
+    // Pull one artifact, decode every `.zst` file as `zstd -d` would, and
+    // compare each file with the fixture of its name; returns the pulled
+    // names.
+    let pull_and_decode = |image: &image_store::Descriptor, folder: &str, fixtures: &[&str]| {
+        let to = pulled.join(folder);
+        let names = oras_pull(&store, image, &to);
+        let manifest =
+            Manifest::decode_for_summary(&store.read_verified(image, MAX_SMALL_BLOB).unwrap())
+                .unwrap();
+        for ((layer, name), relative) in manifest.layers.iter().zip(&names).zip(fixtures) {
+            let fixture = fs::read(vendor().join(relative)).unwrap();
+            let file = file_name(relative);
+            if layer.is_compressed() {
+                assert_eq!(*name, format!("{file}.zst"));
+                assert_eq!(zstd_d(&to, name, layer), fixture, "{relative}");
+            } else {
+                assert_eq!(*name, file);
+            }
+            assert_eq!(fs::read(to.join(&file)).unwrap(), fixture, "{relative}");
+        }
+        names
+    };
+    let packages = template::build_firmware(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    for (built, source) in packages.iter().zip(&template::FIRMWARE) {
+        let names = pull_and_decode(
+            &built.descriptor,
+            source.catalogue_id,
+            &[source.rom, source.source_archive],
+        );
+        assert_eq!(
+            names,
+            [
+                format!("{}.zst", file_name(source.rom)),
+                format!("{}.zst", file_name(source.source_archive)),
+                "README.md".into()
+            ]
+        );
+    }
+    let sets = template::build_media(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    for (built, source) in sets.iter().zip(&template::MEDIA) {
+        let files: Vec<&str> = source
+            .disks
+            .iter()
+            .chain(source.release.extras.iter().map(|(file, _)| file))
+            .map(|file| file.path)
+            .collect();
+        let names = pull_and_decode(&built.descriptor, source.tag, &files);
+        let mut expected: Vec<String> = files
+            .iter()
+            .map(|path| format!("{}.zst", file_name(path)))
+            .collect();
+        expected.push("metadata.json".into());
+        assert_eq!(names, expected);
+        assert_eq!(names[0], "x86BOOT.img.zst");
+    }
 }

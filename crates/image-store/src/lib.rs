@@ -16,6 +16,7 @@
 mod artifact;
 pub mod codec;
 pub mod compat;
+pub mod export_name;
 mod filesystem;
 pub mod firmware;
 pub mod library;

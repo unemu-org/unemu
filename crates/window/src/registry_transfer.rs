@@ -2346,6 +2346,7 @@ pub(crate) mod tests {
                 path: disk,
                 label: None,
                 format: None,
+                file_name: None,
             }],
             extras: Vec::new(),
             compress: false,

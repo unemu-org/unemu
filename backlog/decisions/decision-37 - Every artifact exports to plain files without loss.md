@@ -35,9 +35,22 @@ has no `upcli`.
    `org.opencontainers.image.title`, the ORAS convention, so a generic OCI
    client names the files it pulls. A `+zstd` layer is one Zstandard frame;
    `unemu.decoded.digest` is the SHA-256 of what `zstd -d` gives.
+
+   *Amendment, 2026-11-17 (the maintainer, implementing A3):* a `+zstd`
+   layer is titled with `.zst` after its file name (`x86BOOT.img.zst`,
+   `LICENSES.TXT.zst`), so an ORAS pull followed by plain `zstd -d` gives
+   back exactly the original files under their names; an uncompressed
+   layer keeps the plain name. The name rules and the uniqueness of names
+   within an artifact apply to the decoded name, and the title with `.zst`
+   must also be a valid file name. No layer of an input takes a name the
+   export writes itself: `config.toml`, `metadata.json` (a set's metadata
+   layer only), `manifest.json`, `SHA256SUMS` and `EXPORT-VERSION`, and in a
+   firmware package `README.md`, its README layer's name. The rules are in
+   machine-images §2, Export file names.
 4. **The layout is documented** in `backlog/docs/` with a script of a few
    lines that uses only an OCI client, `zstd` and `sha256sum`, and it has a
-   version file. It is one of the things that bind forever (recipes.md §9).
+   version file, `EXPORT-VERSION`. It is one of the things that bind forever
+   (recipes.md §9).
 5. **Three limits are stated, not hidden.** A container a recipe unpacked is
    not rebuilt: the user gets the members taken, not the archive. Members
    the recipe did not take are not in the artifact. Host file times are
@@ -48,8 +61,17 @@ has no `upcli`.
 ## Consequences
 
 - The config gains nothing; the file names travel as descriptor
-  annotations. ASSUMED, to be checked: releases 0.0.1 and 0.0.2 ignore an
-  unknown descriptor annotation.
+  annotations. MEASURED on 2026-11-17: releases 0.0.1 and 0.0.2 read
+  installation sets and firmware packages with a title on every layer.
+  Scratch builds of each release's sources (`git archive` of the tag) took
+  the three FreeDOS sets and three firmware packages the release builds
+  itself, plus a synthetic set, added the title to every layer, and read
+  them through the release's own code: manifest decode, store resolution
+  and publication check, library summaries, a machine created from the
+  titled packages, a firmware edit, a set re-import and a registry pull.
+- The export writes `EXPORT-VERSION` beside `config.toml`, `metadata.json`,
+  `manifest.json` and `SHA256SUMS`; no layer of an input may take one of
+  these names.
 - The test-only FAT reader in `crates/media` becomes product code.
 - A user decides about deleting originals with the build's report in front
   of them. The program never deletes a source file.

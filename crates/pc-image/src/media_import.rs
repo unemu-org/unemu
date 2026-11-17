@@ -4,6 +4,11 @@
 //! array position defines disk order, never file names or labels. Sources are
 //! copied by the store's streaming, full-SHA-256 ingestion path and stay
 //! unchanged; host paths never enter the config, metadata or annotations.
+//! Each medium and extra layer names its export file in
+//! [`export_name::TITLE`]: the file name of its source as given, without the
+//! folder, unless the request names the medium's file, with `.zst` after it
+//! on a layer stored compressed; the metadata layer is `metadata.json`
+//! (recipes.md §3.10).
 //! Floppy geometry follows the IBM Personal Computer AT Technical Reference,
 //! Diskette Drive Adapter, through [`crate::media_set`].
 //!
@@ -21,6 +26,7 @@ use crate::media_set::{self as pc, PcMediaFormats};
 use image_store::{
     codec,
     compat::AppVersion,
+    export_name,
     license::{self, Expression},
     media_set::{valid_text, Config, Extra, ExtraKind, MediaFormats, Medium, Validator},
     media_type as mt,
@@ -28,7 +34,7 @@ use image_store::{
     Descriptor, Digest, Manifest, Store,
 };
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{btree_map::Entry, BTreeMap, BTreeSet},
     ffi::OsString,
     fmt, fs,
     path::{Path, PathBuf},
@@ -84,6 +90,9 @@ pub struct Source {
     pub path: PathBuf,
     pub label: Option<String>,
     pub format: Option<String>,
+    /// The file name the medium is exported under; `None` takes the
+    /// source's own file name, without the folder.
+    pub file_name: Option<String>,
 }
 /// A loose file stored with the set; `None` derives the kind from the extension.
 #[derive(Clone, Debug)]
@@ -187,6 +196,65 @@ fn regular_size(path: &Path, what: &str) -> Result<u64> {
     Ok(stat.len())
 }
 
+/// The name a medium or extra is exported under: its source's file name as
+/// given, refused unless it is UTF-8 and a valid input name
+/// ([`export_name::input_problem`]). It is never derived, so an export gives
+/// back the user's own file names.
+fn export_file_name(what: &str, path: &Path) -> Result<String> {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| Refusal(format!("{what} {:?}: filename must be UTF-8", path)))?;
+    match export_name::input_problem(name) {
+        Some(problem) => Err(Refusal(format!(
+            "{what} {path:?}: file name {name:?} {problem}; rename the file"
+        ))),
+        None => Ok(name.to_owned()),
+    }
+}
+
+/// An export file name the request states for a medium, checked as a
+/// source's own file name is.
+fn checked_name(what: &str, path: &Path, name: &str) -> Result<String> {
+    match export_name::input_problem(name) {
+        Some(problem) => Err(Refusal(format!(
+            "{what} {path:?}: export file name {name:?} {problem}"
+        ))),
+        None => Ok(name.to_owned()),
+    }
+}
+
+/// Every file of a set is exported under its own name, so two different
+/// sources or extras may not share one, ignoring case as macOS and Windows
+/// do ([`export_name::key`]). A name also stands for itself with `.zst`
+/// after it, which it takes if it is stored compressed. A file listed twice
+/// is two disks with one layer.
+fn distinct_names(names: &[(&str, &Path, String)]) -> Result<()> {
+    let mut seen = BTreeMap::<String, (&str, &Path, &str)>::new();
+    for &(what, path, ref name) in names {
+        let compressed = format!("{name}{}", export_name::ZST);
+        for occupied in [name.as_str(), compressed.as_str()] {
+            match seen.entry(export_name::key(occupied)) {
+                Entry::Vacant(entry) => {
+                    entry.insert((what, path, name));
+                }
+                Entry::Occupied(entry) => {
+                    let (other_what, other, other_name) = *entry.get();
+                    ensure(other == path, || {
+                        format!(
+                            "{what} {path:?}: file name {name:?} and {other_what} {other:?} \
+                             ({other_name:?}) would both be exported as {occupied:?}, ignoring \
+                             case; each file of a set is exported under its own name, so \
+                             rename one"
+                        )
+                    })?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Every format a PC installation set may declare, floppies first.
 pub fn format_names() -> Vec<&'static str> {
     assembly::descriptors::FLOPPY_TYPES
@@ -221,7 +289,8 @@ pub struct Plan {
     annotations: BTreeMap<String, String>,
     config: Config,
     metadata: Metadata,
-    media: Vec<(PathBuf, &'static str, u64)>,
+    /// Each medium's source, payload type, length and export file name.
+    media: Vec<(PathBuf, &'static str, u64, String)>,
     extras: Vec<PathBuf>,
     compress: bool,
     /// The stated licence and the extras with its text and the source.
@@ -275,7 +344,7 @@ impl Plan {
     pub fn media(&self) -> impl Iterator<Item = (&Path, &Medium)> {
         self.media
             .iter()
-            .map(|(path, _, _)| path.as_path())
+            .map(|(path, _, _, _)| path.as_path())
             .zip(&self.config.media)
     }
 }
@@ -311,9 +380,15 @@ pub fn plan_with(request: &Request, open: Option<&OpenStatement>) -> Result<Plan
         extras: Vec::new(),
     };
     let mut media = Vec::new();
+    let mut names = Vec::new();
     for (index, source) in request.media.iter().enumerate() {
         let path = &source.path;
         let size = source_size(path)?;
+        let exported = match &source.file_name {
+            Some(name) => checked_name("source", path, name)?,
+            None => export_file_name("source", path)?,
+        };
+        names.push(("source", path.as_path(), exported.clone()));
         let name = source
             .format
             .as_deref()
@@ -343,7 +418,7 @@ pub fn plan_with(request: &Request, open: Option<&OpenStatement>) -> Result<Plan
             format,
             blob: empty.clone(),
         });
-        media.push((path.clone(), kind, size));
+        media.push((path.clone(), kind, size, exported));
     }
     for extra in &request.extras {
         let path = &extra.path;
@@ -356,6 +431,7 @@ pub fn plan_with(request: &Request, open: Option<&OpenStatement>) -> Result<Plan
         ensure(valid_text(&filename), || {
             format!("extra {:?}: invalid filename", path)
         })?;
+        names.push(("extra", path.as_path(), export_file_name("extra", path)?));
         if let Some(name) = &extra.dos_name {
             PcMediaFormats
                 .validate_name(name)
@@ -369,6 +445,7 @@ pub fn plan_with(request: &Request, open: Option<&OpenStatement>) -> Result<Plan
             dos_name: extra.dos_name.clone(),
         });
     }
+    distinct_names(&names)?;
     config.encode().context(|| {
         format!(
             "source list {:?}, extras {:?}",
@@ -607,10 +684,11 @@ fn describe(title: &Title) -> BTreeMap<String, String> {
 
 /// Copy and fully hash each source in order, then publish the tag last. When
 /// the tag already names a set, nothing is written: the same media, labels,
-/// formats, extras, metadata, descriptive annotations and marks are already
-/// imported, anything else is a tag conflict. `cancelled` is checked before
-/// each file and a cancelled import writes no tag. `progress` receives files
-/// done and the file total.
+/// formats, extras, metadata, descriptive annotations, file names and marks
+/// are already imported, anything else is a tag conflict. Identical bytes are
+/// one layer, named after the first source or extra that holds them.
+/// `cancelled` is checked before each file and a cancelled import writes no
+/// tag. `progress` receives files done and the file total.
 pub fn publish(
     store: &Store,
     plan: &Plan,
@@ -667,14 +745,16 @@ pub fn publish_checked(
         };
     let mut config = plan.config.clone();
     let mut layers = Vec::new();
-    for (index, (path, kind, size)) in plan.media.iter().enumerate() {
-        let blob = payload(index, "source", path, kind, *size)?;
+    for (index, (path, kind, size, name)) in plan.media.iter().enumerate() {
+        let mut blob = payload(index, "source", path, kind, *size)?;
+        export_name::assign(&mut blob, name);
         config.media[index].blob = blob.decoded_digest()?;
         layers.push(blob);
     }
     for (index, path) in plan.extras.iter().enumerate() {
         let size = config.extras[index].size;
-        let blob = payload(plan.media.len() + index, "extra", path, mt::EXTRA, size)?;
+        let mut blob = payload(plan.media.len() + index, "extra", path, mt::EXTRA, size)?;
+        export_name::assign(&mut blob, &config.extras[index].filename);
         config.extras[index].blob = blob.decoded_digest()?;
         layers.push(blob);
     }
@@ -698,7 +778,7 @@ pub fn publish_checked(
         if seen.insert(d.digest.clone()) {
             unique.push(d);
         } else {
-            let paths: Vec<_> = plan.media.iter().map(|(path, _, _)| path).collect();
+            let paths: Vec<_> = plan.media.iter().map(|(path, _, _, _)| path).collect();
             ensure(
                 unique.iter().any(|p| {
                     p.digest == d.digest && p.media_type == d.media_type && p.size == d.size
@@ -720,7 +800,10 @@ pub fn publish_checked(
         ))
     };
     let bytes = plan.metadata.encode(&unique)?;
-    unique.push(small(mt::METADATA, &bytes)?);
+    let mut metadata = small(mt::METADATA, &bytes)?;
+    export_name::assign(&mut metadata, export_name::METADATA);
+    unique.push(metadata);
+    export_name::check(&unique)?;
     let cfg = small(mt::MEDIA_SET_CONFIG, &config.encode()?)?;
     let mut manifest = Manifest::new_media_set(&config.platform, cfg, unique)?;
     manifest.annotations.extend(plan.annotations.clone());
@@ -763,10 +846,11 @@ pub fn publish_checked(
 
 /// An existing tag is compared without writing anything. The stored set is
 /// resolved first; anything but an installation set, or a set whose metadata,
-/// descriptive annotations, disk count, labels, formats, extras or licence
-/// marks differ, is refused before a source is read. Only then is each
-/// source's raw SHA-256 compared with the stored config's decoded digests, so
-/// how the set was stored (compressed or not) never decides the outcome.
+/// descriptive annotations, disk count, labels, formats, extras, licence
+/// marks or file names differ, is refused before a source is read. Only then
+/// is each source's raw SHA-256 compared with the stored config's decoded
+/// digests, so how the set was stored (compressed or not) never decides the
+/// outcome.
 fn compare_existing(
     store: &Store,
     plan: &Plan,
@@ -838,11 +922,35 @@ fn compare_existing(
             return Err(different());
         }
     }
+    // So are the file names the layers export to: a set stored without them
+    // (before they existed) or under other names is another set. Whether it
+    // differs only in them is known once the sources are hashed below.
+    let mut names = BTreeMap::new();
+    for (medium, (_, _, _, name)) in stored.media.iter().zip(&plan.media) {
+        names.entry(&medium.blob).or_insert_with(|| name.clone());
+    }
+    for extra in &stored.extras {
+        names
+            .entry(&extra.blob)
+            .or_insert_with(|| extra.filename.clone());
+    }
+    let mut renamed = false;
+    for d in &resolved.manifest.layers {
+        let wanted = if d.media_type == mt::METADATA {
+            Some(export_name::METADATA)
+        } else {
+            names.get(&d.decoded_digest()?).map(String::as_str)
+        };
+        renamed |= export_name::of(d)
+            != wanted
+                .map(|name| export_name::title_for(d, name))
+                .as_deref();
+    }
     let total = plan.media.len() + plan.extras.len();
     let sources = plan
         .media
         .iter()
-        .map(|(path, kind, size)| ("source", path, *kind, *size))
+        .map(|(path, kind, size, _)| ("source", path, *kind, *size))
         .chain(
             plan.extras
                 .iter()
@@ -865,6 +973,14 @@ fn compare_existing(
         }
     }
     progress(total, total);
+    if renamed {
+        return Err(Refusal(format!(
+            "tag conflict: {} already names these files under other export file names, or \
+             without them as earlier releases stored sets ({}); the names are part of the \
+             set, so choose another tag",
+            plan.tag, existing.digest
+        )));
+    }
     Ok(Outcome::AlreadyImported(Descriptor::new(
         mt::MANIFEST,
         existing.digest.clone(),
@@ -910,6 +1026,7 @@ mod tests {
                     path: path.clone(),
                     label: None,
                     format: None,
+                    file_name: None,
                 })
                 .collect(),
             extras: Vec::new(),
@@ -1190,9 +1307,13 @@ mod tests {
             text.contains("not the file name of an extra") && text.contains("VENDOR.TXT"),
             "{text}"
         );
+        // Two extras never share a file name, whatever the statement: each is
+        // exported under its own.
         request.extras.push(extra(&copy));
         let text = refusal(&request, "LicenseRef-synthetic", "VENDOR.TXT");
-        assert!(text.contains("names 2 extras"), "{text}");
+        assert!(text.contains("would both be exported as"), "{text}");
+        assert!(plan(&request).is_err());
+        request.extras.pop();
         // Without a statement the set is user-supplied, whatever the extras are called.
         assert!(plan(&request).unwrap().open().is_none());
     }
@@ -1352,7 +1473,7 @@ mod tests {
         fs::write(&copy, b"Another synthetic archive").unwrap();
         request.extras.push(extra(&copy));
         let text = refusal(&request, with_source("GPL-2.0-only", "COPYING", "SRC.TAR"));
-        assert!(text.contains("names 2 extras"), "{text}");
+        assert!(text.contains("would both be exported as"), "{text}");
         request.extras.pop();
         // The source archive is an archive extra, never the terms text.
         let text = refusal(&request, with_source("GPL-2.0-only", "SRC.TAR", "SRC.TAR"));
@@ -1505,7 +1626,8 @@ mod tests {
     fn a_set_imported_without_a_statement_keeps_its_manifest_bytes() {
         // Measured with the import as it was before open statements existed:
         // the default marks, and so every set digest, are unchanged. The
-        // rename of the platform id to `ibm-pc` moved it once.
+        // rename of the platform id to `ibm-pc` moved it once, and the
+        // layers' export file names once more.
         let temp = Temp::new("pinned");
         let disk = temp.0.join("disk.img");
         floppy(&disk, 0x5a);
@@ -1522,14 +1644,26 @@ mod tests {
         let published = publish(&store, &plan(&set).unwrap(), &|_, _| {}, &|| false).unwrap();
         assert_eq!(
             published.descriptor().digest.to_string(),
-            "sha256:6e6804aba2a89f2c56d6b8758b9abb575b04c272eaca415c63d5ef3d7df2f57e"
+            "sha256:889392e9bd24bf2f9cc5f9ca842d53b106233bbda0685d2e9816a785856b1cb1"
         );
-        // The test support that makes artifacts naming the retired id gives
-        // this set as releases before the rename wrote it, byte for byte: the
-        // pin of those releases.
+        // Without the file names, which releases 0.0.1 and 0.0.2 did not
+        // write, the test support that makes artifacts naming the retired id
+        // gives this set as those releases wrote it, byte for byte: the pin
+        // of those releases.
+        use image_store::BlobSource;
+        let mut untitled = Manifest::decode(
+            &store
+                .read_verified(published.descriptor(), image_store::MAX_SMALL_BLOB)
+                .unwrap(),
+        )
+        .unwrap();
+        for layer in &mut untitled.layers {
+            layer.annotations.remove(export_name::TITLE);
+        }
+        let untitled = store.import_manifest(&untitled).unwrap();
         let old = image_store::platform::with_platform_id(
             &store,
-            published.descriptor(),
+            &untitled,
             &[],
             image_store::platform::ALIASES[0].0,
         )
@@ -1538,6 +1672,225 @@ mod tests {
             old.digest.to_string(),
             "sha256:852615e645eac3a3bccfb7d3a30b026e4cec4bbb7fc5ee72f06ba2808b671dcf"
         );
+    }
+
+    /// The export file name of every layer, in manifest order.
+    fn titles(store: &Store, set: &Descriptor) -> Vec<String> {
+        store
+            .resolve_descriptor(set, &Validator(&PcMediaFormats))
+            .unwrap()
+            .manifest
+            .layers
+            .iter()
+            .map(|d| export_name::of(d).unwrap_or("<none>").to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn every_layer_names_the_file_it_was_imported_from() {
+        let temp = Temp::new("export-names");
+        fs::create_dir_all(temp.0.join("b")).unwrap();
+        let (one, two) = (temp.0.join("DISK1.IMG"), temp.0.join("b/Disk 2.ima"));
+        floppy(&one, 1);
+        floppy(&two, 2);
+        let manual = temp.0.join("manual.txt");
+        fs::write(&manual, b"Synthetic manual").unwrap();
+        let store = Store::open(temp.0.join("store")).unwrap();
+        // The same disk listed twice is one layer, under its one name.
+        let mut set = request(&[one.clone(), two.clone(), one.clone()], "Named set");
+        set.extras.push(ExtraSource {
+            path: manual.clone(),
+            dos_name: None,
+            kind: None,
+        });
+        let published = publish(&store, &plan(&set).unwrap(), &|_, _| {}, &|| false).unwrap();
+        let resolved = store
+            .resolve_descriptor(published.descriptor(), &Validator(&PcMediaFormats))
+            .unwrap();
+        // The disks are stored compressed, so `zstd -d` on a pulled
+        // `DISK1.IMG.zst` gives back `DISK1.IMG`; the short manual is raw.
+        assert!(resolved.manifest.layers[0].is_compressed());
+        assert!(!resolved.manifest.layers[2].is_compressed());
+        assert_eq!(
+            titles(&store, published.descriptor()),
+            [
+                "DISK1.IMG.zst",
+                "Disk 2.ima.zst",
+                "manual.txt",
+                "metadata.json"
+            ]
+        );
+        image_store::export_name::check(&resolved.manifest.layers).unwrap();
+        assert_eq!(
+            export_name::of(&resolved.manifest.config),
+            None,
+            "the config is exported as config.toml without a name of its own"
+        );
+
+        // Identical bytes are one layer, named after the first file.
+        let copy = temp.0.join("COPY.IMG");
+        fs::copy(&two, &copy).unwrap();
+        let mut twice = request(&[one.clone(), two.clone(), copy.clone()], "Copied set");
+        twice.tag = "test:copied-r1".into();
+        let copied = publish(&store, &plan(&twice).unwrap(), &|_, _| {}, &|| false).unwrap();
+        assert_eq!(
+            titles(&store, copied.descriptor()),
+            ["DISK1.IMG.zst", "Disk 2.ima.zst", "metadata.json"]
+        );
+
+        // A request may name a medium's file, as Create from files does.
+        let mut stated = request(&[one.clone(), two.clone()], "Stated names");
+        stated.tag = "test:stated-r1".into();
+        stated.media[0].file_name = Some("GALAXIA-01.img".into());
+        stated.compress = false;
+        let named = publish(&store, &plan(&stated).unwrap(), &|_, _| {}, &|| false).unwrap();
+        assert_eq!(
+            titles(&store, named.descriptor()),
+            ["GALAXIA-01.img", "Disk 2.ima", "metadata.json"]
+        );
+        stated.media[1].file_name = Some("galaxia-01.IMG".into());
+        let text = plan(&stated).unwrap_err().to_string();
+        assert!(text.contains("would both be exported as"), "{text}");
+        stated.media[1].file_name = Some("SHA256SUMS".into());
+        let text = plan(&stated).unwrap_err().to_string();
+        assert!(
+            text.contains("export file name \"SHA256SUMS\"")
+                && text.contains("the export writes itself"),
+            "{text}"
+        );
+
+        // The same files again are this set; other names for the same bytes
+        // are another set under the tag.
+        let again = publish(&store, &plan(&set).unwrap(), &|_, _| {}, &|| false).unwrap();
+        assert_eq!(
+            again,
+            Outcome::AlreadyImported(published.descriptor().clone())
+        );
+        let renamed = temp.0.join("disk-a.img");
+        fs::copy(&one, &renamed).unwrap();
+        let mut other = set.clone();
+        other.media = request(&[renamed, two.clone(), one.clone()], "x").media;
+        other.media[0].label = Some("DISK1.IMG".into());
+        let refusal = publish(&store, &plan(&other).unwrap(), &|_, _| {}, &|| false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refusal.contains("already names these files under other export file names"),
+            "{refusal}"
+        );
+        // Other bytes are still just another set.
+        let mut changed = set.clone();
+        changed.media = request(&[two.clone(), one.clone(), one.clone()], "x").media;
+        changed.media[0].label = Some("DISK1.IMG".into());
+        changed.media[1].label = Some("Disk 2.ima".into());
+        let refusal = publish(&store, &plan(&changed).unwrap(), &|_, _| {}, &|| false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refusal.contains("a different installation set"),
+            "{refusal}"
+        );
+
+        // A set stored without names, as releases 0.0.1 and 0.0.2 stored it,
+        // is not reported as this one either.
+        use image_store::BlobSource;
+        let mut unnamed = Manifest::decode(
+            &store
+                .read_verified(published.descriptor(), image_store::MAX_SMALL_BLOB)
+                .unwrap(),
+        )
+        .unwrap();
+        for layer in &mut unnamed.layers {
+            layer.annotations.remove(export_name::TITLE);
+        }
+        let unnamed = store.import_manifest(&unnamed).unwrap();
+        store
+            .update_tag(
+                "test:unnamed-r1",
+                &unnamed,
+                None,
+                &Validator(&PcMediaFormats),
+            )
+            .unwrap();
+        let mut old = set.clone();
+        old.tag = "test:unnamed-r1".into();
+        let refusal = publish(&store, &plan(&old).unwrap(), &|_, _| {}, &|| false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refusal.contains("or without them as earlier releases stored sets"),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn file_names_that_cannot_be_exported_are_refused_before_anything_is_stored() {
+        let temp = Temp::new("export-name-refusals");
+        fs::create_dir_all(temp.0.join("b")).unwrap();
+        let one = temp.0.join("DISK.IMG");
+        floppy(&one, 1);
+        let store = Store::open(temp.0.join("store")).unwrap();
+        let blobs = || entries(&store.root().join("images/blobs/sha256"));
+        let before = blobs();
+        let refused = |set: &Request| plan(set).unwrap_err().to_string();
+
+        // Two different files under one name, ignoring case.
+        let other = temp.0.join("b/disk.img");
+        floppy(&other, 2);
+        let text = refused(&request(&[one.clone(), other.clone()], "Clash"));
+        assert!(
+            text.contains("file name \"disk.img\" and source")
+                && text.contains("(\"DISK.IMG\") would both be exported as \"disk.img\"")
+                && text.contains("rename one"),
+            "{text}"
+        );
+        // Case is compared character by character, beyond ASCII too.
+        let (upper, lower) = (temp.0.join("ΟΔΟΣ.IMG"), temp.0.join("b/οδοσ.img"));
+        floppy(&upper, 4);
+        floppy(&lower, 5);
+        assert!(refused(&request(&[upper, lower], "Greek")).contains("would both be exported"));
+        // A file and the same name with .zst, which the first takes when it
+        // is stored compressed.
+        let zst = temp.0.join("b/DISK.IMG.zst");
+        floppy(&zst, 6);
+        assert!(refused(&request(&[one.clone(), zst], "Zst")).contains("\"DISK.IMG.zst\""));
+        // An extra named like a medium, or like a file the export writes.
+        let mut set = request(std::slice::from_ref(&one), "Extra clash");
+        set.extras.push(ExtraSource {
+            path: temp.0.join("b/DISK.IMG"),
+            dos_name: None,
+            kind: None,
+        });
+        fs::write(temp.0.join("b/DISK.IMG"), b"not a disk").unwrap();
+        assert!(refused(&set).contains("would both be exported as"));
+        for name in [
+            "METADATA.JSON",
+            "config.toml",
+            "manifest.json",
+            "SHA256SUMS",
+            "export-version",
+        ] {
+            let path = temp.0.join(name);
+            fs::write(&path, b"{}").unwrap();
+            set.extras = vec![ExtraSource {
+                path,
+                dos_name: None,
+                kind: None,
+            }];
+            let text = refused(&set);
+            assert!(text.contains("the export writes itself"), "{name}: {text}");
+        }
+        // Names that one of macOS, Linux or Windows would not take.
+        for name in ["Disk 1: Setup.img", "CON.img", "disk.img."] {
+            let path = temp.0.join(name);
+            floppy(&path, 3);
+            let text = refused(&request(&[path], "Unsafe"));
+            assert!(
+                text.contains(&format!("file name {name:?}")) && text.contains("rename the file"),
+                "{text}"
+            );
+        }
+        assert_eq!(blobs(), before);
     }
 
     /// The manifest's OCI image-spec annotations, the ones registry browsers read.

@@ -856,6 +856,7 @@ fn media_request(vendor: &Path, source: &MediaSource, tag: &str) -> Result<Reque
                 path: fixture(disk)?,
                 label: Some(disk.name.into()),
                 format: Some(source.format.into()),
+                file_name: None,
             })
         })
         .collect::<Result<_>>()?;
