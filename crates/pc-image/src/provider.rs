@@ -491,6 +491,7 @@ pub(crate) fn prepare(
             drive.media = Some(assembly::FloppyMediaList {
                 entries,
                 empty: slot.inserted.is_none(),
+                inserted: 0,
             });
             drive.expected_sha256 = None;
             drive.write = assembly::WriteMode::Volatile;

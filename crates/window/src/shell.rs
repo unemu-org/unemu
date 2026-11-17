@@ -474,6 +474,7 @@ impl Shell {
         }
         if let Some(transfer) = self.image_library.launched.take() {
             let inserts = std::mem::take(&mut self.image_library.launched_inserts);
+            let kept = std::mem::take(&mut self.image_library.start_catalogue);
             self.selected = None;
             let prepared = match transfer.restore() {
                 Ok(prepared) => prepared,
@@ -516,6 +517,7 @@ impl Shell {
                     presenter.audio.open(&mut io::stderr());
                     self.started(presenter);
                     self.name_inserted_disks(&inserts);
+                    self.restore_catalogue(kept);
                     // What the Start left out, once the machine runs.
                     let notes = std::mem::take(&mut self.image_library.start_notes);
                     if !notes.is_empty() {
@@ -1450,25 +1452,46 @@ impl Shell {
                             .iter()
                             .find(|p| p.drive == letter);
                         let created = row.created.iter().find(|c| c.drive == letter);
+                        // The drive takes back the catalogue it kept at the
+                        // last Stop, after a pending insert's disks.
+                        let waiting = self.machine_waiting(row, unit);
+                        let at_start = waiting
+                            .chosen
+                            .and_then(|index| waiting.disks.iter().find(|d| d.index == index));
+                        let catalogue = if waiting.kept.is_some() {
+                            waiting.disks.clone()
+                        } else {
+                            Vec::new()
+                        };
                         Drive {
                             unit,
                             geometry,
-                            holds: match (pending, created) {
-                                (Some(p), _) => {
+                            holds: match (pending, created, waiting.kept) {
+                                (Some(p), _, _) => {
                                     format!("{} at Start", self.image_library.pending_label(p))
                                 }
-                                (None, Some(c)) => format!("{} at Start", c.title),
-                                (None, None) => "as the image sets it".to_owned(),
+                                (None, Some(c), _) => format!("{} at Start", c.title),
+                                (None, None, Some(_)) => at_start.map_or_else(
+                                    || "empty at Start".to_owned(),
+                                    |disk| format!("{} at Start", disk.name),
+                                ),
+                                (None, None, None) => "as the image sets it".to_owned(),
                             },
-                            catalogue: Vec::new(),
-                            current: pending.and_then(|p| {
-                                let set = sets.iter().find(|s| s.image.digest == p.set.digest)?;
-                                Some((
-                                    p.set.digest.clone(),
-                                    set.disks.iter().position(|d| d.id == p.medium)?,
-                                ))
-                            }),
-                            catalogue_note: Some(IMAGE_DISKS_AT_START.into()),
+                            current: pending
+                                .and_then(|p| {
+                                    let set =
+                                        sets.iter().find(|s| s.image.digest == p.set.digest)?;
+                                    Some((
+                                        p.set.digest.clone(),
+                                        set.disks.iter().position(|d| d.id == p.medium)?,
+                                    ))
+                                })
+                                .or_else(|| at_start.and_then(|disk| disk.set.clone())),
+                            catalogue_note: waiting
+                                .kept
+                                .is_none()
+                                .then(|| IMAGE_DISKS_AT_START.into()),
+                            catalogue,
                         }
                     })
                     .collect();
@@ -1549,8 +1572,9 @@ impl Shell {
     /// Drive `unit`'s Catalogue submenu, from the catalogue the media
     /// picker's This machine lists; `inserted` as [`Self::floppy_inserted`]
     /// gives it. A stopped library machine and an image know their own disks
-    /// only at Start: their submenu lists the disks waiting for it. `None`
-    /// while the drive takes no disk.
+    /// only at Start: their submenu lists the disks waiting for it, for a
+    /// library machine the catalogue it kept at its last Stop. `None` while
+    /// the drive takes no disk.
     fn catalogue(
         &self,
         unit: u8,
@@ -1579,32 +1603,33 @@ impl Shell {
                 in_drive: now,
                 pending: None,
                 unknown: None,
+                kept: false,
             });
         }
-        let waiting =
-            |(disks, chosen): (Vec<crate::media_picker::CatalogueDisk>, Option<usize>)| Catalogue {
-                unit,
-                disks,
-                in_drive: None,
-                pending: chosen.map(Pending::Entry),
-                unknown: Some(IMAGE_DISKS_AT_START.into()),
-            };
+        let waiting = |waiting: Waiting| Catalogue {
+            unit,
+            disks: waiting.disks,
+            in_drive: None,
+            pending: waiting.chosen.map(Pending::Entry),
+            unknown: Some(IMAGE_DISKS_AT_START.into()),
+            kept: waiting.kept.is_some(),
+        };
         if self.image_library.machine.is_some() {
             let row = self.image_library.selected_machine_row();
-            return Some(waiting(row.map_or_else(
-                || (Vec::new(), None),
-                |row| self.machine_waiting(row, unit),
-            )));
+            return Some(waiting(row.map_or_else(Waiting::default, |row| {
+                self.machine_waiting(row, unit)
+            })));
         }
         let pending = self.pending_media.as_ref()?;
         let slot = pending.slots.get(usize::from(unit))?.as_ref()?;
         if matches!(pending.owner, crate::media_dialog::PendingOwner::Image(_)) {
             let name = self.stopped_name();
             return Some(waiting(pending.waiting(unit).map_or_else(
-                || (Vec::new(), None),
-                |(entries, chosen)| {
-                    let disks = waiting_catalogue(entries, slot.geometry, &name, &find);
-                    (disks, Some(chosen))
+                Waiting::default,
+                |(entries, chosen)| Waiting {
+                    disks: waiting_catalogue(entries, slot.geometry, &name, &find),
+                    chosen: Some(chosen),
+                    kept: None,
                 },
             )));
         }
@@ -1621,23 +1646,27 @@ impl Shell {
             in_drive: pending.power_on(unit),
             pending: waiting,
             unknown: None,
+            kept: false,
         })
     }
 
     /// The disks waiting for drive `unit` of the stopped library machine
-    /// `row` at its next Start, and the place of the one that goes in: a
-    /// library set's disk (every disk of the set when all join), else the
-    /// disks Create from files… made for the machine.
+    /// `row` at its next Start and the place of the one that goes in: a
+    /// pending insert's (a library set's disk, every disk of the set when all
+    /// join, else the disks Create from files… made for the machine), then
+    /// the catalogue the machine kept at its last Stop, without the disks the
+    /// insert brings itself.
     fn machine_waiting(
         &self,
         row: &crate::library_view::machines::MachineRow,
         unit: u8,
-    ) -> (Vec<crate::media_picker::CatalogueDisk>, Option<usize>) {
+    ) -> Waiting {
         use crate::catalogue_menu::{set_disk, short_name};
+        use crate::kept_catalogue::KeptDisk;
         use crate::media_picker::CatalogueDisk;
         let letter = crate::media_picker::drive_name(unit);
         let Some(&(_, geometry)) = row.drives.iter().find(|(u, _)| *u == unit) else {
-            return (Vec::new(), None);
+            return Waiting::default();
         };
         let words = |journal: bool| {
             if journal {
@@ -1646,63 +1675,160 @@ impl Shell {
                 "write-protected".to_owned()
             }
         };
+        let listed = row
+            .listing
+            .machine
+            .pending
+            .iter()
+            .find(|p| p.drive == letter);
+        let created = row.created.iter().find(|c| c.drive == letter);
+        let (mut disks, chosen) = if let Some(insert) = listed {
+            match self.image_library.picker_set(&insert.set.digest) {
+                None => {
+                    let disk = CatalogueDisk {
+                        name: self.image_library.pending_label(insert),
+                        format: geometry,
+                        write: words(insert.journal),
+                        inserted: false,
+                        index: 0,
+                        set: None,
+                    };
+                    (vec![disk], Some(0))
+                }
+                Some(set) => {
+                    let disks: Vec<CatalogueDisk> = (0..set.disks.len())
+                        .filter(|at| insert.all || set.disks[*at].id == insert.medium)
+                        .enumerate()
+                        .map(|(index, at)| {
+                            let disk = &set.disks[at];
+                            CatalogueDisk {
+                                name: short_name(set_disk(&set, &disk.id), &disk.id),
+                                format: disk.format.unwrap_or(geometry),
+                                write: words(insert.journal),
+                                inserted: false,
+                                index,
+                                set: Some((insert.set.digest.clone(), at)),
+                            }
+                        })
+                        .collect();
+                    let chosen = disks.iter().position(|disk| {
+                        disk.set
+                            .as_ref()
+                            .is_some_and(|(_, at)| set.disks[*at].id == insert.medium)
+                    });
+                    (disks, chosen)
+                }
+            }
+        } else if let Some(created) = created {
+            let disks = created
+                .disks
+                .iter()
+                .enumerate()
+                .map(|(index, disk)| CatalogueDisk {
+                    name: disk.name.clone(),
+                    format: geometry,
+                    write: words(created.journal),
+                    inserted: false,
+                    index,
+                    set: None,
+                })
+                .collect();
+            (disks, Some(created.first()))
+        } else {
+            (Vec::new(), None)
+        };
+        let Some(kept) = row.kept.iter().find(|k| k.drive == letter) else {
+            return Waiting {
+                disks,
+                chosen,
+                kept: None,
+            };
+        };
+        // The disks the pending insert brings itself are listed once, as it
+        // has them.
+        let brought = |disk: &KeptDisk| match disk {
+            KeptDisk::Set { set, medium, .. } => listed.is_some_and(|insert| {
+                insert.set.digest == set.digest && (insert.all || insert.medium == *medium)
+            }),
+            KeptDisk::Image { sha256, .. } => {
+                listed.is_none()
+                    && created.is_some_and(|c| c.disks.iter().any(|d| d.sha256 == *sha256))
+            }
+            KeptDisk::Own { .. } => false,
+        };
+        let from = disks.len();
+        let find = |digest: &image_store::Digest| self.image_library.picker_set(digest);
+        disks.extend(crate::kept_catalogue::waiting_disks(
+            kept,
+            geometry,
+            row.name(),
+            &find,
+            from,
+            &brought,
+        ));
+        Waiting {
+            chosen: if from > 0 { chosen } else { kept.in_drive },
+            disks,
+            kept: Some(from),
+        }
+    }
+
+    /// Make disk `index` of the disks waiting for drive `unit` of the
+    /// stopped library machine `row` ([`Self::machine_waiting`]) the one that
+    /// goes in at its next Start: another disk of its pending insert, or a
+    /// kept disk, which takes the pending insert out.
+    fn choose_waiting(
+        &mut self,
+        row: &crate::library_view::machines::MachineRow,
+        unit: u8,
+        index: usize,
+    ) {
+        let drive = crate::media_picker::drive_name(unit);
+        let waiting = self.machine_waiting(row, unit);
+        let Some(disk) = waiting.disks.iter().find(|disk| disk.index == index) else {
+            return;
+        };
+        if let Some(from) = waiting.kept.filter(|from| index >= *from) {
+            let listed = row.listing.machine.pending.iter().any(|p| p.drive == drive);
+            if listed || row.created.iter().any(|c| c.drive == drive) {
+                self.image_library.set_pending(row.id(), &drive, None);
+            }
+            self.image_library
+                .set_kept_disk(row.id(), &drive, index - from);
+            return;
+        }
+        if waiting.chosen == Some(index) {
+            return;
+        }
         if let Some(insert) = row
             .listing
             .machine
             .pending
             .iter()
-            .find(|p| p.drive == letter)
+            .find(|p| p.drive == drive)
         {
-            let Some(set) = self.image_library.picker_set(&insert.set.digest) else {
-                let disk = CatalogueDisk {
-                    name: self.image_library.pending_label(insert),
-                    format: geometry,
-                    write: words(insert.journal),
-                    inserted: false,
-                    index: 0,
-                    set: None,
-                };
-                return (vec![disk], Some(0));
-            };
-            let disks: Vec<CatalogueDisk> = (0..set.disks.len())
-                .filter(|at| insert.all || set.disks[*at].id == insert.medium)
-                .enumerate()
-                .map(|(index, at)| {
-                    let disk = &set.disks[at];
-                    CatalogueDisk {
-                        name: short_name(set_disk(&set, &disk.id), &disk.id),
-                        format: disk.format.unwrap_or(geometry),
-                        write: words(insert.journal),
-                        inserted: false,
-                        index,
-                        set: Some((insert.set.digest.clone(), at)),
-                    }
-                })
-                .collect();
-            let chosen = disks.iter().position(|disk| {
-                disk.set
-                    .as_ref()
-                    .is_some_and(|(_, at)| set.disks[*at].id == insert.medium)
+            let medium = disk.set.as_ref().and_then(|(digest, at)| {
+                Some(
+                    self.image_library
+                        .picker_set(digest)?
+                        .disks
+                        .get(*at)?
+                        .id
+                        .clone(),
+                )
             });
-            return (disks, chosen);
+            if let Some(medium) = medium.filter(|medium| *medium != insert.medium) {
+                let insert = image_store::machine::PendingInsert {
+                    medium,
+                    ..insert.clone()
+                };
+                self.image_library
+                    .set_pending(row.id(), &drive, Some(insert));
+            }
+        } else if row.created.iter().any(|c| c.drive == drive) {
+            self.image_library
+                .set_created_first(row.id(), &drive, index);
         }
-        let Some(created) = row.created.iter().find(|c| c.drive == letter) else {
-            return (Vec::new(), None);
-        };
-        let disks = created
-            .disks
-            .iter()
-            .enumerate()
-            .map(|(index, disk)| CatalogueDisk {
-                name: disk.name.clone(),
-                format: geometry,
-                write: words(created.journal),
-                inserted: false,
-                index,
-                set: None,
-            })
-            .collect();
-        (disks, Some(created.first()))
     }
 
     /// A disk of drive `unit`'s Catalogue submenu, by its catalogue index:
@@ -1737,39 +1863,7 @@ impl Shell {
         } else if catalogue.unknown.is_some() {
             let machine = match self.image_library.selected_machine_row().cloned() {
                 Some(row) if self.image_library.machine.is_some() => {
-                    let listed = row
-                        .listing
-                        .machine
-                        .pending
-                        .iter()
-                        .find(|p| p.drive == drive);
-                    if let Some(insert) = listed {
-                        let medium = disk.set.as_ref().and_then(|(digest, at)| {
-                            Some(
-                                self.image_library
-                                    .picker_set(digest)?
-                                    .disks
-                                    .get(*at)?
-                                    .id
-                                    .clone(),
-                            )
-                        });
-                        if let Some(medium) = medium.filter(|medium| *medium != insert.medium) {
-                            let insert = image_store::machine::PendingInsert {
-                                medium,
-                                ..insert.clone()
-                            };
-                            self.image_library
-                                .set_pending(row.id(), &drive, Some(insert));
-                        }
-                    } else if row
-                        .created
-                        .iter()
-                        .any(|c| c.drive == drive && c.first() != index)
-                    {
-                        self.image_library
-                            .set_created_first(row.id(), &drive, index);
-                    }
+                    self.choose_waiting(&row, unit, index);
                     row.name().to_owned()
                 }
                 _ => {
@@ -1801,14 +1895,16 @@ impl Shell {
     /// All N disks… of drive `unit`'s Catalogue submenu: Insert… on This
     /// machine, with the disk in the drive chosen and scrolled into view;
     /// while the drive knows only the disks waiting for Start, Insert… with
-    /// their set chosen.
+    /// their set chosen; a library machine's catalogue kept at its last Stop
+    /// on This machine, with the disk waiting for Start selected.
     fn open_catalogue_picker(&mut self, unit: u8) {
+        use crate::catalogue_menu::Pending;
         use crate::media_picker::{Choice, Source};
         let inserted = self.floppy_inserted();
         let Some(catalogue) = self.catalogue(unit, inserted) else {
             return;
         };
-        if catalogue.unknown.is_some() {
+        if catalogue.unknown.is_some() && !catalogue.kept {
             let set = catalogue
                 .disks
                 .iter()
@@ -1819,7 +1915,11 @@ impl Shell {
         self.open_picker(unit, None, None);
         if let Some(picker) = &mut self.picker {
             picker.set_source(Source::Machine);
-            if let Some(index) = catalogue.in_drive {
+            let waiting = match catalogue.pending {
+                Some(Pending::Entry(index)) if catalogue.kept => Some(index),
+                _ => None,
+            };
+            if let Some(index) = catalogue.in_drive.or(waiting) {
                 picker.choose(Choice::Entry(unit, index));
             }
             picker.reveal = true;
@@ -1851,11 +1951,38 @@ impl Shell {
                     break;
                 }
                 entry.source = Some(source);
+                entry.reference = Some(insert.reference.clone());
                 entry.origin = Some(crate::media_dialog::set_origin(
                     &insert.reference,
                     at,
                     count,
                 ));
+            }
+        }
+    }
+
+    /// The catalogues a library machine took back at Start, as it kept them
+    /// at its last Stop: their set disks keep the short names and tooltips
+    /// their sets give them, and the tag they came from for the next Stop.
+    fn restore_catalogue(&mut self, drives: Vec<crate::kept_catalogue::RestoredDrive>) {
+        let Some(presenter) = &mut self.presenter else {
+            return;
+        };
+        for drive in drives {
+            if let Some(slot) = presenter
+                .media_slots
+                .get_mut(usize::from(drive.unit))
+                .and_then(Option::as_mut)
+            {
+                for set in drive.sets {
+                    if let Some(entry) =
+                        slot.entries.iter_mut().find(|e| e.index == Some(set.index))
+                    {
+                        entry.source = Some(set.source);
+                        entry.reference = Some(set.reference);
+                        entry.origin = Some(set.origin);
+                    }
+                }
             }
         }
     }
@@ -2004,6 +2131,23 @@ impl Shell {
                     presenter
                         .media_events
                         .push((unit, assembly::FloppyAction::Insert(index)));
+                } else if let Some(id) = target {
+                    // A disk waiting for a stopped library machine's Start:
+                    // it goes in then.
+                    let Some(row) = self.image_library.machine_rows().iter().find(|r| r.id() == id).cloned() else {
+                        self.dialog = Some(("Insert disk", "That machine is no longer in the library.".into()));
+                        return;
+                    };
+                    let waiting = self.machine_waiting(&row, unit);
+                    let drive = crate::media_picker::drive_name(unit);
+                    if let Some(disk) = waiting.disks.iter().find(|disk| disk.index == index) {
+                        self.message = format!(
+                            "{} goes into {drive} of {} at its next Start.",
+                            disk.name,
+                            row.name()
+                        );
+                    }
+                    self.choose_waiting(&row, unit, index);
                 } else if let Some(entry) = self
                     .floppy_slot(unit)
                     .and_then(|slot| slot.entries.into_iter().find(|e| e.index == Some(index)))
@@ -3247,7 +3391,23 @@ impl Shell {
         self.start_request = None;
         let mut failure = None;
         let had_session = self.presenter.is_some();
+        let mut catalogue = Vec::new();
         if let Some(mut presenter) = self.presenter.take() {
+            // The drives' catalogues as they are now, with the media changes
+            // queued for the next run boundary in, which a library machine
+            // keeps for its next Start.
+            let inserted = [0u8, 1].map(|unit| {
+                let now = presenter
+                    .fdc()
+                    .and_then(|fdc| fdc.inserted_medium(usize::from(unit)));
+                let count = presenter
+                    .assembled
+                    .floppy_names
+                    .get(&(assembly::DeviceId::Fdc, unit))
+                    .map_or(0, Vec::len);
+                crate::kept_catalogue::after_queued(unit, now, count, &presenter.media_events)
+            });
+            catalogue = crate::kept_catalogue::stopped(&presenter.media_slots, inserted);
             if (presenter.running || presenter.halted) && presenter.error.is_none() {
                 if let Err(error) = presenter.finish_persistence(&mut io::stderr()) {
                     failure = Some(error.to_string());
@@ -3260,6 +3420,7 @@ impl Shell {
         }
         let retain_workspace = std::mem::take(&mut self.retain_workspace_on_stop);
         if had_session {
+            self.image_library.keep_catalogue(catalogue);
             self.image_library
                 .finish_with_failure(retain_workspace, failure.is_some());
         }
@@ -5271,6 +5432,17 @@ pub(crate) const EJECT_MARK: &str = "⏏";
 const IMAGE_DISKS_AT_START: &str =
     "The image's own disks are in the drive at Start; Next disk swaps them once the machine runs.";
 
+/// The disks waiting for a stopped drive's Start and the place of the one
+/// that goes in.
+#[derive(Default)]
+struct Waiting {
+    disks: Vec<crate::media_picker::CatalogueDisk>,
+    chosen: Option<usize>,
+    /// The catalogue a library machine kept at its last Stop is among them,
+    /// its disks numbered from here on (after a pending insert's).
+    kept: Option<usize>,
+}
+
 fn eject_shortcut(unit: u8) -> &'static str {
     if unit == 0 {
         "Ctrl+Alt+E"
@@ -6285,6 +6457,7 @@ mod tests {
                     name: name.into(),
                 })
                 .collect(),
+            inserted: 0,
         });
         shell.presenter = Some(
             Presenter::new(
@@ -11506,6 +11679,7 @@ kind='mda'
                     name: format!("AZURAMON {number} of {count}"),
                 })
                 .collect(),
+            inserted: 0,
         });
         shell.presenter = Some(
             Presenter::new(
@@ -12076,6 +12250,7 @@ kind='mda'
                     name: name.into(),
                 })
                 .collect(),
+            inserted: 0,
         });
         shell.presenter = Some(
             Presenter::new(
@@ -13703,6 +13878,242 @@ kind='mda'
         let row = shell.image_library.machine_rows()[0].image_row();
         shell.image_library.show_machine(id.clone(), row);
         (shell, id)
+    }
+
+    /// A library machine's drive catalogue survives Stop: a set's disk
+    /// Insert… put in from the library and an image file Browse… put in
+    /// come back at the next Start in the same order, with the same short
+    /// names and write settings, and the disk that was in the drive is in it
+    /// again. Stopped, the Catalogue submenu lists them as waiting for that
+    /// Start, the one in the drive "at Start", and choosing another makes it
+    /// the one that goes in then.
+    #[test]
+    fn a_library_machine_keeps_its_catalogue_across_stop_and_start() {
+        let f = crate::library_test_support::Fixture::new();
+        f.import_set();
+        let (mut shell, id) = machine_shell(&f);
+        // Insert… from the library reads this store.
+        shell.preferences.store_root = Some(f.store.root().to_owned());
+        let ctx = egui::Context::default();
+        let pause = || std::thread::sleep(std::time::Duration::from_millis(5));
+        let start = |shell: &mut Shell| {
+            shell.command(Command::Start, &ctx);
+            for _ in crate::test_wait::rounds() {
+                shell.poll_images(&ctx);
+                if shell.presenter.is_some() {
+                    break;
+                }
+                pause();
+            }
+            assert!(shell.presenter.is_some(), "{:?}", shell.dialog);
+            // The first run boundary takes the queued media changes.
+            shell.tick(&ctx, false, std::time::Duration::ZERO);
+        };
+        let stop = |shell: &mut Shell| {
+            assert!(shell.stop());
+            for _ in crate::test_wait::rounds() {
+                shell.poll_images(&ctx);
+                if shell.image_library.active.is_none() {
+                    break;
+                }
+                pause();
+            }
+            assert!(shell.image_library.active.is_none());
+        };
+        let listed = |shell: &mut Shell| {
+            let inserted = shell.floppy_inserted();
+            let catalogue = shell.catalogue(0, inserted).unwrap();
+            let disks: Vec<(String, String)> = catalogue
+                .disks
+                .iter()
+                .map(|disk| (disk.name.clone(), disk.write.clone()))
+                .collect();
+            (disks, catalogue.in_drive)
+        };
+        start(&mut shell);
+        let own = listed(&mut shell).0;
+        // Insert… from the library, keeping its writes in the machine.
+        shell.command(Command::InsertFile(0), &ctx);
+        shell.open_insert_library();
+        for _ in crate::test_wait::rounds() {
+            let library = shell
+                .insert_dialog
+                .as_mut()
+                .unwrap()
+                .library
+                .as_mut()
+                .unwrap();
+            assert_eq!(library.poll(), None);
+            if !library.is_busy() {
+                break;
+            }
+            pause();
+        }
+        let library = shell
+            .insert_dialog
+            .as_mut()
+            .unwrap()
+            .library
+            .as_mut()
+            .unwrap();
+        library.selected = library
+            .rows
+            .iter()
+            .position(|row| row.tag == "disks-set:r1");
+        library.journal = true;
+        for _ in crate::test_wait::rounds() {
+            shell.confirm_insert();
+            if shell.insert_dialog.is_none() {
+                break;
+            }
+            assert_eq!(shell.insert_dialog.as_ref().unwrap().error, None);
+            pause();
+        }
+        // An image file of this computer, write-protected.
+        let host = f.temp.path().join("game.img");
+        std::fs::write(&host, vec![0x5a; 360 * 1024]).unwrap();
+        shell.browse_into(0, &host);
+        shell.confirm_insert();
+        shell.tick(&ctx, false, std::time::Duration::ZERO);
+        let before = listed(&mut shell);
+        let mut expected = own.clone();
+        expected.extend([
+            ("Session disks".to_owned(), "changes kept in DOS".to_owned()),
+            ("game.img".to_owned(), "write-protected".to_owned()),
+        ]);
+        assert_eq!(before, (expected.clone(), Some(own.len() + 1)));
+        stop(&mut shell);
+        // The worker keeps the catalogue before it finishes the session.
+        let workspace = f.store.workspace_path(&id).unwrap();
+        assert_eq!(
+            crate::kept_catalogue::read(&workspace).unwrap()[0]
+                .disk
+                .len(),
+            expected.len()
+        );
+        // Stopped, the catalogue waits for the next Start.
+        shell
+            .image_library
+            .pump_until(|view| view.machine_rows().iter().any(|row| !row.kept.is_empty()));
+        let waiting = shell.catalogue(0, [None, None]).unwrap();
+        assert!(waiting.kept);
+        assert_eq!(
+            waiting
+                .disks
+                .iter()
+                .map(|d| d.name.clone())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            waiting.pending,
+            Some(crate::catalogue_menu::Pending::Entry(own.len() + 1))
+        );
+        assert_eq!(
+            waiting.rows()[0],
+            crate::catalogue_menu::Row::Heading(format!(
+                "For A: at the next Start, in order · {} disks",
+                expected.len()
+            ))
+        );
+        assert!(!waiting.rows().contains(&crate::catalogue_menu::Row::Note(
+            crate::catalogue_menu::OWN_DISKS_AT_START.into()
+        )));
+        shell.command(Command::Insert(0), &ctx);
+        let picker = shell.picker.take().expect("the media picker");
+        assert_eq!(picker.drive().unwrap().holds, "game.img at Start");
+        assert_eq!(picker.drive().unwrap().catalogue, waiting.disks);
+        // All N disks… opens This machine on the disk waiting for Start.
+        shell.open_catalogue_picker(0);
+        let picker = shell.picker.take().expect("the media picker");
+        assert_eq!(picker.source, crate::media_picker::Source::Machine);
+        assert_eq!(
+            picker.insert(),
+            Some(crate::media_picker::Outcome::Entry {
+                unit: 0,
+                index: own.len() + 1
+            })
+        );
+        // A disk chosen for Start from the library leads, and the kept disks
+        // follow it without that disk a second time; choosing a kept disk
+        // takes the chosen one out again.
+        let set = shell
+            .image_library
+            .picker_sets()
+            .into_iter()
+            .find(|set| set.reference == "disks-set:r1")
+            .unwrap();
+        let insert = image_store::machine::PendingInsert {
+            drive: "A:".into(),
+            set: set.image.clone(),
+            reference: "disks-set:r1".into(),
+            medium: set.disks[0].id.clone(),
+            all: false,
+            journal: true,
+        };
+        shell.image_library.set_pending(&id, "A:", Some(insert));
+        let names = |catalogue: &crate::catalogue_menu::Catalogue| -> Vec<String> {
+            catalogue.disks.iter().map(|d| d.name.clone()).collect()
+        };
+        let both = shell.catalogue(0, [None, None]).unwrap();
+        let mut leading = vec!["Session disks".to_owned()];
+        leading.extend(own.iter().map(|(name, _)| name.clone()));
+        leading.push("game.img".into());
+        assert_eq!(names(&both), leading);
+        assert_eq!(both.pending, Some(crate::catalogue_menu::Pending::Entry(0)));
+        let game = both.disks.last().unwrap().index;
+        shell.command(Command::CatalogueDisk(0, game), &ctx);
+        shell.image_library.pump_until(|view| {
+            view.machine_rows()
+                .iter()
+                .any(|row| row.id() == id && row.listing.machine.pending.is_empty())
+        });
+        assert!(pc_image::machine::get(&f.store, &id)
+            .unwrap()
+            .machine
+            .pending
+            .is_empty());
+        assert_eq!(
+            crate::kept_catalogue::read(&workspace).unwrap()[0].in_drive,
+            Some(own.len() + 1)
+        );
+        start(&mut shell);
+        assert_eq!(listed(&mut shell), before);
+        // The set's disk is the library's again, with its tooltip.
+        let set_disk = &shell.presenter.as_ref().unwrap().media_slots[0]
+            .as_ref()
+            .unwrap()
+            .entries[own.len()];
+        assert!(set_disk.source.is_some());
+        assert!(set_disk
+            .origin
+            .as_deref()
+            .is_some_and(|origin| origin.starts_with("Media set disks-set:r1 from")));
+        // A disk put in just before Stop, before the next run boundary, is
+        // the one kept in the drive.
+        shell.command(Command::CatalogueDisk(0, 0), &ctx);
+        stop(&mut shell);
+        assert_eq!(
+            crate::kept_catalogue::read(&workspace).unwrap()[0].in_drive,
+            Some(0)
+        );
+        // Another kept disk chosen while stopped goes in at the next Start.
+        shell.command(Command::CatalogueDisk(0, own.len()), &ctx);
+        assert_eq!(
+            shell.message,
+            "Session disks goes into A: of DOS at its next Start."
+        );
+        shell.image_library.pump_until(|_| {
+            crate::kept_catalogue::read(&workspace)
+                .is_ok_and(|kept| kept[0].in_drive == Some(own.len()))
+        });
+        start(&mut shell);
+        assert_eq!(listed(&mut shell), (expected, Some(own.len())));
+        stop(&mut shell);
+        shell.image_library.shutdown();
     }
 
     /// Pending disks of a stopped machine change one drive at a time: two

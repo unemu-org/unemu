@@ -10,7 +10,10 @@
 //! no longer hash to it is replaced by a new directory entry, never
 //! rewritten. Guest writes go to the journal `<sha-256>.upfj` beside the
 //! machine's other journals, or are refused. Every byte comes from the
-//! FAT12 builder, so the same files give the same image and name.
+//! FAT12 builder, so the same files give the same image and name. A library
+//! machine's folder also holds, the same way, copies of the image files of
+//! this computer its catalogue kept at Stop, and that record
+//! (`crate::kept_catalogue`).
 //!
 //! A stopped library machine keeps its pending insert of created disks in
 //! `created/pending.toml` of its workspace, not in the store's machine list:
@@ -176,7 +179,7 @@ pub(crate) struct Created {
     pub keep_failed: Option<String>,
 }
 
-fn hex(digest: &[u8; 32]) -> String {
+pub(crate) fn hex(digest: &[u8; 32]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
@@ -455,6 +458,7 @@ fn apply_one(
             media.append(&mut list.entries);
             list.entries = media;
             list.empty = false;
+            list.inserted = 0;
         }
         None => {
             // A drive with one fixed image becomes a catalogue for this run.
@@ -467,6 +471,7 @@ fn apply_one(
             drive.media = Some(assembly::FloppyMediaList {
                 entries: media,
                 empty: false,
+                inserted: 0,
             });
             drive.image = assembly::ImageSource::Blank {
                 size: drive.kind.image_bytes(),
@@ -523,6 +528,7 @@ pub(crate) fn entries(
                     index + 1
                 )),
                 verified: created.verified.get(index).cloned(),
+                reference: None,
             },
         )
         .collect()

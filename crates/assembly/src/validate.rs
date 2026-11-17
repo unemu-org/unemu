@@ -177,6 +177,12 @@ impl MachineConfig {
                         message: "media requires a floppy catalogue or an empty drive".into(),
                     });
                 }
+                if !list.empty && list.inserted >= list.entries.len() {
+                    return Err(ConfigError::Journal {
+                        drive_index,
+                        message: "the disk in the drive at power-on is not in its catalogue".into(),
+                    });
+                }
                 for medium in &list.entries {
                     if let Some(actual) = medium.image.known_len() {
                         drive.kind.check_image_len(drive_index, actual)?;
@@ -1616,6 +1622,7 @@ mod tests {
         config.drives[0].media = Some(crate::FloppyMediaList {
             entries: vec![],
             empty: true,
+            inserted: 0,
         });
         assert_eq!(config.check_part_sources(), expected);
         config.drives[0].image = ImageSource::Blank { size: 1_474_560 };
@@ -1629,7 +1636,11 @@ mod tests {
             for invalid in 0..2 {
                 let mut entries = vec![medium.clone(), medium.clone()];
                 entries[invalid].image = container.clone();
-                config.drives[0].media = Some(crate::FloppyMediaList { entries, empty });
+                config.drives[0].media = Some(crate::FloppyMediaList {
+                    entries,
+                    empty,
+                    inserted: 0,
+                });
                 assert_eq!(
                     config.check_part_sources(),
                     expected,
@@ -1661,6 +1672,7 @@ mod tests {
             config.drives[0].media = Some(crate::FloppyMediaList {
                 entries,
                 empty: true,
+                inserted: 0,
             });
             config.check_part_sources().unwrap();
         }
@@ -1682,6 +1694,7 @@ mod tests {
                     name: "base.img".into(),
                 })
                 .collect(),
+            inserted: 0,
         });
         let mut second = config.drives[0].clone();
         second.unit = 1;

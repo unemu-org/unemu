@@ -221,6 +221,7 @@ fn freedos_reads_a_floppy_built_from_host_files() {
         FloppyMediaList {
             entries: vec![read_only("host.img", image)],
             empty: false,
+            inserted: 0,
         },
     );
     let prompt = |text: &str| at(text, "A:\\>");
@@ -334,6 +335,7 @@ fn freedos_enters_and_rebuilds_a_split_set_with_xcopy() {
                 read_only("set-2of2.img", disk(2)),
             ],
             empty: false,
+            inserted: 0,
         },
     );
     let a = "A:\\>";

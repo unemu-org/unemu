@@ -1800,6 +1800,8 @@ fn insert_medium(
             media.append(&mut list.entries);
             list.entries = media;
             list.empty = false;
+            // The chosen medium leads, so it is the one in the drive.
+            list.inserted = 0;
         }
         None => {
             // A drive with one fixed image becomes a catalogue for this run.
@@ -1812,6 +1814,7 @@ fn insert_medium(
             drive.media = Some(assembly::FloppyMediaList {
                 entries: media,
                 empty: false,
+                inserted: 0,
             });
             drive.image = assembly::ImageSource::Blank {
                 size: drive.kind.image_bytes(),

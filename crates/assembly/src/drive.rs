@@ -234,6 +234,11 @@ pub struct FloppyMediaList {
     pub entries: Vec<FloppyMedium>,
     /// Start without a disk. The change line still starts clear.
     pub empty: bool,
+    /// The entry in the drive at power-on unless `empty`: the first, `0`,
+    /// for a machine file. A host that restarts a machine with another disk
+    /// in the drive names it here, so the guest sees that disk from
+    /// power-on with the change line clear, exactly as it sees the first.
+    pub inserted: usize,
 }
 
 /// One immutable base and its independent overlay policy.

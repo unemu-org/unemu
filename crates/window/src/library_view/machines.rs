@@ -36,6 +36,9 @@ pub(crate) struct MachineRow {
     pub created: Vec<crate::created_media::CreatedInsert>,
     /// Why the record of those disks cannot be read, when it cannot.
     pub created_problem: Option<String>,
+    /// The floppy catalogues it had at its last Stop, which its drives take
+    /// back at its next Start, kept in its workspace.
+    pub kept: Vec<crate::kept_catalogue::KeptDrive>,
 }
 
 fn repository(reference: &str) -> &str {
@@ -496,6 +499,16 @@ fn change_lines(row: &MachineRow) -> Vec<String> {
         lines.push(format!(
             "Pending insert — {} in {}, created from files",
             insert.title, insert.drive
+        ));
+    }
+    // A catalogue other than the image's own, which the next Start takes
+    // back.
+    for kept in row.kept.iter().filter(|kept| !kept.is_default()) {
+        let count = kept.disk.len();
+        lines.push(format!(
+            "Catalogue of {} — {count} {} kept at the last Stop",
+            kept.drive,
+            if count == 1 { "disk" } else { "disks" }
         ));
     }
     lines
@@ -1191,6 +1204,26 @@ impl LibraryView {
             id: id.to_owned(),
             drive: drive.to_owned(),
             first,
+        }));
+    }
+
+    /// Which disk of the catalogue `drive` of the stopped machine `id` kept
+    /// at its last Stop goes in at its next Start, by its place there.
+    pub fn set_kept_disk(&mut self, id: &str, drive: &str, index: usize) {
+        let mut rows = (*self.machines).clone();
+        if let Some(kept) = rows
+            .iter_mut()
+            .find(|row| row.id() == id)
+            .and_then(|row| row.kept.iter_mut().find(|k| k.drive == drive))
+        {
+            kept.in_drive = Some(index);
+            self.machines = std::sync::Arc::new(rows);
+            self.machines_revision += 1;
+        }
+        self.send(Request::Machine(MachineJob::SetKeptDisk {
+            id: id.to_owned(),
+            drive: drive.to_owned(),
+            index,
         }));
     }
 
@@ -1963,6 +1996,7 @@ pub(crate) mod tests {
             drives: vec![(0, assembly::descriptors::FLOPPY_TYPES[0].geometry)],
             created: Vec::new(),
             created_problem: None,
+            kept: Vec::new(),
         }
     }
 
@@ -2067,6 +2101,40 @@ pub(crate) mod tests {
         assert!(machine
             .state_text()
             .ends_with(" · created disks unreadable"));
+    }
+
+    /// Reset to image… and Delete name a catalogue the machine kept at its
+    /// last Stop, which they drop, unless it is the image's own.
+    #[test]
+    fn a_kept_catalogue_other_than_the_images_is_listed_for_reset() {
+        use crate::kept_catalogue::{KeptDisk, KeptDrive};
+        let mut machine = row("dos", "DOS", "a", &["games:1.0.0"]);
+        let own = |name: &str| KeptDisk::Own {
+            name: name.into(),
+            sha256: None,
+            format: None,
+        };
+        let kept = |drive: &str, in_drive, disk| KeptDrive {
+            drive: drive.into(),
+            in_drive,
+            disk,
+        };
+        machine.kept = vec![
+            kept("A:", Some(0), vec![own("one.img"), own("two.img")]),
+            kept("B:", Some(1), vec![own("one.img"), own("two.img")]),
+        ];
+        let lines = change_lines(&machine);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.starts_with("Catalogue of"))
+                .collect::<Vec<_>>(),
+            ["Catalogue of B: — 2 disks kept at the last Stop"]
+        );
+        machine.kept.clear();
+        assert!(!change_lines(&machine)
+            .iter()
+            .any(|line| line.starts_with("Catalogue of")));
     }
 
     /// A machine on the superseded open AT BIOS: the quiet badge in its

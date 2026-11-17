@@ -51,6 +51,7 @@ mod file_dialog;
 mod firmware_choices;
 mod host_audio;
 mod image_settings;
+mod kept_catalogue;
 mod layers_dialog;
 #[cfg(test)]
 mod library_test_support;
@@ -1110,6 +1111,7 @@ mod tests {
                     name: name.into(),
                 })
                 .collect(),
+            inserted: 0,
         });
         let mut b = config.drives[0].clone();
         b.unit = 1;
@@ -1179,6 +1181,7 @@ mod tests {
                     name: name.into(),
                 })
                 .collect(),
+            inserted: 0,
         });
         Presenter::new(
             &config,

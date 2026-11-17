@@ -35,6 +35,9 @@ pub(super) struct CatalogueEntry {
     /// A disk Create from files… made, hashed in full off the window's
     /// thread, so it goes into a running drive without hashing it again.
     pub verified: Option<crate::created_media::Verified>,
+    /// The tag a library disk came from, which a library machine keeps
+    /// with its catalogue at Stop.
+    pub reference: Option<String>,
 }
 
 impl CatalogueEntry {
@@ -120,6 +123,7 @@ impl FloppySlot {
                     workspace_journal: None,
                     origin: None,
                     verified: None,
+                    reference: None,
                 })
                 .collect();
             Some(Self {
@@ -151,6 +155,7 @@ impl FloppySlot {
         // The same disk may arrive again through another set tag.
         if entry.origin.is_some() {
             row.origin.clone_from(&entry.origin);
+            row.reference.clone_from(&entry.reference);
         }
         if row.index == Some(index) {
             return;
@@ -251,6 +256,7 @@ pub(super) fn browse(path: &Path, drive: FloppyGeometry) -> io::Result<Catalogue
         workspace_journal: None,
         origin: None,
         verified: None,
+        reference: None,
     })
 }
 
@@ -1252,6 +1258,7 @@ impl LibraryInsert {
                 }
                 entries.push(CatalogueEntry {
                     origin: Some(set_origin(&row.tag, index, config.media.len())),
+                    reference: Some(row.tag.clone()),
                     ..existing.clone()
                 });
                 continue;
@@ -1314,6 +1321,7 @@ impl LibraryInsert {
                 workspace_journal: Some(journal),
                 origin: Some(set_origin(&row.tag, index, config.media.len())),
                 verified: None,
+                reference: Some(row.tag.clone()),
             });
         }
         if self.journal {
@@ -1517,6 +1525,7 @@ pub(super) fn append_entries(
                 write: drive.write.clone(),
                 name: String::new(),
             }],
+            inserted: 0,
         });
     }
     for entry in entries {
@@ -1682,7 +1691,7 @@ impl PendingMedia {
     }
 
     /// The catalogue index of the floppy drive `unit` holds at power-on
-    /// without a waiting one: the first of its catalogue, unless the machine
+    /// without a waiting one: the one its catalogue names, unless the machine
     /// starts with the door open.
     pub fn power_on(&self, unit: u8) -> Option<usize> {
         let drive = self
@@ -1692,7 +1701,8 @@ impl PendingMedia {
             .find(|drive| drive.controller == assembly::DeviceId::Fdc && drive.unit == unit)?;
         match &drive.media {
             Some(list) if list.empty || list.entries.is_empty() => None,
-            _ => Some(0),
+            Some(list) => Some(list.inserted),
+            None => Some(0),
         }
     }
 
@@ -1730,6 +1740,7 @@ impl PendingMedia {
                                 write: drive.write.clone(),
                                 name: String::new(),
                             }],
+                            inserted: 0,
                         });
                     }
                     let Some(list) = &mut drive.media else {

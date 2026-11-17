@@ -1334,6 +1334,9 @@ pub(super) struct LibraryView {
     pub disks_created: Option<std::result::Result<Box<crate::created_media::Created>, String>>,
     /// What the last Start left out, for the status bar once it runs.
     pub start_notes: Vec<String>,
+    /// The drives the launched session took back their kept catalogue in,
+    /// for the shell once the machine has assembled.
+    pub start_catalogue: Vec<crate::kept_catalogue::RestoredDrive>,
     /// The Remotes group: the registries, the node shown and its rows.
     pub(crate) remote: remotes::RemotesView,
 }
@@ -1406,6 +1409,7 @@ impl LibraryView {
             host_reads: Vec::new(),
             disks_created: None,
             start_notes: Vec::new(),
+            start_catalogue: Vec::new(),
             remote: remotes::RemotesView::new(),
         }
     }
@@ -1614,6 +1618,7 @@ impl LibraryView {
             Event::HostRead(path, result) => self.host_reads.push((path, *result)),
             Event::DisksCreated(result) => self.disks_created = Some(result),
             Event::StartNotes(notes) => self.start_notes = notes,
+            Event::StartCatalogue(drives) => self.start_catalogue = drives,
             Event::MediaSources(pick, result) => {
                 self.busy = false;
                 if let Some(dialog) = &mut self.media_import {
@@ -2270,6 +2275,14 @@ impl LibraryView {
     pub fn cancel_operation(&mut self) {
         self.pending_operation = false;
         self.busy = false;
+    }
+    /// Hand the stopped session's floppy catalogues to the worker, ahead of
+    /// [`Self::finish_with_failure`]: a library machine keeps them for its
+    /// next Start.
+    pub fn keep_catalogue(&mut self, drives: Vec<crate::kept_catalogue::StoppedDrive>) {
+        if self.active.is_some() {
+            self.send(Request::KeepCatalogue(drives));
+        }
     }
     pub fn finish_with_failure(&mut self, retain: bool, failed: bool) {
         if let Some((row, name, kind)) = self.active.clone() {

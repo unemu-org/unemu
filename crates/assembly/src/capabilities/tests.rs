@@ -159,6 +159,7 @@ fn known_bios_drive_domain_runs_without_firmware_bytes() {
     draft.config.drives[0].media = Some(FloppyMediaList {
         entries: Vec::new(),
         empty: true,
+        inserted: 0,
     });
     draft.set(
         "firmware.bios",
@@ -282,6 +283,7 @@ fn missing_firmware_is_pending_and_does_not_disable_unrelated_choices() {
             write: WriteMode::Volatile,
         }],
         empty: false,
+        inserted: 0,
     });
     assert!(validate_draft(&draft)
         .diagnostics

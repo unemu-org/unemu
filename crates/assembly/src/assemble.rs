@@ -1502,7 +1502,7 @@ fn mount_removable_fdc(
                         *keep_generations,
                     );
                     handle.floppy = Some((controller, drive.unit, index));
-                    if index == 0 && !list.empty {
+                    if index == list.inserted && !list.empty {
                         handle.insert()?;
                     }
                     persistence.push(handle);
@@ -1510,8 +1510,14 @@ fn mount_removable_fdc(
                 }
             });
         }
-        fdc.set_media_list(unit, drive_geometry.drive_type(), entries, list.empty)
-            .map_err(install_error)?;
+        fdc.set_media_list_from(
+            unit,
+            drive_geometry.drive_type(),
+            entries,
+            list.empty,
+            list.inserted,
+        )
+        .map_err(install_error)?;
     }
     Ok(fdc)
 }
@@ -1872,6 +1878,7 @@ mod tests {
         config.drives[0].media = Some(crate::FloppyMediaList {
             entries: vec![],
             empty: true,
+            inserted: 0,
         });
         let mut assembled = assemble(&config).unwrap();
         assert_eq!(

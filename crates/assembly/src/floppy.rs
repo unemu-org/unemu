@@ -114,6 +114,7 @@ impl AssembledMachine {
                     write: drive.write.clone(),
                     name: self.floppy_name(controller, unit),
                 }],
+                inserted: 0,
             });
         }
         if let Some(list) = &mut drive.media {
@@ -543,6 +544,7 @@ mod tests {
                     name: format!("{byte}.img"),
                 })
                 .collect(),
+            inserted: 0,
         });
         let mut assembled = crate::assemble(&config).unwrap();
         let event = FloppyEvent {
@@ -583,6 +585,44 @@ mod tests {
         assert_eq!(assembled.floppy_name(DeviceId::Fdc, 0), "17.img");
         assembled.finish_persistence().unwrap();
     }
+    /// A catalogue may start with any entry in the drive: the guest sees it
+    /// from power-on with the change line clear, its journal opens as the
+    /// first entry's would, and an entry past the catalogue is refused.
+    #[test]
+    fn a_catalogue_can_start_with_any_entry_in_the_drive() {
+        let temp = crate::test_support::TempDir::new("floppy-power-on");
+        let base_path = temp.path().join("base.img");
+        let journal_path = temp.path().join("second.upfj");
+        std::fs::write(&base_path, vec![0x22; 1_474_560]).unwrap();
+        let mut config = crate::floppy_boot(vec![0xfa, 0xeb, 0xfe], vec![0; 1_474_560]);
+        let list = |inserted| FloppyMediaList {
+            empty: false,
+            entries: vec![
+                FloppyMedium {
+                    image: ImageSource::Inline(vec![0x11; 1_474_560]),
+                    expected_sha256: None,
+                    write: WriteMode::ReadOnly,
+                    name: "first.img".into(),
+                },
+                FloppyMedium {
+                    image: ImageSource::File(base_path.clone()),
+                    expected_sha256: None,
+                    write: WriteMode::journal(&journal_path),
+                    name: "second.img".into(),
+                },
+            ],
+            inserted,
+        };
+        config.drives[0].media = Some(list(2));
+        assert!(crate::assemble(&config).is_err(), "no third entry");
+        config.drives[0].media = Some(list(1));
+        let mut assembled = crate::assemble(&config).unwrap();
+        assert_eq!(assembled.floppy_name(DeviceId::Fdc, 0), "second.img");
+        assert!(journal_path.exists(), "the disk in the drive is open");
+        assert_eq!(assembled.machine.bus_mut().port_read(0x3f7, 1).unwrap(), 0);
+        assembled.finish_persistence().unwrap();
+    }
+
     #[test]
     fn floppy_media_runtime_eject_releases_journal_and_reinsertion_replays_writes() {
         let temp = crate::test_support::TempDir::new("floppy-runtime");
@@ -607,6 +647,7 @@ mod tests {
                     name: "second.img".into(),
                 },
             ],
+            inserted: 0,
         });
         let mut assembled = crate::assemble(&config).unwrap();
         assert!(!journal_path.exists());

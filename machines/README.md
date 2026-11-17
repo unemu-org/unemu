@@ -475,11 +475,39 @@ separate journal path, defaulting to `<base>.upfj` with a Save picker. Relative
 journal paths use the selected base's directory. Retention follows the drive's
 existing journal policy, or defaults to ten closed generations. **Insert** applies at the same boundary
 as the hotkeys, including while paused; **Cancel** keeps the current medium.
-Browsed additions last for the running session; edit the machine file to retain
-them across starts. The base file is never rewritten. A failed mount or persistence
+Browsed additions to a machine file last for the running session; edit the
+machine file to retain them across starts. The base file is never rewritten. A failed mount or persistence
 operation stops execution and opens an error dialog.
 Browse validation errors stay in Insert so the path can be corrected or the
 dialog cancelled while retaining the running session.
+
+A machine of the library keeps each floppy drive's catalogue at Stop, whatever
+went in while it ran: disks of a library set, image files chosen with
+**Browse for an image file…**, disks **Create from files…** made. Its next
+Start (a power cycle too) puts the same disks back in the same order, with the
+same names and write settings, and the disk that was in the drive in it from
+power-on, or leaves the drive empty if it was. The machine keeps the record in
+its own workspace, never in the store's machine list: each disk by what
+identifies it, a set's disk by the set, its disk and the tag it came from, any
+other image by its SHA-256; the same disk inserted twice is kept once, and a
+catalogue that is just the image's own leaves no record. A browsed file is
+copied into the machine's workspace at Stop as a read-only base named by its
+SHA-256, so changing or removing the file later does not change the machine's
+disk, and a journal chosen beside the file is copied in too: the machine's
+later writes, and those of its copies, go to the machine's own copy, never
+to the file beside the image. While the machine is stopped, the drive's
+**Catalogue** submenu and **Insert…**'s This machine list those disks as
+waiting for Start, the one that goes in marked *at Start*; choosing another
+makes it the one that goes in. A disk chosen for Start from the library or
+made with Create from files… wins its drive: it is listed first and goes in,
+and the kept catalogue follows it; choosing a kept disk instead takes it out
+again. A disk that cannot come back (its set or file is gone) stays out with a
+note in the status bar, as does the whole catalogue if its record cannot be
+read; the Start goes on, and a record a newer version wrote is left as it is.
+Duplicate and Gaming mode carry the catalogue, each with its own copies of the
+journals. Save as new image… keeps the catalogue as it keeps created disks, but
+with fresh journals: the writes to kept set, created and browsed disks start
+afresh. Reset to image… drops it, and its confirmation says so.
 
 **Tools › Create blank disk…** creates an unpartitioned fixed disk by exact CHS
 or rounded size, or a formatted FAT12 1.2M/1.44M/720K/360K data floppy. For a
@@ -666,7 +694,8 @@ one of the machine's own disks in its media folder (a library machine's
 workspace, a running session's media folder, or a machine file's
 `<machine>.local/media`); it is a read-only base, and the guest's writes go to the
 machine's journal or are refused, as chosen. A running or halted machine takes
-disk 1 at once and every disk joins the drive's catalogue in order. A stopped
+disk 1 at once and every disk joins the drive's catalogue in order; a machine of
+the library keeps them there across Stop, as above. A stopped
 machine takes the disks at its next Start: they wait in its workspace, not in
 the store's machine list, and leave once the started machine has assembled;
 **Take out again** drops them, and so does Reset to image…. **Also keep in the

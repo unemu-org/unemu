@@ -83,6 +83,7 @@ fn freedos_dir_observes_scheduled_second_floppy() {
                 name: "second.img".into(),
             },
         ],
+        inserted: 0,
     });
     let policy = ObservationPolicy {
         routes: vec![ObservationRequest {

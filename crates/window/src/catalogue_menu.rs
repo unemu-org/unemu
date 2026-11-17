@@ -301,6 +301,10 @@ pub(crate) struct Catalogue {
     /// not: those of a stopped library machine, or of an image, join it only
     /// then.
     pub unknown: Option<String>,
+    /// The disks waiting for Start are the whole catalogue the stopped
+    /// library machine kept at its last Stop, the image's own disks among
+    /// them, so no line says that those join later.
+    pub kept: bool,
 }
 
 /// What a disk row says at its right.
@@ -427,7 +431,7 @@ impl Catalogue {
                 "At Start: {name}, which joins the catalogue then."
             )));
         }
-        if self.unknown.is_some() {
+        if self.unknown.is_some() && !self.kept {
             rows.push(Row::Note(OWN_DISKS_AT_START.into()));
         }
         if capped {
@@ -856,6 +860,7 @@ mod tests {
             workspace_journal: None,
             origin: None,
             verified: None,
+            reference: None,
         }
     }
 
@@ -1062,6 +1067,7 @@ mod tests {
             in_drive,
             pending,
             unknown: None,
+            kept: false,
         }
     }
 

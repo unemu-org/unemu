@@ -149,6 +149,10 @@ pub(super) enum Request {
     ),
     /// Remotes: list and read a registry without pulling.
     Browse(crate::remote_browse::BrowseRequest),
+    /// The running machine's floppy catalogues at Stop, sent before its
+    /// `Finish`: a library machine, or a Gaming-mode copy of one, keeps them
+    /// for its next Start.
+    KeepCatalogue(Vec<crate::kept_catalogue::StoppedDrive>),
     Shutdown,
 }
 impl Request {
@@ -190,6 +194,13 @@ pub(super) enum MachineJob {
         id: String,
         drive: String,
         first: usize,
+    },
+    /// Choose which disk of the catalogue one drive of a stopped machine
+    /// kept at its last Stop goes in at its next Start, by its place there.
+    SetKeptDisk {
+        id: String,
+        drive: String,
+        index: usize,
     },
     /// Finish an interrupted Save as new image… as it was chosen.
     FinishCommit(String),
@@ -345,6 +356,10 @@ pub(super) enum Event {
     /// What a Start left out and why, sent before its `Launched`: created
     /// disks whose record or images could not be used.
     StartNotes(Vec<String>),
+    /// The drives a Start gave back the catalogue they had at the last
+    /// Stop, sent right before its `Launched`: the window names their set
+    /// disks and puts the kept disk in before the first instruction.
+    StartCatalogue(Vec<crate::kept_catalogue::RestoredDrive>),
 }
 pub(super) struct Worker {
     pub send: mpsc::Sender<Request>,
@@ -1105,20 +1120,25 @@ fn machine_row(
             })
             .clone(),
     };
-    let (created, created_problem) = match store
-        .workspace_path(&listing.id)
-        .map_err(|e| e.to_string())
+    let workspace = store.workspace_path(&listing.id).map_err(|e| e.to_string());
+    let (created, created_problem) = match workspace
+        .clone()
         .and_then(|workspace| crate::created_media::read_pending(&workspace))
     {
         Ok(created) => (created, None),
         Err(error) => (Vec::new(), Some(error)),
     };
+    // A record that cannot be read lists nothing; its Start says why.
+    let kept = workspace
+        .and_then(|workspace| crate::kept_catalogue::read(&workspace))
+        .unwrap_or_default();
     library_view::machines::MachineRow {
         summary: cache.summary(&image.digest).cloned(),
         title: pc_image::machine::image_title(store, &image).ok().flatten(),
         drives,
         created,
         created_problem,
+        kept,
         listing,
     }
 }
@@ -1278,6 +1298,14 @@ fn machine_job<B: Backend>(
                     "{drive} of \u{201c}{name}\u{201d} takes the disk at its next Start"
                 ))
             }
+            MachineJob::SetKeptDisk { id, drive, index } => {
+                let name = machine_named(store, cache, &id)?.name().to_owned();
+                let owner = machine::own(store, &id).map_err(error)?;
+                crate::kept_catalogue::set_in_drive(owner.path(), &drive, index)?;
+                Event::MachineNote(format!(
+                    "{drive} of \u{201c}{name}\u{201d} takes the disk at its next Start"
+                ))
+            }
             MachineJob::FinishCommit(id) => {
                 let tag = machine::pending_commit(store, &id)
                     .map_err(error)?
@@ -1364,21 +1392,57 @@ fn machine_job<B: Backend>(
 
 /// A Gaming-mode copy of a machine plays with the machine's created disks
 /// pending, as with its other pending disks; the copy keeps them for every
-/// power cycle and the machine keeps them for its own Start.
+/// power cycle and the machine keeps them for its own Start. The copy's
+/// drives take back the catalogue the copy kept, at first the machine's.
+/// The drives that took one back are for the window, with the launch.
 fn copied_disks(
     copy: &Workspace<'_>,
     session: &mut pc_image::workspace::PreparedSession,
     send: &dyn Fn(Event),
-) -> Result<()> {
-    let listed: Vec<String> = pc_image::machine::copy_of(copy)
+) -> Result<Vec<crate::kept_catalogue::RestoredDrive>> {
+    let listed = pc_image::machine::copy_of(copy)
         .map_err(|e| e.to_string())?
-        .map(|record| record.pending.into_iter().map(|p| p.drive).collect())
+        .map(|record| record.pending)
         .unwrap_or_default();
-    note_start(
-        send,
-        crate::created_media::apply(session, copy.path(), &listed).notes,
-    );
-    Ok(())
+    let drives: Vec<String> = listed.iter().map(|p| p.drive.clone()).collect();
+    let applied = crate::created_media::apply(session, copy.path(), &drives);
+    let restored =
+        crate::kept_catalogue::restore(session, copy.store(), copy.path(), &listed, &applied.done);
+    note_start(send, [applied.notes, restored.notes].concat());
+    Ok(restored.drives)
+}
+
+/// The catalogues the window handed over at Stop, kept in `workspace` for
+/// its next Start. What could not be kept goes to the log and comes back,
+/// for the status bar once the session has finished.
+fn keep_catalogue(
+    store: &Store,
+    workspace: &Workspace<'_>,
+    drives: Vec<crate::kept_catalogue::StoppedDrive>,
+    send: &dyn Fn(Event),
+) -> Vec<String> {
+    match crate::kept_catalogue::keep(store, workspace.path(), drives) {
+        Ok(notes) => {
+            for note in &notes {
+                eprintln!("unemupc: {note}");
+            }
+            notes
+        }
+        Err(error) => {
+            send(Event::Error(format!(
+                "The drives' catalogues were not kept for the next Start: {error}"
+            )));
+            Vec::new()
+        }
+    }
+}
+
+/// What a Stop could not keep, after its `Finished`, which would otherwise
+/// put "Ready" over it.
+fn note_stop(send: &dyn Fn(Event), notes: Vec<String>) {
+    if !notes.is_empty() {
+        send(Event::MachineNote(notes.join(" ")));
+    }
 }
 
 /// What a Start left out goes to the log and, after the Start, to the
@@ -1400,7 +1464,8 @@ fn read_host(path: PathBuf) -> Event {
 
 /// Serve the library while a session runs, until the session finishes.
 /// `None` when the program shuts down first. `assembled` runs when the
-/// shell reports that the machine assembled.
+/// shell reports that the machine assembled, and `stopped` with the drives'
+/// catalogues the shell hands over at Stop.
 #[allow(clippy::too_many_arguments)]
 fn serve_session<B: Backend>(
     backend: &B,
@@ -1410,12 +1475,14 @@ fn serve_session<B: Backend>(
     requests: &mpsc::Receiver<Request>,
     send: &dyn Fn(Event),
     mut assembled: impl FnMut(),
+    mut stopped: impl FnMut(Vec<crate::kept_catalogue::StoppedDrive>),
 ) -> Result<Option<Finish>> {
     loop {
         match requests.recv() {
             Ok(Request::Finish(outcome)) => return Ok(Some(outcome)),
             Ok(Request::Shutdown) | Err(_) => return Ok(None),
             Ok(Request::Assembled) => assembled(),
+            Ok(Request::KeepCatalogue(drives)) => stopped(drives),
             // Machine jobs are served while a machine runs: renames, settings
             // read read-only and new machines work; a job that needs the
             // running machine's lock is refused by the store with a reason.
@@ -1609,11 +1676,12 @@ fn run<B: Backend>(
                                 record.reference = existing.reference;
                             }
                         }
+                        let mut restored = Vec::new();
                         let prepared = (|| -> Result<_> {
                             record.write(&owner)?;
                             let prepared = if record.machine.is_some() {
                                 let mut session = backend.resume_copy(&owner)?.session;
-                                copied_disks(&owner, &mut session, &send)?;
+                                restored = copied_disks(&owner, &mut session, &send)?;
                                 session
                             } else {
                                 let prepared = backend.prepare(
@@ -1642,6 +1710,9 @@ fn run<B: Backend>(
                                 return Err(error);
                             }
                         };
+                        if !restored.is_empty() {
+                            send(Event::StartCatalogue(restored));
+                        }
                         send(Event::Launched(
                             Box::new(transfer),
                             Box::new(row),
@@ -1649,6 +1720,7 @@ fn run<B: Backend>(
                             kind,
                             Vec::new(),
                         ));
+                        let mut stopped = None;
                         let Some(outcome) = serve_session(
                             &backend,
                             &store,
@@ -1657,6 +1729,7 @@ fn run<B: Backend>(
                             &requests,
                             &send,
                             || (),
+                            |drives| stopped = Some(drives),
                         )?
                         else {
                             record.recovery = true;
@@ -1664,6 +1737,16 @@ fn run<B: Backend>(
                             drop(owner);
                             return Ok(false);
                         };
+                        // Only a copy of a machine keeps its catalogue, and
+                        // not when it is discarded; an image's session has
+                        // no machine to keep it for.
+                        let mut stop_notes = Vec::new();
+                        if let Some(drives) = stopped
+                            .take()
+                            .filter(|_| record.machine.is_some() && outcome != Finish::Discard)
+                        {
+                            stop_notes = keep_catalogue(&store, &owner, drives, &send);
+                        }
                         if outcome == Finish::Discard {
                             owner.discard_and_remove().map_err(|e| e.to_string())?;
                         } else {
@@ -1672,6 +1755,7 @@ fn run<B: Backend>(
                             drop(owner);
                         }
                         send(Event::Finished);
+                        note_stop(&send, stop_notes);
                         send(Event::Recoveries(recoveries(&store)?));
                     }
                     Request::LaunchMachine(id, gaming) => {
@@ -1696,12 +1780,16 @@ fn run<B: Backend>(
                             let prepared = (|| -> Result<_> {
                                 record.write(&owner)?;
                                 let mut prepared = backend.prepare_copy(&source, &owner)?;
-                                copied_disks(&owner, &mut prepared.session, &send)?;
-                                prepared.session.into_transfer().map_err(|e| e.to_string())
+                                let restored = copied_disks(&owner, &mut prepared.session, &send)?;
+                                let transfer = prepared
+                                    .session
+                                    .into_transfer()
+                                    .map_err(|e| e.to_string())?;
+                                Ok((transfer, restored))
                             })();
                             drop(source);
-                            let transfer = match prepared {
-                                Ok(transfer) => transfer,
+                            let (transfer, restored) = match prepared {
+                                Ok(prepared) => prepared,
                                 Err(error) => {
                                     owner
                                         .discard_and_remove()
@@ -1709,6 +1797,9 @@ fn run<B: Backend>(
                                     return Err(error);
                                 }
                             };
+                            if !restored.is_empty() {
+                                send(Event::StartCatalogue(restored));
+                            }
                             send(Event::Launched(
                                 Box::new(transfer),
                                 Box::new(row),
@@ -1716,6 +1807,7 @@ fn run<B: Backend>(
                                 WorkspaceKind::Disposable,
                                 Vec::new(),
                             ));
+                            let mut stopped = None;
                             let Some(outcome) = serve_session(
                                 &backend,
                                 &store,
@@ -1724,11 +1816,19 @@ fn run<B: Backend>(
                                 &requests,
                                 &send,
                                 || (),
+                                |drives| stopped = Some(drives),
                             )?
                             else {
                                 record.write(&owner)?;
                                 return Ok(false);
                             };
+                            // A discarded copy keeps nothing.
+                            let mut stop_notes = Vec::new();
+                            if let Some(drives) =
+                                stopped.take().filter(|_| outcome != Finish::Discard)
+                            {
+                                stop_notes = keep_catalogue(&store, &owner, drives, &send);
+                            }
                             if outcome == Finish::Discard {
                                 owner.discard_and_remove().map_err(|e| e.to_string())?;
                             } else {
@@ -1737,6 +1837,7 @@ fn run<B: Backend>(
                                 record.write(&owner)?;
                             }
                             send(Event::Finished);
+                            note_stop(&send, stop_notes);
                             send(Event::Recoveries(recoveries(&store)?));
                         } else {
                             let owner =
@@ -1750,12 +1851,22 @@ fn run<B: Backend>(
                                 owner.path(),
                                 &listed,
                             );
-                            note_start(&send, applied.notes);
                             let created = applied.done;
+                            let restored = crate::kept_catalogue::restore(
+                                &mut prepared.session,
+                                &store,
+                                owner.path(),
+                                &inserted,
+                                &created,
+                            );
+                            note_start(&send, [applied.notes, restored.notes].concat());
                             let transfer = prepared
                                 .session
                                 .into_transfer()
                                 .map_err(|e| e.to_string())?;
+                            if !restored.drives.is_empty() {
+                                send(Event::StartCatalogue(restored.drives));
+                            }
                             send(Event::Launched(
                                 Box::new(transfer),
                                 Box::new(row),
@@ -1779,14 +1890,23 @@ fn run<B: Backend>(
                                     send(Event::Error(error));
                                 }
                             };
+                            let mut stop_notes = Vec::new();
                             let outcome = serve_session(
-                                &backend, &store, &mut cache, &query, &requests, &send, confirm,
+                                &backend,
+                                &store,
+                                &mut cache,
+                                &query,
+                                &requests,
+                                &send,
+                                confirm,
+                                |drives| stop_notes = keep_catalogue(&store, &owner, drives, &send),
                             )?;
                             drop(owner);
                             if outcome.is_none() {
                                 return Ok(false);
                             }
                             send(Event::Finished);
+                            note_stop(&send, stop_notes);
                         }
                     }
                     Request::Assembled => (),
@@ -2057,7 +2177,8 @@ fn run<B: Backend>(
                     Request::CreateDisks(order, place) => send(Event::DisksCreated(
                         crate::created_media::create(&store, *order, place).map(Box::new),
                     )),
-                    Request::Finish(_) => (),
+                    // Catalogues come only while a machine runs.
+                    Request::Finish(_) | Request::KeepCatalogue(_) => (),
                 }
                 Ok(true)
             };
@@ -3662,6 +3783,861 @@ mod tests {
             "DOS 2"
         );
         assert_eq!(pc_image::machine::list(&f.store).unwrap().len(), 2);
+        w.shutdown();
+    }
+
+    use crate::kept_catalogue::{KeptDisk, RestoredDrive, StoppedDisk, StoppedDrive};
+
+    /// A Start of machine `id`, or of its Gaming-mode copy: the prepared
+    /// session, its workspace name, the drives that took back a kept
+    /// catalogue and what the Start left out.
+    fn start_kept(
+        w: &Worker,
+        id: &str,
+        gaming: bool,
+    ) -> (
+        pc_image::workspace::PreparedSession,
+        String,
+        Vec<RestoredDrive>,
+        Vec<String>,
+    ) {
+        w.send
+            .send(Request::LaunchMachine(id.into(), gaming))
+            .unwrap();
+        let mut drives = Vec::new();
+        let mut notes = Vec::new();
+        loop {
+            match until(w, |e| {
+                matches!(
+                    e,
+                    Event::Launched(..) | Event::StartCatalogue(_) | Event::StartNotes(_)
+                )
+            }) {
+                Event::StartCatalogue(restored) => drives = restored,
+                Event::StartNotes(left_out) => notes = left_out,
+                Event::Launched(transfer, _, name, ..) => {
+                    return (transfer.restore().unwrap(), name, drives, notes)
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    /// Stop the running session as the window does: its catalogues, then
+    /// its finish.
+    fn stop_kept(w: &Worker, drives: Vec<StoppedDrive>, outcome: Finish) {
+        w.send.send(Request::KeepCatalogue(drives)).unwrap();
+        w.send.send(Request::Finish(outcome)).unwrap();
+        until(w, |e| matches!(e, Event::Finished));
+    }
+
+    /// Drive A:'s catalogue in a prepared session.
+    fn drive_a(prepared: &pc_image::workspace::PreparedSession) -> &assembly::FloppyMediaList {
+        prepared
+            .machine
+            .drives
+            .iter()
+            .find(|d| d.unit == 0 && matches!(d.kind, assembly::DriveKind::Floppy { .. }))
+            .and_then(|d| d.media.as_ref())
+            .expect("drive A:'s catalogue")
+    }
+
+    fn names(list: &assembly::FloppyMediaList) -> Vec<String> {
+        list.entries.iter().map(|m| m.name.clone()).collect()
+    }
+
+    /// The disks a session started with, as the window hands them over.
+    fn started_with(list: &assembly::FloppyMediaList) -> Vec<StoppedDisk> {
+        list.entries
+            .iter()
+            .map(|m| StoppedDisk {
+                name: m.name.clone(),
+                source: None,
+                reference: None,
+                image: m.image.clone(),
+                sha256: m.expected_sha256,
+                write: m.write.clone(),
+                format: None,
+                started_with: true,
+            })
+            .collect()
+    }
+
+    /// A 360K image file of this computer, inserted with Browse….
+    fn browsed(f: &Fixture, byte: u8) -> (std::path::PathBuf, StoppedDisk) {
+        use sha2::Digest as _;
+        let path = f.temp.path().join("host/game.img");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let bytes = vec![byte; 360 * 1024];
+        fs::write(&path, &bytes).unwrap();
+        let disk = StoppedDisk {
+            name: "game.img".into(),
+            source: None,
+            reference: None,
+            image: assembly::ImageSource::File(path.clone()),
+            sha256: Some(sha2::Sha256::digest(&bytes).into()),
+            write: assembly::WriteMode::ReadOnly,
+            format: Some(assembly::FloppyGeometry::DD_360K),
+            started_with: false,
+        };
+        (path, disk)
+    }
+
+    /// The library source of the set's one disk, as the window names it.
+    fn set_source(f: &Fixture, set: &Descriptor) -> image_store::media_set::CatalogueSource {
+        let resolved = f
+            .store
+            .resolve_descriptor(
+                set,
+                &image_store::media_set::Validator(&pc_image::media_set::PcMediaFormats),
+            )
+            .unwrap();
+        let config = image_store::media_set::Config::decode(&resolved.config).unwrap();
+        image_store::media_set::CatalogueSource {
+            set: set.digest.clone(),
+            medium_id: config.media[0].id.clone(),
+            blob: config.media[0].blob.clone(),
+        }
+    }
+
+    /// A library machine's catalogue comes back at its next Start as it
+    /// was at Stop: a set's disk a pending insert put in, the image's own
+    /// disks and an image file Browse… inserted keep their order, names and
+    /// write settings, and the disk that was in the drive goes in again.
+    /// The image file is the machine's own copy, so a later change of the
+    /// file changes nothing; the record lives in the machine's workspace,
+    /// never in the machine list, which no Stop or Start rewrites. Choosing
+    /// another kept disk for the next Start changes the disk in the drive.
+    #[test]
+    fn a_machine_takes_back_at_start_the_catalogue_it_had_at_stop() {
+        use sha2::Digest as _;
+        let f = Fixture::new();
+        let set = f.import_set();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        pc_image::machine::set_pending_insert(&f.store, &id, "A:", Some(pending_a(&set))).unwrap();
+        let (prepared, _, restored, _) = start_kept(&w, &id, false);
+        assert!(restored.is_empty(), "nothing was kept yet");
+        w.send.send(Request::Assembled).unwrap();
+        let first = drive_a(&prepared).clone();
+        drop(prepared);
+        let (host, game) = browsed(&f, 0x5a);
+        let mut disks = started_with(&first);
+        disks[0].source = Some(set_source(&f, &set));
+        disks[0].reference = Some("disks-set:r1".into());
+        disks.push(game.clone());
+        let at = disks.len() - 1;
+        let list_file = f.store.root().join("local/machines.toml");
+        // The run's last-run stamp lands at Assembled, which the worker has
+        // done once it answers the next job; the Stop changes no machine
+        // list after it.
+        w.send
+            .send(Request::Machine(MachineJob::ReadSettings(id.clone())))
+            .unwrap();
+        until(&w, |e| matches!(e, Event::MachineSettings(..)));
+        let machines = fs::read(&list_file).unwrap();
+        stop_kept(
+            &w,
+            vec![StoppedDrive {
+                unit: 0,
+                disks,
+                in_drive: Some(at),
+            }],
+            Finish::Retain,
+        );
+        assert_eq!(fs::read(&list_file).unwrap(), machines);
+        let workspace = f.store.workspace_path(&id).unwrap();
+        let kept = crate::kept_catalogue::read(&workspace).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].in_drive, Some(at));
+        assert!(matches!(
+            &kept[0].disk[0],
+            KeptDisk::Set { journal: true, .. }
+        ));
+        assert!(kept[0].disk[1..at]
+            .iter()
+            .all(|disk| matches!(disk, KeptDisk::Own { .. })));
+        let sha = crate::created_media::hex(&game.sha256.unwrap());
+        assert_eq!(
+            kept[0].disk[at],
+            KeptDisk::Image {
+                name: "game.img".into(),
+                sha256: sha.clone(),
+                journal: false,
+                journal_file: None,
+                format: Some("360K".into()),
+            }
+        );
+        let copy = workspace.join(format!("media/created/{sha}.img"));
+        assert_eq!(fs::read(&copy).unwrap(), fs::read(&host).unwrap());
+        fs::write(&host, vec![0x11; 360 * 1024]).unwrap();
+        // The next Start: no pending insert, the kept catalogue alone.
+        let (prepared, _, restored, notes) = start_kept(&w, &id, false);
+        assert!(notes.is_empty(), "{notes:?}");
+        let list = drive_a(&prepared);
+        let mut expected = names(&first);
+        expected.push("game.img".into());
+        assert_eq!(names(list), expected);
+        assert_eq!(list.entries[..at], first.entries[..]);
+        let last = &list.entries[at];
+        assert_eq!(last.image, assembly::ImageSource::File(copy.clone()));
+        assert_eq!(last.write, assembly::WriteMode::ReadOnly);
+        assert_eq!(
+            last.expected_sha256,
+            Some(sha2::Sha256::digest(vec![0x5a; 360 * 1024]).into())
+        );
+        assert!(prepared.bases.contains_key(&copy));
+        // The browsed disk is in the drive from power-on; the set's disk
+        // keeps its library source and the tag it came from.
+        assert!(!list.empty);
+        assert_eq!(list.inserted, at);
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].sets.len(), 1);
+        assert_eq!(restored[0].sets[0].index, 0);
+        assert_eq!(restored[0].sets[0].source, set_source(&f, &set));
+        assert_eq!(restored[0].sets[0].reference, "disks-set:r1");
+        drop(prepared);
+        stop_kept(&w, Vec::new(), Finish::Retain);
+        assert_eq!(fs::read(&list_file).unwrap(), machines, "never assembled");
+        // An empty catalogue list from the window keeps nothing.
+        assert!(crate::kept_catalogue::read(&workspace).unwrap().is_empty());
+        w.shutdown();
+    }
+
+    /// Choosing a kept disk for a stopped machine's next Start makes it the
+    /// disk in the drive from power-on then.
+    #[test]
+    fn a_kept_disk_chosen_for_start_goes_in_then() {
+        let f = Fixture::new();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        let (prepared, _, _, _) = start_kept(&w, &id, false);
+        let first = drive_a(&prepared).clone();
+        drop(prepared);
+        let (_, game) = browsed(&f, 0x33);
+        let mut disks = started_with(&first);
+        disks.push(game);
+        stop_kept(
+            &w,
+            vec![StoppedDrive {
+                unit: 0,
+                disks,
+                in_drive: None,
+            }],
+            Finish::Retain,
+        );
+        // The drive was empty at Stop: it is empty at Start.
+        let (prepared, _, _, _) = start_kept(&w, &id, false);
+        assert!(drive_a(&prepared).empty);
+        drop(prepared);
+        w.send.send(Request::Finish(Finish::Retain)).unwrap();
+        until(&w, |e| matches!(e, Event::Finished));
+        for index in [first.entries.len(), 0] {
+            w.send
+                .send(Request::Machine(MachineJob::SetKeptDisk {
+                    id: id.clone(),
+                    drive: "A:".into(),
+                    index,
+                }))
+                .unwrap();
+            until(&w, |e| matches!(e, Event::MachineNote(_)));
+            let (prepared, _, _, _) = start_kept(&w, &id, false);
+            assert!(!drive_a(&prepared).empty, "{index}");
+            assert_eq!(drive_a(&prepared).inserted, index);
+            drop(prepared);
+            w.send.send(Request::Finish(Finish::Retain)).unwrap();
+            until(&w, |e| matches!(e, Event::Finished));
+        }
+        w.shutdown();
+    }
+
+    /// Disks Create from files… made while the machine ran stay in its
+    /// catalogue across a restart: all of a split, in order, with their
+    /// journals in the machine's workspace, the one in the drive in again.
+    #[test]
+    fn a_created_split_stays_in_the_catalogue_across_a_restart() {
+        use crate::created_media::{CreateOrder, Place};
+        use media::fat12::{volume_label, FloppyFormat, HostItem, ShortName};
+        let f = Fixture::new();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        let (prepared, _, _, _) = start_kept(&w, &id, false);
+        let first = drive_a(&prepared).clone();
+        drop(prepared);
+        let game = f.temp.path().join("host/game");
+        fs::create_dir_all(&game).unwrap();
+        fs::write(game.join("one.dat"), vec![1; 250_000]).unwrap();
+        fs::write(game.join("two.dat"), vec![2; 250_000]).unwrap();
+        let workspace = f.store.workspace_path(&id).unwrap();
+        let media = workspace.join("media");
+        w.send
+            .send(Request::CreateDisks(
+                Box::new(CreateOrder {
+                    unit: 0,
+                    items: vec![HostItem::read(&game).unwrap()],
+                    top: ShortName::parse("GAME"),
+                    format: FloppyFormat::Dd360,
+                    label: volume_label("GAME").ok(),
+                    split: true,
+                    journal: true,
+                    keep: None,
+                    title: "GAME".into(),
+                }),
+                Place::Folder(media.clone()),
+            ))
+            .unwrap();
+        let Event::DisksCreated(created) = until(&w, |e| matches!(e, Event::DisksCreated(_)))
+        else {
+            unreachable!()
+        };
+        let created = created.unwrap();
+        assert_eq!(created.disks.len(), 2);
+        let mut disks = started_with(&first);
+        for entry in crate::created_media::entries(&created, 3) {
+            disks.push(StoppedDisk {
+                name: entry.medium.name,
+                source: None,
+                reference: None,
+                image: entry.medium.image,
+                sha256: entry.medium.expected_sha256,
+                write: entry.medium.write,
+                format: entry.geometry,
+                started_with: false,
+            });
+        }
+        let second = disks.len() - 1;
+        stop_kept(
+            &w,
+            vec![StoppedDrive {
+                unit: 0,
+                disks,
+                in_drive: Some(second),
+            }],
+            Finish::Retain,
+        );
+        let (prepared, _, restored, notes) = start_kept(&w, &id, false);
+        assert!(notes.is_empty(), "{notes:?}");
+        let list = drive_a(&prepared);
+        let mut expected = names(&first);
+        expected.extend(["GAME 1 of 2".to_owned(), "GAME 2 of 2".to_owned()]);
+        assert_eq!(names(list), expected);
+        for (medium, (path, digest, _)) in list.entries[second - 1..].iter().zip(&created.disks) {
+            assert_eq!(medium.image, assembly::ImageSource::File(path.clone()));
+            assert_eq!(medium.expected_sha256, Some(*digest));
+            assert!(
+                matches!(&medium.write, assembly::WriteMode::Journal { path, .. }
+                    if *path == media.join(format!("{}.upfj", crate::created_media::hex(digest)))),
+                "{medium:?}"
+            );
+        }
+        assert_eq!((list.empty, list.inserted), (false, second));
+        assert!(restored[0].sets.is_empty());
+        drop(prepared);
+        w.send.send(Request::Finish(Finish::Retain)).unwrap();
+        until(&w, |e| matches!(e, Event::Finished));
+        w.shutdown();
+    }
+
+    /// A pending insert for a drive wins it: its disk leads the catalogue
+    /// and is in the drive at Start, as the insert chose it, and the kept
+    /// catalogue follows in its order, without the insert's disk a second
+    /// time; the other drive keeps its kept catalogue whole.
+    #[test]
+    fn a_pending_insert_wins_its_drive_and_the_kept_catalogue_follows() {
+        let f = Fixture::new();
+        let set = f.import_set();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        pc_image::machine::set_pending_insert(&f.store, &id, "A:", Some(pending_a(&set))).unwrap();
+        let (prepared, _, _, _) = start_kept(&w, &id, false);
+        w.send.send(Request::Assembled).unwrap();
+        let first = drive_a(&prepared).clone();
+        drop(prepared);
+        let (_, game) = browsed(&f, 0x44);
+        let mut disks = started_with(&first);
+        disks[0].source = Some(set_source(&f, &set));
+        disks.push(game);
+        let at = disks.len() - 1;
+        stop_kept(
+            &w,
+            vec![StoppedDrive {
+                unit: 0,
+                disks,
+                in_drive: Some(at),
+            }],
+            Finish::Retain,
+        );
+        // The same disk again, now write-protected.
+        let insert = image_store::machine::PendingInsert {
+            journal: false,
+            ..pending_a(&set)
+        };
+        pc_image::machine::set_pending_insert(&f.store, &id, "A:", Some(insert)).unwrap();
+        let (prepared, _, restored, notes) = start_kept(&w, &id, false);
+        assert!(notes.is_empty(), "{notes:?}");
+        let list = drive_a(&prepared);
+        assert_eq!(names(list)[..at], names(&first)[..]);
+        assert_eq!(names(list)[at], "game.img");
+        assert_eq!(list.entries.len(), at + 1, "the set's disk once");
+        assert_eq!(list.entries[0].image, first.entries[0].image);
+        assert_eq!(list.entries[0].write, assembly::WriteMode::ReadOnly);
+        assert!(!list.empty, "the insert's disk is in the drive at power-on");
+        assert_eq!(list.inserted, 0);
+        assert!(restored[0].sets.is_empty(), "the insert names its own disk");
+        drop(prepared);
+        w.send.send(Request::Finish(Finish::Retain)).unwrap();
+        until(&w, |e| matches!(e, Event::Finished));
+        w.shutdown();
+    }
+
+    /// Stop the running session as the window does, and the notes the Stop
+    /// sends after its finish, up to the answer of the next job.
+    fn stop_noted(w: &Worker, id: &str, drives: Vec<StoppedDrive>) -> Vec<String> {
+        stop_kept(w, drives, Finish::Retain);
+        w.send
+            .send(Request::Machine(MachineJob::ReadSettings(id.into())))
+            .unwrap();
+        let mut notes = Vec::new();
+        while let Event::MachineNote(note) = until(w, |e| {
+            matches!(e, Event::MachineNote(_) | Event::MachineSettings(..))
+        }) {
+            notes.push(note);
+        }
+        notes
+    }
+
+    /// A kept catalogue whose record cannot be read, or that a newer
+    /// version wrote, never stops a Start: the drive is as the image sets
+    /// it and the Start says why. The next Stop leaves a newer version's
+    /// record as it is and says so, and replaces a damaged one. A kept disk
+    /// whose image is gone stays out with a note, and the others come back.
+    #[test]
+    fn an_unreadable_kept_catalogue_never_stops_a_start() {
+        let f = Fixture::new();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        let (prepared, _, _, _) = start_kept(&w, &id, false);
+        let first = drive_a(&prepared).clone();
+        drop(prepared);
+        w.send.send(Request::Finish(Finish::Retain)).unwrap();
+        until(&w, |e| matches!(e, Event::Finished));
+        let workspace = f.store.workspace_path(&id).unwrap();
+        let record = workspace.join("media/created/catalogue.toml");
+        fs::create_dir_all(record.parent().unwrap()).unwrap();
+        let (_, game) = browsed(&f, 0x66);
+        let sha = crate::created_media::hex(&game.sha256.unwrap());
+        let mut disks = started_with(&first);
+        disks.push(game);
+        for (text, newer) in [
+            ("schema = 2\n[[drive]]\ndrive = \"A:\"\n", true),
+            (
+                "schema = 1\n[[drive]]\ndrive = \"A:\"\n[[drive.disk]]\nkind = \"own\"\nname = \"x\"\nlater = 1\n",
+                true,
+            ),
+            ("not a record", false),
+        ] {
+            fs::write(&record, text).unwrap();
+            let (prepared, _, restored, notes) = start_kept(&w, &id, false);
+            assert!(restored.is_empty(), "{text}");
+            assert_eq!(notes.len(), 1, "{text}: {notes:?}");
+            assert!(notes[0].contains("cannot be read"), "{notes:?}");
+            assert_eq!(*drive_a(&prepared), first, "{text}");
+            drop(prepared);
+            let notes = stop_noted(
+                &w,
+                &id,
+                vec![StoppedDrive {
+                    unit: 0,
+                    disks: disks.clone(),
+                    in_drive: Some(0),
+                }],
+            );
+            if newer {
+                assert_eq!(fs::read_to_string(&record).unwrap(), text, "kept for its version");
+                assert_eq!(notes.len(), 1, "{notes:?}");
+                assert!(notes[0].contains("a newer version keeps them"), "{notes:?}");
+            } else {
+                assert!(notes.is_empty(), "{notes:?}");
+                let kept = crate::kept_catalogue::read(&workspace).unwrap();
+                assert_eq!(kept[0].disk.len(), disks.len(), "a damaged record is replaced");
+            }
+        }
+        fs::remove_file(workspace.join(format!("media/created/{sha}.img"))).unwrap();
+        let (prepared, _, _, notes) = start_kept(&w, &id, false);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].starts_with("game.img left A:'s catalogue: its image is gone"),
+            "{notes:?}"
+        );
+        assert_eq!(*drive_a(&prepared), first);
+        drop(prepared);
+        w.send.send(Request::Finish(Finish::Retain)).unwrap();
+        until(&w, |e| matches!(e, Event::Finished));
+        w.shutdown();
+    }
+
+    /// Write `value` to sector 0 of `base` through the journal at `path`, as
+    /// the guest's writes go.
+    fn journal_write(path: &std::path::Path, base: &[u8], value: u8) {
+        let mut journal =
+            media::JournalMedia::open(path, base, base.len() as u64, Default::default()).unwrap();
+        journal.write_batch(&[(0, [value; 512])]);
+        journal.finish().unwrap();
+    }
+
+    /// A journal Insert put beside an image file of this computer becomes
+    /// the machine's own at Stop, copied into its media folder, so Gaming
+    /// mode and Duplicate write their own copies of it: the machine's
+    /// journal and the one beside the file stay as they were, also when the
+    /// Gaming-mode copy is discarded.
+    #[test]
+    fn copies_of_a_machine_never_share_a_journal_beside_an_image_file() {
+        let f = Fixture::new();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        let (prepared, _, _, _) = start_kept(&w, &id, false);
+        let first = drive_a(&prepared).clone();
+        drop(prepared);
+        let (host, mut game) = browsed(&f, 0x44);
+        let beside = f.temp.path().join("host/game.img.upfj");
+        journal_write(&beside, &fs::read(&host).unwrap(), 0x45);
+        game.write = assembly::WriteMode::journal(&beside);
+        let sha = crate::created_media::hex(&game.sha256.unwrap());
+        let mut disks = started_with(&first);
+        disks.push(game);
+        let at = disks.len() - 1;
+        stop_kept(
+            &w,
+            vec![StoppedDrive {
+                unit: 0,
+                disks,
+                in_drive: Some(at),
+            }],
+            Finish::Retain,
+        );
+        let workspace = f.store.workspace_path(&id).unwrap();
+        let kept = crate::kept_catalogue::read(&workspace).unwrap();
+        assert!(matches!(
+            &kept[0].disk[at],
+            KeptDisk::Image {
+                journal: true,
+                journal_file: None,
+                ..
+            }
+        ));
+        let own = workspace.join(format!("media/{sha}.upfj"));
+        let beside_bytes = fs::read(&beside).unwrap();
+        assert_eq!(
+            fs::read(&own).unwrap(),
+            beside_bytes,
+            "the machine's own copy"
+        );
+        let journals = |w: &Worker, copy: &str, gaming: bool| {
+            let (prepared, name, _, _) = start_kept(w, copy, gaming);
+            let media = f.store.workspace_path(&name).unwrap().join("media");
+            let last = drive_a(&prepared).entries.last().unwrap().clone();
+            assert!(
+                matches!(&last.write, assembly::WriteMode::Journal { path, .. }
+                    if *path == media.join(format!("{sha}.upfj"))),
+                "{last:?}"
+            );
+            // The copy's guest writes every journaled disk.
+            f.change(&prepared, 0x99);
+        };
+        journals(&w, &id, true);
+        stop_kept(&w, Vec::new(), Finish::Discard);
+        assert_eq!(fs::read(&own).unwrap(), beside_bytes);
+        assert_eq!(fs::read(&beside).unwrap(), beside_bytes);
+        w.send
+            .send(Request::Machine(MachineJob::Duplicate(
+                id.clone(),
+                "DOS copy".into(),
+            )))
+            .unwrap();
+        let (_, select, _) = machine_done(&w);
+        let (copy, _) = select.unwrap();
+        journals(&w, &copy, false);
+        stop_kept(&w, Vec::new(), Finish::Retain);
+        assert_eq!(fs::read(&own).unwrap(), beside_bytes);
+        assert_eq!(fs::read(&beside).unwrap(), beside_bytes);
+        w.shutdown();
+    }
+
+    /// Import a one-disk 360K set under the revision tag `tag`, as the
+    /// command line does; its release alias follows it.
+    fn import_tagged(f: &Fixture, tag: &str) -> Descriptor {
+        let disk = f.temp.path().join("tagged-disk.img");
+        let args: Vec<std::ffi::OsString> = vec![
+            "floppy".into(),
+            "--type".into(),
+            "360K".into(),
+            "--format".into(),
+            disk.clone().into_os_string(),
+        ];
+        cli::create::execute(cli::create::parse(&args).unwrap(), &mut std::io::sink()).unwrap();
+        let args: Vec<std::ffi::OsString> = vec![
+            "image".into(),
+            "media".into(),
+            "import".into(),
+            disk.into_os_string(),
+            "--store".into(),
+            f.store.root().as_os_str().to_owned(),
+            "--title".into(),
+            "Tagged".into(),
+            "--tag".into(),
+            tag.into(),
+        ];
+        let mut errors = Vec::new();
+        assert_eq!(
+            cli::command::run(&args, &mut std::io::sink(), &mut errors),
+            0,
+            "{}",
+            String::from_utf8_lossy(&errors)
+        );
+        f.store.tag_descriptor(tag).unwrap()
+    }
+
+    /// A set's disk keeps the tag it came from for its tooltip, unless that
+    /// is a release alias, which moves: then, and when the window knows no
+    /// tag, the set's revision tag.
+    #[test]
+    fn a_set_disk_keeps_its_tag_and_never_a_release_alias() {
+        let f = Fixture::new();
+        let set = import_tagged(&f, "games:1.0-r1");
+        assert_eq!(
+            f.store.tag_descriptor("games:1.0").unwrap().digest,
+            set.digest,
+            "the release alias names the set"
+        );
+        let workspace = f.temp.path().join("workspace");
+        let source = set_source(&f, &set);
+        for (reference, kept) in [
+            (Some("games:1.0-r1"), "games:1.0-r1"),
+            (Some("games:1.0"), "games:1.0-r1"),
+            (None, "games:1.0-r1"),
+        ] {
+            let disk = StoppedDisk {
+                name: "Disk 1".into(),
+                source: Some(source.clone()),
+                reference: reference.map(str::to_owned),
+                image: assembly::ImageSource::File("/store/disk.img".into()),
+                sha256: None,
+                write: assembly::WriteMode::ReadOnly,
+                format: None,
+                started_with: false,
+            };
+            crate::kept_catalogue::keep(
+                &f.store,
+                &workspace,
+                vec![StoppedDrive {
+                    unit: 0,
+                    disks: vec![disk],
+                    in_drive: Some(0),
+                }],
+            )
+            .unwrap();
+            let record = crate::kept_catalogue::read(&workspace).unwrap();
+            assert!(
+                matches!(&record[0].disk[0], KeptDisk::Set { reference, .. } if reference == kept),
+                "{reference:?}: {record:?}"
+            );
+        }
+    }
+
+    /// An image file that changed since it went in is not kept: the Stop
+    /// says so once the session has finished, and keeps the other disks,
+    /// here the image's own, which leave no record.
+    #[test]
+    fn a_changed_image_file_is_not_kept_and_the_stop_says_so() {
+        let f = Fixture::new();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        let (prepared, _, _, _) = start_kept(&w, &id, false);
+        let first = drive_a(&prepared).clone();
+        drop(prepared);
+        let (host, game) = browsed(&f, 0x22);
+        fs::write(&host, vec![0x23; 360 * 1024]).unwrap();
+        let mut disks = started_with(&first);
+        disks.push(game);
+        w.send
+            .send(Request::KeepCatalogue(vec![StoppedDrive {
+                unit: 0,
+                disks,
+                in_drive: Some(0),
+            }]))
+            .unwrap();
+        w.send.send(Request::Finish(Finish::Retain)).unwrap();
+        until(&w, |e| matches!(e, Event::Finished));
+        // The notes after the finish, up to the answer of the next job.
+        w.send
+            .send(Request::Machine(MachineJob::ReadSettings(id.clone())))
+            .unwrap();
+        let mut notes = Vec::new();
+        while let Event::MachineNote(note) = until(&w, |e| {
+            matches!(e, Event::MachineNote(_) | Event::MachineSettings(..))
+        }) {
+            notes.push(note);
+        }
+        assert_eq!(
+            notes,
+            ["game.img left A:'s catalogue at Stop: its image file changed since it went in."]
+        );
+        // What is left is the image's own catalogue, which needs no record.
+        let workspace = f.store.workspace_path(&id).unwrap();
+        assert!(crate::kept_catalogue::read(&workspace).unwrap().is_empty());
+        assert!(!workspace.join("media/created/catalogue.toml").exists());
+        w.shutdown();
+    }
+
+    /// The kept catalogue follows the machine's media: Duplicate copies it
+    /// with the machine's own copy of an image file, Gaming mode plays with
+    /// it from the copy, Save as new image… keeps it and Reset to image…
+    /// drops it.
+    #[test]
+    fn duplicate_and_gaming_mode_carry_the_kept_catalogue_and_reset_drops_it() {
+        let f = Fixture::new();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        let (prepared, _, _, _) = start_kept(&w, &id, false);
+        let first = drive_a(&prepared).clone();
+        drop(prepared);
+        let (_, game) = browsed(&f, 0x77);
+        let sha = crate::created_media::hex(&game.sha256.unwrap());
+        let mut disks = started_with(&first);
+        disks.push(game);
+        let at = disks.len() - 1;
+        stop_kept(
+            &w,
+            vec![StoppedDrive {
+                unit: 0,
+                disks,
+                in_drive: Some(at),
+            }],
+            Finish::Retain,
+        );
+        let workspace = f.store.workspace_path(&id).unwrap();
+        let kept = crate::kept_catalogue::read(&workspace).unwrap();
+        let ends_with_game = |name: &str, prepared: &pc_image::workspace::PreparedSession| {
+            let last = drive_a(prepared).entries.last().unwrap().clone();
+            let copy = f
+                .store
+                .workspace_path(name)
+                .unwrap()
+                .join(format!("media/created/{sha}.img"));
+            last.name == "game.img" && last.image == assembly::ImageSource::File(copy)
+        };
+        // Gaming mode plays the machine's catalogue, from the copy.
+        let (prepared, name, _, _) = start_kept(&w, &id, true);
+        assert!(ends_with_game(&name, &prepared));
+        assert_eq!(drive_a(&prepared).inserted, at);
+        drop(prepared);
+        stop_kept(&w, Vec::new(), Finish::Discard);
+        assert_eq!(crate::kept_catalogue::read(&workspace).unwrap(), kept);
+        // Duplicate copies it, with the machine's own copy of the file.
+        w.send
+            .send(Request::Machine(MachineJob::Duplicate(
+                id.clone(),
+                "DOS copy".into(),
+            )))
+            .unwrap();
+        let (_, select, _) = machine_done(&w);
+        let (copy, _) = select.unwrap();
+        let copied = f.store.workspace_path(&copy).unwrap();
+        assert_eq!(crate::kept_catalogue::read(&copied).unwrap(), kept);
+        let (prepared, name, _, _) = start_kept(&w, &copy, false);
+        assert_eq!(name, copy);
+        assert!(ends_with_game(&copy, &prepared));
+        drop(prepared);
+        w.send.send(Request::Finish(Finish::Retain)).unwrap();
+        until(&w, |e| matches!(e, Event::Finished));
+        // Save as new image… with fresh journals keeps it, as it keeps
+        // created disks: the new image's own disks come back by name.
+        w.send
+            .send(Request::Machine(MachineJob::Commit {
+                id: id.clone(),
+                target: target("saver:1.0.0", false),
+                keep: false,
+            }))
+            .unwrap();
+        let (message, _, _) = machine_done(&w);
+        assert!(message.contains("fresh, empty journals"), "{message}");
+        assert_eq!(crate::kept_catalogue::read(&workspace).unwrap(), kept);
+        let (prepared, _, _, notes) = start_kept(&w, &id, false);
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(names(drive_a(&prepared))[..at], names(&first)[..]);
+        assert!(ends_with_game(&id, &prepared));
+        assert_eq!(drive_a(&prepared).inserted, at);
+        drop(prepared);
+        w.send.send(Request::Finish(Finish::Retain)).unwrap();
+        until(&w, |e| matches!(e, Event::Finished));
+        // Reset to image… drops it.
+        w.send
+            .send(Request::Machine(MachineJob::Reset(id.clone())))
+            .unwrap();
+        machine_done(&w);
+        assert!(crate::kept_catalogue::read(&workspace).unwrap().is_empty());
+        let (prepared, _, restored, _) = start_kept(&w, &id, false);
+        assert!(restored.is_empty());
+        assert_eq!(names(drive_a(&prepared)), names(&first));
+        drop(prepared);
+        w.send.send(Request::Finish(Finish::Retain)).unwrap();
+        until(&w, |e| matches!(e, Event::Finished));
         w.shutdown();
     }
 }

@@ -602,6 +602,7 @@ mod tests {
                 medium("FreeDOS 1.2 boot", WriteMode::ReadOnly, Some([0x9A; 32])),
                 medium("tools", WriteMode::journal("/journals/tools.upfj"), None),
             ],
+            inserted: 0,
         });
         config.drives.push(hard_drive(
             ImageSource::File("/disks/dos.img".into()),
@@ -669,6 +670,7 @@ mod tests {
                 write: WriteMode::ReadOnly,
                 name: "game.img".into(),
             }],
+            inserted: 0,
         });
         config.drives.push(b);
         let views = drive_views(
@@ -862,6 +864,7 @@ mod tests {
             workspace_journal: None,
             origin: Some("Media set freedos:1.2.0 from the library · disk 1 of 2".into()),
             verified: None,
+            reference: None,
         }
     }
 

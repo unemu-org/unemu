@@ -737,6 +737,22 @@ impl Upd765 {
         media: Vec<Drive>,
         empty: bool,
     ) -> Result<(), MediaChangeError> {
+        self.set_media_list_from(unit, drive_type, media, empty, 0)
+    }
+
+    /// [`Self::set_media_list`] with entry `first` in the drive at power-on
+    /// instead of the first one. The drive holds it from power-on, so the
+    /// disk-change line starts clear, as with the first entry: IBM PC AT
+    /// Technical Reference, Fixed Disk and Diskette Drive Adapter, Digital
+    /// Input Register (3F7h) reports a change only after the door opened.
+    pub fn set_media_list_from(
+        &mut self,
+        unit: usize,
+        drive_type: DriveType,
+        media: Vec<Drive>,
+        empty: bool,
+        first: usize,
+    ) -> Result<(), MediaChangeError> {
         if unit >= 4 {
             return Err(MediaChangeError::UnknownDrive);
         }
@@ -746,13 +762,16 @@ impl Upd765 {
         {
             return Err(MediaChangeError::GeometryMismatch);
         }
+        if !empty && !media.is_empty() && first >= media.len() {
+            return Err(MediaChangeError::UnknownMedium);
+        }
         self.drive_types[unit] = Some(drive_type);
         self.drives[unit] = None;
         self.inserted[unit] = None;
         self.media_lists[unit] = media.into_iter().map(Some).collect();
         if !empty && !self.media_lists[unit].is_empty() {
-            self.drives[unit] = self.media_lists[unit][0].take();
-            self.inserted[unit] = Some(0);
+            self.drives[unit] = self.media_lists[unit][first].take();
+            self.inserted[unit] = Some(first);
         }
         self.disk_changed[unit] = empty;
         Ok(())
@@ -3286,6 +3305,42 @@ mod tests {
         bus_command(bus, &[4, unit]);
         assert_eq!(bus_results(bus, 1), [ST3_READY | ST3_TRACK_ZERO | unit]);
         assert_eq!(bus.port_read(DIR_CCR, 1).unwrap(), 0x80);
+    }
+
+    /// Any catalogue entry can be in the drive at power-on: the drive reads
+    /// it and the disk-change line is clear, exactly as with the first
+    /// entry; an entry past the catalogue is refused.
+    #[test]
+    fn any_catalogue_entry_can_be_in_the_drive_at_power_on() {
+        let entries = || {
+            vec![
+                Drive::new(FloppyGeometry::HD1440, vec![0x11; SECTOR_SIZE]),
+                Drive::new(FloppyGeometry::HD1440, vec![0x22; SECTOR_SIZE]),
+            ]
+        };
+        let mut views = Vec::new();
+        for first in [0, 1] {
+            let mut bus = MockBus::new(Box::new(ready_drives([None, None, None, None])));
+            swap_fdc(&mut bus)
+                .set_media_list_from(0, DriveType::HD1440, entries(), false, first)
+                .unwrap();
+            assert_eq!(swap_fdc(&mut bus).inserted_medium(0), Some(first));
+            views.push(bus.port_read(DIR_CCR, 1).unwrap());
+            bus_command(&mut bus, &[0x46, 0, 0, 0, 1, 2, 1, 0x1B, 0xFF]);
+            let DmaOp::ToMemory(data) = bus.device_mut().take_dma_request().unwrap().op else {
+                panic!("READ DMA direction");
+            };
+            assert_eq!(data[0], [0x11, 0x22][first], "entry {first}");
+        }
+        assert_eq!(views, [0, 0], "the change line starts clear");
+        let mut fdc = ready_drives([None, None, None, None]);
+        assert_eq!(
+            fdc.set_media_list_from(0, DriveType::HD1440, entries(), false, 2),
+            Err(MediaChangeError::UnknownMedium)
+        );
+        fdc.set_media_list_from(0, DriveType::HD1440, entries(), true, 2)
+            .unwrap();
+        assert_eq!(fdc.inserted_medium(0), None);
     }
 
     #[test]

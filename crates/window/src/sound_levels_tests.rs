@@ -315,6 +315,7 @@ fn insert_level_disk(config: &mut assembly::MachineConfig, path: &Path) {
             name: "levels-1200.img".into(),
         }],
         empty: false,
+        inserted: 0,
     });
 }
 

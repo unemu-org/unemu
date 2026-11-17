@@ -184,9 +184,10 @@ fn repository_machine_file_parity() {
         ("machines/at-freedos.toml".into(), "3b07a7a4089cf617f743f2f7f5c80e3c85a3f7bdc0e5b6f3b6eb835946afac0c".into()),
         ("machines/at-freedos.yaml".into(), "3b07a7a4089cf617f743f2f7f5c80e3c85a3f7bdc0e5b6f3b6eb835946afac0c".into()),
         // Open VGA BIOS and VGA card, an empty 1.44M B:; the video ROM is relocated by synthetic().
-        ("machines/at-games-open.toml".into(), "0f1bfd56b632ba68d3600fbcfb90abd467beb405894c2cc7cbf29dd7cfa755d5".into()),
-        // The video ROM is relocated by synthetic().
-        ("machines/at-games.toml".into(), "5f809f39dc27e958b90c541ae3cedfa45fece732dbeb8b4ea80123509f5a4358".into()),
+        // Its floppy media lists name their power-on entry, the first.
+        ("machines/at-games-open.toml".into(), "f80bf12dce409214e0f4834b6586ffdc42993bea15b4ffbfe116f6a70aef8cf8".into()),
+        // The video ROM is relocated by synthetic(); the media lists as above.
+        ("machines/at-games.toml".into(), "803c59aaa00a7b9c78a66a52ea37193d7bde6e5bb63a4077322e5f3e52e02c74".into()),
         // The open AT BIOS's mono display switch.
         ("machines/at-ide.toml".into(), "e42872c37de7d3674033a09efaf304ff1e47f95392af3baa9f2ed2553ab8a60d".into()),
         ("machines/presets/ibm-5170.toml".into(), "resolve:<repo>/machines/presets/ibm-5170.toml:16: firmware.bios.image: required fields are missing: firmware.bios.image (<repo>/machines/presets/ibm-5170.toml:16); inheritance chain: <repo>/machines/presets/ibm-5170.toml".into()),

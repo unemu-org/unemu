@@ -893,6 +893,7 @@ impl<R: ImageReader> Context<'_, R> {
                     media: Some(assembly::FloppyMediaList {
                         entries,
                         empty: drive.empty.unwrap_or(false),
+                        inserted: 0,
                     }),
                     controller: device.id,
                     unit,

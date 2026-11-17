@@ -5,6 +5,49 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — A library machine's drive catalogue survives Stop:** disks
+  that went into a running library machine (a set's disk from Insert…, an
+  image file from Browse for an image file…, the disks Create from files…
+  made) joined the drive's catalogue for that run only, so a 10-disk split
+  made on a running machine had to be inserted again after every restart. At
+  Stop the window now hands each floppy drive's catalogue, with the media
+  changes queued for the next run boundary counted, to the library worker,
+  which keeps it in the machine's workspace, `media/created/catalogue.toml`
+  beside the created disks' pending insert, never in `local/machines.toml`,
+  which released versions read with unknown fields refused. Each disk is kept
+  by identity: the image's own disk by name and SHA-256, a set's disk by the
+  set's manifest, medium id and the tag it came from (never a moving release
+  alias), any other image by its SHA-256 among the machine's created images.
+  A browsed file is copied there at Stop as a read-only base named by its
+  SHA-256, and a journal Insert put beside it is copied into the machine's
+  media folder, so the record holds no host path and Duplicate and Gaming
+  mode never share that journal. The record keeps each disk's write setting,
+  format and place and the disk in each drive; the same disk inserted again
+  is kept once, and a catalogue that is the image's own leaves no record.
+  The next Start puts the catalogue back into the prepared session through
+  the same path as pending inserts and created disks, with the disk that was
+  in the drive in it from power-on: assembly's `FloppyMediaList` gained an
+  `inserted` index (0 for machine files) and the uPD765 model
+  `set_media_list_from`, so the guest sees that disk with the change line
+  clear, exactly as a catalogue's first disk. Conflict rule: a pending insert
+  for a drive wins that drive (its disks lead and its chosen disk goes in),
+  and the kept catalogue follows in its order without the insert's disks
+  twice; the image's own disks the record does not name come last. A disk
+  that cannot come back, and a record that cannot be read or that a newer
+  version wrote, stay out with a Start note; the Start goes on, and a Stop
+  leaves a newer version's record as it is, with a note. Duplicate and Gaming
+  mode carry the record (a Gaming-mode copy keeps its own at its Stop unless
+  it is discarded), Reset to image… drops it and its confirmation lists it,
+  and Save as new image… keeps it as it keeps created disks, with fresh
+  journals: the writes to kept set, created and browsed disks start afresh,
+  and the new image's own disks are matched by name. On a stopped machine the
+  Catalogue submenu and the picker's This machine list the kept catalogue as
+  waiting for Start, after a pending insert's disks, each with its own
+  format; choosing a disk there makes it the one that goes in (a kept one
+  takes the pending insert out). The stopped machine's drive chips still show
+  only pending and created disks. `crates/window/src/kept_catalogue.rs` holds
+  the record, the restore and their tests; library worker, shell, assembly
+  and uPD765 tests cover it.
 - **2026-11-17 — Metadata schema 2: needs, requirements and the work:**
   a title record may now state what it needs from its platform family
   (`needs`: kinds of feature with alternatives, best first), the box's own
