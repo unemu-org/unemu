@@ -1,25 +1,151 @@
 {
-  "workspace_root": "/workspace",
-  "workspace_members": [
-    "path+file:///workspace/crates/device#0.0.2",
-    "path+file:///workspace/crates/bus#0.0.2",
-    "path+file:///workspace/crates/chipset#0.0.2",
-    "path+file:///workspace/crates/devices#0.0.2",
-    "path+file:///workspace/crates/testkit#0.0.2",
-    "path+file:///workspace/crates/cpu#0.0.2",
-    "path+file:///workspace/crates/video#0.0.2",
-    "path+file:///workspace/crates/machine#0.0.2",
-    "path+file:///workspace/crates/audio#0.0.2",
-    "path+file:///workspace/crates/assembly#0.0.2",
-    "path+file:///workspace/crates/media#0.0.2",
-    "path+file:///workspace/crates/cli#0.0.2",
-    "path+file:///workspace/crates/registry#image-registry@0.0.2",
-    "path+file:///workspace/crates/image-store#0.0.2",
-    "path+file:///workspace/crates/machine-file#0.0.2",
-    "path+file:///workspace/crates/pc-image#0.0.2",
-    "path+file:///workspace/crates/window#0.0.2"
-  ],
   "packages": [
+    {
+      "name": "device",
+      "id": "path+file:///workspace/crates/device#0.0.2",
+      "manifest_path": "/workspace/crates/device/Cargo.toml",
+      "dependencies": []
+    },
+    {
+      "name": "bus",
+      "id": "path+file:///workspace/crates/bus#0.0.2",
+      "manifest_path": "/workspace/crates/bus/Cargo.toml",
+      "dependencies": [
+        {
+          "name": "device",
+          "kind": null,
+          "path": "/workspace/crates/device"
+        }
+      ]
+    },
+    {
+      "name": "chipset",
+      "id": "path+file:///workspace/crates/chipset#0.0.2",
+      "manifest_path": "/workspace/crates/chipset/Cargo.toml",
+      "dependencies": [
+        {
+          "name": "device",
+          "kind": null,
+          "path": "/workspace/crates/device"
+        },
+        {
+          "name": "devices",
+          "kind": null,
+          "path": "/workspace/crates/devices"
+        },
+        {
+          "name": "testkit",
+          "kind": "dev",
+          "path": "/workspace/crates/testkit"
+        }
+      ]
+    },
+    {
+      "name": "devices",
+      "id": "path+file:///workspace/crates/devices#0.0.2",
+      "manifest_path": "/workspace/crates/devices/Cargo.toml",
+      "dependencies": [
+        {
+          "name": "device",
+          "kind": null,
+          "path": "/workspace/crates/device"
+        },
+        {
+          "name": "testkit",
+          "kind": "dev",
+          "path": "/workspace/crates/testkit"
+        },
+        {
+          "name": "video",
+          "kind": "dev",
+          "path": "/workspace/crates/video"
+        }
+      ]
+    },
+    {
+      "name": "testkit",
+      "id": "path+file:///workspace/crates/testkit#0.0.2",
+      "manifest_path": "/workspace/crates/testkit/Cargo.toml",
+      "dependencies": [
+        {
+          "name": "cpu",
+          "kind": null,
+          "path": "/workspace/crates/cpu"
+        },
+        {
+          "name": "device",
+          "kind": null,
+          "path": "/workspace/crates/device"
+        }
+      ]
+    },
+    {
+      "name": "cpu",
+      "id": "path+file:///workspace/crates/cpu#0.0.2",
+      "manifest_path": "/workspace/crates/cpu/Cargo.toml",
+      "dependencies": []
+    },
+    {
+      "name": "video",
+      "id": "path+file:///workspace/crates/video#0.0.2",
+      "manifest_path": "/workspace/crates/video/Cargo.toml",
+      "dependencies": [
+        {
+          "name": "device",
+          "kind": null,
+          "path": "/workspace/crates/device"
+        }
+      ]
+    },
+    {
+      "name": "machine",
+      "id": "path+file:///workspace/crates/machine#0.0.2",
+      "manifest_path": "/workspace/crates/machine/Cargo.toml",
+      "dependencies": [
+        {
+          "name": "bus",
+          "kind": null,
+          "path": "/workspace/crates/bus"
+        },
+        {
+          "name": "cpu",
+          "kind": null,
+          "path": "/workspace/crates/cpu"
+        },
+        {
+          "name": "device",
+          "kind": null,
+          "path": "/workspace/crates/device"
+        },
+        {
+          "name": "chipset",
+          "kind": "dev",
+          "path": "/workspace/crates/chipset"
+        },
+        {
+          "name": "devices",
+          "kind": "dev",
+          "path": "/workspace/crates/devices"
+        },
+        {
+          "name": "testkit",
+          "kind": "dev",
+          "path": "/workspace/crates/testkit"
+        }
+      ]
+    },
+    {
+      "name": "audio",
+      "id": "path+file:///workspace/crates/audio#0.0.2",
+      "manifest_path": "/workspace/crates/audio/Cargo.toml",
+      "dependencies": [
+        {
+          "name": "device",
+          "kind": null,
+          "path": "/workspace/crates/device"
+        }
+      ]
+    },
     {
       "name": "assembly",
       "id": "path+file:///workspace/crates/assembly#0.0.2",
@@ -83,50 +209,10 @@
       ]
     },
     {
-      "name": "audio",
-      "id": "path+file:///workspace/crates/audio#0.0.2",
-      "manifest_path": "/workspace/crates/audio/Cargo.toml",
-      "dependencies": [
-        {
-          "name": "device",
-          "kind": null,
-          "path": "/workspace/crates/device"
-        }
-      ]
-    },
-    {
-      "name": "bus",
-      "id": "path+file:///workspace/crates/bus#0.0.2",
-      "manifest_path": "/workspace/crates/bus/Cargo.toml",
-      "dependencies": [
-        {
-          "name": "device",
-          "kind": null,
-          "path": "/workspace/crates/device"
-        }
-      ]
-    },
-    {
-      "name": "chipset",
-      "id": "path+file:///workspace/crates/chipset#0.0.2",
-      "manifest_path": "/workspace/crates/chipset/Cargo.toml",
-      "dependencies": [
-        {
-          "name": "device",
-          "kind": null,
-          "path": "/workspace/crates/device"
-        },
-        {
-          "name": "devices",
-          "kind": null,
-          "path": "/workspace/crates/devices"
-        },
-        {
-          "name": "testkit",
-          "kind": "dev",
-          "path": "/workspace/crates/testkit"
-        }
-      ]
+      "name": "media",
+      "id": "path+file:///workspace/crates/media#0.0.2",
+      "manifest_path": "/workspace/crates/media/Cargo.toml",
+      "dependencies": []
     },
     {
       "name": "cli",
@@ -137,16 +223,6 @@
           "name": "assembly",
           "kind": null,
           "path": "/workspace/crates/assembly"
-        },
-        {
-          "name": "bus",
-          "kind": null,
-          "path": "/workspace/crates/bus"
-        },
-        {
-          "name": "chipset",
-          "kind": null,
-          "path": "/workspace/crates/chipset"
         },
         {
           "name": "cpu",
@@ -189,9 +265,19 @@
           "path": "/workspace/crates/media"
         },
         {
+          "name": "pc-harness",
+          "kind": null,
+          "path": "/workspace/crates/pc-harness"
+        },
+        {
           "name": "pc-image",
           "kind": null,
           "path": "/workspace/crates/pc-image"
+        },
+        {
+          "name": "platforms",
+          "kind": null,
+          "path": "/workspace/crates/platforms"
         },
         {
           "name": "video",
@@ -214,53 +300,9 @@
           "path": "/workspace/crates/image-store"
         },
         {
-          "name": "machine",
-          "kind": "dev",
-          "path": "/workspace/crates/machine"
-        },
-        {
           "name": "media",
           "kind": "dev",
           "path": "/workspace/crates/media"
-        },
-        {
-          "name": "testkit",
-          "kind": "dev",
-          "path": "/workspace/crates/testkit"
-        }
-      ]
-    },
-    {
-      "name": "cpu",
-      "id": "path+file:///workspace/crates/cpu#0.0.2",
-      "manifest_path": "/workspace/crates/cpu/Cargo.toml",
-      "dependencies": []
-    },
-    {
-      "name": "device",
-      "id": "path+file:///workspace/crates/device#0.0.2",
-      "manifest_path": "/workspace/crates/device/Cargo.toml",
-      "dependencies": []
-    },
-    {
-      "name": "devices",
-      "id": "path+file:///workspace/crates/devices#0.0.2",
-      "manifest_path": "/workspace/crates/devices/Cargo.toml",
-      "dependencies": [
-        {
-          "name": "device",
-          "kind": null,
-          "path": "/workspace/crates/device"
-        },
-        {
-          "name": "testkit",
-          "kind": "dev",
-          "path": "/workspace/crates/testkit"
-        },
-        {
-          "name": "video",
-          "kind": "dev",
-          "path": "/workspace/crates/video"
         }
       ]
     },
@@ -286,43 +328,6 @@
       "id": "path+file:///workspace/crates/image-store#0.0.2",
       "manifest_path": "/workspace/crates/image-store/Cargo.toml",
       "dependencies": []
-    },
-    {
-      "name": "machine",
-      "id": "path+file:///workspace/crates/machine#0.0.2",
-      "manifest_path": "/workspace/crates/machine/Cargo.toml",
-      "dependencies": [
-        {
-          "name": "bus",
-          "kind": null,
-          "path": "/workspace/crates/bus"
-        },
-        {
-          "name": "cpu",
-          "kind": null,
-          "path": "/workspace/crates/cpu"
-        },
-        {
-          "name": "device",
-          "kind": null,
-          "path": "/workspace/crates/device"
-        },
-        {
-          "name": "chipset",
-          "kind": "dev",
-          "path": "/workspace/crates/chipset"
-        },
-        {
-          "name": "devices",
-          "kind": "dev",
-          "path": "/workspace/crates/devices"
-        },
-        {
-          "name": "testkit",
-          "kind": "dev",
-          "path": "/workspace/crates/testkit"
-        }
-      ]
     },
     {
       "name": "machine-file",
@@ -357,10 +362,76 @@
       ]
     },
     {
-      "name": "media",
-      "id": "path+file:///workspace/crates/media#0.0.2",
-      "manifest_path": "/workspace/crates/media/Cargo.toml",
-      "dependencies": []
+      "name": "pc-harness",
+      "id": "path+file:///workspace/crates/pc-harness#0.0.2",
+      "manifest_path": "/workspace/crates/pc-harness/Cargo.toml",
+      "dependencies": [
+        {
+          "name": "assembly",
+          "kind": null,
+          "path": "/workspace/crates/assembly"
+        },
+        {
+          "name": "chipset",
+          "kind": null,
+          "path": "/workspace/crates/chipset"
+        },
+        {
+          "name": "cpu",
+          "kind": null,
+          "path": "/workspace/crates/cpu"
+        },
+        {
+          "name": "device",
+          "kind": null,
+          "path": "/workspace/crates/device"
+        },
+        {
+          "name": "devices",
+          "kind": null,
+          "path": "/workspace/crates/devices"
+        },
+        {
+          "name": "machine",
+          "kind": null,
+          "path": "/workspace/crates/machine"
+        },
+        {
+          "name": "video",
+          "kind": null,
+          "path": "/workspace/crates/video"
+        },
+        {
+          "name": "assembly",
+          "kind": "dev",
+          "path": "/workspace/crates/assembly"
+        },
+        {
+          "name": "bus",
+          "kind": "dev",
+          "path": "/workspace/crates/bus"
+        },
+        {
+          "name": "machine",
+          "kind": "dev",
+          "path": "/workspace/crates/machine"
+        },
+        {
+          "name": "machine-file",
+          "kind": "dev",
+          "path": "/workspace/crates/machine-file"
+        },
+        {
+          "name": "media",
+          "kind": "dev",
+          "path": "/workspace/crates/media"
+        },
+        {
+          "name": "testkit",
+          "kind": "dev",
+          "path": "/workspace/crates/testkit"
+        }
+      ]
     },
     {
       "name": "pc-image",
@@ -415,31 +486,29 @@
       ]
     },
     {
-      "name": "testkit",
-      "id": "path+file:///workspace/crates/testkit#0.0.2",
-      "manifest_path": "/workspace/crates/testkit/Cargo.toml",
+      "name": "platforms",
+      "id": "path+file:///workspace/crates/platforms#0.0.2",
+      "manifest_path": "/workspace/crates/platforms/Cargo.toml",
       "dependencies": [
         {
-          "name": "cpu",
+          "name": "assembly",
           "kind": null,
-          "path": "/workspace/crates/cpu"
+          "path": "/workspace/crates/assembly"
         },
         {
-          "name": "device",
+          "name": "image-registry",
           "kind": null,
-          "path": "/workspace/crates/device"
-        }
-      ]
-    },
-    {
-      "name": "video",
-      "id": "path+file:///workspace/crates/video#0.0.2",
-      "manifest_path": "/workspace/crates/video/Cargo.toml",
-      "dependencies": [
+          "path": "/workspace/crates/registry"
+        },
         {
-          "name": "device",
+          "name": "image-store",
           "kind": null,
-          "path": "/workspace/crates/device"
+          "path": "/workspace/crates/image-store"
+        },
+        {
+          "name": "pc-image",
+          "kind": null,
+          "path": "/workspace/crates/pc-image"
         }
       ]
     },
@@ -457,11 +526,6 @@
           "name": "audio",
           "kind": null,
           "path": "/workspace/crates/audio"
-        },
-        {
-          "name": "cli",
-          "kind": null,
-          "path": "/workspace/crates/cli"
         },
         {
           "name": "device",
@@ -504,6 +568,11 @@
           "path": "/workspace/crates/pc-image"
         },
         {
+          "name": "platforms",
+          "kind": null,
+          "path": "/workspace/crates/platforms"
+        },
+        {
           "name": "video",
           "kind": null,
           "path": "/workspace/crates/video"
@@ -540,5 +609,27 @@
         }
       ]
     }
-  ]
+  ],
+  "workspace_members": [
+    "path+file:///workspace/crates/device#0.0.2",
+    "path+file:///workspace/crates/bus#0.0.2",
+    "path+file:///workspace/crates/chipset#0.0.2",
+    "path+file:///workspace/crates/devices#0.0.2",
+    "path+file:///workspace/crates/testkit#0.0.2",
+    "path+file:///workspace/crates/cpu#0.0.2",
+    "path+file:///workspace/crates/video#0.0.2",
+    "path+file:///workspace/crates/machine#0.0.2",
+    "path+file:///workspace/crates/audio#0.0.2",
+    "path+file:///workspace/crates/assembly#0.0.2",
+    "path+file:///workspace/crates/media#0.0.2",
+    "path+file:///workspace/crates/cli#0.0.2",
+    "path+file:///workspace/crates/registry#image-registry@0.0.2",
+    "path+file:///workspace/crates/image-store#0.0.2",
+    "path+file:///workspace/crates/machine-file#0.0.2",
+    "path+file:///workspace/crates/pc-harness#0.0.2",
+    "path+file:///workspace/crates/pc-image#0.0.2",
+    "path+file:///workspace/crates/platforms#0.0.2",
+    "path+file:///workspace/crates/window#0.0.2"
+  ],
+  "workspace_root": "/workspace"
 }

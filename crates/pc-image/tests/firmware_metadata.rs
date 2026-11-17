@@ -4,7 +4,7 @@
 //! ROMs and archives only, except the machine-image test, which needs the
 //! open Xi8088 BIOS fixture.
 
-#[path = "../../cli/tests/support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
 use image_store::{

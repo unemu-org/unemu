@@ -85,18 +85,18 @@ fn freedos_lists_the_readonly_ide_marker() {
     let keyboard_index = assembled.device_index[&DeviceId::Keyboard];
     let run_policy = RunPolicy {
         retired_cap: Some(100_000_000),
-        idle_limit: Some(cli::BIOS_IDLE_LIMIT),
+        idle_limit: Some(pc_harness::BIOS_IDLE_LIMIT),
         stop: StopCondition::PromptThen {
             console: ConsoleProbe {
                 device: DeviceId::Mda,
             },
-            needle: cli::DOS_DATE_PROMPT.into(),
-            poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
-            then_budget: cli::DOS_INTERACTIVE_COMMAND_BUDGET,
+            needle: pc_harness::DOS_DATE_PROMPT.into(),
+            poll_step: pc_harness::DOS_INTERACTIVE_POLL_STEP,
+            then_budget: pc_harness::DOS_INTERACTIVE_COMMAND_BUDGET,
         },
         stimuli: vec![KeyboardStimulus {
             keyboard_index,
-            scancodes: [cli::KEY_ENTER, cli::KEY_ENTER].concat(),
+            scancodes: [pc_harness::KEY_ENTER, pc_harness::KEY_ENTER].concat(),
             schedule: InjectionSchedule::AfterPrompt,
         }],
     };
@@ -130,7 +130,7 @@ fn freedos_lists_the_readonly_ide_marker() {
         0x9c,
     ];
     assembly::inject_scancodes(&mut assembled.machine, keyboard_index, &script);
-    let cap = assembled.machine.virtual_time() + cli::DOS_INTERACTIVE_COMMAND_BUDGET;
+    let cap = assembled.machine.virtual_time() + pc_harness::DOS_INTERACTIVE_COMMAND_BUDGET;
     let result = assembled.machine.run_bounded(Some(cap));
     assert!(result.is_ok(), "DIR failed: {result:?}");
     // A FAT16 free-space scan takes longer than the floppy DIR budget. Poll
@@ -139,7 +139,7 @@ fn freedos_lists_the_readonly_ide_marker() {
         .lines()
         .any(|line| line.trim() == "A:\\>")
     {
-        let cap = assembled.machine.virtual_time() + cli::DOS_INTERACTIVE_POLL_STEP;
+        let cap = assembled.machine.virtual_time() + pc_harness::DOS_INTERACTIVE_POLL_STEP;
         assert!(cap <= 40_000_000, "DIR did not return to the prompt");
         assembled.machine.run_bounded(Some(cap)).unwrap();
     }

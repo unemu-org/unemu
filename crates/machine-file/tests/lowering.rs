@@ -11,7 +11,7 @@ use std::{
 use assembly::{ConfigError, DeviceId, DeviceKind, ImageSource, NvramSource, RamRegion, WriteMode};
 use machine_file::{lower, parse_toml, ImageReader, MachineFile, Origin, Origins};
 
-#[path = "../../cli/tests/support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
 const MACHINE: &str = include_str!("../../../machines/at-freedos.toml");

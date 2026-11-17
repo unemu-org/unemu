@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Synthetic chip/package integration and open-fixture provenance; machine-images §5.3.
 
-#[path = "../../cli/tests/support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
 use image_store::{

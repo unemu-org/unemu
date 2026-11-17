@@ -263,8 +263,10 @@ fn run_program(file: &Path, cap: u64) -> anyhow::Result<Run> {
         ..ObservationPolicy::default()
     };
     let mut assembled = loaded.assemble(&policy)?;
-    let outcome =
-        assembled.run_session(&RunPolicy::natural(Some(cap), Some(cli::BIOS_IDLE_LIMIT)))?;
+    let outcome = assembled.run_session(&RunPolicy::natural(
+        Some(cap),
+        Some(pc_harness::BIOS_IDLE_LIMIT),
+    ))?;
     let com1 = assembled
         .observation
         .drain_bytes(DeviceId::Uart, ByteStreamKind::SerialTx)?;

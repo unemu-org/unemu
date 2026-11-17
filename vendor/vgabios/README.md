@@ -29,7 +29,7 @@ restored. The probe gains the check `tty.bel`: counter 2 starts in mode 0 at
 FFFFh, and after AX=0E07h it must have been reprogrammed, with the cursor and
 port 61h bits 0–3 unchanged. How long the tone lasts is for the emulator to
 check: `open_vga_bios_teletype_bel_sounds_the_speaker_for_31_64_seconds` in
-`crates/cli/tests/open_vga_golden.rs` reads it from the headless speaker trace.
+`crates/pc-harness/tests/open_vga_golden.rs` reads it from the headless speaker trace.
 
 ## Licence
 
@@ -150,7 +150,7 @@ as an open video BIOS for `ibm-5170`, suggested at C0000h, requiring an
 video-ROM window that both the IBM and Kiselev BIOSes scan.
 `machines/at-games-open.toml` maps it there with the `vga` card; its XTIDE
 option ROM follows at C8000h. The goldens in `crates/cli/tests/at_games.rs`
-and `crates/cli/tests/open_vga_golden.rs` boot FreeDOS, run the probe, time
+and `crates/pc-harness/tests/open_vga_golden.rs` boot FreeDOS, run the probe, time
 the BEL tone and pin mode 0Dh and mode 13h scanout frames with this ROM, and
 the templates from 1.2.0 on carry it as their video BIOS package.
 

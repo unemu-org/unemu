@@ -31,7 +31,7 @@
 //! the rev now pinned in `Cargo.lock`. Re-run it whenever that pin moves, and
 //! re-baseline it only if the new rev changes the trace.
 
-use cli::{run_boot, BOOT_HANDLER_OFFSET, BOOT_PROGRAM};
+use pc_harness::{run_boot, BOOT_HANDLER_OFFSET, BOOT_PROGRAM};
 use testkit::golden::assert_bytes_eq;
 
 /// The committed golden: five `.` markers, one per serviced timer interrupt.

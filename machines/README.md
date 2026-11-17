@@ -24,7 +24,7 @@ and checks the completed listing, prompt instruction count, screen hashes
 and POST sequence. Run it with:
 
 ```sh
-UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test ide_freedos_golden -- --ignored --nocapture
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test ide_freedos_golden -- --ignored --nocapture
 ```
 
 Fetch the Kiselev BIOS images with `vendor/kiselev-bios/fetch.sh`, the open AT

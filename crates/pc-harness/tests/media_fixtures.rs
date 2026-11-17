@@ -213,21 +213,21 @@ fn volatile_boots_preserve_pinned_fixture_hashes_and_vendor_entries() {
         assert!(assembled.persistence.is_empty());
         let policy = if boot == "bios" {
             RunPolicy::natural(
-                Some(cli::BIOS_GOLDEN_MAX_RETIRED),
-                Some(cli::BIOS_IDLE_LIMIT),
+                Some(pc_harness::BIOS_GOLDEN_MAX_RETIRED),
+                Some(pc_harness::BIOS_IDLE_LIMIT),
             )
         } else {
             RunPolicy {
-                retired_cap: Some(cli::BIOS_MAX_RETIRED),
-                idle_limit: Some(cli::BIOS_IDLE_LIMIT),
+                retired_cap: Some(pc_harness::BIOS_MAX_RETIRED),
+                idle_limit: Some(pc_harness::BIOS_IDLE_LIMIT),
                 stop: StopCondition::PromptThen {
                     console: ConsoleProbe {
                         device: DeviceId::Mda,
                     },
-                    needle: cli::DOS_DATE_PROMPT.into(),
-                    poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
+                    needle: pc_harness::DOS_DATE_PROMPT.into(),
+                    poll_step: pc_harness::DOS_INTERACTIVE_POLL_STEP,
                     then_budget: if boot == "dos-write" {
-                        cli::DOS_INTERACTIVE_COMMAND_BUDGET
+                        pc_harness::DOS_INTERACTIVE_COMMAND_BUDGET
                     } else {
                         0
                     },
@@ -235,7 +235,7 @@ fn volatile_boots_preserve_pinned_fixture_hashes_and_vendor_entries() {
                 stimuli: if boot == "dos-write" {
                     vec![KeyboardStimulus {
                         keyboard_index: assembled.device_index[&DeviceId::Keyboard],
-                        scancodes: cli::dos_write_file_script(),
+                        scancodes: pc_harness::dos_write_file_script(),
                         schedule: InjectionSchedule::AfterPrompt,
                     }]
                 } else {

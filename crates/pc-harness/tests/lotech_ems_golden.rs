@@ -174,7 +174,7 @@ fn capture(config: &assembly::MachineConfig, broken: bool) -> (String, u64) {
     }
     rig.run_session(&RunPolicy {
         retired_cap: Some(80_000_000),
-        idle_limit: Some(cli::BIOS_IDLE_LIMIT),
+        idle_limit: Some(pc_harness::BIOS_IDLE_LIMIT),
         stop: StopCondition::PromptThen {
             console: ConsoleProbe {
                 device: DeviceId::Mda,

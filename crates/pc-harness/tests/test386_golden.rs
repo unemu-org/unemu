@@ -51,7 +51,7 @@
 //!   The stop point is only meaningful against a known CPU revision; re-baseline
 //!   the golden if `SAHF` (or a nearer instruction) gains real-mode support.
 
-use cli::{run_test386, StopReason};
+use pc_harness::{run_test386, StopReason};
 #[path = "support/fixtures.rs"]
 mod fixtures;
 

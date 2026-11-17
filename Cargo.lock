@@ -684,8 +684,6 @@ version = "0.0.2"
 dependencies = [
  "anyhow",
  "assembly",
- "bus",
- "chipset",
  "cpu",
  "device",
  "devices",
@@ -695,9 +693,9 @@ dependencies = [
  "machine",
  "machine-file",
  "media",
+ "pc-harness",
  "pc-image",
  "platforms",
- "testkit",
  "toml",
  "video",
 ]
@@ -2582,6 +2580,25 @@ dependencies = [
  "redox_syscall 0.5.18",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "pc-harness"
+version = "0.0.2"
+dependencies = [
+ "anyhow",
+ "assembly",
+ "bus",
+ "chipset",
+ "cpu",
+ "device",
+ "devices",
+ "machine",
+ "machine-file",
+ "media",
+ "testkit",
+ "toml",
+ "video",
 ]
 
 [[package]]

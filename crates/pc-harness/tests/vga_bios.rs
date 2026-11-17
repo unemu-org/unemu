@@ -370,7 +370,9 @@ fn user_rom_ibm_vga_bios_mode13_pattern() {
     let mut assembled = loaded
         .assemble(&observation)
         .unwrap_or_else(|error| panic!("assembling IBM VGA: {}", redact(&error.to_string())));
-    assembled.machine.set_idle_limit(Some(cli::BIOS_IDLE_LIMIT));
+    assembled
+        .machine
+        .set_idle_limit(Some(pc_harness::BIOS_IDLE_LIMIT));
     let VgaRun {
         outcome,
         text_hash,

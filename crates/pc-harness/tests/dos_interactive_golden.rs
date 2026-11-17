@@ -17,7 +17,7 @@
 //!
 //! Builds on the FreeDOS boot spike ([`freedos_boot_golden`]): the same Kiselev
 //! Xi8088 BIOS in masked ROM and the same bootable FreeDOS 1.44 MB floppy, but
-//! [`cli::run_freedos_interactive_config`] boots to FreeCOM's date prompt and then injects a
+//! [`pc_harness::run_freedos_interactive_config`] boots to FreeCOM's date prompt and then injects a
 //! **keyboard script** into the 8042, closing the full input path end to end:
 //!
 //! ```text
@@ -88,7 +88,7 @@
 //! - FreeDOS: 8086 kernel + FreeCOM, FAT12 1.44 MB image (`vendor/freedos`).
 //! - CPU: `x86jit-core`, the rev pinned in `Cargo.lock`.
 
-use cli::{dos_dir_script, StopReason};
+use pc_harness::{dos_dir_script, StopReason};
 #[path = "support/fixtures.rs"]
 mod fixtures;
 #[path = "support/session.rs"]
@@ -105,7 +105,7 @@ fn freedos_runs_dir_from_the_keyboard() {
     };
     assert_eq!(img.len(), 1_474_560, "FreeDOS floppy is a 1.44 MB image");
 
-    let run = cli::run_freedos_interactive_config(
+    let run = pc_harness::run_freedos_interactive_config(
         machine_file::load(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml"),
         )

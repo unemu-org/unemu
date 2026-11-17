@@ -37,7 +37,9 @@
 //! path runs the same pinned `x86jit-core` rev as the other CPU-driven goldens —
 //! the rev in `Cargo.lock`. Re-baseline when that rev moves.
 
-use cli::{fdc_write_pattern, run_fdc_write, FDC_WRITE_MARKER, FDC_WRITE_PROGRAM, FDC_WRITE_SRC};
+use pc_harness::{
+    fdc_write_pattern, run_fdc_write, FDC_WRITE_MARKER, FDC_WRITE_PROGRAM, FDC_WRITE_SRC,
+};
 use testkit::golden::assert_bytes_eq;
 
 #[test]

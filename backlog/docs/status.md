@@ -5,6 +5,22 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — Machine runners and emulation goldens out of the
+  command-line crate:** a new `pc-harness` crate (layer `pc`) holds what
+  was `cli`'s library: the machine runners, the hand-encoded guest
+  programs, the key scripts and `StopReason`. Its `tests/` hold the 33
+  emulation goldens that never use the command line, the binary or the
+  store, and `tests/support/`, which the other crates still include by
+  `#[path]` (a dependency would put a `pc` crate under `assembly`'s
+  tests). `upcli`'s `--boot`, `--bios` and `run` call the same runners
+  through `pc-harness`; the command tests and the eight goldens that need
+  `upcli`, the command line or the store stay in `cli`. No behaviour
+  changed: the workspace lists the same 3 844 tests (51 ignored) under the
+  same names, upcli's output is byte-identical over 67 invocations (usage,
+  every subcommand's errors, `--boot`, `--bios` and `run --machine`), and
+  no golden changed. A CLI-only change no longer builds or runs the
+  emulation goldens: 24 test binaries instead of 57 and 7 ignored tests by
+  name instead of 32, 57 s instead of 95 s (MEASURED, loaded machine).
 - **2026-11-17 — FAT builder additions for recipes, and a data-disk boot
   sector:** `media::fat12::plan_volumes` builds FAT12 diskettes from files
   given in memory, as a recipe's `fat` step will (design/recipes.md §6.9,

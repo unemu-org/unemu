@@ -6,7 +6,7 @@ use assembly::*;
 use device::Device;
 use devices::{CmosConfig, CmosRtc};
 
-#[path = "../../cli/tests/support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
 #[test]

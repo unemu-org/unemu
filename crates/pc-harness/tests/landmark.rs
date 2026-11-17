@@ -172,7 +172,7 @@ fn synthetic_stop_machine(program: &[u8]) -> assembly::AssembledMachine {
 }
 
 fn run_policy(budget: u64) -> RunPolicy {
-    RunPolicy::natural(Some(budget), Some(cli::BIOS_IDLE_LIMIT))
+    RunPolicy::natural(Some(budget), Some(pc_harness::BIOS_IDLE_LIMIT))
 }
 
 fn mda_policy() -> ObservationPolicy {
@@ -845,18 +845,18 @@ fn user_rom_ibm_5170_1985_post() {
     let cap = 200_000_000;
     let mut result = assembled.run_session(&RunPolicy {
         retired_cap: Some(cap),
-        idle_limit: Some(cli::BIOS_IDLE_LIMIT),
+        idle_limit: Some(pc_harness::BIOS_IDLE_LIMIT),
         stop: StopCondition::PromptThen {
             console: ConsoleProbe {
                 device: DeviceId::Mda,
             },
-            needle: cli::DOS_DATE_PROMPT.into(),
-            poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
+            needle: pc_harness::DOS_DATE_PROMPT.into(),
+            poll_step: pc_harness::DOS_INTERACTIVE_POLL_STEP,
             then_budget: 0,
         },
         stimuli: vec![KeyboardStimulus {
             keyboard_index: assembled.device_index[&DeviceId::Keyboard],
-            scancodes: [cli::KEY_ENTER, cli::KEY_ENTER].concat(),
+            scancodes: [pc_harness::KEY_ENTER, pc_harness::KEY_ENTER].concat(),
             schedule: InjectionSchedule::AfterPrompt,
         }],
     });
@@ -878,7 +878,8 @@ fn user_rom_ibm_5170_1985_post() {
         {
             break (grid, dos_prompt);
         }
-        let next = (assembled.machine.virtual_time() + cli::DOS_INTERACTIVE_POLL_STEP).min(cap);
+        let next =
+            (assembled.machine.virtual_time() + pc_harness::DOS_INTERACTIVE_POLL_STEP).min(cap);
         result = assembled.run_session(&run_policy(next));
     };
     let cpu = assembled.machine.cpu();

@@ -4,6 +4,11 @@
 # providers and the emulator cores can later live in separate repositories
 # (backlog/docs/design/core-contract.md §7.3 and §7.4).
 #
+# The check reads Cargo dependencies only: a test that includes another
+# crate's source file with #[path] (the shared golden support under
+# crates/pc-harness/tests/support) is invisible to it, and only the compiler
+# stops such a file from naming a crate its includer may not use.
+#
 # Every workspace package names its layer in its manifest:
 #
 #   [package.metadata.unemu]

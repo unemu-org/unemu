@@ -7,16 +7,16 @@
 use assembly::{AssemblyOptions, BoardModel, DeviceId, DeviceKind, ImageSource, WriteMode};
 use machine_file::schema::v1;
 
-#[path = "support/session.rs"]
+#[path = "../../pc-harness/tests/support/session.rs"]
 pub mod session;
-#[path = "support/at_games.rs"]
+#[path = "../../pc-harness/tests/support/at_games.rs"]
 mod support;
 
 const OPTIONS: AssemblyOptions = AssemblyOptions {
     allow_unlisted_firmware: true,
 };
 
-#[path = "support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
 const CPU_REV: &str = "ae12d43e7ec21dbed3e6c128a63c566a428a3054";
@@ -200,18 +200,18 @@ fn user_rom_at_games_freedos_prompt() {
         let cap = 500_000_000;
         let mut outcome = assembled.run_session(&RunPolicy {
             retired_cap: Some(cap),
-            idle_limit: Some(cli::BIOS_IDLE_LIMIT),
+            idle_limit: Some(pc_harness::BIOS_IDLE_LIMIT),
             stop: StopCondition::PromptThen {
                 console: ConsoleProbe {
                     device: DeviceId::Vga,
                 },
-                needle: cli::DOS_DATE_PROMPT.into(),
-                poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
+                needle: pc_harness::DOS_DATE_PROMPT.into(),
+                poll_step: pc_harness::DOS_INTERACTIVE_POLL_STEP,
                 then_budget: 0,
             },
             stimuli: vec![KeyboardStimulus {
                 keyboard_index: assembled.device_index[&DeviceId::Keyboard],
-                scancodes: [cli::KEY_ENTER, cli::KEY_ENTER].concat(),
+                scancodes: [pc_harness::KEY_ENTER, pc_harness::KEY_ENTER].concat(),
                 schedule: InjectionSchedule::AfterPrompt,
             }],
         })?;
@@ -233,9 +233,12 @@ fn user_rom_at_games_freedos_prompt() {
             {
                 break (capture.frame, dos_prompt);
             }
-            let next = (assembled.machine.virtual_time() + cli::DOS_INTERACTIVE_POLL_STEP).min(cap);
-            outcome = assembled
-                .run_session(&RunPolicy::natural(Some(next), Some(cli::BIOS_IDLE_LIMIT)))?;
+            let next =
+                (assembled.machine.virtual_time() + pc_harness::DOS_INTERACTIVE_POLL_STEP).min(cap);
+            outcome = assembled.run_session(&RunPolicy::natural(
+                Some(next),
+                Some(pc_harness::BIOS_IDLE_LIMIT),
+            ))?;
         };
         let cpu = assembled.machine.cpu();
         let location = (cpu.code_segment(), cpu.reg(CpuReg::Rip));
@@ -356,18 +359,18 @@ fn run_ctrl_alt_del_reboot(frame_chunk: Option<u64>) {
             let cap = assembled.machine.virtual_time() + 500_000_000;
             let policy = RunPolicy {
                 retired_cap: Some(cap),
-                idle_limit: Some(cli::BIOS_IDLE_LIMIT),
+                idle_limit: Some(pc_harness::BIOS_IDLE_LIMIT),
                 stop: StopCondition::PromptThen {
                     console: ConsoleProbe {
                         device: DeviceId::Vga,
                     },
-                    needle: cli::DOS_DATE_PROMPT.into(),
-                    poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
+                    needle: pc_harness::DOS_DATE_PROMPT.into(),
+                    poll_step: pc_harness::DOS_INTERACTIVE_POLL_STEP,
                     then_budget: 0,
                 },
                 stimuli: vec![KeyboardStimulus {
                     keyboard_index: assembled.device_index[&DeviceId::Keyboard],
-                    scancodes: [cli::KEY_ENTER, cli::KEY_ENTER].concat(),
+                    scancodes: [pc_harness::KEY_ENTER, pc_harness::KEY_ENTER].concat(),
                     schedule: InjectionSchedule::AfterPrompt,
                 }],
             };
@@ -387,11 +390,12 @@ fn run_ctrl_alt_del_reboot(frame_chunk: Option<u64>) {
                 if dos_prompt || assembled.machine.virtual_time() >= cap {
                     break (capture.frame, dos_prompt);
                 }
-                let next =
-                    (assembled.machine.virtual_time() + cli::DOS_INTERACTIVE_POLL_STEP).min(cap);
+                let next = (assembled.machine.virtual_time()
+                    + pc_harness::DOS_INTERACTIVE_POLL_STEP)
+                    .min(cap);
                 outcome = session::run_progressing(
                     assembled,
-                    &RunPolicy::natural(Some(next), Some(cli::BIOS_IDLE_LIMIT)),
+                    &RunPolicy::natural(Some(next), Some(pc_harness::BIOS_IDLE_LIMIT)),
                 )?;
             };
             anyhow::ensure!(dos_prompt, "FreeDOS prompt not reached before the cap");
@@ -409,7 +413,7 @@ fn run_ctrl_alt_del_reboot(frame_chunk: Option<u64>) {
             if !grid
                 .rows_as_strings()
                 .join("\n")
-                .contains(cli::DOS_DATE_PROMPT)
+                .contains(pc_harness::DOS_DATE_PROMPT)
             {
                 break;
             }
@@ -417,8 +421,8 @@ fn run_ctrl_alt_del_reboot(frame_chunk: Option<u64>) {
                 assembled.machine.virtual_time() < clear_cap,
                 "warm POST reached the cap before clearing the old date prompt"
             );
-            let next =
-                (assembled.machine.virtual_time() + cli::DOS_INTERACTIVE_POLL_STEP).min(clear_cap);
+            let next = (assembled.machine.virtual_time() + pc_harness::DOS_INTERACTIVE_POLL_STEP)
+                .min(clear_cap);
             // Keep observation caps fixed while also testing frame-sized run boundaries.
             while assembled.machine.virtual_time() < next {
                 let chunk = frame_chunk.map_or(next, |size| {
@@ -426,7 +430,7 @@ fn run_ctrl_alt_del_reboot(frame_chunk: Option<u64>) {
                 });
                 session::run_progressing(
                     &mut assembled,
-                    &RunPolicy::natural(Some(chunk), Some(cli::BIOS_IDLE_LIMIT)),
+                    &RunPolicy::natural(Some(chunk), Some(pc_harness::BIOS_IDLE_LIMIT)),
                 )?;
             }
         }
@@ -750,7 +754,10 @@ fn open_game_profile_boots_freedos() {
         let next = assembled.machine.virtual_time() + 100_000;
         assert!(next < cap, "POST never reported the video BIOS");
         let outcome = assembled
-            .run_session(&RunPolicy::natural(Some(next), Some(cli::BIOS_IDLE_LIMIT)))
+            .run_session(&RunPolicy::natural(
+                Some(next),
+                Some(pc_harness::BIOS_IDLE_LIMIT),
+            ))
             .unwrap();
         assert_eq!(outcome, RunOutcome::RetiredCapReached);
         let capture = assembled.capture_text(DeviceId::Vga).unwrap();
@@ -774,18 +781,18 @@ fn open_game_profile_boots_freedos() {
     let mut outcome = assembled
         .run_session(&RunPolicy {
             retired_cap: Some(cap),
-            idle_limit: Some(cli::BIOS_IDLE_LIMIT),
+            idle_limit: Some(pc_harness::BIOS_IDLE_LIMIT),
             stop: StopCondition::PromptThen {
                 console: ConsoleProbe {
                     device: DeviceId::Vga,
                 },
-                needle: cli::DOS_DATE_PROMPT.into(),
-                poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
+                needle: pc_harness::DOS_DATE_PROMPT.into(),
+                poll_step: pc_harness::DOS_INTERACTIVE_POLL_STEP,
                 then_budget: 0,
             },
             stimuli: vec![KeyboardStimulus {
                 keyboard_index: assembled.device_index[&DeviceId::Keyboard],
-                scancodes: [cli::KEY_ENTER, cli::KEY_ENTER].concat(),
+                scancodes: [pc_harness::KEY_ENTER, pc_harness::KEY_ENTER].concat(),
                 schedule: InjectionSchedule::AfterPrompt,
             }],
         })
@@ -804,9 +811,13 @@ fn open_game_profile_boots_freedos() {
             eprintln!("at-games-open console:\n{text}");
             break (capture.frame, dos_prompt);
         }
-        let next = (assembled.machine.virtual_time() + cli::DOS_INTERACTIVE_POLL_STEP).min(cap);
+        let next =
+            (assembled.machine.virtual_time() + pc_harness::DOS_INTERACTIVE_POLL_STEP).min(cap);
         outcome = assembled
-            .run_session(&RunPolicy::natural(Some(next), Some(cli::BIOS_IDLE_LIMIT)))
+            .run_session(&RunPolicy::natural(
+                Some(next),
+                Some(pc_harness::BIOS_IDLE_LIMIT),
+            ))
             .unwrap();
     };
     let retired = assembled.machine.cpu().retired();
@@ -991,7 +1002,7 @@ fn open_game_profile_reads_720k_in_b_and_360k_in_a() {
         assert!(next < cap, "budget exhausted:\n{text}");
         let outcome = session::run_progressing(
             assembled,
-            &RunPolicy::natural(Some(next), Some(cli::BIOS_IDLE_LIMIT)),
+            &RunPolicy::natural(Some(next), Some(pc_harness::BIOS_IDLE_LIMIT)),
         )
         .unwrap();
         assert_eq!(outcome, RunOutcome::RetiredCapReached, "\n{text}");
@@ -1007,7 +1018,7 @@ fn open_game_profile_reads_720k_in_b_and_360k_in_a() {
             let next = assembled.machine.virtual_time() + 100_000;
             session::run_progressing(
                 assembled,
-                &RunPolicy::natural(Some(next), Some(cli::BIOS_IDLE_LIMIT)),
+                &RunPolicy::natural(Some(next), Some(pc_harness::BIOS_IDLE_LIMIT)),
             )
             .unwrap();
         }
@@ -1015,18 +1026,18 @@ fn open_game_profile_reads_720k_in_b_and_360k_in_a() {
     let outcome = assembled
         .run_session(&RunPolicy {
             retired_cap: Some(cap),
-            idle_limit: Some(cli::BIOS_IDLE_LIMIT),
+            idle_limit: Some(pc_harness::BIOS_IDLE_LIMIT),
             stop: StopCondition::PromptThen {
                 console: ConsoleProbe {
                     device: DeviceId::Vga,
                 },
-                needle: cli::DOS_DATE_PROMPT.into(),
-                poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
+                needle: pc_harness::DOS_DATE_PROMPT.into(),
+                poll_step: pc_harness::DOS_INTERACTIVE_POLL_STEP,
                 then_budget: 0,
             },
             stimuli: vec![KeyboardStimulus {
                 keyboard_index: keyboard,
-                scancodes: [cli::KEY_ENTER, cli::KEY_ENTER].concat(),
+                scancodes: [pc_harness::KEY_ENTER, pc_harness::KEY_ENTER].concat(),
                 schedule: InjectionSchedule::AfterPrompt,
             }],
         })

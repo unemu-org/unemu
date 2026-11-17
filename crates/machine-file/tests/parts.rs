@@ -10,10 +10,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[path = "../../cli/tests/support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
-#[path = "../../cli/tests/support/at_games.rs"]
+#[path = "../../pc-harness/tests/support/at_games.rs"]
 mod game_profiles;
 
 #[derive(Default)]

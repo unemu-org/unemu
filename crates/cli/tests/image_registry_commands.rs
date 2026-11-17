@@ -4,7 +4,7 @@
 //! and 5.3. Commands that talk to the registry run the binary as a child
 //! process so each gets its own environment: synthetic credentials, and none
 //! of the caller's registry settings.
-#[path = "support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
 use image_registry::test_support::{MockRegistry, Policy};

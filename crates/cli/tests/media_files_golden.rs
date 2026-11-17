@@ -15,9 +15,9 @@ use machine::RunOutcome;
 use std::ffi::OsString;
 use video::Frame;
 
-#[path = "support/fat12.rs"]
+#[path = "../../pc-harness/tests/support/fat12.rs"]
 mod fat12;
-#[path = "support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
 /// Set-1 make/break codes for a FreeDOS command line: lowercase letters,
@@ -74,7 +74,10 @@ fn run_until(assembled: &mut assembly::AssembledMachine, done: impl Fn(&str) -> 
         let next = assembled.machine.virtual_time() + 200_000;
         assert!(next < cap, "budget exhausted:\n{text}");
         let outcome = assembled
-            .run_session(&RunPolicy::natural(Some(next), Some(cli::BIOS_IDLE_LIMIT)))
+            .run_session(&RunPolicy::natural(
+                Some(next),
+                Some(pc_harness::BIOS_IDLE_LIMIT),
+            ))
             .unwrap();
         assert_eq!(outcome, RunOutcome::RetiredCapReached, "\n{text}");
     }
@@ -90,7 +93,10 @@ fn type_line(assembled: &mut assembly::AssembledMachine, keyboard: usize, line: 
         );
         let next = assembled.machine.virtual_time() + 100_000;
         assembled
-            .run_session(&RunPolicy::natural(Some(next), Some(cli::BIOS_IDLE_LIMIT)))
+            .run_session(&RunPolicy::natural(
+                Some(next),
+                Some(pc_harness::BIOS_IDLE_LIMIT),
+            ))
             .unwrap();
     }
 }
@@ -137,19 +143,19 @@ fn boot(a: Option<Vec<u8>>, b: FloppyMediaList) -> (assembly::AssembledMachine, 
     let keyboard = assembled.device_index[&DeviceId::Keyboard];
     assembled
         .run_session(&RunPolicy {
-            retired_cap: Some(cli::BIOS_MAX_RETIRED),
-            idle_limit: Some(cli::BIOS_IDLE_LIMIT),
+            retired_cap: Some(pc_harness::BIOS_MAX_RETIRED),
+            idle_limit: Some(pc_harness::BIOS_IDLE_LIMIT),
             stop: StopCondition::PromptThen {
                 console: ConsoleProbe {
                     device: DeviceId::Mda,
                 },
-                needle: cli::DOS_DATE_PROMPT.into(),
-                poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
+                needle: pc_harness::DOS_DATE_PROMPT.into(),
+                poll_step: pc_harness::DOS_INTERACTIVE_POLL_STEP,
                 then_budget: 0,
             },
             stimuli: vec![KeyboardStimulus {
                 keyboard_index: keyboard,
-                scancodes: [cli::KEY_ENTER, cli::KEY_ENTER].concat(),
+                scancodes: [pc_harness::KEY_ENTER, pc_harness::KEY_ENTER].concat(),
                 schedule: InjectionSchedule::AfterPrompt,
             }],
         })

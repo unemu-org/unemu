@@ -41,4 +41,4 @@ loaded sectors. A changed source or another nasm version can change the hash;
 deliberately re-measure the goldens before updating the pin.
 
 The CI `fixtures` gate runs this script. The goldens are in
-`crates/cli/tests/at_pm_test_golden.rs`; see `backlog/docs/commands.md`.
+`crates/pc-harness/tests/at_pm_test_golden.rs`; see `backlog/docs/commands.md`.

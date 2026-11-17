@@ -108,7 +108,7 @@ fn run_step(assembled: &mut assembly::AssembledMachine, budget: u64) {
     let cap = assembled.machine.virtual_time() + budget;
     session::run_progressing(
         assembled,
-        &assembly::RunPolicy::natural(Some(cap), Some(cli::BIOS_IDLE_LIMIT)),
+        &assembly::RunPolicy::natural(Some(cap), Some(pc_harness::BIOS_IDLE_LIMIT)),
     )
     .unwrap();
 }

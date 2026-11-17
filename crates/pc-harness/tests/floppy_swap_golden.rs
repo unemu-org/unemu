@@ -96,19 +96,19 @@ fn freedos_dir_observes_scheduled_second_floppy() {
     let mut assembled = assembly::assemble_with_observation(&config, &policy).unwrap();
     let keyboard = assembled.device_index[&DeviceId::Keyboard];
     let boot = RunPolicy {
-        retired_cap: Some(cli::BIOS_MAX_RETIRED),
-        idle_limit: Some(cli::BIOS_IDLE_LIMIT),
+        retired_cap: Some(pc_harness::BIOS_MAX_RETIRED),
+        idle_limit: Some(pc_harness::BIOS_IDLE_LIMIT),
         stop: assembly::StopCondition::PromptThen {
             console: assembly::ConsoleProbe {
                 device: DeviceId::Mda,
             },
             needle: "Enter new date".into(),
-            poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
-            then_budget: cli::DOS_INTERACTIVE_COMMAND_BUDGET,
+            poll_step: pc_harness::DOS_INTERACTIVE_POLL_STEP,
+            then_budget: pc_harness::DOS_INTERACTIVE_COMMAND_BUDGET,
         },
         stimuli: vec![assembly::KeyboardStimulus {
             keyboard_index: keyboard,
-            scancodes: cli::dos_dir_script(),
+            scancodes: pc_harness::dos_dir_script(),
             schedule: assembly::InjectionSchedule::AfterPrompt,
         }],
     };
@@ -120,7 +120,7 @@ fn freedos_dir_observes_scheduled_second_floppy() {
     assembled
         .run_floppy_schedule(
             at,
-            Some(cli::BIOS_IDLE_LIMIT),
+            Some(pc_harness::BIOS_IDLE_LIMIT),
             &[FloppyEvent {
                 at,
                 controller: DeviceId::Fdc,
@@ -140,7 +140,7 @@ fn freedos_dir_observes_scheduled_second_floppy() {
         ],
     );
     assembled
-        .run_floppy_schedule(at + 3_000_000, Some(cli::BIOS_IDLE_LIMIT), &[])
+        .run_floppy_schedule(at + 3_000_000, Some(pc_harness::BIOS_IDLE_LIMIT), &[])
         .unwrap();
     let capture = assembled.capture_text(DeviceId::Mda).unwrap();
     let Frame::Text(grid) = capture.frame else {

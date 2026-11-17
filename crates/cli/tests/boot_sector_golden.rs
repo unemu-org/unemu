@@ -16,7 +16,7 @@ use assembly::{
 use std::ffi::OsString;
 use video::Frame;
 
-#[path = "support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
 const MESSAGE: &str = "This is not a system disk.";
@@ -41,7 +41,10 @@ fn run_until(assembled: &mut AssembledMachine, budget: u64, done: impl Fn(&str) 
         let before = assembled.machine.virtual_time();
         let next = (before + 200_000).min(cap);
         assembled
-            .run_session(&RunPolicy::natural(Some(next), Some(cli::BIOS_IDLE_LIMIT)))
+            .run_session(&RunPolicy::natural(
+                Some(next),
+                Some(pc_harness::BIOS_IDLE_LIMIT),
+            ))
             .unwrap();
         if assembled.machine.virtual_time() == before {
             return screen(assembled);
@@ -100,7 +103,7 @@ fn boots_the_data_disk_and_retries_after_a_key(profile: &std::path::Path, firmwa
     let keyboard = assembled.device_index[&DeviceId::Keyboard];
     let shown = |count: usize| move |text: &str| text.matches(PROMPT).count() >= count;
 
-    let first = run_until(&mut assembled, cli::BIOS_MAX_RETIRED * 4, shown(1));
+    let first = run_until(&mut assembled, pc_harness::BIOS_MAX_RETIRED * 4, shown(1));
     assert_eq!(first.matches(MESSAGE).count(), 1, "{profile}:\n{first}");
     assert_eq!(first.matches(PROMPT).count(), 1, "{profile}:\n{first}");
 
@@ -108,8 +111,8 @@ fn boots_the_data_disk_and_retries_after_a_key(profile: &std::path::Path, firmwa
     let waiting = run_until(&mut assembled, 5_000_000, shown(2));
     assert_eq!(waiting.matches(PROMPT).count(), 1, "{profile}:\n{waiting}");
 
-    assembly::inject_scancodes(&mut assembled.machine, keyboard, &cli::KEY_ENTER);
-    let again = run_until(&mut assembled, cli::BIOS_MAX_RETIRED, shown(2));
+    assembly::inject_scancodes(&mut assembled.machine, keyboard, &pc_harness::KEY_ENTER);
+    let again = run_until(&mut assembled, pc_harness::BIOS_MAX_RETIRED, shown(2));
     assert_eq!(again.matches(MESSAGE).count(), 2, "{profile}:\n{again}");
     assert_eq!(again.matches(PROMPT).count(), 2, "{profile}:\n{again}");
     eprintln!("{profile}:\n{again}");

@@ -207,7 +207,7 @@ verdict classifications. Historical capture rules were:
 - a reason for every expected non-PASS row.
 
 The ignored CLI test `user_rom_landmark_at_full_pass` in
-`crates/cli/tests/landmark.rs` pins the complete-pass golden in the user-ROM
+`crates/pc-harness/tests/landmark.rs` pins the complete-pass golden in the user-ROM
 lane. It extends `preset:ibm-5170` with MDA as the sole display,
 `display_switch = "auto"`, a unit-0 1.2 MB floppy drive using
 `vendor/freedos/freedos-1200.img` read-only, and an IDE card with
@@ -250,7 +250,7 @@ a temporary machine file extending `preset:ibm-5170`, using absolute part paths
 (or an assembled image), `provides = []`, explicit RTC start and volatile derived
 NVRAM. It follows `run --machine`: `machine_file::load_for_assembly`,
 `LoadedMachine::assemble`, then `run_session` with `RunPolicy::natural`, the
-30,000,000-step cap and `cli::BIOS_IDLE_LIMIT`. Catalogue membership is required;
+30,000,000-step cap and `pc_harness::BIOS_IDLE_LIMIT`. Catalogue membership is required;
 no unlisted escape is used for the user ROM. This selects the preset hardware
 (640 KiB base RAM, MDA and VGA text, UART, wired FDC without a drive),
 volatile derived NVRAM, RTC start `2000-01-01T00:00:00`, and CPU revision

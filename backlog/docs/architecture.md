@@ -33,7 +33,8 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | `machine-file` | Schema 1 TOML/YAML parsing, source origins, image hashing and lowering through assembly validation; merging remains deferred ([schema](design/machine-files.md#schema-field-by-field)) | `assembly`, `image-store`, `serde`, `sha2`, `toml`, `serde-saphyr`, `thiserror` | None |
 | `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
 | `platforms` | The one place that names the platforms compiled into both programs: the image providers a transfer or listing uses (`with_image_providers`), the push plan bound to the PC firmware catalogue (`push_plan`) and the program's licence notice | `assembly`, `image-store`, `image-registry`, `pc-image` | None |
-| `cli` | Binary and runner library: guest programs, assembly/policy selection, output capture and stop diagnostics | `assembly`, `device`, `bus`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow`, `pc-image`, `image-store`, `image-registry`, `platforms`, `toml` | `testkit`, `machine/reference-scheduler`, `assembly/reference-scheduler`, `assembly/test-support`, `image-registry/test-support` |
+| `pc-harness` | Machine runners for the PC/AT goldens and the command line: hand-encoded guest programs, key scripts, assembly/policy selection, output capture and stop diagnostics (`StopReason`). Its `tests/` hold the emulation goldens (BIOS POST, FreeDOS boots and sessions, floppy, IDE, VGA, EMS, sound, the scheduler A/B tests) and `tests/support/`, which other crates include with `#[path]` | `assembly`, `device`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow` | `bus`, `testkit`, `toml`, `machine-file`, `media/test-support`, `machine/reference-scheduler`, `assembly/reference-scheduler`, `assembly/test-support` |
+| `cli` | The `upcli` binary and its commands; `--boot`, `--bios` and `run` call the runners of `pc-harness`. Its `tests/` hold the command tests and the goldens that need the command line, the binary or the store | `pc-harness`, `assembly`, `device`, `cpu`, `machine`, `machine-file`, `media`, `devices`, `video`, `anyhow`, `pc-image`, `image-store`, `image-registry`, `platforms`, `toml` | `assembly/test-support`, `media/test-support`, `image-store/test-support`, `image-registry/test-support` |
 
 Each crate names its layer in its manifest (`[package.metadata.unemu] layer`),
 and `scripts/crate-boundaries.sh` keeps the layers apart
@@ -44,7 +45,7 @@ and `scripts/crate-boundaries.sh` keeps the layers apart
 | `contract` | none yet | nothing at all |
 | `neutral` | `media`, `image-store`, `image-registry` | `contract`, `neutral` |
 | `emulation` | `device`, `bus`, `cpu`, `video`, `audio`, `devices`, `chipset`, `machine`, `testkit`, `assembly` | `contract`, `emulation` |
-| `pc` | `machine-file`, `pc-image` | `contract`, `neutral`, `emulation`, `pc` |
+| `pc` | `machine-file`, `pc-image`, `pc-harness` | `contract`, `neutral`, `emulation`, `pc` |
 | `application` | `cli`, `window`, `platforms` | anything |
 
 The rules cover test dependencies too, and no window crate depends on a CLI

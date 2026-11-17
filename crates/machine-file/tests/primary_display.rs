@@ -218,7 +218,7 @@ fn open_at_bios_machine_files_select_their_console_with_ibm_polarity() {
     }
 }
 
-#[path = "../../cli/tests/support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
 #[test]

@@ -61,7 +61,7 @@
 //! and visible. MDA card capture exposes the BIOS cursor at `(0, 18)`, visible;
 //! the earlier RAM probe hid it. These are the intended independent-card states.
 
-use cli::{bootable_floppy_image, run_bios_boot, FLOPPY_BOOT_MARKER};
+use pc_harness::{bootable_floppy_image, run_bios_boot, FLOPPY_BOOT_MARKER};
 #[path = "support/fixtures.rs"]
 mod fixtures;
 #[path = "support/session.rs"]
@@ -76,7 +76,7 @@ fn bios_int19_reads_boot_sector_over_the_floppy() {
     assert_eq!(rom.len(), 32768, "Xi8088 BIOS is a 32 KiB image");
 
     let run = run_bios_boot(&rom, bootable_floppy_image());
-    assert_eq!(run.stop, cli::StopReason::BudgetExhausted);
+    assert_eq!(run.stop, pc_harness::StopReason::BudgetExhausted);
     // CMOS 32h=20h supplies the century in the BIOS RTC date 2000-01-01.
     session::assert_golden(
         &run,

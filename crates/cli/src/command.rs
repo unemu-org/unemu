@@ -65,7 +65,7 @@ const USAGE: &str = "usage: upcli --boot (Real16 timer demo)
        upcli media verify --base IMG --journal J [--repair-tail --backup PATH]
        upcli media rollback --base IMG --journal J --to N --backup PATH
        upcli media commit (alias compact) --base IMG --journal J --to N --output OUT
-DOS boot and interactive sessions: see crates/cli/tests/*dos*golden.rs\n";
+DOS boot and interactive sessions: see crates/pc-harness/tests/*dos*golden.rs\n";
 
 /// Host paths are supplied by the executable, never discovered by library tests.
 #[derive(Clone, Debug, Default)]

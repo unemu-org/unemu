@@ -3,7 +3,7 @@
 use crate::library_view::ImageRow;
 use image_store::Store;
 use std::{fs, path::Path};
-#[path = "../../cli/tests/support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 /// One medium of an installation set, as `upcli image media import` takes
 /// it: the file, and its `--label N=TEXT` and `--format N=FORMAT` if given.

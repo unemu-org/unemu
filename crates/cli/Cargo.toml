@@ -7,7 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "Frontend and golden runners for deterministic Real16 PC/AT machines (§3.1)."
+description = "Command-line frontend for deterministic Real16 PC/AT machines and their images (§3.1)."
 
 [package.metadata.unemu]
 layer = "application"
@@ -17,6 +17,8 @@ name = "upcli"
 path = "src/main.rs"
 
 [dependencies]
+# The machine runners behind --boot, --bios and run.
+pc-harness = { path = "../pc-harness", version = "0.0.2" }
 pc-image = { path = "../pc-image", version = "0.0.2" }
 image-store = { path = "../image-store", version = "0.0.2" }
 image-registry = { path = "../registry", version = "0.0.2" }
@@ -27,9 +29,7 @@ machine-file.workspace = true
 anyhow.workspace = true
 assembly.workspace = true
 device.workspace = true
-bus.workspace = true
 cpu.workspace = true
-chipset.workspace = true
 machine.workspace = true
 media.workspace = true
 devices.workspace = true
@@ -40,11 +40,9 @@ video.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
-testkit.workspace = true
 # The FAT12 reader that checks disks built from host files.
 media = { workspace = true, features = ["test-support"] }
 image-registry = { path = "../registry", version = "0.0.2", features = ["test-support"] }
 # Tags an image as a newer release would, in a store both share.
 image-store = { path = "../image-store", version = "0.0.2", features = ["test-support"] }
-machine = { workspace = true, features = ["reference-scheduler"] }
-assembly = { workspace = true, features = ["reference-scheduler", "test-support"] }
+assembly = { workspace = true, features = ["test-support"] }

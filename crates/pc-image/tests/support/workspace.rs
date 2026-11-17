@@ -8,7 +8,7 @@ use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
-#[path = "../../../cli/tests/support/fixtures.rs"]
+#[path = "../../../pc-harness/tests/support/fixtures.rs"]
 pub mod fixtures;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 /// Bytes of a resolved medium: its file, its inline bytes, or, for a

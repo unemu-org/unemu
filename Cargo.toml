@@ -13,6 +13,7 @@ members = [
     "crates/assembly",
     "crates/testkit",
     "crates/cli",
+    "crates/pc-harness",
     "crates/window",
     "crates/media",
     "crates/machine-file",

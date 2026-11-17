@@ -18,22 +18,48 @@
     }
   },
   {
-    "name": "cli-only change pulls in the window, runs cli's ignored tests and the window's that name cli::",
+    "name": "cli-only change runs the command line alone, with its front-end goldens by name",
     "changed": ["crates/cli/src/image.rs"],
     "expect": {
-      "mode": "crates", "seeds": ["cli"], "affected": ["cli", "window"], "tier": "fast",
-      "targeted_crates": ["cli", "window"],
+      "mode": "crates", "seeds": ["cli"], "affected": ["cli"], "tier": "fast",
+      "targeted": [
+        "freedos_enters_and_rebuilds_a_split_set_with_xcopy",
+        "freedos_ide_journal_survives_a_fresh_assembly_without_changing_base",
+        "freedos_installs_and_boots_from_a_blank_hard_disk",
+        "freedos_reads_a_floppy_built_from_host_files",
+        "freedos_writes_persist_in_a_machine_until_reset",
+        "open_game_profile_boots_freedos",
+        "open_game_profile_reads_720k_in_b_and_360k_in_a"
+      ],
+      "targeted_crates": ["cli"],
       "scan_tests": ["image-store:platform_ids"],
       "release_devices": false, "cli": true, "deny": false
     }
   },
   {
-    "name": "cli machine-runner change selects the goldens",
-    "changed": ["crates/cli/src/lib.rs"],
+    "name": "machine-runner change selects the goldens of the runners and the command line",
+    "changed": ["crates/pc-harness/src/lib.rs"],
     "expect": {
-      "mode": "crates", "seeds": ["cli"], "affected": ["cli", "window"], "tier": "goldens",
-      "golden_reasons": ["crates/cli/src/lib.rs: machine runner the goldens drive"],
+      "mode": "crates", "seeds": ["pc-harness"], "affected": ["cli", "pc-harness"],
+      "tier": "goldens",
+      "golden_reasons": ["crates/pc-harness/src/lib.rs: machine runner the goldens drive"],
       "targeted": []
+    }
+  },
+  {
+    "name": "a new runner module is a runner too",
+    "changed": ["crates/pc-harness/src/new_runner.rs"],
+    "expect": {
+      "mode": "crates", "tier": "goldens",
+      "golden_reasons": ["crates/pc-harness/src/new_runner.rs: machine runner the goldens drive"]
+    }
+  },
+  {
+    "name": "the command module the front-end goldens drive selects the goldens",
+    "changed": ["crates/cli/src/command.rs"],
+    "expect": {
+      "mode": "crates", "seeds": ["cli"], "affected": ["cli"], "tier": "goldens",
+      "golden_reasons": ["crates/cli/src/command.rs: machine runner the goldens drive"]
     }
   },
   {
@@ -41,7 +67,8 @@
     "changed": ["crates/image-store/src/library.rs"],
     "expect": {
       "mode": "crates", "seeds": ["image-store"],
-      "affected": ["cli", "image-registry", "image-store", "machine-file", "pc-image", "window"],
+      "affected": ["cli", "image-registry", "image-store", "machine-file", "pc-harness", "pc-image",
+        "platforms", "window"],
       "tier": "fast",
       "targeted_files": [
         "crates/cli/tests/machine_freedos_golden.rs: names image_store::",
@@ -56,7 +83,7 @@
     "name": "pc-image change runs the ignored tests that name pc_image::",
     "changed": ["crates/pc-image/src/lib.rs"],
     "expect": {
-      "mode": "crates", "seeds": ["pc-image"], "affected": ["cli", "pc-image", "window"],
+      "mode": "crates", "seeds": ["pc-image"], "affected": ["cli", "pc-image", "platforms", "window"],
       "tier": "fast",
       "targeted_files": [
         "crates/cli/tests/machine_freedos_golden.rs: names pc_image::",
@@ -69,7 +96,8 @@
     "changed": ["crates/devices/src/pit8253.rs"],
     "expect": {
       "mode": "crates", "seeds": ["devices"],
-      "affected": ["assembly", "chipset", "cli", "devices", "machine", "machine-file", "pc-image", "window"],
+      "affected": ["assembly", "chipset", "cli", "devices", "machine", "machine-file", "pc-harness",
+        "pc-image", "platforms", "window"],
       "tier": "goldens", "golden_reasons": ["crates/devices/src/pit8253.rs: emulation crate"],
       "targeted": [], "scan_tests": ["image-store:platform_ids"],
       "release_devices": true, "deny": false
@@ -77,7 +105,7 @@
   },
   {
     "name": "golden tier with a changed golden file runs nothing twice by name",
-    "changed": ["crates/devices/src/pit8253.rs", "crates/cli/tests/freedos_boot_golden.rs"],
+    "changed": ["crates/devices/src/pit8253.rs", "crates/pc-harness/tests/freedos_boot_golden.rs"],
     "expect": { "mode": "crates", "tier": "goldens", "targeted": [], "targeted_files": [] }
   },
   {
@@ -105,8 +133,8 @@
     "expect": {
       "mode": "full",
       "affected": ["assembly", "audio", "bus", "chipset", "cli", "cpu", "device", "devices",
-        "image-registry", "image-store", "machine", "machine-file", "media", "pc-image",
-        "testkit", "video", "window"],
+        "image-registry", "image-store", "machine", "machine-file", "media", "pc-harness",
+        "pc-image", "platforms", "testkit", "video", "window"],
       "tier": "goldens", "deny": true, "release_devices": true, "cli": true, "scan_tests": [],
       "targeted": []
     }
@@ -142,8 +170,9 @@
     "name": "shipped machine file selects its readers and the goldens",
     "changed": ["machines/at-freedos.toml"],
     "expect": {
-      "mode": "crates", "seeds": ["cli", "machine-file", "pc-image", "window"],
-      "affected": ["cli", "machine-file", "pc-image", "window"], "tier": "goldens"
+      "mode": "crates", "seeds": ["cli", "machine-file", "pc-harness", "pc-image", "window"],
+      "affected": ["cli", "machine-file", "pc-harness", "pc-image", "platforms", "window"],
+      "tier": "goldens"
     }
   },
   {
@@ -151,7 +180,7 @@
     "changed": ["machines/README.md"],
     "expect": {
       "mode": "crates", "seeds": ["cli", "machine-file", "pc-image", "window"], "tier": "fast",
-      "targeted_crates": ["cli", "window"]
+      "targeted_crates": ["cli", "pc-harness", "window"]
     }
   },
   {
@@ -159,24 +188,25 @@
     "changed": ["vendor/kiselev-bios/fetch.sh"],
     "expect": {
       "mode": "crates",
-      "seeds": ["assembly", "cli", "machine-file", "pc-image", "window"],
+      "seeds": ["assembly", "cli", "machine-file", "pc-harness", "pc-image", "window"],
       "tier": "goldens", "shell": ["vendor/kiselev-bios/fetch.sh"]
     }
   },
   {
     "name": "golden test support shared through #[path] selects every including crate",
-    "changed": ["crates/cli/tests/support/fixtures.rs"],
+    "changed": ["crates/pc-harness/tests/support/fixtures.rs"],
     "expect": {
-      "mode": "crates", "seeds": ["assembly", "cli", "machine-file", "pc-image", "window"],
+      "mode": "crates",
+      "seeds": ["assembly", "cli", "machine-file", "pc-harness", "pc-image", "window"],
       "tier": "goldens"
     }
   },
   {
     "name": "changed golden test file runs its crate's ignored tests by name",
-    "changed": ["crates/cli/tests/freedos_boot_golden.rs"],
+    "changed": ["crates/pc-harness/tests/freedos_boot_golden.rs"],
     "expect": {
-      "mode": "crates", "affected": ["cli", "window"], "tier": "fast",
-      "targeted_crates": ["cli", "window"]
+      "mode": "crates", "affected": ["cli", "pc-harness"], "tier": "fast",
+      "targeted_crates": ["cli", "pc-harness"]
     }
   },
   {
@@ -185,7 +215,7 @@
     "ignored": {
       "crates/image-store/tests/store.rs": {"tests": ["slow_store"], "mentions": ["image_store"]},
       "crates/pc-image/tests/import.rs": {"tests": ["slow_import"], "mentions": ["image_store", "pc_image"]},
-      "crates/cli/tests/rtc_golden.rs": {"tests": ["unrelated"], "mentions": ["cli"]},
+      "crates/pc-harness/tests/rtc_golden.rs": {"tests": ["unrelated"], "mentions": ["pc_harness"]},
       "crates/media/tests/journal.rs": {"tests": ["outside_the_affected_set"], "mentions": ["image_store"]}
     },
     "expect": {

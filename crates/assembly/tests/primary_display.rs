@@ -204,7 +204,7 @@ fn primary_display_switch_rejects_missing_adapter_classes() {
     }
 }
 
-#[path = "../../cli/tests/support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
 #[test]

@@ -15,7 +15,7 @@
 //! in virtual time; screen content is unchanged apart from the clock rows.
 //! Normalized logical hashes and cursors are unchanged.
 //!
-//! Assembles the PC/AT machine ([`cli::run_freedos_config`]) with the real Kiselev Xi8088
+//! Assembles the PC/AT machine ([`pc_harness::run_freedos_config`]) with the real Kiselev Xi8088
 //! BIOS in masked ROM and a real, bootable **FreeDOS** 1.44 MB floppy image (8086
 //! kernel + FreeCOM, built by `vendor/freedos/fetch.sh`) in the µPD765 floppy
 //! drive, and boots from the reset vector. The golden captures the startup date-prompt
@@ -94,7 +94,7 @@
 //! - FreeDOS: 8086 kernel + FreeCOM, FAT12 1.44 MB image (`vendor/freedos`).
 //! - CPU: `x86jit-core`, the rev pinned in `Cargo.lock`.
 
-use cli::StopReason;
+use pc_harness::StopReason;
 #[path = "support/fixtures.rs"]
 mod fixtures;
 #[path = "support/session.rs"]
@@ -116,7 +116,7 @@ fn freedos_reaches_shell_prompt() {
     };
     assert_eq!(img.len(), 1_474_560, "FreeDOS floppy is a 1.44 MB image");
 
-    let run = cli::run_freedos_config(
+    let run = pc_harness::run_freedos_config(
         machine_file::load(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml"),
         )

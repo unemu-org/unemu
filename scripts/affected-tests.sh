@@ -17,8 +17,8 @@
 # Tiers. The fast tier is the ordinary test run of the affected crates. The
 # golden tier adds the ignored tests (BIOS POST, DOS boots and sessions,
 # fixture archives) of every affected crate; it is chosen when a change can
-# alter emulated behaviour: an emulation crate, the command-line machine
-# runners the goldens drive, a shipped machine file or a fixture pin changed.
+# alter emulated behaviour: an emulation crate, the machine runners the
+# goldens drive (pc-harness), a shipped machine file or a fixture pin changed.
 # Without it, the ignored tests of each changed crate still run, by name, and
 # so do those in files of the affected crates that name a changed crate
 # (`image_store::`, say). Tests that need user-supplied firmware start with
@@ -75,9 +75,10 @@ planner='
 # selects the golden tier.
 def emulation_crates: ["assembly", "audio", "bus", "chipset", "cpu", "device",
   "devices", "machine", "machine-file", "media", "testkit", "video"];
-# Files of a frontend crate that hold the machine runners and the disk
-# builder the goldens drive.
-def runner_files: ["crates/cli/src/lib.rs", "crates/cli/src/command.rs",
+# Files that hold the machine runners and the disk builder the goldens drive,
+# and the command module the front-end goldens drive; a path ending in "/"
+# covers every file under it.
+def runner_files: ["crates/pc-harness/src/", "crates/cli/src/command.rs",
   "crates/pc-image/src/media_create.rs"];
 # Paths that crates read outside their own directory: test support shared
 # with #[path], shipped machine files, fixture scripts and pins, assets.
@@ -85,8 +86,8 @@ def runner_files: ["crates/cli/src/lib.rs", "crates/cli/src/command.rs",
 # directory is covered here, and that every crate that builds paths from the
 # repository root reads both machines/ and vendor/.
 def data_rules: [
-  {prefix: "crates/cli/tests/support/", goldens: true,
-   crates: ["assembly", "cli", "machine-file", "pc-image", "window"],
+  {prefix: "crates/pc-harness/tests/support/", goldens: true,
+   crates: ["assembly", "cli", "machine-file", "pc-harness", "pc-image", "window"],
    why: "golden test support shared by several crates"},
   {prefix: "crates/pc-image/tests/support/", goldens: false,
    crates: ["cli", "pc-image"], why: "test support shared with cli"},
@@ -94,16 +95,16 @@ def data_rules: [
    crates: ["cli", "machine-file", "pc-image", "window"],
    why: "machine-file guide that tests quote"},
   {prefix: "machines/", goldens: true,
-   crates: ["cli", "machine-file", "pc-image", "window"],
+   crates: ["cli", "machine-file", "pc-harness", "pc-image", "window"],
    why: "shipped machine file"},
   {prefix: "vendor/", except: "[.]md$", goldens: true,
-   crates: ["assembly", "cli", "machine-file", "pc-image", "window"],
+   crates: ["assembly", "cli", "machine-file", "pc-harness", "pc-image", "window"],
    why: "fixture script, pin or notice"},
   {prefix: "assets/", goldens: false, crates: ["window"], why: "window asset"},
   {prefix: "backlog/docs/design/mockups/", goldens: false, crates: ["window"],
    why: "approved mock-ups the window icon tests read"},
   {prefix: "backlog/docs/design/recipe-corpus/", goldens: false,
-   crates: ["cli"], why: "recipes the user-file volume tests build"}
+   crates: ["pc-harness"], why: "recipes the user-file volume tests build"}
 ];
 # Tests that read the sources of every crate.
 def scan_tests: [
@@ -143,7 +144,7 @@ def classify($members):
        goldens: $data.goldens, deny: false, why: $data.why}
     elif $owner != null then
       (emulation_crates | has($owner.name)) as $emulation
-      | (runner_files | has($f)) as $runner
+      | (any(runner_files[]; . as $r | $f == $r or ($r | endswith("/")) and ($f | startswith($r)))) as $runner
       | {class: "crate", crates: [$owner.name], goldens: ($emulation or $runner),
          deny: ($f == $owner.dir + "/Cargo.toml"),
          why: (if $emulation then "emulation crate"

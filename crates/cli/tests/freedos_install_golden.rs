@@ -13,9 +13,9 @@ use cpu::Cpu;
 use std::path::PathBuf;
 use video::Frame;
 
-#[path = "support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
-#[path = "support/session.rs"]
+#[path = "../../pc-harness/tests/support/session.rs"]
 pub mod session;
 
 struct Scratch(PathBuf);
@@ -88,7 +88,7 @@ fn run_for(assembled: &mut AssembledMachine, budget: u64) {
     let cap = assembled.machine.virtual_time() + budget;
     let result = session::run_progressing(
         assembled,
-        &RunPolicy::natural(Some(cap), Some(cli::BIOS_IDLE_LIMIT)),
+        &RunPolicy::natural(Some(cap), Some(pc_harness::BIOS_IDLE_LIMIT)),
     );
     eprintln!(
         "run={result:?}, retired={}, virtual={}, CS:IP={:04x}:{:04x}\n{}",
@@ -110,7 +110,7 @@ fn command(assembled: &mut AssembledMachine, command: &str) {
         let cap = assembled.machine.virtual_time() + 100_000;
         session::run_progressing(
             assembled,
-            &RunPolicy::natural(Some(cap), Some(cli::BIOS_IDLE_LIMIT)),
+            &RunPolicy::natural(Some(cap), Some(pc_harness::BIOS_IDLE_LIMIT)),
         )
         .unwrap();
     }
@@ -134,13 +134,13 @@ fn command(assembled: &mut AssembledMachine, command: &str) {
 fn boot_prompt(assembled: &mut AssembledMachine, drive: &str) {
     let policy = RunPolicy {
         retired_cap: Some(assembled.machine.virtual_time() + 100_000_000),
-        idle_limit: Some(cli::BIOS_IDLE_LIMIT),
+        idle_limit: Some(pc_harness::BIOS_IDLE_LIMIT),
         stop: StopCondition::PromptThen {
             console: ConsoleProbe {
                 device: DeviceId::Mda,
             },
-            needle: cli::DOS_DATE_PROMPT.into(),
-            poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
+            needle: pc_harness::DOS_DATE_PROMPT.into(),
+            poll_step: pc_harness::DOS_INTERACTIVE_POLL_STEP,
             then_budget: 2_000_000,
         },
         stimuli: vec![KeyboardStimulus {
@@ -172,7 +172,7 @@ fn reboot(assembled: &mut AssembledMachine) {
     // POST leaves the previous console visible until video initialization. Wait
     // for it to clear so the old date prompt cannot trigger keyboard injection.
     let deadline = assembled.machine.virtual_time() + 30_000_000;
-    while console(assembled).contains(cli::DOS_DATE_PROMPT) {
+    while console(assembled).contains(pc_harness::DOS_DATE_PROMPT) {
         run_for(assembled, 1_000_000);
         assert!(
             assembled.machine.virtual_time() < deadline,
@@ -194,7 +194,7 @@ fn polling_rejects_if_clear_halt() {
             ..Default::default()
         };
         let mut assembled = assembly::assemble_with_observation(&config, &observation).unwrap();
-        let mut policy = RunPolicy::natural(Some(100), Some(cli::BIOS_IDLE_LIMIT));
+        let mut policy = RunPolicy::natural(Some(100), Some(pc_harness::BIOS_IDLE_LIMIT));
         if prompt {
             policy.stop = StopCondition::PromptThen {
                 console: ConsoleProbe {

@@ -179,7 +179,7 @@ fn run_prints_text_and_reports_budget_and_execution_failure() {
     ));
 }
 
-#[path = "support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
 #[test]

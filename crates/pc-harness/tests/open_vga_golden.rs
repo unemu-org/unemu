@@ -163,7 +163,7 @@ fn run_probe(policy: &ObservationPolicy) -> Option<ProbeRun> {
     let outcome = assembled
         .run_session(&assembly::RunPolicy::natural(
             Some(100_000_000),
-            Some(cli::BIOS_IDLE_LIMIT),
+            Some(pc_harness::BIOS_IDLE_LIMIT),
         ))
         .unwrap();
     let rows = screen_rows(&mut assembled);
@@ -640,7 +640,7 @@ fn open_vga_bios_mode_0d_scrolling_and_mode_13h_reach_scanout() {
         outcome = assembled
             .run_session(&assembly::RunPolicy::natural(
                 Some(next),
-                Some(cli::BIOS_IDLE_LIMIT),
+                Some(pc_harness::BIOS_IDLE_LIMIT),
             ))
             .unwrap();
         let stage = boot_stage(assembled.machine.cpu());

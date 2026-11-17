@@ -3,7 +3,7 @@
 //! see machines/README.md § Preparing disks and Microsoft FAT Specification,
 //! FAT on-disk format, BPB and FAT12 entries.
 
-#[path = "support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
 use cli::command::{parse, run};

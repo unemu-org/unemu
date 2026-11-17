@@ -64,7 +64,7 @@
 //! - CPU: `x86jit-core`, the rev pinned in `Cargo.lock`.
 //!   Re-pinning requires re-running this golden against the same ROM and policy.
 
-use cli::{run_bios_with_cap, StopReason};
+use pc_harness::{run_bios_with_cap, StopReason};
 #[path = "support/fixtures.rs"]
 mod fixtures;
 #[path = "support/session.rs"]
@@ -93,7 +93,7 @@ fn bios_boot_stop_point_matches_golden() {
     };
     assert_eq!(rom.len(), 32768, "Xi8088 BIOS is a 32 KiB image");
 
-    let run = run_bios_with_cap(&rom, cli::BIOS_GOLDEN_MAX_RETIRED);
+    let run = run_bios_with_cap(&rom, pc_harness::BIOS_GOLDEN_MAX_RETIRED);
     // The bare rig's 8042 selects the 80286 model; its trap after POP DS changes
     // the open BIOS's CPU identification and adds its segment-load warning.
     // CMOS 32h=20h supplies the century in the BIOS RTC date 2000-01-01.

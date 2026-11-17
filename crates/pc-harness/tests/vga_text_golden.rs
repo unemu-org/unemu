@@ -20,7 +20,7 @@
 //! path runs the same pinned `x86jit-core` rev as the other real-mode goldens —
 //! the rev in `Cargo.lock`. Re-baseline when that rev moves.
 
-use cli::{run_vga_text, VGA_TEXT_PROGRAM};
+use pc_harness::{run_vga_text, VGA_TEXT_PROGRAM};
 use video::{Cursor, TextCell};
 
 #[test]

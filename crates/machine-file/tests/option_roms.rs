@@ -6,7 +6,7 @@ use machine_file::{lower, parse_toml, parse_yaml, ImageReader, Origins};
 use sha2::{Digest, Sha256};
 use std::{io, path::Path};
 
-#[path = "../../cli/tests/support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
 fn rom() -> Vec<u8> {

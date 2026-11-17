@@ -17,7 +17,7 @@
 //!
 //! Builds on the interactive DIR golden ([`dos_interactive_golden`]): the same
 //! Kiselev Xi8088 BIOS in masked ROM and the same bootable FreeDOS 1.44 MB floppy,
-//! driven by [`cli::run_freedos_interactive_config`], but the keyboard script
+//! driven by [`pc_harness::run_freedos_interactive_config`], but the keyboard script
 //! ([`dos_write_file_script`]) makes the shell **write to the disk**:
 //!
 //! ```text
@@ -76,7 +76,7 @@
 //! - FreeDOS: 8086 kernel + FreeCOM, FAT12 1.44 MB image (`vendor/freedos`).
 //! - CPU: `x86jit-core`, the rev pinned in `Cargo.lock`.
 
-use cli::{dos_write_file_script, StopReason};
+use pc_harness::{dos_write_file_script, StopReason};
 #[path = "support/fat12.rs"]
 mod fat12;
 use fat12::file as fat12_file;
@@ -98,7 +98,7 @@ fn freedos_writes_a_file_from_the_keyboard() {
     assert_eq!(img.len(), 1_474_560, "FreeDOS floppy is a 1.44 MB image");
 
     assert!(fat12_file(&img, b"ZZ         ").is_none(), "ZZ must be new");
-    let run = cli::run_freedos_interactive_config(
+    let run = pc_harness::run_freedos_interactive_config(
         machine_file::load(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml"),
         )

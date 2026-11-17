@@ -18,7 +18,7 @@ set of machine paths, and this program exercises the same paths:
 
 Build and fixture details are in
 [`vendor/at-pm-test/README.md`](../../../vendor/at-pm-test/README.md), the
-goldens in `crates/cli/tests/at_pm_test_golden.rs`, and the commands in
+goldens in `crates/pc-harness/tests/at_pm_test_golden.rs`, and the commands in
 [`commands.md`](../commands.md#ci).
 
 Evidence labels: **READ** (seen in the named source), **MEASURED** (run in

@@ -64,7 +64,7 @@ fn cli_escape_flag_reaches_assembly_and_prints_one_hash_warning() {
     assert_eq!(String::from_utf8(misplaced.stderr).unwrap().lines().next().unwrap(), "Error: invalid configuration: system BIOS of 32767 bytes at 0xf8000 must have a positive size that is a multiple of 8 KiB and end at 0x100000");
 }
 
-#[path = "support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
 #[test]
@@ -72,12 +72,15 @@ fn legacy_post_runner_checks_the_catalogue_without_changing_the_bare_rig() {
     let Some(mut rom) = fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
         return;
     };
-    let real = cli::run_bios_with_cap(&rom, 0);
-    assert!(!matches!(real.stop, cli::StopReason::ConfigFailed { .. }));
+    let real = pc_harness::run_bios_with_cap(&rom, 0);
+    assert!(!matches!(
+        real.stop,
+        pc_harness::StopReason::ConfigFailed { .. }
+    ));
     rom[0] ^= 1;
-    let changed = cli::run_bios_with_cap(&rom, 0);
+    let changed = pc_harness::run_bios_with_cap(&rom, 0);
     match changed.stop {
-        cli::StopReason::ConfigFailed { detail } => {
+        pc_harness::StopReason::ConfigFailed { detail } => {
             assert!(detail.contains("is not a known image for board \"ibm-5170\""));
             assert!(detail.contains("kiselev-xi8088-1.0.2 (open, vendor/kiselev-bios/fetch.sh)"));
         }

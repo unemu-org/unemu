@@ -15,7 +15,7 @@ fn kiselev_empty_socket_finishes_the_coprocessor_probe() {
     };
     let mut screens = Vec::new();
     for fpu in [FpuChip::I80287, FpuChip::None] {
-        let mut config = bios(rom.clone(), Some(cli::bootable_floppy_image()));
+        let mut config = bios(rom.clone(), Some(pc_harness::bootable_floppy_image()));
         config.cpu.fpu = fpu;
         let policy = assembly::ObservationPolicy {
             routes: vec![assembly::ObservationRequest {
@@ -29,8 +29,8 @@ fn kiselev_empty_socket_finishes_the_coprocessor_probe() {
         assert_eq!(
             assembled
                 .run_session(&assembly::RunPolicy::natural(
-                    Some(cli::BIOS_GOLDEN_MAX_RETIRED),
-                    Some(cli::BIOS_IDLE_LIMIT),
+                    Some(pc_harness::BIOS_GOLDEN_MAX_RETIRED),
+                    Some(pc_harness::BIOS_IDLE_LIMIT),
                 ))
                 .unwrap(),
             machine::RunOutcome::RetiredCapReached

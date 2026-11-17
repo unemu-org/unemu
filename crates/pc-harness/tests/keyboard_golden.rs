@@ -28,7 +28,7 @@
 //! path runs the same pinned `x86jit-core` rev as the timer boot golden — the rev
 //! in `Cargo.lock`. Re-baseline when that rev moves.
 
-use cli::{run_keyboard, KBD_HANDLER_OFFSET, KBD_PROGRAM, KBD_SCANCODE};
+use pc_harness::{run_keyboard, KBD_HANDLER_OFFSET, KBD_PROGRAM, KBD_SCANCODE};
 use testkit::golden::assert_bytes_eq;
 
 #[test]

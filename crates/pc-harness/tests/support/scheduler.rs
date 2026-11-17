@@ -314,12 +314,12 @@ pub fn prepare_with_bios(workload: Workload, bios: Option<Vec<u8>>) -> Result<Op
             }
         }
         Workload::Boot => {
-            policy.idle_limit = Some(cli::BOOT_IDLE_LIMIT);
-            assemble(&assembly::at_boot(cli::BOOT_PROGRAM.to_vec()))?
+            policy.idle_limit = Some(pc_harness::BOOT_IDLE_LIMIT);
+            assemble(&assembly::at_boot(pc_harness::BOOT_PROGRAM.to_vec()))?
         }
         Workload::Keyboard => {
-            policy.idle_limit = Some(cli::KBD_IDLE_LIMIT);
-            let mut assembled = assemble(&assembly::at_keyboard(cli::KBD_PROGRAM.to_vec()))?;
+            policy.idle_limit = Some(pc_harness::KBD_IDLE_LIMIT);
+            let mut assembled = assemble(&assembly::at_keyboard(pc_harness::KBD_PROGRAM.to_vec()))?;
             assembled
                 .machine
                 .bus_mut()
@@ -328,35 +328,37 @@ pub fn prepare_with_bios(workload: Workload, bios: Option<Vec<u8>>) -> Result<Op
                 .as_any_mut()
                 .and_then(|any| any.downcast_mut::<I8042>())
                 .expect("8042")
-                .push_scancode(cli::KBD_SCANCODE);
+                .push_scancode(pc_harness::KBD_SCANCODE);
             assembled
         }
         Workload::Rtc => {
-            policy.idle_limit = Some(cli::RTC_IDLE_LIMIT);
+            policy.idle_limit = Some(pc_harness::RTC_IDLE_LIMIT);
             assemble(&assembly::at_rtc(
-                cli::RTC_PROGRAM.to_vec(),
-                cli::RTC_SECOND_TICKS,
-                cli::RTC_UIP_TICKS,
+                pc_harness::RTC_PROGRAM.to_vec(),
+                pc_harness::RTC_SECOND_TICKS,
+                pc_harness::RTC_UIP_TICKS,
             ))?
         }
-        Workload::VgaText => assemble(&assembly::at_vga_text(cli::VGA_TEXT_PROGRAM.to_vec()))?,
+        Workload::VgaText => assemble(&assembly::at_vga_text(
+            pc_harness::VGA_TEXT_PROGRAM.to_vec(),
+        ))?,
         Workload::FloppyBoot => assemble(&assembly::floppy_boot(
-            cli::FLOPPY_LOADER.to_vec(),
-            cli::bootable_floppy_image(),
+            pc_harness::FLOPPY_LOADER.to_vec(),
+            pc_harness::bootable_floppy_image(),
         ))?,
         Workload::FdcWrite => {
-            policy.retired_cap = Some(cli::FDC_WRITE_RETIRED_CAP);
+            policy.retired_cap = Some(pc_harness::FDC_WRITE_RETIRED_CAP);
             assemble(&assembly::at_fdc_write(
-                cli::FDC_WRITE_PROGRAM.to_vec(),
-                cli::fdc_write_pattern(),
-                cli::FDC_WRITE_SRC,
+                pc_harness::FDC_WRITE_PROGRAM.to_vec(),
+                pc_harness::fdc_write_pattern(),
+                pc_harness::FDC_WRITE_SRC,
             ))?
         }
         Workload::Test386 => {
             let Some(image) = fixtures::fixture("test386/test386.bin") else {
                 return Ok(None);
             };
-            policy.retired_cap = Some(cli::TEST386_MAX_RETIRED);
+            policy.retired_cap = Some(pc_harness::TEST386_MAX_RETIRED);
             assemble(&assembly::test386(image))?
         }
         Workload::BiosPost
@@ -370,7 +372,7 @@ pub fn prepare_with_bios(workload: Workload, bios: Option<Vec<u8>>) -> Result<Op
             };
             anyhow::ensure!(rom.len() == 32768, "Xi8088 BIOS must be 32 KiB");
             let floppy = if matches!(workload, Workload::BiosFloppy) {
-                Some(cli::bootable_floppy_image())
+                Some(pc_harness::bootable_floppy_image())
             } else if !matches!(workload, Workload::BiosPost) {
                 let Some(image) = fixtures::fixture("freedos/freedos.img") else {
                     return Ok(None);
@@ -381,8 +383,8 @@ pub fn prepare_with_bios(workload: Workload, bios: Option<Vec<u8>>) -> Result<Op
                 None
             };
             policy = RunPolicy::natural(
-                Some(cli::BIOS_GOLDEN_MAX_RETIRED),
-                Some(cli::BIOS_IDLE_LIMIT),
+                Some(pc_harness::BIOS_GOLDEN_MAX_RETIRED),
+                Some(pc_harness::BIOS_IDLE_LIMIT),
             );
             let has_floppy = floppy.is_some();
             let mut config = if matches!(workload, Workload::BiosPost | Workload::BiosFloppy) {
@@ -407,13 +409,13 @@ pub fn prepare_with_bios(workload: Workload, bios: Option<Vec<u8>>) -> Result<Op
             }
             let assembled = assemble(&config)?;
             if has_floppy && !matches!(workload, Workload::BiosFloppy) {
-                policy.retired_cap = Some(cli::BIOS_MAX_RETIRED);
+                policy.retired_cap = Some(pc_harness::BIOS_MAX_RETIRED);
                 policy.stop = StopCondition::PromptThen {
                     console: ConsoleProbe {
                         device: DeviceId::Mda,
                     },
-                    needle: cli::DOS_DATE_PROMPT.to_string(),
-                    poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
+                    needle: pc_harness::DOS_DATE_PROMPT.to_string(),
+                    poll_step: pc_harness::DOS_INTERACTIVE_POLL_STEP,
                     then_budget: 0,
                 };
             }
@@ -422,14 +424,14 @@ pub fn prepare_with_bios(workload: Workload, bios: Option<Vec<u8>>) -> Result<Op
                 policy.stimuli.push(assembly::KeyboardStimulus {
                     keyboard_index: assembled.device_index[&DeviceId::Keyboard],
                     scancodes: if matches!(workload, Workload::DosWrite) {
-                        cli::dos_write_file_script()
+                        pc_harness::dos_write_file_script()
                     } else {
-                        cli::dos_dir_script()
+                        pc_harness::dos_dir_script()
                     },
                     schedule: assembly::InjectionSchedule::AfterPrompt,
                 });
                 if let StopCondition::PromptThen { then_budget, .. } = &mut policy.stop {
-                    *then_budget = cli::DOS_INTERACTIVE_COMMAND_BUDGET;
+                    *then_budget = pc_harness::DOS_INTERACTIVE_COMMAND_BUDGET;
                 }
             }
             assembled

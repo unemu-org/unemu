@@ -38,7 +38,7 @@
 //! path runs the same pinned `x86jit-core` rev as the timer boot golden — the rev
 //! in `Cargo.lock`. Re-baseline when that rev moves.
 
-use cli::{run_rtc, RTC_HANDLER_OFFSET, RTC_MARKER, RTC_PROGRAM};
+use pc_harness::{run_rtc, RTC_HANDLER_OFFSET, RTC_MARKER, RTC_PROGRAM};
 use testkit::golden::assert_bytes_eq;
 
 #[test]

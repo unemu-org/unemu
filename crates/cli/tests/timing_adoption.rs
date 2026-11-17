@@ -28,7 +28,7 @@ fn binary_usage_names_the_remaining_demo_and_dos_goldens() {
     assert!(output.status.success());
     let usage = String::from_utf8(output.stdout).unwrap();
     assert!(usage.contains("--boot (Real16 timer demo)"));
-    assert!(usage.contains("crates/cli/tests/*dos*golden.rs"));
+    assert!(usage.contains("crates/pc-harness/tests/*dos*golden.rs"));
 }
 
 #[test]

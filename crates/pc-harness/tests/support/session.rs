@@ -2,7 +2,7 @@
 //! BIOS/DOS polling guards and screen assertions using the shipped CLI helpers.
 //! See status.md §Port 61h timing re-baseline for the recorded comparisons.
 
-use cli::{BiosRun, ScreenStamp};
+use pc_harness::{BiosRun, ScreenStamp};
 
 /// Stable FNV-1a of canonical console rows, including empty rows.
 pub fn screen_hash(text: &str) -> u64 {

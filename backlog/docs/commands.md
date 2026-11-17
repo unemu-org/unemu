@@ -1037,25 +1037,36 @@ cargo test --release -p devices              # release-only device behaviour (CI
 cargo test --workspace -- --ignored          # slow goldens: BIOS POST, FreeDOS boot, DOS sessions
 UNEMUPC_REQUIRE_FIXTURES=1 cargo test --workspace -- --include-ignored # CI goldens lane: every fixture test and the goldens; fail if a fixture is missing
 # Corrected per-clock oracle versus production deadlines (no environment gate):
-UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test scheduler_ab -- --include-ignored --nocapture
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test scheduler_ab -- --include-ignored --nocapture
 # Opt-in host timing only, BIOS POST and FreeDOS prompt, median of three per engine:
-UNEMUPC_REQUIRE_FIXTURES=1 UNEMUPC_SCHEDULER_WALL_TIMES=1 cargo test --offline --release -p cli --test scheduler_ab scheduler_engine_wall_times -- --ignored --nocapture
+UNEMUPC_REQUIRE_FIXTURES=1 UNEMUPC_SCHEDULER_WALL_TIMES=1 cargo test --offline --release -p pc-harness --test scheduler_ab scheduler_engine_wall_times -- --ignored --nocapture
 # DOS sessions and their final console screens (requires fetched fixtures):
-UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_interactive_golden -- --ignored --nocapture
-UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_write_golden -- --ignored --nocapture
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test dos_interactive_golden -- --ignored --nocapture
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test dos_write_golden -- --ignored --nocapture
 # FreeDOS lists and types a B: floppy built by media create --add, then enters a
 # two-disk --split set with CD and rebuilds it with XCOPY:
 UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test media_files_golden -- --ignored --nocapture
 # FreeDOS boots A: with the open AT BIOS and XT+ ROM, then lists readonly C:
-UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test ide_freedos_golden -- --ignored --nocapture
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test ide_freedos_golden -- --ignored --nocapture
 # Open AT protected-mode test floppy: INT 15h 88h/87h, PM entry, 8042/triple-fault resets, A20 (design/at-pm-test.md)
-UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test at_pm_test_golden -- --include-ignored --nocapture
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test at_pm_test_golden -- --include-ignored --nocapture
 cargo test -p devices                        # one crate's tests
 cargo build --offline -p window --bin unemupc
 cargo run --offline -p window --bin unemupc # lists machines/, selects at-freedos.toml
 cargo run --offline -p window --bin unemupc -- --machine machines/local.toml --allow-unlisted-firmware
 cargo tree --offline -i window               # window is a leaf frontend
 ```
+
+The emulation goldens (BIOS POST, FreeDOS boots and sessions, floppy, IDE,
+VGA, EMS, the sound cards, the scheduler A/B tests) live in
+`crates/pc-harness/tests/`, beside the machine runners they drive, with the
+test support other crates include by `#[path]` in
+`crates/pc-harness/tests/support/`: run them with `-p pc-harness`. The
+goldens that need the command line, the `upcli` binary or the image store
+(`at_games`, `boot_sector_golden`, `firmware_catalogue`,
+`freedos_install_golden`, `ide_journal_golden`, `machine_freedos_golden`,
+`media_files_golden`, `timing_adoption`) and the command tests stay in
+`crates/cli/tests/`: run them with `-p cli`.
 
 Ordinary tests and ignored goldens share compiled artifacts because both are
 `cargo test` runs in the same profile. The default `test` profile inherits the
@@ -1358,7 +1369,7 @@ file in the tree widens the plan, and one that no rule knows selects
 everything, so keep logs and scratch files outside the repository. Files
 outside the crates map to the crates that read them: shipped machine files,
 fixture scripts and pins under `vendor/`, the test support that several
-crates include with `#[path]` from `crates/cli/tests/support/`, the
+crates include with `#[path]` from `crates/pc-harness/tests/support/`, the
 repository's `assets/`, the approved mock-ups and the recipe corpus. Every crate that depends
 on a changed crate (normal, build or dev dependency, from `cargo metadata
 --no-deps`) is affected too. The root `Cargo.toml`, `Cargo.lock`, the flake
@@ -1382,7 +1393,7 @@ and the `user_rom_` name prefix; no test attribute changes for them:
 | Tier | Runs | Chosen |
 | --- | --- | --- |
 | fast | the affected crates' tests that are not ignored, plus some ignored ones by name (below) | by default |
-| goldens | plus every ignored test except `user_rom_*` | automatically when an emulation crate (`assembly`, `audio`, `bus`, `chipset`, `cpu`, `device`, `devices`, `machine`, `machine-file`, `media`, `testkit`, `video`), the CLI's machine runners (`crates/cli/src/{lib,command,create}.rs`), a shipped machine file, a fixture under `vendor/`, the shared golden test support, the workspace manifest, the lock file, the toolchain, a `[patch]` override or a path no rule knows changed; or `--tier goldens` |
+| goldens | plus every ignored test except `user_rom_*` | automatically when an emulation crate (`assembly`, `audio`, `bus`, `chipset`, `cpu`, `device`, `devices`, `machine`, `machine-file`, `media`, `testkit`, `video`), the machine runners (`crates/pc-harness/src/`), the command module the front-end goldens drive (`crates/cli/src/command.rs`), the disk builder (`crates/pc-image/src/media_create.rs`), a shipped machine file, a fixture under `vendor/`, the shared golden test support, the workspace manifest, the lock file, the toolchain, a `[patch]` override or a path no rule knows changed; or `--tier goldens` |
 | user-roms | auto plus the ignored `user_rom_*` tests | `--tier user-roms`, with `UNEMUPC_USER_ROMS_DIR` set |
 | all | goldens and user-ROM tests | `--tier all`; before a release with `--all` |
 
@@ -1393,8 +1404,11 @@ affected crate that name a changed crate as `crate_name::` (an `image-store`
 or `pc-image` change runs `machine_freedos_golden`). `--tier fast` turns
 that off too. A crate in the affected set only through its dependencies does
 not select the goldens: an `image-store` change runs the fast tests of
-`image-store`, `image-registry`, `machine-file`, `pc-image`, `cli` and
-`window`, and the ignored tests that name `image_store::`. The goldens need
+`image-store`, `image-registry`, `machine-file`, `pc-image`, `pc-harness`,
+`platforms`, `cli` and `window`, and the ignored tests that name
+`image_store::`. A change to the command line alone (`crates/cli/src/image.rs`,
+say) runs `cli`'s own tests and, by name, the seven ignored tests of its
+front-end goldens; the emulation goldens in `pc-harness` are not rebuilt. The goldens need
 the fetched fixtures; the bead gate sets `UNEMUPC_REQUIRE_FIXTURES=1` so a
 missing one fails instead of skipping.
 
@@ -1839,7 +1853,7 @@ TODO-MEASURE sentinels until a new local run. See
 `design/compatibility-diagnostics.md` §3. Run only the Landmark tests with:
 
 ```sh
-cargo test --offline -p cli --test landmark -- --ignored user_rom_landmark_at_real_mode_prefix --nocapture
+cargo test --offline -p pc-harness --test landmark -- --ignored user_rom_landmark_at_real_mode_prefix --nocapture
 ```
 
 ```sh
@@ -1901,7 +1915,7 @@ upstream paths, and host-free metadata; the `goldens` gate runs it with
 `UNEMUPC_REQUIRE_FIXTURES=1`, so a missing archive fails there:
 
 ```sh
-UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test media_fixtures source_archive -- --include-ignored
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test media_fixtures source_archive -- --include-ignored
 ```
 
 The XTIDE Universal BIOS option-ROM fixtures:
@@ -1926,7 +1940,7 @@ devShell) from the fork's public repository,
 vendor/vgabios/fetch.sh                        # vgabios-std.bin and int10-probe-1200.img
 UNEMU_VGABIOS_CHECKOUT=../vgabios vendor/vgabios/fetch.sh   # pinned revision from a local clone
 UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p assembly --lib open_vga
-cargo test --offline -p cli --test open_vga_golden -- --include-ignored
+cargo test --offline -p pc-harness --test open_vga_golden -- --include-ignored
 ```
 
 The script builds release `v0.9d-unemu.1` at its pinned revision, read
@@ -1955,7 +1969,7 @@ fork of `skiselev/8088_bios`, renamed from `unemu-at-bios`):
 vendor/unemu-at-bios/fetch.sh                  # bios-unemu-at.bin and its source archive
 UNEMU_AT_BIOS_CHECKOUT=../at-bios vendor/unemu-at-bios/fetch.sh   # pinned revision from a local clone
 UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p assembly --lib unemu_at_bios
-UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline --release -p cli --test xms_warm_boot_golden -- --ignored --nocapture
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline --release -p pc-harness --test xms_warm_boot_golden -- --ignored --nocapture
 ```
 
 The restart golden `xms_warm_boot_golden` boots the pinned ROM; with

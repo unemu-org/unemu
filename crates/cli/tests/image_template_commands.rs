@@ -4,7 +4,7 @@
 //! namespace, a POST of the open-at template, and `image media import`
 //! reproducing the installation sets the unemu-media repository publishes;
 //! machine-images §5.5. Nothing here reaches a network registry.
-#[path = "support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
 use image_registry::{guard::Redistribution, Reference, RegistryEntry, DEFAULT_REGISTRY};

@@ -7,7 +7,7 @@ use assembly::*;
 use cpu::Cpu;
 use device::ByteStreamKind;
 
-#[path = "../../cli/tests/support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
 fn rom() -> Vec<u8> {

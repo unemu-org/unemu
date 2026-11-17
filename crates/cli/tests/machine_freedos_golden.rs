@@ -17,9 +17,9 @@ use std::{
 use video::Frame;
 
 #[allow(dead_code)]
-#[path = "support/fat12.rs"]
+#[path = "../../pc-harness/tests/support/fat12.rs"]
 mod fat12;
-#[path = "support/fixtures.rs"]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
 struct Temp(PathBuf);
@@ -87,13 +87,13 @@ fn session(store: &image_store::Store, id: &str, command: &str) -> String {
     let keyboard_index = assembled.device_index[&DeviceId::Keyboard];
     let policy = assembly::RunPolicy {
         retired_cap: Some(100_000_000),
-        idle_limit: Some(cli::BIOS_IDLE_LIMIT),
+        idle_limit: Some(pc_harness::BIOS_IDLE_LIMIT),
         stop: assembly::StopCondition::PromptThen {
             console: assembly::ConsoleProbe {
                 device: DeviceId::Mda,
             },
-            needle: cli::DOS_DATE_PROMPT.into(),
-            poll_step: cli::DOS_INTERACTIVE_POLL_STEP,
+            needle: pc_harness::DOS_DATE_PROMPT.into(),
+            poll_step: pc_harness::DOS_INTERACTIVE_POLL_STEP,
             then_budget: 10_000_000,
         },
         stimuli: vec![assembly::KeyboardStimulus {
