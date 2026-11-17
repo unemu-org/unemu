@@ -23,7 +23,7 @@ use std::{
 };
 
 const ENTRY_ID: &str = "landmark-rom-post-at-1.2.0";
-const CPU_REV: &str = "ae12d43e7ec21dbed3e6c128a63c566a428a3054";
+const CPU_REV: &str = "cf32ec2ea7426da1cb90f8e96f67a1f45b73a8da";
 const STEP_BUDGET: u64 = 30_000_000;
 // Historical Application Real16 prefix after the PIT refresh calibration.
 const REAL16_GOLDEN_RETIRED: u64 = 15_785_137;
@@ -522,7 +522,9 @@ fn landmark_machine_file_preserves_absolute_parts_and_preset_settings() {
 
 #[test]
 fn landmark_invalid_opcode_delivers_real_mode_offset_through_ivt() {
-    let mut assembled = synthetic_stop_machine(&[0x0F, 0x05]);
+    // 0F FF is undefined on the 80286 (Intel 80286 Programmer's Reference
+    // Manual, the invalid-opcode exception, interrupt 6). 0F 05 is not: it is LOADALL.
+    let mut assembled = synthetic_stop_machine(&[0x0F, 0xFF]);
     let result = assembled.run_session(&run_policy(8));
     assert_synthetic_ud(&assembled, result);
     assert_eq!(assembled.machine.cpu().retired(), 2);
@@ -531,7 +533,7 @@ fn landmark_invalid_opcode_delivers_real_mode_offset_through_ivt() {
 #[test]
 fn landmark_unexpected_stop_reports_variant_location_and_counts() {
     for (program, expected_result, count) in [
-        (&[0x90, 0x0F, 0x05][..], "Ok(Halted)", 3),
+        (&[0x90, 0x0F, 0xFF][..], "Ok(Halted)", 3),
         (&[0xEB, 0xFE][..], "Ok(RetiredCapReached)", 8),
     ] {
         let mut assembled = synthetic_stop_machine(program);

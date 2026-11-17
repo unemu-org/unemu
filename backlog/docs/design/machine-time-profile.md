@@ -8,7 +8,7 @@ spike; no guest behaviour or scheduler change is proposed.
 
 ## String instruction accounting
 
-The current CPU pin is `ae12d43e7ec21dbed3e6c128a63c566a428a3054`.
+The current CPU pin is `cf32ec2ea7426da1cb90f8e96f67a1f45b73a8da`.
 The profiling tables below retain the revisions on which they were measured;
 they are historical measurements, not new measurements of this pin.
 

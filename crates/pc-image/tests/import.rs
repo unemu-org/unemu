@@ -442,7 +442,7 @@ fn short_open_bios_checkpoint_matches_machine_file() {
         )
     };
     assert!(
-        include_str!("../../../Cargo.lock").contains("ae12d43e7ec21dbed3e6c128a63c566a428a3054")
+        include_str!("../../../Cargo.lock").contains("cf32ec2ea7426da1cb90f8e96f67a1f45b73a8da")
     );
     let reference = checkpoint(&original);
     assert_eq!(reference.0, machine::RunOutcome::RetiredCapReached);

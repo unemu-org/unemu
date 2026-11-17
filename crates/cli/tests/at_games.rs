@@ -19,7 +19,7 @@ const OPTIONS: AssemblyOptions = AssemblyOptions {
 #[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
 
-const CPU_REV: &str = "ae12d43e7ec21dbed3e6c128a63c566a428a3054";
+const CPU_REV: &str = "cf32ec2ea7426da1cb90f8e96f67a1f45b73a8da";
 // These values moved when the open profile replaced its MDA console with the
 // VGA card and open video BIOS, and when the test began sampling POST. They
 // moved again (from 15,241,264 and 41ff081e…) when the open AT BIOS began

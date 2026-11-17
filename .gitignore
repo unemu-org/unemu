@@ -90,6 +90,10 @@ target/
 # vendor/at-pm-test/build.sh.
 /vendor/at-pm-test/build/
 /vendor/at-pm-test/at-pm-test-1200.img
+# Open AT LOADALL test floppy: assembled from the committed source by
+# vendor/at-loadall-test/build.sh.
+/vendor/at-loadall-test/build/
+/vendor/at-loadall-test/at-loadall-test-1200.img
 
 # repoctx local index (generated)
 .repoctx/

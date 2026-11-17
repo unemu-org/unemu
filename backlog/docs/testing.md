@@ -52,7 +52,10 @@ gate builds it. The first is the open AT protected-mode return test
 ([`design/at-pm-test.md`](design/at-pm-test.md)): 80286 protected-mode entry,
 the 8042 and triple-fault returns through the CMOS shutdown byte, A20
 through the 8042 and the BIOS's INT 15h AH=88h and AH=87h, reported line
-by line on COM1.
+by line on COM1. The open AT LOADALL test
+([`design/at-loadall-test.md`](design/at-loadall-test.md)) moves a block
+above 1 MiB and back from real mode through the 80286 LOADALL, as a 286
+extended-memory manager does.
 
 ### 5. Golden / trace tests
 

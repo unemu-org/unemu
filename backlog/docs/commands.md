@@ -1050,6 +1050,8 @@ UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test media_files_golden
 UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test ide_freedos_golden -- --ignored --nocapture
 # Open AT protected-mode test floppy: INT 15h 88h/87h, PM entry, 8042/triple-fault resets, A20 (design/at-pm-test.md)
 UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test at_pm_test_golden -- --include-ignored --nocapture
+# Open AT LOADALL test floppy: real-mode moves above 1 MiB through LOADALL caches (design/at-loadall-test.md)
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test at_loadall_test_golden -- --include-ignored --nocapture
 cargo test -p devices                        # one crate's tests
 cargo build --offline -p window --bin unemupc
 cargo run --offline -p window --bin unemupc # lists machines/, selects at-freedos.toml
@@ -1726,7 +1728,7 @@ bash scripts/ci-gate.sh guard                    # publication guard, crate-boun
 bash scripts/ci-gate.sh clippy
 bash scripts/ci-gate.sh deny                     # advisories, licences, bans, sources; all features
 bash scripts/ci-gate.sh tests
-bash scripts/ci-gate.sh fixtures                 # build/hash-check BIOSes, FreeDOS, test386, XTIDE, HDD, VGA BIOS, open AT BIOS, at-pm-test, source archives
+bash scripts/ci-gate.sh fixtures                 # build/hash-check BIOSes, FreeDOS, test386, XTIDE, HDD, VGA BIOS, open AT BIOS, at-pm-test, at-loadall-test, source archives
 bash scripts/ci-gate.sh goldens                  # slow tests in the test profile; requires fixtures
 ```
 
@@ -1863,14 +1865,14 @@ UNEMUPC_REQUIRE_USER_ROMS=1 bash scripts/ci-gate.sh user-roms
 See `vendor/user-roms/README.md` for catalogue hashes and the proprietary golden rule.
 
 The CI `fixtures` gate runs the Kiselev, FreeDOS, test386, XTIDE, hard-disk,
-open VGA BIOS, open AT BIOS and at-pm-test scripts below; each checks pinned
+open VGA BIOS, open AT BIOS, at-pm-test and at-loadall-test scripts below; each checks pinned
 output SHA-256 hashes. The gate prints `== fixtures: <script>` before each one
 and stops at the first failure, so the last header names the failing script.
 Downloads use the devShell's `curl` and verify against its pinned CA bundle,
 not the host's (see [`dev-setup.md`](dev-setup.md#stack-specific-toolchain-rust)).
 All but the two Nix-built BIOSes rebuild offline when
 their pinned source commits and release archives are cached (Nix caches the
-VGA and AT BIOS sources and store paths); `vendor/at-pm-test/build.sh` always builds offline, assembling the
+VGA and AT BIOS sources and store paths); `vendor/at-pm-test/build.sh` and `vendor/at-loadall-test/build.sh` always build offline, each assembling its
 committed program source with the devShell's nasm into a 1.2M boot floppy.
 FreeDOS also fixes the volume serial (`2895-9853`), label (`FREEDOS`) and all filesystem
 timestamps (1980-01-01 UTC). A hash mismatch requires checking the sources and

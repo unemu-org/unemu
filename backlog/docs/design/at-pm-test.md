@@ -16,6 +16,10 @@ set of machine paths, and this program exercises the same paths:
   use instead of its own protected-mode code: INT 15h AH=88h (size) and
   AH=87h (block move).
 
+The undocumented LOADALL, the other way such a manager reaches extended
+memory on an 80286, has its own program:
+[`at-loadall-test.md`](at-loadall-test.md).
+
 Build and fixture details are in
 [`vendor/at-pm-test/README.md`](../../../vendor/at-pm-test/README.md), the
 goldens in `crates/pc-harness/tests/at_pm_test_golden.rs`, and the commands in

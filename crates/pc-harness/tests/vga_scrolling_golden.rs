@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Synthetic VGA scrolling ROM: IBM VGA/XGA Technical Reference Manual,
 //! Graphics Modes, CRTC Start Address and Attribute Controller PEL Panning.
-//! Frame hashes pin x86jit ae12d43e7ec21dbed3e6c128a63c566a428a3054.
+//! Frame hashes pin x86jit cf32ec2ea7426da1cb90f8e96f67a1f45b73a8da.
 
 use assembly::{
     AssemblyOptions, DeviceId, ObservationPolicy, ObservationRequest, OutputKind, RunPolicy,
 };
 
-const CPU_REV: &str = "ae12d43e7ec21dbed3e6c128a63c566a428a3054";
+const CPU_REV: &str = "cf32ec2ea7426da1cb90f8e96f67a1f45b73a8da";
 
 const FRAME_HASHES: [&str; 7] = [
     "542e315e0ac2a357e8debffd2636765cb37d50542f923826656b76a7e5f22a1b",

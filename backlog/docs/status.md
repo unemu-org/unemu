@@ -5,6 +5,21 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — The 80286 executes LOADALL; the CPU pin moves to
+  `cf32ec2e`:** x86jit `cf32ec2e` runs the undocumented LOADALL (0F 05) on
+  its 80286 model, which HIMEM.SYS 3.x uses to copy extended memory from
+  real mode; the previous pin raised interrupt 6 there, so DOS stopped with
+  "Invalid Opcode" at the first XMS move. Cargo.toml, Cargo.lock (only
+  x86jit-core moves) and every golden's CPU revision follow. A new open
+  floppy, `vendor/at-loadall-test` (design/at-loadall-test.md), moves a
+  block to `150000h` and back through LOADALL-loaded ES and DS caches and
+  checks the guard at their A20 and selector alias. MEASURED with the open
+  AT BIOS: every line passes, 6,404,154 retired instructions; at the
+  previous pin the same image reports `loadall write FAIL 0005` and
+  `loadall read FAIL 0015`. Every other golden keeps its outcome and
+  retired count. Three synthetic-firmware tests (`firmware_catalogue` and
+  two in `landmark`) used 0F 05 as an undefined 286 opcode; they now use
+  0F FF.
 - **2026-11-17 — Machine runners and emulation goldens out of the
   command-line crate:** a new `pc-harness` crate (layer `pc`) holds what
   was `cli`'s library: the machine runners, the hand-encoded guest

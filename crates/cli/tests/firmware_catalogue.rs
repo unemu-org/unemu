@@ -92,8 +92,10 @@ fn legacy_post_runner_checks_the_catalogue_without_changing_the_bare_rig() {
 fn bios_invalid_286_instruction_reaches_its_ivt_handler_and_halts() {
     let rom = RomFile::program("invalid-opcode", &[0xEA, 0, 0x81, 0, 0xF0]);
     let mut bytes = std::fs::read(&rom.0).unwrap();
+    // 0F FF is undefined on the 80286 (Intel 80286 Programmer's Reference
+    // Manual, the invalid-opcode exception, interrupt 6). 0F 05 is not: it is LOADALL.
     bytes[0x100..0x10F].copy_from_slice(&[
-        0xFA, 0xC7, 0x06, 0x18, 0, 0, 0x82, 0xC7, 0x06, 0x1A, 0, 0, 0xF0, 0x0F, 0x05,
+        0xFA, 0xC7, 0x06, 0x18, 0, 0, 0x82, 0xC7, 0x06, 0x1A, 0, 0, 0xF0, 0x0F, 0xFF,
     ]);
     bytes[0x200..0x208].copy_from_slice(&[0xFA, 0xBA, 0xF8, 3, 0xB0, b'U', 0xEE, 0xF4]);
     std::fs::write(&rom.0, bytes).unwrap();

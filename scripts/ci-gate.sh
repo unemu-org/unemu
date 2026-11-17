@@ -73,6 +73,8 @@ case "$step" in
             bash vendor/unemu-at-bios/fetch.sh
             echo "== fixtures: vendor/at-pm-test/build.sh"
             bash vendor/at-pm-test/build.sh
+            echo "== fixtures: vendor/at-loadall-test/build.sh"
+            bash vendor/at-loadall-test/build.sh
             echo "== fixtures: vendor/xtide-universal-bios/fetch.sh"
             bash vendor/xtide-universal-bios/fetch.sh
             echo "== fixtures: vendor/freedos/fetch-floppy-1.4.sh"
