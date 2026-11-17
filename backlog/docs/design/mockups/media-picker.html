@@ -277,6 +277,21 @@ kbd { font: 10.5px var(--code); padding: 0 3px; box-shadow: var(--thin-in); back
 .xcopy { display: block; margin: 4px 0; padding: 4px 6px; background: var(--field); box-shadow: var(--thin-in); border-radius: var(--radius); }
 .check.later > span { color: var(--muted); }
 
+/* Revision 3: a drive's Catalogue submenu, in the Media menu and a drive chip's menu */
+.subwrap { position: relative; }
+.menu-panel [data-sub][aria-expanded="true"], .popmenu [data-sub][aria-expanded="true"] { background: var(--sel); color: var(--sel-ink); }
+.menu-panel [data-sub][aria-expanded="true"] .mk { color: var(--ink); }
+.sub-why { color: var(--muted); font-size: 11px; }
+.submenu { position: absolute; z-index: 21; top: -3px; left: calc(100% + 3px); min-width: 250px; max-width: 360px; padding: 3px; background: var(--face); color: var(--ink); box-shadow: var(--out), 3px 3px #0003; border-radius: var(--radius); }
+.submenu.left { left: auto; right: calc(100% + 3px); }
+.popmenu.up .submenu { top: auto; bottom: -3px; }
+.submenu.inline { position: static; margin: 1px 0 3px 14px; box-shadow: var(--thin-in); }
+.menu-panel .submenu button, .popmenu .submenu button { grid-template-columns: 12px minmax(0, 1fr) auto; }
+.submenu .dot { font-size: 12px; text-align: center; }
+.menu-panel .key .arr, .popmenu .key .arr { font-size: 16px; line-height: 1; opacity: 1; }
+.submenu .where { font-size: 11px; opacity: .8; white-space: nowrap; }
+@media (max-width: 640px) { .submenu, .submenu.left { position: static; margin: 1px 0 3px 14px; box-shadow: var(--thin-in); } }
+
 @media (max-width: 980px) { .pk-body { grid-template-columns: 160px minmax(0, 1fr); height: auto; } .pk-detail { grid-column: 1 / -1; max-height: none; } .pk-results { max-height: 340px; } }
 @media (max-width: 860px) {
   .lists { grid-template-columns: 1fr; }
@@ -311,7 +326,7 @@ kbd { font: 10.5px var(--code); padding: 0 3px; box-shadow: var(--thin-in); back
 
 <div class="note">
   <div>
-    <p><strong>Design mock-up — revision 2, for approval.</strong> Revision 1 was approved by the maintainer on 2026-11-15, all “please confirm” items included, and stays as it was: one media picker for every Insert…, the Installation media collection’s Insert into… and Add to machine…, and pending inserts on stopped and halted machines. Revision 2 adds <strong>Create from files…</strong>: many DOS games, from itch.io for example, come as loose EXE files and folders, and the picker packs them into diskette images instead of a host tool. It builds on the approved machines, main-window and installation media mock-ups; everything not shown here stays as they show it. Sample data only: sizes, digests, dates and the host files and folders are illustrative, and actions are previews. Nothing runs, reads a file or contacts a registry.</p>
+    <p><strong>Design mock-up — revision 3, approved 2026-11-17.</strong> Revision 1 was approved by the maintainer on 2026-11-15, all “please confirm” items included, and stays as it was: one media picker for every Insert…, the Installation media collection’s Insert into… and Add to machine…, and pending inserts on stopped and halted machines. Revision 2 adds <strong>Create from files…</strong>: many DOS games, from itch.io for example, come as loose EXE files and folders, and the picker packs them into diskette images instead of a host tool; the maintainer’s decisions on it, of 2026-11-17, are at the bottom. Revision 3 adds a <strong>Catalogue</strong> submenu under each drive in the Media menu and a drive chip’s menu, so every disk of a split set is one click away instead of several Next disks or three clicks through Insert…; its notes and the maintainer’s decisions are at the bottom too. It builds on the approved machines, main-window and installation media mock-ups; everything not shown here stays as they show it. Sample data only: sizes, digests, dates and the host files and folders are illustrative, and actions are previews. Nothing runs, reads a file or contacts a registry.</p>
     <p class="rev-h">Changes in revision 2</p>
     <ul class="rev">
       <li><strong>Create from files…</strong> in the picker’s footer, beside <em>Browse for an image file…</em>. It turns the picker into its Create view; the Into row (machine, drive, when) stays.</li>
@@ -382,6 +397,11 @@ kbd { font: 10.5px var(--code); padding: 0 3px; box-shadow: var(--thin-in); back
   <button type="button" data-demo="ck-azuramon">azuramon (561 files)</button>
   <button type="button" data-demo="ck-nightfall">nightfall (one file too large)</button>
   <button type="button" data-demo="ck-empty">empty</button>
+  <span>· Catalogue submenu (revision 3):</span>
+  <button type="button" data-catdemo="open">Media › B: › Catalogue</button>
+  <button type="button" data-catdemo="pending">Stopped: AZURAMON 5 of 10 at Start</button>
+  <button type="button" data-catdemo="long">18 disks in B:</button>
+  <button type="button" data-catdemo="chip">Drive chip B: › Catalogue</button>
 </div>
 
 <main class="app" id="app">
@@ -453,6 +473,38 @@ kbd { font: 10.5px var(--code); padding: 0 3px; box-shadow: var(--thin-in); back
       <li><strong>Entry points:</strong> the picker’s footer, and <em>Create from files…</em> in the Media menu and a drive chip’s menu. Dropping files on the main window or a drive chip comes later.</li>
       <li><strong>A created disk for a stopped machine:</strong> the machine owns the image by its SHA-256 until Start; the library is not needed.</li>
       <li><strong>Split order:</strong> folder order, as drawn.</li>
+    </ol>
+  </div>
+</div>
+
+<div class="lists">
+  <div>
+    <p class="rev-h">Revision 3 — Catalogue submenu</p>
+    <ol>
+      <li><strong>Where.</strong> <em>Catalogue ▸</em> under each floppy drive in the Media menu, after Create from files… and before Next disk, which stays with its keys. A drive chip’s menu has the same item, because it lists the same drive items (recommended; see the questions).</li>
+      <li><strong>What it lists.</strong> The drive’s catalogue in order, under a line with the drive and the count. Names are for reading: a disk of a set by the set’s title and its place, “AZURAMON 3 of 10”, with the disk’s own name after a dash when it says more than its number, “FreeDOS 1 of 2 — Boot disk”; a one-disk set by its title, “Keen 4”; a browsed image file by its name.</li>
+      <li><strong>Marks.</strong> ● and “in B:” mark the disk in the drive. On a stopped machine, the disk that goes in at the next Start says “at Start”; a pending disk that is not in the catalogue yet is named under the list.</li>
+      <li><strong>Choosing a disk</strong> does what Insert… › This machine does with it. Running or halted, it goes in now (halted, Ctrl+Alt+Del then boots from A:); stopped, it becomes the drive’s pending insert and replaces another one. Choosing the disk already in the drive takes a pending insert out. Every disk keeps its own write setting, and the status bar says what happened.</li>
+      <li><strong>Disabled, with the reason,</strong> when the catalogue holds one disk or none: “Catalogue · one disk”, “Catalogue · empty”. The tooltip adds that Insert… adds disks.</li>
+      <li><strong>A long catalogue.</strong> Up to 12 disks are listed. Past 12, the submenu shows 12: the disk in the drive (or the pending one), 2 before it and 9 after, because programs ask for the next disks. The heading then says “Disks 2–13 of 18”, and <em>All 18 disks…</em> opens Insert… on This machine with the disk in the drive selected. The menu never scrolls.</li>
+      <li><strong>Keyboard.</strong> No new keys. In the Media menu, or a drive chip’s menu (Tab to the chip, Enter): <kbd>↑</kbd><kbd>↓</kbd> to Catalogue, <kbd>→</kbd> or <kbd>Enter</kbd> opens it on the disk in the drive, <kbd>↑</kbd><kbd>↓</kbd> choose, <kbd>Enter</kbd> puts the disk in, <kbd>←</kbd> or <kbd>Esc</kbd> goes back. So → ↓ Enter puts in the next disk. The mouse opens it on hover or click.</li>
+      <li><strong>Created disks.</strong> A split that Create from files… makes for one machine alone names its disks the same way, “AZURAMON 3 of 10”; revision 2 wrote “AZURAMON — disk 3 of 10”.</li>
+      <li><strong>Sample.</strong> B: of DOS games now holds Keen 4 and the ten AZURAMON disks made from the azuramon folder for that machine alone (Also keep in the library turned off), disk 3 in the drive. A: of DOS games (empty) and of IBM AT with DOS (one disk) show the disabled item. Mock-up controls open the submenu, a pending disk, an 18-disk catalogue and the chip’s menu.</li>
+    </ol>
+    <p class="rev-h">Revision 3 — out of scope</p>
+    <ul>
+      <li>Previous disk, and reordering, renaming or removing disks in a catalogue: a catalogue still changes only through Insert…, Create from files… and Add to machine….</li>
+      <li>Fixed disks and CD-ROM. Machine › Insert media… is unchanged.</li>
+    </ul>
+  </div>
+  <div>
+    <p class="rev-h">Revision 3 — decided by the maintainer (2026-11-17)</p>
+    <ol>
+      <li><strong>The drive chip’s menu</strong> gets the same Catalogue submenu, as drawn.</li>
+      <li><strong>Names:</strong> the drive chip, the Media menu’s drive line, This machine in the picker and the submenu use the same short names; a title that ends in a number takes a middle dot, “Win 3.1 · 1 of 7 — Setup”.</li>
+      <li><strong>The cap:</strong> 12 disks, 2 before the disk in the drive and 9 after, then All N disks…; the menu never scrolls.</li>
+      <li><strong>The disk already in the drive,</strong> chosen on a stopped machine, takes a pending insert out, as Take out again does.</li>
+      <li><strong>No new key:</strong> the menu path is enough; Next disk keeps Ctrl+Alt+F (Shift for B:).</li>
     </ol>
   </div>
 </div>
@@ -574,10 +626,13 @@ const REMOTE = { title: 'Cosmo’s Cosmic Adventure: Episode 1', ver: 'shareware
 const REMOTES = [['registry.unemu.dev', 'default'], ['nas.example', 'private']];
 const set = id => SETS.find(s => s.id === id);
 
+// B: of DOS games holds Keen 4 and a split set: the ten disks Create from
+// files… made from the azuramon folder for this machine alone, disk 3 in the drive.
+const AZURAMON = Array.from({ length: 10 }, (_, k) => ({ label: 'AZURAMON ' + (k + 1) + ' of 10', fmt: '1.44M', write: 'journal' }));
 const MACHINES0 = [
   { id: 'dos-games', name: 'DOS games', image: 'open-at-games:1.1.0', drives: [
       { id: 'A:', fmt: '1.2M', kind: '5.25-inch 1.2M', cat: [], ins: -1, pending: null },
-      { id: 'B:', fmt: '1.44M', kind: '3.5-inch 1.44M', cat: [{ set: 'keen4', disk: 0, write: 'journal' }], ins: 0, pending: null }] },
+      { id: 'B:', fmt: '1.44M', kind: '3.5-inch 1.44M', cat: [{ set: 'keen4', disk: 0, write: 'journal' }].concat(AZURAMON), ins: 3, pending: null }] },
   { id: 'ibm-at-with-dos', name: 'IBM AT with DOS', image: 'ibm-at-dos:1.0.0', drives: [
       { id: 'A:', fmt: '1.2M', kind: '5.25-inch 1.2M', cat: [{ label: 'Blank work disk', fmt: '1.2M', write: 'journal' }], ins: 0, pending: null }] }
 ];
@@ -702,6 +757,7 @@ function driveItems(m, d, withLabel) {
   return (withLabel ? '<div class="drv">' + d.id + ' ' + d.fmt + ' — ' + esc(d.pending ? pendingName(d.pending) + ' (at Start)' : d.ins >= 0 ? entryName(d.cat[d.ins]) : 'empty') + '</div>' : '') +
     '<button type="button" data-act="pick" data-machine="' + m.id + '" data-drive="' + d.id + '"><span>Insert…</span><span class="mk chg">changed</span><span class="key">' + (d.id === 'A:' ? 'Ctrl+Alt+I' : 'Ctrl+Alt+Shift+I') + '</span></button>' +
     '<button type="button" data-act="create" data-machine="' + m.id + '" data-drive="' + d.id + '"><span>Create from files…</span><span class="mk">new</span><span class="key"></span></button>' +
+    catalogueItem(m, d) +
     '<button type="button" data-act="next" data-machine="' + m.id + '" data-drive="' + d.id + '"' + (d.cat.length > 1 && !d.pending ? '' : ' disabled') + '><span>Next disk in catalogue</span><span></span><span class="key">' + (d.id === 'A:' ? 'Ctrl+Alt+F' : 'Ctrl+Alt+Shift+F') + '</span></button>' +
     (d.pending ? '<button type="button" data-act="unpend" data-machine="' + m.id + '" data-drive="' + d.id + '"><span>Take out again (pending)</span><span class="mk">new</span><span class="key"></span></button>'
       : '<button type="button" data-act="eject" data-machine="' + m.id + '" data-drive="' + d.id + '"' + (d.ins >= 0 ? '' : ' disabled') + '><span>Eject ' + d.id + '</span><span></span><span class="key">' + (d.id === 'A:' ? 'Ctrl+Alt+E' : 'Ctrl+Alt+Shift+E') + '</span></button>') +
@@ -711,13 +767,90 @@ function renderMenus() {
   const m = targetMachine();
   $('mediaMenu').innerHTML = m ? '<div class="for">For ' + esc(m.name) + ' (' + (S.view === 'library' ? 'stopped' : S.view) + ')</div>' + m.drives.map(d => driveItems(m, d, true)).join('<hr>') +
     '<hr><div class="for">Removed: Insert into › Browse / catalogue… and From library… — both are Insert… now. C:, Disk layers… and CD-ROM unchanged.</div>' +
-    '<div class="for">Create from files… is in the picker’s footer, beside Browse for an image file…; it has no menu item of its own.</div>' : '<div class="for">Select a machine</div>';
+    '<div class="for">New in revision 3: Catalogue ▸ under each drive lists its catalogue; a drive chip’s menu has it too.</div>' : '<div class="for">Select a machine</div>';
   $('machineMenu').innerHTML = '<div class="for">For ' + esc(m ? m.name : '—') + '</div>' +
     '<button type="button" data-act="start"' + (S.view === 'library' ? '' : ' disabled') + '><span>Start</span><span></span><span class="key">Enter</span></button>' +
     '<button type="button" data-act="cad"' + (S.view === 'library' ? ' disabled' : '') + '><span>' + (S.view === 'halted' ? 'Reset halted machine' : 'Send Ctrl+Alt+Del') + '</span><span></span><span class="key">Ctrl+Alt+End</span></button>' +
     '<button type="button" data-act="stop"' + (S.view === 'library' ? ' disabled' : '') + '><span>Stop</span><span></span><span class="key">Ctrl+Alt+Q</span></button>' +
     '<div class="for">Other items unchanged</div>';
 }
+
+/* ---------- revision 3: a drive's Catalogue submenu ---------- */
+// A disk is named for reading: its set's title and its place in the set,
+// "AZURAMON 3 of 10", then the disk's own name when it says more than its number.
+function catName(e) {
+  if (!e.set) return e.label;
+  const s = set(e.set), n = s.disks.length;
+  if (n === 1) return s.short;
+  const own = s.disks[e.disk].replace(/^Disk \d+( of \d+)?\s*/i, '').replace(/^\((.*)\)$/, '$1');
+  return s.short + ' ' + (e.disk + 1) + ' of ' + n + (own ? ' — ' + own : '');
+}
+// A menu does not scroll: past CAT_CAP disks the submenu shows a window around
+// the disk in the drive (or the pending one), more after it than before, since
+// programs ask for the next disk, and All N disks… for the rest.
+const CAT_CAP = 12;
+function catPendingAt(d) {
+  const p = d.pending; if (!p) return -1;
+  return d.cat.findIndex(e => p.entry ? JSON.stringify(e) === JSON.stringify(p.entry) : e.set === p.set && e.disk === p.disk);
+}
+function catWindow(d) {
+  const n = d.cat.length; if (n <= CAT_CAP) return [0, n];
+  const p = catPendingAt(d), at = p >= 0 ? p : Math.max(d.ins, 0);
+  const from = Math.max(0, Math.min(at - 2, n - CAT_CAP));
+  return [from, from + CAT_CAP];
+}
+function catalogueItem(m, d) {
+  const n = d.cat.length, attrs = ' data-machine="' + m.id + '" data-drive="' + d.id + '"';
+  if (n < 2) return '<button type="button" disabled title="' + esc(n ? 'Only one disk in ' + d.id + '’s catalogue. Insert… adds more.' : d.id + '’s catalogue is empty. Insert… and Create from files… add disks to it.') + '"><span>Catalogue <span class="sub-why">· ' + (n ? 'one disk' : 'empty') + '</span></span><span class="mk">new</span><span class="key"><span class="arr">▸</span></span></button>';
+  const [from, to] = catWindow(d), pAt = catPendingAt(d), capped = to - from < n;
+  let rows = '<div class="for">' + (capped ? 'Disks ' + (from + 1) + '–' + to + ' of ' + n + ' in ' + d.id + '’s catalogue' : d.id + '’s catalogue, in order · ' + n + ' disks') + '</div>';
+  for (let i = from; i < to; i++) {
+    const here = i === d.ins;
+    rows += '<button type="button" role="menuitemradio" aria-checked="' + here + '" data-act="catpick" data-idx="' + i + '"' + attrs + '><span class="dot" aria-hidden="true">' + (here ? '●' : '') + '</span><span>' + esc(catName(d.cat[i])) + '</span>' +
+      (i === pAt ? '<span class="mk chg">at Start</span>' : here ? '<span class="where">in ' + d.id + '</span>' : '<span></span>') + '</button>';
+  }
+  if (d.pending && pAt < 0) rows += '<div class="for">At Start: ' + esc(pendingName(d.pending)) + ', which joins the catalogue then.</div>';
+  if (capped) rows += '<hr><button type="button" role="menuitem" data-act="catall"' + attrs + ' title="Opens Insert… on This machine, with the disk in ' + d.id + ' selected"><span></span><span>All ' + n + ' disks…</span><span class="where">Insert… › This machine</span></button>';
+  return '<div class="subwrap"><button type="button" data-sub aria-haspopup="menu" aria-expanded="false"' + attrs + '><span>Catalogue</span><span class="mk">new</span><span class="key"><span class="arr">▸</span></span></button>' +
+    '<div class="submenu" role="menu" aria-label="' + d.id + ' catalogue" hidden>' + rows + '</div></div>';
+}
+// Choosing a disk does what Insert… › This machine does with it.
+function catPick(m, d, i) {
+  const e = d.cat[i], name = catName(e);
+  if (isLive(m)) { d.ins = i; d.pending = null; S.flash = d.id + ' now holds ' + name + '.' + (S.view === 'halted' && d.id === 'A:' ? ' Press Ctrl+Alt+Del to boot from it.' : ''); }
+  else if (i === d.ins) { S.flash = d.pending ? 'Took the pending disk out; ' + name + ' stays in ' + d.id + '.' : name + ' is in ' + d.id + ' already.'; d.pending = null; }
+  else { d.pending = { set: e.set || null, disk: e.disk || 0, all: false, write: e.write, entry: clone(e) }; S.flash = name + ' goes into ' + d.id + ' of ' + m.name + ' at its next Start.'; }
+  render();
+}
+function catAll(m, d) {
+  openPicker(m.id, d.id);
+  P.source = 'machine'; P.sel = d.ins >= 0 ? 'entry:' + d.id + '|' + d.ins : null;
+  pkRender();
+  const r = $('pkResults').querySelector('.res[aria-selected="true"]'); if (r) r.scrollIntoView({ block: 'nearest' });
+  $('pkResults').focus();
+}
+// One submenu open at a time. It opens beside its menu, on the side with room,
+// or inside the menu when neither side has room.
+function openSub(btn, how) {
+  const sub = btn.parentElement.querySelector('.submenu');
+  document.querySelectorAll('.submenu:not([hidden])').forEach(s => { if (s !== sub) closeSub(s); });
+  sub.hidden = false; sub.dataset.how = how; btn.setAttribute('aria-expanded', 'true');
+  sub.classList.remove('left', 'inline');
+  if (!window.matchMedia('(max-width: 640px)').matches) {
+    const vw = document.documentElement.clientWidth;
+    if (sub.getBoundingClientRect().right > vw - 4) {
+      sub.classList.add('left');
+      if (sub.getBoundingClientRect().left < 4) { sub.classList.remove('left'); sub.classList.add('inline'); }
+    }
+  }
+  if (how === 'key') { const f = sub.querySelector('[aria-checked="true"]') || sub.querySelector('button:not(:disabled)'); if (f) f.focus(); }
+}
+function closeSub(sub, refocus) {
+  sub.hidden = true; delete sub.dataset.how;
+  const b = sub.parentElement.querySelector(':scope > [data-sub]');
+  if (b) { b.setAttribute('aria-expanded', 'false'); if (refocus) b.focus(); }
+}
+function closeSubs() { document.querySelectorAll('.submenu:not([hidden])').forEach(s => closeSub(s)); }
 function renderToolbar() {
   const m = targetMachine();
   $('tbStart').disabled = S.view !== 'library' || !m; $('tbStop').disabled = S.view === 'library'; $('tbCad').disabled = S.view === 'library';
@@ -1239,7 +1372,7 @@ function ckCreate() {
     if (live) { putSet(d, s, n > 1, C.write); d.ins = d.cat.findIndex(e => e.set === s.id && e.disk === 0); if (d.ins < 0) { d.cat.push({ set: s.id, disk: 0, write: C.write }); d.ins = d.cat.length - 1; } d.pending = null; }
     else d.pending = { set: s.id, disk: 0, all: n > 1, write: C.write };
   } else {
-    const entries = Array.from({ length: n }, (_, k) => ({ label: title + (n > 1 ? ' — disk ' + (k + 1) + ' of ' + n : ''), fmt: C.fmt, write: C.write }));
+    const entries = Array.from({ length: n }, (_, k) => ({ label: title + (n > 1 ? ' ' + (k + 1) + ' of ' + n : ''), fmt: C.fmt, write: C.write }));
     if (live) { entries.forEach(e => d.cat.push(e)); d.ins = d.cat.length - n; d.pending = null; }
     else d.pending = { entry: entries[0], more: entries, write: C.write };
   }
@@ -1315,6 +1448,8 @@ function act(a, b) {
     case 'unpend': d.pending = null; S.flash = 'Took the pending disk out of ' + d.id + ' of ' + m.name + '.'; return render();
     case 'eject': d.ins = -1; S.flash = 'Ejected ' + d.id + '.'; return render();
     case 'next': d.ins = (d.ins + 1) % d.cat.length; S.flash = d.id + ' now holds ' + entryName(d.cat[d.ins]) + '.'; return render();
+    case 'catpick': return catPick(m, d, +b.dataset.idx);
+    case 'catall': return catAll(m, d);
     case 'start': return startMachine(m);
     case 'stop': S.view = 'library'; S.flash = 'Stopped ' + mach(S.run).name + '.'; S.run = null; return render();
     case 'cad': if (S.view === 'halted') { const a1 = drv(mach(S.run), 'A:'); if (a1.ins >= 0) { S.view = 'running'; S.flash = 'POST ran again and booted from ' + entryName(a1.cat[a1.ins]) + '.'; } else S.flash = 'No boot disk in A: — the machine halts again.'; } return render();
@@ -1340,17 +1475,60 @@ document.addEventListener('click', e => {
   if (!e.target.closest('#chipMenu') && !e.target.closest('[data-chip]')) $('chipMenu').hidden = true;
   if (!e.target.closest('#intoMenu') && !e.target.closest('#insertInto') && $('intoMenu')) $('intoMenu').hidden = true;
   if (!e.target.closest('#ckHostMenu') && !e.target.closest('#ckAddFiles') && !e.target.closest('#ckAddFolder')) $('ckHostMenu').hidden = true;
+  if (!e.target.closest('.subwrap')) closeSubs();
+  // Catalogue ▸ opens on click too; a click keeps a submenu the mouse opened.
+  const sb = e.target.closest('[data-sub]');
+  if (sb) { const s = sb.parentElement.querySelector('.submenu'); if (s.hidden) openSub(sb, 'click'); else if (s.dataset.how === 'hover') s.dataset.how = 'click'; else closeSub(s); return; }
   const b = e.target.closest('[data-act]'); if (!b || b.disabled) return;
   closeMenus(); $('chipMenu').hidden = true; act(b.dataset.act, b);
 });
-$('chips').addEventListener('click', e => {
-  const c = e.target.closest('[data-chip]'); if (!c) return;
-  e.stopPropagation();
+function openChipMenu(c) {
   const menu = $('chipMenu'), m = targetMachine(), d = drv(m, c.dataset.chip);
-  if (!menu.hidden && menu.dataset.drive === d.id) { menu.hidden = true; return; }
   menu.innerHTML = '<div class="for">Drive ' + d.id + ' (' + d.kind + ') — ' + esc(m.name) + '</div>' + driveItems(m, d, false);
   menu.dataset.drive = d.id; menu.hidden = false;
   menu.style.left = Math.max(0, Math.min(c.offsetLeft, $('statusbar').clientWidth - menu.offsetWidth)) + 'px';
+}
+$('chips').addEventListener('click', e => {
+  const c = e.target.closest('[data-chip]'); if (!c) return;
+  e.stopPropagation();
+  const menu = $('chipMenu');
+  if (!menu.hidden && menu.dataset.drive === c.dataset.chip) { menu.hidden = true; return; }
+  openChipMenu(c);
+});
+// The mouse opens Catalogue ▸ on hover; hovering another item of the same menu
+// closes a submenu the mouse opened.
+document.addEventListener('mouseover', e => {
+  const t = e.target instanceof Element ? e.target : null; if (!t) return;
+  const panel = t.closest('.menu-panel, #chipMenu'); if (!panel) return;
+  const w = t.closest('.subwrap');
+  panel.querySelectorAll('.submenu:not([hidden])').forEach(s => { if (s.parentElement !== w && s.dataset.how === 'hover') closeSub(s); });
+  if (w && w.querySelector('.submenu').hidden) openSub(w.querySelector(':scope > [data-sub]'), 'hover');
+});
+// Menus by keyboard: ↓ from a menu title enters it, ↑↓ move between items,
+// → or Enter opens a Catalogue submenu on the disk in the drive, ← or Esc
+// closes it, and Esc closes the menu.
+document.addEventListener('keydown', e => {
+  const t = e.target instanceof Element ? e.target : null;
+  if (!t || document.querySelector('dialog[open]')) return;
+  const items = panel => [...panel.querySelectorAll(':scope > button:not(:disabled), :scope > .subwrap > button:not(:disabled)')];
+  const sum = t.closest('.menu > summary');
+  if (sum && e.key === 'ArrowDown') { e.preventDefault(); const det = sum.parentElement; det.open = true; const first = items(det.querySelector('.menu-panel'))[0]; if (first) first.focus(); return; }
+  const sub = t.closest('.submenu'), panel = sub || t.closest('.menu-panel, #chipMenu');
+  if (!panel) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const list = items(panel), i = list.indexOf(t.closest('button')), k = e.key === 'ArrowDown' ? 1 : -1;
+    const next = list[i < 0 ? 0 : (i + k + list.length) % list.length]; if (next) next.focus();
+    return;
+  }
+  if (!sub && t.matches('[data-sub]') && (e.key === 'ArrowRight' || e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openSub(t, 'key'); return; }
+  if (sub && (e.key === 'ArrowLeft' || e.key === 'Escape')) { e.preventDefault(); closeSub(sub, true); return; }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    const det = panel.closest('.menu');
+    if (det) { det.open = false; det.querySelector('summary').focus(); }
+    else { panel.hidden = true; const c = document.querySelector('[data-chip="' + panel.dataset.drive + '"]'); if (c) c.focus(); }
+  }
 });
 $('tree').addEventListener('click', e => { const n = e.target.closest('[data-coll]'); if (!n) return; S.coll = n.dataset.coll; S.flash = ''; render(); });
 $('list').addEventListener('click', e => {
@@ -1374,6 +1552,21 @@ document.querySelectorAll('[data-demo]').forEach(b => b.addEventListener('click'
   if (k === 'only-ibm') { S.onlyIbm = !S.onlyIbm; b.setAttribute('aria-pressed', String(S.onlyIbm)); S.view = 'library'; S.run = null; S.target = S.onlyIbm ? 'ibm-at-with-dos' : 'dos-games'; S.selMachine = S.target; render(); }
   if (k.startsWith('ck-')) { if (S.onlyIbm) return msg('DOS games is hidden by the sample switch.'); openPicker('dos-games', 'B:'); ckOpen(CK_SAMPLES[k.slice(3)]); }
   if (k === 'reset') { for (let i = SETS.length - 1; i >= 0; i--) if (SETS[i].made) SETS.splice(i, 1); MACHINES = clone(MACHINES0); S.view = 'library'; S.run = null; S.coll = 'media'; S.selSet = 'win31'; S.target = 'dos-games'; S.selMachine = 'dos-games'; S.onlyIbm = false; S.flash = ''; document.querySelector('[data-demo="only-ibm"]').setAttribute('aria-pressed', 'false'); render(); }
+}));
+// Revision 3 controls: open B:'s Catalogue submenu of DOS games in a given state.
+document.querySelectorAll('[data-catdemo]').forEach(btn => btn.addEventListener('click', e => {
+  e.stopPropagation();
+  const k = btn.dataset.catdemo;
+  if (S.onlyIbm) return msg('These states use DOS games; turn off “only IBM AT with DOS” first.');
+  if (k === 'pending' && S.view !== 'library') { S.view = 'library'; S.run = null; }
+  if (S.view === 'library') { S.target = 'dos-games'; S.selMachine = 'dos-games'; }
+  const b = drv(mach('dos-games'), 'B:');
+  if (k === 'pending') { const i = b.cat.findIndex(x => x.label === 'AZURAMON 5 of 10'); if (i >= 0) b.pending = { set: null, disk: 0, all: false, write: b.cat[i].write, entry: clone(b.cat[i]) }; }
+  if (k === 'long') putSet(b, set('win31'), true, 'journal');
+  S.flash = ''; closeMenus(); $('chipMenu').hidden = true; render();
+  if (k === 'chip') { openChipMenu(document.querySelector('[data-chip="B:"]')); openSub($('chipMenu').querySelector('[data-sub]'), 'key'); return; }
+  $('mediaMenu').closest('details').open = true;
+  const opener = $('mediaMenu').querySelector('[data-sub][data-drive="B:"]'); if (opener) openSub(opener, 'key');
 }));
 document.addEventListener('keydown', e => {
   if (document.querySelector('dialog[open]')) return;
