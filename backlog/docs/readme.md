@@ -12,6 +12,7 @@ curated files below are hand-maintained.
 |------|---------|
 | [`architecture.md`](architecture.md) | Repo shape, data flow, module map. |
 | [`commands.md`](commands.md) | Build, test, run, typecheck, lint commands. |
+| [`test-timings.md`](test-timings.md) | Measured build and test times; what keeps a change from gating in five minutes. |
 | [`conventions.md`](conventions.md) | Coding conventions: file naming, imports, comments, commits. |
 | [`dev-setup.md`](dev-setup.md) | Toolchain (flake devShell, direnv, pre-commit, static analysis). |
 | [`deferred.md`](deferred.md) | Things deliberately not implemented — don't add them unprompted. |

@@ -70,6 +70,9 @@
             # --- Rust toolchain (CPU core = x86jit, all crates are Rust) ---
             rustToolchain
             pkgs.cargo-deny
+            # Runs every test in its own process and test binaries side by
+            # side; scripts/affected-tests.sh uses it when present.
+            pkgs.cargo-nextest
 
             # --- guest test-ROM build (hand-assembled real-mode / long-mode programs) ---
             pkgs.nasm

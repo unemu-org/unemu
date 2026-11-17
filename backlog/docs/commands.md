@@ -1336,6 +1336,106 @@ stderr with status 2. The informative
 `scheduler_engine_wall_times` test skips with one line unless
 `UNEMUPC_SCHEDULER_WALL_TIMES=1` is set, including in ordinary slow/CI runs.
 
+## Affected tests and the bead gate
+
+Run only what a change can affect (in the devShell, from any directory):
+
+```sh
+bash scripts/affected-tests.sh --plan        # what would run, and why; builds nothing
+bash scripts/affected-tests.sh               # changes since the merge base with main, working tree included
+bash scripts/affected-tests.sh --base origin/main --tier goldens
+bash scripts/affected-tests.sh --all --tier all   # everything, every tier: before a release
+bash scripts/affected-tests.sh --self-test   # the planner on its fixtures, the rules against the sources
+AFFECTED_RUNNER=cargo bash scripts/affected-tests.sh   # cargo test instead of cargo-nextest
+bash scripts/bead-gate.sh                    # fmt, guard, clippy, tests, rustdoc, deny: only what the change affects
+AFFECTED_CARGO='nice -n 10 cargo' bash scripts/bead-gate.sh --log-dir "${TMPDIR:-/tmp}/gate-logs"
+```
+
+The runner takes the changed files (the merge base of `--base`, default
+`main`, against the working tree, plus untracked files) and maps each to the
+workspace crate whose directory holds it. Untracked files count: a stray
+file in the tree widens the plan, and one that no rule knows selects
+everything, so keep logs and scratch files outside the repository. Files
+outside the crates map to the crates that read them: shipped machine files,
+fixture scripts and pins under `vendor/`, the test support that several
+crates include with `#[path]` from `crates/cli/tests/support/`, the
+repository's `assets/`, the approved mock-ups and the recipe corpus. Every crate that depends
+on a changed crate (normal, build or dev dependency, from `cargo metadata
+--no-deps`) is affected too. The root `Cargo.toml`, `Cargo.lock`, the flake
+and toolchain files, a `[patch]` section in `.cargo/config.toml` (the local
+CPU-core override of [`dev-setup.md`](dev-setup.md), which means the tests do
+not run against the pinned core) and any path no rule knows select the whole
+workspace with the goldens. Every run starts with the checks that need no
+build: the publication guard (unless `--no-guard`), `git diff --check` of the
+changed documentation (untracked files included), `bash -n` of every changed
+shell script (`scripts/`, `vendor/*/fetch.sh` and `build.sh`) and, when the
+runner or its fixtures changed, its self-test. Documentation, script,
+repository and tracker configuration (`.github/`, `.beads/`) changes run only
+these. A Rust change anywhere under `crates/` also runs image-store's
+`platform_ids`, which reads every crate's sources, and an affected `devices`
+also runs its release-profile tests. The plan lists every file with the rule
+that mapped it.
+
+Tiers select among the tests of the affected crates by libtest's ignore flag
+and the `user_rom_` name prefix; no test attribute changes for them:
+
+| Tier | Runs | Chosen |
+| --- | --- | --- |
+| fast | the affected crates' tests that are not ignored, plus some ignored ones by name (below) | by default |
+| goldens | plus every ignored test except `user_rom_*` | automatically when an emulation crate (`assembly`, `audio`, `bus`, `chipset`, `cpu`, `device`, `devices`, `machine`, `machine-file`, `media`, `testkit`, `video`), the CLI's machine runners (`crates/cli/src/{lib,command,create}.rs`), a shipped machine file, a fixture under `vendor/`, the shared golden test support, the workspace manifest, the lock file, the toolchain, a `[patch]` override or a path no rule knows changed; or `--tier goldens` |
+| user-roms | auto plus the ignored `user_rom_*` tests | `--tier user-roms`, with `UNEMUPC_USER_ROMS_DIR` set |
+| all | goldens and user-ROM tests | `--tier all`; before a release with `--all` |
+
+In the fast tier the runner still runs some ignored tests, by name and in
+the same build: every ignored test of a crate that changed directly (a
+window change runs the window's three boots), and those in files of an
+affected crate that name a changed crate as `crate_name::` (an `image-store`
+or `pc-image` change runs `machine_freedos_golden`). `--tier fast` turns
+that off too. A crate in the affected set only through its dependencies does
+not select the goldens: an `image-store` change runs the fast tests of
+`image-store`, `image-registry`, `machine-file`, `pc-image`, `cli` and
+`window`, and the ignored tests that name `image_store::`. The goldens need
+the fetched fixtures; the bead gate sets `UNEMUPC_REQUIRE_FIXTURES=1` so a
+missing one fails instead of skipping.
+
+The tests run under cargo-nextest when the devShell provides it, otherwise
+under `cargo test`; the runner says which. Nextest runs each test in its own
+process and several test binaries at once, which cargo runs one after
+another; it selects the same tests (`--run-ignored` and a filter expression
+on `user_rom_` and the names), and doctests, which nextest does not run, go
+through `cargo test --doc`. Both runners run at most `AFFECTED_TEST_THREADS`
+tests at once, default `RUST_TEST_THREADS`, else 4, never unbounded.
+`AFFECTED_RUNNER=cargo` forces `cargo test`. Each failed test is listed by
+name in the summary.
+
+`AFFECTED_CARGO` is the command that runs cargo (default `cargo`), so a wrapper
+that bounds parallelism on a shared machine goes there; `AFFECTED_LOG_DIR`
+keeps the runner's logs. The runner prints each step's time and the slowest
+tests (nextest) or test binaries (`cargo test`, from libtest's `finished in`).
+`--files FILE` plans from a list of paths instead of git, and `--metadata
+FILE` from saved `cargo metadata` output; the self-test uses both with
+`scripts/testdata/affected-tests/` (a snapshot of the workspace graph and of
+the sources' ignored tests, the scenarios and their expected plans).
+
+`scripts/bead-gate.sh` gates one change: `cargo fmt --check`, the publication
+guard, clippy with `-D warnings` on the affected crates (`--all-targets
+--all-features`, plus the production `upcli` binary when `cli` is affected),
+the affected tests in their tier, rustdoc with `-D warnings` for the
+affected crates, and `cargo deny` only when `Cargo.lock`, a manifest or
+`deny.toml` changed. Every step runs after a failure; the summary gives each
+step's result and seconds. It takes the runner's `--base`, `--tier`,
+`--all` and `--files` and `--log-dir DIR`.
+
+CI (`.github/workflows/ci.yml`) still runs every lane on the whole workspace
+for pushes to `main` and pull requests, and the release checklist
+([Releases](#releases)) runs `--all --tier all`. Measured build and test times, and what keeps a change
+from gating within five minutes, are in [`test-timings.md`](test-timings.md).
+When the rules miss a path a crate reads, add it to the planner's
+`data_rules` in `scripts/affected-tests.sh`; the self-test fails until a
+path a crate source names outside its directory is mapped to that crate, and
+until every crate whose sources build paths from the repository root reads
+both `machines/` and `vendor/`.
+
 ## Creating disk images
 
 ```sh
@@ -1918,6 +2018,9 @@ package version. The maintainer pushes the
 tag and creates and publishes the GitHub release for it. Publishing starts
 `.github/workflows/release.yml`, which builds `upcli` and `unemupc` and
 attaches them to that release; nothing goes to a package registry.
+Before tagging, run every test tier on the whole workspace, including the
+user-ROM tests CI never has:
+`UNEMUPC_REQUIRE_FIXTURES=1 UNEMUPC_USER_ROMS_DIR=/path/to/roms bash scripts/affected-tests.sh --all --tier all`.
 
 ```sh
 git tag -s v0.1.0 -m 'unemupc 0.1.0' && git push origin v0.1.0

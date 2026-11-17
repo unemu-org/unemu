@@ -94,7 +94,10 @@ The CI lane runs these checks via `scripts/ci-gate.sh`, plus the publication
 guard, `cargo deny --all-features check licenses bans sources` on every run,
 and the slow goldens after building their fixtures. Use
 `bash scripts/ci-gate.sh <step>` to run the same gate locally; see
-[`commands.md` § CI](commands.md#ci).
+[`commands.md` § CI](commands.md#ci). Before merging one change,
+`bash scripts/bead-gate.sh` runs the same kinds of checks on only what the change
+can affect, with the slow goldens when it touches emulation; see
+[`commands.md` § Affected tests and the bead gate](commands.md#affected-tests-and-the-bead-gate).
 
 Plus, when the change warrants it:
 

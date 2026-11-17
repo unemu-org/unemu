@@ -1,0 +1,241 @@
+[
+  {
+    "name": "window-only change, with the window's own ignored tests by name",
+    "changed": ["crates/window/src/pacing.rs"],
+    "expect": {
+      "mode": "crates", "seeds": ["window"], "affected": ["window"], "tier": "fast",
+      "targeted": [
+        "a_floppy_inserted_before_start_boots_freedos_on_the_open_bios",
+        "freedos_window_chunks_deliver_dir_listing_without_opening_a_window",
+        "no_rom_basic_takes_a_boot_floppy_and_ctrl_alt_del_boots_freedos"
+      ],
+      "targeted_files": [
+        "crates/window/src/main.rs: in changed crate window",
+        "crates/window/src/shell.rs: in changed crate window"
+      ],
+      "scan_tests": ["image-store:platform_ids"],
+      "release_devices": false, "cli": false, "deny": false, "user_roms": false
+    }
+  },
+  {
+    "name": "cli-only change pulls in the window, runs cli's ignored tests and the window's that name cli::",
+    "changed": ["crates/cli/src/image.rs"],
+    "expect": {
+      "mode": "crates", "seeds": ["cli"], "affected": ["cli", "window"], "tier": "fast",
+      "targeted_crates": ["cli", "window"],
+      "scan_tests": ["image-store:platform_ids"],
+      "release_devices": false, "cli": true, "deny": false
+    }
+  },
+  {
+    "name": "cli machine-runner change selects the goldens",
+    "changed": ["crates/cli/src/lib.rs"],
+    "expect": {
+      "mode": "crates", "seeds": ["cli"], "affected": ["cli", "window"], "tier": "goldens",
+      "golden_reasons": ["crates/cli/src/lib.rs: machine runner the goldens drive"],
+      "targeted": []
+    }
+  },
+  {
+    "name": "image-store change pulls in its dependents and the ignored tests that name image_store::",
+    "changed": ["crates/image-store/src/library.rs"],
+    "expect": {
+      "mode": "crates", "seeds": ["image-store"],
+      "affected": ["cli", "image-registry", "image-store", "machine-file", "pc-image", "window"],
+      "tier": "fast",
+      "targeted_files": [
+        "crates/cli/tests/machine_freedos_golden.rs: names image_store::",
+        "crates/registry/src/tests.rs: names image_store::",
+        "crates/window/src/main.rs: names image_store::",
+        "crates/window/src/shell.rs: names image_store::"
+      ],
+      "scan_tests": [], "release_devices": false, "deny": false
+    }
+  },
+  {
+    "name": "pc-image change runs the ignored tests that name pc_image::",
+    "changed": ["crates/pc-image/src/lib.rs"],
+    "expect": {
+      "mode": "crates", "seeds": ["pc-image"], "affected": ["cli", "pc-image", "window"],
+      "tier": "fast",
+      "targeted_files": [
+        "crates/cli/tests/machine_freedos_golden.rs: names pc_image::",
+        "crates/window/src/shell.rs: names pc_image::"
+      ]
+    }
+  },
+  {
+    "name": "devices change pulls in its dependents and the goldens",
+    "changed": ["crates/devices/src/pit8253.rs"],
+    "expect": {
+      "mode": "crates", "seeds": ["devices"],
+      "affected": ["assembly", "chipset", "cli", "devices", "machine", "machine-file", "pc-image", "window"],
+      "tier": "goldens", "golden_reasons": ["crates/devices/src/pit8253.rs: emulation crate"],
+      "targeted": [], "scan_tests": ["image-store:platform_ids"],
+      "release_devices": true, "deny": false
+    }
+  },
+  {
+    "name": "golden tier with a changed golden file runs nothing twice by name",
+    "changed": ["crates/devices/src/pit8253.rs", "crates/cli/tests/freedos_boot_golden.rs"],
+    "expect": { "mode": "crates", "tier": "goldens", "targeted": [], "targeted_files": [] }
+  },
+  {
+    "name": "docs-only change runs the doc and guard checks only",
+    "changed": ["backlog/docs/commands.md", "README.md", "vendor/hdd/README.md"],
+    "expect": {
+      "mode": "checks", "seeds": [], "affected": [],
+      "docs": ["backlog/docs/commands.md", "README.md", "vendor/hdd/README.md"], "shell": [],
+      "self_test": false, "deny": false, "release_devices": false
+    }
+  },
+  {
+    "name": "a non-ASCII documentation path is documentation",
+    "changed": ["backlog/completed/task-1 - Boot the BIOS — first light.md"],
+    "expect": { "mode": "checks", "docs": ["backlog/completed/task-1 - Boot the BIOS — first light.md"] }
+  },
+  {
+    "name": "tracker data is configuration, without tests",
+    "changed": [".beads/issues.jsonl"],
+    "expect": { "mode": "checks", "affected": [], "docs": [], "deny": false }
+  },
+  {
+    "name": "Cargo.lock change runs everything, the goldens and the dependency policy",
+    "changed": ["Cargo.lock"],
+    "expect": {
+      "mode": "full",
+      "affected": ["assembly", "audio", "bus", "chipset", "cli", "cpu", "device", "devices",
+        "image-registry", "image-store", "machine", "machine-file", "media", "pc-image",
+        "testkit", "video", "window"],
+      "tier": "goldens", "deny": true, "release_devices": true, "cli": true, "scan_tests": [],
+      "targeted": []
+    }
+  },
+  {
+    "name": "workspace manifest change runs everything",
+    "changed": ["Cargo.toml"],
+    "expect": { "mode": "full", "tier": "goldens", "deny": true }
+  },
+  {
+    "name": "a [patch] override in .cargo/config.toml runs everything with the goldens",
+    "changed": ["crates/window/src/pacing.rs"],
+    "patch": ".cargo/config.toml has a [patch] section: a dependency is not the pinned one, so everything",
+    "expect": {
+      "mode": "full", "tier": "goldens", "targeted": [],
+      "golden_reasons": [".cargo/config.toml: .cargo/config.toml has a [patch] section: a dependency is not the pinned one, so everything"]
+    }
+  },
+  {
+    "name": "scripts-only change checks the scripts",
+    "changed": ["scripts/ci-gate.sh"],
+    "expect": {
+      "mode": "checks", "affected": [], "shell": ["scripts/ci-gate.sh"],
+      "self_test": false, "docs": []
+    }
+  },
+  {
+    "name": "runner change runs its self-test",
+    "changed": ["scripts/affected-tests.sh", "scripts/testdata/affected-tests/scenarios.json"],
+    "expect": { "mode": "checks", "self_test": true, "shell": ["scripts/affected-tests.sh"] }
+  },
+  {
+    "name": "shipped machine file selects its readers and the goldens",
+    "changed": ["machines/at-freedos.toml"],
+    "expect": {
+      "mode": "crates", "seeds": ["cli", "machine-file", "pc-image", "window"],
+      "affected": ["cli", "machine-file", "pc-image", "window"], "tier": "goldens"
+    }
+  },
+  {
+    "name": "machine-file guide selects its readers without the goldens",
+    "changed": ["machines/README.md"],
+    "expect": {
+      "mode": "crates", "seeds": ["cli", "machine-file", "pc-image", "window"], "tier": "fast",
+      "targeted_crates": ["cli", "window"]
+    }
+  },
+  {
+    "name": "fixture script selects its readers and the goldens, and gets bash -n",
+    "changed": ["vendor/kiselev-bios/fetch.sh"],
+    "expect": {
+      "mode": "crates",
+      "seeds": ["assembly", "cli", "machine-file", "pc-image", "window"],
+      "tier": "goldens", "shell": ["vendor/kiselev-bios/fetch.sh"]
+    }
+  },
+  {
+    "name": "golden test support shared through #[path] selects every including crate",
+    "changed": ["crates/cli/tests/support/fixtures.rs"],
+    "expect": {
+      "mode": "crates", "seeds": ["assembly", "cli", "machine-file", "pc-image", "window"],
+      "tier": "goldens"
+    }
+  },
+  {
+    "name": "changed golden test file runs its crate's ignored tests by name",
+    "changed": ["crates/cli/tests/freedos_boot_golden.rs"],
+    "expect": {
+      "mode": "crates", "affected": ["cli", "window"], "tier": "fast",
+      "targeted_crates": ["cli", "window"]
+    }
+  },
+  {
+    "name": "ignored tests given by a scenario: own crate and files naming it",
+    "changed": ["crates/image-store/src/library.rs"],
+    "ignored": {
+      "crates/image-store/tests/store.rs": {"tests": ["slow_store"], "mentions": ["image_store"]},
+      "crates/pc-image/tests/import.rs": {"tests": ["slow_import"], "mentions": ["image_store", "pc_image"]},
+      "crates/cli/tests/rtc_golden.rs": {"tests": ["unrelated"], "mentions": ["cli"]},
+      "crates/media/tests/journal.rs": {"tests": ["outside_the_affected_set"], "mentions": ["image_store"]}
+    },
+    "expect": {
+      "targeted": ["slow_import", "slow_store"],
+      "targeted_files": [
+        "crates/image-store/tests/store.rs: in changed crate image-store",
+        "crates/pc-image/tests/import.rs: names image_store::"
+      ]
+    }
+  },
+  {
+    "name": "approved mock-up change selects the window",
+    "changed": ["backlog/docs/design/mockups/library.html"],
+    "expect": { "mode": "crates", "seeds": ["window"], "tier": "fast", "docs": [] }
+  },
+  {
+    "name": "crate manifest change checks the dependency policy",
+    "changed": ["crates/media/Cargo.toml"],
+    "expect": { "mode": "crates", "seeds": ["media"], "tier": "goldens", "deny": true }
+  },
+  {
+    "name": "dependency policy change runs cargo deny only",
+    "changed": ["deny.toml"],
+    "expect": { "mode": "checks", "affected": [], "deny": true }
+  },
+  {
+    "name": "CI workflow change runs the guard only",
+    "changed": [".github/workflows/ci.yml"],
+    "expect": { "mode": "checks", "affected": [], "docs": [], "shell": [], "deny": false }
+  },
+  {
+    "name": "unmapped path runs everything",
+    "changed": ["tools/new-tool.py"],
+    "expect": { "mode": "full", "tier": "goldens", "deny": false }
+  },
+  {
+    "name": "fast tier override drops the goldens and the named ignored tests",
+    "changed": ["crates/devices/src/pit8253.rs"],
+    "tier": "fast",
+    "expect": { "mode": "crates", "tier": "fast", "targeted": [], "user_roms": false }
+  },
+  {
+    "name": "user-rom tier adds the user-ROM tests",
+    "changed": ["crates/window/src/pacing.rs"],
+    "tier": "user-roms",
+    "expect": { "mode": "crates", "tier": "fast", "user_roms": true }
+  },
+  {
+    "name": "nothing changed",
+    "changed": [],
+    "expect": { "mode": "none", "affected": [], "deny": false }
+  }
+]
