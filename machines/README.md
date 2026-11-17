@@ -293,9 +293,10 @@ host files instead, see [Building a floppy from host files](#building-a-floppy-f
 Without `--format` every byte is zero. With it, the command writes standard FAT12 BPB/FAT/root metadata,
 a fixed serial (`0x28959855`) and, by default, `NO NAME` in the BPB. The root stays empty
 unless `--label` supplies an uppercase ASCII volume label; its timestamps are
-fixed at 1980-01-01. The boot sector silently disables interrupts and halts
-in a loop; it contains no DOS loader or system files. Use a bootable DOS floppy
-for starting the machine. `--label` requires `--format` (or `--add`), accepts 1–11 ASCII
+fixed at 1980-01-01. The boot sector is that of a data disk: started from it,
+the machine says that this is not a system disk, waits for a key and tries to
+boot again, so a system disk can be put in first. It contains no DOS loader or
+system files. Use a bootable DOS floppy for starting the machine. `--label` requires `--format` (or `--add`), accepts 1–11 ASCII
 characters and rejects leading spaces and FAT filename punctuation. `--force`
 replaces an existing directory entry atomically; it never opens the old image for writing. Use a new
 output name for any base already referenced by a journal.
@@ -605,8 +606,8 @@ leading backslash and the `--top` folder: `\GAME\LEVELS\WORLD1` has 19. A deeper
 folder is refused by name before anything is written; files inside an accepted
 folder always fit.
 
-The image depends only on the files' names and contents: entries are ordered by
-the bytes of their host names, every date is 1980-01-01 00:00, the serial is the
+The image depends only on the files' names and contents: each folder lists its
+files first, then its folders, each by the bytes of their DOS names, every date is 1980-01-01 00:00, the serial is the
 formatter's fixed one, and no hidden, system or archive attribute is set. Host
 file times and directory order never matter.
 

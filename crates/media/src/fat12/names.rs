@@ -48,30 +48,48 @@ pub struct ShortName([u8; 11]);
 
 impl ShortName {
     /// A name typed by a person, such as a top folder: it must already be a
-    /// valid 8.3 name apart from letter case. Nothing is converted.
+    /// valid 8.3 name apart from letter case, which is upper-cased as DOS
+    /// does. Nothing else is converted.
     pub fn parse(text: &str) -> Option<Self> {
+        Self::strict(&text.to_ascii_uppercase()).ok()
+    }
+
+    /// A name exactly as a directory entry stores it, saying which rule a
+    /// refused name breaks: a stem of one to eight characters, an optional
+    /// extension of one to three after a single period, only upper-case
+    /// letters, digits and `!#$%&'()-@^_`{}~`, and no DOS device name.
+    /// Nothing is converted, not even letter case.
+    pub fn strict(text: &str) -> Result<Self, NameFault> {
+        if text.is_empty() {
+            return Err(NameFault::Empty);
+        }
+        if let Some(bad) = text.chars().find(|&c| {
+            c != '.'
+                && !(c.is_ascii()
+                    && (c.is_ascii_alphanumeric() || PUNCTUATION.contains(&(c as u8))))
+        }) {
+            return Err(NameFault::Character(bad));
+        }
+        if let Some(lower) = text.chars().find(char::is_ascii_lowercase) {
+            return Err(NameFault::LowerCase(lower));
+        }
         let (stem, extension) = text.split_once('.').unwrap_or((text, ""));
-        let valid = |part: &str, max: usize| {
-            part.len() <= max
-                && part
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || PUNCTUATION.contains(&b))
-        };
         if stem.is_empty()
-            || !valid(stem, 8)
-            || !valid(extension, 3)
+            || extension.contains('.')
             || (text.contains('.') && extension.is_empty())
         {
-            return None;
+            return Err(NameFault::Periods);
         }
-        let stem = stem.to_ascii_uppercase();
+        if stem.len() > 8 {
+            return Err(NameFault::Stem(stem.len()));
+        }
+        if extension.len() > 3 {
+            return Err(NameFault::Extension(extension.len()));
+        }
         if reserved(stem.as_bytes()) {
-            return None;
+            return Err(NameFault::Device);
         }
-        Some(Self::from_parts(
-            stem.as_bytes(),
-            extension.to_ascii_uppercase().as_bytes(),
-        ))
+        Ok(Self::from_parts(stem.as_bytes(), extension.as_bytes()))
     }
 
     /// The name a host file or folder converts to when nothing beside it
@@ -91,6 +109,48 @@ impl ShortName {
     /// The 11 bytes of the directory entry's name field.
     pub fn as_bytes(&self) -> &[u8; 11] {
         &self.0
+    }
+}
+
+/// Why a name is not a valid 8.3 name as it stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NameFault {
+    /// Nothing between two separators, or nothing at all.
+    Empty,
+    /// A character DOS does not allow in a short name.
+    Character(char),
+    /// A lower-case letter: a directory entry stores upper case, and the
+    /// name is wanted as it is stored.
+    LowerCase(char),
+    /// A period that starts or ends the name, or more than one.
+    Periods,
+    /// A stem of this many characters, more than eight.
+    Stem(usize),
+    /// An extension of this many characters, more than three.
+    Extension(usize),
+    /// A DOS device (`CON`, `NUL`, `COM1`…), which DOS would open instead.
+    Device,
+}
+
+impl fmt::Display for NameFault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => f.write_str("the name is empty"),
+            Self::Character(c) => write!(f, "the character {c:?} is not allowed"),
+            Self::LowerCase(c) => write!(f, "the lower-case letter {c:?} is not allowed: a directory entry stores upper case, so write the name as it is on the disk"),
+            Self::Periods => {
+                f.write_str("a name has at most one period, between a stem and an extension")
+            }
+            Self::Stem(length) => write!(
+                f,
+                "the name has {length} characters before the extension; at most 8 are allowed"
+            ),
+            Self::Extension(length) => write!(
+                f,
+                "the extension has {length} characters; at most 3 are allowed"
+            ),
+            Self::Device => f.write_str("it names a DOS device"),
+        }
     }
 }
 

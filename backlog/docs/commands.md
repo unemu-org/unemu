@@ -1355,7 +1355,7 @@ and host junk inside folders (`.DS_Store`, `._*`, `__MACOSX`, `Thumbs.db`,
 `desktop.ini`), links, devices and the images being written print as
 `skipped HOST: REASON`. A folder path on the disk may have at most 64
 characters, counting the leading backslash and `--top`. Identical trees give
-identical images: host-name order, 1980-01-01 dates, no host times. Without
+identical images: files before folders, each by DOS name, 1980-01-01 dates, no host times. Without
 `--split` a misfit is an error naming the shortfall in bytes and nothing is
 written. `--split` writes `<stem>-1ofN.<ext>`, `<stem>-2ofN.<ext>`… beside `OUT`
 (or `OUT` itself when one disk is enough), fills them in folder order (a

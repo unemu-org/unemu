@@ -1067,15 +1067,15 @@ may not claim an archive's times and state others. A member with `size` and
 | `format` | A media format name of the platform provider: `"1.44M"`. It selects the geometry and the provider's volume profile (§10). |
 | `label` | The volume label, at most 11 characters of the DOS set. Optional. |
 | `serial` | The volume serial, a 32-bit integer. Default: the builder's fixed serial. |
-| `order` | `"name"` (default): entries by the bytes of their names, files of a folder before its folders. `"listed"`: the tree's own order, which is the order its members or files are written in the recipe. |
+| `order` | `"name"` (default): in every folder its files, then its folders, each by the bytes of their 8.3 names as stored. `"listed"`: the tree's own order, which is the order its members or files are written in the recipe. |
 | `time` | A local date-time for entries that have none, for folders and for the label. Default `1980-01-01T00:00:00`. |
 | `volumes` | A whole number N from 2: split the tree over exactly N volumes, in folder order. |
 
 Without `volumes` the result is a file, the image, and a tree that does not
 fit is an error. With `volumes` the result is a tree with the members `1`
 to `N`; a tree that needs another number of volumes is an error that states
-the number. Names must already be valid for the file system (8.3 names, the
-folder depth DOS allows): the step refuses a bad name and never renames. No
+the number. Names must already be valid for the file system (8.3 names as
+stored, upper case; the folder depth DOS allows): the step refuses a bad name and never renames. No
 long-name entries are written. The bytes are those of the deterministic
 builder in `crates/media/src/fat12` [REPO] with four additions it lacks
 today: listed order, entry times, a chosen serial and a label.
@@ -2074,6 +2074,63 @@ disk shows the message and, after a key, tries to boot again (a golden
 test); the boot sector holds no vendor's bytes (its source is in the
 repository); new goldens for each addition; Ken's
 Labyrinth's disk and AZURAMON's split build twice to the same bytes.
+Done on 2026-11-17 (`upc-5pw.113.3`). The typed API the `fat` step calls
+in B7 is `media::fat12::plan_volumes(entries, &Volume)`: `Entry` is a path
+with `/` separators, the bytes (or none for a folder) and an optional
+`DosTime`; `Volume` holds `format`, `label`, `serial` (default
+`DEFAULT_SERIAL`, `0x28959855`), `order` (`Order::Name` or
+`Order::Listed`), `time` (default the FAT epoch) and `volumes`
+(`Some(N)` from 2). Decisions taken while building it:
+- `order = "name"` (maintainer's ruling, 2026-11-17): every folder's
+  directory entries, and so its clusters, are its files first, then its
+  folders, each group by the bytes of the stored 8.3 names, as XCOPY /S
+  writes a tree and as the split takes them. One rule for recipes,
+  `media create --add` and the window's Create from files (the shared host
+  builder, which before ordered files and folders together by host-name
+  bytes; numeric tails are still assigned in host-name order). With the
+  same stored names, sizes and default keys a volume equals
+  `media create --add`'s byte for byte (a test). `"listed"` orders each
+  folder's members by the first appearance of their paths.
+- An entry's time is written as its creation, last-access and last-write
+  time (DOS before 4.0 reads only the last); the default epoch writes
+  today's bytes. A folder's `.` and `..` take the folder's time.
+- Names (maintainer's ruling, 2026-11-17): every part must already be the
+  8.3 name as stored, upper case; a lower-case letter is refused like any
+  other bad name, as the recipe states the name as it is on the disk. Host
+  files keep their conversion, upper case included. The error names the
+  entry, the part and the rule (characters, lower case, periods, stem or
+  extension length, a DOS device). A
+  path named twice, or as both a file and a folder, is refused; a folder
+  above files may still be listed once, for its time. A folder deeper than
+  the 64 characters DOS keeps for a current directory, the leading
+  backslash counted, is refused (64 pass, 65 do not).
+- `volumes = N` splits greedily in folder order and is an error unless
+  that fills exactly N volumes; the error states the number, or says that
+  the files fit on one volume. An empty tree is a formatted volume.
+- The boot sector lives in `crates/media/src/fat12` (`boot.asm`, with the
+  bytes and a commented listing in `boot.rs`), beside the PC/AT diskette
+  geometries and BPB values: that module is today's IBM PC volume profile,
+  and the CLI and the window call it directly, so moving the boot code into
+  `pc-image` would split one profile across two crates. When B4's volume-profile
+  trait moves the profile, the boot code goes with the geometries. 100
+  bytes of 8086 code and message from offset 62, each message line within
+  40 columns; the test `boot_sector_source` assembles the source with nasm
+  and compares. Measured against `main` before this bead for all four
+  formats, labelled and not, filled disks and a split set: blank and
+  labelled images and the split, whose folders were already in files-first
+  order, changed in bytes 63 to 160 of sector 0 only; the filled disks
+  hold the same files, folders, attributes, times and contents, with a
+  folder's entries and clusters now files first. Their pins were taken
+  again once. Two goldens boot a built disk, on the Xi8088 BIOS and on the
+  open AT BIOS without option ROMs, see the message, take a key and see it
+  again. SHA-256 pins of synthetic volumes freeze listed order, entry
+  times, the serial with the label and its time, and each volume of an
+  exact split.
+- The user-file goldens look for the files by size and SHA-256 in the
+  user-ROM roots (listed in `vendor/user-roms/README.md`), take the step's
+  keys from the corpus recipe, and skip without the files. Ken's Labyrinth's disk is MEASURED
+  and pinned from the author's LABFULL.ZIP; AZURAMON's split runs only
+  where its files are present.
 
 **B4. The recipe crate: model, parser, checks.**
 Scope: a platform-neutral crate beside `image-store` with the typed model

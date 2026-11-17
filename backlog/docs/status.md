@@ -5,6 +5,31 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — FAT builder additions for recipes, and a data-disk boot
+  sector:** `media::fat12::plan_volumes` builds FAT12 diskettes from files
+  given in memory, as a recipe's `fat` step will (design/recipes.md §6.9,
+  B3): listed or name order, a time per entry (creation, access and write
+  fields), a chosen serial, a label with its time, names refused with the
+  rule they break (lower case included) and never renamed, folders deeper
+  than DOS allows refused, and a split to exactly N volumes whose error
+  names the number it needs. Name order now writes every folder's files
+  first, then its folders, each by the stored 8.3 names, for recipes,
+  `media create --add` and Create from files alike; with the default keys
+  a volume equals `media create --add`'s. Every disk the builder makes,
+  `media create --format` included, now carries our own boot code
+  (`crates/media/src/fat12/boot.asm`, 8086 instructions only) in place of
+  the halt loop: started from the disk, the machine prints that it is not
+  a system disk, waits for a key and boots again through INT 19h. MEASURED
+  on the Xi8088 BIOS and on the open AT BIOS without option ROMs
+  (`boot_sector_golden`, the message twice, a key between). Against the
+  previous `main`, blank images and a split changed in sector 0 only
+  (bytes 63 to 160) and filled disks also in their folders' entry order,
+  with the same files, times and contents (MEASURED); the pins were taken
+  again, and synthetic volumes pin each addition. A test assembles the
+  source with nasm and compares it with the bytes on the disk. Ken's
+  Labyrinth from the author's LABFULL.ZIP builds twice to the same, now
+  pinned, image (MEASURED, user-file lane); AZURAMON's split test needs
+  the user's files and was not run here.
 - **2026-11-17 — Crate layers and the desktop off the command-line crate:**
   every workspace crate names its layer (`contract`, `neutral`, `emulation`,
   `pc` or `application`) in `[package.metadata.unemu]`, and

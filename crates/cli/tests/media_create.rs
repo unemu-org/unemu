@@ -104,7 +104,9 @@ fn every_floppy_has_standard_readable_deterministic_fat12_or_zero_bytes() {
         assert_eq!(&disk[39..43], &0x28959855u32.to_le_bytes());
         assert_eq!(&disk[43..54], b"TEST DISK  ");
         assert_eq!(&disk[54..62], b"FAT12   ");
-        assert_eq!(&disk[62..66], &[0xFA, 0xF4, 0xEB, 0xFD]);
+        // The data-disk boot code that follows the BPB reports a disk
+        // without a system; boot_sector_golden.rs runs it.
+        assert!(String::from_utf8_lossy(&disk[62..510]).contains("This is not a system disk"));
         assert_eq!(&disk[510..512], &[0x55, 0xAA]);
         let fat = &disk[512..(1 + fat_sectors) * 512];
         assert_eq!(

@@ -4,7 +4,7 @@
 //! Directory Structure (32-byte entries, `.` and `..` in every subdirectory).
 
 use super::tree::Tree;
-use super::{format_metadata, BuildError, FloppyFormat, ENTRY, FAT_EPOCH_DATE};
+use super::{metadata, BuildError, DosTime, FloppyFormat, ENTRY};
 use std::fs;
 use std::io::Read;
 use std::path::Path;
@@ -41,15 +41,25 @@ pub(super) fn members(tree: &Tree, member: &[bool]) -> (Vec<Vec<usize>>, Vec<usi
     (folders, root)
 }
 
+/// The volume-wide values of one disk: the label, the serial and the time
+/// the label entry carries.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Stamp {
+    pub label: Option<[u8; 11]>,
+    pub serial: u32,
+    pub time: DosTime,
+}
+
 /// The whole image of one disk. The plan has already checked that the
 /// members fit, so allocation never runs past the data area.
 pub(super) fn image(
     format: FloppyFormat,
     tree: &Tree,
     member: &[bool],
-    label: Option<[u8; 11]>,
+    stamp: Stamp,
 ) -> Result<Vec<u8>, BuildError> {
-    let mut image = format_metadata(format, label);
+    let label = stamp.label;
+    let mut image = metadata(format, stamp);
     image.resize(format.image_bytes() as usize, 0);
     let (folders, root) = members(tree, member);
     let cluster_bytes = format.cluster_bytes() as usize;
@@ -94,6 +104,7 @@ pub(super) fn image(
             attributes,
             first[index],
             node.size.unwrap_or(0) as u32,
+            node.time,
         )
     };
     let root_slots = format.root_start() + usize::from(label.is_some()) * ENTRY;
@@ -110,8 +121,14 @@ pub(super) fn image(
                 // `..` of a first-level folder points at cluster 0, the root.
                 let parent = node.parent.map_or(0, |parent| first[parent]);
                 let dots = [
-                    (*b".          ", ATTRIBUTE_DIRECTORY, first[index], 0),
-                    (*b"..         ", ATTRIBUTE_DIRECTORY, parent, 0),
+                    (
+                        *b".          ",
+                        ATTRIBUTE_DIRECTORY,
+                        first[index],
+                        0,
+                        node.time,
+                    ),
+                    (*b"..         ", ATTRIBUTE_DIRECTORY, parent, 0, node.time),
                 ];
                 let entries = dots
                     .into_iter()
@@ -120,6 +137,11 @@ pub(super) fn image(
                     let at = data(first[index]) + slot * ENTRY;
                     write_entry(&mut image[at..at + ENTRY], entry);
                 }
+            }
+            (Some(1..), _) if node.contents.is_some() => {
+                let contents = node.contents.as_deref().unwrap_or_default();
+                let at = data(first[index]);
+                image[at..at + contents.len()].copy_from_slice(contents);
             }
             (Some(bytes @ 1..), Some(host)) => {
                 let contents = read_host(host, bytes)?;
@@ -145,17 +167,35 @@ fn set_fat12(fat: &mut [u8], cluster: u16, value: u16) {
     }
 }
 
-/// A 32-byte short entry with every date at the FAT epoch, every time zero
-/// and no attributes but the directory bit where it applies.
-fn write_entry(entry: &mut [u8], (name, attributes, cluster, bytes): ([u8; 11], u8, u16, u32)) {
+/// One directory entry: name, attributes, first cluster, length and time.
+type EntryFields = ([u8; 11], u8, u16, u32, DosTime);
+
+/// A 32-byte short entry with no attributes but the directory bit where it
+/// applies.
+fn write_entry(entry: &mut [u8], (name, attributes, cluster, bytes, time): EntryFields) {
     entry.fill(0);
     entry[..11].copy_from_slice(&name);
     entry[11] = attributes;
-    for offset in [16, 18, 24] {
-        entry[offset..offset + 2].copy_from_slice(&FAT_EPOCH_DATE.to_le_bytes());
-    }
+    stamp_entry(entry, time);
     entry[26..28].copy_from_slice(&cluster.to_le_bytes());
     entry[28..32].copy_from_slice(&bytes.to_le_bytes());
+}
+
+/// Write `time` as the entry's creation, last-access and last-write time
+/// (FAT Directory Structure: DIR_CrtTime, DIR_CrtDate, DIR_LstAccDate,
+/// DIR_WrtTime, DIR_WrtDate). DOS before 4.0 reads only the write time and
+/// date; the others repeat it so every reader sees one time. The tenths of
+/// creation time stay zero, as the seconds are even.
+pub(super) fn stamp_entry(entry: &mut [u8], time: DosTime) {
+    for (offset, word) in [
+        (14, time.time()),
+        (16, time.date()),
+        (18, time.date()),
+        (22, time.time()),
+        (24, time.date()),
+    ] {
+        entry[offset..offset + 2].copy_from_slice(&word.to_le_bytes());
+    }
 }
 
 /// Read exactly the planned length without following a symbolic link that

@@ -16,27 +16,47 @@
 //!
 //! Every byte depends only on the request and on the host files' names and
 //! contents. Timestamps are the FAT epoch (1980-01-01 00:00:00), the volume
-//! serial is fixed, entries are ordered by the bytes of their host names, and
-//! clusters are allocated contiguously in that order. Images are built in
+//! serial is fixed, each folder holds its files first, then its folders, each
+//! by the bytes of their 8.3 names (as XCOPY /S writes a tree), and clusters
+//! are allocated contiguously in that order. Images are built in
 //! memory; [`crate::create::image`] publishes them. Nothing is written for a
 //! request that does not fit. [`HostItem`] and [`Survey`] split the same work
 //! for an editor: host items are read once, then laid out and planned for any
 //! top folder, format and label without reading the host again.
+//!
+//! [`plan_volumes`] builds from files given in memory instead, the way a
+//! recipe's `fat` step does (backlog/docs/design/recipes.md §6.9): names
+//! must already be 8.3 names and are refused, never renamed; entries keep
+//! their listed order or take name order; each entry may carry its own time,
+//! and the serial, the label's time and an exact number of volumes are
+//! chosen.
+//!
+//! This module is the IBM PC volume profile (recipes.md §10): the PC/AT
+//! diskette geometries, the BPB values DOS FORMAT writes, DOS 8.3 names and
+//! the boot sector of a data disk, whose code (`boot.asm`) reports a disk
+//! without a system, waits for a key and retries the boot through INT 19h.
 
+mod boot;
 mod layout;
 mod names;
 #[cfg(any(test, feature = "test-support"))]
 pub mod reader;
 mod split;
 mod survey;
+mod time;
 mod tree;
+mod volume;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod volume_tests;
 
-pub use names::ShortName;
+pub use names::{NameFault, ShortName};
 pub use survey::Survey;
+pub use time::DosTime;
 pub use tree::HostItem;
+pub use volume::{plan_volumes, Entry, Order, Volume};
 
 use std::fmt;
 use std::io;
@@ -46,10 +66,9 @@ use std::path::PathBuf;
 const SECTOR: usize = 512;
 /// Bytes per directory entry (FAT Directory Structure).
 const ENTRY: usize = 32;
-/// Fixed volume serial so identical requests give identical images.
-const SERIAL: u32 = 0x2895_9855;
-/// FAT date of 1980-01-01, the earliest a directory entry can encode.
-const FAT_EPOCH_DATE: u16 = 0x21;
+/// The volume serial unless one is chosen, so identical requests give
+/// identical images.
+pub const DEFAULT_SERIAL: u32 = 0x2895_9855;
 
 /// One of the four PC/AT diskette formats.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -191,10 +210,24 @@ pub fn volume_label(value: &str) -> Result<[u8; 11], &'static str> {
 /// directory. The data area that follows is all zero, so a caller may publish
 /// this as the prefix of a zero-filled image.
 ///
-/// The boot sector disables interrupts and halts in a loop: a data disk booted
-/// by mistake stops instead of executing filesystem metadata. With a label the
-/// root holds its volume-label entry (attribute 08h, FAT epoch dates).
+/// The boot sector's code is that of a data disk: a machine started from it
+/// prints that the disk is not a system disk, waits for a key and loads a
+/// boot sector again through INT 19h. With a label the root holds its
+/// volume-label entry (attribute 08h, FAT epoch dates).
 pub fn format_metadata(format: FloppyFormat, label: Option<[u8; 11]>) -> Vec<u8> {
+    metadata(
+        format,
+        layout::Stamp {
+            label,
+            serial: DEFAULT_SERIAL,
+            time: DosTime::EPOCH,
+        },
+    )
+}
+
+/// [`format_metadata`] with a chosen serial and label time.
+fn metadata(format: FloppyFormat, stamp: layout::Stamp) -> Vec<u8> {
+    let label = stamp.label;
     let layout = format.layout();
     let root_start = format.root_start();
     let mut disk = vec![0; format.data_start()];
@@ -215,10 +248,10 @@ pub fn format_metadata(format: FloppyFormat, label: Option<[u8; 11]>) -> Vec<u8>
     disk[16] = 2;
     disk[21] = layout.media;
     disk[38] = 0x29;
-    disk[39..43].copy_from_slice(&SERIAL.to_le_bytes());
+    disk[39..43].copy_from_slice(&stamp.serial.to_le_bytes());
     disk[43..54].copy_from_slice(&label.unwrap_or(*b"NO NAME    "));
     disk[54..62].copy_from_slice(b"FAT12   ");
-    disk[62..66].copy_from_slice(&[0xFA, 0xF4, 0xEB, 0xFD]);
+    disk[boot::CODE_OFFSET..boot::CODE_OFFSET + boot::CODE.len()].copy_from_slice(&boot::CODE);
     disk[510..512].copy_from_slice(&[0x55, 0xAA]);
     for start in [format.fat_start(), format.fat_start() + format.fat_bytes()] {
         disk[start..start + 3].copy_from_slice(&[layout.media, 0xFF, 0xFF]);
@@ -226,10 +259,7 @@ pub fn format_metadata(format: FloppyFormat, label: Option<[u8; 11]>) -> Vec<u8>
     if let Some(label) = label {
         disk[root_start..root_start + 11].copy_from_slice(&label);
         disk[root_start + 11] = 8;
-        for offset in [16, 18, 24] {
-            disk[root_start + offset..root_start + offset + 2]
-                .copy_from_slice(&FAT_EPOCH_DATE.to_le_bytes());
-        }
+        layout::stamp_entry(&mut disk[root_start..root_start + ENTRY], stamp.time);
     }
     disk
 }
@@ -326,7 +356,7 @@ pub struct DiskPlan {
     /// Volume label written to the BPB and the root.
     pub label: Option<[u8; 11]>,
     /// Files on this disk, in folder order: a folder's own files before
-    /// its subfolders', each in host-name order.
+    /// its subfolders', each by name.
     pub files: Vec<PlacedFile>,
     /// Data-area bytes in use, cluster rounding and folders included.
     pub used_bytes: u64,
@@ -349,6 +379,8 @@ pub struct Plan {
     pub skipped: Vec<Skipped>,
     tree: tree::Tree,
     members: Vec<Vec<bool>>,
+    serial: u32,
+    time: DosTime,
 }
 
 impl Plan {
@@ -364,7 +396,11 @@ impl Plan {
             self.format,
             &self.tree,
             &self.members[index],
-            self.disks[index].label,
+            layout::Stamp {
+                label: self.disks[index].label,
+                serial: self.serial,
+                time: self.time,
+            },
         )
     }
 
@@ -464,6 +500,40 @@ pub enum BuildError {
         /// `needed - capacity`.
         shortfall: u64,
     },
+    /// A name given for a volume is not a valid 8.3 name. Such names are
+    /// refused, never renamed.
+    #[error("{path}: {name:?} is not a DOS 8.3 name: {fault}; names are refused, never renamed")]
+    BadName {
+        /// The entry's path as given.
+        path: String,
+        /// The part of it that is refused.
+        name: String,
+        /// Which rule it breaks.
+        fault: NameFault,
+    },
+    /// Two entries give the same DOS path, or one path is both a file and
+    /// a folder.
+    #[error("{path}: named twice, or as both a file and a folder")]
+    NameClash {
+        /// The entry's path as given, the second time it is named.
+        path: String,
+    },
+    /// A split asked for fewer than two volumes.
+    #[error("a split needs at least 2 volumes, not {requested}")]
+    VolumeCount {
+        /// The number asked for.
+        requested: usize,
+    },
+    /// The tree needs another number of volumes than the one asked for.
+    #[error("{}", wrong_volumes(*format, *requested, *needed))]
+    WrongVolumes {
+        /// The diskette format.
+        format: FloppyFormat,
+        /// The number asked for.
+        requested: usize,
+        /// The number the split fills.
+        needed: usize,
+    },
     /// The fixed root directory has too few entries.
     #[error("the root folder of a {format} disk holds {capacity} entries but {needed} are needed; put the files under a top folder")]
     RootFull {
@@ -476,6 +546,14 @@ pub enum BuildError {
     },
 }
 
+fn wrong_volumes(format: FloppyFormat, requested: usize, needed: usize) -> String {
+    if needed == 1 {
+        format!("the files fit on one {format} volume, not {requested}; build one volume instead of a split")
+    } else {
+        format!("the files need {needed} {format} volumes in folder order, not {requested}; ask for {needed}")
+    }
+}
+
 /// Plan one disk holding every source. Fails with the shortfall when it does
 /// not fit, or names a file that cannot fit even alone.
 pub fn plan(request: &Request) -> Result<Plan, BuildError> {
@@ -483,10 +561,10 @@ pub fn plan(request: &Request) -> Result<Plan, BuildError> {
 }
 
 /// Plan as many disks of one format as the sources need. Items go greedily in
-/// folder order (a folder's own files first, then its subfolders, each in
-/// host-name order); every disk repeats the folders above its files, so
-/// copying each disk's tree onto one drive in turn rebuilds the whole tree.
-/// Directory entries on each disk stay in host-name order. With a label and
+/// folder order (a folder's own files first, then its subfolders, each by
+/// name), the order of the directory entries; every disk repeats the folders
+/// above its files, so copying each disk's tree onto one drive in turn
+/// rebuilds the whole tree. With a label and
 /// more than one disk, disk `k` is labelled `<LABEL> k`, the label shortened to
 /// fit eleven characters. A file that cannot fit on an empty disk is refused,
 /// never split.

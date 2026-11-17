@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The host tree a request names, scanned without following symbolic links,
-//! ordered by the bytes of host names and given short names folder by folder.
+//! given short names folder by folder in host-name order, then ordered files
+//! first, then folders, each by the bytes of the short names.
 //! Only names, kinds and lengths are read here; host timestamps never are.
 
-use super::{names, BuildError, Rename, Request, ShortName, SkipReason, Skipped};
+use super::{names, BuildError, DosTime, Rename, Request, ShortName, SkipReason, Skipped};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// One file or folder. Nodes are in pre-order: a folder precedes its members,
-/// and members follow in host-name order.
+/// and members follow in name order: files first, then folders, each by the
+/// bytes of their 8.3 names.
 #[derive(Clone, Debug)]
 pub(super) struct Node {
     pub parent: Option<usize>,
@@ -20,6 +22,11 @@ pub(super) struct Node {
     /// A file's length; `None` for a folder.
     pub size: Option<u64>,
     pub dos_path: String,
+    /// A file's bytes when they were given in memory; host files are read
+    /// only when the image is built.
+    pub contents: Option<Vec<u8>>,
+    /// The entry's time; a folder's `.` and `..` take it too.
+    pub time: DosTime,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -33,7 +40,7 @@ pub(super) struct Tree {
 /// current directory structure: the drive letter and colon, the path from its
 /// leading backslash, and a terminating NUL. A folder deeper than that could
 /// not be entered with CD, and XCOPY could not create it.
-const MAX_FOLDER_PATH: usize = 64;
+pub(super) const MAX_FOLDER_PATH: usize = 64;
 
 /// A host file or folder as it was read for a disk: its name and identity,
 /// and its length or, for a folder, its members in host-name order with the
@@ -259,6 +266,8 @@ pub(super) fn build(
                 name: top,
                 size: None,
                 dos_path: top.to_string(),
+                contents: None,
+                time: DosTime::EPOCH,
             });
             (Some(0), top.to_string())
         }
@@ -337,7 +346,12 @@ fn add(
     let names = names::assign(&hosts).map_err(|index| BuildError::NoShortName {
         path: items[index].host.clone(),
     })?;
-    for (item, (name, renamed)) in items.iter().zip(names) {
+    // Names are given in host-name order, which decides numeric tails; the
+    // folder is then written files first, then folders, each by the bytes of
+    // the stored names, as XCOPY /S writes a tree.
+    let mut named: Vec<_> = items.iter().zip(names).collect();
+    named.sort_by_key(|(item, (name, _))| (item.is_folder(), *name.as_bytes()));
+    for (item, (name, renamed)) in named {
         let dos_path = if prefix.is_empty() {
             name.to_string()
         } else {
@@ -366,6 +380,8 @@ fn add(
                 HostKind::Folder { .. } => None,
             },
             dos_path: dos_path.clone(),
+            contents: None,
+            time: DosTime::EPOCH,
         });
         if let HostKind::Folder { members, skipped } = &item.kind {
             tree.skipped.extend(skipped.iter().cloned());

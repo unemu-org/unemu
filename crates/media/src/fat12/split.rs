@@ -3,12 +3,12 @@
 //! format. Costs count whole clusters for files and folders (a folder grows a
 //! cluster at a time as entries are added) and entries of the fixed root.
 //! Items are planned in folder order: a folder's own files first, then its
-//! subfolders, each in host-name order, so the loose files beside a program's
+//! subfolders, each by name, so the loose files beside a program's
 //! folders (its EXE, SETUP and README) go on the first disk.
 
 use super::layout::{file_clusters, folder_clusters, members};
 use super::tree::Tree;
-use super::{BuildError, DiskPlan, FloppyFormat, PlacedFile, Plan};
+use super::{BuildError, DiskPlan, DosTime, FloppyFormat, PlacedFile, Plan, DEFAULT_SERIAL};
 
 /// One disk being filled.
 struct Disk {
@@ -49,7 +49,7 @@ struct Item {
 }
 
 /// Files and folders without members in folder order: at every level the
-/// files first, then the folders, each in tree (host-name) order.
+/// files first, then the folders, each in tree order.
 fn order(tree: &Tree) -> Vec<usize> {
     let mut members: Vec<Vec<usize>> = vec![Vec::new(); tree.nodes.len()];
     let mut roots = Vec::new();
@@ -320,5 +320,7 @@ fn finish(
         skipped,
         tree,
         members,
+        serial: DEFAULT_SERIAL,
+        time: DosTime::EPOCH,
     }
 }

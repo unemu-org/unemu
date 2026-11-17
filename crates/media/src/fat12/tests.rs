@@ -9,10 +9,10 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-struct Scratch(PathBuf);
+pub(super) struct Scratch(PathBuf);
 
 impl Scratch {
-    fn new(tag: &str) -> Self {
+    pub(super) fn new(tag: &str) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "unemupc-fat12-{tag}-{}-{}",
@@ -23,18 +23,18 @@ impl Scratch {
         Self(path)
     }
 
-    fn path(&self, relative: &str) -> PathBuf {
+    pub(super) fn path(&self, relative: &str) -> PathBuf {
         self.0.join(relative)
     }
 
-    fn file(&self, relative: &str, bytes: &[u8]) -> PathBuf {
+    pub(super) fn file(&self, relative: &str, bytes: &[u8]) -> PathBuf {
         let path = self.path(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, bytes).unwrap();
         path
     }
 
-    fn folder(&self, relative: &str) -> PathBuf {
+    pub(super) fn folder(&self, relative: &str) -> PathBuf {
         let path = self.path(relative);
         fs::create_dir_all(&path).unwrap();
         path
@@ -72,50 +72,72 @@ fn names(hosts: &[&str]) -> Vec<(String, bool)> {
         .collect()
 }
 
-/// SHA-256 of blank images written by the command-line formatter before it
-/// moved into this module (MEASURED from the previous release's code path).
-const BLANK_SHA256: [(FloppyFormat, bool, &str); 8] = [
+/// SHA-256 of blank images, `(format, labelled, today, before)`. `before`
+/// is what the command-line formatter wrote before it moved into this module
+/// (MEASURED from the previous release's code path), with a boot sector that
+/// only halted. The pins were taken again once, when that halt loop gave way
+/// to the data-disk boot code: an image with its code area put back to the
+/// halt loop still hashes to `before`, so nothing outside the boot code
+/// changed.
+const BLANK_SHA256: [(FloppyFormat, bool, &str, &str); 8] = [
     (
         FloppyFormat::Hd144,
         false,
+        "ad5f8c958565c134af3610e34a5d30fe641869a9593fefad597a1b3249890cee",
         "1b5a59272b41b2250b168d0a36d434ea1e3b93d17e29549ed161770c75460a51",
     ),
     (
         FloppyFormat::Hd144,
         true,
+        "2791cb26479fa6a313a1ef8e8af3501139c7e53095e0649637cea70427fdd05e",
         "ce1cde123d7654476c1701c67ebd6d4aa2a2ebb2283fad0f4b3c65c2b35acb30",
     ),
     (
         FloppyFormat::Hd12,
         false,
+        "7bb3e03fbb64d303832e01f48db57734b1c5e9ae74faf269203e70ea8778e061",
         "aa811c1ebee755d42b74b195cba4607ce78f3839fa916195e2e71a8388f795ac",
     ),
     (
         FloppyFormat::Hd12,
         true,
+        "a5c61e6a375f08bc99dc110a0dc257e771b2f1acbdfbd30e41ae2cf4cdbc6443",
         "b4fa9598d115f73fa63ed7f668dded56c738b80d23402b0489c0f3c78554a11d",
     ),
     (
         FloppyFormat::Dd720,
         false,
+        "ab982731bf2232aa554224b642916f962b28dbbddad24a6588d2c3bbc10124c9",
         "5a0ef43713bcbd4101bbf430f8600dab868c0292b512e72a11a7c65a82cec27a",
     ),
     (
         FloppyFormat::Dd720,
         true,
+        "896aaead449eddb56a113dd998a15ca55afeb873c15df9bae4502e6edce479ee",
         "3f21c59e2d4d5ae30582544e57bb9d5c0ec9e8e97df343b378bbd6df8a07e017",
     ),
     (
         FloppyFormat::Dd360,
         false,
+        "36fb37973a5e2ade4d1f6f5ae1a666acaf1d537dec213693e47dd4f88ca2182c",
         "42b2f137eabbcec61ade48304df9dc088bbf331df0bc2ff7a3a1dcea7828c1ef",
     ),
     (
         FloppyFormat::Dd360,
         true,
+        "d43ecb1d4c0bba5345b0b51733ed01e5534ebceee79fa0030866adfefa8322f9",
         "ab694193a5ceda0c07acddff3491564405467c53243baf5030ce1581ca161136",
     ),
 ];
+
+/// The image with its boot code replaced by the earlier halt loop
+/// (`cli; hlt; jmp $-1`) and zeros up to the signature.
+fn with_halt_loop(image: &[u8]) -> Vec<u8> {
+    let mut image = image.to_vec();
+    image[62..510].fill(0);
+    image[62..66].copy_from_slice(&[0xFA, 0xF4, 0xEB, 0xFD]);
+    image
+}
 
 fn sha256(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
@@ -128,11 +150,12 @@ fn sha256(bytes: &[u8]) -> String {
 fn blank_volumes_are_byte_identical_to_the_previous_formatter() {
     let scratch = Scratch::new("blank");
     let empty = scratch.file("empty.txt", b"");
-    for (format, labelled, expected) in BLANK_SHA256 {
+    for (format, labelled, expected, before) in BLANK_SHA256 {
         let label = labelled.then(|| volume_label("test disk").unwrap());
         let mut blank = format_metadata(format, label);
         blank.resize(format.image_bytes() as usize, 0);
         assert_eq!(sha256(&blank), expected, "{format} labelled={labelled}");
+        assert_eq!(sha256(&with_halt_loop(&blank)), before, "{format}");
         // The builder starts from the same bytes: an empty file adds only its
         // root entry, and no cluster.
         let (mut built, plan) = build(&Request {
@@ -214,8 +237,8 @@ fn every_format_reads_back_files_and_folders() {
             .into_iter()
             .map(|e| e.name)
             .collect();
-        // Host-name byte order: upper case sorts before lower case.
-        assert_eq!(root, ["GAME.EXE", "DATA", "DOCS", "README.TXT"], "{format}");
+        // Files first, then folders, each by the bytes of the stored names.
+        assert_eq!(root, ["GAME.EXE", "README.TXT", "DATA", "DOCS"], "{format}");
         assert_eq!(volume.list("DOCS").unwrap().len(), 2, "only . and ..");
         for (relative, bytes) in &files {
             let path = relative.to_ascii_uppercase().replace('/', "\\");
@@ -1172,7 +1195,8 @@ fn a_split_puts_a_folders_own_files_before_its_subfolders() {
             vec!["GAME\\AAA\\DEEP\\THREE.DAT", "GAME\\ZZZ\\LAST.DAT"],
         ]
     );
-    // On each disk the directory entries stay in host-name order.
+    // On each disk a folder's directory entries are its files, then its
+    // folders: the order the split takes them in.
     let listed: Vec<String> = Volume::open(&images[0])
         .unwrap()
         .list("GAME")
@@ -1182,7 +1206,7 @@ fn a_split_puts_a_folders_own_files_before_its_subfolders() {
         .collect();
     assert_eq!(
         listed,
-        [".", "..", "AAA", "INSTALL.BAT", "README.TXT", "SETUP.EXE"]
+        [".", "..", "INSTALL.BAT", "README.TXT", "SETUP.EXE", "AAA"]
     );
     // One disk lists its files in the same order.
     let one = plan(&Request {
