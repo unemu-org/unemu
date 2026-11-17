@@ -38,7 +38,11 @@ host path.
 
 The maintainer chose TOML after reading this corpus. From here on only the
 TOML files change; the `.hcl` files are kept as they were, as the evidence
-for the fallback, and no longer match the TOML of the three folders below.
+for the fallback, and no longer match the TOML of the three folders below. They are
+also the first round's full title records of those folders: a test in
+`pc-image` (`recipe_check`) reads their `title`, `needs` and `ids` blocks and
+compares them, field by field, with each recipe merged with its work file
+(recipes.md §19.2, B5).
 
 Three folders gained a **work file** (`*.work.toml`, recipes.md §6.16) with
 what their releases share, and two gained a release to exercise it: Ken's

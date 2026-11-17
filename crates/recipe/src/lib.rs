@@ -11,13 +11,16 @@
 //! through the traits of [`provider`] (recipes §10). [`schema`] writes the
 //! JSON Schema of the format from the same key tables and the providers.
 //!
-//! Work files (recipes §6.16) are read as far as the checks need: their
-//! tables, their recipe version and their vocabulary against the platform
-//! of each recipe that names them. Building, fetching and planning are not
-//! here.
+//! Work files (recipes §6.16) are checked with the recipes that name them:
+//! their tables, their recipe version and their vocabulary against the
+//! platform of each such recipe. [`merge_path`] merges a recipe that passes
+//! the checks with its work file into one description record
+//! ([`merge::Merged`]), the title metadata a build writes. Building,
+//! fetching and planning are not here.
 
 mod check;
 mod finding;
+pub mod merge;
 pub mod model;
 mod parse;
 pub mod provider;
@@ -208,6 +211,75 @@ pub(crate) fn check_text(name: &str, text: &str, providers: Providers<'_>) -> Re
         files: vec![report],
         findings: findings.into_iter().collect(),
     }
+}
+
+/// What [`merge_path`] gives for one file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Shown {
+    /// The file is a Mediafile that passes the checks: its merged record.
+    Merged(Box<merge::Merged>),
+    /// The file does not pass the checks: their report, with findings.
+    Refused(Report),
+    /// The file passes the checks but is no Mediafile, so it has no title
+    /// record to merge: a Firmwarefile or a work file.
+    NotMedia(What),
+}
+
+/// Check one recipe file, as [`check_paths`] does, and merge a Mediafile
+/// that passes with the work file it names (recipes §6.16). An I/O error is
+/// a file that cannot be read at all, or one that no longer reads as it did
+/// when it was checked (`InvalidData`): the files are read twice.
+pub fn merge_path(path: &Path, providers: Providers<'_>) -> io::Result<Shown> {
+    let report = check_paths(&[path.to_path_buf()], providers)?;
+    if !report.is_clean() {
+        return Ok(Shown::Refused(report));
+    }
+    match report.files.first().and_then(|f| f.what) {
+        Some(What::Media) => {}
+        Some(what) => return Ok(Shown::NotMedia(what)),
+        None => return Err(changed(path)),
+    }
+    let Some(Document::Recipe(recipe)) = document(path)? else {
+        return Err(changed(path));
+    };
+    let work = match &recipe.work {
+        Some(id) => {
+            let file = path
+                .parent()
+                .unwrap_or(Path::new(""))
+                .join(format!("{}.work.toml", id.value));
+            match document(&file)? {
+                Some(Document::Work(work)) => Some(work),
+                _ => return Err(changed(&file)),
+            }
+        }
+        None => None,
+    };
+    match merge::merge(&recipe, work.as_deref()) {
+        Some(merged) => Ok(Shown::Merged(Box::new(merged))),
+        None => Err(changed(path)),
+    }
+}
+
+/// A file that passed the checks and then no longer read as it did.
+fn changed(path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "{}: changed while it was read; check it again",
+            path.display()
+        ),
+    )
+}
+
+/// The document a file holds, read again after the checks passed on it.
+fn document(path: &Path) -> io::Result<Option<Document>> {
+    let bytes = std::fs::read(path).map_err(|e| named(path, e))?;
+    let (Some(source), _) = read(&path.display().to_string(), bytes) else {
+        return Ok(None);
+    };
+    let mut sink = Sink::new(&source);
+    Ok(syntax::parse(&mut sink).and_then(|root| parse::document(&mut sink, &root)))
 }
 
 /// A work file read for the recipes that name it.

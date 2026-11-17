@@ -1485,6 +1485,28 @@ After a change to the format or a provider vocabulary, regenerate it:
 UNEMUPC_WRITE_RECIPE_SCHEMA=1 cargo test --offline -p pc-image --test recipe_check
 ```
 
+`upcli recipe show FILE` prints a media recipe's title record merged with
+the work file it names, by the rules of design/recipes.md §6.16, as the
+build will write the set's title metadata:
+
+```sh
+cargo run --offline -p cli -- recipe show backlog/docs/design/recipe-corpus/kenslab-2.01/kenslab-2.01.media.toml
+```
+
+The first line is `NAME:TAG`, the digest or `draft`, and the platform; then
+one line per value, a field name, a tab and the value (text quoted), with
+the names and order of `upcli image media show`'s catalogue lines
+(`publisher`, `developer`, `year`, `genre`, `platform`, `description`,
+`version`, `edition`, `requirements`, `need`, `work`, `synopsis`,
+`work-id`, `set-label`) and the title fields that command does not print
+beside them (`title`, `sort-title`, `series`, `players MIN MAX`,
+`language`, `region`, `source-media`). A value that came from the work file
+ends in `# from NAME.work.toml`. The recipe must pass `recipe check`: if it
+does not, `show` prints the check's report instead and exits 1. Exit 2 on a
+usage error, a file that cannot be read, a folder, or a file that is not a
+media recipe (a firmware recipe or a work file has no title record to
+merge).
+
 ## Creating disk images
 
 ```sh

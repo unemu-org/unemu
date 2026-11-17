@@ -1234,6 +1234,7 @@ the set of commands is the proposal.
 | Command | What it does |
 | --- | --- |
 | `upcli recipe check FILE` | The static checks of §6.11. Reads nothing else. |
+| `upcli recipe show FILE` | A media recipe's identity and its description merged with its work file (§6.16), each value from the work file marked. Refuses a recipe that does not pass `check`. |
 | `upcli recipe plan FILE\|REF [--json]` | Resolves every input and prints the report of §3.5. Writes nothing. |
 | `upcli recipe build FILE\|REF [--fetch] [--library DIR]…` | Builds and tags the artifact and every attachment whose inputs are found. `--fetch` is the consent of R15. |
 | `upcli recipe pin FILE` | The author's build: writes `digest` into the file and the lock beside it. |
@@ -1306,7 +1307,7 @@ file is that repository's description.
 | Field | Work file | Recipe | When both state it |
 | --- | --- | --- | --- |
 | `title`, `sort_title`, `series`, `software_platform`, `players` | yes | yes | The recipe's value (Probotector) |
-| `developers`, `publishers`, `genres` | yes | yes | The recipe's list replaces the work's |
+| `developers`, `publishers`, `genres` | yes | yes | The recipe's list replaces the work's. A recipe states no empty list: it leaves the key out to keep the work's |
 | `labels` | yes | yes | The union: the work's, then the recipe's new ones |
 | `synopsis` | yes | no | — |
 | `version`, `edition`, `year`, `regions`, `languages`, `source_media`, `requirements`, `description` | no | yes | — |
@@ -1332,9 +1333,13 @@ recipe states none, it is the synopsis. Metadata schema 2 also carries the
 synopsis and the work id on their own, so the library can show one text
 for the work above its releases.
 
-**`upcli recipe show FILE`** prints the merged recipe as one TOML document,
-with a comment on each field that came from the work file. `check` works on
-the merged result and names the file a bad value came from.
+**`upcli recipe show FILE`** prints the identity line (the tag, the digest
+or `draft`, the platform) and the merged description record: `[title]`,
+`[needs]` and `[ids]` with the work file's fields, and nothing of the
+inputs, steps, media or licence. It writes them in the plain lines of
+`upcli image media show`, not as a TOML document, with a comment on each
+value that came from the work file (B5, §19.2).
+`check` works on the merged result and names the file a bad value came from.
 
 **Work files and the lock.** A work file is not pinned by the recipes that
 name it; if it were, a corrected synopsis would mean editing every recipe.
@@ -2241,6 +2246,55 @@ Depends on: B4, B2 (the work id and synopsis need schema 2). Must prove:
 the three corpus folders with work files show the same merged record the
 first-round recipes stated in full; each merge rule has a test, the label
 union and the list replacement above all.
+Done on 2026-11-18 (`upc-5pw.113.5`). The merge is `recipe::merge`:
+`merge_path(FILE, providers)` runs the checks on the file and gives
+`Shown::Merged` for a media recipe that passes, `Shown::Refused` with the
+check's report, or `Shown::NotMedia`; a file that no longer reads as it did when it was checked is
+an error of its own. `Merged` holds the identity; each field the recipe and
+its work file share, with the file it came from (`Sourced`, `Origin`);
+the release fields, the recipe's alone, as plain values; the synopsis; and
+`[ids]` and `[needs]` per key, each with its file; `Merged::title` maps it onto
+`image_store::metadata::Title` and `Merged::metadata` onto the whole
+metadata (the platform by its current id, the labels as the envelope's
+labels, the one title). `upcli recipe show FILE` prints it (commands.md,
+Checking recipes). Decisions taken while building it:
+- The first-round full records are the `.hcl` copies of the corpus, which
+  the corpus keeps as the first round wrote them (corpus README, second
+  round); the TOML files were rewritten in place. MEASURED, field by field
+  through a test that reads their `title`, `needs` and `ids` blocks: all
+  seven recipes that have one (FreeDOS's three, Ken's Labyrinth 2.01,
+  Contra's USA, Japan and Europe, the last with the test provider for
+  `nes`) merge to the same title, series, version, edition, year,
+  publishers, developers, genres, software platform, regions, players,
+  description, needs and ids. The merge adds what schema 2 gives the work:
+  the work id and the synopsis. Labels are the same set; Ken's Labyrinth
+  2.01's are in another order (`game`, `first-person-shooter`, `freeware`
+  where the first round wrote `freeware` second), because the union puts
+  the work's labels first. Since labels keep their order in the metadata,
+  a build of that recipe writes other metadata bytes than an import with
+  the first round's order would.
+- The record's `id` is the last component of `name`, as §6.4 says, so the
+  work id for a recipe that names one; a test asserts it on the corpus.
+  `image media import`, which B7 hands its outputs to, writes the id
+  `title` for every set today; ruled 2026-11-18: in B7 the importer follows
+  §6.4.
+- A recipe's empty list of credits or genres (`publishers = []`) is
+  refused (rule 1, with the advice to leave the key out, which keeps the
+  work's list): it could only mean "none", which the metadata cannot hold,
+  as it writes no empty list and absent means unknown there. The other
+  lists of `[title]` may still be empty, and an empty list in a work file
+  states nothing.
+- The union keeps each label once: the work's in its order, then the
+  recipe's it lacks, a repeat within the recipe dropped.
+- `[ids]` and `[needs]` are sorted by catalogue and kind, as the metadata
+  keeps them; a need's alternatives keep the author's order.
+- `show` prints the record in the lines of `upcli image media show`
+  rather than as one TOML document (§6.16 above), so that a recipe's
+  record and an imported set's read alike: the same field names and order, with the title fields
+  that command leaves out beside them, and `# from NAME.work.toml` after a
+  value from the work file. It takes one media recipe; a firmware recipe
+  or a work file has no title record to merge and is exit 2, as is a
+  folder.
 
 **B6. Libraries, the index and the plan.**
 Scope: library folders in preferences and `--library`; the index cache
@@ -2268,7 +2322,9 @@ Scope: `upcli recipe pin`; the lock directory; the checks of §3.8,
 including the field-by-field comparison and the work-file drift report;
 building from a lock with a release other than the one that pinned it; the
 conformance harness that builds pinned recipes from a fixture library and
-compares digests. Depends on: B7, A2, B5. Must prove: a recipe pinned by
+compares digests; `recipe show` of a pinned recipe prints the locked
+metadata, which a build writes, rather than the merge with today's work file
+(B5 merges the work file as it is, as a draft builds). Depends on: B7, A2, B5. Must prove: a recipe pinned by
 one build of `upcli` builds the same manifest digest with another whose
 manifest writer was deliberately changed; a changed work file is reported
 and does not change the result.

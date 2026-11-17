@@ -3,6 +3,7 @@
 //! provider: the corpus of recipes.md §4.6, one fixture per rule with its
 //! exact findings, and the JSON Schema written from the providers.
 
+use image_store::metadata::{self, Metadata};
 use image_store::needs::{Form, Kind, Vocabulary};
 use pc_image::recipe::PcRecipes;
 use recipe::provider::{CatalogueEntry, FirmwareProfile, MediaProfile, Provider, VolumeProfile};
@@ -54,6 +55,7 @@ fixture! {
     rule_1_unknown_and_missing_keys: "rule01-keys.media.toml",
     rule_1_toml_1_1_forms: "rule01-toml-1.1.media.toml",
     rule_1_types_and_values: "rule01-values.media.toml",
+    rule_1_empty_credits_and_genres: "rule01-empty-credits.media.toml",
     rule_2_identity_and_kind: "rule02-kind.media.toml",
     rule_2_no_identity_table: "rule02-no-identity.media.toml",
     rule_3_names_and_references: "rule03-references.media.toml",
@@ -336,11 +338,9 @@ impl FirmwareProfile for Future {
     }
 }
 
-/// The whole corpus passes once the two future platforms have providers:
-/// the engine's part of the format needs nothing of either (recipes §10).
-#[test]
-fn the_whole_corpus_passes_with_a_provider_for_every_platform() {
-    let nes = Future {
+/// The NES as the corpus assumes it.
+fn nes() -> Future {
+    Future {
         platform: "nes",
         formats: &["ines"],
         exact: None,
@@ -349,7 +349,14 @@ fn the_whole_corpus_passes_with_a_provider_for_every_platform() {
             name: "tv_system",
             form: Form::Choice(&["ntsc", "pal"]),
         }],
-    };
+    }
+}
+
+/// The whole corpus passes once the two future platforms have providers:
+/// the engine's part of the format needs nothing of either (recipes §10).
+#[test]
+fn the_whole_corpus_passes_with_a_provider_for_every_platform() {
+    let nes = nes();
     let amiga = Future {
         platform: "amiga",
         formats: &["880K"],
@@ -389,4 +396,208 @@ fn the_published_schema_is_the_generated_one() {
         published == generated,
         "{SCHEMA} is not the generated schema; regenerate it with UNEMUPC_WRITE_RECIPE_SCHEMA=1"
     );
+}
+
+/// The first round's full title record of a corpus recipe: the `title`,
+/// `needs` and `ids` blocks of its `.hcl` copy, which the corpus keeps as
+/// that round wrote it, before the work files (corpus README, second
+/// round). The blocks are flat `key = value` lines, which read as TOML.
+fn first_round(hcl: &str) -> (metadata::Title, Vec<String>) {
+    let text = std::fs::read_to_string(format!("{CORPUS}/{hcl}")).unwrap();
+    let mut toml = String::new();
+    let mut inside = false;
+    for line in text.lines() {
+        if let Some(block) = ["title", "needs", "ids"]
+            .into_iter()
+            .find(|b| line == format!("{b} {{"))
+        {
+            toml.push_str(&format!("[{block}]\n"));
+            inside = true;
+        } else if line == "}" {
+            inside = false;
+        } else if inside {
+            toml.push_str(line);
+            toml.push('\n');
+        }
+    }
+    let table: toml::Table = toml.parse().unwrap();
+    let title = table["title"].as_table().unwrap();
+    let text = |key: &str| title.get(key).map(|v| v.as_str().unwrap().to_owned());
+    let list = |key: &str| -> Vec<String> {
+        title.get(key).map_or_else(Vec::new, |v| {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s.as_str().unwrap().to_owned())
+                .collect()
+        })
+    };
+    let known = [
+        "title",
+        "series",
+        "version",
+        "edition",
+        "year",
+        "publishers",
+        "developers",
+        "genres",
+        "software_platform",
+        "regions",
+        "players",
+        "labels",
+        "description",
+    ];
+    for key in title.keys() {
+        assert!(known.contains(&key.as_str()), "{hcl}: unmapped field {key}");
+    }
+    let values = |table: Option<&toml::Value>| {
+        table
+            .map(|t| t.as_table().unwrap().clone())
+            .unwrap_or_default()
+    };
+    let record = metadata::Title {
+        title: text("title").unwrap(),
+        series: text("series"),
+        version: text("version"),
+        edition: text("edition"),
+        release_year: title.get("year").map(|y| y.as_integer().unwrap()),
+        publishers: list("publishers"),
+        developers: list("developers"),
+        genres: list("genres"),
+        platform: text("software_platform"),
+        regions: list("regions"),
+        players: title.get("players").map(|p| metadata::Players {
+            min: p["min"].as_integer().unwrap() as u32,
+            max: p["max"].as_integer().unwrap() as u32,
+        }),
+        description: text("description"),
+        needs: values(table.get("needs"))
+            .into_iter()
+            .map(|(kind, v)| {
+                let values = match v {
+                    toml::Value::String(one) => vec![one],
+                    v => v
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|s| s.as_str().unwrap().to_owned())
+                        .collect(),
+                };
+                (kind, values)
+            })
+            .collect(),
+        work_ids: values(table.get("ids"))
+            .into_iter()
+            .map(|(catalogue, id)| (catalogue, id.as_str().unwrap().to_owned()))
+            .collect(),
+        ..metadata::Title::default()
+    };
+    (record, list("labels"))
+}
+
+fn merged(recipe: &str, providers: &[&dyn Provider]) -> recipe::merge::Merged {
+    let path = PathBuf::from(format!("{CORPUS}/{recipe}"));
+    match recipe::merge_path(&path, Providers(providers)).unwrap() {
+        recipe::Shown::Merged(merged) => *merged,
+        other => panic!("{recipe}: {other:?}"),
+    }
+}
+
+/// The work file's synopsis, read as written.
+fn synopsis(work: &str) -> String {
+    let text = std::fs::read_to_string(format!("{CORPUS}/{work}")).unwrap();
+    let table: toml::Table = text.parse().unwrap();
+    table["title"]["synopsis"].as_str().unwrap().to_owned()
+}
+
+/// Each recipe of the three corpus folders with a work file, merged with
+/// it, gives the title record its first-round copy stated in full, field by
+/// field, and its labels as a set. What the merge adds is the work's own
+/// fields of metadata schema 2, the work id and the synopsis, and the
+/// record's id, which is the last component of the recipe's `name`
+/// (recipes §6.4). The two releases added with the work files have no
+/// first round.
+#[test]
+fn the_corpus_work_files_merge_into_the_first_rounds_full_records() {
+    let nes = nes();
+    let providers: [&dyn Provider; 2] = [&PcRecipes, &nes];
+    let cases = [
+        ("freedos-1.4-floppy/freedos-1.4", "freedos"),
+        ("freedos-1.4-floppy/freedos-1.4-1.2m", "freedos"),
+        ("freedos-1.4-floppy/freedos-1.4-720k", "freedos"),
+        ("kenslab-2.01/kenslab-2.01", "kenslab"),
+        ("contra-nes/contra-usa", "contra"),
+        ("contra-nes/contra-japan", "contra"),
+        ("contra-nes/contra-europe", "contra"),
+    ];
+    for (recipe, work) in cases {
+        let folder = recipe.split('/').next().unwrap();
+        let (mut expected, labels) = first_round(&format!("{recipe}.media.hcl"));
+        expected.work_id = Some(work.into());
+        expected.synopsis = Some(synopsis(&format!("{folder}/{work}.work.toml")));
+        let merged = merged(&format!("{recipe}.media.toml"), &providers);
+        let title = merged.title();
+        // The record's id, read from the recipe's own `name`.
+        let text = std::fs::read_to_string(format!("{CORPUS}/{recipe}.media.toml")).unwrap();
+        let table: toml::Table = text.parse().unwrap();
+        let name = table["media"]["name"].as_str().unwrap();
+        assert_eq!(title.id, name.rsplit('/').next().unwrap(), "{recipe}");
+        assert_eq!(title.id, work, "{recipe}");
+        assert_eq!(
+            metadata::Title {
+                id: String::new(),
+                ..title
+            },
+            expected,
+            "{recipe}"
+        );
+        let mut merged_labels = merged.metadata().labels;
+        let mut labels = labels;
+        merged_labels.sort();
+        labels.sort();
+        assert_eq!(merged_labels, labels, "{recipe}");
+    }
+    // The union puts the work file's labels first: the full version's own
+    // label follows the work's two, where the first round had it second.
+    assert_eq!(
+        merged("kenslab-2.01/kenslab-2.01.media.toml", &providers)
+            .metadata()
+            .labels,
+        ["game", "first-person-shooter", "freeware"]
+    );
+    assert_eq!(
+        first_round("kenslab-2.01/kenslab-2.01.media.hcl").1,
+        ["game", "freeware", "first-person-shooter"]
+    );
+}
+
+/// Every recipe of the three folders, the two new releases included, maps
+/// onto metadata schema 2 that encodes and decodes to the same record, and
+/// encodes again to the same bytes.
+#[test]
+fn the_merged_corpus_records_round_trip_through_schema_2_metadata() {
+    let nes = nes();
+    let providers: [&dyn Provider; 2] = [&PcRecipes, &nes];
+    for recipe in [
+        "freedos-1.4-floppy/freedos-1.4",
+        "freedos-1.4-floppy/freedos-1.4-1.2m",
+        "freedos-1.4-floppy/freedos-1.4-720k",
+        "kenslab-2.01/kenslab-2.01",
+        "kenslab-2.01/kenslab-1.0-shareware",
+        "contra-nes/contra-usa",
+        "contra-nes/contra-usa-rev1",
+        "contra-nes/contra-japan",
+        "contra-nes/contra-europe",
+    ] {
+        let metadata = merged(&format!("{recipe}.media.toml"), &providers).metadata();
+        let bytes = metadata.encode(&[]).unwrap();
+        let decoded = Metadata::decode(&bytes, &[]).unwrap();
+        assert_eq!(decoded.schema(), 2, "{recipe}");
+        assert_eq!(
+            (&decoded.platform, &decoded.labels, &decoded.titles),
+            (&metadata.platform, &metadata.labels, &metadata.titles),
+            "{recipe}"
+        );
+        assert_eq!(decoded.encode(&[]).unwrap(), bytes, "{recipe}");
+    }
 }

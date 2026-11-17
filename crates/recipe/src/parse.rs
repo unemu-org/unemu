@@ -161,7 +161,16 @@ impl Checker<'_, '_> {
                 }
             },
             (Ty::Array { item, min }, DeValue::Array(items)) => {
-                if items.len() < *min {
+                // In a recipe's [title] only the credits and genres take at
+                // least one item: an empty list there would state nothing
+                // (recipes §6.16), so the message says what to write instead.
+                if items.is_empty() && *min > 0 && path.starts_with("title.") {
+                    self.finding(
+                        &span,
+                        path,
+                        "an empty list states nothing: leave the key out, which keeps the work file's list",
+                    );
+                } else if items.len() < *min {
                     self.finding(&span, path, format!("expected at least {min} item"));
                 }
                 let nodes = items

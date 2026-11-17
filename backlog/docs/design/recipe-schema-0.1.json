@@ -1607,6 +1607,7 @@
           "items": {
             "$ref": "#/$defs/line"
           },
+          "minItems": 1,
           "type": "array"
         },
         "edition": {
@@ -1616,6 +1617,7 @@
           "items": {
             "$ref": "#/$defs/line"
           },
+          "minItems": 1,
           "type": "array"
         },
         "labels": {
@@ -1637,6 +1639,7 @@
           "items": {
             "$ref": "#/$defs/line"
           },
+          "minItems": 1,
           "type": "array"
         },
         "regions": {
@@ -1685,6 +1688,7 @@
           "items": {
             "$ref": "#/$defs/line"
           },
+          "minItems": 1,
           "type": "array"
         },
         "edition": {
@@ -1694,6 +1698,7 @@
           "items": {
             "$ref": "#/$defs/line"
           },
+          "minItems": 1,
           "type": "array"
         },
         "labels": {
@@ -1715,6 +1720,7 @@
           "items": {
             "$ref": "#/$defs/line"
           },
+          "minItems": 1,
           "type": "array"
         },
         "regions": {

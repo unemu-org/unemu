@@ -5,6 +5,20 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — Work files merge, and `upcli recipe show`:** a media
+  recipe and the work file it names merge into one description record,
+  field by field as design/recipes.md §6.16 rules (B5): a single value is
+  the recipe's when it states one; a recipe's list of publishers,
+  developers or genres replaces the work's whole; labels are the union, the
+  work's first; `[ids]` and `[needs]` merge per key; the description falls
+  back to the synopsis. `recipe::merge_path` checks the file and merges it,
+  and `Merged::title` and `Merged::metadata` give the title metadata of
+  schema 2 a build will write, which encodes and decodes unchanged.
+  `upcli recipe show FILE` prints the record in the lines of `upcli image
+  media show`, each value from the work file marked, or the check's
+  findings with exit 1. The seven corpus recipes of the three folders with
+  work files that had a first round give its full records field by field;
+  the labels of Ken's Labyrinth 2.01 differ in order only (MEASURED).
 - **2026-11-18 — The desktop's skin and widget helpers move to a `ui-kit`
   crate:** first step of the window split (design/core-contract.md §8).
   The new crate (layer `neutral`; the boundary check counts it as a window

@@ -175,6 +175,14 @@ const LINES: Ty = Ty::Array {
     item: &LINE,
     min: 0,
 };
+/// A recipe's credits and genres: a list it states replaces its work
+/// file's whole, so an empty one could only mean "none", which metadata
+/// cannot hold (absent is unknown there); it is refused, and leaving the key
+/// out keeps the work file's list (recipes §6.16).
+const CREDITS: Ty = Ty::Array {
+    item: &LINE,
+    min: 1,
+};
 const LABELS: Ty = Ty::Array {
     item: &Ty::Str(Text::Id),
     min: 0,
@@ -222,9 +230,9 @@ pub static TITLE: Table = table(
         opt("description", Ty::Str(Text::Text)),
         opt("requirements", LINE),
         opt("year", Ty::Int { min: 1, max: 9999 }),
-        opt("publishers", LINES),
-        opt("developers", LINES),
-        opt("genres", LINES),
+        opt("publishers", CREDITS),
+        opt("developers", CREDITS),
+        opt("genres", CREDITS),
         opt("languages", LINES),
         opt("regions", LINES),
         opt("software_platform", Ty::Vocab(Vocab::SoftwarePlatform)),

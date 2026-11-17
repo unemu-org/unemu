@@ -57,6 +57,7 @@ const USAGE: &str = "usage: upcli --boot (Real16 timer demo)
        upcli image registry set HOST [--private | --namespace NAME[:private|:public]...] [--config FILE]
        upcli image template build --store DIR [--vendor DIR] [--dry-run]
        upcli recipe check FILE|FOLDER... (the static checks of recipes and work files; exit 0 clean, 1 with findings)
+       upcli recipe show FILE (a media recipe's title record merged with its work file; exit 1 with the check's findings)
        upcli media create floppy --type 1.44M|1.2M|720K|360K OUT [--format] [--label NAME] [--force]
        upcli media create floppy --type 1.44M|1.2M|720K|360K OUT --add PATH [--add PATH]... [--top NAME] [--label NAME] [--split] [--force]
          --add copies host files and folders (folders whole, symlinks never followed) onto a new FAT12 disk with 8.3 names;
