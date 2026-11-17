@@ -1993,86 +1993,213 @@ fn media_set(store: &Store, label: &[u8]) -> Descriptor {
     store.import_manifest(&manifest).unwrap()
 }
 
+/// The tags of sets and packages: a revision tag (`[<release>-]rN`) never
+/// moves, not even from the confirmed digest, and no set takes one that names
+/// another image; writing a revision moves the alias of its release forward
+/// in the same compare-and-swap; the alias never moves backward or to
+/// another release; no `latest`. A tag an earlier release wrote, such as
+/// `1.3`, stays where it is.
 #[test]
-fn media_set_tags_never_move_unless_they_are_aliases() {
+fn revision_tags_never_move_and_aliases_move_only_forward() {
     let dir = Temp::new();
     let store = dir.store();
     let sets = image_store::media_set::Validator(&Floppies);
     let first = media_set(&store, b"first set");
     let second = media_set(&store, b"second set");
-    for tag in ["sets:1.4", "sets:1.4-registered-720k-r2", "sets:latest"] {
-        store.update_tag(tag, &first, None, &sets).unwrap();
-    }
-    // Not even the confirmed current digest moves a set's tag, and the
+    let other = media_set(&store, b"another release");
+    let named = |tag: &str| store.tag_descriptor(tag).map(|d| d.digest);
+    store
+        .update_tag("sets:1.4-r1", &first, None, &sets)
+        .unwrap();
+    assert_eq!(named("sets:1.4").unwrap(), first.digest);
+    // Not even the confirmed current digest moves a revision tag, and the
     // refusal offers the next revision.
-    for (tag, revision) in [
-        ("sets:1.4", "sets:1.4-r2"),
-        ("sets:1.4-registered-720k-r2", "sets:1.4-registered-720k-r3"),
-    ] {
+    let error = store
+        .update_tag("sets:1.4-r1", &second, Some(&first.digest), &sets)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("never move") && error.contains("sets:1.4-r2"),
+        "{error}"
+    );
+    for expected in [None, Some(&first.digest)] {
         let error = store
-            .update_tag(tag, &second, Some(&first.digest), &sets)
+            .check_tag_target("sets:1.4-r1", expected, None)
             .unwrap_err()
             .to_string();
-        assert!(
-            error.contains("never move") && error.contains(revision),
-            "{error}"
-        );
-        for expected in [None, Some(&first.digest)] {
-            let error = store
-                .check_tag_target(tag, expected, None)
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains("never move"), "{error}");
-        }
-        assert_eq!(store.tag_descriptor(tag).unwrap().digest, first.digest);
-        // Writing the same digest again is not a move.
-        store
-            .update_tag(tag, &first, Some(&first.digest), &sets)
-            .unwrap();
+        assert!(error.contains("never move"), "{error}");
     }
-    // An alias moves from the confirmed digest.
+    // Writing the same digest again is not a move.
     store
-        .check_tag_target("sets:latest", Some(&first.digest), None)
+        .update_tag("sets:1.4-r1", &first, Some(&first.digest), &sets)
         .unwrap();
+    // A new revision moves the alias forward with it.
     store
-        .update_tag("sets:latest", &second, Some(&first.digest), &sets)
+        .update_tag("sets:1.4-r2", &second, None, &sets)
         .unwrap();
-    assert_eq!(
-        store.tag_descriptor("sets:latest").unwrap().digest,
-        second.digest
-    );
+    assert_eq!(named("sets:1.4").unwrap(), second.digest);
+    assert_eq!(named("sets:1.4-r1").unwrap(), first.digest);
+    // Never backward, never to another release, even from the confirmed
+    // digest.
+    store
+        .update_tag("sets:1.5-r1", &other, None, &sets)
+        .unwrap();
+    for image in [&first, &other] {
+        let error = store
+            .update_tag("sets:1.4", image, Some(&second.digest), &sets)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("alias"), "{error}");
+    }
+    assert_eq!(named("sets:1.4").unwrap(), second.digest);
+    // An older revision written again leaves the alias where it is.
+    store.remove_tag("sets:1.4-r1", &first.digest).unwrap();
+    store
+        .update_tag("sets:1.4-r1", &first, None, &sets)
+        .unwrap();
+    assert_eq!(named("sets:1.4").unwrap(), second.digest);
+    // An alias written by hand is a compare-and-swap too.
+    store.remove_tag("sets:1.4", &second.digest).unwrap();
+    store.update_tag("sets:1.4", &second, None, &sets).unwrap();
+    assert!(matches!(
+        store.update_tag("sets:1.4", &second, None, &sets),
+        Err(Error::Conflict { current: Some(d) }) if d == second.digest
+    ));
+    store
+        .check_tag_target("sets:1.4", Some(&second.digest), None)
+        .unwrap();
+    assert_eq!(named("sets:1.4").unwrap(), second.digest);
+    // No set or package is tagged latest.
+    let error = store
+        .update_tag("sets:latest", &first, None, &sets)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no latest"), "{error}");
+    assert!(matches!(named("sets:latest"), Err(Error::TagNotFound(_))));
+    // A tag an earlier release wrote, as a pull of a registry from before
+    // revisions writes it, reads as an alias without revisions, and stays.
+    store
+        .update_pulled_tag("sets:1.3", &first, None, &sets, "registry.example")
+        .unwrap();
+    let error = store
+        .update_tag("sets:1.3", &second, Some(&first.digest), &sets)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("alias"), "{error}");
     // A machine image keeps the version-tag rule: a tag of the same shape
     // moves from the confirmed digest.
     let provider = Provider("zx-spectrum");
     let (machine, _) = fixture(&store, b"machine");
-    let (other, _) = fixture(&store, b"other machine");
-    let machine = publish(&store, &machine, "lab:1.4");
-    let other = store.import_manifest(&other).unwrap();
+    let (another, _) = fixture(&store, b"other machine");
+    let machine = publish(&store, &machine, "lab:1.4-r1");
+    let another = store.import_manifest(&another).unwrap();
     store
-        .check_tag_target("lab:1.4", Some(&machine.digest), None)
+        .check_tag_target("lab:1.4-r1", Some(&machine.digest), None)
         .unwrap();
     store
-        .update_tag("lab:1.4", &other, Some(&machine.digest), &provider)
+        .update_tag("lab:1.4-r1", &another, Some(&machine.digest), &provider)
         .unwrap();
     // But no set takes its tag, and it takes no set's tag.
     let error = store
-        .update_tag("lab:1.4", &second, Some(&other.digest), &sets)
+        .update_tag("lab:1.4-r1", &second, Some(&another.digest), &sets)
         .unwrap_err()
         .to_string();
     assert!(error.contains("never move"), "{error}");
     let error = store
-        .update_tag("sets:1.4", &other, Some(&first.digest), &provider)
+        .update_tag("sets:1.4-r1", &another, Some(&first.digest), &provider)
         .unwrap_err()
         .to_string();
     assert!(error.contains("never move"), "{error}");
-    assert_eq!(
-        store.tag_descriptor("lab:1.4").unwrap().digest,
-        other.digest
+    assert_eq!(named("lab:1.4-r1").unwrap(), another.digest);
+    assert_eq!(named("sets:1.4-r1").unwrap(), first.digest);
+}
+
+/// The version rule of machine images does not bind sets and packages: a
+/// release shaped like a semantic version is an alias like any other.
+#[test]
+fn a_set_release_shaped_like_a_version_is_an_alias_like_any_other() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let sets = image_store::media_set::Validator(&Floppies);
+    let first = media_set(&store, b"first set");
+    let second = media_set(&store, b"second set");
+    let named = |tag: &str| store.tag_descriptor(tag).map(|d| d.digest);
+    store.update_tag("y:1.0.0-r1", &first, None, &sets).unwrap();
+    assert_eq!(named("y:1.0.0").unwrap(), first.digest);
+    store
+        .update_tag("y:1.0.0-r2", &second, None, &sets)
+        .unwrap();
+    assert_eq!(named("y:1.0.0").unwrap(), second.digest);
+    // Deleted, it is no retired version: it is written again at its newest
+    // revision.
+    store.remove_tag("y:1.0.0", &second.digest).unwrap();
+    store.update_tag("y:1.0.0", &second, None, &sets).unwrap();
+    store
+        .check_tag_target("y:1.0.0", Some(&second.digest), None)
+        .unwrap();
+}
+
+/// A new alias of a set or package names the newest revision of its release
+/// here; a set takes no new tag outside the scheme. A pull of a registry
+/// from before revisions writes its alias as it is.
+#[test]
+fn a_new_alias_names_the_newest_revision_and_no_set_takes_a_tag_outside_the_scheme() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let sets = image_store::media_set::Validator(&Floppies);
+    let first = media_set(&store, b"first set");
+    let second = media_set(&store, b"second set");
+    let error = store
+        .update_tag("x:1.0", &first, None, &sets)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("x:1.0-r1") && error.contains("the alias x:1.0 follows"),
+        "{error}"
     );
-    assert_eq!(
-        store.tag_descriptor("sets:1.4").unwrap().digest,
-        first.digest
-    );
+    for tag in ["x:Beta", "x:1.0-R1", "x:latest"] {
+        assert!(store.update_tag(tag, &first, None, &sets).is_err(), "{tag}");
+    }
+    store.update_tag("x:1.0-r1", &first, None, &sets).unwrap();
+    store.update_tag("x:1.0-r2", &second, None, &sets).unwrap();
+    store.remove_tag("x:1.0", &second.digest).unwrap();
+    let error = store
+        .update_tag("x:1.0", &first, None, &sets)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("x:1.0-r2"), "{error}");
+    store.update_tag("x:1.0", &second, None, &sets).unwrap();
+    store
+        .update_pulled_tag("x:2.0", &first, None, &sets, "registry.example")
+        .unwrap();
+    assert!(store.tag_descriptor("x:Beta").is_err());
+}
+
+/// A revision tag names one image forever, also after it was deleted.
+#[test]
+fn a_deleted_revision_tag_names_no_other_image() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let sets = image_store::media_set::Validator(&Floppies);
+    let first = media_set(&store, b"first set");
+    let second = media_set(&store, b"second set");
+    store.update_tag("z:1.0-r1", &first, None, &sets).unwrap();
+    store.remove_tag("z:1.0-r1", &first.digest).unwrap();
+    let error = store
+        .update_tag("z:1.0-r1", &second, None, &sets)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("was deleted"), "{error}");
+    assert!(store
+        .check_tag_target("z:1.0-r1", None, Some(&second.digest))
+        .is_err());
+    let reopened = Store::open(&dir.0).unwrap();
+    assert!(reopened
+        .update_tag("z:1.0-r1", &second, None, &sets)
+        .is_err());
+    reopened
+        .update_tag("z:1.0-r1", &first, None, &sets)
+        .unwrap();
 }
 
 #[test]

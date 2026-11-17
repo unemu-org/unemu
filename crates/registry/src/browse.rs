@@ -130,6 +130,33 @@ pub fn list_tags(
     Err(Error::Protocol("registry paging does not end".into()))
 }
 
+/// The revision tags of `release` that `repository` has
+/// ([`image_store::tag`]), highest first, read with [`list_tags`]; none for a
+/// repository the registry does not have (`404`).
+pub fn release_revisions(
+    client: &Client,
+    repository: &str,
+    release: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<String>> {
+    let tags = match list_tags(client, repository, 100, cancelled) {
+        Err(Error::Status { status: 404, .. }) => Vec::new(),
+        other => other?,
+    };
+    let mut revisions: Vec<(u64, String)> = tags
+        .into_iter()
+        .filter_map(|name| match image_store::tag::parse(&name)? {
+            image_store::tag::Kind::Revision {
+                release: Some(of),
+                number,
+            } if of == release => Some((number, name.clone())),
+            _ => None,
+        })
+        .collect();
+    revisions.sort_by_key(|(number, _)| std::cmp::Reverse(*number));
+    Ok(revisions.into_iter().map(|(_, name)| name).collect())
+}
+
 /// Read `repository:tag`: its manifest and, for a media set or firmware
 /// package, its config record. A tag that is gone, or that names a manifest
 /// type other than the OCI image manifest, is [`Error::NotFound`].

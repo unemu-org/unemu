@@ -9,8 +9,11 @@
 //! A tag is pulled by the digest the list showed, through the path of
 //! Image › Pull by reference… ([`PullRun`]): every blob is verified as it
 //! arrives, blobs the store holds are not fetched again, and the local tag is
-//! written last, after the whole closure is verified. Pull never moves a
-//! local tag. A tag whose local name holds another image is pulled alone,
+//! written last, after the whole closure is verified. Pull moves no local
+//! tag, with one exception: a set or package pulled by its release alias
+//! writes the revision the registry's alias names and moves the local alias
+//! of that release forward to it ([`image_store::tag`]). A tag whose local
+//! name holds another image is pulled alone,
 //! under another local tag the dialog asks for; a typed tag that names
 //! another image is refused before anything is fetched. A tag this release
 //! cannot run is not offered; should the registry's manifest say so after
@@ -531,14 +534,27 @@ impl RemotePull {
             return Some(local_tag_problem(tag));
         }
         let digest = item.source.digest.as_ref();
+        // A set or package pulled by its release alias writes the revision
+        // the registry's alias names, and the local alias moves only forward
+        // with it: another image under the alias is no clash.
+        let release_alias = image_store::tag::governs(&item.artifact_type)
+            && item.source.tag.as_deref().is_some_and(|source| {
+                tag.rsplit_once(':')
+                    .is_some_and(|(_, local)| local == source)
+                    && source != image_store::tag::LATEST
+                    && matches!(
+                        image_store::tag::parse(source),
+                        Some(image_store::tag::Kind::Alias { .. })
+                    )
+            });
         if let Some((_, current)) = self
             .library
             .iter()
             .find(|(local, _)| local == tag)
-            .filter(|(_, current)| Some(current) != digest)
+            .filter(|(_, current)| Some(current) != digest && !release_alias)
         {
             return Some(format!(
-                "{tag} already names another image ({}). Pull never moves a local tag: choose another one.",
+                "{tag} already names another image ({}). Pull moves no local tag but a release alias: choose another one.",
                 short(current)
             ));
         }

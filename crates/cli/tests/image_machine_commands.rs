@@ -468,7 +468,7 @@ fn a_pending_insert_goes_into_its_drive_at_the_next_start_and_is_consumed() {
         "--title",
         "Setup disks",
         "--tag",
-        "setup:1",
+        "setup:r1",
     ]);
     lab.ok(&[
         "image",
@@ -479,11 +479,11 @@ fn a_pending_insert_goes_into_its_drive_at_the_next_start_and_is_consumed() {
         "Installer",
     ]);
     let store = lab.store();
-    let set = store.tag_descriptor("setup:1").unwrap();
+    let set = store.tag_descriptor("setup:r1").unwrap();
     let insert = PendingInsert {
         drive: "A:".into(),
         set: set.clone(),
-        reference: "setup:1".into(),
+        reference: "setup:r1".into(),
         medium: "disk-1".into(),
         all: false,
         journal: true,

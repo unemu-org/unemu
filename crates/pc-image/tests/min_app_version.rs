@@ -40,10 +40,10 @@ fn a_new_machine_inherits_the_minimum_version_of_its_firmware_packages() {
     assert_eq!(requirement(store, &plain), Requirement::Release(RENAMED_IN));
 
     // An edit states the newest release this build reads: a new revision.
-    let raised_tag = format!("firmware/{BIOS}:2");
+    let raised_tag = format!("private/firmware/ibm-pc/{BIOS}:r2");
     firmware_import::edit(
         store,
-        &format!("firmware/{BIOS}:1"),
+        &format!("private/firmware/ibm-pc/{BIOS}:r1"),
         &raised_tag,
         &Statement {
             title: Some("Raised BIOS".into()),
@@ -92,7 +92,7 @@ fn marked(open: &open_image::Open, marker: &str, tag: &str) -> Descriptor {
     let package = open
         .packages
         .iter()
-        .find(|p| p.reference == format!("firmware/{BIOS}:1"))
+        .find(|p| p.reference == format!("private/firmware/ibm-pc/{BIOS}:r1"))
         .unwrap();
     let mut manifest = package.manifest.clone();
     manifest
@@ -118,7 +118,7 @@ fn a_machine_binding_a_package_this_release_cannot_read_is_refused() {
         ("99.0.0", "needs unemupc 99.0.0 or newer"),
         ("soon", "needs a newer unemupc"),
     ] {
-        let tag = format!("firmware/marked-{marker}:1");
+        let tag = format!("private/firmware/ibm-pc/marked-{marker}:r1");
         let package = marked(&open, marker, &tag);
         let refused = |error: pc_image::Error| {
             let error = error.to_string();
@@ -149,7 +149,7 @@ fn a_machine_binding_a_package_this_release_cannot_read_is_refused() {
         let original = open
             .packages
             .iter()
-            .find(|p| p.reference == format!("firmware/{BIOS}:1"))
+            .find(|p| p.reference == format!("private/firmware/ibm-pc/{BIOS}:r1"))
             .unwrap();
         let sources = manifest.annotations["unemu.firmware.sources"].replace(
             &original.descriptor.digest.to_string(),

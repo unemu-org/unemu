@@ -7,7 +7,7 @@ use crate::{
     MAX_SMALL_BLOB,
 };
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, collections::BTreeSet};
+use std::collections::BTreeSet;
 
 /// Provider-owned format validation, independent of emulator hardware in storage.
 /// See machine-images § Platform neutrality and §5.2.
@@ -132,111 +132,6 @@ pub fn valid_id(id: &str) -> bool {
         && id
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
-}
-
-/// Whether a tag of an installation media set is an alias that may move.
-///
-/// Set tags follow `<upstream version>[-<edition>][-<format>][-rN]` (`1.4`,
-/// `1.4-720k`, `1.4-r2`, `1.4-registered-720k-r2`), so each starts with a digit
-/// of the upstream version and names one set forever, even when it is not a
-/// semantic version. A tag whose first character is not an ASCII digit
-/// (`latest`, `stable`) is an alias and moves with the usual confirmation;
-/// machine-images §5.2.
-pub fn is_alias_tag(tag: &str) -> bool {
-    !tag.starts_with(|c: char| c.is_ascii_digit())
-}
-
-/// The revision tag to offer when a set's tag already names another set: a
-/// trailing `-rN` counts up, and a tag without one gets `-r2`.
-pub fn next_revision(tag: &str) -> String {
-    let next = tag.rsplit_once("-r").and_then(|(base, number)| {
-        let number = number
-            .bytes()
-            .all(|b| b.is_ascii_digit())
-            .then(|| number.parse::<u64>().ok())
-            .flatten()?;
-        Some(format!("{base}-r{}", number.checked_add(1)?))
-    });
-    next.unwrap_or_else(|| format!("{tag}-r2"))
-}
-
-/// What orders a set tag: the upstream version's dot-separated numbers, the
-/// variant (edition and format) between them and the revision, `-rN`, r1
-/// when absent. `None` for an alias, or an upstream version with a part that
-/// is not a number.
-struct SetTag<'a> {
-    version: Vec<u64>,
-    variant: &'a str,
-    revision: u64,
-}
-
-fn set_tag(tag: &str) -> Option<SetTag<'_>> {
-    if is_alias_tag(tag) {
-        return None;
-    }
-    let (version, rest) = tag.split_once('-').unwrap_or((tag, ""));
-    let version = version
-        .split('.')
-        .map(|part| {
-            part.bytes()
-                .all(|b| b.is_ascii_digit())
-                .then(|| part.parse::<u64>().ok())
-                .flatten()
-        })
-        .collect::<Option<Vec<_>>>()?;
-    let last = rest.rsplit('-').next().unwrap_or_default();
-    let revision = last
-        .strip_prefix('r')
-        .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-    Some(match revision {
-        Some(number) => SetTag {
-            version,
-            variant: rest[..rest.len() - last.len()].trim_end_matches('-'),
-            revision: number.parse().ok()?,
-        },
-        None => SetTag {
-            version,
-            variant: rest,
-            revision: 1,
-        },
-    })
-}
-
-/// Dot-separated numbers compared part by part; a missing part counts as 0.
-fn compare_numbers(a: &[u64], b: &[u64]) -> Ordering {
-    (0..a.len().max(b.len()))
-        .map(|i| a.get(i).unwrap_or(&0).cmp(b.get(i).unwrap_or(&0)))
-        .find(|order| order.is_ne())
-        .unwrap_or(Ordering::Equal)
-}
-
-/// How two tags of one set repository compare as versions: by the upstream
-/// version's numbers, then the revision, so `1.4-r2` is newer than `1.4` and
-/// `1.5` newer than `1.4-r2`. Only tags of the same edition and format
-/// compare: `1.4-720k` is a sibling of `1.4`, never newer, and an alias never
-/// counts; both give `None`.
-pub fn compare_set_tags(a: &str, b: &str) -> Option<Ordering> {
-    let (a, b) = (set_tag(a)?, set_tag(b)?);
-    (a.variant == b.variant)
-        .then(|| compare_numbers(&a.version, &b.version).then(a.revision.cmp(&b.revision)))
-}
-
-/// Newest first, to choose the tag a set repository is shown by: the highest
-/// upstream version, then the set without a variant before its variants
-/// (alphabetically), then the highest revision. Tags that are not set tags
-/// come last: `latest`, then the others by name. A total order, independent
-/// of the order a registry lists the tags in.
-pub fn newest_set_tag_first(a: &str, b: &str) -> Ordering {
-    match (set_tag(a), set_tag(b)) {
-        // The empty variant of the plain set sorts before every other.
-        (Some(x), Some(y)) => compare_numbers(&y.version, &x.version)
-            .then_with(|| x.variant.cmp(y.variant))
-            .then_with(|| y.revision.cmp(&x.revision))
-            .then_with(|| a.cmp(b)),
-        (Some(_), None) => Ordering::Less,
-        (None, Some(_)) => Ordering::Greater,
-        (None, None) => (b == "latest").cmp(&(a == "latest")).then_with(|| a.cmp(b)),
-    }
 }
 
 /// Adapter reuses store closure, full-blob verification and CAS publication.
@@ -412,80 +307,5 @@ mod review_tests {
             config.encode().is_ok(),
             "guest device names are provider-owned"
         );
-    }
-
-    #[test]
-    fn set_tags_starting_with_a_digit_are_fixed_and_others_are_aliases() {
-        for tag in ["1.4", "1.4-720k", "1.4-r2", "1.4-registered-720k-r2", "6"] {
-            assert!(!is_alias_tag(tag), "{tag}");
-        }
-        for tag in ["latest", "stable", "v1.4", "_1"] {
-            assert!(is_alias_tag(tag), "{tag}");
-        }
-        for (tag, next) in [
-            ("1.4", "1.4-r2"),
-            ("1.4-720k", "1.4-720k-r2"),
-            ("1.4-r2", "1.4-r3"),
-            ("1.4-registered-720k-r9", "1.4-registered-720k-r10"),
-            ("1.4-registered", "1.4-registered-r2"),
-            ("1.4-r", "1.4-r-r2"),
-        ] {
-            assert_eq!(next_revision(tag), next, "{tag}");
-        }
-    }
-
-    #[test]
-    fn set_tags_compare_within_one_variant_by_version_then_revision() {
-        use Ordering::*;
-        for (a, b, order) in [
-            ("1.4", "1.3", Some(Greater)),
-            ("1.4-r2", "1.4", Some(Greater)),
-            ("1.4", "1.4-r1", Some(Equal)),
-            ("1.5", "1.4-r2", Some(Greater)),
-            ("1.10", "1.9", Some(Greater)),
-            ("1.4", "1.4.0", Some(Equal)),
-            ("1.4-720k", "1.3-720k-r3", Some(Greater)),
-            (
-                "1.4-registered-720k-r2",
-                "1.4-registered-720k",
-                Some(Greater),
-            ),
-            ("1.4-720k", "1.4", None),
-            ("1.5-720k", "1.4", None),
-            ("latest", "1.4", None),
-            ("1.4a", "1.3", None),
-        ] {
-            assert_eq!(compare_set_tags(a, b), order, "{a} vs {b}");
-            assert_eq!(
-                compare_set_tags(b, a),
-                order.map(Ordering::reverse),
-                "{b} vs {a}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_newest_set_tag_comes_first_whatever_the_listing_order() {
-        fn order<'a>(tags: &[&'a str]) -> Vec<&'a str> {
-            let mut tags = tags.to_vec();
-            tags.sort_by(|a, b| newest_set_tag_first(a, b));
-            tags
-        }
-        let expected = [
-            "1.5",
-            "1.4-r2",
-            "1.4",
-            "1.4-1.2m",
-            "1.4-720k-r2",
-            "1.4-720k",
-            "latest",
-            "beta",
-        ];
-        let mut listed = expected.to_vec();
-        assert_eq!(order(&listed), expected);
-        listed.reverse();
-        assert_eq!(order(&listed), expected);
-        assert_eq!(order(&["1.4-720k", "1.4"]), ["1.4", "1.4-720k"]);
-        assert_eq!(order(&["1", "10", "2"]), ["10", "2", "1"]);
     }
 }

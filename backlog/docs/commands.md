@@ -31,13 +31,13 @@ cargo run --offline -p cli -- image machine commit dos-games --store /path/to/st
 cargo run --offline -p cli -- image machine commit dos-games --store /path/to/store --tag dos-games:1.1.0 --title "DOS games" --keep-on-old-image
 cargo run --offline -p cli -- image machine reset dos-games --store /path/to/store --yes
 cargo run --offline -p cli -- image machine rm dos-games --store /path/to/store --yes
-cargo run --offline -p cli -- image media import /path/to/disks --title "Installation set" --tag install:1.0 --store /path/to/store --create
-cargo run --offline -p cli -- image media import /path/to/disk1.img /path/to/disk2.img --title "Installation set" --tag install:2.0 --label '1=Setup' --extra /path/to/manual.txt:MANUAL.TXT --store /path/to/store
-cargo run --offline -p cli -- image media import /path/to/disc.iso --title "Optical set" --tag optical:1.0 --format 1=iso-2048 --store /path/to/store
-cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag wolf3d-shareware:1.4 --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1992 --genre "first-person shooter" --platform DOS --description 'Wolfenstein 3-D, episode 1, Escape from Wolfenstein, version 1.4, the shareware episode of a first-person shooter with texture-mapped VGA graphics by id Software, published by Apogee Software. As B.J. Blazkowicz the player escapes from Castle Wolfenstein through ten floors, one of them secret. It needs a 286 or better. The disk holds the files of the original Apogee shareware archive 1wolf14.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store --create
+cargo run --offline -p cli -- image media import /path/to/disks --title "Installation set" --tag private/media/ibm-pc/install:1.0-r1 --store /path/to/store --create
+cargo run --offline -p cli -- image media import /path/to/disk1.img /path/to/disk2.img --title "Installation set" --tag private/media/ibm-pc/install:2.0-r1 --label '1=Setup' --extra /path/to/manual.txt:MANUAL.TXT --store /path/to/store
+cargo run --offline -p cli -- image media import /path/to/disc.iso --title "Optical set" --tag private/media/ibm-pc/optical:1.0-r1 --format 1=iso-2048 --store /path/to/store
+cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag private/media/ibm-pc/wolf3d-shareware:1.4-r1 --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1992 --genre "first-person shooter" --platform DOS --description 'Wolfenstein 3-D, episode 1, Escape from Wolfenstein, version 1.4, the shareware episode of a first-person shooter with texture-mapped VGA graphics by id Software, published by Apogee Software. As B.J. Blazkowicz the player escapes from Castle Wolfenstein through ten floors, one of them secret. It needs a 286 or better. The disk holds the files of the original Apogee shareware archive 1wolf14.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store --create
 cargo run --offline -p cli -- image media ls --store /path/to/store
-cargo run --offline -p cli -- image media show install:1.0 --store /path/to/store
-cargo run --offline -p cli -- image push wolf3d-shareware:1.4 --store /path/to/store --dry-run
+cargo run --offline -p cli -- image media show private/media/ibm-pc/install:1.0 --store /path/to/store
+cargo run --offline -p cli -- image push private/media/ibm-pc/wolf3d-shareware:1.4-r1 unemu/media/ibm-pc/wolf3d-shareware:1.4-r1 --store /path/to/store --dry-run
 ```
 
 Machines (machine-images §3.2) are named local instances of images: the
@@ -175,17 +175,20 @@ creation time.
 
 The command line reproduces the FreeDOS 1.4 Floppy Edition sets that the
 unemu-media repository (<https://github.com/unemu-org/unemu-media>) builds and
-publishes as `unemu/media/freedos:1.4` (the edition's own 1.44M disks),
+publishes as `unemu/media/ibm-pc/freedos:1.4-r1` (the edition's own 1.44M
+disks), `:1.4-1.2m-r1` and `:1.4-720k-r1`, with the release aliases `:1.4`,
 `:1.4-1.2m` and `:1.4-720k`, byte for byte, with the same set digests: these
 are the arguments its publish step passes (`lib/manifest.py sets`), and
 `pc_image::template::build_media`, the local build the tests use, gives the
 same sets. A test imports each set both ways and compares them, and another
 pins the published digests. The sets published so far name the platform by
-its retired id `ibm-pc-at`; the pins are those of their `ibm-pc` rebuilds,
-which replace them under the same tags before the first public release
-(decision-32). Fetch the fixtures with
-`bash vendor/freedos/fetch-floppy-1.4.sh` and import into a store that does
-not hold these tags yet (the command line never moves a tag). Each command
+its retired id `ibm-pc-at`, under `unemu/media/freedos` without the
+platform and with the first packaging as `:1.4`; the pins are those of their
+`ibm-pc` rebuilds, which replace them under the new names before the first
+public release (decision-32, decision-35, decision-38). Fetch the fixtures
+with `bash vendor/freedos/fetch-floppy-1.4.sh` and import into a store that
+does not hold these tags yet (the command line never moves a tag; the store
+moves each release alias forward with its revision). Each command
 states the disks in installer order with their labels and format, the licence
 index and the source archive as extras with their DOS names, the title record
 (the work's title, `FreeDOS`, with the release and edition in fields of their
@@ -194,9 +197,9 @@ extension. To use the published sets, pull them instead (Official template
 images, below).
 
 ```sh
-cargo run --offline -p cli -- image media import vendor/freedos/floppy-1.4/144m/x86BOOT.img vendor/freedos/floppy-1.4/144m/x86DSK01.img vendor/freedos/floppy-1.4/144m/x86DSK02.img vendor/freedos/floppy-1.4/144m/x86DSK03.img vendor/freedos/floppy-1.4/144m/x86DSK04.img vendor/freedos/floppy-1.4/144m/x86DSK05.img vendor/freedos/floppy-1.4/144m/x86DSK06.img --title FreeDOS --tag unemu/media/freedos:1.4 --label '1=Disk 1 of 7 - boot disk and installer (x86BOOT.img)' --format 1=1.44M --label '2=Disk 2 of 7 - packages (x86DSK01.img)' --format 2=1.44M --label '3=Disk 3 of 7 - packages (x86DSK02.img)' --format 3=1.44M --label '4=Disk 4 of 7 - packages (x86DSK03.img)' --format 4=1.44M --label '5=Disk 5 of 7 - packages (x86DSK04.img)' --format 5=1.44M --label '6=Disk 6 of 7 - packages (x86DSK05.img)' --format 6=1.44M --label '7=Disk 7 of 7 - packages (x86DSK06.img)' --format 7=1.44M --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher 'The FreeDOS Project' --developer 'The FreeDOS Project' --year 2025 --genre 'operating system' --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on seven 3.5-inch 1.44M diskettes, unmodified: the boot disk with the floppy installer, then six disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition 'Floppy Edition' --set-label freedos --set-label open-source --set-label operating-system --open --license 'GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other' --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
-cargo run --offline -p cli -- image media import vendor/freedos/floppy-1.4/120m/x86BOOT.img vendor/freedos/floppy-1.4/120m/x86DSK01.img vendor/freedos/floppy-1.4/120m/x86DSK02.img vendor/freedos/floppy-1.4/120m/x86DSK03.img vendor/freedos/floppy-1.4/120m/x86DSK04.img vendor/freedos/floppy-1.4/120m/x86DSK05.img vendor/freedos/floppy-1.4/120m/x86DSK06.img vendor/freedos/floppy-1.4/120m/x86DSK07.img --title FreeDOS --tag unemu/media/freedos:1.4-1.2m --label '1=Disk 1 of 8 - boot disk and installer (x86BOOT.img)' --format 1=1.2M --label '2=Disk 2 of 8 - packages (x86DSK01.img)' --format 2=1.2M --label '3=Disk 3 of 8 - packages (x86DSK02.img)' --format 3=1.2M --label '4=Disk 4 of 8 - packages (x86DSK03.img)' --format 4=1.2M --label '5=Disk 5 of 8 - packages (x86DSK04.img)' --format 5=1.2M --label '6=Disk 6 of 8 - packages (x86DSK05.img)' --format 6=1.2M --label '7=Disk 7 of 8 - packages (x86DSK06.img)' --format 7=1.2M --label '8=Disk 8 of 8 - packages (x86DSK07.img)' --format 8=1.2M --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher 'The FreeDOS Project' --developer 'The FreeDOS Project' --year 2025 --genre 'operating system' --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on eight 5.25-inch 1.2M diskettes, unmodified: the boot disk with the floppy installer, then seven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition 'Floppy Edition' --set-label freedos --set-label open-source --set-label operating-system --open --license 'GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other' --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
-cargo run --offline -p cli -- image media import vendor/freedos/floppy-1.4/720k/x86BOOT.img vendor/freedos/floppy-1.4/720k/x86DSK01.img vendor/freedos/floppy-1.4/720k/x86DSK02.img vendor/freedos/floppy-1.4/720k/x86DSK03.img vendor/freedos/floppy-1.4/720k/x86DSK04.img vendor/freedos/floppy-1.4/720k/x86DSK05.img vendor/freedos/floppy-1.4/720k/x86DSK06.img vendor/freedos/floppy-1.4/720k/x86DSK07.img vendor/freedos/floppy-1.4/720k/x86DSK08.img vendor/freedos/floppy-1.4/720k/x86DSK09.img vendor/freedos/floppy-1.4/720k/x86DSK10.img vendor/freedos/floppy-1.4/720k/x86DSK11.img --title FreeDOS --tag unemu/media/freedos:1.4-720k --label '1=Disk 1 of 12 - boot disk and installer (x86BOOT.img)' --format 1=720K --label '2=Disk 2 of 12 - packages (x86DSK01.img)' --format 2=720K --label '3=Disk 3 of 12 - packages (x86DSK02.img)' --format 3=720K --label '4=Disk 4 of 12 - packages (x86DSK03.img)' --format 4=720K --label '5=Disk 5 of 12 - packages (x86DSK04.img)' --format 5=720K --label '6=Disk 6 of 12 - packages (x86DSK05.img)' --format 6=720K --label '7=Disk 7 of 12 - packages (x86DSK06.img)' --format 7=720K --label '8=Disk 8 of 12 - packages (x86DSK07.img)' --format 8=720K --label '9=Disk 9 of 12 - packages (x86DSK08.img)' --format 9=720K --label '10=Disk 10 of 12 - packages (x86DSK09.img)' --format 10=720K --label '11=Disk 11 of 12 - packages (x86DSK10.img)' --format 11=720K --label '12=Disk 12 of 12 - packages (x86DSK11.img)' --format 12=720K --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher 'The FreeDOS Project' --developer 'The FreeDOS Project' --year 2025 --genre 'operating system' --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on twelve 3.5-inch 720K diskettes, unmodified: the boot disk with the floppy installer, then eleven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition 'Floppy Edition' --set-label freedos --set-label open-source --set-label operating-system --open --license 'GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other' --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
+cargo run --offline -p cli -- image media import vendor/freedos/floppy-1.4/144m/x86BOOT.img vendor/freedos/floppy-1.4/144m/x86DSK01.img vendor/freedos/floppy-1.4/144m/x86DSK02.img vendor/freedos/floppy-1.4/144m/x86DSK03.img vendor/freedos/floppy-1.4/144m/x86DSK04.img vendor/freedos/floppy-1.4/144m/x86DSK05.img vendor/freedos/floppy-1.4/144m/x86DSK06.img --title FreeDOS --tag unemu/media/ibm-pc/freedos:1.4-r1 --label '1=Disk 1 of 7 - boot disk and installer (x86BOOT.img)' --format 1=1.44M --label '2=Disk 2 of 7 - packages (x86DSK01.img)' --format 2=1.44M --label '3=Disk 3 of 7 - packages (x86DSK02.img)' --format 3=1.44M --label '4=Disk 4 of 7 - packages (x86DSK03.img)' --format 4=1.44M --label '5=Disk 5 of 7 - packages (x86DSK04.img)' --format 5=1.44M --label '6=Disk 6 of 7 - packages (x86DSK05.img)' --format 6=1.44M --label '7=Disk 7 of 7 - packages (x86DSK06.img)' --format 7=1.44M --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher 'The FreeDOS Project' --developer 'The FreeDOS Project' --year 2025 --genre 'operating system' --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on seven 3.5-inch 1.44M diskettes, unmodified: the boot disk with the floppy installer, then six disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition 'Floppy Edition' --set-label freedos --set-label open-source --set-label operating-system --open --license 'GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other' --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
+cargo run --offline -p cli -- image media import vendor/freedos/floppy-1.4/120m/x86BOOT.img vendor/freedos/floppy-1.4/120m/x86DSK01.img vendor/freedos/floppy-1.4/120m/x86DSK02.img vendor/freedos/floppy-1.4/120m/x86DSK03.img vendor/freedos/floppy-1.4/120m/x86DSK04.img vendor/freedos/floppy-1.4/120m/x86DSK05.img vendor/freedos/floppy-1.4/120m/x86DSK06.img vendor/freedos/floppy-1.4/120m/x86DSK07.img --title FreeDOS --tag unemu/media/ibm-pc/freedos:1.4-1.2m-r1 --label '1=Disk 1 of 8 - boot disk and installer (x86BOOT.img)' --format 1=1.2M --label '2=Disk 2 of 8 - packages (x86DSK01.img)' --format 2=1.2M --label '3=Disk 3 of 8 - packages (x86DSK02.img)' --format 3=1.2M --label '4=Disk 4 of 8 - packages (x86DSK03.img)' --format 4=1.2M --label '5=Disk 5 of 8 - packages (x86DSK04.img)' --format 5=1.2M --label '6=Disk 6 of 8 - packages (x86DSK05.img)' --format 6=1.2M --label '7=Disk 7 of 8 - packages (x86DSK06.img)' --format 7=1.2M --label '8=Disk 8 of 8 - packages (x86DSK07.img)' --format 8=1.2M --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher 'The FreeDOS Project' --developer 'The FreeDOS Project' --year 2025 --genre 'operating system' --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on eight 5.25-inch 1.2M diskettes, unmodified: the boot disk with the floppy installer, then seven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition 'Floppy Edition' --set-label freedos --set-label open-source --set-label operating-system --open --license 'GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other' --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
+cargo run --offline -p cli -- image media import vendor/freedos/floppy-1.4/720k/x86BOOT.img vendor/freedos/floppy-1.4/720k/x86DSK01.img vendor/freedos/floppy-1.4/720k/x86DSK02.img vendor/freedos/floppy-1.4/720k/x86DSK03.img vendor/freedos/floppy-1.4/720k/x86DSK04.img vendor/freedos/floppy-1.4/720k/x86DSK05.img vendor/freedos/floppy-1.4/720k/x86DSK06.img vendor/freedos/floppy-1.4/720k/x86DSK07.img vendor/freedos/floppy-1.4/720k/x86DSK08.img vendor/freedos/floppy-1.4/720k/x86DSK09.img vendor/freedos/floppy-1.4/720k/x86DSK10.img vendor/freedos/floppy-1.4/720k/x86DSK11.img --title FreeDOS --tag unemu/media/ibm-pc/freedos:1.4-720k-r1 --label '1=Disk 1 of 12 - boot disk and installer (x86BOOT.img)' --format 1=720K --label '2=Disk 2 of 12 - packages (x86DSK01.img)' --format 2=720K --label '3=Disk 3 of 12 - packages (x86DSK02.img)' --format 3=720K --label '4=Disk 4 of 12 - packages (x86DSK03.img)' --format 4=720K --label '5=Disk 5 of 12 - packages (x86DSK04.img)' --format 5=720K --label '6=Disk 6 of 12 - packages (x86DSK05.img)' --format 6=720K --label '7=Disk 7 of 12 - packages (x86DSK06.img)' --format 7=720K --label '8=Disk 8 of 12 - packages (x86DSK07.img)' --format 8=720K --label '9=Disk 9 of 12 - packages (x86DSK08.img)' --format 9=720K --label '10=Disk 10 of 12 - packages (x86DSK09.img)' --format 10=720K --label '11=Disk 11 of 12 - packages (x86DSK10.img)' --format 11=720K --label '12=Disk 12 of 12 - packages (x86DSK11.img)' --format 12=720K --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher 'The FreeDOS Project' --developer 'The FreeDOS Project' --year 2025 --genre 'operating system' --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on twelve 3.5-inch 720K diskettes, unmodified: the boot disk with the floppy installer, then eleven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition 'Floppy Edition' --set-label freedos --set-label open-source --set-label operating-system --open --license 'GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other' --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
 ```
 
 A redistributable set (decision-26 amendment of 2026-11-15, for example a
@@ -246,9 +249,9 @@ cargo run --offline -p cli -- image firmware import /path/to/even.bin /path/to/o
 cargo run --offline -p cli -- image firmware import /path/to/roms --rescan --for ibm-5170-bios-1985-06-10 --extra /path/to/manual.pdf --store /path/to/store
 cargo run --offline -p cli -- image firmware import /path/to/roms --for kiselev-xi8088-1.0.2-atreset --source vendor/kiselev-bios/kiselev-bios-a4af458-atreset-src.tar --label open-source --label xi8088 --store /path/to/store
 cargo run --offline -p cli -- image firmware import /path/to/rom.bin --unlisted my-option-rom --role option-rom --open --license MIT --built-from "example/option-rom" --revision r7 --store /path/to/store
-cargo run --offline -p cli -- image firmware edit firmware/kiselev-xi8088-1.0.2:1 --source vendor/kiselev-bios/kiselev-bios-a4af458-atreset-src.tar --store /path/to/store
+cargo run --offline -p cli -- image firmware edit private/firmware/ibm-pc/kiselev-xi8088-1.0.2:r1 --source vendor/kiselev-bios/kiselev-bios-a4af458-atreset-src.tar --store /path/to/store
 cargo run --offline -p cli -- image firmware ls --store /path/to/store
-cargo run --offline -p cli -- image firmware show firmware/ibm-5170-bios-1985-06-10:1 --store /path/to/store
+cargo run --offline -p cli -- image firmware show private/firmware/ibm-pc/ibm-5170-bios-1985-06-10:r1 --store /path/to/store
 ```
 
 Firmware import recursively enumerates files in stable name order (32 directory
@@ -257,7 +260,17 @@ SHA-256 and length against the catalogue and verifies reconstructed chip sets.
 It reports unmatched/unreadable inputs and incomplete sets with missing sockets;
 those inputs are never published. Multiple complete layouts require an explicit
 file list containing one layout; ambiguous catalogue identities require `--for`.
-Tags are `firmware/<catalogue-id>:1`; a package under the tag with the same ROM
+Tags are `private/firmware/ibm-pc/<catalogue-id>:r1`, the first revision
+(recipes.md §8.3), open or not: a local import never takes the official
+`unemu/…` name a pull of the published package writes, which only the
+template builders write. When the store already holds the catalogue entry's
+first revision under `unemu/` and no `private/` one, an import checks that
+one instead (already imported, or a conflict). The guard, not the name,
+decides where a push may go, and `image push LOCAL TARGET` names any target.
+A package has no release alias unless its tag names a release
+(`2x32k-r1`). `image firmware edit` publishes the next revision (`:r2`); a
+package an earlier release imported as `firmware/<catalogue-id>:1` keeps that
+tag, and its edit goes to `:r2`. A package under the tag with the same ROM
 and document bytes reports already imported whatever its metadata (an import
 whose own statement would change it is refused and names `image firmware
 edit`), while other bytes conflict before copying, with CAS at publication. `--rescan` bypasses reusable persistent ROM hashes. `--dry-run`
@@ -273,7 +286,8 @@ proprietary (an IBM BIOS chip, say) can never be marked open, whatever its
 catalogue id, and `image push` keeps such bytes private in any package,
 pulled ones included. A ROM the catalogue lists as open is open under the
 catalogue's licence (`--user-supplied` keeps it private). `--unlisted ID
---role ROLE` adds one ROM the catalogue does not know (tag `firmware/ID:1`;
+--role ROLE` adds one ROM the catalogue does not know (tag
+`private/firmware/ibm-pc/ID:r1`;
 the id may not be a catalogue id); it is user-supplied unless `--open
 --license SPDX` states its licence, which is never guessed. A GPL, LGPL, AGPL
 or MPL family licence needs an open source archive: `--source ARCHIVE` (zip
@@ -383,7 +397,8 @@ different set there is a tag conflict.
 Defaults differ where the window shows an editable value: a disk's label is the
 file name without its extension (the CLI uses the whole file name), the software
 platform is DOS (the CLI records none), the tag is derived from the title as
-`<title-words>:1.0` until edited (the CLI requires `--tag`), and publisher, year,
+`private/media/ibm-pc/<title-words>:1.0-r1` until edited (the CLI requires
+`--tag`), and publisher, year,
 genre, labels and description are optional fields (the CLI sets only the title).
 An extra's kind comes from the same extension rule and can be changed; its DOS
 name is suggested when the file name fits 8.3 and is otherwise left to the
@@ -538,8 +553,9 @@ cargo run --offline -p cli -- image push dos-lab:1.0.0 private/dos-lab:1.0.0 --s
 cargo run --offline -p cli -- image push dos-lab:latest private/dos-lab:latest --store /path/to/store --move
 cargo run --offline -p cli -- image pull private/dos-lab:1.0.0 --store /path/to/store
 cargo run --offline -p cli -- image pull nas.example:5000/private/games:1 --store /path/to/new-store --create --tag games:1
-cargo run --offline -p cli -- image push firmware/kiselev-xi8088-1.0.2:1 nas.example:5000/firmware/kiselev-xi8088-1.0.2:1 --store /path/to/store --dry-run
-cargo run --offline -p cli -- image pull nas.example:5000/firmware/kiselev-xi8088-1.0.2:1 --store /path/to/store
+cargo run --offline -p cli -- image push private/firmware/ibm-pc/kiselev-xi8088-1.0.2:r1 nas.example:5000/private/firmware/ibm-pc/kiselev-xi8088-1.0.2:r1 --store /path/to/store --dry-run
+cargo run --offline -p cli -- image pull nas.example:5000/private/firmware/ibm-pc/kiselev-xi8088-1.0.2:r1 --store /path/to/store
+cargo run --offline -p cli -- image pull unemu/media/ibm-pc/freedos:1.4 --store /path/to/store
 cargo run --offline -p cli -- image remote ls private/dos-lab
 cargo run --offline -p cli -- image remote ls registry.unemu.dev
 cargo run --offline -p cli -- image login registry.unemu.dev --user NAME
@@ -567,15 +583,41 @@ here, and tags pulled before that record existed, have none. `--create`
 initializes a missing store.
 
 `push` leaves a tag that already names the image alone and never moves a
-version tag. Nor does it move a tag of an installation media set that starts
-with a digit (`1.4`, `1.4-720k`, `1.4-registered-720k-r2`), even with
-`--move`: push the changed set under the revision tag the refusal suggests
-(`1.4-r2`). Any other tag that names another image, `latest` included, moves
-only with `--move`; without it the refusal shows both digests. A tag counts
-as taken whatever manifest or index type it names, an image index pushed by
-another tool included.
+version tag. Installation media sets and firmware packages are tagged
+`[<release>-]rN` (recipes.md §8.2, decision-38): `1.4-r1`, `1.4-720k-r2`,
+`usa-rev1-r1`, `r1`. A tag that ends in `rN` never moves, even with
+`--move`: push the changed set or package under the revision the refusal
+suggests (`1.4-r2`). The release alone (`1.4`, also a release shaped like a
+version, `1.0.0`, which the version rule of machine images does not bind) is
+an alias that names the newest revision of its release: push it after that
+revision, and it moves, with `--move`, only forward to a newer revision of
+the same release that the registry already has. The client checks that on
+the registry: it lists the repository's tags, takes the revisions of the
+release, reads the digest each names highest first, and refuses unless the
+pushed image is the highest revision's and the image the alias names now is
+a lower one's; an alias published before revisions, which no revision
+names, is to be deleted on the registry, not moved. Sets and packages have
+no `latest` and take no tag outside the scheme (`Beta`). A machine image's tag that names another
+image, `latest` included, moves only with `--move`; without it the refusal
+shows both digests. A tag counts as taken whatever manifest or index type it
+names, an image index pushed by another tool included.
 
-Firmware packages (`firmware/<catalogue-id>:1`) push and pull like machine
+`pull` of a set or package by its alias (`unemu/media/ibm-pc/freedos:1.4`)
+writes the revision that names the same image on the registry
+(`…:1.4-r2`); a pull by a revision writes that one. Either way the store
+moves the local alias with it, forward only and under its index lock, so
+`freedos:1.4` locally names the newest revision of 1.4 the library holds;
+the output says so with an `alias` line before the `pulled` line. A
+registry alias published before revisions, which no revision names there,
+is pulled under the alias as it is. Locally too, a new alias is written
+only at the newest revision of its release (`image media import --tag
+x:1.0` is refused and names `x:1.0-r1`), no set or package takes a new tag
+outside the scheme, and a deleted revision tag names no other image. A
+store an earlier release wrote keeps its tags as they are (`freedos:1.4`,
+`firmware/<catalogue-id>:1`, paths without the platform): they still list,
+resolve and run, and nothing rewrites or moves them.
+
+Firmware packages (`<namespace>/firmware/ibm-pc/<catalogue-id>:r1`) push and pull like machine
 images and media sets; a pulled package lists in `image firmware ls`. A
 package whose layers are all open may go to any configured registry,
 including `unemu/`, except that an open ROM under a GPL, LGPL, AGPL or MPL
@@ -761,26 +803,28 @@ and published by the unemu-media repository
 from the default registry (`--create` for a new store):
 
 ```sh
-upcli image pull unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1 --store /path/to/store
-upcli image pull unemu/firmware/vgabios-0.9d-unemu.1-std:1 --store /path/to/store
-upcli image pull unemu/firmware/xub-r638-xtp-ata1f0:1 --store /path/to/store
-upcli image pull unemu/media/freedos:1.4 --store /path/to/store
-upcli image pull unemu/media/freedos:1.4-1.2m --store /path/to/store
-upcli image pull unemu/media/freedos:1.4-720k --store /path/to/store
+upcli image pull unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1 --store /path/to/store
+upcli image pull unemu/firmware/ibm-pc/vgabios-0.9d-unemu.1-std:r1 --store /path/to/store
+upcli image pull unemu/firmware/ibm-pc/xub-r638-xtp-ata1f0:r1 --store /path/to/store
+upcli image pull unemu/media/ibm-pc/freedos:1.4 --store /path/to/store
+upcli image pull unemu/media/ibm-pc/freedos:1.4-1.2m --store /path/to/store
+upcli image pull unemu/media/ibm-pc/freedos:1.4-720k --store /path/to/store
 ```
 
 | Local tag | Image |
 | --- | --- |
-| `unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1` | unemu AT BIOS package (the unemu fork of Kiselev 8088_bios) with its source archive |
-| `unemu/firmware/vgabios-0.9d-unemu.1-std:1` | unemu LGPL VGA BIOS package with its source archive |
-| `unemu/firmware/xub-r638-xtp-ata1f0:1` | XTIDE Universal BIOS r638 package with its source archive |
-| `unemu/media/freedos:1.4` | the edition's seven 1.44M disks |
-| `unemu/media/freedos:1.4-1.2m` | its eight 1.2M disks |
-| `unemu/media/freedos:1.4-720k` | its twelve 720K disks |
+| `unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1` | unemu AT BIOS package (the unemu fork of Kiselev 8088_bios) with its source archive |
+| `unemu/firmware/ibm-pc/vgabios-0.9d-unemu.1-std:r1` | unemu LGPL VGA BIOS package with its source archive |
+| `unemu/firmware/ibm-pc/xub-r638-xtp-ata1f0:r1` | XTIDE Universal BIOS r638 package with its source archive |
+| `unemu/media/ibm-pc/freedos:1.4-r1`, `:1.4` | the edition's seven 1.44M disks |
+| `unemu/media/ibm-pc/freedos:1.4-1.2m-r1`, `:1.4-1.2m` | its eight 1.2M disks |
+| `unemu/media/ibm-pc/freedos:1.4-720k-r1`, `:1.4-720k` | its twelve 720K disks |
 
-A package's tag is its revision and a set's tag names the release and, unless
-it is the edition's own 1.44M, the floppy format; neither tag moves and
-neither has `latest`. Each set holds the disks unmodified in installer order
+A package's tag is its revision, `r1`, and a set's names the release (the
+version and, unless it is the edition's own 1.44M, the floppy format) and
+the revision; neither revision tag moves and neither has `latest`. A pull by
+a set's release alias writes the revision it names, and the local alias
+follows it. Each set holds the disks unmodified in installer order
 and, as extras, `LICENSES.TXT` (the licence index, its licence text) and the
 deterministic source archive, open under the conjunction of the programs'
 licences with both linked; its title is the work's, `FreeDOS`, with the
@@ -791,8 +835,10 @@ images can be built locally from the fixtures:
 their tests pin the published digests, so each pin checks that the two
 repositories still build the same image. The packages and sets published so
 far name the platform by its retired id `ibm-pc-at`, which this release reads
-as `ibm-pc`; the pins are those of their `ibm-pc` rebuilds, which replace them
-under the same tags before the first public release (decision-32). `image media import` reproduces each
+as `ibm-pc`, under the old names (`unemu/firmware/<catalogue-id>:1`,
+`unemu/media/freedos:1.4`); the pins are those of their `ibm-pc` rebuilds,
+which replace them under the names above before the first public release
+(decision-32, decision-35, decision-38). `image media import` reproduces each
 set from the command line (Local machine images, above).
 
 `image template build` imports the three packages it binds from the firmware
@@ -872,10 +918,10 @@ vendor/shareware/keen4/fetch.sh                # Commander Keen 4 1.4: keen4-sw1
 vendor/shareware/wolf3d/fetch.sh               # Wolfenstein 3-D 1.4: wolf3d-sw14-1440.img, extras/
 vendor/shareware/duke2/fetch.sh                # Duke Nukem II 1.0: duke2-sw10-1440.img, extras/
 SHAREWARE_ARCHIVE=/path/to/1wolf14.zip vendor/shareware/wolf3d/fetch.sh   # your own copy; no network
-cargo run --offline -p cli -- image media import vendor/shareware/keen4/keen4-sw14-1440.img --title "Commander Keen 4: Secret of the Oracle (shareware 1.4)" --tag keen4-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/keen4/extras/README.DOC:README.DOC --extra vendor/shareware/keen4/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1991 --genre platformer --platform DOS --description 'Commander Keen 4: Secret of the Oracle, version 1.4, the shareware episode of a side-scrolling platform game in EGA graphics by id Software, distributed by Apogee Software. Keen searches the Shadowlands of Gnosticus IV for the eight missing Council Members. The disk holds the files of the original Apogee shareware archive 4keen.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-readme-keen4-v1.4 --license-text README.DOC --store /path/to/store --create
-cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag wolf3d-shareware:1.4 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1992 --genre "first-person shooter" --platform DOS --description 'Wolfenstein 3-D, episode 1, Escape from Wolfenstein, version 1.4, the shareware episode of a first-person shooter with texture-mapped VGA graphics by id Software, published by Apogee Software. As B.J. Blazkowicz the player escapes from Castle Wolfenstein through ten floors, one of them secret. It needs a 286 or better. The disk holds the files of the original Apogee shareware archive 1wolf14.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store
-cargo run --offline -p cli -- image media import vendor/shareware/duke2/duke2-sw10-1440.img --title "Duke Nukem II: Episode 1 (shareware 1.0)" --tag duke2-shareware:1.0 --label '1=Disk 1 of 1 - Shareware v1.0 installation' --extra vendor/shareware/duke2/extras/LICENSE.DOC:LICENSE.DOC --extra vendor/shareware/duke2/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "Apogee Software" --year 1993 --genre platformer --platform DOS --description 'Duke Nukem II, episode 1, version 1.0, the shareware episode of a side-scrolling platform game by Todd Replogle and Apogee Software, in which Duke fights the alien Rigelatins. It needs VGA graphics and a 286 or better. The disk holds the files of the original Apogee shareware archive 4duke.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-license-v12.01.93 --license-text LICENSE.DOC --store /path/to/store
-cargo run --offline -p cli -- image push wolf3d-shareware:1.4 --store /path/to/store --dry-run   # guard verdict for unemu/wolf3d-shareware:1.4
+cargo run --offline -p cli -- image media import vendor/shareware/keen4/keen4-sw14-1440.img --title "Commander Keen 4: Secret of the Oracle (shareware 1.4)" --tag private/media/ibm-pc/keen4-shareware:1.4-r1 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/keen4/extras/README.DOC:README.DOC --extra vendor/shareware/keen4/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1991 --genre platformer --platform DOS --description 'Commander Keen 4: Secret of the Oracle, version 1.4, the shareware episode of a side-scrolling platform game in EGA graphics by id Software, distributed by Apogee Software. Keen searches the Shadowlands of Gnosticus IV for the eight missing Council Members. The disk holds the files of the original Apogee shareware archive 4keen.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-readme-keen4-v1.4 --license-text README.DOC --store /path/to/store --create
+cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag private/media/ibm-pc/wolf3d-shareware:1.4-r1 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1992 --genre "first-person shooter" --platform DOS --description 'Wolfenstein 3-D, episode 1, Escape from Wolfenstein, version 1.4, the shareware episode of a first-person shooter with texture-mapped VGA graphics by id Software, published by Apogee Software. As B.J. Blazkowicz the player escapes from Castle Wolfenstein through ten floors, one of them secret. It needs a 286 or better. The disk holds the files of the original Apogee shareware archive 1wolf14.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store
+cargo run --offline -p cli -- image media import vendor/shareware/duke2/duke2-sw10-1440.img --title "Duke Nukem II: Episode 1 (shareware 1.0)" --tag private/media/ibm-pc/duke2-shareware:1.0-r1 --label '1=Disk 1 of 1 - Shareware v1.0 installation' --extra vendor/shareware/duke2/extras/LICENSE.DOC:LICENSE.DOC --extra vendor/shareware/duke2/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "Apogee Software" --year 1993 --genre platformer --platform DOS --description 'Duke Nukem II, episode 1, version 1.0, the shareware episode of a side-scrolling platform game by Todd Replogle and Apogee Software, in which Duke fights the alien Rigelatins. It needs VGA graphics and a 286 or better. The disk holds the files of the original Apogee shareware archive 4duke.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-license-v12.01.93 --license-text LICENSE.DOC --store /path/to/store
+cargo run --offline -p cli -- image push private/media/ibm-pc/wolf3d-shareware:1.4-r1 unemu/media/ibm-pc/wolf3d-shareware:1.4-r1 --store /path/to/store --dry-run   # guard verdict for the official path
 ```
 
 Each script downloads the publisher's original shareware archive from a pinned

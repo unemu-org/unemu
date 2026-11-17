@@ -62,6 +62,7 @@ fn row(repository: &str, tag: &str, record: TagRecord, local: LocalState) -> Tag
         record: Ok(record),
         local: Some(local),
         stored: BTreeSet::new(),
+        newest_revision: None,
     }
 }
 
@@ -98,6 +99,7 @@ fn pulled(id: u64, tag: &str) -> TransferEvent {
             fetched: Vec::new(),
             present: Vec::new(),
             outcome: PullOutcome::Pulled,
+            alias: None,
         }),
     }
 }
@@ -160,7 +162,8 @@ fn one_tag_is_pulled_by_its_digest_and_never_moves_a_local_tag() {
     let problem = dialog.problem().unwrap();
     assert!(
         problem.starts_with(&format!("{local} already names another image (sha256:"))
-            && problem.ends_with("Pull never moves a local tag: choose another one."),
+            && problem
+                .ends_with("Pull moves no local tag but a release alias: choose another one."),
         "{problem}"
     );
     assert!(dialog.start().is_empty(), "a clash is never pulled");
@@ -595,7 +598,7 @@ fn the_dialog_renders_every_stage() {
         "Pull and create machine — private/games/dune2:1.0.0",
         &format!("{LAN}/private/games/dune2:1.0.0"),
         "· pulled by this digest, as listed",
-        "From this registry the name carries its host, so the same path on another registry, or made here, never clashes. Pull never moves a local tag.",
+        "From this registry the name carries its host, so the same path on another registry, or made here, never clashes. Pull moves no local tag, except that a set or package pulled by its release writes the revision and moves its local release alias forward.",
         "Then New machine from image… asks for the machine's name; the default is “Dune II”.",
         "Download: 3.0 MiB of 3.0 MiB · 0 of 2 blobs already in the store",
         "Pull and create machine",
@@ -607,7 +610,10 @@ fn the_dialog_renders_every_stage() {
     let (_, shown) = draw(&mut dialog, vec![]);
     assert!(
         shows(&shown, "taken:1.0.0 already names another image")
-            && shows(&shown, "Pull never moves a local tag: choose another one."),
+            && shows(
+                &shown,
+                "Pull moves no local tag but a release alias: choose another one."
+            ),
         "{shown:?}"
     );
     dialog.items[0].local_tag = local.clone();

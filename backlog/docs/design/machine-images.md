@@ -612,7 +612,12 @@ registry is still revised under its `-local.N` suffix. Which registry a host-les
 is host configuration (§5.1). Digests
 are immutable identities. Resolve a tag once at launch and pin the result for
 the session. Unpublished local tag replacement uses compare-and-swap under the
-index lock (§3.1). References tracking pushed version tags retain their published digest;
+index lock (§3.1). Tags of installation media sets and firmware packages
+follow their own rule (§5.2, Tags): a revision tag `[<release>-]rN` never
+moves, and the store moves the release alias forward in the same
+compare-and-swap that writes a newer revision of it; a pull by an alias
+writes the revision it names, with its record, and the alias follows with
+the same record. References tracking pushed version tags retain their published digest;
 metadata/artwork edits use the library overlay until publication under a new
 version or tag. Moving remote aliases follow the force policy in §5.1.
 Branching creates a new tag/workspace without editing the parent.
@@ -839,8 +844,18 @@ Installation media, Firmware). Nothing contacts a registry until its node is
 expanded or selected, and every request runs on the library worker (§5.1).
 A node's list has the mock-up's columns (Name, Source, Title, Latest, Type,
 Licence, Size, Local state); a repository of several tags expands into them,
-newest first; a tag this release cannot run is muted with "Needs unemupc X
-or newer" (§5.6). Strips over the rows say a listing runs, stopped or no
+newest first: a machine image's by version, then `latest`; a set's or
+package's by release, the alias of each release first as the name of its
+newest revision, then its revisions highest first (§5.2, Tags), so a set
+repository stands for the alias of its first release. Newer available
+compares versions of a machine image, and only the revisions of one release
+of a set or package. A local release alias at another image than the
+registry's alias is compared by the revision it names with the highest
+revision of that release the registry lists: Newer available when the
+registry's is higher, "Local is newer: …-r2" when the library's is, and
+otherwise, or for an alias an earlier release wrote that names no revision,
+the neutral Local tag names another image. A tag this release cannot run is
+muted with "Needs unemupc X or newer" (§5.6). Strips over the rows say a listing runs, stopped or no
 longer answers, and a message replaces the rows when nothing is listed, with
 Stop, Refresh, Try again or Log in… as the state offers. Next 50 › reads the
 catalog's next page; F5, View › Refresh remote and the toolbar's Refresh
@@ -875,9 +890,13 @@ local states and offers Pull… for those it can take. **Pull…** (also Image �
 Pull…, the toolbar's Pull…, shown while the library shows Remotes in the room
 of the speed control, and Enter on a tag's row) pulls by the digest the
 list showed through the Pull path, so the local tag is written last (§3.1),
-and never moves a local tag: a tag whose local name holds another image goes
-alone, under another local tag the dialog proposes (`name-new:tag`), and a
-typed tag that names another image is refused before anything is fetched.
+and moves no local tag but one: a set or package pulled by its release
+alias writes the revision the registry's alias names and moves the local
+alias of that release forward to it (§5.2, Tags), so an alias row behind
+the registry's is pulled under its own name. Any other tag whose local name
+holds another image goes alone, under another local tag the dialog proposes
+(`name-new:tag`), and a typed tag that names another image is refused before
+anything is fetched.
 Several tags are pulled one after another under one progress bar that
 counts blobs already in the store as done; tags in the library, tags whose
 local name holds another image, tags this release cannot run and tags of a
@@ -1146,7 +1165,7 @@ publishing proprietary bytes by accident:
   keeps its owner, and a first component with a dot, a colon or `localhost`
   names the host. Preferences, `--registry` and an environment variable override
   the default host. A pull from `registry.unemu.dev` writes the short local tag
-  (`open-at:1.2.0`, `unemu/media/freedos:1.4`); a pull from any other registry,
+  (`open-at:1.2.0`, `unemu/media/ibm-pc/freedos:1.4-r1`); a pull from any other registry,
   a configured default one included, writes the full reference with its host
   and port (`registry.lan.example/private/games/dune2:1.0.0`,
   `nas.example:5000/private/media/x:1.1`) and records the registry on the tag
@@ -1535,17 +1554,33 @@ mutable external reference. §5.1 push/pull, private-registry rules, version-tag
 policy (extended by the tag rule below), upload resumption, complete-closure
 verification and tag-last publication apply to sets. Private OCI archives carry the same verified closure.
 
-**Tags.** Set tags follow `<upstream version>[-<edition>][-<format>][-rN]`
-(`freedos:1.4`, `1.4-720k`, `1.4-r2`, `1.4-registered-720k-r2`), which is not
-semantic versioning, yet they are immutable too: once a tag whose first
-character is an ASCII digit names a set, neither the local store nor a push
-moves it, not even with `--move` or a confirmed current digest, and no set
-takes such a tag from another image. The refusal suggests the next revision
-(`1.4-r2`, then `1.4-r3`). A tag that does not start with a digit, `latest`
-included, is an alias and moves after the usual confirmation. Machine images
-and firmware packages keep the version-tag rule alone. Unlike a version tag,
-a deleted set tag is not remembered in the local store; the registry still
-refuses to move it.
+**Tags.** Set and package tags name a release and a revision
+(recipes.md §8.2, decision-38): `[<release>-]rN`, where the release is parts
+joined by `-`, each `[a-z0-9]+([._][a-z0-9]+)*` and none `r` plus digits
+(`freedos:1.4-r1`, `1.4-720k-r2`, `contra:usa-rev1-r1`, a package's `r1`).
+A tag that ends in `rN` names one set or package forever: neither the local
+store nor a push moves it, not even with `--move` or a confirmed current
+digest, no set or package takes one from another image, and a deleted one
+names no other image, as a deleted version tag; the refusal suggests the
+next revision (`1.4-r2`). The release alone (`freedos:1.4`) is an alias for
+the newest revision of that release, also when the release is shaped like a
+semantic version (`1.0.0`): the version rule of machine images does not bind
+sets and packages. The store writes a new alias only at the newest revision
+of its release here (a pull of a registry alias published before revisions
+excepted) and moves it in the same compare-and-swap, under the index lock,
+that writes a newer revision; an explicit move goes only forward to a higher
+revision of the same release that a local revision tag names, never backward
+or to another release; a push moves it only to the newest revision of its release that the
+registry already has, after the usual confirmation (§5.1; the client lists
+the repository's tags and compares the digest each revision of the release
+names). Sets and packages have no `latest` and take no new tag outside the
+scheme. The parts of a release are the
+author's convention, not fields: nothing reads a version or a format out of a
+tag. Tags an earlier release wrote still read as they are: `freedos:1.4` is
+an alias without revisions, which stays where it is, `1.4-r2` a revision,
+and a firmware `:1` an alias of release `1`. Machine images keep the
+version-tag rule alone. Unlike a version tag, a deleted set tag is not
+remembered in the local store; the registry still refuses to move it.
 
 **Import and library.** Import installation media… accepts a folder or an
 explicit file list. A folder preview enumerates candidate image files in stable
@@ -1895,7 +1930,8 @@ identity is known before anything is written.
 
 *Revisions.* A package is immutable. `image firmware edit NAME:TAG` applies
 the same metadata and licence statements, can add or replace the source archive,
-and publishes a new revision under a new tag (`:N` to `:N+1` by default) that
+and publishes a new revision under a new tag (`:rN` to `:rN+1` by default; a
+package an earlier release tagged `:N` goes to `:rN+1`) that
 reuses the stored ROM and document blobs, with a new config and README. A
 package under the tag that holds the same ROM and document bytes counts as
 already imported, whatever its metadata, licences, source archive or README
@@ -2061,7 +2097,7 @@ labels, fits (catalogue fits narrowed only, with Restore catalogue fits),
 provenance (kind, details, supplied date), the layers and licences table and an
 editable README preview. Edit metadata… (in the pane and the File menu; Add
 source archive… is the same dialog with the picker) uses the same editor on a stored package and publishes
-`:N+1` through `firmware_import::edit`. Neither dialog decides a rule: the
+`:rN+1` through `firmware_import::edit`. Neither dialog decides a rule: the
 library worker previews each changed statement (`preview_manifest_with`,
 `preview_edit`, one at a time per statement), and the dialog shows the verdict,
 the layers' marks, the README text and the library's reason, with its
@@ -2116,21 +2152,32 @@ like any other (§5.1), never a machine file.
 | Repository | Content |
 | --- | --- |
 | `unemu/<name>` | a template machine, such as `unemu/open-at` |
-| `unemu/firmware/<catalogue-id>` | the open firmware package of one catalogue entry |
+| `unemu/firmware/<platform>/<catalogue-id>` | the open firmware package of one catalogue entry |
 
 Both follow the OCI repository grammar (`[a-z0-9]+((\.|_|__|-+)[a-z0-9]+)*` per
 component), so catalogue ids such as `kiselev-xi8088-1.0.2-atreset` need no
 mapping. Each template generation has a semantic-version tag (`1.0.0`), which
 never moves, and `latest`, which follows the newest version. The local tags of
 a template build are the short forms a pull from `registry.unemu.dev`
-writes: `open-at:1.0.0` for `unemu/open-at`. A firmware package's tag is its revision,
-`unemu/firmware/<id>:1` (two components remain after `unemu/`, so the local
-tag keeps the full name). Installation sets live under `unemu/media/<work>`,
-one repository per work, tagged with the release and, unless it is the
-edition's own format, the floppy format: `unemu/media/freedos:1.4`,
-`:1.4-1.2m`, `:1.4-720k`. Neither a package nor a set has `latest`, and
-neither tag moves. Future software images get their own names when their
-licence decision is made.
+writes: `open-at:1.0.0` for `unemu/open-at`. Sets and packages carry the
+platform in their path (recipes.md §8.3, decision-35), so one work on two
+platforms never shares a repository. A firmware package's tag is its
+revision, `unemu/firmware/ibm-pc/<id>:r1` (several components remain after
+`unemu/`, so the local tag keeps the full name), and without a release it
+has no alias. Installation sets live under `unemu/media/<platform>/<work>`,
+one repository per work, tagged with the release (the version and, unless
+it is the edition's own format, the floppy format) and the revision:
+`unemu/media/ibm-pc/freedos:1.4-r1`, `:1.4-1.2m-r1`, `:1.4-720k-r1`, each
+with its release alias (`:1.4`, `:1.4-1.2m`, `:1.4-720k`). Neither a package
+nor a set has `latest`, and no revision tag moves (§5.2, Tags). Only the
+official builders write these `unemu/` names. Local imports (`image firmware
+import`, `image media import`, the library's import dialogs and Create from
+files) name their result under `private/` by default
+(`private/firmware/ibm-pc/ibm-5170-bios-1985-06-10:r1`), open or not, so a
+local import never takes the name a pull of the published artifact writes;
+an explicit tag still wins, and the guard decides where a push may go.
+Future software images get their own names when their licence decision is
+made.
 
 **Who publishes what (2026-11-16).** The firmware packages and the
 installation sets are built and published by the unemu-media repository
@@ -2142,15 +2189,19 @@ the values `image firmware import` and `image media import` take there; their
 tests pin the published digests, so each pin cross-checks the two
 repositories. A template binds the packages by digest, so its digest does not
 depend on where the packages came from. The packages and sets published so
-far name the retired id `ibm-pc-at` (§1); before the first public release
-they are replaced under the same tags by their `ibm-pc` rebuilds, whose
-digests the local builders' tests pin (decision-32).
+far name the retired id `ibm-pc-at` (§1) and the names before the platform
+segment and revisions (`unemu/firmware/<id>:1`, `unemu/media/freedos:1.4`);
+before the first public release they are deleted and pushed again under the
+names above as their `ibm-pc` rebuilds, whose digests the local builders'
+tests pin (decision-32, decision-35, decision-38). The names change no
+manifest byte, so those pins did not move with them.
 
 **Installation sets (2026-11-15).** The templates describe the official
 **FreeDOS 1.4 Floppy Edition** (`vendor/freedos/fetch-floppy-1.4.sh`,
 `pc_image::template::MEDIA`) as one set per floppy format it ships:
-`unemu/media/freedos:1.4` (the edition's 1.44M, 7 disks), `:1.4-1.2m` (8) and
-`:1.4-720k` (12), each disk byte for byte the edition's, in
+`unemu/media/ibm-pc/freedos:1.4-r1` (the edition's 1.44M, 7 disks),
+`:1.4-1.2m-r1` (8) and `:1.4-720k-r1` (12), each with its release alias,
+each disk byte for byte the edition's, in
 installer order (`x86BOOT.img`, then `x86DSK01.img`…), labelled "Disk N of M
 - boot disk and installer (x86BOOT.img)" or "… - packages (x86DSKnn.img)".
 Every set carries the same two extras: `LICENSES.TXT`, kind document, a
@@ -2210,18 +2261,18 @@ COM1 and a 2 MiB Lo-tech EMS board at 260h with its frame at D000h. Neither
 holds an operating system or other software: disk images with an operating
 system need their own licence decision. Generation 1.0.1 changed only the
 VGA BIOS package's source archive. **Generation 1.1.0** replaces the system
-BIOS package with the open AT BIOS, `unemu/firmware/unemu-at-bios-1.0.2-unemu.2`
+BIOS package with the open AT BIOS, `unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.2`
 (the unemu fork of the Kiselev BIOS, with its source archive) and adds an
 empty 3.5-inch 1.44M B: drive (unit 1, which also takes 720K disks) beside the
 1.2M A:; the rest of the hardware is unchanged. Its firmware packages also
 state a title, description, vendor, version and labels; earlier generations
 had only the catalogue id as their title. **Generation 1.1.1** replaces the
-system BIOS package with `unemu/firmware/unemu-at-bios-1.0.2-unemu.3`, the
+system BIOS package with `unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3`, the
 fix release whose POST clears extended memory (so FreeDOS keeps its XMS after
 Ctrl+Alt+Del), and moves the VGA BIOS package to the source archive of
 release `v0.8a-unemu.3`, with unchanged ROM bytes; the XTIDE package and the
 hardware are unchanged. **Generation 1.2.0** replaces the VGA BIOS package
-with `unemu/firmware/vgabios-0.9d-unemu.1-std`, the fork's release based on
+with `unemu/firmware/ibm-pc/vgabios-0.9d-unemu.1-std`, the fork's release based on
 upstream 0.9d whose teletype BEL sounds the PC speaker (the 0.8a entry stays
 catalogued as superseded), and moves the system BIOS package to the
 re-measured source archive of the same release, whose `NOTICE` now names the

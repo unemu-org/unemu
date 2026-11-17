@@ -31,8 +31,7 @@ use crate::{
     Client, Error, Reference, RegistryEntry, Result,
 };
 use image_store::{
-    media_set, media_type, BlobSource, ConfigValidator, Descriptor, Digest, Manifest, Store,
-    MAX_SMALL_BLOB,
+    BlobSource, ConfigValidator, Descriptor, Digest, Manifest, Store, MAX_SMALL_BLOB,
 };
 use std::{
     collections::BTreeSet,
@@ -46,9 +45,12 @@ pub const MIN_CHUNK_SIZE: u64 = 8 * 1024 * 1024;
 pub const DEFAULT_CHUNK_SIZE: u64 = 64 * 1024 * 1024;
 
 /// Transfer settings. `allow_move` is the explicit confirmation for moving a
-/// non-version tag; version tags never move, nor do the tags of installation
-/// media sets other than aliases ([`media_set::is_alias_tag`]), whether the
-/// set is the image pushed or the one the tag names now.
+/// non-version tag; version tags never move, nor do the revision tags of
+/// installation media sets and firmware packages ([`image_store::tag`]),
+/// whether the set or package is the image pushed or the one the tag names
+/// now, and an alias of theirs moves only forward, to the newest revision of
+/// its release that the registry already has, which the client reads from
+/// the registry's tag list and the digest each revision names.
 #[derive(Clone, Debug)]
 pub struct PushOptions {
     pub chunk_size: u64,
@@ -303,17 +305,34 @@ pub fn push_cancellable(
     let reference = plan.target.manifest_reference();
     let preflight = client.manifest_digest(repository, &reference)?;
     let new = || plan.image.digest.clone();
-    let set_tag = match (&plan.target.digest, &plan.target.tag, preflight.as_ref()) {
-        (None, Some(tag), Some(current))
-            if current != &plan.image.digest
-                && !is_version_tag(tag)
-                && !media_set::is_alias_tag(tag) =>
-        {
-            plan.manifest.artifact_type() == media_type::MEDIA_SET
-                || names_media_set(client, repository, current)?
+    // The tag rules of sets and packages apply when either the image pushed
+    // or the one the tag names now is one; they replace the version rule of
+    // machine images, so a release shaped like a semantic version is an
+    // alias like any other.
+    let scheme = match (&plan.target.digest, &plan.target.tag, preflight.as_ref()) {
+        (None, Some(_), current) if current != Some(&plan.image.digest) => {
+            image_store::tag::governs(plan.manifest.artifact_type())
+                || match current {
+                    Some(current) => names_set_or_package(client, repository, current)?,
+                    None => false,
+                }
         }
         _ => false,
     };
+    if scheme {
+        if let Some(tag) = &plan.target.tag {
+            let package = plan.manifest.artifact_type() == image_store::media_type::FIRMWARE;
+            scheme_rules(
+                client,
+                repository,
+                tag,
+                &plan.image.digest,
+                preflight.as_ref(),
+                package,
+                cancelled,
+            )?;
+        }
+    }
     let tag = match (&plan.target.digest, &plan.target.tag, preflight.as_ref()) {
         (_, _, Some(current)) if current == &plan.image.digest => {
             return Ok(PushReport {
@@ -324,15 +343,8 @@ pub fn push_cancellable(
         }
         (Some(_), _, _) | (None, None, _) => TagOutcome::Untagged,
         (None, Some(_), None) => TagOutcome::Created,
-        (None, Some(tag), Some(current)) if is_version_tag(tag) => {
+        (None, Some(tag), Some(current)) if is_version_tag(tag) && !scheme => {
             return Err(Error::ImmutableTag {
-                tag: tag.clone(),
-                current: current.clone(),
-                new: new(),
-            })
-        }
-        (None, Some(tag), Some(current)) if set_tag => {
-            return Err(Error::ImmutableMediaSetTag {
                 tag: tag.clone(),
                 current: current.clone(),
                 new: new(),
@@ -362,14 +374,97 @@ pub fn push_cancellable(
     finish(store, plan, client, options, &mut watch, tag, preflight)
 }
 
-/// Whether the registry's manifest `digest` is an installation media set. A
-/// manifest this client cannot fetch or read as an OCI image manifest, such
-/// as an image index, is not one.
-fn names_media_set(client: &Client, repository: &str, digest: &Digest) -> Result<bool> {
+/// Whether the registry's manifest `digest` is an installation media set or
+/// a firmware package. A manifest this client cannot fetch or read as an OCI
+/// image manifest, such as an image index, is neither.
+fn names_set_or_package(client: &Client, repository: &str, digest: &Digest) -> Result<bool> {
     Ok(client
         .manifest(repository, &digest.to_string())?
         .and_then(|fetched| Manifest::decode_for_summary(&fetched.bytes).ok())
-        .is_some_and(|manifest| manifest.artifact_type() == media_type::MEDIA_SET))
+        .is_some_and(|manifest| image_store::tag::governs(manifest.artifact_type())))
+}
+
+/// The tag rules of sets and packages on a registry ([`image_store::tag`]),
+/// for a push of `new` to `tag`, which names `current` there now: no
+/// `latest`; a revision tag never moves; an alias only as [`check_alias`]
+/// allows; no tag outside the scheme. A move the rules allow still needs
+/// the usual confirmation. `package` is a firmware package push.
+fn scheme_rules(
+    client: &Client,
+    repository: &str,
+    tag: &str,
+    new: &Digest,
+    current: Option<&Digest>,
+    package: bool,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<()> {
+    if tag == image_store::tag::LATEST {
+        return Err(Error::NoLatest);
+    }
+    match image_store::tag::parse(tag) {
+        Some(image_store::tag::Kind::Alias { release }) => check_alias(
+            client, repository, tag, release, new, current, package, cancelled,
+        ),
+        Some(image_store::tag::Kind::Revision { .. }) => match current {
+            Some(current) => Err(Error::ImmutableRevisionTag {
+                tag: tag.into(),
+                current: current.clone(),
+                new: new.clone(),
+            }),
+            None => Ok(()),
+        },
+        None => Err(Error::OutsideTagScheme { tag: tag.into() }),
+    }
+}
+
+/// An alias of a set or package names the newest revision of its release
+/// that the registry has, and moves only forward. The client checks it on
+/// the registry itself, never from its own store: it lists the
+/// repository's tags (`tags/list`, every page), keeps the revision tags of
+/// `release`, and asks for the digest each names (a manifest `HEAD`),
+/// highest revision first. `new` must be the image of the highest revision;
+/// when the alias exists, the image it names now (`current`) must be the one
+/// of a lower revision. An alias at an image no revision of its release
+/// names there, as one published before revisions, or a release without
+/// revisions there, is refused.
+#[allow(clippy::too_many_arguments)]
+fn check_alias(
+    client: &Client,
+    repository: &str,
+    tag: &str,
+    release: &str,
+    new: &Digest,
+    current: Option<&Digest>,
+    package: bool,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<()> {
+    let refuse = |reason: String| Error::AliasNotForward {
+        tag: tag.into(),
+        reason,
+    };
+    let revisions = crate::browse::release_revisions(client, repository, release, cancelled)?;
+    let Some(newest) = revisions.first() else {
+        return Err(refuse(format!(
+            "the registry has no revision of release {release}; push one such as {} first",
+            image_store::tag::first_revision(release, package)
+        )));
+    };
+    if client.manifest_digest(repository, newest)?.as_ref() != Some(new) {
+        return Err(refuse(format!(
+            "the newest revision there is {newest}, which names another image; push this image as a new revision first"
+        )));
+    }
+    let Some(current) = current else {
+        return Ok(());
+    };
+    for lower in &revisions[1..] {
+        if client.manifest_digest(repository, lower)?.as_ref() == Some(current) {
+            return Ok(());
+        }
+    }
+    Err(refuse(format!(
+        "it names {current}, which no revision of release {release} names there, as an alias published before revisions; delete {tag} on the registry first"
+    )))
 }
 
 /// What a running push reports, and asks whether to stop.

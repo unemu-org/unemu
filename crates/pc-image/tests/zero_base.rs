@@ -638,7 +638,7 @@ fn a_copyleft_rom_without_its_source_archive_keeps_a_new_image_private() {
     let rules = pc_image::firmware::PcFirmwareRules(pc_image::firmware::catalogue());
     open.store
         .update_tag(
-            "firmware/foreign-at-bios:1",
+            "private/firmware/ibm-pc/foreign-at-bios:r1",
             &crafted,
             None,
             &image_store::firmware::Validator(&rules),

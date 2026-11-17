@@ -641,6 +641,11 @@ pub fn publish_checked(
         Err(image_store::Error::TagNotFound(_)) => store.check_new_tag(&plan.tag)?,
         Err(error) => return Err(error.into()),
     }
+    // A new set takes a revision tag, whose release alias the store writes
+    // with it; refused here before any medium is copied.
+    if let Some(problem) = image_store::tag::new_image_problem(&plan.tag, false) {
+        return Err(Refusal(problem));
+    }
     let codecs = if plan.compress {
         codec::MEDIA_PAYLOAD_TYPES
     } else {
@@ -893,7 +898,7 @@ mod tests {
     }
     fn request(paths: &[PathBuf], title: &str) -> Request {
         Request {
-            tag: "test:set".into(),
+            tag: "test:set-r1".into(),
             title: Title {
                 title: title.into(),
                 ..Title::default()
@@ -1010,7 +1015,7 @@ mod tests {
         assert_eq!(
             refusal,
             format!(
-                "tag conflict: test:set already names a different installation set ({}); \
+                "tag conflict: test:set-r1 already names a different installation set ({}); \
                  choose another tag",
                 stored.descriptor().digest
             )
@@ -1028,17 +1033,17 @@ mod tests {
         assert!(result
             .unwrap_err()
             .to_string()
-            .starts_with("tag conflict: test:set"));
+            .starts_with("tag conflict: test:set-r1"));
         assert_eq!(hashed, 0);
         assert_eq!((blobs(), staging()), (before, staged));
         assert_eq!(
-            store.tag_descriptor("test:set").unwrap().digest,
+            store.tag_descriptor("test:set-r1").unwrap().digest,
             stored.descriptor().digest
         );
 
         // The other way round: a compressed set matches a raw re-import.
         let mut tagged = compressed.clone();
-        tagged.tag = "test:compressed".into();
+        tagged.tag = "test:compressed-r1".into();
         let stored = publish(&store, &plan(&tagged).unwrap(), &|_, _| {}, &|| false).unwrap();
         tagged.compress = false;
         assert_eq!(
@@ -1065,7 +1070,7 @@ mod tests {
             Manifest::decode(&store.read_verified(d, image_store::MAX_SMALL_BLOB).unwrap()).unwrap()
         };
         let mut plain = request(std::slice::from_ref(&disk), "Plain set");
-        plain.tag = "test:plain".into();
+        plain.tag = "test:plain-r1".into();
         let stored = publish(&store, &plan(&plain).unwrap(), &|_, _| {}, &|| false).unwrap();
         assert_eq!(
             Requirement::of(&read(stored.descriptor())),
@@ -1123,7 +1128,7 @@ mod tests {
         );
         assert!(refusal.contains("2.img"), "{refusal}");
         assert_eq!(*seen.borrow(), [(0, 3), (1, 3)]);
-        assert!(store.tag_descriptor("test:set").is_err());
+        assert!(store.tag_descriptor("test:set-r1").is_err());
     }
 
     fn statement(license: &str, terms: &str) -> OpenStatement {
@@ -1207,7 +1212,7 @@ mod tests {
         fs::write(&terms, "Synthetic vendor terms. ".repeat(200)).unwrap();
         let store = Store::open(temp.0.join("store")).unwrap();
         let mut shareware = request(&[a, b], "Synthetic shareware");
-        shareware.tag = "test:open".into();
+        shareware.tag = "test:open-r1".into();
         shareware.extras = vec![extra(&manual), extra(&terms)];
         let vendor = statement("LicenseRef-synthetic-shareware", "VENDOR.TXT");
         let publish_with = |request: &Request, open: Option<&OpenStatement>| {
@@ -1258,7 +1263,7 @@ mod tests {
 
         // The same files without the statement are user-supplied throughout.
         let mut private = shareware.clone();
-        private.tag = "test:private".into();
+        private.tag = "test:private-r1".into();
         let user = resolve(&publish_with(&private, None).unwrap());
         for d in std::iter::once(&user.manifest.config).chain(&user.manifest.layers) {
             assert_eq!(
@@ -1273,8 +1278,8 @@ mod tests {
         // The marks are part of the set: the same bytes under other marks,
         // another licence, or another extra as terms text are a tag conflict.
         let mut swapped = shareware.clone();
-        swapped.tag = "test:private".into();
-        private.tag = "test:open".into();
+        swapped.tag = "test:private-r1".into();
+        private.tag = "test:open-r1".into();
         let manual_terms = statement("LicenseRef-synthetic-shareware", "MANUAL.TXT");
         let other_licence = statement("LicenseRef-other-terms", "VENDOR.TXT");
         for (request, open) in [
@@ -1386,7 +1391,7 @@ mod tests {
         fs::write(&archive, vec![b's'; 9000]).unwrap();
         let store = Store::open(temp.0.join("store")).unwrap();
         let mut set = request(&[a, b], "Synthetic free software");
-        set.tag = "test:gpl".into();
+        set.tag = "test:gpl-r1".into();
         set.extras = vec![extra(&copying), extra(&archive)];
         let gpl = with_source("GPL-2.0-or-later AND MIT", "COPYING", "SRC.TAR");
         let publish_with = |request: &Request, open: &OpenStatement| {
@@ -1483,7 +1488,7 @@ mod tests {
         assert_eq!(refusal, "synthetic refusal");
         let checked = seen.into_inner().expect("the check saw the manifest");
         assert_eq!(checked.layers.len(), 2);
-        assert!(store.tag_descriptor("test:set").is_err());
+        assert!(store.tag_descriptor("test:set-r1").is_err());
         let digest = Digest::of(&checked.encode().unwrap());
         assert!(!store
             .root()
@@ -1587,15 +1592,18 @@ mod tests {
         }
         let bare = store.import_manifest(&bare).unwrap();
         store
-            .update_tag(
-                "test:set",
-                &bare,
-                Some(&published.descriptor().digest),
-                &Validator(&PcMediaFormats),
-            )
+            .remove_tag("test:set-r1", &published.descriptor().digest)
+            .unwrap();
+        // That earlier import's store kept no record of deleted revisions.
+        fs::remove_file(store.root().join("local/retired-version-tags.toml")).unwrap();
+        store
+            .update_tag("test:set-r1", &bare, None, &Validator(&PcMediaFormats))
             .unwrap();
         let refusal = import().unwrap_err().to_string();
-        assert!(refusal.starts_with("tag conflict: test:set"), "{refusal}");
+        assert!(
+            refusal.starts_with("tag conflict: test:set-r1"),
+            "{refusal}"
+        );
     }
 
     #[test]

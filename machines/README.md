@@ -672,7 +672,8 @@ the store's machine list, and leave once the started machine has assembled;
 **Take out again** drops them, and so does Reset to image…. **Also keep in the
 library as an installation media set**, on for a split and off for one disk
 until you change it, also adds the disks to Installation media as a private set
-(`azuramon:1.0`, titled `AZURAMON`) so every machine's **Insert…** lists them.
+(`private/media/ibm-pc/azuramon:1.0-r1`, titled `AZURAMON`, with the alias
+`…:1.0`) so every machine's **Insert…** lists them.
 Left off, the disks belong to that machine alone.
 
 ### Copying host files

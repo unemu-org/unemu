@@ -448,7 +448,7 @@ fn edit(
         Some(target) => target,
         None => firmware_import::next_revision(&command.tag).ok_or_else(|| {
             anyhow::anyhow!(
-                "{} has no numeric revision; name the new tag with --to",
+                "{} is not a revision tag such as NAME:r1; name the new tag with --to",
                 command.tag
             )
         })?,
@@ -569,37 +569,40 @@ fn import(
     for candidate in &eligible {
         let preview =
             firmware_import::preview_manifest_with(candidate, &extras, statement, catalogue)?;
+        let tag = match &store {
+            Some(store) => firmware_import::import_tag(store, &candidate.catalogue_id)?,
+            None => candidate.tag(),
+        };
         for note in &preview.notes {
-            writeln!(output, "note\t{}\t{note}", candidate.tag())?;
+            writeln!(output, "note\t{tag}\t{note}")?;
         }
         let manifest = preview.manifest;
         let digest = Digest::of(&manifest.encode()?);
-        states.push(match &store {
-            Some(store) => {
-                firmware_import::existing(store, &candidate.tag(), &manifest, catalogue)?
-                    .map(|existing| (existing.digest != digest).then_some(existing.digest))
-            }
-            None => None,
-        });
+        states.push((
+            match &store {
+                Some(store) => firmware_import::existing(store, &tag, &manifest, catalogue)?
+                    .map(|existing| (existing.digest != digest).then_some(existing.digest)),
+                None => None,
+            },
+            tag,
+        ));
     }
-    for (c, existing) in eligible.into_iter().zip(states) {
+    for (c, (existing, tag)) in eligible.into_iter().zip(states) {
         match existing {
             Some(None) => {
-                writeln!(output, "already imported\t{}", c.tag())?;
+                writeln!(output, "already imported\t{tag}")?;
                 continue;
             }
             Some(Some(older)) => {
                 writeln!(
                     output,
-                    "already imported\t{}\t{older}\tthe same ROMs with other metadata or licences; image firmware edit {} changes them",
-                    c.tag(),
-                    c.tag()
+                    "already imported\t{tag}\t{older}\tthe same ROMs with other metadata or licences; image firmware edit {tag} changes them",
                 )?;
                 continue;
             }
             None => (),
         }
-        writeln!(output, "complete\t{}\t{}", c.tag(), c.config.roms[0].sha256)?;
+        writeln!(output, "complete\t{tag}\t{}", c.config.roms[0].sha256)?;
         if !command.dry_run {
             let d = firmware_import::publish_with(
                 store
@@ -614,7 +617,7 @@ fn import(
                 d.media_type == media_type::MANIFEST,
                 "invalid package descriptor"
             );
-            writeln!(output, "imported\t{}\t{}", c.tag(), d.digest)?;
+            writeln!(output, "imported\t{tag}\t{}", d.digest)?;
         }
     }
     if command.dry_run {
@@ -706,8 +709,8 @@ mod tests {
         let mut out = Vec::new();
         import(command(store.root(), &files), &mut out, &cat).unwrap();
         let out = String::from_utf8(out).unwrap();
-        assert!(out.contains("already imported\tfirmware/synthetic-first:1"));
-        assert!(out.contains("imported\tfirmware/synthetic-second:1"));
+        assert!(out.contains("already imported\tprivate/firmware/ibm-pc/synthetic-first:r1"));
+        assert!(out.contains("imported\tprivate/firmware/ibm-pc/synthetic-second:r1"));
         assert_eq!(store.list_tags(None, 10).unwrap().tags.len(), 2);
     }
     #[test]
@@ -733,14 +736,14 @@ mod tests {
         let out = String::from_utf8(out).unwrap();
         assert!(
             out.contains(&format!(
-                "already imported\tfirmware/synthetic-first:1\t{}\t",
+                "already imported\tprivate/firmware/ibm-pc/synthetic-first:r1\t{}\t",
                 first.digest
-            )) && out.contains("image firmware edit firmware/synthetic-first:1"),
+            )) && out.contains("image firmware edit private/firmware/ibm-pc/synthetic-first:r1"),
             "{out}"
         );
         assert_eq!(
             store
-                .tag_descriptor("firmware/synthetic-first:1")
+                .tag_descriptor("private/firmware/ibm-pc/synthetic-first:r1")
                 .unwrap()
                 .digest,
             first.digest
@@ -781,14 +784,23 @@ mod tests {
             edit(&store, parse(&args).unwrap(), &mut out, &[]).unwrap();
             String::from_utf8(out).unwrap()
         };
-        let out = run(&["edit", "firmware/readme-rom:1", "--notes", "A quirk."]);
-        assert!(out.contains("edited\tfirmware/readme-rom:1\tfirmware/readme-rom:2\t"));
+        let out = run(&[
+            "edit",
+            "private/firmware/ibm-pc/readme-rom:r1",
+            "--notes",
+            "A quirk.",
+        ]);
+        assert!(out.contains("edited\tprivate/firmware/ibm-pc/readme-rom:r1\tprivate/firmware/ibm-pc/readme-rom:r2\t"));
         assert_eq!(
-            readme_of("firmware/readme-rom:2"),
+            readme_of("private/firmware/ibm-pc/readme-rom:r2"),
             "# Mine\n\nWritten by hand.\n"
         );
-        run(&["edit", "firmware/readme-rom:2", "--regenerate-readme"]);
-        let generated = readme_of("firmware/readme-rom:3");
+        run(&[
+            "edit",
+            "private/firmware/ibm-pc/readme-rom:r2",
+            "--regenerate-readme",
+        ]);
+        let generated = readme_of("private/firmware/ibm-pc/readme-rom:r3");
         assert!(
             generated.starts_with("# readme-rom\n") && generated.contains("A quirk."),
             "{generated}"
@@ -847,7 +859,7 @@ mod tests {
         assert_eq!(
             String::from_utf8(out).unwrap(),
             format!(
-                "firmware/synthetic-first:1\t{}\t\"synthetic-first\"\tSome(FirmwareSummary {{ \
+                "private/firmware/ibm-pc/synthetic-first:r1\t{}\t\"synthetic-first\"\tSome(FirmwareSummary {{ \
                  roles: [\"system-bios\"], boards: [\"ibm-5170\"], machine_classes: [\"at\"], \
                  catalogue_ids: [\"synthetic-first\"], hashes: [\"{}\"] }})\t\
                  min-app-version:0.0.3\n",

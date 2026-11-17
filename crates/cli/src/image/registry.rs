@@ -442,6 +442,10 @@ fn execute_with(
             for descriptor in &report.present {
                 writeln!(output, "present\t{}", descriptor.digest)?;
             }
+            // A set or package pulled by its release moves that alias too.
+            if let Some(alias) = &report.alias {
+                writeln!(output, "alias\t{alias}\t{}", report.image.digest)?;
+            }
             let word = match report.outcome {
                 pull::PullOutcome::Pulled => "pulled",
                 pull::PullOutcome::Unchanged => "unchanged",
@@ -983,13 +987,13 @@ mod tests {
         let entry = registry.entry(false);
         let client = Client::new(&entry, Box::new(Anonymous)).unwrap();
         let reference = Reference::parse(
-            &format!("{}/owner/rom:1", registry.host()),
+            &format!("{}/owner/rom:r1", registry.host()),
             "unused.example",
         )
         .unwrap();
         let plan = push::plan(
             &foreign,
-            "firmware/foreign-rom:1",
+            "private/firmware/ibm-pc/foreign-rom:r1",
             reference.clone(),
             Some(&entry),
         )
@@ -1035,7 +1039,7 @@ mod tests {
         .unwrap();
         for (target, refusal) in [
             ("owner/rom:2", "not marked private"),
-            ("unemu/rom:1", "official namespace"),
+            ("unemu/rom:r1", "official namespace"),
         ] {
             let target =
                 Reference::parse(&format!("{}/{target}", registry.host()), "unused.example")

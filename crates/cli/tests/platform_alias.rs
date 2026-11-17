@@ -42,6 +42,10 @@ const RETIRED: &str = "ibm-pc-at";
 const CURRENT: &str = "ibm-pc";
 /// The first release that reads `ibm-pc`.
 const RENAMED_IN: AppVersion = AppVersion::new(0, 0, 3);
+/// An installation set's local tag as release 0.0.2 wrote it for a pull of
+/// the published set: no platform in the path, and the first packaging
+/// under the release alone.
+const OLD_SET: &str = "unemu/media/freedos:1.4";
 
 fn run(store: &Path, list: &[&str]) -> String {
     let mut args: Vec<OsString> = list.iter().map(OsString::from).collect();
@@ -120,7 +124,16 @@ fn retired(
     validator: &dyn ConfigValidator,
 ) -> Descriptor {
     let old = with_platform_id(store, image, types, RETIRED).unwrap();
-    store.update_tag(tag, &old, None, validator).unwrap();
+    // A set or package of that release came under its release alone (a pull
+    // of `unemu/media/freedos:1.4`, an import as `firmware/<id>:1`), which
+    // this release writes only as a pull of content from before revisions.
+    if image_store::tag::governs(validator.artifact_type()) {
+        store
+            .update_pulled_tag(tag, &old, None, validator, "registry.unemu.dev")
+            .unwrap();
+    } else {
+        store.update_tag(tag, &old, None, validator).unwrap();
+    }
     let (manifest, config) = read(store, &old, types);
     assert_eq!(manifest.platform().unwrap(), RETIRED);
     assert!(config.contains("platform = \"ibm-pc-at\"\n"), "{config}");
@@ -156,7 +169,8 @@ impl Lab {
         for package in &open.packages {
             assert_written_now(store, &package.descriptor, &[]);
             let id = package.config.roms[0].catalogue_id.clone().unwrap();
-            let tag = format!("old/{id}:1");
+            // The tag an import of release 0.0.2 wrote.
+            let tag = format!("firmware/{id}:1");
             let old = retired(
                 store,
                 &package.descriptor,
@@ -174,16 +188,16 @@ impl Lab {
         run(
             store.root(),
             &[
-                "image", "media", "import", &disk, "--title", "Setup", "--tag", "set:new",
+                "image", "media", "import", &disk, "--title", "Setup", "--tag", "set:r1",
             ],
         );
-        let new_set = store.tag_descriptor("set:new").unwrap();
+        let new_set = store.tag_descriptor("set:r1").unwrap();
         assert_written_now(store, &new_set, &[]);
         let old_set = retired(
             store,
             &new_set,
             &[],
-            "set:old",
+            OLD_SET,
             &MediaValidator(&PcMediaFormats),
         );
         Some(Self {
@@ -211,7 +225,7 @@ fn artifacts_that_name_the_retired_id_are_read_and_listed() {
     // Read by every provider, and the old machine by the desktop's checks.
     store.resolve("lab:old", &PcProvider).unwrap();
     store
-        .resolve("set:old", &MediaValidator(&PcMediaFormats))
+        .resolve(OLD_SET, &MediaValidator(&PcMediaFormats))
         .unwrap();
     for (tag, _) in &lab.packages {
         store.resolve(tag, &FirmwareValidator(&rules)).unwrap();
@@ -249,15 +263,15 @@ fn artifacts_that_name_the_retired_id_are_read_and_listed() {
     let root = store.root();
     assert!(run(root, &["image", "ls"]).contains("lab:old\t"));
     let sets = run(root, &["image", "media", "ls"]);
-    assert!(sets.contains("set:old\t"), "{sets}");
+    assert!(sets.contains(&format!("{OLD_SET}\t")), "{sets}");
     let firmware = run(root, &["image", "firmware", "ls"]);
     for (tag, _) in &lab.packages {
         assert!(firmware.contains(&format!("{tag}\t")), "{firmware}");
     }
     // Machine-readable output names the platform by its current id.
-    let shown = run(root, &["image", "media", "show", "set:old"]);
+    let shown = run(root, &["image", "media", "show", OLD_SET]);
     assert!(
-        shown.starts_with(&format!("set:old\t{}\t{CURRENT}\n", lab.old_set.digest)),
+        shown.starts_with(&format!("{OLD_SET}\t{}\t{CURRENT}\n", lab.old_set.digest)),
         "{shown}"
     );
 }
@@ -294,7 +308,7 @@ fn a_machine_that_names_the_retired_id_runs_and_combines_with_current_artifacts(
         vec![PendingInsert {
             drive: "A:".into(),
             set: lab.old_set.clone(),
-            reference: "set:old".into(),
+            reference: OLD_SET.into(),
             medium: "disk-1".into(),
             all: false,
             journal: true,
@@ -312,7 +326,7 @@ fn a_machine_that_names_the_retired_id_runs_and_combines_with_current_artifacts(
         let id = rom.rom().unwrap().catalogue_id.clone().unwrap();
         let package = packages
             .iter()
-            .find(|p| p.reference == format!("old/{id}:1"))
+            .find(|p| p.reference == format!("firmware/{id}:1"))
             .unwrap();
         let entry = package
             .config
@@ -393,8 +407,10 @@ fn artifacts_that_name_the_retired_id_are_pulled_unchanged() {
     target.resolve("pulled/2:1", &firmware).unwrap();
 }
 
-/// A store a release before the rename wrote loads, lists and resolves with
-/// its index and every blob unchanged.
+/// A store a release before the rename wrote, with that release's names and
+/// tags (`lab:old`, `unemu/media/freedos:1.4`, `firmware/<id>:1`), loads,
+/// lists and resolves with its index and every blob unchanged, and nothing
+/// moves its tags.
 #[test]
 fn a_store_from_before_the_rename_is_read_without_a_rewrite() {
     let Some(lab) = Lab::new() else {
@@ -402,7 +418,7 @@ fn a_store_from_before_the_rename_is_read_without_a_rewrite() {
     };
     let store = lab.store();
     // Only the retired copies stay tagged, as in a store of release 0.0.2.
-    for tag in ["lab:new", "set:new"] {
+    for tag in ["lab:new", "set:r1"] {
         store
             .remove_tag(tag, &store.tag_descriptor(tag).unwrap().digest)
             .unwrap();
@@ -445,7 +461,7 @@ fn a_store_from_before_the_rename_is_read_without_a_rewrite() {
         );
         let validator: &dyn ConfigValidator = match tag.name.as_str() {
             "lab:old" => &PcProvider,
-            "set:old" => &MediaValidator(&PcMediaFormats),
+            OLD_SET => &MediaValidator(&PcMediaFormats),
             _ => &FirmwareValidator(&rules),
         };
         let resolved = store.resolve(&tag.name, validator).unwrap();
@@ -454,6 +470,22 @@ fn a_store_from_before_the_rename_is_read_without_a_rewrite() {
     assert_eq!(create::packages(&store).unwrap().len(), lab.packages.len());
     pc_image::desktop::check(&store, &lab.old_machine, None, || false).unwrap();
     assert_eq!(snapshot(), before, "the store's images were rewritten");
+    // Nothing moves the tags of that release: the set's tag reads as the
+    // alias of release 1.4 with no revision here, so it stays where it is,
+    // also when a revision of its release is written beside it.
+    let media = MediaValidator(&PcMediaFormats);
+    let error = store
+        .update_tag(OLD_SET, &lab.new_set, Some(&lab.old_set.digest), &media)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("alias"), "{error}");
+    store
+        .update_tag("unemu/media/freedos:1.4-r2", &lab.new_set, None, &media)
+        .unwrap();
+    assert_eq!(
+        store.tag_descriptor(OLD_SET).unwrap().digest,
+        lab.old_set.digest
+    );
 }
 
 /// Every writer that derives from an artifact naming the retired id writes
@@ -492,9 +524,7 @@ fn writers_deriving_from_the_retired_id_write_the_current_one() {
     assert_eq!(manifest.config.digest, old.config.digest);
     store.resolve("lab:compressed", &PcProvider).unwrap();
     let media = MediaValidator(&PcMediaFormats);
-    let set = store
-        .compress_image("set:old", "set:compressed", &media)
-        .unwrap();
+    let set = store.compress_image(OLD_SET, "set:r2", &media).unwrap();
     let (manifest, _) = read(store, &set, &[]);
     assert_eq!(manifest.platform().unwrap(), CURRENT);
     assert_eq!(metadata_platform(store, &manifest), CURRENT);
@@ -524,10 +554,13 @@ fn writers_deriving_from_the_retired_id_write_the_current_one() {
     assert_ne!(edited.digest, lab.old_machine.digest);
     // A firmware package edit: a new revision of the package.
     let (tag, _) = &lab.packages[0];
+    // Its next revision: an import of release 0.0.2 counted `:1`, so `:r2`.
+    let next = firmware_import::next_revision(tag).unwrap();
+    assert_eq!(next, tag.replace(":1", ":r2"));
     let edit = firmware_import::edit(
         store,
         tag,
-        "old/edited:2",
+        &next,
         &Statement {
             title: Some("Edited package".into()),
             ..Statement::default()
@@ -561,7 +594,7 @@ fn an_unknown_platform_id_stays_refused() {
         .resolve_descriptor(&package, &FirmwareValidator(&rules))
         .is_err());
     assert!(store
-        .update_tag("unknown:1", &package, None, &FirmwareValidator(&rules))
+        .update_tag("unknown:r1", &package, None, &FirmwareValidator(&rules))
         .is_err());
     let (manifest, _) = read(store, &machine, PAYLOAD_TYPES);
     let media = MediaValidator(&PcMediaFormats);

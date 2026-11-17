@@ -631,18 +631,21 @@ fn a_tag_naming_an_index_or_a_docker_manifest_moves_only_when_confirmed() {
     assert_eq!(registry.tag_digest("o/lab", "1.0.0"), Some(foreign));
 }
 
-/// Tags of installation media sets (`<upstream version>[-<edition>]
-/// [-<format>][-rN]`) never move once they name a set, not even with
-/// `--move`, whichever side the set is on; an alias such as `latest` moves
-/// when confirmed, and machine images keep the version-tag rule.
+/// The tags of installation media sets and firmware packages on a
+/// registry: a revision tag (`[<release>-]rN`) never moves, with or without
+/// `--move`, whichever side the set is on; the release alias moves only
+/// forward, to the newest revision of its release the registry already has,
+/// and only when confirmed; no `latest`. Machine images keep the version-tag
+/// rule, and their other tags move when confirmed.
 #[test]
-fn media_set_tags_never_move_on_the_registry_but_aliases_and_machine_tags_do() {
+fn revision_tags_never_move_on_the_registry_and_aliases_move_only_forward() {
     let dir = Temp::new();
     let store = dir.store();
-    let first = open_media_set(&store, "sets:1.4", b"first set");
+    let first = open_media_set(&store, "sets:1.4-r1", b"first set");
     let second = open_media_set(&store, "sets:1.4-r2", b"second set");
+    let other = open_media_set(&store, "sets:1.5-r1", b"other release");
     let machine = open_image(&store, "lab:1.4", b"machine");
-    let other = open_image(&store, "lab:1.5", b"other machine");
+    let newer_machine = open_image(&store, "lab:1.5", b"other machine");
     let registry = MockRegistry::start(open_policy());
     let entry = registry.entry(true);
     let client = client(&entry, Anonymous);
@@ -657,16 +660,21 @@ fn media_set_tags_never_move_on_the_registry_but_aliases_and_machine_tags_do() {
         allow_move: true,
         ..PushOptions::default()
     };
-    for path in ["private/sets:1.4", "private/sets:latest"] {
-        send("sets:1.4", path, &plain).unwrap();
-    }
-    // Neither another set nor a machine image takes the set's tag; the
-    // refusal offers the next revision tag.
+    // An alias waits for a revision of its release on the registry.
+    let early = send("sets:1.4-r1", "private/sets:1.4", &plain);
+    assert!(
+        matches!(&early, Err(Error::AliasNotForward { .. })),
+        "{early:?}"
+    );
+    send("sets:1.4-r1", "private/sets:1.4-r1", &plain).unwrap();
+    send("sets:1.4-r1", "private/sets:1.4", &plain).unwrap();
+    // Neither another set nor a machine image takes a revision tag; the
+    // refusal offers the next revision.
     for (local, new) in [("sets:1.4-r2", &second), ("lab:1.4", &machine)] {
         for options in [&plain, &moving] {
-            let refused = send(local, "private/sets:1.4", options);
+            let refused = send(local, "private/sets:1.4-r1", options);
             assert!(
-                matches!(&refused, Err(Error::ImmutableMediaSetTag { current, new: pushed, .. })
+                matches!(&refused, Err(Error::ImmutableRevisionTag { current, new: pushed, .. })
                     if *current == first.digest && pushed == &new.digest),
                 "{local}: {refused:?}"
             );
@@ -674,48 +682,232 @@ fn media_set_tags_never_move_on_the_registry_but_aliases_and_machine_tags_do() {
             assert!(message.contains("such as 1.4-r2"), "{message}");
         }
     }
-    assert_eq!(
-        registry.tag_digest("private/sets", "1.4"),
-        Some(first.digest.clone())
-    );
-    // Nor does a set take a fixed tag that names another image.
-    send("lab:1.4", "private/sets:1.4-720k", &plain).unwrap();
-    let refused = send("sets:1.4-r2", "private/sets:1.4-720k", &moving);
+    // The alias moves only to the newest revision the registry has.
+    let ahead = send("sets:1.4-r2", "private/sets:1.4", &moving);
     assert!(
-        matches!(&refused, Err(Error::ImmutableMediaSetTag { current, .. }) if *current == machine.digest),
-        "{refused:?}"
+        matches!(&ahead, Err(Error::AliasNotForward { .. })),
+        "{ahead:?}"
     );
-    // The alias moves, and only when confirmed.
-    let unconfirmed = send("sets:1.4-r2", "private/sets:latest", &plain);
+    send("sets:1.4-r2", "private/sets:1.4-r2", &plain).unwrap();
+    let unconfirmed = send("sets:1.4-r2", "private/sets:1.4", &plain);
     assert!(
         matches!(unconfirmed, Err(Error::TagMoveNeedsConfirmation { .. })),
         "{unconfirmed:?}"
     );
-    let moved = send("sets:1.4-r2", "private/sets:latest", &moving).unwrap();
+    let moved = send("sets:1.4-r2", "private/sets:1.4", &moving).unwrap();
     assert_eq!(
         moved.tag,
         TagOutcome::Moved {
             from: first.digest.clone()
         }
     );
-    // A machine image's tag of the same shape moves when confirmed.
-    send("lab:1.4", "private/lab:1.4", &plain).unwrap();
-    let unconfirmed = send("lab:1.5", "private/lab:1.4", &plain);
-    assert!(
-        matches!(unconfirmed, Err(Error::TagMoveNeedsConfirmation { .. })),
-        "{unconfirmed:?}"
+    // Never backward, never to another release.
+    send("sets:1.5-r1", "private/sets:1.5-r1", &plain).unwrap();
+    for local in ["sets:1.4-r1", "sets:1.5-r1"] {
+        let refused = send(local, "private/sets:1.4", &moving);
+        assert!(
+            matches!(&refused, Err(Error::AliasNotForward { .. })),
+            "{local}: {refused:?}"
+        );
+    }
+    assert_eq!(
+        registry.tag_digest("private/sets", "1.4"),
+        Some(second.digest.clone())
     );
-    let moved = send("lab:1.5", "private/lab:1.4", &moving).unwrap();
+    assert_eq!(
+        registry.tag_digest("private/sets", "1.4-r1"),
+        Some(first.digest.clone())
+    );
+    assert_eq!(
+        registry.tag_digest("private/sets", "1.5-r1"),
+        Some(other.digest)
+    );
+    // No latest for a set, not even a new one.
+    for options in [&plain, &moving] {
+        let refused = send("sets:1.4-r2", "private/sets:latest", options);
+        assert!(matches!(refused, Err(Error::NoLatest)), "{refused:?}");
+    }
+    assert_eq!(registry.tag_digest("private/sets", "latest"), None);
+    // A machine image keeps its rules: a tag of the same shape moves when
+    // confirmed, and `latest` too.
+    for path in ["private/lab:1.4", "private/lab:latest"] {
+        send("lab:1.4", path, &plain).unwrap();
+        let unconfirmed = send("lab:1.5", path, &plain);
+        assert!(
+            matches!(unconfirmed, Err(Error::TagMoveNeedsConfirmation { .. })),
+            "{unconfirmed:?}"
+        );
+        let moved = send("lab:1.5", path, &moving).unwrap();
+        assert_eq!(
+            moved.tag,
+            TagOutcome::Moved {
+                from: machine.digest.clone()
+            }
+        );
+    }
+    assert_eq!(
+        registry.tag_digest("private/lab", "1.4"),
+        Some(newer_machine.digest)
+    );
+}
+
+/// A set pulled by the alias of its release is written under the revision
+/// the registry's alias names, and the local alias follows it forward; a
+/// pull of an older revision leaves the alias where it is.
+#[test]
+fn a_pull_writes_the_revision_and_moves_the_local_alias_forward() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let first = open_media_set(&store, "sets:1.4-r1", b"first set");
+    let second = open_media_set(&store, "sets:1.4-r2", b"second set");
+    let registry = MockRegistry::start(open_policy());
+    let entry = registry.entry(true);
+    let client = client(&entry, Anonymous);
+    let providers: [&dyn ConfigValidator; 2] = [&Synthetic, &MEDIA_SETS];
+    let moving = PushOptions {
+        allow_move: true,
+        ..PushOptions::default()
+    };
+    for (local, path) in [
+        ("sets:1.4-r1", "private/sets:1.4-r1"),
+        ("sets:1.4-r1", "private/sets:1.4"),
+        ("sets:1.4-r2", "private/sets:1.4-r2"),
+        ("sets:1.4-r2", "private/sets:1.4"),
+    ] {
+        let plan = push::plan(&store, local, target(&registry, path), Some(&entry)).unwrap();
+        push::push(&store, &plan, &providers, &client, &moving, &mut |_, _| {}).unwrap();
+    }
+    let host = registry.host();
+    let fresh = Temp::new();
+    let pulled = fresh.store();
+    let pull = |path: &str| {
+        let reference = target(&registry, path);
+        let local = reference.local_tag().unwrap();
+        pull::pull(&pulled, &client, &reference, &local, &providers, &|_| {}).unwrap()
+    };
+    // An older revision first: the alias is new, so it names that one.
+    let report = pull("private/sets:1.4-r1");
+    assert_eq!(report.local_tag, format!("{host}/private/sets:1.4-r1"));
+    let alias = format!("{host}/private/sets:1.4");
+    assert_eq!(pulled.tag_descriptor(&alias).unwrap().digest, first.digest);
+    // By the alias: the newest revision, and the local alias follows, which
+    // the report says.
+    let report = pull("private/sets:1.4");
+    assert_eq!(report.local_tag, format!("{host}/private/sets:1.4-r2"));
+    assert_eq!(report.image.digest, second.digest);
+    assert_eq!(report.alias.as_deref(), Some(alias.as_str()));
+    let named = |tag: &str| pulled.tag_descriptor(tag).unwrap();
+    assert_eq!(named(&alias).digest, second.digest);
+    assert_eq!(
+        named(&alias).annotations.get(image_store::PULL_REGISTRY),
+        Some(&host)
+    );
+    assert_eq!(
+        named(&format!("{host}/private/sets:1.4-r1")).digest,
+        first.digest
+    );
+    // An older revision pulled again never moves the alias back.
+    pulled
+        .remove_tag(&format!("{host}/private/sets:1.4-r1"), &first.digest)
+        .unwrap();
+    let report = pull("private/sets:1.4-r1");
+    assert_eq!(report.alias, None);
+    assert_eq!(named(&alias).digest, second.digest);
+    // A revision already in place still brings its alias along.
+    pulled.remove_tag(&alias, &second.digest).unwrap();
+    let report = pull("private/sets:1.4");
+    assert_eq!(report.outcome, pull::PullOutcome::Unchanged);
+    assert_eq!(report.alias.as_deref(), Some(alias.as_str()));
+    assert_eq!(named(&alias).digest, second.digest);
+}
+
+/// Seed the manifest and blobs of the local `image` under `repository:tag`,
+/// as a registry holds what an earlier release published.
+fn seed_published(
+    store: &Store,
+    registry: &MockRegistry,
+    repository: &str,
+    tag: &str,
+    image: &Descriptor,
+) {
+    let bytes = store.read_verified(image, MAX_SMALL_BLOB).unwrap();
+    let manifest = Manifest::decode_for_summary(&bytes).unwrap();
+    for blob in std::iter::once(&manifest.config).chain(&manifest.layers) {
+        registry.seed_blob(
+            repository,
+            &store.read_verified(blob, MAX_SMALL_BLOB).unwrap(),
+        );
+    }
+    registry.seed_manifest(repository, tag, &bytes);
+}
+
+/// The set and package rules replace the version rule: a release shaped like
+/// a semantic version is an alias that moves forward. A tag outside the
+/// scheme is refused. An alias a registry published before revisions is
+/// pulled as it is, and a push names it to be deleted rather than moved.
+#[test]
+fn version_shaped_releases_move_and_aliases_from_before_revisions_stay() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let first = open_media_set(&store, "sets:1.0.0-r1", b"first set");
+    let second = open_media_set(&store, "sets:1.0.0-r2", b"second set");
+    let rebuilt = open_media_set(&store, "old:1.4-r1", b"rebuilt set");
+    let registry = MockRegistry::start(open_policy());
+    let entry = registry.entry(true);
+    let client = client(&entry, Anonymous);
+    let providers: [&dyn ConfigValidator; 2] = [&Synthetic, &MEDIA_SETS];
+    let send =
+        |local: &str, path: &str, options: &PushOptions| -> crate::Result<push::PushReport> {
+            let plan = push::plan(&store, local, target(&registry, path), Some(&entry))?;
+            push::push(&store, &plan, &providers, &client, options, &mut |_, _| {})
+        };
+    let moving = PushOptions {
+        allow_move: true,
+        ..PushOptions::default()
+    };
+    for (local, path) in [
+        ("sets:1.0.0-r1", "private/sets:1.0.0-r1"),
+        ("sets:1.0.0-r1", "private/sets:1.0.0"),
+        ("sets:1.0.0-r2", "private/sets:1.0.0-r2"),
+    ] {
+        send(local, path, &PushOptions::default()).unwrap();
+    }
+    let moved = send("sets:1.0.0-r2", "private/sets:1.0.0", &moving).unwrap();
     assert_eq!(
         moved.tag,
         TagOutcome::Moved {
-            from: machine.digest.clone()
+            from: first.digest.clone()
         }
     );
     assert_eq!(
-        registry.tag_digest("private/lab", "1.4"),
-        Some(other.digest)
+        registry.tag_digest("private/sets", "1.0.0"),
+        Some(second.digest.clone())
     );
+    let outside = send("sets:1.0.0-r2", "private/sets:Beta", &moving);
+    assert!(
+        matches!(&outside, Err(Error::OutsideTagScheme { tag }) if tag == "Beta"),
+        "{outside:?}"
+    );
+    // The registry holds `old:1.4` as an earlier release published it, with
+    // no revision.
+    seed_published(&store, &registry, "private/old", "1.4", &first);
+    send("old:1.4-r1", "private/old:1.4-r1", &moving).unwrap();
+    let refused = send("old:1.4-r1", "private/old:1.4", &moving).unwrap_err();
+    assert!(
+        matches!(&refused, Error::AliasNotForward { .. })
+            && refused.to_string().contains("delete 1.4 on the registry"),
+        "{refused}"
+    );
+    assert_ne!(rebuilt.digest, first.digest);
+    // A pull of that alias finds no revision naming its image and writes it
+    // as it is.
+    let fresh = Temp::new();
+    let pulled = fresh.store();
+    let reference = target(&registry, "private/old:1.4");
+    let local = reference.local_tag().unwrap();
+    let report = pull::pull(&pulled, &client, &reference, &local, &providers, &|_| {}).unwrap();
+    assert_eq!(report.local_tag, local);
+    assert_eq!(pulled.tag_descriptor(&local).unwrap().digest, first.digest);
 }
 
 #[test]

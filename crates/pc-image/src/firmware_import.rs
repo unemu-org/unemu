@@ -34,9 +34,53 @@ pub struct Candidate {
     pub sources: Vec<PathBuf>,
     pub distribution: assembly::FirmwareDistribution,
 }
+/// The local tag an import gives the package of the catalogue entry
+/// `catalogue_id`: its first revision in
+/// `private/firmware/<platform>/<catalogue id>` (recipes.md §8.3). A local
+/// import is never named under `unemu/`, open or not, so it never takes the
+/// official name a pull of the published package writes; the official
+/// builders (`template::build_firmware`) write those, and a push may name
+/// any target the guard allows.
+pub fn package_tag(catalogue_id: &str) -> String {
+    format!(
+        "{}:{}",
+        crate::firmware_repository(crate::PRIVATE_NAMESPACE, catalogue_id),
+        image_store::tag::revision(None, 1)
+    )
+}
+
+/// The local tag an import of the package of `catalogue_id` checks and
+/// writes in `store`: [`package_tag`], unless only the first revision under
+/// `unemu/` exists, as a pull or a template build wrote it. One catalogue
+/// entry has one first revision here: [`existing`] reports the same ROM and
+/// document bytes under it as already imported, whatever its licences, and
+/// other bytes as a conflict; an edit publishes a new revision.
+pub fn import_tag(store: &Store, catalogue_id: &str) -> Result<String> {
+    let own = package_tag(catalogue_id);
+    let present = |tag: &str| match store.tag_descriptor(tag) {
+        Ok(_) => Ok(true),
+        Err(image_store::Error::TagNotFound(_)) => Ok(false),
+        Err(error) => Err(error),
+    };
+    if present(&own)? {
+        return Ok(own);
+    }
+    let official = format!(
+        "{}:{}",
+        crate::firmware_repository(crate::OPEN_NAMESPACE, catalogue_id),
+        image_store::tag::revision(None, 1)
+    );
+    if present(&official)? {
+        return Ok(official);
+    }
+    Ok(own)
+}
+
 impl Candidate {
+    /// The local tag an import of this candidate writes into a store that
+    /// holds no package of its catalogue entry ([`package_tag`]).
     pub fn tag(&self) -> String {
-        format!("firmware/{}:1", self.catalogue_id)
+        package_tag(&self.catalogue_id)
     }
     /// Another catalogue entry pins the same logical ROM, so the folder alone
     /// cannot choose its identity: the user must select one entry.
@@ -1552,11 +1596,11 @@ pub fn publish_with(
         attachments,
         statement,
         catalogue,
-        &candidate.tag(),
+        &import_tag(store, &candidate.catalogue_id)?,
         None,
     )
 }
-/// [`publish_with`] under a chosen local tag instead of `firmware/<id>:1`,
+/// [`publish_with`] under a chosen local tag instead of [`package_tag`],
 /// such as the version tag of an official template package. With `judged`,
 /// only a package with that manifest digest is tagged or reused: the one a
 /// caller checked, for example against a push guard.
@@ -1597,21 +1641,15 @@ fn unjudged(judged: Option<&Digest>, digest: &Digest) -> Result<()> {
     }
 }
 
-/// How two firmware package tags compare as revisions: each tag is a plain
-/// revision number (`1`, `2`, `10`), numbered as [`next_revision`] counts,
-/// and a higher number is newer. `None` when either tag is not one.
-pub fn compare_revisions(a: &str, b: &str) -> Option<std::cmp::Ordering> {
-    let revision = |tag: &str| {
-        (!tag.is_empty() && tag.bytes().all(|b| b.is_ascii_digit()))
-            .then(|| tag.parse::<u64>().ok())
-            .flatten()
-    };
-    Some(revision(a)?.cmp(&revision(b)?))
-}
-
-/// The tag after `name:N`, for a tag whose version is a plain revision number.
+/// The tag after `name:TAG`: the next revision of a revision tag
+/// (`name:r1` gives `name:r2`, `name:2x32k-r1` gives `name:2x32k-r2`), and
+/// `name:rN+1` for a plain number `N`, the first packaging an earlier
+/// release numbered `1`. `None` for any other tag.
 pub fn next_revision(tag: &str) -> Option<String> {
     let (name, revision) = tag.rsplit_once(':')?;
+    if let Some(next) = image_store::tag::next_revision(revision) {
+        return Some(format!("{name}:{next}"));
+    }
     if revision.is_empty()
         || revision.starts_with('0')
         || !revision.bytes().all(|b| b.is_ascii_digit())
@@ -1620,7 +1658,7 @@ pub fn next_revision(tag: &str) -> Option<String> {
     }
     Some(format!(
         "{name}:{}",
-        revision.parse::<u64>().ok()?.checked_add(1)?
+        image_store::tag::revision(None, revision.parse::<u64>().ok()?.checked_add(1)?)
     ))
 }
 
@@ -1920,12 +1958,12 @@ mod tests {
             &[],
             &Statement::default(),
             &[],
-            "firmware/plain:1",
+            "firmware/plain:r1",
             None,
         )
         .unwrap();
         assert_eq!(
-            requirement("firmware/plain:1"),
+            requirement("firmware/plain:r1"),
             Requirement::Release(computed)
         );
         for lower in [AppVersion::new(0, 0, 0), BASELINE, PACKAGE] {
@@ -1935,7 +1973,7 @@ mod tests {
                 &[],
                 &stated(lower),
                 &[],
-                "firmware/lower:1",
+                "firmware/lower:r1",
                 None,
             )
             .unwrap_err()
@@ -1951,12 +1989,12 @@ mod tests {
             &[],
             &stated(level()),
             &[],
-            "firmware/raised:1",
+            "firmware/raised:r1",
             None,
         )
         .unwrap();
         assert_eq!(
-            requirement("firmware/raised:1"),
+            requirement("firmware/raised:r1"),
             Requirement::Release(level())
         );
         let renamed = Statement {
@@ -1965,21 +2003,21 @@ mod tests {
         };
         edit(
             &store,
-            "firmware/raised:1",
-            "firmware/raised:2",
+            "firmware/raised:r1",
+            "firmware/raised:r2",
             &renamed,
             &[],
         )
         .unwrap();
         assert_eq!(
-            requirement("firmware/raised:2"),
+            requirement("firmware/raised:r2"),
             Requirement::Release(level())
         );
         // An edit may raise the value, never lower it.
         let refusal = edit(
             &store,
-            "firmware/raised:2",
-            "firmware/raised:3",
+            "firmware/raised:r2",
+            "firmware/raised:r3",
             &stated(BASELINE),
             &[],
         )
@@ -1990,8 +2028,8 @@ mod tests {
         // stating it again changes nothing.
         let refusal = edit(
             &store,
-            "firmware/plain:1",
-            "firmware/plain:2",
+            "firmware/plain:r1",
+            "firmware/plain:r2",
             &stated(level()),
             &[],
         )
@@ -2002,14 +2040,89 @@ mod tests {
     }
 
     #[test]
-    fn revision_tags_compare_by_number() {
-        use std::cmp::Ordering::*;
-        assert_eq!(compare_revisions("10", "2"), Some(Greater));
-        assert_eq!(compare_revisions("2", "10"), Some(Less));
-        assert_eq!(compare_revisions("1", "1"), Some(Equal));
-        assert_eq!(compare_revisions("1", "latest"), None);
-        assert_eq!(compare_revisions("1.0.0", "1"), None);
-        assert_eq!(compare_revisions("", "1"), None);
-        assert_eq!(next_revision("pkg:9").as_deref(), Some("pkg:10"));
+    fn the_next_revision_counts_up_from_revision_tags_and_old_numbers() {
+        for (tag, next) in [
+            (
+                "private/firmware/ibm-pc/pkg:r1",
+                Some("private/firmware/ibm-pc/pkg:r2"),
+            ),
+            ("pkg:r9", Some("pkg:r10")),
+            ("pkg:2x32k-r1", Some("pkg:2x32k-r2")),
+            // A package an earlier release imported as `:1`.
+            ("firmware/pkg:1", Some("firmware/pkg:r2")),
+            ("pkg:9", Some("pkg:r10")),
+            ("pkg:2x32k", None),
+            ("pkg:latest", None),
+            ("pkg:01", None),
+            ("pkg", None),
+        ] {
+            assert_eq!(next_revision(tag).as_deref(), next, "{tag}");
+        }
+    }
+
+    #[test]
+    fn a_local_import_is_named_under_private_open_or_not() {
+        let root =
+            std::env::temp_dir().join(format!("pc-image-package-tag-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let rom = root.join("rom.bin");
+        fs::write(&rom, [0x5a; 8192]).unwrap();
+        let candidate = unlisted(&rom, "synthetic-rom", "option-rom", &[]).unwrap();
+        let tag = "private/firmware/ibm-pc/synthetic-rom:r1";
+        assert_eq!(candidate.tag(), tag);
+        let open = Statement {
+            open: true,
+            license: Some("MIT".into()),
+            ..Statement::default()
+        };
+        // Open or not, a local import never takes the official name.
+        let opened = Store::open(root.join("opened")).unwrap();
+        let open_package = publish_with(&opened, &candidate, &[], &open, &[]).unwrap();
+        assert_eq!(
+            opened.tag_descriptor(tag).unwrap().digest,
+            open_package.digest
+        );
+        // The official revision the store already holds is the one an
+        // import checks: the same ROMs there are already imported.
+        let official = Store::open(root.join("official")).unwrap();
+        let unemu = "unemu/firmware/ibm-pc/synthetic-rom:r1";
+        let pulled = publish_as(&official, &candidate, &[], &open, &[], unemu, None).unwrap();
+        assert_eq!(import_tag(&official, "synthetic-rom").unwrap(), unemu);
+        assert_eq!(publish(&official, &candidate, &[], &[]).unwrap(), pulled);
+        assert!(official.tag_descriptor(tag).is_err());
+        // A package's revision tag never moves, not even from the confirmed
+        // digest, and no package is tagged latest.
+        let store = Store::open(root.join("store")).unwrap();
+        let first = publish(&store, &candidate, &[], &[]).unwrap();
+        assert_eq!(store.tag_descriptor(tag).unwrap().digest, first.digest);
+        let validator = Validator(&PcFirmwareRules(&[]));
+        let other = publish_as(
+            &store,
+            &candidate,
+            &[],
+            &open,
+            &[],
+            "private/firmware/ibm-pc/other:r1",
+            None,
+        )
+        .unwrap();
+        let error = store
+            .update_tag(tag, &other, Some(&first.digest), &validator)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("never move"), "{error}");
+        let error = store
+            .update_tag(
+                "private/firmware/ibm-pc/synthetic-rom:latest",
+                &first,
+                None,
+                &validator,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no latest"), "{error}");
+        assert_eq!(store.tag_descriptor(tag).unwrap().digest, first.digest);
+        fs::remove_dir_all(&root).unwrap();
     }
 }

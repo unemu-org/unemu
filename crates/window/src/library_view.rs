@@ -246,9 +246,11 @@ impl Listed<'_> {
     }
 }
 /// Tags of one repository that name the same manifest, such as a version tag
-/// and its `latest` alias, form one row. A version tag leads its row because
-/// it names that manifest forever (machine-images §3); the other tags follow
-/// by name. Rows keep the order of their first tag in `tags`.
+/// and its `latest` alias, or a set's revision tag and its release alias,
+/// form one row. A version tag or a revision tag (`1.4-r1`) leads its row
+/// because it names that manifest forever (machine-images §3 and §5.2); the
+/// other tags follow by name. Rows keep the order of their first tag in
+/// `tags`.
 pub(super) fn listed(tags: &[Tag]) -> Vec<Listed<'_>> {
     let mut rows: Vec<Vec<&Tag>> = Vec::new();
     let mut index: BTreeMap<(&str, &Digest), usize> = BTreeMap::new();
@@ -266,9 +268,9 @@ pub(super) fn listed(tags: &[Tag]) -> Vec<Listed<'_>> {
         }
     }
     let alias = |tag: &Tag| {
-        !tag.name
-            .rsplit_once(':')
-            .is_some_and(|(_, version)| Store::is_version_tag(version))
+        !tag.name.rsplit_once(':').is_some_and(|(_, version)| {
+            Store::is_version_tag(version) || image_store::tag::is_revision(version)
+        })
     };
     rows.into_iter()
         .map(|mut tags| {
@@ -4310,8 +4312,9 @@ pub(super) mod tests {
             pc_image::firmware::catalogue(),
         )
         .unwrap();
-        tag_again(&store, "firmware/synthetic:latest", &package);
-        tag_again(&store, "firmware/synthetic:1.1.0", &package);
+        // Tags an earlier release could write, beside the import's revision.
+        tag_again(&store, "private/firmware/ibm-pc/synthetic:latest", &package);
+        tag_again(&store, "private/firmware/ibm-pc/synthetic:1.1.0", &package);
         // An installation set under a version tag and latest.
         let machine = Manifest::decode_for_summary(
             &store
@@ -4388,8 +4391,8 @@ pub(super) mod tests {
         assert_eq!((firmware.firmware_total, firmware.matched), (1, 1));
         assert_eq!(firmware.firmware_rows.len(), 1);
         let package = &firmware.firmware_rows[0].image;
-        assert_eq!(package.reference, "firmware/synthetic:1.1.0");
-        assert_eq!(package.tags(), "1.1.0, 1, latest");
+        assert_eq!(package.reference, "private/firmware/ibm-pc/synthetic:1.1.0");
+        assert_eq!(package.tags(), "1.1.0, r1, latest");
 
         let media = snapshot(
             &cache,
@@ -4513,7 +4516,8 @@ pub(super) mod tests {
             texts(&output)
         };
         // The pane's second line, under the package name, and its last facts line.
-        let top = "System BIOS · local package · firmware/synthetic-two-chip-bios:1";
+        let top =
+            "System BIOS · local package · private/firmware/ibm-pc/synthetic-two-chip-bios:r1";
         let last = "Edit metadata… creates a new package revision; ROM blobs unchanged. A machine \
                     embeds its ROM blobs and records the source package digest. Source folders \
                     are not needed after import.";

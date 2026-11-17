@@ -1035,7 +1035,9 @@ fn suggest_dos(path: &Path) -> String {
         String::new()
     }
 }
-/// A local tag from the title: lowercase words joined by hyphens, version 1.0.
+/// A local tag from the title: lowercase words joined by hyphens as the work
+/// of a user-supplied set (`private/media/<platform>/<work>`), release 1.0,
+/// first revision (recipes.md §8.3).
 fn default_tag(title: &str) -> String {
     let mut slug = String::new();
     for c in title.chars() {
@@ -1047,13 +1049,15 @@ fn default_tag(title: &str) -> String {
     }
     let slug: String = slug.trim_end_matches('-').chars().take(64).collect();
     let slug = slug.trim_end_matches('-');
+    let work = if slug.is_empty() {
+        "installation-media"
+    } else {
+        slug
+    };
     format!(
-        "{}:1.0",
-        if slug.is_empty() {
-            "installation-media"
-        } else {
-            slug
-        }
+        "{}:{}",
+        pc_image::media_repository(pc_image::PRIVATE_NAMESPACE, work),
+        image_store::tag::revision(Some("1.0"), 1)
     )
 }
 fn list(text: &str) -> Vec<String> {
@@ -1717,7 +1721,7 @@ pub(crate) mod tests {
                 "--title",
                 "Example Adventure",
                 "--tag",
-                "example-adventure:1.0",
+                "example-adventure:r1",
                 "--label",
                 "1=Disk 1 of 2 - Setup",
                 "--label",
@@ -1737,7 +1741,7 @@ pub(crate) mod tests {
                 "--title",
                 "Sample Atlas",
                 "--tag",
-                "sample-atlas:1.0",
+                "sample-atlas:r1",
             ],
         );
         let disc = root.join("archive.iso");
@@ -1751,7 +1755,7 @@ pub(crate) mod tests {
                 "--title",
                 "Moonlit Archive",
                 "--tag",
-                "moonlit-archive:1.0",
+                "moonlit-archive:r1",
             ],
         );
         let cache = warm(&f.store);
@@ -1887,34 +1891,34 @@ pub(crate) mod tests {
                 .find(|r| r.image.reference == tag)
                 .unwrap()
         };
-        let adventure = cells(row("example-adventure:1.0"), &[]);
+        let adventure = cells(row("example-adventure:r1"), &[]);
         assert_eq!(
             adventure,
             [
                 "Example Adventure (2 x 1.44M)",
                 // Imported here.
                 "local",
-                "1.0",
+                "r1",
                 "",
                 "2 x 1.44M",
                 "Fits a 1.44M drive",
             ]
         );
         assert_eq!(
-            row("example-adventure:1.0").redistribution.label(),
+            row("example-adventure:r1").redistribution.label(),
             "User-supplied"
         );
         assert_eq!(
-            cells(row("example-adventure:1.0"), &DRIVE_A)[5],
+            cells(row("example-adventure:r1"), &DRIVE_A)[5],
             "Ready to insert into A:"
         );
-        let atlas = cells(row("sample-atlas:1.0"), &DRIVE_A);
+        let atlas = cells(row("sample-atlas:r1"), &DRIVE_A);
         assert_eq!(atlas[0], "Sample Atlas (1 x 1.2M)");
         assert_eq!(
             atlas[5],
             "1.2M disks; drive A: is 1.44M, which takes 1.44M or 720K"
         );
-        let disc = cells(row("moonlit-archive:1.0"), &DRIVE_A);
+        let disc = cells(row("moonlit-archive:r1"), &DRIVE_A);
         assert_eq!(disc[4], "1 x ISO-2048");
         assert_eq!(disc[5], "CD-ROM emulation not available yet");
         assert_eq!(
@@ -2080,7 +2084,7 @@ pub(crate) mod tests {
     #[test]
     fn set_labels_facet_uses_library_labels() {
         let (f, _) = library();
-        let tag = f.store.tag_descriptor("sample-atlas:1.0").unwrap();
+        let tag = f.store.tag_descriptor("sample-atlas:r1").unwrap();
         f.store
             .edit_library(&tag.digest, |entry| {
                 entry.labels = vec!["To install".into()];
@@ -2160,7 +2164,7 @@ pub(crate) mod tests {
         let first = super::super::firmware::short(Digest::of(&fs::read(first).unwrap()).hex());
         for expected in [
             "Example Adventure (2 x 1.44M)",
-            "example-adventure:1.0 · private library",
+            "example-adventure:r1 · private library",
             "IBM PC compatible / Unknown",
             "User-supplied · private store and export",
             "1. Disk 1 of 2 - Setup",
@@ -2235,7 +2239,7 @@ pub(crate) mod tests {
                 .clone()
                 .unwrap()
         };
-        let adventure = summary("example-adventure:1.0");
+        let adventure = summary("example-adventure:r1");
         assert_eq!(
             availability(&adventure, &[]),
             Availability::NoMachine("1.44M".into())
@@ -2244,14 +2248,14 @@ pub(crate) mod tests {
         let both = [(0, FloppyGeometry::HD_1_2), (1, FloppyGeometry::HD_1_44)];
         assert_eq!(availability(&adventure, &both), Availability::Ready(1));
         assert_eq!(
-            availability(&summary("moonlit-archive:1.0"), &DRIVE_A),
+            availability(&summary("moonlit-archive:r1"), &DRIVE_A),
             Availability::Unavailable("CD-ROM emulation not available yet".into())
         );
         // Clicking Insert names the drive; without a running drive it is disabled.
         let row = result
             .media_rows
             .iter()
-            .find(|r| r.image.reference == "example-adventure:1.0")
+            .find(|r| r.image.reference == "example-adventure:r1")
             .unwrap();
         for (drives, expected) in [(&DRIVE_A[..], Some(0)), (&[][..], None)] {
             let ctx = egui::Context::default();
@@ -2293,7 +2297,7 @@ pub(crate) mod tests {
         let mut mixed = result
             .media_rows
             .iter()
-            .find(|r| r.image.reference == "example-adventure:1.0")
+            .find(|r| r.image.reference == "example-adventure:r1")
             .unwrap()
             .image
             .summary
@@ -2418,7 +2422,7 @@ pub(crate) mod tests {
         dialog.move_disk(3, false);
         assert_eq!(labels(&dialog), ["disk1", "disk2", "odd", "cd"]);
         dialog.set_title("Example Adventure!".into());
-        assert_eq!(dialog.tag, "example-adventure:1.0");
+        assert_eq!(dialog.tag, "private/media/ibm-pc/example-adventure:1.0-r1");
         let problems = dialog.problems();
         assert!(
             problems
@@ -2610,14 +2614,19 @@ pub(crate) mod tests {
         pick(&mut view, Pick::Extras, vec![manual.clone()]);
         assert_eq!(
             run_import(&mut view),
-            Ok(Outcome::Imported("folder-set:1.0".into()))
+            Ok(Outcome::Imported(
+                "private/media/ibm-pc/folder-set:1.0-r1".into()
+            ))
         );
-        assert_eq!(view.status.as_deref(), Some("Imported folder-set:1.0"));
+        assert_eq!(
+            view.status.as_deref(),
+            Some("Imported private/media/ibm-pc/folder-set:1.0-r1")
+        );
         // The same set the command line would publish from the same choices.
         let store = Store::open_existing(temp.path().join("store")).unwrap();
         let image = store
             .resolve(
-                "folder-set:1.0",
+                "private/media/ibm-pc/folder-set:1.0-r1",
                 &image_store::media_set::Validator(&PcMediaFormats),
             )
             .unwrap();
@@ -2651,7 +2660,9 @@ pub(crate) mod tests {
         dialog.outcome = None;
         assert_eq!(
             run_import(&mut view),
-            Ok(Outcome::AlreadyImported("folder-set:1.0".into()))
+            Ok(Outcome::AlreadyImported(
+                "private/media/ibm-pc/folder-set:1.0-r1".into()
+            ))
         );
         // A different set under the same tag is refused as the CLI refuses it.
         let dialog = view.media_import.as_mut().unwrap();
@@ -2719,7 +2730,9 @@ pub(crate) mod tests {
             "a cancelled review can be imported again"
         );
         let store = Store::open_existing(temp.path().join("store")).unwrap();
-        assert!(store.tag_descriptor("refused:1.0").is_err());
+        assert!(store
+            .tag_descriptor("private/media/ibm-pc/refused:1.0-r1")
+            .is_err());
         view.shutdown();
     }
 
@@ -2795,7 +2808,7 @@ pub(crate) mod tests {
     fn rows_without_a_summary_say_pending_or_unavailable() {
         let row = |failure: Option<&str>| MediaRow {
             image: ImageRow {
-                reference: "synthetic-set:1.0".into(),
+                reference: "synthetic-set:r1".into(),
                 aliases: Vec::new(),
                 descriptor: Descriptor::new(media_type::MANIFEST, Digest::of(b"set"), 7),
                 summary: None,
@@ -2807,7 +2820,7 @@ pub(crate) mod tests {
         assert!(!lead(&row(None)).warning);
         let failed = cells(&row(Some("missing blob")), &[]);
         assert_eq!(failed[5], "Unavailable");
-        assert_eq!(failed[0], "synthetic-set:1.0");
+        assert_eq!(failed[0], "synthetic-set:r1");
         let failed = lead(&row(Some("missing blob")));
         assert!(failed.warning);
         assert_eq!(failed.icon, Some(crate::shell_icons::Icon::Media));

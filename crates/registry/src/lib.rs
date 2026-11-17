@@ -114,14 +114,20 @@ pub enum Error {
         new: Digest,
     },
     #[error(
-        "tag {tag} already names {current}; tags of installation media sets never move, even with --move; publish {new} under a new revision tag such as {}",
-        image_store::media_set::next_revision(.tag)
+        "revision tag {tag} already names {current}; a revision tag ([RELEASE-]rN) of an installation media set or firmware package never moves, even with --move; publish {new} under a new revision tag{}",
+        image_store::tag::next_revision(.tag).map(|next| format!(" such as {next}")).unwrap_or_default()
     )]
-    ImmutableMediaSetTag {
+    ImmutableRevisionTag {
         tag: String,
         current: Digest,
         new: Digest,
     },
+    #[error("installation media sets and firmware packages have no {} tag; push a revision tag such as r1 or 1.0-r1, then its release alias", image_store::tag::LATEST)]
+    NoLatest,
+    #[error("release alias {tag} moves only to the newest revision of its release that the registry has: {reason}")]
+    AliasNotForward { tag: String, reason: String },
+    #[error("{tag} is neither a revision tag ([RELEASE-]rN) nor a release alias; installation media sets and firmware packages take only those")]
+    OutsideTagScheme { tag: String },
     #[error("tag {tag} names {current}; moving it to {new} needs confirmation (--move)")]
     TagMoveNeedsConfirmation {
         tag: String,

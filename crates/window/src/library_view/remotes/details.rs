@@ -135,6 +135,7 @@ fn state_text(row: Option<&TagRow>) -> String {
     match &row.local {
         Some(LocalState::InLibrary) => "In library".into(),
         Some(LocalState::NewerAvailable { have }) => format!("Newer available · you have {have}"),
+        Some(LocalState::LocalNewer { have }) => format!("Local is newer: {have}"),
         Some(LocalState::OtherImage { .. }) => "⚠ Local tag names another image".into(),
         Some(LocalState::NotPulled { same_as: Some(tag) }) => {
             format!("Not pulled · same image as {tag}")
@@ -147,11 +148,24 @@ fn state_text(row: Option<&TagRow>) -> String {
 fn local_sentence(row: &TagRow) -> String {
     match &row.local {
         Some(LocalState::InLibrary) => "In the library under this name.".into(),
+        Some(LocalState::NewerAvailable { have }) if release_alias(row) => format!(
+            "Newer than your copy. The library has {have}, an older revision of this release. Pull writes the registry's newest revision and moves your local alias {} forward to it; {have} and the machines made from it stay as they are.",
+            row.local_tag
+        ),
         Some(LocalState::NewerAvailable { have }) => format!(
             "Newer than your copy. The library has {have} from this registry. Pull adds this tag beside it; your copy and the machines made from it stay as they are."
         ),
+        Some(LocalState::LocalNewer { have }) => format!(
+            "Your copy is newer: {have} is a higher revision of this release than the registry lists. Pull writes the registry's revision beside it and leaves your alias {} where it is.",
+            row.local_tag
+        ),
+        Some(LocalState::OtherImage { current }) if release_alias(row) => format!(
+            "⚠ Your alias under this name names another image ({}), which no newer or older revision of this release on the registry explains. Pull writes the registry's revision of {} and moves your alias only forward.",
+            short(current),
+            row.tag
+        ),
         Some(LocalState::OtherImage { current }) => format!(
-            "⚠ Your copy under this name is another image ({}): the registry's tag {} changed after you pulled it. Version tags never move in unemupc, so another tool or a rebuilt registry moved it. Pull does not overwrite your copy; Pull… offers another local tag.",
+            "⚠ Your copy under this name is another image ({}): the registry's tag {} changed after you pulled it. Version and revision tags never move in unemupc, so another tool or a rebuilt registry moved it. Pull does not overwrite your copy; Pull… offers another local tag.",
             short(current),
             row.tag
         ),
@@ -162,6 +176,18 @@ fn local_sentence(row: &TagRow) -> String {
             "Not in the library under this name.".into()
         }
     }
+}
+
+/// Whether the row is the release alias of a set or package, which a pull
+/// resolves to a revision and moves forward ([`image_store::tag`]).
+fn release_alias(row: &TagRow) -> bool {
+    row.record
+        .as_ref()
+        .is_ok_and(|record| image_store::tag::governs(&record.artifact_type))
+        && matches!(
+            image_store::tag::parse(&row.tag),
+            Some(image_store::tag::Kind::Alias { .. })
+        )
 }
 
 impl LibraryView {

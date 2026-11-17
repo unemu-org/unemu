@@ -3974,7 +3974,10 @@ pub(crate) mod tests {
             assert!(!order.split && order.journal, "{what}");
             assert_eq!(
                 order.keep,
-                Some(("nightfal:1.0".to_owned(), "NIGHTFAL".to_owned()))
+                Some((
+                    "private/media/ibm-pc/nightfal:1.0-r1".to_owned(),
+                    "NIGHTFAL".to_owned()
+                ))
             );
             assert_eq!(
                 run.click(&mut picker, Role::Button, "Cancel", 1),

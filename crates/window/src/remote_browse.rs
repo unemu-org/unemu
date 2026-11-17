@@ -52,10 +52,11 @@
 //! this image. *Local tag names another image*: it names another one. *Newer
 //! available*: the library holds older versions under that name and none as
 //! new, by the artifact type's order: Semantic Versioning 2.0.0 §11
-//! precedence for machine images, the set-tag order for installation media
-//! sets ([`media_set::compare_set_tags`]) and the revision number for
-//! firmware packages; a tag outside its type's order, an alias such as
-//! `latest` or another tool's artifact makes no claim. *Not pulled*
+//! precedence for machine images, and for installation media sets and
+//! firmware packages the revision numbers of one release
+//! ([`image_store::tag::compare`]); a tag outside its type's order, an
+//! alias such as `latest` or `1.4`, a revision of another release or
+//! another tool's artifact makes no claim. *Not pulled*
 //! otherwise, naming another local tag of the same image when there is one.
 //! The comparison runs on the worker against the store, and again whenever
 //! the library changes. The same comparison notes which blobs of each read
@@ -73,7 +74,7 @@ use image_registry::{
     reference::OFFICIAL_NAMESPACE,
     Client, Error, Reference, RegistryEntry, DEFAULT_REGISTRY,
 };
-use image_store::{compat, media_set, media_type as mt, Descriptor, Digest, Store};
+use image_store::{compat, media_type as mt, Descriptor, Digest, Store};
 use std::{
     cmp::Ordering as Order,
     collections::{BTreeMap, BTreeSet},
@@ -300,6 +301,9 @@ pub(crate) enum LocalState {
     /// The library holds `have`, an older version under the same name, and
     /// no version as new as this one.
     NewerAvailable { have: String },
+    /// The local alias of a set's or package's release names `have`, a
+    /// higher revision than the newest the registry lists for it.
+    LocalNewer { have: String },
     /// The local tag a pull writes names `current`, another image.
     OtherImage { current: Digest },
 }
@@ -317,6 +321,9 @@ pub(crate) struct TagRow {
     /// The blobs of the record the store held when it was last compared;
     /// a pull does not fetch them again.
     pub stored: BTreeSet<Digest>,
+    /// For the release alias of a set or package, the highest revision of
+    /// that release the registry lists ([`newest_listed_revision`]).
+    pub newest_revision: Option<u64>,
 }
 
 /// What a pull of a tag would fetch.
@@ -397,9 +404,10 @@ impl RepositoryRow {
 /// The tags a repository row may stand for, newest first, whatever order the
 /// registry lists them in: the releases by Semantic Versioning 2.0.0 §11
 /// precedence; without a release the pre-releases; without either every tag
-/// by the set-tag order ([`media_set::newest_set_tag_first`]), which also
-/// puts the highest firmware revision first, then `latest`, then the other
-/// aliases by name.
+/// `latest`, as a machine repository's moving tag, then the order of set and
+/// package tags ([`image_store::tag::newest_first`]): by release, each
+/// release's alias before its revisions, highest revision first, then the
+/// tags outside the scheme by name.
 pub(crate) fn candidates(tags: &[String]) -> Vec<String> {
     let versions = |release: bool| {
         let mut versions: Vec<_> = tags
@@ -422,7 +430,12 @@ pub(crate) fn candidates(tags: &[String]) -> Vec<String> {
         return pre_releases;
     }
     let mut all = tags.to_vec();
-    all.sort_by(|a, b| media_set::newest_set_tag_first(a, b));
+    all.sort_by(|a, b| {
+        let latest = |tag: &str| tag == image_store::tag::LATEST;
+        latest(b)
+            .cmp(&latest(a))
+            .then_with(|| image_store::tag::newest_first(a, b))
+    });
     all
 }
 
@@ -441,8 +454,7 @@ pub(crate) fn compare_tags(artifact_type: &str, a: &str, b: &str) -> Option<Orde
         mt::MACHINE => {
             Some(pc_image::template::precedence(a)?.cmp(&pc_image::template::precedence(b)?))
         }
-        mt::MEDIA_SET => media_set::compare_set_tags(a, b),
-        mt::FIRMWARE => pc_image::firmware_import::compare_revisions(a, b),
+        mt::MEDIA_SET | mt::FIRMWARE => image_store::tag::compare(a, b),
         _ => None,
     }
 }
@@ -459,24 +471,77 @@ pub(crate) fn local_tag_of(host: &str, repository: &str, tag: &str) -> String {
     .unwrap_or_default()
 }
 
+/// The highest revision of the release of the alias `tag` among the tags a
+/// repository lists; `None` for any other tag, or a release without one.
+pub(crate) fn newest_listed_revision(listed: &[String], tag: &str) -> Option<u64> {
+    let Some(image_store::tag::Kind::Alias { release }) = image_store::tag::parse(tag) else {
+        return None;
+    };
+    listed
+        .iter()
+        .filter_map(|other| match image_store::tag::parse(other)? {
+            image_store::tag::Kind::Revision {
+                release: Some(of),
+                number,
+            } if of == release => Some(number),
+            _ => None,
+        })
+        .max()
+}
+
 /// How the image `digest` of `artifact_type`, which a pull would write as
-/// `local_tag`, stands against the library's tags.
+/// `local_tag`, stands against the library's tags. `newest_revision` is,
+/// for a set's or package's release alias, the highest revision of that
+/// release the registry lists.
 pub(crate) fn local_state(
     local_tag: &str,
     digest: &Digest,
     artifact_type: &str,
     library: &[(String, Digest)],
+    newest_revision: Option<u64>,
 ) -> LocalState {
+    let (name, mine) = local_tag.rsplit_once(':').unwrap_or((local_tag, ""));
     if let Some((_, current)) = library.iter().find(|(tag, _)| tag == local_tag) {
-        return if current == digest {
-            LocalState::InLibrary
-        } else {
-            LocalState::OtherImage {
-                current: current.clone(),
+        if current == digest {
+            return LocalState::InLibrary;
+        }
+        // The local alias of a set's or package's release names another image
+        // than the registry's: it is shown by the revision it names, against
+        // the newest revision the registry lists. An alias no local revision
+        // names, as an earlier release wrote it, makes no claim.
+        if let (true, Some(image_store::tag::Kind::Alias { release })) = (
+            image_store::tag::governs(artifact_type),
+            image_store::tag::parse(mine),
+        ) {
+            let revision = |tag: &str| match image_store::tag::parse(tag)? {
+                image_store::tag::Kind::Revision {
+                    release: Some(of),
+                    number,
+                } if of == release => Some(number),
+                _ => None,
+            };
+            let have = library
+                .iter()
+                .filter(|(_, image)| image == current)
+                .filter_map(|(tag, _)| {
+                    let (other, version) = tag.rsplit_once(':')?;
+                    (other == name).then(|| revision(version).map(|n| (n, tag)))?
+                })
+                .max();
+            match (have, newest_revision) {
+                (Some((have, tag)), Some(newest)) if newest > have => {
+                    return LocalState::NewerAvailable { have: tag.clone() }
+                }
+                (Some((have, tag)), Some(newest)) if newest < have => {
+                    return LocalState::LocalNewer { have: tag.clone() }
+                }
+                _ => {}
             }
+        }
+        return LocalState::OtherImage {
+            current: current.clone(),
         };
     }
-    let (name, mine) = local_tag.rsplit_once(':').unwrap_or((local_tag, ""));
     let held: Vec<(Order, &str, &String)> = library
         .iter()
         .filter_map(|(tag, _)| {
@@ -525,6 +590,9 @@ pub(crate) enum BrowseRequest {
         job: Box<Job>,
         repository: String,
         tags: Vec<String>,
+        /// Every tag the repository lists, to tell the newest revision of a
+        /// release alias's release.
+        listed: Vec<String>,
         details: bool,
     },
     /// Each read tag's local state again. No registry is contacted.
@@ -541,6 +609,8 @@ pub(crate) struct LocalQuery {
     pub artifact_type: String,
     /// Its blobs, to see which ones the store holds.
     pub blobs: Vec<Descriptor>,
+    /// As [`TagRow::newest_revision`].
+    pub newest_revision: Option<u64>,
 }
 
 /// How one read tag stands against the library now.
@@ -622,9 +692,10 @@ pub(crate) fn run(store: &Store, request: BrowseRequest, send: &dyn Fn(BrowseEve
             job,
             repository,
             tags,
+            listed,
             details,
         } => {
-            let end = read(store, &job, &repository, &tags, details, send);
+            let end = read(store, &job, &repository, &tags, &listed, details, send);
             send(BrowseEvent::Ended { id: job.id, end });
         }
         BrowseRequest::Local { id, tags } => send(BrowseEvent::Local {
@@ -638,6 +709,7 @@ pub(crate) fn run(store: &Store, request: BrowseRequest, send: &dyn Fn(BrowseEve
                                 &query.digest,
                                 &query.artifact_type,
                                 &library,
+                                query.newest_revision,
                             ),
                             stored: stored(store, &query.blobs).map_err(|error| {
                                 format!("The library could not be read: {error}")
@@ -775,11 +847,13 @@ fn listed_under(entry: &RegistryEntry, repository: &str) -> bool {
 
 /// One tag's row, with its metadata record when `details`; only an error
 /// that ends the job is returned as one.
+#[allow(clippy::too_many_arguments)]
 fn tag_row(
     client: &Client,
     store: &Store,
     repository: &str,
     tag: &str,
+    listed: &[String],
     library: &[(String, Digest)],
     details: bool,
     cancelled: &dyn Fn() -> bool,
@@ -796,6 +870,7 @@ fn tag_row(
                 record: Err(text(&error)),
                 local: None,
                 stored: BTreeSet::new(),
+                newest_revision: None,
             })
         }
     };
@@ -813,7 +888,16 @@ fn tag_row(
     };
     let mut record = TagRecord::from_read(read);
     record.details = title;
-    let local = local_state(&local_tag, &record.digest, &record.artifact_type, library);
+    let newest_revision = image_store::tag::governs(&record.artifact_type)
+        .then(|| newest_listed_revision(listed, tag))
+        .flatten();
+    let local = local_state(
+        &local_tag,
+        &record.digest,
+        &record.artifact_type,
+        library,
+        newest_revision,
+    );
     let stored = stored(store, &record.descriptors).map_err(Error::Store)?;
     Ok(TagRow {
         tag: tag.into(),
@@ -821,6 +905,7 @@ fn tag_row(
         record: Ok(record),
         local: Some(local),
         stored,
+        newest_revision,
     })
 }
 
@@ -882,7 +967,9 @@ fn choose_representative(
         if cancelled() {
             return Err(Error::Cancelled);
         }
-        let read = tag_row(client, store, &row.name, tag, library, false, cancelled)?;
+        let read = tag_row(
+            client, store, &row.name, tag, &row.tags, library, false, cancelled,
+        )?;
         let runs = read
             .record
             .as_ref()
@@ -987,6 +1074,7 @@ fn read(
     job: &Job,
     repository: &str,
     tags: &[String],
+    listed: &[String],
     details: bool,
     send: &dyn Fn(BrowseEvent),
 ) -> End {
@@ -1003,7 +1091,9 @@ fn read(
         if stopped() {
             return End::Stopped;
         }
-        match tag_row(&client, store, repository, tag, &library, details, &stopped) {
+        match tag_row(
+            &client, store, repository, tag, listed, &library, details, &stopped,
+        ) {
             Ok(row) => send(BrowseEvent::Tag {
                 id: job.id,
                 repository: repository.into(),
@@ -1674,7 +1764,7 @@ impl Remotes {
         details: bool,
     ) -> Option<BrowseRequest> {
         let view = self.registry(host)?;
-        view.repository(repository)?;
+        let listed = view.repository(repository)?.tags.clone();
         let covered = |tag: &String| {
             view.reads.iter().any(|r| {
                 r.repository == repository && (r.details || !details) && r.tags.contains(tag)
@@ -1696,6 +1786,7 @@ impl Remotes {
             job,
             repository: repository.into(),
             tags,
+            listed,
             details,
         })
     }
@@ -1740,6 +1831,7 @@ impl Remotes {
                     digest: record.digest.clone(),
                     artifact_type: record.artifact_type.clone(),
                     blobs: record.blobs().into_iter().cloned().collect(),
+                    newest_revision: row.newest_revision,
                 })
             })
             .collect();
@@ -2294,9 +2386,21 @@ mod tests {
             |tags: &[&str]| representative(&tags.iter().map(|t| t.to_string()).collect::<Vec<_>>());
         assert_eq!(pick(&["1.4", "1.4-720k"]).as_deref(), Some("1.4"));
         assert_eq!(pick(&["1.4-720k", "1.4"]).as_deref(), Some("1.4"));
+        // Sets and packages: the alias of the first release stands for its
+        // newest revision; without one, the highest revision.
         assert_eq!(
-            pick(&["1.4-720k", "1.4-r2", "1.4"]).as_deref(),
+            pick(&["1.4-720k-r1", "1.4-r2", "1.4-r1", "1.4", "1.4-720k"]).as_deref(),
+            Some("1.4")
+        );
+        assert_eq!(
+            pick(&["1.4-720k-r1", "1.4-r1", "1.4-r2"]).as_deref(),
             Some("1.4-r2")
+        );
+        assert_eq!(pick(&["r1", "r10", "r2"]).as_deref(), Some("r10"));
+        assert_eq!(pick(&["4x16k-r1", "2x32k-r1"]).as_deref(), Some("2x32k-r1"));
+        assert_eq!(
+            pick(&["usa-rev1-r1", "usa-r1", "europe-r1"]).as_deref(),
+            Some("europe-r1")
         );
         assert_eq!(pick(&["1", "10", "2"]).as_deref(), Some("10"), "firmware");
         assert_eq!(pick(&["stable", "beta"]).as_deref(), Some("beta"));
@@ -2879,8 +2983,8 @@ mod tests {
             "open-at:1.2.0"
         );
         assert_eq!(
-            local_tag_of(DEFAULT_REGISTRY, "unemu/media/freedos", "1.4"),
-            "unemu/media/freedos:1.4"
+            local_tag_of(DEFAULT_REGISTRY, "unemu/media/ibm-pc/freedos", "1.4-r1"),
+            "unemu/media/ibm-pc/freedos:1.4-r1"
         );
         assert_eq!(
             local_tag_of(
@@ -2900,20 +3004,34 @@ mod tests {
     fn local_states_compare_within_one_host_qualified_name() {
         let lan = "registry.lan.example/private/games/monkey-island";
         let nas = "nas.example:5000/private/games/monkey-island";
+        let freedos = "unemu/media/ibm-pc/freedos";
+        let contra = "nas.example:5000/private/media/nes/contra";
         let library = vec![
             (format!("{lan}:1.0.0"), digest("lan 1.0.0")),
             (format!("{lan}:1.1.0"), digest("lan 1.1.0")),
             (format!("{lan}:latest"), digest("lan 1.1.0")),
             ("open-at:1.0.0".to_owned(), digest("open-at 1.0.0")),
-            ("vgabios-std:1".to_owned(), digest("vga")),
+            ("vgabios-std:r1".to_owned(), digest("vga")),
             ("unemu/media/freedos:1.3".to_owned(), digest("freedos 1.3")),
+            (format!("{freedos}:1.4-r1"), digest("freedos 1.4 r1")),
+            (format!("{freedos}:1.4"), digest("freedos 1.4 r1")),
+            (format!("{contra}:usa-rev1-r1"), digest("contra usa rev1")),
+            (format!("{contra}:usa-rev1"), digest("contra usa rev1")),
+            (format!("{contra}:japan-r1"), digest("contra japan r1")),
+            (format!("{contra}:japan-r2"), digest("contra japan r2")),
+            (format!("{contra}:japan"), digest("contra japan r2")),
         ];
         let state =
-            |tag: &str, image: &str| local_state(tag, &digest(image), mt::MACHINE, &library);
-        let set =
-            |tag: &str, image: &str| local_state(tag, &digest(image), mt::MEDIA_SET, &library);
+            |tag: &str, image: &str| local_state(tag, &digest(image), mt::MACHINE, &library, None);
+        let set = |tag: &str, image: &str| {
+            local_state(tag, &digest(image), mt::MEDIA_SET, &library, None)
+        };
+        // A release alias as the registry lists it with its newest revision.
+        let alias = |tag: &str, image: &str, newest: u64| {
+            local_state(tag, &digest(image), mt::MEDIA_SET, &library, Some(newest))
+        };
         let package =
-            |tag: &str, image: &str| local_state(tag, &digest(image), mt::FIRMWARE, &library);
+            |tag: &str, image: &str| local_state(tag, &digest(image), mt::FIRMWARE, &library, None);
         assert_eq!(
             state(&format!("{lan}:1.1.0"), "lan 1.1.0"),
             LocalState::InLibrary
@@ -2954,36 +3072,100 @@ mod tests {
         );
         // The same image under another local tag.
         assert_eq!(
-            package("unemu/firmware/vgabios-std:1", "vga"),
+            package("unemu/firmware/ibm-pc/vgabios-std:r1", "vga"),
             LocalState::NotPulled {
-                same_as: Some("vgabios-std:1".into())
+                same_as: Some("vgabios-std:r1".into())
             }
         );
-        // Installation media sets compare by the set-tag order, within one
-        // edition and format.
+        // Sets and packages compare the revisions of one release.
         assert_eq!(
-            set("unemu/media/freedos:1.4", "freedos 1.4"),
+            set(&format!("{freedos}:1.4-r2"), "freedos 1.4 r2"),
             LocalState::NewerAvailable {
-                have: "unemu/media/freedos:1.3".into()
+                have: format!("{freedos}:1.4-r1")
             }
         );
         assert_eq!(
-            set("unemu/media/freedos:1.3-r2", "freedos 1.3 r2"),
+            set(&format!("{contra}:usa-rev1-r2"), "contra usa rev1 r2"),
             LocalState::NewerAvailable {
-                have: "unemu/media/freedos:1.3".into()
+                have: format!("{contra}:usa-rev1-r1")
             }
         );
         assert_eq!(
-            set("unemu/media/freedos:1.4-720k", "freedos 1.4 720k"),
-            LocalState::NotPulled { same_as: None },
-            "another format is a sibling"
-        );
-        // Firmware packages compare by revision number.
-        assert_eq!(
-            package("vgabios-std:2", "vga 2"),
+            package("vgabios-std:r2", "vga 2"),
             LocalState::NewerAvailable {
-                have: "vgabios-std:1".into()
+                have: "vgabios-std:r1".into()
             }
+        );
+        // The alias of a release stands for its newest revision. Behind the
+        // registry's newest revision, it names the revision the library has;
+        // ahead of it, the library's is newer; level, or without the
+        // registry's list, it names another image.
+        assert_eq!(
+            alias(&format!("{freedos}:1.4"), "freedos 1.4 r2", 2),
+            LocalState::NewerAvailable {
+                have: format!("{freedos}:1.4-r1")
+            }
+        );
+        assert_eq!(
+            alias(&format!("{contra}:japan"), "contra japan r1", 1),
+            LocalState::LocalNewer {
+                have: format!("{contra}:japan-r2")
+            },
+            "the registry's alias still names r1"
+        );
+        for newest in [Some(1), None] {
+            assert_eq!(
+                local_state(
+                    &format!("{freedos}:1.4"),
+                    &digest("freedos 1.4 rebuilt"),
+                    mt::MEDIA_SET,
+                    &library,
+                    newest
+                ),
+                LocalState::OtherImage {
+                    current: digest("freedos 1.4 r1")
+                }
+            );
+        }
+        assert_eq!(
+            alias(&format!("{freedos}:1.4"), "freedos 1.4 r1", 1),
+            LocalState::InLibrary
+        );
+        // An alias an earlier release wrote names no revision: no claim.
+        assert_eq!(
+            alias("unemu/media/freedos:1.3", "freedos 1.3 r2", 2),
+            LocalState::OtherImage {
+                current: digest("freedos 1.3")
+            }
+        );
+        // Another release or format, a region without the cartridge
+        // revision, or another chip layout is other software: no claim.
+        for (tag, image) in [
+            (format!("{freedos}:1.5-r1"), "freedos 1.5"),
+            (format!("{freedos}:1.4-720k-r2"), "freedos 1.4 720k"),
+            (format!("{contra}:usa-r2"), "contra usa"),
+        ] {
+            assert_eq!(
+                set(&tag, image),
+                LocalState::NotPulled { same_as: None },
+                "{tag}"
+            );
+        }
+        assert_eq!(
+            package("vgabios-std:2x32k-r1", "vga split"),
+            LocalState::NotPulled { same_as: None }
+        );
+        // A revision tag at another image is a clash, and a tag an earlier
+        // release wrote still reads.
+        assert_eq!(
+            set(&format!("{freedos}:1.4-r1"), "other"),
+            LocalState::OtherImage {
+                current: digest("freedos 1.4 r1")
+            }
+        );
+        assert_eq!(
+            set("unemu/media/freedos:1.3", "freedos 1.3"),
+            LocalState::InLibrary
         );
         // A SemVer tag of another type, or of another tool's artifact, makes
         // no claim.
@@ -2992,7 +3174,8 @@ mod tests {
                 &format!("{lan}:1.2.0"),
                 &digest("x"),
                 "application/example",
-                &library
+                &library,
+                None
             ),
             LocalState::NotPulled { same_as: None }
         );

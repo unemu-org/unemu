@@ -145,6 +145,7 @@ fn read(host: &str, repository: &str, tag: &str, record: TagRecord, local: Local
         record: Ok(record),
         local: Some(local),
         stored: Default::default(),
+        newest_revision: None,
     }
 }
 
@@ -2063,6 +2064,7 @@ fn pull_and_insert_leaves_the_first_disk_pending_in_a_stopped_machine() {
             fetched: Vec::new(),
             present: Vec::new(),
             outcome: image_registry::pull::PullOutcome::Pulled,
+            alias: None,
         }),
     }));
     let pending: Vec<_> = rig
@@ -2112,6 +2114,7 @@ fn pull_and_create_machine_opens_new_machine_from_image_after_the_pull() {
             fetched: Vec::new(),
             present: Vec::new(),
             outcome: image_registry::pull::PullOutcome::Pulled,
+            alias: None,
         }),
     }));
     let ctx = egui::Context::default();
@@ -2274,7 +2277,7 @@ fn pulling_from_remotes_writes_the_local_tag_last_and_never_moves_one() {
     assert!(dialog
         .problem()
         .unwrap()
-        .ends_with("Pull never moves a local tag: choose another one."));
+        .ends_with("Pull moves no local tag but a release alias: choose another one."));
     assert!(dialog.start().is_empty());
     dialog.items[0].local_tag = another.clone();
     start(&mut view);
@@ -2697,4 +2700,74 @@ fn contents_fits_a_narrow_window() {
             }
         }
     }
+}
+
+/// An expanded repository lists a set's or package's tags by release: the
+/// alias of each release first, as the name that stands for its newest
+/// revision, then its revisions highest first; a machine image's by
+/// version, then `latest`, then its other tags.
+#[test]
+fn expanded_tags_list_by_release_with_the_alias_before_its_revisions() {
+    let listed = |name: &str, tags: &[&str], artifact_type: &str| {
+        let shown =
+            representative(&tags.iter().map(|t| (*t).to_owned()).collect::<Vec<_>>()).unwrap();
+        let row = repository(
+            name,
+            tags,
+            vec![read(
+                DEFAULT_REGISTRY,
+                name,
+                &shown,
+                record(artifact_type, "x"),
+                LocalState::NotPulled { same_as: None },
+            )],
+        );
+        newest_first(&row)
+    };
+    assert_eq!(
+        listed(
+            "unemu/media/ibm-pc/freedos",
+            &[
+                "1.4-720k-r1",
+                "1.4-r1",
+                "1.4",
+                "1.4-720k",
+                "1.4-r2",
+                "1.4-1.2m-r1"
+            ],
+            mt::MEDIA_SET
+        ),
+        [
+            "1.4",
+            "1.4-r2",
+            "1.4-r1",
+            "1.4-1.2m-r1",
+            "1.4-720k",
+            "1.4-720k-r1"
+        ]
+    );
+    assert_eq!(
+        listed(
+            "private/media/nes/contra",
+            &["usa-rev1-r1", "usa-r2", "usa", "usa-r1", "japan-r1"],
+            mt::MEDIA_SET
+        ),
+        ["japan-r1", "usa", "usa-r2", "usa-r1", "usa-rev1-r1"]
+    );
+    assert_eq!(
+        listed(
+            "private/firmware/ibm-pc/ibm-5170-bios-1984-01-10",
+            &["4x16k-r1", "r1", "2x32k-r1", "r2"],
+            mt::FIRMWARE
+        ),
+        ["r2", "r1", "2x32k-r1", "4x16k-r1"]
+    );
+    assert_eq!(
+        listed(
+            "unemu/open-at",
+            &["scratch", "1.0.0", "latest", "1.2.0"],
+            mt::MACHINE
+        ),
+        ["1.2.0", "1.0.0", "latest", "scratch"]
+    );
 }

@@ -33,6 +33,28 @@ pub use provider::{compress_image, resolve, PcProvider, CMOS, DISK_ZERO, PAYLOAD
 /// names.
 pub const PLATFORM_NAME: &str = "IBM PC compatible";
 
+/// The namespace of open content, which the official registry takes: the
+/// templates, and the sets and packages whose every blob is open.
+pub const OPEN_NAMESPACE: &str = "unemu";
+/// The namespace of user-supplied content, which only private registries
+/// take (recipes.md §7.3).
+pub const PRIVATE_NAMESPACE: &str = "private";
+
+/// The repository of an installation media set of `work` in `namespace`:
+/// `unemu/media/<platform>/<work>` for open sets, `private/media/…` for
+/// user-supplied ones (recipes.md §8.3).
+pub fn media_repository(namespace: &str, work: &str) -> String {
+    [namespace, "media", PLATFORM, work].join("/")
+}
+
+/// The repository of the firmware package of the catalogue entry
+/// `catalogue_id` in `namespace`: `unemu/firmware/<platform>/<catalogue id>`
+/// for open packages, `private/firmware/…` for user-supplied ones
+/// (recipes.md §8.3).
+pub fn firmware_repository(namespace: &str, catalogue_id: &str) -> String {
+    [namespace, "firmware", PLATFORM, catalogue_id].join("/")
+}
+
 /// Whether `id` names this provider's platform: [`PLATFORM`] or its retired
 /// alias.
 pub fn is_pc(id: &str) -> bool {

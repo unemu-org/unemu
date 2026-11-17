@@ -35,7 +35,7 @@ impl Fixture {
         };
         Self { temp, store, row }
     }
-    /// Import a one-disk 360K installation set, `disks:set`, as the command
+    /// Import a one-disk 360K installation set, `disks-set:r1`, as the command
     /// line does; returns its manifest.
     pub fn import_set(&self) -> image_store::Descriptor {
         let disk = self.temp.path().join("set-disk.img");
@@ -57,7 +57,7 @@ impl Fixture {
             "--title".into(),
             "Session disks".into(),
             "--tag".into(),
-            "disks:set".into(),
+            "disks-set:r1".into(),
         ];
         let mut errors = Vec::new();
         assert_eq!(
@@ -66,7 +66,7 @@ impl Fixture {
             "{}",
             String::from_utf8_lossy(&errors)
         );
-        self.store.tag_descriptor("disks:set").unwrap()
+        self.store.tag_descriptor("disks-set:r1").unwrap()
     }
     pub fn change(&self, prepared: &pc_image::workspace::PreparedSession, value: u8) {
         let change = |source: &assembly::ImageSource, write: &assembly::WriteMode| {

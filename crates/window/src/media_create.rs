@@ -465,8 +465,9 @@ impl Create {
         }
     }
 
-    /// The tag a kept set gets: the title in lower case with hyphens, at
-    /// version 1.0.
+    /// The tag a kept set gets: the title in lower case with hyphens as the
+    /// work of a user-supplied set (`private/media/<platform>/<work>`),
+    /// release 1.0, first revision (recipes.md §8.3).
     pub fn tag(&self) -> String {
         let mut slug = String::new();
         for c in self.title().chars() {
@@ -477,7 +478,14 @@ impl Create {
             }
         }
         let slug = slug.trim_end_matches('-');
-        format!("{}:1.0", if slug.is_empty() { "files" } else { slug })
+        format!(
+            "{}:{}",
+            pc_image::media_repository(
+                pc_image::PRIVATE_NAMESPACE,
+                if slug.is_empty() { "files" } else { slug }
+            ),
+            image_store::tag::revision(Some("1.0"), 1)
+        )
     }
 
     /// What Create and insert asks the shell for, when it can run.
@@ -1525,7 +1533,7 @@ pub(crate) mod tests {
             ("NIGHTFAL", "NIGHTFAL")
         );
         assert_eq!(create.format, Some(FloppyFormat::Hd144));
-        assert_eq!(create.tag(), "nightfal:1.0");
+        assert_eq!(create.tag(), "private/media/ibm-pc/nightfal:1.0-r1");
         assert_eq!(create.add([folder.clone()]), 0);
         assert_eq!(create.items.len(), 1);
         // The label follows the top folder until it is edited.
@@ -1698,7 +1706,10 @@ pub(crate) mod tests {
         let order = create.order(1).unwrap();
         assert_eq!(
             order.keep,
-            Some(("azura:1.0".to_owned(), "AZURA".to_owned()))
+            Some((
+                "private/media/ibm-pc/azura:1.0-r1".to_owned(),
+                "AZURA".to_owned()
+            ))
         );
         // Without a journal the disks go in write-protected.
         create.settle(&accepted, false);

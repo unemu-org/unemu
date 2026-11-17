@@ -48,10 +48,11 @@ pub const VERSION: &str = "1.2.0";
 /// The moving tag that follows the newest version.
 pub const ALIAS: &str = "latest";
 /// The registry namespace every template lives in.
-pub const NAMESPACE: &str = "unemu";
+pub const NAMESPACE: &str = crate::OPEN_NAMESPACE;
 /// The tag of every firmware package: its first revision, numbered as
-/// `image firmware import` numbers them. A revision tag never moves.
-pub const FIRMWARE_REVISION: &str = "1";
+/// `image firmware import` numbers them. A revision tag never moves, and a
+/// package without a release has no alias (recipes.md §8.3).
+pub const FIRMWARE_REVISION: &str = "r1";
 
 /// One open firmware package of the templates: the catalogue entry, the
 /// fixture files, relative to the vendor directory, that its fetch script
@@ -70,9 +71,9 @@ pub struct FirmwareSource {
 }
 
 impl FirmwareSource {
-    /// `unemu/firmware/<catalogue id>`.
+    /// `unemu/firmware/<platform>/<catalogue id>`.
     pub fn repository(&self) -> String {
-        format!("{NAMESPACE}/firmware/{}", self.catalogue_id)
+        crate::firmware_repository(NAMESPACE, self.catalogue_id)
     }
 
     /// What the build states for the package, as `image firmware import`
@@ -222,8 +223,8 @@ const fn file(path: &'static str, sha256: &'static str, name: &'static str) -> M
 /// fields, its licence statement and the extras every set carries.
 #[derive(Clone, Copy, Debug)]
 pub struct MediaRelease {
-    /// The repository name under `unemu/media/`: the work, whatever its
-    /// release or format, which the tag names.
+    /// The repository name under `unemu/media/<platform>/`: the work,
+    /// whatever its release or format, which the tag names.
     pub work: &'static str,
     /// The work's title only; the version, the edition and the floppy format
     /// have fields and a tag of their own.
@@ -288,8 +289,10 @@ pub const FREEDOS_1_4: MediaRelease = MediaRelease {
 /// format, unmodified and in installer order.
 #[derive(Clone, Copy, Debug)]
 pub struct MediaSource {
-    /// The set's tag in its work's repository: the release, then the floppy
-    /// format unless it is the edition's own. A set's tag never moves.
+    /// The set's revision tag in its work's repository: the release (the
+    /// version, then the floppy format unless it is the edition's own) and
+    /// the revision. It never moves; the release alone is the alias that
+    /// follows the newest revision (recipes.md §8.2).
     pub tag: &'static str,
     pub description: &'static str,
     /// The floppy format of every disk.
@@ -299,9 +302,15 @@ pub struct MediaSource {
 }
 
 impl MediaSource {
-    /// `unemu/media/<work>`.
+    /// `unemu/media/<platform>/<work>`.
     pub fn repository(&self) -> String {
-        format!("{NAMESPACE}/media/{}", self.release.work)
+        crate::media_repository(NAMESPACE, self.release.work)
+    }
+
+    /// The release alias the set's revision moves: its tag without the
+    /// revision.
+    pub fn alias(&self) -> &'static str {
+        image_store::tag::alias_of(self.tag).unwrap_or(self.tag)
     }
 }
 
@@ -309,7 +318,7 @@ impl MediaSource {
 /// 1.44M, then 5.25-inch 1.2M and 3.5-inch 720K.
 pub const MEDIA: [MediaSource; 3] = [
     MediaSource {
-        tag: "1.4",
+        tag: "1.4-r1",
         description: "The official FreeDOS 1.4 Floppy Edition on seven 3.5-inch 1.44M diskettes, unmodified: the boot disk with the floppy installer, then six disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.",
         format: "1.44M",
         disks: &[
@@ -352,7 +361,7 @@ pub const MEDIA: [MediaSource; 3] = [
         release: &FREEDOS_1_4,
     },
     MediaSource {
-        tag: "1.4-1.2m",
+        tag: "1.4-1.2m-r1",
         description: "The official FreeDOS 1.4 Floppy Edition on eight 5.25-inch 1.2M diskettes, unmodified: the boot disk with the floppy installer, then seven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.",
         format: "1.2M",
         disks: &[
@@ -400,7 +409,7 @@ pub const MEDIA: [MediaSource; 3] = [
         release: &FREEDOS_1_4,
     },
     MediaSource {
-        tag: "1.4-720k",
+        tag: "1.4-720k-r1",
         description: "The official FreeDOS 1.4 Floppy Edition on twelve 3.5-inch 720K diskettes, unmodified: the boot disk with the floppy installer, then eleven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.",
         format: "720K",
         disks: &[
@@ -491,7 +500,7 @@ pub enum Outcome {
 pub enum Kind {
     Firmware,
     Machine,
-    /// An open installation set under `unemu/media/`.
+    /// An open installation set under `unemu/media/<platform>/`.
     Media,
 }
 
@@ -502,13 +511,13 @@ pub struct Built {
     /// The registry repository, such as `unemu/open-at`.
     pub repository: String,
     /// The tag that never moves: [`VERSION`] for a template,
-    /// [`FIRMWARE_REVISION`] for a package, a media set's own tag.
+    /// [`FIRMWARE_REVISION`] for a package, a media set's revision tag.
     pub version: &'static str,
     pub descriptor: Descriptor,
-    /// That tag, then a template's alias; a package or a set has no alias.
-    /// Local tags are the short form a pull of the repository from the
-    /// family default registry writes, so `image push TAG` reaches the
-    /// repository.
+    /// That tag, then its alias: `latest` for a template, the release for a
+    /// set; a package without a release has none. Local tags are the short
+    /// form a pull of the repository from the family default registry
+    /// writes, so `image push TAG` reaches the repository.
     pub tags: Vec<(String, Outcome)>,
 }
 
@@ -576,9 +585,9 @@ pub fn precedence(tag: &str) -> Option<Precedence> {
 }
 
 /// Asked with the image's reference, manifest and config bytes before the
-/// image is tagged: `repository:VERSION` for a template, `repository:1`
-/// ([`FIRMWARE_REVISION`]) for a package, a set's own tag for a set. An error
-/// refuses the build.
+/// image is tagged: `repository:VERSION` for a template, `repository:r1`
+/// ([`FIRMWARE_REVISION`]) for a package, a set's revision tag for a set. An
+/// error refuses the build.
 pub type Guard<'a> = &'a dyn Fn(&str, &Manifest, &[u8]) -> std::result::Result<(), String>;
 
 /// Build every template machine into `store`, in a fixed order, handing each
@@ -635,10 +644,11 @@ pub fn build(
 }
 
 /// Build every firmware package of [`FIRMWARE`] from the fixtures under
-/// `vendor` into `store`, each under `unemu/firmware/<catalogue id>:1`
-/// ([`FIRMWARE_REVISION`]) and offered to `guard` before it is tagged, as
-/// [`build`] builds the templates. A package's tag never moves, so another
-/// package under it refuses the build.
+/// `vendor` into `store`, each under
+/// `unemu/firmware/<platform>/<catalogue id>:r1` ([`FIRMWARE_REVISION`]) and
+/// offered to `guard` before it is tagged, as [`build`] builds the
+/// templates. A package's revision tag never moves, so another package under
+/// it refuses the build.
 pub fn build_firmware(
     store: &Store,
     vendor: &Path,
@@ -656,8 +666,10 @@ pub fn build_firmware(
 }
 
 /// Build every installation set of [`MEDIA`] from the fixtures under
-/// `vendor` into `store`, each under `unemu/media/<work>:<tag>` and offered
-/// to `guard` before it is tagged, as [`build`] builds the templates. Every
+/// `vendor` into `store`, each under its revision tag
+/// `unemu/media/<platform>/<work>:<release>-r1`, whose release alias the
+/// store moves with it, and offered to `guard` before it is tagged, as
+/// [`build`] builds the templates. Every
 /// fixture of every set is checked against its pin first
 /// ([`check_media_fixtures`]), so a missing or changed file stops the build
 /// before any set is tagged.
@@ -911,6 +923,8 @@ fn build_set(
     let repository = source.repository();
     let release = source.release;
     let version = local_tag(&repository, source.tag);
+    let alias = local_tag(&repository, source.alias());
+    let alias_before = current(store, &alias)?;
     let plan = media_plan(vendor, source, &version)?;
     let validator = MediaValidator(&PcMediaFormats);
     let before = match current(store, &version)? {
@@ -957,11 +971,23 @@ fn build_set(
             release.fetch
         )));
     }
+    // The store moved the alias in the write of the revision, when that
+    // went forward.
+    let mut tags = vec![(version, before)];
+    match (alias_before, current(store, &alias)?) {
+        (_, None) => {}
+        (None, Some(_)) => tags.push((alias, Outcome::Created)),
+        (Some(old), Some(_)) if old == descriptor.digest => tags.push((alias, Outcome::Present)),
+        (Some(old), Some(now)) if now == descriptor.digest => {
+            tags.push((alias, Outcome::Moved(old)))
+        }
+        (Some(_), Some(now)) => tags.push((alias, Outcome::Kept(now))),
+    }
     Ok(Built {
         kind: Kind::Media,
         repository,
         version: source.tag,
-        tags: vec![(version, before)],
+        tags,
         descriptor,
     })
 }
@@ -1088,16 +1114,34 @@ pub fn plan_tags(store: &Store, built: &Built) -> Result<Vec<(String, Outcome)>>
     let digest = &built.descriptor.digest;
     let version = local_tag(&built.repository, built.version);
     let state = planned_version(store, &version, digest)?;
-    let mut tags = vec![(version, state)];
-    // Only a template has an alias; a package or a set has its own tag alone.
-    if built.kind == Kind::Machine {
-        tags.push(planned_alias(
+    let alias = match built.kind {
+        Kind::Machine => Some(planned_alias(
             store,
             &built.repository,
             built.version,
             digest,
-        )?);
-    }
+        )?),
+        // The store moves a set's release alias with its revision, forward
+        // only; a package without a release has no alias.
+        Kind::Media | Kind::Firmware => {
+            store
+                .alias_plan(&version, digest)?
+                .and_then(|(alias, current, follows)| {
+                    let outcome = match (current, follows) {
+                        (None, true) => Outcome::Created,
+                        // A newer revision of the release is here, and the
+                        // absent alias is not created for an older one.
+                        (None, false) => return None,
+                        (Some(current), _) if &current == digest => Outcome::Present,
+                        (Some(current), true) => Outcome::Moved(current),
+                        (Some(current), false) => Outcome::Kept(current),
+                    };
+                    Some((alias, outcome))
+                })
+        }
+    };
+    let mut tags = vec![(version, state)];
+    tags.extend(alias);
     Ok(tags)
 }
 
@@ -1109,8 +1153,11 @@ mod tests {
     fn names_follow_the_registry_grammar_and_the_pull_short_form() {
         assert_eq!(local_tag("unemu/open-at", VERSION), "open-at:1.2.0");
         assert_eq!(
-            local_tag("unemu/firmware/xub-r638-xtp-ata1f0", FIRMWARE_REVISION),
-            "unemu/firmware/xub-r638-xtp-ata1f0:1"
+            local_tag(
+                "unemu/firmware/ibm-pc/xub-r638-xtp-ata1f0",
+                FIRMWARE_REVISION
+            ),
+            "unemu/firmware/ibm-pc/xub-r638-xtp-ata1f0:r1"
         );
         for template in &TEMPLATES {
             image_store::Store::validate_tag_name(&local_tag(&template.repository(), VERSION))
@@ -1131,30 +1178,42 @@ mod tests {
         assert_eq!(
             packages,
             [
-                "unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1",
-                "unemu/firmware/vgabios-0.9d-unemu.1-std:1",
-                "unemu/firmware/xub-r638-xtp-ata1f0:1",
+                "unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1",
+                "unemu/firmware/ibm-pc/vgabios-0.9d-unemu.1-std:r1",
+                "unemu/firmware/ibm-pc/xub-r638-xtp-ata1f0:r1",
             ]
         );
         let sets: Vec<_> = MEDIA
             .iter()
-            .map(|source| local_tag(&source.repository(), source.tag))
+            .flat_map(|source| {
+                [
+                    local_tag(&source.repository(), source.tag),
+                    local_tag(&source.repository(), source.alias()),
+                ]
+            })
             .collect();
         assert_eq!(
             sets,
             [
-                "unemu/media/freedos:1.4",
-                "unemu/media/freedos:1.4-1.2m",
-                "unemu/media/freedos:1.4-720k",
+                "unemu/media/ibm-pc/freedos:1.4-r1",
+                "unemu/media/ibm-pc/freedos:1.4",
+                "unemu/media/ibm-pc/freedos:1.4-1.2m-r1",
+                "unemu/media/ibm-pc/freedos:1.4-1.2m",
+                "unemu/media/ibm-pc/freedos:1.4-720k-r1",
+                "unemu/media/ibm-pc/freedos:1.4-720k",
             ]
         );
         for tag in packages.iter().chain(&sets) {
             image_store::Store::validate_tag_name(tag).unwrap();
         }
-        // Neither has a version tag, so neither has an alias to move.
-        assert!(!image_store::Store::is_version_tag(FIRMWARE_REVISION));
+        // Revision tags, which never move; a package without a release has
+        // no alias, a set's release is its alias. Neither is a version.
+        assert_eq!(image_store::tag::alias_of(FIRMWARE_REVISION), None);
+        assert!(image_store::tag::is_revision(FIRMWARE_REVISION));
         for source in &MEDIA {
+            assert!(image_store::tag::is_revision(source.tag));
             assert!(!image_store::Store::is_version_tag(source.tag));
+            assert!(!image_store::Store::is_version_tag(source.alias()));
         }
     }
 

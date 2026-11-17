@@ -19,6 +19,12 @@
 //! ([`image_store::compat::MIN_APP_VERSION`]) is refused before any blob is
 //! fetched; machine-images §5.6.
 //!
+//! A set or package pulled by the alias of a release (`freedos:1.4`) is
+//! written under the revision tag that names the same image on the registry
+//! (`freedos:1.4-r2`), and the store moves the local alias forward with it
+//! ([`image_store::tag`]); pulled by a revision tag, it is written under that
+//! tag and the alias follows the same way.
+//!
 //! A caller can cancel a pull ([`pull_cancellable`]): the check runs before
 //! each blob, while a blob downloads and before the local tag is written, so
 //! a cancelled pull never sets the tag. Blobs already verified stay in the
@@ -59,11 +65,16 @@ pub enum PullOutcome {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PullReport {
+    /// The tag written: for a set or package pulled by its release alias,
+    /// the revision the registry's alias names.
     pub local_tag: String,
     pub image: Descriptor,
     pub fetched: Vec<Descriptor>,
     pub present: Vec<Descriptor>,
     pub outcome: PullOutcome,
+    /// The release alias the pull moved or created with the revision it
+    /// wrote, if any ([`image_store::tag`]).
+    pub alias: Option<String>,
 }
 
 /// Pull `source` and tag it locally as `local_tag`, which is usually
@@ -141,15 +152,31 @@ pub fn pull_cancellable(
         fetched.digest.clone(),
         fetched.bytes.len() as u64,
     );
+    let revision = match source.tag.as_deref() {
+        Some(tag) if image_store::tag::governs(manifest.artifact_type()) => {
+            revision_tag(client, repository, tag, local_tag, &image.digest, cancelled)?
+        }
+        _ => None,
+    };
+    let local_tag = revision.as_deref().unwrap_or(local_tag);
+    Store::validate_tag_name(local_tag)?;
+    let scheme = image_store::tag::governs(manifest.artifact_type());
     match store.tag_descriptor(local_tag) {
         Ok(current) if current.digest == image.digest => {
+            // The revision is in place; its release alias still follows it.
+            let alias = if scheme {
+                store.follow_alias(local_tag, Some(&source.host))?
+            } else {
+                None
+            };
             return Ok(PullReport {
                 local_tag: local_tag.into(),
                 image,
                 fetched: Vec::new(),
                 present: Vec::new(),
                 outcome: PullOutcome::Unchanged,
-            })
+                alias,
+            });
         }
         Ok(current) => {
             return Err(Error::LocalTagConflict {
@@ -181,14 +208,64 @@ pub fn pull_cancellable(
     }
     downloaded?;
     store.import(fetched.bytes.as_slice(), Some(&image.digest))?;
+    // What the write does to the release alias, read under the same rules
+    // the write applies under the index lock.
+    let alias = match scheme {
+        true => {
+            store
+                .alias_plan(local_tag, &image.digest)?
+                .and_then(|(alias, current, follows)| {
+                    (follows && current.as_ref() != Some(&image.digest)).then_some(alias)
+                })
+        }
+        false => None,
+    };
     store.update_pulled_tag(local_tag, &image, None, validator, &source.host)?;
     Ok(PullReport {
+        alias,
         local_tag: local_tag.into(),
         image,
         fetched: missing,
         present,
         outcome: PullOutcome::Pulled,
     })
+}
+
+/// The local tag a pull of a set or package by the alias `tag` writes
+/// instead of `local_tag`: the revision tag of the alias's release that
+/// names the same image on the registry, in the local repository, so the
+/// store moves the local alias with it ([`image_store::tag`]). The client
+/// lists the repository's tags and asks for the digest of the release's
+/// revisions, highest first, until one names `digest`. `None` keeps
+/// `local_tag`: a revision tag, a `local_tag` that does not end in `tag`, or
+/// an alias no revision names there (as published before revisions).
+fn revision_tag(
+    client: &Client,
+    repository: &str,
+    tag: &str,
+    local_tag: &str,
+    digest: &Digest,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<Option<String>> {
+    let Some(image_store::tag::Kind::Alias { release }) = image_store::tag::parse(tag) else {
+        return Ok(None);
+    };
+    let Some(local_repository) = local_tag
+        .strip_suffix(tag)
+        .and_then(|rest| rest.strip_suffix(':'))
+    else {
+        return Ok(None);
+    };
+    let revisions = crate::browse::release_revisions(client, repository, release, &|| cancelled())?;
+    for revision in revisions {
+        if cancelled() {
+            return Err(Error::Cancelled);
+        }
+        if client.manifest_digest(repository, &revision)?.as_ref() == Some(digest) {
+            return Ok(Some(format!("{local_repository}:{revision}")));
+        }
+    }
+    Ok(None)
 }
 
 fn download_all(

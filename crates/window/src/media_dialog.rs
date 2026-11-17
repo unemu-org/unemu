@@ -1906,7 +1906,7 @@ mod media_set_tests {
             "--title".into(),
             "Synthetic installation".into(),
             "--tag".into(),
-            "test:set".into(),
+            "test-set:r1".into(),
             "--create".into(),
         ];
         let mut command = vec!["image".into()];
@@ -1938,7 +1938,7 @@ mod media_set_tests {
         assert_eq!(entries[1].medium.name, "second.img");
         assert_eq!(
             entries[1].origin.as_deref(),
-            Some("Media set test:set from the library · disk 2 of 2")
+            Some("Media set test-set:r1 from the library · disk 2 of 2")
         );
         let indices =
             append_entries(&mut assembled, &mut machine, &mut slots, 0, &entries).unwrap();
@@ -1966,7 +1966,7 @@ mod media_set_tests {
         assert_eq!(views[0].chip_text(), "A: second.img · 1.44M · journal");
         assert!(views[0].tooltip(false).contains(&(
             "Source",
-            "Media set test:set from the library · disk 2 of 2".into()
+            "Media set test-set:r1 from the library · disk 2 of 2".into()
         )));
         assert_eq!(
             assembled.floppy_name(assembly::DeviceId::Fdc, 0),
@@ -2140,7 +2140,7 @@ mod review_tests {
             "--title".into(),
             "Review set".into(),
             "--tag".into(),
-            "review:set".into(),
+            "review-set:r1".into(),
             "--store".into(),
             root.join("store").into_os_string(),
             "--create".into(),
@@ -2170,13 +2170,13 @@ mod review_tests {
         let mut slots = FloppySlot::from_config(&config);
         let mut assembled = assembly::assemble(&config).unwrap();
         let (entries, _) = library.entries(slots[0].as_ref().unwrap(), 0).unwrap();
-        let first = "Media set review:set from the library · disk 1 of 1";
+        let first = "Media set review-set:r1 from the library · disk 1 of 1";
         assert_eq!(entries[0].origin.as_deref(), Some(first));
         let indices = append_entries(&mut assembled, &mut config, &mut slots, 0, &entries).unwrap();
         // The same set under another tag reuses the loaded disk.
-        library.rows[0].tag = "review:other".into();
+        library.rows[0].tag = "review-other:r1".into();
         let (again, _) = library.entries(slots[0].as_ref().unwrap(), 0).unwrap();
-        let other = "Media set review:other from the library · disk 1 of 1";
+        let other = "Media set review-other:r1 from the library · disk 1 of 1";
         assert_eq!(again[0].index, Some(indices[0]));
         assert_eq!(again[0].origin.as_deref(), Some(other));
         assert_eq!(
@@ -2277,28 +2277,28 @@ mod review_tests {
         use image_store::platform::{with_platform_id, ALIASES};
         let (_temp, mut library, config) = fixture();
         let store = image_store::Store::open_existing(&library.store_path).unwrap();
-        let set = store.tag_descriptor("review:set").unwrap();
+        let set = store.tag_descriptor("review-set:r1").unwrap();
         let validator = image_store::media_set::Validator(&pc_image::media_set::PcMediaFormats);
         let old = with_platform_id(&store, &set, &[], ALIASES[0].0).unwrap();
         store
-            .update_tag("review:old", &old, None, &validator)
+            .update_tag("review-old:r1", &old, None, &validator)
             .unwrap();
         let unknown = with_platform_id(&store, &set, &[], "ibm-pc-xt").unwrap();
         assert!(store
-            .update_tag("review:unknown", &unknown, None, &validator)
+            .update_tag("review-unknown:r1", &unknown, None, &validator)
             .is_err());
         store
-            .tag_as_newer_release("review:unknown", &unknown)
+            .tag_as_newer_release("review-unknown:r1", &unknown)
             .unwrap();
         library.refresh(FloppyGeometry::HD_1_44, 0).unwrap();
         let index = |tag: &str| library.rows.iter().position(|r| r.tag == tag).unwrap();
-        assert_eq!(library.rows[index("review:old")].reason, None);
-        let reason = library.rows[index("review:unknown")].reason.clone();
+        assert_eq!(library.rows[index("review-old:r1")].reason, None);
+        let reason = library.rows[index("review-unknown:r1")].reason.clone();
         assert_eq!(
             reason.as_deref(),
             Some("Platform ibm-pc-xt is unavailable for this drive")
         );
-        library.selected = Some(index("review:old"));
+        library.selected = Some(index("review-old:r1"));
         let slots = FloppySlot::from_config(&config);
         let (entries, _) = library.entries(slots[0].as_ref().unwrap(), 0).unwrap();
         assert_eq!(entries.len(), 1);
@@ -2498,8 +2498,8 @@ mod review_tests {
         let index_path = store.root().join("images/index.json");
         // A damaged imported index can reference an invalid set without going through publication.
         let mut index = std::fs::read_to_string(&index_path).unwrap();
-        let new= format!("{{\"mediaType\":\"{}\",\"digest\":\"{}\",\"size\":{},\"annotations\":{{\"org.opencontainers.image.ref.name\":\"review:damaged\"}}}},",image_store::media_type::MANIFEST,damaged.digest,damaged.size);
-        let new = format!("{new}{{\"mediaType\":\"{}\",\"digest\":\"{}\",\"size\":{},\"annotations\":{{\"org.opencontainers.image.ref.name\":\"review:summary-damaged\"}}}},", image_store::media_type::MANIFEST, summary_image.digest, summary_image.size);
+        let new= format!("{{\"mediaType\":\"{}\",\"digest\":\"{}\",\"size\":{},\"annotations\":{{\"org.opencontainers.image.ref.name\":\"review-damaged:r1\"}}}},",image_store::media_type::MANIFEST,damaged.digest,damaged.size);
+        let new = format!("{new}{{\"mediaType\":\"{}\",\"digest\":\"{}\",\"size\":{},\"annotations\":{{\"org.opencontainers.image.ref.name\":\"review-summary-damaged:r1\"}}}},", image_store::media_type::MANIFEST, summary_image.digest, summary_image.size);
         index = index.replacen("\"manifests\":[", &format!("\"manifests\":[{new}"), 1);
         std::fs::write(index_path, index).unwrap();
         library.refresh(FloppyGeometry::HD_1_44, 0).unwrap();
@@ -2507,11 +2507,11 @@ mod review_tests {
         assert!(library
             .rows
             .iter()
-            .any(|row| row.tag == "review:damaged" && row.reason.is_some()));
+            .any(|row| row.tag == "review-damaged:r1" && row.reason.is_some()));
         assert!(library
             .rows
             .iter()
-            .any(|row| row.tag == "review:set" && row.reason.is_none()));
+            .any(|row| row.tag == "review-set:r1" && row.reason.is_none()));
         let lock = std::fs::OpenOptions::new()
             .read(true)
             .write(true)

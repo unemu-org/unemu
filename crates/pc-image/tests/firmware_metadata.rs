@@ -23,6 +23,17 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+/// The tag an import of `candidate` wrote: its first revision under
+/// `unemu/` when open, `private/` otherwise; the `private/` one when
+/// neither is in the store yet.
+fn tag_of(store: &image_store::Store, candidate: &pc_image::firmware_import::Candidate) -> String {
+    ["unemu", "private"]
+        .iter()
+        .map(|namespace| format!("{namespace}/firmware/ibm-pc/{}:r1", candidate.catalogue_id))
+        .find(|tag| store.tag_descriptor(tag).is_ok())
+        .unwrap_or_else(|| format!("private/firmware/ibm-pc/{}:r1", candidate.catalogue_id))
+}
+
 struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
@@ -177,7 +188,7 @@ fn a_catalogue_open_rom_is_open_with_its_pinned_source_archive_and_prefilled_met
         firmware_import::preview_manifest_with(&candidate, &[], &statement, &cat).unwrap();
     assert!(preview.notes.is_empty(), "{:?}", preview.notes);
     let d = firmware_import::publish_with(&store, &candidate, &[], &statement, &cat).unwrap();
-    let (manifest, config) = resolve(&store, &candidate.tag(), &cat);
+    let (manifest, config) = resolve(&store, &tag_of(&store, &candidate), &cat);
     assert_eq!(d.digest, Digest::of(&manifest.encode().unwrap()));
     assert_eq!(preview.manifest, manifest);
     // Catalogue lists are kept sorted.
@@ -248,7 +259,7 @@ fn a_catalogue_open_copyleft_rom_without_its_open_source_stays_user_supplied() {
     assert!(bare.notes[0].contains("add the archive synthetic/fetch.sh builds with --source"));
     let store = t.store("store");
     firmware_import::publish(&store, &candidate, &[], &cat).unwrap();
-    let (manifest, _) = resolve(&store, &candidate.tag(), &cat);
+    let (manifest, _) = resolve(&store, &tag_of(&store, &candidate), &cat);
     assert!(std::iter::once(&manifest.config)
         .chain(&manifest.layers)
         .all(
@@ -323,16 +334,22 @@ fn a_proprietary_catalogue_rom_can_never_be_marked_open() {
     assert!(err.contains("proprietary"), "{err}");
     assert!(store.list_tags(None, 10).unwrap().tags.is_empty());
     firmware_import::publish(&store, &candidate, &[], &cat).unwrap();
-    let (manifest, config) = resolve(&store, &candidate.tag(), &cat);
+    let (manifest, config) = resolve(&store, &tag_of(&store, &candidate), &cat);
     assert!(config.provenance.is_none());
     assert!(class(layer(&manifest, mt::FIRMWARE)).is_none());
     assert!(class(&manifest.config).is_none());
     assert!(!manifest
         .annotations
         .contains_key("org.opencontainers.image.licenses"));
-    let err = firmware_import::edit(&store, &candidate.tag(), "firmware/x:2", &open("MIT"), &cat)
-        .unwrap_err()
-        .to_string();
+    let err = firmware_import::edit(
+        &store,
+        &tag_of(&store, &candidate),
+        "private/firmware/ibm-pc/x:r2",
+        &open("MIT"),
+        &cat,
+    )
+    .unwrap_err()
+    .to_string();
     assert!(err.contains("proprietary"), "{err}");
 }
 
@@ -355,7 +372,7 @@ fn rights_follow_the_bytes_even_for_a_crafted_candidate() {
         .to_string();
     assert!(err.contains("proprietary"), "{err}");
     firmware_import::publish(&store, &candidate, &[], &cat).unwrap();
-    let (manifest, _) = resolve(&store, &candidate.tag(), &cat);
+    let (manifest, _) = resolve(&store, &tag_of(&store, &candidate), &cat);
     assert!(class(layer(&manifest, mt::FIRMWARE)).is_none());
     // One chip of a proprietary layout is proprietary too, as a ROM or a document.
     let chip = t.file("chip.bin", &[EVEN_CHIP; 16384]);
@@ -395,7 +412,7 @@ fn an_edit_cannot_open_bytes_a_newer_catalogue_lists_as_proprietary() {
     let candidate = unlisted(&t, "later-listed", &[]);
     let store = t.store("store");
     firmware_import::publish_with(&store, &candidate, &[], &open("MIT"), &[]).unwrap();
-    let (manifest, _) = resolve(&store, "firmware/later-listed:1", &[]);
+    let (manifest, _) = resolve(&store, "private/firmware/ibm-pc/later-listed:r1", &[]);
     assert_eq!(
         class(layer(&manifest, mt::FIRMWARE)).as_deref(),
         Some("MIT")
@@ -410,8 +427,8 @@ fn an_edit_cannot_open_bytes_a_newer_catalogue_lists_as_proprietary() {
     }];
     let err = firmware_import::edit(
         &store,
-        "firmware/later-listed:1",
-        "firmware/later-listed:2",
+        "private/firmware/ibm-pc/later-listed:r1",
+        "private/firmware/ibm-pc/later-listed:r2",
         &open("MIT"),
         &newer,
     )
@@ -424,13 +441,13 @@ fn an_edit_cannot_open_bytes_a_newer_catalogue_lists_as_proprietary() {
     };
     firmware_import::edit(
         &store,
-        "firmware/later-listed:1",
-        "firmware/later-listed:2",
+        "private/firmware/ibm-pc/later-listed:r1",
+        "private/firmware/ibm-pc/later-listed:r2",
         &relabelled,
         &newer,
     )
     .unwrap();
-    let (manifest, _) = resolve(&store, "firmware/later-listed:2", &newer);
+    let (manifest, _) = resolve(&store, "private/firmware/ibm-pc/later-listed:r2", &newer);
     assert!(
         class(layer(&manifest, mt::FIRMWARE)).is_none(),
         "locked by bytes"
@@ -476,7 +493,7 @@ fn an_unlisted_rom_is_user_supplied_unless_the_user_names_its_licence() {
     }
     assert!(store.list_tags(None, 10).unwrap().tags.is_empty());
     firmware_import::publish(&store, &candidate, &[], &cat).unwrap();
-    let (manifest, config) = resolve(&store, "firmware/plain-rom:1", &cat);
+    let (manifest, config) = resolve(&store, "private/firmware/ibm-pc/plain-rom:r1", &cat);
     assert!(config.roms[0].catalogue_id.is_none());
     assert!(class(layer(&manifest, mt::FIRMWARE)).is_none());
     // The README of a minimal package, byte for byte.
@@ -493,7 +510,7 @@ fn an_unlisted_rom_is_user_supplied_unless_the_user_names_its_licence() {
     assert_eq!(readme(&store, &manifest), expected);
     let named = t.store("named");
     firmware_import::publish_with(&named, &candidate, &[], &open("MIT"), &cat).unwrap();
-    let (manifest, _) = resolve(&named, "firmware/plain-rom:1", &cat);
+    let (manifest, _) = resolve(&named, "private/firmware/ibm-pc/plain-rom:r1", &cat);
     assert_eq!(
         class(layer(&manifest, mt::FIRMWARE)).as_deref(),
         Some("MIT")
@@ -523,7 +540,7 @@ fn a_copyleft_rom_is_open_only_with_its_source_archive_which_it_links() {
         ..open("GPL-2.0-only")
     };
     firmware_import::publish_with(&store, &candidate, &[], &statement, &cat).unwrap();
-    let (manifest, config) = resolve(&store, "firmware/copyleft-rom:1", &cat);
+    let (manifest, config) = resolve(&store, "private/firmware/ibm-pc/copyleft-rom:r1", &cat);
     let archive = layer(&manifest, mt::TAR);
     // A source archive of at least 4 KiB is a compressible payload.
     assert_eq!(archive.media_type, "application/x-tar+zstd");
@@ -563,7 +580,7 @@ fn a_copyleft_rom_is_open_only_with_its_source_archive_which_it_links() {
         ..open("LGPL-2.1-or-later")
     };
     firmware_import::publish_with(&zipped, &candidate, &[], &statement, &cat).unwrap();
-    let (manifest, _) = resolve(&zipped, "firmware/copyleft-rom:1", &cat);
+    let (manifest, _) = resolve(&zipped, "private/firmware/ibm-pc/copyleft-rom:r1", &cat);
     assert_eq!(layer(&manifest, mt::ZIP).media_type, mt::ZIP);
     let text = t.file("not-an-archive.tar", &[b'x'; 600]);
     let statement = Statement {
@@ -589,7 +606,7 @@ fn the_config_and_readme_are_open_only_when_every_other_layer_is() {
     }];
     let store = t.store("store");
     firmware_import::publish_with(&store, &candidate, &extras, &open("MIT"), &cat).unwrap();
-    let (manifest, _) = resolve(&store, "firmware/documented-rom:1", &cat);
+    let (manifest, _) = resolve(&store, "private/firmware/ibm-pc/documented-rom:r1", &cat);
     assert_eq!(
         class(layer(&manifest, mt::FIRMWARE)).as_deref(),
         Some("MIT")
@@ -608,7 +625,7 @@ fn the_config_and_readme_are_open_only_when_every_other_layer_is() {
         ..open("MIT")
     };
     firmware_import::publish_with(&licensed, &candidate, &extras, &statement, &cat).unwrap();
-    let (manifest, _) = resolve(&licensed, "firmware/documented-rom:1", &cat);
+    let (manifest, _) = resolve(&licensed, "private/firmware/ibm-pc/documented-rom:r1", &cat);
     assert_eq!(
         class(layer(&manifest, mt::EXTRA)).as_deref(),
         Some("CC-BY-4.0")
@@ -689,7 +706,7 @@ fn manifests_and_readmes_are_byte_identical_across_imports() {
         let store = t.store(name);
         let d =
             firmware_import::publish_with(&store, &candidate, &extras, &statement, &cat).unwrap();
-        let (manifest, _) = resolve(&store, "firmware/described-rom:1", &cat);
+        let (manifest, _) = resolve(&store, "private/firmware/ibm-pc/described-rom:r1", &cat);
         packages.push((d, manifest.encode().unwrap(), readme(&store, &manifest)));
     }
     assert_eq!(packages[0], packages[1]);
@@ -740,8 +757,8 @@ fn an_edit_publishes_a_new_revision_with_the_same_rom_blobs() {
     let candidate = unlisted(&t, "edited-rom", &cat);
     let first = firmware_import::publish(&store, &candidate, &[], &cat).unwrap();
     assert_eq!(
-        firmware_import::next_revision("firmware/edited-rom:1").as_deref(),
-        Some("firmware/edited-rom:2")
+        firmware_import::next_revision("private/firmware/ibm-pc/edited-rom:r1").as_deref(),
+        Some("private/firmware/ibm-pc/edited-rom:r2")
     );
     for tag in ["firmware/edited-rom:latest", "x:01", "x:"] {
         assert_eq!(firmware_import::next_revision(tag), None, "{tag}");
@@ -754,8 +771,8 @@ fn an_edit_publishes_a_new_revision_with_the_same_rom_blobs() {
     };
     let second = firmware_import::edit(
         &store,
-        "firmware/edited-rom:1",
-        "firmware/edited-rom:2",
+        "private/firmware/ibm-pc/edited-rom:r1",
+        "private/firmware/ibm-pc/edited-rom:r2",
         &statement,
         &cat,
     )
@@ -764,14 +781,14 @@ fn an_edit_publishes_a_new_revision_with_the_same_rom_blobs() {
     assert_ne!(first.digest, second.descriptor.digest);
     assert_eq!(
         store
-            .tag_descriptor("firmware/edited-rom:1")
+            .tag_descriptor("private/firmware/ibm-pc/edited-rom:r1")
             .unwrap()
             .digest,
         first.digest,
         "a package is immutable"
     );
-    let (old, _) = resolve(&store, "firmware/edited-rom:1", &cat);
-    let (new, config) = resolve(&store, "firmware/edited-rom:2", &cat);
+    let (old, _) = resolve(&store, "private/firmware/ibm-pc/edited-rom:r1", &cat);
+    let (new, config) = resolve(&store, "private/firmware/ibm-pc/edited-rom:r2", &cat);
     assert_eq!(
         layer(&old, mt::FIRMWARE).digest,
         layer(&new, mt::FIRMWARE).digest,
@@ -791,13 +808,13 @@ fn an_edit_publishes_a_new_revision_with_the_same_rom_blobs() {
     };
     firmware_import::edit(
         &store,
-        "firmware/edited-rom:2",
-        "firmware/edited-rom:3",
+        "private/firmware/ibm-pc/edited-rom:r2",
+        "private/firmware/ibm-pc/edited-rom:r3",
         &third,
         &cat,
     )
     .unwrap();
-    let (newest, config) = resolve(&store, "firmware/edited-rom:3", &cat);
+    let (newest, config) = resolve(&store, "private/firmware/ibm-pc/edited-rom:r3", &cat);
     assert_eq!(layer(&newest, mt::TAR).digest, layer(&new, mt::TAR).digest);
     assert_eq!(
         class(layer(&newest, mt::FIRMWARE)).as_deref(),
@@ -805,9 +822,13 @@ fn an_edit_publishes_a_new_revision_with_the_same_rom_blobs() {
     );
     assert_eq!(config.name, "Edited ROM");
     for (target, statement, reason) in [
-        ("firmware/edited-rom:4", third.clone(), "changes nothing"),
         (
-            "firmware/edited-rom:1",
+            "private/firmware/ibm-pc/edited-rom:r4",
+            third.clone(),
+            "changes nothing",
+        ),
+        (
+            "private/firmware/ibm-pc/edited-rom:r1",
             Statement {
                 title: Some("Other".into()),
                 ..Statement::default()
@@ -815,9 +836,15 @@ fn an_edit_publishes_a_new_revision_with_the_same_rom_blobs() {
             "exists",
         ),
     ] {
-        let err = firmware_import::edit(&store, "firmware/edited-rom:3", target, &statement, &cat)
-            .unwrap_err()
-            .to_string();
+        let err = firmware_import::edit(
+            &store,
+            "private/firmware/ibm-pc/edited-rom:r3",
+            target,
+            &statement,
+            &cat,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(
             err.contains(reason) || err.contains("conflict"),
             "{target}: {err}"
@@ -851,7 +878,7 @@ fn old_package(
     let d = store.import_manifest(&manifest).unwrap();
     store
         .update_tag(
-            &candidate.tag(),
+            &tag_of(store, candidate),
             &d,
             None,
             &Validator(&PcFirmwareRules(cat)),
@@ -867,7 +894,7 @@ fn packages_written_before_licences_stay_readable_and_user_supplied() {
     let store = t.store("store");
     let candidate = scanned(&t, OPEN_ROM, &cat);
     let old = old_package(&store, &candidate, &cat);
-    let (manifest, config) = resolve(&store, &candidate.tag(), &cat);
+    let (manifest, config) = resolve(&store, &tag_of(&store, &candidate), &cat);
     assert!(config.readme.is_none() && config.sources.is_empty());
     assert!(
         class(layer(&manifest, mt::FIRMWARE)).is_none(),
@@ -892,7 +919,7 @@ fn packages_written_before_licences_stay_readable_and_user_supplied() {
         "no source, kept private"
     );
     assert_eq!(
-        firmware_import::existing(&store, &candidate.tag(), &preview, &cat).unwrap(),
+        firmware_import::existing(&store, &tag_of(&store, &candidate), &preview, &cat).unwrap(),
         Some(Descriptor::new(mt::MANIFEST, old.digest.clone(), old.size))
     );
     assert_eq!(
@@ -906,8 +933,8 @@ fn packages_written_before_licences_stay_readable_and_user_supplied() {
         open: true,
         ..with_source(t.file("synthetic-src.tar", &pinned()))
     };
-    let target = "firmware/synthetic-open-bios:2";
-    firmware_import::edit(&store, &candidate.tag(), target, &restated, &cat).unwrap();
+    let target = "private/firmware/ibm-pc/synthetic-open-bios:r2";
+    firmware_import::edit(&store, &tag_of(&store, &candidate), target, &restated, &cat).unwrap();
     let (manifest, _) = resolve(&store, target, &cat);
     assert_eq!(
         class(layer(&manifest, mt::FIRMWARE)).as_deref(),
@@ -1001,7 +1028,7 @@ fn a_machine_image_embeds_the_source_layer_of_an_open_catalogue_rom() {
     let with = t.store("with-source");
     let statement = with_source(source);
     firmware_import::publish_with(&with, candidate, &[], &statement, catalogue).unwrap();
-    let (package, _) = resolve(&with, &candidate.tag(), catalogue);
+    let (package, _) = resolve(&with, &tag_of(&with, candidate), catalogue);
     pc_image::import_machine(&with, &machine, "lab:1", &Default::default()).unwrap();
     let image = with.resolve("lab:1", &pc_image::PcProvider).unwrap();
     let archive = layer(&image.manifest, mt::TAR);
@@ -1061,7 +1088,7 @@ fn a_hand_written_readme_and_cleared_fields_are_what_the_preview_shows_and_the_i
         let preview =
             firmware_import::preview_manifest_with(&candidate, &[], statement, &cat).unwrap();
         firmware_import::publish_with(&store, &candidate, &[], statement, &cat).unwrap();
-        let (manifest, config) = resolve(&store, &candidate.tag(), &cat);
+        let (manifest, config) = resolve(&store, &tag_of(&store, &candidate), &cat);
         assert_eq!(preview.manifest, manifest, "{name}");
         assert_eq!(preview.config, config, "{name}");
         let stored = readme(&store, &manifest);
@@ -1149,8 +1176,8 @@ fn an_edit_preview_is_the_revision_the_edit_publishes_and_can_clear_fields() {
         ..Statement::default()
     };
     firmware_import::publish_with(&store, &candidate, &[], &first, &cat).unwrap();
-    let tag = "firmware/previewed-rom:1";
-    let target = "firmware/previewed-rom:2";
+    let tag = "private/firmware/ibm-pc/previewed-rom:r1";
+    let target = "private/firmware/ibm-pc/previewed-rom:r2";
     let same =
         firmware_import::preview_edit(&store, tag, target, &Statement::default(), &cat).unwrap();
     assert!(same.unchanged);
@@ -1237,10 +1264,13 @@ fn a_tag_holding_the_same_roms_is_already_imported_whatever_its_metadata() {
     let plain = firmware_import::preview_manifest(&candidate, &[]).unwrap();
     assert_ne!(Digest::of(&plain.encode().unwrap()), first.digest);
     assert_eq!(
-        firmware_import::existing(&store, &candidate.tag(), &plain, &cat).unwrap(),
+        firmware_import::existing(&store, &tag_of(&store, &candidate), &plain, &cat).unwrap(),
         Some(first.clone())
     );
-    assert!(firmware_import::already_imported(&store, &candidate.tag(), &plain, &cat).unwrap());
+    assert!(
+        firmware_import::already_imported(&store, &tag_of(&store, &candidate), &plain, &cat)
+            .unwrap()
+    );
     // A plain re-import keeps the package; a statement that would change it
     // is refused, naming the edit, instead of being dropped.
     assert_eq!(
@@ -1267,7 +1297,10 @@ fn a_tag_holding_the_same_roms_is_already_imported_whatever_its_metadata() {
     }];
     assert!(firmware_import::publish(&store, &candidate, &extras, &cat).is_err());
     assert_eq!(
-        store.tag_descriptor(&candidate.tag()).unwrap().digest,
+        store
+            .tag_descriptor(&tag_of(&store, &candidate))
+            .unwrap()
+            .digest,
         first.digest
     );
 }
@@ -1296,8 +1329,8 @@ fn an_edit_keeps_a_hand_written_readme_unless_asked_to_generate_it() {
     };
     // Another field changes; the README written by hand stays as it is.
     let (text, hand, _) = edit(
-        "firmware/readme-rom:1",
-        "firmware/readme-rom:2",
+        "private/firmware/ibm-pc/readme-rom:r1",
+        "private/firmware/ibm-pc/readme-rom:r2",
         Statement {
             notes: Some("A quirk.".into()),
             ..Statement::default()
@@ -1307,8 +1340,8 @@ fn an_edit_keeps_a_hand_written_readme_unless_asked_to_generate_it() {
     assert!(hand);
     // Asked to, the edit generates it again, and later edits follow the fields.
     let (text, hand, generated) = edit(
-        "firmware/readme-rom:2",
-        "firmware/readme-rom:3",
+        "private/firmware/ibm-pc/readme-rom:r2",
+        "private/firmware/ibm-pc/readme-rom:r3",
         Statement {
             readme: ReadmeChoice::Generate,
             ..Statement::default()
@@ -1318,8 +1351,8 @@ fn an_edit_keeps_a_hand_written_readme_unless_asked_to_generate_it() {
     assert_eq!(text, generated);
     assert!(text.contains("## Notes and known quirks\n\nA quirk.\n"));
     let (text, hand, generated) = edit(
-        "firmware/readme-rom:3",
-        "firmware/readme-rom:4",
+        "private/firmware/ibm-pc/readme-rom:r3",
+        "private/firmware/ibm-pc/readme-rom:r4",
         Statement {
             notes: Some("Another quirk.".into()),
             ..Statement::default()

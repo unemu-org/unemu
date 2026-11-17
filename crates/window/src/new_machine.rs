@@ -1497,7 +1497,7 @@ mod tests {
         );
         // The video BIOS and option ROM pickers never offer a system BIOS.
         assert!(!offer_names(&wizard.offers(Slot::Video).0).contains(&"Synthetic XT BIOS"));
-        wizard.filter = "private".into();
+        wizard.filter = "private copy".into();
         assert_eq!(
             offer_names(&wizard.offers(Slot::Bios).0),
             ["Kiselev AT BIOS (private copy)"]

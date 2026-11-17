@@ -685,9 +685,9 @@ fn pull_form(ui: &mut egui::Ui, dialog: &mut RemotePull) {
         None => small(
             ui,
             if default_registry {
-                "From the default registry the short name is kept. Pull never moves a local tag."
+                "From the default registry the short name is kept. Pull moves no local tag, except that a set or package pulled by its release writes the revision and moves its local release alias forward."
             } else {
-                "From this registry the name carries its host, so the same path on another registry, or made here, never clashes. Pull never moves a local tag."
+                "From this registry the name carries its host, so the same path on another registry, or made here, never clashes. Pull moves no local tag, except that a set or package pulled by its release writes the revision and moves its local release alias forward."
             },
         ),
     }

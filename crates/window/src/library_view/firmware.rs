@@ -1169,13 +1169,19 @@ impl std::fmt::Display for Outcome {
     }
 }
 
+/// Whether the store holds the candidate's ROMs under the tag an import
+/// writes, and that tag.
 fn existing(
     store: &Store,
     candidate: &Candidate,
     catalogue: &[assembly::FirmwareEntry],
-) -> pc_image::Result<bool> {
+) -> pc_image::Result<(bool, String)> {
     let manifest = firmware_import::preview_manifest(candidate, &[])?;
-    firmware_import::already_imported(store, &candidate.tag(), &manifest, catalogue)
+    let tag = firmware_import::import_tag(store, &candidate.catalogue_id)?;
+    Ok((
+        firmware_import::already_imported(store, &tag, &manifest, catalogue)?,
+        tag,
+    ))
 }
 
 /// Worker side of the scan: match the folder against the catalogue without
@@ -1234,12 +1240,17 @@ pub(crate) fn scan_folder(
                 && entry.size == rom.size
         });
         let catalogue_kind = Catalogue::of(&candidate.config, catalogue);
-        let state = match (existing(store, candidate, catalogue), &catalogue_kind) {
+        let existing = existing(store, candidate, catalogue);
+        let tag = existing
+            .as_ref()
+            .map(|(_, tag)| tag.clone())
+            .unwrap_or_default();
+        let state = match (existing, &catalogue_kind) {
             (Err(error), _) => CandidateState::Refused(error.to_string()),
             (_, Err(error)) => CandidateState::Refused(error.clone()),
-            (Ok(true), _) => CandidateState::AlreadyImported,
-            (Ok(false), _) if ambiguous => CandidateState::Ambiguous,
-            (Ok(false), _) => CandidateState::New,
+            (Ok((true, _)), _) => CandidateState::AlreadyImported,
+            (Ok((false, _)), _) if ambiguous => CandidateState::Ambiguous,
+            (Ok((false, _)), _) => CandidateState::New,
         };
         let name = |path: &PathBuf| {
             path.strip_prefix(folder)
@@ -1277,7 +1288,7 @@ pub(crate) fn scan_folder(
         };
         report.candidates.push(CandidateView {
             catalogue_id: candidate.catalogue_id.clone(),
-            tag: candidate.tag(),
+            tag,
             name: candidate.config.name.clone(),
             chips,
             identity: (rom.sha256.clone(), rom.size),
@@ -1332,10 +1343,13 @@ pub(crate) fn import_selected(
                     "not in the last scan; scan the folder again".into(),
                 );
             };
-            let tag = candidate.tag();
+            let tag = match firmware_import::import_tag(store, &candidate.catalogue_id) {
+                Ok(tag) => tag,
+                Err(error) => return Outcome::Failed(id.clone(), error.to_string()),
+            };
             match existing(store, candidate, catalogue) {
-                Ok(true) => Outcome::AlreadyImported(tag),
-                Ok(false) => {
+                Ok((true, _)) => Outcome::AlreadyImported(tag),
+                Ok((false, _)) => {
                     match firmware_import::publish_with(store, candidate, &[], statement, catalogue)
                     {
                         Ok(_) => Outcome::Imported(tag),
@@ -2018,7 +2032,11 @@ pub(crate) mod tests {
             result
                 .firmware_rows
                 .iter()
-                .find(|r| r.image.reference == format!("firmware/{id}:1"))
+                .find(|r| {
+                    r.image
+                        .reference
+                        .ends_with(&format!("/firmware/ibm-pc/{id}:r1"))
+                })
                 .unwrap()
         };
         let split = row("synthetic-two-chip-bios");
@@ -2340,7 +2358,10 @@ pub(crate) mod tests {
         assert_eq!(report.candidates.len(), 1);
         let candidate = &report.candidates[0];
         assert_eq!(candidate.state, CandidateState::New);
-        assert_eq!(candidate.tag, "firmware/synthetic-two-chip-bios:1");
+        assert_eq!(
+            candidate.tag,
+            "private/firmware/ibm-pc/synthetic-two-chip-bios:r1"
+        );
         assert_eq!(candidate.chips, ["a → U27 even @ 0", "b → U47 odd @ 0"]);
         assert_eq!(candidate.result(), "2 of 2 chips present");
         assert_eq!(
@@ -2373,7 +2394,7 @@ pub(crate) mod tests {
         assert_eq!(
             view.firmware_import.as_ref().unwrap().outcomes,
             Some(vec![Outcome::Imported(
-                "firmware/synthetic-two-chip-bios:1".into()
+                "private/firmware/ibm-pc/synthetic-two-chip-bios:r1".into()
             )])
         );
         poll_until(&mut view, |v| {
@@ -2470,7 +2491,7 @@ pub(crate) mod tests {
         let Outcome::Failed(tag, reason) = &outcomes[0] else {
             panic!("{outcomes:?}")
         };
-        assert_eq!(tag, "firmware/synthetic-two-chip-bios:1");
+        assert_eq!(tag, "private/firmware/ibm-pc/synthetic-two-chip-bios:r1");
         assert!(
             reason.contains("changed since the scan")
                 && reason.contains(&Digest::of(&[0x31; 16384]).to_string())
@@ -2479,10 +2500,10 @@ pub(crate) mod tests {
         );
         assert_eq!(
             outcomes[1],
-            Outcome::Imported("firmware/synthetic-first:1".into())
+            Outcome::Imported("private/firmware/ibm-pc/synthetic-first:r1".into())
         );
         assert!(store
-            .tag_descriptor("firmware/synthetic-two-chip-bios:1")
+            .tag_descriptor("private/firmware/ibm-pc/synthetic-two-chip-bios:r1")
             .is_err());
         assert_eq!(
             import_selected(
@@ -2493,7 +2514,7 @@ pub(crate) mod tests {
             )
             .unwrap(),
             [Outcome::AlreadyImported(
-                "firmware/synthetic-first:1".into()
+                "private/firmware/ibm-pc/synthetic-first:r1".into()
             )]
         );
 
@@ -2680,7 +2701,7 @@ pub(crate) mod tests {
         many.firmware_rows = (0..2000)
             .map(|i| {
                 let mut row = one.firmware_rows[0].clone();
-                row.image.reference = format!("firmware/synthetic-{i}:1");
+                row.image.reference = format!("private/firmware/ibm-pc/synthetic-{i}:r1");
                 row
             })
             .collect();
@@ -2717,7 +2738,7 @@ pub(crate) mod tests {
         let tag = cache
             .tags()
             .iter()
-            .find(|t| t.name == "firmware/synthetic-open-bios:1")
+            .find(|t| t.name == "private/firmware/ibm-pc/synthetic-open-bios:r1")
             .unwrap();
         let open = cache.summary(&tag.manifest.digest).unwrap().clone();
         assert_eq!(Redistribution::of(&open).label(), "Open · MIT");
@@ -2761,7 +2782,7 @@ pub(crate) mod tests {
     fn rows_without_a_summary_say_pending_or_unavailable() {
         let row = |failure: Option<&str>| FirmwareRow {
             image: ImageRow {
-                reference: "firmware/synthetic:1".into(),
+                reference: "private/firmware/ibm-pc/synthetic:r1".into(),
                 aliases: Vec::new(),
                 descriptor: Descriptor::new(media_type::MANIFEST, Digest::of(b"package"), 7),
                 summary: None,
@@ -2775,7 +2796,7 @@ pub(crate) mod tests {
         assert!(!lead(&row(None)).warning);
         let failed = cells(&row(Some("missing blob")));
         assert_eq!(failed[2], "Unavailable");
-        assert_eq!(failed[0], "firmware/synthetic:1");
+        assert_eq!(failed[0], "private/firmware/ibm-pc/synthetic:r1");
         let failed = lead(&row(Some("missing blob")));
         assert!(failed.warning);
         assert_eq!(failed.icon, Some(crate::shell_icons::Icon::Firmware));
@@ -2808,8 +2829,8 @@ pub(crate) mod tests {
             }
             summary
         };
-        let open = compress(summary("firmware/synthetic-open-bios:1"));
-        let split = summary("firmware/synthetic-two-chip-bios:1");
+        let open = compress(summary("private/firmware/ibm-pc/synthetic-open-bios:r1"));
+        let split = summary("private/firmware/ibm-pc/synthetic-two-chip-bios:r1");
         assert!(open
             .storage_blobs
             .iter()

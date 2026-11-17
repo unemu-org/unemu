@@ -287,15 +287,15 @@ mod tests {
         let guard = official_guard(&stores);
         // The platform id is first read by 0.0.3, so the bare manifest is
         // refused until it declares that release.
-        let refusal = guard("unemu/firmware/synthetic:1", &manifest, &bytes).unwrap_err();
+        let refusal = guard("unemu/firmware/ibm-pc/synthetic:r1", &manifest, &bytes).unwrap_err();
         assert!(refusal.contains("unemu.min-app-version"), "{refusal}");
         pc_image::compat::stamp(&mut manifest, &bytes, image_store::compat::BASELINE, None)
             .unwrap();
-        guard("unemu/firmware/synthetic:1", &manifest, &bytes).unwrap();
+        guard("unemu/firmware/ibm-pc/synthetic:r1", &manifest, &bytes).unwrap();
         manifest
             .annotations
             .insert(image_store::compat::MIN_APP_VERSION.into(), "soon".into());
-        let refusal = guard("unemu/firmware/synthetic:1", &manifest, &bytes).unwrap_err();
+        let refusal = guard("unemu/firmware/ibm-pc/synthetic:r1", &manifest, &bytes).unwrap_err();
         assert!(refusal.contains("unemu.min-app-version"), "{refusal}");
     }
 

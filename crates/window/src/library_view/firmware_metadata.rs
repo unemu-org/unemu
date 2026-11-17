@@ -1535,7 +1535,7 @@ mod tests {
     use std::fs;
 
     const OPEN: &str = "synthetic-open-bios";
-    const OPEN_TAG: &str = "firmware/synthetic-open-bios:1";
+    const OPEN_TAG: &str = "private/firmware/ibm-pc/synthetic-open-bios:r1";
     const COPYLEFT: &str = "synthetic-copyleft-bios";
     const VENDOR: &str = "synthetic-two-chip-bios";
 
@@ -1817,9 +1817,9 @@ mod tests {
         assert_eq!(
             import_and_wait(&mut view),
             [
-                Outcome::Imported("firmware/synthetic-copyleft-bios:1".into()),
+                Outcome::Imported("private/firmware/ibm-pc/synthetic-copyleft-bios:r1".into()),
                 Outcome::Imported(OPEN_TAG.into()),
-                Outcome::Imported("firmware/synthetic-two-chip-bios:1".into()),
+                Outcome::Imported("private/firmware/ibm-pc/synthetic-two-chip-bios:r1".into()),
             ]
         );
         // Scanned again, every set is already imported, whatever statement
@@ -1857,19 +1857,20 @@ mod tests {
         ));
         assert!(
             drawn.iter().any(|t| t.starts_with(
-                "Already in the store as firmware/synthetic-copyleft-bios:1. Nothing is imported \
+                "Already in the store as private/firmware/ibm-pc/synthetic-copyleft-bios:r1. Nothing is imported \
                  again."
             )),
             "{drawn:?}"
         );
         view.shutdown();
         let store = Store::open(temp.path().join("store")).unwrap();
-        let (manifest, config) = resolve(&store, "firmware/synthetic-copyleft-bios:1");
+        let (manifest, config) =
+            resolve(&store, "private/firmware/ibm-pc/synthetic-copyleft-bios:r1");
         let rom = layer(&manifest, media_type::FIRMWARE);
         assert_eq!(class(rom).as_deref(), Some("GPL-3.0-or-later"));
         assert!(!license::source_missing(rom, &manifest.layers));
         assert_eq!(config.sources[0].filename, "other-src.tar");
-        let (manifest, _) = resolve(&store, "firmware/synthetic-two-chip-bios:1");
+        let (manifest, _) = resolve(&store, "private/firmware/ibm-pc/synthetic-two-chip-bios:r1");
         assert!(class(layer(&manifest, media_type::FIRMWARE)).is_none());
     }
 
@@ -2018,10 +2019,11 @@ mod tests {
         assert_eq!(
             outcomes,
             [Outcome::Imported(
-                "firmware/synthetic-two-chip-bios:1".into()
+                "private/firmware/ibm-pc/synthetic-two-chip-bios:r1".into()
             )]
         );
-        let (manifest, config) = resolve(&store, "firmware/synthetic-two-chip-bios:1");
+        let (manifest, config) =
+            resolve(&store, "private/firmware/ibm-pc/synthetic-two-chip-bios:r1");
         assert_eq!(config.name, "Example two-chip BIOS");
         assert_eq!(
             config.description.as_deref(),
@@ -2047,8 +2049,16 @@ mod tests {
         let readme = readme_text(&store, &manifest);
         assert!(readme.starts_with("# Example two-chip BIOS\n\nTwo interleaved chips.\n"));
         // The stored package reads back as Edit metadata…'s starting point.
-        let source = open_edit(&store, "firmware/synthetic-two-chip-bios:1", cat).unwrap();
-        assert_eq!(source.target, "firmware/synthetic-two-chip-bios:2");
+        let source = open_edit(
+            &store,
+            "private/firmware/ibm-pc/synthetic-two-chip-bios:r1",
+            cat,
+        )
+        .unwrap();
+        assert_eq!(
+            source.target,
+            "private/firmware/ibm-pc/synthetic-two-chip-bios:r2"
+        );
         let stored = &source.draft.fields;
         assert_eq!(stored.title, "Example two-chip BIOS");
         assert_eq!(stored.labels, ["at", "original"]);
@@ -2189,7 +2199,7 @@ mod tests {
         let dialog = view.firmware_edit.as_ref().unwrap();
         assert_eq!(
             dialog.target.as_deref(),
-            Some("firmware/synthetic-open-bios:2")
+            Some("private/firmware/ibm-pc/synthetic-open-bios:r2")
         );
         assert_eq!(dialog.footer(), (false, "No changes yet.".into()));
         let draft = dialog.draft.as_ref().unwrap();
@@ -2207,12 +2217,12 @@ mod tests {
         poll_until(&mut view, |v| v.firmware_edit.is_none());
         assert_eq!(
             view.status.as_deref(),
-            Some("Published firmware/synthetic-open-bios:2; firmware/synthetic-open-bios:1 is unchanged")
+            Some("Published private/firmware/ibm-pc/synthetic-open-bios:r2; private/firmware/ibm-pc/synthetic-open-bios:r1 is unchanged")
         );
         poll_until(&mut view, |v| {
-            v.firmware_selected
-                .as_ref()
-                .is_some_and(|r| r.image.reference == "firmware/synthetic-open-bios:2")
+            v.firmware_selected.as_ref().is_some_and(|r| {
+                r.image.reference == "private/firmware/ibm-pc/synthetic-open-bios:r2"
+            })
         });
         view.shutdown();
         assert_eq!(
@@ -2221,7 +2231,7 @@ mod tests {
             "the edited tag never changes"
         );
         let (old, _) = resolve(&f.store, OPEN_TAG);
-        let (new, config) = resolve(&f.store, "firmware/synthetic-open-bios:2");
+        let (new, config) = resolve(&f.store, "private/firmware/ibm-pc/synthetic-open-bios:r2");
         assert_eq!(
             layer(&old, media_type::FIRMWARE).digest,
             layer(&new, media_type::FIRMWARE).digest,
@@ -2239,7 +2249,7 @@ mod tests {
         let err = open_edit(&f.store, OPEN_TAG, synthetic_catalogue()).unwrap_err();
         assert_eq!(
             err,
-            "firmware/synthetic-open-bios:2 already exists; edit the newest revision of the package"
+            "private/firmware/ibm-pc/synthetic-open-bios:r2 already exists; edit the newest revision of the package"
         );
     }
 
@@ -2358,7 +2368,7 @@ mod tests {
             ..Statement::default()
         };
         firmware_import::publish_with(store, &candidate, &[], &open, &[]).unwrap();
-        let (mut manifest, _) = resolve(store, "firmware/legacy-rom:1");
+        let (mut manifest, _) = resolve(store, "private/firmware/ibm-pc/legacy-rom:r1");
         let gpl = Expression::parse("GPL-2.0-only").unwrap();
         for d in manifest
             .layers
@@ -2368,7 +2378,7 @@ mod tests {
             license::mark(d, Some(&gpl));
         }
         let d = store.import_manifest(&manifest).unwrap();
-        let tag = "firmware/crafted-rom:1";
+        let tag = "private/firmware/ibm-pc/crafted-rom:r1";
         store
             .update_tag(tag, &d, None, &Validator(&PcFirmwareRules(&[])))
             .unwrap();
@@ -2392,7 +2402,7 @@ mod tests {
         };
         let crafted = row(tag);
         assert!(crafted.source_missing);
-        assert!(!row("firmware/legacy-rom:1").source_missing);
+        assert!(!row("private/firmware/ibm-pc/legacy-rom:r1").source_missing);
         assert_eq!(
             cells(&crafted)[6],
             "Open · GPL-2.0-only ⚠ No source · private only"
@@ -2471,7 +2481,7 @@ mod tests {
         poll_until(&mut view, |v| v.firmware_edit.is_none());
         view.shutdown();
         let store = Store::open(temp.path().join("store")).unwrap();
-        let (manifest, _) = resolve(&store, "firmware/crafted-rom:2");
+        let (manifest, _) = resolve(&store, "private/firmware/ibm-pc/crafted-rom:r2");
         assert!(!license::source_missing(
             layer(&manifest, media_type::FIRMWARE),
             &manifest.layers
@@ -2481,7 +2491,7 @@ mod tests {
         let revised = result
             .firmware_rows
             .iter()
-            .find(|r| r.image.reference == "firmware/crafted-rom:2")
+            .find(|r| r.image.reference == "private/firmware/ibm-pc/crafted-rom:r2")
             .unwrap();
         assert!(!revised.source_missing);
         assert_eq!(
@@ -2490,7 +2500,7 @@ mod tests {
         );
         let read = read_package(
             &store,
-            "firmware/crafted-rom:2",
+            "private/firmware/ibm-pc/crafted-rom:r2",
             &revised.image.descriptor.digest,
             &[],
         )
@@ -2566,7 +2576,7 @@ mod tests {
             assert!(view.firmware_edit.is_none(), "survive {survive}");
             assert!(
                 f.store
-                    .tag_descriptor("firmware/synthetic-open-bios:2")
+                    .tag_descriptor("private/firmware/ibm-pc/synthetic-open-bios:r2")
                     .is_err(),
                 "nothing was published"
             );

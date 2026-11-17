@@ -9927,7 +9927,7 @@ kind='mda'
         assert!(shell.command_allowed(Command::Start));
         shell
             .image_library
-            .select_set(&cache, "example-adventure:1.0", &mut shell.selected);
+            .select_set(&cache, "example-adventure:r1", &mut shell.selected);
         assert!(!shell.command_allowed(Command::Start));
         assert!(!shell.command_allowed(Command::GamingMode));
         assert!(
@@ -10877,7 +10877,7 @@ kind='mda'
             "--title",
             "Synthetic install",
             "--tag",
-            "test:set",
+            "test-set:r1",
             "--label",
             "1=Setup",
             "--label",
@@ -10910,7 +10910,7 @@ kind='mda'
         );
         shell
             .image_library
-            .select_set(&cache, "test:set", &mut shell.selected);
+            .select_set(&cache, "test-set:r1", &mut shell.selected);
         assert!(shell.command_allowed(Command::InsertSet(0)));
         assert!(
             !shell.command_allowed(Command::InsertSet(1)),
@@ -10926,12 +10926,12 @@ kind='mda'
         let Some(crate::media_picker::Choice::Set(chosen)) = picker.choice else {
             panic!("the selected set is chosen: {:?}", picker.choice);
         };
-        assert_eq!(picker.sets[chosen].reference, "test:set");
+        assert_eq!(picker.sets[chosen].reference, "test-set:r1");
         let outcome = picker.insert().expect("the chosen set goes in");
         assert!(matches!(
             &outcome,
             crate::media_picker::Outcome::Set { unit: 0, reference, first: 0, all: true, journal: true, .. }
-                if reference == "test:set"
+                if reference == "test-set:r1"
         ));
         shell.apply_picker(outcome);
         let draft = shell
@@ -10949,7 +10949,7 @@ kind='mda'
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        let chosen = library.rows.iter().position(|row| row.tag == "test:set");
+        let chosen = library.rows.iter().position(|row| row.tag == "test-set:r1");
         assert!(chosen.is_some());
         assert_eq!(
             library.selected, chosen,
@@ -12134,7 +12134,7 @@ kind='mda'
         let insert = |drive: &str| image_store::machine::PendingInsert {
             drive: drive.into(),
             set: set.clone(),
-            reference: "disks:set".into(),
+            reference: "disks-set:r1".into(),
             medium: "disk-1".into(),
             all: false,
             journal: true,
@@ -12332,7 +12332,7 @@ kind='mda'
             let row = library
                 .rows
                 .iter()
-                .position(|row| row.tag == "disks:set")
+                .position(|row| row.tag == "disks-set:r1")
                 .unwrap();
             library.selected = Some(row);
             library.journal = true;

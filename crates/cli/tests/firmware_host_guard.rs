@@ -110,7 +110,7 @@ fn firmware_host_guard_child() {
         cli::command::run_with_firmware_sources(&listing, &mut listed, &mut Vec::new(), &supplied),
         0
     );
-    assert!(String::from_utf8_lossy(&listed).contains("firmware/guard:1"));
+    assert!(String::from_utf8_lossy(&listed).contains("private/firmware/ibm-pc/guard:r1"));
     assert_eq!(
         cli::command::run_with_firmware_sources(
             &run_args,

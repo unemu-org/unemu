@@ -132,7 +132,7 @@ fn the_build_is_reproducible_all_open_for_unemu_and_its_dry_run_writes_nothing()
             &source.repository(),
             pc_image::template::FIRMWARE_REVISION,
         );
-        assert!(tag.ends_with(":1"), "{tag}");
+        assert!(tag.ends_with(":r1"), "{tag}");
         assert!(store.tag_descriptor(&tag).is_ok(), "{tag}");
     }
     drop(store);
@@ -255,10 +255,10 @@ fn a_store_that_records_an_open_rom_as_user_supplied_refuses_the_build() {
     assert_eq!(
         tags,
         [
-            "firmware/unemu-at-bios-1.0.2-unemu.3:1",
-            "unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1",
-            "unemu/firmware/vgabios-0.9d-unemu.1-std:1",
-            "unemu/firmware/xub-r638-xtp-ata1f0:1",
+            "private/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1",
+            "unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1",
+            "unemu/firmware/ibm-pc/vgabios-0.9d-unemu.1-std:r1",
+            "unemu/firmware/ibm-pc/xub-r638-xtp-ata1f0:r1",
         ]
     );
 }
@@ -477,11 +477,16 @@ fn the_dry_run_names_a_version_conflict_and_what_latest_does() {
     );
     let ours = store.tag_descriptor(&xub).unwrap();
     let another = store.tag_descriptor(&bios).unwrap();
+    // A revision tag never moves, so the other package takes the tag after
+    // it was deleted, in a store of an earlier release that kept no record
+    // of deleted revisions.
+    store.remove_tag(&xub, &ours.digest).unwrap();
+    fs::remove_file(path.join("local/retired-version-tags.toml")).unwrap();
     store
         .update_tag(
             &xub,
             &another,
-            Some(&ours.digest),
+            None,
             &image_store::firmware::Validator(&pc_image::firmware::PcFirmwareRules(
                 pc_image::firmware::catalogue(),
             )),

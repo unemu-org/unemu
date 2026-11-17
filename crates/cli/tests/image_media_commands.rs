@@ -81,7 +81,7 @@ fn media_set_cli_directory_list_extras_sources_and_tag_precheck() {
         "--title",
         "Synthetic set",
         "--tag",
-        "test:dir",
+        "test-dir:r1",
         "--label",
         "1=Setup",
         "--label",
@@ -96,7 +96,7 @@ fn media_set_cli_directory_list_extras_sources_and_tag_precheck() {
     assert_eq!(code, 0, "{err}");
     let store = Store::open_existing(p.join("store")).unwrap();
     let image = store
-        .resolve("test:dir", &Validator(&PcMediaFormats))
+        .resolve("test-dir:r1", &Validator(&PcMediaFormats))
         .unwrap();
     let config = Config::decode(&image.config).unwrap();
     assert_eq!(config.media.len(), 2);
@@ -121,8 +121,8 @@ fn media_set_cli_directory_list_extras_sources_and_tag_precheck() {
     );
     let (code, out, err) = run(p, &["ls"]);
     assert_eq!(code, 0, "{err}");
-    assert!(out.contains("test:dir"));
-    let (code, out, err) = run(p, &["show", "test:dir"]);
+    assert!(out.contains("test-dir:r1"));
+    let (code, out, err) = run(p, &["show", "test-dir:r1"]);
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("MANUAL.TXT"));
     let mut cache = SummaryCache::open(&store).unwrap();
@@ -164,18 +164,18 @@ fn media_set_cli_file_order_determinism_and_fail_closed_import() {
             ],
         )
     };
-    let (code, _, err) = import("test:first");
+    let (code, _, err) = import("test-first:r1");
     assert_eq!(code, 0, "{err}");
-    let (code, _, err) = import("test:second");
+    let (code, _, err) = import("test-second:r1");
     assert_eq!(code, 0, "{err}");
     let store = Store::open_existing(p.join("store")).unwrap();
     let first = store
-        .resolve("test:first", &Validator(&PcMediaFormats))
+        .resolve("test-first:r1", &Validator(&PcMediaFormats))
         .unwrap();
     assert_eq!(
         first.image.digest,
         store
-            .resolve("test:second", &Validator(&PcMediaFormats))
+            .resolve("test-second:r1", &Validator(&PcMediaFormats))
             .unwrap()
             .image
             .digest
@@ -193,13 +193,13 @@ fn media_set_cli_file_order_determinism_and_fail_closed_import() {
         "--title",
         "Unknown",
         "--tag",
-        "test:unknown",
+        "test-unknown:r1",
     ];
     let (code, _, err) = run(p, &args);
     assert_ne!(code, 0);
     assert!(err.contains("unknown media size"), "{err}");
     for (format, success) in [("iso-2048", true), ("1.44M", false), ("unknown", false)] {
-        let tag = format!("test:{format}");
+        let tag = format!("test-{}:r1", format.to_lowercase());
         let (code, _, err) = run(
             p,
             &[
@@ -232,14 +232,14 @@ fn media_set_closure_refuses_unknown_format_size_mismatch_and_extra_descriptors(
             "--title",
             "Closure test",
             "--tag",
-            "test:valid",
+            "test-valid:r1",
             "--create",
         ],
     );
     assert_eq!(code, 0, "{err}");
     let store = Store::open_existing(p.join("store")).unwrap();
     let resolved = store
-        .resolve("test:valid", &Validator(&PcMediaFormats))
+        .resolve("test-valid:r1", &Validator(&PcMediaFormats))
         .unwrap();
     let config = Config::decode(&resolved.config).unwrap();
     for variant in ["unknown", "size", "missing", "extra", "order", "platform"] {
@@ -278,7 +278,7 @@ fn media_set_closure_refuses_unknown_format_size_mismatch_and_extra_descriptors(
         assert!(
             store
                 .update_tag(
-                    &format!("test:{variant}"),
+                    &format!("test-{variant}:r1"),
                     &descriptor,
                     None,
                     &Validator(&PcMediaFormats)
@@ -287,7 +287,9 @@ fn media_set_closure_refuses_unknown_format_size_mismatch_and_extra_descriptors(
             "{variant}"
         );
     }
-    assert!(store.resolve("test:valid", &pc_image::PcProvider).is_err());
+    assert!(store
+        .resolve("test-valid:r1", &pc_image::PcProvider)
+        .is_err());
     let text = std::str::from_utf8(&resolved.config).unwrap();
     let medium = &text[text.find("[[media]]").unwrap()..];
     assert!(Config::decode(format!("{text}\n{medium}").as_bytes()).is_err());
@@ -312,7 +314,7 @@ fn review_directory_preview_dry_run_and_preflight() {
         "--title",
         "Distinct disks",
         "--tag",
-        "review:set",
+        "review-set:r1",
         "--create",
         "--dry-run",
     ];
@@ -323,10 +325,10 @@ fn review_directory_preview_dry_run_and_preflight() {
     assert!(!p.join("store").exists());
     let (code, out, error) = run(p, &args[..args.len() - 1]);
     assert_eq!(code, 0, "{error}");
-    assert!(out.find("media order:").unwrap() < out.find("review:set\tsha256:").unwrap());
+    assert!(out.find("media order:").unwrap() < out.find("review-set:r1\tsha256:").unwrap());
     let store = Store::open_existing(p.join("store")).unwrap();
     let image = store
-        .resolve("review:set", &Validator(&PcMediaFormats))
+        .resolve("review-set:r1", &Validator(&PcMediaFormats))
         .unwrap();
     let config = Config::decode(&image.config).unwrap();
     assert_eq!(config.media[0].label, "a.img");
@@ -338,7 +340,7 @@ fn review_directory_preview_dry_run_and_preflight() {
     assert_eq!(fs::read(directory.join("b.ima")).unwrap(), b);
     fs::create_dir(directory.join("nested")).unwrap();
     let mut invalid = args.to_vec();
-    invalid[5] = "review:other";
+    invalid[5] = "review-other:r1";
     let (code, _, error) = run(p, &invalid);
     assert_ne!(code, 0);
     assert!(error.contains("nested"), "{error}");
@@ -371,7 +373,7 @@ fn review_bad_labels_and_guest_names_leave_no_blobs() {
                 "--title",
                 "Preflight",
                 "--tag",
-                "review:bad",
+                "review-bad:r1",
                 "--create",
                 &option[0],
                 &option[1],
@@ -404,7 +406,7 @@ fn review_schema_two_summary_is_discarded_and_rebuilt() {
             "--title",
             "Cache rebuild",
             "--tag",
-            "review:cache",
+            "review-cache:r1",
             "--create",
         ],
     );
@@ -466,7 +468,7 @@ fn compression_command_preserves_media_set_config_for_optical_and_extra_payloads
             "--title",
             "Synthetic optical set",
             "--tag",
-            "test:raw",
+            "test-raw:r1",
             "--create",
             "--no-compress",
         ],
@@ -474,15 +476,15 @@ fn compression_command_preserves_media_set_config_for_optical_and_extra_payloads
     assert_eq!(code, 0, "{errors}");
     let store = Store::open_existing(path.join("store")).unwrap();
     let raw = store
-        .resolve("test:raw", &Validator(&PcMediaFormats))
+        .resolve("test-raw:r1", &Validator(&PcMediaFormats))
         .unwrap();
     assert!(raw.manifest.layers.iter().all(|d| !d.is_compressed()));
     let command = [
         "image".into(),
         "compress".into(),
-        "test:raw".into(),
+        "test-raw:r1".into(),
         "--tag".into(),
-        "test:compressed".into(),
+        "test-compressed:r1".into(),
         "--store".into(),
         store.root().as_os_str().to_owned(),
     ];
@@ -496,7 +498,7 @@ fn compression_command_preserves_media_set_config_for_optical_and_extra_payloads
     fs::remove_file(optical).unwrap();
     fs::remove_file(extra).unwrap();
     let image = store
-        .resolve("test:compressed", &Validator(&PcMediaFormats))
+        .resolve("test-compressed:r1", &Validator(&PcMediaFormats))
         .unwrap();
     assert_eq!(raw.config, image.config);
     assert_eq!(raw.manifest.config.digest, image.manifest.config.digest);
@@ -536,7 +538,7 @@ fn an_open_statement_goes_together_and_names_a_licence_reference_and_an_extra() 
             "--title",
             "Synthetic shareware",
             "--tag",
-            "test:open",
+            "test-open:r1",
             "--create",
             "--extra",
             terms.to_str().unwrap(),
@@ -624,7 +626,7 @@ fn a_set_imported_without_metadata_flags_keeps_its_manifest_bytes() {
             "--title",
             "Pinned set",
             "--tag",
-            "test:pinned",
+            "test-pinned:r1",
             "--extra",
             &format!("{}:MANUAL.TXT", manual.display()),
             "--no-compress",
@@ -637,7 +639,7 @@ fn a_set_imported_without_metadata_flags_keeps_its_manifest_bytes() {
         format!(
             "media order:\n1\t\"disk.img\"\t{disk:?}\t360K\n\
              extra\t\"MANUAL.TXT\"\tSome(\"MANUAL.TXT\")\n\
-             test:pinned\tsha256:6e6804aba2a89f2c56d6b8758b9abb575b04c272eaca415c63d5ef3d7df2f57e\n"
+             test-pinned:r1\tsha256:6e6804aba2a89f2c56d6b8758b9abb575b04c272eaca415c63d5ef3d7df2f57e\n"
         )
     );
 }
@@ -657,7 +659,7 @@ fn set_level_metadata_flags_land_in_the_metadata_blob_in_order_and_show_prints_t
             "--title",
             "Synthetic catalogued set",
             "--tag",
-            "test:catalogued",
+            "test-catalogued:r1",
             "--extra",
             terms.to_str().unwrap(),
             "--publisher",
@@ -707,7 +709,7 @@ fn set_level_metadata_flags_land_in_the_metadata_blob_in_order_and_show_prints_t
 
     let store = Store::open_existing(p.join("store")).unwrap();
     let image = store
-        .resolve("test:catalogued", &Validator(&PcMediaFormats))
+        .resolve("test-catalogued:r1", &Validator(&PcMediaFormats))
         .unwrap();
     let metadata = Metadata::decode(&image.metadata, &image.manifest.layers).unwrap();
     let [title] = &metadata.titles[..] else {
@@ -767,7 +769,7 @@ fn set_level_metadata_flags_land_in_the_metadata_blob_in_order_and_show_prints_t
     };
     assert_eq!(cache.query("", &facets).len(), 1);
 
-    let (code, out, err) = run(p, &["show", "test:catalogued"]);
+    let (code, out, err) = run(p, &["show", "test-catalogued:r1"]);
     assert_eq!(code, 0, "{err}");
     assert!(out.contains(catalogue), "{out}");
     // The metadata stays this program's generated content: CC0-1.0 in an open set.
@@ -794,11 +796,11 @@ fn set_level_metadata_flags_land_in_the_metadata_blob_in_order_and_show_prints_t
             "--title",
             "Synthetic plain set",
             "--tag",
-            "test:plain",
+            "test-plain:r1",
         ],
     );
     assert_eq!(code, 0, "{err}");
-    let (code, out, err) = run(p, &["show", "test:plain"]);
+    let (code, out, err) = run(p, &["show", "test-plain:r1"]);
     assert_eq!(code, 0, "{err}");
     for key in [
         "publisher",
@@ -812,7 +814,7 @@ fn set_level_metadata_flags_land_in_the_metadata_blob_in_order_and_show_prints_t
     }
     // Nor does its manifest carry any standard annotation but the title.
     let plain = store
-        .resolve("test:plain", &Validator(&PcMediaFormats))
+        .resolve("test-plain:r1", &Validator(&PcMediaFormats))
         .unwrap();
     let oci: Vec<&str> = plain
         .manifest
@@ -836,7 +838,7 @@ fn a_bad_year_an_unknown_platform_or_a_blank_value_is_refused_before_any_blob() 
             "--title",
             "Synthetic refused set",
             "--tag",
-            "test:refused",
+            "test-refused:r1",
             "--create",
         ];
         args.extend(flags);
@@ -901,7 +903,7 @@ fn a_bad_year_an_unknown_platform_or_a_blank_value_is_refused_before_any_blob() 
         );
     }
     let store = Store::open_existing(p.join("store")).unwrap();
-    assert!(store.tag_descriptor("test:refused").is_err());
+    assert!(store.tag_descriptor("test-refused:r1").is_err());
     // The usage names the set-level flags.
     let (_, _, err) = import(&["--year", "19x1"]);
     assert!(
@@ -956,11 +958,14 @@ fn set_labels_version_and_edition_land_in_the_metadata_in_order_and_show_prints_
                  set-label\t\"zeta\"\n\
                  set-label\t\"alpha\"\n\
                  set-label\t\"middle\"\n";
-    let (code, preview, err) = import("test:release", &[&flags[..], &["--dry-run"][..]].concat());
+    let (code, preview, err) = import(
+        "test-release:r1",
+        &[&flags[..], &["--dry-run"][..]].concat(),
+    );
     assert_eq!(code, 0, "{err}");
     assert!(preview.contains(lines), "{preview}");
     assert_eq!(blob_count(p), 0, "a dry run writes no blobs");
-    let (code, out, err) = import("test:release", &flags);
+    let (code, out, err) = import("test-release:r1", &flags);
     assert_eq!(code, 0, "{err}");
     assert!(out.contains(lines), "{out}");
 
@@ -968,7 +973,7 @@ fn set_labels_version_and_edition_land_in_the_metadata_in_order_and_show_prints_
     // the title record's, trimmed like every set-level value.
     let store = Store::open_existing(p.join("store")).unwrap();
     let image = store
-        .resolve("test:release", &Validator(&PcMediaFormats))
+        .resolve("test-release:r1", &Validator(&PcMediaFormats))
         .unwrap();
     let metadata = Metadata::decode(&image.metadata, &image.manifest.layers).unwrap();
     assert_eq!(metadata.labels, ["zeta", "alpha", "middle"]);
@@ -977,7 +982,7 @@ fn set_labels_version_and_edition_land_in_the_metadata_in_order_and_show_prints_
     };
     assert_eq!(title.version.as_deref(), Some("2.1"));
     assert_eq!(title.edition.as_deref(), Some("Synthetic Edition"));
-    let (code, shown, err) = run(p, &["show", "test:release"]);
+    let (code, shown, err) = run(p, &["show", "test-release:r1"]);
     assert_eq!(code, 0, "{err}");
     assert!(shown.contains(lines), "{shown}");
 
@@ -985,14 +990,14 @@ fn set_labels_version_and_edition_land_in_the_metadata_in_order_and_show_prints_
     // another set digest.
     let mut reordered = flags;
     reordered.swap(1, 5);
-    let (code, again, err) = import("test:reordered", &reordered);
+    let (code, again, err) = import("test-reordered:r1", &reordered);
     assert_eq!(code, 0, "{err}");
     assert_ne!(digest(&again), digest(&out));
 
     // A set without the flags shows none of these lines.
-    let (code, _, err) = import("test:plain", &[]);
+    let (code, _, err) = import("test-plain:r1", &[]);
     assert_eq!(code, 0, "{err}");
-    let (code, shown, err) = run(p, &["show", "test:plain"]);
+    let (code, shown, err) = run(p, &["show", "test-plain:r1"]);
     assert_eq!(code, 0, "{err}");
     for key in ["version", "edition", "set-label"] {
         assert!(!shown.contains(&format!("\n{key}\t")), "{shown}");
@@ -1037,7 +1042,7 @@ fn a_blank_duplicate_or_misplaced_set_label_version_or_edition_is_refused() {
             "--title",
             "Synthetic refused release",
             "--tag",
-            "test:refused",
+            "test-refused:r1",
             "--create",
         ];
         args.extend(&flags);
@@ -1067,7 +1072,7 @@ fn dry_run(root: &Path, tag: &str) -> (u8, String, String) {
         "image".into(),
         "push".into(),
         tag.into(),
-        "shareware:1".into(),
+        "shareware-1:r1".into(),
         "--store".into(),
         root.join("store").into_os_string(),
         "--registry".into(),
@@ -1105,7 +1110,7 @@ fn an_open_set_shows_its_licence_and_terms_and_only_a_linked_closure_enters_unem
             "--title",
             "Synthetic shareware",
             "--tag",
-            "test:open",
+            "test-open:r1",
             "--extra",
             manual.to_str().unwrap(),
             "--extra",
@@ -1124,7 +1129,7 @@ fn an_open_set_shows_its_licence_and_terms_and_only_a_linked_closure_enters_unem
         "{out}"
     );
     let terms_digest = Digest::of(b"Synthetic vendor terms").to_string();
-    let (code, out, err) = run(p, &["show", "test:open"]);
+    let (code, out, err) = run(p, &["show", "test-open:r1"]);
     assert_eq!(code, 0, "{err}");
     assert!(
         out.contains(&format!("terms\t\"VENDOR.TXT\"\t{terms_digest}\n")),
@@ -1146,10 +1151,10 @@ fn an_open_set_shows_its_licence_and_terms_and_only_a_linked_closure_enters_unem
         out.ends_with("push\tany configured registry, including unemu/\n"),
         "{out}"
     );
-    let (code, out, err) = dry_run(p, "test:open");
+    let (code, out, err) = dry_run(p, "test-open:r1");
     assert_eq!(code, 0, "{out}{err}");
     assert!(
-        out.starts_with("target:registry.unemu.dev/unemu/shareware:1\n"),
+        out.starts_with("target:registry.unemu.dev/unemu/shareware-1:r1\n"),
         "{out}"
     );
     assert!(out.ends_with("guard:allowed\n"), "{out}");
@@ -1158,11 +1163,11 @@ fn an_open_set_shows_its_licence_and_terms_and_only_a_linked_closure_enters_unem
     // links a terms text that is not in the closure.
     let store = Store::open_existing(p.join("store")).unwrap();
     let image = store
-        .resolve("test:open", &Validator(&PcMediaFormats))
+        .resolve("test-open:r1", &Validator(&PcMediaFormats))
         .unwrap();
     for (tag, edit) in [
-        ("test:unlinked", "missing"),
-        ("test:elsewhere", "elsewhere"),
+        ("test-unlinked:r1", "missing"),
+        ("test-elsewhere:r1", "elsewhere"),
     ] {
         let mut layers = image.manifest.layers.clone();
         match edit {
@@ -1211,11 +1216,11 @@ fn an_open_set_shows_its_licence_and_terms_and_only_a_linked_closure_enters_unem
             "--title",
             "Synthetic private set",
             "--tag",
-            "test:private",
+            "test-private:r1",
         ],
     );
     assert_eq!(code, 0, "{err}");
-    let (code, out, _) = run(p, &["show", "test:private"]);
+    let (code, out, _) = run(p, &["show", "test-private:r1"]);
     assert_eq!(code, 0);
     assert!(!out.contains("\nterms\t"), "{out}");
     assert!(out.contains("layer\tmedium\t"), "{out}");
@@ -1229,7 +1234,7 @@ fn an_open_set_shows_its_licence_and_terms_and_only_a_linked_closure_enters_unem
         out.ends_with("push\tprivate registries outside unemu/ only: user-supplied layers\n"),
         "{out}"
     );
-    let (code, out, err) = dry_run(p, "test:private");
+    let (code, out, err) = dry_run(p, "test-private:r1");
     assert_eq!(code, 1, "{out}{err}");
     assert!(err.contains("official namespace"), "{err}");
 
@@ -1243,14 +1248,14 @@ fn an_open_set_shows_its_licence_and_terms_and_only_a_linked_closure_enters_unem
             "--title",
             "Synthetic copy",
             "--tag",
-            "test:copy",
+            "test-copy:r1",
         ],
     );
     assert_eq!(code, 0, "{err}");
-    let (code, out, err) = dry_run(p, "test:open");
+    let (code, out, err) = dry_run(p, "test-open:r1");
     assert_eq!(code, 1, "{out}{err}");
     assert!(
-        out.contains("\tuser-supplied\tlocal tag test:copy\n"),
+        out.contains("\tuser-supplied\tlocal tag test-copy:r1\n"),
         "{out}"
     );
     assert!(err.contains("official namespace"), "{err}");
@@ -1286,7 +1291,7 @@ fn an_spdx_licensed_set_needs_its_source_and_only_a_linked_closure_enters_unemu(
         run(p, &args)
     };
     // --source belongs to an open statement, and an SPDX licence needs it.
-    let (code, _, err) = import("test:gpl", &["--source", "SRC.TAR"]);
+    let (code, _, err) = import("test-gpl:r1", &["--source", "SRC.TAR"]);
     assert_eq!(code, 2, "{err}");
     assert!(err.contains("--source names the source archive of an open set; add --open"));
     assert!(
@@ -1300,7 +1305,7 @@ fn an_spdx_licensed_set_needs_its_source_and_only_a_linked_closure_enters_unemu(
         "--license-text",
         "COPYING",
     ];
-    let (code, _, err) = import("test:gpl", &gpl);
+    let (code, _, err) = import("test-gpl:r1", &gpl);
     assert_eq!(code, 1, "{err}");
     assert!(
         err.contains("the vendor's own terms") && err.contains("corresponding source"),
@@ -1308,11 +1313,11 @@ fn an_spdx_licensed_set_needs_its_source_and_only_a_linked_closure_enters_unemu(
     );
     let mut with_source = gpl.to_vec();
     with_source.extend(["--source", "SOURCES.ZIP"]);
-    let (code, _, err) = import("test:gpl", &with_source);
+    let (code, _, err) = import("test-gpl:r1", &with_source);
     assert_eq!(code, 1, "{err}");
     assert!(err.contains("source archive \"SOURCES.ZIP\": not the file name of an extra"));
     with_source[6] = "SRC.TAR";
-    let (code, out, err) = import("test:gpl", &with_source);
+    let (code, out, err) = import("test-gpl:r1", &with_source);
     assert_eq!(code, 0, "{err}");
     assert!(
         out.contains("open\tGPL-2.0-or-later AND MIT\tterms\t\"COPYING\"\nsource\t\"SRC.TAR\"\n"),
@@ -1323,7 +1328,7 @@ fn an_spdx_licensed_set_needs_its_source_and_only_a_linked_closure_enters_unemu(
         Digest::of(b"Synthetic licence text").to_string(),
         Digest::of(b"Synthetic source archive").to_string(),
     );
-    let (code, out, err) = run(p, &["show", "test:gpl"]);
+    let (code, out, err) = run(p, &["show", "test-gpl:r1"]);
     assert_eq!(code, 0, "{err}");
     assert!(
         out.contains(&format!(
@@ -1344,7 +1349,7 @@ fn an_spdx_licensed_set_needs_its_source_and_only_a_linked_closure_enters_unemu(
         out.ends_with("push\tany configured registry, including unemu/\n"),
         "{out}"
     );
-    let (code, out, err) = dry_run(p, "test:gpl");
+    let (code, out, err) = dry_run(p, "test-gpl:r1");
     assert_eq!(code, 0, "{out}{err}");
     assert!(out.ends_with("guard:allowed\n"), "{out}");
 
@@ -1352,7 +1357,7 @@ fn an_spdx_licensed_set_needs_its_source_and_only_a_linked_closure_enters_unemu(
     // for unemu/ and shown as private-only.
     let store = Store::open_existing(p.join("store")).unwrap();
     let image = store
-        .resolve("test:gpl", &Validator(&PcMediaFormats))
+        .resolve("test-gpl:r1", &Validator(&PcMediaFormats))
         .unwrap();
     let mut layers = image.manifest.layers.clone();
     layers[0].annotations.remove(license::SOURCE);
@@ -1362,13 +1367,13 @@ fn an_spdx_licensed_set_needs_its_source_and_only_a_linked_closure_enters_unemu(
     let descriptor = store.import_manifest(&manifest).unwrap();
     store
         .update_tag(
-            "test:unsourced",
+            "test-unsourced:r1",
             &descriptor,
             None,
             &Validator(&PcMediaFormats),
         )
         .unwrap();
-    let (code, out, err) = dry_run(p, "test:unsourced");
+    let (code, out, err) = dry_run(p, "test-unsourced:r1");
     assert_eq!(code, 1, "{out}{err}");
     assert!(out.ends_with("guard:refused\n"), "{out}");
     assert!(
@@ -1376,7 +1381,7 @@ fn an_spdx_licensed_set_needs_its_source_and_only_a_linked_closure_enters_unemu(
             && err.contains("--source EXTRA"),
         "{err}"
     );
-    let (code, out, err) = run(p, &["show", "test:unsourced"]);
+    let (code, out, err) = run(p, &["show", "test-unsourced:r1"]);
     assert_eq!(code, 0, "{err}");
     assert!(
         out.ends_with(
@@ -1384,4 +1389,51 @@ fn an_spdx_licensed_set_needs_its_source_and_only_a_linked_closure_enters_unemu(
         ),
         "{out}"
     );
+}
+
+/// A new set takes a revision tag, and its release alias follows it; an
+/// alias alone, or a tag outside the scheme, is refused before any medium is
+/// copied, and the refusal names the revision to use.
+#[test]
+fn a_new_set_takes_a_revision_tag_and_its_release_alias_follows() {
+    let t = Temp::new();
+    let p = &t.0;
+    disk(&p.join("a.img"));
+    let image = p.join("a.img");
+    let import = |tag: &str, create: bool| {
+        let mut args = vec![
+            "import",
+            image.to_str().unwrap(),
+            "--title",
+            "Revision set",
+            "--tag",
+            tag,
+        ];
+        if create {
+            args.push("--create");
+        }
+        run(p, &args)
+    };
+    let (code, _, err) = import("lab-set:1.0", true);
+    assert_eq!(code, 1);
+    assert!(
+        err.contains("tag the image lab-set:1.0-r1, and the alias lab-set:1.0 follows"),
+        "{err}"
+    );
+    let (code, _, err) = import("lab-set:Beta", false);
+    assert_eq!(code, 1);
+    assert!(
+        err.contains("neither a revision tag nor a release alias"),
+        "{err}"
+    );
+    let (code, out, err) = import("lab-set:1.0-r1", false);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("lab-set:1.0-r1\tsha256:"), "{out}");
+    let (code, listed, err) = run(p, &["ls"]);
+    assert_eq!(code, 0, "{err}");
+    let tags: Vec<&str> = listed
+        .lines()
+        .map(|l| l.split('\t').next().unwrap())
+        .collect();
+    assert_eq!(tags, ["lab-set:1.0", "lab-set:1.0-r1"], "{listed}");
 }

@@ -612,6 +612,58 @@ mod tests {
         }
     }
 
+    /// Sets and packages carry the platform in their path (recipes.md §8.3):
+    /// user-supplied ones are refused under `unemu/media/<platform>/…` and
+    /// `unemu/firmware/<platform>/…` on any host, revision or alias alike,
+    /// and taken under `private/…` where that namespace is private.
+    #[test]
+    fn user_supplied_sets_and_packages_go_under_private_never_under_unemu() {
+        let user = [
+            entry(Some("user-supplied"), mt::FIRMWARE_CONFIG, b"c"),
+            entry(None, mt::FIRMWARE, b"rom"),
+        ];
+        let namespaced = RegistryEntry {
+            namespaces: vec![
+                crate::config::Namespace {
+                    name: "unemu".into(),
+                    private: false,
+                },
+                crate::config::Namespace {
+                    name: "private".into(),
+                    private: true,
+                },
+            ],
+            ..RegistryEntry::builtin("registry.unemu.dev")
+        };
+        for entry in [&registry(false), &registry(true), &namespaced] {
+            for path in [
+                "unemu/firmware/ibm-pc/ibm-5170-bios-1985-06-10:r1",
+                "unemu/media/ibm-pc/windows:3.0-1.2m-r1",
+                "unemu/media/ibm-pc/windows:3.0-1.2m",
+            ] {
+                assert!(
+                    matches!(
+                        check(Some(entry), &target(path), &user),
+                        Err(Refusal::OfficialNamespaceNeedsOpen { .. })
+                    ),
+                    "{path}"
+                );
+            }
+        }
+        for path in [
+            "private/firmware/ibm-pc/ibm-5170-bios-1985-06-10:r1",
+            "private/media/ibm-pc/windows:3.0-1.2m-r1",
+        ] {
+            for entry in [&registry(true), &namespaced] {
+                assert_eq!(check(Some(entry), &target(path), &user), Ok(()), "{path}");
+            }
+            assert!(matches!(
+                check(Some(&registry(false)), &target(path), &user),
+                Err(Refusal::RegistryNotPrivate { .. })
+            ));
+        }
+    }
+
     #[test]
     fn user_supplied_blobs_need_a_private_registry_outside_the_official_namespace() {
         let unmarked = [entry(None, mt::CONFIG, b"c")];

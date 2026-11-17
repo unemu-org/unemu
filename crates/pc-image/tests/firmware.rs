@@ -19,6 +19,17 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
+
+/// The tag an import of `candidate` wrote: its first revision under
+/// `unemu/` when open, `private/` otherwise; the `private/` one when
+/// neither is in the store yet.
+fn tag_of(store: &image_store::Store, candidate: &pc_image::firmware_import::Candidate) -> String {
+    ["unemu", "private"]
+        .iter()
+        .map(|namespace| format!("{namespace}/firmware/ibm-pc/{}:r1", candidate.catalogue_id))
+        .find(|tag| store.tag_descriptor(tag).is_ok())
+        .unwrap_or_else(|| format!("private/firmware/ibm-pc/{}:r1", candidate.catalogue_id))
+}
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Temp(PathBuf);
 impl Temp {
@@ -115,7 +126,7 @@ fn firmware_import_assembles_chips_reports_incomplete_unmatched_and_preserves_so
     .unwrap();
     let image = store
         .resolve(
-            "firmware/synthetic-two-chip-bios:1",
+            "private/firmware/ibm-pc/synthetic-two-chip-bios:r1",
             &Validator(&PcFirmwareRules(&cat)),
         )
         .unwrap();
@@ -212,7 +223,7 @@ fn firmware_import_determinism_assembled_pin_and_catalogue_layout_are_enforced()
         .any(|i| i.reason.contains("assembled firmware identity")));
     let image = a
         .resolve(
-            "firmware/synthetic-two-chip-bios:1",
+            "private/firmware/ibm-pc/synthetic-two-chip-bios:r1",
             &Validator(&PcFirmwareRules(&cat)),
         )
         .unwrap();
@@ -241,7 +252,7 @@ fn firmware_import_determinism_assembled_pin_and_catalogue_layout_are_enforced()
     fs::write(path, vec![0; blob.size as usize]).unwrap();
     assert!(a
         .resolve(
-            "firmware/synthetic-two-chip-bios:1",
+            "private/firmware/ibm-pc/synthetic-two-chip-bios:r1",
             &Validator(&PcFirmwareRules(&cat))
         )
         .is_err());
@@ -459,7 +470,7 @@ fn firmware_machine_image_records_open_package_provenance_and_owns_rom_closure()
     .unwrap();
     assert!(manifest.layers.iter().any(|l| l.digest == firmware.digest));
     store
-        .remove_tag(&scan.candidates[0].tag(), &d.digest)
+        .remove_tag(&tag_of(&store, &scan.candidates[0]), &d.digest)
         .unwrap();
     assert!(store.resolve("test:1", &pc_image::PcProvider).is_ok());
 }
@@ -474,15 +485,15 @@ fn firmware_package_rejects_missing_unreferenced_payloads_and_unknown_roles() {
     firmware_import::publish(&store, &scan.candidates[0], &[], &cat).unwrap();
     let validator = Validator(&PcFirmwareRules(&cat));
     let image = store
-        .resolve(&scan.candidates[0].tag(), &validator)
+        .resolve(&tag_of(&store, &scan.candidates[0]), &validator)
         .unwrap();
     let mut missing = image.manifest.clone();
     missing.layers.pop();
     let d = store.import_manifest(&missing).unwrap();
     assert!(store
-        .update_tag("test:missing", &d, None, &validator)
+        .update_tag("test:missing-r1", &d, None, &validator)
         .is_err());
-    assert!(store.tag_descriptor("test:missing").is_err());
+    assert!(store.tag_descriptor("test:missing-r1").is_err());
     let extra = store.import(b"unreferenced".as_slice(), None).unwrap();
     let mut unreferenced = image.manifest.clone();
     unreferenced
@@ -490,9 +501,9 @@ fn firmware_package_rejects_missing_unreferenced_payloads_and_unknown_roles() {
         .push(Descriptor::new(mt::EXTRA, extra.digest, extra.size));
     let d = store.import_manifest(&unreferenced).unwrap();
     assert!(store
-        .update_tag("test:unreferenced", &d, None, &validator)
+        .update_tag("test:unreferenced-r1", &d, None, &validator)
         .is_err());
-    assert!(store.tag_descriptor("test:unreferenced").is_err());
+    assert!(store.tag_descriptor("test:unreferenced-r1").is_err());
     let mut config = Config::decode(&image.config).unwrap();
     config.roms[0].role = "mystery".into();
     let bytes = config.encode().unwrap();
@@ -501,7 +512,7 @@ fn firmware_package_rejects_missing_unreferenced_payloads_and_unknown_roles() {
     unknown.config = Descriptor::new(mt::FIRMWARE_CONFIG, blob.digest, blob.size);
     let d = store.import_manifest(&unknown).unwrap();
     assert!(store
-        .update_tag("test:unknown-role", &d, None, &validator)
+        .update_tag("test:unknown-role-r1", &d, None, &validator)
         .is_err());
     config.roms[0].catalogue_id = None;
     let bytes = [0x31, 0x72].repeat(16384);
@@ -599,7 +610,7 @@ fn firmware_store_skips_foreign_provider_packages_with_matching_pins() {
     let (pc, cat) = unlisted_package(&store, &root);
     let image = store
         .resolve(
-            "firmware/synthetic-two-chip-bios:1",
+            "private/firmware/ibm-pc/synthetic-two-chip-bios:r1",
             &Validator(&PcFirmwareRules(&cat)),
         )
         .unwrap();
@@ -616,10 +627,13 @@ fn firmware_store_skips_foreign_provider_packages_with_matching_pins() {
     .unwrap();
     let foreign = store.import_manifest(&foreign).unwrap();
     store
-        .update_tag("foreign:1", &foreign, None, &Validator(&Foreign))
+        .update_tag("foreign:r1", &foreign, None, &Validator(&Foreign))
         .unwrap();
     store
-        .remove_tag("firmware/synthetic-two-chip-bios:1", &pc.digest)
+        .remove_tag(
+            "private/firmware/ibm-pc/synthetic-two-chip-bios:r1",
+            &pc.digest,
+        )
         .unwrap();
     fs::write(t.0.join("declared.bin"), [0x31, 0x72].repeat(16384)).unwrap();
     let machine = t.0.join("machine.toml");
@@ -772,7 +786,7 @@ fn provider_refuses_parts_for_every_non_system_role() {
         assert!(PcFirmwareRules(&cat)
             .validate(&candidate.config, &store, &descriptors)
             .is_err());
-        assert!(store.tag_descriptor(&candidate.tag()).is_err());
+        assert!(store.tag_descriptor(&tag_of(&store, &candidate)).is_err());
     }
 }
 fn alternative_catalogue() -> (Vec<assembly::FirmwareEntry>, Vec<Vec<u8>>, Vec<u8>) {
@@ -1095,15 +1109,18 @@ fn reimport_reuses_identical_packages_but_rejects_changed_attachments() {
         firmware_import::publish(&store, &scan.candidates[0], &extras, &cat).unwrap()
     );
     let manifest = firmware_import::preview_manifest(&scan.candidates[0], &extras).unwrap();
-    assert!(
-        firmware_import::already_imported(&store, &scan.candidates[0].tag(), &manifest, &cat)
-            .unwrap()
-    );
+    assert!(firmware_import::already_imported(
+        &store,
+        &tag_of(&store, &scan.candidates[0]),
+        &manifest,
+        &cat
+    )
+    .unwrap());
     fs::write(manual, b"changed").unwrap();
     assert!(firmware_import::publish(&store, &scan.candidates[0], &extras, &cat).is_err());
     assert_eq!(
         store
-            .tag_descriptor(&scan.candidates[0].tag())
+            .tag_descriptor(&tag_of(&store, &scan.candidates[0]))
             .unwrap()
             .digest,
         first.digest
@@ -1148,7 +1165,7 @@ fn legacy_option_chip_package_does_not_replace_a_scalar_option_rom() {
     .unwrap();
     let legacy = store.import_manifest(&legacy).unwrap();
     store
-        .update_tag("legacy:option", &legacy, None, &Validator(&Legacy))
+        .update_tag("legacy:r1", &legacy, None, &Validator(&Legacy))
         .unwrap();
     fs::write(t.0.join("declared.bin"), [0x31, 0x72].repeat(16384)).unwrap();
     let path = t.0.join("machine.toml");
@@ -1378,8 +1395,15 @@ fn compressed_and_older_raw_packages_resolve_and_summarize_both_sizes() {
     .unwrap();
     manifest.annotations = image.manifest.annotations.clone();
     let raw = store.import_manifest(&manifest).unwrap();
-    let tag = "firmware/synthetic-two-chip-bios:1";
-    store.remove_tag(tag, &d.digest).unwrap();
+    // The raw copy is the package's next revision, and the compressed one
+    // leaves the library.
+    store
+        .remove_tag(
+            "private/firmware/ibm-pc/synthetic-two-chip-bios:r1",
+            &d.digest,
+        )
+        .unwrap();
+    let tag = "private/firmware/ibm-pc/synthetic-two-chip-bios:r2";
     store.update_tag(tag, &raw, None, &validator).unwrap();
     let machine = t.0.join("machine.toml");
     fs::write(&machine, format!("schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nsha256='{}'\nparts=[{{image='absent-even',lane='even'}},{{image='absent-odd',lane='odd'}}]\n[[card]]\nkind='mda'\n", cat[0].sha256)).unwrap();

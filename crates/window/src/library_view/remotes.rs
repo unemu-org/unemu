@@ -48,7 +48,7 @@ use crate::{
 };
 use egui::{AtomExt, Color32, Rect, RichText, Sense, Stroke, Vec2};
 use image_registry::{reference::OFFICIAL_NAMESPACE, DEFAULT_REGISTRY};
-use image_store::{media_set, media_type as mt};
+use image_store::media_type as mt;
 use std::collections::BTreeSet;
 
 /// An artifact-type group under a namespace, as the mock-up's tree groups
@@ -875,6 +875,10 @@ fn state_parts(row: &TagRow) -> (Vec<Part>, bool) {
                 (format!(" · you have {version}"), Tone::Muted),
             ]
         }
+        Some(LocalState::LocalNewer { have }) => {
+            let version = have.rsplit_once(':').map_or(have.as_str(), |(_, tag)| tag);
+            vec![(format!("Local is newer: {version}"), Tone::Muted)]
+        }
         Some(LocalState::OtherImage { .. }) => {
             vec![("⚠ Local tag names another image".into(), Tone::Warn)]
         }
@@ -1014,14 +1018,15 @@ fn tag_row(host: &str, repository: &RepositoryRow, tag: &str) -> RowCells {
 }
 
 /// A repository's tags newest first, by its artifact type's order: Semantic
-/// Versioning 2.0.0 §11 precedence for machine images, then the set-tag
-/// order, which also puts the highest firmware revision first and aliases
-/// last.
+/// Versioning 2.0.0 §11 precedence for machine images, then `latest`, then
+/// the order of set and package tags ([`image_store::tag::newest_first`]),
+/// which is a set's or package's own: by release, the alias of each release
+/// first as its newest, then its revisions highest first.
 fn newest_first(repository: &RepositoryRow) -> Vec<String> {
     let machine = group_of(repository) == Some(Group::Machines);
     let mut tags = repository.tags.clone();
     tags.sort_by(|a, b| {
-        let by_set = || media_set::newest_set_tag_first(a, b);
+        let by_set = || image_store::tag::newest_first(a, b);
         if !machine {
             return by_set();
         }
@@ -1032,7 +1037,11 @@ fn newest_first(repository: &RepositoryRow) -> Vec<String> {
             (Some(a), Some(b)) => b.cmp(&a),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => by_set(),
+            // A machine repository's `latest` leads its other tags.
+            (None, None) => {
+                let latest = |tag: &str| tag == image_store::tag::LATEST;
+                latest(b).cmp(&latest(a)).then_with(by_set)
+            }
         }
     });
     tags
@@ -1060,9 +1069,10 @@ fn sort_key(repository: &RepositoryRow, column: usize) -> (String, String) {
             let rank = match tag.and_then(|t| t.local.as_ref()) {
                 Some(LocalState::NewerAvailable { .. }) => 0,
                 Some(LocalState::OtherImage { .. }) => 1,
-                Some(LocalState::NotPulled { .. }) => 2,
-                Some(LocalState::InLibrary) => 3,
-                None => 4,
+                Some(LocalState::LocalNewer { .. }) => 2,
+                Some(LocalState::NotPulled { .. }) => 3,
+                Some(LocalState::InLibrary) => 4,
+                None => 5,
             };
             rank.to_string()
         }

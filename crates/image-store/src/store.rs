@@ -617,6 +617,10 @@ impl Store {
     /// pull's registry ([`PULL_REGISTRY`]) or, for any other write, that it
     /// was made here ([`MADE_HERE`]). Rewriting a tag with the image it
     /// already names keeps its record, which a pull replaces with its own.
+    ///
+    /// A revision tag of a set or package ([`crate::tag`]) also moves the
+    /// alias of its release in the same index write when that goes forward
+    /// ([`Store::alias_to_follow`]); the alias gets the same record.
     pub(crate) fn update_tag_locked(
         &self,
         name: &str,
@@ -626,92 +630,75 @@ impl Store {
     ) -> Result<()> {
         validate_tag(name)?;
         let mut index = self.read_index()?;
-        let position = index.manifests.iter().position(|raw| {
-            local_descriptor(raw)
-                .ok()
-                .flatten()
-                .is_some_and(|d| tag_name(&d) == Some(name))
-        });
-        let current_image = position
-            .map(|i| {
-                local_descriptor(&index.manifests[i])
-                    .and_then(|d| d.ok_or_else(|| invalid("invalid local tag")))
-            })
-            .transpose()?;
+        let current_image = find_tag(&index, name)?;
         let current = current_image.as_ref().map(|d| d.digest.clone());
         if current.as_ref() != expected {
             return Err(Error::Conflict { current });
         }
         // Even a caller that confirmed the current digest cannot move a version
-        // tag, nor bind a deleted one to another image, nor move a set's tag.
+        // tag of a machine image, nor a set's or a package's revision tag,
+        // nor bind a deleted one to another image. Sets and packages follow
+        // their own tag scheme, where a release shaped like a semantic
+        // version is an alias like any other.
         let retired = self.read_retired_inner()?;
-        refuse_version_move(
-            name,
-            current.as_ref().or(retired.tags.get(name)),
-            Some(&manifest.digest),
-        )?;
-        if let Some(current) = current_image.filter(|d| d.digest != manifest.digest) {
-            self.refuse_media_set_move(name, &current, Some(manifest))?;
+        let kind = self.artifact_type(manifest)?;
+        let revisions = kind.as_deref().is_some_and(crate::tag::governs);
+        let current_kind = match &current_image {
+            Some(image) if image.digest != manifest.digest => self.artifact_type(image)?,
+            _ => kind.clone(),
+        };
+        let moved = current_kind.as_deref().is_some_and(crate::tag::governs);
+        if !(revisions || moved) {
+            refuse_version_move(
+                name,
+                current.as_ref().or(retired.tags.get(name)),
+                Some(&manifest.digest),
+            )?;
         }
-        let mut descriptor = manifest.clone();
-        descriptor
-            .annotations
-            .insert("org.opencontainers.image.ref.name".into(), name.into());
-        descriptor.annotations.remove(PULL_REGISTRY);
-        descriptor.annotations.remove(MADE_HERE);
-        let same_image = current.as_ref() == Some(&manifest.digest);
-        match pulled {
-            Some(registry) => {
-                descriptor
-                    .annotations
-                    .insert(PULL_REGISTRY.into(), registry.into());
-            }
-            None if !same_image => {
-                descriptor
-                    .annotations
-                    .insert(MADE_HERE.into(), "true".into());
-            }
-            None => (),
+        refuse_retired_revision(name, current.as_ref(), &retired, &manifest.digest)?;
+        if current.as_ref() != Some(&manifest.digest) && (revisions || moved) {
+            let package =
+                [kind.as_deref(), current_kind.as_deref()].contains(&Some(media_type::FIRMWARE));
+            refuse_revision_rules(
+                &index,
+                name,
+                current_image.as_ref(),
+                manifest,
+                package,
+                pulled.is_some(),
+            )?;
         }
-        let replacement = to_raw_value(&descriptor).map_err(|e| invalid(e.to_string()))?;
-        if let Some(position) = position {
-            // Keep opaque OCI fields as raw JSON even when editing our own tag.
-            let mut existing: BTreeMap<String, Box<RawValue>> =
-                decode_json(index.manifests[position].get().as_bytes())?;
-            if existing.contains_key("data") && current.as_ref() != Some(&manifest.digest) {
-                return Err(invalid(
-                    "cannot replace a tag with embedded OCI descriptor data",
-                ));
-            }
-            let mut replacement: BTreeMap<String, Box<RawValue>> =
-                decode_json(replacement.get().as_bytes())?;
-            let mut annotations: BTreeMap<String, Box<RawValue>> = existing
-                .get("annotations")
-                .map(|raw| decode_json(raw.get().as_bytes()))
-                .transpose()?
-                .unwrap_or_default();
-            // Where the old image came from says nothing about the new one,
-            // and a pull's record replaces whatever the tag recorded.
-            if !same_image || pulled.is_some() {
-                annotations.remove(PULL_REGISTRY);
-                annotations.remove(MADE_HERE);
-            }
-            if let Some(raw) = replacement.remove("annotations") {
-                annotations.extend(decode_json::<BTreeMap<String, Box<RawValue>>>(
-                    raw.get().as_bytes(),
-                )?);
-            }
-            existing.insert(
-                "annotations".into(),
-                to_raw_value(&annotations).map_err(|e| invalid(e.to_string()))?,
-            );
-            existing.extend(replacement);
-            index.manifests[position] =
-                to_raw_value(&existing).map_err(|e| invalid(e.to_string()))?;
+        let alias = if revisions {
+            alias_to_follow(&index, name, &manifest.digest)?
         } else {
-            index.manifests.push(replacement);
+            None
+        };
+        place(&mut index, name, manifest, current.as_ref(), pulled)?;
+        if let Some((alias, current)) = alias {
+            place(&mut index, &alias, manifest, current.as_ref(), pulled)?;
         }
         self.write_index(&index)
+    }
+
+    /// Whether `image` is a set or a package, whose tags follow
+    /// [`crate::tag`]. Caller holds the store lease.
+    fn governed(&self, image: &Descriptor) -> Result<bool> {
+        Ok(self
+            .artifact_type(image)?
+            .as_deref()
+            .is_some_and(crate::tag::governs))
+    }
+
+    /// The manifest's artifact type. Only that field is read, so an image a
+    /// newer release wrote, which this build cannot decode, still answers.
+    /// Caller holds the store lease.
+    fn artifact_type(&self, image: &Descriptor) -> Result<Option<String>> {
+        let bytes = self.read_inner(image, MAX_SMALL_BLOB)?;
+        let value: serde_json::Value = decode_json(&bytes)?;
+        Ok(value
+            .get("artifactType")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned))
     }
 
     /// Resolve once and pin the image digest. Required payloads are fully hashed;
@@ -1276,36 +1263,290 @@ fn refuse_version_move(
     }
 }
 
-impl Store {
-    /// A tag of an installation media set names one set forever unless it is
-    /// an alias ([`crate::media_set::is_alias_tag`]), even when it is not a
-    /// semantic version: sets are pulled by tag, and a moved tag would hand
-    /// different media out under a name already in use. The tag cannot move
-    /// away from a set, and no set can take a tag that names another image.
-    /// Caller holds the store lease.
-    fn refuse_media_set_move(
-        &self,
-        name: &str,
-        current: &Descriptor,
-        replacement: Option<&Descriptor>,
-    ) -> Result<()> {
-        let (repository, tag) = name.rsplit_once(':').unwrap_or(("", name));
-        if crate::media_set::is_alias_tag(tag) {
-            return Ok(());
+/// The local tag `name` in `index`, if there is one.
+fn find_tag(index: &Index, name: &str) -> Result<Option<Descriptor>> {
+    for raw in &index.manifests {
+        if let Some(descriptor) = local_descriptor(raw)? {
+            if tag_name(&descriptor) == Some(name) {
+                return Ok(Some(descriptor));
+            }
         }
-        let is_set = |image: &Descriptor| -> Result<bool> {
-            let bytes = self.read_inner(image, MAX_SMALL_BLOB)?;
-            Ok(Manifest::decode_for_summary(&bytes)?.artifact_type() == media_type::MEDIA_SET)
-        };
-        if is_set(current)? || replacement.map(is_set).transpose()? == Some(true) {
-            return Err(invalid(format!(
-                "{name} already names {}; tags of installation media sets never move; tag the changed set with a new revision such as {repository}:{}",
-                current.digest,
-                crate::media_set::next_revision(tag)
-            )));
-        }
-        Ok(())
     }
+    Ok(None)
+}
+
+/// The highest revision `N` among the tags `<repository>:<release>-rN` of
+/// `index` that name `digest`.
+fn revision_naming(index: &Index, repository: &str, release: &str, digest: &Digest) -> Option<u64> {
+    index
+        .manifests
+        .iter()
+        .filter_map(|raw| local_descriptor(raw).ok().flatten())
+        .filter(|d| &d.digest == digest)
+        .filter_map(|d| {
+            let (other, tag) = tag_name(&d)?.rsplit_once(':')?;
+            match crate::tag::parse(tag)? {
+                crate::tag::Kind::Revision {
+                    release: Some(of),
+                    number,
+                } if other == repository && of == release => Some(number),
+                _ => None,
+            }
+        })
+        .max()
+}
+
+/// The highest revision of `release` that `index` tags in `repository`.
+fn newest_revision(index: &Index, repository: &str, release: &str) -> Option<u64> {
+    index
+        .manifests
+        .iter()
+        .filter_map(|raw| local_descriptor(raw).ok().flatten())
+        .filter_map(|d| {
+            let (other, tag) = tag_name(&d)?.rsplit_once(':')?;
+            match crate::tag::parse(tag)? {
+                crate::tag::Kind::Revision {
+                    release: Some(of),
+                    number,
+                } if other == repository && of == release => Some(number),
+                _ => None,
+            }
+        })
+        .max()
+}
+
+/// A revision tag of a set or package that was deleted names only the image
+/// it named: as a version tag, its name stays bound after its index entry
+/// goes ([`Store::remove_tag`]).
+fn refuse_retired_revision(
+    name: &str,
+    current: Option<&Digest>,
+    retired: &RetiredTags,
+    replacement: &Digest,
+) -> Result<()> {
+    let tag = name.rsplit_once(':').map_or(name, |(_, tag)| tag);
+    match (current, retired.tags.get(name)) {
+        (None, Some(old)) if crate::tag::is_revision(tag) && old != replacement => {
+            Err(invalid(format!(
+                "{name} was deleted while it named {old}; revision tags never move, so it names no other image; tag this one with a new revision"
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The revision to suggest for `release`: `<release>-r1`, or `rN` for a
+/// package's plain number `N`, the revision an earlier release wrote as `:N`.
+fn first_revision(repository: &str, release: &str, package: bool) -> String {
+    format!(
+        "{repository}:{}",
+        crate::tag::first_revision(release, package)
+    )
+}
+
+/// The tag rules of sets and packages ([`crate::tag`]), for a write of
+/// `name` to `replacement` that creates the tag or moves it from `current`,
+/// where either image is a set or a package (`package` when one is a
+/// firmware package). A revision tag never moves, and no set or package
+/// takes one that names another image: sets and packages are pulled by tag,
+/// and a moved revision would hand other bytes out under a name already in
+/// use. No set or package is tagged `latest`, and none takes a new tag
+/// outside the scheme. A new alias names the newest revision of its release
+/// here, except where a pull (`pulled`) writes an alias a registry published
+/// before revisions existed. An alias moves only forward within its release:
+/// the image it names now and the new one must each have a revision tag of
+/// that release here, the new one a higher revision; an alias naming an
+/// image without one (a tag an earlier release wrote, say) stays until it is
+/// deleted. A tag outside the scheme does not move.
+fn refuse_revision_rules(
+    index: &Index,
+    name: &str,
+    current: Option<&Descriptor>,
+    replacement: &Descriptor,
+    package: bool,
+    pulled: bool,
+) -> Result<()> {
+    let (repository, tag) = name.rsplit_once(':').unwrap_or(("", name));
+    if tag == crate::tag::LATEST {
+        return Err(invalid(format!(
+            "installation media sets and firmware packages have no {} tag; tag a revision such as {repository}:r1, or a release and its revision such as {repository}:1.0-r1",
+            crate::tag::LATEST
+        )));
+    }
+    let Some(current) = current else {
+        return match crate::tag::parse(tag) {
+            Some(crate::tag::Kind::Revision { .. }) => Ok(()),
+            Some(crate::tag::Kind::Alias { .. }) if pulled => Ok(()),
+            Some(crate::tag::Kind::Alias { release }) => {
+                match newest_revision(index, repository, release) {
+                    None => Err(invalid(format!(
+                        "{name} is the alias of release {release}, which names its newest revision, and no revision of it is here; tag the image {}, and the alias {name} follows",
+                        first_revision(repository, release, package)
+                    ))),
+                    Some(newest) => {
+                        let newest = format!(
+                            "{repository}:{}",
+                            crate::tag::revision(Some(release), newest)
+                        );
+                        match find_tag(index, &newest)? {
+                            Some(image) if image.digest == replacement.digest => Ok(()),
+                            _ => Err(invalid(format!(
+                                "{name} is the alias of release {release}, which names its newest revision, {newest}; tag this image with a new revision, and the alias follows"
+                            ))),
+                        }
+                    }
+                }
+            }
+            None => Err(invalid(format!(
+                "{name} is neither a revision tag nor a release alias; installation media sets and firmware packages are tagged [RELEASE-]rN, such as {repository}:1.0-r1 or {repository}:r1, and the release alone follows its newest revision"
+            ))),
+        };
+    };
+    match crate::tag::parse(tag) {
+        Some(crate::tag::Kind::Revision { .. }) => Err(invalid(format!(
+            "{name} already names {}; revision tags never move; tag the changed image with a new revision such as {repository}:{}",
+            current.digest,
+            crate::tag::next_revision(tag).unwrap_or_default()
+        ))),
+        Some(crate::tag::Kind::Alias { release }) => {
+            let from = revision_naming(index, repository, release, &current.digest);
+            let to = revision_naming(index, repository, release, &replacement.digest);
+            match (from, to) {
+                (Some(from), Some(to)) if to > from => Ok(()),
+                (_, None) => Err(invalid(format!(
+                    "{name} is the alias of release {release}: it moves only to an image a revision tag such as {} names here",
+                    first_revision(repository, release, package)
+                ))),
+                (None, Some(_)) => Err(invalid(format!(
+                    "{name} names {}, which no revision tag of release {release} names here, so a move cannot be shown to go forward; delete {name} first",
+                    current.digest
+                ))),
+                (Some(from), Some(to)) => Err(invalid(format!(
+                    "{name} names revision {} of release {release}; an alias moves only forward, never to revision {}",
+                    crate::tag::revision(Some(release), from),
+                    crate::tag::revision(Some(release), to)
+                ))),
+            }
+        }
+        None => Err(invalid(format!(
+            "{name} already names {}; it is neither a revision tag nor a release alias, so it does not move; installation media sets and firmware packages are tagged [RELEASE-]rN, and the release alone follows its newest revision",
+            current.digest
+        ))),
+    }
+}
+
+/// The alias a write of the revision tag `name` to `digest` moves, with the
+/// image it names now: none for a tag without a release; the release when
+/// it is absent and this is the newest revision of it here, or when it names
+/// a lower revision of it. An alias at a higher revision, or at an image no
+/// revision of its release names, stays. `index` is read before the write.
+/// The caller holds the index lock, so reading the alias here and writing it
+/// with the revision is one compare-and-swap.
+fn alias_to_follow(
+    index: &Index,
+    name: &str,
+    digest: &Digest,
+) -> Result<Option<(String, Option<Digest>)>> {
+    let Some((repository, tag)) = name.rsplit_once(':') else {
+        return Ok(None);
+    };
+    let Some(crate::tag::Kind::Revision {
+        release: Some(release),
+        number,
+    }) = crate::tag::parse(tag)
+    else {
+        return Ok(None);
+    };
+    let alias = format!("{repository}:{release}");
+    if validate_tag(&alias).is_err() {
+        return Ok(None);
+    }
+    let follow = match find_tag(index, &alias)? {
+        None => newest_revision(index, repository, release).is_none_or(|newest| number >= newest),
+        Some(current) if &current.digest == digest => false,
+        Some(current) => {
+            revision_naming(index, repository, release, &current.digest).is_some_and(|n| n < number)
+        }
+    };
+    Ok(follow.then(|| {
+        let current = find_tag(index, &alias).ok().flatten().map(|d| d.digest);
+        (alias, current)
+    }))
+}
+
+/// Write the descriptor of `manifest` under `name` into `index`, replacing
+/// the tag's entry when it has one; see [`Store::update_tag_locked`].
+fn place(
+    index: &mut Index,
+    name: &str,
+    manifest: &Descriptor,
+    current: Option<&Digest>,
+    pulled: Option<&str>,
+) -> Result<()> {
+    let position = index.manifests.iter().position(|raw| {
+        local_descriptor(raw)
+            .ok()
+            .flatten()
+            .is_some_and(|d| tag_name(&d) == Some(name))
+    });
+    let mut descriptor = manifest.clone();
+    descriptor
+        .annotations
+        .insert("org.opencontainers.image.ref.name".into(), name.into());
+    descriptor.annotations.remove(PULL_REGISTRY);
+    descriptor.annotations.remove(MADE_HERE);
+    let same_image = current == Some(&manifest.digest);
+    match pulled {
+        Some(registry) => {
+            descriptor
+                .annotations
+                .insert(PULL_REGISTRY.into(), registry.into());
+        }
+        None if !same_image => {
+            descriptor
+                .annotations
+                .insert(MADE_HERE.into(), "true".into());
+        }
+        None => (),
+    }
+    let replacement = to_raw_value(&descriptor).map_err(|e| invalid(e.to_string()))?;
+    if let Some(position) = position {
+        // Keep opaque OCI fields as raw JSON even when editing our own tag.
+        let mut existing: BTreeMap<String, Box<RawValue>> =
+            decode_json(index.manifests[position].get().as_bytes())?;
+        if existing.contains_key("data") && !same_image {
+            return Err(invalid(
+                "cannot replace a tag with embedded OCI descriptor data",
+            ));
+        }
+        let mut replacement: BTreeMap<String, Box<RawValue>> =
+            decode_json(replacement.get().as_bytes())?;
+        let mut annotations: BTreeMap<String, Box<RawValue>> = existing
+            .get("annotations")
+            .map(|raw| decode_json(raw.get().as_bytes()))
+            .transpose()?
+            .unwrap_or_default();
+        // Where the old image came from says nothing about the new one,
+        // and a pull's record replaces whatever the tag recorded.
+        if !same_image || pulled.is_some() {
+            annotations.remove(PULL_REGISTRY);
+            annotations.remove(MADE_HERE);
+        }
+        if let Some(raw) = replacement.remove("annotations") {
+            annotations.extend(decode_json::<BTreeMap<String, Box<RawValue>>>(
+                raw.get().as_bytes(),
+            )?);
+        }
+        existing.insert(
+            "annotations".into(),
+            to_raw_value(&annotations).map_err(|e| invalid(e.to_string()))?,
+        );
+        existing.extend(replacement);
+        index.manifests[position] = to_raw_value(&existing).map_err(|e| invalid(e.to_string()))?;
+    } else {
+        index.manifests.push(replacement);
+    }
+    Ok(())
 }
 
 /// Split a local tag or repository into its registry host, if it names one,
@@ -1523,8 +1764,9 @@ impl Store {
     }
 
     /// Reject a tag update before an expensive ingest: an occupied version tag
-    /// never moves, nor does an occupied tag of an installation media set that
-    /// is not an alias, and any other occupied tag moves only from the digest
+    /// never moves, nor does an occupied revision tag of an installation
+    /// media set or firmware package ([`crate::tag`]), and any other occupied
+    /// tag moves only from the digest
     /// the user confirmed (`expected`). An absent tag needs `expected = None`.
     /// Publication still uses compare-and-swap to catch concurrent changes.
     /// A deleted version tag still refuses any digest other than `replacement`
@@ -1544,18 +1786,91 @@ impl Store {
         let current = current_image.as_ref().map(|d| d.digest.clone());
         let _lease = self.lease()?;
         let retired = self.read_retired_inner()?;
-        refuse_version_move(
-            name,
-            current.as_ref().or(retired.tags.get(name)),
-            replacement.filter(|_| current.is_none()),
-        )?;
+        // A set's or package's tag follows its own scheme, not the version
+        // rule of machine images.
+        let governed = match &current_image {
+            Some(image) => self.governed(image)?,
+            None => false,
+        };
+        if !governed {
+            refuse_version_move(
+                name,
+                current.as_ref().or(retired.tags.get(name)),
+                replacement.filter(|_| current.is_none()),
+            )?;
+        }
+        if let (Some(replacement), None) = (replacement, &current) {
+            refuse_retired_revision(name, None, &retired, replacement)?;
+        }
         if let Some(current) = &current_image {
-            self.refuse_media_set_move(name, current, None)?;
+            // Only an alias of a set or package can ever move; whether this
+            // move goes forward is judged when the new image is written.
+            let tag = name.rsplit_once(':').map_or(name, |(_, tag)| tag);
+            let alias = matches!(crate::tag::parse(tag), Some(crate::tag::Kind::Alias { .. }))
+                && tag != crate::tag::LATEST;
+            if !alias && governed {
+                let index = self.read_index()?;
+                refuse_revision_rules(&index, name, Some(current), current, false, false)?;
+            }
         }
         if current.as_ref() != expected {
             return Err(Error::Conflict { current });
         }
         Ok(())
+    }
+
+    /// What a write of the revision tag `name` to `digest` would do to the
+    /// alias of its release ([`crate::tag`]), reading only: the alias, the
+    /// image it names now, and whether the write would create or move it.
+    /// `None` for a tag without an alias, such as `r1`.
+    pub fn alias_plan(
+        &self,
+        name: &str,
+        digest: &Digest,
+    ) -> Result<Option<(String, Option<Digest>, bool)>> {
+        validate_tag(name)?;
+        let Some((repository, tag)) = name.rsplit_once(':') else {
+            return Ok(None);
+        };
+        let Some(release) = crate::tag::alias_of(tag) else {
+            return Ok(None);
+        };
+        let _lease = self.lease()?;
+        let index = self.read_index()?;
+        if let Some((alias, current)) = alias_to_follow(&index, name, digest)? {
+            return Ok(Some((alias, current, true)));
+        }
+        let alias = format!("{repository}:{release}");
+        let current = find_tag(&index, &alias)?.map(|d| d.digest);
+        Ok(Some((alias, current, false)))
+    }
+
+    /// Move the release alias of the revision tag `name` of a set or package
+    /// to the image the revision names, as a write of the revision does
+    /// ([`crate::tag`]): created when absent and this is the newest revision
+    /// here, moved only forward, in one compare-and-swap under the index
+    /// lock. For a revision already in place, such as one a pull finds
+    /// unchanged. `pulled` records the registry on the alias as a pull's
+    /// write does. Returns the alias when it now names the image and did not
+    /// before.
+    pub fn follow_alias(&self, name: &str, pulled: Option<&str>) -> Result<Option<String>> {
+        validate_tag(name)?;
+        if let Some(registry) = pulled {
+            Self::validate_registry_host(registry)?;
+        }
+        let _lease = self.lease()?;
+        let _lock = host::exclusive_lock(&self.root.join("locks/index.lock"))?;
+        let mut index = self.read_index()?;
+        let image = find_tag(&index, name)?.ok_or_else(|| Error::TagNotFound(name.into()))?;
+        if !self.governed(&image)? {
+            return Ok(None);
+        }
+        let Some((alias, current)) = alias_to_follow(&index, name, &image.digest)? else {
+            return Ok(None);
+        };
+        place(&mut index, &alias, &image, current.as_ref(), pulled)?;
+        self.write_index(&index)?;
+        Ok(Some(alias))
     }
 
     /// Reject invalid or occupied tag names before an expensive ingest.
@@ -1609,9 +1924,17 @@ impl Store {
                 current: Some(current.digest),
             });
         }
-        if version_shaped(name) {
+        // A machine image's version tag and a set's or package's revision tag
+        // name one image forever.
+        let tag = name.rsplit_once(':').map_or(name, |(_, tag)| tag);
+        let fixed = if self.governed(&current)? {
+            crate::tag::is_revision(tag)
+        } else {
+            version_shaped(name)
+        };
+        if fixed {
             // Recorded before the index changes: a crash in between leaves a
-            // name bound to the digest it already names, never a free version.
+            // name bound to the digest it already names, never a free tag.
             let mut retired = self.read_retired_inner()?;
             retired.tags.insert(name.into(), current.digest.clone());
             self.write_retired_locked(&retired)?;
@@ -1621,9 +1944,10 @@ impl Store {
     }
 }
 
-/// Deleted version tags and the digest each named, `local/retired-version-tags.toml`.
-/// A version tag names one image forever (machine-images §3), so its name
-/// stays bound after its index entry goes.
+/// Deleted version tags of machine images and revision tags of sets and
+/// packages, and the digest each named, `local/retired-version-tags.toml`.
+/// Such a tag names one image forever (machine-images §3 and §5.2), so its
+/// name stays bound after its index entry goes.
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RetiredTags {

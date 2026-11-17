@@ -5,6 +5,41 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — Repository paths carry the platform; sets and packages are
+  tagged by release and revision:** media sets live under
+  `unemu/media/<platform>/<work>` and firmware packages under
+  `unemu/firmware/<platform>/<catalogue id>` when official, and under the same
+  paths in `private/` for everything imported here; machine templates keep
+  `unemu/<name>` (recipes.md §8.3, decision-35). A set or package tag is
+  `[<release>-]rN` (`1.4-r1`, `usa-rev1-r1`, `r1`), which never moves, locally
+  or by push, with or without `--move`, and a deleted one names no other
+  image; the release alone (`1.4`, also a release shaped like a version,
+  `1.0.0`) is an alias for the newest revision of its release: the store
+  creates it only at that newest revision and moves it forward in the same
+  compare-and-swap that writes a newer revision, never backward and never to
+  another release; sets and packages have no `latest` and take no new tag
+  outside the scheme; the digit-first set tag rule is retired (decision-38).
+  A push creates or moves an alias only at the newest revision of its release
+  that the registry already has, checked against the registry's tag list and
+  the digest of each revision. A pull by an alias writes the revision it
+  names, the local alias follows, and the output says so; a registry alias
+  published before revisions is pulled as it is. Local imports (`image
+  firmware import`, `image media import`, the window's import and Create from
+  files) name their result under `private/` (`private/firmware/ibm-pc/<id>:r1`,
+  `private/media/ibm-pc/<title>:1.0-r1`) and never take the official name a
+  pull writes; `image firmware edit` goes to the next revision (`r2`). Only
+  the template and media builders write `unemu/firmware/ibm-pc/<id>:r1` and
+  `unemu/media/ibm-pc/freedos:1.4-r1` with its alias, the names the replaced
+  published artifacts will take; no manifest byte changes, so no pinned digest
+  moved. Remotes lists a set's or package's tags by release, each release's
+  alias first, then its revisions highest first, and says Newer available only
+  between revisions of one release; a local release alias at another image
+  than the registry's reads Newer available when the registry lists a higher
+  revision than the one the alias names, "Local is newer: …-r2" when the
+  library's is higher, and otherwise Local tag names another image, as does a
+  0.0.2 alias that names no revision. A store written by 0.0.2
+  (`freedos:1.4`, `firmware/<id>:1`, paths without the platform) still lists,
+  resolves and runs; nothing rewrites or moves those tags.
 - **2026-11-17 — The Zstandard encoder is frozen as profile 1:** the
   encoder every `+zstd` payload is written with (zstd 0.13.5, zstd-safe
   7.4.1, zstd-sys 2.1.3 building the bundled libzstd 1.5.7, level 3, one

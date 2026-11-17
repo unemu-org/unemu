@@ -80,17 +80,25 @@ cards, firmware and drives. `at-games-open.toml` is the open DOS games machine
   content goes public only with its licence, and copyleft only with its source.
 - **Templates:** official open machine images (`unemu/open-at`,
   `unemu/open-at-games`) built from open firmware packages. The firmware
-  packages and the FreeDOS 1.4 Floppy Edition installation sets are on
-  `registry.unemu.dev` already:
+  packages and the FreeDOS 1.4 Floppy Edition installation sets are
+  published on `registry.unemu.dev`. Once they are pushed again for this
+  release, they live under `unemu/firmware/<platform>/…` and
+  `unemu/media/<platform>/…`, and a set's tag is its release and revision
+  (`1.4-r1`), which never moves, while the release alone (`1.4`) follows the
+  newest revision:
 
   ```sh
-  upcli image pull unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1 --store DIR --create
-  upcli image pull unemu/firmware/vgabios-0.9d-unemu.1-std:1 --store DIR
-  upcli image pull unemu/firmware/xub-r638-xtp-ata1f0:1 --store DIR
-  upcli image pull unemu/media/freedos:1.4 --store DIR        # 1.44M disks
-  upcli image pull unemu/media/freedos:1.4-1.2m --store DIR
-  upcli image pull unemu/media/freedos:1.4-720k --store DIR
+  upcli image pull unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1 --store DIR --create
+  upcli image pull unemu/firmware/ibm-pc/vgabios-0.9d-unemu.1-std:r1 --store DIR
+  upcli image pull unemu/firmware/ibm-pc/xub-r638-xtp-ata1f0:r1 --store DIR
+  upcli image pull unemu/media/ibm-pc/freedos:1.4 --store DIR        # 1.44M disks
+  upcli image pull unemu/media/ibm-pc/freedos:1.4-1.2m --store DIR
+  upcli image pull unemu/media/ibm-pc/freedos:1.4-720k --store DIR
   ```
+
+  Until then they are on the registry under their earlier names, which
+  release 0.0.2 pulls: `unemu/firmware/<catalogue id>:1` and
+  `unemu/media/freedos:1.4`, `:1.4-1.2m`, `:1.4-720k`.
 
   The template machines come with a later release; until then, build them
   locally with the firmware fetch scripts and `upcli image template build`

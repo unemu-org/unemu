@@ -93,7 +93,7 @@ fn firmware_cli_dry_run_import_extras_inspection_and_tag_conflicts() {
     let (code, out, err) = run(&t.0, &args);
     assert_eq!(code, 0, "{err}");
     assert!(out.contains("imported"));
-    let tag = format!("firmware/{}:1", assembly::KISELEV_XI8088.id);
+    let tag = format!("private/firmware/ibm-pc/{}:r1", assembly::KISELEV_XI8088.id);
     let (code, out, err) = run(&t.0, &["ls"]);
     assert_eq!(code, 0, "{err}");
     assert!(out.contains(&tag));
@@ -227,13 +227,13 @@ fn firmware_cli_states_licences_sources_and_metadata_and_edits_revisions() {
     assert_eq!(code, 0, "{err}");
     let digest = out
         .lines()
-        .find_map(|l| l.strip_prefix("imported\tfirmware/opt-rom:1\t"))
+        .find_map(|l| l.strip_prefix("imported\tprivate/firmware/ibm-pc/opt-rom:r1\t"))
         .unwrap_or_else(|| panic!("{out}"))
         .to_owned();
-    let (code, show, err) = run(&t.0, &["show", "firmware/opt-rom:1"]);
+    let (code, show, err) = run(&t.0, &["show", "private/firmware/ibm-pc/opt-rom:r1"]);
     assert_eq!(code, 0, "{err}");
     assert!(show.starts_with(&format!(
-        "firmware/opt-rom:1\t{digest}\t\"Synthetic option ROM\"\n"
+        "private/firmware/ibm-pc/opt-rom:r1\t{digest}\t\"Synthetic option ROM\"\n"
     )));
     for line in [
         "requires\toption-rom\t[\"ata-primary\"]\n",
@@ -256,7 +256,7 @@ fn firmware_cli_states_licences_sources_and_metadata_and_edits_revisions() {
         &t.0,
         &[
             "edit",
-            "firmware/opt-rom:1",
+            "private/firmware/ibm-pc/opt-rom:r1",
             "--label",
             "edited",
             "--notes",
@@ -265,17 +265,19 @@ fn firmware_cli_states_licences_sources_and_metadata_and_edits_revisions() {
     );
     assert_eq!(code, 0, "{err}");
     assert!(
-        out.starts_with("edited\tfirmware/opt-rom:1\tfirmware/opt-rom:2\tsha256:"),
+        out.starts_with(
+            "edited\tprivate/firmware/ibm-pc/opt-rom:r1\tprivate/firmware/ibm-pc/opt-rom:r2\tsha256:"
+        ),
         "{out}"
     );
-    let (code, edited, err) = run(&t.0, &["show", "firmware/opt-rom:2"]);
+    let (code, edited, err) = run(&t.0, &["show", "private/firmware/ibm-pc/opt-rom:r2"]);
     assert_eq!(code, 0, "{err}");
     assert!(edited.contains("labels\t[\"edited\"]\n"), "{edited}");
     assert!(edited.contains("notes\t\"A quirk.\"\n"), "{edited}");
     assert_eq!(layers(&edited, "rom"), rom_layer);
     assert_eq!(layers(&edited, "source"), layers(&show, "source"));
     assert_ne!(layers(&edited, "readme"), layers(&show, "readme"));
-    let (code, unchanged, _) = run(&t.0, &["show", "firmware/opt-rom:1"]);
+    let (code, unchanged, _) = run(&t.0, &["show", "private/firmware/ibm-pc/opt-rom:r1"]);
     assert_eq!(code, 0);
     assert_eq!(unchanged, show, "the first revision is immutable");
     // Keeping a package private drops every licence mark.
@@ -283,14 +285,14 @@ fn firmware_cli_states_licences_sources_and_metadata_and_edits_revisions() {
         &t.0,
         &[
             "edit",
-            "firmware/opt-rom:2",
+            "private/firmware/ibm-pc/opt-rom:r2",
             "--to",
-            "private/opt-rom:1",
+            "private/opt-rom:r1",
             "--user-supplied",
         ],
     );
     assert_eq!(code, 0, "{err}");
-    let (_, private, _) = run(&t.0, &["show", "private/opt-rom:1"]);
+    let (_, private, _) = run(&t.0, &["show", "private/opt-rom:r1"]);
     assert!(
         private.contains("push\tprivate registries outside unemu/ only: user-supplied layers\n")
     );
@@ -358,7 +360,7 @@ fn firmware_cli_refuses_incomplete_licence_and_metadata_options() {
             "--dumped-from",
             "b",
         ],
-        &["edit", "firmware/x:1"],
+        &["edit", "private/firmware/ibm-pc/x:r1"],
         &["edit", "--title", "No tag"],
         &["ls", "--open"],
         &["show", "x:1", "--label", "a"],
@@ -398,7 +400,12 @@ fn firmware_cli_refuses_incomplete_licence_and_metadata_options() {
             "--open",
             "--open",
         ][..],
-        &["edit", "firmware/x:1", "--user-supplied", "--user-supplied"],
+        &[
+            "edit",
+            "private/firmware/ibm-pc/x:r1",
+            "--user-supplied",
+            "--user-supplied",
+        ],
         &["import", "rom", "--create", "--create"],
     ] {
         let (code, _, err) = run(&t.0, args);

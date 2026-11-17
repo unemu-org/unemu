@@ -589,7 +589,7 @@ fn import_open_firmware(dir: &Dir, store: &Path) -> Option<(String, String)> {
         &source,
     ]));
     assert_eq!(code, 0, "{errors}");
-    let tag = format!("firmware/{}:1", assembly::KISELEV_XI8088.id);
+    let tag = format!("private/firmware/ibm-pc/{}:r1", assembly::KISELEV_XI8088.id);
     let prefix = format!("imported\t{tag}\t");
     let digest = output
         .lines()
@@ -621,7 +621,10 @@ fn import_user_supplied_firmware(dir: &Dir, store: &Path) -> (String, String) {
         panic!("{:?}", scan.issues)
     };
     pc_image::firmware_import::publish(&store, candidate, &[], &catalogue).unwrap();
-    (candidate.tag(), digest.to_string())
+    (
+        "private/firmware/ibm-pc/synthetic-user-supplied-bios:r1".into(),
+        digest.to_string(),
+    )
 }
 
 /// The manifest digest of a local tag and the digests of its config and layers.
@@ -704,7 +707,8 @@ impl PushedFirmware {
         });
         let preferences = config(&dir, &registry, true);
         let host = registry.host();
-        let reference = format!("{host}/{tag}");
+        // The open package goes to a private registry under `private/`.
+        let reference = format!("{host}/{}", tag.replacen("unemu/", "private/", 1));
         let mut pushed = Self {
             dir,
             source,
@@ -830,7 +834,11 @@ fn an_open_firmware_package_round_trips_through_a_private_registry() {
             &"image",
             &"remote",
             &"ls",
-            &format!("{}/firmware/{}", pushed.host, assembly::KISELEV_XI8088.id),
+            &format!(
+                "{}/private/firmware/ibm-pc/{}",
+                pushed.host,
+                assembly::KISELEV_XI8088.id
+            ),
             &"--config",
             &pushed.preferences,
         ]),
@@ -905,16 +913,16 @@ fn user_supplied_firmware_is_refused_by_public_registries_and_the_official_names
     assert_eq!(layer.decoded_size().unwrap(), 32768);
     let stored = layer.digest.to_string();
     let public = config(&dir, &registry, false);
-    let (code, _, errors) = push(format!("{host}/private/rom:1"), &public, false);
+    let (code, _, errors) = push(format!("{host}/private/rom:r1"), &public, false);
     assert_eq!(code, 1);
     assert!(errors.contains("not marked private"), "{errors}");
     assert!(errors.contains(&stored), "{errors}");
     let private = config(&dir, &registry, true);
-    let (code, _, errors) = push(format!("{host}/unemu/rom:1"), &private, false);
+    let (code, _, errors) = push(format!("{host}/unemu/rom:r1"), &private, false);
     assert_eq!(code, 1);
     assert!(errors.contains("official namespace"), "{errors}");
     assert!(errors.contains(&stored), "{errors}");
-    let (code, output, errors) = push(format!("{host}/private/rom:1"), &private, true);
+    let (code, output, errors) = push(format!("{host}/private/rom:r1"), &private, true);
     assert_eq!(code, 0, "{errors}");
     assert!(
         output.contains(&format!(
@@ -944,7 +952,7 @@ fn a_firmware_dry_run_shows_the_rom_layer_effective_class() {
             &"image",
             &"push",
             &tag,
-            &format!("{host}/{tag}"),
+            &format!("{host}/{}", tag.replacen("unemu/", "private/", 1)),
             &"--store",
             &store,
             &"--config",
@@ -999,7 +1007,7 @@ fn a_firmware_dry_run_shows_the_rom_layer_effective_class() {
             &"image",
             &"push",
             &tag,
-            &format!("{host}/{tag}"),
+            &format!("{host}/{}", tag.replacen("unemu/", "private/", 1)),
             &"--store",
             &store,
             &"--config",
@@ -1052,10 +1060,10 @@ fn import_copyleft_with_source(dir: &Dir, store: &Path) -> String {
     ]));
     assert_eq!(code, 0, "{errors}");
     assert!(
-        output.contains("imported\tfirmware/copyleft-rom:1\t"),
+        output.contains("imported\tprivate/firmware/ibm-pc/copyleft-rom:r1\t"),
         "{output}"
     );
-    "firmware/copyleft-rom:1".into()
+    "private/firmware/ibm-pc/copyleft-rom:r1".into()
 }
 
 #[test]
@@ -1070,7 +1078,7 @@ fn a_copyleft_package_with_its_source_round_trips_and_may_enter_the_official_nam
     });
     let host = registry.host();
     let public = config(&dir, &registry, false);
-    let reference = format!("{host}/unemu/copyleft-rom:1");
+    let reference = format!("{host}/unemu/firmware/ibm-pc/copyleft-rom:r1");
     let push = |dry_run: bool| {
         let mut args = os(&[
             &"image",
@@ -1169,7 +1177,7 @@ fn an_open_copyleft_rom_without_its_source_stays_in_private_registries() {
     let opened = image_store::Store::open_existing(&store).unwrap();
     let image = opened
         .resolve(
-            "firmware/permissive-rom:1",
+            "private/firmware/ibm-pc/permissive-rom:r1",
             &image_store::firmware::Validator(&pc_image::firmware::PcFirmwareRules(&[])),
         )
         .unwrap();
@@ -1182,7 +1190,7 @@ fn an_open_copyleft_rom_without_its_source_stays_in_private_registries() {
         }
     }
     let crafted = opened.import_manifest(&manifest).unwrap();
-    let tag = "foreign/bios:1";
+    let tag = "foreign/bios:r1";
     opened
         .update_tag(
             tag,

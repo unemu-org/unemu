@@ -37,7 +37,7 @@ use image_registry::{
     reference::{is_version_tag, OFFICIAL_NAMESPACE},
     Error, Reference, DEFAULT_REGISTRY,
 };
-use image_store::{media_set, media_type as mt, ConfigValidator, Descriptor, Digest, Store};
+use image_store::{media_type as mt, tag as set_tag, ConfigValidator, Descriptor, Digest, Store};
 use std::{
     collections::BTreeSet,
     path::PathBuf,
@@ -191,9 +191,10 @@ pub(crate) struct PlanData {
     pub local_tag: String,
     pub image: Descriptor,
     pub closure: Vec<ClosureEntry>,
-    /// The image is an installation media set, whose tags other than aliases
-    /// never move on the registry.
-    pub media_set: bool,
+    /// The image is an installation media set or a firmware package, whose
+    /// revision tags never move on the registry and whose release aliases
+    /// move only forward ([`image_store::tag`]).
+    pub revisions: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -304,7 +305,7 @@ fn plan(
                 local_tag: tag.into(),
                 image: plan.image().clone(),
                 closure: plan.closure().to_vec(),
-                media_set: plan.manifest().artifact_type() == mt::MEDIA_SET,
+                revisions: set_tag::governs(plan.manifest().artifact_type()),
             })
         }
         None => None,
@@ -454,9 +455,20 @@ fn push_failure(error: Error, closure: &[ClosureEntry]) -> PushFailure {
         Error::ImmutableTag { tag, current, new } => PushFailure::Failed(format!(
             "Version tag {tag} already names {current} on the registry, and this image is {new}. Version tags never move: push this image under a new version."
         )),
-        Error::ImmutableMediaSetTag { tag, current, new } => PushFailure::Failed(format!(
-            "Tag {tag} already names {current} on the registry, and this image is {new}. Tags of installation media sets never move, not even with confirmation: push a changed set under a new revision tag such as {}.",
-            media_set::next_revision(&tag)
+        Error::ImmutableRevisionTag { tag, current, new } => PushFailure::Failed(format!(
+            "Revision tag {tag} already names {current} on the registry, and this image is {new}. Revision tags of installation media sets and firmware packages never move, not even with confirmation: push a changed one under a new revision tag{}.",
+            set_tag::next_revision(&tag)
+                .map(|next| format!(" such as {next}"))
+                .unwrap_or_default()
+        )),
+        Error::NoLatest => PushFailure::Failed(
+            "Installation media sets and firmware packages have no latest tag: push a revision tag such as r1 or 1.0-r1, then its release alias.".into(),
+        ),
+        Error::AliasNotForward { tag, reason } => PushFailure::Failed(format!(
+            "Release alias {tag} moves only to the newest revision of its release that the registry already has: {reason}."
+        )),
+        Error::OutsideTagScheme { tag } => PushFailure::Failed(format!(
+            "{tag} is neither a revision tag ([RELEASE-]rN) nor a release alias: installation media sets and firmware packages take only those."
         )),
         Error::RemoteTagChanged { tag, .. } => PushFailure::Failed(format!(
             "Tag {tag} changed on the registry during the push, so nothing was published. Push again to see the image it names now."
@@ -992,14 +1004,26 @@ impl PushDialog {
                 let tag = target.tag.clone().unwrap_or_else(|| "latest".into());
                 evaluation.checks.push(check(
                     Mark::Note,
-                    if is_version_tag(&tag) {
+                    if plan.revisions && set_tag::is_revision(&tag) {
+                        format!(
+                            "{tag} is a revision tag: once it names an image on the registry it never moves, not even with confirmation; push a changed one under the next revision{}. The manifest and the tag are written after every blob",
+                            set_tag::next_revision(&tag)
+                                .map(|next| format!(", {next}"))
+                                .unwrap_or_default()
+                        )
+                    } else if plan.revisions && tag == set_tag::LATEST {
+                        "Installation media sets and firmware packages have no latest tag: push a revision tag such as r1 or 1.0-r1, then its release alias".to_owned()
+                    } else if plan.revisions && set_tag::parse(&tag).is_some() {
+                        format!(
+                            "{tag} is the alias of a release: it names the newest revision of {tag} the registry already has, and moves only forward to a newer one, after you confirm the move with both digests. The manifest and the tag are written after every blob"
+                        )
+                    } else if plan.revisions {
+                        format!(
+                            "{tag} is neither a revision tag ([RELEASE-]rN) nor a release alias: installation media sets and firmware packages take only those, so the push is refused"
+                        )
+                    } else if is_version_tag(&tag) {
                         format!(
                             "{tag} is a version tag: once it names an image on the registry it never moves. The manifest and the tag are written after every blob"
-                        )
-                    } else if plan.media_set && !media_set::is_alias_tag(&tag) {
-                        format!(
-                            "{tag} is a tag of an installation media set: once it names a set on the registry it never moves, not even with confirmation; push a changed set under a new revision tag such as {}. The manifest and the tag are written after every blob",
-                            media_set::next_revision(&tag)
                         )
                     } else {
                         format!(
@@ -1481,13 +1505,20 @@ impl PullDialog {
 }
 
 pub(crate) fn pulled_text(source: &Reference, report: &PullReport) -> String {
+    // A set or package pulled by its release writes the revision, and the
+    // local alias of the release moves forward to it.
+    let alias = report
+        .alias
+        .as_ref()
+        .map(|alias| format!(" The local alias {alias} moved to it."))
+        .unwrap_or_default();
     match report.outcome {
         PullOutcome::Unchanged => format!(
-            "{} already names this image; nothing was fetched.",
+            "{} already names this image; nothing was fetched.{alias}",
             report.local_tag
         ),
         PullOutcome::Pulled => format!(
-            "Pulled {source} as {} ({}): {} blobs fetched ({}), {} already in the store. The tag was written after every blob was verified.",
+            "Pulled {source} as {} ({}): {} blobs fetched ({}), {} already in the store. The tag was written after every blob was verified.{alias}",
             report.local_tag,
             short(&report.image.digest),
             report.fetched.len(),
@@ -2135,7 +2166,7 @@ pub(crate) mod tests {
         };
         pc_image::firmware_import::publish_with(&lab.f.store, &candidate, &[], &statement, &[])
             .unwrap();
-        let tag = "firmware/foreign-rom:1";
+        let tag = "private/firmware/ibm-pc/foreign-rom:r1";
         let catalogue = crate::library_view::firmware::tests::synthetic_catalogue();
         assert!(pc_image::firmware::proprietary(
             catalogue,
@@ -2160,7 +2191,7 @@ pub(crate) mod tests {
                 format!("{host}/owner/rom:2"),
                 "push it only to a private registry",
             ),
-            (format!("{host}/unemu/rom:1"), "never to unemu/"),
+            (format!("{host}/unemu/rom:r1"), "never to unemu/"),
         ] {
             dialog.destination = destination.clone();
             let evaluation = dialog.evaluate();
@@ -2188,7 +2219,7 @@ pub(crate) mod tests {
                 live: Live::default(),
             }))
         };
-        for target in ["owner/rom:2", "unemu/rom:1"] {
+        for target in ["owner/rom:r2", "unemu/rom:r1"] {
             let events = run_here(&lab.f.store, job(target), catalogue);
             assert!(
                 matches!(events.as_slice(), [TransferEvent::Pushed { result: Err(PushFailure::Refused(text)), .. }]
@@ -2338,44 +2369,54 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_dry_run_says_a_set_tag_never_moves_while_aliases_and_machine_tags_move_when_confirmed() {
+    fn the_dry_run_says_a_revision_never_moves_and_an_alias_only_forward() {
         let mut lab = Lab::new(true);
         let host = lab.host();
-        installation_set(&lab.f, "sets:1.4", 1);
-        let dialog = lab.open_push("sets:1.4");
+        installation_set(&lab.f, "sets:1.4-r1", 1);
+        let dialog = lab.open_push("sets:1.4-r1");
+        dialog.destination = format!("{host}/private/sets:1.4-r1");
+        let note = tag_note(dialog);
+        assert!(
+            note.starts_with("1.4-r1 is a revision tag")
+                && note.contains("never moves, not even with confirmation")
+                && note.contains("1.4-r2"),
+            "{note}"
+        );
         dialog.destination = format!("{host}/private/sets:1.4");
         let note = tag_note(dialog);
         assert!(
-            note.starts_with("1.4 is a tag of an installation media set")
-                && note.contains("never moves, not even with confirmation")
-                && note.contains("such as 1.4-r2"),
+            note.starts_with("1.4 is the alias of a release")
+                && note.contains("moves only forward"),
             "{note}"
         );
         dialog.destination = format!("{host}/private/sets:latest");
-        let note = tag_note(dialog);
+        let evaluation = dialog.evaluate();
         assert!(
-            note.starts_with("latest is not a version") && note.contains("you confirm the move"),
-            "{note}"
+            evaluation
+                .checks
+                .iter()
+                .any(|c| c.text.contains("have no latest tag")),
+            "{evaluation:?}"
         );
-        // A machine image's tag of the same shape is not a set's tag.
+        // A machine image's tag of the same shape moves when confirmed.
         let dialog = lab.open_push("test:source");
-        dialog.destination = format!("{host}/private/test:1.4");
+        dialog.destination = format!("{host}/private/test:1.4-r1");
         let note = tag_note(dialog);
         assert!(
-            note.starts_with("1.4 is not a version") && note.contains("you confirm the move"),
+            note.starts_with("1.4-r1 is not a version") && note.contains("you confirm the move"),
             "{note}"
         );
     }
 
     #[test]
-    fn a_set_pushed_onto_a_taken_set_tag_fails_without_a_move_confirmation() {
+    fn a_set_pushed_onto_a_taken_revision_tag_fails_even_when_confirmed() {
         let mut lab = Lab::new(true);
         let host = lab.host();
-        let first = installation_set(&lab.f, "sets:1.4", 1);
-        let second = installation_set(&lab.f, "sets:changed", 2);
-        lab.push_through("sets:1.4", &format!("{host}/private/sets:1.4"));
-        let dialog = lab.open_push("sets:changed");
-        dialog.destination = format!("{host}/private/sets:1.4");
+        let first = installation_set(&lab.f, "sets:1.4-r1", 1);
+        let second = installation_set(&lab.f, "sets:changed-r1", 2);
+        lab.push_through("sets:1.4-r1", &format!("{host}/private/sets:1.4-r1"));
+        let dialog = lab.open_push("sets:changed-r1");
+        dialog.destination = format!("{host}/private/sets:1.4-r1");
         let request = dialog.push().unwrap();
         lab.view.send(Request::Transfer(request));
         lab.view.pump_until(push_settled);
@@ -2384,13 +2425,19 @@ pub(crate) mod tests {
         };
         assert!(!ok);
         assert!(
-            message
-                .contains("Tags of installation media sets never move, not even with confirmation")
+            message.contains("Revision tags of installation media sets and firmware packages never move, not even with confirmation")
                 && message.contains("such as 1.4-r2")
                 && message.contains(&first.digest.to_string())
                 && message.contains(&second.digest.to_string()),
             "{message}"
         );
+        assert_eq!(
+            lab.registry.tag_digest("private/sets", "1.4-r1"),
+            Some(first.digest.clone())
+        );
+        // The alias goes up only after its revision, which the registry
+        // checks.
+        lab.push_through("sets:1.4-r1", &format!("{host}/private/sets:1.4"));
         assert_eq!(
             lab.registry.tag_digest("private/sets", "1.4"),
             Some(first.digest)

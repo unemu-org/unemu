@@ -2930,7 +2930,7 @@ mod tests {
         image_store::machine::PendingInsert {
             drive: "A:".into(),
             set: set.clone(),
-            reference: "disks:set".into(),
+            reference: "disks-set:r1".into(),
             medium: "disk-1".into(),
             all: false,
             journal: true,
@@ -3134,10 +3134,10 @@ mod tests {
             .unwrap()
             .is_empty());
         // Kept in the library: one private set, the same tag the next time.
-        let keep = || Some(("game:1.0".to_owned(), "GAME".to_owned()));
-        assert_eq!(create(&w, keep()).kept.as_deref(), Some("game:1.0"));
-        assert_eq!(create(&w, keep()).kept.as_deref(), Some("game:1.0"));
-        assert!(f.store.tag_descriptor("game:1.0").is_ok());
+        let keep = || Some(("game:1.0-r1".to_owned(), "GAME".to_owned()));
+        assert_eq!(create(&w, keep()).kept.as_deref(), Some("game:1.0-r1"));
+        assert_eq!(create(&w, keep()).kept.as_deref(), Some("game:1.0-r1"));
+        assert!(f.store.tag_descriptor("game:1.0-r1").is_ok());
         w.shutdown();
     }
 

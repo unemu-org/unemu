@@ -27,6 +27,7 @@ pub mod metadata;
 pub mod platform;
 mod store;
 pub mod summary;
+pub mod tag;
 pub mod workspace;
 
 pub use artifact::{

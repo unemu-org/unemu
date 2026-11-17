@@ -348,21 +348,23 @@ const PINNED: [(&str, &str); 2] = [
 ];
 
 /// The firmware packages as the unemu-media repository publishes them
-/// (`recipes/*/firmware.toml`), read back anonymously from the registry. The
-/// local build must give these digests: a pin that fails means the two
-/// repositories no longer build the same package, and a package's tag never
-/// moves.
+/// (`recipes/*/firmware.toml`), read back anonymously from the registry, under
+/// the names they take when they are pushed again with the platform in the
+/// path and the revision tag: the names change no manifest byte. The local
+/// build must give these digests: a pin that fails means the two
+/// repositories no longer build the same package, and a package's revision
+/// tag never moves.
 const FIRMWARE_PINNED: [(&str, &str); 3] = [
     (
-        "unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1",
+        "unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1",
         "sha256:61f098cd1b4419563575160964281921a6c4480a3001673ab95ab0f1ff14efe6",
     ),
     (
-        "unemu/firmware/vgabios-0.9d-unemu.1-std:1",
+        "unemu/firmware/ibm-pc/vgabios-0.9d-unemu.1-std:r1",
         "sha256:1cb3cf2b82afefd0c1453d88468b0ba432e9944415ac911bccf65d3dd4e75db0",
     ),
     (
-        "unemu/firmware/xub-r638-xtp-ata1f0:1",
+        "unemu/firmware/ibm-pc/xub-r638-xtp-ata1f0:r1",
         "sha256:912d74c3b1c83d0439866304693efd25512be362598a45ee0fdd36df0d419d7a",
     ),
 ];
@@ -657,18 +659,18 @@ fn only_the_judged_manifest_is_tagged() {
             Some(judged),
         )
     };
-    let error = publish("judged/bios:1", &wrong).unwrap_err().to_string();
+    let error = publish("judged/bios:r1", &wrong).unwrap_err().to_string();
     assert!(
         error.contains(&format!("not the checked {wrong}")),
         "{error}"
     );
-    assert!(store.tag_descriptor("judged/bios:1").is_err());
+    assert!(store.tag_descriptor("judged/bios:r1").is_err());
     // The template's own package, under its published tag, is the judged one.
     let package = store
-        .tag_descriptor("unemu/firmware/unemu-at-bios-1.0.2-unemu.3:1")
+        .tag_descriptor("unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1")
         .unwrap();
     assert_eq!(
-        publish("judged/bios:1", &package.digest).unwrap().digest,
+        publish("judged/bios:r1", &package.digest).unwrap().digest,
         package.digest
     );
 }
@@ -870,13 +872,13 @@ fn the_guard_judges_each_installation_set_before_its_tags() {
     let seen = RefCell::new(Vec::new());
     let guard = |reference: &str, manifest: &Manifest, _: &[u8]| {
         let (repository, tag) = reference.rsplit_once(':').unwrap();
-        assert_eq!(repository, "unemu/media/freedos");
+        assert_eq!(repository, "unemu/media/ibm-pc/freedos");
         assert_eq!(manifest.artifact_type(), mt::MEDIA_SET);
         assert!(store
             .tag_descriptor(&template::local_tag(repository, tag))
             .is_err());
         seen.borrow_mut().push(reference.to_owned());
-        if tag == "1.4-1.2m" {
+        if tag == "1.4-1.2m-r1" {
             Err("synthetic refusal".to_owned())
         } else {
             Ok(())
@@ -886,15 +888,27 @@ fn the_guard_judges_each_installation_set_before_its_tags() {
         .unwrap_err()
         .to_string();
     assert!(
-        error.contains("unemu/media/freedos:1.4-1.2m refused: synthetic refusal"),
+        error.contains("unemu/media/ibm-pc/freedos:1.4-1.2m-r1 refused: synthetic refusal"),
         "{error}"
     );
     assert_eq!(
         *seen.borrow(),
-        ["unemu/media/freedos:1.4", "unemu/media/freedos:1.4-1.2m"]
+        [
+            "unemu/media/ibm-pc/freedos:1.4-r1",
+            "unemu/media/ibm-pc/freedos:1.4-1.2m-r1"
+        ]
     );
-    assert!(store.tag_descriptor("unemu/media/freedos:1.4").is_ok());
-    for tag in ["unemu/media/freedos:1.4-1.2m", "unemu/media/freedos:latest"] {
+    for tag in [
+        "unemu/media/ibm-pc/freedos:1.4-r1",
+        "unemu/media/ibm-pc/freedos:1.4",
+    ] {
+        assert!(store.tag_descriptor(tag).is_ok(), "{tag}");
+    }
+    for tag in [
+        "unemu/media/ibm-pc/freedos:1.4-1.2m-r1",
+        "unemu/media/ibm-pc/freedos:1.4-1.2m",
+        "unemu/media/ibm-pc/freedos:latest",
+    ] {
         assert!(store.tag_descriptor(tag).is_err(), "{tag}");
     }
 }
@@ -943,20 +957,22 @@ fn another_file_at_a_media_fixture_path_is_refused_before_any_set_is_tagged() {
 
 /// The installation sets as the unemu-media repository publishes them
 /// (`recipes/freedos-1.4-floppy/media.toml`), read back anonymously from the
-/// registry. The local build must give these digests: a pin that fails means
-/// the two repositories no longer build the same set, and a set's tag never
+/// registry, under the revision tags they take when they are pushed again
+/// with the platform in the path: the names change no manifest byte. The
+/// local build must give these digests: a pin that fails means the two
+/// repositories no longer build the same set, and a set's revision tag never
 /// moves.
 const MEDIA_PINNED: [(&str, &str); 3] = [
     (
-        "unemu/media/freedos:1.4",
+        "unemu/media/ibm-pc/freedos:1.4-r1",
         "sha256:137d9bbcfdfe2a6cfa5682ead5e1351a73c1249ddfde2031187efda44965b130",
     ),
     (
-        "unemu/media/freedos:1.4-1.2m",
+        "unemu/media/ibm-pc/freedos:1.4-1.2m-r1",
         "sha256:1d77d11e7422b8164c21dc37b8dcbe160018ea2475b5c5afa136cb3489f58037",
     ),
     (
-        "unemu/media/freedos:1.4-720k",
+        "unemu/media/ibm-pc/freedos:1.4-720k-r1",
         "sha256:9ec1fea01076803aba5a27846c28143ebe21f63ab6fd163a6c57b1a6d373baa0",
     ),
 ];
@@ -976,8 +992,24 @@ fn two_media_builds_from_different_fixture_copies_give_the_published_sets() {
     assert_eq!(identities(&a), identities(&b));
     for (built, source) in a.iter().zip(&template::MEDIA) {
         assert_eq!(built.version, source.tag);
-        assert_eq!(built.tags.len(), 1, "a set has no alias");
-        assert_eq!(built.tags[0].1, Outcome::Created);
+        // The revision, then the release alias the store moved with it.
+        assert_eq!(
+            built.tags,
+            [
+                (
+                    template::local_tag(&source.repository(), source.tag),
+                    Outcome::Created
+                ),
+                (
+                    template::local_tag(&source.repository(), source.alias()),
+                    Outcome::Created
+                ),
+            ]
+        );
+        assert_eq!(
+            first.tag_descriptor(&built.tags[1].0).unwrap().digest,
+            built.descriptor.digest
+        );
     }
     let tagged: Vec<_> = a
         .iter()
