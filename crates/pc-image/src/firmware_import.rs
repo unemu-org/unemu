@@ -434,6 +434,10 @@ pub struct Statement {
     pub extra_licenses: Vec<Option<String>>,
     /// What happens to the README layer.
     pub readme: ReadmeChoice,
+    /// A minimum release above what the compatibility tables compute, for
+    /// behaviour they cannot see (machine-images §5.6); never lower. An edit
+    /// keeps the edited package's own as a floor.
+    pub min_app_version: Option<image_store::compat::AppVersion>,
 }
 
 /// The README a statement asks for.
@@ -1390,7 +1394,14 @@ fn decide(
         source.as_ref().map(|(_, class)| class.is_some()),
         license::ACTIVE,
     )?;
-    assemble(config, roms, source, extras, rom_license, notes, readme)
+    let mut plan = assemble(config, roms, source, extras, rom_license, notes, readme)?;
+    crate::compat::stamp(
+        &mut plan.manifest,
+        &plan.config,
+        image_store::compat::BASELINE,
+        statement.min_app_version,
+    )?;
+    Ok(plan)
 }
 
 /// The ROM and document layers' decoded identities in manifest order.
@@ -1565,9 +1576,9 @@ pub fn publish_as(
     if let Some(existing) = existing(store, tag, &plan.manifest, catalogue)? {
         if existing.digest != digest && *statement != Statement::default() {
             return Err(invalid(format!(
-                "{tag} already holds these ROMs with other metadata or licences; an edit \
-                 (image firmware edit, or Edit metadata… in the library) publishes them as \
-                 a new revision"
+                "{tag} already holds these ROMs with other metadata, licences or minimum \
+                 version; an edit (image firmware edit, or Edit metadata… in the library) \
+                 publishes them as a new revision"
             )));
         }
         // An earlier package with the same ROMs is kept as it is.
@@ -1685,6 +1696,15 @@ fn edit_plan(
     }
     store.check_new_tag(target)?;
     let image = store.resolve(tag, &Validator(&PcFirmwareRules(catalogue)))?;
+    let declared = image_store::compat::Requirement::of(&image.manifest).release()?;
+    if let Some(stated) = statement
+        .min_app_version
+        .filter(|stated| *stated < declared)
+    {
+        return Err(invalid(format!(
+            "{tag} already declares {declared}; a stated minimum version ({stated}) only raises it"
+        )));
+    }
     let mut config = Config::decode(&image.config)?;
     if config.sources.len() > 1 {
         return Err(invalid(
@@ -1747,7 +1767,7 @@ fn edit_plan(
     }
     apply(&mut config, statement)?;
     let known = known(&config, Some(catalogue), None)?;
-    let plan = decide(
+    let mut plan = decide(
         config,
         roms,
         source,
@@ -1758,6 +1778,7 @@ fn edit_plan(
         Some(catalogue),
         kept.as_deref(),
     )?;
+    image_store::compat::carry(&mut plan.manifest, &image.manifest)?;
     validate(&plan, catalogue, Some(store))?;
     let unchanged = Digest::of(&plan.manifest.encode()?) == image.image.digest;
     Ok((plan, unchanged))
@@ -1848,5 +1869,114 @@ mod tests {
     }
     fn notes_free(result: Result<(Option<String>, Vec<String>)>) -> bool {
         result.is_ok_and(|(license, notes)| license.is_some() && notes.is_empty())
+    }
+
+    /// A package that uses only what release 0.0.1 reads carries no marker;
+    /// a stated minimum release raises it, never below the computed one, and
+    /// an edit keeps the edited package's marker.
+    #[test]
+    fn a_stated_minimum_release_marks_a_package_and_an_edit_keeps_it() {
+        use image_store::compat::{AppVersion, Requirement, BASELINE, PACKAGE};
+        let root = std::env::temp_dir().join(format!(
+            "pc-image-firmware-min-app-version-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let rom = root.join("rom.bin");
+        fs::write(&rom, [0x5a; 8192]).unwrap();
+        let store = Store::open(root.join("store")).unwrap();
+        let candidate = unlisted(&rom, "marked-rom", "option-rom", &[]).unwrap();
+        let requirement = |tag: &str| {
+            let image = store
+                .resolve(tag, &Validator(&PcFirmwareRules(&[])))
+                .unwrap();
+            Requirement::of(&image.manifest)
+        };
+        let stated = |version| Statement {
+            min_app_version: Some(version),
+            ..Statement::default()
+        };
+        publish_as(
+            &store,
+            &candidate,
+            &[],
+            &Statement::default(),
+            &[],
+            "firmware/plain:1",
+            None,
+        )
+        .unwrap();
+        assert_eq!(requirement("firmware/plain:1"), Requirement::None);
+        let lower = AppVersion::new(0, 0, 0);
+        let refusal = publish_as(
+            &store,
+            &candidate,
+            &[],
+            &stated(lower),
+            &[],
+            "firmware/lower:1",
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            refusal.contains("0.0.0") && refusal.contains(&BASELINE.to_string()),
+            "{refusal}"
+        );
+        publish_as(
+            &store,
+            &candidate,
+            &[],
+            &stated(PACKAGE),
+            &[],
+            "firmware/raised:1",
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            requirement("firmware/raised:1"),
+            Requirement::Release(PACKAGE)
+        );
+        let renamed = Statement {
+            title: Some("Renamed ROM".into()),
+            ..Statement::default()
+        };
+        edit(
+            &store,
+            "firmware/raised:1",
+            "firmware/raised:2",
+            &renamed,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            requirement("firmware/raised:2"),
+            Requirement::Release(PACKAGE)
+        );
+        // An edit may raise the value, never lower it.
+        let refusal = edit(
+            &store,
+            "firmware/raised:2",
+            "firmware/raised:3",
+            &stated(BASELINE),
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(refusal.contains("only raises"), "{refusal}");
+        edit(
+            &store,
+            "firmware/plain:1",
+            "firmware/plain:2",
+            &stated(PACKAGE),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            requirement("firmware/plain:2"),
+            Requirement::Release(PACKAGE)
+        );
+        fs::remove_dir_all(&root).unwrap();
     }
 }

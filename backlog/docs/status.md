@@ -5,6 +5,22 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — Images declare the oldest unemupc that runs them (core
+  and command line):** a manifest may carry `unemu.min-app-version`, the
+  oldest release that reads and runs it. Writers compute it from per-feature
+  tables (shared rows in `image-store`, PC rows in `pc-image`: config keys,
+  vocabulary values, payload types, firmware catalogue entries) and leave it
+  out at 0.0.1, so the published FreeDOS sets, firmware packages and
+  templates keep their digests; every row is 0.0.1 today. `--min-app-version`
+  on `image import`, `image media import` and `image firmware import` and
+  `edit` raises it, never lowers it, and a machine takes the value of the
+  firmware packages it binds. Pull refuses an image that needs a newer release
+  before fetching any blob, with "REFERENCE needs unemupc X or newer (this is
+  Y)"; `image run`, `image machine new` and Start refuse it with the same
+  sentence before reading its config; the `image`, `machine`, `media` and
+  `firmware` listings show the requirement. A push into `unemu/` computes the value
+  again and refuses a missing or lower one. The window's disabled rows and
+  Get templates' choice of a runnable version come next.
 - **2026-11-17 — Create from files… in the media picker:** the picker's
   footer has **Create from files…** beside Browse for an image file…, and
   Media › Create from files… under each drive's Insert… and the same item in

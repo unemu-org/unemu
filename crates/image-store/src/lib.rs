@@ -15,6 +15,7 @@
 
 mod artifact;
 pub mod codec;
+pub mod compat;
 mod filesystem;
 pub mod firmware;
 pub mod library;
@@ -67,6 +68,15 @@ pub enum Error {
     /// The host cannot provide the required local storage guarantees.
     #[error("unsupported store filesystem: {0}")]
     UnsupportedFilesystem(String),
+    /// The artifact declares a newer release than this build reads; nothing
+    /// of it was decoded (machine-images §5.6). `required` is `None` when the
+    /// declared value does not parse.
+    #[error("{reference} {}", compat::needs_newer(.required, .level))]
+    NeedsNewer {
+        reference: String,
+        required: Option<compat::AppVersion>,
+        level: compat::AppVersion,
+    },
 }
 
 /// Storage operations return typed errors without changing an existing blob.

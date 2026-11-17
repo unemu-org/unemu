@@ -390,6 +390,10 @@ impl Store {
         for descriptor in &mut manifest.layers {
             *descriptor = self.compress_payload(descriptor, validator.payload_types())?;
         }
+        // The compressed payload types have rows of their own; the source's
+        // marker stays as a floor.
+        let required = validator.required_release(&manifest, &image.config)?;
+        crate::compat::floor(&mut manifest, required)?;
         self.import_manifest_with_types(&manifest, validator.payload_types())
     }
 

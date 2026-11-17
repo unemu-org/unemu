@@ -474,23 +474,47 @@ impl Manifest {
     }
 }
 
-pub(crate) fn neutral_size_limit(kind: &str) -> Option<u64> {
+/// Media types the neutral envelope reads by itself: each one's size limit
+/// and the first release that reads it (machine-images §5.6), so a new type
+/// cannot be read without a row.
+pub(crate) const NEUTRAL_TYPES: &[(&str, u64, crate::compat::AppVersion)] = {
+    use crate::compat::BASELINE;
     use media_type::*;
-    match kind {
-        MANIFEST | CONFIG | MEDIA_SET_CONFIG | FIRMWARE_CONFIG | METADATA | DISK_LAYER
-        | MARKDOWN => Some(MAX_SMALL_BLOB),
-        PNG | JPEG => Some(4 * MAX_SMALL_BLOB),
-        FIRMWARE | DISK_BASE | DISK_SECTORS | FLOPPY | OPTICAL | EXTRA | TAR | ZIP => {
-            Some(i64::MAX as u64)
-        }
-        _ => None,
-    }
+    const ANY: u64 = i64::MAX as u64;
+    &[
+        (MANIFEST, MAX_SMALL_BLOB, BASELINE),
+        (CONFIG, MAX_SMALL_BLOB, BASELINE),
+        (MEDIA_SET_CONFIG, MAX_SMALL_BLOB, BASELINE),
+        (FIRMWARE_CONFIG, MAX_SMALL_BLOB, BASELINE),
+        (METADATA, MAX_SMALL_BLOB, BASELINE),
+        (DISK_LAYER, MAX_SMALL_BLOB, BASELINE),
+        (MARKDOWN, MAX_SMALL_BLOB, BASELINE),
+        (PNG, 4 * MAX_SMALL_BLOB, BASELINE),
+        (JPEG, 4 * MAX_SMALL_BLOB, BASELINE),
+        (FIRMWARE, ANY, BASELINE),
+        (DISK_BASE, ANY, BASELINE),
+        (DISK_SECTORS, ANY, BASELINE),
+        (FLOPPY, ANY, BASELINE),
+        (OPTICAL, ANY, BASELINE),
+        (EXTRA, ANY, BASELINE),
+        (TAR, ANY, BASELINE),
+        (ZIP, ANY, BASELINE),
+    ]
+};
+
+pub(crate) fn neutral_size_limit(kind: &str) -> Option<u64> {
+    NEUTRAL_TYPES
+        .iter()
+        .find(|(t, _, _)| *t == kind)
+        .map(|(_, max, _)| *max)
 }
 
 fn validate_annotations(annotations: &BTreeMap<String, String>) -> Result<()> {
+    // The accepted values are the compatibility table's rows, so a new value
+    // cannot be read without one.
     if annotations
         .get("unemu.redistribution")
-        .is_some_and(|v| !matches!(v.as_str(), "open" | "user-supplied"))
+        .is_some_and(|v| crate::compat::lookup(&[crate::compat::REDISTRIBUTION], v).is_none())
     {
         return Err(invalid("invalid redistribution annotation"));
     }

@@ -31,6 +31,11 @@
 //! An entry that lists namespaces takes pushes only into them: a push to a
 //! repository outside every listed namespace is refused whatever it holds
 //! ([`crate::config::Scope`]). There is no override.
+//!
+//! Every release reads what `unemu/` holds, so a push there also needs the
+//! manifest to declare at least the release the compatibility tables compute
+//! for it ([`check_release`]; machine-images §5.6). Other namespaces are not
+//! checked.
 
 use crate::{
     config::{RegistryEntry, Scope},
@@ -38,6 +43,7 @@ use crate::{
     Reference,
 };
 use image_store::{
+    compat::{self, AppVersion, Requirement},
     license, media_type, BlobSource, Descriptor, Digest, Manifest, Store, MAX_SMALL_BLOB,
 };
 use std::{collections::BTreeMap, fmt};
@@ -112,6 +118,9 @@ impl LocalMarks {
             let page = store.list_tags(after.as_deref(), 1000)?;
             for tag in &page.tags {
                 let bytes = store.read_verified(&tag.manifest, MAX_SMALL_BLOB)?;
+                // An image a newer release tagged fails the scan with the
+                // release it needs, not with a decoder message.
+                Requirement::read(&bytes).check(&tag.name)?;
                 let manifest = Manifest::decode_for_summary(&bytes)?;
                 for descriptor in std::iter::once(&manifest.config).chain(&manifest.layers) {
                     if Redistribution::of(descriptor) == Redistribution::UserSupplied {
@@ -240,6 +249,15 @@ pub enum Refusal {
         /// What records the link for this kind of artifact.
         hint: &'static str,
         blobs: Vec<Descriptor>,
+    },
+    #[error("{target} is in unemu/, which every release reads, and the image needs unemupc {required} or newer by this release's tables, but its {} declares {declared}; import or build it again with this release", compat::MIN_APP_VERSION)]
+    MinAppVersion {
+        target: String,
+        /// What the tables compute for the image.
+        required: AppVersion,
+        /// What the manifest declares: `none`, a lower release or a value
+        /// that does not parse.
+        declared: String,
     },
 }
 
@@ -385,6 +403,38 @@ pub fn check(
         });
     }
     Ok(())
+}
+
+/// A push into `unemu/` needs the manifest to declare at least `required`,
+/// the release the compatibility tables compute for it again; the annotation
+/// may be left out only when that is the baseline. A higher declaration, an
+/// emulation fix the tables cannot see, passes. Any other namespace passes.
+pub fn check_release(
+    target: &Reference,
+    manifest: &Manifest,
+    required: AppVersion,
+) -> Result<(), Refusal> {
+    if target.namespace() != OFFICIAL_NAMESPACE {
+        return Ok(());
+    }
+    let declared = Requirement::of(manifest);
+    let enough = match &declared {
+        Requirement::None => required <= compat::BASELINE,
+        Requirement::Release(release) => *release >= required,
+        Requirement::Invalid(_) => false,
+    };
+    if enough {
+        return Ok(());
+    }
+    Err(Refusal::MinAppVersion {
+        target: target.to_string(),
+        required,
+        declared: match declared {
+            Requirement::None => "none".into(),
+            Requirement::Release(release) => release.to_string(),
+            Requirement::Invalid(text) => format!("{text:?}"),
+        },
+    })
 }
 
 /// What clears a user-supplied restriction, when the closure shows it: a

@@ -128,6 +128,11 @@ pub fn parse(args: &[OsString]) -> Result<ImageCommand, &'static str> {
                 tag = Some(value.to_str().ok_or("invalid image tag")?.to_owned())
             }
             Some("--rom-dir") if action == "import" => options.rom_dirs.push(PathBuf::from(value)),
+            Some("--min-app-version")
+                if action == "import" && options.min_app_version.is_none() =>
+            {
+                options.min_app_version = Some(min_app_version(value)?)
+            }
             Some("--recover") if action == "import" => {
                 let (id, choice) = value
                     .to_str()
@@ -350,6 +355,7 @@ pub fn execute_with_firmware_sources(
                     let manifest = store
                         .read_verified(&tag.manifest, image_store::MAX_SMALL_BLOB)
                         .and_then(|bytes| image_store::Manifest::decode_for_summary(&bytes));
+                    let requirement = requirement_columns(&store, &tag.manifest);
                     let (kind, stored, decoded) = match manifest {
                         Ok(m) => {
                             let stored = m
@@ -384,7 +390,7 @@ pub fn execute_with_firmware_sources(
                     };
                     writeln!(
                         output,
-                        "{}\t{}\t{}\tstored:{}\tdecoded:{}",
+                        "{}\t{}\t{}\tstored:{}\tdecoded:{}{requirement}",
                         tag.name, tag.manifest.digest, kind, stored, decoded
                     )?;
                 }
@@ -406,6 +412,64 @@ pub fn execute_with_firmware_sources(
         }
     }
     Ok(0)
+}
+
+/// The value of `--min-app-version`: a release `MAJOR.MINOR.PATCH`, from
+/// the first release up to this one, refused before anything is read or
+/// copied.
+fn min_app_version(value: &OsString) -> Result<image_store::compat::AppVersion, &'static str> {
+    use image_store::compat::{level, AppVersion, BASELINE};
+    let version: AppVersion = value
+        .to_str()
+        .and_then(|s| s.parse().ok())
+        .ok_or("--min-app-version expects a release MAJOR.MINOR.PATCH")?;
+    if version < BASELINE {
+        return Err("--min-app-version is lower than 0.0.1, the first release");
+    }
+    if version > level() {
+        return Err("--min-app-version is newer than this unemupc (upcli --version)");
+    }
+    Ok(version)
+}
+
+/// The listing columns of an image's minimum release (machine-images §5.6),
+/// read from its manifest alone: `min-app-version:X.Y.Z` when it declares
+/// one, then `Needs unemupc X.Y.Z or newer` when this build does not read it.
+/// Empty for an image without the annotation.
+fn requirement_columns(store: &image_store::Store, image: &image_store::Descriptor) -> String {
+    use image_store::{compat::Requirement, BlobSource};
+    let Ok(bytes) = store.read_verified(image, image_store::MAX_SMALL_BLOB) else {
+        return String::new();
+    };
+    let requirement = Requirement::read(&bytes);
+    let declared = match &requirement {
+        Requirement::None => return String::new(),
+        Requirement::Release(release) => release.to_string(),
+        Requirement::Invalid(text) => format!("{text:?}"),
+    };
+    let mut columns = format!("\tmin-app-version:{declared}");
+    if !requirement.met_by(image_store::compat::level()) {
+        let required = match requirement {
+            Requirement::Release(release) => Some(release),
+            _ => None,
+        };
+        columns.push('\t');
+        columns.push_str(&image_store::compat::needs(required));
+    }
+    columns
+}
+
+/// The `min-app-version` line of a `show` command, when the image declares one.
+fn write_min_app_version(
+    output: &mut impl Write,
+    manifest: &image_store::Manifest,
+) -> std::io::Result<()> {
+    match image_store::compat::Requirement::of(manifest) {
+        image_store::compat::Requirement::Release(release) => {
+            writeln!(output, "min-app-version\t{release}")
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Refuse a workspace command on a machine's workspace, naming the machine

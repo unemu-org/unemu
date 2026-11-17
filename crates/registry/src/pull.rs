@@ -14,7 +14,10 @@
 //! from zero. The local tag is written by compare-and-swap only after the
 //! store has verified the complete closure, and it records the registry it
 //! came from ([`image_store::PULL_REGISTRY`]). Compressed payload types are not
-//! supported yet, so only the stored bytes' digest is checked.
+//! supported yet, so only the stored bytes' digest is checked. A manifest that
+//! declares a newer release than this build reads
+//! ([`image_store::compat::MIN_APP_VERSION`]) is refused before any blob is
+//! fetched; machine-images §5.6.
 //!
 //! A caller can cancel a pull ([`pull_cancellable`]): the check runs before
 //! each blob, while a blob downloads and before the local tag is written, so
@@ -110,6 +113,9 @@ pub fn pull_cancellable(
     let fetched = client
         .manifest(repository, &source.manifest_reference())?
         .ok_or_else(|| Error::NotFound(source.to_string()))?;
+    // An image a newer release wrote is refused before any blob is fetched,
+    // with the release it needs, whatever else in it this build cannot read.
+    image_store::compat::Requirement::read(&fetched.bytes).check(&source.to_string())?;
     if fetched
         .media_type
         .as_deref()

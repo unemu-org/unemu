@@ -19,7 +19,10 @@ use image_registry::{
     pull, push, Client, Reference, RegistryEntry,
 };
 use image_store::{firmware, media_set, ConfigValidator, Store};
-use pc_image::firmware::{catalogue, PcFirmwareRules};
+use pc_image::{
+    compat::WithPcRows,
+    firmware::{catalogue, PcFirmwareRules},
+};
 use std::{
     ffi::OsString,
     io::Write,
@@ -322,11 +325,16 @@ const MEDIA_SETS: media_set::Validator<'static> =
 /// machine images, PC media sets and PC firmware packages. Push and pull pick
 /// the one whose artifact type and platform match the manifest. The command
 /// line and the desktop shell both take the list from here, so they accept
-/// the same artifacts.
+/// the same artifacts. Each rates an artifact with the PC rows of the
+/// compatibility table, which the push guard of `unemu/` checks.
 pub fn with_image_providers<T>(job: impl FnOnce(&[&dyn ConfigValidator]) -> T) -> T {
     let firmware_rules = PcFirmwareRules(catalogue());
     let firmware = firmware::Validator(&firmware_rules);
-    job(&[&pc_image::PcProvider, &MEDIA_SETS, &firmware])
+    job(&[
+        &pc_image::PcProvider,
+        &WithPcRows(&MEDIA_SETS),
+        &WithPcRows(&firmware),
+    ])
 }
 
 pub fn execute(command: RegistryCommand, output: &mut impl Write) -> anyhow::Result<()> {

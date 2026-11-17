@@ -198,6 +198,7 @@ Annotations are string values and never bind hardware or media:
 | `unemu.terms` | On an open installation medium or extra: decoded digest of the vendor's terms-text extra in the same closure (§5.2). |
 | `unemu.provenance` | Publish-safe evidence supporting the open classification. |
 | `unemu.pull.registry` | Local only, on a tag's manifest descriptor in the store's `index.json`, never in a manifest: the registry host, port included, that a pull wrote the tag from (§3, §5.1). |
+| `unemu.min-app-version` | Manifest only, optional: the oldest release of the program providing `unemu.platform` that reads and runs the artifact, a SemVer `MAJOR.MINOR.PATCH`. Absent means no requirement (release 0.0.1). A hint read before any strict decode, never an authority and never part of a config (§5.6). |
 
 The config is the single authority for bindings, slots, catalogue order and
 media heads; layer descriptors (§4) are the single authority for parents.
@@ -2163,7 +2164,15 @@ the list; the status bar names the templates added.
 Status: **accepted** in
 [decision-30](<../../decisions/decision-30 - Published images declare the oldest unemupc that runs them.md>)
 (design step of `upc-dfs.15`), accepted by the maintainer 2026-11-17;
-nothing is implemented yet.
+**implemented in part: core and command line** (2026-11-17). The marker,
+its parser and lenient reader, the shared and PC tables (every row is
+0.0.1; the next release, 0.0.3, is `image_store::compat::NEXT_RELEASE`), the
+writers, the early refusal of pull, Start, `image run` and `image machine
+new`, the `unemu/` push guard, machines inheriting their firmware packages'
+value and the command-line listings are in place
+(`backlog/docs/commands.md` § Minimum release of an image). The window's
+disabled rows, Get templates' choice of a runnable version and the summary
+cache's record of the requirement remain.
 Published templates, installation sets and firmware packages stay on the
 registry for good, and older releases read them too. This section records
 what today's readers do with a newer image and defines a marker, so an

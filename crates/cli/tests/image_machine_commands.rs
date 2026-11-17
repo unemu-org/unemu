@@ -682,3 +682,211 @@ fn settings_say_when_another_bios_layout_resets_the_cmos() {
     ]);
     assert!(!output.contains("cmos-reset:"), "{output}");
 }
+
+/// An image a newer release tagged in a store both share: `machine new` and
+/// `run` refuse it with the release it needs before its config is decoded,
+/// and the listing shows the requirement. Without the marker the same image
+/// is refused only by the decoder, after its config is read.
+#[test]
+fn an_image_that_needs_a_newer_release_is_refused_before_its_config_is_read() {
+    use image_store::{compat, BlobSource, Descriptor, Manifest, MAX_SMALL_BLOB};
+    let Some(lab) = Lab::new() else {
+        return;
+    };
+    let store = lab.store();
+    let base = store.tag_descriptor("test:base").unwrap();
+    let manifest = Manifest::decode_with_types(
+        &store.read_verified(&base, MAX_SMALL_BLOB).unwrap(),
+        pc_image::PAYLOAD_TYPES,
+    )
+    .unwrap();
+    let mut config = b"future_option = 1\n".to_vec();
+    config.extend(
+        store
+            .read_verified(&manifest.config, MAX_SMALL_BLOB)
+            .unwrap(),
+    );
+    let blob = store.import(config.as_slice(), None).unwrap();
+    let newer = |marker: Option<&str>| {
+        let mut newer = manifest.clone();
+        newer.config = Descriptor {
+            digest: blob.digest.clone(),
+            size: blob.size,
+            ..manifest.config.clone()
+        };
+        if let Some(marker) = marker {
+            newer
+                .annotations
+                .insert(compat::MIN_APP_VERSION.into(), marker.into());
+        }
+        store
+            .import_manifest_with_types(&newer, pc_image::PAYLOAD_TYPES)
+            .unwrap()
+    };
+    store
+        .tag_as_newer_release("newer:1.0.0", &newer(Some("99.0.0")))
+        .unwrap();
+    store
+        .tag_as_newer_release("unmarked:1.0.0", &newer(None))
+        .unwrap();
+    let sentence = format!(
+        "newer:1.0.0 needs unemupc 99.0.0 or newer (this is {})",
+        compat::level()
+    );
+    for command in [
+        &["image", "machine", "new", "newer:1.0.0"][..],
+        &[
+            "image",
+            "run",
+            "newer:1.0.0",
+            "--workspace",
+            "newer",
+            "--max-steps",
+            "1",
+        ],
+    ] {
+        let (code, _, errors) = lab.run(command);
+        assert_ne!(code, 0, "{command:?}");
+        assert!(errors.contains(&sentence), "{command:?}: {errors}");
+    }
+    assert!(lab.ok(&["image", "machine", "ls"]).is_empty());
+    // A machine a newer release made of the image shows the reason it cannot
+    // start here.
+    let newer_image = store.tag_descriptor("newer:1.0.0").unwrap();
+    store
+        .edit_machines(|machines| {
+            machines.insert(
+                "newer",
+                image_store::machine::Machine::new(
+                    "Newer",
+                    Descriptor::new(
+                        image_store::media_type::MANIFEST,
+                        newer_image.digest,
+                        newer_image.size,
+                    ),
+                    "newer:1.0.0",
+                    image_store::machine::Origin::New,
+                ),
+            )
+        })
+        .unwrap();
+    let machines = lab.ok(&["image", "machine", "ls"]);
+    let line = machines.lines().find(|l| l.starts_with("newer\t")).unwrap();
+    assert!(
+        line.ends_with("\tmin-app-version:99.0.0\tNeeds unemupc 99.0.0 or newer"),
+        "{machines}"
+    );
+    // Its config is not read: no decoder message.
+    assert!(line.contains("needs unemupc 99.0.0 or newer"), "{line}");
+    assert!(!line.contains("future_option"), "{line}");
+    let listed = lab.ok(&["image", "ls"]);
+    let line = |tag: &str| {
+        listed
+            .lines()
+            .find(|l| l.starts_with(&format!("{tag}\t")))
+            .unwrap()
+            .to_owned()
+    };
+    assert!(
+        line("newer:1.0.0").ends_with("\tmin-app-version:99.0.0\tNeeds unemupc 99.0.0 or newer"),
+        "{listed}"
+    );
+    assert!(!line("test:base").contains("min-app-version"), "{listed}");
+
+    let (code, _, errors) = lab.run(&[
+        "image",
+        "run",
+        "unmarked:1.0.0",
+        "--workspace",
+        "unmarked",
+        "--max-steps",
+        "1",
+    ]);
+    assert_ne!(code, 0);
+    assert!(errors.contains("unknown field `future_option`"), "{errors}");
+    assert!(!errors.contains("needs unemupc"), "{errors}");
+    // New machine from image… still makes a machine of it, as before.
+    lab.ok(&["image", "machine", "new", "unmarked:1.0.0"]);
+}
+
+/// `image import --min-app-version` raises the image's minimum release, never
+/// below what this release computes and never above this release.
+#[test]
+fn import_states_a_minimum_release_only_upwards() {
+    use image_store::compat::{level, PACKAGE};
+    let Some(lab) = Lab::new() else {
+        return;
+    };
+    let file = lab.root.join("machine.toml");
+    let file = file.to_str().unwrap();
+    let raised = PACKAGE.to_string();
+    lab.ok(&[
+        "image",
+        "import",
+        file,
+        "--tag",
+        "test:raised",
+        "--min-app-version",
+        &raised,
+    ]);
+    let listed = lab.ok(&["image", "ls"]);
+    let line = listed
+        .lines()
+        .find(|l| l.starts_with("test:raised\t"))
+        .unwrap();
+    assert!(
+        line.ends_with(&format!("\tmin-app-version:{raised}")),
+        "{listed}"
+    );
+    for (stated, words) in [
+        // Refused when the command line is read, before anything is copied.
+        (
+            "0.0.0",
+            vec!["--min-app-version is lower than 0.0.1, the first release"],
+        ),
+        (
+            "99.0.0",
+            vec!["--min-app-version is newer than this unemupc (upcli --version)"],
+        ),
+    ] {
+        let (code, _, errors) = lab.run(&[
+            "image",
+            "import",
+            file,
+            "--tag",
+            "test:refused",
+            "--min-app-version",
+            stated,
+        ]);
+        assert_ne!(code, 0, "{stated}");
+        for word in words {
+            assert!(errors.contains(word), "{stated}: {errors}");
+        }
+    }
+    assert!(!lab.ok(&["image", "ls"]).contains("test:refused"));
+    // A machine shows what its image needs.
+    lab.ok(&["image", "machine", "new", "test:raised", "--name", "Raised"]);
+    let machines = lab.ok(&["image", "machine", "ls"]);
+    let line = machines
+        .lines()
+        .find(|l| l.starts_with("raised\t"))
+        .unwrap();
+    assert!(
+        line.ends_with(&format!("\tmin-app-version:{raised}")),
+        "{machines}"
+    );
+    for bad in ["1.0", "1.0.0-rc.1", "v1.0.0"] {
+        let (code, _, errors) = lab.run(&[
+            "image",
+            "import",
+            file,
+            "--tag",
+            "test:bad",
+            "--min-app-version",
+            bad,
+        ]);
+        assert_ne!(code, 0);
+        assert!(errors.contains("--min-app-version expects"), "{errors}");
+    }
+    assert!(level() >= PACKAGE);
+}

@@ -69,12 +69,13 @@ pub fn parse(args: &[OsString]) -> Result<TemplateCommand, &'static str> {
 
 /// The guard `image push` applies to `unemu/` on the default registry, with
 /// the local marks of each of `stores` and the firmware catalogue: the image
-/// must pass with every store's marks.
+/// must pass with every store's marks, and declare at least the release the
+/// PC tables compute from its config.
 fn official_guard<'a>(
     stores: &'a [&'a Store],
-) -> impl Fn(&str, &Manifest) -> Result<(), String> + 'a {
+) -> impl Fn(&str, &Manifest, &[u8]) -> Result<(), String> + 'a {
     let entry = RegistryEntry::builtin(DEFAULT_REGISTRY);
-    move |reference, manifest| {
+    move |reference, manifest, config| {
         let target = Reference::parse(reference, DEFAULT_REGISTRY).map_err(|e| e.to_string())?;
         if target.namespace() != OFFICIAL_NAMESPACE {
             return Err(format!("{target} is outside the official namespace"));
@@ -86,7 +87,8 @@ fn official_guard<'a>(
             let closure = guard::closure(manifest, &marks);
             guard::check(Some(&entry), &target, &closure).map_err(|e| e.to_string())?;
         }
-        Ok(())
+        let required = pc_image::compat::release(manifest, config).map_err(|e| e.to_string())?;
+        guard::check_release(&target, manifest, required).map_err(|e| e.to_string())
     }
 }
 
@@ -222,6 +224,74 @@ pub fn execute(command: TemplateCommand, output: &mut impl Write) -> anyhow::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The official guard also refuses a manifest that does not declare the
+    /// release the PC tables compute, as a push into `unemu/` does.
+    #[test]
+    fn the_official_guard_checks_the_declared_release() {
+        use image_store::{firmware, license, media_type as mt, Descriptor, Digest};
+        let temp = assembly::test_support::TempDir::new("template-guard-release");
+        let store = Store::open(temp.path().join("store")).unwrap();
+        let rom = [0x5a_u8; 2048];
+        let digest = Digest::of(&rom);
+        let config = firmware::Config {
+            schema: 1,
+            platform: "ibm-pc-at".into(),
+            name: "Synthetic ROM".into(),
+            vendor: None,
+            version: None,
+            date: None,
+            notes: None,
+            description: None,
+            labels: Vec::new(),
+            fits: toml::Table::new(),
+            provenance: None,
+            roms: vec![firmware::Rom {
+                id: "synthetic".into(),
+                role: "option-rom".into(),
+                catalogue_id: None,
+                sha256: digest.hex().into(),
+                size: rom.len() as u64,
+                blob: Some(digest.clone()),
+                position: None,
+                part_number: None,
+                requires: Vec::new(),
+                parts: Vec::new(),
+            }],
+            sources: Vec::new(),
+            extras: Vec::new(),
+            readme: None,
+        };
+        let bytes = config.encode().unwrap();
+        let open = |mut d: Descriptor| {
+            d.annotations
+                .insert(license::REDISTRIBUTION.into(), license::OPEN.into());
+            d.annotations.insert(license::LICENSE.into(), "MIT".into());
+            d
+        };
+        let mut manifest = Manifest::new_firmware(
+            "ibm-pc-at",
+            open(Descriptor::new(
+                mt::FIRMWARE_CONFIG,
+                Digest::of(&bytes),
+                bytes.len() as u64,
+            )),
+            vec![open(Descriptor::new(
+                mt::FIRMWARE,
+                digest,
+                rom.len() as u64,
+            ))],
+        )
+        .unwrap();
+        let stores = [&store];
+        let guard = official_guard(&stores);
+        guard("unemu/firmware/synthetic:1", &manifest, &bytes).unwrap();
+        manifest
+            .annotations
+            .insert(image_store::compat::MIN_APP_VERSION.into(), "soon".into());
+        let refusal = guard("unemu/firmware/synthetic:1", &manifest, &bytes).unwrap_err();
+        assert!(refusal.contains("unemu.min-app-version"), "{refusal}");
+    }
 
     fn os(args: &[&str]) -> Vec<OsString> {
         args.iter().map(OsString::from).collect()

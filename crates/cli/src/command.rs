@@ -16,7 +16,8 @@ const USAGE: &str = "usage: upcli --boot (Real16 timer demo)
        upcli --bios PATH [--allow-unlisted-firmware]
        upcli machine check FILE [--allow-unlisted-firmware] [--rom-dir DIR]...
        upcli run --machine FILE [--store DIR | --no-store] [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--print CARD] [--allow-unlisted-firmware]
-       upcli image import FILE --store DIR --tag NAME:TAG [--create] [--no-compress] [--rom-dir DIR]... [--recover MEDIUM=tip|MEDIUM=generation:N]...
+       upcli image import FILE --store DIR --tag NAME:TAG [--create] [--no-compress] [--rom-dir DIR]... [--recover MEDIUM=tip|MEDIUM=generation:N]... [--min-app-version X.Y.Z]
+         --min-app-version (here, on image media import and on image firmware import and edit) raises the oldest unemupc the image declares it needs: never below what this release computes, never above this release
        upcli image compress NAME:TAG --store DIR --tag NAME:TAG
        upcli image ls --store DIR
        upcli image sweep --store DIR
@@ -34,11 +35,11 @@ const USAGE: &str = "usage: upcli --boot (Real16 timer demo)
        upcli image machine settings ID --store DIR [--set PATH=VALUE]... [--clear] [--dry-run]
        upcli image machine commit ID --store DIR --tag NAME:TAG [--title TITLE] [--keep-on-old-image]
        upcli image machine run ID --store DIR [--max-steps N]
-       upcli image media import FILE...|DIR --title TITLE --tag NAME:TAG --store DIR [--create] [--dry-run] [--no-compress] [--label N=TEXT]... [--format N=FORMAT]... [--extra PATH[:DOSNAME]]... [--open --license LicenseRef-NAME --license-text EXTRA] [--open --license EXPRESSION --license-text EXTRA --source EXTRA] [SET-METADATA]
+       upcli image media import FILE...|DIR --title TITLE --tag NAME:TAG --store DIR [--create] [--dry-run] [--no-compress] [--label N=TEXT]... [--format N=FORMAT]... [--extra PATH[:DOSNAME]]... [--open --license LicenseRef-NAME --license-text EXTRA] [--open --license EXPRESSION --license-text EXTRA --source EXTRA] [--min-app-version X.Y.Z] [SET-METADATA]
          SET-METADATA: [--publisher P]... [--developer D]... [--year YYYY] [--genre G]... [--platform PLATFORM] [--description TEXT] [--version V] [--edition E] [--set-label L]...
-       upcli image firmware import FOLDER|FILES... [--store DIR] [--create] [--rescan] [--dry-run] [--for CATALOGUE-ID [EXTRAS] [METADATA]]
-       upcli image firmware import FILE --unlisted ID --role ROLE [--store DIR] [--create] [--dry-run] [EXTRAS] [METADATA]
-       upcli image firmware edit NAME:TAG [--to NAME:TAG] [--store DIR] [--regenerate-readme] METADATA
+       upcli image firmware import FOLDER|FILES... [--store DIR] [--create] [--rescan] [--dry-run] [--for CATALOGUE-ID [EXTRAS] [METADATA] [--min-app-version X.Y.Z]]
+       upcli image firmware import FILE --unlisted ID --role ROLE [--store DIR] [--create] [--dry-run] [EXTRAS] [METADATA] [--min-app-version X.Y.Z]
+       upcli image firmware edit NAME:TAG [--to NAME:TAG] [--store DIR] [--regenerate-readme] [METADATA] [--min-app-version X.Y.Z]
          EXTRAS: [--extra PATH[:DOSNAME] [--extra-license SPDX]]...
          METADATA: [--title T] [--description T] [--notes T] [--vendor T] [--version T] [--date YYYY-MM-DD]
                    [--label L]... [--board B]... [--class C]... [--requires KIND]...

@@ -398,7 +398,8 @@ fn the_dry_run_names_a_version_conflict_and_what_latest_does() {
     let path = t.0.join("conflict");
     let store = Store::open(&path).unwrap();
     // Only the packages the templates bind: every template is refused.
-    let firmware_only = |_: &str, _: &image_store::Manifest| Err("machines later".to_owned());
+    let firmware_only =
+        |_: &str, _: &image_store::Manifest, _: &[u8]| Err("machines later".to_owned());
     assert!(pc_image::template::build(&store, &vendor(), &firmware_only, &mut |_| {}).is_err());
     let other = pc_image::create::create(
         &store,
@@ -642,7 +643,7 @@ fn the_media_import_command_reproduces_each_installation_set() {
     }
     let t = Temp::new("template-media-import");
     let store = Store::open(t.0.join("built")).unwrap();
-    let allow = |_: &str, _: &image_store::Manifest| Ok(());
+    let allow = |_: &str, _: &image_store::Manifest, _: &[u8]| Ok(());
     let built = pc_image::template::build_media(&store, &vendor(), &allow, &mut |_| {}).unwrap();
     assert_eq!(built.len(), pc_image::template::MEDIA.len());
     for (source, set) in pc_image::template::MEDIA.iter().zip(&built) {

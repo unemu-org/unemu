@@ -39,5 +39,7 @@ testkit.workspace = true
 # The FAT12 reader that checks disks built from host files.
 media = { workspace = true, features = ["test-support"] }
 image-registry = { path = "../registry", version = "0.0.2", features = ["test-support"] }
+# Tags an image as a newer release would, in a store both share.
+image-store = { path = "../image-store", version = "0.0.2", features = ["test-support"] }
 machine = { workspace = true, features = ["reference-scheduler"] }
 assembly = { workspace = true, features = ["reference-scheduler", "test-support"] }

@@ -481,6 +481,10 @@ impl Store {
                 "org.opencontainers.image.base.digest".into(),
                 source.digest.to_string(),
             );
+            // Artwork types have rows of their own; the source's marker stays
+            // as a floor.
+            let required = validator.required_release(&manifest, &resolved.config)?;
+            crate::compat::floor(&mut manifest, required)?;
             self.import_manifest_with_types(&manifest, validator.payload_types())?
         };
         let _lock = host::exclusive_lock(&self.root().join("locks/index.lock"))?;

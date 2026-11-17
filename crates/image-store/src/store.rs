@@ -3,8 +3,8 @@
 //! See machine-images §§2–3.1: immutable blobs precede mutable index publication.
 
 use crate::{
-    artifact::valid_platform, filesystem as host, invalid, media_type, Descriptor, Digest, Error,
-    Manifest, PayloadType, Result, MAX_OBJECTS, MAX_SMALL_BLOB,
+    artifact::valid_platform, compat::AppVersion, filesystem as host, invalid, media_type,
+    Descriptor, Digest, Error, Manifest, PayloadType, Result, MAX_OBJECTS, MAX_SMALL_BLOB,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::value::{to_raw_value, RawValue};
@@ -77,6 +77,14 @@ pub trait ConfigValidator {
         descriptors: &[Descriptor],
         blobs: &dyn BlobSource,
     ) -> Result<Vec<Digest>>;
+
+    /// The oldest release that reads this artifact by the compatibility
+    /// tables (machine-images §5.6), from its manifest and config bytes. The
+    /// default knows the shared rows only; a provider that owns config keys,
+    /// vocabulary or payload types overrides it with its own rows.
+    fn required_release(&self, manifest: &Manifest, config: &[u8]) -> Result<AppVersion> {
+        crate::compat::shared_release(manifest, config)
+    }
 }
 
 /// One local repository:tag reference and its immutable manifest descriptor.
@@ -748,10 +756,14 @@ impl Store {
         if image.media_type != media_type::MANIFEST {
             return Err(invalid("tag target is not a manifest"));
         }
-        let manifest = Manifest::decode_with_types(
-            &self.read_inner(image, MAX_SMALL_BLOB)?,
-            validator.payload_types(),
-        )?;
+        let bytes = self.read_inner(image, MAX_SMALL_BLOB)?;
+        // The marker comes first: an image a newer release wrote is refused
+        // with the release it needs, never with a decoder message.
+        crate::compat::Requirement::read(&bytes).check(&match tag_name(image) {
+            Some(name) => name.to_owned(),
+            None => image.digest.to_string(),
+        })?;
+        let manifest = Manifest::decode_with_types(&bytes, validator.payload_types())?;
         if manifest.artifact_type() != validator.artifact_type() {
             return Err(invalid("artifact type does not match validator"));
         }
@@ -1667,6 +1679,19 @@ impl Store {
         host::sync_dir(self.root())?;
         host::sync_dir(&self.root.join("local"))?;
         self.atomic_write(&directory.join(format!("{}.toml", digest.hex())), bytes)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Store {
+    /// Tag an image without reading its closure, as a newer release tags an
+    /// image this build cannot read in a store both share. Only for tests:
+    /// every other write validates the closure first.
+    pub fn tag_as_newer_release(&self, name: &str, manifest: &Descriptor) -> Result<()> {
+        validate_tag(name)?;
+        let _lease = self.lease()?;
+        let _index_lock = host::exclusive_lock(&self.root.join("locks/index.lock"))?;
+        self.update_tag_locked(name, manifest, None, None)
     }
 }
 

@@ -1365,3 +1365,35 @@ fn unassigned_artwork_stays_rooted_without_creating_an_image_revision() {
         .unwrap()
         .contains(&art.digest));
 }
+
+/// A catalogue edit's new manifest is rated with the provider's tables, and
+/// keeps the higher of that and the source's marker (machine-images §5.6).
+#[test]
+fn a_published_catalogue_edit_is_rated_by_the_provider() {
+    use image_store::compat::{AppVersion, Requirement, PACKAGE};
+    struct Rated;
+    impl ConfigValidator for Rated {
+        fn platform(&self) -> &str {
+            "c64"
+        }
+        fn validate(
+            &self,
+            table: &toml::Table,
+            descriptors: &[Descriptor],
+            blobs: &dyn BlobSource,
+        ) -> Result<Vec<Digest>> {
+            Provider.validate(table, descriptors, blobs)
+        }
+        fn required_release(&self, _: &Manifest, _: &[u8]) -> Result<AppVersion> {
+            Ok(PACKAGE)
+        }
+    }
+    let temp = Temp::new();
+    let store = temp.store();
+    let image = publish(&store, &catalogue(), "demo:plain");
+    store.edit_library(&image.digest, edit_description).unwrap();
+    let edited = store.publish_overlay(&image, "demo:rated", &Rated).unwrap();
+    let manifest = store.resolve("demo:rated", &Rated).unwrap().manifest;
+    assert_ne!(edited.digest, image.digest);
+    assert_eq!(Requirement::of(&manifest), Requirement::Release(PACKAGE));
+}

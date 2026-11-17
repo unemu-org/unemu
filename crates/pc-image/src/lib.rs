@@ -3,6 +3,7 @@
 //! Hardware parsing, defaults and catalogue checks remain in machine-file and assembly.
 //! The platform-neutral store never depends on this provider.
 
+pub mod compat;
 pub mod create;
 mod defaults;
 pub mod desktop;

@@ -2621,3 +2621,375 @@ fn a_confirmed_move_applies_only_from_the_digest_the_user_saw() {
     assert_eq!(moved.tag, TagOutcome::Moved { from: elsewhere });
     assert_eq!(registry.tag_digest("o/lab", "latest"), Some(second.digest));
 }
+
+/// A provider that refuses config keys it does not know, as every real
+/// decoder does: `unknown field`, after the closure is fetched.
+struct Strict;
+impl ConfigValidator for Strict {
+    fn platform(&self) -> &str {
+        "synthetic"
+    }
+    fn validate(
+        &self,
+        table: &toml::Table,
+        descriptors: &[Descriptor],
+        blobs: &dyn BlobSource,
+    ) -> image_store::Result<Vec<Digest>> {
+        if let Some(key) = table
+            .keys()
+            .find(|k| !matches!(k.as_str(), "schema" | "platform" | "blobs"))
+        {
+            return Err(image_store::Error::Invalid(format!(
+                "unknown field `{key}`"
+            )));
+        }
+        Synthetic.validate(table, descriptors, blobs)
+    }
+}
+
+/// An image another release published: its config holds a key this build
+/// does not know, and its manifest optionally declares the release it needs.
+fn newer_image(
+    registry: &MockRegistry,
+    repository: &str,
+    marker: Option<&str>,
+) -> (Reference, Vec<Digest>) {
+    let payload: &[u8] = b"payload of a newer release";
+    let rom = registry.seed_blob(repository, payload);
+    let config =
+        format!("schema = 1\nplatform = \"synthetic\"\nblobs = [\"{rom}\"]\nfuture_option = 1\n");
+    let config_digest = registry.seed_blob(repository, config.as_bytes());
+    let metadata: &[u8] = br#"{"schema":1,"platform":"synthetic","titles":[]}"#;
+    let metadata_digest = registry.seed_blob(repository, metadata);
+    let mut manifest = Manifest::new(
+        "synthetic",
+        Descriptor::new(mt::CONFIG, config_digest.clone(), config.len() as u64),
+        vec![
+            Descriptor::new(mt::FIRMWARE, rom.clone(), payload.len() as u64),
+            Descriptor::new(mt::METADATA, metadata_digest.clone(), metadata.len() as u64),
+        ],
+    )
+    .unwrap();
+    if let Some(marker) = marker {
+        manifest
+            .annotations
+            .insert(image_store::compat::MIN_APP_VERSION.into(), marker.into());
+    }
+    registry.seed_manifest(repository, "1.0.0", &manifest.encode().unwrap());
+    (
+        target(registry, &format!("{repository}:1.0.0")),
+        vec![rom, config_digest, metadata_digest],
+    )
+}
+
+fn blob_requests(registry: &MockRegistry) -> Vec<String> {
+    registry
+        .log()
+        .into_iter()
+        .filter(|line| line.contains("/blobs/"))
+        .collect()
+}
+
+#[test]
+fn pull_refuses_an_image_that_needs_a_newer_release_before_fetching_any_blob() {
+    let registry = MockRegistry::start(open_policy());
+    let entry = registry.entry(false);
+    let client = client(&entry, Anonymous);
+    let level = image_store::compat::level();
+    let providers: [&dyn ConfigValidator; 1] = [&Strict];
+
+    let (reference, _) = newer_image(&registry, "o/newer", Some("99.0.0"));
+    let dir = Temp::new();
+    let store = dir.store();
+    registry.clear_log();
+    let refused = pull::pull(
+        &store,
+        &client,
+        &reference,
+        "newer:1.0.0",
+        &providers,
+        &|_| {},
+    );
+    assert_eq!(
+        refused.unwrap_err().to_string(),
+        format!("{reference} needs unemupc 99.0.0 or newer (this is {level})")
+    );
+    assert!(blob_requests(&registry).is_empty(), "{:?}", registry.log());
+    assert!(registry.log().iter().all(|l| l.contains("/manifests/")));
+    assert!(matches!(
+        store.tag_descriptor("newer:1.0.0"),
+        Err(image_store::Error::TagNotFound(_))
+    ));
+
+    // Without the marker the same image fails as before: after the whole
+    // closure is fetched, with the decoder's message, and nothing is tagged.
+    let (unmarked, blobs) = newer_image(&registry, "o/unmarked", None);
+    registry.clear_log();
+    let refused = pull::pull(
+        &store,
+        &client,
+        &unmarked,
+        "unmarked:1.0.0",
+        &providers,
+        &|_| {},
+    );
+    let message = refused.unwrap_err().to_string();
+    assert!(
+        message.contains("unknown field `future_option`"),
+        "{message}"
+    );
+    assert_eq!(blob_requests(&registry).len(), blobs.len());
+    assert!(matches!(
+        store.tag_descriptor("unmarked:1.0.0"),
+        Err(image_store::Error::TagNotFound(_))
+    ));
+
+    // A marker that does not parse counts as unmet.
+    let (invalid, _) = newer_image(&registry, "o/invalid", Some("next"));
+    registry.clear_log();
+    let refused = pull::pull(
+        &store,
+        &client,
+        &invalid,
+        "invalid:1.0.0",
+        &providers,
+        &|_| {},
+    );
+    assert_eq!(
+        refused.unwrap_err().to_string(),
+        format!("{invalid} needs a newer unemupc (this is {level})")
+    );
+    assert!(blob_requests(&registry).is_empty());
+}
+
+#[test]
+fn pull_takes_an_image_whose_marker_this_release_meets() {
+    let registry = MockRegistry::start(open_policy());
+    let entry = registry.entry(false);
+    let client = client(&entry, Anonymous);
+    let source = Temp::new();
+    let store = source.store();
+    let level = image_store::compat::level();
+    let image = rated_image(&store, "met:1.0.0", b"met", Some(&level.to_string()));
+    let reference = target(&registry, "o/met:1.0.0");
+    push_with(
+        &store,
+        "met:1.0.0",
+        reference.clone(),
+        &entry,
+        &client,
+        &PushOptions::default(),
+    )
+    .unwrap();
+    let fresh = Temp::new();
+    let report = pull::pull(
+        &fresh.store(),
+        &client,
+        &reference,
+        "met:1.0.0",
+        &PROVIDERS,
+        &|_| {},
+    )
+    .unwrap();
+    assert_eq!(report.image.digest, image.digest);
+}
+
+/// A synthetic provider whose tables rate every image at `self.0`.
+struct Rated(image_store::compat::AppVersion);
+impl ConfigValidator for Rated {
+    fn platform(&self) -> &str {
+        "synthetic"
+    }
+    fn validate(
+        &self,
+        table: &toml::Table,
+        descriptors: &[Descriptor],
+        blobs: &dyn BlobSource,
+    ) -> image_store::Result<Vec<Digest>> {
+        Synthetic.validate(table, descriptors, blobs)
+    }
+    fn required_release(
+        &self,
+        _: &Manifest,
+        _: &[u8],
+    ) -> image_store::Result<image_store::compat::AppVersion> {
+        Ok(self.0)
+    }
+}
+
+/// An open synthetic image whose manifest declares `marker`.
+fn rated_image(store: &Store, tag: &str, label: &[u8], marker: Option<&str>) -> Descriptor {
+    let mut layers = vec![marked(store, mt::FIRMWARE, label, Some("open"))];
+    let config = marked(
+        store,
+        mt::CONFIG,
+        format!(
+            "schema = 1\nplatform = \"synthetic\"\nblobs = [\"{}\"]\n",
+            layers[0].digest
+        )
+        .as_bytes(),
+        Some("open"),
+    );
+    layers.push(marked(
+        store,
+        mt::METADATA,
+        br#"{"schema":1,"platform":"synthetic","titles":[]}"#,
+        Some("open"),
+    ));
+    let mut manifest = Manifest::new("synthetic", config, layers).unwrap();
+    if let Some(marker) = marker {
+        manifest
+            .annotations
+            .insert(image_store::compat::MIN_APP_VERSION.into(), marker.into());
+    }
+    let descriptor = store.import_manifest(&manifest).unwrap();
+    store
+        .update_tag(tag, &descriptor, None, &Synthetic)
+        .unwrap();
+    descriptor
+}
+
+#[test]
+fn the_official_namespace_refuses_a_missing_or_lower_release_marker() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let required = image_store::compat::level();
+    assert!(required > image_store::compat::BASELINE);
+    rated_image(&store, "none:1.0.0", b"none", None);
+    rated_image(&store, "lower:1.0.0", b"lower", Some("0.0.1"));
+    let exact = rated_image(&store, "exact:1.0.0", b"exact", Some(&required.to_string()));
+    let registry = MockRegistry::start(open_policy());
+    let entry = registry.entry(false);
+    let client = client(&entry, Anonymous);
+    let rated = Rated(required);
+    let push_to = |local: &str, path: &str| {
+        let plan = push::plan(&store, local, target(&registry, path), Some(&entry))?;
+        push::push(
+            &store,
+            &plan,
+            &[&rated],
+            &client,
+            &PushOptions::default(),
+            &mut |_, _| {},
+        )
+    };
+    for (local, declared) in [("none:1.0.0", "none"), ("lower:1.0.0", "0.0.1")] {
+        let refused = push_to(local, &format!("unemu/{local}")).unwrap_err();
+        assert!(
+            matches!(
+                &refused,
+                Error::Refused(Refusal::MinAppVersion { required: r, declared: d, .. })
+                    if *r == required && d == declared
+            ),
+            "{refused:?}"
+        );
+        let message = refused.to_string();
+        assert!(
+            message.contains(&format!("needs unemupc {required} or newer")),
+            "{message}"
+        );
+        let repository = local.split(':').next().unwrap();
+        assert_eq!(
+            registry.tag_digest(&format!("unemu/{repository}"), "1.0.0"),
+            None
+        );
+    }
+    // A declaration at least as high as the computed release passes.
+    push_to("exact:1.0.0", "unemu/exact:1.0.0").unwrap();
+    assert_eq!(
+        registry.tag_digest("unemu/exact", "1.0.0"),
+        Some(exact.digest)
+    );
+    // Other namespaces are not checked.
+    push_to("none:1.0.0", "private/none:1.0.0").unwrap();
+    // A provider whose tables rate the image at the baseline needs no marker.
+    let baseline = Rated(image_store::compat::BASELINE);
+    let plan = push::plan(
+        &store,
+        "none:1.0.0",
+        target(&registry, "unemu/none:1.0.0"),
+        Some(&entry),
+    )
+    .unwrap();
+    push::push(
+        &store,
+        &plan,
+        &[&baseline],
+        &client,
+        &PushOptions::default(),
+        &mut |_, _| {},
+    )
+    .unwrap();
+}
+
+#[test]
+fn the_release_guard_reads_the_marker_and_names_the_computed_release() {
+    let manifest = |marker: Option<&str>| {
+        let config = Descriptor::new(mt::CONFIG, Digest::of(b"config"), 6);
+        let metadata = Descriptor::new(mt::METADATA, Digest::of(b"metadata"), 8);
+        let mut manifest = Manifest::new("synthetic", config, vec![metadata]).unwrap();
+        if let Some(marker) = marker {
+            manifest
+                .annotations
+                .insert(image_store::compat::MIN_APP_VERSION.into(), marker.into());
+        }
+        manifest
+    };
+    let registry = MockRegistry::start(open_policy());
+    let official = target(&registry, "unemu/lab:1.0.0");
+    let private = target(&registry, "private/lab:1.0.0");
+    let next = image_store::compat::NEXT_RELEASE;
+    let baseline = image_store::compat::BASELINE;
+    use crate::guard::check_release;
+    assert!(check_release(&official, &manifest(None), baseline).is_ok());
+    assert!(check_release(&official, &manifest(Some("0.0.3")), next).is_ok());
+    assert!(check_release(&official, &manifest(Some("1.0.0")), next).is_ok());
+    for marker in [None, Some("0.0.2"), Some("0.0.3-rc.1"), Some("soon")] {
+        let refusal = check_release(&official, &manifest(marker), next).unwrap_err();
+        assert!(
+            refusal.to_string().contains("needs unemupc 0.0.3 or newer"),
+            "{refusal}"
+        );
+        assert!(check_release(&private, &manifest(marker), next).is_ok());
+    }
+}
+
+/// A push plan reads the marker before it decodes the manifest, so an image
+/// a newer release tagged in a shared store, whose envelope this build cannot
+/// decode, is refused with the release it needs.
+#[test]
+fn a_push_plan_refuses_an_unreadable_newer_image_with_the_release_it_needs() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let bytes = br#"{"schemaVersion":3,"mediaType":"application/vnd.oci.image.manifest.v2+json","annotations":{"unemu.platform":"synthetic","unemu.min-app-version":"99.0.0"}}"#;
+    let blob = store.import(&bytes[..], None).unwrap();
+    let image = Descriptor::new(mt::MANIFEST, blob.digest, blob.size);
+    store.tag_as_newer_release("future:1", &image).unwrap();
+    let registry = MockRegistry::start(open_policy());
+    let entry = registry.entry(false);
+    let sentence = format!(
+        "future:1 needs unemupc 99.0.0 or newer (this is {})",
+        image_store::compat::level()
+    );
+    let refused = push::plan_with_marks(
+        &store,
+        "future:1",
+        target(&registry, "o/future:1"),
+        Some(&entry),
+        crate::guard::LocalMarks::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(refused, sentence);
+    // The scan of local marks, which every push makes, fails closed on it
+    // with the same sentence.
+    let refused = push::plan(
+        &store,
+        "future:1",
+        target(&registry, "o/future:1"),
+        Some(&entry),
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(refused, sentence);
+}

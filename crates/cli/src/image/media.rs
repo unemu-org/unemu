@@ -52,6 +52,8 @@ pub struct MediaCommand {
     license_text: Option<String>,
     /// `--source`: the file name of the extra with the set's source archive.
     source: Option<String>,
+    /// `--min-app-version`: raise the set's minimum release.
+    min_app_version: Option<image_store::compat::AppVersion>,
 }
 
 pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
@@ -79,6 +81,7 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
         license: None,
         license_text: None,
         source: None,
+        min_app_version: None,
     };
     let mut args = args[1..].iter();
     while let Some(arg) = args.next() {
@@ -203,6 +206,11 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
             Some("--source") if action == "import" && command.source.is_none() => {
                 command.source = Some(value.to_str().ok_or("invalid source archive name")?.into())
             }
+            Some("--min-app-version")
+                if action == "import" && command.min_app_version.is_none() =>
+            {
+                command.min_app_version = Some(super::min_app_version(value)?)
+            }
             _ => return Err("unknown or duplicate media option"),
         }
     }
@@ -296,8 +304,11 @@ pub fn execute(command: MediaCommand, output: &mut impl Write) -> anyhow::Result
                     if row.kind == image_store::summary::ArtifactKind::MediaSet {
                         writeln!(
                             output,
-                            "{}\t{}\t{}",
-                            tag.name, tag.manifest.digest, row.name
+                            "{}\t{}\t{}{}",
+                            tag.name,
+                            tag.manifest.digest,
+                            row.name,
+                            super::requirement_columns(&store, &tag.manifest)
                         )?;
                     }
                 }
@@ -320,6 +331,7 @@ fn show(store: &Store, tag: &str, output: &mut impl Write) -> anyhow::Result<()>
         "{}\t{}\t{}",
         tag, image.image.digest, config.platform
     )?;
+    super::write_min_app_version(output, &image.manifest)?;
     for (index, m) in config.media.iter().enumerate() {
         writeln!(
             output,
@@ -483,7 +495,10 @@ fn import(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> 
         }),
         _ => None,
     };
-    let plan = media_import::plan_with(&request, open.as_ref())?;
+    let mut plan = media_import::plan_with(&request, open.as_ref())?;
+    if let Some(stated) = command.min_app_version {
+        plan.raise_min_app_version(stated)?;
+    }
     writeln!(output, "media order:")?;
     for (index, (path, medium)) in plan.media().enumerate() {
         writeln!(
@@ -504,6 +519,9 @@ fn import(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> 
     }
     if let Some(source) = plan.source() {
         writeln!(output, "source\t{:?}", source.filename)?;
+    }
+    if let Some(stated) = plan.min_app_version() {
+        writeln!(output, "min-app-version\t{stated}")?;
     }
     if command.dry_run {
         writeln!(output, "dry run; no blobs or tag written")?;
@@ -550,6 +568,22 @@ mod tests {
         );
         assert_eq!(command.title.version.as_deref(), Some("1.4"));
         assert_eq!(command.title.edition.as_deref(), Some("Floppy Edition"));
+    }
+
+    #[test]
+    fn min_app_version_takes_one_release_version() {
+        let command = parse_import(&["--min-app-version", "0.0.2"]).unwrap();
+        assert_eq!(
+            command.min_app_version,
+            Some(image_store::compat::AppVersion::new(0, 0, 2))
+        );
+        assert!(parse_import(&[]).unwrap().min_app_version.is_none());
+        for bad in ["1.0", "0.0.2-rc.1", "x"] {
+            assert!(parse_import(&["--min-app-version", bad]).is_err(), "{bad}");
+        }
+        assert!(
+            parse_import(&["--min-app-version", "0.0.2", "--min-app-version", "0.0.2"]).is_err()
+        );
     }
 
     #[test]

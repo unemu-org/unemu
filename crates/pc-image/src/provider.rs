@@ -103,6 +103,13 @@ impl ConfigValidator for PcProvider {
         .map(|p| p.references)
         .map_err(store_error)
     }
+    fn required_release(
+        &self,
+        manifest: &image_store::Manifest,
+        config: &[u8],
+    ) -> image_store::Result<image_store::compat::AppVersion> {
+        crate::compat::release(manifest, config)
+    }
 }
 fn store_error(e: Error) -> image_store::Error {
     image_store::Error::Invalid(e.to_string())

@@ -186,6 +186,9 @@ pub fn parse(args: &[OsString]) -> Result<FirmwareCommand, &'static str> {
                     return Err("give one of --dumped-from, --downloaded-from or --built-from");
                 }
             }
+            Some("--min-app-version") if describes && statement.min_app_version.is_none() => {
+                statement.min_app_version = Some(super::min_app_version(value)?)
+            }
             Some("--revision") if describes => once(&mut provenance.revision, text(value)?)?,
             Some("--url") if describes => once(&mut provenance.url, text(value)?)?,
             Some("--provenance-date") if describes => once(&mut provenance.date, text(value)?)?,
@@ -303,11 +306,12 @@ pub fn execute(
             {
                 writeln!(
                     output,
-                    "{}\t{}\t{:?}\t{:?}",
+                    "{}\t{}\t{:?}\t{:?}{}",
                     tag.name,
                     tag.manifest.digest,
                     row.name,
-                    row.firmware.as_ref().map(Listed)
+                    row.firmware.as_ref().map(Listed),
+                    super::requirement_columns(&store, &tag.manifest)
                 )?;
             }
         }
@@ -330,6 +334,7 @@ fn show(store: &Store, tag: &str, output: &mut impl Write) -> anyhow::Result<()>
     let image = store.resolve(tag, &Validator(&PcFirmwareRules(catalogue())))?;
     let config = Config::decode(&image.config)?;
     writeln!(output, "{}\t{}\t{:?}", tag, image.image.digest, config.name)?;
+    super::write_min_app_version(output, &image.manifest)?;
     writeln!(output, "fits\t{:?}", config.fits)?;
     for rom in &config.roms {
         writeln!(
@@ -653,6 +658,35 @@ mod tests {
             statement: Box::default(),
         }
     }
+    #[test]
+    fn min_app_version_is_an_import_statement_of_one_package() {
+        let args = |list: &[&str]| list.iter().map(OsString::from).collect::<Vec<_>>();
+        let command = parse(&args(&[
+            "import",
+            "rom.bin",
+            "--unlisted",
+            "rom",
+            "--role",
+            "option-rom",
+            "--min-app-version",
+            "0.0.2",
+        ]))
+        .unwrap();
+        assert_eq!(
+            command.statement.min_app_version,
+            Some(image_store::compat::AppVersion::new(0, 0, 2))
+        );
+        for bad in [
+            &["import", "roms", "--min-app-version", "0.0.2"][..],
+            &["import", "roms", "--for", "x", "--min-app-version", "2"],
+        ] {
+            assert!(parse(&args(bad)).is_err(), "{bad:?}");
+        }
+        // An edit takes it too: the way to raise an imported package's value.
+        let edit = parse(&args(&["edit", "a:1", "--min-app-version", "0.0.2"])).unwrap();
+        assert!(edit.statement.min_app_version.is_some());
+    }
+
     #[test]
     fn folder_reimport_keeps_existing_packages_and_publishes_new_ones() {
         let temp = assembly::test_support::TempDir::new("firmware-folder-reimport");

@@ -206,7 +206,7 @@ pub fn host_time() -> Option<String> {
         .map(|d| image_store::machine::utc_text(d.as_secs()))
 }
 
-fn row(listing: &Listing) -> String {
+fn row(store: &image_store::Store, listing: &Listing) -> String {
     let m = &listing.machine;
     let mut line = format!(
         "{}\t{}\t{}\t{}\t{}\tlast-run:{}\tchanges:{}",
@@ -237,6 +237,8 @@ fn row(listing: &Listing) -> String {
     if let Some(problem) = &listing.problem {
         line.push_str(&format!("\tproblem:{problem}"));
     }
+    // What the machine's image needs, as `image ls` shows it.
+    line.push_str(&super::requirement_columns(store, &m.image));
     line
 }
 
@@ -272,7 +274,7 @@ pub fn execute(
     match command.action {
         Action::List => {
             for listing in machine::list(&store)? {
-                writeln!(output, "{}", row(&listing))?;
+                writeln!(output, "{}", row(&store, &listing))?;
             }
         }
         Action::New { image, name } => {
@@ -290,7 +292,7 @@ pub fn execute(
         }
         Action::Reset { id, yes } | Action::Remove { id, yes } if !yes => {
             let listing = machine::get(&store, &id)?;
-            writeln!(output, "{}", row(&listing))?;
+            writeln!(output, "{}", row(&store, &listing))?;
             anyhow::bail!("this drops the machine's changes; repeat with --yes");
         }
         Action::Reset { id, .. } => machine::reset(&store, &id)?,

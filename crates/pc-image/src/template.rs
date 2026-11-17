@@ -575,11 +575,11 @@ pub fn precedence(tag: &str) -> Option<Precedence> {
     })
 }
 
-/// Asked with the image's reference and manifest before the image is tagged:
-/// `repository:VERSION` for a template, `repository:1`
+/// Asked with the image's reference, manifest and config bytes before the
+/// image is tagged: `repository:VERSION` for a template, `repository:1`
 /// ([`FIRMWARE_REVISION`]) for a package, a set's own tag for a set. An error
 /// refuses the build.
-pub type Guard<'a> = &'a dyn Fn(&str, &Manifest) -> std::result::Result<(), String>;
+pub type Guard<'a> = &'a dyn Fn(&str, &Manifest, &[u8]) -> std::result::Result<(), String>;
 
 /// Build every template machine into `store`, in a fixed order, handing each
 /// to `built` once its tags are written. The firmware packages it binds come
@@ -597,7 +597,7 @@ pub fn build(
     guard: Guard<'_>,
     built: &mut dyn FnMut(&Built),
 ) -> Result<Vec<Built>> {
-    let packages: Vec<Digest> = build_firmware(store, vendor, &|_, _| Ok(()), &mut |_| {})?
+    let packages: Vec<Digest> = build_firmware(store, vendor, &|_, _, _| Ok(()), &mut |_| {})?
         .into_iter()
         .map(|package| package.descriptor.digest)
         .collect();
@@ -773,7 +773,13 @@ fn build_package(
     let statement = source.statement(archive);
     let repository = source.repository();
     let preview = firmware_import::preview_manifest_with(&candidate, &[], &statement, catalogue)?;
-    check(guard, &repository, FIRMWARE_REVISION, &preview.manifest)?;
+    check(
+        guard,
+        &repository,
+        FIRMWARE_REVISION,
+        &preview.manifest,
+        &preview.config.encode()?,
+    )?;
     let judged = Digest::of(&preview.manifest.encode()?);
     let revision = local_tag(&repository, FIRMWARE_REVISION);
     let before = version_state(store, &revision, &judged, PACKAGE_CONFLICT)?;
@@ -802,8 +808,8 @@ fn build_machine(
     guard: Guard<'_>,
 ) -> Result<Built> {
     let repository = template.repository();
-    let manifest = create::preview(image, store)?;
-    check(guard, &repository, VERSION, &manifest)?;
+    let (config, manifest) = create::preview_with_config(image, store)?;
+    check(guard, &repository, VERSION, &manifest, &config)?;
     let judged = Digest::of(&manifest.encode_with_types(PcProvider.payload_types())?);
     let version = local_tag(&repository, VERSION);
     let before = version_state(store, &version, &judged, TEMPLATE_CONFLICT)?;
@@ -912,12 +918,18 @@ fn build_set(
             media_import::publish(store, &plan, &|_, _| {}, &|| false)
                 .map_err(|refusal| invalid(refusal.to_string()))?;
             let stored = store.resolve(&version, &validator)?;
-            check(guard, &repository, source.tag, &stored.manifest)?;
+            check(
+                guard,
+                &repository,
+                source.tag,
+                &stored.manifest,
+                &stored.config,
+            )?;
             Outcome::Present
         }
         None => {
-            let judge = |manifest: &Manifest| {
-                check(guard, &repository, source.tag, manifest).map_err(|e| e.to_string())
+            let judge = |manifest: &Manifest, config: &[u8]| {
+                check(guard, &repository, source.tag, manifest, config).map_err(|e| e.to_string())
             };
             media_import::publish_checked(store, &plan, &|_, _| {}, &|| false, &judge)
                 .map_err(|refusal| invalid(refusal.to_string()))?;
@@ -954,8 +966,14 @@ fn build_set(
     })
 }
 
-fn check(guard: Guard<'_>, repository: &str, version: &str, manifest: &Manifest) -> Result<()> {
-    guard(&format!("{repository}:{version}"), manifest)
+fn check(
+    guard: Guard<'_>,
+    repository: &str,
+    version: &str,
+    manifest: &Manifest,
+    config: &[u8],
+) -> Result<()> {
+    guard(&format!("{repository}:{version}"), manifest, config)
         .map_err(|reason| invalid(format!("{repository}:{version} refused: {reason}")))
 }
 

@@ -866,6 +866,8 @@ fn finish(mut plan: Plan, blobs: &dyn BlobSource, image: &NewImage) -> Result<(V
                 .join(",")
         ),
     );
+    let inherited = crate::compat::packages_floor(image.firmware.iter().map(|rom| &rom.package))?;
+    crate::compat::stamp(&mut manifest, &bytes, inherited, None)?;
     Ok((bytes, manifest))
 }
 
@@ -878,7 +880,15 @@ pub fn check(image: &NewImage, blobs: &dyn BlobSource) -> Result<()> {
 /// caller can apply the push guard's rule to the whole prospective closure.
 /// Nothing is written; `blobs` must hold the chosen ROMs.
 pub fn preview(image: &NewImage, blobs: &dyn BlobSource) -> Result<Manifest> {
-    Ok(finish(plan(image)?, blobs, image)?.1)
+    Ok(preview_with_config(image, blobs)?.1)
+}
+
+/// [`preview`] with the configuration bytes Create would store.
+pub fn preview_with_config(
+    image: &NewImage,
+    blobs: &dyn BlobSource,
+) -> Result<(Vec<u8>, Manifest)> {
+    finish(plan(image)?, blobs, image)
 }
 
 /// Build and tag a new empty image: configuration, the chosen firmware blobs

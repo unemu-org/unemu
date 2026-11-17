@@ -27,6 +27,10 @@ pub struct ImportOptions {
     pub rom_dirs: Vec<PathBuf>,
     /// Store every payload raw, for fixtures that inspect exact blob bytes.
     pub no_compress: bool,
+    /// Raise the image's minimum release above what the compatibility
+    /// tables compute, for behaviour they cannot see, such as an emulation
+    /// fix a title needs; never lower (machine-images §5.6).
+    pub min_app_version: Option<image_store::compat::AppVersion>,
 }
 impl ImportOptions {
     /// Payload codecs offered to ingest; CMOS declares no compressed variant.
@@ -870,6 +874,18 @@ pub fn import_machine(
             .annotations
             .insert("unemu.firmware.sources".into(), format!("[{sources}]"));
     }
+    let packages = match prepared.firmware_sources() {
+        [] => Vec::new(),
+        _ => crate::create::packages(store)?,
+    };
+    let inherited =
+        crate::compat::packages_floor(crate::compat::listed_packages(&manifest, &packages))?;
+    crate::compat::stamp(
+        &mut manifest,
+        bytes.as_bytes(),
+        inherited,
+        options.min_app_version,
+    )?;
     let manifest = store.import_manifest_with_types(&manifest, PcProvider.payload_types())?;
     let record = ImportRecord {
         schema: 1,

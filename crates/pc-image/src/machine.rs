@@ -389,7 +389,10 @@ fn clash(machines: &Machines, name: &str) -> image_store::Error {
 /// (`repository:tag`, or empty). Without `name` it is named after the image
 /// title, then `title (2)`, … . Its id is a slug of the name. The workspace is
 /// pinned to the image at once; nothing is verified or materialized until it
-/// starts. `created` is host text for the library, like a last run.
+/// starts. `created` is host text for the library, like a last run. An image
+/// that declares a newer release than this build reads is refused first,
+/// with that release (machine-images §5.6): a machine made of it could not
+/// start.
 pub fn create(
     store: &Store,
     image: &Descriptor,
@@ -397,6 +400,13 @@ pub fn create(
     name: Option<&str>,
     created: Option<String>,
 ) -> Result<String> {
+    let reference = if source.is_empty() {
+        image.digest.to_string()
+    } else {
+        source.to_owned()
+    };
+    image_store::compat::Requirement::read(&store.read_verified(image, MAX_SMALL_BLOB)?)
+        .check(&reference)?;
     let image = &identity(image);
     let name = name.map(validate_name).transpose()?;
     let title = match &name {
@@ -655,8 +665,11 @@ fn journal_bytes(directory: &Path) -> Result<u64> {
 }
 
 fn image_config(store: &Store, image: &Descriptor) -> Result<(Manifest, Config)> {
-    let manifest =
-        Manifest::decode_with_types(&store.read_verified(image, MAX_SMALL_BLOB)?, PAYLOAD_TYPES)?;
+    let bytes = store.read_verified(image, MAX_SMALL_BLOB)?;
+    // The config of an image a newer release wrote is not read: the listing
+    // shows the release it needs instead of a decoder message.
+    image_store::compat::Requirement::read(&bytes).check(&image.digest.to_string())?;
+    let manifest = Manifest::decode_with_types(&bytes, PAYLOAD_TYPES)?;
     let bytes = store.read_verified(&manifest.config, MAX_SMALL_BLOB)?;
     let config: Config = decode(
         std::str::from_utf8(&bytes)

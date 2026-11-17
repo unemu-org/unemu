@@ -66,7 +66,7 @@ fn media_present() -> bool {
         .all(|relative| fixtures::fixture(relative).is_some())
 }
 
-fn allow(_: &str, _: &Manifest) -> Result<(), String> {
+fn allow(_: &str, _: &Manifest, _: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
@@ -163,7 +163,7 @@ fn the_guard_sees_each_image_before_its_tags_and_a_refusal_tags_nothing_of_it() 
     let t = Temp::new("template-guard");
     let store = Store::open(t.0.join("store")).unwrap();
     let seen = RefCell::new(Vec::new());
-    let guard = |reference: &str, manifest: &Manifest| {
+    let guard = |reference: &str, manifest: &Manifest, _: &[u8]| {
         let (repository, tag) = reference.rsplit_once(':').unwrap();
         assert_eq!(tag, VERSION);
         assert!(store
@@ -405,7 +405,7 @@ fn the_firmware_packages_are_the_published_ones() {
     let first = Store::open(t.0.join("first")).unwrap();
     let second = Store::open(t.0.join("second")).unwrap();
     let seen = RefCell::new(Vec::new());
-    let record = |reference: &str, _: &Manifest| {
+    let record = |reference: &str, _: &Manifest, _: &[u8]| {
         seen.borrow_mut().push(reference.to_owned());
         Ok(())
     };
@@ -532,7 +532,7 @@ fn a_version_tag_that_names_another_image_refuses_the_build() {
     let t = Temp::new("template-version-conflict");
     let store = Store::open(t.0.join("store")).unwrap();
     // Only the packages the templates bind: every template is refused.
-    let firmware_only = |_: &str, _: &Manifest| Err("machines later".to_owned());
+    let firmware_only = |_: &str, _: &Manifest, _: &[u8]| Err("machines later".to_owned());
     assert!(template::build(&store, &vendor(), &firmware_only, &mut |_| {}).is_err());
     let other = pc_image::create::create(
         &store,
@@ -865,7 +865,7 @@ fn the_guard_judges_each_installation_set_before_its_tags() {
     let t = Temp::new("template-media-guard");
     let store = Store::open(t.0.join("store")).unwrap();
     let seen = RefCell::new(Vec::new());
-    let guard = |reference: &str, manifest: &Manifest| {
+    let guard = |reference: &str, manifest: &Manifest, _: &[u8]| {
         let (repository, tag) = reference.rsplit_once(':').unwrap();
         assert_eq!(repository, "unemu/media/freedos");
         assert_eq!(manifest.artifact_type(), mt::MEDIA_SET);

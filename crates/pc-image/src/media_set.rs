@@ -145,6 +145,34 @@ mod tests {
         }
         assert_eq!(detect(4096), None);
     }
+
+    /// Every key of a format table has a row in the compatibility table.
+    #[test]
+    fn every_format_key_has_a_row() {
+        use crate::compat::MEDIA_FORMAT_KEYS;
+        use image_store::compat::{lookup, struct_fields};
+        // `Format` is tagged by `kind`; its variants hold `geometry` and `encoding`.
+        let mut paths = vec!["media.format.kind".to_owned()];
+        paths.extend(["geometry", "encoding"].map(|k| format!("media.format.{k}")));
+        paths.extend(
+            struct_fields::<Geometry>()
+                .iter()
+                .map(|k| format!("media.format.geometry.{k}")),
+        );
+        for path in &paths {
+            assert!(
+                lookup(&[MEDIA_FORMAT_KEYS], path).is_some(),
+                "no row for {path}"
+            );
+        }
+        assert_eq!(paths.len(), MEDIA_FORMAT_KEYS.len());
+        for name in ["1.44M", "iso-2048"] {
+            let table = format(name).unwrap();
+            for key in table.keys() {
+                assert!(paths.contains(&format!("media.format.{key}")), "{key}");
+            }
+        }
+    }
 }
 
 /// Construct the existing sector adapter from a captured full-verification receipt.

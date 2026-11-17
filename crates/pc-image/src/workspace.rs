@@ -596,12 +596,11 @@ pub(crate) fn publish_machine(
             }),
     );
     // The configuration is this program's own file: open, never re-marked.
+    let config_bytes = toml::to_string(&config).map_err(|e| invalid(e.to_string()))?;
     let configuration = crate::generated(stored(
         store,
         mt::CONFIG,
-        toml::to_string(&config)
-            .map_err(|e| invalid(e.to_string()))?
-            .as_bytes(),
+        config_bytes.as_bytes(),
         &mut hook,
     )?);
     let sources = crate::revision::firmware_sources(&packages, &image.manifest, &layers, &bound)?;
@@ -616,7 +615,11 @@ pub(crate) fn publish_machine(
             .annotations
             .insert(crate::revision::FIRMWARE_SOURCES.into(), sources);
     }
+    let inherited =
+        crate::compat::packages_floor(crate::compat::listed_packages(&manifest, packages.list()?))?;
+    crate::compat::stamp(&mut manifest, config_bytes.as_bytes(), inherited, None)?;
     derive_annotations(&mut manifest, &image.manifest, &old.image.digest, title)?;
+    image_store::compat::carry(&mut manifest, &image.manifest)?;
     let proposed = store.import_manifest_with_types(&manifest, PcProvider.payload_types())?;
     hook(PublicationStep::BlobStored(proposed.digest.clone()))?;
     let verified = store.verify_publication_reusing(&proposed, &PcProvider, &image)?;

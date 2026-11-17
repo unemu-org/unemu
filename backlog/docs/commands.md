@@ -8,6 +8,7 @@ Everyday commands for this project. Keep this file **flat and copy-pasteable** �
 cargo run --offline -p cli -- image import machines/at-freedos.toml --store /path/to/store --tag dos-lab:1.0 --create
 cargo run --offline -p cli -- image import /path/to/machine.yaml --store /path/to/store --tag dos-lab:recovered --recover medium-0=tip
 cargo run --offline -p cli -- image import /path/to/machine.toml --store /path/to/store --tag dos-lab:checkpoint --recover medium-0=generation:1
+cargo run --offline -p cli -- image import /path/to/machine.toml --store /path/to/store --tag dos-lab:1.1 --min-app-version 0.0.2
 cargo run --offline -p cli -- image compress dos-lab:1.0 --tag dos-lab:compressed --store /path/to/store
 cargo run --offline -p cli -- image ls --store /path/to/store
 cargo run --offline -p cli -- image sweep --store /path/to/store
@@ -439,6 +440,76 @@ the workspace pins the new image with fresh journals. Interrupted journal tails
 must be explicitly recovered with the existing offline media tools before
 publication. A crash never automatically discards a workspace. These disk changes
 are independent recovery points, not a live machine snapshot.
+
+## Minimum release of an image
+
+An image, installation set or firmware package may declare the oldest
+unemupc that reads and runs it, in the manifest annotation
+`unemu.min-app-version` (`MAJOR.MINOR.PATCH`, no pre-release or build part;
+machine-images §5.6). Writers compute it from per-feature tables
+(`image_store::compat` for the shared rows, `pc_image::compat` for the PC
+ones) and leave it out when it is 0.0.1, so everything 0.0.1 reads keeps its
+bytes and digest: import, media and firmware import, template build, New
+machine…, Save as new image…, `image publish`, `image machine commit`,
+`image firmware edit`, `image compress` and catalogue edits. The derived
+ones keep their source's value as a floor, and a machine image also takes
+the highest value of the firmware packages it binds (`unemu.firmware.sources`),
+so a fix stated on a package reaches every machine made with it. No writer
+puts a set's media into a machine image yet; when one does, it takes the
+set's value the same way.
+
+`--min-app-version X.Y.Z` on `image import`, `image media import`,
+`image firmware import` (with `--for` or `--unlisted`) and `image firmware
+edit` raises the value, for behaviour the tables cannot see, such as an
+emulation fix a title needs. It never lowers it. A value below 0.0.1 or above
+this release is refused when the command line is read; one below what the
+tables compute is refused naming both (`the stated minimum version 0.0.1 is
+lower than 0.0.2, the oldest unemupc that reads this artifact`), and an edit
+refuses one below the package's own value. Re-importing a package's ROMs
+with another value names `image firmware edit`. `image import` computes the
+value only once its payloads are in the store (the config binds their
+digests), so that refusal leaves unreferenced blobs for the sweep; the other
+importers check before copying.
+
+A release reads an image whose value is no higher than its level: its own
+version, or the newest version its tables name when that is higher. A value
+that does not parse counts as unmet. For any other image:
+
+- `image pull` refuses before it fetches any blob and tags nothing:
+  `REFERENCE needs unemupc X.Y.Z or newer (this is A.B.C)`, or
+  `REFERENCE needs a newer unemupc (this is A.B.C)`;
+- `image run`, `image machine new`, `image machine run`, `image media show`
+  and `image firmware show` refuse with the same sentence, naming the tag
+  (or the pinned digest), before the config is read;
+- `image ls`, `image media ls`, `image firmware ls` and `image machine ls`
+  (for each machine's image) append `min-app-version:X.Y.Z` to an image that
+  declares a value, then
+  `Needs unemupc X.Y.Z or newer` (or `Needs a newer unemupc`) when this
+  release does not read it; `image media show` and `image firmware show`
+  print `min-app-version<TAB>X.Y.Z`.
+
+`image push` into `unemu/` computes the value again with the provider's
+tables and refuses a missing, lower or unparseable declaration, naming the
+computed release, and so does `image template build` before it tags a
+template (`TARGET is in unemu/, which every release reads, and the
+image needs unemupc X.Y.Z or newer by this release's tables, but its
+unemu.min-app-version declares none; …`). Other namespaces are not checked.
+Releases 0.0.1 and 0.0.2 ignore the annotation and fail as before.
+
+A change that adds a feature a reader reads (an optional config key, a
+vocabulary value, a payload media type, a firmware catalogue entry, a wider
+accepted range) adds its row in the same change, with the version
+`image_store::compat::NEXT_RELEASE` names (0.0.3 now) written as a literal,
+`AppVersion::new(0, 0, 3)`, and `NEWEST_ROW` raised to it. A writer refuses
+to stamp a value above the build's level, which points at a missing
+`NEWEST_ROW` update. Vocabulary enums are matched exhaustively, so a new value
+does not compile without a row; the completeness tests refuse a key, payload
+type or catalogue entry without one:
+
+```sh
+cargo test --offline -p image-store compat
+cargo test --offline -p pc-image compat
+```
 
 ## Registry push and pull
 
@@ -1675,7 +1746,10 @@ See [`dev-setup.md`](dev-setup.md#ci) for the runner and cache setup.
 ## Releases
 
 A release is a tag `v<version>` that matches `version` under
-`[workspace.package]` in `Cargo.toml`; bump that first. The maintainer pushes the
+`[workspace.package]` in `Cargo.toml`; bump that first. The same commit raises
+`NEXT_RELEASE` in `crates/image-store/src/compat.rs` past the new version
+(`next_release_is_above_the_package_version` fails until it does); rows already
+written for the release keep their literal version. The maintainer pushes the
 tag and creates and publishes the GitHub release for it. Publishing starts
 `.github/workflows/release.yml`, which builds `upcli` and `unemupc` and
 attaches them to that release; nothing goes to a package registry.

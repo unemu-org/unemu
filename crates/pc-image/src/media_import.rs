@@ -20,6 +20,7 @@
 use crate::media_set::{self as pc, PcMediaFormats};
 use image_store::{
     codec,
+    compat::AppVersion,
     license::{self, Expression},
     media_set::{valid_text, Config, Extra, ExtraKind, MediaFormats, Medium, Validator},
     media_type as mt,
@@ -225,6 +226,8 @@ pub struct Plan {
     compress: bool,
     /// The stated licence and the extras with its text and the source.
     open: Option<Open>,
+    /// A minimum release stated above what the tables compute.
+    min_app_version: Option<AppVersion>,
 }
 /// A checked [`OpenStatement`]: the licence and the positions of the
 /// terms-text and source-archive extras.
@@ -254,6 +257,19 @@ impl Plan {
     }
     pub fn tag(&self) -> &str {
         &self.tag
+    }
+    /// State a minimum release above what the compatibility tables compute
+    /// for the set, for behaviour they cannot see (machine-images §5.6). A
+    /// value below the computed one is refused, naming both.
+    pub fn raise_min_app_version(&mut self, stated: AppVersion) -> Result<()> {
+        let required = crate::compat::media_set_config(&self.config)?;
+        image_store::compat::raised(required, Some(stated))?;
+        self.min_app_version = Some(stated);
+        Ok(())
+    }
+    /// The minimum release stated for the set, if any.
+    pub fn min_app_version(&self) -> Option<AppVersion> {
+        self.min_app_version
     }
     /// Each medium's source beside its config entry, in disk order.
     pub fn media(&self) -> impl Iterator<Item = (&Path, &Medium)> {
@@ -381,6 +397,7 @@ pub fn plan_with(request: &Request, open: Option<&OpenStatement>) -> Result<Plan
         extras: request.extras.iter().map(|e| e.path.clone()).collect(),
         compress: request.compress,
         open,
+        min_app_version: None,
     })
 }
 
@@ -600,11 +617,15 @@ pub fn publish(
     progress: &dyn Fn(usize, usize),
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Outcome> {
-    publish_checked(store, plan, progress, cancelled, &|_| Ok(()))
+    publish_checked(store, plan, progress, cancelled, &|_, _| Ok(()))
 }
 
-/// [`publish`], handing a new set's finished manifest to `check` before the
-/// manifest is stored and the tag written: a refusal, reported as `check`
+/// What [`publish_checked`] asks before a new set is stored: its finished
+/// manifest and config bytes; an error refuses the set in its own words.
+pub type Check<'a> = &'a dyn Fn(&Manifest, &[u8]) -> std::result::Result<(), String>;
+
+/// [`publish`], handing a new set's finished manifest and its config bytes to
+/// `check` before the manifest is stored and the tag written: a refusal, reported as `check`
 /// words it, writes neither, and the payloads already copied stay
 /// unreferenced until a sweep. A tag that already names the set is reported
 /// without a check, as [`publish`] reports it.
@@ -613,7 +634,7 @@ pub fn publish_checked(
     plan: &Plan,
     progress: &dyn Fn(usize, usize),
     cancelled: &dyn Fn() -> bool,
-    check: &dyn Fn(&Manifest) -> std::result::Result<(), String>,
+    check: Check<'_>,
 ) -> Result<Outcome> {
     match store.tag_descriptor(&plan.tag) {
         Ok(existing) => return compare_existing(store, plan, &existing, progress, cancelled),
@@ -710,7 +731,14 @@ pub fn publish_checked(
                 .insert(LICENSES.into(), all.as_str().into());
         }
     }
-    check(&manifest).map_err(Refusal)?;
+    let config_bytes = config.encode()?;
+    crate::compat::stamp(
+        &mut manifest,
+        &config_bytes,
+        image_store::compat::BASELINE,
+        plan.min_app_version,
+    )?;
+    check(&manifest, &config_bytes).map_err(Refusal)?;
     let manifest = store.import_manifest(&manifest)?;
     match store.update_tag(&plan.tag, &manifest, None, &Validator(&PcMediaFormats)) {
         Ok(()) => Ok(Outcome::Imported(manifest)),
@@ -775,11 +803,17 @@ fn compare_existing(
     // The descriptive annotations are part of what the tag names: a set stored
     // without the ones this import writes (published before they existed, say)
     // is refused like one with another title, never reported as this set.
+    // So is the minimum release, which an import computes again and may raise.
+    let release = image_store::compat::raised(
+        crate::compat::media_set_config(&stored)?,
+        plan.min_app_version,
+    )?;
     if layout != plan.config
         || resolved.metadata != plan.metadata.encode(&[])?
         || DESCRIPTIVE
             .iter()
             .any(|&key| resolved.manifest.annotations.get(key) != plan.annotations.get(key))
+        || image_store::compat::Requirement::of(&resolved.manifest).release()? != release
     {
         return Err(different());
     }
@@ -1009,6 +1043,54 @@ mod tests {
         tagged.compress = false;
         assert_eq!(
             attempt(&tagged).0.unwrap(),
+            Outcome::AlreadyImported(stored.descriptor().clone())
+        );
+    }
+
+    /// A set that uses only what release 0.0.1 reads carries no marker; a
+    /// stated minimum release raises it, one below the computed release is
+    /// refused naming both, and a re-import must state the same one.
+    #[test]
+    fn a_stated_minimum_release_raises_the_marker_and_never_lowers_it() {
+        use image_store::compat::{Requirement, BASELINE, MIN_APP_VERSION, PACKAGE};
+        let temp = Temp::new("min-app-version");
+        let disk = temp.0.join("disk.img");
+        floppy(&disk, 7);
+        let store = Store::open(temp.0.join("store")).unwrap();
+        let read = |d: &Descriptor| {
+            use image_store::BlobSource;
+            Manifest::decode(&store.read_verified(d, image_store::MAX_SMALL_BLOB).unwrap()).unwrap()
+        };
+        let mut plain = request(std::slice::from_ref(&disk), "Plain set");
+        plain.tag = "test:plain".into();
+        let stored = publish(&store, &plan(&plain).unwrap(), &|_, _| {}, &|| false).unwrap();
+        assert!(!read(stored.descriptor())
+            .annotations
+            .contains_key(MIN_APP_VERSION));
+
+        let mut raised = plan(&request(std::slice::from_ref(&disk), "Raised set")).unwrap();
+        let refusal = raised
+            .raise_min_app_version(AppVersion::new(0, 0, 0))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refusal.contains("0.0.0") && refusal.contains(&BASELINE.to_string()),
+            "{refusal}"
+        );
+        raised.raise_min_app_version(PACKAGE).unwrap();
+        let stored = publish(&store, &raised, &|_, _| {}, &|| false).unwrap();
+        assert_eq!(
+            Requirement::of(&read(stored.descriptor())),
+            Requirement::Release(PACKAGE)
+        );
+        // The marker is part of what the tag names.
+        let same = plan(&request(std::slice::from_ref(&disk), "Raised set")).unwrap();
+        let refusal = publish(&store, &same, &|_, _| {}, &|| false)
+            .unwrap_err()
+            .to_string();
+        assert!(refusal.starts_with("tag conflict: test:set"), "{refusal}");
+        assert_eq!(
+            publish(&store, &raised, &|_, _| {}, &|| false).unwrap(),
             Outcome::AlreadyImported(stored.descriptor().clone())
         );
     }
@@ -1388,7 +1470,7 @@ mod tests {
         let store = Store::open(temp.0.join("store")).unwrap();
         let plan = plan(&request(&[disk], "Checked set")).unwrap();
         let seen = std::cell::RefCell::new(None);
-        let refusal = publish_checked(&store, &plan, &|_, _| {}, &|| false, &|manifest| {
+        let refusal = publish_checked(&store, &plan, &|_, _| {}, &|| false, &|manifest, _| {
             *seen.borrow_mut() = Some(manifest.clone());
             Err("synthetic refusal".into())
         })
@@ -1405,7 +1487,8 @@ mod tests {
             .join(digest.hex())
             .exists());
         // The same plan passes once the check allows it.
-        let published = publish_checked(&store, &plan, &|_, _| {}, &|| false, &|_| Ok(())).unwrap();
+        let published =
+            publish_checked(&store, &plan, &|_, _| {}, &|| false, &|_, _| Ok(())).unwrap();
         assert_eq!(published.descriptor().digest, digest);
     }
 
