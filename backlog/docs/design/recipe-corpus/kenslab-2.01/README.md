@@ -54,3 +54,8 @@ archive was not obtained). The `.hcl` file is the first round's.
 7. **The licence stays in each recipe.** The full version is freeware under
    the author's terms, the shareware episode under the publisher's; a work
    file may not hold `[license]`.
+8. **The shareware recipe had lost its licence.** Its first draft had no
+   `[license]` and still named `unemu/`, which §7.3 refuses; the corpus
+   check (recipes.md §4.6) caught it. It now states the publisher's terms,
+   PLACEHOLDER like the rest of its data, with the terms text as an extra
+   taken from the archive. 35 lines became 45.

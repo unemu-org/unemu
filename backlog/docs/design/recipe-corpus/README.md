@@ -52,7 +52,7 @@ data. Lines without blanks and comments, MEASURED:
 | `freedos-1.4-floppy/freedos-1.4-720k` | 151 | 142 |
 | `freedos-1.4-floppy/freedos.work` | — | 15 |
 | `kenslab-2.01/kenslab-2.01` | 94 | 86 |
-| `kenslab-2.01/kenslab-1.0-shareware` (new) | — | 35 |
+| `kenslab-2.01/kenslab-1.0-shareware` (new) | — | 45 |
 | `kenslab-2.01/kenslab.work` | — | 15 |
 | `contra-nes/contra-usa` | 36 | 27 |
 | `contra-nes/contra-japan` | 36 | 27 |
@@ -151,7 +151,8 @@ stay open:
     names the file with its header cannot use a No-Intro hash as a hint.
     Needs provider input forms (recipes.md §13).
 11. **Metadata schema 1's list of software platforms** has no NES and no
-    AmigaOS. New platforms need schema 2 or a longer list.
+    AmigaOS. New platforms need schema 2 or a longer list. The corpus
+    check fails `contra.work` and `amdemo` on it (recipes.md §4.6, O1).
 12. **The ROM's hash was written twice** in the open firmware recipe (input
     and `[[rom]]`). Fixed in the specification: a `[[rom]]` with `from`
     takes size and hash from its value; only a ROM in `parts` states them.

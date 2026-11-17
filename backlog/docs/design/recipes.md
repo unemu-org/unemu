@@ -10,7 +10,9 @@ Accepted: decision-34 (inputs by content, the lock), decision-35 (recipe
 artifacts and naming), decision-36 (optional parts), decision-38 (tags and
 versions), decision-39 (work files), and then decision-37 (export
 guarantees) with every remaining recommendation (§16, Also decided). All
-seven records are accepted. The proposed order of work is §19. The corpus of
+seven records are accepted. The proposed order of work is §19. The
+throwaway corpus check (§19.2, B1) ran the same day; its findings, the
+fixes it made and the points it leaves open are §4.6. The corpus of
 real recipes in two syntaxes is in [`recipe-corpus/`](recipe-corpus/README.md).
 
 Markers: **[REPO]** = read in this repository or in unemu-media; **[SRC n]** =
@@ -400,7 +402,7 @@ as they ignore unknown manifest annotations; the checker step verifies it.
 ### 4.1. What the syntax must carry
 
 Measured on the corpus: a description of 10 to 20 short fields and one long
-text; lists of names; an SPDX expression of up to 400 characters; 1 to 3
+text; lists of names; an SPDX expression of up to 256 characters (§4.6); 1 to 3
 inputs for most recipes, 561 for one; 0 to 2 steps; 1 to 12 media; DOS
 names and paths with backslashes; file times without a time zone.
 
@@ -512,6 +514,200 @@ the long step lists, shows TOML to be unreadable there, the fallback is the
 HCL subset of the corpus with the same schema. That is a second parser, not
 a second design. The syntax stays `0.x` until that corpus exists (§14).
 
+### 4.6. Findings of the corpus check (B1)
+
+Done on 2026-11-17 for `upc-5pw.113.1`, before any product code, as §14 and
+§19.2 (B1) ask. Its fixes are already in §6 and in the corpus; what needs a
+decision is the open list at the end.
+
+**What was checked.** A throwaway Rust program of about 2,000 lines,
+outside the repository and not kept, read all 18 `*.toml` files of the
+corpus: 15 recipes and 3 work files. It used the `toml` crate at the
+version the workspace pins (1.2.1+spec-1.1.0, whose parser is
+`toml_parser` 1.1.5) and a serde model of §6 that refuses unknown keys at
+every level. It applied §6.1, merged work files by §6.16 and ran every
+rule of §6.11; rule 8 only as "a `digest` without a lock", since nothing is
+pinned. Platform data came from mock providers: `ibm-pc` with the media
+formats, ROM roles, boards and lanes of `pc-image`, the needs vocabulary of
+§6.7 and the two firmware catalogue entries the corpus names [REPO]; `nes`
+and `amiga` with the corpus's own ASSUMED words. A real checker refuses the
+five recipes of those two platforms at `platform`, as rule 7 says; the mocks
+let the rest of each recipe be checked. The `.hcl` files were not read:
+they are the fallback's evidence (decision-33).
+
+**Per recipe.** MEASURED, after the fixes below.
+
+| File | Result |
+| --- | --- |
+| `freedos-1.4-floppy`: three recipes and `freedos.work` | Pass. Each medium's member size fits its format. |
+| `freedos-1.4-livecd` | Pass. |
+| `kenslab-2.01/kenslab-2.01` and `kenslab.work` | Pass. |
+| `kenslab-2.01/kenslab-1.0-shareware` | Failed, fixed: it had no `[license]` and was named under `unemu/` (§7.3). |
+| `azuramon/azuramoon-2026` | Pass: 561 file-set entries, all 8.3 names, ten volumes. |
+| `windows-3.0/windows-3.0-1.2m` | Pass. A warning: the placeholder size of `users-guide`, 1 byte, would meet the 256-byte guard of §6.13 at push. |
+| `unemu-at-bios`, `ibm-5170-bios` | Pass. Licence, size and hash agree with the firmware catalogue. |
+| `contra-nes`: four recipes | Pass, through the work file. |
+| `contra-nes/contra.work` | Fails: `software_platform = "NES"` is not in metadata schema 1's list (O1). |
+| `amiga-adf/amdemo` | Fails: `software_platform = "AmigaOS"`, the same (O1). |
+
+The split of rule 5: every input is required except Windows 3.0's
+`users-guide`, which only the attachment uses. No recipe has an unused
+input or step, a reference forward or a duplicate name.
+
+**Fixes made.** Each is small and in place.
+
+| Where | Fix |
+| --- | --- |
+| `kenslab-1.0-shareware` | Gains the `[license]` its folder's README already called for (the publisher's terms), PLACEHOLDER like the rest of its data, with the terms text as an extra from the archive. 35 lines became 45. |
+| §6.1 | The ASSUMED note on the `toml` crate is now MEASURED, with the method. |
+| §6.2 | `work` is media only; `[machine]` is reserved and a 0.1 checker refuses it; the extras of attachments share the output-id namespace. |
+| §6.6 | The source rule per kind, as the importers apply it: a set's expression that is not one `LicenseRef-`, a firmware package's copyleft one. A ROM the catalogue lists as user-supplied takes no `[license]`. An expression is at most 256 bytes, as the store keeps it. |
+| §6.8 | `ids[].db` is one of `no-intro`, `redump`, `tosec`, `mame`, and a MAME `set` may be a machine's ROM set: the IBM 5170 BIOS is one, not a software list. A file-set entry's `time` has a member's form. |
+| §6.9 | A member's time has a year from 1980 to 2107, which FAT and zip can hold. |
+| §6.10 | Of a part's keys, `lane` and `from` are required, `position` and `part_number` optional, and `offset` defaults to 0, as in the package config. |
+| §6.11, rule 3 | Also a member path the tree does not list: every tree of 0.1 lists its members. |
+| §6.16 | A work file states `recipe`, as the example and all three corpus work files do. |
+| §10 | NES `tv_system`, not `tv-system`: keys are `snake_case`. |
+| §4.1 | The longest SPDX expression is 256 characters (FreeDOS), not 400. |
+
+The FreeDOS expression is exactly at the store's 256-byte limit (MEASURED).
+One more licence in a later FreeDOS release would not fit; that is a limit
+of the store to revisit then, not of recipes.
+
+**TOML 1.1.** MEASURED with a probe of 19 snippets.
+
+| Parser | TOML 1.1 cases refused | TOML 1.0 controls parsed |
+| --- | --- | --- |
+| `toml` 1.2.1 alone, the workspace's | 0 of 11 | 7 of 7 |
+| `toml` 1.2.1 after the pre-pass below | 11 of 11 | 7 of 7, none flagged |
+| `toml` 0.9.2 with `toml_parser` 1.0.1 | 6 of 6 | 1 of 1 |
+| Python 3.13 `tomllib` | 6 of 6 | 1 of 1 |
+
+The crate has no switch for TOML 1.0, neither a feature nor an option, and
+`toml_datetime` 1.1 even models a time without seconds as
+`second: Option<u8>` [READ: the crate sources]. Three ways out were
+weighed. A version pin works, since 0.9.2 refuses all four forms, but holds
+the whole workspace on an old crate line for good. A second, strict
+parser means two grammars that can disagree. The way taken is a pre-pass
+over the event stream of `toml_parser`, the parser inside the crate, about
+120 lines. It refuses a line break or a comment while the innermost open
+container is an inline table, a value separator followed by that table's
+close, `\e` or `\x` in a basic string or a quoted key, and a bare value
+whose time has hours and minutes and no seconds. Its controls include a
+multi-line array inside an inline table, an escaped backslash before `e`,
+`'C:\x'` in a literal string and a line-ending backslash. Recommendation
+for B4: the pre-pass, proved on the TOML 1.0 cases of `toml-test`
+[SRC 3], every valid one parsed and every invalid one refused by the
+pre-pass and the crate together (ASSUMED: the suite can select its 1.0
+cases; not tried).
+
+**Error messages.** MEASURED on 44 broken copies of corpus files, one
+change each: an unknown key, a float for an integer, each 1.1 form, a
+byte-order mark, a reference to a later step, a member the tree lacks, a
+licence that names no extra, an unknown need in a work file, a `digest`
+without a lock, a release field in a work file, and so on. The checker
+refused all 44, and every message names the file, line, column, key path
+and rule:
+
+```text
+kenslab-2.01/kenslab-2.01.media.toml:15:1: error[6.1] media.revison: unknown field `revison`, expected one of `name`, `platform`, `release`, `revision`, `digest`, `min_app_version`
+kenslab-2.01/kenslab-2.01.media.toml:49:27: error[6.1] step[1].members[1]: a line break inside an inline table is TOML 1.1 syntax; recipes are TOML 1.0
+kenslab-2.01/kenslab.work.toml:20:9: error[6.11.7] needs.video: "8514" is not one of mda, hercules, cga, ega, mcga, vga, svga, or none
+kenslab-2.01/kenslab-2.01.media.toml:96:8: error[6.11.3] extra[1].from: the tree "files" has no member "READ.ME"
+```
+
+What B4 should do better than the throwaway:
+
+- serde stops at the first error of a file, and its type errors name Rust
+  types (`invalid type: floating point 940242.0, expected i64`).
+- `toml::de::Error` carries a span but no public key path. The checker
+  recovered the path from the spans of `toml::de::DeTable`, the innermost
+  key or value around the error; B4 can do the same. A missing key is still
+  reported at the table header, without the array index
+  (`medium: missing field format`).
+- Errors cascade. A broken reference also leaves its target unused
+  (rule 4), and a step with two verbs makes every reference to it unknown.
+  Rule 4 should skip values behind a failed reference.
+- A work file's needs are checked against each recipe's platform, so one
+  bad value is found once per recipe. The message names the work file, and
+  the copies must be merged.
+
+**JSON Schema.** One schema covers the three file kinds 0.1 specifies,
+Mediafile, Firmwarefile and work file:
+[`recipe-schema-0.1.json`](recipe-schema-0.1.json), draft 2020-12, about 560
+lines. It dispatches on `work` being a table (a work file) and on
+`[firmware]`, and carries the `ibm-pc` vocabularies under an `if` on
+`platform`; other platforms get the shape only. MEASURED with Python
+`jsonschema` 4.26, and the schema itself passes the 2020-12 metaschema. On
+the corpus it gives exactly the checker's failures: the two above and,
+before the fix, the shareware recipe's. Of the 44 broken copies it refuses
+27, six of them only because Python's TOML 1.0 parser refuses the file
+first.
+
+It expresses every key, type and required key; the closed vocabularies;
+ids, hashes, the release grammar with its ban on an `rN` part, a local time
+with even seconds, 8.3 names and volume labels as patterns; one verb per
+step with that verb's keys (`oneOf` of closed objects); a file or a file
+set; a ROM from one value or in parts; a bundled input of at most 1 MiB and
+a disclosable file under 256 bytes; no `[license]` means not under
+`unemu/`; the source rules of §6.6; `synopsis` only in a work file and the
+release fields only in a recipe.
+
+It cannot express the following, so `upcli recipe check` stays the
+authority:
+
+1. Syntax: the 1.1 forms, a byte-order mark, the 1 MiB limit. A schema sees
+   data after parsing, and an editor whose TOML parser reads 1.1 accepts
+   them (ASSUMED for Taplo and Even Better TOML; not tried).
+2. Types the TOML-to-JSON mapping loses: `integer` accepts a float without
+   a fraction (`940242.0` passed), and a local date-time becomes a string,
+   so a time written as a quoted string passes.
+3. References: an input or an earlier step, a member the tree lists, a file
+   or a tree, unused inputs and steps, `terms` and `source` naming an extra.
+4. Uniqueness of one key across items: output ids over four arrays, value
+   names over inputs and steps, file-set and member paths, DOS names.
+   `uniqueItems` compares whole items only.
+5. Sums: at most 256 outputs and 100,000 file-set entries, each counted
+   over several arrays.
+6. Equality between fields or files: the work id and the last component of
+   `name`; the platform segment of `name`, except per known platform;
+   `players.min` at most `max`; sizes and hashes against the catalogue; the
+   work file's existence and the merge; the lock beside a `digest`.
+7. A work file's needs: a work file states no platform.
+8. SPDX: the nesting of the grammar and the identifier list; a character
+   pattern stands in.
+9. Good messages: a failed `oneOf` says "is not valid under any of the
+   given schemas"; the validator's best match recovers the useful one.
+
+A keyword beside `$ref` needs draft 2019-09 or later. Which editors read
+draft 2020-12 is ASSUMED, not tried.
+
+**Open after B1.** Decisions, not fixes.
+
+- **O1. Software platforms of new platforms.** `software_platform` is
+  metadata schema 1's list (`image_store::metadata`), which the importer
+  enforces and the codec keeps open [REPO]. It has neither `NES` nor
+  `AmigaOS`, so `contra.work` and `amdemo` fail. Either the list grows,
+  append-only (§9, row 7), when a platform arrives, or each provider owns
+  its part of it. The keys of `[ids]` (`wikidata`, `mobygames`, `igdb` in
+  the checker) raise the same question.
+- **O2. Four more static checks**, as a rule 10 of §6.11: a stated size the
+  medium's format does not allow; a `fat` step whose format differs from
+  the medium it feeds; a name in a `fat` tree that the volume profile
+  refuses (§6.9 leaves it to the build, but the names are in the recipe);
+  a ROM whose size or hash differs from its catalogue entry. The checker
+  had all four; none fires on the corpus.
+- **O3. Who keeps the schema.** It holds provider vocabularies, so a copy
+  kept by hand drifts. Either `upcli` generates it from the providers (B4)
+  and the freeze publishes it (B17), or it is kept by hand.
+- **O4. A work file's version.** May a recipe of one version name a work
+  file of another? It matters from the second version on.
+- **O5. A work whose releases differ in openness.** A shareware episode
+  under `unemu/` and a registered version under `private/` are two
+  repositories of one work, against "the work is the repository" (§6.16).
+  The corpus avoids it only because both Ken's Labyrinth releases are
+  open.
+
 ## 5. A first example
 
 Ken's Labyrinth 2.01, complete. It names the author's archive, takes its
@@ -619,9 +815,10 @@ change until the freeze of §14.
 - **TOML 1.0.0** [SRC 3]. Syntax that only TOML 1.1 accepts (a line break or
   a trailing comma inside an inline table, the `\e` and `\xHH` escapes, a
   time without seconds) is refused, so that every TOML 1.0 parser reads
-  every recipe. ASSUMED: the `toml` crate this repository uses reads TOML
-  1.1 [REPO: `Cargo.lock`, `toml 1.2.1+spec-1.1.0`] and has no 1.0-only
-  mode, so the checker needs its own refusal of these four forms.
+  every recipe. MEASURED (§4.6): the `toml` crate this repository uses
+  [REPO: `Cargo.lock`, `toml 1.2.1+spec-1.1.0`] reads all four and has no
+  1.0-only mode, so the checker refuses them itself, in a pre-pass over the
+  events of `toml_parser`, the crate's own parser.
 - Value types used: string, integer, boolean, local date-time, array, table.
   A float, an offset date-time, a lone date or a lone time is refused.
 - A key that this section does not name is refused, at every level. So is a
@@ -640,7 +837,7 @@ change until the freeze of §14.
 | Key | Kind | Required | Content |
 | --- | --- | --- | --- |
 | `recipe` | string | yes | The recipe version, `"0.1"`. It selects the schema and the bytes every step writes (§9). |
-| `work` | string | no | The id of the work this is a release of. Its shared description is read from `<id>.work.toml` beside the recipe (§6.16). |
+| `work` | string | no | The id of the work this is a release of. Its shared description is read from `<id>.work.toml` beside the recipe (§6.16). Media only: a work file holds only media tables. |
 | `[media]`, `[firmware]` or `[machine]` | table | exactly one | The kind and the output's identity (§6.3). |
 | `[title]` | table | media: yes | The title record (§6.4). |
 | `[package]` | table | firmware: yes | The package description (§6.5). |
@@ -654,8 +851,12 @@ change until the freeze of §14.
 | `[[extra]]` | array | no | Loose files of the artifact (§6.10). |
 | `[[attachment]]` | array | no | Optional parts (§6.10). |
 
-Inputs and steps share one namespace of value names. Media, ROMs, extras
-and attachments share one namespace of output ids.
+Inputs and steps share one namespace of value names. Media, ROMs, extras,
+attachments and the extras of attachments share one namespace of output
+ids.
+
+`[machine]` is reserved for the Machinefile (§11). Version 0.1 gives it no
+keys, so a 0.1 checker refuses a file that has it.
 
 ### 6.3. Identity: `[media]`, `[firmware]`, `[machine]`
 
@@ -704,15 +905,18 @@ firmware-package config and its descriptive metadata (machine-images §5.3
 
 | Key | Content |
 | --- | --- |
-| `expression` | An SPDX licence expression, or one `LicenseRef-` for a vendor's own terms. |
+| `expression` | An SPDX licence expression, or one `LicenseRef-` for a vendor's own terms. At most 256 bytes with single spaces, as the store keeps it. |
 | `terms` | The id of the `[[extra]]` that holds the licence text. |
 | `source` | The id of the `[[extra]]` that holds the corresponding source archive. |
 
 This is today's open statement (`--open --license --license-text --source`)
 with the same rules and refusals (machine-images §5.2, Redistributable sets
-[REPO]): an expression that is not one `LicenseRef-` needs `source`; `terms`
-is required for a set; a firmware package's expression must equal the one
-the firmware catalogue records for its ROM. Without `[license]` every layer
+[REPO]): a set's expression that is not one `LicenseRef-` needs `source`,
+and so does a firmware package's expression with a GPL, LGPL, AGPL or MPL
+identifier anywhere in it; `terms` is required for a set; a firmware
+package's expression must equal the one the firmware catalogue records for
+its ROM, and a ROM the catalogue lists as user-supplied takes no
+`[license]`. Without `[license]` every layer
 is `user-supplied`, as an import without `--open` leaves it. The push guard
 is unchanged and decides alone what may leave the machine.
 
@@ -801,10 +1005,10 @@ An input is a single file or a file set.
 | --- | --- | --- |
 | `name` | yes | The canonical file name (a file) or folder name (a file set). A hint, never an identity. |
 | `size`, `sha256` | a file: yes | Exact byte size and lower-case SHA-256. |
-| `files` | a file set: yes | An array of `{ path, size, sha256 }`, optionally with `time`. Paths are relative, use `/`, and are unique. |
+| `files` | a file set: yes | An array of `{ path, size, sha256 }`, optionally with `time` in the form of an `unpack` member's (§6.9). Paths are relative, use `/`, and are unique. |
 | `names` | no | Other names the file is known under. |
 | `crc32`, `md5`, `sha1` | no | Weaker hashes, as catalogues carry them. Hints for choosing candidates. |
-| `ids` | no | An array of `{ db, set, name }`: the dump's entry in No-Intro, Redump, TOSEC or a MAME software list [SRC 9, 10]. |
+| `ids` | no | An array of `{ db, set, name }`, all three required: the dump's entry in No-Intro, Redump, TOSEC or MAME [SRC 9, 10]. `db` is `no-intro`, `redump`, `tosec` or `mame`; for MAME, `set` is a machine's ROM set or a software list. |
 | `urls` | no | `https` URLs that serve exactly these bytes, tried in order. |
 | `bundle` | no | `true`: the bytes travel with the recipe (§7.1). Only for our own text, at most 1 MiB. |
 | `disclosable` | no | `true`: this file is under 256 bytes and its hash may be published all the same (§6.13). Also allowed on a file-set entry. |
@@ -834,9 +1038,9 @@ directory entries are skipped and not counted by `complete`; CRC-32 and the
 declared size are verified, and `size` and `sha256` when given.
 
 Nothing but bytes is taken from the archive (§3.4). A member's time is the
-`time` the recipe states, a local date-time with even seconds, which is
-what both a zip entry and a FAT directory entry can hold. `upcli recipe
-scaffold` writes the list, with sizes, hashes and the archive's own times,
+`time` the recipe states, a local date-time with even seconds and a year
+from 1980 to 2107, which is what both a zip entry and a FAT directory
+entry can hold. `upcli recipe scaffold` writes the list, with sizes, hashes and the archive's own times,
 when a recipe is first written. When the archive is opened and a stated
 size, hash or time differs from the archive's, the build stops: a recipe
 may not claim an archive's times and state others. A member with `size` and
@@ -901,7 +1105,7 @@ The operand must be ASCII in v1.
 | `id`, `role` | yes | As in the package config: `system-bios`, `video-bios`, `option-rom`, … |
 | `catalogue_id` | no | The firmware catalogue entry. |
 | `from` | one of | A file: a ROM stored as one blob. Its size and hash are the value's. |
-| `parts` | one of | An array of `{ position, part_number, lane, offset, from }`: one blob per chip. |
+| `parts` | one of | An array of `{ position, part_number, lane, offset, from }`: one blob per chip. `lane` and `from` are required; `position` and `part_number` are optional, and `offset` defaults to 0, as in the package config. |
 | `size`, `sha256` | with `parts` | The logical ROM, the chips assembled. Refused with `from`. |
 
 **`[[extra]]`**: `id`, `file_name`, `kind` (`document`, `archive`,
@@ -918,8 +1122,10 @@ of `[[extra]]`.
 1. a file that is not the TOML of §6.1, or has an unknown key, type or value;
 2. no identity table, or two; a table that belongs to another kind;
 3. a duplicate value name or output id; a reference to a name that is not
-   an input or an earlier step; a member path under a value that is a file;
-   a file where a tree is wanted, or a tree where a file is wanted;
+   an input or an earlier step; a member path under a value that is a file,
+   or one the tree does not list (every tree of 0.1 lists its members: a
+   file set, an `unpack` step, the volumes `1` to `N` of a `fat` step); a
+   file where a tree is wanted, or a tree where a file is wanted;
 4. an input or a step that no output uses;
 5. nothing here, but it prints the split: every input a `[[medium]]`,
    `[[rom]]` or top-level `[[extra]]` depends on is required, every other
@@ -1064,10 +1270,11 @@ description = "…"
 ```
 
 **The file.** `<id>.work.toml`, in the recipe's own folder. `work = "contra"`
-names it by id; there is no path to write and none to escape through. Its
-identity table is `[work]` with `id`. It may hold `[title]`, `[ids]` and
-`[needs]`, and nothing else: no inputs, steps, outputs, licence, digest or
-`work` key of its own. One level only: a work file includes nothing.
+names it by id; there is no path to write and none to escape through. It
+states `recipe` as a recipe does, and its identity table is `[work]` with
+`id`. Besides those it may hold `[title]`, `[ids]` and `[needs]`, and
+nothing else: no inputs, steps, outputs, licence, digest or `work` key of
+its own. One level only: a work file includes nothing.
 
 **The work is the repository.** The last component of a recipe's `name`
 must equal its work's id. So all releases of one work on one platform are
@@ -1376,7 +1583,7 @@ today's `MediaFormats` and firmware rules [REPO]:
 | Media formats: name to config format, exact size, export extension | `1.44M`, `iso-2048` | Amiga `880K` (ADF); NES `ines`; C64 `d64` |
 | Volume profile for a file-system step: geometry, BPB values, boot sector convention, name rules | The four PC/AT diskette formats and DOS 8.3 names | Atari ST: other BPB conventions and serial placement in the same FAT12 |
 | Firmware roles and catalogue | `system-bios`, `video-bios`, `option-rom` | Amiga Kickstart; a console's boot ROM |
-| Needs vocabulary | `cpu`, `video`, `sound` | Amiga `chipset`, `kickstart`, `memory`; NES `tv-system` |
+| Needs vocabulary | `cpu`, `video`, `sound` | Amiga `chipset`, `kickstart`, `memory`; NES `tv_system` |
 | Input forms (later, §13) | none | NES: the cartridge without its 16-byte iNES header |
 
 The corpus has two recipes for platforms that do not exist yet (an Amiga
@@ -1521,9 +1728,10 @@ As the maintainer accepted: nothing freezes before it meets reality.
 
 1. **Corpus** (done here, as drafts): `recipe-corpus/`, nine recipes in two
    syntaxes.
-2. **Throwaway checker**: a small parser and the static checks of §6.11 for
-   both syntaxes, run over the corpus. It settles the ASSUMED points of
-   §6.1 and §3.10 and gives the first real error messages.
+2. **Throwaway checker** (done for TOML, §4.6): a small parser and the
+   static checks of §6.11 for both syntaxes, run over the corpus. It
+   settles the ASSUMED points of §6.1 and §3.10 and gives the first real
+   error messages.
 3. **Decisions** 33 to 38, each accepted or changed on its own.
 4. **`0.x`**: the engine behind an experimental flag; unemu-media migrates;
    one private recipe (Windows 3.0 or AZURAMON) is built end to end from a
@@ -1623,10 +1831,11 @@ derive a work entry.
   kind; the `disclosable` guard for files under 256 bytes in published
   user-supplied recipes.
 
-Nothing in this document waits for a decision now. Two small readings are
-the author's and can be corrected without touching anything else: `none`
-stays a value of every choice kind in `[needs]` (§6.7), and the ASSUMED
-points of §6.1 and §3.10 are left to the checker (§19, B1 and A3).
+None of these questions waits for a decision now; the corpus check left
+five points of its own, listed in §4.6. Two small readings are the
+author's and can be corrected without touching anything else: `none` stays
+a value of every choice kind in `[needs]` (§6.7), and the ASSUMED point of
+§3.10 is left to A3 (§19). The one of §6.1 was settled by the corpus check.
 
 ## 17. Differences from the earlier design
 
@@ -1812,7 +2021,7 @@ prove or disprove: every corpus recipe passes, or the specification or the
 recipe is corrected; the `toml` crate can be made to refuse the four 1.1
 forms; the error messages name file, line and key; the schema of §6 can be
 written as one JSON Schema. Its findings change this document before any
-product code is written.
+product code is written. Done on 2026-11-17: §4.6.
 
 **B2. Metadata schema 2. [PRE]**
 Scope: the title record gains `needs`, `requirements`, the work id, the
