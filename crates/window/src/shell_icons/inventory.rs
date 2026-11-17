@@ -59,7 +59,6 @@ const TOOLBAR_ONLY_MACHINE: &str =
      this command is not on it (it is in the menus and the details pane)";
 const SYSTEM_TITLE_BAR: &str =
     "a window button; the system title bar draws it (the classic title strip has none)";
-const PULL_LATER: &str = "Pull from the Remotes list is not built yet";
 const CLOSE: &str =
     "dialog close buttons where the app's dialogs have one (Settings, Preferences, New machine, Edit metadata)";
 
@@ -195,8 +194,8 @@ pub(super) const INVENTORY: &[Entry] = &[
     glyph(ACCOUNTS, '□', "maximise", Place::Missing(SYSTEM_TITLE_BAR)),
     // get-templates.html.
     svg(TEMPLATES, "viewBox=\"0 0 48 48\"", "no machine images yet", Place::Painted(Icon::EmptyLibrary, "the empty library card")),
-    glyph(TEMPLATES, '✓', "pulled", Place::Text("Get templates… results")),
-    glyph(TEMPLATES, '✗', "failed", Place::Text("Get templates… results")),
+    glyph(TEMPLATES, '✓', "pulled", Place::Text("Pull… results of Remotes, which replaced the Get templates dialog")),
+    glyph(TEMPLATES, '✗', "failed", Place::Text("Pull… results of Remotes, which replaced the Get templates dialog")),
     glyph(TEMPLATES, '×', "close", Place::Text(CLOSE)),
     glyph(TEMPLATES, '□', "maximise", Place::Missing(SYSTEM_TITLE_BAR)),
     // media-picker.html.
@@ -241,7 +240,7 @@ pub(super) const INVENTORY: &[Entry] = &[
     // The Remotes mock-up: browsing configured registries from the library.
     svg(REMOTES, "fill=\"#c9d6e8\" stroke=\"#0b1a33\"", "application", Place::Painted(Icon::App, "classic title strip")),
     svg(REMOTES, "M4 2l10 6-10 6z", "Start", Place::Painted(Icon::Play, "toolbar Start")),
-    svg(REMOTES, "M8 3v10M4 9l4 4 4-4", "Pull", Place::Missing(PULL_LATER)),
+    svg(REMOTES, "M8 3v10M4 9l4 4 4-4", "Pull", Place::Painted(Icon::Pull, "toolbar Pull…, while the library shows Remotes: the tags selected there")),
     svg(REMOTES, "M13 8a5 5 0 1 1-1.5-3.6", "Refresh a registry listing", Place::Painted(Icon::Refresh, "toolbar Refresh, which lists the shown registry again")),
     svg(REMOTES, "M5 4.5h1M5 11.5h1", "a registry", Place::Painted(Icon::Registry, "Remotes tree: each registry; toolbar Registries…")),
     svg(REMOTES, "M5 14h6M8 11v3", "a machine", Place::Painted(Icon::Machine, "tree Machines, machine rows, the machine details heading")),
@@ -256,7 +255,7 @@ pub(super) const INVENTORY: &[Entry] = &[
     svg(REMOTES, "M4 12h12l3 3h17v19H4z", "an empty registry namespace", Place::Painted(Icon::EmptyRegistry, "Remotes list: the message of a registry with nothing published")),
     svg(REMOTES, "M20 10v10l7 4", "a registry listing in progress", Place::Painted(Icon::Listing, "Remotes list: the message of a listing before its first row")),
     glyph(REMOTES, '⚠', "a registry or tag that needs attention", Place::Text("Remotes strips of a stopped or stale listing, and the Local state of a tag whose local name holds another image")),
-    glyph(REMOTES, '✓', "a pulled tag", Place::Missing(PULL_LATER)),
+    glyph(REMOTES, '✓', "a pulled tag", Place::Text("Remotes Pull… results")),
     glyph(REMOTES, '−', "an expanded repository group", Place::Text("repository group rows")),
     glyph(REMOTES, '▲', "sorted ascending", Place::Text("sortable column headers")),
     glyph(REMOTES, '▼', "sorted descending", Place::Text("sortable column headers")),

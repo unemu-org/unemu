@@ -17,16 +17,22 @@
 //! A node's list is the library's grid with the mock-up's columns: Name,
 //! Source, Title, Latest, Type, Licence, Size and Local state. A repository
 //! row stands for the tag the model chose (the newest release, else the
-//! newest set tag or firmware revision); a repository of several tags
-//! expands into them, newest first. A tag this release cannot run is muted
-//! and says "Needs unemupc X or newer" (machine-images §5.6). Above the rows
-//! a strip says a listing runs, stopped, or answers no more; instead of the
-//! rows a message says why nothing is listed, with the action the model
-//! offers. Next 50 › reads the catalog's next page; F5 and the toolbar's
-//! Refresh list the registry again. Every request runs on the library
-//! worker, so the window never waits for a registry.
+//! newest set tag or firmware revision this release runs); a repository of
+//! several tags expands into them, newest first. A tag this release cannot
+//! run is muted and says "Needs unemupc X or newer" (machine-images §5.6); a
+//! repository is muted only when none of its versions runs here, and
+//! otherwise its row names the newer versions that need a newer release.
+//! Above the rows a strip says a listing runs, stopped, or answers no more;
+//! instead of the rows a message says why nothing is listed, with the action
+//! the model offers. Next 50 › reads the catalog's next page; F5 and the
+//! toolbar's Refresh list the registry again. Every request runs on the
+//! library worker, so the window never waits for a registry.
 //!
-//! The details pane of a remote tag and Pull are not built yet.
+//! A click selects a tag; Ctrl (⌘ on macOS) adds or removes one and Shift
+//! selects the rows between the last click and this one, so Pull… takes
+//! several. Enter on a tag's row opens Pull…. The details pane of the
+//! selection is [`details`]; File › Get templates… and the empty library's
+//! button show Remotes › the default registry › `unemu/` › Machine images.
 
 use super::{
     fit_columns, human_size, pane, sort_header, table_width, Cell, Columns, LibraryView, Request,
@@ -42,7 +48,7 @@ use crate::{
 };
 use egui::{AtomExt, Color32, Rect, RichText, Sense, Stroke, Vec2};
 use image_registry::{reference::OFFICIAL_NAMESPACE, DEFAULT_REGISTRY};
-use image_store::{compat, media_set, media_type as mt};
+use image_store::{media_set, media_type as mt};
 use std::collections::BTreeSet;
 
 /// An artifact-type group under a namespace, as the mock-up's tree groups
@@ -141,8 +147,17 @@ pub(crate) struct RemotesView {
     open: BTreeSet<String>,
     /// Expanded repositories by host and name.
     expanded: BTreeSet<(String, String)>,
-    /// The selected tag: host, repository and tag.
+    /// The selected tag, the one the details pane shows when one is:
+    /// host, repository and tag.
     selected: Option<(String, String, String)>,
+    /// Several tags of the shown registry selected with Ctrl or Shift, by
+    /// repository and tag in the order they were added; empty, or one tag
+    /// alone, when `selected` stands for the selection.
+    multi: Vec<(String, String)>,
+    /// Where Shift selects from: the row clicked last, by repository and tag.
+    anchor: Option<(String, String)>,
+    /// Contents… while it is open: host, repository and tag.
+    pub(super) contents: Option<(String, String, String)>,
     sort: usize,
     descending: bool,
     /// Log in… opened Preferences on this registry; it lists again once
@@ -170,6 +185,96 @@ struct ListCache {
 }
 
 impl RemotesView {
+    /// A click on a tag's row of `host`: alone, it selects the tag; with
+    /// Ctrl (⌘ on macOS) it adds the tag to the selection or takes it out;
+    /// with Shift it selects every row between the last click and this one.
+    fn pick(&mut self, host: &str, repository: String, tag: String, modifiers: egui::Modifiers) {
+        let clicked = (repository, tag);
+        let current = self
+            .selected
+            .as_ref()
+            .filter(|(h, _, _)| h == host)
+            .map(|(_, r, t)| (r.clone(), t.clone()));
+        if modifiers.command {
+            if self.multi.len() < 2 {
+                self.multi = current.into_iter().collect();
+            }
+            match self.multi.iter().position(|id| *id == clicked) {
+                Some(index) => {
+                    self.multi.remove(index);
+                }
+                None => self.multi.push(clicked.clone()),
+            }
+        } else if let (true, Some(anchor)) = (modifiers.shift, self.anchor.clone()) {
+            let rows = self.shown_rows();
+            let at = |id: &(String, String)| rows.iter().position(|row| row == id);
+            self.multi = match (at(&anchor), at(&clicked)) {
+                (Some(a), Some(b)) => {
+                    let mut range: Vec<(String, String)> = Vec::new();
+                    for row in &rows[a.min(b)..=a.max(b)] {
+                        if !range.contains(row) {
+                            range.push(row.clone());
+                        }
+                    }
+                    range
+                }
+                _ => vec![clicked.clone()],
+            };
+        } else {
+            self.multi.clear();
+        }
+        if !modifiers.shift {
+            self.anchor = Some(clicked.clone());
+        }
+        let focus = match self.multi.as_slice() {
+            [only] => only.clone(),
+            _ => clicked,
+        };
+        if self.multi.len() < 2 {
+            self.multi.clear();
+        }
+        self.selected = Some((host.into(), focus.0, focus.1));
+    }
+
+    /// The shown list's rows from the top, each by its repository and the
+    /// tag it stands for, as the list last drew them.
+    fn shown_rows(&self) -> Vec<(String, String)> {
+        let (Some(model), Some(cache)) = (&self.model, &self.list) else {
+            return Vec::new();
+        };
+        let Some(view) = model.registry(&cache.node.host) else {
+            return Vec::new();
+        };
+        cache
+            .lines
+            .iter()
+            .filter_map(|line| {
+                let repository = view.repositories.get(line.repository)?;
+                let tag = line
+                    .tag
+                    .clone()
+                    .or_else(|| repository.representative.clone())?;
+                Some((repository.name.clone(), tag))
+            })
+            .collect()
+    }
+
+    /// The selected tags of the shown registry, by repository and tag: the
+    /// several Ctrl or Shift chose, else the one selected.
+    pub(super) fn selection(&self) -> Vec<(String, String)> {
+        let Some(node) = &self.node else {
+            return Vec::new();
+        };
+        if self.multi.len() > 1 {
+            return self.multi.clone();
+        }
+        self.selected
+            .iter()
+            .filter(|(host, _, _)| *host == node.host)
+            .map(|(_, repository, tag)| (repository.clone(), tag.clone()))
+            .collect()
+    }
+
     pub fn new() -> Self {
         Self {
             model: None,
@@ -177,6 +282,9 @@ impl RemotesView {
             open: BTreeSet::new(),
             expanded: BTreeSet::new(),
             selected: None,
+            multi: Vec::new(),
+            anchor: None,
+            contents: None,
             // The mock-up's list opens sorted by type.
             sort: TYPE_COLUMN,
             descending: false,
@@ -726,38 +834,27 @@ fn draw_row(
     answer
 }
 
-/// What the Type column says of an artifact type: under `unemu/` a machine
-/// image is a template, as the mock-up decides.
+/// Whether a repository holds official templates: one name right under
+/// `unemu/`, such as `unemu/open-at`, as Get templates always named them.
+/// Deeper repositories under `unemu/` (`unemu/staging/…`) list under the
+/// same node as machine images, not templates.
+fn template(repository: &str) -> bool {
+    repository
+        .strip_prefix(OFFICIAL_NAMESPACE)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .is_some_and(|name| !name.is_empty() && !name.contains('/'))
+}
+
+/// What the Type column says of an artifact type: a machine image of an
+/// official template repository is a template, as the mock-up decides.
 fn type_label(artifact_type: &str, repository: &str) -> &'static str {
     match Group::of(artifact_type) {
-        Some(Group::Machines) if first_component(repository) == Some(OFFICIAL_NAMESPACE) => {
-            "Machine template"
-        }
+        Some(Group::Machines) if template(repository) => "Machine template",
         Some(Group::Machines) => "Machine image",
         Some(Group::Media) => "Installation media",
         Some(Group::Firmware) => "Firmware package",
         None => "Other artifact",
     }
-}
-
-/// "Needs unemupc X or newer" when this release does not run the tag, by
-/// the `unemu.min-app-version` of its manifest read as the store reads it:
-/// a value that is not a release version is unmet (machine-images §5.6).
-fn needs_newer(record: &TagRecord) -> Option<String> {
-    let requirement = match record.min_app_version.as_deref() {
-        None => compat::Requirement::None,
-        Some(text) => text.parse().map_or_else(
-            |_| compat::Requirement::Invalid(text.into()),
-            compat::Requirement::Release,
-        ),
-    };
-    if requirement.met_by(compat::level()) {
-        return None;
-    }
-    Some(compat::needs(match requirement {
-        compat::Requirement::Release(required) => Some(required),
-        _ => None,
-    }))
 }
 
 /// The Local state cell of a read tag, and whether the row is muted.
@@ -766,8 +863,8 @@ fn state_parts(row: &TagRow) -> (Vec<Part>, bool) {
         Ok(record) => record,
         Err(reason) => return (vec![(format!("⚠ {reason}"), Tone::Warn)], false),
     };
-    if let Some(needs) = needs_newer(record) {
-        return (vec![(needs, Tone::Warn)], true);
+    if let Some(reason) = record.not_runnable() {
+        return (vec![(reason, Tone::Warn)], true);
     }
     let parts = match &row.local {
         Some(LocalState::InLibrary) => vec![("In library".into(), Tone::Good)],
@@ -851,6 +948,7 @@ fn repository_row(host: &str, repository: &RepositoryRow, open: bool) -> RowCell
             Tone::Muted,
         ));
     }
+    state.extend(newer_needs(repository));
     row.parts[7] = state;
     if let Ok(record) = &tag.record {
         row.icon = Group::of(&record.artifact_type).map(Group::icon);
@@ -863,6 +961,20 @@ fn repository_row(host: &str, repository: &RepositoryRow, open: bool) -> RowCell
         row.parts[6] = vec![(human_size(record.size), Tone::Plain)];
     }
     row
+}
+
+/// The newer versions a repository's row cannot stand for, after its
+/// Local state: " · 1.3.0 needs unemupc 0.2.0 or newer".
+fn newer_needs(repository: &RepositoryRow) -> Vec<Part> {
+    repository
+        .newer_needs
+        .iter()
+        .map(|(tag, needs)| {
+            let mut phrase = needs.clone();
+            phrase[..1].make_ascii_lowercase();
+            (format!(" · {tag} {phrase}"), Tone::Warn)
+        })
+        .collect()
 }
 
 /// One tag's row under its expanded repository.
@@ -1010,12 +1122,16 @@ fn accent(visuals: &egui::Visuals) -> Color32 {
     }
 }
 
-fn action_label(action: Action) -> &'static str {
+/// The button of an action. A login is asked on the registry's entry in
+/// Preferences › Registries, which a registry preferences do not list must
+/// get first: its button says Add registry….
+fn action_label(action: Action, configured: bool) -> &'static str {
     match action {
         Action::Stop => "Stop",
         Action::Refresh => "Refresh",
         Action::TryAgain => "Try again",
-        Action::LogIn => "Log in…",
+        Action::LogIn if configured => "Log in…",
+        Action::LogIn => "Add registry…",
     }
 }
 
@@ -1024,7 +1140,7 @@ fn action_label(action: Action) -> &'static str {
 /// listing runs and in the warning colour otherwise; a spinner or ⚠, the
 /// heading in bold with the text after it, wrapped, and its button at the
 /// right. Returns the action clicked.
-fn strip(ui: &mut egui::Ui, message: &Message, listing: bool) -> Option<Action> {
+fn strip(ui: &mut egui::Ui, message: &Message, listing: bool, configured: bool) -> Option<Action> {
     let visuals = ui.visuals().clone();
     let bar = if listing {
         accent(&visuals)
@@ -1049,7 +1165,9 @@ fn strip(ui: &mut egui::Ui, message: &Message, listing: bool) -> Option<Action> 
                 } else {
                     ui.colored_label(visuals.warn_fg_color, "⚠");
                 }
-                let button = message.action.map(action_label);
+                let button = message
+                    .action
+                    .map(|action| action_label(action, configured));
                 let button_width = button.map_or(0.0, |label| {
                     ui.painter()
                         .layout_no_wrap(
@@ -1115,7 +1233,12 @@ fn message_look(state: &State, visuals: &egui::Visuals) -> (Icon, Color32) {
 /// 40 px picture beside the heading, the text and the button, at most 64
 /// characters wide, in the middle of the list's area. Returns the action
 /// clicked.
-fn message_card(ui: &mut egui::Ui, message: &Message, state: &State) -> Option<Action> {
+fn message_card(
+    ui: &mut egui::Ui,
+    message: &Message,
+    state: &State,
+    configured: bool,
+) -> Option<Action> {
     let (icon, ink) = message_look(state, ui.visuals());
     let area = ui.available_rect_before_wrap();
     let char_width =
@@ -1161,7 +1284,7 @@ fn message_card(ui: &mut egui::Ui, message: &Message, state: &State) -> Option<A
     column.add(egui::Label::new(&message.text).wrap());
     if let Some(action) = message.action {
         column.add_space(4.0);
-        let label = action_label(action);
+        let label = action_label(action, configured);
         let primary = matches!(action, Action::TryAgain | Action::LogIn);
         let response = if primary {
             let button = pane::primary(&column, label);
@@ -1182,17 +1305,13 @@ fn message_card(ui: &mut egui::Ui, message: &Message, state: &State) -> Option<A
 #[derive(Default)]
 struct ListAnswer {
     action: Option<Action>,
-    select: Option<(String, String)>,
+    /// A row's tag was clicked, by repository and tag, with the modifiers
+    /// held.
+    select: Option<(String, String, egui::Modifiers)>,
     toggle: Option<String>,
     next_page: bool,
-}
-
-/// The details pane while a remote node is shown.
-pub(super) fn details(ui: &mut egui::Ui) {
-    pane::meta(
-        ui,
-        "Details and Pull… of remote tags are not built yet. Image › Pull… pulls a tag by its reference.",
-    );
+    /// Enter on a tag's row: Pull….
+    pull: bool,
 }
 
 /// The event that ends a request the worker never got, with `message`.
@@ -1306,10 +1425,9 @@ impl LibraryView {
         self.send_browse(request);
     }
 
-    /// Remotes › the default registry › `unemu/` › Machine images, listed
-    /// first if this session has not. File › Get templates… keeps its dialog,
-    /// which pulls, until the list can pull; then it shows this node.
-    #[cfg_attr(not(test), expect(dead_code))]
+    /// File › Get templates… and the empty library's button: Remotes › the
+    /// default registry › `unemu/` › Machine images, listed first if this
+    /// session has not.
     pub fn show_templates(&mut self, accounts: Accounts, selected_file: &mut Option<usize>) {
         self.attach_remotes(accounts);
         let Some(host) = self
@@ -1347,6 +1465,12 @@ impl LibraryView {
         self.firmware_selected = None;
         self.media_selected = None;
         *selected_file = None;
+        // A tag of another node is no longer shown: Pull… never takes it.
+        if self.remote.node.as_ref() != Some(&node) {
+            self.remote.selected = None;
+            self.remote.anchor = None;
+        }
+        self.remote.multi.clear();
         let request = self
             .remote
             .model
@@ -1440,13 +1564,16 @@ impl LibraryView {
             host = registry.host.clone();
             if let Some(banner) = registry.banner() {
                 let listing = registry.state == State::Listing;
-                answer.action = strip(ui, &banner, listing);
+                answer.action = strip(ui, &banner, listing, registry.configured);
                 ui.add_space(3.0);
             }
             if let Some(message) = registry.message() {
-                answer.action = answer
-                    .action
-                    .or(message_card(ui, &message, &registry.state));
+                answer.action = answer.action.or(message_card(
+                    ui,
+                    &message,
+                    &registry.state,
+                    registry.configured,
+                ));
             } else {
                 let revision = model.revision();
                 let sorted = (view.sort, view.descending);
@@ -1478,6 +1605,7 @@ impl LibraryView {
                     let descending = &mut view.descending;
                     let expanded = &view.expanded;
                     let selected = &view.selected;
+                    let multi = &view.multi;
                     egui::ScrollArea::horizontal()
                         .id_salt(("remote-columns", node))
                         .show(ui, |ui| {
@@ -1502,6 +1630,12 @@ impl LibraryView {
                                         let picked = selected.as_ref().filter(|(h, r, _)| {
                                             *h == host && *r == repository.name
                                         });
+                                        let several = multi.len() > 1;
+                                        let chosen = |tag: &str| {
+                                            multi
+                                                .iter()
+                                                .any(|(r, t)| *r == repository.name && t == tag)
+                                        };
                                         let (cells, tag, is_selected) = match &line.tag {
                                             None => {
                                                 let open = expanded.contains(&(
@@ -1510,7 +1644,12 @@ impl LibraryView {
                                                 ));
                                                 // A collapsed repository shows the
                                                 // selection of any of its tags.
-                                                let is_selected = !open && picked.is_some();
+                                                let is_selected = !open
+                                                    && if several {
+                                                        repository.tags.iter().any(|t| chosen(t))
+                                                    } else {
+                                                        picked.is_some()
+                                                    };
                                                 let cells = repository_row(&host, repository, open);
                                                 (
                                                     cells,
@@ -1519,8 +1658,11 @@ impl LibraryView {
                                                 )
                                             }
                                             Some(tag) => {
-                                                let is_selected =
-                                                    picked.is_some_and(|(_, _, t)| t == tag);
+                                                let is_selected = if several {
+                                                    chosen(tag)
+                                                } else {
+                                                    picked.is_some_and(|(_, _, t)| t == tag)
+                                                };
                                                 (
                                                     tag_row(&host, repository, tag),
                                                     Some(tag.clone()),
@@ -1542,13 +1684,27 @@ impl LibraryView {
                                             index % 2 == 0,
                                             id,
                                         );
-                                        let several = cells.twisty.is_some();
-                                        if row.toggled || (several && (row.double || row.enter)) {
+                                        let expands = cells.twisty.is_some();
+                                        if row.toggled || (expands && (row.double || row.enter)) {
                                             answer.toggle = Some(repository.name.clone());
+                                        } else if let (true, Some(tag)) = (row.enter, &tag) {
+                                            // egui also clicks a focused row on
+                                            // Enter: the focused tag is the one
+                                            // pulled, the selection of several
+                                            // kept when it is part of it.
+                                            if !(several && chosen(tag)) {
+                                                answer.select = Some((
+                                                    repository.name.clone(),
+                                                    tag.clone(),
+                                                    egui::Modifiers::NONE,
+                                                ));
+                                            }
+                                            answer.pull = true;
                                         } else if row.clicked {
                                             if let Some(tag) = tag {
+                                                let modifiers = ui.input(|i| i.modifiers);
                                                 answer.select =
-                                                    Some((repository.name.clone(), tag));
+                                                    Some((repository.name.clone(), tag, modifiers));
                                             }
                                         }
                                     }
@@ -1611,10 +1767,13 @@ impl LibraryView {
                     requests.push(model.expand(host, &repository));
                 }
             }
-            if let Some((repository, tag)) = answer.select {
+            if let Some((repository, tag, modifiers)) = answer.select {
                 requests.push(model.select(host, &repository, &tag));
-                self.remote.selected = Some((host.into(), repository, tag));
+                self.remote.pick(host, repository, tag, modifiers);
             }
+        }
+        if answer.pull && self.can_pull_remote() {
+            self.begin_remote_pull(crate::remote_pull::Mode::Pull);
         }
         if matches!(
             answer.action,
@@ -1627,6 +1786,8 @@ impl LibraryView {
         }
     }
 }
+
+mod details;
 
 #[cfg(test)]
 mod tests;

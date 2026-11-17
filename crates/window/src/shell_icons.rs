@@ -58,6 +58,8 @@ pub(crate) enum Icon {
     EmptyLibrary,
     /// Refresh a registry listing: a circular arrow.
     Refresh,
+    /// Pull from a registry: an arrow pointing down.
+    Pull,
     /// A registry: two stacked server units.
     Registry,
     /// A registry namespace: a folder outline.
@@ -80,7 +82,7 @@ pub(crate) enum Icon {
 impl Icon {
     /// Every icon, in declaration order.
     #[cfg(test)]
-    pub(crate) const ALL: [Icon; 25] = [
+    pub(crate) const ALL: [Icon; 26] = [
         Icon::App,
         Icon::Play,
         Icon::Pause,
@@ -99,6 +101,7 @@ impl Icon {
         Icon::Refusal,
         Icon::EmptyLibrary,
         Icon::Refresh,
+        Icon::Pull,
         Icon::Registry,
         Icon::Namespace,
         Icon::Lock,
@@ -406,6 +409,11 @@ pub(crate) fn paint(
             // the end point at about 314°, then the arrow head.
             pen.line(&Pen::arc_points((8.0, 8.0), 5.0, 0.0, 314.2), 1.5, ink);
             pen.line(&[(12.5, 1.5), (12.5, 5.0), (9.0, 5.0)], 1.5, ink);
+        }
+        Icon::Pull => {
+            // "M8 3v10M4 9l4 4 4-4": the shaft, then the arrow head.
+            pen.segments(&[[(8.0, 3.0), (8.0, 13.0)]], 1.6, ink);
+            pen.line(&[(4.0, 9.0), (8.0, 13.0), (12.0, 9.0)], 1.6, ink);
         }
         Icon::Registry => {
             pen.frame((2.5, 2.5, 11.0, 4.0), ink);
@@ -832,6 +840,7 @@ mod tests {
             Icon::MachineFile,
             Icon::Info,
             Icon::Refresh,
+            Icon::Pull,
             Icon::Registry,
             Icon::Namespace,
             Icon::Lock,

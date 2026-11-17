@@ -100,7 +100,9 @@ cards, firmware and drives. `at-games-open.toml` is the open DOS games machine
 
 - **Desktop app** (`unemupc`, egui): machine, media and firmware
   library; New machine… wizard; Settings on an image and Save as new image…;
-  Get templates…; Push… and Pull…; status-bar drive chips with activity
+  Remotes, which browse the configured registries and pull from them (File ›
+  Get templates… shows the official templates there); Push… and Pull by
+  reference…; status-bar drive chips with activity
   lights; Media menu with Insert from library…; speed controls; macOS
   application menu.
 - **Command line** (`upcli`): run machines headless, check machine files,

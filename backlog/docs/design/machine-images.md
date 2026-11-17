@@ -797,9 +797,49 @@ Stop, Refresh, Try again or Log in… as the state offers. Next 50 › reads the
 catalog's next page; F5, View › Refresh remote and the toolbar's Refresh
 list the shown registry again, and the toolbar's Registries… opens
 Preferences › Registries; every start of a machine stops every listing
-first. A remote tag's details pane and Pull from the list are not built
-yet: File › Get templates… keeps its dialog, which pulls the templates, and
-Image › Pull… pulls by reference. The
+first. A repository row stands for the newest version this release runs:
+`latest`'s version when it is one of the 16 newest and runs here, else the
+newest one that runs here; the listing reads versions newest first until it
+reaches that one, at most the 16 newest, the row names the newer versions
+that cannot run here and why, and only a repository with no such version
+that runs here is muted (§5.6). A tag runs here when it is an IBM PC
+compatible artifact (`ibm-pc`, or the retired `ibm-pc-at`) of the PC
+provider's three types and its release requirement is met; another
+family's image is muted with the reason and cannot be pulled. A login on a registry Preferences does not list says Add
+registry…. A click selects a tag; Ctrl (⌘ on macOS) adds or removes one and
+Shift selects a range. The details pane of one tag shows the manifest's
+annotations (title, vendor, description, licences, source), its digest
+("Pull uses this digest") and type, the edition and version its metadata
+record adds once selected, a media set's disks, the local tag a pull writes
+and its source, the tag's local state, what a pull downloads with the blobs
+the store holds left out, and the repository's tags, each a link. Its
+buttons: Show in library (for a tag in the library), Pull…, Pull and create
+machine… for a machine image (New machine from image… once it is in the
+library), Pull and insert… for a set while a stopped machine has a drive
+that takes every disk (Insert…, the media picker on that drive, once it is
+in the library), and Contents…, which lists every descriptor of the manifest
+with its size, redistribution mark and whether the store holds it, all read
+from the manifest. A tag this release cannot run, one of a registry that no
+longer answers, or one already in the library cannot be pulled, and the pane
+says why under its buttons. For several tags the pane lists them with their
+local states and offers Pull… for those it can take. **Pull…** (also Image ›
+Pull…, the toolbar's Pull…, shown while the library shows Remotes in the room
+of the speed control, and Enter on a tag's row) pulls by the digest the
+list showed through the Pull path, so the local tag is written last (§3.1),
+and never moves a local tag: a tag whose local name holds another image goes
+alone, under another local tag the dialog proposes (`name-new:tag`), and a
+typed tag that names another image is refused before anything is fetched.
+Several tags are pulled one after another under one progress bar that
+counts blobs already in the store as done; tags in the library, tags whose
+local name holds another image, tags this release cannot run and tags of a
+registry that no longer answers are skipped, each with its reason. Cancel or
+Escape stops the running pull at its next read and the waiting ones before
+they contact the registry. Pull and create machine… then opens New machine
+from image… with the manifest's title as the name; Pull and insert… then
+leaves the set's first disk pending in the chosen drive for the machine's
+next Start. After a pull the library refreshes and the row turns In library
+from the store, without a new listing. Image › Pull by reference… pulls an
+image named by its reference, as Image › Pull… did before. The
 library opens on Machines. Every machine change runs on the worker through
 `pc_image::machine`, never on the frame loop:
 
@@ -1137,8 +1177,9 @@ publishing proprietary bytes by accident:
   its verified blobs stay in the store. A confirmed tag move is bound to the
   digest the user was shown: if the tag names another digest when the push
   starts, the confirmation is asked again.
-- The desktop shell's Image › Push… and Image › Pull… follow the approved
-  registry-accounts mock-up. Push… shows the dry run of the local image (every
+- The desktop shell's Image › Push… and Image › Pull by reference… follow
+  the approved registry-accounts mock-up; Pull… of the tags selected in the
+  library's Remotes follows the remotes mock-up (§3.2, Desktop library). Push… shows the dry run of the local image (every
   blob with its effective class and where it was recorded: this image, another
   local tag or the firmware catalogue) and the guard's verdict for the
   destination as it is typed, with no override. It pushes only the image the
@@ -2106,8 +2147,8 @@ Two parts are read closely and are inside the claim: the cpidos fonts ship as
 UPX-packed CPI files, the form their author edits (`SOURCES.TXT`), so each CPX
 carries its source losslessly; the zlib 1.2.3 library SHSURDRV links is
 modified and marked as such (`ZLIBCDRD.TXT`), and the zlib licence obliges no
-source. Get templates… lists machine images only, so it skips `unemu/media/…`
-after reading each manifest; offering sets belongs to the media picker.
+source. The library's Remotes list the sets under `unemu/` › Installation
+media, apart from the machine images Get templates… shows.
 
 **First generation (1.0.0).** `open-at`: an IBM 5170-class board with the
 Kiselev AT-reset BIOS, the unemu VGA BIOS and XTIDE Universal BIOS r638 (each
@@ -2166,43 +2207,33 @@ never from a higher version or from an image the build did not version. **The
 build never pushes**: publishing the tags is the maintainer's step, with a dry run
 of each push first.
 
-**Get templates….** File › Get templates… follows the approved get-templates
-mock-up (`mockups/get-templates.html`); this paragraph is the one description
-of its behaviour, which commands.md and status.md point to. The library offers
-it in its empty state while it holds no machine image; firmware packages and
-media sets do not count, and the empty state contacts no registry. The dialog
-lists the templates of the default registry (`UNEMU_REGISTRY`, then
-preferences): repositories the registry catalog (`/v2/_catalog`, paged with
-`n` and `Link`; zot lists the repositories the caller may read, so a stored
-login goes with the first request) names under `unemu/`, without
-`unemu/firmware/…` and `unemu/test-…`, which are not read at all, keeping
-manifests of the PC machine artifact type only. Each repository offers the
-version tag `latest` names when that is one of its 16 newest releases (its
-pre-releases when it has no release); otherwise it offers the newest of them.
-A row shows name, tag, title, description and the size of the manifest and
-its distinct blobs. A template already in the library, or whose local tag
-names another image, is dimmed and cannot be chosen; a click anywhere on any
-other row chooses it, and Get is hidden when the registry offers none. A
-repository that does not answer properly, or that this account may not read,
-is skipped. An offline or unreachable registry, a refused or a missing login,
-a registry without a catalog or an unreadable library ends the listing with
-one message and Try again, after at most the login-check timeouts (10 s to
-connect, 15 s per read); closing the dialog stops the listing before the next
-repository. A registry without a catalog would need a small well-known index
-image instead; the catalog suffices for zot, so none exists. The two login
-cases offer Log in…, which opens Tools › Preferences › Registries on that
-registry's Log in dialog; a registry with no entry there offers Add
-registry…, which opens the Add dialog prefilled with the host and no other
-row selected. Either way the dialog lists again once Preferences closes. Get
-pulls the chosen templates one after another on the library worker through
-the Pull… path, by the digest shown, so each closure is verified before its
-local tag is written. One progress bar covers them all; blobs the library
-already has, also those a template earlier in the same Get fetched, count as
-done and are not fetched again. While pulls run, Close becomes Cancel: Cancel
-and Escape stop the running pull at its next read and the queued ones before
-they contact the registry, and quitting cancels them as in Pull…. Once every
-pull answered, the dialog sums up what was added and offers Close or Back to
-the list; the status bar names the templates added.
+**Get templates….** File › Get templates… and the Get templates… button of
+the library's empty state, shown while the library holds no machine image
+(firmware packages and media sets do not count; the empty state contacts no
+registry), select Remotes › the default registry (`UNEMU_REGISTRY`, then
+preferences) › `unemu/` › Machine images, listing it first if this session
+has not (§3.2, Desktop library; the approved remotes mock-up, revision 2,
+note 2). The Get templates dialog of the get-templates mock-up is retired;
+its rules hold in Remotes: a template row offers the version tag `latest`
+names when that is one of its 16 newest releases (its pre-releases when it
+has no release), else the newest of them, among those this release runs
+(§5.6); only PC artifacts of the PC provider's types run here, so a machine
+image the node lists for another machine family, or another tool's artifact,
+is muted with the reason ("A c64 machine image: this release runs IBM PC
+compatibles") and cannot be pulled, as the dialog offered PC machine images
+only; the Type column says Machine template only for a repository one name
+under `unemu/` (`unemu/open-at`), while a deeper one (`unemu/staging/…`)
+lists under the same node as a machine image; repositories the live registry
+test leaves under `unemu/test-…` are never listed; Pull goes by the digest
+the row showed and writes each local
+tag after its closure is verified; a template already in the library says
+so; several are chosen with Ctrl or Shift and pulled one after another under
+one progress bar that counts blobs already in the store as done; Cancel
+stops the running pull at its next read and the queued ones before they
+contact the registry; a login a registry asks for opens Tools › Preferences ›
+Registries on its Log in dialog, or on Add registry… for a registry with no
+entry there, and the registry lists again once Preferences closes; listing
+uses the login-check timeouts (10 s to connect, 15 s per read).
 
 ### 5.6. Compatibility of published images
 
@@ -2215,9 +2246,12 @@ its parser and lenient reader, the shared and PC tables (every row is
 writers, the early refusal of pull, Start, `image run` and `image machine
 new`, the `unemu/` push guard, machines inheriting their firmware packages'
 value and the command-line listings are in place
-(`backlog/docs/commands.md` § Minimum release of an image). The window's
-disabled rows, Get templates' choice of a runnable version and the summary
-cache's record of the requirement remain.
+(`backlog/docs/commands.md` § Minimum release of an image). Remotes' choice
+of the newest runnable version, its note of which newer version needs which
+release, its dimming of a repository with nothing runnable and its refusal
+to pull a tag this release cannot run are in place too (2026-11-17; Get
+templates now shows Remotes, §5.5). The library's disabled rows of local
+images and the summary cache's record of the requirement remain.
 Published templates, installation sets and firmware packages stay on the
 registry for good, and older releases read them too. This section records
 what today's readers do with a newer image and defines a marker, so an
@@ -2239,7 +2273,7 @@ schema 1 is strict, and a newer schema is shown read-only (§2.1).
 | --- | --- | --- | --- | --- |
 | Library summaries | Unreadable row (⚠) with the decoder's reason | Row looks normal | Machine image: row looks normal (its config is not read); set or package: unreadable row | Machine image or package: row looks normal; set with a new format: "Unknown floppy geometry" |
 | Selecting a machine image, Start, `image run` | Refused | Refused | Refused with the decoder's message | Refused with the decoder's message |
-| Get templates | Repository left out without a word (only the offered tag is read) | Offered; Get is refused before any download | Offered; Get is refused after the download | Offered; Get is refused after the download |
+| Remotes (File › Get templates… shows them) | Row listed, read leniently; Pull is refused before any blob | Row listed; Pull is refused before any blob | Row listed; Pull is refused after the download | Row listed; Pull is refused after the download |
 | Pull…, `image pull` | Refused before any blob | Refused before any blob | Refused after every blob is fetched; nothing tagged | Same |
 | New machine from image… | Refused | Refused | Machine made; it cannot start | Machine made; it cannot start |
 | Insert… and the media picker | Refused | Refused | Refused | Refused |

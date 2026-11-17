@@ -1112,7 +1112,8 @@ pub(super) fn host_last_run() -> String {
         .map_or_else(|_| "Unknown".into(), |d| last_run_utc(d.as_secs()))
 }
 /// The library's empty state while it holds no machine image: where the
-/// first one comes from. Nothing contacts a registry until Get templates….
+/// first one comes from. Nothing contacts a registry until Get templates…
+/// shows the default registry's templates in Remotes.
 fn empty_library(ui: &mut egui::Ui, commands: &mut Vec<Command>) {
     ui.group(|ui| {
         // The get-templates mock-up's empty card: its picture beside the text.
@@ -1126,7 +1127,7 @@ fn empty_library_text(ui: &mut egui::Ui, commands: &mut Vec<Command>) {
     ui.strong("No machine images yet");
     ui.add(
         egui::Label::new(
-            "Get templates… downloads ready-made open machines from the default registry: open firmware with its source and a blank disk, no operating system.",
+            "Get templates… lists the ready-made open machines of the default registry under Remotes, to pull: open firmware with its source and a blank disk, no operating system.",
         )
         .wrap(),
     );
@@ -1281,16 +1282,19 @@ pub(super) struct LibraryView {
     pub image_settings: Option<crate::image_settings::ImageSettings>,
     /// Delete tag… of the selected firmware package, apart from an image's.
     delete_package: Option<ImageRow>,
+    /// Show in library of a pulled installation media set: the tag the
+    /// Installation media collection selects once it lists it.
+    media_reselect: Option<String>,
     /// "Switch to …": the firmware choice the next Settings sheet opens with.
     settings_switch: Option<(crate::firmware_choices::Slot, String)>,
     /// Image › Push… while it is open.
     pub push: Option<crate::registry_transfer::PushDialog>,
     /// Image › Pull… while it is open.
     pub pull: Option<crate::registry_transfer::PullDialog>,
-    /// File › Get templates… while it is open.
-    pub templates: Option<crate::templates::TemplatesDialog>,
-    /// Log in… of Get templates…: the registry whose login the shell opens in
-    /// Preferences › Registries.
+    /// Pull… of tags selected in Remotes while it is open.
+    pub remote_pull: Option<crate::remote_pull::RemotePull>,
+    /// Log in… of a registry in Remotes: the registry whose login the shell
+    /// opens in Preferences › Registries.
     pub login_wanted: Option<String>,
     /// Every machine in the store, as the worker last listed them.
     machines: Arc<Vec<machines::MachineRow>>,
@@ -1379,7 +1383,8 @@ impl LibraryView {
             image_settings: None,
             push: None,
             pull: None,
-            templates: None,
+            remote_pull: None,
+            media_reselect: None,
             login_wanted: None,
             machines: Arc::default(),
             machine: None,
@@ -1493,7 +1498,7 @@ impl LibraryView {
         if let Some(dialog) = &mut self.pull {
             dialog.fail(&message);
         }
-        if let Some(dialog) = &mut self.templates {
+        if let Some(dialog) = &mut self.remote_pull {
             dialog.fail(&message);
         }
     }
@@ -1529,6 +1534,16 @@ impl LibraryView {
                 if let Some(selected) = &mut self.media_selected {
                     if let Some(current) = snapshot.media_rows.iter().find(|r| r.same(selected)) {
                         *selected = current.clone();
+                    }
+                }
+                if let Some(reference) = self.media_reselect.clone() {
+                    if let Some(row) = snapshot
+                        .media_rows
+                        .iter()
+                        .find(|r| r.image.has_tag(&reference))
+                    {
+                        self.media_reselect = None;
+                        self.media_selected = Some(row.clone());
                     }
                 }
                 let tags_changed = self.snapshot.tags != snapshot.tags;
@@ -1868,10 +1883,10 @@ impl LibraryView {
                         crate::registry_transfer::TransferEvent::Pushed { .. } => {
                             self.push.is_none()
                         }
-                        // Get templates… reports its own pulls.
+                        // Pull… from Remotes reports its own pulls.
                         crate::registry_transfer::TransferEvent::Pulled { id, .. } => {
                             self.pull.is_none()
-                                && !self.templates.as_ref().is_some_and(|d| d.owns(*id))
+                                && !self.remote_pull.as_ref().is_some_and(|d| d.owns(*id))
                         }
                         _ => self.pull.is_none(),
                     };
@@ -1892,13 +1907,20 @@ impl LibraryView {
                         self.status = Some(format!("Pulled {tag}"));
                     }
                 }
-                if let Some(dialog) = &mut self.templates {
+                let mut insert = None;
+                if let Some(dialog) = &mut self.remote_pull {
                     let running = dialog.running();
                     dialog.on_event(&event);
                     let pulled = dialog.pulled();
                     if running && !dialog.running() && !pulled.is_empty() {
-                        self.status = Some(format!("Got {}", pulled.join(", ")));
+                        self.status = Some(format!("Pulled {}", pulled.join(", ")));
                     }
+                    insert = dialog.take_insert();
+                }
+                // Pull and insert…: the set's first disk waits in the drive.
+                if let Some((machine, insert)) = insert {
+                    let drive = insert.drive.clone();
+                    self.set_pending(&machine, &drive, Some(insert));
                 }
                 if let Some(request) = follow_up {
                     self.send(Request::Transfer(request));
@@ -2089,7 +2111,7 @@ impl LibraryView {
         // Dropping a transfer dialog cancels its transfer at the next check.
         self.push = None;
         self.pull = None;
-        self.templates = None;
+        self.remote_pull = None;
         if let Some(mut worker) = self.worker.take() {
             worker.shutdown();
         }
@@ -2395,32 +2417,19 @@ impl LibraryView {
         if self.push.as_ref().is_some_and(|d| d.running()) {
             Some("push")
         } else if self.pull.as_ref().is_some_and(|d| d.running())
-            || self.templates.as_ref().is_some_and(|d| d.running())
+            || self.remote_pull.as_ref().is_some_and(|d| d.running())
         {
             Some("pull")
         } else {
             None
         }
     }
-    /// Image › Pull…: a reference into the local store.
+    /// Image › Pull by reference…: a reference into the local store.
     pub fn begin_pull(&mut self, accounts: crate::registry_transfer::Accounts) {
         self.pull = Some(crate::registry_transfer::PullDialog::open(accounts));
     }
-    /// File › Get templates…: the official templates of the default registry,
-    /// listed by the worker.
-    pub fn begin_templates(&mut self, accounts: crate::registry_transfer::Accounts) {
-        let (dialog, request) = crate::templates::TemplatesDialog::open(accounts);
-        self.templates = Some(dialog);
-        if let Some(request) = request {
-            self.send(Request::Transfer(request));
-        }
-    }
-    /// Preferences closed: Get templates… lists again when its Log in…
-    /// opened them.
+    /// Preferences closed: a registry whose Log in… opened them lists again.
     pub fn preferences_closed(&mut self) {
-        if let Some(request) = self.templates.as_mut().and_then(|d| d.after_preferences()) {
-            self.send(Request::Transfer(request));
-        }
         self.remote_preferences_closed();
     }
     pub fn begin_import(&mut self, path: &Path) {
@@ -2487,7 +2496,8 @@ impl LibraryView {
             || self.new_machine.is_some()
             || self.push.is_some()
             || self.pull.is_some()
-            || self.templates.is_some()
+            || self.remote_pull.is_some()
+            || self.remote.contents.is_some()
             || self.machine_dialog.is_some()
     }
     /// Close Disk layers, Import image, Delete tag and Import ROM folder for an
@@ -2509,7 +2519,8 @@ impl LibraryView {
         self.new_machine = None;
         self.push = None;
         self.pull = None;
-        self.templates = None;
+        self.remote_pull = None;
+        self.remote.contents = None;
         self.machine_dialog = None;
     }
     /// Entering the Firmware or Installation media collection drops the machine
@@ -3066,7 +3077,7 @@ impl LibraryView {
     ) {
         pane::style(ui);
         if self.remote.node.is_some() {
-            remotes::details(ui);
+            self.remote_details(ui);
         } else if self.query.filter.is_firmware() {
             match self.firmware_selected.clone() {
                 Some(row) => {
@@ -3795,13 +3806,13 @@ impl LibraryView {
         requests
     }
     fn transfer_modals(&mut self, ctx: &egui::Context, classic: bool, requests: &mut Vec<Request>) {
-        use crate::registry_transfer_view::{show_pull, show_push, show_templates, Action};
+        use crate::registry_transfer_view::{show_pull, show_push, show_remote_pull, Action};
         if let Some(dialog) = &mut self.push {
             match show_push(ctx, dialog, classic) {
                 Action::Send(request) => requests.push(Request::Transfer(request)),
                 Action::SendAll(list) => requests.extend(list.into_iter().map(Request::Transfer)),
                 Action::Close => self.push = None,
-                Action::None | Action::LogIn(_) => (),
+                Action::None | Action::ShowPulled | Action::NewMachine => (),
             }
         }
         if let Some(dialog) = &mut self.pull {
@@ -3809,18 +3820,40 @@ impl LibraryView {
                 Action::Send(request) => requests.push(Request::Transfer(request)),
                 Action::SendAll(list) => requests.extend(list.into_iter().map(Request::Transfer)),
                 Action::Close => self.pull = None,
-                Action::None | Action::LogIn(_) => (),
+                Action::None | Action::ShowPulled | Action::NewMachine => (),
             }
         }
-        if let Some(dialog) = &mut self.templates {
-            match show_templates(ctx, dialog, classic) {
+        if let Some(dialog) = &mut self.remote_pull {
+            match show_remote_pull(ctx, dialog, classic) {
                 Action::Send(request) => requests.push(Request::Transfer(request)),
                 Action::SendAll(list) => requests.extend(list.into_iter().map(Request::Transfer)),
-                Action::Close => self.templates = None,
-                Action::LogIn(host) => self.login_wanted = Some(host),
+                Action::Close => self.remote_pull = None,
+                Action::ShowPulled => {
+                    if let Some(dialog) = self.remote_pull.take() {
+                        let item = &dialog.items[0];
+                        if let Some(digest) = item.source.digest.clone() {
+                            let image = Descriptor::new(
+                                image_store::media_type::MANIFEST,
+                                digest,
+                                item.manifest_size,
+                            );
+                            self.show_in_library(&item.local_tag, &item.artifact_type, image);
+                        }
+                    }
+                }
+                Action::NewMachine => {
+                    if let Some((tag, image, name)) = self
+                        .remote_pull
+                        .take()
+                        .and_then(|dialog| dialog.created_image())
+                    {
+                        self.new_machine_from(&tag, image, &name);
+                    }
+                }
                 Action::None => (),
             }
         }
+        self.remote_contents(ctx, classic);
     }
     /// Apply worker events until `done` holds; tests only, the frame loop polls.
     #[cfg(test)]
@@ -4040,7 +4073,7 @@ pub(super) mod tests {
         let at = button.expect("the empty state shows Get templates…");
         for wanted in [
             "No machine images yet",
-            "Get templates… downloads ready-made open machines from the default registry: open firmware with its source and a blank disk, no operating system.",
+            "Get templates… lists the ready-made open machines of the default registry under Remotes, to pull: open firmware with its source and a blank disk, no operating system.",
             "File › New machine… builds one from firmware you imported, and File › Import image… adds an image file. Nothing is downloaded until you choose.",
         ] {
             assert!(texts.iter().any(|t| t == wanted), "{wanted}: {texts:?}");

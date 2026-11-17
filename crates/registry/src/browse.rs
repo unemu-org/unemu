@@ -38,6 +38,9 @@ pub struct TagRecord {
     pub artifact_type: String,
     /// The manifest's annotations, as the registry has them.
     pub annotations: BTreeMap<String, String>,
+    /// The manifest's config descriptor, with its annotations; fetched only
+    /// as [`TagRecord::config`] says.
+    pub config_descriptor: Descriptor,
     /// The manifest's layers, with their annotations, none of them fetched.
     pub layers: Vec<Descriptor>,
     /// The manifest and every distinct blob it names, as stored.
@@ -175,6 +178,7 @@ pub fn read_tag(
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| implied_type(&config.media_type).to_owned()),
         annotations: envelope.annotations,
+        config_descriptor: config,
         layers,
         size,
         user_supplied,
@@ -260,6 +264,11 @@ mod tests {
         assert_eq!(record.digest, digest);
         assert_eq!(record.artifact_type, mt::FIRMWARE);
         assert_eq!(record.config.as_deref(), Some(&config[..]));
+        assert_eq!(
+            record.config_descriptor,
+            Descriptor::new(mt::FIRMWARE_CONFIG, Digest::of(config), config.len() as u64),
+            "the config descriptor is kept for Contents…"
+        );
         assert_eq!(record.annotations[MIN_APP_VERSION], "99.0.0");
         assert_eq!(
             record.size,

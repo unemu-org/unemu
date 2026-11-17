@@ -1214,7 +1214,15 @@ impl LibraryView {
         let Some(row) = self.selected.clone() else {
             return;
         };
-        let value = unique_among(row.name(), self.names());
+        let name = row.name().to_owned();
+        self.new_machine_named(row, &name);
+    }
+
+    /// New machine from image… on `row`, proposing `name`, or the first
+    /// free name after it: Pull and create machine… proposes the title the
+    /// registry's manifest gives, before the library has read the image.
+    pub(super) fn new_machine_named(&mut self, row: ImageRow, name: &str) {
+        let value = unique_among(name, self.names());
         self.machine_dialog = Some(Dialog::Name(NameDialog {
             title: "New machine from image".into(),
             intro: format!(

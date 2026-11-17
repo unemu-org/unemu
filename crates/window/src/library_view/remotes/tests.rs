@@ -127,10 +127,14 @@ fn record(artifact_type: &str, title: &str) -> TagRecord {
         version: None,
         formats: Vec::new(),
         min_app_version: None,
+        platform: Some(pc_image::PLATFORM.into()),
         size: 3 * 1024 * 1024 + 512 * 1024,
         user_supplied: false,
         annotations: Default::default(),
         details: None,
+        manifest_size: 1024,
+        descriptors: Vec::new(),
+        media: Vec::new(),
     }
 }
 
@@ -140,6 +144,7 @@ fn read(host: &str, repository: &str, tag: &str, record: TagRecord, local: Local
         local_tag: local_tag_of(host, repository, tag),
         record: Ok(record),
         local: Some(local),
+        stored: Default::default(),
     }
 }
 
@@ -151,6 +156,7 @@ fn repository(name: &str, tags: &[&str], read: Vec<TagRow>) -> RepositoryRow {
         tags,
         read,
         error: None,
+        newer_needs: Vec::new(),
     }
 }
 
@@ -162,6 +168,10 @@ fn sample(host: &str) -> Vec<RepositoryRow> {
     future.min_app_version = Some("99.0.0".into());
     let mut freedos = record(mt::MEDIA_SET, "FreeDOS");
     freedos.formats = vec!["1.44M".into()];
+    freedos.media = vec![
+        ("disk-1".into(), "1.44M".into()),
+        ("disk-2".into(), "1.44M".into()),
+    ];
     let mut keen = record(mt::MEDIA_SET, "Commander Keen 4");
     keen.user_supplied = true;
     vec![
@@ -386,6 +396,12 @@ impl Shown {
 
     fn has_widget(&self, label: &str) -> bool {
         self.widgets.iter().any(|w| w.label == label)
+    }
+
+    /// The text is painted, or a widget says it: a label the details pane
+    /// scrolled out of view says it without painting it.
+    fn shows(&self, text: &str) -> bool {
+        self.has(text) || self.has_widget(text)
     }
 
     /// The list's cells, row by row from the top, each row's labels left to
@@ -839,7 +855,8 @@ fn every_registry_state_draws_its_strip_or_message_and_action() {
             continue;
         };
         rig.sent();
-        screen.click(&mut rig.view, action_label(action));
+        let configured = rig.registry(host).configured;
+        screen.click(&mut rig.view, action_label(action, configured));
         match action {
             Action::Stop => {}
             Action::Refresh | Action::TryAgain => {
@@ -1140,20 +1157,22 @@ fn get_templates_selects_the_unemu_machine_images_node() {
     assert_eq!(rig.view.remote.node, None);
 }
 
-/// The library's details pane says what a remote node offers yet, and a
-/// tag's selection never becomes the library's.
+/// A tag's selection never becomes the library's: the details pane shows
+/// the remote tag, and without a selection it says how to make one.
 #[test]
 fn a_remote_node_keeps_the_library_selection_apart() {
     let mut rig = Rig::new();
     rig.listed();
     rig.show(unemu(None));
     let mut screen = Screen::new(true, false, WIDE);
+    let shown = screen.settled(&mut rig.view);
+    assert!(shown.has(
+        "Select a tag for its details and Pull…. Ctrl (⌘ on macOS) adds a tag to the selection; Shift selects a range."
+    ));
     screen.click(&mut rig.view, "unemu/clash");
     assert!(rig.view.selected.is_none() && rig.view.machine.is_none());
     let shown = screen.settled(&mut rig.view);
-    assert!(shown.has(
-        "Details and Pull… of remote tags are not built yet. Image › Pull… pulls a tag by its reference."
-    ));
+    assert!(shown.has("Annotations, from the manifest") && shown.has("In your library"));
 }
 
 /// The list and the tree lay out in both skins and both themes at the
@@ -1697,4 +1716,985 @@ fn a_collapsed_repository_shows_the_selection_of_its_tag() {
         .color;
     assert_eq!(shown.text("unemu/open-at (3 tags)").colour, selection);
     assert_ne!(shown.text("unemu/clash").colour, selection);
+}
+
+/// Click the widget labelled `label` with `modifiers` held.
+fn click_with(
+    screen: &mut Screen,
+    view: &mut LibraryView,
+    label: &str,
+    modifiers: egui::Modifiers,
+) {
+    let at = screen.settled(view).widget(label).rect.center();
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers,
+    };
+    // egui keeps the modifiers from the event that changes them.
+    screen.time += 1.0;
+    screen.frame(
+        view,
+        vec![
+            egui::Event::ModifiersChanged(modifiers),
+            egui::Event::PointerMoved(at),
+        ],
+    );
+    screen.frame(view, vec![button(true)]);
+    screen.frame(view, vec![button(false)]);
+    screen.frame(
+        view,
+        vec![
+            egui::Event::ModifiersChanged(egui::Modifiers::NONE),
+            egui::Event::PointerMoved(egui::pos2(1.0, 1.0)),
+        ],
+    );
+}
+
+/// A record as the registry's manifest and metadata record give it: the
+/// annotations the pane shows, a config and one layer, and the edition and
+/// version the selection read.
+fn rich(artifact_type: &str, title: &str, layer: &str) -> TagRecord {
+    let mut record = record(artifact_type, title);
+    for (key, value) in [
+        ("org.opencontainers.image.title", title),
+        ("org.opencontainers.image.vendor", "unemu"),
+        (
+            "org.opencontainers.image.description",
+            "An IBM 5170-class 80286 with open firmware only.",
+        ),
+        ("org.opencontainers.image.licenses", "GPL-3.0-or-later"),
+        (
+            "org.opencontainers.image.source",
+            "Three source archives travel in the image.",
+        ),
+    ] {
+        record.annotations.insert(key.into(), value.into());
+    }
+    record.details = Some(Ok(crate::remote_browse::Details {
+        edition: Some("Floppy Edition".into()),
+        version: Some("1.4".into()),
+    }));
+    let config = image_store::Descriptor::new(mt::CONFIG, Digest::of(title.as_bytes()), 2048);
+    let mut payload =
+        image_store::Descriptor::new(mt::FIRMWARE, Digest::of(layer.as_bytes()), 1 << 20);
+    payload
+        .annotations
+        .insert("org.opencontainers.image.title".into(), layer.into());
+    record.descriptors = vec![config, payload];
+    record.manifest_size = 1024;
+    record.size = 1024 + 2048 + (1 << 20);
+    record
+}
+
+/// The details pane of a machine image, a media set and a firmware package:
+/// the manifest's annotations, digest and type, the edition and version
+/// the metadata record adds, the local tag a pull writes and its source,
+/// the local state, the download with the blobs the store holds left out,
+/// the repository's tags, and the buttons each kind offers, with the reason
+/// a disabled one gives.
+#[test]
+fn the_details_pane_shows_a_machine_image_a_media_set_and_a_firmware_package() {
+    let host = DEFAULT_REGISTRY;
+    let machine = rich(mt::MACHINE, "Open AT 286", "unemu AT BIOS ROM");
+    let mut machine_row = read(
+        host,
+        "unemu/open-at",
+        "1.2.0",
+        machine.clone(),
+        LocalState::NotPulled { same_as: None },
+    );
+    // The firmware ROM is in the store already: only the rest is fetched.
+    machine_row
+        .stored
+        .insert(machine.descriptors[1].digest.clone());
+    let mut set = rich(mt::MEDIA_SET, "FreeDOS", "Disk 1");
+    set.media = (1..=7)
+        .map(|i| (format!("disk-{i}"), "1.44M".to_owned()))
+        .collect();
+    set.formats = vec!["1.44M".into()];
+    let package = rich(mt::FIRMWARE, "XTIDE Universal BIOS", "XUB ROM");
+    let mut rig = Rig::new();
+    let registry = rig.registry(host);
+    registry.repositories = vec![
+        repository("unemu/open-at", &["1.0.0", "1.2.0"], vec![machine_row]),
+        repository(
+            "unemu/media/freedos",
+            &["1.4"],
+            vec![read(
+                host,
+                "unemu/media/freedos",
+                "1.4",
+                set,
+                LocalState::NotPulled { same_as: None },
+            )],
+        ),
+        repository(
+            "unemu/firmware/xub",
+            &["1"],
+            vec![read(
+                host,
+                "unemu/firmware/xub",
+                "1",
+                package,
+                LocalState::InLibrary,
+            )],
+        ),
+    ];
+    registry.state = State::Listed;
+    rig.show(unemu(None));
+    let mut screen = Screen::new(true, false, WIDE);
+    let select = |rig: &mut Rig, repository: &str, tag: &str| {
+        rig.view.remote.selected = Some((host.into(), repository.into(), tag.into()));
+    };
+
+    select(&mut rig, "unemu/open-at", "1.2.0");
+    let shown = screen.settled(&mut rig.view);
+    for text in [
+        "Annotations, from the manifest",
+        "Open AT 286",
+        "unemu",
+        "An IBM 5170-class 80286 with open firmware only.",
+        "1.4",
+        "Floppy Edition",
+        "GPL-3.0-or-later",
+        "Three source archives travel in the image.",
+        "Machine template",
+        mt::MACHINE,
+        "· Pull uses this digest",
+        "In your library",
+        "open-at:1.2.0",
+        "· the default registry keeps short names",
+        "registry.unemu.dev",
+        "Not in the library under this name.",
+        "Download: 3.0 KiB to fetch of 1.0 MiB; 1 of 2 blobs already in the store.",
+        "Tags of this repository",
+        "Read from the registry: the tag list and this manifest. No layer, cover or disk has been fetched.",
+    ] {
+        assert!(shown.shows(text), "machine image: {text:?}");
+    }
+    for button in ["Pull…", "Pull and create machine…", "Contents…"] {
+        assert!(shown.has_widget(button), "machine image: {button}");
+    }
+    assert!(!shown.has_widget("Pull and insert…"));
+
+    select(&mut rig, "unemu/media/freedos", "1.4");
+    let shown = screen.settled(&mut rig.view);
+    for text in [
+        "7 × 1.44M diskettes",
+        "Installation media",
+        "unemu/media/freedos:1.4",
+        // No machine has a drive for the set yet.
+        "Pull and insert… needs a stopped machine with a drive that takes 1.44M disks; none has one.",
+    ] {
+        assert!(shown.shows(text), "media set: {text:?}");
+    }
+    assert!(shown.has_widget("Pull and insert…"));
+    assert!(!shown.has_widget("Pull and create machine…"));
+    screen.click(&mut rig.view, "Pull and insert…");
+    assert!(rig.view.remote_pull.is_none(), "disabled without a drive");
+
+    select(&mut rig, "unemu/firmware/xub", "1");
+    let shown = screen.settled(&mut rig.view);
+    for text in [
+        "Firmware package",
+        "In the library under this name.",
+        "Download: nothing.",
+        "Already in the library under this name; Pull has nothing to do.",
+    ] {
+        assert!(shown.shows(text), "firmware package: {text:?}");
+    }
+    assert!(shown.has_widget("Show in library"));
+    assert!(!shown.has_widget("Pull and create machine…") && !shown.has_widget("Pull and insert…"));
+    screen.click(&mut rig.view, "Pull…");
+    assert!(rig.view.remote_pull.is_none(), "nothing to pull");
+    // Show in library selects the package in the Firmware collection once
+    // the library lists it.
+    screen.click(&mut rig.view, "Show in library");
+    assert_eq!(rig.view.remote.node, None);
+    assert_eq!(rig.view.query.filter, Filter::Firmware);
+    assert_eq!(
+        rig.view.firmware_reselect.as_deref(),
+        Some("unemu/firmware/xub:1")
+    );
+
+    // Contents… lists every descriptor, with what the store holds.
+    rig.show(unemu(None));
+    select(&mut rig, "unemu/open-at", "1.2.0");
+    screen.click(&mut rig.view, "Contents…");
+    assert_eq!(
+        rig.view.remote.contents,
+        Some((host.into(), "unemu/open-at".into(), "1.2.0".into()))
+    );
+    let ctx = egui::Context::default();
+    let (_, texts) = crate::registry_transfer_view::tests::render(&ctx, Vec::new(), |ctx| {
+        rig.view.modals(ctx, None, Vec::new(), true, false)
+    });
+    for text in [
+        "Contents — unemu/open-at:1.2.0",
+        "Manifest",
+        "image manifest",
+        "machine config",
+        "unemu AT BIOS ROM",
+        "firmware",
+        "1.0 MiB",
+        "Yes — not fetched again",
+        "No",
+        "open-at:1.2.0 · what Pull would write",
+    ] {
+        assert!(
+            crate::registry_transfer_view::tests::shows(&texts, text),
+            "Contents…: {text:?} in {texts:?}"
+        );
+    }
+}
+
+/// Ctrl (⌘ on macOS) adds a tag to the selection or takes it out, Shift
+/// selects the rows between the last click and this one; the pane lists
+/// them and Pull… takes those it can, leaving the others out with the
+/// reason.
+#[test]
+fn ctrl_and_shift_select_several_tags_for_one_pull() {
+    let mut rig = Rig::new();
+    rig.listed();
+    rig.show(unemu(None));
+    let mut screen = Screen::new(true, false, WIDE);
+    screen.click(&mut rig.view, "unemu/media/freedos");
+    click_with(
+        &mut screen,
+        &mut rig.view,
+        "unemu/firmware/future-bios",
+        egui::Modifiers::SHIFT,
+    );
+    let ids = |rig: &Rig| -> Vec<String> {
+        rig.view
+            .remote
+            .selection()
+            .into_iter()
+            .map(|(repository, tag)| format!("{repository}:{tag}"))
+            .collect()
+    };
+    assert_eq!(
+        ids(&rig),
+        [
+            "unemu/media/freedos:1.4",
+            "unemu/media/keen4:1.4",
+            "unemu/firmware/future-bios:1"
+        ]
+    );
+    let shown = screen.settled(&mut rig.view);
+    assert!(shown.has("3 tags selected"));
+    assert!(
+        shown.has_widget("Pull 2 tags…"),
+        "the future BIOS is left out"
+    );
+    click_with(
+        &mut screen,
+        &mut rig.view,
+        "unemu/media/keen4",
+        egui::Modifiers::COMMAND,
+    );
+    assert_eq!(
+        ids(&rig),
+        ["unemu/media/freedos:1.4", "unemu/firmware/future-bios:1"]
+    );
+    click_with(
+        &mut screen,
+        &mut rig.view,
+        "unemu/open-at-games",
+        egui::Modifiers::COMMAND,
+    );
+    let shown = screen.settled(&mut rig.view);
+    assert!(shown.has("3 tags selected"));
+    assert!(rig.view.can_pull_remote());
+    screen.click(&mut rig.view, "Pull 2 tags…");
+    let dialog = rig.view.remote_pull.as_ref().expect("Pull… opens");
+    assert!(dialog.several);
+    let skipped: Vec<Option<&str>> = dialog.items.iter().map(|i| i.skip.as_deref()).collect();
+    assert_eq!(skipped, [None, Some("needs unemupc 99.0.0 or newer"), None]);
+    // A plain click selects one tag again.
+    rig.view.remote_pull = None;
+    screen.click(&mut rig.view, "unemu/clash");
+    assert_eq!(ids(&rig), ["unemu/clash:1.0.0"]);
+}
+
+/// Pull and insert… is offered while a stopped machine has a drive that
+/// takes the set; once the set is pulled, its first disk waits in that
+/// drive for the machine's next Start. A running machine's drives are not
+/// offered.
+#[test]
+fn pull_and_insert_leaves_the_first_disk_pending_in_a_stopped_machine() {
+    use crate::{
+        library_view::machines::tests::row,
+        registry_transfer::{TransferEvent, TransferRequest},
+    };
+    let mut rig = Rig::new();
+    rig.listed();
+    rig.show(unemu(None));
+    rig.view.machines = Arc::new(vec![row("games", "Games machine", "games", &[])]);
+    rig.view.active_machine = Some(("games".into(), "Games machine".into()));
+    let mut screen = Screen::new(true, false, WIDE);
+    screen.click(&mut rig.view, "unemu/media/freedos");
+    screen.click(&mut rig.view, "Pull and insert…");
+    assert!(rig.view.remote_pull.is_none(), "the machine runs");
+    rig.view.active_machine = None;
+    screen.click(&mut rig.view, "Pull and insert…");
+    let dialog = rig
+        .view
+        .remote_pull
+        .as_mut()
+        .expect("Pull and insert… opens");
+    assert_eq!(dialog.mode, crate::remote_pull::Mode::Insert);
+    assert_eq!(
+        dialog.drives.iter().map(|d| d.label()).collect::<Vec<_>>(),
+        ["Games machine — A: 1.44M"]
+    );
+    let requests = dialog.start();
+    let [TransferRequest::Pull(job)] = requests.as_slice() else {
+        panic!("one pull")
+    };
+    rig.sent();
+    rig.view.on_event(Event::Transfer(TransferEvent::Pulled {
+        id: job.id,
+        result: Ok(image_registry::pull::PullReport {
+            local_tag: job.local_tag.clone(),
+            image: image_store::Descriptor::new(mt::MANIFEST, Digest::of(b"FreeDOS"), 1024),
+            fetched: Vec::new(),
+            present: Vec::new(),
+            outcome: image_registry::pull::PullOutcome::Pulled,
+        }),
+    }));
+    let pending: Vec<_> = rig
+        .sent()
+        .into_iter()
+        .filter_map(|request| match request {
+            Request::Machine(MachineJob::SetPending { id, drive, insert }) => {
+                Some((id, drive, insert))
+            }
+            _ => None,
+        })
+        .collect();
+    let [(id, drive, Some(insert))] = pending.as_slice() else {
+        panic!("{pending:?}")
+    };
+    assert_eq!((id.as_str(), drive.as_str()), ("games", "A:"));
+    assert_eq!(insert.reference, "unemu/media/freedos:1.4");
+    assert_eq!(insert.medium, "disk-1");
+    assert!(insert.all, "both disks join the catalogue");
+    assert_eq!(
+        rig.view.status.as_deref(),
+        Some("Pulled unemu/media/freedos:1.4")
+    );
+}
+
+/// Pull and create machine… pulls, then New machine from image… opens on
+/// the pulled image with the manifest's title as the name.
+#[test]
+fn pull_and_create_machine_opens_new_machine_from_image_after_the_pull() {
+    use crate::registry_transfer::{TransferEvent, TransferRequest};
+    let mut rig = Rig::new();
+    rig.listed();
+    rig.show(unemu(None));
+    let mut screen = Screen::new(true, false, WIDE);
+    screen.click(&mut rig.view, "unemu/open-at-games");
+    screen.click(&mut rig.view, "Pull and create machine…");
+    let dialog = rig.view.remote_pull.as_mut().expect("the dialog opens");
+    let requests = dialog.start();
+    let [TransferRequest::Pull(job)] = requests.as_slice() else {
+        panic!("one pull")
+    };
+    rig.view.on_event(Event::Transfer(TransferEvent::Pulled {
+        id: job.id,
+        result: Ok(image_registry::pull::PullReport {
+            local_tag: job.local_tag.clone(),
+            image: image_store::Descriptor::new(mt::MANIFEST, Digest::of(b"x"), 1024),
+            fetched: Vec::new(),
+            present: Vec::new(),
+            outcome: image_registry::pull::PullOutcome::Pulled,
+        }),
+    }));
+    let ctx = egui::Context::default();
+    crate::registry_transfer_view::tests::click(&ctx, "New machine from image…", |ctx| {
+        rig.view.modals(ctx, None, Vec::new(), true, false)
+    });
+    assert!(rig.view.remote_pull.is_none());
+    assert_eq!(rig.view.remote.node, None, "the image is shown in Images");
+    let selected = rig.view.selected.as_ref().unwrap();
+    assert_eq!(selected.reference, "open-at-games:1.2.0");
+    let Some(crate::library_view::machines::Dialog::Name(dialog)) = &rig.view.machine_dialog else {
+        panic!("New machine from image… opens")
+    };
+    assert_eq!(dialog.title, "New machine from image");
+    assert_eq!(dialog.value, "Open AT 286 for games");
+}
+
+/// A login on a registry preferences list is Log in…; on one they do not
+/// list it is Add registry…, which adds the entry first. Either asks the
+/// shell for Preferences on that registry.
+#[test]
+fn a_registry_without_an_entry_offers_add_registry_instead_of_log_in() {
+    for (host, label) in [(LAN, "Log in…"), (DEFAULT_REGISTRY, "Add registry…")] {
+        let mut rig = Rig::new();
+        rig.registry(host).state = State::LoginRequired {
+            challenge: Some(Challenge::Basic { realm: None }),
+            refused: false,
+        };
+        rig.show(Node::registry(host));
+        let mut screen = Screen::new(true, false, WIDE);
+        let shown = screen.settled(&mut rig.view);
+        assert!(shown.has_widget(label), "{host}");
+        screen.click(&mut rig.view, label);
+        assert_eq!(rig.view.login_wanted.as_deref(), Some(host));
+    }
+}
+
+/// Pull… from Remotes against a registry, through the library worker. One
+/// tag is pulled by the digest the list showed and its local tag is written
+/// last, after every blob; the row then turns In library from the store,
+/// without a new listing. A tag whose local name holds another image is
+/// offered another local tag; the clashing one is refused, and the local tag
+/// never moves. Several tags pull one after another, the ones Pull cannot
+/// take left out; Cancel stops the running pull at its next read and the
+/// waiting one before it contacts the registry.
+#[test]
+fn pulling_from_remotes_writes_the_local_tag_last_and_never_moves_one() {
+    use crate::{
+        registry_transfer::tests::{retitled, wait_pumping, Lab},
+        remote_pull::{Mode, Stage},
+    };
+    let mut lab = Lab::new(true);
+    let host = lab.registry.host();
+    let source = lab.f.row.descriptor.clone();
+    lab.push_through("test:source", &format!("{host}/private/test:1.0.0"));
+    let copy = retitled(&lab.f, "test:copy");
+    lab.push_through("test:copy", &format!("{host}/private/copy:1.0.0"));
+    let third = retitled(&lab.f, "test:third");
+    lab.push_through("test:third", &format!("{host}/private/third:1.0.0"));
+    let local = |repository: &str| format!("{host}/private/{repository}:1.0.0");
+
+    let listed = |dir: &str| {
+        let target = assembly::test_support::TempDir::new(dir);
+        let store = image_store::Store::open(target.path().join("store")).unwrap();
+        let mut view = LibraryView::synthetic(store.root().to_owned());
+        view.attach_remotes(lab.accounts.clone());
+        let mut file = None;
+        view.select_remote(Node::registry(&host), &mut file);
+        view.pump_until(|v| {
+            v.remote
+                .model
+                .as_ref()
+                .unwrap()
+                .registry(&host)
+                .unwrap()
+                .state
+                == State::Listed
+        });
+        (target, store, view)
+    };
+    let row = |view: &LibraryView, repository: &str| -> TagRow {
+        view.remote
+            .model
+            .as_ref()
+            .unwrap()
+            .registry(&host)
+            .unwrap()
+            .repository(&format!("private/{repository}"))
+            .unwrap()
+            .representative_row()
+            .unwrap()
+            .clone()
+    };
+    let select = |view: &mut LibraryView, repositories: &[&str]| {
+        let ids: Vec<(String, String)> = repositories
+            .iter()
+            .map(|r| (format!("private/{r}"), "1.0.0".to_owned()))
+            .collect();
+        view.remote.selected = Some((host.clone(), ids[0].0.clone(), ids[0].1.clone()));
+        view.remote.multi = if ids.len() > 1 { ids } else { Vec::new() };
+    };
+    let start = |view: &mut LibraryView| {
+        let requests = view.remote_pull.as_mut().unwrap().start();
+        assert!(!requests.is_empty());
+        for request in requests {
+            view.send(Request::Transfer(request));
+        }
+    };
+    let finished = |v: &LibraryView| v.remote_pull.as_ref().is_some_and(|d| d.finished());
+
+    // One tag: the local tag waits for every blob.
+    let (_target, store, mut view) = listed("remotes-pull");
+    assert_eq!(
+        row(&view, "test").local,
+        Some(LocalState::NotPulled { same_as: None })
+    );
+    select(&mut view, &["test"]);
+    view.begin_remote_pull(Mode::Pull);
+    lab.registry.clear_log();
+    lab.registry.hold_next("GET /v2/private/test/blobs/");
+    start(&mut view);
+    let registry = &lab.registry;
+    wait_pumping(&mut view, || registry.held());
+    assert!(matches!(
+        store.tag_descriptor(&local("test")),
+        Err(image_store::Error::TagNotFound(_))
+    ));
+    lab.registry.release();
+    view.pump_until(finished);
+    assert_eq!(
+        store.tag_descriptor(&local("test")).unwrap().digest,
+        source.digest
+    );
+    assert_eq!(view.status, Some(format!("Pulled {}", local("test"))));
+    view.pump_until(|v| row(v, "test").local == Some(LocalState::InLibrary));
+    assert!(
+        !lab.registry
+            .log()
+            .iter()
+            .any(|line| line.contains("_catalog")),
+        "no new listing: {:?}",
+        lab.registry.log()
+    );
+
+    // The copy's local name holds another image: Pull offers another tag
+    // and never moves that one.
+    pc_image::test_support::with_synthetic_firmware(|| {
+        store.update_tag(&local("copy"), &source, None, &pc_image::PcProvider)
+    })
+    .unwrap();
+    view.send(Request::Query(view.query.clone()));
+    view.pump_until(|v| matches!(row(v, "copy").local, Some(LocalState::OtherImage { .. })));
+    view.remote_pull = None;
+    select(&mut view, &["copy"]);
+    view.begin_remote_pull(Mode::Pull);
+    let dialog = view.remote_pull.as_mut().unwrap();
+    let another = format!("{host}/private/copy-new:1.0.0");
+    assert_eq!(dialog.items[0].local_tag, another);
+    dialog.items[0].local_tag = local("copy");
+    assert!(dialog
+        .problem()
+        .unwrap()
+        .ends_with("Pull never moves a local tag: choose another one."));
+    assert!(dialog.start().is_empty());
+    dialog.items[0].local_tag = another.clone();
+    start(&mut view);
+    view.pump_until(finished);
+    assert_eq!(store.tag_descriptor(&another).unwrap().digest, copy.digest);
+    assert_eq!(
+        store.tag_descriptor(&local("copy")).unwrap().digest,
+        source.digest,
+        "the clashing local tag never moved"
+    );
+
+    // Several: the ones in the library or whose name holds another image
+    // are left out.
+    view.remote_pull = None;
+    select(&mut view, &["test", "copy", "third"]);
+    view.begin_remote_pull(Mode::Pull);
+    let skipped: Vec<Option<String>> = view
+        .remote_pull
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .map(|i| i.skip.clone())
+        .collect();
+    assert_eq!(
+        skipped,
+        [
+            Some("already in the library".to_owned()),
+            Some("its local tag names another image; pull it alone, under another tag".to_owned()),
+            None
+        ]
+    );
+    start(&mut view);
+    view.pump_until(finished);
+    assert_eq!(
+        store.tag_descriptor(&local("third")).unwrap().digest,
+        third.digest
+    );
+    assert_eq!(
+        view.remote_pull
+            .as_ref()
+            .unwrap()
+            .summary()
+            .unwrap()
+            .heading,
+        "Pulled 1 tag."
+    );
+
+    // Cancel: the running pull stops at its next read, the waiting one never
+    // asks the registry.
+    let (_fresh, fresh, mut view) = listed("remotes-pull-cancel");
+    select(&mut view, &["test", "third"]);
+    view.begin_remote_pull(Mode::Pull);
+    lab.registry.clear_log();
+    lab.registry.hold_next("GET /v2/private/test/blobs/");
+    start(&mut view);
+    let registry = &lab.registry;
+    wait_pumping(&mut view, || registry.held());
+    view.remote_pull.as_mut().unwrap().cancel();
+    lab.registry.release();
+    view.pump_until(finished);
+    let dialog = view.remote_pull.as_ref().unwrap();
+    assert_eq!(dialog.stage(0), Stage::Cancelled);
+    assert_eq!(dialog.stage(1), Stage::NotStarted);
+    assert!(
+        !lab.registry
+            .log()
+            .iter()
+            .any(|line| line.contains("/v2/private/third/")),
+        "{:?}",
+        lab.registry.log()
+    );
+    for repository in ["test", "third"] {
+        assert!(fresh.tag_descriptor(&local(repository)).is_err());
+    }
+    // Pulled again, both come, in the order chosen.
+    view.remote_pull = None;
+    view.begin_remote_pull(Mode::Pull);
+    lab.registry.clear_log();
+    start(&mut view);
+    view.pump_until(finished);
+    let manifests: Vec<String> = lab
+        .registry
+        .log()
+        .into_iter()
+        .filter(|line| line.starts_with("GET ") && line.contains("/manifests/"))
+        .collect();
+    let first = |repository: &str| manifests.iter().position(|l| l.contains(repository));
+    assert!(
+        first("private/test") < first("private/third"),
+        "{manifests:?}"
+    );
+    assert_eq!(view.remote_pull.as_ref().unwrap().pulled().len(), 2);
+}
+
+/// The details pane of one tag and of several lays out in both skins and
+/// both themes at the window widths the library is checked at: nothing
+/// moves or grows from frame to frame, and no text leaves the window or is
+/// cut at a side of its clip.
+#[test]
+fn the_details_pane_lays_out_in_every_look_without_growing() {
+    for (classic, dark) in LOOKS {
+        for width in [760.0, 1000.0, 1400.0, 2000.0] {
+            for several in [false, true] {
+                let what = format!("classic {classic}, dark {dark}, {width} px, several {several}");
+                let mut rig = Rig::new();
+                rig.listed();
+                let open_at = rig
+                    .registry(DEFAULT_REGISTRY)
+                    .repositories
+                    .iter_mut()
+                    .find(|r| r.name == "unemu/open-at")
+                    .unwrap();
+                let rich = rich(mt::MACHINE, "Open AT 286", "unemu AT BIOS ROM");
+                open_at.read[0].record = Ok(rich);
+                open_at.newer_needs =
+                    vec![("2.0.0".into(), "Needs unemupc 99.0.0 or newer".into())];
+                rig.show(unemu(None));
+                rig.view.remote.selected = Some((
+                    DEFAULT_REGISTRY.into(),
+                    "unemu/open-at".into(),
+                    "1.2.0".into(),
+                ));
+                if several {
+                    rig.view.remote.multi = vec![
+                        ("unemu/open-at".into(), "1.2.0".into()),
+                        ("unemu/clash".into(), "1.0.0".into()),
+                        ("unemu/media/freedos".into(), "1.4".into()),
+                    ];
+                }
+                rig.view.classic = classic;
+                let size = egui::vec2(width, 900.0);
+                let mut screen = Screen::new(classic, dark, size);
+                // The pane is taller than its area: its scroll bar takes its
+                // room over egui's animation time first.
+                for _ in 0..30 {
+                    screen.frame(&mut rig.view, Vec::new());
+                }
+                let first = screen.settled(&mut rig.view);
+                let later = {
+                    screen.frame(&mut rig.view, Vec::new());
+                    screen.frame(&mut rig.view, Vec::new())
+                };
+                assert_eq!(first.texts, later.texts, "{what}: the texts moved");
+                assert_eq!(first.widgets, later.widgets, "{what}: the widgets moved");
+                let heading = if several {
+                    "3 tags selected"
+                } else {
+                    "In your library"
+                };
+                let pane_top = first.text(heading).rect.top() - 40.0;
+                let window = Rect::from_min_size(egui::Pos2::ZERO, size);
+                for text in first.texts.iter().filter(|t| t.rect.top() >= pane_top) {
+                    let visible = text.rect.intersect(text.clip);
+                    if !visible.is_positive() {
+                        continue;
+                    }
+                    assert!(
+                        window.expand(0.5).contains_rect(visible),
+                        "{what}: {:?} leaves the window",
+                        text.text
+                    );
+                    assert!(
+                        text.rect.left() >= text.clip.left() - 1.0
+                            && text.rect.right() <= text.clip.right() + 1.0,
+                        "{what}: {:?} is cut at a side ({:?} in {:?})",
+                        text.text,
+                        text.rect,
+                        text.clip
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A machine image of another family under the templates' node is muted
+/// with the reason and can be neither pulled nor made into a machine.
+#[test]
+fn another_familys_image_is_muted_and_cannot_be_pulled() {
+    let mut c64 = record(mt::MACHINE, "Commodore 64");
+    c64.platform = Some("c64".into());
+    let mut rig = Rig::new();
+    let registry = rig.registry(DEFAULT_REGISTRY);
+    registry.repositories = vec![repository(
+        "unemu/c64",
+        &["1.0.0"],
+        vec![read(
+            DEFAULT_REGISTRY,
+            "unemu/c64",
+            "1.0.0",
+            c64,
+            LocalState::NotPulled { same_as: None },
+        )],
+    )];
+    registry.state = State::Listed;
+    rig.show(unemu(Some(Group::Machines)));
+    let mut screen = Screen::new(true, false, WIDE);
+    let reason = "A c64 machine image: this release runs IBM PC compatibles";
+    let shown = screen.settled(&mut rig.view);
+    let rows = shown.rows();
+    assert_eq!(rows[0].last().map(String::as_str), Some(reason));
+    let muted = crate::shell::skin_visuals(true, false).weak_text_color();
+    assert_eq!(shown.text("unemu/c64").colour, muted);
+    screen.click(&mut rig.view, "unemu/c64");
+    let shown = screen.settled(&mut rig.view);
+    assert!(shown.shows(&format!("{reason}.")));
+    assert!(!rig.view.can_pull_remote());
+    for button in ["Pull…", "Pull and create machine…"] {
+        screen.click(&mut rig.view, button);
+        assert!(rig.view.remote_pull.is_none(), "{button}");
+    }
+}
+
+/// Enter on a tag's row opens Pull… for it: egui clicks a focused row on
+/// Enter, and the tag is selected and pulled; a repository of several tags
+/// expands instead.
+#[test]
+fn enter_on_a_tag_row_opens_pull() {
+    let mut rig = Rig::new();
+    rig.listed();
+    rig.show(unemu(None));
+    let mut screen = Screen::new(true, false, WIDE);
+    screen.click(&mut rig.view, "unemu/clash");
+    screen.click(&mut rig.view, "unemu/open-at-games");
+    assert!(rig.view.remote_pull.is_none());
+    screen.key(&mut rig.view, egui::Key::Enter);
+    let dialog = rig.view.remote_pull.as_ref().expect("Enter opens Pull…");
+    assert_eq!(dialog.items.len(), 1);
+    assert_eq!(dialog.items[0].name(), "unemu/open-at-games:1.2.0");
+    assert_eq!(
+        rig.view.remote.selection(),
+        [("unemu/open-at-games".to_owned(), "1.2.0".to_owned())]
+    );
+}
+
+/// A tag selected under one node is no longer the selection once another
+/// node is shown, so Pull… never takes a tag the list does not show.
+#[test]
+fn another_node_drops_the_selection() {
+    let mut rig = Rig::new();
+    rig.listed();
+    let mut file = None;
+    rig.view
+        .select_remote(unemu(Some(Group::Machines)), &mut file);
+    let mut screen = Screen::new(true, false, WIDE);
+    screen.click(&mut rig.view, "unemu/open-at-games");
+    assert!(rig.view.can_pull_remote());
+    rig.view
+        .select_remote(unemu(Some(Group::Firmware)), &mut file);
+    assert!(rig.view.remote.selection().is_empty());
+    assert!(!rig.view.can_pull_remote());
+    let shown = screen.settled(&mut rig.view);
+    assert!(shown.has(
+        "Select a tag for its details and Pull…. Ctrl (⌘ on macOS) adds a tag to the selection; Shift selects a range."
+    ));
+    // Showing the same node again keeps it.
+    screen.click(&mut rig.view, "unemu/firmware/future-bios");
+    rig.view
+        .select_remote(unemu(Some(Group::Firmware)), &mut file);
+    assert_eq!(rig.view.remote.selection().len(), 1);
+}
+
+/// Official templates are the machine images one name under `unemu/`; a
+/// deeper repository there lists under the same node as a machine image.
+#[test]
+fn only_a_name_right_under_unemu_is_a_template() {
+    assert_eq!(type_label(mt::MACHINE, "unemu/open-at"), "Machine template");
+    assert_eq!(
+        type_label(mt::MACHINE, "unemu/staging/open-at"),
+        "Machine image"
+    );
+    assert_eq!(type_label(mt::MACHINE, "unemu"), "Machine image");
+    assert_eq!(type_label(mt::MACHINE, "private/open-at"), "Machine image");
+    assert_eq!(
+        type_label(mt::MEDIA_SET, "unemu/freedos"),
+        "Installation media"
+    );
+    let mut rig = Rig::new();
+    rig.listed();
+    rig.registry(DEFAULT_REGISTRY).repositories.push(repository(
+        "unemu/staging/open-at",
+        &["1.3.0"],
+        vec![read(
+            DEFAULT_REGISTRY,
+            "unemu/staging/open-at",
+            "1.3.0",
+            record(mt::MACHINE, "Open AT 286, staged"),
+            LocalState::NotPulled { same_as: None },
+        )],
+    ));
+    rig.show(unemu(Some(Group::Machines)));
+    let mut screen = Screen::new(true, false, WIDE);
+    let rows = screen.settled(&mut rig.view).rows();
+    let staged = rows
+        .iter()
+        .find(|r| r[0] == "unemu/staging/open-at")
+        .expect("listed under the node");
+    assert_eq!(staged[4], "Machine image");
+}
+
+/// A selected tag whose record is not read yet is listed and counted as
+/// left out, the same in the pane and in the dialog.
+#[test]
+fn an_unread_tag_of_several_is_left_out_with_the_reason() {
+    let mut rig = Rig::new();
+    rig.listed();
+    rig.show(unemu(None));
+    rig.view.remote.selected = Some((
+        DEFAULT_REGISTRY.into(),
+        "unemu/open-at".into(),
+        "1.0.0".into(),
+    ));
+    rig.view.remote.multi = vec![
+        ("unemu/open-at".into(), "1.0.0".into()),
+        ("unemu/open-at-games".into(), "1.2.0".into()),
+    ];
+    let mut screen = Screen::new(true, false, WIDE);
+    let shown = screen.settled(&mut rig.view);
+    assert!(shown.has("2 tags selected"));
+    assert!(shown.shows("Not read yet"));
+    assert!(shown.has_widget("Pull 1 tag…"));
+    screen.click(&mut rig.view, "Pull 1 tag…");
+    let dialog = rig.view.remote_pull.as_ref().expect("Pull… opens");
+    let skipped: Vec<Option<&str>> = dialog.items.iter().map(|i| i.skip.as_deref()).collect();
+    assert_eq!(skipped, [Some("it is not read yet"), None]);
+    assert_eq!(dialog.go_label(), "Pull 1 tag");
+}
+
+/// Pull and insert… names what waits in a drive for the next Start already,
+/// which the pulled set's first disk replaces.
+#[test]
+fn pull_and_insert_says_what_it_replaces() {
+    use crate::library_view::machines::tests::row;
+    let mut rig = Rig::new();
+    rig.listed();
+    rig.show(unemu(None));
+    let mut games = row("games", "Games machine", "games", &[]);
+    games.created.push(crate::created_media::CreatedInsert {
+        drive: "A:".into(),
+        title: "Saved games".into(),
+        disks: Vec::new(),
+        journal: false,
+    });
+    rig.view.machines = Arc::new(vec![games]);
+    let mut screen = Screen::new(true, false, WIDE);
+    screen.click(&mut rig.view, "unemu/media/freedos");
+    screen.click(&mut rig.view, "Pull and insert…");
+    let dialog = rig
+        .view
+        .remote_pull
+        .as_ref()
+        .expect("Pull and insert… opens");
+    assert_eq!(
+        dialog.drives.iter().map(|d| d.label()).collect::<Vec<_>>(),
+        ["Games machine — A: 1.44M — replaces Saved games"]
+    );
+}
+
+/// Contents… keeps inside a window at its narrowest width, 760 px, with a
+/// gutter at its sides, and cuts no text.
+#[test]
+fn contents_fits_a_narrow_window() {
+    let mut rig = Rig::new();
+    rig.listed();
+    rig.show(unemu(None));
+    rig.view.remote.contents = Some((
+        DEFAULT_REGISTRY.into(),
+        "unemu/open-at".into(),
+        "1.2.0".into(),
+    ));
+    let open_at = rig
+        .registry(DEFAULT_REGISTRY)
+        .repositories
+        .iter_mut()
+        .find(|r| r.name == "unemu/open-at")
+        .unwrap();
+    open_at.read[0].record = Ok(rich(mt::MACHINE, "Open AT 286", "unemu AT BIOS ROM"));
+    for (classic, dark) in LOOKS {
+        let size = egui::vec2(760.0, 500.0);
+        let ctx = egui::Context::default();
+        crate::shell::configure_context(&ctx);
+        ctx.set_visuals(crate::shell::skin_visuals(classic, dark));
+        let mut shown = None;
+        for frame in 0..4 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    time: Some(f64::from(frame) / 60.0),
+                    ..Default::default()
+                },
+                |ui| {
+                    rig.view.modals(ui.ctx(), None, Vec::new(), classic, false);
+                },
+            );
+            output.textures_delta.clear();
+            shown = Some(Shown::of(&output));
+        }
+        let shown = shown.unwrap();
+        assert!(shown.has("Contents — unemu/open-at:1.2.0"));
+        // The dialog keeps a gutter inside the window, as at its wide size.
+        let window = Rect::from_min_size(egui::Pos2::ZERO, size).shrink(8.0);
+        for text in &shown.texts {
+            let visible = text.rect.intersect(text.clip);
+            if visible.is_positive() {
+                assert!(
+                    window.expand(0.5).contains_rect(visible),
+                    "classic {classic}, dark {dark}: {:?} leaves the window's gutter ({:?})",
+                    text.text,
+                    text.rect
+                );
+                assert!(
+                    text.rect.left() >= text.clip.left() - 1.0
+                        && text.rect.right() <= text.clip.right() + 1.0,
+                    "classic {classic}, dark {dark}: {:?} is cut at a side ({:?} in {:?})",
+                    text.text,
+                    text.rect,
+                    text.clip
+                );
+            }
+        }
+    }
 }

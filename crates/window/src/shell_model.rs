@@ -69,8 +69,11 @@ pub(crate) enum Command {
     SaveImage,
     /// Image › Push… of a local image to a registry.
     Push,
-    /// Image › Pull… of a registry image into the local store.
+    /// Image › Pull… and the toolbar's Pull…: the tags selected in the
+    /// library's Remotes, into the local store.
     Pull,
+    /// Image › Pull by reference…: a registry image named by its reference.
+    PullReference,
     /// File › Get templates…: Remotes › the default registry › `unemu/` ›
     /// Machine images.
     GetTemplates,

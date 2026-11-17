@@ -13,8 +13,14 @@
 //! for each repository its tag list (`tags/list`), following the registry's
 //! `Link` paging; and the record of the tag the repository row stands for:
 //! its manifest and, for a media set or firmware package, its config record
-//! ([`image_registry::browse`]). The other tags are read when a repository is
-//! expanded or a tag selected. Selecting a tag also reads its small metadata
+//! ([`image_registry::browse`]). That tag is the newest one this release runs
+//! (machine-images §5.6): the version tag `latest` names when it is one of
+//! the 16 newest versions and runs here, else the newest version that runs
+//! here, versions newest first as [`candidates`] orders them. The listing
+//! reads the versions newest first until it reaches that one, so it knows
+//! which newer versions need which release; a repository none of whose
+//! versions runs here stands for its newest one, which the list dims. The
+//! other tags are read when a repository is expanded or a tag selected. Selecting a tag also reads its small metadata
 //! record, for the edition and version the details pane shows; no other layer
 //! is ever fetched. A registry entry that names namespaces lists only the
 //! repositories in them. A stored login goes with the first request, because
@@ -22,7 +28,7 @@
 //! instead of a challenge.
 //!
 //! Every request runs on the library worker, also while a machine runs, with
-//! Get templates' short timeouts (10 s to connect, 15 s per read), and
+//! the short timeouts of a login check (10 s to connect, 15 s per read), and
 //! answers on a later frame. Stop sets a flag the worker checks before every
 //! request after a job's first, so a listing stops at its next read; answers
 //! of a stopped job change nothing. The worker answers one request at a time,
@@ -52,9 +58,12 @@
 //! `latest` or another tool's artifact makes no claim. *Not pulled*
 //! otherwise, naming another local tag of the same image when there is one.
 //! The comparison runs on the worker against the store, and again whenever
-//! the library changes.
+//! the library changes. The same comparison notes which blobs of each read
+//! tag the store already holds, so the details pane can say what a pull would
+//! fetch.
 //!
-//! The library window draws it: [`crate::library_view::remotes`].
+//! Pull runs in [`crate::remote_pull`]; the library window draws both:
+//! [`crate::library_view::remotes`].
 
 use crate::registry_transfer::{common_failure, next_id, Accounts};
 use image_registry::{
@@ -64,10 +73,10 @@ use image_registry::{
     reference::OFFICIAL_NAMESPACE,
     Client, Error, Reference, RegistryEntry, DEFAULT_REGISTRY,
 };
-use image_store::{media_set, media_type as mt, Digest, Store};
+use image_store::{compat, media_set, media_type as mt, Descriptor, Digest, Store};
 use std::{
     cmp::Ordering as Order,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -79,9 +88,12 @@ use std::{
 pub(crate) const CATALOG_PAGE: usize = 50;
 /// Tags are asked for in pages of this size, following the registry's `Link`.
 const TAG_PAGE: usize = 100;
+/// At most this many of the newest versions are compared with `latest`.
+const LATEST_LOOKUPS: usize = 16;
 
 const TITLE: &str = "org.opencontainers.image.title";
 const VERSION: &str = "org.opencontainers.image.version";
+const PLATFORM: &str = "unemu.platform";
 
 /// What the list shows of one tag.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,6 +111,9 @@ pub(crate) struct TagRecord {
     pub formats: Vec<String>,
     /// `unemu.min-app-version` as the manifest has it, not yet interpreted.
     pub min_app_version: Option<String>,
+    /// `unemu.platform` as the manifest has it: the machine family the
+    /// artifact is for.
+    pub platform: Option<String>,
     /// The manifest and every distinct blob it names.
     pub size: u64,
     /// Some blob is marked user-supplied.
@@ -108,6 +123,14 @@ pub(crate) struct TagRecord {
     /// What the metadata record adds once the tag is selected, or why it
     /// could not be read; `None` until then.
     pub details: Option<Result<Details, String>>,
+    /// The manifest's own bytes.
+    pub manifest_size: u64,
+    /// Every descriptor the manifest names, the config first, then the
+    /// layers in manifest order, with their sizes and marks: what Contents…
+    /// lists. Reading them fetches none.
+    pub descriptors: Vec<Descriptor>,
+    /// A media set's media in set order: each one's id and format name.
+    pub media: Vec<(String, String)>,
 }
 
 /// The selected tag's edition and version from its metadata record; a
@@ -118,7 +141,85 @@ pub(crate) struct Details {
     pub version: Option<String>,
 }
 
+/// What a person calls an artifact of `artifact_type`.
+fn kind_name(artifact_type: &str) -> &'static str {
+    match artifact_type {
+        mt::MACHINE => "machine image",
+        mt::MEDIA_SET => "installation media set",
+        mt::FIRMWARE => "firmware package",
+        _ => "artifact",
+    }
+}
+
 impl TagRecord {
+    /// Why this release does not read the tag at all: an artifact type the
+    /// PC provider does not read, or another machine family's artifact. The
+    /// family is compared through its current id, so the retired PC id
+    /// counts as the PC (machine-images §1, Platform neutrality).
+    pub fn other_platform(&self) -> Option<String> {
+        if ![mt::MACHINE, mt::MEDIA_SET, mt::FIRMWARE].contains(&self.artifact_type.as_str()) {
+            return Some(format!(
+                "Another tool's artifact ({}): this release pulls machine images, installation media sets and firmware packages",
+                self.artifact_type
+            ));
+        }
+        let kind = kind_name(&self.artifact_type);
+        let family = pc_image::PLATFORM_NAME;
+        let Some(family_id) = self.platform.as_deref() else {
+            return Some(format!(
+                "A {kind} that names no machine family: this release runs {family}s"
+            ));
+        };
+        if pc_image::is_pc(family_id) {
+            return None;
+        }
+        let article = if family_id.starts_with(['a', 'e', 'i', 'o', 'u']) {
+            "An"
+        } else {
+            "A"
+        };
+        Some(format!(
+            "{article} {family_id} {kind}: this release runs {family}s"
+        ))
+    }
+
+    /// Why this release does not run the tag: [`Self::other_platform`], else
+    /// [`Self::needs_newer`]. A tag with a reason is muted, never stands for
+    /// its repository while another version runs here, and is not pulled.
+    pub fn not_runnable(&self) -> Option<String> {
+        self.other_platform().or_else(|| self.needs_newer())
+    }
+
+    /// "Needs unemupc X or newer" when this release does not run the tag, by
+    /// the `unemu.min-app-version` of its manifest read as the store reads
+    /// it: a value that is not a release version is unmet (machine-images
+    /// §5.6).
+    pub fn needs_newer(&self) -> Option<String> {
+        let requirement = match self.min_app_version.as_deref() {
+            None => compat::Requirement::None,
+            Some(text) => text.parse().map_or_else(
+                |_| compat::Requirement::Invalid(text.into()),
+                compat::Requirement::Release,
+            ),
+        };
+        if requirement.met_by(compat::level()) {
+            return None;
+        }
+        Some(compat::needs(match requirement {
+            compat::Requirement::Release(required) => Some(required),
+            _ => None,
+        }))
+    }
+
+    /// Each blob the manifest names once, the config first.
+    pub fn blobs(&self) -> Vec<&Descriptor> {
+        let mut seen = BTreeSet::new();
+        self.descriptors
+            .iter()
+            .filter(|d| seen.insert(&d.digest))
+            .collect()
+    }
+
     fn from_read(read: browse::TagRecord) -> Self {
         let annotation = |key: &str| {
             read.annotations
@@ -139,6 +240,7 @@ impl TagRecord {
                 .map(str::to_owned)
         };
         let mut formats = Vec::new();
+        let mut set = Vec::new();
         if read.artifact_type == mt::MEDIA_SET {
             let media = config
                 .as_ref()
@@ -149,16 +251,33 @@ impl TagRecord {
                     .get("format")
                     .and_then(toml::Value::as_table)
                     .and_then(|format| pc_image::media_set::format_name(format).ok());
+                let id = medium.get("id").and_then(toml::Value::as_str);
+                if let (Some(id), Some(name)) = (id, name) {
+                    set.push((id.to_owned(), name.to_owned()));
+                }
                 if let Some(name) = name.filter(|name| !formats.iter().any(|f| f == name)) {
                     formats.push(name.to_owned());
                 }
             }
         }
+        let descriptors: Vec<Descriptor> = std::iter::once(read.config_descriptor)
+            .chain(read.layers)
+            .collect();
+        let mut seen = BTreeSet::new();
+        let blobs: u64 = descriptors
+            .iter()
+            .filter(|d| seen.insert(d.digest.clone()))
+            .map(|d| d.size)
+            .sum();
         Self {
+            manifest_size: read.size.saturating_sub(blobs),
+            descriptors,
+            media: set,
             title: annotation(TITLE).or_else(|| field("name")),
             version: annotation(VERSION).or_else(|| field("version")),
             formats,
             min_app_version: read.annotations.get(MIN_APP_VERSION).cloned(),
+            platform: annotation(PLATFORM),
             digest: read.digest,
             artifact_type: read.artifact_type,
             size: read.size,
@@ -195,6 +314,47 @@ pub(crate) struct TagRow {
     pub record: Result<TagRecord, String>,
     /// `None` when the record could not be read.
     pub local: Option<LocalState>,
+    /// The blobs of the record the store held when it was last compared;
+    /// a pull does not fetch them again.
+    pub stored: BTreeSet<Digest>,
+}
+
+/// What a pull of a tag would fetch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Download {
+    /// The manifest and every blob the store does not hold.
+    pub bytes: u64,
+    /// Blobs the store holds already, of `blobs`.
+    pub present: usize,
+    pub blobs: usize,
+}
+
+impl TagRow {
+    /// What a pull would fetch; `None` when it fetches nothing, as the image
+    /// is in the library under this name or another.
+    pub fn download(&self) -> Option<Download> {
+        let record = self.record.as_ref().ok()?;
+        if matches!(
+            self.local,
+            Some(LocalState::InLibrary | LocalState::NotPulled { same_as: Some(_) })
+        ) {
+            return None;
+        }
+        let blobs = record.blobs();
+        let missing: u64 = blobs
+            .iter()
+            .filter(|d| !self.stored.contains(&d.digest))
+            .map(|d| d.size)
+            .sum();
+        Some(Download {
+            bytes: record.manifest_size.saturating_add(missing),
+            present: blobs
+                .iter()
+                .filter(|d| self.stored.contains(&d.digest))
+                .count(),
+            blobs: blobs.len(),
+        })
+    }
 }
 
 /// One repository of a registry's catalog.
@@ -203,12 +363,17 @@ pub(crate) struct RepositoryRow {
     pub name: String,
     /// Every tag, as the registry lists them.
     pub tags: Vec<String>,
-    /// The tag the row stands for ([`representative`]).
+    /// The tag the row stands for: the newest version this release runs,
+    /// as the listing chose it from the [`candidates`].
     pub representative: Option<String>,
     /// The tags read so far.
     pub read: Vec<TagRow>,
     /// Why the tags could not be listed.
     pub error: Option<String>,
+    /// Versions newer than the representative that this release cannot
+    /// run, newest first, each with the reason, such as "Needs unemupc X or
+    /// newer".
+    pub newer_needs: Vec<(String, String)>,
 }
 
 impl RepositoryRow {
@@ -229,28 +394,43 @@ impl RepositoryRow {
     }
 }
 
-/// The tag a repository row stands for, chosen before any manifest is read
-/// and whatever order the registry lists the tags in: the newest release by
-/// Semantic Versioning 2.0.0 §11 precedence, else the newest pre-release,
-/// else the first by the set-tag order ([`media_set::newest_set_tag_first`]),
-/// which also puts the highest firmware revision first, then `latest`, then
-/// the other aliases by name.
-pub(crate) fn representative(tags: &[String]) -> Option<String> {
-    let newest = |release: bool| {
-        tags.iter()
+/// The tags a repository row may stand for, newest first, whatever order the
+/// registry lists them in: the releases by Semantic Versioning 2.0.0 §11
+/// precedence; without a release the pre-releases; without either every tag
+/// by the set-tag order ([`media_set::newest_set_tag_first`]), which also
+/// puts the highest firmware revision first, then `latest`, then the other
+/// aliases by name.
+pub(crate) fn candidates(tags: &[String]) -> Vec<String> {
+    let versions = |release: bool| {
+        let mut versions: Vec<_> = tags
+            .iter()
             .filter_map(|tag| {
                 pc_image::template::precedence(tag)
                     .filter(|p| p.is_release() == release)
-                    .map(|p| (p, tag))
+                    .map(|p| (p, tag.clone()))
             })
-            .max_by(|a, b| a.0.cmp(&b.0))
-            .map(|(_, tag)| tag.clone())
+            .collect();
+        versions.sort_by(|a, b| b.0.cmp(&a.0));
+        versions.into_iter().map(|(_, tag)| tag).collect::<Vec<_>>()
     };
-    newest(true).or_else(|| newest(false)).or_else(|| {
-        tags.iter()
-            .min_by(|a, b| media_set::newest_set_tag_first(a, b))
-            .cloned()
-    })
+    let releases = versions(true);
+    if !releases.is_empty() {
+        return releases;
+    }
+    let pre_releases = versions(false);
+    if !pre_releases.is_empty() {
+        return pre_releases;
+    }
+    let mut all = tags.to_vec();
+    all.sort_by(|a, b| media_set::newest_set_tag_first(a, b));
+    all
+}
+
+/// The tag a repository row stands for before any manifest is read: the
+/// first of its [`candidates`].
+#[cfg(test)]
+pub(crate) fn representative(tags: &[String]) -> Option<String> {
+    candidates(tags).into_iter().next()
 }
 
 /// How two tags of one repository compare as versions of `artifact_type`, or
@@ -347,12 +527,30 @@ pub(crate) enum BrowseRequest {
         tags: Vec<String>,
         details: bool,
     },
-    /// Each read tag's local state again: the local tag a pull writes, the
-    /// image the tag names and its artifact type. No registry is contacted.
-    Local {
-        id: u64,
-        tags: Vec<(String, Digest, String)>,
-    },
+    /// Each read tag's local state again. No registry is contacted.
+    Local { id: u64, tags: Vec<LocalQuery> },
+}
+
+/// One read tag to compare with the library again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LocalQuery {
+    /// The local tag a pull writes.
+    pub local_tag: String,
+    /// The image the tag names, and its artifact type.
+    pub digest: Digest,
+    pub artifact_type: String,
+    /// Its blobs, to see which ones the store holds.
+    pub blobs: Vec<Descriptor>,
+}
+
+/// How one read tag stands against the library now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LocalAnswer {
+    pub local_tag: String,
+    pub digest: Digest,
+    pub state: LocalState,
+    /// The blobs of the tag the store holds.
+    pub stored: BTreeSet<Digest>,
 }
 
 /// Why a job ended without finishing.
@@ -409,7 +607,7 @@ pub(crate) enum BrowseEvent {
     /// read.
     Local {
         id: u64,
-        states: Result<Vec<(String, Digest, LocalState)>, String>,
+        states: Result<Vec<LocalAnswer>, String>,
     },
 }
 
@@ -431,11 +629,22 @@ pub(crate) fn run(store: &Store, request: BrowseRequest, send: &dyn Fn(BrowseEve
         }
         BrowseRequest::Local { id, tags } => send(BrowseEvent::Local {
             id,
-            states: library(store).map(|library| {
+            states: library(store).and_then(|library| {
                 tags.into_iter()
-                    .map(|(tag, digest, artifact_type)| {
-                        let state = local_state(&tag, &digest, &artifact_type, &library);
-                        (tag, digest, state)
+                    .map(|query| {
+                        Ok(LocalAnswer {
+                            state: local_state(
+                                &query.local_tag,
+                                &query.digest,
+                                &query.artifact_type,
+                                &library,
+                            ),
+                            stored: stored(store, &query.blobs).map_err(|error| {
+                                format!("The library could not be read: {error}")
+                            })?,
+                            local_tag: query.local_tag,
+                            digest: query.digest,
+                        })
                     })
                     .collect()
             }),
@@ -446,6 +655,25 @@ pub(crate) fn run(store: &Store, request: BrowseRequest, send: &dyn Fn(BrowseEve
 fn library(store: &Store) -> Result<Vec<(String, Digest)>, String> {
     crate::save_image::local_tags(store)
         .map_err(|error| format!("The library could not be read: {error}"))
+}
+
+/// Which of `blobs` the store holds, by the check a pull makes before it
+/// fetches anything.
+pub(crate) fn stored<'a>(
+    store: &Store,
+    blobs: impl IntoIterator<Item = &'a Descriptor>,
+) -> image_store::Result<BTreeSet<Digest>> {
+    let mut held = BTreeSet::new();
+    for blob in blobs {
+        match store.open_blob(&blob.digest, blob.size) {
+            Ok(_) => {
+                held.insert(blob.digest.clone());
+            }
+            Err(image_store::Error::MissingBlob { .. }) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(held)
 }
 
 /// Errors that end a job; any other failure stays with its repository or tag.
@@ -517,8 +745,8 @@ fn failure(error: Error, client: Option<&Client>) -> End {
     })
 }
 
-/// The client of Get templates and connection tests, with a stored login
-/// sent from the first request, and the registry's entry.
+/// The client of connection tests, with its short timeouts and a stored
+/// login sent from the first request, and the registry's entry.
 fn connect(job: &Job) -> Result<(Client, RegistryEntry), End> {
     let (config, _) = job
         .accounts
@@ -534,15 +762,22 @@ fn connect(job: &Job) -> Result<(Client, RegistryEntry), End> {
 }
 
 /// Whether a catalog name is listed under `entry`: an entry that names
-/// namespaces lists only the repositories in them.
+/// namespaces lists only the repositories in them. The repositories the
+/// live registry test leaves under `unemu/test-` are never listed, nor read.
 fn listed_under(entry: &RegistryEntry, repository: &str) -> bool {
-    entry.namespaces.is_empty() || matches!(entry.scope(repository), Scope::Namespace { .. })
+    let live_test = repository
+        .strip_prefix(OFFICIAL_NAMESPACE)
+        .is_some_and(|rest| rest.starts_with("/test-"));
+    !live_test
+        && (entry.namespaces.is_empty()
+            || matches!(entry.scope(repository), Scope::Namespace { .. }))
 }
 
 /// One tag's row, with its metadata record when `details`; only an error
 /// that ends the job is returned as one.
 fn tag_row(
     client: &Client,
+    store: &Store,
     repository: &str,
     tag: &str,
     library: &[(String, Digest)],
@@ -560,6 +795,7 @@ fn tag_row(
                 local_tag,
                 record: Err(text(&error)),
                 local: None,
+                stored: BTreeSet::new(),
             })
         }
     };
@@ -578,12 +814,114 @@ fn tag_row(
     let mut record = TagRecord::from_read(read);
     record.details = title;
     let local = local_state(&local_tag, &record.digest, &record.artifact_type, library);
+    let stored = stored(store, &record.descriptors).map_err(Error::Store)?;
     Ok(TagRow {
         tag: tag.into(),
         local_tag,
         record: Ok(record),
         local: Some(local),
+        stored,
     })
+}
+
+/// The version tag `latest` names, when the repository has `latest` and it
+/// names one of the [`LATEST_LOOKUPS`] newest `candidates`; compared by the
+/// manifest digests the registry answers, without reading a manifest.
+fn latest_version(
+    client: &Client,
+    repository: &str,
+    tags: &[String],
+    candidates: &[String],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Option<String>, Error> {
+    if !tags.iter().any(|tag| tag == "latest") {
+        return Ok(None);
+    }
+    let Some(latest) = client.manifest_digest(repository, "latest")? else {
+        return Ok(None);
+    };
+    for tag in candidates
+        .iter()
+        .filter(|tag| *tag != "latest")
+        .take(LATEST_LOOKUPS)
+    {
+        if cancelled() {
+            return Err(Error::Cancelled);
+        }
+        if client.manifest_digest(repository, tag)?.as_ref() == Some(&latest) {
+            return Ok(Some(tag.clone()));
+        }
+    }
+    Ok(None)
+}
+
+/// Read a repository's versions newest first until the one its row stands
+/// for: `latest`'s version when it runs here, else the newest version that
+/// runs here; a version whose record cannot be read ends the search there.
+/// At most the [`LATEST_LOOKUPS`] newest versions are read, so a repository
+/// whose 16 newest versions all need a newer release stands for its newest
+/// one, dimmed, even if an older one would run. Sets the representative, the
+/// rows read and the newer versions' reasons.
+fn choose_representative(
+    client: &Client,
+    store: &Store,
+    row: &mut RepositoryRow,
+    library: &[(String, Digest)],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(), Error> {
+    let candidates = candidates(&row.tags);
+    let latest = match latest_version(client, &row.name, &row.tags, &candidates, cancelled) {
+        Ok(latest) => latest,
+        Err(error) if ends_job(&error) => return Err(error),
+        // A `latest` that cannot be compared makes no claim.
+        Err(_) => None,
+    };
+    let mut runnable: Option<String> = None;
+    let mut chosen = None;
+    for tag in candidates.iter().take(LATEST_LOOKUPS) {
+        if cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let read = tag_row(client, store, &row.name, tag, library, false, cancelled)?;
+        let runs = read
+            .record
+            .as_ref()
+            .ok()
+            .map(|r| r.not_runnable().is_none());
+        row.read.push(read);
+        match runs {
+            None => {
+                chosen = Some(runnable.clone().unwrap_or_else(|| tag.clone()));
+                break;
+            }
+            Some(true) if latest.as_ref() == Some(tag) => {
+                chosen = Some(tag.clone());
+                break;
+            }
+            Some(true) => {
+                runnable.get_or_insert_with(|| tag.clone());
+            }
+            Some(false) => {}
+        }
+        let latest_ahead = latest
+            .as_ref()
+            .is_some_and(|latest| !row.read.iter().any(|r| &r.tag == latest));
+        if runnable.is_some() && !latest_ahead {
+            chosen = runnable.clone();
+            break;
+        }
+    }
+    let representative = chosen.or(runnable).or_else(|| candidates.first().cloned());
+    row.newer_needs = candidates
+        .iter()
+        .take_while(|tag| Some(*tag) != representative.as_ref())
+        .filter_map(|tag| {
+            let needs = row.row(tag)?.record.as_ref().ok()?.not_runnable()?;
+            Some((tag.clone(), needs))
+        })
+        .collect();
+    row.representative = representative;
+    Ok(())
 }
 
 fn list(store: &Store, job: &Job, next: Option<String>, send: &dyn Fn(BrowseEvent)) -> End {
@@ -623,24 +961,20 @@ fn list(store: &Store, job: &Job, next: Option<String>, send: &dyn Fn(BrowseEven
             representative: None,
             read: Vec::new(),
             error: None,
+            newer_needs: Vec::new(),
         };
         match browse::list_tags(&client, &row.name, TAG_PAGE, &stopped) {
             Ok(tags) => {
-                row.representative = representative(&tags);
                 row.tags = tags;
+                if let Err(error) =
+                    choose_representative(&client, store, &mut row, &library, &stopped)
+                {
+                    return failure(error, Some(&client));
+                }
             }
             Err(error) if ends_job(&error) => return failure(error, Some(&client)),
             Err(error) => {
                 row.error = Some(common_failure(&error).unwrap_or_else(|| error.to_string()))
-            }
-        }
-        if let Some(tag) = row.representative.clone() {
-            if stopped() {
-                return End::Stopped;
-            }
-            match tag_row(&client, &row.name, &tag, &library, false, &stopped) {
-                Ok(tag_row) => row.read.push(tag_row),
-                Err(error) => return failure(error, Some(&client)),
             }
         }
         send(BrowseEvent::Repository { id: job.id, row });
@@ -669,7 +1003,7 @@ fn read(
         if stopped() {
             return End::Stopped;
         }
-        match tag_row(&client, repository, tag, &library, details, &stopped) {
+        match tag_row(&client, store, repository, tag, &library, details, &stopped) {
             Ok(row) => send(BrowseEvent::Tag {
                 id: job.id,
                 repository: repository.into(),
@@ -833,9 +1167,7 @@ impl RegistryView {
         matches!(self.state, State::Unreachable { stale: true, .. })
     }
 
-    /// Why Pull is unavailable for this registry's rows. Pull from the list
-    /// is not drawn yet, so only the tests read it.
-    #[cfg_attr(not(test), expect(dead_code))]
+    /// Why Pull is unavailable for this registry's rows.
     pub fn pull_blocked(&self) -> Option<String> {
         self.stale().then(|| {
             format!(
@@ -1192,6 +1524,11 @@ impl Remotes {
         self.revision
     }
 
+    /// Where Pull finds logins: the same preferences and credential store.
+    pub fn accounts(&self) -> &Accounts {
+        &self.accounts
+    }
+
     /// Tests change the registries' fields directly; this marks the change.
     #[cfg(test)]
     pub fn touch(&mut self) {
@@ -1391,18 +1728,19 @@ impl Remotes {
     /// The library changed: compare every read tag with it again.
     pub fn library_changed(&mut self) -> Option<BrowseRequest> {
         self.revision += 1;
-        let tags: Vec<(String, Digest, String)> = self
+        let tags: Vec<LocalQuery> = self
             .registries
             .iter()
             .flat_map(|view| &view.repositories)
             .flat_map(|repository| &repository.read)
             .filter_map(|row| {
                 let record = row.record.as_ref().ok()?;
-                Some((
-                    row.local_tag.clone(),
-                    record.digest.clone(),
-                    record.artifact_type.clone(),
-                ))
+                Some(LocalQuery {
+                    local_tag: row.local_tag.clone(),
+                    digest: record.digest.clone(),
+                    artifact_type: record.artifact_type.clone(),
+                    blobs: record.blobs().into_iter().cloned().collect(),
+                })
             })
             .collect();
         if tags.is_empty() {
@@ -1488,12 +1826,13 @@ impl Remotes {
                         .iter_mut()
                         .flat_map(|repository| repository.read.iter_mut())
                     {
-                        let found = states.iter().find(|(tag, digest, _)| {
-                            *tag == row.local_tag
-                                && row.record.as_ref().is_ok_and(|r| r.digest == *digest)
+                        let found = states.iter().find(|answer| {
+                            answer.local_tag == row.local_tag
+                                && row.record.as_ref().is_ok_and(|r| r.digest == answer.digest)
                         });
-                        if let Some((_, _, state)) = found {
-                            row.local = Some(state.clone());
+                        if let Some(answer) = found {
+                            row.local = Some(answer.state.clone());
+                            row.stored.clone_from(&answer.stored);
                         }
                     }
                 }
@@ -1517,12 +1856,12 @@ mod tests {
         sync::{mpsc, Mutex},
     };
 
-    /// A neutral machine provider for local tags: the config lists its
+    /// A stand-in for the PC provider for local tags: the config lists its
     /// payload digests.
     struct Synthetic;
     impl ConfigValidator for Synthetic {
         fn platform(&self) -> &str {
-            "synthetic"
+            pc_image::PLATFORM
         }
         fn validate(
             &self,
@@ -1594,33 +1933,43 @@ mod tests {
     /// A metadata record with one title, its edition and version named after
     /// `label`.
     fn metadata(label: &str) -> Vec<u8> {
+        metadata_of(pc_image::PLATFORM, label)
+    }
+
+    /// [`metadata`] of a machine family's artifact.
+    fn metadata_of(family: &str, label: &str) -> Vec<u8> {
         format!(
-            r#"{{"schema":1,"platform":"synthetic","titles":[{{"id":"t","title":"{label}","edition":"{label} edition","version":"{label} version"}}]}}"#
+            r#"{{"schema":1,"platform":"{family}","titles":[{{"id":"t","title":"{label}","edition":"{label} edition","version":"{label} version"}}]}}"#
         )
         .into_bytes()
     }
 
-    /// A machine image whose one payload holds `label`.
+    /// A PC machine image whose one payload holds `label`.
     fn machine(label: &str, annotations: &[(&str, &str)]) -> Image {
+        machine_of(pc_image::PLATFORM, label, annotations)
+    }
+
+    /// A machine image of the machine family `family`.
+    fn machine_of(family: &str, label: &str, annotations: &[(&str, &str)]) -> Image {
         let payload = label.as_bytes().to_vec();
         let config = format!(
-            "schema = 1\nplatform = \"synthetic\"\nblobs = [\"{}\"]\n",
+            "schema = 1\nplatform = \"{family}\"\nblobs = [\"{}\"]\n",
             Digest::of(&payload)
         )
         .into_bytes();
         let mut manifest = Manifest::new(
-            "synthetic",
+            family,
             blob(mt::CONFIG, &config),
             vec![
                 blob(mt::FIRMWARE, &payload),
-                blob(mt::METADATA, &metadata(label)),
+                blob(mt::METADATA, &metadata_of(family, label)),
             ],
         )
         .unwrap();
         for (key, value) in annotations {
             manifest.annotations.insert((*key).into(), (*value).into());
         }
-        Image::new(manifest, config, vec![payload, metadata(label)])
+        Image::new(manifest, config, vec![payload, metadata_of(family, label)])
     }
 
     /// An installation media set of one disk per format.
@@ -1630,7 +1979,7 @@ mod tests {
             .collect();
         let config = media_set::Config {
             schema: 1,
-            platform: "synthetic".into(),
+            platform: pc_image::PLATFORM.into(),
             media: formats
                 .iter()
                 .zip(&disks)
@@ -1648,9 +1997,12 @@ mod tests {
         .unwrap();
         let mut layers: Vec<Descriptor> = disks.iter().map(|d| blob(mt::FLOPPY, d)).collect();
         layers.push(blob(mt::METADATA, &metadata(label)));
-        let mut manifest =
-            Manifest::new_media_set("synthetic", blob(mt::MEDIA_SET_CONFIG, &config), layers)
-                .unwrap();
+        let mut manifest = Manifest::new_media_set(
+            pc_image::PLATFORM,
+            blob(mt::MEDIA_SET_CONFIG, &config),
+            layers,
+        )
+        .unwrap();
         manifest
             .annotations
             .insert(TITLE.into(), format!("{label} set"));
@@ -1967,6 +2319,8 @@ mod tests {
         game.seed(&registry, "private/games/dune2", "1.0.0");
         let older = machine("dune old", &[(TITLE, "Dune II")]);
         older.seed(&registry, "private/games/dune2", "0.9.0");
+        let oldest = machine("dune oldest", &[(TITLE, "Dune II")]);
+        oldest.seed(&registry, "private/games/dune2", "0.8.0");
         let setup = Setup::with(&registry);
         let mut remotes = setup.remotes();
         let host = registry.host();
@@ -1984,10 +2338,34 @@ mod tests {
             set.bytes.len() + set.config.len() + set.layers.iter().map(Vec::len).sum::<usize>();
         assert_eq!(record.size, size as u64);
         assert_eq!(record.min_app_version, None);
+        // Every descriptor is kept for Contents…, the config first, and the
+        // set's media with their ids for Pull and insert….
+        assert_eq!(record.manifest_size, set.bytes.len() as u64);
+        assert_eq!(
+            record.descriptors,
+            std::iter::once(set.manifest.config.clone())
+                .chain(set.manifest.layers.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            record.media,
+            [("disk-0", "720K"), ("disk-1", "720K"), ("disk-2", "1.44M")]
+                .map(|(id, format)| (id.to_owned(), format.to_owned()))
+        );
 
+        // 1.0.0 needs a newer release, so the row stands for 0.9.0, the
+        // newest version this release runs, and names what 1.0.0 needs.
         let row = view.repository("private/games/dune2").unwrap();
-        assert_eq!(row.representative.as_deref(), Some("1.0.0"));
-        let record = row.representative_row().unwrap().record.clone().unwrap();
+        assert_eq!(row.representative.as_deref(), Some("0.9.0"));
+        assert_eq!(
+            row.newer_needs,
+            [(
+                "1.0.0".to_owned(),
+                "Needs unemupc 99.0.0 or newer".to_owned()
+            )]
+        );
+        assert_eq!(row.read.len(), 2, "1.0.0, then 0.9.0");
+        let record = row.row("1.0.0").unwrap().record.clone().unwrap();
         assert_eq!(record.artifact_type, mt::MACHINE);
         assert_eq!(record.title.as_deref(), Some("Dune II"));
         assert_eq!(record.version.as_deref(), Some("1.07"));
@@ -1999,6 +2377,11 @@ mod tests {
         assert_eq!(record.annotations["example.unknown"], "kept");
         assert!(record.formats.is_empty());
 
+        assert_eq!(
+            record.needs_newer().as_deref(),
+            Some("Needs unemupc 99.0.0 or newer")
+        );
+
         // Expanding reads the other tag; a read tag is never read again.
         let request = remotes.expand(&host, "private/games/dune2");
         let events = setup.answer(&mut remotes, request);
@@ -2008,13 +2391,17 @@ mod tests {
             .unwrap()
             .repository("private/games/dune2")
             .unwrap();
-        assert_eq!(row.read.len(), 2);
+        assert_eq!(row.read.len(), 3);
+        assert_eq!(
+            row.row("0.8.0").unwrap().record.as_ref().unwrap().digest,
+            oldest.digest
+        );
         assert_eq!(
             row.row("0.9.0").unwrap().record.as_ref().unwrap().digest,
             older.digest
         );
         assert!(row
-            .row("0.9.0")
+            .row("0.8.0")
             .unwrap()
             .record
             .as_ref()
@@ -2414,6 +2801,7 @@ mod tests {
             representative: None,
             read: Vec::new(),
             error: None,
+            newer_needs: Vec::new(),
         }
     }
 
@@ -2848,6 +3236,19 @@ mod tests {
             machine(label, &[]).seed(&registry, name, "1.0.0");
         }
         let host = registry.host();
+        // The live registry test's repositories are never listed, whatever
+        // the entry.
+        machine("live", &[]).seed(&registry, "unemu/test-1a2b", "1.0.0");
+        let whole = Setup::with(&registry);
+        let mut remotes = whole.remotes();
+        let request = remotes.open_node(&host);
+        whole.answer(&mut remotes, request);
+        assert_eq!(
+            names(remotes.registry(&host).unwrap()),
+            ["games/a", "private/b", "private/c", "unemu/d"]
+        );
+        assert!(!registry.log().iter().any(|l| l.contains("unemu/test-")));
+        registry.clear_log();
         let setup = Setup::new(&[format!(
             "{}\nnamespaces = [{{ name = \"private\", private = true }}]",
             plain(&host)
@@ -3084,5 +3485,322 @@ mod tests {
         drop(session);
         worker.send.send(Request::Finish(Finish::Retain)).unwrap();
         wait(&|e| matches!(e, Event::Recoveries(_)));
+    }
+
+    /// A repository's row stands for the version `latest` names when it is
+    /// one of the newest and runs here, else for the newest version this
+    /// release runs, and names the newer versions that need a newer
+    /// release. A repository none of whose versions runs here stands for its
+    /// newest one, whose need dims the row.
+    #[test]
+    fn the_row_stands_for_latests_version_or_the_newest_this_release_runs() {
+        let registry = MockRegistry::start(open_registry());
+        let named = machine("named by latest", &[]);
+        named.seed(&registry, "games/latest", "1.0.1");
+        named.seed(&registry, "games/latest", "latest");
+        machine("newer, not named", &[]).seed(&registry, "games/latest", "1.1.0");
+        let future = machine("future", &[(MIN_APP_VERSION, "99.0.0")]);
+        future.seed(&registry, "games/future", "1.3.0");
+        future.seed(&registry, "games/future", "latest");
+        let runs = machine("runs", &[]);
+        runs.seed(&registry, "games/future", "1.2.0");
+        machine("none 2", &[(MIN_APP_VERSION, "99.0.0")]).seed(&registry, "games/none", "2.0.0");
+        machine("none 1", &[(MIN_APP_VERSION, "98.0.0")]).seed(&registry, "games/none", "1.9.0");
+        let setup = Setup::with(&registry);
+        let mut remotes = setup.remotes();
+        let host = registry.host();
+        let request = remotes.open_node(&host);
+        setup.answer(&mut remotes, request);
+        let view = remotes.registry(&host).unwrap();
+
+        let row = view.repository("games/latest").unwrap();
+        assert_eq!(
+            row.representative.as_deref(),
+            Some("1.0.1"),
+            "latest's version"
+        );
+        assert!(row.newer_needs.is_empty());
+        assert_eq!(
+            row.representative_row()
+                .unwrap()
+                .record
+                .as_ref()
+                .unwrap()
+                .digest,
+            named.digest
+        );
+        let log = registry.log();
+        for tag in ["latest", "1.1.0", "1.0.1"] {
+            assert!(
+                log.contains(&format!("HEAD /v2/games/latest/manifests/{tag}")),
+                "{tag} is compared by digest: {log:?}"
+            );
+        }
+
+        let row = view.repository("games/future").unwrap();
+        assert_eq!(
+            row.representative.as_deref(),
+            Some("1.2.0"),
+            "latest names a version this release cannot run"
+        );
+        assert_eq!(
+            row.newer_needs,
+            [(
+                "1.3.0".to_owned(),
+                "Needs unemupc 99.0.0 or newer".to_owned()
+            )]
+        );
+        let record = row.representative_row().unwrap().record.as_ref().unwrap();
+        assert_eq!(record.digest, runs.digest);
+        assert_eq!(record.needs_newer(), None);
+
+        let row = view.repository("games/none").unwrap();
+        assert_eq!(row.representative.as_deref(), Some("2.0.0"), "the newest");
+        assert!(row.newer_needs.is_empty());
+        assert_eq!(row.read.len(), 2, "every version was looked at");
+        assert_eq!(
+            row.representative_row()
+                .unwrap()
+                .record
+                .as_ref()
+                .unwrap()
+                .needs_newer()
+                .as_deref(),
+            Some("Needs unemupc 99.0.0 or newer")
+        );
+        assert_eq!(
+            candidates(&["1.0.0".into(), "latest".into(), "2.0.0-rc.1".into()]),
+            ["1.0.0"],
+            "pre-releases only without a release; aliases never"
+        );
+    }
+
+    /// What a pull would download leaves out the blobs the store holds,
+    /// before and after the library changes; an image in the library
+    /// downloads nothing.
+    #[test]
+    fn the_download_leaves_out_blobs_the_store_holds() {
+        let registry = MockRegistry::start(open_registry());
+        let host = registry.host();
+        let image = machine("partly here", &[]);
+        image.seed(&registry, "games/partly", "1.0.0");
+        let setup = Setup::with(&registry);
+        // The config is in the store already, as another image shares it.
+        setup.store.import(image.config.as_slice(), None).unwrap();
+        let mut remotes = setup.remotes();
+        let request = remotes.open_node(&host);
+        setup.answer(&mut remotes, request);
+        let download = |remotes: &Remotes| {
+            remotes
+                .registry(&host)
+                .unwrap()
+                .repository("games/partly")
+                .unwrap()
+                .representative_row()
+                .unwrap()
+                .download()
+        };
+        let layers: u64 = image.layers.iter().map(|l| l.len() as u64).sum();
+        assert_eq!(
+            download(&remotes),
+            Some(Download {
+                bytes: image.bytes.len() as u64 + layers,
+                present: 1,
+                blobs: 3,
+            })
+        );
+        // Every blob arrives, without the manifest: only the manifest is left.
+        for layer in &image.layers {
+            setup.store.import(layer.as_slice(), None).unwrap();
+        }
+        let request = remotes.library_changed();
+        setup.answer(&mut remotes, request);
+        assert_eq!(
+            download(&remotes),
+            Some(Download {
+                bytes: image.bytes.len() as u64,
+                present: 3,
+                blobs: 3,
+            })
+        );
+        image.tag(&setup.store, &local_tag_of(&host, "games/partly", "1.0.0"));
+        let request = remotes.library_changed();
+        setup.answer(&mut remotes, request);
+        assert_eq!(download(&remotes), None, "in the library: nothing to fetch");
+    }
+
+    /// A tag this release cannot run is listed with the release it needs and
+    /// cannot be pulled from the list; a pull by its digest that reaches the
+    /// worker anyway is refused before any blob is fetched.
+    #[test]
+    fn a_tag_needing_a_newer_release_is_refused_before_any_blob() {
+        let registry = MockRegistry::start(open_registry());
+        let host = registry.host();
+        let future = machine("future", &[(MIN_APP_VERSION, "99.0.0")]);
+        future.seed(&registry, "games/future", "1.0.0");
+        let setup = Setup::with(&registry);
+        let mut remotes = setup.remotes();
+        let request = remotes.open_node(&host);
+        setup.answer(&mut remotes, request);
+        let row = remotes
+            .registry(&host)
+            .unwrap()
+            .repository("games/future")
+            .unwrap()
+            .representative_row()
+            .unwrap()
+            .clone();
+        let pick = crate::remote_pull::Pick {
+            host: &host,
+            repository: "games/future",
+            tag: "1.0.0",
+            row: Some(&row),
+            blocked: None,
+        };
+        assert_eq!(
+            crate::remote_pull::refusal(&pick).as_deref(),
+            Some("Needs unemupc 99.0.0 or newer: Pull refuses it before fetching anything.")
+        );
+        registry.clear_log();
+        let source = Reference {
+            host: host.clone(),
+            repository: "games/future".into(),
+            tag: Some("1.0.0".into()),
+            digest: Some(future.digest.clone()),
+        };
+        let (_, request) = crate::registry_transfer::PullRun::start(
+            &setup.accounts,
+            source,
+            row.local_tag.clone(),
+        );
+        let events = Mutex::new(Vec::new());
+        cli::with_image_providers(|providers| {
+            crate::registry_transfer::run(
+                &setup.store,
+                request,
+                providers,
+                &[],
+                &|event| events.lock().unwrap().push(event),
+                &|| {},
+            )
+        });
+        let events = events.into_inner().unwrap();
+        let [crate::registry_transfer::TransferEvent::Pulled {
+            result: Err(crate::registry_transfer::PullFailure::Failed(message)),
+            ..
+        }] = events.as_slice()
+        else {
+            panic!("the pull is refused")
+        };
+        assert!(
+            message.contains("needs unemupc 99.0.0 or newer"),
+            "{message}"
+        );
+        assert!(blob_requests(&registry).is_empty(), "{:?}", registry.log());
+        assert!(setup.store.tag_descriptor(&row.local_tag).is_err());
+    }
+
+    /// Only IBM PC compatible artifacts of the PC provider's three types run
+    /// here, whichever of the family's ids they name: a machine image naming
+    /// `ibm-pc` or the retired `ibm-pc-at` can be pulled, while one for
+    /// another family, or another tool's artifact, is refused with the
+    /// reason, as Get templates left out what is not a PC machine image.
+    #[test]
+    fn only_ibm_pc_artifacts_run_here_and_others_say_why() {
+        let registry = MockRegistry::start(open_registry());
+        let host = registry.host();
+        let retired = image_store::platform::ALIASES[0].0;
+        machine_of(pc_image::PLATFORM, "pc", &[]).seed(&registry, "unemu/pc", "1.0.0");
+        machine_of(retired, "pc at", &[]).seed(&registry, "unemu/pc-at", "1.0.0");
+        machine_of("c64", "c64", &[]).seed(&registry, "unemu/c64", "1.0.0");
+        let setup = Setup::with(&registry);
+        let mut remotes = setup.remotes();
+        let request = remotes.open_node(&host);
+        setup.answer(&mut remotes, request);
+        let view = remotes.registry(&host).unwrap();
+        let reason = |repository: &str| {
+            let row = view
+                .repository(repository)
+                .unwrap()
+                .representative_row()
+                .unwrap();
+            let pick = crate::remote_pull::Pick {
+                host: &host,
+                repository,
+                tag: "1.0.0",
+                row: Some(row),
+                blocked: None,
+            };
+            (
+                row.record.as_ref().unwrap().not_runnable(),
+                crate::remote_pull::refusal(&pick),
+            )
+        };
+        assert_eq!(reason("unemu/pc"), (None, None));
+        assert_eq!(
+            reason("unemu/pc-at"),
+            (None, None),
+            "the retired id is the PC"
+        );
+        assert_eq!(
+            reason("unemu/c64"),
+            (
+                Some("A c64 machine image: this release runs IBM PC compatibles".into()),
+                Some("A c64 machine image: this release runs IBM PC compatibles.".into())
+            )
+        );
+        let mut other = view
+            .repository("unemu/pc")
+            .unwrap()
+            .representative_row()
+            .unwrap()
+            .record
+            .clone()
+            .unwrap();
+        other.artifact_type = "application/vnd.example.save-game.v1".into();
+        assert_eq!(
+            other.not_runnable().as_deref(),
+            Some("Another tool's artifact (application/vnd.example.save-game.v1): this release pulls machine images, installation media sets and firmware packages")
+        );
+        other.artifact_type = mt::MACHINE.into();
+        other.platform = None;
+        assert_eq!(
+            other.not_runnable().as_deref(),
+            Some("A machine image that names no machine family: this release runs IBM PC compatibles")
+        );
+    }
+
+    /// The listing reads at most the 16 newest versions of a repository
+    /// looking for one that runs here; past them the row stands for the
+    /// newest, dimmed.
+    #[test]
+    fn the_listing_reads_at_most_sixteen_versions_per_repository() {
+        let registry = MockRegistry::start(open_registry());
+        let future = machine("future", &[(MIN_APP_VERSION, "99.0.0")]);
+        for patch in 0..=LATEST_LOOKUPS {
+            future.seed(&registry, "games/many", &format!("2.0.{patch}"));
+        }
+        machine("old", &[]).seed(&registry, "games/many", "1.0.0");
+        let setup = Setup::with(&registry);
+        let mut remotes = setup.remotes();
+        let host = registry.host();
+        let request = remotes.open_node(&host);
+        setup.answer(&mut remotes, request);
+        let row = remotes
+            .registry(&host)
+            .unwrap()
+            .repository("games/many")
+            .unwrap()
+            .clone();
+        assert_eq!(row.representative.as_deref(), Some("2.0.16"));
+        assert_eq!(row.read.len(), LATEST_LOOKUPS);
+        assert_eq!(
+            registry
+                .log()
+                .iter()
+                .filter(|line| line.starts_with("GET /v2/games/many/manifests/"))
+                .count(),
+            LATEST_LOOKUPS
+        );
     }
 }

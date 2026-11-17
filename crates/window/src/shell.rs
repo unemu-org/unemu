@@ -2264,8 +2264,14 @@ impl Shell {
                 }
                 // A transfer runs on the library worker, which serves the
                 // running machine's session until it stops.
-                Command::Push | Command::Pull | Command::GetTemplates => {
+                Command::Push | Command::PullReference | Command::GetTemplates => {
                     self.presenter.is_none() && self.image_library.active.is_none()
+                }
+                // Pull… takes the tags selected in Remotes.
+                Command::Pull => {
+                    self.presenter.is_none()
+                        && self.image_library.active.is_none()
+                        && self.image_library.can_pull_remote()
                 }
                 // The library, and with it Remotes, shows only while no
                 // machine runs.
@@ -2297,9 +2303,10 @@ impl Shell {
             }
     }
 
-    /// Tools › Preferences… on its Registries page. Log in… of Get templates…
-    /// opens it on that registry's Log in dialog, or on Add registry… for it
-    /// when it has no entry: never on another registry's row.
+    /// Tools › Preferences… on its Registries page. Log in… of a registry in
+    /// Remotes opens it on that registry's Log in dialog, or on Add
+    /// registry… for it when it has no entry: never on another registry's
+    /// row.
     fn open_preferences(&mut self) {
         self.release();
         let mut dialog = crate::preferences_sheet::PreferencesDialog::new(
@@ -2326,7 +2333,8 @@ impl Shell {
     }
 
     /// Commands the library's dialogs asked for: Import ROM folder… of the
-    /// New machine wizard, and Preferences for a Log in… of Get templates….
+    /// New machine wizard, and Preferences for a Log in… of a registry in
+    /// Remotes.
     fn library_commands(&mut self, commands: &mut Vec<Command>) {
         if std::mem::take(&mut self.image_library.firmware_import_wanted) {
             commands.push(Command::ImportFirmware);
@@ -2339,7 +2347,8 @@ impl Shell {
         }
     }
 
-    /// Get templates… lists again after a Log in… that opened Preferences.
+    /// A registry in Remotes lists again after a Log in… that opened
+    /// Preferences.
     fn close_preferences(&mut self) {
         self.preferences_dialog = None;
         self.image_library.preferences_closed();
@@ -3354,8 +3363,9 @@ impl Shell {
             Preferences => self.open_preferences(),
             SaveState => {},
             Push => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_push(accounts); },
-            Pull => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_pull(accounts); },
-            GetTemplates => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_templates(accounts); },
+            Pull => { self.release(); self.image_library.begin_remote_pull(crate::remote_pull::Mode::Pull); },
+            PullReference => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_pull(accounts); },
+            GetTemplates => { self.release(); let accounts = self.registry_accounts(); self.image_library.show_templates(accounts, &mut self.selected); },
             RefreshRemote => self.image_library.refresh_remote(),
             Rename => { self.release(); self.image_library.begin_rename(); },
             Duplicate => { self.release(); self.image_library.begin_duplicate(); },
@@ -3454,6 +3464,7 @@ impl Shell {
             }
             Start | GamingMode if running => "A machine runs already",
             Start | GamingMode if !image && self.selected.is_none() => "Select a machine",
+            Pull if !self.image_library.can_pull_remote() => "Select a tag in Remotes to pull",
             _ => return None,
         })
     }
@@ -3526,7 +3537,8 @@ impl Shell {
                 );
                 self.item(ui, "Layers…", "", ImageLayers, commands);
                 self.item(ui, "Push…", "", Push, commands);
-                self.item(ui, "Pull…", "", Pull, commands);
+                self.item(ui, "Pull…", "Enter", Pull, commands);
+                self.item(ui, "Pull by reference…", "", PullReference, commands);
             });
             ui.menu_button("Machine", |ui| {
                 let target = match (
@@ -3797,12 +3809,17 @@ impl Shell {
             }
             // The remotes mock-up's Refresh, which applies while the library
             // shows a registry's node, and Registries…, which opens
-            // Preferences on its Registries page.
+            // Preferences on its Registries page. While the library shows
+            // Remotes its Pull… comes first, and takes the room of the speed
+            // control, which applies to a running machine only: the toolbar
+            // keeps to one line at the window's default width.
+            let remotes = self.presenter.is_none() && self.image_library.remote_shown();
             ui.separator();
-            for (label, icon, command) in [
+            let pull = remotes.then_some(("Pull…", Icon::Pull, Command::Pull));
+            for (label, icon, command) in pull.into_iter().chain([
                 ("Refresh", Icon::Refresh, Command::RefreshRemote),
                 ("Registries…", Icon::Registry, Command::Preferences),
-            ] {
+            ]) {
                 let response = ui
                     .add_enabled_ui(self.command_allowed(command), |ui| {
                         toolbar_button(ui, self.classic, label, Some(icon))
@@ -3815,8 +3832,10 @@ impl Shell {
                     commands.push(command);
                 }
             }
-            ui.separator();
-            self.speed_selector(ui, commands);
+            if !remotes {
+                ui.separator();
+                self.speed_selector(ui, commands);
+            }
         });
     }
 
@@ -5521,14 +5540,14 @@ mod tests {
         let mut shell = shell();
         let ctx = egui::Context::default();
         shell.command(Command::Push, &ctx);
-        shell.command(Command::Pull, &ctx);
+        shell.command(Command::PullReference, &ctx);
         assert!(shell.image_library.push.is_none() && shell.image_library.pull.is_none());
         shell.stop();
         let temp = assembly::test_support::TempDir::new("shell-registry-transfer");
         let path = temp.path().join("preferences.toml");
         std::fs::write(&path, "default_registry = \"nas.example:5000\"\n[[registries]]\nhost = \"nas.example:5000\"\nprivate = true\n").unwrap();
         shell.preferences_path = Some(path);
-        shell.command(Command::Pull, &ctx);
+        shell.command(Command::PullReference, &ctx);
         let pull = shell.image_library.pull.as_ref().unwrap();
         assert_eq!(pull.default_host, "nas.example:5000");
         assert!(shell.has_dialog());
@@ -5591,41 +5610,102 @@ mod tests {
         assert_eq!(commands, [Command::RefreshRemote]);
     }
 
+    /// The toolbar's Pull… and Image › Pull… take the tags selected in
+    /// Remotes: without one they are disabled and say why. The toolbar shows
+    /// Pull… while the library shows Remotes, in the room of the speed
+    /// control, which applies to a running machine only. Image › Pull by
+    /// reference… opens the reference dialog.
     #[test]
-    fn get_templates_opens_with_the_shell_accounts_only_while_no_machine_runs() {
+    fn pull_takes_the_remote_selection_and_pull_by_reference_opens_its_dialog() {
+        use crate::library_view::remotes::Node;
+        let mut shell = shell();
+        let ctx = egui::Context::default();
+        shell.stop();
+        let (texts, _) = toolbar_pass(&ctx, &mut shell, Vec::new());
+        assert!(!shows(&texts, "Pull…") && shows(&texts, "Speed:"));
+        shell.image_library.remote.node = Some(Node {
+            host: "registry.unemu.dev".into(),
+            namespace: None,
+            group: None,
+        });
+        let (texts, _) = toolbar_pass(&ctx, &mut shell, Vec::new());
+        assert!(!shows(&texts, "Speed:"));
+        let registries = label_rect(&texts, "Registries…");
+        let pull = label_rect(&texts, "Pull…");
+        assert!(
+            (pull.center().y - registries.center().y).abs() < 4.0 && registries.right() <= 1040.0,
+            "one line at the default width: {pull:?} {registries:?}"
+        );
+        let pull = pull.center();
+        assert!(click_toolbar(&ctx, &mut shell, pull).is_empty());
+        assert!(!shell.command_allowed(Command::Pull));
+        assert_eq!(
+            shell.disabled_reason(Command::Pull),
+            Some("Select a tag in Remotes to pull")
+        );
+        let drawn = draw(&ctx, &mut shell, Vec::new());
+        click(&ctx, &mut shell, label_rect(&drawn.text, "Image").center());
+        let drawn = draw(&ctx, &mut shell, Vec::new());
+        assert!(drawn.text.iter().filter(|(t, _)| t == "Pull…").count() >= 2);
+        // Image › Start… and Image › Pull… both name Enter.
+        assert_eq!(drawn.text.iter().filter(|(t, _)| t == "Enter").count(), 2);
+        let item = label_rect(&drawn.text, "Pull by reference…");
+        assert_eq!(
+            click(&ctx, &mut shell, item.center()),
+            [Command::PullReference]
+        );
+    }
+
+    /// File › Get templates… shows Remotes › the default registry › unemu/
+    /// › Machine images with the shell's accounts, and only while no machine
+    /// runs; the machine file selection goes. Without a store worker the
+    /// listing ends at once with the reason.
+    #[test]
+    fn get_templates_selects_the_default_registry_templates_only_while_no_machine_runs() {
+        use crate::{library_view::remotes::Group, remote_browse::State};
         let mut shell = shell();
         let ctx = egui::Context::default();
         assert!(!shell.command_allowed(Command::GetTemplates));
         shell.command(Command::GetTemplates, &ctx);
-        assert!(shell.image_library.templates.is_none());
+        assert!(!shell.image_library.remote_shown());
         shell.stop();
         assert!(shell.command_allowed(Command::GetTemplates));
         let temp = assembly::test_support::TempDir::new("shell-templates");
         let path = temp.path().join("preferences.toml");
         std::fs::write(&path, "default_registry = \"nas.example:5000\"\n").unwrap();
         shell.preferences_path = Some(path);
+        shell.selected = Some(0);
         shell.command(Command::GetTemplates, &ctx);
-        assert!(shell.has_dialog());
-        let dialog = shell.image_library.templates.as_ref().unwrap();
-        assert_eq!(dialog.default_host, "nas.example:5000");
-        // Without a store worker the listing ends at once instead of waiting.
+        assert_eq!(shell.selected, None);
+        let node = shell.image_library.remote.node.clone().unwrap();
+        assert_eq!(node.host, "nas.example:5000");
+        assert_eq!(node.namespace, Some(Some("unemu".into())));
+        assert_eq!(node.group, Some(Group::Machines));
+        let registry = shell
+            .image_library
+            .remote
+            .model
+            .as_ref()
+            .unwrap()
+            .registry("nas.example:5000")
+            .unwrap();
         assert!(
-            matches!(&dialog.state, crate::templates::TemplatesState::Failed(f) if f.message.contains("worker stopped")),
+            matches!(&registry.state, State::Failed(message) if message.contains("worker stopped")),
             "{:?}",
-            dialog.state
+            registry.state
         );
+        assert!(!shell.has_dialog(), "no dialog opens");
     }
 
+    /// Log in… of a registry in Remotes opens Preferences › Registries on
+    /// that registry's Log in dialog, never on another registry's row; a
+    /// registry without an entry is the next test's.
     #[test]
-    fn log_in_from_get_templates_opens_that_registry_login_and_closing_preferences_lists_again() {
-        use crate::{
-            registry_transfer::TransferEvent,
-            templates::{FailureKind, ListingFailure, TemplatesDialog, TemplatesState},
-        };
+    fn log_in_from_remotes_opens_that_registry_login() {
         let mut shell = shell();
         shell.stop();
         let ctx = egui::Context::default();
-        let temp = assembly::test_support::TempDir::new("shell-templates-login");
+        let temp = assembly::test_support::TempDir::new("shell-remotes-login");
         let path = temp.path().join("preferences.toml");
         std::fs::write(
             &path,
@@ -5633,22 +5713,8 @@ mod tests {
         )
         .unwrap();
         shell.preferences_path = Some(path);
-        // The listing ended asking for a login, as the worker reports it.
-        let (mut dialog, request) = TemplatesDialog::open(shell.registry_accounts());
-        let Some(crate::registry_transfer::TransferRequest::Templates { id, .. }) = request else {
-            panic!("the dialog asks for the list")
-        };
-        dialog.on_event(&TransferEvent::Templates {
-            id,
-            result: Err(ListingFailure {
-                kind: FailureKind::LoginRequired,
-                host: "nas.example:5000".into(),
-                listed: true,
-                message: "nas.example:5000 asks for a login.".into(),
-            }),
-        });
-        shell.image_library.login_wanted = dialog.log_in();
-        shell.image_library.templates = Some(dialog);
+        // Log in… in the Remotes list asks for this registry's login.
+        shell.image_library.login_wanted = Some("nas.example:5000".into());
         // The frame turns the request into the Preferences command.
         let mut commands = Vec::new();
         shell.library_commands(&mut commands);
@@ -5658,15 +5724,8 @@ mod tests {
         let page = &shell.preferences_dialog.as_ref().unwrap().registries;
         assert_eq!(page.selected_row().unwrap().entry.host, "nas.example:5000");
         assert_eq!(page.login.as_ref().unwrap().host, "nas.example:5000");
-        // Closing Preferences lists again; without a store worker the new
-        // listing ends at once.
         shell.close_preferences();
         assert!(shell.preferences_dialog.is_none());
-        let state = &shell.image_library.templates.as_ref().unwrap().state;
-        assert!(
-            matches!(state, TemplatesState::Failed(f) if f.message.contains("worker stopped")),
-            "{state:?}"
-        );
         // Preferences from the menu opens no Log in dialog.
         shell.command(Command::Preferences, &ctx);
         assert!(shell

@@ -129,13 +129,6 @@ pub(crate) enum TransferRequest {
     },
     Push(Box<PushJob>),
     Pull(Box<PullJob>),
-    /// File › Get templates…: list the official templates of the default
-    /// registry until `cancel` is set.
-    Templates {
-        id: u64,
-        accounts: Box<Accounts>,
-        cancel: Arc<AtomicBool>,
-    },
 }
 
 pub(crate) struct PushJob {
@@ -175,10 +168,6 @@ pub(crate) enum TransferEvent {
     Pulled {
         id: u64,
         result: Result<PullReport, PullFailure>,
-    },
-    Templates {
-        id: u64,
-        result: Result<Vec<crate::templates::TemplateRow>, crate::templates::ListingFailure>,
     },
 }
 
@@ -274,14 +263,6 @@ pub(crate) fn run(
             });
             send(TransferEvent::Pulled { id: job.id, result });
         }
-        TransferRequest::Templates {
-            id,
-            accounts,
-            cancel,
-        } => send(TransferEvent::Templates {
-            id,
-            result: crate::templates::list(store, &accounts, &cancel),
-        }),
     }
 }
 
@@ -545,7 +526,7 @@ fn refusal_text(refusal: &Refusal, closure: &[ClosureEntry]) -> String {
 
 /// A local tag the store refused, explained: its length, its registry host,
 /// or the grammar, which allows a host first.
-fn local_tag_problem(local: &str) -> String {
+pub(crate) fn local_tag_problem(local: &str) -> String {
     let name = local.rsplit_once(':').map_or(local, |(name, _)| name);
     if name.len() > 255 {
         return format!(
@@ -601,7 +582,7 @@ pub(crate) fn kind_label(descriptor: &Descriptor) -> String {
     }
 }
 
-fn short(digest: &Digest) -> String {
+pub(crate) fn short(digest: &Digest) -> String {
     format!("sha256:{}…", &digest.hex()[..12])
 }
 
@@ -1623,7 +1604,7 @@ pub(crate) mod tests {
         }
 
         /// Push `tag` to `destination` through the dialog; the guard must allow it.
-        fn push_through(&mut self, tag: &str, destination: &str) {
+        pub fn push_through(&mut self, tag: &str, destination: &str) {
             let dialog = self.open_push(tag);
             dialog.destination = destination.into();
             let request = dialog.push().expect("the guard allows this push");
@@ -1712,7 +1693,7 @@ pub(crate) mod tests {
 
     /// Tag `tag` as a copy of the fixture image whose manifest differs only
     /// in its title, so it has another digest and the same blobs.
-    fn retitled(f: &Fixture, tag: &str) -> Descriptor {
+    pub(crate) fn retitled(f: &Fixture, tag: &str) -> Descriptor {
         let mut manifest = manifest_of(&f.store, &f.row.descriptor);
         manifest
             .annotations

@@ -5,6 +5,46 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — Remotes: the details pane of a remote tag and Pull from
+  the list; Get templates opens Remotes:** selecting a tag in Remotes shows,
+  as the approved remotes mock-up draws it, the manifest's annotations,
+  digest and type, the edition and version its metadata record adds, a media
+  set's disks, the local tag a pull writes and its source, its local state,
+  what a pull downloads (blobs the store holds left out) and the
+  repository's tags; buttons Show in library, Pull…, Pull and create
+  machine… (machine images), Pull and insert… (media sets, into a stopped
+  machine with a drive that takes the set) and Contents… (every descriptor of
+  the manifest, read without fetching). Ctrl (⌘) and Shift select several
+  tags. Pull… (pane, Image › Pull…, toolbar Pull…, Enter on a row) pulls by
+  the listed digest, writes the local tag last, never moves a local tag (a
+  clash is pulled under another tag the dialog proposes, and a typed tag
+  that names another image is refused), and pulls several one after another
+  under one progress bar, skipping with the reason tags in the library, tags
+  whose local name holds another image, tags this release cannot run and
+  tags of a registry that no longer answers; Cancel stops at the next read
+  and the waiting pulls before they start. After a pull the row turns In
+  library from the store, without a new listing. A repository row now stands
+  for the newest version this release runs (`latest`'s version when it is one
+  of the 16 newest and runs here; at most the 16 newest are read), names the
+  newer versions that cannot run here and why, and is dimmed only when no
+  version runs here. Only IBM PC compatible artifacts (`ibm-pc`, or the
+  retired `ibm-pc-at`) of the PC provider's three types run here: another
+  family's image ("A c64 machine image: this release runs IBM PC
+  compatibles") or another tool's artifact is muted with the reason and
+  cannot be pulled. Machine template is said only of a repository one name
+  under `unemu/`. A typed local tag that already names the image makes Pull
+  say Done; Pull and insert… names what waiting disk it replaces in a drive
+  and offers no drive to a CD set. File › Get
+  templates… and the empty library's button select Remotes › the default
+  registry › `unemu/` › Machine images; the Get templates dialog is retired,
+  its rules ported (the `latest` rule, `unemu/test-…` never listed, Add
+  registry… for a registry preferences do not list). Image › Pull by
+  reference… is the former Image › Pull…. While the library shows Remotes
+  the toolbar shows Pull…, its icon drawn, in the room of the speed control,
+  which applies to a running machine only, so the toolbar keeps to one line
+  at the default window width.
+  Not yet: the registry node's own details pane, a search over remotes, and
+  the library's disabled rows of local images that need a newer release.
 - **2026-11-17 — The PC platform id is `ibm-pc`; `ibm-pc-at` stays a
   read-only alias:** the id names the IBM PC compatible family, from the PC
   and XT through the AT to the 386 and later machines, and displays call it

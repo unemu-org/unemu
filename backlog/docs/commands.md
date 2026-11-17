@@ -659,7 +659,8 @@ Preferences… › Registries page uses the same functions and store:
 - Set as default, and Test connection (anonymous `GET /v2/`, then Basic, with
   the result per step).
 
-The desktop shell's Image › Push… and Image › Pull… build the same push plan
+The desktop shell's Image › Push… and Image › Pull by reference… (and Pull…
+of the tags selected in the library's Remotes) build the same push plan
 (`cli::push_plan`: local marks plus the firmware catalogue), the same client
 (`cli::registry_client`) and the same providers list as `image push` and
 `image pull`, and resolve short names against the same default registry
@@ -667,13 +668,13 @@ The desktop shell's Image › Push… and Image › Pull… build the same push 
 - Push… shows the `--dry-run` classification as a table and the guard's
   verdict while the destination is typed, starting with the registry entry
   and the namespace the destination falls in ("HOST is configured;
-  private/ is marked private"). Pull… shows the same line under the resolved
-  reference. A non-version tag moves only after a confirmation that shows
+  private/ is marked private"). Pull by reference… shows the same line under
+  the resolved reference. A non-version tag moves only after a confirmation that shows
   both digests, and only from the digest shown. A
   local tag that names another image than the reviewed one is not pushed.
-- Pull… writes the local tag `image pull` would (short from
-  `registry.unemu.dev`, host-qualified from any other registry) unless another
-  one is typed.
+- Pull by reference… and Pull… of Remotes write the local tag `image pull`
+  would (short from `registry.unemu.dev`, host-qualified from any other
+  registry) unless another one is typed.
 - Cancel (or Escape, or closing the dialog) stops a transfer before the next
   blob or chunk. A cancelled push publishes no manifest; a cancelled pull
   writes no tag. Quitting during a transfer asks first.
@@ -849,11 +850,12 @@ that already names another image on the registry is refused; push a new
 version instead. Once `latest` names an older version there, its push stops
 with both digests; repeat it with `--move` after checking them.
 
-The desktop shell's **File › Get templates…** lists these templates from the
-default registry and pulls the chosen ones;
+The desktop shell's **File › Get templates…** shows these templates in the
+library's Remotes group, Remotes › the default registry › `unemu/` › Machine
+images, where Pull… pulls the selected ones;
 [`design/machine-images.md`](design/machine-images.md) §5.5 describes its
-behaviour. The library's Remotes group lists the same repositories, and the
-other configured registries, without pulling (§3.2, Desktop library).
+behaviour and §3.2 (Desktop library) the Remotes group, which lists the
+other configured registries too.
 
 ## Shareware installation media (local only)
 

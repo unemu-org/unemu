@@ -72,6 +72,7 @@ mod registries_model;
 mod registry_transfer;
 mod registry_transfer_view;
 mod remote_browse;
+mod remote_pull;
 mod save_image;
 mod settings_model;
 mod settings_sheet;
@@ -81,7 +82,6 @@ mod shell_model;
 #[cfg(test)]
 mod sound_levels_tests;
 mod system_keys;
-mod templates;
 
 const SINK_SCALE: u16 = 2;
 

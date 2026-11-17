@@ -79,6 +79,8 @@ icons are the project's own mock-up artwork, under the project licence.
 | remotes | application monitor, Start, machine, image, media set, firmware, machine file | the same places as in the machines mock-up; − ▲ ▼ ⌘ as in the library lists and menus |
 | remotes | registry, namespace, lock | the Remotes tree: each registry, each namespace, and the lock after a private namespace until a login lists it; the registry icon also on the toolbar's Registries… |
 | remotes | Refresh | the toolbar's Refresh, which lists the shown registry again |
+| remotes | Pull | the toolbar's Pull…, while the library shows Remotes: the tags selected there |
+| remotes, get-templates | ✓ ✗ | the stage of each tag in Remotes' Pull… (Pulled ✓, Failed ✗) |
 | remotes | the four message pictures (unreachable, login, empty, listing) | the Remotes list's message instead of the rows, 40 px |
 | remotes | ⚠ | the strips of a stopped or stale listing, and the Local state of a tag whose local name holds another image |
 
@@ -101,8 +103,6 @@ name cells are left-aligned. Child rows of a repository group are set in by
 - **View menu ✓ and ●**: egui's check boxes (Toolbar, Status bar) and selection
   highlight (scale modes) show the state; Mute audio says Unmute audio instead.
   Their accessibility state ("toggled") comes from those widgets.
-- **remotes.html** Pull and the ✓ of a pulled tag: Pull from the Remotes
-  list is not built yet.
 - **A drive menu's ● write mode**: the drive menu names the write mode as text
   (a departure accepted on 2026-11-15).
 - **library.html ★ rating**: the app has no rating field.
