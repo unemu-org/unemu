@@ -334,18 +334,20 @@ pub(super) fn picker_set(row: &MediaRow) -> Option<crate::media_picker::SetEntry
 }
 
 /// The Installation media list's columns, as the installation media
-/// mock-up lists sets; availability names the drive of the running machine.
-pub(super) const COLUMNS: super::Columns<5> = super::Columns {
-    labels: ["Set", "Tag", "Platform", "Format", "Availability"],
-    widths: [280.0, 90.0, 100.0, 140.0, 300.0],
+/// mock-up lists sets, with the remotes mock-up's Source column after the
+/// set; availability names the drive of the running machine.
+pub(super) const COLUMNS: super::Columns<6> = super::Columns {
+    labels: ["Set", "Source", "Tag", "Platform", "Format", "Availability"],
+    widths: [280.0, 140.0, 90.0, 100.0, 140.0, 300.0],
     cells: [
+        super::Cell::Text,
         super::Cell::Text,
         super::Cell::Mono,
         super::Cell::Text,
         super::Cell::Text,
         super::Cell::Text,
     ],
-    samples: ["", "", "", "", ""],
+    samples: ["", "local", "", "", "", ""],
 };
 
 /// "Example Adventure (4 x 1.44M)", as rows and the details pane name a set.
@@ -374,11 +376,13 @@ pub(super) fn lead(row: &MediaRow) -> super::Lead {
 
 /// A set's cells; a set without its summary says why in the availability
 /// column.
-pub(super) fn cells(row: &MediaRow, drives: &[(u8, FloppyGeometry)]) -> [String; 5] {
+pub(super) fn cells(row: &MediaRow, drives: &[(u8, FloppyGeometry)]) -> [String; 6] {
+    let source = super::source(&row.image.descriptor).text();
     let (Some(summary), Some(_)) = (row.image.summary.as_ref(), row.set()) else {
-        let mut cells: [String; 5] = Default::default();
+        let mut cells: [String; 6] = Default::default();
         cells[0] = row.image.name().to_owned();
-        cells[4] = if row.image.failure.is_some() {
+        cells[1] = source;
+        cells[5] = if row.image.failure.is_some() {
             "Unavailable"
         } else {
             "Pending"
@@ -389,6 +393,7 @@ pub(super) fn cells(row: &MediaRow, drives: &[(u8, FloppyGeometry)]) -> [String;
     let title = summary.titles.first();
     [
         set_name(row),
+        source,
         row.image.tags(),
         title.and_then(|t| t.platform.clone()).unwrap_or_default(),
         disks_label(&formats(summary)),
@@ -401,10 +406,10 @@ fn sort_value(row: &MediaRow, column: usize) -> String {
     let set = row.set();
     match column {
         // Counts sort as numbers, then by the format text for equal counts.
-        3 => format!(
+        4 => format!(
             "{:020} {}",
             set.map_or(0, |s| s.media.len()),
-            cells(row, &[])[3].to_lowercase()
+            cells(row, &[])[4].to_lowercase()
         ),
         column => cells(row, &[])
             .get(column)
@@ -804,8 +809,9 @@ impl LibraryView {
                                 .media_selected
                                 .as_ref()
                                 .is_some_and(|current| current.same(row));
+                            let hints = [None, Some(super::source(&row.image.descriptor).hint())];
                             // A double click only selects: sets have no launch action.
-                            let (clicked, double) = super::draw_cells(
+                            let (clicked, double) = super::draw_cells_with_hints(
                                 ui,
                                 &cells(row, &drives),
                                 &widths,
@@ -813,6 +819,7 @@ impl LibraryView {
                                 selected,
                                 index % 2 == 0,
                                 lead(row),
+                                &hints,
                             );
                             if (clicked || double) && !selected {
                                 self.select_media(row, selected_file);
@@ -1890,6 +1897,8 @@ pub(crate) mod tests {
             adventure,
             [
                 "Example Adventure (2 x 1.44M)",
+                // Imported here.
+                "local",
                 "1.0",
                 "",
                 "2 x 1.44M",
@@ -1901,18 +1910,18 @@ pub(crate) mod tests {
             "User-supplied"
         );
         assert_eq!(
-            cells(row("example-adventure:1.0"), &DRIVE_A)[4],
+            cells(row("example-adventure:1.0"), &DRIVE_A)[5],
             "Ready to insert into A:"
         );
         let atlas = cells(row("sample-atlas:1.0"), &DRIVE_A);
         assert_eq!(atlas[0], "Sample Atlas (1 x 1.2M)");
         assert_eq!(
-            atlas[4],
+            atlas[5],
             "1.2M disks; drive A: is 1.44M, which takes 1.44M or 720K"
         );
         let disc = cells(row("moonlit-archive:1.0"), &DRIVE_A);
-        assert_eq!(disc[3], "1 x ISO-2048");
-        assert_eq!(disc[4], "CD-ROM emulation not available yet");
+        assert_eq!(disc[4], "1 x ISO-2048");
+        assert_eq!(disc[5], "CD-ROM emulation not available yet");
         assert_eq!(
             result.media_facets["Format"],
             BTreeSet::from(["1.2M".into(), "1.44M".into(), "iso-2048".into()])
@@ -2799,10 +2808,10 @@ pub(crate) mod tests {
             },
             redistribution: Redistribution::default(),
         };
-        assert_eq!(cells(&row(None), &[])[4], "Pending");
+        assert_eq!(cells(&row(None), &[])[5], "Pending");
         assert!(!lead(&row(None)).warning);
         let failed = cells(&row(Some("missing blob")), &[]);
-        assert_eq!(failed[4], "Unavailable");
+        assert_eq!(failed[5], "Unavailable");
         assert_eq!(failed[0], "synthetic-set:1.0");
         let failed = lead(&row(Some("missing blob")));
         assert!(failed.warning);

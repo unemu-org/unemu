@@ -71,8 +71,12 @@ pub(crate) enum Command {
     Push,
     /// Image › Pull… of a registry image into the local store.
     Pull,
-    /// File › Get templates…: pull official templates from the default registry.
+    /// File › Get templates…: Remotes › the default registry › `unemu/` ›
+    /// Machine images.
     GetTemplates,
+    /// View › Refresh remote (F5) and the toolbar's Refresh: list the shown
+    /// registry again.
+    RefreshRemote,
     /// Rename… of the selected machine (F2).
     Rename,
     /// Duplicate… of the selected machine (Ctrl+D).
@@ -179,6 +183,7 @@ pub(crate) fn logical_shortcut_key(key: &Key) -> Option<KeyCode> {
         Key::Named(NamedKey::End) => Some(End),
         Key::Named(NamedKey::Enter) => Some(Enter),
         Key::Named(NamedKey::F2) => Some(F2),
+        Key::Named(NamedKey::F5) => Some(F5),
         Key::Named(NamedKey::Delete) => Some(Delete),
         Key::Named(NamedKey::Backspace) => Some(Backspace),
         _ => None,
@@ -261,6 +266,7 @@ pub(crate) fn hotkey(
         F1 if !macos => Some(Shortcuts),
         Enter if state == State::Stopped && !alt && !ctrl => Some(Start),
         F2 if plain => Some(Rename),
+        F5 if plain && state == State::Stopped => Some(RefreshRemote),
         Delete if plain && !macos => Some(DeleteSelection),
         _ => None,
     }

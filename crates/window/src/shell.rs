@@ -2123,7 +2123,7 @@ impl Shell {
         let selected = shell_model::select_machine(&mut paths, &args.machine, machine_given);
         let library = paths.into_iter().map(LibraryEntry::pending).collect();
         let discovery_roots = preferences.roots(&args.rom_dirs, &default_firmware_roots);
-        Self {
+        let mut shell = Self {
             args,
             library,
             image_library: crate::library_view::LibraryView::new(
@@ -2199,7 +2199,12 @@ impl Shell {
             system_keys: crate::system_keys::SystemKeys::platform(),
             file_dialogs: file_dialog::FileDialogs::native(),
             creating: None,
-        }
+        };
+        // Remotes lists the registries of Preferences › Registries; nothing
+        // contacts them until a node opens.
+        let accounts = shell.registry_accounts();
+        shell.image_library.attach_remotes(accounts);
+        shell
     }
 
     fn state(&self) -> State {
@@ -2261,6 +2266,11 @@ impl Shell {
                 // running machine's session until it stops.
                 Command::Push | Command::Pull | Command::GetTemplates => {
                     self.presenter.is_none() && self.image_library.active.is_none()
+                }
+                // The library, and with it Remotes, shows only while no
+                // machine runs.
+                Command::RefreshRemote => {
+                    self.presenter.is_none() && self.image_library.remote_shown()
                 }
                 Command::ImportMedia => {
                     self.presenter.is_none() && self.image_library.can_import_media()
@@ -2539,6 +2549,9 @@ impl Shell {
         if self.presenter.is_some() {
             return;
         }
+        // A machine file starts without the library worker, but nothing it
+        // loads should wait for a registry either.
+        self.image_library.stop_remotes();
         self.reset_keyboard();
         if let Some(index) = self.selected {
             self.start_request = Some(index);
@@ -3343,6 +3356,7 @@ impl Shell {
             Push => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_push(accounts); },
             Pull => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_pull(accounts); },
             GetTemplates => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_templates(accounts); },
+            RefreshRemote => self.image_library.refresh_remote(),
             Rename => { self.release(); self.image_library.begin_rename(); },
             Duplicate => { self.release(); self.image_library.begin_duplicate(); },
             DeleteMachine => { self.release(); self.image_library.begin_delete_machine(); },
@@ -3676,6 +3690,7 @@ impl Shell {
                 ui.selectable_value(&mut self.integer_scale, false, "Scale to window, 4:3");
                 ui.selectable_value(&mut self.integer_scale, true, "Integer scale");
                 self.item(ui, "Full screen", "Ctrl+Alt+Enter", Fullscreen, commands);
+                self.item(ui, "Refresh remote", "F5", RefreshRemote, commands);
                 let mute = self
                     .presenter
                     .as_ref()
@@ -3771,6 +3786,26 @@ impl Shell {
                 let response = ui
                     .add_enabled_ui(self.command_allowed(command), |ui| {
                         toolbar_button(ui, self.classic, label, icon)
+                    })
+                    .inner;
+                if self.classic {
+                    bevel(ui, response.rect, response.is_pointer_button_down_on());
+                }
+                if response.clicked() {
+                    commands.push(command);
+                }
+            }
+            // The remotes mock-up's Refresh, which applies while the library
+            // shows a registry's node, and Registries…, which opens
+            // Preferences on its Registries page.
+            ui.separator();
+            for (label, icon, command) in [
+                ("Refresh", Icon::Refresh, Command::RefreshRemote),
+                ("Registries…", Icon::Registry, Command::Preferences),
+            ] {
+                let response = ui
+                    .add_enabled_ui(self.command_allowed(command), |ui| {
+                        toolbar_button(ui, self.classic, label, Some(icon))
                     })
                     .inner;
                 if self.classic {
@@ -4457,6 +4492,7 @@ impl eframe::App for Shell {
         let mut recheck_firmware = false;
         let mut cancel_firmware = false;
         let mut browse_rom_folder = false;
+        let mut reattach_remotes = false;
         let show_firmware_progress = self.visible_discovery() || self.discovery_finished;
         if let Some((title, text)) = &self.dialog {
             egui::Modal::new(egui::Id::unique("shell-dialog")).show(&ctx, |ui| {
@@ -4607,6 +4643,7 @@ impl eframe::App for Shell {
                                 } else {
                                     self.image_library =
                                         crate::library_view::LibraryView::new(Some(path));
+                                    reattach_remotes = true;
                                     close_dialog = true;
                                 }
                             }
@@ -4699,6 +4736,11 @@ impl eframe::App for Shell {
         }
         if browse_rom_folder {
             self.ask_file(FileFor::RomFolder);
+        }
+        if reattach_remotes {
+            // The new store's library lists the same registries.
+            let accounts = self.registry_accounts();
+            self.image_library.attach_remotes(accounts);
         }
         if close_dialog {
             if self
@@ -5238,6 +5280,7 @@ fn shortcuts_help(macos: bool) -> String {
         ("Ctrl+N", "New machine… (makes the image and a machine)"),
         ("Ctrl+Shift+N", "New machine from image…"),
         ("F2", "Rename… (machine)"),
+        ("F5", "Refresh remote (the registry the library shows)"),
         ("Ctrl+D", "Duplicate… (machine)"),
         ("Delete", "Delete machine… / Delete tag… (image)"),
         ("Ctrl+O", "open machine file"),
@@ -5502,6 +5545,50 @@ mod tests {
             push.state,
             crate::registry_transfer::PushState::Ready
         ));
+    }
+
+    /// The toolbar has the remotes mock-up's Refresh and Registries…, and
+    /// View has Refresh remote with F5. While the library shows a registry's
+    /// node, Refresh and Refresh remote list it again; while it shows a
+    /// collection they are disabled. Registries… opens Preferences.
+    #[test]
+    fn refresh_remote_is_on_the_toolbar_and_in_view_while_a_registry_shows() {
+        use crate::library_view::remotes::Node;
+        let mut shell = shell();
+        let ctx = egui::Context::default();
+        shell.stop();
+        // Shown but disabled while the library shows a collection.
+        let (texts, _) = toolbar_pass(&ctx, &mut shell, Vec::new());
+        let refresh = label_rect(&texts, "Refresh").center();
+        assert!(click_toolbar(&ctx, &mut shell, refresh).is_empty());
+        assert!(!shell.command_allowed(Command::RefreshRemote));
+        // Registries… opens Preferences on its Registries page.
+        let (texts, _) = toolbar_pass(&ctx, &mut shell, Vec::new());
+        let registries = label_rect(&texts, "Registries…").center();
+        assert_eq!(
+            click_toolbar(&ctx, &mut shell, registries),
+            [Command::Preferences]
+        );
+        shell.image_library.remote.node = Some(Node {
+            host: "registry.unemu.dev".into(),
+            namespace: None,
+            group: None,
+        });
+        assert!(shell.command_allowed(Command::RefreshRemote));
+        let (texts, _) = toolbar_pass(&ctx, &mut shell, Vec::new());
+        let commands = click_toolbar(&ctx, &mut shell, label_rect(&texts, "Refresh").center());
+        assert_eq!(commands, [Command::RefreshRemote]);
+        let drawn = draw(&ctx, &mut shell, Vec::new());
+        click(&ctx, &mut shell, label_rect(&drawn.text, "View").center());
+        let drawn = draw(&ctx, &mut shell, Vec::new());
+        let item = label_rect(&drawn.text, "Refresh remote");
+        let key = label_rect(&drawn.text, "F5");
+        assert!(
+            (item.center().y - key.center().y).abs() < 2.0,
+            "{item:?} {key:?}"
+        );
+        let commands = click(&ctx, &mut shell, item.center());
+        assert_eq!(commands, [Command::RefreshRemote]);
     }
 
     #[test]

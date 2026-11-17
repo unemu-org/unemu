@@ -356,14 +356,15 @@ pub fn image_title(store: &Store, image: &Descriptor) -> Result<Option<String>> 
 }
 
 /// The identity a machine pins: the manifest descriptor without the
-/// annotations of the local tag it was resolved through, its name and the
-/// registry a pull wrote it from.
+/// annotations of the local tag it was resolved through, its name and where
+/// the tag came from.
 fn identity(image: &Descriptor) -> Descriptor {
     let mut image = image.clone();
     image
         .annotations
         .remove("org.opencontainers.image.ref.name");
     image.annotations.remove(image_store::PULL_REGISTRY);
+    image.annotations.remove(image_store::MADE_HERE);
     image
 }
 

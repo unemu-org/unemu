@@ -198,6 +198,7 @@ Annotations are string values and never bind hardware or media:
 | `unemu.terms` | On an open installation medium or extra: decoded digest of the vendor's terms-text extra in the same closure (§5.2). |
 | `unemu.provenance` | Publish-safe evidence supporting the open classification. |
 | `unemu.pull.registry` | Local only, on a tag's manifest descriptor in the store's `index.json`, never in a manifest: the registry host, port included, that a pull wrote the tag from (§3, §5.1). |
+| `unemu.made-here` | Local only, beside `unemu.pull.registry` and never with it: `true` when a write in this library, not a pull, made the tag (§3). |
 | `unemu.min-app-version` | Manifest only, optional: the oldest release of the program providing `unemu.platform` that reads and runs the artifact, a SemVer `MAJOR.MINOR.PATCH`. Absent means no requirement (release 0.0.1). A hint read before any strict decode, never an authority and never part of a config (§5.6). |
 
 The config is the single authority for bindings, slots, catalogue order and
@@ -530,11 +531,14 @@ characters, and a port from 1 to 65535 without leading zeros. The name, host
 included, is at most 255 characters. Namespace policy reads the repository path after the
 host. Pull records its source registry on each tag it writes, as the
 `unemu.pull.registry` annotation of the tag's index descriptor, which tells a
-short tag pulled from the default registry apart from one made here. Tags
-written before pulls recorded it have no annotation: their source is unknown,
-never guessed, and they are never renamed. Only a pull writes the annotation:
-any other write leaves it off the tag it writes, even when it copies a pulled
-tag's descriptor, and drops it when it moves a tag to another image. Names
+short tag pulled from the default registry apart from one made here. Every
+other write (import, New machine…, Save as new image, a revision, a retag)
+marks a tag it creates or moves to another image with `unemu.made-here` =
+`true` instead, also when it copies a pulled tag's descriptor; a pull never
+writes the mark and replaces it with its record. Rewriting a tag with the
+image it already names keeps its record. Tags written before the store kept
+these records have neither: their source is unknown, never guessed, and
+they are never renamed. A machine pins its image without either. Names
 suggested for images made from a pulled one (Save as new image, Publish
 revision) take the family short form, without the host and, when one
 component remains, without `unemu/`; an official template pulled from another
@@ -756,8 +760,29 @@ per start; workspaces it adopts are named in a one-time notice above the
 Machines list. The sidebar is one Library group: Machines (with Recently
 played and Favourites, which list machines), Images, Installation media,
 Firmware and Machine files; the selected collection's facets sit under it
-(machines filter by their own labels and their image's catalogue metadata),
-and a greyed, collapsed Remotes group says it comes after the MVP. The
+(machines filter by their own labels and their image's catalogue metadata).
+The Images, Installation media and Firmware lists show each tag's Source
+after its name: the registry host its pull recorded (`unemu.pull.registry`),
+`local` for a tag a write here made (`unemu.made-here`), and a dash for a tag
+with neither record, whose source is unknown and never guessed. A Remotes group follows Library (approved remotes mock-up,
+revision 2): one node per registry of Preferences › Registries, the default
+registry first and `registry.unemu.dev` always; under an open registry its
+namespaces, a private one locked until a login lists it; under an open
+namespace one group per artifact type with repositories (Machine images,
+Installation media, Firmware). Nothing contacts a registry until its node is
+expanded or selected, and every request runs on the library worker (§5.1).
+A node's list has the mock-up's columns (Name, Source, Title, Latest, Type,
+Licence, Size, Local state); a repository of several tags expands into them,
+newest first; a tag this release cannot run is muted with "Needs unemupc X
+or newer" (§5.6). Strips over the rows say a listing runs, stopped or no
+longer answers, and a message replaces the rows when nothing is listed, with
+Stop, Refresh, Try again or Log in… as the state offers. Next 50 › reads the
+catalog's next page; F5, View › Refresh remote and the toolbar's Refresh
+list the shown registry again, and the toolbar's Registries… opens
+Preferences › Registries; every start of a machine stops every listing
+first. A remote tag's details pane and Pull from the list are not built
+yet: File › Get templates… keeps its dialog, which pulls the templates, and
+Image › Pull… pulls by reference. The
 library opens on Machines. Every machine change runs on the worker through
 `pc_image::machine`, never on the frame loop:
 

@@ -177,8 +177,25 @@ fn a_machine_from_a_host_qualified_tag_gets_a_plain_folder_name() {
     let listing = machine::get(store, &id).unwrap();
     assert_eq!(listing.machine.name, tag);
     assert_eq!(listing.machine.source, tag);
-    // The machine pins the image, not the annotations of the tag it came by.
+    // The machine pins the image, not the annotations of the tag it came by,
+    // a pulled tag's or one made here.
     assert_eq!(listing.machine.image.digest, image.digest);
+    assert!(
+        listing.machine.image.annotations.is_empty(),
+        "{:?}",
+        listing.machine.image.annotations
+    );
+    store
+        .update_tag("made-here:1", &image, None, &PcProvider)
+        .unwrap();
+    assert!(store
+        .list_tags(None, 100)
+        .unwrap()
+        .tags
+        .iter()
+        .any(|t| t.made_here()));
+    let id = machine::create_from_tag(store, "made-here:1", Some("Made here"), None).unwrap();
+    let listing = machine::get(store, &id).unwrap();
     assert!(
         listing.machine.image.annotations.is_empty(),
         "{:?}",

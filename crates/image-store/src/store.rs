@@ -104,17 +104,35 @@ pub struct Tag {
 /// that moves the tag to another image drops it.
 pub const PULL_REGISTRY: &str = "unemu.pull.registry";
 
+/// Index annotation on a local tag's manifest descriptor, set to `true`: a
+/// write in this library made the tag, not a pull. Every tag write other
+/// than a pull records it on a tag it creates or moves to another image; a
+/// pull never writes it. With [`PULL_REGISTRY`] it says where every tag
+/// written since came from; a tag with neither was written before the store
+/// recorded either, and its source is unknown. Like the pull record it lives
+/// in `index.json` only, is never pushed, and never travels to another tag.
+pub const MADE_HERE: &str = "unemu.made-here";
+
 impl Tag {
     /// The registry a pull fetched this tag's image from ([`PULL_REGISTRY`]).
-    /// `None` for a tag made in this library, and also for one pulled before
-    /// pulls recorded their registry: the store cannot tell those apart and
-    /// never guesses.
+    /// `None` for a tag made in this library, and also for one written
+    /// before pulls recorded their registry.
     pub fn pulled_from(&self) -> Option<&str> {
         self.manifest
             .annotations
             .get(PULL_REGISTRY)
             .map(String::as_str)
             .filter(|host| check_host(host).is_ok())
+    }
+
+    /// A write in this library made the tag ([`MADE_HERE`]). `false` for a
+    /// pulled tag, and also for one written before the store recorded where
+    /// tags came from: the store never guesses.
+    pub fn made_here(&self) -> bool {
+        self.manifest
+            .annotations
+            .get(MADE_HERE)
+            .is_some_and(|value| value == "true")
     }
 }
 
@@ -594,7 +612,11 @@ impl Store {
     /// Caller holds the store lease and index lock and has verified the closure.
     /// `pulled` is the registry a pull fetched the image from; any other write
     /// passes `None`. A descriptor read from another tag carries that tag's
-    /// pull record, which never travels to the tag written here.
+    /// origin record, which never travels to the tag written here. A tag this
+    /// write creates or moves to another image records where it came from: the
+    /// pull's registry ([`PULL_REGISTRY`]) or, for any other write, that it
+    /// was made here ([`MADE_HERE`]). Rewriting a tag with the image it
+    /// already names keeps its record, which a pull replaces with its own.
     pub(crate) fn update_tag_locked(
         &self,
         name: &str,
@@ -636,10 +658,20 @@ impl Store {
             .annotations
             .insert("org.opencontainers.image.ref.name".into(), name.into());
         descriptor.annotations.remove(PULL_REGISTRY);
-        if let Some(registry) = pulled {
-            descriptor
-                .annotations
-                .insert(PULL_REGISTRY.into(), registry.into());
+        descriptor.annotations.remove(MADE_HERE);
+        let same_image = current.as_ref() == Some(&manifest.digest);
+        match pulled {
+            Some(registry) => {
+                descriptor
+                    .annotations
+                    .insert(PULL_REGISTRY.into(), registry.into());
+            }
+            None if !same_image => {
+                descriptor
+                    .annotations
+                    .insert(MADE_HERE.into(), "true".into());
+            }
+            None => (),
         }
         let replacement = to_raw_value(&descriptor).map_err(|e| invalid(e.to_string()))?;
         if let Some(position) = position {
@@ -658,9 +690,11 @@ impl Store {
                 .map(|raw| decode_json(raw.get().as_bytes()))
                 .transpose()?
                 .unwrap_or_default();
-            // Where the old image came from says nothing about the new one.
-            if current.as_ref() != Some(&manifest.digest) {
+            // Where the old image came from says nothing about the new one,
+            // and a pull's record replaces whatever the tag recorded.
+            if !same_image || pulled.is_some() {
                 annotations.remove(PULL_REGISTRY);
+                annotations.remove(MADE_HERE);
             }
             if let Some(raw) = replacement.remove("annotations") {
                 annotations.extend(decode_json::<BTreeMap<String, Box<RawValue>>>(

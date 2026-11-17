@@ -35,7 +35,7 @@ pub use artifact::{
 pub use store::verification_passes;
 pub use store::{
     Blob, BlobSource, ConfigValidator, ContentReader, ResolvedImage, Store, Tag, TagPage,
-    PULL_REGISTRY,
+    MADE_HERE, PULL_REGISTRY,
 };
 
 /// Failures at the storage and untrusted artifact boundaries.

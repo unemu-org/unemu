@@ -480,18 +480,23 @@ fn the_firmware_and_media_panes_lay_out_at_every_width() {
         let (texts, _) = pane(&mut view, width);
         assert_laid_out("firmware pane", width, &texts);
         assert_type_sizes("firmware pane", &texts);
+        // With the Source column the list scrolls sideways on the narrowest
+        // window, as the mock-up's grid does; its leading columns show whole.
+        let headers = [
+            "Name",
+            "Source",
+            "Role",
+            "Status",
+            "Fits",
+            "Version / date",
+            "Redistribution",
+        ];
+        let shown = if width < 1000.0 { 3 } else { headers.len() };
         assert_headers_fit(
             "Firmware",
             width,
             &library(&mut view, width),
-            &[
-                "Name",
-                "Role",
-                "Status",
-                "Fits",
-                "Version / date",
-                "Redistribution",
-            ],
+            &headers[..shown],
         );
     }
     let (_m, cache) = install_media::tests::library();
@@ -504,11 +509,13 @@ fn the_firmware_and_media_panes_lay_out_at_every_width() {
         let (texts, _) = pane(&mut view, width);
         assert_laid_out("media pane", width, &texts);
         assert_type_sizes("media pane", &texts);
+        let headers = ["Set", "Source", "Tag", "Platform", "Format", "Availability"];
+        let shown = if width < 1000.0 { 3 } else { headers.len() };
         assert_headers_fit(
             "Installation media",
             width,
             &library(&mut view, width),
-            &["Set", "Tag", "Platform", "Format", "Availability"],
+            &headers[..shown],
         );
     }
 }
@@ -558,7 +565,9 @@ fn assert_whole(what: &str, width: f32, texts: &[Drawn], wanted: &[&str]) {
 
 /// The Machines and Images lists draw every column inside their area at
 /// every width, and the Images list groups a repository's images under one
-/// row with the mock-up's columns.
+/// row with the mock-up's columns. On the narrowest window the Images list,
+/// with the remotes mock-up's Source column, scrolls sideways in its own
+/// area, as the mock-up's grid does: its leading columns show whole.
 #[test]
 fn lists_fit_their_area_and_images_group_by_repository() {
     let (_f, mut view) = machine_view();
@@ -586,26 +595,27 @@ fn lists_fit_their_area_and_images_group_by_repository() {
     view.snapshot = Arc::new(snapshot(&cache, &view.query));
     for width in WINDOW_WIDTHS {
         let texts = library(&mut view, width);
-        assert_headers_fit(
-            "Images",
-            width,
-            &texts,
-            &[
-                "Name",
-                "Tags",
-                "Digest",
-                "Machines",
-                "Redistribution",
-                "Size",
-            ],
-        );
+        let headers = [
+            "Name",
+            "Source",
+            "Tags",
+            "Digest",
+            "Machines",
+            "Redistribution",
+            "Size",
+        ];
+        let shown = if width < 1000.0 { 5 } else { headers.len() };
+        assert_headers_fit("Images", width, &texts, &headers[..shown]);
         assert!(
             texts
                 .iter()
                 .any(|t| t.text.contains("synthetic-0 · 2 images")),
             "Images at {width}: no group row"
         );
-        assert_whole("Images", width, &texts, &["user-supplied", "0"]);
+        assert_whole("Images", width, &texts, &["—", "0"]);
+        if width >= 1000.0 {
+            assert_whole("Images", width, &texts, &["user-supplied"]);
+        }
     }
 }
 
@@ -670,7 +680,7 @@ fn an_open_rom_with_a_user_supplied_disk_makes_the_image_user_supplied() {
         group: None,
         child: false,
     };
-    assert_eq!(row_cells(&row, 0)[4], "user-supplied");
+    assert_eq!(row_cells(&row, 0)[5], "user-supplied");
     let summary = image.summary.as_mut().unwrap();
     for d in &mut summary.storage_blobs {
         license::mark(d, Some(&mit));
@@ -1880,7 +1890,8 @@ fn a_tree_taller_than_its_pane_scrolls() {
     crate::shell::configure_context(&ctx);
     ctx.set_visuals(crate::shell::skin_visuals(true, false));
     let size = egui::vec2(GROUNDS_WIDTH, 300.0);
-    let last = "after the MVP — separate mock-up";
+    // The Remotes heading closes the tree of a library without registries.
+    let last = "Remotes";
     let mut time = 0.0;
     let mut pass = |events: Vec<egui::Event>| {
         time += 0.1;

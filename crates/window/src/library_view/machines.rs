@@ -599,6 +599,7 @@ impl LibraryView {
 
     /// Show the Machines collection with `id` selected and visible.
     pub(crate) fn show_machine(&mut self, id: String, row: ImageRow) {
+        self.remote.node = None;
         if !self.query.filter.is_machines() {
             self.query.filter = Filter::Machines;
         }
@@ -1072,6 +1073,7 @@ impl LibraryView {
     /// Start on an image: a machine named after it, started at once, when it
     /// has none; otherwise the Start… chooser, the last run preselected.
     pub(super) fn start_image(&mut self, row: ImageRow) {
+        self.stop_remotes();
         let machines: Vec<StartChoice> = self
             .machines_of(&row.descriptor.digest)
             .into_iter()
@@ -1129,6 +1131,7 @@ impl LibraryView {
         if self.busy {
             return;
         }
+        self.stop_remotes();
         let Some(row) = self.selected.clone() else {
             return;
         };
@@ -1497,6 +1500,9 @@ impl LibraryView {
                     close |= ui.input_mut(crate::shell::escape_pressed);
                 });
                 if go {
+                    // The machine's readiness check must not wait behind a
+                    // registry listing.
+                    self.stop_remotes();
                     match dialog.pick {
                         Some(id) => {
                             let row = self

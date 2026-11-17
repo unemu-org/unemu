@@ -53,10 +53,8 @@
 //! otherwise, naming another local tag of the same image when there is one.
 //! The comparison runs on the worker against the store, and again whenever
 //! the library changes.
-
-// The library window draws this model in a later change; until then only the
-// worker and the tests use most of it.
-#![cfg_attr(not(test), expect(dead_code))]
+//!
+//! The library window draws it: [`crate::library_view::remotes`].
 
 use crate::registry_transfer::{common_failure, next_id, Accounts};
 use image_registry::{
@@ -835,7 +833,9 @@ impl RegistryView {
         matches!(self.state, State::Unreachable { stale: true, .. })
     }
 
-    /// Why Pull is unavailable for this registry's rows.
+    /// Why Pull is unavailable for this registry's rows. Pull from the list
+    /// is not drawn yet, so only the tests read it.
+    #[cfg_attr(not(test), expect(dead_code))]
     pub fn pull_blocked(&self) -> Option<String> {
         self.stale().then(|| {
             format!(
@@ -899,7 +899,7 @@ impl RegistryView {
                 ),
                 action: Some(Action::Stop),
             }),
-            State::Stopped => Some(Message {
+            State::Stopped if read > 0 => Some(Message {
                 heading: "Listing stopped".into(),
                 text: format!(
                     "after {read} of {expected} repositories. Refresh lists the registry again."
@@ -927,6 +927,11 @@ impl RegistryView {
                 heading: format!("Listing {host}…"),
                 text: "Reading the catalog. Rows appear as manifests arrive.".into(),
                 action: Some(Action::Stop),
+            }),
+            State::Stopped => Some(Message {
+                heading: "Listing stopped".into(),
+                text: "Stop came before the first repository was read. Refresh lists the registry again.".into(),
+                action: Some(Action::Refresh),
             }),
             State::Listed => Some(Message {
                 heading: format!("{host} has nothing published yet"),
@@ -1125,6 +1130,9 @@ pub(crate) struct Remotes {
     pub error: Option<String>,
     /// The local-state request whose answer is awaited.
     local: Option<u64>,
+    /// Counts every change, so a view can keep what it derives until the
+    /// next one.
+    revision: u64,
 }
 
 impl Drop for Remotes {
@@ -1165,14 +1173,57 @@ impl Remotes {
             registries: Vec::new(),
             error: None,
             local: None,
+            revision: 0,
         };
         remotes.reload();
         remotes
     }
 
+    /// Read the registries from `accounts`' preferences again, as
+    /// [`Remotes::reload`] does, and use its logins from now on.
+    pub fn reattach(&mut self, accounts: Accounts) {
+        self.accounts = accounts;
+        self.reload();
+    }
+
+    /// The count of changes so far: anything derived from the registries
+    /// holds while it stays the same.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Tests change the registries' fields directly; this marks the change.
+    #[cfg(test)]
+    pub fn touch(&mut self) {
+        self.revision += 1;
+    }
+
+    /// End every running listing, read and local-state request with
+    /// `message`, as when the library worker is gone and no answer comes.
+    pub fn fail_running(&mut self, message: &str) {
+        let mut ended = Vec::new();
+        for view in &self.registries {
+            ended.extend(view.listing.iter().map(|job| job.id));
+            ended.extend(view.reads.iter().map(|read| read.job.id));
+        }
+        for id in ended {
+            self.on_event(BrowseEvent::Ended {
+                id,
+                end: End::Failed(Failure::Local(message.into())),
+            });
+        }
+        if let Some(id) = self.local {
+            self.on_event(BrowseEvent::Local {
+                id,
+                states: Err(message.into()),
+            });
+        }
+    }
+
     /// Read the registries from preferences again; what a registry still
     /// listed has shown stays.
     pub fn reload(&mut self) {
+        self.revision += 1;
         let roots = match roots(&self.accounts) {
             Ok(roots) => roots,
             Err(message) => {
@@ -1227,6 +1278,7 @@ impl Remotes {
 
     /// Opening a registry's node lists it the first time in this session.
     pub fn open_node(&mut self, host: &str) -> Option<BrowseRequest> {
+        self.revision += 1;
         if self.registry(host)?.state != State::Idle {
             return None;
         }
@@ -1236,6 +1288,7 @@ impl Remotes {
     /// Refresh and Try again: list the registry again. The rows shown stay
     /// aside until the new listing answers, for an unreachable registry.
     pub fn refresh(&mut self, host: &str) -> Option<BrowseRequest> {
+        self.revision += 1;
         let view = self.registries.iter_mut().find(|v| v.host == host)?;
         let listing = view.state == State::Listing;
         view.cancel_jobs();
@@ -1248,6 +1301,7 @@ impl Remotes {
 
     /// Next 50 ›: the catalog's next page, added to the rows.
     pub fn next_page(&mut self, host: &str) -> Option<BrowseRequest> {
+        self.revision += 1;
         let view = self.registry(host)?;
         if view.state != State::Listed {
             return None;
@@ -1258,6 +1312,7 @@ impl Remotes {
 
     /// Stop: the listing ends at its next read; the rows read so far stay.
     pub fn stop(&mut self, host: &str) {
+        self.revision += 1;
         if let Some(view) = self.registries.iter_mut().find(|v| v.host == host) {
             view.stop();
         }
@@ -1266,6 +1321,7 @@ impl Remotes {
     /// Stop every registry's listing and reads, as the window does before a
     /// machine starts, so the worker is free for it.
     pub fn stop_all(&mut self) {
+        self.revision += 1;
         for view in &mut self.registries {
             view.stop();
         }
@@ -1334,6 +1390,7 @@ impl Remotes {
 
     /// The library changed: compare every read tag with it again.
     pub fn library_changed(&mut self) -> Option<BrowseRequest> {
+        self.revision += 1;
         let tags: Vec<(String, Digest, String)> = self
             .registries
             .iter()
@@ -1359,6 +1416,7 @@ impl Remotes {
     /// Take one of the worker's answers; answers of stopped or replaced jobs
     /// change nothing.
     pub fn on_event(&mut self, event: BrowseEvent) {
+        self.revision += 1;
         let listing_of =
             |view: &RegistryView, id: u64| view.listing.as_ref().is_some_and(|r| r.id == id);
         match event {

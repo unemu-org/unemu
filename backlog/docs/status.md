@@ -5,6 +5,47 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — Remotes in the library window (browse only), and where
+  each local tag came from:** the sidebar lists Remotes under the Library
+  group, as the approved remotes mock-up draws it: each registry of Tools ›
+  Preferences › Registries, the default one first and `registry.unemu.dev`
+  even when not configured, with its kind (official, public / private /
+  public) or its state (a spinner while listing, unreachable, error). An
+  open registry shows its namespaces (those its entry names, or the first
+  path components a whole-registry entry's catalog returns), a private one
+  with a lock while no account is stored or the registry asks for a login;
+  an open namespace shows one group per artifact type that has repositories
+  (Machine images, Installation media, Firmware), with counts. Nothing
+  contacts a registry until its node is expanded or selected; every request
+  runs on the library worker. The list is the library's grid with the
+  mock-up's columns (Name, Source, Title, Latest, Type, Licence, Size, Local
+  state): a repository row stands for the tag the model chose, a repository
+  of several tags expands into them newest first (its other tags are read
+  then), and a tag this release cannot run is muted with "Needs unemupc X or
+  newer". Strips over the rows say a listing runs (Stop), stopped (Refresh)
+  or no longer answers (the earlier rows stay, Try again); messages instead
+  of the rows cover a listing before its first row, a listing stopped before
+  it, nothing published, unreachable, server errors (404 included), login
+  required (Log in… only for a Basic challenge; Preferences › Registries
+  opens on the registry, and it lists again when they close) and local
+  failures, including a library worker that went away. Next 50 › reads the
+  catalog's next page. F5, View › Refresh remote and the toolbar's Refresh
+  list the shown registry again; the toolbar's Registries… opens Preferences.
+  Every start of a machine (Start, Gaming mode, Start…, a power cycle, a
+  machine file) stops every listing first, also before the readiness check,
+  so a slow registry never holds a machine back; an expanded repository
+  whose reads stop or whose listing is replaced collapses. The arrow keys
+  move between rows and Enter expands a repository, as in the library's
+  lists. The store now records where every tag written from now on came
+  from: a pull its registry (`unemu.pull.registry`), any other write
+  `unemu.made-here`; the Images, Installation media and Firmware lists show
+  that as a Source column (the host, `local`, or a dash for a tag written
+  before either record, never guessed). Not yet: the details pane of a
+  remote tag and Pull from the list (File › Get templates… keeps its dialog,
+  which pulls the templates, and Image › Pull… pulls by reference),
+  multiple selection, a search over remotes, and dimming a repository only
+  when none of its versions runs on this release (each tag row is dimmed on
+  its own today).
 - **2026-11-17 — Browsing remotes, without drawing yet:** the library worker
   can list a registry without pulling, for the Remotes group of the approved
   mock-up, also while a machine runs. The roots are the configured

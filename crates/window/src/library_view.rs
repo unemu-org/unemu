@@ -4,7 +4,9 @@
 //! The tree, facets and virtualized rows consume platform-neutral summaries.
 //! Firmware packages (§5.3) and installation media sets (§5.2) form their own
 //! collections, see [`firmware`] and [`install_media`]; a firmware package's
-//! metadata and licences are edited with [`firmware_metadata`].
+//! metadata and licences are edited with [`firmware_metadata`]. The
+//! configured registries follow the Library group as Remotes, see
+//! [`remotes`].
 
 pub(crate) mod firmware;
 pub(crate) mod firmware_metadata;
@@ -14,6 +16,7 @@ pub(crate) mod install_media;
 mod layout_tests;
 pub(crate) mod machines;
 pub(crate) mod pane;
+pub(crate) mod remotes;
 
 use crate::{
     layers_dialog::LayersDialog,
@@ -155,6 +158,58 @@ fn tags(reference: &str, aliases: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
+
+/// Where a local tag came from, as the library lists' Source column says it
+/// (the remotes mock-up, revision 2; machine-images §3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Source<'a> {
+    /// The registry host a pull wrote the tag from.
+    Pulled(&'a str),
+    /// Made in this library.
+    Local,
+    /// Written before the store recorded where tags come from; never guessed.
+    Unknown,
+}
+
+impl Source<'_> {
+    /// The cell text: the host, "local", or a dash when unknown.
+    pub fn text(self) -> String {
+        match self {
+            Self::Pulled(host) => host.to_owned(),
+            Self::Local => "local".into(),
+            Self::Unknown => "—".into(),
+        }
+    }
+
+    /// The cell's tooltip.
+    pub fn hint(self) -> String {
+        match self {
+            Self::Pulled(host) => format!("Pulled from {host}"),
+            Self::Local => "Made in this library".into(),
+            Self::Unknown => "Source not recorded: the tag was written before the library recorded where tags come from".into(),
+        }
+    }
+}
+
+/// The source the store records on a local tag's index descriptor: the
+/// registry a pull wrote it from ([`image_store::PULL_REGISTRY`]), or that a
+/// write here made it ([`image_store::MADE_HERE`]); a tag with neither is
+/// unknown.
+pub(super) fn source(descriptor: &Descriptor) -> Source<'_> {
+    let pulled = descriptor
+        .annotations
+        .get(image_store::PULL_REGISTRY)
+        .filter(|host| Store::validate_registry_host(host).is_ok());
+    let made_here = descriptor
+        .annotations
+        .get(image_store::MADE_HERE)
+        .is_some_and(|value| value == "true");
+    match pulled {
+        Some(host) => Source::Pulled(host),
+        None if made_here => Source::Local,
+        None => Source::Unknown,
+    }
+}
 /// One manifest of one repository as the library lists it, with every tag
 /// there that names it.
 pub(super) struct Listed<'a> {
@@ -292,10 +347,11 @@ fn facets_for(filter: &Filter) -> Facets {
 fn sort_value(row: &ImageRow, column: usize) -> String {
     let s = row.summary.as_ref();
     match column {
-        1 => row.reference.clone(),
-        2 => row.descriptor.digest.hex().to_owned(),
-        4 => s.map(redistribution).unwrap_or_default().into(),
-        5 => format!("{:020}", s.map_or(0, |s| s.stored_size)),
+        1 => source(&row.descriptor).text(),
+        2 => row.reference.clone(),
+        3 => row.descriptor.digest.hex().to_owned(),
+        5 => s.map(redistribution).unwrap_or_default().into(),
+        6 => format!("{:020}", s.map_or(0, |s| s.stored_size)),
         _ => row.name().to_lowercase(),
     }
 }
@@ -482,18 +538,21 @@ pub(super) fn snapshot(cache: &SummaryCache, q: &Query) -> Snapshot {
     result
 }
 
-/// The Images list's columns, as the machines mock-up lists images.
-const IMAGE_COLUMNS: Columns<6> = Columns {
+/// The Images list's columns, as the machines mock-up lists images, with the
+/// remotes mock-up's Source column after the name.
+const IMAGE_COLUMNS: Columns<7> = Columns {
     labels: [
         "Name",
+        "Source",
         "Tags",
         "Digest",
         "Machines",
         "Redistribution",
         "Size",
     ],
-    widths: [260.0, 220.0, 120.0, 80.0, 110.0, 90.0],
+    widths: [260.0, 140.0, 220.0, 120.0, 80.0, 110.0, 90.0],
     cells: [
+        Cell::Text,
         Cell::Text,
         Cell::Mono,
         Cell::Mono,
@@ -501,10 +560,18 @@ const IMAGE_COLUMNS: Columns<6> = Columns {
         Cell::Badge,
         Cell::Number,
     ],
-    samples: ["", "", "00000000…0000", "99", "user-supplied", "999.9 MiB"],
+    samples: [
+        "",
+        "local",
+        "",
+        "00000000…0000",
+        "99",
+        "user-supplied",
+        "999.9 MiB",
+    ],
 };
 /// The store cannot count machines, so the list does not sort by them.
-const IMAGE_MACHINES_COLUMN: usize = 3;
+const IMAGE_MACHINES_COLUMN: usize = 4;
 /// The details pane's first height, and the least either side of the split
 /// keeps: a few list rows with their header and footer, a few pane lines.
 /// On a window 1280 px wide or wider the first height shows the whole pane
@@ -548,7 +615,7 @@ fn image_newer(image: &ImageRow) -> Vec<crate::firmware_choices::Newer> {
 }
 /// An image row's cells; `machines` counts the machines made from it. A
 /// superseded firmware puts the quiet "↑ newer BIOS" badge after the name.
-fn row_cells(row: &ViewRow, machines: usize) -> [String; 6] {
+fn row_cells(row: &ViewRow, machines: usize) -> [String; 7] {
     let image = &row.image;
     let summary = image.summary.as_ref();
     let mut name = image.name().to_owned();
@@ -558,6 +625,7 @@ fn row_cells(row: &ViewRow, machines: usize) -> [String; 6] {
     }
     [
         name,
+        source(&image.descriptor).text(),
         image.references(),
         pane::short_digest(image.descriptor.digest.hex()),
         machines.to_string(),
@@ -1257,6 +1325,8 @@ pub(super) struct LibraryView {
     pub disks_created: Option<std::result::Result<Box<crate::created_media::Created>, String>>,
     /// What the last Start left out, for the status bar once it runs.
     pub start_notes: Vec<String>,
+    /// The Remotes group: the registries, the node shown and its rows.
+    pub(crate) remote: remotes::RemotesView,
 }
 impl LibraryView {
     pub fn new(root: Option<PathBuf>) -> Self {
@@ -1325,6 +1395,7 @@ impl LibraryView {
             host_reads: Vec::new(),
             disks_created: None,
             start_notes: Vec::new(),
+            remote: remotes::RemotesView::new(),
         }
     }
     /// Whether the worker runs, to read host files and build disks for
@@ -1406,6 +1477,8 @@ impl LibraryView {
                 );
             }
             self.fail_transfers();
+            let message = self.error.clone().unwrap_or_default();
+            self.fail_remotes(&message);
         }
     }
     /// Push… and Pull… wait for the worker; once it is gone they end.
@@ -1458,8 +1531,12 @@ impl LibraryView {
                         *selected = current.clone();
                     }
                 }
+                let tags_changed = self.snapshot.tags != snapshot.tags;
                 self.snapshot = snapshot;
                 self.refresh_facts();
+                if tags_changed {
+                    self.remote_library_changed();
+                }
             }
             Event::HostRead(path, result) => self.host_reads.push((path, *result)),
             Event::DisksCreated(result) => self.disks_created = Some(result),
@@ -1971,9 +2048,7 @@ impl LibraryView {
                 self.busy = false;
                 self.commit_refused(refused.error, refused.tags);
             }
-            // The library sends no browsing request yet; Remotes takes these
-            // answers once the window draws it.
-            Event::Browse(_) => (),
+            Event::Browse(event) => self.on_browse(event),
             Event::Error(error) => {
                 self.busy = false;
                 self.pending_operation = false;
@@ -1986,6 +2061,11 @@ impl LibraryView {
         }
     }
     pub fn send(&mut self, request: Request) {
+        // The worker answers one request at a time: a slow registry listing
+        // must not hold a machine's start behind it.
+        if request.launches() {
+            self.stop_remotes();
+        }
         let result = if let Some(worker) = &self.worker {
             worker
                 .cancel
@@ -2068,6 +2148,8 @@ impl LibraryView {
         if self.busy {
             return;
         }
+        // Before the readiness check too: it waits behind a registry listing.
+        self.stop_remotes();
         if let Some(row) = self.selected.clone() {
             if self.machine.is_none() && !kind.disposable() {
                 self.start_image(row);
@@ -2094,6 +2176,7 @@ impl LibraryView {
         }
     }
     pub fn resume(&mut self, row: ImageRow, name: String, kind: WorkspaceKind) {
+        self.stop_remotes();
         self.pending_operation = true;
         self.busy = true;
         self.status = Some("Reopening image workspace…".into());
@@ -2250,6 +2333,7 @@ impl LibraryView {
     fn select_image(&mut self, row: ImageRow) {
         self.machine = None;
         self.machine_settings = None;
+        self.remote.node = None;
         self.query.filter = Filter::All;
         self.query.text.clear();
         self.query.expanded.insert(row.repository().to_owned());
@@ -2263,6 +2347,7 @@ impl LibraryView {
     fn show_created(&mut self, row: ImageRow) {
         self.machine = None;
         self.machine_settings = None;
+        self.remote.node = None;
         self.query.filter = Filter::All;
         self.query.text.clear();
         self.query.expanded.insert(row.repository().to_owned());
@@ -2336,6 +2421,7 @@ impl LibraryView {
         if let Some(request) = self.templates.as_mut().and_then(|d| d.after_preferences()) {
             self.send(Request::Transfer(request));
         }
+        self.remote_preferences_closed();
     }
     pub fn begin_import(&mut self, path: &Path) {
         self.import = Some((path.to_string_lossy().into_owned(), String::new()));
@@ -2445,6 +2531,7 @@ impl LibraryView {
         if !filter.is_media() {
             self.media_selected = None;
         }
+        self.remote.node = None;
         self.query.filter = filter;
     }
     /// The machines mock-up's warning banner for unfinished gaming sessions:
@@ -2632,12 +2719,13 @@ impl LibraryView {
                                 Some(icon) => crate::shell_icons::atom(icon),
                                 None => crate::shell_icons::blank(),
                             };
+                            let current = self.remote.node.is_none() && self.query.filter == filter;
                             let picked = ui
                                 .horizontal(|ui| {
                                     if indent {
                                         ui.add_space(16.0);
                                     }
-                                    ui.selectable_label(self.query.filter == filter, (mark, label.as_str()))
+                                    ui.selectable_label(current, (mark, label.as_str()))
                                         .clicked()
                                 })
                                 .inner;
@@ -2646,7 +2734,7 @@ impl LibraryView {
                                 changed = true;
                             }
                             let current = &self.query.filter;
-                            let here = match filter {
+                            let here = self.remote.node.is_none() && match filter {
                                 Filter::Favorites => current.is_machines(),
                                 Filter::All => {
                                     matches!(current, Filter::All)
@@ -2660,19 +2748,7 @@ impl LibraryView {
                                 changed |= self.tree_facets(ui, &filter, selected_file);
                             }
                         }
-                        ui.add_space(6.0);
-                        // Remotes come after the MVP, in their own mock-up.
-                        ui.add_enabled_ui(false, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label("+");
-                                ui.strong("Remotes");
-                            })
-                            .response
-                            .on_disabled_hover_text(
-                                "Configured registries, browse and pull: after the MVP, in a separate mock-up",
-                            );
-                            ui.label(egui::RichText::new("after the MVP — separate mock-up").small());
-                        });
+                        self.remote_tree(ui, selected_file);
                     });
             });
         // The split between the list and the details pane drags, as in the
@@ -2701,6 +2777,10 @@ impl LibraryView {
         let panel = egui::CentralPanel::default().frame(LIST_PANE.frame());
         panel.show(ui, |ui| {
             LIST_PANE.paint(ui, classic);
+            if self.remote.node.is_some() {
+                self.remote_list(ui);
+                return;
+            }
             let firmware_mode = self.query.filter.is_firmware();
             let media_mode = self.query.filter.is_media();
             ui.horizontal(|ui| {
@@ -2855,6 +2935,7 @@ impl LibraryView {
                                         let entry = &files[i];
                                         let cells = [
                                             entry.name.clone(),
+                                            String::new(),
                                             "Machine file".into(),
                                             String::new(),
                                             String::new(),
@@ -2865,7 +2946,7 @@ impl LibraryView {
                                             ui,
                                             &cells,
                                             &widths,
-                                            &[Cell::Text; 6],
+                                            &[Cell::Text; 7],
                                             self.selected.is_none() && *selected_file == Some(i),
                                             index % 2 == 0,
                                             Lead {
@@ -2908,9 +2989,12 @@ impl LibraryView {
                                                 .selected
                                                 .as_ref()
                                                 .is_some_and(|r| r.same(image));
-                                            let hints = [crate::firmware_choices::badge_tooltip(
-                                                &image_newer(image),
-                                            )];
+                                            let hints = [
+                                                crate::firmware_choices::badge_tooltip(
+                                                    &image_newer(image),
+                                                ),
+                                                Some(source(&image.descriptor).hint()),
+                                            ];
                                             let (clicked, double) = draw_cells_with_hints(
                                                 ui,
                                                 &cells,
@@ -2981,7 +3065,9 @@ impl LibraryView {
         commands: &mut Vec<Command>,
     ) {
         pane::style(ui);
-        if self.query.filter.is_firmware() {
+        if self.remote.node.is_some() {
+            remotes::details(ui);
+        } else if self.query.filter.is_firmware() {
             match self.firmware_selected.clone() {
                 Some(row) => {
                     let machines = self.package_machines(&row);
@@ -4135,7 +4221,7 @@ pub(super) mod tests {
             assert_eq!(snapshot(&cache, &query).matched, 0);
         }
         query.filter = Filter::All;
-        query.sort = 1;
+        query.sort = 2;
         query.descending = true;
         assert_eq!(
             snapshot(&cache, &query).rows[0].image.reference,
@@ -4232,7 +4318,7 @@ pub(super) mod tests {
         let rows: Vec<_> = machines
             .rows
             .iter()
-            .map(|row| (row.group, row.child, row_cells(row, 0)[1].clone()))
+            .map(|row| (row.group, row.child, row_cells(row, 0)[2].clone()))
             .collect();
         // The header counts the repository's two images, one per manifest,
         // over its three tags.
@@ -4283,7 +4369,7 @@ pub(super) mod tests {
         assert_eq!(media.media_rows.len(), 1);
         assert_eq!(media.media_rows[0].image.reference, "installation:1.0.0");
         assert_eq!(
-            install_media::cells(&media.media_rows[0], &[])[1],
+            install_media::cells(&media.media_rows[0], &[])[2],
             "1.0.0, latest"
         );
     }

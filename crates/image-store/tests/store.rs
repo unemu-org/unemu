@@ -1124,6 +1124,96 @@ fn a_pull_record_never_travels_to_a_tag_another_write_makes() {
     );
 }
 
+/// Every tag write other than a pull marks a tag it creates or moves as made
+/// here, also when it copies a pulled tag's descriptor; a pull never does.
+/// Rewriting a tag with the image it names keeps its record, and a pull's
+/// record replaces a made-here mark. A tag with neither is unknown.
+#[test]
+fn a_tag_made_here_says_so_and_a_pulled_tag_does_not() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let (manifest, _) = fixture(&store, b"firmware");
+    let image = publish(&store, &manifest, "made-here:1");
+    let provider = Provider("zx-spectrum");
+    store
+        .update_pulled_tag("lab:latest", &image, None, &provider, "registry.unemu.dev")
+        .unwrap();
+    let pulled = store.tag_descriptor("lab:latest").unwrap();
+    store
+        .update_tag("copy:1", &pulled, None, &provider)
+        .unwrap();
+    let verified = store.verify_publication(&pulled, &provider).unwrap();
+    store
+        .update_verified_tag("verified:1", &verified, None)
+        .unwrap();
+    let origins = |store: &Store| -> Vec<(String, Option<String>, bool)> {
+        store
+            .list_tags(None, 10)
+            .unwrap()
+            .tags
+            .iter()
+            .map(|t| {
+                (
+                    t.name.clone(),
+                    t.pulled_from().map(str::to_owned),
+                    t.made_here(),
+                )
+            })
+            .collect()
+    };
+    let unemu = || Some("registry.unemu.dev".to_owned());
+    assert_eq!(
+        origins(&dir.store()),
+        [
+            ("copy:1".into(), None, true),
+            ("lab:latest".into(), unemu(), false),
+            ("made-here:1".into(), None, true),
+            ("verified:1".into(), None, true),
+        ]
+    );
+    let index = fs::read_to_string(dir.0.join("images/index.json")).unwrap();
+    assert!(index.contains(r#""unemu.made-here":"true""#), "{index}");
+    // The same image again keeps each tag's record.
+    for name in ["lab:latest", "made-here:1"] {
+        store
+            .update_tag(name, &image, Some(&image.digest), &provider)
+            .unwrap();
+    }
+    assert_eq!(origins(&store)[1], ("lab:latest".into(), unemu(), false));
+    assert_eq!(origins(&store)[2], ("made-here:1".into(), None, true));
+    // A pull of the image a made-here tag names replaces its mark.
+    store
+        .update_pulled_tag(
+            "made-here:1",
+            &image,
+            Some(&image.digest),
+            &provider,
+            "nas.example:5000",
+        )
+        .unwrap();
+    assert_eq!(
+        origins(&store)[2],
+        ("made-here:1".into(), Some("nas.example:5000".into()), false)
+    );
+    // Moving the pulled tag to an image made here marks it made here.
+    let (other, _) = fixture(&store, b"made here");
+    let other = store.import_manifest(&other).unwrap();
+    store
+        .update_tag("lab:latest", &other, Some(&image.digest), &provider)
+        .unwrap();
+    assert_eq!(origins(&store)[1], ("lab:latest".into(), None, true));
+    // A tag written before the store recorded either is unknown.
+    let raw = fs::read_to_string(dir.0.join("images/index.json")).unwrap();
+    fs::write(
+        dir.0.join("images/index.json"),
+        raw.replace(r#","unemu.made-here":"true""#, ""),
+    )
+    .unwrap();
+    assert!(origins(&dir.store())
+        .iter()
+        .all(|(name, pulled, here)| !here && (pulled.is_some() == (name == "made-here:1"))));
+}
+
 /// One registry has one spelling in the library: a port with a leading
 /// zero, port 0, an over-long DNS label or a malformed IPv6 address would
 /// give the same registry a second name, or name none.
@@ -1204,7 +1294,9 @@ fn a_store_without_pull_records_loads_and_lists_unchanged() {
     let tags = reopened.list_tags(None, 10).unwrap().tags;
     let names: Vec<_> = tags.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(names, ["open-at:1.2.0", "private/media/x:1.1"]);
-    assert!(tags.iter().all(|t| t.pulled_from().is_none()));
+    assert!(tags
+        .iter()
+        .all(|t| t.pulled_from().is_none() && !t.made_here()));
     reopened
         .resolve("open-at:1.2.0", &Provider("zx-spectrum"))
         .unwrap();

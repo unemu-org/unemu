@@ -838,7 +838,8 @@ with both digests; repeat it with `--move` after checking them.
 The desktop shell's **File › Get templates…** lists these templates from the
 default registry and pulls the chosen ones;
 [`design/machine-images.md`](design/machine-images.md) §5.5 describes its
-behaviour.
+behaviour. The library's Remotes group lists the same repositories, and the
+other configured registries, without pulling (§3.2, Desktop library).
 
 ## Shareware installation media (local only)
 

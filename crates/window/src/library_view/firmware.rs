@@ -254,17 +254,19 @@ pub(super) fn rows(
     rows
 }
 
-/// The Firmware list's columns, as the firmware mock-up lists packages.
-pub(super) const COLUMNS: super::Columns<6> = super::Columns {
+/// The Firmware list's columns, as the firmware mock-up lists packages, with
+/// the remotes mock-up's Source column after the name.
+pub(super) const COLUMNS: super::Columns<7> = super::Columns {
     labels: [
         "Name",
+        "Source",
         "Role",
         "Status",
         "Fits",
         "Version / date",
         "Redistribution",
     ],
-    widths: [240.0, 140.0, 150.0, 140.0, 200.0, 200.0],
+    widths: [240.0, 140.0, 140.0, 150.0, 140.0, 200.0, 200.0],
     cells: [
         super::Cell::Text,
         super::Cell::Text,
@@ -272,8 +274,9 @@ pub(super) const COLUMNS: super::Columns<6> = super::Columns {
         super::Cell::Text,
         super::Cell::Text,
         super::Cell::Text,
+        super::Cell::Text,
     ],
-    samples: ["", "", "", "", "", "User-supplied"],
+    samples: ["", "local", "", "", "", "", "User-supplied"],
 };
 
 /// A package's catalogue status, as the firmware-settings mock-up's Status
@@ -348,12 +351,14 @@ pub(super) fn lead(row: &FirmwareRow) -> super::Lead {
 
 /// A package's cells; a package without its summary says why in the role
 /// column.
-pub(super) fn cells(row: &FirmwareRow) -> [String; 6] {
+pub(super) fn cells(row: &FirmwareRow) -> [String; 7] {
     let name = row.image.name().to_owned();
+    let source = super::source(&row.image.descriptor).text();
     let Some(f) = row.firmware() else {
-        let mut cells: [String; 6] = Default::default();
+        let mut cells: [String; 7] = Default::default();
         cells[0] = name;
-        cells[1] = if row.image.failure.is_some() {
+        cells[1] = source;
+        cells[2] = if row.image.failure.is_some() {
             "Unavailable"
         } else {
             "Pending"
@@ -363,6 +368,7 @@ pub(super) fn cells(row: &FirmwareRow) -> [String; 6] {
     };
     [
         name,
+        source,
         roles(f),
         status(f),
         fits(f),
@@ -1063,8 +1069,9 @@ impl LibraryView {
                                 .firmware_selected
                                 .as_ref()
                                 .is_some_and(|current| current.same(row));
+                            let hints = [None, Some(super::source(&row.image.descriptor).hint())];
                             // A double click only selects: packages have no launch action.
-                            let (clicked, double) = super::draw_cells(
+                            let (clicked, double) = super::draw_cells_with_hints(
                                 ui,
                                 &cells(row),
                                 &widths,
@@ -1072,6 +1079,7 @@ impl LibraryView {
                                 selected,
                                 index % 2 == 0,
                                 lead(row),
+                                &hints,
                             );
                             if (clicked || double) && !selected {
                                 self.select_firmware(row, selected_file);
@@ -2018,6 +2026,8 @@ pub(crate) mod tests {
             cells(split),
             [
                 "Synthetic two-chip BIOS",
+                // Imported here.
+                "local",
                 "System BIOS",
                 "Not catalogued",
                 "ibm-5170 · AT",
@@ -2028,8 +2038,8 @@ pub(crate) mod tests {
         assert!(split.used_by.is_empty());
         let open = row("synthetic-open-bios");
         let cells = super::cells(open);
-        assert_eq!(cells[4], "Version unknown / date unknown");
-        assert_eq!(cells[5], "Open · MIT");
+        assert_eq!(cells[5], "Version unknown / date unknown");
+        assert_eq!(cells[6], "Open · MIT");
         // The Status column: a superseded package names its replacement.
         for (id, expected) in [
             ("unemu-at-bios-1.0.2-unemu.2", "Superseded by 1.0.2-unemu.3"),
@@ -2045,7 +2055,7 @@ pub(crate) mod tests {
                 .and_then(|s| s.firmware.as_mut())
                 .unwrap()
                 .catalogue_ids = vec![id.into()];
-            assert_eq!(super::cells(&package)[2], expected, "{id}");
+            assert_eq!(super::cells(&package)[3], expected, "{id}");
         }
         assert_eq!(open.used_by, ["test:source"]);
         assert_eq!(
@@ -2102,7 +2112,7 @@ pub(crate) mod tests {
             );
         }
         let mut sorted = query(Filter::Firmware, "");
-        sorted.firmware_sort = 5;
+        sorted.firmware_sort = 6;
         assert_eq!(names(&snapshot(&cache, &sorted))[0], "synthetic-open-bios");
         sorted.firmware_descending = true;
         assert_eq!(
@@ -2761,10 +2771,10 @@ pub(crate) mod tests {
             used_by: Vec::new(),
             source_missing: false,
         };
-        assert_eq!(cells(&row(None))[1], "Pending");
+        assert_eq!(cells(&row(None))[2], "Pending");
         assert!(!lead(&row(None)).warning);
         let failed = cells(&row(Some("missing blob")));
-        assert_eq!(failed[1], "Unavailable");
+        assert_eq!(failed[2], "Unavailable");
         assert_eq!(failed[0], "firmware/synthetic:1");
         let failed = lead(&row(Some("missing blob")));
         assert!(failed.warning);

@@ -148,9 +148,20 @@ pub(super) enum Request {
         crate::created_media::Place,
     ),
     /// Remotes: list and read a registry without pulling.
-    #[cfg_attr(not(test), expect(dead_code))]
     Browse(crate::remote_browse::BrowseRequest),
     Shutdown,
+}
+impl Request {
+    /// The request sends a machine to run: Start, Gaming mode, a power cycle
+    /// that starts again, and Start on an image that makes its machine first.
+    pub fn launches(&self) -> bool {
+        matches!(
+            self,
+            Request::Launch(..)
+                | Request::LaunchMachine(..)
+                | Request::Machine(MachineJob::Create { start: true, .. })
+        )
+    }
 }
 /// What the library asks of the machines in the store; machine-images §3.2.
 pub(super) enum MachineJob {
@@ -286,7 +297,6 @@ pub(super) enum Event {
     FirmwareFailed(String),
     Transfer(crate::registry_transfer::TransferEvent),
     /// What Remotes read of a registry, and local states.
-    #[cfg_attr(not(test), expect(dead_code))]
     Browse(crate::remote_browse::BrowseEvent),
     /// Listed picks, or the refusal; only the media import dialog shows it.
     MediaSources(
@@ -760,6 +770,21 @@ impl Backend for SyntheticBackend {
 impl Worker {
     pub(crate) fn synthetic(root: PathBuf) -> Self {
         Self::spawn_backend(root, egui::Context::default(), SyntheticBackend)
+    }
+    /// A worker without a thread: the test reads every request the library
+    /// sends and hands it events of its own.
+    pub(crate) fn recording() -> (Self, mpsc::Receiver<Request>, mpsc::SyncSender<Event>) {
+        let (send, requests) = mpsc::channel();
+        let (events, receive) = mpsc::sync_channel(64);
+        let (_, done) = mpsc::channel();
+        let worker = Self {
+            send,
+            receive,
+            cancel: Arc::new(AtomicU64::new(0)),
+            done,
+            join: None,
+        };
+        (worker, requests, events)
     }
     /// A worker whose thread dies inside a firmware job after `survive`
     /// successful catalogue lookups. Every scan, set or edit preview, import,

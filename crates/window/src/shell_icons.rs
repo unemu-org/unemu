@@ -56,12 +56,31 @@ pub(crate) enum Icon {
     Refusal,
     /// The empty library's picture: a monitor over a keyboard.
     EmptyLibrary,
+    /// Refresh a registry listing: a circular arrow.
+    Refresh,
+    /// A registry: two stacked server units.
+    Registry,
+    /// A registry namespace: a folder outline.
+    Namespace,
+    /// A private namespace before login: a padlock.
+    Lock,
+    /// The Remotes list's picture of a registry that cannot be reached or
+    /// answered with an error: a crossed circle.
+    Unreachable,
+    /// The Remotes list's picture of a registry that asks for a login: a
+    /// large padlock.
+    LoginRequired,
+    /// The Remotes list's picture of a registry with nothing published: an
+    /// empty folder.
+    EmptyRegistry,
+    /// The Remotes list's picture of a listing in progress: a clock.
+    Listing,
 }
 
 impl Icon {
     /// Every icon, in declaration order.
     #[cfg(test)]
-    pub(crate) const ALL: [Icon; 17] = [
+    pub(crate) const ALL: [Icon; 25] = [
         Icon::App,
         Icon::Play,
         Icon::Pause,
@@ -79,12 +98,21 @@ impl Icon {
         Icon::Question,
         Icon::Refusal,
         Icon::EmptyLibrary,
+        Icon::Refresh,
+        Icon::Registry,
+        Icon::Namespace,
+        Icon::Lock,
+        Icon::Unreachable,
+        Icon::LoginRequired,
+        Icon::EmptyRegistry,
+        Icon::Listing,
     ];
 
     /// The side of the square the icon is drawn in, in points.
     pub(crate) fn size(self) -> f32 {
         match self {
             Icon::Question | Icon::Refusal => 32.0,
+            Icon::Unreachable | Icon::LoginRequired | Icon::EmptyRegistry | Icon::Listing => 40.0,
             Icon::EmptyLibrary => 48.0,
             _ => 16.0,
         }
@@ -92,10 +120,10 @@ impl Icon {
 
     /// The side of the mock-up's SVG view box.
     fn view_box(self) -> f32 {
-        if self == Icon::EmptyLibrary {
-            48.0
-        } else {
-            16.0
+        match self {
+            Icon::EmptyLibrary => 48.0,
+            Icon::Unreachable | Icon::LoginRequired | Icon::EmptyRegistry | Icon::Listing => 40.0,
+            _ => 16.0,
         }
     }
 }
@@ -147,9 +175,43 @@ impl Pen<'_> {
             .add(Shape::line(points, self.stroke(width, color)));
     }
     fn closed(&self, points: &[(f32, f32)], color: Color32) {
+        self.closed_width(points, 1.0, color);
+    }
+    fn closed_width(&self, points: &[(f32, f32)], width: f32, color: Color32) {
         let points = points.iter().map(|&p| self.at(p)).collect();
         self.painter
-            .add(Shape::closed_line(points, self.stroke(1.0, color)));
+            .add(Shape::closed_line(points, self.stroke(width, color)));
+    }
+    /// An SVG rect's outline with a `width`-unit stroke centred on the edge.
+    fn frame_width(&self, (x, y, w, h): (f32, f32, f32, f32), width: f32, color: Color32) {
+        self.painter.rect_stroke(
+            self.rect(x, y, w, h),
+            0.0,
+            self.stroke(width, color),
+            egui::StrokeKind::Middle,
+        );
+    }
+    fn circle(&self, center: (f32, f32), radius: f32, width: f32, color: Color32) {
+        self.painter.circle_stroke(
+            self.at(center),
+            radius * self.unit,
+            self.stroke(width, color),
+        );
+    }
+    /// The points of an SVG arc around `center`, from `from` to `to` degrees
+    /// measured as SVG measures them (y down, so increasing angles turn
+    /// clockwise on screen), one point every 15 degrees at most.
+    fn arc_points(center: (f32, f32), radius: f32, from: f32, to: f32) -> Vec<(f32, f32)> {
+        let steps = ((to - from).abs() / 15.0).ceil().max(1.0) as usize;
+        (0..=steps)
+            .map(|i| {
+                let angle = (from + (to - from) * i as f32 / steps as f32).to_radians();
+                (
+                    center.0 + radius * angle.cos(),
+                    center.1 + radius * angle.sin(),
+                )
+            })
+            .collect()
     }
     fn polygon(&self, points: &[(f32, f32)], color: Color32) {
         let points = points.iter().map(|&p| self.at(p)).collect();
@@ -338,6 +400,75 @@ pub(crate) fn paint(
             pen.fill((4.0, 36.0, 40.0, 8.0), face);
             pen.frame((4.0, 36.0, 40.0, 8.0), ink);
             pen.segments(&[[(27.0, 40.0), (38.0, 40.0)]], 1.5, ink);
+        }
+        Icon::Refresh => {
+            // "M13 8a5 5 0 1 1-1.5-3.6": the large clockwise arc from 0° to
+            // the end point at about 314°, then the arrow head.
+            pen.line(&Pen::arc_points((8.0, 8.0), 5.0, 0.0, 314.2), 1.5, ink);
+            pen.line(&[(12.5, 1.5), (12.5, 5.0), (9.0, 5.0)], 1.5, ink);
+        }
+        Icon::Registry => {
+            pen.frame((2.5, 2.5, 11.0, 4.0), ink);
+            pen.frame((2.5, 9.5, 11.0, 4.0), ink);
+            pen.segments(
+                &[[(5.0, 4.5), (6.0, 4.5)], [(5.0, 11.5), (6.0, 11.5)]],
+                1.0,
+                ink,
+            );
+        }
+        Icon::Namespace => pen.closed(
+            &[
+                (1.5, 3.5),
+                (6.5, 3.5),
+                (8.0, 5.0),
+                (14.5, 5.0),
+                (14.5, 13.5),
+                (1.5, 13.5),
+            ],
+            ink,
+        ),
+        Icon::Lock => {
+            pen.frame((3.5, 7.5, 9.0, 7.0), ink);
+            let mut shackle = vec![(5.5, 7.5)];
+            shackle.extend(Pen::arc_points((8.0, 5.0), 2.5, 180.0, 360.0));
+            shackle.push((10.5, 7.5));
+            pen.line(&shackle, 1.0, ink);
+            pen.segments(&[[(8.0, 10.0), (8.0, 12.0)]], 1.0, ink);
+        }
+        Icon::Unreachable => {
+            pen.circle((20.0, 20.0), 16.0, 2.0, ink);
+            pen.segments(
+                &[[(13.0, 13.0), (27.0, 27.0)], [(27.0, 13.0), (13.0, 27.0)]],
+                2.5,
+                ink,
+            );
+        }
+        Icon::LoginRequired => {
+            pen.frame_width((9.0, 18.0, 22.0, 17.0), 2.0, ink);
+            let mut shackle = vec![(14.0, 18.0)];
+            shackle.extend(Pen::arc_points((20.0, 13.0), 6.0, 180.0, 360.0));
+            shackle.push((26.0, 18.0));
+            pen.line(&shackle, 2.0, ink);
+            pen.segments(&[[(20.0, 24.0), (20.0, 29.0)]], 2.5, ink);
+        }
+        Icon::EmptyRegistry => {
+            pen.closed_width(
+                &[
+                    (4.0, 12.0),
+                    (16.0, 12.0),
+                    (19.0, 15.0),
+                    (36.0, 15.0),
+                    (36.0, 34.0),
+                    (4.0, 34.0),
+                ],
+                2.0,
+                ink,
+            );
+            pen.segments(&[[(14.0, 25.0), (26.0, 25.0)]], 2.0, ink);
+        }
+        Icon::Listing => {
+            pen.circle((20.0, 20.0), 16.0, 2.0, ink);
+            pen.line(&[(20.0, 10.0), (20.0, 20.0), (27.0, 24.0)], 2.5, ink);
         }
     }
 }
@@ -700,6 +831,14 @@ mod tests {
             Icon::Firmware,
             Icon::MachineFile,
             Icon::Info,
+            Icon::Refresh,
+            Icon::Registry,
+            Icon::Namespace,
+            Icon::Lock,
+            Icon::Unreachable,
+            Icon::LoginRequired,
+            Icon::EmptyRegistry,
+            Icon::Listing,
         ] {
             assert!(painted(icon).iter().all(|c| *c == ink), "{icon:?}");
         }
