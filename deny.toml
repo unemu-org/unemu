@@ -30,6 +30,8 @@ allow = [
     "OFL-1.1",
     # epaint_default_fonts embeds Ubuntu Light under Ubuntu-font-1.0.
     "Ubuntu-font-1.0",
+    # arboard's Windows clipboard backend, clipboard-win and error-code, is BSL-1.0.
+    "BSL-1.0",
 ]
 confidence-threshold = 0.9
 

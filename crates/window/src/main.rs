@@ -83,6 +83,7 @@ mod shell_model;
 #[cfg(test)]
 mod sound_levels_tests;
 mod system_keys;
+mod text_clipboard;
 
 const SINK_SCALE: u16 = 2;
 

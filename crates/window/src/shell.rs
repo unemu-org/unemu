@@ -261,6 +261,8 @@ pub(super) fn run(args: Args, autostart: bool) -> Result<(), Box<dyn Error>> {
             .with_inner_size([1040.0, 700.0])
             .with_min_inner_size([760.0, 500.0]),
         renderer: eframe::Renderer::Glow,
+        // Only a focused text field takes cut, copy and paste, and only then
+        // is the host clipboard read; see `text_clipboard`.
         clipboard_shortcuts: false,
         persist_window: false,
         ..Default::default()
@@ -377,6 +379,8 @@ struct Shell {
     transfer_prompt: Option<&'static str>,
     /// The opt-in keyboard tap that hands macOS system shortcuts to the guest.
     system_keys: crate::system_keys::SystemKeys,
+    /// The host clipboard a paste into a text field reads.
+    clipboard: Box<dyn crate::text_clipboard::HostClipboard>,
     /// The host file dialog, which answers on a later frame. It is no shell
     /// dialog: a running machine keeps running while it is open.
     file_dialogs: file_dialog::FileDialogs<FileFor>,
@@ -2528,6 +2532,7 @@ impl Shell {
             restore_input: None,
             transfer_prompt: None,
             system_keys: crate::system_keys::SystemKeys::platform(),
+            clipboard: Box::<crate::text_clipboard::SystemClipboard>::default(),
             file_dialogs: file_dialog::FileDialogs::native(),
             creating: None,
         };
@@ -4799,6 +4804,7 @@ fn firmware_progress(
 
 impl eframe::App for Shell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        crate::text_clipboard::shortcuts(ctx, &mut *self.clipboard);
         // Before anything draws: a file dialog opened later in this frame
         // then already wakes the shell with its answer.
         self.poll_file_dialog(ctx);
@@ -5785,6 +5791,7 @@ mod tests {
             restore_input: None,
             transfer_prompt: None,
             system_keys: crate::system_keys::fake::system_keys().0,
+            clipboard: Box::<crate::text_clipboard::tests::FakeClipboard>::default(),
             file_dialogs: file_dialog::FileDialogs::with_host(
                 file_dialog::fake::Host::default().boxed(),
             ),
@@ -6115,6 +6122,114 @@ mod tests {
         // login can go to another registry by mistake.
         assert!(page.selected_row().is_none());
         assert!(page.login.is_none() && !page.can_log_in());
+    }
+
+    /// One frame of the shell with Preferences open: the logic step, then
+    /// the dialog as the shell draws it.
+    fn preferences_frame(shell: &mut Shell, frame: &mut eframe::Frame, ui: &mut egui::Ui) {
+        eframe::App::logic(shell, ui.ctx(), frame);
+        if let Some(dialog) = shell.preferences_dialog.as_mut() {
+            let _ = crate::preferences_sheet::show(ui.ctx(), dialog, true);
+        }
+    }
+
+    /// The registry Log in dialog takes a pasted user name and password with
+    /// Command+V on macOS and Ctrl+V elsewhere, gives nothing of the password
+    /// to copy or cut, and Enter right after a paste logs in with the pasted
+    /// password, against a registry on this computer.
+    #[test]
+    fn the_registry_login_fields_take_a_paste_and_the_password_never_leaves() {
+        use crate::text_clipboard::tests::{press, Host, CTRL_COMMAND, MAC_COMMAND};
+        use image_registry::test_support::{MockRegistry, Policy};
+        fn page(shell: &mut Shell) -> &mut crate::registries_model::RegistriesPage {
+            &mut shell.preferences_dialog.as_mut().unwrap().registries
+        }
+        for modifiers in [MAC_COMMAND, CTRL_COMMAND] {
+            let registry = MockRegistry::start(Policy {
+                user: Some(("ci".into(), "synthetic-secret".into())),
+                ..Policy::default()
+            });
+            let host_name = registry.host();
+            let mut shell = shell();
+            shell.stop();
+            let temp = assembly::test_support::TempDir::new("shell-login-paste");
+            let path = temp.path().join("preferences.toml");
+            std::fs::write(
+                &path,
+                format!(
+                    "[[registries]]\nhost = \"{host_name}\"\nprivate = true\nplain_http = true\nuser = \"old-user\"\n"
+                ),
+            )
+            .unwrap();
+            shell.preferences_path = Some(path);
+            shell.image_library.login_wanted = Some(host_name.clone());
+            let mut host = Host::new("ci");
+            shell.clipboard = Box::new(host.clipboard.clone());
+            shell.command(Command::Preferences, &host.ctx);
+            let mut frame = eframe::Frame::_new_kittest();
+            let login = |shell: &mut Shell| {
+                let dialog = page(shell).login.as_ref().expect("Log in is open");
+                (dialog.user.clone(), dialog.password.clone())
+            };
+
+            host.pass(Vec::new(), |ui| {
+                preferences_frame(&mut shell, &mut frame, ui)
+            });
+            let painted = host.pass(Vec::new(), |ui| {
+                preferences_frame(&mut shell, &mut frame, ui)
+            });
+            // The dialog draws above the registry table, which also names
+            // the user.
+            let (_, user) = painted
+                .iter()
+                .rev()
+                .find(|(text, _)| text == "old-user")
+                .expect("the user field shows its text");
+            host.click(user.center(), |ui| {
+                preferences_frame(&mut shell, &mut frame, ui)
+            });
+            host.pass(
+                vec![
+                    press(egui::Key::A, modifiers),
+                    press(egui::Key::V, modifiers),
+                ],
+                |ui| preferences_frame(&mut shell, &mut frame, ui),
+            );
+            assert_eq!(login(&mut shell), ("ci".into(), String::new()));
+
+            host.set_text("wrong-secret");
+            host.ctx.memory_mut(|memory| {
+                memory.request_focus(crate::preferences_sheet::password_field_id())
+            });
+            host.pass(vec![press(egui::Key::V, modifiers)], |ui| {
+                preferences_frame(&mut shell, &mut frame, ui)
+            });
+            assert_eq!(login(&mut shell), ("ci".into(), "wrong-secret".into()));
+            assert_eq!(host.reads(), 2, "one clipboard read per paste");
+
+            host.set_text("unchanged");
+            for key in [egui::Key::A, egui::Key::C, egui::Key::X] {
+                host.pass(vec![press(key, modifiers)], |ui| {
+                    preferences_frame(&mut shell, &mut frame, ui)
+                });
+            }
+            assert_eq!(login(&mut shell).1, "wrong-secret");
+            assert_eq!((host.text().as_str(), host.writes()), ("unchanged", 0));
+
+            // The password is still selected: paste over it and press Enter
+            // in the same pass.
+            host.set_text("synthetic-secret");
+            host.pass(
+                vec![
+                    press(egui::Key::V, modifiers),
+                    press(egui::Key::Enter, egui::Modifiers::NONE),
+                ],
+                |ui| preferences_frame(&mut shell, &mut frame, ui),
+            );
+            page(&mut shell).wait();
+            assert!(page(&mut shell).login.is_none(), "the login succeeded");
+            assert_eq!(page(&mut shell).signed_in_count(), 1);
+        }
     }
 
     #[test]
@@ -7243,6 +7358,47 @@ mod tests {
         assert_eq!(take_guest_scancodes(&mut shell), [0x1D, 0x2E, 0xAE, 0x9D]);
         assert!(shell.guest_held.is_empty());
         assert!(shell.held.is_empty());
+    }
+
+    /// While the machine has the keyboard, Ctrl+C is the guest's in both
+    /// shortcut styles: the window keeps the keys from egui, the frame's
+    /// clipboard step leaves the platform's clipboard chords alone while no
+    /// text field is focused, and no clipboard is read or written.
+    #[test]
+    fn ctrl_c_stays_the_guests_and_no_clipboard_is_touched_without_a_text_field() {
+        use crate::text_clipboard::tests::{press, release, Host, CTRL_COMMAND, MAC_COMMAND};
+        for (macos, modifiers) in [(false, CTRL_COMMAND), (true, MAC_COMMAND)] {
+            let mut shell = keyboard_shell();
+            shell.macos_shortcuts = macos;
+            let mut frame = eframe::Frame::_new_kittest();
+            let mut host = Host::new("never read");
+            shell.clipboard = Box::new(host.clipboard.clone());
+            let mut forwarded = false;
+            for (key, state) in [
+                (KeyCode::ControlLeft, Pressed),
+                (KeyCode::KeyC, Pressed),
+                (KeyCode::KeyC, Released),
+                (KeyCode::ControlLeft, Released),
+            ] {
+                forwarded |= shell.events.borrow_mut().key(key, state);
+            }
+            assert!(!forwarded, "the guest's keys never reach egui");
+            // The platform's clipboard chords as egui receives them while the
+            // shell, and no text field, has the keyboard.
+            let chords = [egui::Key::C, egui::Key::V, egui::Key::X]
+                .into_iter()
+                .flat_map(|key| [press(key, modifiers), release(key, modifiers)])
+                .collect::<Vec<_>>();
+            let mut seen = Vec::new();
+            host.pass(chords.clone(), |ui| {
+                eframe::App::logic(&mut shell, ui.ctx(), &mut frame);
+                seen = ui.input(|input| input.events.clone());
+            });
+            assert_eq!(seen, chords);
+            assert_eq!((host.reads(), host.writes()), (0, 0));
+            shell.input(&host.ctx, false);
+            assert_eq!(take_guest_scancodes(&mut shell), [0x1D, 0x2E, 0xAE, 0x9D]);
+        }
     }
 
     #[test]

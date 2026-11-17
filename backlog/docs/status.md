@@ -5,6 +5,35 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — Text fields in the desktop window cut, copy and paste
+  with the host clipboard:** the window keeps egui's built-in clipboard
+  shortcuts off, and eframe was built without its `clipboard` feature, so
+  no text field took Command+V (Ctrl+V elsewhere), a registry password
+  could not be pasted into Log in, and egui's clipboard was a string inside
+  the program. eframe now has `clipboard` (arboard; smithay-clipboard on
+  Linux, new in `Cargo.lock` with its Wayland toolkit crates; on Windows
+  arboard's BSL-1.0 backend, now allowed in `deny.toml`). A focused text
+  field gets the platform's cut, copy and paste chords (Command on macOS,
+  Ctrl elsewhere, the dedicated keys, and on Windows Shift+Delete,
+  Ctrl+Insert and Shift+Insert, as egui maps them). Paste reads the host
+  clipboard at once through one arboard clipboard the shell opens at the
+  first paste and keeps, and puts the text where the chord was, so Enter
+  right after a paste submits the pasted password and Tab moves on only
+  after the text is in. Copy and cut leave through egui's copy output, which
+  egui-winit writes to the host clipboard. The password field takes paste
+  only: copy and cut do nothing there (egui's own cut would delete the
+  selection without copying it). With no text field focused the chords
+  stay ordinary keys and no clipboard is opened or read; while the machine
+  has the keyboard its keys still go only to the guest, so Ctrl+C remains
+  the guest's in both shortcut styles. The native macOS menu has no Edit
+  menu, so no key equivalent takes Command+V before the window.
+  `crates/window/src/text_clipboard.rs` holds the mapping and its tests
+  with a fake clipboard, plus a check that eframe is built with
+  `clipboard` and that arboard opens the host clipboard (skipped on Linux
+  without an X11 or Wayland display, as on the headless CI runner); the
+  shell tests paste into the registry Log in fields and log in to a
+  registry on this computer, and check that Ctrl+C still reaches the guest
+  without a clipboard read.
 - **2026-11-17 — Media › Catalogue: every disk of a drive's catalogue one
   click away:** each floppy drive in the Media menu, and its drive chip's
   menu, has Catalogue ▸ after Create from files… and before Next disk, as

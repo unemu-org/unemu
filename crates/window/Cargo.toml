@@ -33,6 +33,9 @@ video.workspace = true
 assembly.workspace = true
 machine.workspace = true
 winit.workspace = true
+# Paste reads the host clipboard with the arboard that eframe's clipboard
+# already locks, so no new crate enters the build.
+arboard = { version = "=3.7.0", default-features = false }
 
 # The native application menu, the system quit hook and the opt-in keyboard
 # tap for system shortcuts, at the versions eframe, rfd and arboard already

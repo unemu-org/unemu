@@ -470,6 +470,7 @@ fn login_modal(ctx: &egui::Context, page: &mut RegistriesPage) {
                         .id(password_field_id())
                         .password(true),
                 );
+                crate::text_clipboard::mark_password(ui.ctx(), response.id);
                 if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     submit = true;
                 }
