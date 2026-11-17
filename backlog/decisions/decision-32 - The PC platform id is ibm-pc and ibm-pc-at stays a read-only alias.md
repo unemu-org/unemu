@@ -57,11 +57,15 @@ more expensive with every artifact published, so it is done now or never.
    `unemu.min-app-version` 0.0.3 or higher. Releases 0.0.1 and 0.0.2 ignore
    the marker and refuse such an artifact at pull, after the download, as
    decision-30 point 8 accepts for preview releases.
-5. **Published artifacts are never rewritten.** The six published ones keep
-   their tags and digests and stay readable through the alias. unemu-media
-   publishes `ibm-pc` versions as new revisions (for example
-   `unemu/media/freedos:1.4-r2`, firmware revision 2) once a release that
-   reads them exists; this repository's pinned digests of the builders it
+5. **Before the first public release the published tags are replaced, not
+   revised** (maintainer, 2026-11-17: no `-r2` revisions while the project
+   is before its release). When the first release that writes `ibm-pc` is
+   out, unemu-media rebuilds the six published artifacts with it and pushes
+   them under their existing tags (`unemu/media/freedos:1.4`, firmware
+   revision 1), replacing the `ibm-pc-at` ones; titles not yet published
+   wait for that release and are published once. Tags on registry.unemu.dev
+   become immutable from the first public release on; from then on a change
+   is a new revision. This repository's pinned digests of the builders it
    still has move to the new values.
 6. **Local stores are not migrated.** Images, sets and packages already in a
    store keep their bytes and digests; machines pinned to them keep working.
@@ -77,6 +81,10 @@ more expensive with every artifact published, so it is done now or never.
   design, `upc-5pw.113`) describe what a title needs within the family; the
   platform id says nothing about CPU, video or sound.
 - A future XT-class machine profile belongs to the same platform.
+- A local store that pulled one of the six before the replacement keeps its
+  `ibm-pc-at` copy, which still runs. Pulling the replaced tag refuses to
+  move the local set tag (set tags never move); the user deletes the local
+  tag first. Accepted for preview releases.
 
 ## Alternatives considered
 
@@ -87,3 +95,6 @@ more expensive with every artifact published, so it is done now or never.
 - **Rename later.** Each published artifact adds a revision to republish and
   a digest to move; after the first public release the alias would also have
   to cover releases users depend on.
+- **Publish the renamed artifacts as new revisions (`-r2`).** Keeps every
+  published tag immutable, but before the first public release it only
+  adds revisions nobody needs. Rejected by the maintainer.
