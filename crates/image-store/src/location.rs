@@ -5,6 +5,8 @@
 use crate::{invalid, Result, Store};
 use std::path::{Path, PathBuf};
 
+pub mod preferences;
+
 pub fn default_store_root() -> Result<PathBuf> {
     Ok(data_directory()?.join("unemu"))
 }

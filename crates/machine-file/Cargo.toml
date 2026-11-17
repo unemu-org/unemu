@@ -9,6 +9,9 @@ repository.workspace = true
 publish.workspace = true
 description = "Machine description files (TOML and YAML) over one versioned schema."
 
+[package.metadata.unemu]
+layer = "pc"
+
 [dependencies]
 image-store = { path = "../image-store", version = "0.0.2" }
 assembly.workspace = true

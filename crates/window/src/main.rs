@@ -795,7 +795,7 @@ fn informational_output(arg: &OsStr) -> Option<String> {
         Some(format!(
             "unemupc {}\n{}\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}\n\n{opl3}",
             env!("CARGO_PKG_VERSION"),
-            cli::about::licence_notice(),
+            platforms::licence_notice(),
         ))
     } else {
         None

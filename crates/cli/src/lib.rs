@@ -13,9 +13,11 @@
 
 pub mod about;
 pub mod command;
-pub mod create;
 mod image;
-pub mod preferences;
+/// The shared preferences file lives beside the store's other host locations.
+pub use image_store::location::preferences;
+/// Image creation lives with the PC provider, which the desktop calls too.
+pub use pc_image::media_create as create;
 
 pub use image::{
     build_templates, push_plan, registry_client, registry_probe_client, with_image_providers,

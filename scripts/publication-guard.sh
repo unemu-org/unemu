@@ -73,7 +73,7 @@ old_name_allowed() {
     vendor/*/source-notice.txt) return 0 ;;
     # LICENSES.TXT of the FreeDOS 1.4 template, whose hash is pinned.
     vendor/freedos/floppy-1.4-licenses.txt) return 0 ;;
-    crates/cli/src/preferences.rs) return 0 ;;
+    crates/image-store/src/location/preferences.rs) return 0 ;;
   esac
   return 1
 }

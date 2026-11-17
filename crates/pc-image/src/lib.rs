@@ -15,6 +15,7 @@ mod firmware_readme;
 mod import;
 pub mod inspection;
 pub mod machine;
+pub mod media_create;
 pub mod media_import;
 pub mod media_set;
 pub mod needs;

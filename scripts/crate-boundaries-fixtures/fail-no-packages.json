@@ -1,0 +1,9 @@
+{
+  "self_test": {
+    "expect": "fail",
+    "message": "no packages: the metadata lists no workspace package"
+  },
+  "packages": [],
+  "workspace_members": [],
+  "version": 1
+}

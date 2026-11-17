@@ -2,8 +2,8 @@
 
 Status: **Accepted** by the maintainer on 2026-11-17 (design step of
 `upc-dfs.24`, with `upc-3bm`), with the recommended answer to each question
-of §11. Nothing here is implemented yet; the steps of §7 land one at a
-time. The decision record is
+of §11. Steps 1 and 2 of §7.5 are implemented; the other steps land one at
+a time. The decision record is
 [decision-40](<../../decisions/decision-40 - Front ends drive emulator cores through one contract crate.md>).
 
 Markers: **[REPO]** = read in this repository at `896c5d9`, with the path;
@@ -1418,13 +1418,18 @@ Two more rules:
 `scripts/crate-boundaries.sh`, bash with `cargo metadata` and `jq` (both
 in the devShell; no new crate):
 
-1. Reads `cargo metadata --format-version 1 --locked` once.
+1. Reads `cargo metadata --format-version 1 --no-deps` once: the
+   dependencies each workspace manifest declares, optional and
+   target-specific ones included, not the resolved closure.
 2. Fails when a workspace package has no `layer`, so a new crate cannot
    dodge the rules.
-3. For every workspace package, walks its resolved dependency closure
-   inside the workspace, per dependency kind, and fails on an edge the
-   table of §7.3 forbids, printing the path: `cli-core → image-registry →
-   … → assembly`.
+3. For every workspace package, walks those declared dependencies inside
+   the workspace (its own of every kind, then normal and build ones of the
+   crates it reaches, whose test dependencies it never builds) and fails on
+   the first crate on each path that the table of §7.3 forbids, printing
+   the path once: `cli-core → image-registry → … → assembly`. The walk
+   does not cross an allow-listed edge, so a crate depending on `assembly`
+   needs no entry of its own for `media`.
 4. Fails when the `contract` package has any dependency.
 5. Reads `scripts/crate-boundaries.allow`, a list of known violations, one
    `from → to (kind): reason` per line. A listed edge passes; **a listed
@@ -1439,7 +1444,8 @@ in the devShell; no new crate):
 
 It runs in the `guard` lane of `scripts/ci-gate.sh`, on every push and
 pull request, and in the supervisor's gate. It takes about a second
-(ASSUMED: one `cargo metadata` call on a resolved lock).
+(measured: about 0.1 s for the check, a few seconds with the devShell's
+start).
 
 ### 7.5. Steps
 
@@ -1450,8 +1456,8 @@ expected effects are ASSUMED, derived from the PRELIMINARY figures of
 
 | # | Step | Expected effect |
 |---|---|---|
-| 1 | **Boundary check.** Add `layer` to every manifest, `scripts/crate-boundaries.sh` with its self-test and the allow list of today's violations; wire it into the `guard` lane. No code moves | Gate +1 s. Later steps cannot regress |
-| 2 | **`window` off `cli`.** Move the shared helpers of §2.5 to `image-registry`, `image_store::location`, `pc-image` and the new `platforms` crate (§7.1). Replace the six `cli::command::run` fixture calls in `window`'s tests with the library calls they stand for. Remove `cli` from `window`'s manifest; add the "no window crate depends on a CLI crate" rule | The largest win. A CLI-only change no longer rebuilds or tests the desktop: from about 154 s to about 30–45 s. Clean build unchanged |
+| 1 | **Done.** **Boundary check.** Add `layer` to every manifest, `scripts/crate-boundaries.sh` with its self-test and the allow list of today's violations; wire it into the `guard` lane. No code moves | Gate +1 s. Later steps cannot regress |
+| 2 | **Done.** **`window` off `cli`.** Move the shared helpers of §2.5 to `image-registry`, `image_store::location`, `pc-image` and the new `platforms` crate (§7.1). Replace the six `cli::command::run` fixture calls in `window`'s tests with the library calls they stand for. Remove `cli` from `window`'s manifest; add the "no window crate depends on a CLI crate" rule | The largest win. A CLI-only change no longer rebuilds or tests the desktop: from about 154 s to about 30–45 s. Clean build unchanged |
 | 3 | **Runners and goldens out of `cli`.** Create `pc-harness` from `cli/src/lib.rs` and move the 32 golden binaries and `tests/support` with it. `cli` depends on `pc-harness` for `--boot`, `--bios` and `run`. The seven goldens that need a front end stay with `cli` and stay selected by tier | A CLI-only change links 21 test binaries instead of 53: about 10–20 s less, and about 60–70 s less at the tier that includes the slow goldens, by construction and not by tier marks |
 | 4 | **The provider seam, inside `cli`.** Add `CliPlatform` and `PlatformCommand`; route every PC command through one PC implementation; the neutral commands take providers as arguments. Still one crate. A test asserts the usage text and the parse of every documented command line are unchanged | None in time. Makes step 5 a move |
 | 5 | **`cli-core`.** Move the neutral modules and their tests (`media_tools`, `media_fifo`, the neutral halves of the image command tests, with the store's synthetic providers). The rest of `cli` keeps working through re-exports for one step | A neutral command change rebuilds `cli-core` and its dependents; a PC command change no longer runs the neutral tests. A few seconds |

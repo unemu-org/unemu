@@ -859,7 +859,7 @@ pub(crate) mod tests {
             let (mut dialog, request) = PushDialog::open(accounts.clone(), Some(tag.into()));
             let events = Mutex::new(Vec::new());
             pc_image::test_support::with_synthetic_firmware(|| {
-                cli::with_image_providers(|providers| {
+                platforms::with_image_providers(|providers| {
                     registry_transfer::run(
                         &f.store,
                         request,

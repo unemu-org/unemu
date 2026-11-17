@@ -5,6 +5,23 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — Crate layers and the desktop off the command-line crate:**
+  every workspace crate names its layer (`contract`, `neutral`, `emulation`,
+  `pc` or `application`) in `[package.metadata.unemu]`, and
+  `scripts/crate-boundaries.sh` checks the rules of core-contract §7.3 over
+  normal, build and test dependencies, with a self-test on fixture metadata
+  and a shrink-only allow list (`scripts/crate-boundaries.allow`, today only
+  `assembly` → `media`). It runs in the guard lane of CI. The desktop no
+  longer depends on `cli`: registry clients moved to
+  `image_registry::accounts`, the preferences path to
+  `image_store::location::preferences`, image creation to
+  `pc_image::media_create`, and the provider list, the licence notice and the
+  push plan to the new `platforms` crate; `platforms::push_plan` binds the
+  neutral `image_registry::push::plan_with_catalogue` to the PC firmware
+  catalogue (`pc_image::firmware::restricted`), so neither program can plan a
+  push without it. `cli` re-exports them; `upcli`'s usage, output and
+  exit codes are unchanged. A change to `cli` no longer rebuilds or tests the
+  desktop.
 - **2026-11-17 — A library machine's drive catalogue survives Stop:** disks
   that went into a running library machine (a set's disk from Insert…, an
   image file from Browse for an image file…, the disks Create from files…

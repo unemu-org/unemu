@@ -29,10 +29,35 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | `machine` | Generic `Machine<C: Cpu>` and execution/clock/IRQ/DMA loop | `cpu`, `bus`, `device`, `thiserror` | `testkit`, `devices` |
 | `video` | `FrameSink`, text frames/grids, text-mode renderer and capture sink | `device` | None |
 | `assembly` | `MachineConfig`, validation, presets, image/device construction, wiring, and `RunPolicy` driver | `machine`, `cpu`, `bus`, `device`, `devices`, `video`, `chipset`, `media`, `sha2`, `thiserror` | `media/test-support` |
-| `window` | CP437 rasteriser, shared `FrameSink`, and egui desktop shell | `video`, `device`, `assembly`, `machine`, `winit`, `egui`, `eframe`, `image-store`, `pc-image` | `cpu`, `assembly/test-support`, `image-store/test-support`, `media/test-support`, `pc-image/test-support` |
+| `window` | CP437 rasteriser, shared `FrameSink`, and egui desktop shell | `video`, `device`, `assembly`, `machine`, `winit`, `egui`, `eframe`, `image-store`, `image-registry`, `pc-image`, `platforms` | `cpu`, `assembly/test-support`, `image-store/test-support`, `media/test-support`, `pc-image/test-support` |
 | `machine-file` | Schema 1 TOML/YAML parsing, source origins, image hashing and lowering through assembly validation; merging remains deferred ([schema](design/machine-files.md#schema-field-by-field)) | `assembly`, `image-store`, `serde`, `sha2`, `toml`, `serde-saphyr`, `thiserror` | None |
 | `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
-| `cli` | Binary and runner library: guest programs, assembly/policy selection, output capture and stop diagnostics | `assembly`, `device`, `bus`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow`, `pc-image`, `image-store`, `image-registry`, `toml` | `testkit`, `machine/reference-scheduler`, `assembly/reference-scheduler`, `assembly/test-support`, `image-registry/test-support` |
+| `platforms` | The one place that names the platforms compiled into both programs: the image providers a transfer or listing uses (`with_image_providers`), the push plan bound to the PC firmware catalogue (`push_plan`) and the program's licence notice | `assembly`, `image-store`, `image-registry`, `pc-image` | None |
+| `cli` | Binary and runner library: guest programs, assembly/policy selection, output capture and stop diagnostics | `assembly`, `device`, `bus`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow`, `pc-image`, `image-store`, `image-registry`, `platforms`, `toml` | `testkit`, `machine/reference-scheduler`, `assembly/reference-scheduler`, `assembly/test-support`, `image-registry/test-support` |
+
+Each crate names its layer in its manifest (`[package.metadata.unemu] layer`),
+and `scripts/crate-boundaries.sh` keeps the layers apart
+([core contract](design/core-contract.md) §7.3, §7.4):
+
+| Layer | Crates | May depend on |
+| --- | --- | --- |
+| `contract` | none yet | nothing at all |
+| `neutral` | `media`, `image-store`, `image-registry` | `contract`, `neutral` |
+| `emulation` | `device`, `bus`, `cpu`, `video`, `audio`, `devices`, `chipset`, `machine`, `testkit`, `assembly` | `contract`, `emulation` |
+| `pc` | `machine-file`, `pc-image` | `contract`, `neutral`, `emulation`, `pc` |
+| `application` | `cli`, `window`, `platforms` | anything |
+
+The rules cover test dependencies too, and no window crate depends on a CLI
+crate or the other way round. The desktop takes what it shares with the
+command line from the libraries that own it: registry clients from
+`image_registry::accounts`, the preferences path from
+`image_store::location::preferences`, image creation from
+`pc_image::media_create`, and from `platforms` the provider list, the
+licence notice and the push plan, which binds
+`image_registry::push::plan_with_catalogue` to the PC firmware catalogue
+(`pc_image::firmware::restricted`) so neither program can plan a push
+without it. The one known crossing, `assembly` → `media` for the journals the
+running machine writes, is listed in `scripts/crate-boundaries.allow`.
 
 Concrete hardware selection lives in `assembly` and the frontend. `machine`
 does not depend on `chipset`, `devices`, `video`, or x86jit directly. `Bus` is a
@@ -591,7 +616,7 @@ preserving ordinary path/hash diagnostics regardless of the environment.
 The shell stores host ROM folders in the platform config directory's
 `unemupc/preferences.toml`. On macOS this is under Library/Application Support;
 on Linux it follows XDG_CONFIG_HOME, falling back to ~/.config. The desktop and
-the command line both take that path from `cli::preferences`, which first
+the command line both take that path from `image_store::location::preferences`, which first
 copies the file from the directory named after the project's former name
 when the new file does not exist yet; the old file stays. Preferences and
 Locate firmware share native folder browsing (rfd) and text entry. Saves write and

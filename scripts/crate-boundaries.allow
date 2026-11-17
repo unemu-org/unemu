@@ -1,0 +1,7 @@
+# Known crossings of the crate layers, checked by scripts/crate-boundaries.sh.
+# One `FROM → TO (KIND): REASON` per line, KIND being the kind of FROM's own
+# dependency (normal, build or dev) that leads to TO. The list only shrinks:
+# a line whose crossing is gone fails the check until it is deleted.
+# See backlog/docs/design/core-contract.md §7.4 and §9.
+assembly → media (normal): the running machine owns its journal sessions; settled when the PC core and the front end split (§9)
+assembly → media (dev): the journal fault injection of media's test support, for the same journal sessions

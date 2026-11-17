@@ -15,7 +15,20 @@ export RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
 case "$step" in
     devshell) gate_command+=(rustc --version) ;;
     fmt) gate_command+=(cargo fmt --check) ;;
-    guard) gate_command=(bash scripts/publication-guard.sh) ;;
+    # The publication guard needs no devShell; the crate-boundary check reads
+    # `cargo metadata` with the devShell's cargo and jq. Both run even when the
+    # other fails, so one log names every finding; either failure fails the gate.
+    guard)
+        gate_command=(bash -uc '
+            status=0
+            bash scripts/publication-guard.sh || status=1
+            nix develop --no-update-lock-file --command bash -euc "
+                bash scripts/crate-boundaries.sh --self-test
+                bash scripts/crate-boundaries.sh
+            " || status=1
+            exit "$status"
+        ')
+        ;;
     clippy)
         gate_command+=(bash -euc '
             cargo clippy --locked --all-targets --all-features -- -D warnings

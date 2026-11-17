@@ -824,9 +824,13 @@ fn connect(job: &Job) -> Result<(Client, RegistryEntry), End> {
         .accounts
         .settings()
         .map_err(|message| End::Failed(Failure::Local(message)))?;
-    let client =
-        cli::registry_probe_client(&config, &job.host, &job.accounts.store, &job.accounts.env)
-            .map_err(|error| failure(error, None))?;
+    let client = image_registry::accounts::registry_probe_client(
+        &config,
+        &job.host,
+        &job.accounts.store,
+        &job.accounts.env,
+    )
+    .map_err(|error| failure(error, None))?;
     client
         .use_credentials_now()
         .map_err(|error| failure(error, Some(&client)))?;
@@ -3857,7 +3861,7 @@ mod tests {
             row.local_tag.clone(),
         );
         let events = Mutex::new(Vec::new());
-        cli::with_image_providers(|providers| {
+        platforms::with_image_providers(|providers| {
             crate::registry_transfer::run(
                 &setup.store,
                 request,

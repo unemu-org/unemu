@@ -234,6 +234,36 @@ pub fn plan_with_marks(
     })
 }
 
+/// The push plan of `local_tag` that the command line and the desktop shell
+/// both use: every local mark, plus a catalogue restriction for each digest
+/// `restricted` names in the tag's manifest (the blobs a platform's firmware
+/// catalogue lists as proprietary), built from one reading of the manifest.
+/// When the tag moves to another image meanwhile, the plan is refused as a
+/// tag conflict, so its marks always belong to the image it plans.
+pub fn plan_with_catalogue(
+    store: &Store,
+    local_tag: &str,
+    target: Reference,
+    entry: Option<&RegistryEntry>,
+    restricted: impl FnOnce(&Manifest) -> image_store::Result<Vec<Digest>>,
+) -> Result<PushPlan> {
+    let image = store.tag_descriptor(local_tag)?;
+    let manifest =
+        Manifest::decode_for_summary(&BlobSource::read_verified(store, &image, MAX_SMALL_BLOB)?)?;
+    let mut marks = LocalMarks::scan(store)?;
+    for digest in restricted(&manifest)? {
+        marks.restrict_catalogue(digest);
+    }
+    let plan = plan_with_marks(store, local_tag, target, entry, marks)?;
+    if plan.image().digest != image.digest {
+        return Err(image_store::Error::Conflict {
+            current: Some(plan.image().digest.clone()),
+        }
+        .into());
+    }
+    Ok(plan)
+}
+
 /// Push a planned image. The matching platform provider checks the closure
 /// locally before anything is sent.
 pub fn push(

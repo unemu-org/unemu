@@ -76,6 +76,30 @@ pub fn proprietary<'a>(
     })
 }
 
+/// The blobs of `manifest` that may never be redistributed, whatever marks
+/// they carry: each one whose bytes, stored or decoded, `catalogue` lists as
+/// a proprietary image or chip ([`proprietary`]). The platform-neutral push
+/// guard has no catalogue, so the frontends hand it these digests; a pulled
+/// package that marks such a ROM open still cannot leave a private registry.
+pub fn restricted(
+    manifest: &image_store::Manifest,
+    catalogue: &[assembly::FirmwareEntry],
+) -> image_store::Result<Vec<image_store::Digest>> {
+    let mut digests = Vec::new();
+    for d in std::iter::once(&manifest.config).chain(&manifest.layers) {
+        let mut identities = vec![(d.digest.clone(), d.size)];
+        if d.is_compressed() {
+            identities.push((d.decoded_digest()?, d.decoded_size()?));
+        }
+        for (digest, size) in identities {
+            if proprietary(catalogue, digest.hex(), size).is_some() {
+                digests.push(digest);
+            }
+        }
+    }
+    Ok(digests)
+}
+
 /// Production catalogue; callers may inject synthetic identities for isolation tests.
 pub fn catalogue() -> &'static [assembly::FirmwareEntry] {
     assembly::BoardModel::Ibm5170.firmware_catalogue()
@@ -94,6 +118,47 @@ mod tests {
         for kind in DEVICE_KINDS {
             assert!(image_store::media_set::valid_id(kind), "{kind}");
         }
+    }
+    #[test]
+    fn restricted_names_every_blob_whose_stored_or_decoded_bytes_are_proprietary() {
+        use image_store::{codec, media_type as mt, Descriptor, Digest, Manifest};
+        let (rom, other) = (
+            b"synthetic proprietary rom".as_slice(),
+            b"open rom".as_slice(),
+        );
+        let entry = |bytes: &[u8], distribution| assembly::FirmwareEntry {
+            id: "synthetic-option-rom",
+            kind: assembly::FirmwareKind::OptionRom,
+            sha256: Box::leak(Digest::of(bytes).hex().to_owned().into_boxed_str()),
+            size: bytes.len() as u64,
+            distribution,
+            ..assembly::KISELEV_XI8088
+        };
+        let plain = Descriptor::new(mt::FIRMWARE, Digest::of(rom), rom.len() as u64);
+        let mut compressed = Descriptor::new(
+            format!("{}{}", mt::FIRMWARE, codec::SUFFIX),
+            Digest::of(b"frame"),
+            5,
+        );
+        compressed
+            .annotations
+            .insert(codec::DECODED_DIGEST.into(), Digest::of(rom).to_string());
+        compressed
+            .annotations
+            .insert(codec::DECODED_SIZE.into(), rom.len().to_string());
+        let open = Descriptor::new(mt::FIRMWARE, Digest::of(other), other.len() as u64);
+        let config = Descriptor::new(mt::FIRMWARE_CONFIG, Digest::of(b"config"), 6);
+        let manifest =
+            Manifest::new_firmware("ibm-pc", config, vec![plain, compressed, open]).unwrap();
+        let user_supplied = [entry(rom, assembly::FirmwareDistribution::UserSupplied)];
+        assert_eq!(
+            restricted(&manifest, &user_supplied).unwrap(),
+            vec![Digest::of(rom), Digest::of(rom)],
+            "the plain layer by its digest, the compressed one by its decoded digest"
+        );
+        let open_entry = [entry(rom, assembly::KISELEV_XI8088.distribution)];
+        assert!(restricted(&manifest, &open_entry).unwrap().is_empty());
+        assert!(restricted(&manifest, &[]).unwrap().is_empty());
     }
     #[test]
     fn generated_content_is_open_under_a_valid_licence() {

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Offline raw-image creation: blank or formatted diskettes, diskettes filled
-//! from host files (one disk or a numbered set), and blank hard disks.
+//! from host files (one disk or a numbered set), and blank hard disks. The
+//! command line's `media create` and the desktop's create dialog both parse
+//! and execute their requests here, so the two write the same images.
 //!
 //! The FAT12 formatter and builder live in [`media::fat12`] (Microsoft FAT
 //! Specification; IBM Personal Computer AT Technical Reference, diskette
@@ -424,4 +426,68 @@ fn execute_files(
         )?;
     }
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(words: &[&str]) -> Vec<OsString> {
+        words.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn requests_parse_into_the_image_they_describe() {
+        let floppy = parse(&args(&["floppy", "--type", "720K", "--format", "a.img"])).unwrap();
+        assert_eq!(floppy.output, PathBuf::from("a.img"));
+        assert!(matches!(
+            floppy.kind,
+            ImageKind::Floppy {
+                format: FloppyFormat::Dd720,
+                formatted: true,
+                label: None,
+                files: None
+            }
+        ));
+        let hd = parse(&args(&["hd", "--chs", "615/4/17", "c.img"])).unwrap();
+        let ImageKind::HardDisk(geometry) = hd.kind else {
+            panic!("expected a hard disk");
+        };
+        assert_eq!(
+            (
+                geometry.cylinders,
+                geometry.heads,
+                geometry.sectors_per_track
+            ),
+            (615, 4, 17)
+        );
+        assert_eq!(
+            parse(&args(&["floppy", "a.img"])),
+            Err("floppy requires --type")
+        );
+        assert_eq!(
+            parse(&args(&["hd", "--chs", "1/1/1", "--size", "1MiB", "c.img"])),
+            Err("hd requires exactly one of --chs C/H/S or --size SIZE[MiB|GiB]")
+        );
+    }
+
+    #[test]
+    fn execute_writes_an_image_of_the_requested_size_and_never_replaces_one() {
+        let dir =
+            std::env::temp_dir().join(format!("pc-image-media-create-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("blank.img");
+        let request = || {
+            let mut words = args(&["floppy", "--type", "360K"]);
+            words.push(path.clone().into_os_string());
+            parse(&words).unwrap()
+        };
+        let mut output = Vec::new();
+        assert_eq!(execute(request(), &mut output).unwrap(), 0);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 368_640);
+        assert!(String::from_utf8(output).unwrap().starts_with("created "));
+        assert!(execute(request(), &mut io::sink()).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

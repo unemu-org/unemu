@@ -1666,6 +1666,7 @@ impl ImportDialog {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::library_test_support::{import_media_set, Medium as SetMedium};
     use crate::library_view::{snapshot, Snapshot};
     use image_store::Digest;
     use std::{fs, sync::Arc, time::Duration};
@@ -1675,25 +1676,6 @@ pub(crate) mod tests {
     /// A raw floppy image of one repeated byte, at an exact standard size.
     fn disk(path: &Path, size: usize, byte: u8) {
         fs::write(path, vec![byte; size]).unwrap();
-    }
-    fn import_cli(store: &Path, args: &[&str]) {
-        let mut command: Vec<std::ffi::OsString> = ["image", "media", "import"]
-            .into_iter()
-            .chain(args.iter().copied())
-            .map(Into::into)
-            .collect();
-        command.extend([
-            "--store".into(),
-            store.as_os_str().to_owned(),
-            "--create".into(),
-        ]);
-        let mut errors = Vec::new();
-        assert_eq!(
-            cli::command::run(&command, &mut std::io::sink(), &mut errors),
-            0,
-            "{}",
-            String::from_utf8_lossy(&errors)
-        );
     }
     pub(crate) fn warm(store: &Store) -> SummaryCache {
         let mut cache = SummaryCache::open(store).unwrap();
@@ -1707,57 +1689,41 @@ pub(crate) mod tests {
     pub(crate) fn library() -> (crate::library_test_support::Fixture, SummaryCache) {
         let f = crate::library_test_support::Fixture::new();
         let root = f.temp.path();
-        let store = f.store.root().to_owned();
         let (one, two) = (root.join("setup.img"), root.join("world.img"));
         disk(&one, FLOPPY_1440, 1);
         disk(&two, FLOPPY_1440, 2);
         fs::write(root.join("Manual.txt"), b"synthetic manual").unwrap();
         fs::write(root.join("patch.zip"), b"synthetic patch").unwrap();
-        let manual = format!("{}:MANUAL.TXT", root.join("Manual.txt").display());
-        import_cli(
-            &store,
+        import_media_set(
+            &f.store,
+            "example-adventure:r1",
+            "Example Adventure",
             &[
-                one.to_str().unwrap(),
-                two.to_str().unwrap(),
-                "--title",
-                "Example Adventure",
-                "--tag",
-                "example-adventure:r1",
-                "--label",
-                "1=Disk 1 of 2 - Setup",
-                "--label",
-                "2=Disk 2 of 2 - World",
-                "--extra",
-                &manual,
-                "--extra",
-                root.join("patch.zip").to_str().unwrap(),
+                SetMedium::new(&one).label("Disk 1 of 2 - Setup"),
+                SetMedium::new(&two).label("Disk 2 of 2 - World"),
+            ],
+            &[
+                (&root.join("Manual.txt"), Some("MANUAL.TXT")),
+                (&root.join("patch.zip"), None),
             ],
         );
         let atlas = root.join("atlas.img");
         disk(&atlas, 1_228_800, 3);
-        import_cli(
-            &store,
-            &[
-                atlas.to_str().unwrap(),
-                "--title",
-                "Sample Atlas",
-                "--tag",
-                "sample-atlas:r1",
-            ],
+        import_media_set(
+            &f.store,
+            "sample-atlas:r1",
+            "Sample Atlas",
+            &[SetMedium::new(&atlas)],
+            &[],
         );
         let disc = root.join("archive.iso");
         disk(&disc, 8192, 4);
-        import_cli(
-            &store,
-            &[
-                disc.to_str().unwrap(),
-                "--format",
-                "1=iso-2048",
-                "--title",
-                "Moonlit Archive",
-                "--tag",
-                "moonlit-archive:r1",
-            ],
+        import_media_set(
+            &f.store,
+            "moonlit-archive:r1",
+            "Moonlit Archive",
+            &[SetMedium::new(&disc).format("iso-2048")],
+            &[],
         );
         let cache = warm(&f.store);
         (f, cache)

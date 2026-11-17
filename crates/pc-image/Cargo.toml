@@ -9,6 +9,9 @@ repository.workspace = true
 publish.workspace = true
 description = "IBM PC/AT machine-file import and resolved OCI bundle provider."
 
+[package.metadata.unemu]
+layer = "pc"
+
 [dependencies]
 assembly.workspace = true
 machine-file.workspace = true

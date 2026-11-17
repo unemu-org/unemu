@@ -2,9 +2,84 @@
 //! Headless desktop sessions use synthetic firmware, disks, catalogue and CMOS.
 use crate::library_view::ImageRow;
 use image_store::Store;
-use std::fs;
+use std::{fs, path::Path};
 #[path = "../../cli/tests/support/fixtures.rs"]
 mod fixtures;
+/// One medium of an installation set, as `upcli image media import` takes
+/// it: the file, and its `--label N=TEXT` and `--format N=FORMAT` if given.
+pub(crate) struct Medium<'a> {
+    pub path: &'a Path,
+    pub label: Option<&'a str>,
+    pub format: Option<&'a str>,
+}
+impl<'a> Medium<'a> {
+    pub fn new(path: &'a Path) -> Self {
+        Self {
+            path,
+            label: None,
+            format: None,
+        }
+    }
+    pub fn label(self, label: &'a str) -> Self {
+        Self {
+            label: Some(label),
+            ..self
+        }
+    }
+    pub fn format(self, format: &'a str) -> Self {
+        Self {
+            format: Some(format),
+            ..self
+        }
+    }
+}
+
+/// Publish an installation set titled `title` as `tag` into `store`, as
+/// `upcli image media import` does with the same files, labels, formats and
+/// extras (each with its DOS name, if given): compressed, and never moving an
+/// existing tag. Returns the set's manifest.
+pub(crate) fn import_media_set(
+    store: &Store,
+    tag: &str,
+    title: &str,
+    media: &[Medium<'_>],
+    extras: &[(&Path, Option<&str>)],
+) -> image_store::Descriptor {
+    use pc_image::media_import;
+    store.check_new_tag(tag).unwrap();
+    let request = media_import::Request {
+        tag: tag.into(),
+        title: image_store::metadata::Title {
+            title: title.into(),
+            ..Default::default()
+        },
+        labels: Vec::new(),
+        media: media
+            .iter()
+            .map(|medium| media_import::Source {
+                path: medium.path.to_owned(),
+                label: medium.label.map(Into::into),
+                format: medium.format.map(Into::into),
+                file_name: None,
+            })
+            .collect(),
+        extras: extras
+            .iter()
+            .map(|(path, dos_name)| media_import::ExtraSource {
+                path: path.to_path_buf(),
+                dos_name: dos_name.map(Into::into),
+                kind: None,
+            })
+            .collect(),
+        compress: true,
+    };
+    let plan = media_import::plan_with(&request, None).unwrap();
+    media_import::publish(store, &plan, &|_, _| {}, &|| false)
+        .unwrap()
+        .descriptor()
+        .clone()
+}
+
 pub(crate) struct Fixture {
     pub temp: assembly::test_support::TempDir,
     pub store: Store,
@@ -46,25 +121,17 @@ impl Fixture {
             "--format".into(),
             disk.clone().into_os_string(),
         ];
-        cli::create::execute(cli::create::parse(&args).unwrap(), &mut std::io::sink()).unwrap();
-        let args: Vec<std::ffi::OsString> = vec![
-            "image".into(),
-            "media".into(),
-            "import".into(),
-            disk.into_os_string(),
-            "--store".into(),
-            self.store.root().as_os_str().to_owned(),
-            "--title".into(),
-            "Session disks".into(),
-            "--tag".into(),
-            "disks-set:r1".into(),
-        ];
-        let mut errors = Vec::new();
-        assert_eq!(
-            cli::command::run(&args, &mut std::io::sink(), &mut errors),
-            0,
-            "{}",
-            String::from_utf8_lossy(&errors)
+        pc_image::media_create::execute(
+            pc_image::media_create::parse(&args).unwrap(),
+            &mut std::io::sink(),
+        )
+        .unwrap();
+        import_media_set(
+            &self.store,
+            "disks-set:r1",
+            "Session disks",
+            &[Medium::new(&disk)],
+            &[],
         );
         self.store.tag_descriptor("disks-set:r1").unwrap()
     }

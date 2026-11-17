@@ -18,10 +18,10 @@ use crate::{
     client::{ApiAccess, Client},
     config::{self, RegistryConfig, RegistryEntry},
     credential_store::{CredentialStore, Secret},
-    credentials::{Anonymous, CredentialSource, Credentials},
+    credentials::{Anonymous, CredentialSource, Credentials, EnvCredentials, HostCredentials},
     Error, Result,
 };
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 /// How a configured login fared in a connection test.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +72,53 @@ pub fn test_connection(
         },
     };
     Ok(ConnectionReport { anonymous, login })
+}
+
+/// A client for `host`. Secrets are offered only to configured registries
+/// (and the family default), so a pull from an arbitrary host can never
+/// receive them; the environment pair `env` is further bound to its one host.
+/// The command line and the desktop shell both connect through it.
+pub fn registry_client(
+    config: &RegistryConfig,
+    host: &str,
+    store: &Arc<dyn CredentialStore>,
+    env: &EnvCredentials,
+) -> Result<Client> {
+    let (entry, credentials) = account(config, host, store, env);
+    Client::new(&entry, credentials)
+}
+
+/// [`registry_client`] with the short timeouts of a login check (10 s to
+/// connect, 15 s per read), for listings a person waits for, so an
+/// unreachable registry answers quickly.
+pub fn registry_probe_client(
+    config: &RegistryConfig,
+    host: &str,
+    store: &Arc<dyn CredentialStore>,
+    env: &EnvCredentials,
+) -> Result<Client> {
+    let (entry, credentials) = account(config, host, store, env);
+    Client::for_probes(&entry, credentials)
+}
+
+/// The entry for `host` and the credentials it may receive.
+fn account(
+    config: &RegistryConfig,
+    host: &str,
+    store: &Arc<dyn CredentialStore>,
+    env: &EnvCredentials,
+) -> (RegistryEntry, Box<dyn CredentialSource>) {
+    match config.entry(host) {
+        Some(entry) => {
+            let credentials = HostCredentials {
+                configured_user: entry.user.clone(),
+                env: env.clone(),
+                store: store.clone(),
+            };
+            (entry, Box::new(credentials))
+        }
+        None => (config.entry_or_public(host), Box::new(Anonymous)),
+    }
 }
 
 /// What an accepted login showed about the credentials.
@@ -180,11 +227,9 @@ mod tests {
     use super::*;
     use crate::{
         credential_store::SessionStore,
-        credentials::{EnvCredentials, HostCredentials},
         test_support::{MockRegistry, Policy},
         tests::Temp,
     };
-    use std::sync::Arc;
 
     const SECRET: &str = "synthetic-secret";
 
@@ -232,6 +277,32 @@ mod tests {
         fn delete(&self, host: &str, user: &str) -> Result<()> {
             self.inner.delete(host, user)
         }
+    }
+
+    #[test]
+    fn only_a_configured_registry_is_offered_credentials() {
+        let dir = Temp::new();
+        let registry = MockRegistry::start(user_policy());
+        let path = preferences(&dir, &registry);
+        let host = registry.host();
+        let config = RegistryConfig::from_table(&config::read_preferences(&path).unwrap()).unwrap();
+        let store: Arc<dyn CredentialStore> = Arc::new(SessionStore::default());
+        let stranger = "elsewhere.example";
+        for target in [host.as_str(), stranger] {
+            let env = EnvCredentials::new(target, "ci", SECRET);
+            let (entry, credentials) = account(&config, target, &store, &env);
+            assert_eq!(entry.host, target);
+            let offered = credentials.credentials(target).unwrap();
+            assert_eq!(offered.is_some(), target == host, "{target}");
+        }
+        let env = EnvCredentials::new(&host, "ci", SECRET);
+        for client in [
+            registry_client(&config, &host, &store, &env).unwrap(),
+            registry_probe_client(&config, &host, &store, &env).unwrap(),
+        ] {
+            assert!(client.check_login().unwrap());
+        }
+        assert!(!registry.authorized_log().is_empty());
     }
 
     #[test]

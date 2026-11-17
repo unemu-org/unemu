@@ -696,6 +696,7 @@ dependencies = [
  "machine-file",
  "media",
  "pc-image",
+ "platforms",
  "testkit",
  "toml",
  "video",
@@ -2722,6 +2723,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "platforms"
+version = "0.0.2"
+dependencies = [
+ "assembly",
+ "image-registry",
+ "image-store",
+ "pc-image",
+]
+
+[[package]]
 name = "png"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4123,7 +4134,6 @@ dependencies = [
  "arboard",
  "assembly",
  "audio",
- "cli",
  "cpal",
  "cpu",
  "device",
@@ -4142,6 +4152,7 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "pc-image",
+ "platforms",
  "rfd",
  "serde",
  "sha2",

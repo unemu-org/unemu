@@ -9,6 +9,9 @@ repository.workspace = true
 publish.workspace = true
 description = "Composition root: assembles and runs a Machine from a Cpu + Bus (§3.1)."
 
+[package.metadata.unemu]
+layer = "emulation"
+
 [dependencies]
 thiserror.workspace = true
 device.workspace = true

@@ -4,7 +4,7 @@
 //! registry-accounts mock-up.
 //!
 //! Push… starts from a dry run that the library worker builds with the
-//! command line's own plan ([`cli::push_plan`]): every blob of the chosen
+//! command line's own plan ([`platforms::push_plan`]): every blob of the chosen
 //! local image (machine image, media set or firmware package) with its
 //! effective redistribution class and where that class was recorded, this
 //! image, another local tag or the firmware catalogue. The destination
@@ -20,7 +20,8 @@
 //! frame loop: the dialogs only build jobs, read the progress the worker
 //! shares with them and take its final event. The registries list comes from
 //! the shared preferences file and secrets from the account store, through
-//! the command line's own client ([`cli::registry_client`]); no secret ever
+//! the command line's own client
+//! ([`image_registry::accounts::registry_client`]); no secret ever
 //! reaches a dialog. Cancel sets a flag the transfer checks before each blob,
 //! between the chunks of a large upload and before it publishes, so a
 //! cancelled push never publishes its manifest and a cancelled pull never
@@ -299,7 +300,7 @@ fn plan(
     let images = local_images(store)?;
     let plan = match local_tag {
         Some(tag) => {
-            let plan = cli::push_plan(store, tag, dry_run_target(), None, catalogue)
+            let plan = platforms::push_plan(store, tag, dry_run_target(), None, catalogue)
                 .map_err(|e| e.to_string())?;
             Some(PlanData {
                 local_tag: tag.into(),
@@ -347,7 +348,7 @@ fn run_push(
     // dialog opened must not receive what it may no longer hold.
     let config = job.accounts.config().map_err(PushFailure::Failed)?;
     let entry = config.entry(&job.target.host);
-    let plan = cli::push_plan(
+    let plan = platforms::push_plan(
         store,
         &job.local_tag,
         job.target.clone(),
@@ -361,7 +362,7 @@ fn run_push(
     if let Err(refusal) = plan.verdict() {
         return Err(PushFailure::Refused(refusal_text(refusal, plan.closure())));
     }
-    let client = cli::registry_client(
+    let client = image_registry::accounts::registry_client(
         &config,
         &job.target.host,
         &job.accounts.store,
@@ -398,7 +399,7 @@ fn run_pull(
         return Err(PullFailure::NotStarted);
     }
     let config = job.accounts.config().map_err(PullFailure::Failed)?;
-    let client = cli::registry_client(
+    let client = image_registry::accounts::registry_client(
         &config,
         &job.source.host,
         &job.accounts.store,
@@ -1758,7 +1759,7 @@ pub(crate) mod tests {
     ) -> Vec<TransferEvent> {
         let events = Mutex::new(Vec::new());
         pc_image::test_support::with_synthetic_firmware(|| {
-            cli::with_image_providers(|providers| {
+            platforms::with_image_providers(|providers| {
                 run(
                     store,
                     request,

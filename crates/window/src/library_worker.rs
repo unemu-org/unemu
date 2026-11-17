@@ -636,7 +636,7 @@ trait Backend: Send + 'static {
     /// The platform providers registry transfers validate with, the same list
     /// the command line uses.
     fn with_providers<T>(&self, job: impl FnOnce(&[&dyn image_store::ConfigValidator]) -> T) -> T {
-        cli::with_image_providers(job)
+        platforms::with_image_providers(job)
     }
     fn import_media(
         &self,
@@ -739,7 +739,7 @@ impl Backend for SyntheticBackend {
         library_view::firmware::tests::synthetic_catalogue()
     }
     fn with_providers<T>(&self, job: impl FnOnce(&[&dyn image_store::ConfigValidator]) -> T) -> T {
-        pc_image::test_support::with_synthetic_firmware(|| cli::with_image_providers(job))
+        pc_image::test_support::with_synthetic_firmware(|| platforms::with_image_providers(job))
     }
     fn prepare_machine(&self, owner: &Workspace<'_>) -> Result<pc_image::machine::Prepared> {
         pc_image::test_support::with_synthetic_firmware(|| {
@@ -4408,6 +4408,7 @@ mod tests {
     /// Import a one-disk 360K set under the revision tag `tag`, as the
     /// command line does; its release alias follows it.
     fn import_tagged(f: &Fixture, tag: &str) -> Descriptor {
+        use pc_image::media_create;
         let disk = f.temp.path().join("tagged-disk.img");
         let args: Vec<std::ffi::OsString> = vec![
             "floppy".into(),
@@ -4416,25 +4417,13 @@ mod tests {
             "--format".into(),
             disk.clone().into_os_string(),
         ];
-        cli::create::execute(cli::create::parse(&args).unwrap(), &mut std::io::sink()).unwrap();
-        let args: Vec<std::ffi::OsString> = vec![
-            "image".into(),
-            "media".into(),
-            "import".into(),
-            disk.into_os_string(),
-            "--store".into(),
-            f.store.root().as_os_str().to_owned(),
-            "--title".into(),
-            "Tagged".into(),
-            "--tag".into(),
-            tag.into(),
-        ];
-        let mut errors = Vec::new();
-        assert_eq!(
-            cli::command::run(&args, &mut std::io::sink(), &mut errors),
-            0,
-            "{}",
-            String::from_utf8_lossy(&errors)
+        media_create::execute(media_create::parse(&args).unwrap(), &mut std::io::sink()).unwrap();
+        crate::library_test_support::import_media_set(
+            &f.store,
+            tag,
+            "Tagged",
+            &[crate::library_test_support::Medium::new(&disk)],
+            &[],
         );
         f.store.tag_descriptor(tag).unwrap()
     }

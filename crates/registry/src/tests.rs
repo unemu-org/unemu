@@ -3146,6 +3146,46 @@ fn the_release_guard_reads_the_marker_and_names_the_computed_release() {
     }
 }
 
+/// The digests a platform's catalogue names in the tag's manifest restrict
+/// the plan whatever the blobs' own marks say; with none named the open image
+/// stays open.
+#[test]
+fn a_catalogue_restriction_keeps_an_open_marked_blob_from_leaving() {
+    let dir = Temp::new();
+    let store = dir.store();
+    open_image(&store, "rom:1", b"synthetic vendor rom");
+    let registry = MockRegistry::start(open_policy());
+    let entry = registry.entry(false);
+    let rom = Digest::of(b"synthetic vendor rom");
+    let plan = push::plan_with_catalogue(
+        &store,
+        "rom:1",
+        target(&registry, "owner/rom:1"),
+        Some(&entry),
+        |manifest| {
+            assert!(manifest.layers.iter().any(|d| d.digest == rom));
+            Ok(vec![rom.clone()])
+        },
+    )
+    .unwrap();
+    let restricted = plan
+        .closure()
+        .iter()
+        .find(|c| c.descriptor.digest == rom)
+        .unwrap();
+    assert_eq!(restricted.source, crate::guard::MarkSource::Catalogue);
+    assert!(plan.verdict().is_err());
+    let plan = push::plan_with_catalogue(
+        &store,
+        "rom:1",
+        target(&registry, "owner/rom:1"),
+        Some(&entry),
+        |_| Ok(Vec::new()),
+    )
+    .unwrap();
+    assert_eq!(plan.verdict(), &Ok(()));
+}
+
 /// A push plan reads the marker before it decodes the manifest, so an image
 /// a newer release tagged in a shared store, whose envelope this build cannot
 /// decode, is refused with the release it needs.

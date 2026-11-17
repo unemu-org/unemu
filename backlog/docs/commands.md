@@ -775,8 +775,9 @@ Preferences… › Registries page uses the same functions and store:
 
 The desktop shell's Image › Push… and Image › Pull by reference… (and Pull…
 of the tags selected in the library's Remotes) build the same push plan
-(`cli::push_plan`: local marks plus the firmware catalogue), the same client
-(`cli::registry_client`) and the same providers list as `image push` and
+(`platforms::push_plan`: local marks plus the firmware catalogue), the same
+client (`image_registry::accounts::registry_client`) and the same providers
+list (`platforms::with_image_providers`) as `image push` and
 `image pull`, and resolve short names against the same default registry
 (`UNEMU_REGISTRY`, then preferences). They run on the library worker thread:
 - Push… shows the `--dry-run` classification as a table and the guard's
@@ -1607,7 +1608,7 @@ From the repository root, run the same gates locally:
 ```sh
 bash scripts/ci-gate.sh devshell
 bash scripts/ci-gate.sh fmt
-bash scripts/ci-gate.sh guard
+bash scripts/ci-gate.sh guard                    # publication guard, crate-boundary self-test and check
 bash scripts/ci-gate.sh clippy
 bash scripts/ci-gate.sh deny                     # advisories, licences, bans, sources; all features
 bash scripts/ci-gate.sh tests
@@ -1639,6 +1640,28 @@ in `PUBLICATION_GUARD_PRIVATE_HOSTS`, for example
 `PUBLICATION_GUARD_PRIVATE_HOSTS=nas.example,lab.example bash scripts/publication-guard.sh`.
 That check runs only locally, where someone sets the variable, never in CI, and
 a hit prints only the file and line.
+
+### Crate boundaries
+
+`bash scripts/crate-boundaries.sh` (in the devShell: it needs cargo and jq)
+reads `cargo metadata --no-deps` and fails when a workspace crate has no
+`[package.metadata.unemu] layer`, or depends, through normal, build or test
+dependencies and directly or through other workspace crates, on a layer its
+own may not use ([core contract](design/core-contract.md) §7.3), or when a
+window crate depends on a CLI crate or the other way round. It reads the
+dependencies the manifests declare (optional and target-specific ones
+included), follows a dependency's normal and build dependencies but not its
+test dependencies, and reports the first forbidden crate on each path once:
+the two crates, their layers, the dependency kind, the path and the rule.
+Known violations are listed in `scripts/crate-boundaries.allow`, one declared
+dependency `FROM → TO (KIND): REASON` per line; the walk never crosses a
+listed dependency, and one that is gone or no longer forbidden fails, so the
+list only shrinks. `--self-test` runs the rules over the fixtures in
+`scripts/crate-boundaries-fixtures/`, each with one planted case and its
+expected outcome; `--metadata FILE [--allow FILE]` checks any `cargo
+metadata` output. The `guard` gate runs the publication guard and then the
+self-test and the check, each even when the other failed; the check takes
+well under a second.
 
 ### Third-party licences
 

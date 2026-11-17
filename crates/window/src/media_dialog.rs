@@ -514,7 +514,7 @@ impl BlankDisk {
 
     pub fn create(&self) -> Result<(), String> {
         let command = self.command().map_err(str::to_owned)?;
-        cli::create::execute(command, &mut io::sink())
+        pc_image::media_create::execute(command, &mut io::sink())
             .map(|_| ())
             .map_err(|error| {
                 if error.kind() == io::ErrorKind::AlreadyExists {
@@ -525,7 +525,7 @@ impl BlankDisk {
             })
     }
 
-    pub fn command(&self) -> Result<cli::create::CreateCommand, &'static str> {
+    pub fn command(&self) -> Result<pc_image::media_create::CreateCommand, &'static str> {
         use std::ffi::OsString;
         if self.output.trim().is_empty() {
             return Err("Choose an output path");
@@ -555,7 +555,7 @@ impl BlankDisk {
                 output,
             ]
         };
-        cli::create::parse(&args)
+        pc_image::media_create::parse(&args)
     }
 }
 
@@ -718,8 +718,8 @@ mod tests {
         );
         assert!(matches!(
             floppy.command().unwrap().kind,
-            cli::create::ImageKind::Floppy {
-                format: cli::create::FloppyFormat::Dd720,
+            pc_image::media_create::ImageKind::Floppy {
+                format: pc_image::media_create::FloppyFormat::Dd720,
                 formatted: true,
                 ..
             }
@@ -945,7 +945,7 @@ mod tests {
         };
         assert!(matches!(
             form.command().unwrap().kind,
-            cli::create::ImageKind::HardDisk(_)
+            pc_image::media_create::ImageKind::HardDisk(_)
         ));
         form.chs = "0/4/17".into();
         assert!(form.command().is_err());
@@ -958,11 +958,13 @@ mod tests {
                 .join(format!("{format}.img"))
                 .to_string_lossy()
                 .into_owned();
-            cli::create::execute(form.command().unwrap(), &mut io::sink()).unwrap();
+            pc_image::media_create::execute(form.command().unwrap(), &mut io::sink()).unwrap();
             let bytes = std::fs::read(&form.output).unwrap();
             assert_eq!(&bytes[510..512], &[0x55, 0xAA]);
             assert_eq!(&bytes[54..62], b"FAT12   ");
-            assert!(cli::create::execute(form.command().unwrap(), &mut io::sink()).is_err());
+            assert!(
+                pc_image::media_create::execute(form.command().unwrap(), &mut io::sink()).is_err()
+            );
         }
     }
 }
@@ -1939,32 +1941,24 @@ mod media_set_tests {
             "--format".into(),
             source.clone().into_os_string(),
         ];
-        cli::create::execute(cli::create::parse(&args).unwrap(), &mut io::sink()).unwrap();
+        pc_image::media_create::execute(
+            pc_image::media_create::parse(&args).unwrap(),
+            &mut io::sink(),
+        )
+        .unwrap();
         let bytes = std::fs::read(&source).unwrap();
         let mut other = bytes.clone();
         other[100] = 5;
         std::fs::write(&second, &other).unwrap();
-        let args = vec![
-            "media".into(),
-            "import".into(),
-            source.into_os_string(),
-            second.into_os_string(),
-            "--store".into(),
-            store_path.clone().into_os_string(),
-            "--title".into(),
-            "Synthetic installation".into(),
-            "--tag".into(),
-            "test-set:r1".into(),
-            "--create".into(),
-        ];
-        let mut command = vec!["image".into()];
-        command.extend(args);
-        let mut errors = Vec::new();
-        assert_eq!(
-            cli::command::run(&command, &mut io::sink(), &mut errors),
-            0,
-            "{}",
-            String::from_utf8_lossy(&errors)
+        crate::library_test_support::import_media_set(
+            &image_store::Store::open(&store_path).unwrap(),
+            "test-set:r1",
+            "Synthetic installation",
+            &[
+                crate::library_test_support::Medium::new(&source),
+                crate::library_test_support::Medium::new(&second),
+            ],
+            &[],
         );
         let mut machine = assembly::floppy_boot(vec![0xFA, 0xEB, 0xFE], vec![0; bytes.len()]);
         let mut assembled = assembly::assemble(&machine).unwrap();
@@ -2180,25 +2174,12 @@ mod review_tests {
         let root = temp.path().canonicalize().unwrap();
         let source = root.join("disk.img");
         std::fs::write(&source, vec![0x11; 1_474_560]).unwrap();
-        let args: Vec<std::ffi::OsString> = vec![
-            "image".into(),
-            "media".into(),
-            "import".into(),
-            source.into_os_string(),
-            "--title".into(),
-            "Review set".into(),
-            "--tag".into(),
-            "review-set:r1".into(),
-            "--store".into(),
-            root.join("store").into_os_string(),
-            "--create".into(),
-        ];
-        let mut error = Vec::new();
-        assert_eq!(
-            cli::command::run(&args, &mut io::sink(), &mut error),
-            0,
-            "{}",
-            String::from_utf8_lossy(&error)
+        crate::library_test_support::import_media_set(
+            &image_store::Store::open(root.join("store")).unwrap(),
+            "review-set:r1",
+            "Review set",
+            &[crate::library_test_support::Medium::new(&source)],
+            &[],
         );
         let mut library = LibraryInsert::new(
             image_store::location::machine_media_dir(&root.join("machine.toml")).unwrap(),

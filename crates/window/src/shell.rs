@@ -2576,7 +2576,7 @@ impl Shell {
         // Finding the path may copy the file from the project's former
         // directory. When that fails, the status bar says so: the shell then
         // keeps defaults and saves nothing, so the old file is copied next time.
-        let (preferences_path, path_error) = match cli::preferences::path() {
+        let (preferences_path, path_error) = match image_store::location::preferences::path() {
             Ok(path) => (Some(path), None),
             Err(error) => (None, Some(error.to_string())),
         };
@@ -3852,7 +3852,7 @@ impl Shell {
             Minimize => { self.release(); ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); },
             Exit => self.request_exit(ctx),
             Shortcuts => self.dialog = Some(("Keyboard shortcuts", shortcuts_help(self.macos_shortcuts))),
-            About => self.dialog = Some(("About unemupc", format!("unemupc {}\nemulator of period IBM-compatible PCs\n{}\nx86jit · egui / eframe · cpal\n\n{}\n\n{}\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), cli::about::licence_notice(), window::FONT_NOTICE, window::EGUI_FONT_NOTICE, window::SYMBOL_FONT_NOTICE, devices::OPL3_NOTICE))),
+            About => self.dialog = Some(("About unemupc", format!("unemupc {}\nemulator of period IBM-compatible PCs\n{}\nx86jit · egui / eframe · cpal\n\n{}\n\n{}\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), platforms::licence_notice(), window::FONT_NOTICE, window::EGUI_FONT_NOTICE, window::SYMBOL_FONT_NOTICE, devices::OPL3_NOTICE))),
             Placeholder("Open machine file") => self.open_machine_dialog(),
             Placeholder("New machine") => { self.release(); self.image_library.begin_new_machine(); },
             Placeholder(title) => self.dialog = Some((title, "not yet available".into())),
@@ -9585,7 +9585,7 @@ mod tests {
 
     #[test]
     fn title_about_and_menu_name_the_project_unemupc() {
-        let former = cli::preferences::FORMER_DIRECTORY;
+        let former = image_store::location::preferences::FORMER_DIRECTORY;
         let mut shell = shell();
         assert_eq!(shell.title(), "Machine — unemupc");
         shell.presenter = None;
@@ -9629,7 +9629,7 @@ mod tests {
         assert!(text.contains(window::EGUI_FONT_NOTICE));
         assert!(text.contains(window::SYMBOL_FONT_NOTICE));
         assert!(text.contains(devices::OPL3_NOTICE));
-        assert!(text.contains(&cli::about::licence_notice()));
+        assert!(text.contains(&platforms::licence_notice()));
         for option in ["--help", "--about", "--version"] {
             let output = crate::informational_output(std::ffi::OsStr::new(option)).unwrap();
             assert!(output.contains(window::EGUI_FONT_NOTICE));
@@ -11916,46 +11916,37 @@ kind='mda'
     /// Import a three-disk 360K installation set titled "Win 3.1", tag
     /// `win:3.1`, its first disk labelled "Disk 1 (Setup)"; its manifest.
     fn import_win_set(f: &crate::library_test_support::Fixture) -> image_store::Descriptor {
-        let mut args: Vec<std::ffi::OsString> =
-            vec!["image".into(), "media".into(), "import".into()];
-        for number in 1..=3 {
-            let disk = f.temp.path().join(format!("win-{number}.img"));
-            let create: Vec<std::ffi::OsString> = vec![
-                "floppy".into(),
-                "--type".into(),
-                "360K".into(),
-                "--format".into(),
-                "--label".into(),
-                format!("WIN{number}").into(),
-                disk.clone().into_os_string(),
-            ];
-            cli::create::execute(cli::create::parse(&create).unwrap(), &mut std::io::sink())
+        let disks: Vec<_> = (1..=3)
+            .map(|number| {
+                let disk = f.temp.path().join(format!("win-{number}.img"));
+                let create: Vec<std::ffi::OsString> = vec![
+                    "floppy".into(),
+                    "--type".into(),
+                    "360K".into(),
+                    "--format".into(),
+                    "--label".into(),
+                    format!("WIN{number}").into(),
+                    disk.clone().into_os_string(),
+                ];
+                pc_image::media_create::execute(
+                    pc_image::media_create::parse(&create).unwrap(),
+                    &mut std::io::sink(),
+                )
                 .unwrap();
-            args.push(disk.into_os_string());
-        }
-        let root = f.store.root().to_string_lossy().into_owned();
-        for extra in [
-            "--store",
-            root.as_str(),
-            "--title",
-            "Win 3.1",
-            "--tag",
+                disk
+            })
+            .collect();
+        use crate::library_test_support::{import_media_set, Medium};
+        import_media_set(
+            &f.store,
             "win:3.1-r1",
-            "--label",
-            "1=Disk 1 (Setup)",
-            "--label",
-            "2=Disk 2",
-            "--label",
-            "3=Disk 3",
-        ] {
-            args.push(extra.into());
-        }
-        let mut errors = Vec::new();
-        assert_eq!(
-            cli::command::run(&args, &mut std::io::sink(), &mut errors),
-            0,
-            "{}",
-            String::from_utf8_lossy(&errors)
+            "Win 3.1",
+            &[
+                Medium::new(&disks[0]).label("Disk 1 (Setup)"),
+                Medium::new(&disks[1]).label("Disk 2"),
+                Medium::new(&disks[2]).label("Disk 3"),
+            ],
+            &[],
         );
         f.store.tag_descriptor("win:3.1").unwrap()
     }
@@ -12614,33 +12605,19 @@ kind='mda'
         let temp = assembly::test_support::TempDir::new("library-set-insert");
         let root = temp.path().canonicalize().unwrap();
         let store = root.join("store");
-        let mut command: Vec<std::ffi::OsString> =
-            vec!["image".into(), "media".into(), "import".into()];
         for (name, byte) in [("one.img", 1u8), ("two.img", 2)] {
             std::fs::write(root.join(name), vec![byte; 1_474_560]).unwrap();
-            command.push(root.join(name).into_os_string());
         }
-        for arg in [
-            "--title",
-            "Synthetic install",
-            "--tag",
+        let (one, two) = (root.join("one.img"), root.join("two.img"));
+        crate::library_test_support::import_media_set(
+            &image_store::Store::open(&store).unwrap(),
             "test-set:r1",
-            "--label",
-            "1=Setup",
-            "--label",
-            "2=Data",
-            "--create",
-            "--store",
-        ] {
-            command.push(arg.into());
-        }
-        command.push(store.clone().into_os_string());
-        let mut errors = Vec::new();
-        assert_eq!(
-            cli::command::run(&command, &mut io::sink(), &mut errors),
-            0,
-            "{}",
-            String::from_utf8_lossy(&errors)
+            "Synthetic install",
+            &[
+                crate::library_test_support::Medium::new(&one).label("Setup"),
+                crate::library_test_support::Medium::new(&two).label("Data"),
+            ],
+            &[],
         );
         let cache = crate::library_view::install_media::tests::warm(
             &image_store::Store::open_existing(&store).unwrap(),

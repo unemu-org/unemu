@@ -9,6 +9,9 @@ repository.workspace = true
 publish.workspace = true
 description = "Frontend and golden runners for deterministic Real16 PC/AT machines (§3.1)."
 
+[package.metadata.unemu]
+layer = "application"
+
 [[bin]]
 name = "upcli"
 path = "src/main.rs"
@@ -17,6 +20,8 @@ path = "src/main.rs"
 pc-image = { path = "../pc-image", version = "0.0.2" }
 image-store = { path = "../image-store", version = "0.0.2" }
 image-registry = { path = "../registry", version = "0.0.2" }
+# The platforms compiled in: their image providers and the licence notice.
+platforms = { path = "../platforms", version = "0.0.2" }
 toml.workspace = true
 machine-file.workspace = true
 anyhow.workspace = true

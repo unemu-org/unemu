@@ -3,7 +3,9 @@
 //!
 //! One TOML file holds the desktop's ROM folders and presentation settings and
 //! the registry list the command line edits. Both frontends take its path from
-//! [`path`], so they always read and write the same file.
+//! [`path`], so they always read and write the same file. It lives here,
+//! beside the default store root, because it is the other host location both
+//! frontends share.
 //!
 //! The project was renamed from unemupc98 to unemupc, and the file moved with
 //! it to a directory under the new name. The first time either frontend asks
@@ -122,7 +124,25 @@ fn migrate(old: &Path, new: &Path) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use assembly::test_support::TempDir;
+
+    /// A fresh directory under the system temporary directory, removed on drop.
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&path);
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn files(root: &Path) -> (PathBuf, PathBuf) {
         (

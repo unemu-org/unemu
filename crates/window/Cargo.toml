@@ -11,12 +11,16 @@ repository.workspace = true
 publish.workspace = true
 description = "Windowed presenter: draws text frames in a host window (§9)."
 
+[package.metadata.unemu]
+layer = "application"
+
 [dependencies]
 image-store = { path = "../image-store", version = "0.0.2" }
 image-registry = { path = "../registry", version = "0.0.2" }
 pc-image = { path = "../pc-image", version = "0.0.2" }
 image = { version = "=0.25.10", default-features = false, features = ["png", "gif"] }
-cli = { path = "../cli", version = "0.0.2" }
+# The platforms compiled in: their image providers and the licence notice.
+platforms = { path = "../platforms", version = "0.0.2" }
 media.workspace = true
 sha2.workspace = true
 rfd = { version = "=0.18.0", default-features = false, features = ["xdg-portal"] }

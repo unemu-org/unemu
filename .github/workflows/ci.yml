@@ -105,7 +105,8 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/ci-gate.sh fmt
 
-      - name: Publication guard
+      # The publication guard, then the crate-boundary check and its self-test.
+      - name: Publication guard and crate boundaries
         id: guard
         if: ${{ !cancelled() }}
         run: bash scripts/ci-gate.sh guard

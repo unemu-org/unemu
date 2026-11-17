@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "platforms"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "The emulator platforms compiled into both programs: their image providers and the licence notice."
+
+[package.metadata.unemu]
+layer = "application"
+
+[dependencies]
+assembly.workspace = true
+image-registry = { path = "../registry", version = "0.0.2" }
+image-store = { path = "../image-store", version = "0.0.2" }
+pc-image = { path = "../pc-image", version = "0.0.2" }

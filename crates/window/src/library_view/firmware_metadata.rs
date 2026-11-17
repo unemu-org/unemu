@@ -1150,7 +1150,7 @@ pub(crate) fn read_package(
     catalogue: &[assembly::FirmwareEntry],
 ) -> Result<PackageDetails, String> {
     use image_registry::guard;
-    let plan = cli::push_plan(
+    let plan = platforms::push_plan(
         store,
         tag,
         crate::registry_transfer::dry_run_target(),

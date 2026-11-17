@@ -8,21 +8,17 @@
 //! Add and Edit dialog.
 
 use anyhow::Context;
+pub use image_registry::accounts::{registry_client, registry_probe_client};
 use image_registry::{
     accounts,
     config::{self, RegistryConfig, DEFAULT_REGISTRY_ENV},
     credential_store::{self, CredentialStore, Secret},
-    credentials::{
-        Anonymous, CredentialSource, EnvCredentials, HostCredentials, HOST_ENV, PASSWORD_ENV,
-        USER_ENV,
-    },
-    pull, push, Client, Reference, RegistryEntry,
+    credentials::{EnvCredentials, HOST_ENV, PASSWORD_ENV, USER_ENV},
+    pull, push, Client, Reference,
 };
-use image_store::{firmware, media_set, ConfigValidator, Store};
-use pc_image::{
-    compat::WithPcRows,
-    firmware::{catalogue, PcFirmwareRules},
-};
+use image_store::{ConfigValidator, Store};
+use pc_image::firmware::catalogue;
+pub use platforms::{push_plan, with_image_providers};
 use std::{
     ffi::OsString,
     io::Write,
@@ -189,7 +185,7 @@ pub fn parse(action: &str, args: &[OsString]) -> Result<RegistryCommand, &'stati
 fn load(options: &Common) -> anyhow::Result<(RegistryConfig, String)> {
     let path = match &options.config {
         Some(path) => path.clone(),
-        None => crate::preferences::path()?,
+        None => image_store::location::preferences::path()?,
     };
     let config = RegistryConfig::from_table(&config::read_preferences(&path)?)?;
     let env = std::env::var(DEFAULT_REGISTRY_ENV).ok();
@@ -207,93 +203,10 @@ pub(super) fn guard_marks(
     catalogue: &[assembly::FirmwareEntry],
 ) -> image_registry::Result<image_registry::guard::LocalMarks> {
     let mut marks = image_registry::guard::LocalMarks::scan(store)?;
-    for d in std::iter::once(&manifest.config).chain(&manifest.layers) {
-        let mut identities = vec![(d.digest.clone(), d.size)];
-        if d.is_compressed() {
-            identities.push((d.decoded_digest()?, d.decoded_size()?));
-        }
-        for (digest, size) in identities {
-            if pc_image::firmware::proprietary(catalogue, digest.hex(), size).is_some() {
-                marks.restrict_catalogue(digest);
-            }
-        }
+    for digest in pc_image::firmware::restricted(manifest, catalogue)? {
+        marks.restrict_catalogue(digest);
     }
     Ok(marks)
-}
-
-/// The push plan of `local_tag` that the command line and the desktop shell
-/// both use: every local mark, plus a restriction for each blob whose bytes
-/// the firmware catalogue lists as a proprietary image or chip, built from
-/// one reading of the tag's manifest. When the tag moves to another image
-/// meanwhile, the plan is refused as a tag conflict, so its marks always
-/// belong to the image it plans.
-pub fn push_plan(
-    store: &Store,
-    local_tag: &str,
-    target: Reference,
-    entry: Option<&RegistryEntry>,
-    catalogue: &[assembly::FirmwareEntry],
-) -> image_registry::Result<push::PushPlan> {
-    let image = store.tag_descriptor(local_tag)?;
-    let manifest = image_store::Manifest::decode_for_summary(
-        &image_store::BlobSource::read_verified(store, &image, image_store::MAX_SMALL_BLOB)?,
-    )?;
-    let marks = guard_marks(store, &manifest, catalogue)?;
-    let plan = push::plan_with_marks(store, local_tag, target, entry, marks)?;
-    if plan.image().digest != image.digest {
-        return Err(image_store::Error::Conflict {
-            current: Some(plan.image().digest.clone()),
-        }
-        .into());
-    }
-    Ok(plan)
-}
-
-/// A client for `host`. Secrets are offered only to configured registries
-/// (and the family default), so a pull from an arbitrary host can never
-/// receive them; the environment pair `env` is further bound to its one host.
-/// The command line and the desktop shell both connect through it.
-pub fn registry_client(
-    config: &RegistryConfig,
-    host: &str,
-    store: &Arc<dyn CredentialStore>,
-    env: &EnvCredentials,
-) -> image_registry::Result<Client> {
-    let (entry, credentials) = account(config, host, store, env);
-    Client::new(&entry, credentials)
-}
-
-/// [`registry_client`] with the short timeouts of a login check (10 s to
-/// connect, 15 s per read), for listings a person waits for, so an
-/// unreachable registry answers quickly.
-pub fn registry_probe_client(
-    config: &RegistryConfig,
-    host: &str,
-    store: &Arc<dyn CredentialStore>,
-    env: &EnvCredentials,
-) -> image_registry::Result<Client> {
-    let (entry, credentials) = account(config, host, store, env);
-    Client::for_probes(&entry, credentials)
-}
-
-/// The entry for `host` and the credentials it may receive.
-fn account(
-    config: &RegistryConfig,
-    host: &str,
-    store: &Arc<dyn CredentialStore>,
-    env: &EnvCredentials,
-) -> (RegistryEntry, Box<dyn CredentialSource>) {
-    match config.entry(host) {
-        Some(entry) => {
-            let credentials = HostCredentials {
-                configured_user: entry.user.clone(),
-                env: env.clone(),
-                store: store.clone(),
-            };
-            (entry, Box::new(credentials))
-        }
-        None => (config.entry_or_public(host), Box::new(Anonymous)),
-    }
 }
 
 fn client(
@@ -316,25 +229,6 @@ fn conflicting_registry(options: &Common, reference: &Reference) -> anyhow::Resu
         }
     }
     Ok(())
-}
-
-const MEDIA_SETS: media_set::Validator<'static> =
-    media_set::Validator(&pc_image::media_set::PcMediaFormats);
-
-/// Run `job` with every platform provider a registry transfer may need: PC
-/// machine images, PC media sets and PC firmware packages. Push and pull pick
-/// the one whose artifact type and platform match the manifest. The command
-/// line and the desktop shell both take the list from here, so they accept
-/// the same artifacts. Each rates an artifact with the PC rows of the
-/// compatibility table, which the push guard of `unemu/` checks.
-pub fn with_image_providers<T>(job: impl FnOnce(&[&dyn ConfigValidator]) -> T) -> T {
-    let firmware_rules = PcFirmwareRules(catalogue());
-    let firmware = firmware::Validator(&firmware_rules);
-    job(&[
-        &pc_image::PcProvider,
-        &WithPcRows(&MEDIA_SETS),
-        &WithPcRows(&firmware),
-    ])
 }
 
 pub fn execute(command: RegistryCommand, output: &mut impl Write) -> anyhow::Result<()> {
@@ -478,7 +372,7 @@ fn execute_with(
         RegistryCommand::Login { host, user, config } => {
             let path = match config {
                 Some(path) => path,
-                None => crate::preferences::path()?,
+                None => image_store::location::preferences::path()?,
             };
             log_in(&path, &host, &user, &*secrets, read_secret, output)?;
         }
@@ -490,7 +384,7 @@ fn execute_with(
         } => {
             let path = match config {
                 Some(path) => path,
-                None => crate::preferences::path()?,
+                None => image_store::location::preferences::path()?,
             };
             set_privacy(&path, &host, private, &namespaces, output)?;
         }
@@ -734,8 +628,11 @@ mod tests {
     use super::*;
     use image_registry::{
         credential_store::{SessionStore, StoreKind},
+        credentials::Anonymous,
         test_support::{MockRegistry, Policy},
     };
+    use image_store::firmware;
+    use pc_image::firmware::PcFirmwareRules;
 
     const SECRET: &str = "synthetic-secret";
 
