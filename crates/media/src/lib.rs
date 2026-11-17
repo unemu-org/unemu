@@ -19,9 +19,13 @@
 //! with an immutable clock/control prefix. See § CMOS NVRAM journals.
 //! A valid checksum does not establish guest filesystem health or prove a host
 //! sync was acknowledged.
+//!
+//! [`fat12`] builds new FAT12 diskette bases from host files and folders;
+//! [`create`] publishes them. See machines/README.md § Preparing disks.
 
 mod codec;
 pub mod create;
+pub mod fat12;
 mod history;
 pub mod layer;
 pub mod offline;

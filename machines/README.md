@@ -288,13 +288,14 @@ upcli media create hd --size 32MiB "$HOME/unemupc-disks/disk.img"
 upcli media create floppy --type 1.44M --format --label TRANSFER "$HOME/unemupc-disks/transfer.img"
 ```
 
-Floppy types are `1.44M`, `1.2M`, `720K` and `360K`. Without `--format` every
-byte is zero. With it, the command writes standard FAT12 BPB/FAT/root metadata,
+Floppy types are `1.44M`, `1.2M`, `720K` and `360K`. To fill a new floppy with
+host files instead, see [Building a floppy from host files](#building-a-floppy-from-host-files).
+Without `--format` every byte is zero. With it, the command writes standard FAT12 BPB/FAT/root metadata,
 a fixed serial (`0x28959855`) and, by default, `NO NAME` in the BPB. The root stays empty
 unless `--label` supplies an uppercase ASCII volume label; its timestamps are
 fixed at 1980-01-01. The boot sector silently disables interrupts and halts
 in a loop; it contains no DOS loader or system files. Use a bootable DOS floppy
-for starting the machine. `--label` requires `--format`, accepts 1–11 ASCII
+for starting the machine. `--label` requires `--format` (or `--add`), accepts 1–11 ASCII
 characters and rejects leading spaces and FAT filename punctuation. `--force`
 replaces an existing directory entry atomically; it never opens the old image for writing. Use a new
 output name for any base already referenced by a journal.
@@ -533,11 +534,87 @@ sector state, not filesystem health. Use the same commands with `transfer.img`
 and `transfer.upfj` for the floppy; for example, export it to `transfer-next.img`
 before using the host-copy example below.
 
+### Building a floppy from host files
+
+DOS programs that come as loose files and folders go onto new FAT12 data
+floppies with `--add`, without mtools. The command only ever writes new images:
+
+```sh
+cd "$HOME/unemupc-disks"
+# A folder becomes \GAME on the disk, with its whole tree.
+upcli media create floppy --type 1.44M --add /path/to/GAME --label GAME game.img
+# Loose files under one root folder, \MYGAME.
+upcli media create floppy --type 1.44M --add /path/to/PLAY.EXE --add /path/to/DATA.DAT --top MYGAME mygame.img
+# A tree too large for one disk: big-1ofN.img, big-2ofN.img… (N disks)
+upcli media create floppy --type 1.44M --add /path/to/BIGGAME --label BIGGAME --split big.img
+```
+
+`--add PATH` may repeat; a folder is copied whole as a subdirectory. `--add`
+implies `--format`, so `--label` applies. `--top NAME` puts everything added
+under one root folder; NAME must already be a valid 8.3 name. A path you name
+with `--add` must be a regular file or folder: a symbolic link (name its target
+instead), host metadata such as `.DS_Store`, or a device is refused, and so are
+two `--add` paths that reach the same host file or folder (`./Game` and `game`
+on a case-insensitive file system, say).
+
+The disk holds plain DOS short names, no long-name (VFAT) entries: names are
+upper-cased; a Latin letter with diacritics becomes its base letter, the same
+whether the host stores the name precomposed or decomposed (`Äbc.txt` becomes
+`ABC.TXT`); other non-ASCII characters, characters DOS forbids and spaces become
+`_`; a long name keeps eight characters of its stem and three of the extension
+after its last period; a name already valid as 8.3 is kept; when two names in a
+folder would clash, the later one in sorted order takes `~1`, `~2`…; a DOS device
+name such as `CON` gains a `_`. Every changed name is printed as
+`renamed HOST -> DOS-PATH` (a change of letter case alone is not a rename).
+Inside the folders, `.DS_Store`, `._*`, `Thumbs.db` and `desktop.ini` files,
+`__MACOSX` folders, symbolic links (never followed), devices, sockets and pipes,
+and the images the command is writing (should they sit inside a source tree) are
+left out and printed as `skipped HOST: REASON`.
+
+DOS keeps a drive's current directory in 67 bytes (drive, path and a final NUL),
+so a folder's path on the disk may have at most 64 characters, counting the
+leading backslash and the `--top` folder: `\GAME\LEVELS\WORLD1` has 19. A deeper
+folder is refused by name before anything is written; files inside an accepted
+folder always fit.
+
+The image depends only on the files' names and contents: entries are ordered by
+the bytes of their host names, every date is 1980-01-01 00:00, the serial is the
+formatter's fixed one, and no hidden, system or archive attribute is set. Host
+file times and directory order never matter.
+
+The fit is checked before anything is written. It counts whole clusters for
+every file and folder and the root folder's fixed entries (224 on 1.44M and 1.2M,
+112 on 720K and 360K, one fewer with a label). Without `--split` a misfit is an
+error that names the shortfall in bytes and suggests `--split` (or, for 720K and
+360K, the drive's larger format), and a file larger than the disk is named.
+With `--split` the files go greedily, in sorted tree order, onto
+`<stem>-1ofN.<ext>`, `<stem>-2ofN.<ext>`… beside `OUT` (`big.img` gives
+`big-1of3.img`…); every disk repeats the folders above its files, and disk `k`
+is labelled `LABEL k` (the label shortened to fit eleven characters). When
+everything fits on one disk, `--split` writes `OUT` itself with the plain label.
+A single file larger than one disk is refused, never cut. Without `--force` an
+existing output, any disk of a set included, stops the command before the first
+image is written. Every image is built in memory first; should writing a later
+disk of a set fail, the error names the disks already written. One line per disk
+reports its name, label, file count and free bytes, matching what DIR shows.
+
+To install a split set on C:, insert each disk in B: in turn and copy it with its
+paths. The recipe needs everything under one folder: a single `--add` of a
+folder gives that, and with several `--add` paths use `--top`. Creating the
+folder first keeps XCOPY from asking whether the target is a file or a directory:
+
+```bat
+MD C:\BIGGAME
+XCOPY B:\BIGGAME C:\BIGGAME /S /E
+```
+
+Run the XCOPY line once per disk.
+
 ### Copying host files
 
-To put host files into FAT media, mtools is optional and runs while the emulator
-is stopped. Always create a new working image first; never modify an immutable
-base with a journal bound to it:
+To put host files into existing FAT media, mtools is optional and runs while the
+emulator is stopped. Always create a new working image first; never modify an
+immutable base with a journal bound to it:
 
 ```sh
 cp transfer-next.img transfer-host.img

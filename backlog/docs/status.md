@@ -5,6 +5,28 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-16 — Floppies built from host files:** `upcli media create
+  floppy --add PATH` builds a new FAT12 data floppy (360K, 720K, 1.2M or
+  1.44M) from host files and whole folders, for DOS programs that come as
+  loose files; `--top NAME` puts them under one root folder and `--split`
+  spreads a larger tree over `<stem>-1ofN.<ext>`, `<stem>-2ofN.<ext>`…
+  labelled `LABEL 1`, `LABEL 2`…, each disk repeating the folder path so
+  XCOPY /S /E from every disk rebuilds the tree on C:. Names become plain DOS
+  8.3 names (no long-name entries) with `~1` tails on clashes and Latin
+  diacritics folded to their base letters; every change and every skipped
+  host file inside the folders (Finder, archive and Explorer metadata,
+  symbolic links, devices, the images being written) is printed. A named
+  source that is a link, metadata or a device is refused, as is the same
+  host entry named twice, and so is a folder whose DOS path would pass the 64
+  characters DOS keeps for a current directory. Identical trees give
+  identical bytes whatever the host times or directory order. The fit is
+  checked first, counting whole clusters and folders: a misfit names the
+  shortfall in bytes and writes nothing, and a file larger than a disk is
+  named and never split. The formatter moved into the media crate, where the
+  window can reuse it; blank `--format` images are byte-identical to before.
+  Two slow goldens boot FreeDOS with such disks in B:: one checks DIR and
+  TYPE, the other enters a two-disk 720K set with CD and rebuilds it with
+  XCOPY on A:.
 - **2026-11-16 — `image template build` builds the templates only:** the
   open firmware packages and the FreeDOS 1.4 Floppy Edition installation sets
   are built and published by the unemu-media repository

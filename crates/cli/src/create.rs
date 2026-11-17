@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Offline raw-image creation and deterministic FAT12 formatting.
+//! Offline raw-image creation: blank or formatted diskettes, diskettes filled
+//! from host files (one disk or a numbered set), and blank hard disks.
 //!
-//! Microsoft FAT Specification, FAT on-disk format, BPB and FAT12 entries;
-//! IBM Personal Computer AT Technical Reference, diskette formats and INT 13h
-//! CHS addressing. See machines/README.md § Preparing disks. Hard disks remain
-//! unpartitioned; the bounded CHS policy targets the shipped XUB BIOS path.
+//! The FAT12 formatter and builder live in [`media::fat12`] (Microsoft FAT
+//! Specification; IBM Personal Computer AT Technical Reference, diskette
+//! formats and INT 13h CHS addressing). See machines/README.md § Preparing
+//! disks. Hard disks remain unpartitioned; the bounded CHS policy targets the
+//! shipped XUB BIOS path.
 
-use assembly::{FloppyGeometry, HardDiskGeometry};
-use std::ffi::OsString;
+use assembly::HardDiskGeometry;
+pub use media::fat12::FloppyFormat;
+use media::fat12::{volume_label, BuildError, Request, ShortName};
+use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct CreateCommand {
@@ -24,35 +28,19 @@ pub enum ImageKind {
         format: FloppyFormat,
         formatted: bool,
         label: Option<[u8; 11]>,
+        /// Host files to copy onto the new disk; implies `formatted`.
+        files: Option<FloppyFiles>,
     },
     HardDisk(HardDiskGeometry),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FloppyFormat {
-    Hd144,
-    Hd12,
-    Dd720,
-    Dd360,
-}
-
-impl FloppyFormat {
-    fn geometry(self) -> FloppyGeometry {
-        match self {
-            Self::Hd144 => FloppyGeometry::HD_1_44,
-            Self::Hd12 => FloppyGeometry::HD_1_2,
-            Self::Dd720 => FloppyGeometry::DD_720K,
-            Self::Dd360 => FloppyGeometry::DD_360K,
-        }
-    }
-    fn layout(self) -> (u8, u16, u8, u16) {
-        match self {
-            Self::Hd144 => (1, 224, 0xF0, 9),
-            Self::Hd12 => (1, 224, 0xF9, 7),
-            Self::Dd720 => (2, 112, 0xF9, 3),
-            Self::Dd360 => (2, 112, 0xFD, 2),
-        }
-    }
+/// `--add`, `--top` and `--split`: what goes on a diskette built from host files.
+#[derive(Debug, PartialEq, Eq)]
+pub struct FloppyFiles {
+    pub sources: Vec<PathBuf>,
+    pub top: Option<ShortName>,
+    /// Spread the files over `OUT-1ofN`, `OUT-2ofN`… instead of refusing a misfit.
+    pub split: bool,
 }
 
 pub fn parse(args: &[OsString]) -> Result<CreateCommand, &'static str> {
@@ -64,13 +52,21 @@ pub fn parse(args: &[OsString]) -> Result<CreateCommand, &'static str> {
         return Err("create requires floppy or hd");
     }
     let (mut output, mut floppy, mut chs, mut size, mut label) = (None, None, None, None, None);
-    let (mut force, mut format) = (false, false);
+    let (mut force, mut format, mut split) = (false, false, false);
+    let (mut sources, mut top) = (Vec::new(), None);
     let mut args = args[1..].iter();
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--force") if !force => force = true,
             Some("--format") if kind == "floppy" && !format => format = true,
-            Some(option @ ("--type" | "--label" | "--chs" | "--size")) => {
+            Some("--split") if kind == "floppy" && !split => split = true,
+            // Host paths need not be UTF-8, so --add keeps the raw argument.
+            Some("--add") if kind == "floppy" => sources.push(PathBuf::from(
+                args.next()
+                    .filter(|s| !s.is_empty() && !s.as_encoded_bytes().starts_with(b"--"))
+                    .ok_or("missing create option value")?,
+            )),
+            Some(option @ ("--type" | "--label" | "--top" | "--chs" | "--size")) => {
                 let value = args
                     .next()
                     .and_then(|s| s.to_str())
@@ -78,16 +74,18 @@ pub fn parse(args: &[OsString]) -> Result<CreateCommand, &'static str> {
                     .ok_or("missing create option value")?;
                 match option {
                     "--type" if kind == "floppy" && floppy.is_none() => {
-                        floppy = Some(match value {
-                            "1.44M" => FloppyFormat::Hd144,
-                            "1.2M" => FloppyFormat::Hd12,
-                            "720K" => FloppyFormat::Dd720,
-                            "360K" => FloppyFormat::Dd360,
-                            _ => return Err("floppy type must be 1.44M, 1.2M, 720K or 360K"),
-                        })
+                        floppy = Some(
+                            FloppyFormat::from_name(value)
+                                .ok_or("floppy type must be 1.44M, 1.2M, 720K or 360K")?,
+                        )
                     }
                     "--label" if kind == "floppy" && label.is_none() => {
                         label = Some(volume_label(value)?)
+                    }
+                    "--top" if kind == "floppy" && top.is_none() => {
+                        top = Some(
+                            ShortName::parse(value).ok_or("--top must be a DOS 8.3 folder name")?,
+                        )
                     }
                     "--chs" if kind == "hd" && chs.is_none() => chs = Some(parse_chs(value)?),
                     "--size" if kind == "hd" && size.is_none() => size = Some(parse_size(value)?),
@@ -104,13 +102,21 @@ pub fn parse(args: &[OsString]) -> Result<CreateCommand, &'static str> {
         }
     }
     let kind = if kind == "floppy" {
-        if label.is_some() && !format {
-            return Err("--label requires --format");
+        if sources.is_empty() && (top.is_some() || split) {
+            return Err("--top and --split require --add");
+        }
+        if label.is_some() && !format && sources.is_empty() {
+            return Err("--label requires --format or --add");
         }
         ImageKind::Floppy {
             format: floppy.ok_or("floppy requires --type")?,
-            formatted: format,
+            formatted: format || !sources.is_empty(),
             label,
+            files: (!sources.is_empty()).then_some(FloppyFiles {
+                sources,
+                top,
+                split,
+            }),
         }
     } else {
         ImageKind::HardDisk(match (chs, size) {
@@ -174,77 +180,23 @@ fn parse_size(value: &str) -> Result<HardDiskGeometry, &'static str> {
     })
 }
 
-fn volume_label(value: &str) -> Result<[u8; 11], &'static str> {
-    if value.len() > 11
-        || value.starts_with(' ')
-        || value.trim().is_empty()
-        || !value.bytes().all(|b| b.is_ascii_graphic() || b == b' ')
-        || value.bytes().any(|b| b"\"*+,./:;<=>?[\\]|".contains(&b))
-    {
-        return Err("label must contain 1..=11 ASCII characters, without leading spaces or FAT filename punctuation");
-    }
-    let mut label = [b' '; 11];
-    for (out, byte) in label.iter_mut().zip(value.bytes()) {
-        *out = byte.to_ascii_uppercase();
-    }
-    Ok(label)
-}
-
-/// Format metadata only; the atomic image writer supplies zero data sectors.
-/// Fixed serial, FAT epoch and a silent CLI/HLT loop avoid host-time inputs and
-/// accidental execution of filesystem metadata if this data floppy is booted.
-fn fat12_prefix(format: FloppyFormat, label: Option<[u8; 11]>) -> Vec<u8> {
-    let geometry = format.geometry();
-    let (cluster_sectors, root_entries, media, fat_sectors) = format.layout();
-    let root_start = (1 + 2 * usize::from(fat_sectors)) * 512;
-    let mut disk = vec![0; root_start + usize::from(root_entries) * 32];
-    disk[..3].copy_from_slice(&[0xEB, 0x3C, 0x90]);
-    disk[3..11].copy_from_slice(b"UNEMUPC ");
-    for (offset, value) in [
-        (11, 512),
-        (14, 1),
-        (17, root_entries),
-        (19, (geometry.image_bytes() / 512) as u16),
-        (22, fat_sectors),
-        (24, geometry.sectors_per_track as u16),
-        (26, geometry.heads as u16),
-    ] {
-        disk[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
-    }
-    disk[13] = cluster_sectors;
-    disk[16] = 2;
-    disk[21] = media;
-    disk[38] = 0x29;
-    disk[39..43].copy_from_slice(&0x28959855u32.to_le_bytes());
-    disk[43..54].copy_from_slice(&label.unwrap_or(*b"NO NAME    "));
-    disk[54..62].copy_from_slice(b"FAT12   ");
-    disk[62..66].copy_from_slice(&[0xFA, 0xF4, 0xEB, 0xFD]);
-    disk[510..512].copy_from_slice(&[0x55, 0xAA]);
-    for start in [512, (1 + usize::from(fat_sectors)) * 512] {
-        disk[start..start + 3].copy_from_slice(&[media, 0xFF, 0xFF]);
-    }
-    if let Some(label) = label {
-        disk[root_start..root_start + 11].copy_from_slice(&label);
-        disk[root_start + 11] = 8;
-        // FAT dates cannot represent year zero. Use 1980-01-01 for all date fields.
-        for offset in [16, 18, 24] {
-            disk[root_start + offset..root_start + offset + 2]
-                .copy_from_slice(&0x21u16.to_le_bytes());
-        }
-    }
-    disk
-}
-
 pub fn execute(command: CreateCommand, output: &mut impl Write) -> io::Result<u8> {
     let (bytes, prefix) = match command.kind {
         ImageKind::Floppy {
             format,
+            label,
+            files: Some(files),
+            ..
+        } => return execute_files(&command.output, command.force, format, label, files, output),
+        ImageKind::Floppy {
+            format,
             formatted,
             label,
+            files: None,
         } => (
-            format.geometry().image_bytes(),
+            format.image_bytes(),
             if formatted {
-                fat12_prefix(format, label)
+                media::fat12::format_metadata(format, label)
             } else {
                 Vec::new()
             },
@@ -277,6 +229,199 @@ pub fn execute(command: CreateCommand, output: &mut impl Write) -> io::Result<u8
             )?;
         }
         writeln!(output, "\nXUB supplies geometry through IDENTIFY; an IBM AT system BIOS alone requires a matching AT drive type (for example --chs 615/4/17).\nrun FDISK in DOS, reboot, then FORMAT C: /S (or FORMAT C: and SYS C:).\nguest writes persist in the adjacent journal and preserve the base. Stop the emulator before media commit (export a new image) or media rollback (with a backup). See machines/README.md, Preparing disks.")?;
+    }
+    Ok(0)
+}
+
+/// `OUT-kofN` beside `OUT`, keeping its extension: `game.img` → `game-2of3.img`.
+fn set_member(output: &Path, disk: usize, disks: usize) -> io::Result<PathBuf> {
+    let stem = output.file_stem().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("create {}: output needs a file name", output.display()),
+        )
+    })?;
+    let mut name = stem.to_owned();
+    name.push(format!("-{disk}of{disks}"));
+    if let Some(extension) = output.extension() {
+        name.push(".");
+        name.push(extension);
+    }
+    Ok(output.with_file_name(name))
+}
+
+/// The outputs this command may replace that already exist: `OUT`, and with
+/// `--split` any earlier set beside it (`<stem>-<k>of<n>.<ext>`). The scan
+/// leaves them out should they sit inside a source tree.
+fn existing_outputs(output: &Path, split: bool) -> Vec<PathBuf> {
+    let mut paths = vec![output.to_owned()];
+    let parent = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    if let (true, Some(stem), Ok(entries)) = (split, output.file_stem(), std::fs::read_dir(parent))
+    {
+        paths.extend(
+            entries
+                .flatten()
+                .filter(|entry| is_set_member(&entry.file_name(), stem, output.extension()))
+                .map(|entry| entry.path()),
+        );
+    }
+    paths
+}
+
+/// `name` is `<stem>-<k>of<n>` plus `extension`, as [`set_member`] writes.
+fn is_set_member(name: &OsStr, stem: &OsStr, extension: Option<&OsStr>) -> bool {
+    let Some(rest) = name
+        .as_encoded_bytes()
+        .strip_prefix(stem.as_encoded_bytes())
+        .and_then(|rest| rest.strip_prefix(b"-"))
+    else {
+        return false;
+    };
+    let rest = match extension {
+        Some(extension) => rest
+            .strip_suffix(extension.as_encoded_bytes())
+            .and_then(|rest| rest.strip_suffix(b".")),
+        None => Some(rest),
+    };
+    let number = |part: &[u8]| !part.is_empty() && part.iter().all(u8::is_ascii_digit);
+    rest.and_then(|rest| {
+        let at = rest.windows(2).position(|pair| pair == b"of")?;
+        Some(number(&rest[..at]) && number(&rest[at + 2..]))
+    })
+    .unwrap_or(false)
+}
+
+/// What to suggest when the files do not fit one disk of `format`.
+fn misfit_hint(format: FloppyFormat) -> &'static str {
+    match format {
+        FloppyFormat::Dd720 => {
+            "; use --split for a set of disks, or --type 1.44M if the drive is a 1.44M one"
+        }
+        FloppyFormat::Dd360 => {
+            "; use --split for a set of disks, or --type 1.2M if the drive is a 1.2M one"
+        }
+        FloppyFormat::Hd144 | FloppyFormat::Hd12 => "; use --split for a set of disks",
+    }
+}
+
+/// Build every image in memory, check that no output exists (unless `force`),
+/// then publish them in order. A misfit or an unreadable host file stops the
+/// command before anything is written; a failure publishing a later disk of a
+/// set names the disks already written.
+fn execute_files(
+    output_path: &Path,
+    force: bool,
+    format: FloppyFormat,
+    label: Option<[u8; 11]>,
+    files: FloppyFiles,
+    output: &mut impl Write,
+) -> io::Result<u8> {
+    let request = Request {
+        sources: files.sources,
+        top: files.top,
+        format,
+        label,
+        exclude: existing_outputs(output_path, files.split),
+    };
+    let failed = |error: BuildError| {
+        let (kind, hint) = match &error {
+            BuildError::Io { source, .. } => (source.kind(), ""),
+            BuildError::DoesNotFit { .. } => (io::ErrorKind::InvalidInput, misfit_hint(format)),
+            _ => (io::ErrorKind::InvalidInput, ""),
+        };
+        io::Error::new(
+            kind,
+            format!("create {}: {error}{hint}", output_path.display()),
+        )
+    };
+    let plan = if files.split {
+        media::fat12::plan_split(&request)
+    } else {
+        media::fat12::plan(&request)
+    }
+    .map_err(failed)?;
+    let images = plan.images().map_err(failed)?;
+    let paths = match plan.disks.len() {
+        1 => vec![output_path.to_owned()],
+        disks => (1..=disks)
+            .map(|disk| set_member(output_path, disk, disks))
+            .collect::<io::Result<_>>()?,
+    };
+    if !force {
+        for path in &paths {
+            match std::fs::symlink_metadata(path) {
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        format!(
+                            "create {}: output exists; use --force to replace its directory entry",
+                            path.display()
+                        ),
+                    ))
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!("create {}: {error}", path.display()),
+                    ))
+                }
+            }
+        }
+    }
+    for (index, ((path, image), disk)) in paths.iter().zip(&images).zip(&plan.disks).enumerate() {
+        media::create::image(path, image.len() as u64, image, force).map_err(|error| {
+            let written: Vec<_> = paths[..index]
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect();
+            let note = if written.is_empty() {
+                String::new()
+            } else {
+                format!("; already written: {}", written.join(", "))
+            };
+            io::Error::new(
+                error.kind(),
+                format!("create {}: {error}{note}", path.display()),
+            )
+        })?;
+        let label = disk
+            .label
+            .map(|label| {
+                format!(
+                    "label {}, ",
+                    String::from_utf8_lossy(label.trim_ascii_end())
+                )
+            })
+            .unwrap_or_default();
+        let count = disk.files.len();
+        writeln!(
+            output,
+            "created {} ({} bytes): {label}{count} file{}, {} bytes free",
+            path.display(),
+            image.len(),
+            if count == 1 { "" } else { "s" },
+            disk.free_bytes
+        )?;
+    }
+    for rename in &plan.renames {
+        writeln!(
+            output,
+            "renamed {} -> {}",
+            rename.host.display(),
+            rename.dos_path
+        )?;
+    }
+    for skipped in &plan.skipped {
+        writeln!(
+            output,
+            "skipped {}: {}",
+            skipped.host.display(),
+            skipped.reason
+        )?;
     }
     Ok(0)
 }

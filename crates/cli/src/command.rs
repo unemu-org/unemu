@@ -55,6 +55,9 @@ const USAGE: &str = "usage: upcli --boot (Real16 timer demo)
        upcli image registry set HOST [--private | --namespace NAME[:private|:public]...] [--config FILE]
        upcli image template build --store DIR [--vendor DIR] [--dry-run]
        upcli media create floppy --type 1.44M|1.2M|720K|360K OUT [--format] [--label NAME] [--force]
+       upcli media create floppy --type 1.44M|1.2M|720K|360K OUT --add PATH [--add PATH]... [--top NAME] [--label NAME] [--split] [--force]
+         --add copies host files and folders (folders whole, symlinks never followed) onto a new FAT12 disk with 8.3 names;
+         --top NAME puts them all under one folder; --split writes <stem>-1ofN.<ext>, <stem>-2ofN.<ext>... when they need more than one disk
        upcli media create hd (--chs C/H/S | --size SIZE[MiB|GiB]) OUT [--force]
        upcli media generations --base IMG --journal J
        upcli media verify --base IMG --journal J [--repair-tail --backup PATH]

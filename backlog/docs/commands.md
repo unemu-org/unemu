@@ -822,6 +822,9 @@ UNEMUPC_REQUIRE_FIXTURES=1 UNEMUPC_SCHEDULER_WALL_TIMES=1 cargo test --offline -
 # DOS sessions and their final console screens (requires fetched fixtures):
 UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_interactive_golden -- --ignored --nocapture
 UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test dos_write_golden -- --ignored --nocapture
+# FreeDOS lists and types a B: floppy built by media create --add, then enters a
+# two-disk --split set with CD and rebuilds it with XCOPY:
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test media_files_golden -- --ignored --nocapture
 # FreeDOS boots A: with the open AT BIOS and XT+ ROM, then lists readonly C:
 UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test ide_freedos_golden -- --ignored --nocapture
 # Open AT protected-mode test floppy: INT 15h 88h/87h, PM entry, 8042/triple-fault resets, A20 (design/at-pm-test.md)
@@ -1111,6 +1114,36 @@ print usage to stdout with status 0; unknown or extra arguments print usage to
 stderr with status 2. The informative
 `scheduler_engine_wall_times` test skips with one line unless
 `UNEMUPC_SCHEDULER_WALL_TIMES=1` is set, including in ordinary slow/CI runs.
+
+## Creating disk images
+
+```sh
+cargo run --offline -p cli -- media create floppy --type 1.44M --format --label TRANSFER /path/to/transfer.img
+cargo run --offline -p cli -- media create floppy --type 1.44M --add /path/to/GAME --label GAME /path/to/game.img
+cargo run --offline -p cli -- media create floppy --type 1.44M --add /path/to/PLAY.EXE --add /path/to/DATA.DAT --top MYGAME /path/to/mygame.img
+cargo run --offline -p cli -- media create floppy --type 1.44M --add /path/to/BIGGAME --label BIGGAME --split /path/to/big.img
+cargo run --offline -p cli -- media create hd --size 32MiB /path/to/disk.img
+```
+
+`--add PATH` (repeatable; folders whole, symbolic links never followed) builds
+a new FAT12 floppy from host files and implies `--format`. A named path that is a
+symbolic link, host metadata or a device is refused, as are two paths reaching
+the same host entry. `--top NAME` puts everything under one root folder. Names
+become plain DOS 8.3 names; each change prints as `renamed HOST -> DOS-PATH`,
+and host junk inside folders (`.DS_Store`, `._*`, `__MACOSX`, `Thumbs.db`,
+`desktop.ini`), links, devices and the images being written print as
+`skipped HOST: REASON`. A folder path on the disk may have at most 64
+characters, counting the leading backslash and `--top`. Identical trees give
+identical images: host-name order, 1980-01-01 dates, no host times. Without
+`--split` a misfit is an error naming the shortfall in bytes and nothing is
+written. `--split` writes `<stem>-1ofN.<ext>`, `<stem>-2ofN.<ext>`… beside `OUT`
+(or `OUT` itself when one disk is enough), labels them `LABEL 1`, `LABEL 2`…,
+repeats the folder path on every disk and refuses a single file larger than a
+disk. One line per disk gives its file count and free bytes. Outputs are never
+replaced without `--force`. To install a split set, everything must sit under
+one folder (one folder `--add`, or `--top` with several sources): run
+`MD C:\BIGGAME`, then `XCOPY B:\BIGGAME C:\BIGGAME /S /E` once per disk. Full
+rules: `machines/README.md` § Building a floppy from host files.
 
 ## Offline persistent media
 
