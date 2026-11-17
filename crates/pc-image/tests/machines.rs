@@ -203,6 +203,34 @@ fn a_machine_from_a_host_qualified_tag_gets_a_plain_folder_name() {
     );
 }
 
+/// A listing that probes a machine while another listing's probe holds the
+/// workspace lock for its instant reads the machine as stopped: only an
+/// owner's exclusive lock means running.
+#[test]
+fn a_concurrent_listing_probe_does_not_read_as_running() {
+    let Some(fixture) = Fixture::new() else {
+        return;
+    };
+    let store = &fixture.store;
+    let id = machine::create_from_tag(store, "test:source", Some("Lab"), None).unwrap();
+    drop(store.workspace(&id).unwrap());
+    let stopped = state(store, &id);
+    assert_ne!(stopped, State::Running);
+    let probe = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(store.workspace_path(&id).unwrap().join("workspace.lock"))
+        .unwrap();
+    probe.try_lock_shared().unwrap();
+    assert_eq!(state(store, &id), stopped);
+    let listed = machine::list(store).unwrap();
+    let listed = listed.iter().find(|l| l.id == id).unwrap();
+    assert_eq!(listed.state, stopped);
+    drop(probe);
+    let _owner = store.workspace(&id).unwrap();
+    assert_eq!(state(store, &id), State::Running);
+}
+
 #[test]
 fn state_shows_changed_drives_cmos_and_running() {
     let Some(fixture) = Fixture::new() else {

@@ -5,6 +5,14 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-17 — A listing no longer reads another listing's probe as a
+  running machine:** a machine's state probe took the workspace lock
+  exclusively for an instant, so two listings at the same moment (the
+  window's relist after Discard and a read of the same machine, or the
+  window and `upcli image machine ls`) could show a stopped machine as
+  Running. The probe now asks for a shared lock; a session's exclusive
+  lock still reads as running. The flaky window test that caught it failed 6 of 400
+  runs under load before and 0 of 400 after (MEASURED).
 - **2026-11-17 — The 80286 executes LOADALL; the CPU pin moves to
   `cf32ec2e`:** x86jit `cf32ec2e` runs the undocumented LOADALL (0F 05) on
   its 80286 model, which HIMEM.SYS 3.x uses to copy extended memory from

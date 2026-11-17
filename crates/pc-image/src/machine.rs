@@ -634,7 +634,11 @@ fn listing(store: &Store, tags: &[Tag], id: &str, record: &Machine) -> Result<Li
 }
 
 /// Whether another owner holds the workspace lock. The probe never creates
-/// the lock file and releases its own attempt at once.
+/// the lock file and releases its own attempt at once. It asks for a shared
+/// lock: an owner holds the lock exclusively, so a running machine still
+/// refuses the probe, while two listings probing at the same moment (the
+/// window's relist and a command-line listing, or two threads) share it and
+/// neither reads the other's probe as a running machine.
 fn running(store: &Store, id: &str) -> Result<bool> {
     let path = store.workspace_path(id)?.join("workspace.lock");
     let file = match fs::OpenOptions::new().read(true).write(true).open(path) {
@@ -642,7 +646,7 @@ fn running(store: &Store, id: &str) -> Result<bool> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e.into()),
     };
-    match file.try_lock() {
+    match file.try_lock_shared() {
         Ok(()) => Ok(false),
         Err(fs::TryLockError::WouldBlock) => Ok(true),
         Err(fs::TryLockError::Error(e)) => Err(e.into()),
