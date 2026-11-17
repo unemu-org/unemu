@@ -60,9 +60,10 @@ more expensive with every artifact published, so it is done now or never.
 5. **Before the first public release the published tags are replaced, not
    revised** (maintainer, 2026-11-17: no `-r2` revisions while the project
    is before its release). When the first release that writes `ibm-pc` is
-   out, unemu-media rebuilds the six published artifacts with it and pushes
-   them under their existing tags (`unemu/media/freedos:1.4`, firmware
-   revision 1), replacing the `ibm-pc-at` ones; titles not yet published
+   out, the maintainer deletes the six published `ibm-pc-at` artifacts on
+   the registry by hand, once, and unemu-media pushes their rebuilds under
+   the same tags (`unemu/media/freedos:1.4`, firmware revision 1) as new
+   tags; upcli gains no path for moving frozen tags. Titles not yet published
    wait for that release and are published once. Tags on registry.unemu.dev
    become immutable from the first public release on; from then on a change
    is a new revision. This repository's pinned digests of the builders it
