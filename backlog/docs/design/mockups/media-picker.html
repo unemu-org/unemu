@@ -233,6 +233,50 @@ legend { padding: 0 5px; }
 .pk-sum.bad { color: var(--warn); font-weight: 400; }
 kbd { font: 10.5px var(--code); padding: 0 3px; box-shadow: var(--thin-in); background: var(--field); border-radius: 3px; }
 
+/* revision notes */
+.note .rev-h { margin: 8px 0 2px; font-weight: 700; }
+.note ul.rev { margin: 0; padding-left: 18px; max-width: 84ch; }
+.note ul.rev li { margin: 2px 0; }
+
+/* Create from files: the picker's second view */
+.ck-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.ck-files, .ck-disk { padding: 8px; overflow: auto; }
+.ck-from { font-weight: 700; }
+.ck-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; position: relative; margin-bottom: 6px; }
+.ck-bar .popmenu { top: calc(100% + 2px); }
+.ck-drop { border: 1px dashed var(--muted); padding: 26px 12px; text-align: center; color: var(--muted); border-radius: var(--radius); }
+.ck-drop .hint { display: block; margin-top: 4px; font-size: 11px; }
+.ck-items { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.ck-items th { text-align: left; font-weight: 400; color: var(--muted); padding: 3px 6px; border-bottom: 1px solid var(--lo); white-space: nowrap; }
+.ck-items td { padding: 4px 6px; border-bottom: 1px solid var(--face); vertical-align: top; }
+.ck-items tfoot td { border-bottom: 0; font-weight: 700; }
+.ck-items .num { text-align: right; white-space: nowrap; }
+.ck-items small { display: block; color: var(--muted); font-size: 11px; }
+.ck-items .rm { border: 0; background: none; padding: 0 4px; color: var(--muted); font-weight: 700; }
+.ck-items .rm:hover { color: var(--ink); }
+.ck-more { margin-top: 8px; }
+.ck-more > summary { padding: 2px 0; cursor: default; }
+.ck-more .mini { margin-top: 4px; }
+.ck-more ul { margin: 4px 0 0; padding-left: 18px; }
+.ck-more li { margin: 2px 0; }
+.ck-form { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; align-items: center; }
+.ck-form > .hint { grid-column: 2; font-size: 11px; margin: -2px 0 4px; }
+.ck-form input { width: 14em; }
+.ck-form .seg { justify-self: start; }
+.ck-disk h3 { margin-top: 12px; }
+.meter { display: flex; height: 14px; background: var(--field); box-shadow: var(--in); border-radius: var(--radius); overflow: hidden; margin: 4px 0; padding: 2px; }
+.meter > span { display: block; height: 100%; flex: none; }
+.meter .m-files { background: var(--sel); }
+.meter .m-round { background: var(--sel); opacity: .45; }
+.meter.over .m-files, .meter.over .m-round { background: var(--warn); }
+.ck-nums { margin: 2px 0; font-variant-numeric: tabular-nums; }
+.ck-nums.small { font-size: 11px; color: var(--muted); }
+.ck-ok { color: var(--good); font-weight: 700; }
+.ck-plan .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ck-plan td code { font-size: 10.5px; }
+.xcopy { display: block; margin: 4px 0; padding: 4px 6px; background: var(--field); box-shadow: var(--thin-in); border-radius: var(--radius); }
+.check.later > span { color: var(--muted); }
+
 @media (max-width: 980px) { .pk-body { grid-template-columns: 160px minmax(0, 1fr); height: auto; } .pk-detail { grid-column: 1 / -1; max-height: none; } .pk-results { max-height: 340px; } }
 @media (max-width: 860px) {
   .lists { grid-template-columns: 1fr; }
@@ -259,18 +303,31 @@ kbd { font: 10.5px var(--code); padding: 0 3px; box-shadow: var(--thin-in); back
   .listview { height: 280px; }
   .menu-panel { min-width: min(300px, calc(100vw - 40px)); }
 }
+@media (max-width: 980px) { .ck-body { grid-template-columns: 1fr; } .ck-files { max-height: 380px; } }
+@media (max-width: 640px) { .ck-form { grid-template-columns: 1fr; } .ck-form > .hint { grid-column: 1; } .ck-form input { width: 100%; } }
 </style>
 </head>
 <body>
 
 <div class="note">
-  <p><strong>Design mock-up — approved by the maintainer on 2026-11-15, all “please confirm” items included.</strong> One media picker for every Insert…, the Installation media collection’s Insert into… and Add to machine…, and pending inserts on stopped and halted machines. It builds on the approved machines, main-window and installation media mock-ups; everything not shown here stays as they show it. Sample data only: sizes, digests and dates are illustrative, and actions are previews. Nothing runs, reads a file or contacts a registry.</p>
+  <div>
+    <p><strong>Design mock-up — revision 2, for approval.</strong> Revision 1 was approved by the maintainer on 2026-11-15, all “please confirm” items included, and stays as it was: one media picker for every Insert…, the Installation media collection’s Insert into… and Add to machine…, and pending inserts on stopped and halted machines. Revision 2 adds <strong>Create from files…</strong>: many DOS games, from itch.io for example, come as loose EXE files and folders, and the picker packs them into diskette images instead of a host tool. It builds on the approved machines, main-window and installation media mock-ups; everything not shown here stays as they show it. Sample data only: sizes, digests, dates and the host files and folders are illustrative, and actions are previews. Nothing runs, reads a file or contacts a registry.</p>
+    <p class="rev-h">Changes in revision 2</p>
+    <ul class="rev">
+      <li><strong>Create from files…</strong> in the picker’s footer, beside <em>Browse for an image file…</em>. It turns the picker into its Create view; the Into row (machine, drive, when) stays.</li>
+      <li>The Create view: <em>Add files…</em> and <em>Add folder…</em> (the system dialogs; drag and drop works too), the list of host items with sizes and × to remove, the top folder name, the format (only what the drive takes, its own first), the volume label, a fit meter that counts cluster rounding, folders and root entries, and the DOS (8.3) names and skipped files, collapsible.</li>
+      <li>Live states: fits; does not fit, with the bytes it needs beyond one disk; one file too large for any disk, named.</li>
+      <li>Too big for one disk: both options are shown. <em>Split across N disks</em> with its plan, the catalogue order for Next disk and the XCOPY command that rebuilds the tree on C:; <em>Copy into C:</em> greyed, “later”.</li>
+      <li><strong>Create and insert</strong> stores the disk, or the set, as the machine’s own and puts it into the drive: now while running or halted, at the next Start while stopped. <em>Also keep in the library as an installation media set</em> is on for a split and off for one disk.</li>
+      <li>Mock-up controls open the Create view on sample folders. Notes and the maintainer’s decisions are at the bottom of the page.</li>
+    </ul>
+  </div>
   <div class="ctrls"><button type="button" id="skinBtn">Skin: classic</button><button type="button" id="themeBtn">Theme: system</button></div>
 </div>
 
 <div class="lists">
   <div>
-    <p class="rev-h">Changes in this design</p>
+    <p class="rev-h">Revision 1 — changes in this design (approved)</p>
     <ul>
       <li><strong>One Insert… per drive</strong> — from the Media menu, the drive chip’s menu, the toolbar’s A: and B:, and Ctrl+Alt+I (Shift for B:) — opens the media picker. It replaces both <em>Browse / catalogue…</em> and <em>From library…</em>. The old dialog’s raw store path, Refresh button and list of refusal reasons are gone.</li>
       <li>At the top of the picker you pick the <strong>target</strong>: the machine (fixed while it runs), the drive (switchable, with its format and what is in it now) and when the disk goes in (now, or at the next Start).</li>
@@ -281,7 +338,7 @@ kbd { font: 10.5px var(--code); padding: 0 3px; box-shadow: var(--thin-in); back
       <li><strong>Installation media collection</strong>: <em>Insert into…</em> (a menu of the drives that fit) and <em>Add to machine…</em> are enabled, and disabled only with a short reason. Make transfer media… and Export… still say “not available yet”.</li>
       <li><strong>Pending inserts</strong>: a stopped machine shows them in its details, in the drive chips (“at Start”) and in the Media menu. A halted machine takes the disk at once, and Send Ctrl+Alt+Del boots from it.</li>
     </ul>
-    <p class="rev-h">Out of scope</p>
+    <p class="rev-h">Revision 1 — out of scope</p>
     <ul>
       <li>Remote search, remote rows and Pull and insert: after the MVP, with Remotes and the registry catalogue. This mock-up only reserves their place.</li>
       <li>Showing the library beside a running machine; the library still shows only while no machine runs.</li>
@@ -290,7 +347,7 @@ kbd { font: 10.5px var(--code); padding: 0 3px; box-shadow: var(--thin-in); back
     </ul>
   </div>
   <div>
-    <p class="rev-h">Proposed — please confirm</p>
+    <p class="rev-h">Revision 1 — proposed, confirmed on 2026-11-15</p>
     <ol>
       <li>One <strong>Insert…</strong> per drive replaces <em>Browse / catalogue…</em> and <em>From library…</em>. The drive’s own catalogue becomes the picker’s <em>This machine</em> source, and a disk image file on this computer is <em>Browse for an image file…</em> in the picker’s footer, leading to today’s file flow.</li>
       <li>By default only sets that fit the drive are listed. One line, “N don’t fit A: (1.2M) — Show”, reveals the rest, dimmed. A dimmed row says only where it would fit: another drive of the same machine (click or Alt+B switches the drive), or “No drive in this machine takes 1.44M”.</li>
@@ -318,6 +375,13 @@ kbd { font: 10.5px var(--code); padding: 0 3px; box-shadow: var(--thin-in); back
   <button type="button" data-demo="pick-ibm">Insert… A: of IBM AT with DOS (1.2M only)</button>
   <button type="button" data-demo="only-ibm" aria-pressed="false">Sample: only IBM AT with DOS exists</button>
   <button type="button" data-demo="reset">Reset sample</button>
+  <span>· Create from files… into B: of DOS games:</span>
+  <button type="button" data-demo="ck-starhop">starhop (fits one disk)</button>
+  <button type="button" data-demo="ck-tinyquest">three loose files</button>
+  <button type="button" data-demo="ck-galaxia">galaxia (just too big)</button>
+  <button type="button" data-demo="ck-azuramon">azuramon (561 files)</button>
+  <button type="button" data-demo="ck-nightfall">nightfall (one file too large)</button>
+  <button type="button" data-demo="ck-empty">empty</button>
 </div>
 
 <main class="app" id="app">
@@ -359,24 +423,98 @@ kbd { font: 10.5px var(--code); padding: 0 3px; box-shadow: var(--thin-in); back
   </div>
 </main>
 
+<div class="lists" style="margin-top:14px">
+  <div>
+    <p class="rev-h">Revision 2 — Create from files…: behaviour to approve</p>
+    <ol>
+      <li><strong>Where it starts.</strong> <em>Create from files…</em> sits in the picker’s footer beside <em>Browse for an image file…</em>, so every way into the picker reaches it: Media › Insert…, a drive chip’s Insert…, the toolbar’s A: and B:, Ctrl+Alt+I (Shift for B:), Machine › Insert media… and the collection’s Insert into…. Media › <em>Create from files…</em> under each drive’s Insert…, and the same item in a drive chip’s menu, open the picker straight in the Create view for that drive. Files dropped on the main window or on a drive chip do nothing yet (later).</li>
+      <li><strong>A view of the picker, not a second dialog.</strong> The picker’s body becomes the Create view and the Into row stays, so the machine, the drive (also Alt+A / Alt+B) and when the disk goes in are chosen once, as for a set; the formats follow the drive. <em>‹ Back to search</em> returns with the search and the added items kept; Cancel or Esc closes. I chose this over a dialog of its own because that dialog would need the same target row again, and the shell shows one dialog at a time.</li>
+      <li><strong>Adding.</strong> <em>Add files…</em> opens the system file dialog (several files at once), <em>Add folder…</em> the folder dialog; files and folders dropped on the list are added too. Each row shows where the item lands on the disk, its files and folders, and its size; × removes it. Adding the same item twice changes nothing. Until Create, only names and sizes are read, on the library worker.</li>
+      <li><strong>Layout on the disk.</strong> Everything goes into the top folder. A single added folder becomes the top folder, so its contents go in directly; several items each go into it. The default top folder is the single folder’s name cut to 8.3 (<code>nightfall</code> becomes NIGHTFAL, with no ~1, since nothing else at the root can clash), else empty, which puts everything at the root; it can be edited. Names become 8.3: upper case, characters DOS refuses replaced with _, and a name that does not fit cut to six characters plus ~1 (~2 on a clash). Names that change beyond upper case are listed under <em>DOS names</em>; no long names are written. Host junk is skipped and listed with its reason: <code>.DS_Store</code>, AppleDouble files (<code>._*</code>) and symbolic links.</li>
+      <li><strong>Format and label.</strong> Only the formats the drive takes, the drive’s own first and chosen. The volume label defaults to the top folder name: up to 11 characters, empty writes none.</li>
+      <li><strong>Fit meter.</strong> It counts what DOS counts: the free bytes of a freshly formatted disk (1.44M 1,457,664; 720K 730,112; 1.2M 1,213,952; 360K 362,496), each file rounded up to whole clusters (512 bytes on 1.44M and 1.2M, 1,024 on 720K and 360K), each folder’s own clusters, and the root folder’s fixed entries (224, or 112 on 720K and 360K; the label takes one). The bar shows the files, then the rounding and folders lighter.</li>
+      <li><strong>Live states.</strong> <em>Fits one disk.</em> <em>Does not fit</em>, with the bytes it needs beyond one disk, and a link to a larger format the drive takes when that one fits. <em>A file too large for any disk</em>, named, which disables Create.</li>
+      <li><strong>Too big for one disk.</strong> Both options are shown. <em>Split across N disks</em> keeps folder order and keeps each file whole on one disk; every disk repeats the top folder path and the folders its files need, and its label ends with its number. The plan lists each disk’s label, files, bytes used, and first and last file. The set joins the drive’s catalogue in order, disk 1 goes in, and Media › Next disk swaps. A note gives the XCOPY command that rebuilds the tree on C:, one disk at a time. <em>Copy into C:</em> is greyed, “later”: it writes the files into the machine’s fixed disk as a new layer, a separate and bigger feature.</li>
+      <li><strong>Create and insert.</strong> The image, or each image of a split, is built in memory, stored once by its SHA-256 and becomes one of the machine’s own disks, as a browsed image file does: it joins the drive’s catalogue as a read-only base, and writes go to the machine’s journal or are refused, as chosen. Running or halted, it goes in now; stopped, it is the drive’s pending insert for the next Start, and the stopped machine owns the image by its SHA-256 until then, without the library. <em>Also keep in the library as an installation media set</em> (on for a split, off for one disk, until changed) also adds it to Installation media as a private set, such as <code>azuramon:1.0</code> titled AZURAMON, so every machine’s Insert… lists it. Left off, the disks belong to that machine alone and are removed with it.</li>
+      <li><strong>Deterministic.</strong> The same files with the same names, top folder, label and format give the same image bytes and SHA-256, in whatever order they were added: host times are not kept, every entry gets one fixed date, and nothing random goes in. The window uses the same builder as the new command-line tool.</li>
+    </ol>
+    <p class="rev-h">Revision 2 — out of scope</p>
+    <ul>
+      <li>Copy into C: (shown greyed), editing a DOS name by hand, long file names, and CD-ROM images.</li>
+      <li>Writing an image file on this computer without a machine: the command-line tool does that.</li>
+    </ul>
+  </div>
+  <div>
+    <p class="rev-h">Decided by the maintainer (2026-11-17)</p>
+    <ol>
+      <li><strong>Split first.</strong> Split across N disks ships now. Copy into C: stays greyed, “later”, a feature of its own.</li>
+      <li><strong>Default top folder</strong> as drawn: a single added folder’s name cut to 8.3, else empty (the root).</li>
+      <li><strong>Keep in the library</strong> is on for a split and off for one disk, until the user changes it.</li>
+      <li><strong>Entry points:</strong> the picker’s footer, and <em>Create from files…</em> in the Media menu and a drive chip’s menu. Dropping files on the main window or a drive chip comes later.</li>
+      <li><strong>A created disk for a stopped machine:</strong> the machine owns the image by its SHA-256 until Start; the library is not needed.</li>
+      <li><strong>Split order:</strong> folder order, as drawn.</li>
+    </ol>
+  </div>
+</div>
+
 <!-- The media picker -->
 <dialog class="dlg picker" id="picker" aria-labelledby="pkTitle">
   <div class="titlebar"><span class="t" id="pkTitle">Insert disk</span><button class="tbtn" type="button" data-close aria-label="Close">×</button></div>
   <div class="pk-top">
     <div class="pk-row"><span class="lbl">Into</span><select id="pkMachine" aria-label="Machine"></select><span class="seg" id="pkDrives" role="radiogroup" aria-label="Drive"></span><span class="pk-when" id="pkWhen"></span></div>
-    <div class="pk-row"><span class="lbl">From</span><span class="seg" id="pkSources" role="tablist" aria-label="Source"></span><button type="button" class="link" id="pkRemoteLink">What will a remote result look like?</button></div>
-    <div class="pk-search"><input type="search" id="pkFind" autocomplete="off" spellcheck="false" aria-controls="pkResults" aria-label="Search" placeholder="Search title, publisher, year…  (publisher:apogee, format:720k)"><span class="chips" id="pkChips"></span></div>
+    <div class="pk-row"><span class="lbl">From</span><span class="seg" id="pkSources" role="tablist" aria-label="Source"></span><button type="button" class="link" id="pkRemoteLink">What will a remote result look like?</button><span class="ck-from" id="ckFrom" hidden>Files and folders on this computer</span></div>
+    <div class="pk-search" id="pkSearchRow"><input type="search" id="pkFind" autocomplete="off" spellcheck="false" aria-controls="pkResults" aria-label="Search" placeholder="Search title, publisher, year…  (publisher:apogee, format:720k)"><span class="chips" id="pkChips"></span></div>
   </div>
-  <div class="pk-body">
+  <div class="pk-body" id="pkBodySearch">
     <details class="pane pk-facets" id="pkFacetsWrap" open><summary>Filters</summary><div id="pkFacets"></div></details>
     <div class="pane pk-results" id="pkResults" role="listbox" tabindex="-1" aria-label="Results"></div>
     <section class="pane pk-detail" id="pkDetail" aria-label="Selected set"></section>
   </div>
+  <!-- Create from files: the same picker, its body swapped -->
+  <div class="pk-body ck-body" id="ckBody" hidden>
+    <section class="pane ck-files" aria-label="Files and folders to put on the disk">
+      <div class="ck-bar">
+        <button class="btn" type="button" id="ckAddFiles" aria-haspopup="true">Add files…</button>
+        <button class="btn" type="button" id="ckAddFolder" aria-haspopup="true">Add folder…</button>
+        <span class="hint">or drop files and folders on this list</span>
+        <div class="popmenu" id="ckHostMenu" hidden></div>
+      </div>
+      <div id="ckList"></div>
+      <details class="ck-more" id="ckNames"><summary id="ckNamesSum">DOS names</summary><div id="ckNamesBody"></div></details>
+      <details class="ck-more" id="ckSkipped"><summary id="ckSkippedSum">Skipped</summary><div id="ckSkippedBody"></div></details>
+    </section>
+    <section class="pane ck-disk" aria-label="The disk">
+      <div class="ck-form">
+        <label for="ckTop">Top folder</label>
+        <input type="text" id="ckTop" autocomplete="off" spellcheck="false" maxlength="12" placeholder="none: the root">
+        <span class="hint">Everything added goes into this folder on the disk; a single added folder becomes it. Empty puts everything at the root.</span>
+        <span>Format</span>
+        <span class="seg" id="ckFmt" role="radiogroup" aria-label="Format"></span>
+        <span class="hint" id="ckFmtHint"></span>
+        <label for="ckLabel">Volume label</label>
+        <input type="text" id="ckLabel" autocomplete="off" spellcheck="false" maxlength="11" placeholder="none">
+        <span class="hint">Up to 11 characters; DIR and VOL show it.</span>
+      </div>
+      <h3>Space on the disk</h3>
+      <div id="ckMeter"></div>
+      <div id="ckState"></div>
+      <div id="ckSplit"></div>
+      <fieldset><legend>When a program writes to the disk</legend>
+        <label class="check"><input type="radio" name="ckWrite" value="journal" checked><span>Keep the changes in <span id="ckWriteM"></span><span class="hint">Saved with the machine. The created image itself never changes.</span></span></label>
+        <label class="check"><input type="radio" name="ckWrite" value="ro"><span>Write-protected<span class="hint">A program that tries to write gets an error.</span></span></label>
+      </fieldset>
+      <label class="check"><input type="checkbox" id="ckKeep"><span>Also keep in the library as an installation media set<span class="hint" id="ckKeepHint"></span></span></label>
+      <p class="hint">The same files with the same names, top folder, label and format give the same image bytes, so the same SHA-256, in whatever order they were added. Host times are not kept: every file and folder gets one fixed date, and nothing random, such as a volume serial number, goes in.</p>
+    </section>
+  </div>
   <div class="ft pk-ft">
     <span class="pk-sum" id="pkSum" role="status"></span>
-    <span class="pk-keys">Type to search · <kbd>↑</kbd><kbd>↓</kbd> choose · <kbd>Enter</kbd> inserts · <kbd>Alt+A</kbd> <kbd>Alt+B</kbd> drive · <kbd>Esc</kbd> closes</span>
+    <span class="pk-keys" id="pkKeys">Type to search · <kbd>↑</kbd><kbd>↓</kbd> choose · <kbd>Enter</kbd> inserts · <kbd>Alt+A</kbd> <kbd>Alt+B</kbd> drive · <kbd>Esc</kbd> closes</span>
+    <button class="btn" type="button" id="ckBack" hidden>‹ Back to search</button>
     <button class="btn" type="button" id="pkBrowse">Browse for an image file…</button>
+    <button class="btn" type="button" id="pkCreate">Create from files…</button>
     <button class="btn default" type="button" id="pkInsert">Insert</button>
+    <button class="btn default" type="button" id="ckGo" hidden>Create and insert</button>
     <button class="btn" type="button" data-close>Cancel</button>
   </div>
 </dialog>
@@ -502,7 +640,7 @@ function machineDetails(m) {
     '<h3>Media per drive</h3><table class="mini" aria-label="Media per drive"><thead><tr><th>Drive</th><th>Catalogue (in order)</th><th>In the drive</th><th></th></tr></thead><tbody>' +
     m.drives.map(d => '<tr' + (d.pending ? ' class="pending"' : '') + '><th scope="row">' + d.id + ' <span class="muted" style="font-weight:400">' + d.fmt + '</span></th><td>' + (d.cat.length ? '<ol class="olist">' + d.cat.map(e => '<li>' + esc(entryName(e)) + '</li>').join('') + '</ol>' : '<span class="muted">empty</span>') + '</td><td>' +
       (d.ins >= 0 ? esc(entryName(d.cat[d.ins])) + ' <span class="muted">· ' + writeWords(d.cat[d.ins].write, m) + '</span>' : '<span class="muted">empty</span>') +
-      (d.pending ? '<span class="pendline">Pending: ' + esc(pendingName(d.pending)) + ' — goes in at the next Start' + (d.pending.all && set(d.pending.set).disks.length > 1 ? '; all ' + set(d.pending.set).disks.length + ' disks join the catalogue' : '') + '</span>' : '') + '</td>' +
+      (d.pending ? '<span class="pendline">Pending: ' + esc(pendingName(d.pending)) + ' — goes in at the next Start' + (d.pending.all && set(d.pending.set).disks.length > 1 ? '; all ' + set(d.pending.set).disks.length + ' disks join the catalogue' : '') + (d.pending.more && d.pending.more.length > 1 ? '; all ' + d.pending.more.length + ' disks join the catalogue' : '') + '</span>' : '') + '</td>' +
       '<td><span class="btnrow" style="margin:0"><button class="btn" type="button" data-act="pick" data-machine="' + m.id + '" data-drive="' + d.id + '">Insert…</button>' + (d.pending ? '<button class="btn" type="button" data-act="unpend" data-machine="' + m.id + '" data-drive="' + d.id + '">Take out again</button>' : '') + '</span></td></tr>').join('') + '</tbody></table>' +
     '<div class="btnrow"><button class="btn default" type="button" data-act="start"' + (S.view === 'library' ? '' : ' disabled') + '>Start</button><span class="hint">Pending disks go in before the first instruction, so POST boots from a pending A: disk.</span></div>';
 }
@@ -563,6 +701,7 @@ function driveItems(m, d, withLabel) {
   const live = isLive(m);
   return (withLabel ? '<div class="drv">' + d.id + ' ' + d.fmt + ' — ' + esc(d.pending ? pendingName(d.pending) + ' (at Start)' : d.ins >= 0 ? entryName(d.cat[d.ins]) : 'empty') + '</div>' : '') +
     '<button type="button" data-act="pick" data-machine="' + m.id + '" data-drive="' + d.id + '"><span>Insert…</span><span class="mk chg">changed</span><span class="key">' + (d.id === 'A:' ? 'Ctrl+Alt+I' : 'Ctrl+Alt+Shift+I') + '</span></button>' +
+    '<button type="button" data-act="create" data-machine="' + m.id + '" data-drive="' + d.id + '"><span>Create from files…</span><span class="mk">new</span><span class="key"></span></button>' +
     '<button type="button" data-act="next" data-machine="' + m.id + '" data-drive="' + d.id + '"' + (d.cat.length > 1 && !d.pending ? '' : ' disabled') + '><span>Next disk in catalogue</span><span></span><span class="key">' + (d.id === 'A:' ? 'Ctrl+Alt+F' : 'Ctrl+Alt+Shift+F') + '</span></button>' +
     (d.pending ? '<button type="button" data-act="unpend" data-machine="' + m.id + '" data-drive="' + d.id + '"><span>Take out again (pending)</span><span class="mk">new</span><span class="key"></span></button>'
       : '<button type="button" data-act="eject" data-machine="' + m.id + '" data-drive="' + d.id + '"' + (d.ins >= 0 ? '' : ' disabled') + '><span>Eject ' + d.id + '</span><span></span><span class="key">' + (d.id === 'A:' ? 'Ctrl+Alt+E' : 'Ctrl+Alt+Shift+E') + '</span></button>') +
@@ -571,7 +710,8 @@ function driveItems(m, d, withLabel) {
 function renderMenus() {
   const m = targetMachine();
   $('mediaMenu').innerHTML = m ? '<div class="for">For ' + esc(m.name) + ' (' + (S.view === 'library' ? 'stopped' : S.view) + ')</div>' + m.drives.map(d => driveItems(m, d, true)).join('<hr>') +
-    '<hr><div class="for">Removed: Insert into › Browse / catalogue… and From library… — both are Insert… now. C:, Disk layers… and CD-ROM unchanged.</div>' : '<div class="for">Select a machine</div>';
+    '<hr><div class="for">Removed: Insert into › Browse / catalogue… and From library… — both are Insert… now. C:, Disk layers… and CD-ROM unchanged.</div>' +
+    '<div class="for">Create from files… is in the picker’s footer, beside Browse for an image file…; it has no menu item of its own.</div>' : '<div class="for">Select a machine</div>';
   $('machineMenu').innerHTML = '<div class="for">For ' + esc(m ? m.name : '—') + '</div>' +
     '<button type="button" data-act="start"' + (S.view === 'library' ? '' : ' disabled') + '><span>Start</span><span></span><span class="key">Enter</span></button>' +
     '<button type="button" data-act="cad"' + (S.view === 'library' ? ' disabled' : '') + '><span>' + (S.view === 'halted' ? 'Reset halted machine' : 'Send Ctrl+Alt+Del') + '</span><span></span><span class="key">Ctrl+Alt+End</span></button>' +
@@ -597,14 +737,15 @@ function render() {
 }
 
 /* ---------- the picker ---------- */
-const P = { machine: null, drive: null, source: 'library', query: '', facets: {}, showAll: false, remote: false, sel: null, disk: 0, all: true, write: 'journal', diskTouched: false };
+const P = { machine: null, drive: null, mode: 'search', source: 'library', query: '', facets: {}, showAll: false, remote: false, sel: null, disk: 0, all: true, write: 'journal', diskTouched: false };
 function pkMachine() { return mach(P.machine); }
 function pkDrive() { return drv(pkMachine(), P.drive); }
 function openPicker(mid, did, opts) {
   const m = mach(mid) || targetMachine() || machines()[0];
   P.machine = m.id; P.drive = drv(m, did) ? did : m.drives[0].id;
-  P.source = 'library'; P.query = ''; P.facets = {}; P.showAll = false; P.remote = false; P.write = 'journal'; P.all = true; P.diskTouched = false;
+  P.mode = 'search'; P.source = 'library'; P.query = ''; P.facets = {}; P.showAll = false; P.remote = false; P.write = 'journal'; P.all = true; P.diskTouched = false;
   P.sel = opts && opts.set ? opts.set : null;
+  ckReset();
   if (P.sel && !fits(pkDrive(), set(P.sel))) P.showAll = true;
   $('pkFind').value = '';
   $('pkFacetsWrap').open = window.innerWidth > 640;
@@ -666,14 +807,18 @@ function pkMachineRows() {
   return h;
 }
 function pkRender() {
-  const m = pkMachine(), d = pkDrive(), live = isLive(m);
-  $('pkTitle').textContent = 'Insert disk — ' + m.name;
+  const m = pkMachine(), d = pkDrive(), live = isLive(m), create = P.mode === 'create';
+  $('pkTitle').textContent = (create ? 'Create disk from files — ' : 'Insert disk — ') + m.name;
+  ['pkSources', 'pkRemoteLink', 'pkSearchRow', 'pkBodySearch', 'pkBrowse', 'pkCreate', 'pkInsert'].forEach(id => { $(id).hidden = create; });
+  ['ckFrom', 'ckBody', 'ckBack', 'ckGo'].forEach(id => { $(id).hidden = !create; });
+  $('pkKeys').innerHTML = create ? CK_KEYS : PK_KEYS;
   $('pkMachine').innerHTML = machines().map(x => '<option value="' + x.id + '"' + (x.id === m.id ? ' selected' : '') + '>' + esc(x.name) + (isLive(x) ? ' (' + S.view + ')' : ' (stopped)') + '</option>').join('');
   $('pkMachine').disabled = S.view !== 'library';
   $('pkMachine').title = S.view !== 'library' ? 'The running machine' : 'Any stopped machine';
   $('pkDrives').innerHTML = m.drives.map(x => '<button type="button" role="radio" data-drive="' + x.id + '" aria-checked="' + (x.id === P.drive) + '" title="Alt+' + x.id[0] + '">' + x.id + ' <small>' + x.fmt + ' · ' + esc(x.pending ? pendingName(x.pending) + ' at Start' : x.ins >= 0 ? entryName(x.cat[x.ins]) : 'empty') + '</small></button>').join('');
   $('pkWhen').className = 'pk-when' + (live ? ' now' : '');
   $('pkWhen').textContent = live ? (S.view === 'halted' ? 'Halted: goes in now, then Ctrl+Alt+Del boots from it' : 'Running: goes in now') : 'Stopped: goes in at the next Start';
+  if (create) { ckRender(); return; }
   const nLib = SETS.length, nMac = m.drives.reduce((a, x) => a + x.cat.length, 0);
   $('pkSources').innerHTML = '<button type="button" role="tab" data-source="machine" aria-selected="' + (P.source === 'machine') + '">This machine <small>(' + nMac + ')</small></button>' +
     '<button type="button" role="tab" data-source="library" aria-selected="' + (P.source === 'library') + '">This library <small>(' + nLib + ')</small></button>' +
@@ -824,6 +969,312 @@ $('picker').addEventListener('keydown', e => {
   if (!inText && e.target.closest('#pkResults') && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) { $('pkFind').focus(); }
 });
 
+/* ---------- Create from files: the picker's second view ---------- */
+// What a freshly formatted disk of each format offers, as DOS FORMAT lays it out:
+// free bytes in the data area, the cluster size, the fixed root folder's entries,
+// and the whole image's size.
+const DISK = {
+  '1.44M': { free: 1457664, cluster: 512, root: 224, bytes: 1474560 },
+  '720K': { free: 730112, cluster: 1024, root: 112, bytes: 737280 },
+  '1.2M': { free: 1213952, cluster: 512, root: 224, bytes: 1228800 },
+  '360K': { free: 362496, cluster: 1024, root: 112, bytes: 368640 }
+};
+const PK_KEYS = $('pkKeys').innerHTML;
+const CK_KEYS = 'Drop files and folders on the list · <kbd>Alt+A</kbd> <kbd>Alt+B</kbd> drive · <kbd>Esc</kbd> closes';
+const num = n => n.toLocaleString('en-US');
+const pl = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
+const human = n => n < 1024 ? num(n) + ' bytes' : n < 1048576 ? (n / 1024).toFixed(1) + ' KiB' : (n / 1048576).toFixed(1) + ' MiB';
+
+// Sample host files and folders. Sizes come from a fixed generator, so the
+// mock-up shows the same numbers on every load.
+function rng(seed) { let x = seed >>> 0; return (lo, hi) => { x = (Math.imul(x, 1664525) + 1013904223) >>> 0; return lo + x % (hi - lo + 1); }; }
+const F = (n, s) => ({ n, s }), D = (n, d) => ({ n, d }), L = (n, to) => ({ n, link: to });
+function series(stem, ext, count, lo, hi, seed, width) { const r = rng(seed); return Array.from({ length: count }, (_, i) => F(stem + String(i + 1).padStart(width, '0') + '.' + ext, r(lo, hi))); }
+const HOST = {
+  azuramon: D('azuramon', [
+    F('.DS_Store', 10244), F('._azuramon.exe', 4096), L('latest', '../azuramon-1.2'),
+    F('azuramon.exe', 512340), F('setup.exe', 61200), F('install.bat', 1214), F('readme.txt', 14880), F('file_id.diz', 431),
+    F('Azuramon Manual.txt', 48120), F('credits.html', 7712), F('level editor.exe', 228416), F('azuramon.cfg', 256),
+    D('gfx', [F('.DS_Store', 6148)].concat(series('tile', 'pcx', 240, 6000, 42000, 7, 3))),
+    D('maps', series('level', 'map', 109, 2000, 10000, 11, 3).concat([F('+bonus.map', 8812)])),
+    D('music', series('song', 'mod', 32, 66000, 156000, 13, 2)),
+    D('sfx', series('sfx', 'voc', 170, 4000, 24000, 17, 3))]),
+  starhop: D('starhop', [F('.DS_Store', 6148), F('starhop.exe', 287412), F('starhop.dat', 402880), F('levels.dat', 148226), F('setup.exe', 41870),
+    F('readme.txt', 6212), F('file_id.diz', 412), F('Star Hop Manual.txt', 18904), D('music', series('tune', 'mod', 6, 22000, 48000, 5, 2))]),
+  galaxia: D('galaxia', [F('galaxia.exe', 356820), F('intro.dat', 210450), F('sprites.dat', 488064), F('levels.dat', 301882), F('sounds.dat', 118977),
+    F('readme.txt', 9804), F('order.txt', 3311), F('galaxia.cfg', 128)]),
+  nightfall: D('nightfall', [F('nightfal.exe', 198004), F('intro.fli', 1620480), F('readme.txt', 5120)]),
+  tq1: F('tinyquest.exe', 182334), tq2: F('tinyquest.txt', 4410), tq3: F('TinyQuest Map.pcx', 38222)
+};
+const CK_SAMPLES = { starhop: ['starhop'], tinyquest: ['tq1', 'tq2', 'tq3'], galaxia: ['galaxia'], azuramon: ['azuramon'], nightfall: ['nightfall'], empty: [] };
+function hostStats(node) { const s = { files: 0, bytes: 0 }; (function go(n) { if (n.d) n.d.forEach(go); else if (!n.link) { s.files++; s.bytes += n.s; } })(node); return s; }
+
+const C = { items: [], top: '', topTouched: false, label: '', labelTouched: false, fmt: null, write: 'journal', keep: false, keepTouched: false, menu: null };
+function ckReset() {
+  Object.assign(C, { items: [], top: '', topTouched: false, label: '', labelTouched: false, fmt: null, write: 'journal', keep: false, keepTouched: false, menu: null });
+  $('ckKeep').checked = false; document.querySelector('input[name="ckWrite"][value="journal"]').checked = true;
+  $('ckNames').open = false; $('ckSkipped').open = false; $('ckHostMenu').hidden = true;
+}
+function ckOpen(keys) {
+  P.mode = 'create';
+  if (keys) { C.items = []; C.topTouched = false; C.labelTouched = false; ckAdd(keys); }
+  pkRender(); $('ckAddFolder').focus();
+}
+function ckAdd(keys) { keys.forEach(k => { if (!C.items.some(it => it.key === k)) C.items.push({ key: k, node: HOST[k] }); }); }
+
+// DOS names: the 8.3 rule of short names. Upper case alone is no change.
+const SFN_BAD = /[^A-Z0-9!#$%&'()@^_`{}~-]/g;
+const SFN_OK = /^[A-Z0-9!#$%&'()@^_`{}~-]{1,8}(\.[A-Z0-9!#$%&'()@^_`{}~-]{1,3})?$/;
+const LABEL_OK = /^[A-Z0-9!#$%&'()@^_`{}~ -]{0,11}$/;
+function to83(host, taken) {
+  const up = host.toUpperCase(), dot = up.lastIndexOf('.');
+  const base0 = dot > 0 ? up.slice(0, dot) : up, ext0 = dot > 0 ? up.slice(dot + 1) : '';
+  const why = [];
+  if (/\s/.test(host)) why.push('space');
+  if (base0.includes('.')) why.push('more than one dot');
+  const bad = [...new Set((base0 + ext0).replace(/[\s.]/g, '').match(SFN_BAD) || [])];
+  if (bad.length) why.push(bad.join(' ') + ' not allowed');
+  const base = base0.replace(/[\s.]/g, '').replace(SFN_BAD, '_'), ext = ext0.replace(/\s/g, '').replace(SFN_BAD, '_');
+  if (base.length > 8) why.push('name over 8 characters');
+  if (ext.length > 3) why.push('extension over 3 characters');
+  let out = base + (ext ? '.' + ext : '');
+  if (why.length || taken.has(out)) {
+    if (!why.length) why.push('same name as another file');
+    for (let n = 1; ; n++) { const t = '~' + n, c = base.slice(0, 8 - t.length) + t + (ext ? '.' + ext.slice(0, 3) : ''); if (!taken.has(c)) { out = c; break; } }
+  }
+  taken.add(out);
+  return { out, why };
+}
+const byName = (a, b) => { const x = a.n.toLowerCase(), y = b.n.toLowerCase(); return x < y ? -1 : x > y ? 1 : 0; };
+
+// The tree on the disk. Items are taken in name order, whatever order they were
+// added in, so the DOS names (and the bytes) do not depend on it.
+function ckBuild() {
+  const top = C.top.trim();
+  const root = { path: '', files: [], dirs: [], taken: new Set() };
+  const b = { root, renames: [], skipped: [], items: {}, nFiles: 0, nDirs: 0, bytes: 0 };
+  let into = root;
+  if (top) { into = { path: top + '\\', files: [], dirs: [], taken: new Set() }; root.dirs.push(into); root.taken.add(top); }
+  const single = C.items.length === 1 && C.items[0].node.d;
+  C.items.slice().sort((x, y) => byName(x.node, y.node)).forEach(it => {
+    const st = { files: 0, dirs: 0, bytes: 0, skipped: 0 };
+    let at;
+    if (single) { kids(into, it.node.d, it.node.n + '/', st); at = into.path; } else at = add(into, it.node, '', st);
+    b.items[it.key] = { st, at };
+  });
+  return b;
+  function kids(dir, list, host, st) { list.slice().sort(byName).forEach(n => add(dir, n, host, st)); }
+  function add(dir, node, host, st) {
+    const hp = host + node.n;
+    const junk = node.link ? 'symbolic link to ' + node.link + ', not followed' : node.n === '.DS_Store' ? 'Finder’s folder view settings' : node.n.startsWith('._') ? 'AppleDouble: macOS extended attributes' : '';
+    if (junk) { b.skipped.push({ host: hp, why: junk }); st.skipped++; return null; }
+    const m = to83(node.n, dir.taken), path = dir.path + m.out;
+    if (m.why.length) b.renames.push({ host: hp, dos: path + (node.d ? '\\' : ''), why: m.why.join(', ') });
+    if (node.d) { const sub = { path: path + '\\', files: [], dirs: [], taken: new Set() }; dir.dirs.push(sub); st.dirs++; b.nDirs++; kids(sub, node.d, hp + '/', st); return sub.path; }
+    dir.files.push({ path, size: node.s }); st.files++; st.bytes += node.s; b.nFiles++; b.bytes += node.s; return path;
+  }
+}
+function walk(dir, fn) { fn(dir); dir.dirs.forEach(d => walk(d, fn)); }
+const dirClusters = (entries, cl) => Math.ceil((entries + 2) * 32 / cl);
+// Space as DOS counts it: whole clusters per file and per folder (with its
+// "." and ".." entries); the root folder has fixed entries instead of clusters.
+function ckUsage(b, fmt) {
+  const cl = DISK[fmt].cluster; let files = 0, rounded = 0, folders = 0, nFolders = 0;
+  walk(b.root, d => { if (d !== b.root) { folders += dirClusters(d.files.length + d.dirs.length, cl) * cl; nFolders++; } d.files.forEach(x => { files += x.size; rounded += Math.ceil(x.size / cl) * cl; }); });
+  return { files, rounded, folders, nFolders, used: rounded + folders, rootEntries: b.root.files.length + b.root.dirs.length + (C.label.trim() ? 1 : 0) };
+}
+const ckFits = (u, fmt) => u.used <= DISK[fmt].free && u.rootEntries <= DISK[fmt].root;
+// A file that cannot go on an empty disk, with the folders above it.
+function ckTooLarge(b) {
+  const f = DISK[C.fmt], cl = f.cluster, out = [];
+  walk(b.root, d => d.files.forEach(x => { if (Math.ceil(x.size / cl) * cl + (x.path.split('\\').length - 1) * cl > f.free) out.push(x); }));
+  return out;
+}
+// The split: files in folder order, each whole on one disk; a disk takes the
+// next file while it fits, with the folders it needs repeated.
+function ckPlan(b) {
+  const f = DISK[C.fmt], cl = f.cluster, list = [], disks = [];
+  walk(b.root, d => d.files.forEach(x => list.push(x)));
+  const fresh = () => ({ ent: new Map([['', C.label.trim() ? 1 : 0]]), bytes: 0, used: 0, files: [] });
+  const cost = ent => { let c = 0; ent.forEach((n, p) => { if (p) c += dirClusters(n, cl) * cl; }); return c; };
+  const place = (disk, x) => {
+    const ent = new Map(disk.ent), parts = x.path.split('\\'); let p = '';
+    for (let i = 0; i < parts.length - 1; i++) { const q = p + parts[i] + '\\'; if (!ent.has(q)) { ent.set(p, ent.get(p) + 1); ent.set(q, 0); } p = q; }
+    ent.set(p, ent.get(p) + 1);
+    const bytes = disk.bytes + Math.ceil(x.size / cl) * cl;
+    return { ent, bytes, used: bytes + cost(ent), root: ent.get('') };
+  };
+  let cur = null;
+  list.forEach(x => {
+    let t = cur && place(cur, x);
+    if (!cur || t.used > f.free || t.root > f.root) { if (cur) disks.push(cur); cur = fresh(); t = place(cur, x); }
+    cur.ent = t.ent; cur.bytes = t.bytes; cur.used = t.used; cur.files.push(x);
+  });
+  if (cur) disks.push(cur);
+  return disks;
+}
+function diskLabel(k, n) {
+  const base = C.label.trim(); if (!base) return '';
+  if (n === 1) return base;
+  const suffix = ' ' + k; return base.slice(0, 11 - suffix.length).trimEnd() + suffix;
+}
+function ckState() {
+  const s = { ok: false, kind: 'empty', why: 'Add files or a folder', n: 0 };
+  if (!C.items.length) return s;
+  s.b = ckBuild(); s.u = ckUsage(s.b, C.fmt);
+  if (C.top && !SFN_OK.test(C.top)) return Object.assign(s, { kind: 'name', why: 'The top folder ' + C.top + ' is not an 8.3 name' });
+  if (!LABEL_OK.test(C.label)) return Object.assign(s, { kind: 'name', why: 'The volume label has a character DOS does not allow' });
+  if (!s.b.nFiles) return Object.assign(s, { kind: 'nothing', why: 'Nothing to copy: every file was skipped' });
+  const big = ckTooLarge(s.b);
+  if (big.length) return Object.assign(s, { kind: 'big', big, why: big[0].path.split('\\').pop() + ' is too large for any ' + C.fmt + ' disk' });
+  if (ckFits(s.u, C.fmt)) return Object.assign(s, { kind: 'fits', ok: true, n: 1 });
+  s.plan = ckPlan(s.b);
+  return Object.assign(s, { kind: 'over', ok: true, n: s.plan.length });
+}
+function ckTitle() { return C.top.replace(/\..*$/, '') || C.label.trim() || 'FILES'; }
+function ckTag() { return ckTitle().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') + ':1.0'; }
+// The default top folder: the single folder's name cut to 8.3. Nothing else is
+// at the root to clash with, so it needs no ~1 tail.
+function topDefault(host) {
+  const up = host.toUpperCase(), dot = up.lastIndexOf('.'), clean = s => s.replace(/[\s.]/g, '').replace(SFN_BAD, '_');
+  const base = clean(dot > 0 ? up.slice(0, dot) : up).slice(0, 8), ext = dot > 0 ? clean(up.slice(dot + 1)).slice(0, 3) : '';
+  return base + (ext ? '.' + ext : '');
+}
+function ckDefaults() {
+  const single = C.items.length === 1 && C.items[0].node.d;
+  if (!C.topTouched) C.top = single ? topDefault(C.items[0].node.n) : '';
+  if (!C.labelTouched) C.label = C.top.replace('.', '').slice(0, 11);
+  if (document.activeElement !== $('ckTop')) $('ckTop').value = C.top;
+  if (document.activeElement !== $('ckLabel')) $('ckLabel').value = C.label;
+}
+function ckRender() {
+  const m = pkMachine(), d = pkDrive(), live = isLive(m), next = d.id === 'A:' ? 'Ctrl+Alt+F' : 'Ctrl+Alt+Shift+F';
+  if (!C.fmt || !ACCEPTS[d.fmt].includes(C.fmt)) C.fmt = d.fmt;
+  ckDefaults();
+  const f = DISK[C.fmt], st = ckState(), b = st.b, u = st.u;
+  // the list of host items
+  if (!C.items.length) $('ckList').innerHTML = '<div class="ck-drop">Drop files and folders here<span class="hint">or use Add files… and Add folder…. Nothing on this computer is read beyond names and sizes until Create.</span></div>';
+  else $('ckList').innerHTML = '<table class="ck-items" aria-label="Added from this computer"><thead><tr><th>Added</th><th>On the disk</th><th>Contents</th><th class="num">Size</th><th><span hidden>Remove</span></th></tr></thead><tbody>' +
+    C.items.map(it => { const x = b.items[it.key], folder = !!it.node.d; return '<tr><td>' + esc(it.node.n) + '<small>' + (folder ? 'folder' : 'file') + ' in Downloads</small></td><td><code>\\' + esc(x.at || '') + '</code></td><td>' +
+      (folder ? pl(x.st.files, 'file') + (x.st.dirs ? ' in ' + pl(x.st.dirs, 'folder') : '') : 'file') + (x.st.skipped ? '<small>' + x.st.skipped + ' skipped</small>' : '') + '</td><td class="num" title="' + num(x.st.bytes) + ' bytes">' + human(x.st.bytes) + '</td>' +
+      '<td><button type="button" class="rm" data-ckrm="' + it.key + '" aria-label="Remove ' + esc(it.node.n) + '" title="Remove">×</button></td></tr>'; }).join('') + '</tbody>' +
+    '<tfoot><tr><td colspan="2">Total</td><td>' + pl(b.nFiles, 'file') + (b.nDirs ? ' in ' + pl(b.nDirs, 'folder') : '') + '</td><td class="num" title="' + num(b.bytes) + ' bytes">' + human(b.bytes) + '</td><td></td></tr></tfoot></table>';
+  // DOS names and skipped files
+  const renames = b ? b.renames : [], skipped = b ? b.skipped : [];
+  $('ckNamesSum').textContent = 'DOS names — ' + (renames.length ? renames.length + ' changed beyond upper case' : 'none changed beyond upper case');
+  $('ckNamesBody').innerHTML = (renames.length ? '<table class="mini" aria-label="Changed names"><thead><tr><th>On this computer</th><th>On the disk</th><th>Why</th></tr></thead><tbody>' +
+    renames.map(r => '<tr><td>' + esc(r.host) + '</td><td><code>\\' + esc(r.dos) + '</code></td><td class="hint">' + esc(r.why) + '</td></tr>').join('') + '</tbody></table>' : '') +
+    '<p class="hint">DOS reads 8.3 names only: up to 8 characters, a dot and up to 3 more. Names are upper case on the disk, and no long names are written.</p>';
+  $('ckSkippedSum').textContent = 'Skipped — ' + (skipped.length ? pl(skipped.length, 'item') : 'none');
+  $('ckSkippedBody').innerHTML = (skipped.length ? '<ul>' + skipped.map(x => '<li><code>' + esc(x.host) + '</code> <span class="hint">· ' + esc(x.why) + '</span></li>').join('') + '</ul>' : '') +
+    '<p class="hint">Host junk stays off the disk: .DS_Store files, AppleDouble files (._ and a name) and symbolic links.</p>';
+  // format
+  $('ckFmt').innerHTML = ACCEPTS[d.fmt].map(x => '<button type="button" role="radio" data-ckfmt="' + x + '" aria-checked="' + (x === C.fmt) + '">' + x + ' <small>' + num(DISK[x].free) + ' bytes free</small></button>').join('');
+  $('ckFmtHint').textContent = d.id + ' is a ' + d.kind + ' drive: it takes ' + ACCEPTS[d.fmt].join(' and ') + ' disks.';
+  // fit meter
+  // The bar: the files' own bytes, then cluster rounding and folders, lighter.
+  const used = u ? u.used : 0, over = used > f.free, wAll = Math.min(used, f.free) / f.free * 100, wFiles = u ? Math.min(u.files, f.free) / f.free * 100 : 0;
+  $('ckMeter').innerHTML = '<div class="meter' + (over ? ' over' : '') + '" role="meter" aria-label="Space on one ' + C.fmt + ' disk" aria-valuemin="0" aria-valuemax="' + f.free + '" aria-valuenow="' + Math.min(used, f.free) + '"><span class="m-files" style="width:' + wFiles.toFixed(2) + '%"></span><span class="m-round" style="width:' + (wAll - wFiles).toFixed(2) + '%"></span></div>' +
+    (over ? '<p class="ck-nums why"><strong>' + num(used) + ' bytes needed; one ' + C.fmt + ' disk holds ' + num(f.free) + '</strong></p>'
+      : '<p class="ck-nums"><strong>' + num(used) + ' of ' + num(f.free) + ' bytes used</strong> · ' + num(f.free - used) + ' free</p>') +
+    (u ? '<p class="ck-nums small">Files ' + num(u.files) + ' bytes, ' + num(u.rounded) + ' in whole ' + num(f.cluster) + '-byte clusters · ' + pl(u.nFolders, 'folder') + ' ' + num(u.folders) + ' bytes · root folder ' + u.rootEntries + ' of ' + f.root + ' entries' + (C.label.trim() ? ' (the label is one)' : '') + '</p>' : '');
+  // state
+  let sh = '';
+  if (st.kind === 'empty') sh = '<p class="hint">Add files or a folder to see whether they fit.</p>';
+  else if (st.kind === 'name') sh = '<p class="notice">' + esc(st.why) + '. A DOS name has up to 8 characters, then a dot and up to 3 more: letters, digits and ! # $ % &amp; \' ( ) - @ ^ _ ` { } ~.</p>';
+  else if (st.kind === 'nothing') sh = '<p class="notice">' + esc(st.why) + '.</p>';
+  else if (st.kind === 'big') sh = '<p class="notice">' + st.big.map(x => '<strong>' + esc(x.path.split('\\').pop()) + '</strong> (' + num(x.size) + ' bytes)').join(', ') + (st.big.length > 1 ? ' are' : ' is') + ' too large for any ' + C.fmt + ' disk: an empty one holds ' + num(f.free) + ' bytes. A file never spans two disks, so a split cannot take it either.</p>';
+  else if (st.kind === 'fits') sh = '<p class="ck-ok">Fits one ' + C.fmt + ' disk.</p>';
+  else {
+    const alt = ACCEPTS[d.fmt].find(x => x !== C.fmt && DISK[x].free > f.free && ckFits(ckUsage(b, x), x));
+    const why = [];
+    if (used > f.free) why.push('it needs ' + num(used - f.free) + ' bytes more than the disk holds');
+    if (u.rootEntries > f.root) why.push('its root folder needs ' + u.rootEntries + ' entries and the disk has ' + f.root + (C.top ? '' : '; a top folder needs only one'));
+    sh = '<p class="notice">Does not fit one ' + C.fmt + ' disk: ' + why.join(', and ') + '.' +
+      (alt ? ' It fits one ' + alt + ' disk: <button type="button" class="link" data-ckfmt="' + alt + '">use ' + alt + '</button>.' : '') + '</p>';
+  }
+  $('ckState').innerHTML = sh;
+  // too big for one disk: the two ways
+  let sp = '';
+  if (st.kind === 'over' || st.kind === 'big') {
+    sp = '<fieldset><legend>Too big for one disk</legend>';
+    if (st.kind === 'over') {
+      const n = st.n, top = C.top.trim(), rel = p => top && p.startsWith(top + '\\') ? p.slice(top.length + 1) : p;
+      const src = d.id + '\\' + top, dst = 'C:\\' + (top || 'GAME');
+      sp += '<label class="check"><input type="radio" name="ckHow" value="split" checked><span><strong>Split across ' + n + ' disks of ' + C.fmt + '</strong><span class="hint">Each file stays whole, in folder order. ' + (top ? 'Every disk keeps <code>\\' + esc(top) + '\\</code> and the folders its files need.' : 'Every disk keeps the folders its files need.') + '</span></span></label>' +
+        '<table class="mini ck-plan" aria-label="Split plan"><thead><tr><th>Disk</th><th>Label</th><th class="num">Files</th><th class="num">Bytes used</th><th>First – last file</th></tr></thead><tbody>' +
+        st.plan.map((k, i) => '<tr><th scope="row">' + (i + 1) + '</th><td>' + esc(diskLabel(i + 1, n) || '—') + '</td><td class="num">' + k.files.length + '</td><td class="num">' + num(k.used) + '</td><td><code>' + esc(rel(k.files[0].path)) + '</code> – <code>' + esc(rel(k.files[k.files.length - 1].path)) + '</code></td></tr>').join('') + '</tbody></table>' +
+        '<p class="hint">Each disk holds up to ' + num(f.free) + ' bytes. The ' + n + ' disks join ' + d.id + '’s catalogue in this order and disk 1 goes in; when the game or you need the next one, Media › Next disk (' + next + ') swaps it.</p>' +
+        '<p style="margin:8px 0 2px">To rebuild the tree on C:, run at the DOS prompt with each disk in turn:</p><code class="xcopy">XCOPY ' + esc(src) + ' ' + esc(dst) + ' /S /E</code>' +
+        '<p class="hint">On the first disk XCOPY may ask whether ' + esc(dst) + ' is a file or a directory: answer D. Then ' + next + ' and the same command for the next disk.' + (top ? '' : ' Without a top folder, the command copies each disk’s root; GAME stands for any folder name.') + '</p>';
+    } else {
+      sp += '<label class="check later"><input type="radio" name="ckHow" value="split" disabled><span>Split across several ' + C.fmt + ' disks<span class="hint why">Cannot help: ' + esc(st.big[0].path.split('\\').pop()) + ' alone is larger than a disk.</span></span></label>';
+    }
+    sp += '<label class="check later"><input type="radio" name="ckHow" value="copy" disabled><span>Copy into C: <span class="badge later">later</span><span class="hint">Writes the files into ' + esc(m.name) + '’s fixed disk C: as a new disk layer: no floppies and no XCOPY. A separate, bigger feature: unemupc would write the fixed disk’s own file system from outside the guest.</span></span></label></fieldset>';
+  }
+  $('ckSplit').innerHTML = sp;
+  // keep in the library: on for a split, off for one disk, until the user sets it
+  if (!C.keepTouched) { C.keep = st.n > 1; $('ckKeep').checked = C.keep; }
+  $('ckWriteM').textContent = m.name;
+  $('ckKeepHint').innerHTML = 'Adds ' + (st.n > 1 ? 'the ' + st.n + ' disks, as one set,' : 'the disk') + ' to Installation media as <code>' + esc(ckTag()) + '</code>, titled ' + esc(ckTitle()) + ', so every machine’s Insert… lists it. Left off, ' + (st.n > 1 ? 'the disks belong' : 'the disk belongs') + ' to ' + esc(m.name) + ' alone and ' + (st.n > 1 ? 'are' : 'is') + ' removed with it.';
+  // footer
+  $('ckGo').disabled = !st.ok;
+  $('ckGo').textContent = st.n > 1 ? 'Create ' + st.n + ' disks and insert' : 'Create and insert';
+  if (!st.ok) { $('pkSum').className = 'pk-sum bad'; $('pkSum').textContent = st.why + '.'; return; }
+  const boot = S.view === 'halted' && d.id === 'A:';
+  $('pkSum').className = 'pk-sum';
+  $('pkSum').textContent = 'Create ' + (st.n > 1 ? st.n + ' disks of ' + C.fmt : 'a ' + C.fmt + ' disk') + ' from ' + pl(b.nFiles, 'file') + ' and insert ' + (st.n > 1 ? 'disk 1' : 'it') + ' into ' + d.id + ' of ' + m.name +
+    (live ? (boot ? ' — now; then Ctrl+Alt+Del boots from it.' : ' — now.') : ' — at the next Start.') + (st.n > 1 ? ' All ' + st.n + ' join ' + d.id + '’s catalogue.' : '');
+}
+function ckCreate() {
+  const st = ckState(); if (!st.ok) return;
+  const m = pkMachine(), d = pkDrive(), live = isLive(m), n = st.n, title = ckTitle(), next = d.id === 'A:' ? 'Ctrl+Alt+F' : 'Ctrl+Alt+Shift+F';
+  if (C.keep) {
+    const s = { id: 'made-' + ckTag().replace(':', '-') + '-' + SETS.length, made: true, title, short: title, ver: 'from files', ref: ckTag(), pub: '—', year: '—', genre: 'from files', platform: 'DOS', fmt: C.fmt,
+      disks: Array.from({ length: n }, (_, k) => n > 1 ? 'Disk ' + (k + 1) + ' of ' + n : 'Disk 1'), extras: [], rights: 'user', lic: 'your own files', size: '— / ' + human(n * DISK[C.fmt].bytes), labels: ['from files'], color: '#3b5b44',
+      desc: 'Made with Create from files… from ' + pl(st.b.nFiles, 'file') + '.' };
+    SETS.push(s);
+    if (live) { putSet(d, s, n > 1, C.write); d.ins = d.cat.findIndex(e => e.set === s.id && e.disk === 0); if (d.ins < 0) { d.cat.push({ set: s.id, disk: 0, write: C.write }); d.ins = d.cat.length - 1; } d.pending = null; }
+    else d.pending = { set: s.id, disk: 0, all: n > 1, write: C.write };
+  } else {
+    const entries = Array.from({ length: n }, (_, k) => ({ label: title + (n > 1 ? ' — disk ' + (k + 1) + ' of ' + n : ''), fmt: C.fmt, write: C.write }));
+    if (live) { entries.forEach(e => d.cat.push(e)); d.ins = d.cat.length - n; d.pending = null; }
+    else d.pending = { entry: entries[0], more: entries, write: C.write };
+  }
+  S.flash = title + (n > 1 ? ' (' + n + ' disks)' : '') + (live ? ' is in ' + d.id + ' of ' + m.name + ' now.' + (n > 1 ? ' ' + next + ' swaps to the next disk.' : '') : ' goes into ' + d.id + ' of ' + m.name + ' at its next Start' + (n > 1 ? '; all ' + n + ' disks join the catalogue.' : '.')) + (C.keep ? ' Also kept in the library as ' + ckTag() + '.' : '');
+  if (S.view === 'library') { S.target = m.id; S.selMachine = m.id; }
+  $('picker').close(); render();
+}
+function ckHostMenu(kind, btn) {
+  const menu = $('ckHostMenu');
+  if (!menu.hidden && C.menu === kind) { menu.hidden = true; C.menu = null; return; }
+  C.menu = kind;
+  menu.innerHTML = kind === 'folder'
+    ? '<div class="for">Simulated: the real Add folder… opens the system folder dialog. Choose a sample folder.</div>' + ['azuramon', 'starhop', 'galaxia', 'nightfall'].map(k => { const s = hostStats(HOST[k]); return '<button type="button" data-host="' + k + '"><span>' + k + '</span><span class="muted">' + pl(s.files, 'file') + ' · ' + human(s.bytes) + '</span><span></span></button>'; }).join('')
+    : '<div class="for">Simulated: the real Add files… opens the system file dialog, which takes several files at once.</div><button type="button" data-host="tq1,tq2,tq3"><span>tinyquest.exe, tinyquest.txt, TinyQuest Map.pcx</span><span class="muted">3 files</span><span></span></button>';
+  menu.style.left = btn.offsetLeft + 'px'; menu.hidden = false;
+  const first = menu.querySelector('button'); if (first) first.focus();
+}
+$('pkCreate').addEventListener('click', () => ckOpen(null));
+$('ckBack').addEventListener('click', () => { P.mode = 'search'; pkRender(); $('pkFind').focus(); });
+$('ckGo').addEventListener('click', ckCreate);
+$('ckAddFiles').addEventListener('click', e => { e.stopPropagation(); ckHostMenu('files', e.currentTarget); });
+$('ckAddFolder').addEventListener('click', e => { e.stopPropagation(); ckHostMenu('folder', e.currentTarget); });
+$('ckHostMenu').addEventListener('click', e => { const t = e.target.closest('[data-host]'); if (!t) return; $('ckHostMenu').hidden = true; C.menu = null; ckAdd(t.dataset.host.split(',')); pkRender(); });
+$('ckBody').addEventListener('click', e => {
+  const rm = e.target.closest('[data-ckrm]'); if (rm) { C.items = C.items.filter(it => it.key !== rm.dataset.ckrm); pkRender(); return; }
+  const fm = e.target.closest('[data-ckfmt]'); if (fm) { C.fmt = fm.dataset.ckfmt; pkRender(); }
+});
+['ckTop', 'ckLabel'].forEach(id => $(id).addEventListener('input', e => {
+  const el = e.target, at = el.selectionStart; el.value = el.value.toUpperCase(); el.setSelectionRange(at, at);
+  if (id === 'ckTop') { C.top = el.value.trim(); C.topTouched = true; } else { C.label = el.value; C.labelTouched = true; }
+  pkRender();
+}));
+$('ckBody').addEventListener('change', e => {
+  if (e.target.name === 'ckWrite') C.write = e.target.value;
+  if (e.target.id === 'ckKeep') { C.keep = e.target.checked; C.keepTouched = true; }
+});
+
 /* ---------- Add to machine ---------- */
 let addSet = null;
 function openAdd(s) {
@@ -858,6 +1309,7 @@ function act(a, b) {
   const d = m && b && b.dataset.drive ? drv(m, b.dataset.drive) : null;
   switch (a) {
     case 'pick': if (m) openPicker(m.id, b.dataset.drive || 'A:'); return;
+    case 'create': if (m) { openPicker(m.id, b.dataset.drive || 'A:'); ckOpen(null); } return;
     case 'unpend': d.pending = null; S.flash = 'Took the pending disk out of ' + d.id + ' of ' + m.name + '.'; return render();
     case 'eject': d.ins = -1; S.flash = 'Ejected ' + d.id + '.'; return render();
     case 'next': d.ins = (d.ins + 1) % d.cat.length; S.flash = d.id + ' now holds ' + entryName(d.cat[d.ins]) + '.'; return render();
@@ -872,7 +1324,7 @@ function startMachine(m) {
   m.drives.forEach(d => {
     if (!d.pending) return;
     const p = d.pending;
-    if (p.entry) { let k = d.cat.findIndex(x => JSON.stringify(x) === JSON.stringify(p.entry)); if (k < 0) { d.cat.push(p.entry); k = d.cat.length - 1; } d.ins = k; }
+    if (p.entry) { (p.more || [p.entry]).forEach(e => { if (!d.cat.some(x => JSON.stringify(x) === JSON.stringify(e))) d.cat.push(e); }); d.ins = d.cat.findIndex(x => JSON.stringify(x) === JSON.stringify(p.entry)); }
     else { const s = set(p.set); putSet(d, s, p.all, p.write); let k = d.cat.findIndex(e => e.set === s.id && e.disk === p.disk); if (k < 0) { d.cat.push({ set: s.id, disk: p.disk, write: p.write }); k = d.cat.length - 1; } d.ins = k; }
     if (d.id === 'A:') booted = true;
     d.pending = null;
@@ -885,6 +1337,7 @@ document.addEventListener('click', e => {
   if (!e.target.closest('.menu')) closeMenus();
   if (!e.target.closest('#chipMenu') && !e.target.closest('[data-chip]')) $('chipMenu').hidden = true;
   if (!e.target.closest('#intoMenu') && !e.target.closest('#insertInto') && $('intoMenu')) $('intoMenu').hidden = true;
+  if (!e.target.closest('#ckHostMenu') && !e.target.closest('#ckAddFiles') && !e.target.closest('#ckAddFolder')) $('ckHostMenu').hidden = true;
   const b = e.target.closest('[data-act]'); if (!b || b.disabled) return;
   closeMenus(); $('chipMenu').hidden = true; act(b.dataset.act, b);
 });
@@ -917,7 +1370,8 @@ document.querySelectorAll('[data-demo]').forEach(b => b.addEventListener('click'
   if (k === 'pick-a') { if (S.onlyIbm) return msg('DOS games is hidden by the sample switch.'); if (S.view !== 'library' && S.run !== 'dos-games') { S.view = 'library'; S.run = null; render(); } openPicker('dos-games', 'A:'); }
   if (k === 'pick-ibm') { if (S.view !== 'library') { S.view = 'library'; S.run = null; render(); } openPicker('ibm-at-with-dos', 'A:'); }
   if (k === 'only-ibm') { S.onlyIbm = !S.onlyIbm; b.setAttribute('aria-pressed', String(S.onlyIbm)); S.view = 'library'; S.run = null; S.target = S.onlyIbm ? 'ibm-at-with-dos' : 'dos-games'; S.selMachine = S.target; render(); }
-  if (k === 'reset') { MACHINES = clone(MACHINES0); S.view = 'library'; S.run = null; S.coll = 'media'; S.selSet = 'win31'; S.target = 'dos-games'; S.selMachine = 'dos-games'; S.onlyIbm = false; S.flash = ''; document.querySelector('[data-demo="only-ibm"]').setAttribute('aria-pressed', 'false'); render(); }
+  if (k.startsWith('ck-')) { if (S.onlyIbm) return msg('DOS games is hidden by the sample switch.'); openPicker('dos-games', 'B:'); ckOpen(CK_SAMPLES[k.slice(3)]); }
+  if (k === 'reset') { for (let i = SETS.length - 1; i >= 0; i--) if (SETS[i].made) SETS.splice(i, 1); MACHINES = clone(MACHINES0); S.view = 'library'; S.run = null; S.coll = 'media'; S.selSet = 'win31'; S.target = 'dos-games'; S.selMachine = 'dos-games'; S.onlyIbm = false; S.flash = ''; document.querySelector('[data-demo="only-ibm"]').setAttribute('aria-pressed', 'false'); render(); }
 }));
 document.addEventListener('keydown', e => {
   if (document.querySelector('dialog[open]')) return;
