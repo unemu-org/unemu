@@ -1721,7 +1721,10 @@ The `deny.toml` allowlist covers the all-features graph: AGPL-3.0-or-later for
 workspace crates, MIT, Apache-2.0, Unicode-3.0, BSD-2-Clause, BSD-3-Clause
 and ISC for dependencies. CC-BY-SA-4.0 is allowed only for the `window` crate
 (a crate-scoped exception), whose embedded font assets carry it; see
-`crates/window/assets/fonts/NOTICE.md`. New licences
+`crates/window/assets/fonts/NOTICE.md`. CC0-1.0 and Bitstream-Vera are
+allowed only for the `ui-kit` crate, which embeds the brand logo and the
+DejaVu Sans symbol subset (`assets/brand/README.md`,
+`crates/ui-kit/assets/fonts/dejavu/NOTICE.md`). New licences
 require review before extending it. Unknown registries and git sources are denied;
 only the pinned x86jit repository is explicitly allowed. Wildcard dependencies
 are denied and duplicate versions warn.

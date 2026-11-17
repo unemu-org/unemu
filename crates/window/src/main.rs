@@ -34,9 +34,8 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use window::{
-    HostKeyboard, HostMouse, WindowSink, EGUI_FONT_NOTICE, FONT_NOTICE, SYMBOL_FONT_NOTICE,
-};
+use ui_kit::{EGUI_FONT_NOTICE, SYMBOL_FONT_NOTICE};
+use window::{HostKeyboard, HostMouse, WindowSink, FONT_NOTICE};
 use winit::{
     event::{ElementState, MouseButton},
     keyboard::KeyCode,
@@ -47,7 +46,6 @@ mod app_menu;
 mod catalogue_menu;
 mod created_media;
 mod drive_chips;
-mod file_dialog;
 mod firmware_choices;
 mod host_audio;
 mod image_settings;
@@ -57,7 +55,6 @@ mod layers_dialog;
 mod library_test_support;
 mod library_view;
 mod library_worker;
-mod logo;
 #[cfg(target_os = "macos")]
 mod macos_keys;
 #[cfg(target_os = "macos")]
@@ -79,12 +76,12 @@ mod save_image;
 mod settings_model;
 mod settings_sheet;
 mod shell;
+#[cfg(test)]
 mod shell_icons;
 mod shell_model;
 #[cfg(test)]
 mod sound_levels_tests;
 mod system_keys;
-mod text_clipboard;
 
 const SINK_SCALE: u16 = 2;
 

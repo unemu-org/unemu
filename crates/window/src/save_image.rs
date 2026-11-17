@@ -473,9 +473,9 @@ impl SaveAsImage {
 
 /// A dialog's message beside its mark, as the save-as-image mock-up lays out
 /// its question and refusal dialogs.
-fn alert(ui: &mut egui::Ui, icon: crate::shell_icons::Icon, body: impl FnOnce(&mut egui::Ui)) {
+fn alert(ui: &mut egui::Ui, icon: ui_kit::shell_icons::Icon, body: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal_top(|ui| {
-        crate::shell_icons::show(ui, icon);
+        ui_kit::shell_icons::show(ui, icon);
         ui.vertical(body);
     });
 }
@@ -551,14 +551,14 @@ pub(crate) fn prompts(
     egui::Modal::new(egui::Id::unique("save-as-image-prompt")).show(ctx, |ui| {
         ui.set_width(500.0);
         if classic {
-            crate::shell::gradient_title(ui, &title);
+            ui_kit::skin::gradient_title(ui, &title);
         } else {
             ui.heading(&title);
         }
         match &prompt {
             Prompt::Move(current) => {
                 // The save-as-image mock-up's question mark beside the text.
-                alert(ui, crate::shell_icons::Icon::Question, |ui| {
+                alert(ui, ui_kit::shell_icons::Icon::Question, |ui| {
                     ui.label(format!(
                         "{reference} already names another image. Move it to the image you are saving?"
                     ));
@@ -594,7 +594,7 @@ pub(crate) fn prompts(
             }
             Prompt::Refuse(current) => {
                 // The save-as-image mock-up's stop mark beside the refusal.
-                alert(ui, crate::shell_icons::Icon::Refusal, |ui| {
+                alert(ui, ui_kit::shell_icons::Icon::Refusal, |ui| {
                     ui.label(format!("{reference} already names {}.", short(current)));
                     ui.label(format!(
                         "Tags shaped like a version (x.y.z) never move, so this image cannot use {}. There is no override.",
@@ -613,7 +613,7 @@ pub(crate) fn prompts(
             }
         }
     });
-    if close || ctx.input_mut(crate::shell::escape_pressed) {
+    if close || ctx.input_mut(ui_kit::skin::escape_pressed) {
         model.dismiss();
         return None;
     }

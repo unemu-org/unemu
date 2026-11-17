@@ -35,13 +35,17 @@ allow = [
 ]
 confidence-threshold = 0.9
 
-# The window presenter embeds CC BY-SA 4.0 fonts, CC0 1.0 logo data and a
-# DejaVu Sans symbol subset under the Bitstream Vera font licence (permissive,
-# with an Arev counterpart of the same terms); these licenses are allowed for
-# that crate only.
+# The window presenter embeds CC BY-SA 4.0 fonts, and its ui kit CC0 1.0 logo
+# data and a DejaVu Sans symbol subset under the Bitstream Vera font licence
+# (permissive, with an Arev counterpart of the same terms); these licenses are
+# allowed for those crates only.
 [[licenses.exceptions]]
 crate = "window"
-allow = ["CC-BY-SA-4.0", "CC0-1.0", "Bitstream-Vera"]
+allow = ["CC-BY-SA-4.0"]
+
+[[licenses.exceptions]]
+crate = "ui-kit"
+allow = ["CC0-1.0", "Bitstream-Vera"]
 
 [bans]
 multiple-versions = "warn"

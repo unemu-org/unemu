@@ -1398,7 +1398,7 @@ impl EditDialog {
         egui::Modal::new(egui::Id::unique("firmware-edit-metadata")).show(ctx, |ui| {
             ui.set_max_width(960.0);
             if classic {
-                crate::shell::gradient_title(ui, &title);
+                ui_kit::skin::gradient_title(ui, &title);
             } else {
                 ui.heading(&title);
             }
@@ -1406,7 +1406,7 @@ impl EditDialog {
             ui.group(|ui| {
                 // The firmware mock-up's note banner: ⓘ beside its text.
                 ui.horizontal_top(|ui| {
-                    crate::shell_icons::show(ui, crate::shell_icons::Icon::Info);
+                    ui_kit::shell_icons::show(ui, ui_kit::shell_icons::Icon::Info);
                     ui.vertical(|ui| {
                         ui.strong(
                             "Changes create a new package revision; ROM blobs are unchanged.",
@@ -1492,7 +1492,7 @@ impl ReadmeDialog {
         egui::Modal::new(egui::Id::unique("firmware-readme")).show(ctx, |ui| {
             ui.set_max_width(760.0);
             if classic {
-                crate::shell::gradient_title(ui, &title);
+                ui_kit::skin::gradient_title(ui, &title);
             } else {
                 ui.heading(&title);
             }

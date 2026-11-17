@@ -74,7 +74,7 @@ pub(crate) fn show(ctx: &egui::Context, dialog: &mut PreferencesDialog, classic:
             let width = (ui.available_width() - 30.0).max(100.0);
             ui.allocate_ui(egui::vec2(width, 23.0), |ui| {
                 if classic {
-                    crate::shell::gradient_title(ui, "Preferences");
+                    ui_kit::skin::gradient_title(ui, "Preferences");
                 } else {
                     ui.heading("Preferences");
                 }
@@ -92,7 +92,7 @@ pub(crate) fn show(ctx: &egui::Context, dialog: &mut PreferencesDialog, classic:
             for (tab, label) in [(Tab::General, "General"), (Tab::Registries, "Registries")] {
                 let response = ui.selectable_label(dialog.tab == tab, label);
                 if classic {
-                    crate::shell::bevel(ui, response.rect, dialog.tab == tab);
+                    ui_kit::skin::bevel(ui, response.rect, dialog.tab == tab);
                 }
                 if response.clicked() {
                     dialog.tab = tab;
@@ -157,7 +157,7 @@ pub(crate) fn show(ctx: &egui::Context, dialog: &mut PreferencesDialog, classic:
     editor_modal(ctx, page);
     login_modal(ctx, page);
     confirm_modal(ctx, page);
-    if ctx.input_mut(crate::shell::escape_pressed) {
+    if ctx.input_mut(ui_kit::skin::escape_pressed) {
         if page.confirm.is_some() {
             page.confirm_public(false);
         } else if page.login.is_some() {
@@ -470,7 +470,7 @@ fn login_modal(ctx: &egui::Context, page: &mut RegistriesPage) {
                         .id(password_field_id())
                         .password(true),
                 );
-                crate::text_clipboard::mark_password(ui.ctx(), response.id);
+                ui_kit::text_clipboard::mark_password(ui.ctx(), response.id);
                 if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     submit = true;
                 }

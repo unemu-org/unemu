@@ -367,7 +367,7 @@ fn sizes(summary: &ImageSummary) -> String {
 /// A set row's icon and its warning, before and after the name.
 pub(super) fn lead(row: &MediaRow) -> super::Lead {
     super::Lead {
-        icon: Some(crate::shell_icons::Icon::Media),
+        icon: Some(ui_kit::shell_icons::Icon::Media),
         warning: row.image.failure.is_some(),
         ..super::Lead::default()
     }
@@ -504,7 +504,7 @@ pub(super) fn details(
     super::pane::split3(
         ui,
         |ui| {
-            super::pane::title(ui, crate::shell_icons::Icon::Media, &set_name(row), false);
+            super::pane::title(ui, ui_kit::shell_icons::Icon::Media, &set_name(row), false);
             super::pane::meta(ui, format!("{} · private library", image.references()));
         },
         |facts| {
@@ -1518,7 +1518,7 @@ impl ImportDialog {
         egui::Modal::new(egui::Id::unique("import-installation-media")).show(ctx, |ui| {
             ui.set_max_width(760.0);
             if classic {
-                crate::shell::gradient_title(ui, "Import installation media…");
+                ui_kit::skin::gradient_title(ui, "Import installation media…");
             } else {
                 ui.heading("Import installation media…");
             }
@@ -2791,7 +2791,7 @@ pub(crate) mod tests {
         assert_eq!(failed[0], "synthetic-set:r1");
         let failed = lead(&row(Some("missing blob")));
         assert!(failed.warning);
-        assert_eq!(failed.icon, Some(crate::shell_icons::Icon::Media));
+        assert_eq!(failed.icon, Some(ui_kit::shell_icons::Icon::Media));
     }
 
     /// Insert into… lists every machine's drives that take the set and the

@@ -109,8 +109,8 @@ licence_files() {
 # licences already appear among the components of this repository.
 standard_text() {
   case "$1" in
-    OFL-1.1) printf '%s\n' crates/window/assets/fonts/egui/OFL.txt ;;
-    Ubuntu-font-1.0) printf '%s\n' crates/window/assets/fonts/egui/UFL.txt ;;
+    OFL-1.1) printf '%s\n' crates/ui-kit/assets/fonts/egui/OFL.txt ;;
+    Ubuntu-font-1.0) printf '%s\n' crates/ui-kit/assets/fonts/egui/UFL.txt ;;
     LGPL-2.1-or-later | LGPL-2.1-only) printf '%s\n' crates/devices/src/opl3/LICENSE ;;
     *) if [[ -f LICENSES/$1.txt ]]; then printf '%s\n' "LICENSES/$1.txt"; fi ;;
   esac
@@ -193,13 +193,13 @@ emit_text() {
     crates/devices/src/opl3/LICENSE \
     crates/window/assets/fonts/NOTICE.md \
     crates/window/assets/fonts/LICENSE.txt \
-    crates/window/assets/fonts/dejavu/NOTICE.md \
-    crates/window/assets/fonts/dejavu/LICENSE.txt \
-    crates/window/assets/fonts/egui/NOTICE.txt \
-    crates/window/assets/fonts/egui/UFL.txt \
-    crates/window/assets/fonts/egui/Hack-Regular.txt \
-    crates/window/assets/fonts/egui/OFL.txt \
-    crates/window/assets/fonts/egui/emoji-icon-font-mit-license.txt \
+    crates/ui-kit/assets/fonts/dejavu/NOTICE.md \
+    crates/ui-kit/assets/fonts/dejavu/LICENSE.txt \
+    crates/ui-kit/assets/fonts/egui/NOTICE.txt \
+    crates/ui-kit/assets/fonts/egui/UFL.txt \
+    crates/ui-kit/assets/fonts/egui/Hack-Regular.txt \
+    crates/ui-kit/assets/fonts/egui/OFL.txt \
+    crates/ui-kit/assets/fonts/egui/emoji-icon-font-mit-license.txt \
     assets/brand/README.md; do
     printf '### `%s`\n\n' "$file"
     emit_text "$file"

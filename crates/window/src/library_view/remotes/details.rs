@@ -27,11 +27,11 @@ use crate::{
     registry_transfer::kind_label,
     remote_browse::{LocalState, TagRow},
     remote_pull::{drives_for, refusal, Drive, Mode, Pick, RemotePull},
-    shell_icons::Icon,
 };
 use egui::RichText;
 use image_registry::DEFAULT_REGISTRY;
 use image_store::{license, media_type as mt, Descriptor, Digest};
+use ui_kit::shell_icons::Icon;
 
 const DESCRIPTION: &str = "org.opencontainers.image.description";
 const VENDOR: &str = "org.opencontainers.image.vendor";
@@ -753,7 +753,7 @@ impl LibraryView {
             ui.set_width((ctx.content_rect().width() - 48.0).clamp(320.0, 760.0));
             let heading = format!("Contents — {repository}:{tag}");
             if classic {
-                crate::shell::gradient_title(ui, &heading);
+                ui_kit::skin::gradient_title(ui, &heading);
             } else {
                 ui.heading(&heading);
             }
@@ -830,7 +830,7 @@ impl LibraryView {
                 close = ui.button("Close").clicked();
             });
         });
-        if close || ctx.input_mut(crate::shell::escape_pressed) {
+        if close || ctx.input_mut(ui_kit::skin::escape_pressed) {
             self.remote.contents = None;
         }
     }

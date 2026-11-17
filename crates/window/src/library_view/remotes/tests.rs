@@ -449,8 +449,8 @@ struct Screen {
 impl Screen {
     fn new(classic: bool, dark: bool, size: egui::Vec2) -> Self {
         let ctx = egui::Context::default();
-        crate::shell::configure_context(&ctx);
-        ctx.set_visuals(crate::shell::skin_visuals(classic, dark));
+        ui_kit::skin::configure_context(&ctx);
+        ctx.set_visuals(ui_kit::skin::skin_visuals(classic, dark));
         ctx.enable_accesskit();
         Self {
             ctx,
@@ -560,7 +560,7 @@ fn the_tree_lists_registries_namespaces_locks_and_type_groups_and_opening_lists(
     let private = shown
         .widget("private/ on registry.lan.example locked until you log in")
         .rect;
-    let warn = crate::shell::skin_visuals(true, false).warn_fg_color;
+    let warn = ui_kit::skin::skin_visuals(true, false).warn_fg_color;
     assert!(
         shown
             .strokes
@@ -686,7 +686,7 @@ fn the_list_draws_columns_local_states_and_expands_a_repository() {
         ]
     );
     // Colours: the states in theirs, the muted row's name muted.
-    let visuals = crate::shell::skin_visuals(false, false);
+    let visuals = ui_kit::skin::skin_visuals(false, false);
     assert_eq!(
         shown.text("In library · 1 of 3 tags").colour,
         pane::good_colour(&visuals)
@@ -1137,7 +1137,7 @@ fn get_templates_selects_the_unemu_machine_images_node() {
         .widget("Machine images in unemu/ on registry.unemu.dev (3)")
         .rect;
     // Only the node is marked: the Library's collections are not.
-    let selection = crate::shell::skin_visuals(false, false)
+    let selection = ui_kit::skin::skin_visuals(false, false)
         .selection
         .stroke
         .color;
@@ -1577,7 +1577,7 @@ fn a_selected_node_draws_its_mark_and_count_in_the_selection_colour() {
         rig.listed();
         rig.view.remote.open.insert(DEFAULT_REGISTRY.into());
         let mut screen = Screen::new(classic, dark, WIDE);
-        let visuals = crate::shell::skin_visuals(classic, dark);
+        let visuals = ui_kit::skin::skin_visuals(classic, dark);
         let selection = visuals.selection.stroke.color;
         let shown = screen.settled(&mut rig.view);
         assert_eq!(
@@ -1603,7 +1603,7 @@ fn the_licence_badge_takes_the_library_colours() {
     rig.show(unemu(Some(Group::Media)));
     let mut screen = Screen::new(false, false, WIDE);
     let shown = screen.settled(&mut rig.view);
-    let visuals = crate::shell::skin_visuals(false, false);
+    let visuals = ui_kit::skin::skin_visuals(false, false);
     assert_eq!(shown.text("open").colour, pane::good_colour(&visuals));
     assert_eq!(shown.text("user-supplied").colour, visuals.warn_fg_color);
 }
@@ -1711,7 +1711,7 @@ fn a_collapsed_repository_shows_the_selection_of_its_tag() {
     ));
     let mut screen = Screen::new(true, false, WIDE);
     let shown = screen.settled(&mut rig.view);
-    let selection = crate::shell::skin_visuals(true, false)
+    let selection = ui_kit::skin::skin_visuals(true, false)
         .selection
         .stroke
         .color;
@@ -2480,7 +2480,7 @@ fn another_familys_image_is_muted_and_cannot_be_pulled() {
     let shown = screen.settled(&mut rig.view);
     let rows = shown.rows();
     assert_eq!(rows[0].last().map(String::as_str), Some(reason));
-    let muted = crate::shell::skin_visuals(true, false).weak_text_color();
+    let muted = ui_kit::skin::skin_visuals(true, false).weak_text_color();
     assert_eq!(shown.text("unemu/c64").colour, muted);
     screen.click(&mut rig.view, "unemu/c64");
     let shown = screen.settled(&mut rig.view);
@@ -2660,8 +2660,8 @@ fn contents_fits_a_narrow_window() {
     for (classic, dark) in LOOKS {
         let size = egui::vec2(760.0, 500.0);
         let ctx = egui::Context::default();
-        crate::shell::configure_context(&ctx);
-        ctx.set_visuals(crate::shell::skin_visuals(classic, dark));
+        ui_kit::skin::configure_context(&ctx);
+        ctx.set_visuals(ui_kit::skin::skin_visuals(classic, dark));
         let mut shown = None;
         for frame in 0..4 {
             let mut output = ctx.run_ui(

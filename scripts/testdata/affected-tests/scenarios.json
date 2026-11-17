@@ -134,7 +134,7 @@
       "mode": "full",
       "affected": ["assembly", "audio", "bus", "chipset", "cli", "cpu", "device", "devices",
         "image-registry", "image-store", "machine", "machine-file", "media", "pc-harness",
-        "pc-image", "platforms", "testkit", "video", "window"],
+        "pc-image", "platforms", "testkit", "ui-kit", "video", "window"],
       "tier": "goldens", "deny": true, "release_devices": true, "cli": true, "scan_tests": [],
       "targeted": []
     }
@@ -227,9 +227,24 @@
     }
   },
   {
-    "name": "approved mock-up change selects the window",
+    "name": "approved mock-up change selects the ui kit and the window",
     "changed": ["backlog/docs/design/mockups/library.html"],
-    "expect": { "mode": "crates", "seeds": ["window"], "tier": "fast", "docs": [] }
+    "expect": {
+      "mode": "crates", "seeds": ["ui-kit"], "affected": ["ui-kit", "window"], "tier": "fast",
+      "docs": []
+    }
+  },
+  {
+    "name": "ui kit change runs the ui kit and the window",
+    "changed": ["crates/ui-kit/src/skin.rs"],
+    "expect": {
+      "mode": "crates", "seeds": ["ui-kit"], "affected": ["ui-kit", "window"], "tier": "fast"
+    }
+  },
+  {
+    "name": "brand asset change selects the ui kit and the window",
+    "changed": ["assets/brand/unemupc-logo.gif"],
+    "expect": { "mode": "crates", "seeds": ["ui-kit"], "affected": ["ui-kit", "window"], "tier": "fast" }
   },
   {
     "name": "crate manifest change checks the dependency policy",

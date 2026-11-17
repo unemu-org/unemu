@@ -28,7 +28,7 @@ use winit::window::Window;
 
 /// What the dialog chooses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Kind {
+pub enum Kind {
     /// One existing file.
     File,
     /// Several existing files, in the order the dialog returns them.
@@ -41,7 +41,7 @@ pub(crate) enum Kind {
 
 /// One host file dialog: what it chooses, its title, and where it starts.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Request {
+pub struct Request {
     pub kind: Kind,
     pub title: String,
     /// Named extension filters, in the order the dialog lists them.
@@ -84,18 +84,18 @@ impl Request {
 }
 
 /// The chosen paths, or `None` when the user cancelled.
-pub(crate) type Answer = Option<Vec<PathBuf>>;
+pub type Answer = Option<Vec<PathBuf>>;
 
 /// A dialog's answer, still to come.
-pub(crate) type Pending = Pin<Box<dyn Future<Output = Answer>>>;
+pub type Pending = Pin<Box<dyn Future<Output = Answer>>>;
 
 /// Opens the platform's dialog for a request, attached to the window when
 /// there is one, and returns without waiting for the user.
-pub(crate) type Host = Box<dyn FnMut(&Request, Option<&Window>) -> Pending>;
+pub type Host = Box<dyn FnMut(&Request, Option<&Window>) -> Pending>;
 
 /// A second dialog was asked for while one is open.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Busy;
+pub struct Busy;
 
 enum State<T> {
     Idle,
@@ -106,7 +106,7 @@ enum State<T> {
 }
 
 /// The shell's one host file dialog and who asked for it.
-pub(crate) struct FileDialogs<T> {
+pub struct FileDialogs<T> {
     host: Host,
     state: State<T>,
     /// Asks egui for a frame when the dialog answers. Made at the first poll;
@@ -257,13 +257,13 @@ fn native(request: &Request, parent: Option<&Window>) -> Pending {
 
 /// A scripted host for tests: it records every request and answers only when
 /// the test says so.
-#[cfg(test)]
-pub(crate) mod fake {
+#[cfg(any(test, feature = "test-support"))]
+pub mod fake {
     use super::{Answer, Request};
     use std::{cell::RefCell, rc::Rc, task::Poll};
 
     #[derive(Clone, Default)]
-    pub(crate) struct Host {
+    pub struct Host {
         pub requests: Rc<RefCell<Vec<Request>>>,
         answer: Rc<RefCell<Option<Answer>>>,
         waker: Rc<RefCell<Option<std::task::Waker>>>,

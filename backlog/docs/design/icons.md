@@ -4,9 +4,11 @@ Where the desktop's icons come from, which mock-up icon the app draws where,
 and which it does not. The approved mock-ups in [`mockups/`](mockups/) are the
 reference; [machine images §7](machine-images.md#7-approved-desktop-behavior-and-technology)
 covers the desktop as a whole. The authoritative, tested list is the
-`inventory` module beside `crates/window/src/shell_icons.rs`: its tests read
+`inventory` module beside `crates/ui-kit/src/shell_icons.rs`: its tests read
 every mock-up, so an icon added to a mock-up without an entry, or an entry
-whose icon left its mock-up, fails the build.
+whose icon left its mock-up, fails the build. The desktop's own checks (every
+string it draws has a glyph, its text marks are the mock-ups' characters) are
+in `crates/window/src/shell_icons.rs`.
 
 ## How icons are drawn
 
@@ -28,20 +30,20 @@ whose icon left its mock-up, fails the build.
   proportional and monospace families.
 - **ⓘ is painted** (a circle and an "i"): none of the fonts has U+24D8.
 
-Tests: every character in a string literal of the desktop crate has a glyph in
+Tests: every character in a string literal of the desktop crate and its ui kit has a glyph in
 both families; every mock-up character has one (also those of screens not built yet), except ⓘ, which is painted; every
 icon paints inside its square in both skins and both themes, its text-coloured
 parts at 3:1 or more against the panel (WCAG 2.x non-text contrast).
 
 ## Font licence
 
-`crates/window/assets/fonts/dejavu/DejaVuSans-UI-symbols.ttf` is cut from DejaVu
+`crates/ui-kit/assets/fonts/dejavu/DejaVuSans-UI-symbols.ttf` is cut from DejaVu
 Sans 2.37 (Bitstream Vera and Arev Fonts licences, SPDX `Bitstream-Vera`;
 DejaVu changes are public domain). The licence permits modified fonts under a
 name without "Bitstream", "Vera", "Tavmjong Bah" or "Arev", so the subset keeps
 the name "DejaVu Sans"; its name table keeps the copyright and licence records.
 The release hash, the subset command and the output hash are in the folder's
-`NOTICE.md`; the original `LICENSE` is beside it. The `window` crate's
+`NOTICE.md`; the original `LICENSE` is beside it. The `ui-kit` crate's
 `license` field names `Bitstream-Vera`, which `deny.toml` allows for that crate
 only, and About, `--help` and `--version` carry the attribution. The painted
 icons are the project's own mock-up artwork, under the project licence.

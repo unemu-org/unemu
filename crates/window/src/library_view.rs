@@ -20,7 +20,6 @@ pub(crate) mod remotes;
 
 use crate::{
     layers_dialog::LayersDialog,
-    shell_icons::Icon,
     shell_model::{Command, LibraryEntry},
 };
 use image_store::{
@@ -32,6 +31,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{mpsc, Arc},
 };
+use ui_kit::shell_icons::Icon;
 
 type Result<T> = std::result::Result<T, String>;
 #[cfg(test)]
@@ -1057,7 +1057,7 @@ fn name_cell(
             egui::pos2(left + 2.0, rect.center().y - 8.0),
             egui::Vec2::splat(16.0),
         );
-        crate::shell_icons::paint(&painter, at, icon, ink, ui.visuals());
+        ui_kit::shell_icons::paint(&painter, at, icon, ink, ui.visuals());
         left += NAME_ICON_ROOM;
     }
     let font = egui::TextStyle::Body.resolve(ui.style());
@@ -1068,7 +1068,7 @@ fn name_cell(
         (
             lead.favourite,
             FAVOURITE_BADGE,
-            crate::shell_icons::STAR_GOLD,
+            ui_kit::shell_icons::STAR_GOLD,
         ),
     ] {
         if on {
@@ -1120,7 +1120,7 @@ fn empty_library(ui: &mut egui::Ui, commands: &mut Vec<Command>) {
     ui.group(|ui| {
         // The get-templates mock-up's empty card: its picture beside the text.
         ui.horizontal_top(|ui| {
-            crate::shell_icons::show(ui, Icon::EmptyLibrary);
+            ui_kit::shell_icons::show(ui, Icon::EmptyLibrary);
             ui.vertical(|ui| empty_library_text(ui, commands));
         });
     });
@@ -2799,8 +2799,8 @@ impl LibraryView {
                             // Collections without an icon keep the icon's room, so
                             // the names line up as in the machines mock-up's tree.
                             let mark = match tree_icon(&filter) {
-                                Some(icon) => crate::shell_icons::atom(icon),
-                                None => crate::shell_icons::blank(),
+                                Some(icon) => ui_kit::shell_icons::atom(icon),
+                                None => ui_kit::shell_icons::blank(),
                             };
                             let current = self.remote.node.is_none() && self.query.filter == filter;
                             let picked = ui
@@ -3698,7 +3698,7 @@ impl LibraryView {
         if let Some((path, tag)) = &mut self.import {
             let mut close = false;
             egui::Modal::new(egui::Id::unique("import-image")).show(ctx, |ui| {
-                if classic { crate::shell::gradient_title(ui, "Import image"); } else { ui.heading("Import image"); } ui.label("Machine file"); ui.text_edit_singleline(path); ui.label("New repository:tag"); ui.text_edit_singleline(tag);
+                if classic { ui_kit::skin::gradient_title(ui, "Import image"); } else { ui.heading("Import image"); } ui.label("Machine file"); ui.text_edit_singleline(path); ui.label("New repository:tag"); ui.text_edit_singleline(tag);
                 ui.label("Firmware is located using the configured ROM folders. Missing firmware: Tools > Locate firmware…");
                 ui.horizontal(|ui| { if ui.add_enabled(!self.busy && !tag.trim().is_empty(), egui::Button::new("Import")).clicked() { requests.push(Request::Import(PathBuf::from(path.trim()), tag.trim().into(), roots)); self.busy = true; self.status = Some("Importing machine image…".into()); close = true; }
                     if ui.button("Cancel").clicked() { close = true; } });
@@ -3720,7 +3720,7 @@ impl LibraryView {
                 .map(|row| (row.used_by.clone(), self.package_machines(&row)));
             egui::Modal::new(egui::Id::unique("delete-tag")).show(ctx, |ui| {
                 if classic {
-                    crate::shell::gradient_title(ui, "Delete tag?");
+                    ui_kit::skin::gradient_title(ui, "Delete tag?");
                 } else {
                     ui.heading("Delete tag?");
                 }
@@ -6141,7 +6141,7 @@ pub(super) mod tests {
         let cells: [String; 9] = std::array::from_fn(|i| format!("cell {i}"));
         for classic in [false, true] {
             for dark in [false, true] {
-                let visuals = crate::shell::skin_visuals(classic, dark);
+                let visuals = ui_kit::skin::skin_visuals(classic, dark);
                 let fill = visuals.selection.bg_fill;
                 let ctx = egui::Context::default();
                 ctx.set_visuals(visuals);
@@ -6183,7 +6183,7 @@ pub(super) mod tests {
             }
         }
         let ctx = egui::Context::default();
-        crate::shell::configure_context(&ctx);
+        ui_kit::skin::configure_context(&ctx);
         ctx.set_visuals(egui::Visuals::light());
         let mut output = ctx.run_ui(egui::RawInput::default(), run);
         output.textures_delta.clear();
@@ -6265,7 +6265,7 @@ pub(super) mod tests {
         assert_eq!(name.galley.text(), "cell 0 ⚠ ★");
         let sections = &name.galley.job.sections;
         assert_eq!(sections[1].format.color, visuals.warn_fg_color);
-        assert_eq!(sections[2].format.color, crate::shell_icons::STAR_GOLD);
+        assert_eq!(sections[2].format.color, ui_kit::shell_icons::STAR_GOLD);
         // Left-aligned: the name starts after the group indent and the icon.
         assert_eq!(name.pos.x, CHILD_INDENT + NAME_ICON_ROOM);
         let icon: Vec<_> = shapes

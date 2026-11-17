@@ -1100,7 +1100,7 @@ pub(crate) fn show(ctx: &egui::Context, picker: &mut Picker, classic: bool) -> O
                     format!("Insert disk — {machine_name}")
                 };
                 if classic {
-                    crate::shell::gradient_title(ui, &title);
+                    ui_kit::skin::gradient_title(ui, &title);
                 } else {
                     ui.heading(title);
                 }
@@ -1136,7 +1136,7 @@ pub(crate) fn show(ctx: &egui::Context, picker: &mut Picker, classic: bool) -> O
                     });
             });
         // Escape closes an open drop-down first, then the picker.
-        if !egui::Popup::is_any_open(ui.ctx()) && ui.input_mut(crate::shell::escape_pressed) {
+        if !egui::Popup::is_any_open(ui.ctx()) && ui.input_mut(ui_kit::skin::escape_pressed) {
             outcome = Some(Outcome::Cancel);
         }
     });
@@ -1174,7 +1174,7 @@ pub(crate) fn segment(
     }
     let response = ui.add(button);
     if chosen && classic && ui.is_rect_visible(response.rect) {
-        crate::shell::bevel(ui, response.rect, true);
+        ui_kit::skin::bevel(ui, response.rect, true);
     }
     response
 }
@@ -2805,7 +2805,7 @@ pub(crate) mod tests {
     #[test]
     fn the_picker_renders_headlessly() {
         let ctx = egui::Context::default();
-        crate::shell::configure_context(&ctx);
+        ui_kit::skin::configure_context(&ctx);
         let mut picker = Picker::new(
             vec![
                 machine(Some("dos-games"), When::AtStart),
@@ -2952,7 +2952,7 @@ pub(crate) mod tests {
             modifiers,
         };
         let ctx = egui::Context::default();
-        crate::shell::configure_context(&ctx);
+        ui_kit::skin::configure_context(&ctx);
         let mut picker = Picker::new(vec![machine(None, When::Now)], 0, 0, library(), None);
         let outcome = frame(
             &ctx,
@@ -3114,8 +3114,8 @@ pub(crate) mod tests {
         count: usize,
     ) -> Vec<Shown> {
         let ctx = egui::Context::default();
-        crate::shell::configure_context(&ctx);
-        ctx.set_visuals(crate::shell::skin_visuals(classic, dark));
+        ui_kit::skin::configure_context(&ctx);
+        ctx.set_visuals(ui_kit::skin::skin_visuals(classic, dark));
         ctx.enable_accesskit();
         let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
         (0..count)
@@ -3198,7 +3198,7 @@ pub(crate) mod tests {
     fn the_body_panes_keep_one_height_on_the_field() {
         for (classic, dark) in LOOKS {
             let what = format!("classic {classic}, dark {dark}");
-            let field = crate::shell::skin_visuals(classic, dark).text_edit_bg_color();
+            let field = ui_kit::skin::skin_visuals(classic, dark).text_edit_bg_color();
             let mut picker = Picker::new(vec![machine(None, When::Now)], 0, 0, library(), None);
             picker.show_misfits = true;
             let frames = shown_frames(&mut picker, BIG, classic, dark, 12);
@@ -3452,7 +3452,7 @@ pub(crate) mod tests {
                 shown.modal.right() - cancel.right() < 24.0,
                 "{what}: {cancel:?}"
             );
-            let window = crate::shell::skin_visuals(classic, dark).window_fill;
+            let window = ui_kit::skin::skin_visuals(classic, dark).window_fill;
             for (label, rect) in [("Browse", browse), ("Insert", insert), ("Cancel", cancel)] {
                 assert!(
                     shown.rects.iter().any(|(r, _)| {
@@ -3587,8 +3587,8 @@ pub(crate) mod tests {
     impl Pointer {
         fn new(classic: bool, dark: bool) -> Self {
             let ctx = egui::Context::default();
-            crate::shell::configure_context(&ctx);
-            ctx.set_visuals(crate::shell::skin_visuals(classic, dark));
+            ui_kit::skin::configure_context(&ctx);
+            ctx.set_visuals(ui_kit::skin::skin_visuals(classic, dark));
             ctx.enable_accesskit();
             Self {
                 ctx,
@@ -3809,7 +3809,7 @@ pub(crate) mod tests {
     #[test]
     fn the_create_view_opens_with_add_folder_focused() {
         let ctx = egui::Context::default();
-        crate::shell::configure_context(&ctx);
+        ui_kit::skin::configure_context(&ctx);
         let mut picker = Picker::new(vec![machine(None, When::Now)], 0, 1, library(), None);
         picker.open_create();
         let enter = egui::Event::Key {
@@ -4054,7 +4054,7 @@ pub(crate) mod tests {
         }
         let temp = crate::media_create::tests::host("picker-create-drop", &[("tq.exe", 100)]);
         let ctx = egui::Context::default();
-        crate::shell::configure_context(&ctx);
+        ui_kit::skin::configure_context(&ctx);
         let drop = |picker: &mut Picker| {
             let mut output = ctx.run_ui(
                 egui::RawInput {

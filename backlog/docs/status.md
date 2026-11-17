@@ -5,6 +5,18 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — The desktop's skin and widget helpers move to a `ui-kit`
+  crate:** first step of the window split (design/core-contract.md §8).
+  The new crate (layer `neutral`; the boundary check counts it as a window
+  crate, so it may not depend on a CLI crate) holds the skins, fonts, title
+  strips, bevels and text marks (`ui_kit::skin`), the mock-up icons and
+  their inventory, the library's details-pane layout, the brand logo, the
+  host file dialogs and the clipboard shortcuts, with the DejaVu symbol
+  font and the egui font notices. The desktop uses them from there and
+  keeps what needs the shell or PC firmware. No behaviour changes: the
+  workspace's 3902 test names are the same apart from the crate of the 22
+  moved tests (MEASURED), and a change to the kit, an approved mock-up or
+  the brand assets now selects `ui-kit` and the window.
 - **2026-11-17 — Recipe crate and `upcli recipe check`:** the new
   platform-neutral crate `recipe` reads Mediafiles, Firmwarefiles and work
   files of recipe version 0.1 into a typed model and runs every static
@@ -234,7 +246,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   has the keyboard its keys still go only to the guest, so Ctrl+C remains
   the guest's in both shortcut styles. The native macOS menu has no Edit
   menu, so no key equivalent takes Command+V before the window.
-  `crates/window/src/text_clipboard.rs` holds the mapping and its tests
+  `crates/ui-kit/src/text_clipboard.rs` holds the mapping and its tests
   with a fake clipboard, plus a check that eframe is built with
   `clipboard` and that arboard opens the host clipboard (skipped on Linux
   without an X11 or Wayland display, as on the headless CI runner); the

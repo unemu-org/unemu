@@ -6,13 +6,19 @@
 //! `backlog/docs/design/machine-images.md` §7.
 
 use crate::{
-    file_dialog,
     shell_model::{self, Command, Enablement, LibraryEntry, State},
     Args, Presenter,
 };
 use egui::{Color32, Sense, Stroke, Vec2};
 use std::{
     cell::RefCell, collections::BTreeSet, error::Error, io, rc::Rc, sync::Arc, time::Instant,
+};
+use ui_kit::{
+    file_dialog,
+    skin::{
+        audio_mark, bevel, configure_context, escape_pressed, gradient_title, skin_visuals,
+        window_title, EJECT_MARK,
+    },
 };
 use winit::{
     application::ApplicationHandler,
@@ -257,7 +263,7 @@ pub(super) fn run(args: Args, autostart: bool) -> Result<(), Box<dyn Error>> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("unemupc")
-            .with_icon(crate::logo::icon()?)
+            .with_icon(ui_kit::logo::icon()?)
             .with_inner_size([1040.0, 700.0])
             .with_min_inner_size([760.0, 500.0]),
         renderer: eframe::Renderer::Glow,
@@ -280,7 +286,7 @@ pub(super) fn run(args: Args, autostart: bool) -> Result<(), Box<dyn Error>> {
                 cc.winit_window().cloned(),
                 assembly::firmware_discovery::default_firmware_roots(),
             );
-            shell.logo = Some(crate::logo::Logo::load(&cc.egui_ctx)?);
+            shell.logo = Some(ui_kit::logo::Logo::load(&cc.egui_ctx)?);
             if autostart {
                 shell.start();
             }
@@ -317,7 +323,7 @@ struct Shell {
     dialog: Option<(&'static str, String)>,
     message: String,
     texture: Option<egui::TextureHandle>,
-    logo: Option<crate::logo::Logo>,
+    logo: Option<ui_kit::logo::Logo>,
     events: Rc<RefCell<Events>>,
     errors: Rc<RefCell<Option<String>>>,
     window: Option<Arc<Window>>,
@@ -380,7 +386,7 @@ struct Shell {
     /// The opt-in keyboard tap that hands macOS system shortcuts to the guest.
     system_keys: crate::system_keys::SystemKeys,
     /// The host clipboard a paste into a text field reads.
-    clipboard: Box<dyn crate::text_clipboard::HostClipboard>,
+    clipboard: Box<dyn ui_kit::text_clipboard::HostClipboard>,
     /// The host file dialog, which answers on a later frame. It is no shell
     /// dialog: a running machine keeps running while it is open.
     file_dialogs: file_dialog::FileDialogs<FileFor>,
@@ -2470,7 +2476,7 @@ impl Shell {
         let Some(unit) = view.floppy_unit() else {
             ui.add_enabled(
                 false,
-                egui::Button::new((crate::shell_icons::mark(""), view.fixed_eject_label())),
+                egui::Button::new((ui_kit::shell_icons::mark(""), view.fixed_eject_label())),
             );
             self.marked_item(ui, "", "Disk layers…", "", Command::Layers, commands);
             if let Some(label) = view.write_label() {
@@ -2676,7 +2682,7 @@ impl Shell {
             restore_input: None,
             transfer_prompt: None,
             system_keys: crate::system_keys::SystemKeys::platform(),
-            clipboard: Box::<crate::text_clipboard::SystemClipboard>::default(),
+            clipboard: Box::<ui_kit::text_clipboard::SystemClipboard>::default(),
             file_dialogs: file_dialog::FileDialogs::native(),
             creating: None,
         };
@@ -3852,7 +3858,7 @@ impl Shell {
             Minimize => { self.release(); ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); },
             Exit => self.request_exit(ctx),
             Shortcuts => self.dialog = Some(("Keyboard shortcuts", shortcuts_help(self.macos_shortcuts))),
-            About => self.dialog = Some(("About unemupc", format!("unemupc {}\nemulator of period IBM-compatible PCs\n{}\nx86jit · egui / eframe · cpal\n\n{}\n\n{}\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), platforms::licence_notice(), window::FONT_NOTICE, window::EGUI_FONT_NOTICE, window::SYMBOL_FONT_NOTICE, devices::OPL3_NOTICE))),
+            About => self.dialog = Some(("About unemupc", format!("unemupc {}\nemulator of period IBM-compatible PCs\n{}\nx86jit · egui / eframe · cpal\n\n{}\n\n{}\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), platforms::licence_notice(), window::FONT_NOTICE, ui_kit::EGUI_FONT_NOTICE, ui_kit::SYMBOL_FONT_NOTICE, devices::OPL3_NOTICE))),
             Placeholder("Open machine file") => self.open_machine_dialog(),
             Placeholder("New machine") => { self.release(); self.image_library.begin_new_machine(); },
             Placeholder(title) => self.dialog = Some((title, "not yet available".into())),
@@ -3919,7 +3925,7 @@ impl Shell {
         commands: &mut Vec<Command>,
     ) {
         let button = match mark {
-            Some(mark) => egui::Button::new((crate::shell_icons::mark(mark), label)),
+            Some(mark) => egui::Button::new((ui_kit::shell_icons::mark(mark), label)),
             None => egui::Button::new(label),
         };
         let response = ui.add_enabled(
@@ -4276,7 +4282,7 @@ impl Shell {
 
     fn toolbar(&self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
         ui.horizontal_wrapped(|ui| {
-            use crate::shell_icons::Icon;
+            use ui_kit::shell_icons::Icon;
             // The main-window mock-up sets Ctrl+Alt+Del as code text, without an icon.
             for (label, icon, command) in [
                 (
@@ -4965,7 +4971,7 @@ fn firmware_progress(
 
 impl eframe::App for Shell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        crate::text_clipboard::shortcuts(ctx, &mut *self.clipboard);
+        ui_kit::text_clipboard::shortcuts(ctx, &mut *self.clipboard);
         // Before anything draws: a file dialog opened later in this frame
         // then already wakes the shell with its answer.
         self.poll_file_dialog(ctx);
@@ -4987,7 +4993,7 @@ impl eframe::App for Shell {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
         let mut commands = Vec::new();
         egui::Panel::top("shell-chrome").show(ui, |ui| {
-            if crate::shell_icons::custom_title_bar(self.classic, cfg!(target_os = "macos")) {
+            if ui_kit::shell_icons::custom_title_bar(self.classic, cfg!(target_os = "macos")) {
                 window_title(ui, &self.title());
             }
             self.menus(ui, &mut commands);
@@ -5314,12 +5320,6 @@ impl eframe::App for Shell {
     }
 }
 
-/// One Escape closes one dialog: the first reader consumes the key, so a
-/// dialog stacked beneath cannot close on the same press.
-pub(crate) fn escape_pressed(input: &mut egui::InputState) -> bool {
-    input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
-}
-
 /// Outlines the focused text field in its own text colour, as the mock-ups
 /// outline a focused control (`:focus-visible`: 1 px in `currentColor`), in
 /// every skin. egui outlines it in the selection stroke, which stays white so
@@ -5352,31 +5352,6 @@ pub(crate) fn outline_focused_field(ctx: &egui::Context) {
             outline,
             egui::StrokeKind::Inside,
         );
-}
-
-pub(super) fn configure_context(ctx: &egui::Context) {
-    // The shortcut symbols need glyphs beyond the proportional Latin font.
-    let mut fonts = egui::FontDefinitions::default();
-    fonts
-        .families
-        .entry(egui::FontFamily::Proportional)
-        .or_default()
-        .push("Hack".into());
-    // Last in both families, so it only supplies the marks no egui font has
-    // (✓ ✗ ✕ Ⅱ ⌫); without it they would render as empty boxes.
-    fonts.font_data.insert(
-        "DejaVu-symbols".into(),
-        std::sync::Arc::new(egui::FontData::from_static(window::SYMBOL_FONT)),
-    );
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .push("DejaVu-symbols".into());
-    }
-    ctx.set_fonts(fonts);
-    ctx.options_mut(|options| options.zoom_with_keyboard = false);
 }
 
 fn modifier_index(key: KeyCode) -> Option<usize> {
@@ -5415,18 +5390,6 @@ pub(crate) fn machine_menu_mark(command: Command) -> &'static str {
     }
 }
 
-/// The status bar's speaker, as the main-window mock-up marks its audio cell:
-/// crossed out while no sound reaches the speakers of a running machine.
-pub(crate) fn audio_mark(audible: bool) -> &'static str {
-    if audible {
-        "🔊"
-    } else {
-        "🔇"
-    }
-}
-
-/// The eject mark of the Media menu and the drive menus.
-pub(crate) const EJECT_MARK: &str = "⏏";
 /// Why a stopped library machine lists no disk in its drives' catalogues:
 /// its image's own disks join them at Start.
 const IMAGE_DISKS_AT_START: &str =
@@ -5549,137 +5512,6 @@ fn drive_tooltip(ui: &mut egui::Ui, view: &crate::drive_chips::DriveView, lit: b
     ui.separator();
     ui.weak("Click for this drive's menu");
 }
-/// The visuals of one skin in one theme. Selected rows and items draw their
-/// text in the selection stroke colour on the selection fill, so every skin
-/// keeps that pair legible.
-///
-/// Both skins take the mock-ups' face colour for panels and dialogs, their
-/// field colour for text fields, mini tables and scroll tracks, and their
-/// stripe colour for striped rows: egui's dark field is near black and reads
-/// as a hole in the pane, and its stripe is all but invisible. Warnings and
-/// errors take the mock-ups' warn and bad colours: egui's orange and red
-/// fade on the light face. In the mock-ups the modern skin shares every
-/// colour with the classic one and changes only the corners and the
-/// outlines; see `modern_colours`.
-pub(crate) fn skin_visuals(classic: bool, dark: bool) -> egui::Visuals {
-    let mut visuals = if dark {
-        egui::Visuals::dark()
-    } else {
-        egui::Visuals::light()
-    };
-    (visuals.extreme_bg_color, visuals.faint_bg_color) = if dark {
-        (Color32::from_rgb(38, 40, 43), Color32::from_rgb(44, 46, 50))
-    } else {
-        (Color32::WHITE, Color32::from_rgb(243, 241, 234))
-    };
-    (visuals.warn_fg_color, visuals.error_fg_color) = if dark {
-        (
-            Color32::from_rgb(255, 207, 115),
-            Color32::from_rgb(255, 157, 146),
-        )
-    } else {
-        (
-            Color32::from_rgb(138, 83, 0),
-            Color32::from_rgb(155, 28, 28),
-        )
-    };
-    let face = if dark {
-        Color32::from_rgb(52, 54, 58)
-    } else {
-        Color32::from_rgb(214, 211, 203)
-    };
-    visuals.panel_fill = face;
-    visuals.window_fill = face;
-    if classic {
-        visuals.window_corner_radius = egui::CornerRadius::ZERO;
-        visuals.menu_corner_radius = egui::CornerRadius::ZERO;
-        for widget in [
-            &mut visuals.widgets.inactive,
-            &mut visuals.widgets.hovered,
-            &mut visuals.widgets.active,
-            &mut visuals.widgets.open,
-            &mut visuals.widgets.noninteractive,
-        ] {
-            widget.corner_radius = egui::CornerRadius::ZERO;
-        }
-        visuals.widgets.inactive.bg_fill = face;
-        visuals.widgets.inactive.weak_bg_fill = face;
-        visuals.selection.bg_fill = Color32::from_rgb(34, 70, 138);
-        // egui draws selected text in the selection stroke colour; the
-        // light theme's dark blue would vanish on the classic navy fill.
-        visuals.selection.stroke.color = Color32::WHITE;
-    } else {
-        modern_colours(&mut visuals, face, dark);
-    }
-    visuals
-}
-
-/// The modern skin's colours from the mock-ups' tokens, on egui's rounded
-/// corners. Its flat 1 px outlines take the mock-ups' shadow colour (`lo`):
-/// around dialogs and menus, along separators, and around resting buttons,
-/// fields and check boxes, as the mock-ups outline every control in the
-/// modern skin. egui's own grey all but vanishes on the face colour, and a
-/// resting check box would be hard to find on it without its outline.
-///
-/// Buttons rest on the face colour, as the mock-ups' `.btn` does, and turn
-/// to the second face colour (`face-2`) when hovered or while their menu is
-/// open, as the mock-ups' chips do; pressed ones stay on the face. The boxes
-/// of check boxes and radio buttons and the rails of sliders take the second
-/// face colour at rest, so they stand apart from the face, and hovered ones
-/// go halfway from it to the highlight (`hi`). Text takes the ink colour and
-/// weak text the muted one. Strong text, egui's stand-in for the mock-ups'
-/// bold, as no bold face is loaded, and the text of hovered and pressed
-/// widgets go one step past the ink, to white or black. Selected rows take
-/// the selection colour with white text, links the link colour.
-fn modern_colours(visuals: &mut egui::Visuals, face: Color32, dark: bool) {
-    let rgb = Color32::from_rgb;
-    let (face_2, highlight, outline, ink, strong, muted, selection, link) = if dark {
-        (
-            rgb(62, 64, 69),
-            rgb(92, 95, 102),
-            rgb(31, 32, 35),
-            rgb(230, 228, 223),
-            Color32::WHITE,
-            rgb(169, 166, 160),
-            rgb(60, 100, 176),
-            rgb(169, 198, 255),
-        )
-    } else {
-        (
-            rgb(231, 228, 220),
-            Color32::WHITE,
-            rgb(141, 138, 131),
-            rgb(29, 28, 26),
-            Color32::BLACK,
-            rgb(91, 88, 82),
-            rgb(34, 70, 138),
-            rgb(27, 74, 150),
-        )
-    };
-    let hovered_box = face_2.lerp_to_gamma(highlight, 0.5);
-    visuals.window_stroke.color = outline;
-    visuals.weak_text_color = Some(muted);
-    visuals.hyperlink_color = link;
-    visuals.selection.bg_fill = selection;
-    visuals.selection.stroke.color = Color32::WHITE;
-    let widgets = &mut visuals.widgets;
-    // Per state: the ground of buttons (`weak_bg_fill`), the box of check
-    // boxes and radio buttons and the rail of sliders (`bg_fill`), the text.
-    for (widget, button, boxes, text) in [
-        (&mut widgets.noninteractive, face, face, ink),
-        (&mut widgets.inactive, face, face_2, ink),
-        (&mut widgets.hovered, face_2, hovered_box, strong),
-        (&mut widgets.active, face, face, strong),
-        (&mut widgets.open, face_2, face_2, ink),
-    ] {
-        widget.weak_bg_fill = button;
-        widget.bg_fill = boxes;
-        widget.fg_stroke.color = text;
-    }
-    widgets.noninteractive.bg_stroke.color = outline;
-    widgets.inactive.bg_stroke = Stroke::new(1.0, outline);
-}
-
 /// One main-toolbar button. The classic skin frames it, and the toolbar
 /// bevels it. The modern skin draws it as the main-window mock-up does: no
 /// frame at rest, and on hover only the skin's 1 px outline, without a fill.
@@ -5689,101 +5521,14 @@ fn toolbar_button(
     ui: &mut egui::Ui,
     classic: bool,
     label: &str,
-    icon: Option<crate::shell_icons::Icon>,
+    icon: Option<ui_kit::shell_icons::Icon>,
 ) -> egui::Response {
     if !classic {
         let widgets = &mut ui.visuals_mut().widgets;
         widgets.hovered.weak_bg_fill = Color32::TRANSPARENT;
         widgets.hovered.bg_stroke = widgets.inactive.bg_stroke;
     }
-    crate::shell_icons::button(ui, label, icon, classic)
-}
-
-pub(crate) fn bevel(ui: &egui::Ui, rect: egui::Rect, pressed: bool) {
-    let light = if ui.visuals().dark_mode {
-        Color32::from_gray(92)
-    } else {
-        Color32::WHITE
-    };
-    let shadow = if ui.visuals().dark_mode {
-        Color32::from_gray(24)
-    } else {
-        Color32::from_rgb(141, 138, 131)
-    };
-    let (top, bottom) = if pressed {
-        (shadow, light)
-    } else {
-        (light, shadow)
-    };
-    bevel_ring(ui.painter(), rect, top, bottom);
-}
-
-/// One 1 px ring of a classic bevel just inside `rect`: `top` along its top
-/// and left edges, `bottom` along its right and bottom ones.
-pub(crate) fn bevel_ring(painter: &egui::Painter, rect: egui::Rect, top: Color32, bottom: Color32) {
-    let rect = rect.shrink(0.5);
-    painter.line_segment([rect.left_bottom(), rect.left_top()], Stroke::new(1.0, top));
-    painter.line_segment([rect.left_top(), rect.right_top()], Stroke::new(1.0, top));
-    painter.line_segment(
-        [rect.right_top(), rect.right_bottom()],
-        Stroke::new(1.0, bottom),
-    );
-    painter.line_segment(
-        [rect.right_bottom(), rect.left_bottom()],
-        Stroke::new(1.0, bottom),
-    );
-}
-
-pub(crate) fn gradient_title(ui: &mut egui::Ui, title: &str) {
-    title_strip(ui, title, false);
-}
-
-/// The main window's classic title strip: the application icon, as the
-/// main-window mock-up's title bar shows it, then the title.
-fn window_title(ui: &mut egui::Ui, title: &str) {
-    title_strip(ui, title, true);
-}
-
-fn title_strip(ui: &mut egui::Ui, title: &str, icon: bool) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 23.0), Sense::hover());
-    let mut mesh = egui::Mesh::default();
-    for (pos, color) in [
-        (rect.left_top(), Color32::from_rgb(19, 51, 111)),
-        (rect.right_top(), Color32::from_rgb(75, 121, 193)),
-        (rect.right_bottom(), Color32::from_rgb(75, 121, 193)),
-        (rect.left_bottom(), Color32::from_rgb(19, 51, 111)),
-    ] {
-        mesh.colored_vertex(pos, color);
-    }
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
-    ui.painter().add(mesh);
-    let mut text_left = 7.0;
-    if icon {
-        let icon_rect = egui::Rect::from_center_size(
-            rect.left_center() + Vec2::new(14.0, 0.0),
-            Vec2::splat(16.0),
-        );
-        crate::shell_icons::paint(
-            ui.painter(),
-            icon_rect,
-            crate::shell_icons::Icon::App,
-            Color32::WHITE,
-            ui.visuals(),
-        );
-        text_left = 28.0;
-    }
-    ui.painter().text(
-        rect.left_center() + Vec2::new(text_left, 0.0),
-        egui::Align2::LEFT_CENTER,
-        title,
-        egui::FontId::proportional(13.0),
-        Color32::WHITE,
-    );
-    ui.painter().line_segment(
-        [rect.left_bottom(), rect.right_bottom()],
-        Stroke::new(1.0, Color32::WHITE),
-    );
+    ui_kit::shell_icons::button(ui, label, icon, classic)
 }
 
 /// Shown in Preferences when the system-shortcut option is on without the
@@ -5963,7 +5708,7 @@ mod tests {
             restore_input: None,
             transfer_prompt: None,
             system_keys: crate::system_keys::fake::system_keys().0,
-            clipboard: Box::<crate::text_clipboard::tests::FakeClipboard>::default(),
+            clipboard: Box::<ui_kit::text_clipboard::fake::FakeClipboard>::default(),
             file_dialogs: file_dialog::FileDialogs::with_host(
                 file_dialog::fake::Host::default().boxed(),
             ),
@@ -6311,8 +6056,8 @@ mod tests {
     /// password, against a registry on this computer.
     #[test]
     fn the_registry_login_fields_take_a_paste_and_the_password_never_leaves() {
-        use crate::text_clipboard::tests::{press, Host, CTRL_COMMAND, MAC_COMMAND};
         use image_registry::test_support::{MockRegistry, Policy};
+        use ui_kit::text_clipboard::fake::{press, Host, CTRL_COMMAND, MAC_COMMAND};
         fn page(shell: &mut Shell) -> &mut crate::registries_model::RegistriesPage {
             &mut shell.preferences_dialog.as_mut().unwrap().registries
         }
@@ -7539,7 +7284,7 @@ mod tests {
     /// text field is focused, and no clipboard is read or written.
     #[test]
     fn ctrl_c_stays_the_guests_and_no_clipboard_is_touched_without_a_text_field() {
-        use crate::text_clipboard::tests::{press, release, Host, CTRL_COMMAND, MAC_COMMAND};
+        use ui_kit::text_clipboard::fake::{press, release, Host, CTRL_COMMAND, MAC_COMMAND};
         for (macos, modifiers) in [(false, CTRL_COMMAND), (true, MAC_COMMAND)] {
             let mut shell = keyboard_shell();
             shell.macos_shortcuts = macos;
@@ -9626,14 +9371,14 @@ mod tests {
         shell.command(Command::About, &ctx);
         let text = &shell.dialog.as_ref().unwrap().1;
         assert!(text.contains(window::FONT_NOTICE));
-        assert!(text.contains(window::EGUI_FONT_NOTICE));
-        assert!(text.contains(window::SYMBOL_FONT_NOTICE));
+        assert!(text.contains(ui_kit::EGUI_FONT_NOTICE));
+        assert!(text.contains(ui_kit::SYMBOL_FONT_NOTICE));
         assert!(text.contains(devices::OPL3_NOTICE));
         assert!(text.contains(&platforms::licence_notice()));
         for option in ["--help", "--about", "--version"] {
             let output = crate::informational_output(std::ffi::OsStr::new(option)).unwrap();
-            assert!(output.contains(window::EGUI_FONT_NOTICE));
-            assert!(output.contains(window::SYMBOL_FONT_NOTICE));
+            assert!(output.contains(ui_kit::EGUI_FONT_NOTICE));
+            assert!(output.contains(ui_kit::SYMBOL_FONT_NOTICE));
             assert!(output.contains(devices::OPL3_NOTICE));
         }
         for credit in [
@@ -9846,7 +9591,7 @@ kind='mda'
     fn the_library_sidebar_has_no_logo_entry() {
         let mut shell = shell();
         let ctx = egui::Context::default();
-        shell.logo = Some(crate::logo::Logo::load(&ctx).unwrap());
+        shell.logo = Some(ui_kit::logo::Logo::load(&ctx).unwrap());
         let output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -14853,7 +14598,7 @@ kind='mda'
                                 ui,
                                 classic,
                                 "Settings",
-                                Some(crate::shell_icons::Icon::Settings),
+                                Some(ui_kit::shell_icons::Icon::Settings),
                             )
                             .rect,
                         );

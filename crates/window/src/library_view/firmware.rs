@@ -343,7 +343,7 @@ pub(super) fn short(hash: &str) -> String {
 /// A package row's icon and its warning, before and after the name.
 pub(super) fn lead(row: &FirmwareRow) -> super::Lead {
     super::Lead {
-        icon: Some(crate::shell_icons::Icon::Firmware),
+        icon: Some(ui_kit::shell_icons::Icon::Firmware),
         warning: row.image.failure.is_some(),
         ..super::Lead::default()
     }
@@ -502,7 +502,7 @@ pub(super) fn details(
     super::pane::split3(
         ui,
         |ui| {
-            super::pane::title(ui, crate::shell_icons::Icon::Firmware, image.name(), false);
+            super::pane::title(ui, ui_kit::shell_icons::Icon::Firmware, image.name(), false);
             super::pane::meta(
                 ui,
                 format!("{} · local package · {}", roles(f), image.references()),
@@ -1567,7 +1567,7 @@ impl ImportDialog {
         egui::Modal::new(egui::Id::unique("import-rom-folder")).show(ctx, |ui| {
             ui.set_max_width(980.0);
             if classic {
-                crate::shell::gradient_title(ui, "Import ROM folder…");
+                ui_kit::skin::gradient_title(ui, "Import ROM folder…");
             } else {
                 ui.heading("Import ROM folder…");
             }
@@ -2799,7 +2799,7 @@ pub(crate) mod tests {
         assert_eq!(failed[0], "private/firmware/ibm-pc/synthetic:r1");
         let failed = lead(&row(Some("missing blob")));
         assert!(failed.warning);
-        assert_eq!(failed.icon, Some(crate::shell_icons::Icon::Firmware));
+        assert_eq!(failed.icon, Some(ui_kit::shell_icons::Icon::Firmware));
     }
 
     #[test]

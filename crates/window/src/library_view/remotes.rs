@@ -44,12 +44,12 @@ use crate::{
         Action, BrowseEvent, BrowseRequest, End, Failure, LocalState, Message, RegistryView,
         Remotes, RepositoryRow, State, TagRecord, TagRow,
     },
-    shell_icons::Icon,
 };
 use egui::{AtomExt, Color32, Rect, RichText, Sense, Stroke, Vec2};
 use image_registry::{reference::OFFICIAL_NAMESPACE, DEFAULT_REGISTRY};
 use image_store::media_type as mt;
 use std::collections::BTreeSet;
+use ui_kit::shell_icons::Icon;
 
 /// An artifact-type group under a namespace, as the mock-up's tree groups
 /// repositories by their manifest's artifact type.
@@ -580,7 +580,7 @@ fn tree_line(ui: &mut egui::Ui, line: &TreeLine, current: bool) -> (bool, bool) 
         };
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         let mut atoms = egui::Atoms::new((
-            crate::shell_icons::atom(line.icon),
+            ui_kit::shell_icons::atom(line.icon),
             RichText::new(&line.label).atom_shrink(true),
         ));
         let visuals = ui.visuals();
@@ -621,7 +621,7 @@ fn tree_line(ui: &mut egui::Ui, line: &TreeLine, current: bool) -> (bool, bool) 
                         } else {
                             ui.visuals().warn_fg_color
                         };
-                        crate::shell_icons::paint(
+                        ui_kit::shell_icons::paint(
                             ui.painter(),
                             args.rect,
                             Icon::Lock,
@@ -805,7 +805,7 @@ fn draw_row(
                             }
                         });
                         let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-                        crate::shell_icons::paint(&painter, at, icon, ink, ui.visuals());
+                        ui_kit::shell_icons::paint(&painter, at, icon, ink, ui.visuals());
                         room.min.x += ICON_ROOM;
                     }
                 }
@@ -1278,7 +1278,7 @@ fn message_card(
     let top = area.top() + ((area.height() - height) / 2.0).max(24.0);
     let left = area.left() + ((area.width() - width) / 2.0).max(0.0);
     let card = Rect::from_min_size(egui::pos2(left, top), Vec2::new(width, height));
-    crate::shell_icons::paint(
+    ui_kit::shell_icons::paint(
         ui.painter(),
         Rect::from_min_size(card.min, Vec2::splat(40.0)),
         icon,

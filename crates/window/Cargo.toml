@@ -3,9 +3,9 @@
 name = "window"
 version.workspace = true
 edition.workspace = true
-# The binary embeds CC BY-SA fonts, CC0 logo data and a Bitstream Vera licensed
-# DejaVu Sans symbol subset alongside the AGPL source.
-license = "AGPL-3.0-or-later AND CC-BY-SA-4.0 AND CC0-1.0 AND Bitstream-Vera"
+# The crate embeds CC BY-SA fonts alongside the AGPL source; the logo and the
+# symbol font come with ui-kit.
+license = "AGPL-3.0-or-later AND CC-BY-SA-4.0"
 rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
@@ -18,12 +18,10 @@ layer = "application"
 image-store = { path = "../image-store", version = "0.0.2" }
 image-registry = { path = "../registry", version = "0.0.2" }
 pc-image = { path = "../pc-image", version = "0.0.2" }
-image = { version = "=0.25.10", default-features = false, features = ["png", "gif"] }
 # The platforms compiled in: their image providers and the licence notice.
 platforms = { path = "../platforms", version = "0.0.2" }
 media.workspace = true
 sha2.workspace = true
-rfd = { version = "=0.18.0", default-features = false, features = ["xdg-portal"] }
 serde.workspace = true
 toml.workspace = true
 egui = { workspace = true, features = ["monochrome_emoji_fonts"] }
@@ -37,9 +35,8 @@ video.workspace = true
 assembly.workspace = true
 machine.workspace = true
 winit.workspace = true
-# Paste reads the host clipboard with the arboard that eframe's clipboard
-# already locks, so no new crate enters the build.
-arboard = { version = "=3.7.0", default-features = false }
+# The desktop's skin, icons, panes, file dialogs and clipboard shortcuts.
+ui-kit = { path = "../ui-kit", version = "0.0.2" }
 
 # The native application menu, the system quit hook and the opt-in keyboard
 # tap for system shortcuts, at the versions eframe, rfd and arboard already
@@ -62,6 +59,7 @@ media = { workspace = true, features = ["test-support"] }
 pc-image = { path = "../pc-image", version = "0.0.2", features = ["test-support"] }
 assembly = { workspace = true, features = ["test-support"] }
 cpu.workspace = true
+ui-kit = { path = "../ui-kit", version = "0.0.2", features = ["test-support"] }
 
 [[bin]]
 name = "unemupc"

@@ -15,6 +15,7 @@ members = [
     "crates/cli",
     "crates/pc-harness",
     "crates/window",
+    "crates/ui-kit",
     "crates/media",
     "crates/machine-file",
     "crates/image-store",

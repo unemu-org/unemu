@@ -30,7 +30,8 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | `machine` | Generic `Machine<C: Cpu>` and execution/clock/IRQ/DMA loop | `cpu`, `bus`, `device`, `thiserror` | `testkit`, `devices` |
 | `video` | `FrameSink`, text frames/grids, text-mode renderer and capture sink | `device` | None |
 | `assembly` | `MachineConfig`, validation, presets, image/device construction, wiring, and `RunPolicy` driver | `machine`, `cpu`, `bus`, `device`, `devices`, `video`, `chipset`, `media`, `sha2`, `thiserror` | `media/test-support` |
-| `window` | CP437 rasteriser, shared `FrameSink`, and egui desktop shell | `video`, `device`, `assembly`, `machine`, `winit`, `egui`, `eframe`, `image-store`, `image-registry`, `pc-image`, `platforms` | `cpu`, `assembly/test-support`, `image-store/test-support`, `media/test-support`, `pc-image/test-support` |
+| `window` | CP437 rasteriser, shared `FrameSink`, and egui desktop shell | `video`, `device`, `assembly`, `machine`, `winit`, `egui`, `eframe`, `image-store`, `image-registry`, `pc-image`, `platforms`, `ui-kit` | `cpu`, `assembly/test-support`, `image-store/test-support`, `media/test-support`, `pc-image/test-support`, `ui-kit/test-support` |
+| `ui-kit` | The desktop's skin and widget helpers, free of any machine: the classic and modern skins (`skin`: visuals, fonts, title strips, bevels, the one-Escape rule, the text marks), the mock-up icons and their tested inventory (`shell_icons`), the library's details panes (`pane`), the brand logo, host file dialogs and clipboard shortcuts ([core contract](design/core-contract.md) §8) | `egui`, `winit`, `image`, `rfd`, `arboard` | `toml` |
 | `machine-file` | Schema 1 TOML/YAML parsing, source origins, image hashing and lowering through assembly validation; merging remains deferred ([schema](design/machine-files.md#schema-field-by-field)) | `assembly`, `image-store`, `serde`, `sha2`, `toml`, `serde-saphyr`, `thiserror` | None |
 | `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
 | `platforms` | The one place that names the platforms compiled into both programs: the image providers a transfer or listing uses (`with_image_providers`), the push plan bound to the PC firmware catalogue (`push_plan`) and the program's licence notice | `assembly`, `image-store`, `image-registry`, `pc-image` | None |
@@ -44,7 +45,7 @@ and `scripts/crate-boundaries.sh` keeps the layers apart
 | Layer | Crates | May depend on |
 | --- | --- | --- |
 | `contract` | none yet | nothing at all |
-| `neutral` | `media`, `image-store`, `image-registry`, `recipe` | `contract`, `neutral` |
+| `neutral` | `media`, `image-store`, `image-registry`, `recipe`, `ui-kit` | `contract`, `neutral` |
 | `emulation` | `device`, `bus`, `cpu`, `video`, `audio`, `devices`, `chipset`, `machine`, `testkit`, `assembly` | `contract`, `emulation` |
 | `pc` | `machine-file`, `pc-image`, `pc-harness` | `contract`, `neutral`, `emulation`, `pc` |
 | `application` | `cli`, `window`, `platforms` | anything |
@@ -630,7 +631,7 @@ in-memory document without scanning on the UI thread. Stale results cannot repla
 newer preferences or selections. Launch uses the same roots, also searching the environment
 when set. The deterministic configuration and guest core do not store preferences.
 
-`src/logo.rs` embeds the CC0 brand assets, decodes the icon and the logo once
+`ui_kit::logo` (`crates/ui-kit/src/logo.rs`) embeds the CC0 brand assets, decodes the icon and the logo once
 at startup, and uploads the static About texture. The file-only
 `reduced_motion` preference defaults to false and stills the firmware-scan
 progress animation when enabled.

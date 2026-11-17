@@ -467,7 +467,7 @@ pub(crate) fn item(
     upward: bool,
     commands: &mut Vec<Command>,
 ) {
-    let mark = crate::shell_icons::mark;
+    let mark = ui_kit::shell_icons::mark;
     let arrow = || SubMenuButton::arrow_atom(None);
     let Some(catalogue) = catalogue.filter(|catalogue| catalogue.disabled().is_none()) else {
         let (label, why) = catalogue

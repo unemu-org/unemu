@@ -29,7 +29,7 @@ pub(crate) enum Action {
 
 fn title(ui: &mut egui::Ui, text: &str, classic: bool) {
     if classic {
-        crate::shell::gradient_title(ui, text);
+        ui_kit::skin::gradient_title(ui, text);
     } else {
         ui.heading(text);
     }
@@ -73,7 +73,7 @@ pub(crate) fn show_push(ctx: &egui::Context, dialog: &mut PushDialog, classic: b
             }
         }
     });
-    if ctx.input_mut(crate::shell::escape_pressed) {
+    if ctx.input_mut(ui_kit::skin::escape_pressed) {
         match dialog.state {
             PushState::Pushing(_) => dialog.cancel(),
             PushState::ConfirmMove { .. } => dialog.decline_move(),
@@ -504,7 +504,7 @@ pub(crate) fn show_pull(ctx: &egui::Context, dialog: &mut PullDialog, classic: b
             }
         });
     });
-    if ctx.input_mut(crate::shell::escape_pressed) {
+    if ctx.input_mut(ui_kit::skin::escape_pressed) {
         if dialog.running() {
             dialog.cancel();
         } else {
@@ -631,7 +631,7 @@ pub(crate) fn show_remote_pull(
             }
         });
     });
-    if ctx.input_mut(crate::shell::escape_pressed) {
+    if ctx.input_mut(ui_kit::skin::escape_pressed) {
         if dialog.running() {
             dialog.cancel();
         } else {

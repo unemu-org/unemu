@@ -10,7 +10,8 @@ use std::io::Cursor;
 const ICON: &[u8] = include_bytes!("../../../assets/brand/unemupc-logo-512.png");
 const ANIMATION: &[u8] = include_bytes!("../../../assets/brand/unemupc-logo.gif");
 
-pub(super) fn icon() -> image::ImageResult<egui::IconData> {
+/// The window icon, decoded from the embedded 512 px logo.
+pub fn icon() -> image::ImageResult<egui::IconData> {
     let image = image::load_from_memory_with_format(ICON, image::ImageFormat::Png)?.into_rgba8();
     Ok(egui::IconData {
         width: image.width(),
@@ -82,7 +83,7 @@ fn key_uniform_border(frames: &mut [image::Frame]) -> Option<image::Rgba<u8>> {
 }
 
 /// The About dialog's logo: the first frame of the embedded animation.
-pub(super) struct Logo {
+pub struct Logo {
     texture: egui::TextureHandle,
 }
 

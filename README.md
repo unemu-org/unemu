@@ -175,10 +175,10 @@ revision. Real-mode and 286 support live there under `CpuMode::Real16`.
 - **Ultimate Oldschool PC Font Pack** by VileR: the MDA and VGA bitmap fonts,
   CC BY-SA 4.0 ([notice](crates/window/assets/fonts/NOTICE.md)).
 - **DejaVu Sans** 2.37: a five-symbol subset for the desktop app, Bitstream
-  Vera and Arev licences ([notice](crates/window/assets/fonts/dejavu/NOTICE.md)).
+  Vera and Arev licences ([notice](crates/ui-kit/assets/fonts/dejavu/NOTICE.md)).
 - **egui's default fonts** (Ubuntu Light, Hack, Noto Emoji, emoji-icon-font):
   Ubuntu Font Licence 1.0, MIT, OFL 1.1
-  ([notice](crates/window/assets/fonts/egui/NOTICE.txt)).
+  ([notice](crates/ui-kit/assets/fonts/egui/NOTICE.txt)).
 - **Nuked-OPL3** 1.8 by Nuke.YKT: the OPL3 FM generator is a Rust translation,
   LGPL-2.1-or-later ([licence](crates/devices/src/opl3/LICENSE)).
 - **The unemupc logo**: CC0 1.0 ([notice](assets/brand/README.md)).

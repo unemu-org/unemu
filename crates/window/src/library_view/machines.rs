@@ -15,11 +15,11 @@ use super::{
 use crate::{
     library_worker::{MachineJob, Recovery, Request},
     save_image::{self, SaveAsImage, TagLevel, Target},
-    shell_icons::Icon,
     shell_model::Command,
 };
 use image_store::{machine::unique_among, summary::ImageSummary};
 use std::collections::{BTreeMap, BTreeSet};
+use ui_kit::shell_icons::Icon;
 
 /// A machine as the library lists it.
 #[derive(Clone, Debug)]
@@ -736,7 +736,7 @@ impl LibraryView {
             let mut dismiss = false;
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.horizontal_top(|ui| {
-                    crate::shell_icons::show(ui, Icon::Info);
+                    ui_kit::shell_icons::show(ui, Icon::Info);
                     ui.vertical(|ui| {
                         if !names.is_empty() {
                             ui.strong("Your desktop sessions are machines now.");
@@ -1416,7 +1416,7 @@ impl LibraryView {
         };
         let title = |ui: &mut egui::Ui, text: &str| {
             if classic {
-                crate::shell::gradient_title(ui, text);
+                ui_kit::skin::gradient_title(ui, text);
             } else {
                 ui.heading(text);
             }
@@ -1484,7 +1484,7 @@ impl LibraryView {
                         }
                         close |= ui.button("Cancel").clicked();
                     });
-                    close |= ui.input_mut(crate::shell::escape_pressed);
+                    close |= ui.input_mut(ui_kit::skin::escape_pressed);
                 });
                 match done {
                     Some(name) => {
@@ -1549,7 +1549,7 @@ impl LibraryView {
                         go = ui.add_enabled(problem.is_none(), egui::Button::new("Start")).clicked();
                         close = ui.button("Cancel").clicked();
                     });
-                    close |= ui.input_mut(crate::shell::escape_pressed);
+                    close |= ui.input_mut(ui_kit::skin::escape_pressed);
                 });
                 if go {
                     // The machine's readiness check must not wait behind a
@@ -1639,7 +1639,7 @@ impl LibraryView {
                             close = ui.button("Cancel").clicked();
                         }
                     });
-                    close |= ui.input_mut(crate::shell::escape_pressed);
+                    close |= ui.input_mut(ui_kit::skin::escape_pressed);
                 });
                 if ok {
                     self.busy = true;
@@ -1678,7 +1678,7 @@ impl LibraryView {
                             .clicked();
                         close = ui.button("Cancel").clicked();
                     });
-                    close |= ui.input_mut(crate::shell::escape_pressed);
+                    close |= ui.input_mut(ui_kit::skin::escape_pressed);
                 });
                 if finish {
                     self.busy = true;
@@ -1759,7 +1759,7 @@ impl LibraryView {
                     save_image::prompts(ctx, &mut dialog.form, classic);
                 if target.is_none()
                     && dialog.form.prompt.is_none()
-                    && ctx.input_mut(crate::shell::escape_pressed)
+                    && ctx.input_mut(ui_kit::skin::escape_pressed)
                 {
                     close = true;
                 }
@@ -2270,7 +2270,7 @@ pub(crate) mod tests {
 
     fn drawn(view: &mut LibraryView) -> (Vec<String>, Vec<Command>) {
         let ctx = egui::Context::default();
-        crate::shell::configure_context(&ctx);
+        ui_kit::skin::configure_context(&ctx);
         let mut commands = Vec::new();
         let mut selected = None;
         let mut output = ctx.run_ui(

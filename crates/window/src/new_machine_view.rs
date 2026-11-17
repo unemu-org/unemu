@@ -28,7 +28,7 @@ pub(crate) fn show(ctx: &egui::Context, wizard: &mut Wizard, classic: bool) -> A
                     STEPS[wizard.step]
                 );
                 if classic {
-                    crate::shell::gradient_title(ui, &title);
+                    ui_kit::skin::gradient_title(ui, &title);
                 } else {
                     ui.heading(title);
                 }
@@ -168,7 +168,7 @@ pub(crate) fn show(ctx: &egui::Context, wizard: &mut Wizard, classic: bool) -> A
             Some(false) => wizard.move_prompt = false,
             None => (),
         }
-    } else if ctx.input_mut(crate::shell::escape_pressed) {
+    } else if ctx.input_mut(ui_kit::skin::escape_pressed) {
         action = Action::Cancel;
     }
     action
@@ -180,7 +180,7 @@ fn move_dialog(ctx: &egui::Context, wizard: &Wizard, classic: bool) -> Option<bo
     egui::Modal::new(egui::Id::unique("new-machine-move-dialog")).show(ctx, |ui| {
         ui.set_width(480.0);
         if classic {
-            crate::shell::gradient_title(ui, "Move tag?");
+            ui_kit::skin::gradient_title(ui, "Move tag?");
         } else {
             ui.heading("Move tag?");
         }
@@ -207,7 +207,7 @@ fn move_dialog(ctx: &egui::Context, wizard: &Wizard, classic: bool) -> Option<bo
             }
         });
     });
-    if ctx.input_mut(crate::shell::escape_pressed) {
+    if ctx.input_mut(ui_kit::skin::escape_pressed) {
         answer = Some(false);
     }
     answer

@@ -606,8 +606,24 @@
           "name": "pc-image",
           "kind": "dev",
           "path": "/workspace/crates/pc-image"
+        },
+        {
+          "name": "ui-kit",
+          "kind": null,
+          "path": "/workspace/crates/ui-kit"
+        },
+        {
+          "name": "ui-kit",
+          "kind": "dev",
+          "path": "/workspace/crates/ui-kit"
         }
       ]
+    },
+    {
+      "name": "ui-kit",
+      "id": "path+file:///workspace/crates/ui-kit#0.0.2",
+      "manifest_path": "/workspace/crates/ui-kit/Cargo.toml",
+      "dependencies": []
     }
   ],
   "workspace_members": [
@@ -629,7 +645,8 @@
     "path+file:///workspace/crates/pc-harness#0.0.2",
     "path+file:///workspace/crates/pc-image#0.0.2",
     "path+file:///workspace/crates/platforms#0.0.2",
-    "path+file:///workspace/crates/window#0.0.2"
+    "path+file:///workspace/crates/window#0.0.2",
+    "path+file:///workspace/crates/ui-kit#0.0.2"
   ],
   "workspace_root": "/workspace"
 }

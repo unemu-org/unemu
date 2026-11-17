@@ -1492,9 +1492,24 @@ Target crates:
 
 Order, each a series of small beads under the same rules as §7.5:
 
-1. **`ui-kit`.** Almost every arrow into `shell` is one of six helpers
+1. **Done.** **`ui-kit`.** Almost every arrow into `shell` is one of six helpers
    (§2.5); moving them out cuts most module cycles. No time win; it is
-   the prerequisite for every later step.
+   the prerequisite for every later step. As landed: the six helpers,
+   `window_title` (it shares the title strip) and the eject and speaker
+   marks form `ui_kit::skin`; `shell_icons`, `logo`, `file_dialog`,
+   `text_clipboard` and the layout half of `library_view/pane` move whole,
+   with their tests. The DejaVu symbol font and the egui font notices move
+   with `configure_context`; the kit reads the brand logo from
+   `assets/brand/`. Staying in `window`: `machine_menu_mark` (it maps the
+   shell's own commands), `outline_focused_field` and `toolbar_button`
+   (not in the list), the skin tests of `shell.rs` (they share the mock-up
+   tokens and contrast helpers with the focus and toolbar tests there),
+   the PC firmware parts of the pane (the Firmware section, the newer
+   version hint and the short digest, which read the firmware views; the
+   window's `library_view/pane` re-exports the kit's pane for the library
+   views) and the desktop-wide glyph and mark tests, in a test-only
+   `shell_icons` module, because they read the window's sources and menu
+   marks. Test names are unchanged apart from the crate (3902 tests).
 2. **The contract, `unemu-pc-core` (stage A) and `machine-view`.** The
    session has few inbound arrows (the shell and the media dialogs), so it
    comes out early, and it is where the contract first carries real

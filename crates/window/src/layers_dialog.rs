@@ -786,7 +786,7 @@ impl LayersDialog {
         egui::Modal::new(egui::Id::unique("disk-layers")).show(ctx, |ui| {
             ui.set_width(WIDTH);
             if classic {
-                crate::shell::gradient_title(ui, &self.title);
+                ui_kit::skin::gradient_title(ui, &self.title);
             } else {
                 ui.heading(&self.title);
             }
@@ -864,7 +864,7 @@ impl LayersDialog {
         egui::Modal::new(egui::Id::unique("save-as-image")).show(ctx, |ui| {
             ui.set_width(640.0);
             if classic {
-                crate::shell::gradient_title(ui, "Save as new image");
+                ui_kit::skin::gradient_title(ui, "Save as new image");
             } else {
                 ui.heading("Save as new image");
             }
@@ -935,7 +935,7 @@ impl LayersDialog {
             if let Some(name) = self.workspace.clone() {
                 action = Action::Publish(name, target);
             }
-        } else if form.prompt.is_none() && ctx.input_mut(crate::shell::escape_pressed) {
+        } else if form.prompt.is_none() && ctx.input_mut(ui_kit::skin::escape_pressed) {
             cancel = true;
         }
         if save {
@@ -1218,9 +1218,9 @@ pub(crate) mod tests {
                 shape => out.push(shape),
             }
         }
-        let visuals = crate::shell::skin_visuals(classic, dark);
+        let visuals = ui_kit::skin::skin_visuals(classic, dark);
         let ctx = egui::Context::default();
-        crate::shell::configure_context(&ctx);
+        ui_kit::skin::configure_context(&ctx);
         ctx.set_visuals(visuals.clone());
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024.0, 768.0));
         let mut shapes = Vec::new();
@@ -1575,7 +1575,7 @@ pub(crate) mod tests {
                     },
                     |ui| {
                         ui.ctx()
-                            .set_visuals(crate::shell::skin_visuals(classic, false));
+                            .set_visuals(ui_kit::skin::skin_visuals(classic, false));
                         dialog.show(ui.ctx(), false, classic);
                     },
                 );
@@ -1608,7 +1608,7 @@ pub(crate) mod tests {
                     egui::Id::unique("disk-layers"),
                     egui::vec2(1024.0, 768.0),
                     |ctx| {
-                        ctx.set_visuals(crate::shell::skin_visuals(classic, false));
+                        ctx.set_visuals(ui_kit::skin::skin_visuals(classic, false));
                         assert!(matches!(dialog.show(ctx, false, classic), Action::None));
                     },
                 );

@@ -36,7 +36,7 @@
 use egui::{Event, Key, Modifiers};
 
 /// The host clipboard as a paste reads it.
-pub(crate) trait HostClipboard {
+pub trait HostClipboard {
     /// The clipboard's text; `None` when it holds no text or cannot be read.
     fn text(&mut self) -> Option<String>;
 }
@@ -47,7 +47,7 @@ pub(crate) trait HostClipboard {
 /// paste, so no paste means no clipboard access, and kept from then on; a host
 /// without a clipboard service pastes nothing.
 #[derive(Default)]
-pub(crate) struct SystemClipboard {
+pub struct SystemClipboard {
     clipboard: Option<arboard::Clipboard>,
 }
 
@@ -74,14 +74,14 @@ struct PasswordField;
 
 /// Marks the text field `id` as a password field: it takes paste, never cut
 /// or copy.
-pub(crate) fn mark_password(ctx: &egui::Context, id: egui::Id) {
+pub fn mark_password(ctx: &egui::Context, id: egui::Id) {
     ctx.data_mut(|data| data.insert_temp(id, PasswordField));
 }
 
 /// Gives the platform's cut, copy and paste chords to the focused text field.
 /// Called once a pass before any field draws; while no text field has the
 /// keyboard it changes nothing and leaves `clipboard` alone.
-pub(crate) fn shortcuts(ctx: &egui::Context, clipboard: &mut dyn HostClipboard) {
+pub fn shortcuts(ctx: &egui::Context, clipboard: &mut dyn HostClipboard) {
     if !ctx.text_edit_focused() {
         return;
     }
@@ -157,25 +157,28 @@ fn shortcut(key: Key, modifiers: Modifiers, windows: bool) -> Option<Shortcut> {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
+/// A fake host clipboard and a headless egui host, for the tests of the
+/// windows that use these shortcuts.
+#[cfg(any(test, feature = "test-support"))]
+pub mod fake {
+    use super::HostClipboard;
+    use egui::{Event, Key, Modifiers};
     use std::{cell::RefCell, rc::Rc};
 
     /// The command modifier as egui-winit reports it on macOS (Command).
-    pub(crate) const MAC_COMMAND: Modifiers = Modifiers {
+    pub const MAC_COMMAND: Modifiers = Modifiers {
         mac_cmd: true,
         command: true,
         ..Modifiers::NONE
     };
     /// The command modifier as egui-winit reports it elsewhere (Ctrl).
-    pub(crate) const CTRL_COMMAND: Modifiers = Modifiers {
+    pub const CTRL_COMMAND: Modifiers = Modifiers {
         ctrl: true,
         command: true,
         ..Modifiers::NONE
     };
 
-    pub(crate) fn press(key: Key, modifiers: Modifiers) -> Event {
+    pub fn press(key: Key, modifiers: Modifiers) -> Event {
         Event::Key {
             key,
             physical_key: Some(key),
@@ -185,7 +188,7 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn release(key: Key, modifiers: Modifiers) -> Event {
+    pub fn release(key: Key, modifiers: Modifiers) -> Event {
         Event::Key {
             key,
             physical_key: Some(key),
@@ -197,7 +200,7 @@ pub(crate) mod tests {
 
     /// What the fake host clipboard holds and how often it was used.
     #[derive(Default)]
-    pub(crate) struct Fake {
+    pub struct Fake {
         pub text: String,
         pub reads: usize,
         pub writes: usize,
@@ -205,7 +208,7 @@ pub(crate) mod tests {
 
     /// A fake host clipboard; clones share one [`Fake`].
     #[derive(Clone, Default)]
-    pub(crate) struct FakeClipboard(pub Rc<RefCell<Fake>>);
+    pub struct FakeClipboard(pub Rc<RefCell<Fake>>);
 
     impl HostClipboard for FakeClipboard {
         fn text(&mut self) -> Option<String> {
@@ -217,13 +220,13 @@ pub(crate) mod tests {
 
     /// Runs headless passes and plays egui-winit's part for copy: a copy
     /// output writes the fake clipboard.
-    pub(crate) struct Host {
+    pub struct Host {
         pub ctx: egui::Context,
         pub clipboard: FakeClipboard,
     }
 
     impl Host {
-        pub(crate) fn new(text: &str) -> Self {
+        pub fn new(text: &str) -> Self {
             let clipboard = FakeClipboard::default();
             clipboard.0.borrow_mut().text = text.into();
             Self {
@@ -232,25 +235,25 @@ pub(crate) mod tests {
             }
         }
 
-        pub(crate) fn set_text(&self, text: &str) {
+        pub fn set_text(&self, text: &str) {
             self.clipboard.0.borrow_mut().text = text.into();
         }
 
-        pub(crate) fn text(&self) -> String {
+        pub fn text(&self) -> String {
             self.clipboard.0.borrow().text.clone()
         }
 
-        pub(crate) fn reads(&self) -> usize {
+        pub fn reads(&self) -> usize {
             self.clipboard.0.borrow().reads
         }
 
-        pub(crate) fn writes(&self) -> usize {
+        pub fn writes(&self) -> usize {
             self.clipboard.0.borrow().writes
         }
 
         /// Runs one pass with `events` and returns the painted text with its
         /// screen rectangle.
-        pub(crate) fn pass(
+        pub fn pass(
             &mut self,
             events: Vec<Event>,
             mut run: impl FnMut(&mut egui::Ui),
@@ -286,7 +289,7 @@ pub(crate) mod tests {
         }
 
         /// Clicks the primary button at `at` over two passes.
-        pub(crate) fn click(&mut self, at: egui::Pos2, mut run: impl FnMut(&mut egui::Ui)) {
+        pub fn click(&mut self, at: egui::Pos2, mut run: impl FnMut(&mut egui::Ui)) {
             let button = |pressed| Event::PointerButton {
                 pos: at,
                 button: egui::PointerButton::Primary,
@@ -297,6 +300,12 @@ pub(crate) mod tests {
             self.pass(vec![button(false)], &mut run);
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fake::*;
+    use super::*;
 
     #[derive(Default)]
     struct Fields {

@@ -59,7 +59,7 @@ pub(crate) fn show(ctx: &egui::Context, model: &mut SettingsModel, classic: bool
             ui.allocate_ui(egui::vec2(width, 23.0), |ui| {
                 let title = format!("Settings — {}", model.name);
                 if classic {
-                    crate::shell::gradient_title(ui, &title);
+                    ui_kit::skin::gradient_title(ui, &title);
                 } else {
                     ui.heading(title);
                 }
@@ -80,7 +80,7 @@ pub(crate) fn show(ctx: &egui::Context, model: &mut SettingsModel, classic: bool
             for tab in caps::Group::ALL {
                 let response = ui.selectable_label(model.tab == tab, tab.label());
                 if classic {
-                    crate::shell::bevel(ui, response.rect, model.tab == tab);
+                    ui_kit::skin::bevel(ui, response.rect, model.tab == tab);
                 }
                 if response.clicked() {
                     model.tab = tab;
@@ -126,7 +126,7 @@ pub(crate) fn show(ctx: &egui::Context, model: &mut SettingsModel, classic: bool
             });
         });
         if classic {
-            crate::shell::bevel(ui, response.response.rect, true);
+            ui_kit::skin::bevel(ui, response.response.rect, true);
         }
         if let Some((path, value)) = edit {
             model.set(&path, value);
@@ -197,7 +197,7 @@ pub(crate) fn show(ctx: &egui::Context, model: &mut SettingsModel, classic: bool
             }
         });
     });
-    if ctx.input_mut(crate::shell::escape_pressed) {
+    if ctx.input_mut(ui_kit::skin::escape_pressed) {
         action = Action::Cancel;
     }
     action
@@ -522,7 +522,7 @@ fn title_bar(ui: &mut egui::Ui, title: &str, classic: bool) -> bool {
         let width = (ui.available_width() - 30.0).max(100.0);
         ui.allocate_ui(egui::vec2(width, 23.0), |ui| {
             if classic {
-                crate::shell::gradient_title(ui, title);
+                ui_kit::skin::gradient_title(ui, title);
             } else {
                 ui.heading(title);
             }
@@ -570,7 +570,7 @@ pub(crate) fn show_image(
         // The save-as-image mock-up's note banner: ⓘ beside its two lines;
         // the machines mock-up's banner for Settings… on a machine.
         ui.horizontal_top(|ui| {
-            crate::shell_icons::show(ui, crate::shell_icons::Icon::Info);
+            ui_kit::shell_icons::show(ui, ui_kit::shell_icons::Icon::Info);
             ui.vertical(|ui| match &machine {
                 Some(_) => {
                     ui.strong("These settings belong to this machine.");
@@ -604,7 +604,7 @@ pub(crate) fn show_image(
                 };
                 let response = ui.selectable_label(model.tab == tab, label);
                 if classic {
-                    crate::shell::bevel(ui, response.rect, model.tab == tab);
+                    ui_kit::skin::bevel(ui, response.rect, model.tab == tab);
                 }
                 if response.clicked() {
                     model.tab = tab;
@@ -684,7 +684,7 @@ pub(crate) fn show_image(
             });
         });
         if classic {
-            crate::shell::bevel(ui, response.response.rect, true);
+            ui_kit::skin::bevel(ui, response.response.rect, true);
         }
         if let Some((path, value)) = edit {
             model.set(&path, value);
@@ -753,7 +753,7 @@ pub(crate) fn show_image(
         egui::Modal::new(egui::Id::unique("image-settings-discard")).show(ctx, |ui| {
             ui.set_width(420.0);
             if classic {
-                crate::shell::gradient_title(ui, "Discard changes?");
+                ui_kit::skin::gradient_title(ui, "Discard changes?");
             } else {
                 ui.heading("Discard changes?");
             }
@@ -770,7 +770,7 @@ pub(crate) fn show_image(
                 }
             });
         });
-        if ctx.input_mut(crate::shell::escape_pressed) {
+        if ctx.input_mut(ui_kit::skin::escape_pressed) {
             answer = Some(false);
         }
         match answer {
@@ -783,7 +783,7 @@ pub(crate) fn show_image(
         }
         return action;
     }
-    if (close || ctx.input_mut(crate::shell::escape_pressed)) && model.request_close() {
+    if (close || ctx.input_mut(ui_kit::skin::escape_pressed)) && model.request_close() {
         action = ImageAction::Cancel;
     }
     action
@@ -962,7 +962,7 @@ pub(crate) fn show_review(
         action = ReviewAction::Publish(Box::new(plan.clone()), target);
     } else if review.save.prompt.is_none()
         && matches!(action, ReviewAction::None)
-        && ctx.input_mut(crate::shell::escape_pressed)
+        && ctx.input_mut(ui_kit::skin::escape_pressed)
     {
         action = ReviewAction::Back;
     }

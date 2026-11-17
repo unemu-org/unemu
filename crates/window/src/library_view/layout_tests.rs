@@ -123,7 +123,7 @@ fn drawn(output: &egui::FullOutput) -> (Vec<Drawn>, Vec<egui::epaint::RectShape>
 /// whole pane; the second frame, laid out from the first, is returned.
 fn frames(width: f32, mut draw: impl FnMut(&mut egui::Ui)) -> egui::FullOutput {
     let ctx = egui::Context::default();
-    crate::shell::configure_context(&ctx);
+    ui_kit::skin::configure_context(&ctx);
     let size = egui::vec2(width, 2400.0);
     firmware::tests::frame(&ctx, size, 0.0, vec![], &mut draw);
     firmware::tests::frame(&ctx, size, 1.0, vec![], &mut draw)
@@ -733,8 +733,8 @@ fn mini_table(
         })
         .collect();
     let ctx = egui::Context::default();
-    crate::shell::configure_context(&ctx);
-    ctx.set_visuals(crate::shell::skin_visuals(false, dark));
+    ui_kit::skin::configure_context(&ctx);
+    ctx.set_visuals(ui_kit::skin::skin_visuals(false, dark));
     let mut draw = |ui: &mut egui::Ui| {
         egui::CentralPanel::default().show(ui, |ui| {
             let layout = egui::Layout::top_down(egui::Align::Min);
@@ -766,7 +766,7 @@ fn the_mini_table_rules_every_row_and_tints_changed_ones_without_stripes() {
     let header = TABLE_HEADER;
     for dark in [false, true] {
         let theme = usize::from(dark);
-        let visuals = crate::shell::skin_visuals(false, dark);
+        let visuals = ui_kit::skin::skin_visuals(false, dark);
         let (texts, rects, ground) = mini_table(dark, 420.0);
         // The table's ground: the field colour in an outline, holding every cell.
         assert!(
@@ -884,7 +884,7 @@ fn a_narrow_mini_table_keeps_every_cell_inside_its_outline() {
 fn pane_controls_keep_the_skins_outline() {
     for classic in [false, true] {
         for dark in [false, true] {
-            let visuals = crate::shell::skin_visuals(classic, dark);
+            let visuals = ui_kit::skin::skin_visuals(classic, dark);
             let expected = if classic {
                 egui::Stroke::new(
                     1.0,
@@ -920,9 +920,9 @@ fn group_rows_keep_their_own_ground_apart_from_the_stripes() {
         egui::Color32::from_rgb(0x3e, 0x40, 0x45),
     ];
     for dark in [false, true] {
-        let visuals = crate::shell::skin_visuals(false, dark);
+        let visuals = ui_kit::skin::skin_visuals(false, dark);
         let ctx = egui::Context::default();
-        crate::shell::configure_context(&ctx);
+        ui_kit::skin::configure_context(&ctx);
         ctx.set_visuals(visuals.clone());
         let output = firmware::tests::frame(&ctx, egui::vec2(600.0, 200.0), 0.0, vec![], |ui| {
             egui::CentralPanel::default().show(ui, |ui| {
@@ -1109,7 +1109,7 @@ fn assert_note_reachable(
         (0.0, size.y)
     };
     let ctx = egui::Context::default();
-    crate::shell::configure_context(&ctx);
+    ui_kit::skin::configure_context(&ctx);
     let mut time = 0.0;
     let mut shown = library_frame(&ctx, view, size, chrome, &mut time, vec![]);
     for _ in 0..3 {
@@ -1221,7 +1221,7 @@ fn the_first_height_shows_a_whole_machine_or_image_pane_on_a_laptop_wide_window(
         for width in [1280.0, 1400.0, 2000.0] {
             let size = egui::vec2(width, 800.0);
             let ctx = egui::Context::default();
-            crate::shell::configure_context(&ctx);
+            ui_kit::skin::configure_context(&ctx);
             let mut time = 0.0;
             let mut shown = library_frame(&ctx, &mut view, size, true, &mut time, vec![]);
             for _ in 0..3 {
@@ -1633,8 +1633,8 @@ impl Painted {
 /// its widgets to AccessKit, so a frame tells where each widget lies.
 fn skinned_context(classic: bool, dark: bool) -> egui::Context {
     let ctx = egui::Context::default();
-    crate::shell::configure_context(&ctx);
-    ctx.set_visuals(crate::shell::skin_visuals(classic, dark));
+    ui_kit::skin::configure_context(&ctx);
+    ctx.set_visuals(ui_kit::skin::skin_visuals(classic, dark));
     ctx.enable_accesskit();
     ctx
 }
@@ -1887,8 +1887,8 @@ fn a_tree_taller_than_its_pane_scrolls() {
     let mut view = LibraryView::new(None);
     view.select_first_package(&cache, &mut None);
     let ctx = egui::Context::default();
-    crate::shell::configure_context(&ctx);
-    ctx.set_visuals(crate::shell::skin_visuals(true, false));
+    ui_kit::skin::configure_context(&ctx);
+    ctx.set_visuals(ui_kit::skin::skin_visuals(true, false));
     let size = egui::vec2(GROUNDS_WIDTH, 300.0);
     // The Remotes heading closes the tree of a library without registries.
     let last = "Remotes";
@@ -1957,7 +1957,7 @@ fn text_stripes_and_the_selection_read_on_the_pane_grounds() {
     for classic in [false, true] {
         for dark in [false, true] {
             let what = format!("classic {classic}, dark {dark}");
-            let visuals = crate::shell::skin_visuals(classic, dark);
+            let visuals = ui_kit::skin::skin_visuals(classic, dark);
             let painted = skinned_library(classic, dark);
             let [tree, list, details] = painted.panes(dark, &what).map(|pane| pane.shape.fill);
             let (field, face_2) = (list, details);
@@ -2472,7 +2472,7 @@ fn the_labels_field_keeps_its_focus_when_the_columns_stack() {
             _ => continue,
         };
         let ctx = egui::Context::default();
-        crate::shell::configure_context(&ctx);
+        ui_kit::skin::configure_context(&ctx);
         let mut time = 0.0;
         let mut draw = |view: &mut LibraryView, width: f32, events: Vec<egui::Event>| {
             time += 0.1;
