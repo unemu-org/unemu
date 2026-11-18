@@ -58,9 +58,10 @@ pub(crate) use machine_view::system_keys;
 // The PC media and library models, under the paths the desktop names them by.
 use pc_library::{firmware_choices, pc_desktop};
 use pc_media::{created_media, drive_chips, kept_catalogue};
+// The PC media views, under the path the shell names them by.
+use media_ui::catalogue_menu;
 
 mod app_menu;
-mod catalogue_menu;
 #[cfg(test)]
 mod host_audio;
 mod image_settings;
@@ -73,7 +74,6 @@ mod library_view;
 mod library_worker;
 #[cfg(target_os = "macos")]
 mod macos_menu;
-mod media_create;
 mod media_dialog;
 mod media_picker;
 #[cfg(test)]

@@ -2543,7 +2543,7 @@ impl Shell {
         );
         // The chip's menu opens upward from the status bar, and so does the
         // submenu.
-        crate::catalogue_menu::item(ui, self.catalogue(unit, inserted).as_ref(), true, commands);
+        self.catalogue_item(ui, unit, inserted, true, commands);
         if view.at_start {
             ui.add_enabled(
                 false,
@@ -3993,6 +3993,25 @@ impl Shell {
         self.menu_item(ui, Some(mark), label, shortcut, command, commands);
     }
 
+    /// Drive `unit`'s Catalogue item and submenu, growing `upward` or down;
+    /// the disk chosen there, or All N disks…, becomes its command.
+    fn catalogue_item(
+        &self,
+        ui: &mut egui::Ui,
+        unit: u8,
+        inserted: [Option<usize>; 2],
+        upward: bool,
+        commands: &mut Vec<Command>,
+    ) {
+        use crate::catalogue_menu::Chosen;
+        let catalogue = self.catalogue(unit, inserted);
+        match crate::catalogue_menu::item(ui, catalogue.as_ref(), upward) {
+            Some(Chosen::Disk(index)) => commands.push(Command::CatalogueDisk(unit, index)),
+            Some(Chosen::All) => commands.push(Command::CatalogueAll(unit)),
+            None => {}
+        }
+    }
+
     fn menu_item(
         &self,
         ui: &mut egui::Ui,
@@ -4223,12 +4242,7 @@ impl Shell {
                         CreateFromFiles(unit),
                         commands,
                     );
-                    crate::catalogue_menu::item(
-                        ui,
-                        self.catalogue(unit, in_drives).as_ref(),
-                        false,
-                        commands,
-                    );
+                    self.catalogue_item(ui, unit, in_drives, false, commands);
                     self.marked_item(
                         ui,
                         "",

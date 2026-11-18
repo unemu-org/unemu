@@ -8,7 +8,7 @@
 //! does what Insert there does with it. A running or halted machine takes the
 //! disk now; a stopped one takes it at its next Start, and choosing the disk
 //! already in its drive takes a waiting disk out again. A menu never scrolls,
-//! so past [`CAP`] disks the submenu lists a window around the disk in the
+//! so past `CAP` disks the submenu lists a window around the disk in the
 //! drive, or the one waiting for Start, and All N disks… opens the picker.
 //!
 //! The one short name a disk has wherever a drive names it (the drive chip,
@@ -16,12 +16,11 @@
 //! lives with the media models in `pc_media::catalogue_menu` and is
 //! re-exported here.
 
-use crate::media_dialog::{CatalogueEntry, FloppySlot};
 use crate::media_picker::{drive_name, CatalogueDisk, SetEntry};
-use crate::shell_model::Command;
 use egui::containers::menu::{MenuState, SubMenu, SubMenuButton};
 use egui::{FocusDirection, Key, Modifiers, RichText};
 use image_store::Digest;
+use pc_media::media_dialog::{CatalogueEntry, FloppySlot};
 
 /// The most disks the submenu lists: a menu never scrolls.
 pub(crate) const CAP: usize = 12;
@@ -30,19 +29,20 @@ pub(crate) const CAP: usize = 12;
 /// disk.
 const BEFORE: usize = 2;
 /// The mark of the disk in the drive.
-pub(crate) const IN_DRIVE_MARK: &str = "●";
+pub const IN_DRIVE_MARK: &str = "●";
 /// The submenu's narrowest and widest, as the mock-up's submenu sets them.
 const MIN_WIDTH: f32 = 250.0;
 const MAX_WIDTH: f32 = 360.0;
 
 // A disk's short name lives with the media models, which name it too.
+pub(crate) use pc_media::catalogue_menu::own_name;
 #[cfg(test)]
 use pc_media::catalogue_menu::SetDisk;
-pub(crate) use pc_media::catalogue_menu::{own_name, set_disk, short_name};
+pub use pc_media::catalogue_menu::{set_disk, short_name};
 
 /// A catalogue entry's short name, `set` being the library set its source
 /// names when the library has it.
-pub(crate) fn entry_name(entry: &CatalogueEntry, set: Option<&SetEntry>) -> String {
+pub fn entry_name(entry: &CatalogueEntry, set: Option<&SetEntry>) -> String {
     let own = if entry.medium.name.is_empty() {
         "image"
     } else {
@@ -69,7 +69,7 @@ fn write_words(write: &assembly::WriteMode, machine: &str) -> String {
 /// Catalogue submenu shows it: every disk that can go in, in order, with its
 /// short name. `now` is the catalogue index of the disk in the drive while
 /// the machine runs; `find` looks a library set up by its digest.
-pub(crate) fn slot_catalogue(
+pub fn slot_catalogue(
     slot: &FloppySlot,
     now: Option<usize>,
     machine: &str,
@@ -89,7 +89,7 @@ pub(crate) fn slot_catalogue(
 /// The disks one Insert put into a stopped drive for its next Start, as the
 /// Catalogue submenu lists them while the drive's own disks are not known:
 /// by their place among them, each with its short name.
-pub(crate) fn waiting_catalogue(
+pub fn waiting_catalogue(
     entries: &[CatalogueEntry],
     geometry: assembly::FloppyGeometry,
     machine: &str,
@@ -159,7 +159,7 @@ impl<'a> Sets<'a> {
 
 /// What waits for a stopped machine's next Start in the drive.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Pending {
+pub enum Pending {
     /// A disk of the list, by its index there.
     Entry(usize),
     /// A disk that joins the catalogue at Start, by its short name.
@@ -168,11 +168,11 @@ pub(crate) enum Pending {
 
 /// The line under a list of disks waiting for Start: the drive's own disks
 /// come with the image and join them then.
-pub(crate) const OWN_DISKS_AT_START: &str = "The image's own disks join the catalogue then.";
+pub const OWN_DISKS_AT_START: &str = "The image's own disks join the catalogue then.";
 
 /// One drive's Catalogue submenu.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Catalogue {
+pub struct Catalogue {
     pub unit: u8,
     /// The drive's catalogue in order, as This machine lists it; or, while
     /// [`Self::unknown`] says why, the disks waiting for the next Start.
@@ -193,7 +193,7 @@ pub(crate) struct Catalogue {
 
 /// What a disk row says at its right.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Mark {
+pub enum Mark {
     None,
     /// The disk is in the drive.
     InDrive,
@@ -203,7 +203,7 @@ pub(crate) enum Mark {
 
 /// One line of the submenu.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Row {
+pub enum Row {
     Heading(String),
     Disk {
         index: usize,
@@ -215,7 +215,7 @@ pub(crate) enum Row {
     /// A line under the disks: a disk waiting for Start that is not in the
     /// catalogue yet, or the drive's own disks that join it then.
     Note(String),
-    /// All N disks…, past [`CAP`].
+    /// All N disks…, past `CAP`.
     All(usize),
 }
 
@@ -258,7 +258,7 @@ impl Catalogue {
     }
 
     /// The disks listed, as positions in [`Self::disks`]: all of them up to
-    /// [`CAP`]; past it, [`CAP`] of them from [`BEFORE`] ahead of the disk
+    /// `CAP`; past it, `CAP` of them from `BEFORE` ahead of the disk
     /// waiting for Start, else the disk in the drive, else the first.
     pub fn window(&self) -> std::ops::Range<usize> {
         let count = self.disks.len();
@@ -334,8 +334,18 @@ impl Catalogue {
     }
 }
 
-/// The Catalogue item of a drive's menu and its submenu; `None` while the
-/// drive takes no disk. A chosen disk, or All N disks…, goes to `commands`.
+/// What the submenu was asked for this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chosen {
+    /// A disk of the drive's catalogue, by its catalogue index.
+    Disk(usize),
+    /// All N disks…: the picker on This machine.
+    All,
+}
+
+/// The Catalogue item of a drive's menu and its submenu; `catalogue` is
+/// `None` while the drive takes no disk. Answers with the disk chosen, or
+/// All N disks…, for the caller to act on.
 ///
 /// The submenu opens beside the menu on the side with room. In a menu that
 /// opens upward, a drive chip's menu on the status bar, it grows upward from
@@ -345,12 +355,7 @@ impl Catalogue {
 /// the item opens it on the disk in the drive, ↑↓ choose, Enter takes the
 /// disk, and ← or Escape go back to the item; the menu's own Escape then
 /// closes the menu.
-pub(crate) fn item(
-    ui: &mut egui::Ui,
-    catalogue: Option<&Catalogue>,
-    upward: bool,
-    commands: &mut Vec<Command>,
-) {
+pub fn item(ui: &mut egui::Ui, catalogue: Option<&Catalogue>, upward: bool) -> Option<Chosen> {
     let mark = ui_kit::shell_icons::mark;
     let arrow = || SubMenuButton::arrow_atom(None);
     let Some(catalogue) = catalogue.filter(|catalogue| catalogue.disabled().is_none()) else {
@@ -366,11 +371,11 @@ pub(crate) fn item(
         if let Some(why) = why {
             response.on_disabled_hover_text(why);
         }
-        return;
+        return None;
     };
-    let unit = catalogue.unit;
-    let drive = drive_name(unit);
+    let drive = drive_name(catalogue.unit);
     let mut focus = None;
+    let mut chosen = None;
     // The item as egui's submenu button draws it, highlighted while open.
     let submenu_id = SubMenu::id_from_widget_id(ui.next_auto_id());
     let open = MenuState::from_ui(ui, |state, _| state.open_item == Some(submenu_id));
@@ -464,7 +469,7 @@ pub(crate) fn item(
                     }
                     rows.push(response.id);
                     if response.clicked() {
-                        commands.push(Command::CatalogueDisk(unit, index));
+                        chosen = Some(Chosen::Disk(index));
                         ui.close();
                     }
                 }
@@ -480,7 +485,7 @@ pub(crate) fn item(
                         ));
                     rows.push(response.id);
                     if response.clicked() {
-                        commands.push(Command::CatalogueAll(unit));
+                        chosen = Some(Chosen::All);
                         ui.close();
                     }
                 }
@@ -504,13 +509,14 @@ pub(crate) fn item(
     if let (true, Some(_), Some(focus)) = (keyed, submenu, focus) {
         ui.data_mut(|data| data.insert_temp(in_drive, (focus, pass)));
     }
+    chosen
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::media_picker::Disk;
     use assembly::FloppyGeometry;
+    use pc_media::media_picker::Disk;
 
     fn set(title: &str, labels: &[&str]) -> SetEntry {
         SetEntry {
@@ -678,11 +684,11 @@ mod tests {
             ["Lemmings 1 of 2", "Lemmings 2 of 2"]
         );
         assert_eq!(
-            crate::created_media::disk_name("GAME (1993)", 0, 2),
+            pc_media::created_media::disk_name("GAME (1993)", 0, 2),
             "GAME (1993) 1 of 2"
         );
         assert_eq!(
-            crate::created_media::disk_name("GAME (1993)", 0, 1),
+            pc_media::created_media::disk_name("GAME (1993)", 0, 1),
             "GAME (1993)"
         );
     }
@@ -824,7 +830,7 @@ mod tests {
             let response = ui.put(anchor, egui::Button::new("Drive"));
             egui::Popup::menu(&response).show(|ui| {
                 let _ = ui.button("Insert…");
-                item(ui, Some(catalogue), upward, &mut Vec::new());
+                item(ui, Some(catalogue), upward);
                 let _ = ui.button("Eject");
             });
         });

@@ -2593,11 +2593,85 @@ step is for the boundary.
 
 | # | Move | Cut before it moves | Tests | Proof and effect |
 |---|---|---|---|---|
-| 5.1 | **The catalogue menu answers with its own choice.** `catalogue_menu::item` returns which disk was chosen, or "all disks", and the shell pushes `Command::CatalogueDisk` and `CatalogueAll` | the two uses of the shell's `Command` | the 11 tests of `catalogue_menu` pass unchanged or gain the returned value where they read the pushed command | In place |
-| 5.2 | **`media-ui` starts** with `media_picker` (the picker's state and view), `media_create` and the view of `catalogue_menu`; the pane colours come from `ui_kit::pane` | none after 5.1 | `media_picker` 27, `media_create` 4, `catalogue_menu` 11 move, but for the one that names the library fixture | Plan for a media view file: `media-ui`, `window`: about 5 s of its own tests, then the shell's |
+| 5.1 | **Done.** **The catalogue menu answers with its own choice.** `catalogue_menu::item` returns which disk was chosen, or "all disks", and the shell pushes `Command::CatalogueDisk` and `CatalogueAll` | the two uses of the shell's `Command` | the 11 tests of `catalogue_menu` pass unchanged or gain the returned value where they read the pushed command | In place. As landed: see below the table |
+| 5.2 | **Done.** **`media-ui` starts** with `media_picker` (the picker's state and view), `media_create` and the view of `catalogue_menu`; the pane colours come from `ui_kit::pane` | none after 5.1 | `media_picker` 27, `media_create` 4, `catalogue_menu` 11 move, but for the one that names the library fixture | Plan for a media view file: `media-ui`, `window`: about 5 s of its own tests, then the shell's. As landed: see below the table |
 
 The 22 tests of `media_dialog` stay with the session until
 `upc-dfs.25.7`.
+
+As landed, 5.1 and 5.2 (one bead, two moves, each built and tested before
+the next; no behaviour change). MEASURED with `cargo nextest list
+--workspace --run-ignored all`: the workspace lists the same 4078 test
+names apart from the crate; `media-ui` has 41 and the window 557 where it
+had 598. `media-ui` (`crates/media-ui`, layer `pc`, egui, `pc-media`,
+`ui-kit`) is counted as a window crate by the boundary check, with a
+self-test fixture, and the window's glyph test reads `media_ui::source_dir()`
+too (`test-support`, as in `ui-kit`).
+
+- **5.1.** `catalogue_menu::item` returns `Option<Chosen>`: `Chosen::Disk`
+  with the catalogue index of the disk chosen, or `Chosen::All` for All N
+  disks…, and takes no command list. The shell's `catalogue_item`, which
+  both callers (the drive chip's menu and the Media menu) now call, pushes
+  `Command::CatalogueDisk(unit, index)` or `Command::CatalogueAll(unit)`
+  with the unit it asked about, which is the catalogue's own. The 11 tests
+  pass unchanged but for the one call of `item` in the submenu-placement
+  test, which loses the command list; none of them reads a pushed command.
+  The shell's tests that click a disk or All N disks… and compare the
+  pushed command pass unchanged.
+- **5.2.** `media_ui::media_picker`, `media_create` and `catalogue_menu`
+  hold the three modules whole, with the pane colours from `ui_kit::pane`
+  and the media models from `pc_media` (`created_media`, `media_dialog`).
+  The window's `media_picker.rs` re-exports the picker
+  (`pub(crate) use media_ui::media_picker::*`); `catalogue_menu` is
+  `media_ui`'s under its old name (`use media_ui::catalogue_menu` at the
+  crate root, as `pc_media`'s modules are), and the window's
+  `media_create` is gone, since no window file names it. Visibility: what
+  the window names became `pub` (the picker's `Picker`, `Target`, `Drive`,
+  `When`, `Source`, `Choice`, `Outcome`, `Mode`, `remotes`, `show` and its
+  field `reveal`; Create from files…'s `Create` and `Item`; the
+  submenu's `Catalogue`, `Pending`, `Row` with `Mark`, `Chosen`, `item`,
+  `entry_name`, `slot_catalogue`, `waiting_catalogue`, `IN_DRIVE_MARK` and
+  `OWN_DISKS_AT_START`; and the re-exported `drive_name`, `format_name`,
+  `CatalogueDisk`, `SetEntry`, `set_disk` and `short_name`).
+  `Picker::results` and `Create::outlook`, which no other crate calls,
+  became `pub(crate)`, since their answer types stay crate-wide; `CAP`
+  and `BEFORE` stay crate-wide too, so the public docs that name them
+  (the module's, `Row::All`'s and `Catalogue::window`'s) name them
+  without a link, which rustdoc refuses to a private item. The
+  picker's fixtures that the shell's and the Installation media tests
+  build with (`set`, `set_outcome`), and those the stayed test calls
+  (`library`, `machine`, the three formats), are
+  `media_picker::test_support` behind `test-support`; the media-ui tests
+  import them, and the window's `media_picker::tests` re-exports `set` and
+  `set_outcome` under the old path. 41 tests moved: the 11 of
+  `catalogue_menu`, the 4 of `media_create` and 26 of the 27 of
+  `media_picker`. `the_picker_keeps_its_size_frame_after_frame` calls the
+  library fixture's `settled_modal`, which goes to `ui-kit` only in 6.2,
+  so by rule 2 it stays in the window's `media_picker::tests`, unchanged.
+  Moved test bodies changed only in paths the new crate names otherwise
+  (`crate::created_media` is `pc_media::created_media`, the test-only
+  `Disk` is `pc_media::media_picker::Disk`). Deviation: `media-ui` also
+  depends on `assembly`, `image-store`, `image-registry`, `media` and
+  `pc-image`, which the three modules name directly (floppy geometries and
+  write modes, digests, the registry configuration of the From row, the
+  FAT12 builder, the private repository's name); §8.1.3 lists only
+  `pc-media` and `ui-kit`. Deviation from rule 6 of §8.1.5: some items
+  are `pub` in every build although only the window's tests name them —
+  `IN_DRIVE_MARK`, `OWN_DISKS_AT_START`, `Row` and `Mark`, and the
+  already-public `Catalogue::disabled` and `Catalogue::rows` — because
+  `Row` is the return type of a public function (the private-interfaces
+  lint) and the tests that stayed name these paths in their bodies, which
+  rule 2 forbids changing; the 3.x and 4.3 moves set the precedent.
+
+Time (MEASURED on a loaded development host): the 41 tests of `media-ui`
+take 0.4 s of wall time (`cargo nextest run -p media-ui`); `media-ui` and
+the window together run the same 594 tests as the window did before (598
+listed, 557 + 41, of which 4 are ignored), in
+51.9 s, where the window alone took 50.5 s after 5.1. The runner's plan for
+`crates/media-ui/src/media_picker.rs` (or `catalogue_menu.rs`) is
+`media-ui` and `window`; for the window's `media_picker.rs` or
+`catalogue_menu.rs` it was `window` alone, and it still is for the window's
+`media_picker.rs`, which now holds the stayed test.
 
 #### 8.1.9. Step 6: the PC views, and what is left
 

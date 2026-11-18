@@ -40,6 +40,9 @@ library-model = { path = "../library-model", version = "0.0.2" }
 # The library's platform-neutral views: the list tables, the save form and
 # the push and pull dialogs.
 library-ui = { path = "../library-ui", version = "0.0.2" }
+# The PC media views: the media picker, Create from files… and the Catalogue
+# submenu.
+media-ui = { path = "../media-ui", version = "0.0.2" }
 # The contract the machine window drives, the session over it, and the PC
 # behind it.
 unemu-core-api.workspace = true
@@ -67,6 +70,7 @@ cpu.workspace = true
 ui-kit = { path = "../ui-kit", version = "0.0.2", features = ["test-support"] }
 library-model = { path = "../library-model", version = "0.0.2", features = ["test-support"] }
 library-ui = { path = "../library-ui", version = "0.0.2", features = ["test-support"] }
+media-ui = { path = "../media-ui", version = "0.0.2", features = ["test-support"] }
 pc-media = { path = "../pc-media", version = "0.0.2", features = ["test-support"] }
 pc-library = { path = "../pc-library", version = "0.0.2", features = ["test-support"] }
 machine-view = { workspace = true, features = ["test-support"] }

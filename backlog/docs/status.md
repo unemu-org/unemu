@@ -5,6 +5,18 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — The PC media views leave the window:** moves 5.1 and 5.2
+  of the window split (design/core-contract.md §8.1.8). A drive's
+  Catalogue submenu now answers with the disk chosen, or All N disks…, and
+  the shell turns that into its command, so the submenu no longer names
+  the shell. A new `pc` crate, `media-ui` (egui, `pc-media`, `ui-kit` and
+  the PC crates the moved views already named),
+  holds the media picker (`media_picker`), Create from files…
+  (`media_create`) and the Catalogue submenu (`catalogue_menu`); the
+  window re-exports them under their old paths. No behaviour changes:
+  every test keeps its name (4078; MEASURED); 41 tests moved to
+  `media-ui`, and the picker's size test, which uses the library's modal
+  helper, stays with the window.
 - **2026-11-18 — A scripted test core, `unemu-test-core`:** step 9 of
   design/core-contract.md §13.6. A new neutral crate, `crates/test-core`,
   whose only dependency is the contract: `TestCore` implements all of

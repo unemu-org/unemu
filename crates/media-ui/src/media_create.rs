@@ -12,21 +12,21 @@
 //! without reading the host. Create and insert hands the shell a
 //! [`CreateOrder`]; the library worker builds the images with the same
 //! builder as the command line and stores them as the machine's own disks
-//! ([`crate::created_media`]).
+//! ([`pc_media::created_media`]).
 
-use crate::created_media::{self, CreateOrder};
-use crate::library_view::pane::{good_colour, group_colour};
 use crate::media_picker::{
     drive_name, format_name, group_box, hint, hint_under, key_cap, notice, pane, segment, Outcome,
     Picker, When, PANE_GAP, SMALL_SIZE,
 };
 use egui::{RichText, Stroke};
 use media::fat12::{volume_label, BuildError, FloppyFormat, HostItem, Plan, ShortName, Survey};
+use pc_media::created_media::{self, CreateOrder};
 use std::path::{Path, PathBuf};
+use ui_kit::pane::{good_colour, group_colour};
 
 /// One host file or folder of the list.
 #[derive(Clone, Debug)]
-pub(crate) struct Item {
+pub struct Item {
     pub path: PathBuf,
     /// Its names and sizes, once the library worker read them.
     pub read: Option<Result<HostItem, String>>,
@@ -112,7 +112,7 @@ impl Outlook {
 
 /// The Create view's state: the list, the disk's form and its outlook.
 #[derive(Clone, Debug)]
-pub(crate) struct Create {
+pub struct Create {
     pub items: Vec<Item>,
     pub top: String,
     top_touched: bool,
@@ -364,7 +364,7 @@ impl Create {
     }
 
     /// The outlook [`Self::settle`] made last.
-    pub fn outlook(&self) -> Option<&Outlook> {
+    pub(crate) fn outlook(&self) -> Option<&Outlook> {
         self.outlook.as_ref().map(|(.., outlook)| outlook)
     }
 
@@ -1180,7 +1180,7 @@ fn meter(ui: &mut egui::Ui, outlook: &Outlook, format: FloppyFormat, label: bool
         painter.rect_stroke(
             rect,
             0.0,
-            Stroke::new(1.0, crate::library_view::pane::shadow_colour(visuals)),
+            Stroke::new(1.0, ui_kit::pane::shadow_colour(visuals)),
             egui::StrokeKind::Inside,
         );
         let inner = rect.shrink(2.0);
