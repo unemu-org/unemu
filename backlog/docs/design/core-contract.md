@@ -4456,7 +4456,9 @@ stage B: its library, machine files, media dialogs and `Presenter`
 
 - The shell holds at most one running machine, as today: either the PC's
   `presenter` or a `player`. Starting one while the other runs asks to
-  stop it first, with today's stop prompt.
+  stop it first, with today's stop prompt. Open… while a machine runs
+  first prepares the file (steps 2 to 4) and asks to stop only for a file
+  that can start, so a refused file leaves the running machine alone.
 - The shell's parts that meet a running machine ask whichever is there:
   the commands Pause, Stop, Reset, Power cycle, Mute, Speed, Fast
   forward, Release and Fullscreen; `tick`; the central panel; the title
@@ -4480,7 +4482,7 @@ machine's description and never by trying a call (§3.3):
 | Stop | always | `finish`, then back to the library |
 | Mute, Speed, Fast forward, Fullscreen | always | As today (`Session`) |
 | Save state, Load state | `features.saved_state` | Below |
-| A menu per removable slot | `slots` with `removable` | Eject, Next and the catalogue's entries, from `slot_states()`; `change_medium` at the next boundary. Adding a medium from a file is not part of the first steps |
+| The Media menu | `slots` with `removable` | One Media menu with a section per removable slot, headed by the slot's label and what is in it: Eject, Next in catalogue and the catalogue's entries, from `slot_states()`; `change_medium` at the next boundary. A machine with no removable slot has no Media menu. Adding a medium from a file is not part of the first steps |
 | Input… | a port of kind `Pad` | The Input dialog, below |
 | Show overscan | the picture's `visible` is smaller than the picture | A view option, off by default: the screen shows the visible part |
 | Pointer capture | a `RelativePointer` port | As today |
@@ -4544,8 +4546,10 @@ impl PadBindings {
   [REPO: `crates/window/src/preferences.rs`].
 - **The Input dialog**, minimal: one tab per pad port of the running
   machine, by the port's label; a row per control the port lists, with
-  its keys; click a row and press a key to bind it; "Defaults". Nothing
-  else.
+  its keys; click a row and press a key to bind it (the key replaces the
+  row's keys and leaves any other control that had it; while a row waits,
+  Esc leaves it as it was and Delete clears it, so neither can be bound);
+  "Defaults"; one hint line saying so. Nothing else.
 
 **The absolute pointer.** For a machine with an `AbsolutePointer` port
 the session does not capture the pointer. While the host pointer is over
@@ -4794,7 +4798,7 @@ step moves the pin. Sizes are ASSUMED.
 | 8 | **Core registration.** `platforms::cores()`, the moved and widened test, `core_launch::Cores` with the About lines of both programs (§13.4). `core-launch` starts with `Cores` alone | 7 | **Stated:** `--about` of both programs lists the compiled-in cores; its pins change | The pins change only by the core lines; a core that states another contract is listed as unusable with the sentence of §3.2, in a test with a scripted core; ids are unique |
 | 9 | **The test core.** `unemu-test-core` (§13.3) | 7 | None: it is in no binary | Its own tests: the replay rule; no promised call answers `Unsupported`; the three answers of `identify`; a record written by one machine is read by the next, over the storage in memory; a state saved, changed and loaded; the exact frame count of the sound. The boundary check passes with its layer `neutral` and no dependency but the contract |
 | 10 | **`machine-view` on 0.2.** The absolute pointer, the visible part in the screen's geometry (a function the views call), reset by kind, saving and loading a state | 9 | None for the PC | The `machine-view` row of §13.3's test table, against the test core |
-| 11 | **The look, as mock-ups**: File › Open…, the player's menu and status line, the Input dialog, the refusals. Not a code bead: the maintainer approves it | nothing; best early | None | The maintainer's approval, recorded on the bead |
+| 11 | **Done.** **The look, as mock-ups**: File › Open…, the player's menu and status line, the Input dialog, the refusals. Not a code bead: the maintainer approves it. As landed: `mockups/player.html` revision 1, approved by the maintainer on 2026-11-18 with the page's recommendations: one Media menu with a section per removable slot (the controls table above), no toolbar buttons for Save state and Load state (Machine menu and Ctrl+Alt+S, Ctrl+Alt+L), Open… takes Ctrl+O and Open machine file… goes without a key, Open… while a machine runs checks the file before the stop prompt, and the Input dialog's Esc, Delete and replace rules. Also taken from the page: Open… sits in File above Open machine file… and its dialog opens on "All supported files"; disabled, it says "No core in this release opens files" by its hover text; the title is content — platform — unemupc; controls a description does not offer are absent, not greyed (Load state alone is greyed until a state exists); Reset takes Ctrl+Alt+End; the first two slots take Ctrl+Alt+E/F and the same with Shift; the toolbar keeps the PC's buttons greyed and its Ctrl+Alt+Del button reads Reset | nothing; best early | None | The maintainer's approval, recorded on the bead |
 | 12 | **`core-launch`**: `prepare`, `start`, `HostDirs` (§13.3) | 6, 8, 9 | None: nothing calls it yet | The `core-launch` row of the test table |
 | 13 | **`player-ui`**: the player (§13.3) | 10, 11, 12 | None: nothing shows it yet | The `player-ui` row of the test table; the boundary check counts it as a window crate |
 | 14 | **Open… in the application.** `--open FILE [--core ID]`, File › Open…, the shell holds a player beside the PC's presenter, the `test-core` feature of `platforms`, the two host directories | 13 | **Stated:** one new option and one new menu item. With the release's list, which has no core that opens files yet, the item is disabled and says so | The `window` row of the test table; the usage text's pin changes by one line; the PC's shell tests pass unchanged |
