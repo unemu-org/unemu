@@ -30,7 +30,10 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | `machine` | Generic `Machine<C: Cpu>` and execution/clock/IRQ/DMA loop | `cpu`, `bus`, `device`, `thiserror` | `testkit`, `devices` |
 | `video` | `FrameSink`, text frames/grids, text-mode renderer and capture sink | `device` | None |
 | `assembly` | `MachineConfig`, validation, presets, image/device construction, wiring, and `RunPolicy` driver | `machine`, `cpu`, `bus`, `device`, `devices`, `video`, `chipset`, `media`, `sha2`, `thiserror` | `media/test-support` |
-| `window` | CP437 rasteriser, shared `FrameSink`, and egui desktop shell | `video`, `device`, `assembly`, `machine`, `winit`, `egui`, `eframe`, `image-store`, `image-registry`, `pc-image`, `platforms`, `ui-kit` | `cpu`, `assembly/test-support`, `image-store/test-support`, `media/test-support`, `pc-image/test-support`, `ui-kit/test-support` |
+| `unemu-core-api` | The contract between front ends and emulator cores ([core contract](design/core-contract.md) §3): `Core` with its `CoreDescription`, the `Machine` a front end drives (run to a limit, picture and sound, input by USB HID usage, media slots, reset, saved state, finish, messages), the `CONTRACT` version and its `drives` rule. `std` only, object-safe, every type `#[non_exhaustive]` | None | None |
+| `unemu-pc-core` | The PC core behind the contract (§4, stage A): `PcMachine` wraps an assembled machine and runs it to tick deadlines, with the set-1 scan-code encoder and the 8042 back-pressure (`keyboard`), the pointing-device queue (`mouse`), the deadline-to-cap conversion (`pacing`), the CP437 text rasteriser and its CC BY-SA fonts (`raster`, `font`) and drive-activity sampling; `PcCore` describes the PC and cannot create machines yet | `unemu-core-api`, `assembly`, `audio`, `device`, `devices`, `machine`, `video` | None |
+| `machine-view` | The desktop's session of one machine over `dyn Machine` alone (§5, §8): `Session` with pacing against the host clock, the host audio ring, the winit key-code to HID usage map, pointer capture, the host media and mute chords, the macOS system-key tap and the drives' activity | `unemu-core-api`, `winit`, `cpal`, `objc2*` (macOS) | None |
+| `window` | The egui desktop shell, the machine library and the PC dialogs; its machine window is a `machine_view::Session` over a `unemu_pc_core::PcMachine`, which the media dialogs reach through `PcMachine::assembled` | `assembly`, `machine`, `winit`, `egui`, `eframe`, `image-store`, `image-registry`, `pc-image`, `platforms`, `ui-kit`, `unemu-core-api`, `machine-view`, `unemu-pc-core` | `cpu`, `assembly/test-support`, `image-store/test-support`, `media/test-support`, `pc-image/test-support`, `ui-kit/test-support`, `machine-view/test-support`, `unemu-pc-core/test-support` |
 | `ui-kit` | The desktop's skin and widget helpers, free of any machine: the classic and modern skins (`skin`: visuals, fonts, title strips, bevels, the one-Escape rule, the text marks), the mock-up icons and their tested inventory (`shell_icons`), the library's details panes (`pane`), the brand logo, host file dialogs and clipboard shortcuts ([core contract](design/core-contract.md) §8) | `egui`, `winit`, `image`, `rfd`, `arboard` | `toml` |
 | `machine-file` | Schema 1 TOML/YAML parsing, source origins, image hashing and lowering through assembly validation; merging remains deferred ([schema](design/machine-files.md#schema-field-by-field)) | `assembly`, `image-store`, `serde`, `sha2`, `toml`, `serde-saphyr`, `thiserror` | None |
 | `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
@@ -44,9 +47,9 @@ and `scripts/crate-boundaries.sh` keeps the layers apart
 
 | Layer | Crates | May depend on |
 | --- | --- | --- |
-| `contract` | none yet | nothing at all |
-| `neutral` | `media`, `image-store`, `image-registry`, `recipe`, `ui-kit` | `contract`, `neutral` |
-| `emulation` | `device`, `bus`, `cpu`, `video`, `audio`, `devices`, `chipset`, `machine`, `testkit`, `assembly` | `contract`, `emulation` |
+| `contract` | `unemu-core-api` | nothing at all |
+| `neutral` | `media`, `image-store`, `image-registry`, `recipe`, `ui-kit`, `machine-view` | `contract`, `neutral` |
+| `emulation` | `device`, `bus`, `cpu`, `video`, `audio`, `devices`, `chipset`, `machine`, `testkit`, `assembly`, `unemu-pc-core` | `contract`, `emulation` |
 | `pc` | `machine-file`, `pc-image`, `pc-harness` | `contract`, `neutral`, `emulation`, `pc` |
 | `application` | `cli`, `window`, `platforms` | anything |
 
@@ -638,9 +641,11 @@ progress animation when enabled.
 
 `src/shell.rs` draws the shell and wraps eframe's public winit application.
 The wrapper retains physical keyboard positions and ordered raw mouse motion
-instead of reconstructing scan codes from text events. The existing
-`Presenter`, `HostKeyboard`, `HostMouse`, `HostAudio` and pacing policy own the
-machine session. Menus, dialogs and focus loss release held guest keys and
+instead of reconstructing scan codes from text events. The machine
+session is `machine_view::Session` with its pacing policy, `HostAudio` and
+pointer capture, over the PC core's `PcMachine`, whose `HostKeyboard` and
+`PcMouse` encode the guest's input; the window's `Presenter` adds the PC
+catalogue model the media dialogs edit. Menus, dialogs and focus loss release held guest keys and
 pointer capture; a screen click restores guest focus. The wrapper withholds
 keyboard/IME events from egui during guest focus and pointer events during
 capture, including when the host can only confine the pointer. The screen is
@@ -654,9 +659,9 @@ Held keys from before Start/focus gain cannot enter through OS repeats or
 synthetic focus events. Only Ctrl+Alt chords remain host shortcuts during guest
 focus; F1 and Ctrl+N/O/comma reach the guest. Pointer release and Pause preserve
 keyboard focus. On macOS an opt-in preference (`send_system_shortcuts`) adds
-`src/macos_keys.rs`, an active Quartz event tap that exists only while a running,
+`machine-view`'s `macos_keys`, an active Quartz event tap that exists only while a running,
 unpaused guest has the keyboard and takes the Ctrl and function-key chords
-Mission Control and other system shortcuts would claim; `src/system_keys.rs`
+Mission Control and other system shortcuts would claim; `machine_view::system_keys`
 decides which keys and when, and the taken keys enter the same key queue as
 window events, so focus checks and held-key release are unchanged. Reset queues explicit guest Ctrl/Alt/Delete makes rather than
 resetting the board directly. Stop and normal window close finish only a
@@ -665,9 +670,13 @@ has already finished. A failed finish drops the session, shows its diagnostic
 and retains a nonzero exit status while allowing the window to close. A later
 successful Start or an actual clean Stop clears the stale error.
 
-The frontend advances with `Machine::run_bounded` toward bounded virtual-clock
-targets, captures the selected display through the observation facade, and
-uploads `WindowSink`'s decoded pixels. No sink ticks devices. Only the binary
+The session advances with `Machine::run` of the contract toward bounded
+virtual-clock targets, one chunk of at most a millisecond of guest time at a
+time; `PcMachine` turns each deadline into a retired-instruction cap for
+`run_bounded`, delivers queued keys and pointer segments at the boundary,
+performs guest-requested resets inside the run, captures the observed display
+through the observation facade and rasterises it, and the session uploads the
+picture it returns. No sink ticks devices. Only the binary
 reads `Instant`: the existing rational pacing policy limits catch-up to 50 ms,
 paints on a 60 Hz grid, and discards hidden, suspended, paused and modal time.
 One pause predicate combines user pause, modal/menu state, occlusion and
@@ -677,8 +686,9 @@ Audio retains its bounded cpal ring, mute and recoverable-error policy.
 Neither playback nor UI repaint frequency drives virtual guest time.
 
 ```text
-MDA/VGA scanout -> observation capture -> WindowSink -> CP437/graphics rasteriser
-  -> 0x00RRGGBB pixels -> egui texture (nearest) -> eframe/glow window
+MDA/VGA scanout -> observation capture -> RasterSink -> CP437/graphics rasteriser
+  (unemu-pc-core) -> Machine::frame 0x00RRGGBB pixels -> Session picture
+  (machine-view) -> egui texture (nearest) -> eframe/glow window
 ```
 
 The original VileR fonts and attribution stay embedded. About and informational
@@ -687,9 +697,10 @@ AccessKit is enabled for the shell. Integer scaling first removes the sink's
 pixel-doubling factor. Rasterisation and all
 input/pacing/session tests remain headless. The status bar shows power, one
 chip per drive, configured instruction/PIT ratio, EMS, host audio and speed.
-Drive lamps have an activity signal: after every run chunk the presenter reads
+Drive lamps have an activity signal: after every run chunk `PcMachine` reads
 `Upd765::drive_active` (the DOR-selected, motor-on drive or a pending DMA
-transfer) and `Ata::activity` (BSY or DRQ), both read-only, and the shell holds
+transfer) and `Ata::activity` (BSY or DRQ), both read-only, the session takes what was busy
+through `Machine::slot_states` once per paint, and the shell holds
 each lamp for 200 ms of host UI time, which never reaches the machine. Headless
 CLI runs do not depend on the shell and retain their existing behavior. See
 `design/machine-images.md` §7.

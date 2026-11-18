@@ -2,8 +2,8 @@
 //! Headless tests of the CP437 presenter (design/spec.md §9.4).
 
 use std::num::NonZeroU16;
+use unemu_pc_core::{FontAtlas, RasterSink, Rasterizer, MDA_FONT, VGA_FONT};
 use video::{render_text_mode, Frame, FrameSink, TextAttributeSet, TextModeState};
-use window::{FontAtlas, Rasterizer, WindowSink, MDA_FONT, VGA_FONT};
 
 fn grid(bytes: &[u8], mono: bool, blink: bool, cursor: bool) -> video::TextGrid {
     render_text_mode(&TextModeState {
@@ -137,7 +137,7 @@ fn colour_palette_blink_cursor_and_integer_scaling() {
 
 #[test]
 fn headless_sink_delivers_shared_pixels_and_replaces_the_last_frame() {
-    let mut sink = WindowSink::new(NonZeroU16::new(1).unwrap()).unwrap();
+    let mut sink = RasterSink::new(NonZeroU16::new(1).unwrap()).unwrap();
     let observer = sink.clone();
     assert!(observer.frame().is_none());
     let frame = Frame::Text(grid(&[0xDB, 15], true, true, false));
@@ -197,11 +197,11 @@ fn empty_and_oversized_frames_are_bounded_and_sink_keeps_last_success() {
     let empty = grid(&[], true, true, false);
     let raster = Rasterizer::bundled(NonZeroU16::new(1).unwrap()).unwrap();
     assert!(raster.rasterize(&empty).unwrap().pixels.is_empty());
-    let mut sink = WindowSink::new(NonZeroU16::new(u16::MAX).unwrap()).unwrap();
+    let mut sink = RasterSink::new(NonZeroU16::new(u16::MAX).unwrap()).unwrap();
     sink.present(&Frame::Text(empty));
     let last = sink.frame().clone();
     sink.present(&Frame::Text(grid(&[b'A', 7], true, true, false)));
-    assert_eq!(sink.error(), Some(window::RasterError::TooLarge));
+    assert_eq!(sink.error(), Some(unemu_pc_core::RasterError::TooLarge));
     assert_eq!(*sink.frame(), last);
 }
 
@@ -218,7 +218,7 @@ fn observation_subscriber_smoke_rasterizes_guest_text_without_a_window() {
         ..ObservationPolicy::default()
     };
     let mut assembled = assembly::assemble_with_observation(&config, &policy).unwrap();
-    let sink = WindowSink::new(NonZeroU16::new(1).unwrap()).unwrap();
+    let sink = RasterSink::new(NonZeroU16::new(1).unwrap()).unwrap();
     assembled
         .observation
         .subscribe(DeviceId::Vga, Box::new(sink.clone()))
@@ -290,6 +290,6 @@ fn font_notice_contains_all_required_attribution() {
         "http://int10h.org/oldschool-pc-fonts/",
         "font files unmodified",
     ] {
-        assert!(window::FONT_NOTICE.contains(part), "missing {part}");
+        assert!(unemu_pc_core::FONT_NOTICE.contains(part), "missing {part}");
     }
 }

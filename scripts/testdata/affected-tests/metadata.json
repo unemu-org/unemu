@@ -616,6 +616,21 @@
           "name": "ui-kit",
           "kind": "dev",
           "path": "/workspace/crates/ui-kit"
+        },
+        {
+          "name": "machine-view",
+          "kind": null,
+          "path": "/workspace/crates/machine-view"
+        },
+        {
+          "name": "unemu-core-api",
+          "kind": null,
+          "path": "/workspace/crates/core-api"
+        },
+        {
+          "name": "unemu-pc-core",
+          "kind": null,
+          "path": "/workspace/crates/pc-core"
         }
       ]
     },
@@ -624,6 +639,66 @@
       "id": "path+file:///workspace/crates/ui-kit#0.0.2",
       "manifest_path": "/workspace/crates/ui-kit/Cargo.toml",
       "dependencies": []
+    },
+    {
+      "name": "unemu-core-api",
+      "id": "path+file:///workspace/crates/core-api#0.0.2",
+      "manifest_path": "/workspace/crates/core-api/Cargo.toml",
+      "dependencies": []
+    },
+    {
+      "name": "unemu-pc-core",
+      "id": "path+file:///workspace/crates/pc-core#0.0.2",
+      "manifest_path": "/workspace/crates/pc-core/Cargo.toml",
+      "dependencies": [
+        {
+          "name": "unemu-core-api",
+          "kind": null,
+          "path": "/workspace/crates/core-api"
+        },
+        {
+          "name": "assembly",
+          "kind": null,
+          "path": "/workspace/crates/assembly"
+        },
+        {
+          "name": "audio",
+          "kind": null,
+          "path": "/workspace/crates/audio"
+        },
+        {
+          "name": "device",
+          "kind": null,
+          "path": "/workspace/crates/device"
+        },
+        {
+          "name": "devices",
+          "kind": null,
+          "path": "/workspace/crates/devices"
+        },
+        {
+          "name": "machine",
+          "kind": null,
+          "path": "/workspace/crates/machine"
+        },
+        {
+          "name": "video",
+          "kind": null,
+          "path": "/workspace/crates/video"
+        }
+      ]
+    },
+    {
+      "name": "machine-view",
+      "id": "path+file:///workspace/crates/machine-view#0.0.2",
+      "manifest_path": "/workspace/crates/machine-view/Cargo.toml",
+      "dependencies": [
+        {
+          "name": "unemu-core-api",
+          "kind": null,
+          "path": "/workspace/crates/core-api"
+        }
+      ]
     }
   ],
   "workspace_members": [
@@ -646,7 +721,10 @@
     "path+file:///workspace/crates/pc-image#0.0.2",
     "path+file:///workspace/crates/platforms#0.0.2",
     "path+file:///workspace/crates/window#0.0.2",
-    "path+file:///workspace/crates/ui-kit#0.0.2"
+    "path+file:///workspace/crates/ui-kit#0.0.2",
+    "path+file:///workspace/crates/core-api#0.0.2",
+    "path+file:///workspace/crates/pc-core#0.0.2",
+    "path+file:///workspace/crates/machine-view#0.0.2"
   ],
   "workspace_root": "/workspace"
 }

@@ -173,7 +173,7 @@ revision. Real-mode and 286 support live there under `CpuMode::Real16`.
 ## Third-party components
 
 - **Ultimate Oldschool PC Font Pack** by VileR: the MDA and VGA bitmap fonts,
-  CC BY-SA 4.0 ([notice](crates/window/assets/fonts/NOTICE.md)).
+  CC BY-SA 4.0 ([notice](crates/pc-core/assets/fonts/NOTICE.md)).
 - **DejaVu Sans** 2.37: a five-symbol subset for the desktop app, Bitstream
   Vera and Arev licences ([notice](crates/ui-kit/assets/fonts/dejavu/NOTICE.md)).
 - **egui's default fonts** (Ubuntu Light, Hack, Noto Emoji, emoji-icon-font):

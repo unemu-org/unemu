@@ -757,7 +757,7 @@ pub(crate) fn integer_size(
     original * if fit >= 1.0 { fit.floor() } else { fit }
 }
 
-pub(crate) fn texture_image(frame: &window::PixelFrame) -> egui::ColorImage {
+pub(crate) fn texture_image(frame: &machine_view::Picture) -> egui::ColorImage {
     let mut rgb = Vec::with_capacity(frame.pixels.len() * 3);
     for pixel in &frame.pixels {
         rgb.extend_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, *pixel as u8]);
@@ -1221,10 +1221,12 @@ mod tests {
 
     #[test]
     fn texture_upload_preserves_dimensions_channels_and_row_order() {
-        let image = texture_image(&window::PixelFrame {
+        let image = texture_image(&machine_view::Picture {
             width: 2,
             height: 2,
             pixels: vec![0xff0000, 0x00ff00, 0x0000ff, 0x123456],
+            aspect: (4, 3),
+            serial: 0,
         });
         assert_eq!(image.size, [2, 2]);
         assert_eq!(

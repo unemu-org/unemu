@@ -494,6 +494,12 @@ impl Drive {
     pub fn write_protected(&self) -> bool {
         self.media.write_protected()
     }
+
+    /// Whether the host keeps the guest's writes in a journal.
+    #[must_use]
+    pub fn journaled(&self) -> bool {
+        self.journaled
+    }
 }
 
 /// A host media event must address a configured catalogue at a completed DMA boundary.
@@ -882,6 +888,24 @@ impl Upd765 {
     /// Catalogue entry currently inserted, or an open door.
     pub fn inserted_medium(&self, unit: usize) -> Option<usize> {
         self.inserted.get(unit).copied().flatten()
+    }
+
+    /// Drive `unit`'s catalogue in order, the inserted entry included, for
+    /// host presentation; reading it changes no controller state.
+    pub fn catalogue(&self, unit: usize) -> impl Iterator<Item = &Drive> {
+        let inserted = self.inserted_medium(unit);
+        self.media_lists
+            .get(unit)
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter_map(move |(index, entry)| {
+                if Some(index) == inserted {
+                    self.drives[unit].as_ref()
+                } else {
+                    entry.as_ref()
+                }
+            })
     }
 
     /// Whether drive `unit`'s front-panel activity light is on, for host
@@ -2161,6 +2185,40 @@ impl Device for Upd765 {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    #[test]
+    fn the_catalogue_lists_every_entry_with_its_write_policy_wherever_it_is() {
+        let mut fdc = Upd765::new();
+        let entry = |protected, journaled| {
+            let media = Box::new(InMemoryMedia::new(vec![0; 512], 2880, protected));
+            if journaled {
+                Drive::with_journaled_media(FloppyGeometry::HD1440, media)
+            } else {
+                Drive::with_media(FloppyGeometry::HD1440, media)
+            }
+        };
+        fdc.set_media_list(
+            0,
+            DriveType::HD1440,
+            vec![entry(false, false), entry(true, false), entry(false, true)],
+            false,
+        )
+        .unwrap();
+        let policy = |fdc: &Upd765| {
+            fdc.catalogue(0)
+                .map(|drive| (drive.write_protected(), drive.journaled()))
+                .collect::<Vec<_>>()
+        };
+        let expected = [(false, false), (true, false), (false, true)];
+        assert_eq!(policy(&fdc), expected);
+        fdc.insert(0, 2).unwrap();
+        assert_eq!(fdc.inserted_medium(0), Some(2));
+        assert_eq!(policy(&fdc), expected);
+        fdc.eject(0).unwrap();
+        assert_eq!(policy(&fdc), expected);
+        assert_eq!(fdc.catalogue(1).count(), 0);
+        assert_eq!(fdc.catalogue(9).count(), 0);
+    }
 
     fn swap_fdc(bus: &mut MockBus) -> &mut Upd765 {
         bus.device_mut()

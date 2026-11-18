@@ -20,6 +20,7 @@ use ui_kit::{
         window_title, EJECT_MARK,
     },
 };
+use unemu_core_api::{MediaAction, SlotId};
 use winit::{
     application::ApplicationHandler,
     event::{DeviceEvent, ElementState, StartCause, WindowEvent},
@@ -641,17 +642,13 @@ impl Shell {
             }
         };
         if let Some(presenter) = &mut self.presenter {
-            let result = crate::media_dialog::append_entries(
-                &mut presenter.assembled,
-                &mut presenter.media_config,
-                &mut presenter.media_slots,
-                draft.unit,
-                &entries,
-            );
+            let (assembled, config, slots) = presenter.media_parts();
+            let result =
+                crate::media_dialog::append_entries(assembled, config, slots, draft.unit, &entries);
             match result {
                 Ok(indices) => presenter
                     .media_events
-                    .push((draft.unit, assembly::FloppyAction::Insert(indices[chosen]))),
+                    .push((SlotId(draft.unit), MediaAction::Insert(indices[chosen]))),
                 Err(error) => {
                     if let Some(draft) = &mut self.insert_dialog {
                         draft.error = Some(error);
@@ -1417,8 +1414,7 @@ impl Shell {
                 return (Vec::new(), 0);
             };
             let halted = presenter.awaits_reset();
-            let inserted =
-                [0usize, 1].map(|unit| presenter.fdc().and_then(|fdc| fdc.inserted_medium(unit)));
+            let inserted = [0usize, 1].map(|unit| presenter.inserted_floppy(unit));
             let drives = slot_drives(&presenter.media_slots, inserted, &name);
             return (
                 vec![Target {
@@ -1568,9 +1564,7 @@ impl Shell {
     /// catalogue index.
     fn floppy_inserted(&mut self) -> [Option<usize>; 2] {
         match &mut self.presenter {
-            Some(presenter) => {
-                [0usize, 1].map(|unit| presenter.fdc().and_then(|fdc| fdc.inserted_medium(unit)))
-            }
+            Some(presenter) => [0usize, 1].map(|unit| presenter.inserted_floppy(unit)),
             None => [None, None],
         }
     }
@@ -2136,7 +2130,7 @@ impl Shell {
                 if let Some(presenter) = &mut self.presenter {
                     presenter
                         .media_events
-                        .push((unit, assembly::FloppyAction::Insert(index)));
+                        .push((SlotId(unit), MediaAction::Insert(index)));
                 } else if let Some(id) = target {
                     // A disk waiting for a stopped library machine's Start:
                     // it goes in then.
@@ -2277,17 +2271,14 @@ impl Shell {
                 let entries = crate::created_media::entries(&created, slot.journal_retention);
                 let name = self.session_name().unwrap_or("the machine").to_owned();
                 if let Some(presenter) = &mut self.presenter {
+                    let (assembled, config, slots) = presenter.media_parts();
                     match crate::media_dialog::append_entries(
-                        &mut presenter.assembled,
-                        &mut presenter.media_config,
-                        &mut presenter.media_slots,
-                        unit,
-                        &entries,
+                        assembled, config, slots, unit, &entries,
                     ) {
                         Ok(indices) => {
                             presenter
                                 .media_events
-                                .push((unit, assembly::FloppyAction::Insert(indices[0])));
+                                .push((SlotId(unit), MediaAction::Insert(indices[0])));
                             let next = if count > 1 {
                                 format!(
                                     " {} swaps to the next disk.",
@@ -2561,8 +2552,7 @@ impl Shell {
         let index = self
             .presenter
             .as_mut()
-            .and_then(|presenter| presenter.fdc())
-            .and_then(|fdc| fdc.inserted_medium(usize::from(unit)));
+            .and_then(|presenter| presenter.inserted_floppy(usize::from(unit)));
         if let (Some(index), Some(draft)) = (index, &mut self.insert_dialog) {
             let row = crate::drive_chips::entry_position(&draft.slot, index);
             draft.select(row);
@@ -3403,11 +3393,9 @@ impl Shell {
             // queued for the next run boundary in, which a library machine
             // keeps for its next Start.
             let inserted = [0u8, 1].map(|unit| {
-                let now = presenter
-                    .fdc()
-                    .and_then(|fdc| fdc.inserted_medium(usize::from(unit)));
+                let now = presenter.inserted_floppy(usize::from(unit));
                 let count = presenter
-                    .assembled
+                    .assembled_ref()
                     .floppy_names
                     .get(&(assembly::DeviceId::Fdc, unit))
                     .map_or(0, Vec::len);
@@ -3795,7 +3783,7 @@ impl Shell {
                 self.ask_file(FileFor::RomImport);
             },
             StoreFolder => { self.release(); self.store_path_input = self.image_library.root.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(); self.dialog = Some(("Image store folder", "Local store directory".into())); },
-            Pause => { self.release_pointer(); if let Some(presenter) = &mut self.presenter { presenter.pacing.resync(elapsed, presenter.assembled.machine.clock().0); } self.paused = !self.paused; self.message = if self.paused { "Paused" } else { "Running" }.into(); },
+            Pause => { self.release_pointer(); if let Some(presenter) = &mut self.presenter { presenter.resync(elapsed); } self.paused = !self.paused; self.message = if self.paused { "Paused" } else { "Running" }.into(); },
             Stop => { self.stop(); },
             Library => if !self.ask_before_stopping(StopPrompt::Library) { self.stop(); },
             PowerCycle => {
@@ -3807,10 +3795,10 @@ impl Shell {
                 }
             },
             Reset => { self.guest_held.clear();
-                if self.presenter.as_ref().is_some_and(Presenter::awaits_reset) {
+                if self.presenter.as_ref().is_some_and(|presenter| presenter.awaits_reset()) {
                     self.reset_halted();
                 } else if let Some(presenter) = &mut self.presenter {
-                    presenter.keyboard.ctrl_alt_del();
+                    presenter.machine_mut().ctrl_alt_del();
                 }
             },
             // One Insert… per drive opens the media picker; it replaces the
@@ -3842,7 +3830,7 @@ impl Shell {
             CatalogueDisk(unit, index) => self.choose_catalogue_disk(unit, index),
             CatalogueAll(unit) => { self.release(); self.open_catalogue_picker(unit); },
             Next(unit) | Eject(unit) => if let Some(presenter) = &mut self.presenter {
-                presenter.media_events.push((unit, if matches!(command, Next(_)) { assembly::FloppyAction::Next } else { assembly::FloppyAction::Eject }));
+                presenter.media_events.push((SlotId(unit), if matches!(command, Next(_)) { MediaAction::Next } else { MediaAction::Eject }));
             } else if let (Eject(_), Some(row)) = (command, self.image_library.selected_machine_row().cloned()) {
                 // Take out again: the stopped machine's pending disk goes.
                 let drive = crate::media_picker::drive_name(unit);
@@ -3858,7 +3846,7 @@ impl Shell {
             Minimize => { self.release(); ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); },
             Exit => self.request_exit(ctx),
             Shortcuts => self.dialog = Some(("Keyboard shortcuts", shortcuts_help(self.macos_shortcuts))),
-            About => self.dialog = Some(("About unemupc", format!("unemupc {}\nemulator of period IBM-compatible PCs\n{}\nx86jit · egui / eframe · cpal\n\n{}\n\n{}\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), platforms::licence_notice(), window::FONT_NOTICE, ui_kit::EGUI_FONT_NOTICE, ui_kit::SYMBOL_FONT_NOTICE, devices::OPL3_NOTICE))),
+            About => self.dialog = Some(("About unemupc", format!("unemupc {}\nemulator of period IBM-compatible PCs\n{}\nx86jit · egui / eframe · cpal\n\n{}\n\n{}\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), platforms::licence_notice(), unemu_pc_core::FONT_NOTICE, ui_kit::EGUI_FONT_NOTICE, ui_kit::SYMBOL_FONT_NOTICE, devices::OPL3_NOTICE))),
             Placeholder("Open machine file") => self.open_machine_dialog(),
             Placeholder("New machine") => { self.release(); self.image_library.begin_new_machine(); },
             Placeholder(title) => self.dialog = Some((title, "not yet available".into())),
@@ -4058,7 +4046,11 @@ impl Shell {
                     (None, None) => "Select a machine".into(),
                 };
                 ui.add_enabled(false, egui::Label::new(target));
-                let reset = if self.presenter.as_ref().is_some_and(Presenter::awaits_reset) {
+                let reset = if self
+                    .presenter
+                    .as_ref()
+                    .is_some_and(|presenter| presenter.awaits_reset())
+                {
                     "Reset halted machine"
                 } else {
                     "Send Ctrl+Alt+Del"
@@ -4464,7 +4456,7 @@ impl Shell {
                         size = shell_model::integer_size(
                             available,
                             texture.size_vec2(),
-                            crate::SINK_SCALE,
+                            unemu_pc_core::RASTER_SCALE,
                         );
                     }
                 }
@@ -4546,9 +4538,7 @@ impl Shell {
                     if !hidden {
                         let elapsed = self.elapsed();
                         if let Some(presenter) = &mut self.presenter {
-                            presenter
-                                .pacing
-                                .resync(elapsed, presenter.assembled.machine.clock().0);
+                            presenter.resync(elapsed);
                         }
                     }
                 }
@@ -4633,9 +4623,7 @@ impl Shell {
             if self.macos_shortcuts {
                 // The legacy presenter reserves Ctrl+Alt for media and mouse
                 // controls; macOS must pass those chords intact to the guest.
-                if presenter.running && presenter.error.is_none() {
-                    presenter.keyboard.key_event(key, state);
-                }
+                presenter.guest_key(key, state);
             } else {
                 presenter.key_event(key, state);
             }
@@ -4842,7 +4830,7 @@ impl Shell {
                 return;
             }
             presenter.observe_drive_lights(elapsed);
-            if let Some(frame) = presenter.sink.frame().as_ref() {
+            if let Some(frame) = presenter.picture() {
                 let image = shell_model::texture_image(frame);
                 if let Some(texture) = &mut self.texture {
                     texture.set(image, egui::TextureOptions::NEAREST);
@@ -5767,13 +5755,9 @@ mod tests {
         let presenter = shell.presenter.as_mut().unwrap();
         let mut codes = Vec::new();
         for _ in 0..32 {
-            codes.extend(
-                presenter
-                    .keyboard
-                    .inject_at_boundary(&mut presenter.assembled),
-            );
+            codes.extend(presenter.machine_mut().deliver_keys_for_test());
             if presenter
-                .assembled
+                .assembled()
                 .machine
                 .bus_mut()
                 .port_read(0x64, 1)
@@ -5782,17 +5766,21 @@ mod tests {
                 != 0
             {
                 presenter
-                    .assembled
+                    .assembled()
                     .machine
                     .bus_mut()
                     .port_read(0x60, 1)
                     .unwrap();
             }
-            if presenter.keyboard.pending_events() == 0 {
+            if presenter.keyboard().pending_events() == 0 {
                 return codes;
             }
-            let cap = presenter.assembled.machine.virtual_time() + 100_000;
-            presenter.assembled.machine.run_bounded(Some(cap)).unwrap();
+            let cap = presenter.assembled().machine.virtual_time() + 100_000;
+            presenter
+                .assembled()
+                .machine
+                .run_bounded(Some(cap))
+                .unwrap();
         }
         panic!("keyboard queue did not drain");
     }
@@ -6182,7 +6170,7 @@ mod tests {
 
     fn keyboard_shell() -> Shell {
         let mut shell = shell();
-        shell.presenter.as_mut().unwrap().assembled =
+        *shell.presenter.as_mut().unwrap().assembled() =
             assembly::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
         shell.sync_routing();
         shell
@@ -6972,7 +6960,7 @@ mod tests {
                     .presenter
                     .as_mut()
                     .unwrap()
-                    .assembled
+                    .assembled()
                     .floppy_name(assembly::DeviceId::Fdc, 0),
                 "first.img"
             );
@@ -6981,7 +6969,7 @@ mod tests {
                     .presenter
                     .as_ref()
                     .unwrap()
-                    .assembled
+                    .assembled_ref()
                     .machine
                     .virtual_time(),
                 0
@@ -6992,7 +6980,10 @@ mod tests {
                 assert!(shell.insert_dialog.is_none());
                 assert_eq!(
                     shell.presenter.as_ref().unwrap().media_events,
-                    [(0, assembly::FloppyAction::Insert(2))]
+                    [(
+                        unemu_core_api::SlotId(0),
+                        unemu_core_api::MediaAction::Insert(2)
+                    )]
                 );
             }
             assert!(shell.stop());
@@ -7065,7 +7056,7 @@ mod tests {
                 .presenter
                 .as_ref()
                 .unwrap()
-                .assembled
+                .assembled_ref()
                 .machine
                 .virtual_time(),
             0
@@ -7087,7 +7078,7 @@ mod tests {
                 .presenter
                 .as_mut()
                 .unwrap()
-                .assembled
+                .assembled()
                 .floppy_name(assembly::DeviceId::Fdc, 0),
             "first.img"
         );
@@ -7096,28 +7087,45 @@ mod tests {
         shell.confirm_insert();
         let presenter = shell.presenter.as_mut().unwrap();
         assert_eq!(
-            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            presenter
+                .assembled()
+                .floppy_name(assembly::DeviceId::Fdc, 0),
             "first.img"
         );
         assert_eq!(
             presenter.media_events,
-            [(0, assembly::FloppyAction::Insert(1))]
+            [(
+                unemu_core_api::SlotId(0),
+                unemu_core_api::MediaAction::Insert(1)
+            )]
         );
         presenter.apply_media_events().unwrap();
         assert_eq!(
-            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            presenter
+                .assembled()
+                .floppy_name(assembly::DeviceId::Fdc, 0),
             "second.img"
         );
         shell.command(Command::Eject(0), &ctx);
         let presenter = shell.presenter.as_mut().unwrap();
         assert_eq!(
-            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            presenter
+                .assembled()
+                .floppy_name(assembly::DeviceId::Fdc, 0),
             "second.img"
         );
-        assert_eq!(presenter.media_events, [(0, assembly::FloppyAction::Eject)]);
+        assert_eq!(
+            presenter.media_events,
+            [(
+                unemu_core_api::SlotId(0),
+                unemu_core_api::MediaAction::Eject
+            )]
+        );
         presenter.apply_media_events().unwrap();
         assert_eq!(
-            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            presenter
+                .assembled()
+                .floppy_name(assembly::DeviceId::Fdc, 0),
             "empty"
         );
     }
@@ -7146,7 +7154,7 @@ mod tests {
                 .presenter
                 .as_ref()
                 .unwrap()
-                .assembled
+                .assembled_ref()
                 .machine
                 .virtual_time();
             shell.tick(&ctx, false, std::time::Duration::ZERO);
@@ -7155,7 +7163,7 @@ mod tests {
                     .presenter
                     .as_ref()
                     .unwrap()
-                    .assembled
+                    .assembled_ref()
                     .machine
                     .virtual_time(),
                 time
@@ -7177,7 +7185,7 @@ mod tests {
                         .presenter
                         .as_mut()
                         .unwrap()
-                        .assembled
+                        .assembled()
                         .floppy_name(assembly::DeviceId::Fdc, 0),
                     "extra.img"
                 );
@@ -7534,7 +7542,7 @@ mod tests {
                 } else {
                     [Pressed, Released]
                         .into_iter()
-                        .flat_map(|state| window::set1_scancodes(shift, state).unwrap())
+                        .flat_map(|state| crate::set1_scancodes(shift, state).unwrap())
                         .collect()
                 };
                 assert_eq!(take_guest_scancodes(&mut shell), expected);
@@ -7570,7 +7578,7 @@ mod tests {
         ] {
             for command_key in [SuperLeft, SuperRight] {
                 let mut shell = media_shell();
-                shell.presenter.as_mut().unwrap().assembled =
+                *shell.presenter.as_mut().unwrap().assembled() =
                     assembly::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
                 shell.macos_shortcuts = true;
                 let presenter = shell.presenter.as_mut().unwrap();
@@ -7594,11 +7602,11 @@ mod tests {
                         assert_eq!(
                             shell.presenter.as_ref().unwrap().media_events,
                             [(
-                                unit,
+                                SlotId(unit),
                                 if matches!(expected, Command::Next(_)) {
-                                    assembly::FloppyAction::Next
+                                    MediaAction::Next
                                 } else {
-                                    assembly::FloppyAction::Eject
+                                    MediaAction::Eject
                                 }
                             )]
                         );
@@ -7690,12 +7698,12 @@ mod tests {
                 shell.key(key, Pressed, false, &ctx);
                 assert_eq!(
                     take_guest_scancodes(&mut shell),
-                    window::set1_scancodes(key, Pressed).unwrap()
+                    crate::set1_scancodes(key, Pressed).unwrap()
                 );
                 shell.key(key, Released, false, &ctx);
                 assert_eq!(
                     take_guest_scancodes(&mut shell),
-                    window::set1_scancodes(key, Released).unwrap()
+                    crate::set1_scancodes(key, Released).unwrap()
                 );
                 shell.key(alt, Released, false, &ctx);
                 shell.key(ctrl, Released, false, &ctx);
@@ -7813,7 +7821,7 @@ mod tests {
         assert!(tapped(&log, ArrowLeft, Pressed, true));
         shell.input(&ctx, false);
         let mut first = vec![0x1D];
-        first.extend(window::set1_scancodes(ArrowLeft, Pressed).unwrap());
+        first.extend(crate::set1_scancodes(ArrowLeft, Pressed).unwrap());
         let made = take_guest_scancodes(&mut shell);
         assert!(
             made.starts_with(&first) && made.len() > first.len(),
@@ -7827,7 +7835,7 @@ mod tests {
             .forward(&WindowEvent::Focused(false));
         shell.input(&ctx, false);
         let released = take_guest_scancodes(&mut shell);
-        let arrow_break = window::set1_scancodes(ArrowLeft, Released).unwrap();
+        let arrow_break = crate::set1_scancodes(ArrowLeft, Released).unwrap();
         assert!(
             released
                 .windows(arrow_break.len())
@@ -8058,7 +8066,7 @@ mod tests {
     fn macos_ctrl_alt_g_keeps_capture_and_command_g_releases_it() {
         use KeyCode::*;
         let mut shell = captured_shell();
-        shell.presenter.as_mut().unwrap().assembled =
+        *shell.presenter.as_mut().unwrap().assembled() =
             assembly::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
         shell.macos_shortcuts = true;
         let ctx = egui::Context::default();
@@ -8198,17 +8206,32 @@ mod tests {
         let ctx = egui::Context::default();
         shell.key(KeyCode::KeyA, Pressed, false, &ctx);
         assert_eq!(
-            shell.presenter.as_ref().unwrap().keyboard.pending_events(),
+            shell
+                .presenter
+                .as_ref()
+                .unwrap()
+                .keyboard()
+                .pending_events(),
             1
         );
         shell.release();
-        let pending = shell.presenter.as_ref().unwrap().keyboard.pending_events();
+        let pending = shell
+            .presenter
+            .as_ref()
+            .unwrap()
+            .keyboard()
+            .pending_events();
         assert_eq!(pending, 2);
         shell.key(KeyCode::KeyB, Pressed, true, &ctx);
         shell.key(KeyCode::KeyB, Released, true, &ctx);
         shell.key(KeyCode::KeyA, Released, false, &ctx);
         assert_eq!(
-            shell.presenter.as_ref().unwrap().keyboard.pending_events(),
+            shell
+                .presenter
+                .as_ref()
+                .unwrap()
+                .keyboard()
+                .pending_events(),
             pending
         );
         assert!(!shell.guest_focus);
@@ -8224,7 +8247,12 @@ mod tests {
         shell.key(KeyCode::KeyA, Pressed, false, &ctx);
         assert!(shell.dialog.is_some());
         assert_eq!(
-            shell.presenter.as_ref().unwrap().keyboard.pending_events(),
+            shell
+                .presenter
+                .as_ref()
+                .unwrap()
+                .keyboard()
+                .pending_events(),
             0
         );
     }
@@ -8245,7 +8273,12 @@ mod tests {
         shell.key(KeyCode::ControlLeft, Released, false, &ctx);
         shell.key(KeyCode::AltLeft, Released, false, &ctx);
         assert_eq!(
-            shell.presenter.as_ref().unwrap().keyboard.pending_events(),
+            shell
+                .presenter
+                .as_ref()
+                .unwrap()
+                .keyboard()
+                .pending_events(),
             4
         );
     }
@@ -8274,7 +8307,12 @@ mod tests {
         let ctx = egui::Context::default();
         shell.command(Command::Reset, &ctx);
         assert_eq!(
-            shell.presenter.as_ref().unwrap().keyboard.pending_events(),
+            shell
+                .presenter
+                .as_ref()
+                .unwrap()
+                .keyboard()
+                .pending_events(),
             1
         );
         assert_eq!(
@@ -8380,7 +8418,12 @@ mod tests {
         assert!(shell.dialog.is_none());
         assert!(shell.consumed.is_empty());
         assert_eq!(
-            shell.presenter.as_ref().unwrap().keyboard.pending_events(),
+            shell
+                .presenter
+                .as_ref()
+                .unwrap()
+                .keyboard()
+                .pending_events(),
             10
         );
     }
@@ -8449,7 +8492,7 @@ mod tests {
         shell.input(&ctx, false);
         let presenter = shell.presenter.as_mut().unwrap();
         assert!(presenter.mouse.captured());
-        let delivered = presenter.mouse.inject_at_boundary(&mut presenter.assembled);
+        let delivered = presenter.machine_mut().deliver_pointer_for_test();
         assert_eq!(
             delivered
                 .iter()
@@ -8478,13 +8521,23 @@ mod tests {
         assert!(shell.guest_focus);
         shell.key(KeyCode::KeyA, Released, false, &ctx);
         assert_eq!(
-            shell.presenter.as_ref().unwrap().keyboard.pending_events(),
+            shell
+                .presenter
+                .as_ref()
+                .unwrap()
+                .keyboard()
+                .pending_events(),
             4
         );
         shell.command(Command::Pause, &ctx);
         shell.key(KeyCode::KeyB, Pressed, false, &ctx);
         assert_eq!(
-            shell.presenter.as_ref().unwrap().keyboard.pending_events(),
+            shell
+                .presenter
+                .as_ref()
+                .unwrap()
+                .keyboard()
+                .pending_events(),
             5
         );
     }
@@ -8520,7 +8573,7 @@ mod tests {
                     .presenter
                     .as_ref()
                     .unwrap()
-                    .assembled
+                    .assembled_ref()
                     .machine
                     .virtual_time(),
                 0
@@ -8547,7 +8600,7 @@ mod tests {
                 .presenter
                 .as_ref()
                 .unwrap()
-                .assembled
+                .assembled_ref()
                 .machine
                 .virtual_time(),
             0
@@ -8557,14 +8610,14 @@ mod tests {
         let presenter = shell.presenter.as_ref().unwrap();
         assert!(presenter.occluded_since.is_none());
         assert_eq!(presenter.pacing.dropped, 0);
-        assert_eq!(presenter.assembled.machine.virtual_time(), 0);
+        assert_eq!(presenter.assembled_ref().machine.virtual_time(), 0);
         shell.tick(&ctx, false, Duration::from_millis(220));
         assert!(
             shell
                 .presenter
                 .as_ref()
                 .unwrap()
-                .assembled
+                .assembled_ref()
                 .machine
                 .virtual_time()
                 > 0
@@ -8597,7 +8650,12 @@ mod tests {
         shell.key(KeyCode::F1, Pressed, false, &ctx);
         assert!(shell.dialog.is_none());
         assert_eq!(
-            shell.presenter.as_ref().unwrap().keyboard.pending_events(),
+            shell
+                .presenter
+                .as_ref()
+                .unwrap()
+                .keyboard()
+                .pending_events(),
             1
         );
     }
@@ -8707,18 +8765,20 @@ mod tests {
         shell.tick(&ctx, false, Duration::from_millis(40));
         let presenter = shell.presenter.as_mut().unwrap();
         assert_eq!(
-            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            presenter
+                .assembled()
+                .floppy_name(assembly::DeviceId::Fdc, 0),
             "two.img"
         );
         assert!(presenter.halted);
-        let time = presenter.assembled.machine.virtual_time();
+        let time = presenter.assembled().machine.virtual_time();
         shell.command(Command::Reset, &ctx);
         let presenter = shell.presenter.as_ref().unwrap();
         // The reset button, not keystrokes the halted guest cannot read.
-        assert_eq!(presenter.keyboard.pending_events(), 0);
+        assert_eq!(presenter.keyboard().pending_events(), 0);
         assert!(presenter.running);
-        assert_eq!(presenter.cpu_resets, 1);
-        assert_eq!(presenter.assembled.machine.virtual_time(), time);
+        assert_eq!(presenter.machine().cpu_resets(), 1);
+        assert_eq!(presenter.assembled_ref().machine.virtual_time(), time);
         assert!(!shell.paused);
         for elapsed in (60..=2000).step_by(20) {
             shell.tick(&ctx, false, Duration::from_millis(elapsed));
@@ -8730,7 +8790,9 @@ mod tests {
         assert!(presenter.halted, "the firmware ran again and halted");
         assert_eq!(crate::tests::starts_counted(presenter), 2);
         assert_eq!(
-            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            presenter
+                .assembled()
+                .floppy_name(assembly::DeviceId::Fdc, 0),
             "two.img"
         );
         // A halted session still ends without the stop prompt.
@@ -8849,19 +8911,26 @@ mod tests {
         let presenter = shell.presenter.as_mut().unwrap();
         // Queued before the first instruction: the first run boundary puts
         // the floppy in before POST reads the drive.
-        assert_eq!(presenter.assembled.machine.virtual_time(), 0);
+        assert_eq!(presenter.assembled().machine.virtual_time(), 0);
         assert_eq!(
             presenter.media_events,
-            [(0, assembly::FloppyAction::Insert(0))]
+            [(
+                unemu_core_api::SlotId(0),
+                unemu_core_api::MediaAction::Insert(0)
+            )]
         );
         shell.tick(&ctx, false, std::time::Duration::ZERO);
         let presenter = shell.presenter.as_mut().unwrap();
         assert_eq!(
-            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            presenter
+                .assembled()
+                .floppy_name(assembly::DeviceId::Fdc, 0),
             "boot.img"
         );
         assert_eq!(
-            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 1),
+            presenter
+                .assembled()
+                .floppy_name(assembly::DeviceId::Fdc, 1),
             "empty"
         );
         assert_eq!(std::fs::read(&path).unwrap(), machine_file);
@@ -8951,11 +9020,16 @@ mod tests {
         // Appended after the image's own two disks.
         assert_eq!(
             presenter.media_events,
-            [(0, assembly::FloppyAction::Insert(2))]
+            [(
+                unemu_core_api::SlotId(0),
+                unemu_core_api::MediaAction::Insert(2)
+            )]
         );
         presenter.apply_media_events().unwrap();
         assert_eq!(
-            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            presenter
+                .assembled()
+                .floppy_name(assembly::DeviceId::Fdc, 0),
             "extra.img"
         );
         assert!(shell.stop());
@@ -9033,7 +9107,7 @@ mod tests {
         }
         let presenter = shell.presenter.as_ref().unwrap();
         assert!(presenter.running);
-        assert_eq!(presenter.cpu_resets, 1);
+        assert_eq!(presenter.machine().cpu_resets(), 1);
         for key in [KeyCode::End, KeyCode::AltLeft, KeyCode::ControlLeft] {
             shell.key(key, Released, false, &ctx);
         }
@@ -9041,7 +9115,7 @@ mod tests {
         // boot, not even as the break a later focus loss sends for held keys.
         let presenter = shell.presenter.as_mut().unwrap();
         presenter.focus_changed(false);
-        assert_eq!(presenter.keyboard.pending_events(), 0);
+        assert_eq!(presenter.keyboard().pending_events(), 0);
         assert!(shell.stop());
     }
 
@@ -9071,11 +9145,15 @@ mod tests {
         shell.tick(&ctx, false, std::time::Duration::ZERO);
         let presenter = shell.presenter.as_mut().unwrap();
         assert_eq!(
-            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            presenter
+                .assembled()
+                .floppy_name(assembly::DeviceId::Fdc, 0),
             "empty"
         );
         assert_eq!(
-            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 1),
+            presenter
+                .assembled()
+                .floppy_name(assembly::DeviceId::Fdc, 1),
             "b.img"
         );
         assert!(shell.stop());
@@ -9134,7 +9212,7 @@ mod tests {
                 .presenter
                 .as_mut()
                 .unwrap()
-                .assembled
+                .assembled()
                 .floppy_name(assembly::DeviceId::Fdc, 0),
             "empty"
         );
@@ -9195,7 +9273,8 @@ mod tests {
 
     fn screen_text(shell: &mut Shell) -> String {
         let presenter = shell.presenter.as_mut().unwrap();
-        let capture = presenter.assembled.capture_text(presenter.display).unwrap();
+        let display = presenter.display;
+        let capture = presenter.assembled().capture_text(display).unwrap();
         match &capture.frame {
             video::Frame::Text(grid) => grid.rows_as_strings().join("\n"),
             _ => String::new(),
@@ -9254,13 +9333,15 @@ mod tests {
         shell.command(Command::InsertFile(0), &ctx);
         shell.insert_dialog.as_mut().unwrap().select(Some(1));
         shell.confirm_insert();
-        let resets = shell.presenter.as_ref().unwrap().cpu_resets;
+        let resets = shell.presenter.as_ref().unwrap().machine().cpu_resets();
         shell.command(Command::Reset, &ctx);
         let presenter = shell.presenter.as_mut().unwrap();
         assert!(presenter.running);
-        assert_eq!(presenter.cpu_resets, resets + 1);
+        assert_eq!(presenter.machine().cpu_resets(), resets + 1);
         assert_eq!(
-            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            presenter
+                .assembled()
+                .floppy_name(assembly::DeviceId::Fdc, 0),
             "freedos-1200.img"
         );
         tick_until_screen_shows(&mut shell, &mut elapsed, "FreeDOS kernel", |_| true);
@@ -9302,7 +9383,7 @@ mod tests {
     fn failed_finish_drops_session_and_exit_remains_available() {
         let temp = assembly::test_support::TempDir::new("shell-failed-finish");
         let mut shell = journal_shell(&temp, vec![0xeb, 0xfe]);
-        shell.presenter.as_mut().unwrap().assembled.persistence[0].fail_output();
+        shell.presenter.as_mut().unwrap().assembled().persistence[0].fail_output();
         assert!(!shell.stop());
         assert!(shell.presenter.is_none());
         assert!(shell.dialog.is_some());
@@ -9370,7 +9451,7 @@ mod tests {
         let ctx = egui::Context::default();
         shell.command(Command::About, &ctx);
         let text = &shell.dialog.as_ref().unwrap().1;
-        assert!(text.contains(window::FONT_NOTICE));
+        assert!(text.contains(unemu_pc_core::FONT_NOTICE));
         assert!(text.contains(ui_kit::EGUI_FONT_NOTICE));
         assert!(text.contains(ui_kit::SYMBOL_FONT_NOTICE));
         assert!(text.contains(devices::OPL3_NOTICE));
@@ -9414,7 +9495,12 @@ mod tests {
         shell.visibility(&ctx, false);
         assert!(shell.hidden);
         assert_eq!(
-            shell.presenter.as_ref().unwrap().keyboard.pending_events(),
+            shell
+                .presenter
+                .as_ref()
+                .unwrap()
+                .keyboard()
+                .pending_events(),
             2
         );
         assert!(shell.modal_paused);
@@ -9432,7 +9518,7 @@ mod tests {
     fn exit_closes_even_when_it_discovers_a_finish_error() {
         let temp = assembly::test_support::TempDir::new("shell-exit-finish-error");
         let mut shell = journal_shell(&temp, vec![0xeb, 0xfe]);
-        shell.presenter.as_mut().unwrap().assembled.persistence[0].fail_output();
+        shell.presenter.as_mut().unwrap().assembled().persistence[0].fail_output();
         let ctx = egui::Context::default();
         let mut output = ctx.run_pass(Default::default(), |ctx| {
             shell.command(Command::Exit, ctx);
@@ -10422,7 +10508,7 @@ kind='mda'
             .presenter
             .as_ref()
             .unwrap()
-            .assembled
+            .assembled_ref()
             .machine
             .clock()
             .0
@@ -10737,7 +10823,10 @@ kind='mda'
         let presenter = shell.presenter.as_mut().unwrap();
         assert_eq!(
             presenter.media_events,
-            [(0, assembly::FloppyAction::Insert(2))]
+            [(
+                unemu_core_api::SlotId(0),
+                unemu_core_api::MediaAction::Insert(2)
+            )]
         );
         presenter.apply_media_events().unwrap();
 
@@ -10765,11 +10854,16 @@ kind='mda'
         let presenter = shell.presenter.as_mut().unwrap();
         assert_eq!(
             presenter.media_events,
-            [(0, assembly::FloppyAction::Insert(3))]
+            [(
+                unemu_core_api::SlotId(0),
+                unemu_core_api::MediaAction::Insert(3)
+            )]
         );
         presenter.apply_media_events().unwrap();
         assert_eq!(
-            presenter.assembled.floppy_name(assembly::DeviceId::Fdc, 0),
+            presenter
+                .assembled()
+                .floppy_name(assembly::DeviceId::Fdc, 0),
             "extra.img"
         );
         let slot = presenter.media_slots[0].as_ref().unwrap();
@@ -10934,7 +11028,7 @@ kind='mda'
             .presenter
             .as_mut()
             .unwrap()
-            .assembled
+            .assembled()
             .change_floppy(assembly::DeviceId::Fdc, 0, assembly::FloppyAction::Eject)
             .unwrap();
         let ejected = status_pass(&ctx, &mut shell, 1040.0, Vec::new());
@@ -10996,7 +11090,7 @@ kind='mda'
             .presenter
             .as_mut()
             .unwrap()
-            .assembled
+            .assembled()
             .change_floppy(assembly::DeviceId::Fdc, 0, assembly::FloppyAction::Eject)
             .unwrap();
         let pass = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
@@ -11224,7 +11318,13 @@ kind='mda'
         );
         shell.command(Command::CatalogueDisk(0, 1), &ctx);
         let chosen = std::mem::take(&mut shell.presenter.as_mut().unwrap().media_events);
-        assert_eq!(chosen, [(0, assembly::FloppyAction::Insert(1))]);
+        assert_eq!(
+            chosen,
+            [(
+                unemu_core_api::SlotId(0),
+                unemu_core_api::MediaAction::Insert(1)
+            )]
+        );
         assert_eq!(shell.message, "A: now holds second.img.");
         // Insert of This machine lists the same disks and asks for the same.
         shell.command(Command::Insert(0), &ctx);
@@ -11451,7 +11551,7 @@ kind='mda'
             .presenter
             .as_mut()
             .unwrap()
-            .assembled
+            .assembled()
             .change_floppy(
                 assembly::DeviceId::Fdc,
                 0,
@@ -11496,7 +11596,7 @@ kind='mda'
             .presenter
             .as_mut()
             .unwrap()
-            .assembled
+            .assembled()
             .change_floppy(
                 assembly::DeviceId::Fdc,
                 0,
@@ -12054,7 +12154,7 @@ kind='mda'
             .presenter
             .as_mut()
             .unwrap()
-            .assembled
+            .assembled()
             .change_floppy(
                 assembly::DeviceId::Fdc,
                 0,
@@ -12248,7 +12348,10 @@ kind='mda'
         let presenter = shell.presenter.as_mut().unwrap();
         assert_eq!(
             presenter.media_events,
-            [(0, assembly::FloppyAction::Insert(2))]
+            [(
+                unemu_core_api::SlotId(0),
+                unemu_core_api::MediaAction::Insert(2)
+            )]
         );
         let names: Vec<String> = presenter.media_slots[0]
             .as_ref()
@@ -12271,7 +12374,7 @@ kind='mda'
                 .presenter
                 .as_mut()
                 .unwrap()
-                .assembled
+                .assembled()
                 .floppy_name(assembly::DeviceId::Fdc, 0)
         };
         shell.tick(&ctx, false, std::time::Duration::ZERO);
@@ -12438,7 +12541,10 @@ kind='mda'
         assert_eq!(names, ["first.img", "second.img", "Setup", "Data"]);
         assert_eq!(
             presenter.media_events,
-            [(0, assembly::FloppyAction::Insert(2))]
+            [(
+                unemu_core_api::SlotId(0),
+                unemu_core_api::MediaAction::Insert(2)
+            )]
         );
         assert!(shell.stop());
     }
@@ -12505,7 +12611,10 @@ kind='mda'
         shell.command(Command::Eject(0), &ctx);
         assert_eq!(
             shell.presenter.as_ref().unwrap().media_events,
-            [(0, assembly::FloppyAction::Eject)]
+            [(
+                unemu_core_api::SlotId(0),
+                unemu_core_api::MediaAction::Eject
+            )]
         );
 
         click_status(&ctx, &mut shell, 1600.0, chip);
@@ -13418,7 +13527,7 @@ kind='mda'
     fn system_quit_with_a_failed_stop_keeps_running_and_shows_the_error() {
         let temp = assembly::test_support::TempDir::new("shell-system-quit-failed-stop");
         let mut shell = journal_shell(&temp, vec![0xeb, 0xfe]);
-        shell.presenter.as_mut().unwrap().assembled.persistence[0].fail_output();
+        shell.presenter.as_mut().unwrap().assembled().persistence[0].fail_output();
         let replies = replies(&shell);
         let ctx = egui::Context::default();
         native(&shell, crate::app_menu::NativeRequest::SystemQuit);
@@ -13573,7 +13682,10 @@ kind='mda'
         shell.apply_picker(crate::media_picker::Outcome::Entry { unit: 0, index: 1 });
         assert_eq!(
             shell.presenter.as_ref().unwrap().media_events,
-            [(0, assembly::FloppyAction::Insert(1))]
+            [(
+                unemu_core_api::SlotId(0),
+                unemu_core_api::MediaAction::Insert(1)
+            )]
         );
         shell.presenter.as_mut().unwrap().halted = false;
         assert!(shell.stop());
@@ -14072,9 +14184,10 @@ kind='mda'
             };
             assert!(journal.starts_with(&media), "{}", journal.display());
             assert!(!journal.starts_with(f.store.root().join("images")));
-            presenter
-                .media_events
-                .push((0, assembly::FloppyAction::Eject));
+            presenter.media_events.push((
+                unemu_core_api::SlotId(0),
+                unemu_core_api::MediaAction::Eject,
+            ));
             presenter.apply_media_events().unwrap();
             assert!(journal.is_file());
 

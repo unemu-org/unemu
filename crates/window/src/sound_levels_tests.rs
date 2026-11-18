@@ -246,7 +246,7 @@ fn phase_peaks(mut presenter: Presenter) -> [i32; 5] {
         assert!(presenter.running && presenter.error.is_none());
         let frames = presenter.audio.drain_for_test();
         let cpu::DmaAccess::Complete(current) =
-            presenter.assembled.machine.cpu().guest_dma_read(0x500)
+            presenter.assembled().machine.cpu().guest_dma_read(0x500)
         else {
             panic!("RAM at 500h is not memory");
         };

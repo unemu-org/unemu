@@ -1,70 +1,54 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Host presentation policy for the AT timer; no host clock is read here.
+//! Host presentation policy for a machine's virtual clock; no host clock is
+//! read here.
 //!
-//! IBM Personal Computer AT Technical Reference (March 1984), System Board,
-//! "System Timers" and "Oscillator": the timer input is the 14.31818 MHz
-//! oscillator divided by twelve. See `backlog/docs/design/observation.md`
-//! § Window pacing for rounding, overload and instruction-boundary limits.
+//! The machine names the exact rate of its ticks
+//! ([`unemu_core_api::MachineDescription::clock`]); for an AT that is the
+//! timer input, the 14.31818 MHz oscillator divided by twelve (IBM Personal
+//! Computer AT Technical Reference (March 1984), System Board, "System Timers"
+//! and "Oscillator"). See `backlog/docs/design/observation.md` § Window
+//! pacing for rounding, overload and instruction-boundary limits.
 
-use std::{num::NonZeroU64, time::Duration};
+use std::time::Duration;
+use unemu_core_api::Rate;
 
-use device::clock::{PIT_HZ, TICKS_PER_PIT_CLOCK};
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
 /// Sixty paints per second keeps input responsive without an uncapped redraw loop.
 const FRAME_HZ: u128 = 60;
 /// At 100%, at most 50 ms of guest time per paint bounds catch-up debt.
 const MAX_GUEST_TIME: Duration = Duration::from_millis(50);
 
-#[derive(Clone, Copy)]
-pub(crate) struct CpuRate {
-    pub numerator: NonZeroU64,
-    pub denominator: NonZeroU64,
-}
-
-/// Convert elapsed host time to virtual ticks on the exact board timebase.
-pub(crate) fn virtual_ticks(elapsed: Duration) -> u128 {
-    virtual_ticks_at_scale(elapsed, TICKS_PER_PIT_CLOCK)
-}
-
-fn virtual_ticks_at_scale(elapsed: Duration, ticks_per_pit: u64) -> u128 {
+/// Convert elapsed host time to virtual ticks at the machine's exact rate.
+pub fn virtual_ticks(elapsed: Duration, rate: Rate) -> u128 {
     elapsed
         .as_nanos()
-        .checked_mul(u128::from(PIT_HZ.numerator()))
-        .and_then(|n| n.checked_mul(u128::from(ticks_per_pit)))
+        .checked_mul(u128::from(rate.numerator))
         .map_or(u128::MAX, |n| {
-            n / (u128::from(PIT_HZ.denominator()) * NANOS_PER_SECOND)
+            n / (u128::from(rate.denominator) * NANOS_PER_SECOND)
         })
 }
 
 /// Return an absolute target and the cumulative debt to discard permanently.
 /// Keeping the debt separate preserves fractional clocks in the wall epoch.
-pub(crate) fn frame_target(
+pub fn frame_target(
     elapsed: Duration,
     clock: u64,
     dropped: u128,
     ratio: u32,
+    rate: Rate,
 ) -> (u64, u128) {
-    let wall_target = virtual_ticks(elapsed.saturating_mul(ratio)).saturating_sub(dropped);
-    let target =
-        wall_target.min(u128::from(clock) + virtual_ticks(MAX_GUEST_TIME.saturating_mul(ratio)));
+    let wall_target = virtual_ticks(elapsed.saturating_mul(ratio), rate).saturating_sub(dropped);
+    let target = wall_target
+        .min(u128::from(clock) + virtual_ticks(MAX_GUEST_TIME.saturating_mul(ratio), rate));
     (
         u64::try_from(target).unwrap_or(u64::MAX),
         dropped + wall_target - target,
     )
 }
 
-/// Pure conversion from a virtual-tick target to an absolute virtual-time run cap.
-/// Ceiling avoids stalling at sub-instruction clock distances. The scheduler
-/// owns carried active/HLT fractions; callers recheck its clock after each run.
-pub(crate) fn run_cap(target: u64, clock: u64, virtual_time: u64, rate: CpuRate) -> u64 {
-    let steps = (u128::from(target.saturating_sub(clock)) * u128::from(rate.numerator.get()))
-        .div_ceil(u128::from(rate.denominator.get()) * u128::from(TICKS_PER_PIT_CLOCK));
-    virtual_time.saturating_add(u64::try_from(steps).unwrap_or(u64::MAX))
-}
-
 /// First 60 Hz deadline strictly after the supplied elapsed time. Computing
 /// from the epoch avoids accumulating the rounded 16,666,667 ns frame period.
-pub(crate) fn next_frame(elapsed: Duration) -> Duration {
+pub fn next_frame(elapsed: Duration) -> Duration {
     let index = elapsed.as_nanos() * FRAME_HZ / NANOS_PER_SECOND + 1;
     let nanos = (index * NANOS_PER_SECOND).div_ceil(FRAME_HZ);
     Duration::new(
@@ -76,11 +60,7 @@ pub(crate) fn next_frame(elapsed: Duration) -> Duration {
 /// Decide whether a visible, running presenter needs a redraw. Advancing the
 /// deadline before requesting one prevents queue_redraw wakeups from spinning
 /// even if a platform delays delivering the corresponding paint.
-pub(crate) fn wake(
-    now: Duration,
-    deadline: Option<Duration>,
-    running: bool,
-) -> (bool, Option<Duration>) {
+pub fn wake(now: Duration, deadline: Option<Duration>, running: bool) -> (bool, Option<Duration>) {
     if !running {
         return (false, None);
     }
@@ -92,7 +72,7 @@ pub(crate) fn wake(
 
 /// Host-only acceleration; machine clock rates and input timestamps stay virtual.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Speed {
+pub enum Speed {
     #[default]
     Normal,
     Double,
@@ -135,8 +115,8 @@ impl Speed {
 }
 
 /// Pure pacing state. Caller-supplied host durations never enter the machine.
-#[derive(Default)]
-pub(crate) struct Pacing {
+pub struct Pacing {
+    rate: Rate,
     selected: Speed,
     held: bool,
     anchor_host: Duration,
@@ -147,6 +127,20 @@ pub(crate) struct Pacing {
 }
 
 impl Pacing {
+    /// Pacing for a machine whose ticks run at `rate`, anchored at zero.
+    pub fn new(rate: Rate) -> Self {
+        Self {
+            rate,
+            selected: Speed::default(),
+            held: false,
+            anchor_host: Duration::ZERO,
+            anchor_clock: 0,
+            dropped: 0,
+            samples: std::collections::VecDeque::new(),
+            last_frame: None,
+        }
+    }
+
     pub fn selected(&self) -> Speed {
         self.selected
     }
@@ -189,6 +183,7 @@ impl Pacing {
             clock.saturating_sub(self.anchor_clock),
             self.dropped,
             ratio,
+            self.rate,
         );
         self.dropped = dropped;
         Some(self.anchor_clock.saturating_add(target))
@@ -209,7 +204,7 @@ impl Pacing {
 
     /// Short virtual chunks bound the delay before the next host-budget check.
     pub fn chunk_target(&self, clock: u64, target: Option<u64>) -> u64 {
-        let chunk = clock.saturating_add(virtual_ticks(Duration::from_millis(1)) as u64);
+        let chunk = clock.saturating_add(virtual_ticks(Duration::from_millis(1), self.rate) as u64);
         target.map_or(chunk, |target| target.min(chunk))
     }
 
@@ -235,7 +230,7 @@ impl Pacing {
             .front()
             .zip(self.samples.back())
             .and_then(|(first, last)| {
-                let ticks = virtual_ticks(last.0.saturating_sub(first.0));
+                let ticks = virtual_ticks(last.0.saturating_sub(first.0), self.rate);
                 (ticks > 0).then(|| last.1.saturating_sub(first.1) as f64 / ticks as f64)
             });
         measured.map_or_else(|| mode.clone(), |ratio| format!("{mode} {ratio:.1}x"))
@@ -246,10 +241,22 @@ impl Pacing {
 mod tests {
     use super::*;
 
+    /// The AT's timer input, the rate the desktop paced by before machines
+    /// described their own.
+    const PIT: Rate = Rate::new(105_000_000, 88);
+
+    fn virtual_ticks(elapsed: Duration) -> u128 {
+        super::virtual_ticks(elapsed, PIT)
+    }
+
+    fn frame_target(elapsed: Duration, clock: u64, dropped: u128, ratio: u32) -> (u64, u128) {
+        super::frame_target(elapsed, clock, dropped, ratio, PIT)
+    }
+
     #[test]
     fn speed_modes_have_scaled_targets_and_bounded_host_budgets() {
         for mode in Speed::ALL {
-            let mut pacing = Pacing::default();
+            let mut pacing = Pacing::new(PIT);
             pacing.select(mode, Duration::ZERO, 0);
             for period in [
                 next_frame(Duration::ZERO),
@@ -284,7 +291,7 @@ mod tests {
 
     #[test]
     fn speed_frame_budget_tracks_display_cadence_and_resets_after_pause() {
-        let mut pacing = Pacing::default();
+        let mut pacing = Pacing::new(PIT);
         let initial = pacing.frame_period(Duration::ZERO);
         pacing.observe(Duration::ZERO, 0);
         assert_eq!(
@@ -315,7 +322,7 @@ mod tests {
     fn speed_switches_reanchor_without_catch_up() {
         for before in Speed::ALL {
             for after in Speed::ALL.into_iter().filter(|after| *after != before) {
-                let mut pacing = Pacing::default();
+                let mut pacing = Pacing::new(PIT);
                 pacing.select(before, Duration::ZERO, 0);
                 let now = Duration::from_secs(120);
                 let clock = virtual_ticks(Duration::from_secs(20)) as u64;
@@ -334,7 +341,7 @@ mod tests {
 
     #[test]
     fn speed_unlimited_yields_between_chunks_and_waits_for_the_next_frame() {
-        let mut pacing = Pacing::default();
+        let mut pacing = Pacing::new(PIT);
         pacing.select(Speed::Unlimited, Duration::ZERO, 0);
         assert_eq!(pacing.target(Duration::MAX, 100), None);
         assert_eq!(
@@ -352,7 +359,7 @@ mod tests {
     #[test]
     fn speed_hold_restores_each_selected_mode() {
         for selected in Speed::ALL {
-            let mut pacing = Pacing::default();
+            let mut pacing = Pacing::new(PIT);
             assert_eq!(pacing.effective(), Speed::Normal);
             pacing.select(selected, Duration::ZERO, 0);
             pacing.hold(true, Duration::from_secs(1), 12);
@@ -370,7 +377,7 @@ mod tests {
 
     #[test]
     fn speed_status_formats_modes_and_measures_only_the_last_second() {
-        let mut pacing = Pacing::default();
+        let mut pacing = Pacing::new(PIT);
         assert_eq!(pacing.status(), "Speed 100%");
         pacing.resync(Duration::ZERO, 0);
         let one_second = virtual_ticks(Duration::from_secs(1)) as u64;
@@ -400,17 +407,9 @@ mod tests {
         assert_eq!(pacing.status(), "Unlimited 1.0x");
     }
 
-    fn rate(a: u64, b: u64) -> CpuRate {
-        CpuRate {
-            numerator: NonZeroU64::new(a).unwrap(),
-            denominator: NonZeroU64::new(b).unwrap(),
-        }
-    }
-
     #[test]
     fn rational_wall_target_preserves_fractions_over_long_runs() {
-        let reference =
-            |nanos: u128| nanos * 13_125_000 * u128::from(TICKS_PER_PIT_CLOCK) / 11_000_000_000;
+        let reference = |nanos: u128| nanos * 13_125_000 / 11_000_000_000;
         assert_eq!(
             virtual_ticks(Duration::from_secs(12)),
             reference(12_000_000_000)
@@ -444,18 +443,7 @@ mod tests {
             u128::from(next),
             virtual_ticks(Duration::from_millis(5010)) - dropped
         );
-        assert_eq!(run_cap(10, 20, 100, rate(1, 1)), 100);
-        assert_eq!(run_cap(0, 0, 0, rate(1, 1)), 0);
-    }
-
-    #[test]
-    fn caps_respect_configured_rates_and_saturate_without_overflow() {
-        assert_eq!(run_cap(11, 1, 7, rate(5, 2)), 32);
-        assert_eq!(run_cap(12, 1, 7, rate(2, 5)), 12);
-        assert_eq!(run_cap(u64::MAX, 0, 1, rate(u64::MAX, 1)), u64::MAX);
-        assert_eq!(run_cap(1, 0, u64::MAX, rate(1, 1)), u64::MAX);
         assert_eq!(frame_target(Duration::MAX, u64::MAX, 0, 1).0, u64::MAX);
-        assert_eq!(run_cap((1 << 53) + 1, 0, 7, rate(1, 1)), (1 << 53) + 8);
     }
 
     #[test]
@@ -491,11 +479,16 @@ mod tests {
     }
     #[test]
     fn clock_domain_wall_conversion_saturates_without_wrapping() {
-        let result = std::panic::catch_unwind(|| virtual_ticks_at_scale(Duration::MAX, u64::MAX));
+        let result = std::panic::catch_unwind(|| {
+            super::virtual_ticks(
+                Duration::MAX,
+                Rate {
+                    numerator: u64::MAX,
+                    denominator: 1,
+                },
+            )
+        });
         assert_eq!(result.ok(), Some(u128::MAX));
-        assert_eq!(
-            virtual_ticks(Duration::from_secs(11)),
-            13_125_000 * u128::from(TICKS_PER_PIT_CLOCK)
-        );
+        assert_eq!(virtual_ticks(Duration::from_secs(11)), 13_125_000);
     }
 }

@@ -1,7 +1,7 @@
 [
   {
     "name": "window-only change, with the window's own ignored tests by name",
-    "changed": ["crates/window/src/pacing.rs"],
+    "changed": ["crates/window/src/shell_model.rs"],
     "expect": {
       "mode": "crates", "seeds": ["window"], "affected": ["window"], "tier": "fast",
       "targeted": [
@@ -113,7 +113,7 @@
     "expect": {
       "mode": "crates", "seeds": ["devices"],
       "affected": ["assembly", "chipset", "cli", "devices", "machine", "machine-file", "pc-harness",
-        "pc-image", "platforms", "window"],
+        "pc-image", "platforms", "unemu-pc-core", "window"],
       "tier": "goldens", "golden_reasons": ["crates/devices/src/pit8253.rs: emulation crate"],
       "targeted": [], "scan_tests": ["image-store:platform_ids"],
       "release_devices": true, "deny": false
@@ -149,8 +149,8 @@
     "expect": {
       "mode": "full",
       "affected": ["assembly", "audio", "bus", "chipset", "cli", "cpu", "device", "devices",
-        "image-registry", "image-store", "machine", "machine-file", "media", "pc-harness",
-        "pc-image", "platforms", "testkit", "ui-kit", "video", "window"],
+        "image-registry", "image-store", "machine", "machine-file", "machine-view", "media", "pc-harness",
+        "pc-image", "platforms", "testkit", "ui-kit", "unemu-core-api", "unemu-pc-core", "video", "window"],
       "tier": "goldens", "deny": true, "release_devices": true, "cli": true, "scan_tests": [],
       "targeted": []
     }
@@ -162,7 +162,7 @@
   },
   {
     "name": "a [patch] override in .cargo/config.toml runs everything with the goldens",
-    "changed": ["crates/window/src/pacing.rs"],
+    "changed": ["crates/window/src/shell_model.rs"],
     "patch": ".cargo/config.toml has a [patch] section: a dependency is not the pinned one, so everything",
     "expect": {
       "mode": "full", "tier": "goldens", "targeted": [],
@@ -251,6 +251,30 @@
     }
   },
   {
+    "name": "a session change runs the session crate and the window, not the goldens",
+    "changed": ["crates/machine-view/src/session.rs"],
+    "expect": {
+      "mode": "crates", "seeds": ["machine-view"], "affected": ["machine-view", "window"],
+      "tier": "fast", "release_devices": false, "cli": false
+    }
+  },
+  {
+    "name": "a PC core change is an emulation change: its dependents with the goldens",
+    "changed": ["crates/pc-core/src/machine.rs"],
+    "expect": {
+      "mode": "crates", "seeds": ["unemu-pc-core"], "affected": ["unemu-pc-core", "window"],
+      "tier": "goldens", "golden_reasons": ["crates/pc-core/src/machine.rs: emulation crate"]
+    }
+  },
+  {
+    "name": "a contract change runs every crate that implements or drives it",
+    "changed": ["crates/core-api/src/machine.rs"],
+    "expect": {
+      "mode": "crates", "seeds": ["unemu-core-api"],
+      "affected": ["machine-view", "unemu-core-api", "unemu-pc-core", "window"], "tier": "fast"
+    }
+  },
+  {
     "name": "ui kit change runs the ui kit and the window",
     "changed": ["crates/ui-kit/src/skin.rs"],
     "expect": {
@@ -290,7 +314,7 @@
   },
   {
     "name": "user-rom tier adds the user-ROM tests",
-    "changed": ["crates/window/src/pacing.rs"],
+    "changed": ["crates/window/src/shell_model.rs"],
     "tier": "user-roms",
     "expect": { "mode": "crates", "tier": "fast", "user_roms": true }
   },

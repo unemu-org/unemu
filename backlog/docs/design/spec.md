@@ -129,7 +129,7 @@ absolute virtual-time cap still bounds execution. It reads no host clock,
 spawns no threads and never ticks devices itself. The FreeCOM date prompt, a
 natural halt or a CPU failure stops advancement; the last screen remains visible.
 Headless capture is still the default. Font provenance is recorded in
-`crates/window/assets/fonts/NOTICE.md` and in the binary's `--help`, `--version`
+`crates/pc-core/assets/fonts/NOTICE.md` and in the binary's `--help`, `--version`
 and `--about` output; build/run commands are in `commands.md`.
 
 ## §10 Testing

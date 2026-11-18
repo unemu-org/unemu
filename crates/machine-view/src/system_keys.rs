@@ -38,7 +38,7 @@ use winit::{event::ElementState, keyboard::KeyCode};
 
 /// One key event the shell takes for the guest instead of macOS.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct GuestKey {
+pub struct GuestKey {
     pub key: KeyCode,
     pub state: ElementState,
     pub repeat: bool,
@@ -46,13 +46,13 @@ pub(crate) struct GuestKey {
 
 /// Hands a taken key to the shell; false when the shell cannot take it now,
 /// for example because the guest no longer has the keyboard.
-pub(crate) type Deliver = Box<dyn FnMut(GuestKey) -> bool>;
+pub type Deliver = Box<dyn FnMut(GuestKey) -> bool>;
 
 /// A key event as the tap reports it, mapped to its physical key, with the
 /// modifier flags the system attached to it.
 #[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct TapKey {
+pub struct TapKey {
     pub key: KeyCode,
     pub state: ElementState,
     pub repeat: bool,
@@ -92,7 +92,7 @@ fn collides(key: KeyCode, control: bool, command: bool) -> bool {
 /// The keys of one tap's lifetime that went to the guest instead of macOS.
 #[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Default)]
-pub(crate) struct ChordFilter {
+pub struct ChordFilter {
     taken: std::collections::BTreeSet<KeyCode>,
 }
 
@@ -134,7 +134,7 @@ impl ChordFilter {
 /// Why macOS stopped calling an installed tap. Only the macOS tap reports it.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Disabled {
+pub enum Disabled {
     /// The callback answered too slowly (`kCGEventTapDisabledByTimeout`).
     Timeout,
     /// The user's input disabled event taps (`kCGEventTapDisabledByUserInput`).
@@ -142,7 +142,7 @@ pub(crate) enum Disabled {
 }
 
 /// The platform half of the tap.
-pub(crate) trait TapBackend {
+pub trait TapBackend {
     /// Starts taking colliding chords; false when macOS refuses the tap,
     /// normally because the Accessibility privilege is missing.
     fn install(&mut self, deliver: Deliver) -> bool;
@@ -160,7 +160,7 @@ pub(crate) trait TapBackend {
 }
 
 /// The status hint shown when macOS refuses the tap.
-pub(crate) const REFUSED_HINT: &str = "macOS keeps Ctrl+arrows and other system shortcuts: \
+pub const REFUSED_HINT: &str = "macOS keeps Ctrl+arrows and other system shortcuts: \
      allow unemupc, or the terminal that started it, in System Settings › Privacy & \
      Security › Accessibility";
 
@@ -173,7 +173,7 @@ enum State {
 }
 
 /// The tap's lifetime.
-pub(crate) struct SystemKeys {
+pub struct SystemKeys {
     backend: Box<dyn TapBackend>,
     state: State,
     hinted: bool,
@@ -247,7 +247,7 @@ impl SystemKeys {
             .map_or_else(|| !self.backend.has_access(), |created| !created)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn installed(&self) -> bool {
         self.state == State::On
     }
@@ -283,13 +283,14 @@ impl TapBackend for Unavailable {
 }
 
 /// A tap that records what the shell asked of it, for headless tests.
-#[cfg(test)]
-pub(crate) mod fake {
+/// A scripted tap for the tests of the shells that hold a [`SystemKeys`].
+#[cfg(any(test, feature = "test-support"))]
+pub mod fake {
     use super::*;
     use std::{cell::RefCell, rc::Rc};
 
     #[derive(Default)]
-    pub(crate) struct Log {
+    pub struct Log {
         pub installs: usize,
         pub removes: usize,
         pub access_requests: usize,
@@ -299,7 +300,7 @@ pub(crate) mod fake {
         pub deliver: Option<Deliver>,
     }
 
-    pub(crate) struct FakeTap(pub Rc<RefCell<Log>>);
+    pub struct FakeTap(pub Rc<RefCell<Log>>);
 
     impl TapBackend for FakeTap {
         fn install(&mut self, deliver: Deliver) -> bool {
@@ -330,7 +331,7 @@ pub(crate) mod fake {
         }
     }
 
-    pub(crate) fn system_keys() -> (SystemKeys, Rc<RefCell<Log>>) {
+    pub fn system_keys() -> (SystemKeys, Rc<RefCell<Log>>) {
         let log = Rc::new(RefCell::new(Log::default()));
         (SystemKeys::new(Box::new(FakeTap(log.clone()))), log)
     }

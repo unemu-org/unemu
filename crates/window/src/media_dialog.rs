@@ -1813,17 +1813,13 @@ impl PendingMedia {
                         );
                     }
                 }
-                let indices = append_entries(
-                    &mut presenter.assembled,
-                    &mut presenter.media_config,
-                    &mut presenter.media_slots,
-                    unit,
-                    &entries,
-                )?;
+                let (assembled, config, slots) = presenter.media_parts();
+                let indices = append_entries(assembled, config, slots, unit, &entries)?;
                 let index = *indices.get(chosen).ok_or("Select an image")?;
-                presenter
-                    .media_events
-                    .push((unit, assembly::FloppyAction::Insert(index)));
+                presenter.media_events.push((
+                    unemu_core_api::SlotId(unit),
+                    unemu_core_api::MediaAction::Insert(index),
+                ));
                 Ok(())
             };
             if let Err(error) = insert() {

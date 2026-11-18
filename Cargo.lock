@@ -1960,6 +1960,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "machine-view"
+version = "0.0.2"
+dependencies = [
+ "cpal",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "unemu-core-api",
+ "winit",
+]
+
+[[package]]
 name = "media"
 version = "0.0.2"
 dependencies = [
@@ -3680,6 +3693,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "unemu-core-api"
+version = "0.0.2"
+
+[[package]]
+name = "unemu-pc-core"
+version = "0.0.2"
+dependencies = [
+ "assembly",
+ "audio",
+ "device",
+ "devices",
+ "machine",
+ "unemu-core-api",
+ "video",
+]
+
+[[package]]
 name = "unicode-general-category"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4174,7 +4204,6 @@ version = "0.0.2"
 dependencies = [
  "assembly",
  "audio",
- "cpal",
  "cpu",
  "device",
  "devices",
@@ -4184,11 +4213,10 @@ dependencies = [
  "image-store",
  "machine",
  "machine-file",
+ "machine-view",
  "media",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
- "objc2-core-foundation",
- "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "pc-image",
  "platforms",
@@ -4196,6 +4224,8 @@ dependencies = [
  "sha2",
  "toml",
  "ui-kit",
+ "unemu-core-api",
+ "unemu-pc-core",
  "video",
  "winit",
 ]

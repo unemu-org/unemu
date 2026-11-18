@@ -379,7 +379,7 @@ mod planar_tests {
             indices: vec![1, 200, 0, 1],
             palette: Box::new(palette),
         });
-        let mut sink = crate::WindowSink::new(NonZeroU16::new(2).unwrap()).unwrap();
+        let mut sink = crate::RasterSink::new(NonZeroU16::new(2).unwrap()).unwrap();
         video::FrameSink::present(&mut sink, &frame);
         assert_eq!(
             *sink.frame(),

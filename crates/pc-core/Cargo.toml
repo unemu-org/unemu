@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "unemu-pc-core"
+version.workspace = true
+edition.workspace = true
+# The crate embeds CC BY-SA fonts alongside the AGPL source.
+license = "AGPL-3.0-or-later AND CC-BY-SA-4.0"
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "The PC core behind the front-end contract: a running PC, its input encoders and its text rasteriser (§9.4)."
+
+[package.metadata.unemu]
+layer = "emulation"
+
+[features]
+# The keyboard bytes and mouse segments delivered at each boundary, for the
+# replay tests of the crates that drive a PC.
+test-support = []
+
+[dependencies]
+unemu-core-api.workspace = true
+assembly.workspace = true
+audio.workspace = true
+device.workspace = true
+devices.workspace = true
+machine.workspace = true
+video.workspace = true

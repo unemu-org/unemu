@@ -191,8 +191,8 @@ emit_text() {
   printf -- '- The unemupc logo, CC0 1.0 (unemupc only).\n\n'
   for file in \
     crates/devices/src/opl3/LICENSE \
-    crates/window/assets/fonts/NOTICE.md \
-    crates/window/assets/fonts/LICENSE.txt \
+    crates/pc-core/assets/fonts/NOTICE.md \
+    crates/pc-core/assets/fonts/LICENSE.txt \
     crates/ui-kit/assets/fonts/dejavu/NOTICE.md \
     crates/ui-kit/assets/fonts/dejavu/LICENSE.txt \
     crates/ui-kit/assets/fonts/egui/NOTICE.txt \

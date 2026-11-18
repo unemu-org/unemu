@@ -23,7 +23,7 @@
 #   pc           contract, neutral, emulation, pc
 #   application  anything
 #
-# and no window crate (window, window-*, ui-kit, unemupc) depends on a CLI
+# and no window crate (window, window-*, ui-kit, machine-view, unemupc) depends on a CLI
 # crate (cli, cli-*, upcli), nor the other way round.
 #
 # The check reads the dependencies each manifest declares (optional and
@@ -67,7 +67,8 @@ def known_layer: . as $l | any(layers[]; . == $l);
 def article: if test("^[aeiou]") then "an \(.)" else "a \(.)" end;
 def family:
   if . == "cli" or . == "upcli" or startswith("cli-") then "CLI"
-  elif . == "window" or . == "unemupc" or . == "ui-kit" or startswith("window-") then "window"
+  elif . == "window" or . == "unemupc" or . == "ui-kit" or . == "machine-view"
+       or startswith("window-") then "window"
   else null end;
 
 # The rule $from breaks by depending on $to, if any. A crate without a known

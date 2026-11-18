@@ -29,13 +29,14 @@ const RETIRED_ID: &[&str] = &[
     "cli/tests/platform_alias.rs",
 ];
 /// The production files that may spell out the current PC id: its
-/// definition, the alias table, the compatibility rows and the metadata of a
-/// new machine.
+/// definition, the alias table, the compatibility rows, the metadata of a
+/// new machine and the PC core's description of its platform.
 const PC_LITERAL: &[&str] = &[
     "machine-file/src/firmware_package.rs",
     "image-store/src/platform.rs",
     "image-store/src/compat.rs",
     "pc-image/src/lib.rs",
+    "pc-core/src/core.rs",
 ];
 /// Comparisons of the software platform of a title record ("DOS"), which is
 /// no machine platform id: the file and code its logical line contains.

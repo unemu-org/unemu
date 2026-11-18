@@ -49,7 +49,9 @@ frame sinks and keyboard encoder never read host time. Tests inject elapsed host
 durations and a simulated slice clock into `advance_with_slice_clock`; older
 virtual-target tests use `advance_fully`, which supplies zero host cost. The
 frontend neither ticks devices nor injects input during a scheduler call.
-The pure policy lives in `crates/window/src/pacing.rs`.
+The pure policy lives in `crates/machine-view/src/pacing.rs`; the conversion of a
+tick deadline to a retired-instruction cap lives with the PC core, in
+`crates/pc-core/src/pacing.rs`.
 
 The board oscillator is exactly **OSC = 315/22 MHz**, four times the NTSC
 315/88 MHz colour subcarrier. PIT input is OSC/12, or **13,125,000/11 Hz**:
@@ -615,13 +617,20 @@ not enable capture. Serial motion while DTR or RTS is low is dropped; held host
 buttons remain known for the next power-up. See
 [machine-files.md §Serial mouse](machine-files.md#serial-mouse).
 
-`HostMouse` coalesces motion between button transitions. A transition starts a
-new zero-motion segment carrying the new buttons; subsequent motion joins it.
-For example, motion A, right press, motion B, right release becomes
-`(A, buttons=0), (B, buttons=2), (0, buttons=0)`. Release keeps queued integer
-motion and appends a neutral-button segment if necessary. Event handlers only
-update this FIFO. Immediately before `run_bounded`, after keyboard delivery,
-the presenter delivers through `assembly::inject_mouse`; a zero-work paint
+The session's pointer capture (`machine_view::pointer`) turns host motion
+into counts and button changes into one contract event each; the PC core's
+`PcMouse` (`unemu_pc_core::mouse`) coalesces motion between button
+transitions. A transition starts a new zero-motion segment carrying the new
+buttons; subsequent motion joins it. For example, motion A, right press,
+motion B, right release becomes `(A, buttons=0), (B, buttons=2),
+(0, buttons=0)`. A capture release (the release chord, a menu, Stop) keeps
+queued integer motion and releases each held button as its own event, so
+with several buttons held it appends one segment per released button, for
+example `(0, buttons=1), (0, buttons=0)` with left and right held. Focus loss
+of a running session releases everything at once (`InputEvent::ReleaseAll`):
+one neutral-button segment, if necessary. Event handlers only update this
+FIFO. Immediately before `run_bounded`, after keyboard delivery, `PcMachine`
+delivers through `assembly::inject_mouse`; a zero-work paint
 injects nothing. Before changing the last delivered button state, it checks
 `AssembledMachine::mouse_input_ready`: the attached mouse must have no output
 awaiting serial delivery. Otherwise that change and later segments stay queued

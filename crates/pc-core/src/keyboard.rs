@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Physical host keys to IBM PC scan code set 1 (design/spec.md §7.5).
+//! Keys by their USB HID usage to IBM PC scan code set 1 (design/spec.md §7.5).
 //!
 //! IBM Personal System/2 Hardware Interface Technical Reference — Common
 //! Interfaces (October 1990), "Keyboards (101- and 102-Key)", "Set 1 Scan-Code
@@ -18,124 +18,119 @@
 
 use assembly::{keyboard_leds_if_ready, try_inject_scancode, AssembledMachine, DeviceId};
 use std::collections::{BTreeSet, VecDeque};
-use winit::{event::ElementState, keyboard::KeyCode};
+use unemu_core_api::{Key, KeyState};
 
 /// Encode the base physical make/break; unsupported keys produce no bytes.
 /// [`HostKeyboard`] adds the state-dependent artificial Shift wrappers.
-/// A repeated winit press emits the same make sequence, without an intervening
+/// A repeated press emits the same make sequence, without an intervening
 /// break, implementing host-driven typematic. Guest typematic-rate commands do
 /// not change the host repeat rate. E0 precedes both make and break codes.
-pub fn set1_scancodes(key: KeyCode, state: ElementState) -> Option<Vec<u8>> {
-    use KeyCode::*;
+/// A host repeat ([`KeyState::Repeated`]) is a press.
+pub fn set1_scancodes(key: Key, state: KeyState) -> Option<Vec<u8>> {
     let (code, extended) = match key {
-        Escape => (0x01, false),
-        Digit1 => (0x02, false),
-        Digit2 => (0x03, false),
-        Digit3 => (0x04, false),
-        Digit4 => (0x05, false),
-        Digit5 => (0x06, false),
-        Digit6 => (0x07, false),
-        Digit7 => (0x08, false),
-        Digit8 => (0x09, false),
-        Digit9 => (0x0A, false),
-        Digit0 => (0x0B, false),
-        Minus => (0x0C, false),
-        Equal => (0x0D, false),
-        Backspace => (0x0E, false),
-        Tab => (0x0F, false),
-        KeyQ => (0x10, false),
-        KeyW => (0x11, false),
-        KeyE => (0x12, false),
-        KeyR => (0x13, false),
-        KeyT => (0x14, false),
-        KeyY => (0x15, false),
-        KeyU => (0x16, false),
-        KeyI => (0x17, false),
-        KeyO => (0x18, false),
-        KeyP => (0x19, false),
-        BracketLeft => (0x1A, false),
-        BracketRight => (0x1B, false),
-        Enter => (0x1C, false),
-        ControlLeft => (0x1D, false),
-        KeyA => (0x1E, false),
-        KeyS => (0x1F, false),
-        KeyD => (0x20, false),
-        KeyF => (0x21, false),
-        KeyG => (0x22, false),
-        KeyH => (0x23, false),
-        KeyJ => (0x24, false),
-        KeyK => (0x25, false),
-        KeyL => (0x26, false),
-        Semicolon => (0x27, false),
-        Quote => (0x28, false),
-        Backquote => (0x29, false),
-        ShiftLeft => (0x2A, false),
-        Backslash => (0x2B, false),
-        KeyZ => (0x2C, false),
-        KeyX => (0x2D, false),
-        KeyC => (0x2E, false),
-        KeyV => (0x2F, false),
-        KeyB => (0x30, false),
-        KeyN => (0x31, false),
-        KeyM => (0x32, false),
-        Comma => (0x33, false),
-        Period => (0x34, false),
-        Slash => (0x35, false),
-        ShiftRight => (0x36, false),
-        NumpadMultiply => (0x37, false),
-        AltLeft => (0x38, false),
-        Space => (0x39, false),
-        CapsLock => (0x3A, false),
-        F1 => (0x3B, false),
-        F2 => (0x3C, false),
-        F3 => (0x3D, false),
-        F4 => (0x3E, false),
-        F5 => (0x3F, false),
-        F6 => (0x40, false),
-        F7 => (0x41, false),
-        F8 => (0x42, false),
-        F9 => (0x43, false),
-        F10 => (0x44, false),
-        NumLock => (0x45, false),
-        ScrollLock => (0x46, false),
-        Numpad7 => (0x47, false),
-        Numpad8 => (0x48, false),
-        Numpad9 => (0x49, false),
-        NumpadSubtract => (0x4A, false),
-        Numpad4 => (0x4B, false),
-        Numpad5 => (0x4C, false),
-        Numpad6 => (0x4D, false),
-        NumpadAdd => (0x4E, false),
-        Numpad1 => (0x4F, false),
-        Numpad2 => (0x50, false),
-        Numpad3 => (0x51, false),
-        Numpad0 => (0x52, false),
-        NumpadDecimal => (0x53, false),
-        IntlBackslash => (0x56, false),
-        F11 => (0x57, false),
-        F12 => (0x58, false),
-        NumpadEnter => (0x1C, true),
-        ControlRight => (0x1D, true),
-        NumpadDivide => (0x35, true),
-        AltRight => (0x38, true),
-        Home => (0x47, true),
-        ArrowUp => (0x48, true),
-        PageUp => (0x49, true),
-        ArrowLeft => (0x4B, true),
-        ArrowRight => (0x4D, true),
-        End => (0x4F, true),
-        ArrowDown => (0x50, true),
-        PageDown => (0x51, true),
-        Insert => (0x52, true),
-        Delete => (0x53, true),
+        Key::ESCAPE => (0x01, false),
+        Key::DIGIT_1 => (0x02, false),
+        Key::DIGIT_2 => (0x03, false),
+        Key::DIGIT_3 => (0x04, false),
+        Key::DIGIT_4 => (0x05, false),
+        Key::DIGIT_5 => (0x06, false),
+        Key::DIGIT_6 => (0x07, false),
+        Key::DIGIT_7 => (0x08, false),
+        Key::DIGIT_8 => (0x09, false),
+        Key::DIGIT_9 => (0x0A, false),
+        Key::DIGIT_0 => (0x0B, false),
+        Key::MINUS => (0x0C, false),
+        Key::EQUAL => (0x0D, false),
+        Key::BACKSPACE => (0x0E, false),
+        Key::TAB => (0x0F, false),
+        Key::Q => (0x10, false),
+        Key::W => (0x11, false),
+        Key::E => (0x12, false),
+        Key::R => (0x13, false),
+        Key::T => (0x14, false),
+        Key::Y => (0x15, false),
+        Key::U => (0x16, false),
+        Key::I => (0x17, false),
+        Key::O => (0x18, false),
+        Key::P => (0x19, false),
+        Key::BRACKET_LEFT => (0x1A, false),
+        Key::BRACKET_RIGHT => (0x1B, false),
+        Key::ENTER => (0x1C, false),
+        Key::CONTROL_LEFT => (0x1D, false),
+        Key::A => (0x1E, false),
+        Key::S => (0x1F, false),
+        Key::D => (0x20, false),
+        Key::F => (0x21, false),
+        Key::G => (0x22, false),
+        Key::H => (0x23, false),
+        Key::J => (0x24, false),
+        Key::K => (0x25, false),
+        Key::L => (0x26, false),
+        Key::SEMICOLON => (0x27, false),
+        Key::QUOTE => (0x28, false),
+        Key::BACKQUOTE => (0x29, false),
+        Key::SHIFT_LEFT => (0x2A, false),
+        Key::BACKSLASH => (0x2B, false),
+        Key::Z => (0x2C, false),
+        Key::X => (0x2D, false),
+        Key::C => (0x2E, false),
+        Key::V => (0x2F, false),
+        Key::B => (0x30, false),
+        Key::N => (0x31, false),
+        Key::M => (0x32, false),
+        Key::COMMA => (0x33, false),
+        Key::PERIOD => (0x34, false),
+        Key::SLASH => (0x35, false),
+        Key::SHIFT_RIGHT => (0x36, false),
+        Key::NUMPAD_MULTIPLY => (0x37, false),
+        Key::ALT_LEFT => (0x38, false),
+        Key::SPACE => (0x39, false),
+        Key::CAPS_LOCK => (0x3A, false),
+        Key::F1 => (0x3B, false),
+        Key::F2 => (0x3C, false),
+        Key::F3 => (0x3D, false),
+        Key::F4 => (0x3E, false),
+        Key::F5 => (0x3F, false),
+        Key::F6 => (0x40, false),
+        Key::F7 => (0x41, false),
+        Key::F8 => (0x42, false),
+        Key::F9 => (0x43, false),
+        Key::F10 => (0x44, false),
+        Key::NUM_LOCK => (0x45, false),
+        Key::SCROLL_LOCK => (0x46, false),
+        Key::NUMPAD_7 => (0x47, false),
+        Key::NUMPAD_8 => (0x48, false),
+        Key::NUMPAD_9 => (0x49, false),
+        Key::NUMPAD_SUBTRACT => (0x4A, false),
+        Key::NUMPAD_4 => (0x4B, false),
+        Key::NUMPAD_5 => (0x4C, false),
+        Key::NUMPAD_6 => (0x4D, false),
+        Key::NUMPAD_ADD => (0x4E, false),
+        Key::NUMPAD_1 => (0x4F, false),
+        Key::NUMPAD_2 => (0x50, false),
+        Key::NUMPAD_3 => (0x51, false),
+        Key::NUMPAD_0 => (0x52, false),
+        Key::NUMPAD_DECIMAL => (0x53, false),
+        Key::NON_US_BACKSLASH => (0x56, false),
+        Key::F11 => (0x57, false),
+        Key::F12 => (0x58, false),
+        Key::NUMPAD_ENTER => (0x1C, true),
+        Key::CONTROL_RIGHT => (0x1D, true),
+        Key::NUMPAD_DIVIDE => (0x35, true),
+        Key::ALT_RIGHT => (0x38, true),
+        Key::HOME => (0x47, true),
+        Key::ARROW_UP => (0x48, true),
+        Key::PAGE_UP => (0x49, true),
+        Key::ARROW_LEFT => (0x4B, true),
+        Key::ARROW_RIGHT => (0x4D, true),
+        Key::END => (0x4F, true),
+        Key::ARROW_DOWN => (0x50, true),
+        Key::PAGE_DOWN => (0x51, true),
+        Key::INSERT => (0x52, true),
+        Key::DELETE => (0x53, true),
         _ => return None,
     };
-    let code = code
-        | if state == ElementState::Released {
-            0x80
-        } else {
-            0
-        };
+    let code = code | if state == KeyState::Released { 0x80 } else { 0 };
     Some(if extended {
         vec![0xE0, code]
     } else {
@@ -143,10 +138,117 @@ pub fn set1_scancodes(key: KeyCode, state: ElementState) -> Option<Vec<u8>> {
     })
 }
 
+/// The order [`HostKeyboard::release_all`] releases held keys in: the order
+/// the desktop has always used, letters and punctuation first, then the
+/// modifiers and editing keys, navigation, the keypad and the function keys.
+/// A fixed order keeps the breaks of a focus loss independent of the host.
+const RELEASE_ORDER: [Key; 100] = [
+    Key::BACKQUOTE,
+    Key::BACKSLASH,
+    Key::BRACKET_LEFT,
+    Key::BRACKET_RIGHT,
+    Key::COMMA,
+    Key::DIGIT_0,
+    Key::DIGIT_1,
+    Key::DIGIT_2,
+    Key::DIGIT_3,
+    Key::DIGIT_4,
+    Key::DIGIT_5,
+    Key::DIGIT_6,
+    Key::DIGIT_7,
+    Key::DIGIT_8,
+    Key::DIGIT_9,
+    Key::EQUAL,
+    Key::NON_US_BACKSLASH,
+    Key::A,
+    Key::B,
+    Key::C,
+    Key::D,
+    Key::E,
+    Key::F,
+    Key::G,
+    Key::H,
+    Key::I,
+    Key::J,
+    Key::K,
+    Key::L,
+    Key::M,
+    Key::N,
+    Key::O,
+    Key::P,
+    Key::Q,
+    Key::R,
+    Key::S,
+    Key::T,
+    Key::U,
+    Key::V,
+    Key::W,
+    Key::X,
+    Key::Y,
+    Key::Z,
+    Key::MINUS,
+    Key::PERIOD,
+    Key::QUOTE,
+    Key::SEMICOLON,
+    Key::SLASH,
+    Key::ALT_LEFT,
+    Key::ALT_RIGHT,
+    Key::BACKSPACE,
+    Key::CAPS_LOCK,
+    Key::CONTROL_LEFT,
+    Key::CONTROL_RIGHT,
+    Key::ENTER,
+    Key::SHIFT_LEFT,
+    Key::SHIFT_RIGHT,
+    Key::SPACE,
+    Key::TAB,
+    Key::DELETE,
+    Key::END,
+    Key::HOME,
+    Key::INSERT,
+    Key::PAGE_DOWN,
+    Key::PAGE_UP,
+    Key::ARROW_DOWN,
+    Key::ARROW_LEFT,
+    Key::ARROW_RIGHT,
+    Key::ARROW_UP,
+    Key::NUM_LOCK,
+    Key::NUMPAD_0,
+    Key::NUMPAD_1,
+    Key::NUMPAD_2,
+    Key::NUMPAD_3,
+    Key::NUMPAD_4,
+    Key::NUMPAD_5,
+    Key::NUMPAD_6,
+    Key::NUMPAD_7,
+    Key::NUMPAD_8,
+    Key::NUMPAD_9,
+    Key::NUMPAD_ADD,
+    Key::NUMPAD_DECIMAL,
+    Key::NUMPAD_DIVIDE,
+    Key::NUMPAD_ENTER,
+    Key::NUMPAD_MULTIPLY,
+    Key::NUMPAD_SUBTRACT,
+    Key::ESCAPE,
+    Key::SCROLL_LOCK,
+    Key::F1,
+    Key::F2,
+    Key::F3,
+    Key::F4,
+    Key::F5,
+    Key::F6,
+    Key::F7,
+    Key::F8,
+    Key::F9,
+    Key::F10,
+    Key::F11,
+    Key::F12,
+];
+
 #[derive(Clone, Copy)]
 struct KeyTransition {
-    key: KeyCode,
-    state: ElementState,
+    key: Key,
+    state: KeyState,
     repeat: bool,
     left_shift: bool,
     right_shift: bool,
@@ -164,28 +266,33 @@ enum HostInput {
 #[derive(Default)]
 pub struct HostKeyboard {
     pending: VecDeque<u8>,
-    held: BTreeSet<KeyCode>,
+    held: BTreeSet<Key>,
     events: VecDeque<HostInput>,
     typed_ranges: Vec<std::ops::Range<usize>>,
 }
 
 impl HostKeyboard {
-    /// Queue a winit physical event, including repeated makes. A release for a
+    /// Queue a physical key event, including repeated makes. A release for a
     /// key not held is ignored, including synthetic releases after focus loss.
-    pub fn key_event(&mut self, key: KeyCode, state: ElementState) {
+    pub fn key_event(&mut self, key: Key, state: KeyState) {
         if set1_scancodes(key, state).is_none() {
             return;
         }
-        if state == ElementState::Released && !self.held.remove(&key) {
+        let state = if state == KeyState::Repeated {
+            KeyState::Pressed
+        } else {
+            state
+        };
+        if state == KeyState::Released && !self.held.remove(&key) {
             return;
         }
-        let repeat = state == ElementState::Pressed && !self.held.insert(key);
+        let repeat = state == KeyState::Pressed && !self.held.insert(key);
         self.events.push_back(HostInput::Key(KeyTransition {
             key,
             state,
             repeat,
-            left_shift: self.held.contains(&KeyCode::ShiftLeft),
-            right_shift: self.held.contains(&KeyCode::ShiftRight),
+            left_shift: self.held.contains(&Key::SHIFT_LEFT),
+            right_shift: self.held.contains(&Key::SHIFT_RIGHT),
         }));
     }
 
@@ -219,18 +326,18 @@ impl HostKeyboard {
         };
         let navigation = matches!(
             key,
-            KeyCode::Insert
-                | KeyCode::Delete
-                | KeyCode::Home
-                | KeyCode::End
-                | KeyCode::PageUp
-                | KeyCode::PageDown
-                | KeyCode::ArrowUp
-                | KeyCode::ArrowDown
-                | KeyCode::ArrowLeft
-                | KeyCode::ArrowRight
+            Key::INSERT
+                | Key::DELETE
+                | Key::HOME
+                | Key::END
+                | Key::PAGE_UP
+                | Key::PAGE_DOWN
+                | Key::ARROW_UP
+                | Key::ARROW_DOWN
+                | Key::ARROW_LEFT
+                | Key::ARROW_RIGHT
         );
-        let divide = key == KeyCode::NumpadDivide;
+        let divide = key == Key::NUMPAD_DIVIDE;
         let mut shift_codes = Vec::new();
         if divide || (navigation && !num_lock) {
             if left {
@@ -243,7 +350,7 @@ impl HostKeyboard {
         if navigation && num_lock && !left && !right {
             shift_codes.push(0x2A);
         }
-        if state == ElementState::Pressed {
+        if state == KeyState::Pressed {
             if !repeat {
                 for code in shift_codes {
                     self.pending.extend([0xE0, code]);
@@ -259,16 +366,19 @@ impl HostKeyboard {
     }
 
     /// Release non-Shift keys first so their artificial Shift restorations are
-    /// followed by the physical Shift breaks. Sorted order is host-independent.
+    /// followed by the physical Shift breaks. The keys go up in one fixed,
+    /// host-independent order: letters and punctuation first, the function
+    /// keys last.
     pub fn release_all(&mut self) {
-        let keys: Vec<_> = self.held.iter().copied().collect();
+        let mut keys: Vec<_> = self.held.iter().copied().collect();
+        keys.sort_by_key(|key| RELEASE_ORDER.iter().position(|listed| listed == key));
         for &key in &keys {
-            if !matches!(key, KeyCode::ShiftLeft | KeyCode::ShiftRight) {
-                self.key_event(key, ElementState::Released);
+            if !matches!(key, Key::SHIFT_LEFT | Key::SHIFT_RIGHT) {
+                self.key_event(key, KeyState::Released);
             }
         }
-        for key in [KeyCode::ShiftLeft, KeyCode::ShiftRight] {
-            self.key_event(key, ElementState::Released);
+        for key in [Key::SHIFT_LEFT, Key::SHIFT_RIGHT] {
+            self.key_event(key, KeyState::Released);
         }
     }
 
@@ -361,8 +471,11 @@ impl HostKeyboard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ElementState::{Pressed, Released};
-    use KeyCode::*;
+    use unemu_core_api::KeyState::{Pressed, Released};
+
+    /// A usage the keyboard page leaves unassigned, as a media key arrives
+    /// from a host that maps it to no keyboard usage.
+    const UNASSIGNED: Key = Key(0xFFFF);
 
     #[test]
     fn reset_chord_waits_until_the_keyboard_has_room_for_all_six_bytes() {
@@ -397,8 +510,8 @@ mod tests {
         assert!(assembled.type_scancodes(&[0x1E; 10]));
         let mut input = HostKeyboard::default();
         for _ in 0..3 {
-            input.key_event(KeyB, Pressed);
-            input.key_event(KeyB, Released);
+            input.key_event(Key::B, Pressed);
+            input.key_event(Key::B, Released);
         }
         input.ctrl_alt_del();
         assert_eq!(input.inject_at_boundary(&mut assembled), CTRL_ALT_DEL);
@@ -415,8 +528,8 @@ mod tests {
             .unwrap();
         let mut input = HostKeyboard::default();
         for _ in 0..20 {
-            input.key_event(KeyA, Pressed);
-            input.key_event(KeyA, Released);
+            input.key_event(Key::A, Pressed);
+            input.key_event(Key::A, Released);
         }
         input.ctrl_alt_del();
         assert_eq!(input.inject_at_boundary(&mut assembled), CTRL_ALT_DEL);
@@ -481,8 +594,8 @@ mod tests {
             }
             let mut expected = Vec::new();
             if queued_modifiers {
-                input.key_event(ControlLeft, Pressed);
-                input.key_event(AltLeft, Pressed);
+                input.key_event(Key::CONTROL_LEFT, Pressed);
+                input.key_event(Key::ALT_LEFT, Pressed);
                 expected.extend([0x1D, 0x38, 0xB8, 0x9D]);
             }
             input.ctrl_alt_del();
@@ -549,8 +662,8 @@ mod tests {
     fn reset_chord_is_balanced_independently_of_guest_locks() {
         for leds in [0, 2, 7] {
             let mut input = HostKeyboard::default();
-            input.key_event(ControlLeft, Pressed);
-            input.key_event(AltRight, Pressed);
+            input.key_event(Key::CONTROL_LEFT, Pressed);
+            input.key_event(Key::ALT_RIGHT, Pressed);
             input.ctrl_alt_del();
             assert_eq!(
                 take_codes(&mut input, leds),
@@ -564,92 +677,92 @@ mod tests {
     #[test]
     fn plain_keys_have_exact_make_and_break_codes() {
         for (key, make) in [
-            (Escape, 0x01),
-            (Digit1, 0x02),
-            (Digit2, 0x03),
-            (Digit3, 0x04),
-            (Digit4, 0x05),
-            (Digit5, 0x06),
-            (Digit6, 0x07),
-            (Digit7, 0x08),
-            (Digit8, 0x09),
-            (Digit9, 0x0A),
-            (Digit0, 0x0B),
-            (Minus, 0x0C),
-            (Equal, 0x0D),
-            (Backspace, 0x0E),
-            (Tab, 0x0F),
-            (KeyQ, 0x10),
-            (KeyW, 0x11),
-            (KeyE, 0x12),
-            (KeyR, 0x13),
-            (KeyT, 0x14),
-            (KeyY, 0x15),
-            (KeyU, 0x16),
-            (KeyI, 0x17),
-            (KeyO, 0x18),
-            (KeyP, 0x19),
-            (BracketLeft, 0x1A),
-            (BracketRight, 0x1B),
-            (Enter, 0x1C),
-            (ControlLeft, 0x1D),
-            (KeyA, 0x1E),
-            (KeyS, 0x1F),
-            (KeyD, 0x20),
-            (KeyF, 0x21),
-            (KeyG, 0x22),
-            (KeyH, 0x23),
-            (KeyJ, 0x24),
-            (KeyK, 0x25),
-            (KeyL, 0x26),
-            (Semicolon, 0x27),
-            (Quote, 0x28),
-            (Backquote, 0x29),
-            (ShiftLeft, 0x2A),
-            (Backslash, 0x2B),
-            (KeyZ, 0x2C),
-            (KeyX, 0x2D),
-            (KeyC, 0x2E),
-            (KeyV, 0x2F),
-            (KeyB, 0x30),
-            (KeyN, 0x31),
-            (KeyM, 0x32),
-            (Comma, 0x33),
-            (Period, 0x34),
-            (Slash, 0x35),
-            (ShiftRight, 0x36),
-            (NumpadMultiply, 0x37),
-            (AltLeft, 0x38),
-            (Space, 0x39),
-            (CapsLock, 0x3A),
-            (F1, 0x3B),
-            (F2, 0x3C),
-            (F3, 0x3D),
-            (F4, 0x3E),
-            (F5, 0x3F),
-            (F6, 0x40),
-            (F7, 0x41),
-            (F8, 0x42),
-            (F9, 0x43),
-            (F10, 0x44),
-            (NumLock, 0x45),
-            (ScrollLock, 0x46),
-            (Numpad7, 0x47),
-            (Numpad8, 0x48),
-            (Numpad9, 0x49),
-            (NumpadSubtract, 0x4A),
-            (Numpad4, 0x4B),
-            (Numpad5, 0x4C),
-            (Numpad6, 0x4D),
-            (NumpadAdd, 0x4E),
-            (Numpad1, 0x4F),
-            (Numpad2, 0x50),
-            (Numpad3, 0x51),
-            (Numpad0, 0x52),
-            (NumpadDecimal, 0x53),
-            (IntlBackslash, 0x56),
-            (F11, 0x57),
-            (F12, 0x58),
+            (Key::ESCAPE, 0x01),
+            (Key::DIGIT_1, 0x02),
+            (Key::DIGIT_2, 0x03),
+            (Key::DIGIT_3, 0x04),
+            (Key::DIGIT_4, 0x05),
+            (Key::DIGIT_5, 0x06),
+            (Key::DIGIT_6, 0x07),
+            (Key::DIGIT_7, 0x08),
+            (Key::DIGIT_8, 0x09),
+            (Key::DIGIT_9, 0x0A),
+            (Key::DIGIT_0, 0x0B),
+            (Key::MINUS, 0x0C),
+            (Key::EQUAL, 0x0D),
+            (Key::BACKSPACE, 0x0E),
+            (Key::TAB, 0x0F),
+            (Key::Q, 0x10),
+            (Key::W, 0x11),
+            (Key::E, 0x12),
+            (Key::R, 0x13),
+            (Key::T, 0x14),
+            (Key::Y, 0x15),
+            (Key::U, 0x16),
+            (Key::I, 0x17),
+            (Key::O, 0x18),
+            (Key::P, 0x19),
+            (Key::BRACKET_LEFT, 0x1A),
+            (Key::BRACKET_RIGHT, 0x1B),
+            (Key::ENTER, 0x1C),
+            (Key::CONTROL_LEFT, 0x1D),
+            (Key::A, 0x1E),
+            (Key::S, 0x1F),
+            (Key::D, 0x20),
+            (Key::F, 0x21),
+            (Key::G, 0x22),
+            (Key::H, 0x23),
+            (Key::J, 0x24),
+            (Key::K, 0x25),
+            (Key::L, 0x26),
+            (Key::SEMICOLON, 0x27),
+            (Key::QUOTE, 0x28),
+            (Key::BACKQUOTE, 0x29),
+            (Key::SHIFT_LEFT, 0x2A),
+            (Key::BACKSLASH, 0x2B),
+            (Key::Z, 0x2C),
+            (Key::X, 0x2D),
+            (Key::C, 0x2E),
+            (Key::V, 0x2F),
+            (Key::B, 0x30),
+            (Key::N, 0x31),
+            (Key::M, 0x32),
+            (Key::COMMA, 0x33),
+            (Key::PERIOD, 0x34),
+            (Key::SLASH, 0x35),
+            (Key::SHIFT_RIGHT, 0x36),
+            (Key::NUMPAD_MULTIPLY, 0x37),
+            (Key::ALT_LEFT, 0x38),
+            (Key::SPACE, 0x39),
+            (Key::CAPS_LOCK, 0x3A),
+            (Key::F1, 0x3B),
+            (Key::F2, 0x3C),
+            (Key::F3, 0x3D),
+            (Key::F4, 0x3E),
+            (Key::F5, 0x3F),
+            (Key::F6, 0x40),
+            (Key::F7, 0x41),
+            (Key::F8, 0x42),
+            (Key::F9, 0x43),
+            (Key::F10, 0x44),
+            (Key::NUM_LOCK, 0x45),
+            (Key::SCROLL_LOCK, 0x46),
+            (Key::NUMPAD_7, 0x47),
+            (Key::NUMPAD_8, 0x48),
+            (Key::NUMPAD_9, 0x49),
+            (Key::NUMPAD_SUBTRACT, 0x4A),
+            (Key::NUMPAD_4, 0x4B),
+            (Key::NUMPAD_5, 0x4C),
+            (Key::NUMPAD_6, 0x4D),
+            (Key::NUMPAD_ADD, 0x4E),
+            (Key::NUMPAD_1, 0x4F),
+            (Key::NUMPAD_2, 0x50),
+            (Key::NUMPAD_3, 0x51),
+            (Key::NUMPAD_0, 0x52),
+            (Key::NUMPAD_DECIMAL, 0x53),
+            (Key::NON_US_BACKSLASH, 0x56),
+            (Key::F11, 0x57),
+            (Key::F12, 0x58),
         ] {
             assert_eq!(set1_scancodes(key, Pressed), Some(vec![make]), "{key:?}");
             assert_eq!(
@@ -663,20 +776,20 @@ mod tests {
     #[test]
     fn every_extended_key_prefixes_make_and_break() {
         for (key, make) in [
-            (NumpadEnter, 0x1C),
-            (ControlRight, 0x1D),
-            (NumpadDivide, 0x35),
-            (AltRight, 0x38),
-            (Home, 0x47),
-            (ArrowUp, 0x48),
-            (PageUp, 0x49),
-            (ArrowLeft, 0x4B),
-            (ArrowRight, 0x4D),
-            (End, 0x4F),
-            (ArrowDown, 0x50),
-            (PageDown, 0x51),
-            (Insert, 0x52),
-            (Delete, 0x53),
+            (Key::NUMPAD_ENTER, 0x1C),
+            (Key::CONTROL_RIGHT, 0x1D),
+            (Key::NUMPAD_DIVIDE, 0x35),
+            (Key::ALT_RIGHT, 0x38),
+            (Key::HOME, 0x47),
+            (Key::ARROW_UP, 0x48),
+            (Key::PAGE_UP, 0x49),
+            (Key::ARROW_LEFT, 0x4B),
+            (Key::ARROW_RIGHT, 0x4D),
+            (Key::END, 0x4F),
+            (Key::ARROW_DOWN, 0x50),
+            (Key::PAGE_DOWN, 0x51),
+            (Key::INSERT, 0x52),
+            (Key::DELETE, 0x53),
         ] {
             assert_eq!(
                 set1_scancodes(key, Pressed),
@@ -695,11 +808,11 @@ mod tests {
     fn shift_and_typematic_preserve_physical_event_order() {
         let mut input = HostKeyboard::default();
         for (key, state) in [
-            (ShiftLeft, Pressed),
-            (KeyA, Pressed),
-            (KeyA, Pressed),
-            (KeyA, Released),
-            (ShiftLeft, Released),
+            (Key::SHIFT_LEFT, Pressed),
+            (Key::A, Pressed),
+            (Key::A, Pressed),
+            (Key::A, Released),
+            (Key::SHIFT_LEFT, Released),
         ] {
             input.key_event(key, state);
         }
@@ -709,7 +822,14 @@ mod tests {
     #[test]
     fn unsupported_and_special_keys_are_ignored() {
         let mut input = HostKeyboard::default();
-        for key in [Pause, PrintScreen, SuperLeft, MediaPlayPause, Lang1, F13] {
+        for key in [
+            Key::PAUSE,
+            Key::PRINT_SCREEN,
+            Key::GUI_LEFT,
+            UNASSIGNED,
+            Key::LANG_1,
+            Key::F13,
+        ] {
             for state in [Pressed, Released] {
                 assert_eq!(set1_scancodes(key, state), None);
                 input.key_event(key, state);
@@ -721,36 +841,51 @@ mod tests {
     #[test]
     fn navigation_wrappers_cover_every_numlock_and_shift_case() {
         for (key, make) in [
-            (Insert, 0x52),
-            (Delete, 0x53),
-            (Home, 0x47),
-            (End, 0x4F),
-            (PageUp, 0x49),
-            (PageDown, 0x51),
-            (ArrowUp, 0x48),
-            (ArrowDown, 0x50),
-            (ArrowLeft, 0x4B),
-            (ArrowRight, 0x4D),
+            (Key::INSERT, 0x52),
+            (Key::DELETE, 0x53),
+            (Key::HOME, 0x47),
+            (Key::END, 0x4F),
+            (Key::PAGE_UP, 0x49),
+            (Key::PAGE_DOWN, 0x51),
+            (Key::ARROW_UP, 0x48),
+            (Key::ARROW_DOWN, 0x50),
+            (Key::ARROW_LEFT, 0x4B),
+            (Key::ARROW_RIGHT, 0x4D),
         ] {
             for (num_lock, shifts, before, after) in [
                 (false, vec![], vec![], vec![]),
-                (false, vec![ShiftLeft], vec![0xE0, 0xAA], vec![0xE0, 0x2A]),
-                (false, vec![ShiftRight], vec![0xE0, 0xB6], vec![0xE0, 0x36]),
                 (
                     false,
-                    vec![ShiftLeft, ShiftRight],
+                    vec![Key::SHIFT_LEFT],
+                    vec![0xE0, 0xAA],
+                    vec![0xE0, 0x2A],
+                ),
+                (
+                    false,
+                    vec![Key::SHIFT_RIGHT],
+                    vec![0xE0, 0xB6],
+                    vec![0xE0, 0x36],
+                ),
+                (
+                    false,
+                    vec![Key::SHIFT_LEFT, Key::SHIFT_RIGHT],
                     vec![0xE0, 0xAA, 0xE0, 0xB6],
                     vec![0xE0, 0x2A, 0xE0, 0x36],
                 ),
                 (true, vec![], vec![0xE0, 0x2A], vec![0xE0, 0xAA]),
-                (true, vec![ShiftLeft], vec![], vec![]),
-                (true, vec![ShiftRight], vec![], vec![]),
-                (true, vec![ShiftLeft, ShiftRight], vec![], vec![]),
+                (true, vec![Key::SHIFT_LEFT], vec![], vec![]),
+                (true, vec![Key::SHIFT_RIGHT], vec![], vec![]),
+                (
+                    true,
+                    vec![Key::SHIFT_LEFT, Key::SHIFT_RIGHT],
+                    vec![],
+                    vec![],
+                ),
             ] {
                 let mut input = HostKeyboard::default();
                 if num_lock {
-                    input.key_event(NumLock, Pressed);
-                    input.key_event(NumLock, Released);
+                    input.key_event(Key::NUM_LOCK, Pressed);
+                    input.key_event(Key::NUM_LOCK, Released);
                 }
                 for &shift in &shifts {
                     input.key_event(shift, Pressed);
@@ -778,26 +913,26 @@ mod tests {
         for num_lock in [false, true] {
             for (shifts, before, after) in [
                 (vec![], vec![], vec![]),
-                (vec![ShiftLeft], vec![0xE0, 0xAA], vec![0xE0, 0x2A]),
-                (vec![ShiftRight], vec![0xE0, 0xB6], vec![0xE0, 0x36]),
+                (vec![Key::SHIFT_LEFT], vec![0xE0, 0xAA], vec![0xE0, 0x2A]),
+                (vec![Key::SHIFT_RIGHT], vec![0xE0, 0xB6], vec![0xE0, 0x36]),
                 (
-                    vec![ShiftLeft, ShiftRight],
+                    vec![Key::SHIFT_LEFT, Key::SHIFT_RIGHT],
                     vec![0xE0, 0xAA, 0xE0, 0xB6],
                     vec![0xE0, 0x2A, 0xE0, 0x36],
                 ),
             ] {
                 let mut input = HostKeyboard::default();
                 if num_lock {
-                    input.key_event(NumLock, Pressed);
-                    input.key_event(NumLock, Released);
+                    input.key_event(Key::NUM_LOCK, Pressed);
+                    input.key_event(Key::NUM_LOCK, Released);
                 }
                 for &shift in &shifts {
                     input.key_event(shift, Pressed);
                 }
                 input.events.clear();
                 input.pending.clear();
-                input.key_event(NumpadDivide, Pressed);
-                input.key_event(NumpadDivide, Released);
+                input.key_event(Key::NUMPAD_DIVIDE, Pressed);
+                input.key_event(Key::NUMPAD_DIVIDE, Released);
                 let mut expected = before;
                 expected.extend([0xE0, 0x35, 0xE0, 0xB5]);
                 expected.extend(after);
@@ -815,12 +950,12 @@ mod tests {
             let mut assembled =
                 assembly::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
             let mut input = HostKeyboard::default();
-            input.key_event(ControlLeft, Pressed);
-            input.key_event(NumLock, Pressed);
-            input.key_event(NumLock, Released);
-            input.key_event(ControlLeft, Released);
+            input.key_event(Key::CONTROL_LEFT, Pressed);
+            input.key_event(Key::NUM_LOCK, Pressed);
+            input.key_event(Key::NUM_LOCK, Released);
+            input.key_event(Key::CONTROL_LEFT, Released);
             take_codes(&mut input, 0);
-            input.key_event(ArrowUp, Pressed);
+            input.key_event(Key::ARROW_UP, Pressed);
             // The guest updates indicators after the host event was enqueued.
             set_guest_leds(&mut assembled, leds);
             input.inject_at_boundary(&mut assembled);
@@ -845,8 +980,8 @@ mod tests {
     fn queued_numlock_then_up_reads_leds_separately_for_each_key() {
         let mut assembled = assembly::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
         let mut input = HostKeyboard::default();
-        input.key_event(NumLock, Pressed);
-        input.key_event(ArrowUp, Pressed);
+        input.key_event(Key::NUM_LOCK, Pressed);
+        input.key_event(Key::ARROW_UP, Pressed);
         input.inject_at_boundary(&mut assembled);
         assert_eq!(
             assembled.machine.bus_mut().port_read(0x60, 1).unwrap(),
@@ -876,7 +1011,7 @@ mod tests {
     fn led_exchange_and_reset_are_observed_before_encoding_the_next_key() {
         let mut assembled = assembly::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
         let mut input = HostKeyboard::default();
-        input.key_event(ArrowUp, Pressed);
+        input.key_event(Key::ARROW_UP, Pressed);
         assembled
             .machine
             .bus_mut()
@@ -922,9 +1057,9 @@ mod tests {
             [0x2A, 0xE0, 0x48]
         );
         input.pending.clear();
-        input.key_event(ArrowUp, Released);
+        input.key_event(Key::ARROW_UP, Released);
         input.events.clear();
-        input.key_event(ArrowUp, Pressed);
+        input.key_event(Key::ARROW_UP, Pressed);
         let index = assembled.device_index[&DeviceId::Keyboard];
         assembled
             .machine
@@ -938,8 +1073,8 @@ mod tests {
 
     #[test]
     fn wrapped_typematic_sends_only_the_base_make_after_the_first_press() {
-        for key in [ArrowUp, NumpadDivide] {
-            for shift in [ShiftLeft, ShiftRight] {
+        for key in [Key::ARROW_UP, Key::NUMPAD_DIVIDE] {
+            for shift in [Key::SHIFT_LEFT, Key::SHIFT_RIGHT] {
                 let mut input = HostKeyboard::default();
                 input.key_event(shift, Pressed);
                 take_codes(&mut input, 0);
@@ -958,11 +1093,11 @@ mod tests {
             }
         }
         let mut input = HostKeyboard::default();
-        input.key_event(ArrowUp, Pressed);
+        input.key_event(Key::ARROW_UP, Pressed);
         assert_eq!(take_codes(&mut input, 2), [0xE0, 0x2A, 0xE0, 0x48]);
-        input.key_event(ArrowUp, Pressed);
+        input.key_event(Key::ARROW_UP, Pressed);
         assert_eq!(take_codes(&mut input, 2), [0xE0, 0x48]);
-        input.key_event(ArrowUp, Released);
+        input.key_event(Key::ARROW_UP, Released);
         assert_eq!(take_codes(&mut input, 2), [0xE0, 0xC8, 0xE0, 0xAA]);
     }
 
@@ -970,22 +1105,22 @@ mod tests {
     fn focus_loss_releases_wrapped_keys_before_physical_shifts_and_absorbs_duplicates() {
         for (shifts, wrappers, shift_breaks) in [
             (vec![], vec![], vec![]),
-            (vec![ShiftLeft], vec![0xE0, 0x2A], vec![0xAA]),
-            (vec![ShiftRight], vec![0xE0, 0x36], vec![0xB6]),
+            (vec![Key::SHIFT_LEFT], vec![0xE0, 0x2A], vec![0xAA]),
+            (vec![Key::SHIFT_RIGHT], vec![0xE0, 0x36], vec![0xB6]),
             (
-                vec![ShiftLeft, ShiftRight],
+                vec![Key::SHIFT_LEFT, Key::SHIFT_RIGHT],
                 vec![0xE0, 0x2A, 0xE0, 0x36],
                 vec![0xAA, 0xB6],
             ),
         ] {
             for key in [
-                KeyA,
-                ControlLeft,
-                ControlRight,
-                AltLeft,
-                AltRight,
-                ArrowUp,
-                NumpadDivide,
+                Key::A,
+                Key::CONTROL_LEFT,
+                Key::CONTROL_RIGHT,
+                Key::ALT_LEFT,
+                Key::ALT_RIGHT,
+                Key::ARROW_UP,
+                Key::NUMPAD_DIVIDE,
             ] {
                 let mut input = HostKeyboard::default();
                 for &shift in &shifts {
@@ -996,7 +1131,7 @@ mod tests {
                 input.pending.clear();
                 input.release_all();
                 let mut expected = set1_scancodes(key, Released).unwrap();
-                if matches!(key, ArrowUp | NumpadDivide) {
+                if matches!(key, Key::ARROW_UP | Key::NUMPAD_DIVIDE) {
                     expected.extend(&wrappers);
                 }
                 expected.extend(&shift_breaks);
@@ -1011,9 +1146,9 @@ mod tests {
             }
         }
         let mut input = HostKeyboard::default();
-        input.key_event(NumLock, Pressed);
-        input.key_event(NumLock, Released);
-        input.key_event(ArrowUp, Pressed);
+        input.key_event(Key::NUM_LOCK, Pressed);
+        input.key_event(Key::NUM_LOCK, Released);
+        input.key_event(Key::ARROW_UP, Pressed);
         input.events.clear();
         input.pending.clear();
         input.release_all();
@@ -1023,13 +1158,33 @@ mod tests {
     #[test]
     fn unheld_releases_emit_nothing_before_or_after_an_ordinary_key_pair() {
         let mut input = HostKeyboard::default();
-        for key in [KeyA, ShiftLeft, ControlRight, AltRight, NumLock, ArrowUp] {
+        for key in [
+            Key::A,
+            Key::SHIFT_LEFT,
+            Key::CONTROL_RIGHT,
+            Key::ALT_RIGHT,
+            Key::NUM_LOCK,
+            Key::ARROW_UP,
+        ] {
             input.key_event(key, Released);
         }
         assert_eq!(input.pending_events(), 0);
-        input.key_event(KeyA, Pressed);
-        input.key_event(KeyA, Released);
-        input.key_event(KeyA, Released);
+        input.key_event(Key::A, Pressed);
+        input.key_event(Key::A, Released);
+        input.key_event(Key::A, Released);
         assert_eq!(take_codes(&mut input, 0), [0x1E, 0x9E]);
+    }
+
+    #[test]
+    fn release_order_lists_every_encoded_key_once() {
+        for (index, key) in RELEASE_ORDER.iter().enumerate() {
+            assert!(set1_scancodes(*key, Pressed).is_some(), "{key:?}");
+            assert!(!RELEASE_ORDER[..index].contains(key), "{key:?}");
+        }
+        let encoded = (0..=u16::MAX)
+            .map(Key)
+            .filter(|key| set1_scancodes(*key, Pressed).is_some())
+            .count();
+        assert_eq!(encoded, RELEASE_ORDER.len());
     }
 }

@@ -5,6 +5,25 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — The desktop's machine window drives a `dyn Machine`:**
+  second step of the window split (design/core-contract.md §8). Three new
+  crates: `unemu-core-api`, the front-end contract of §3 (layer
+  `contract`, no dependency at all); `unemu-pc-core`, the PC behind it in
+  stage A (`PcMachine::from_assembled` over the provider's assembled
+  machine; `PcCore::create` answers `Unsupported`), which took the scan-code
+  and mouse encoders, the 8042 back-pressure, the deadline-to-cap
+  conversion, drive-activity sampling, the CP437 rasteriser and its CC
+  BY-SA fonts from the window; and `machine-view` (layer `neutral`), the
+  paced session over the contract with host audio, the HID key map,
+  pointer capture and the macOS system-key tap. The window's machine
+  window is a `machine_view::Session<PcMachine>`; its media dialogs still
+  reach the PC catalogue through `PcMachine::assembled`. No behaviour
+  changes beyond two edge cases listed in core-contract.md §8 (a capture
+  release with several guest buttons held, media keys on a machine with a
+  B: but no A:). The workspace lists the same 3902 test names apart from
+  the crate, plus 26 new tests; the licence list differs only in the
+  fonts' paths; `deny.toml` allows CC-BY-SA-4.0 for `unemu-pc-core`
+  instead of `window`.
 - **2026-11-18 — The command line's provider seam:** step 4 of the CLI
   split (design/core-contract.md §7.2, §7.5). Inside the `cli` crate the
   platform-neutral command line (`cli::cli_core`: the top-level parser,

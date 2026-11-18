@@ -61,6 +61,7 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
 };
+use unemu_core_api::{MediaAction, SlotId};
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -310,16 +311,17 @@ pub(crate) fn after_queued(
     unit: u8,
     now: Option<usize>,
     count: usize,
-    queued: &[(u8, assembly::FloppyAction)],
+    queued: &[(SlotId, MediaAction)],
 ) -> Option<usize> {
     queued
         .iter()
-        .filter(|(at, _)| *at == unit)
+        .filter(|(at, _)| *at == SlotId(unit))
         .fold(now, |now, (_, action)| match action {
-            assembly::FloppyAction::Insert(index) => Some(*index),
-            assembly::FloppyAction::Eject => None,
-            assembly::FloppyAction::Next if count == 0 => now,
-            assembly::FloppyAction::Next => Some(now.map_or(0, |index| (index + 1) % count)),
+            MediaAction::Insert(index) => Some(*index),
+            MediaAction::Eject => None,
+            MediaAction::Next if count == 0 => now,
+            MediaAction::Next => Some(now.map_or(0, |index| (index + 1) % count)),
+            _ => now,
         })
 }
 
@@ -1376,15 +1378,16 @@ mod tests {
     /// the queued changes of that drive count, in order.
     #[test]
     fn queued_media_changes_count_at_stop() {
-        use assembly::FloppyAction::{Eject, Insert, Next};
+        use MediaAction::{Eject, Insert, Next};
+        let (a, b) = (SlotId(0), SlotId(1));
         assert_eq!(after_queued(0, Some(1), 3, &[]), Some(1));
-        assert_eq!(after_queued(0, Some(1), 3, &[(0, Insert(2))]), Some(2));
-        assert_eq!(after_queued(0, Some(1), 3, &[(1, Insert(2))]), Some(1));
-        assert_eq!(after_queued(0, Some(2), 3, &[(0, Next)]), Some(0));
-        assert_eq!(after_queued(0, None, 3, &[(0, Next)]), Some(0));
-        assert_eq!(after_queued(0, None, 0, &[(0, Next)]), None);
+        assert_eq!(after_queued(0, Some(1), 3, &[(a, Insert(2))]), Some(2));
+        assert_eq!(after_queued(0, Some(1), 3, &[(b, Insert(2))]), Some(1));
+        assert_eq!(after_queued(0, Some(2), 3, &[(a, Next)]), Some(0));
+        assert_eq!(after_queued(0, None, 3, &[(a, Next)]), Some(0));
+        assert_eq!(after_queued(0, None, 0, &[(a, Next)]), None);
         assert_eq!(
-            after_queued(0, Some(1), 3, &[(0, Insert(2)), (0, Eject)]),
+            after_queued(0, Some(1), 3, &[(a, Insert(2)), (a, Eject)]),
             None
         );
     }

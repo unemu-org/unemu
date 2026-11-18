@@ -16,6 +16,9 @@ members = [
     "crates/pc-harness",
     "crates/window",
     "crates/ui-kit",
+    "crates/core-api",
+    "crates/pc-core",
+    "crates/machine-view",
     "crates/media",
     "crates/machine-file",
     "crates/image-store",
@@ -72,6 +75,9 @@ devices = { path = "crates/devices", version = "0.0.2" }
 video = { path = "crates/video", version = "0.0.2" }
 audio = { path = "crates/audio", version = "0.0.2" }
 testkit = { path = "crates/testkit", version = "0.0.2" }
+unemu-core-api = { path = "crates/core-api", version = "0.0.2" }
+unemu-pc-core = { path = "crates/pc-core", version = "0.0.2" }
+machine-view = { path = "crates/machine-view", version = "0.0.2" }
 
 # Keep hardware preconditions and arithmetic checked even in optimized dev/test code.
 [profile.dev]

@@ -1,257 +1,90 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Captured host input for the configured PS/2 or serial pointing device (spec.md §9.4).
-//!
-//! IBM PS/2 Hardware Interface Technical Reference, Common Interfaces,
-//! "Pointing Device", Data Reporting, defines positive-up counts and packet
-//! button bits. Host policy uses one raw motion unit per count, carries fractions,
-//! and preserves button transitions between coalesced motion segments. Assembly
-//! converts serial input to Microsoft positive-down counts; each device owns
-//! packet saturation or splitting. See `backlog/docs/design/observation.md`
-//! § Host input for capture, release and boundary ordering.
+//! Tests of the desktop's pointer path as a session joins its halves: the
+//! capture policy of `machine_view::pointer` and the PC's pointing-device
+//! queue of `unemu_pc_core::mouse` (IBM PS/2 Hardware Interface Technical
+//! Reference, Common Interfaces, "Pointing Device", Data Reporting). The
+//! session hands every captured event to the machine at once and releases
+//! everything on focus loss; this shim does the same without a session.
 
-use assembly::{inject_mouse, AssembledMachine};
-use std::collections::{BTreeSet, VecDeque};
+use assembly::AssembledMachine;
+use machine_view::pointer::PointerCapture;
+use unemu_core_api::{InputEvent, PortId};
+use unemu_pc_core::{MouseInput, PcMouse};
 use winit::{
     event::{ElementState, MouseButton},
     keyboard::KeyCode,
 };
 
-/// Relative device counts and the current left/right/middle button bits (0/1/2).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct MouseInput {
-    pub dx: i32,
-    pub dy: i32,
-    pub buttons: u8,
-}
-
-/// Pure capture policy and input FIFO; event handlers never borrow the machine.
-/// A newly captured pointer must also be grabbed by the host window. If that
-/// fails, call [`Self::release`] before accepting further events.
-pub struct HostMouse {
-    enabled: bool,
-    captured: bool,
-    focused: bool,
-    inside: bool,
-    keys: BTreeSet<KeyCode>,
-    suppress_g: bool,
-    capture_button: Option<MouseButton>,
-    fraction: (f64, f64),
-    buttons: u8,
-    delivered_buttons: u8,
-    pending: VecDeque<MouseInput>,
+/// The capture policy feeding the PC's pointer queue.
+struct HostMouse {
+    capture: PointerCapture,
+    device: PcMouse,
 }
 
 impl HostMouse {
-    /// Enable capture only for a machine configured with a host mouse target.
-    pub fn new(enabled: bool) -> Self {
+    fn new(enabled: bool) -> Self {
         Self {
-            enabled,
-            captured: false,
-            focused: true,
-            inside: false,
-            keys: BTreeSet::new(),
-            suppress_g: false,
-            capture_button: None,
-            fraction: (0.0, 0.0),
-            buttons: 0,
-            delivered_buttons: 0,
-            pending: VecDeque::new(),
+            capture: PointerCapture::new(enabled.then_some(PortId(1))),
+            device: PcMouse::default(),
         }
     }
 
-    /// Whether raw movement and subsequent clicks belong to the guest.
-    pub fn captured(&self) -> bool {
-        self.captured
-    }
-
-    /// Client-area presence gates the initial capture click only.
-    pub fn pointer_inside(&mut self, inside: bool) {
-        self.inside = inside;
-    }
-
-    /// Capture on a client-area press, swallowing both edges of that click.
-    /// Returns true only when a host grab needs to be attempted.
-    pub fn button_event(&mut self, button: MouseButton, state: ElementState) -> bool {
-        if self.capture_button == Some(button) {
-            if state == ElementState::Released {
-                self.capture_button = None;
+    fn forward(&mut self) {
+        for event in self.capture.take_events() {
+            match event {
+                InputEvent::PointerMotion { dx, dy, .. } => self.device.motion(dx, dy),
+                InputEvent::PointerButton {
+                    button, pressed, ..
+                } => self.device.button(button, pressed),
+                _ => {}
             }
-            return false;
         }
-        if !self.captured {
-            if self.enabled && self.focused && self.inside && state == ElementState::Pressed {
-                self.captured = true;
-                self.capture_button = Some(button);
-                return true;
-            }
-            return false;
-        }
-        let bit = match button {
-            MouseButton::Left => 1,
-            MouseButton::Right => 2,
-            MouseButton::Middle => 4,
-            _ => return false,
-        };
-        let buttons = if state == ElementState::Pressed {
-            self.buttons | bit
-        } else {
-            self.buttons & !bit
-        };
-        if buttons != self.buttons {
-            self.buttons = buttons;
-            // A zero-motion entry separates motion on opposite sides of a click.
-            self.pending.push_back(MouseInput {
-                buttons,
-                ..MouseInput::default()
-            });
-        }
-        false
     }
 
-    /// Consume the G pair of Ctrl+Alt+G while captured. Modifier keys continue
-    /// through the ordinary keyboard path, including their eventual releases.
-    /// A G already held by the guest is never stolen by a later modifier press.
-    pub fn key_event(&mut self, key: KeyCode, state: ElementState) -> bool {
-        use KeyCode::*;
-        let fresh = if state == ElementState::Pressed {
-            self.keys.insert(key)
-        } else {
-            self.keys.remove(&key);
-            false
-        };
-        if key == KeyG && self.suppress_g {
-            if state == ElementState::Released {
-                self.suppress_g = false;
-            }
-            return true;
-        }
-        if self.captured
-            && key == KeyG
-            && state == ElementState::Pressed
-            && fresh
-            && [ControlLeft, ControlRight]
-                .iter()
-                .any(|key| self.keys.contains(key))
-            && [AltLeft, AltRight]
-                .iter()
-                .any(|key| self.keys.contains(key))
-        {
-            self.suppress_g = true;
-            self.release();
-            return true;
-        }
-        false
+    fn captured(&self) -> bool {
+        self.capture.captured()
     }
 
-    /// Resume a capture that a host dialog interrupted, without a capture
-    /// click. Returns true only when a host grab needs to be attempted.
-    pub fn recapture(&mut self) -> bool {
-        if self.captured || !self.enabled || !self.focused {
-            return false;
-        }
-        self.captured = true;
-        true
+    fn pointer_inside(&mut self, inside: bool) {
+        self.capture.pointer_inside(inside);
     }
 
-    /// Focus loss releases guest buttons and discards sub-count capture residue.
-    pub fn focus_changed(&mut self, focused: bool) {
-        self.focused = focused;
+    fn button_event(&mut self, button: MouseButton, state: ElementState) -> bool {
+        let grab = self.capture.button_event(button, state);
+        self.forward();
+        grab
+    }
+
+    fn key_event(&mut self, key: KeyCode, state: ElementState) -> bool {
+        let taken = self.capture.key_event(key, state);
+        self.forward();
+        taken
+    }
+
+    fn recapture(&mut self) -> bool {
+        self.capture.recapture()
+    }
+
+    /// As a running session: focus loss releases everything in the machine.
+    fn focus_changed(&mut self, focused: bool) {
+        self.capture.focus_changed(focused, !focused);
+        self.forward();
         if !focused {
-            self.release();
-            self.inside = false;
-            self.keys.clear();
-            self.suppress_g = false;
-            self.capture_button = None;
+            self.device.release();
         }
     }
 
-    /// Keep queued input, then release any guest buttons at the next boundary.
-    pub fn release(&mut self) {
-        self.captured = false;
-        self.fraction = (0.0, 0.0);
-        if self.buttons != 0 {
-            self.buttons = 0;
-            self.pending.push_back(MouseInput::default());
-        }
+    fn motion(&mut self, dx: f64, dy: f64) {
+        self.capture.motion(dx, dy);
+        self.forward();
     }
 
-    /// Queue raw relative host movement (Y down), with a fixed 1:1 scale.
-    /// Finite values truncate toward zero with carried fractions. Conversion and
-    /// sums saturate at i32 limits, leaving packet limits to the target device.
-    /// Non-finite values are ignored per axis so one bad event cannot poison it.
-    pub fn motion(&mut self, dx: f64, dy: f64) {
-        if !self.captured {
-            return;
-        }
-        fn counts(delta: f64, fraction: &mut f64) -> i32 {
-            if !delta.is_finite() {
-                return 0;
-            }
-            let total = delta + *fraction;
-            let whole = total.trunc();
-            *fraction = total - whole;
-            whole as i32
-        }
-        let dx = counts(dx, &mut self.fraction.0);
-        let dy = counts(-dy, &mut self.fraction.1);
-        if dx == 0 && dy == 0 {
-            return;
-        }
-        if let Some(last) = self
-            .pending
-            .back_mut()
-            .filter(|last| last.buttons == self.buttons)
-        {
-            last.dx = last.dx.saturating_add(dx);
-            last.dy = last.dy.saturating_add(dy);
-        } else {
-            self.pending.push_back(MouseInput {
-                dx,
-                dy,
-                buttons: self.buttons,
-            });
-        }
+    fn deliver(&mut self, inject: impl FnMut(MouseInput) -> bool) -> Vec<MouseInput> {
+        self.device.deliver(inject)
     }
 
-    fn deliver(&mut self, mut inject: impl FnMut(MouseInput) -> bool) -> Vec<MouseInput> {
-        let mut delivered = Vec::new();
-        while let Some(&input) = self.pending.front() {
-            if !inject(input) {
-                break;
-            }
-            self.pending.pop_front();
-            delivered.push(input);
-        }
-        delivered
-    }
-
-    /// Deliver segments in order immediately before the next bounded run.
-    /// Button changes wait until the mouse's output is empty so a busy packet
-    /// cannot swallow a subsequent press/release pair. Motion with unchanged
-    /// buttons can still coalesce in the device. Keyboard readiness is separate.
-    pub fn inject_at_boundary(&mut self, assembled: &mut AssembledMachine) -> Vec<MouseInput> {
-        let Some(index) = assembled.mouse_device_index() else {
-            return Vec::new();
-        };
-        let mut buttons = self.delivered_buttons;
-        let delivered = self.deliver(|input| {
-            if input.buttons != buttons && !assembled.mouse_input_ready() {
-                return false;
-            }
-            if !inject_mouse(
-                &mut assembled.machine,
-                index,
-                input.dx,
-                input.dy,
-                input.buttons,
-            ) {
-                return false;
-            }
-            buttons = input.buttons;
-            true
-        });
-        self.delivered_buttons = buttons;
-        delivered
+    fn inject_at_boundary(&mut self, assembled: &mut AssembledMachine) -> Vec<MouseInput> {
+        self.device.inject_at_boundary(assembled)
     }
 }
 

@@ -2,8 +2,9 @@
 
 Status: **Accepted** by the maintainer on 2026-11-17 (design step of
 `upc-dfs.24`, with `upc-3bm`), with the recommended answer to each question
-of §11. Steps 1 and 2 of §7.5 are implemented; the other steps land one at
-a time. The decision record is
+of §11. Steps 1 to 3 of §7.5 and steps 1 and 2 of §8 are implemented (the
+contract crate of §3 and the PC core of §4 in its stage A came with §8 step
+2); the other steps land one at a time. The decision record is
 [decision-40](<../../decisions/decision-40 - Front ends drive emulator cores through one contract crate.md>).
 
 Markers: **[REPO]** = read in this repository at `896c5d9`, with the path;
@@ -485,6 +486,8 @@ pub struct Features {
     pub saved_state: bool,
     /// Whether removable media can change while the machine runs.
     pub media_changes: bool,
+    /// Whether a run can stop when a display finishes a frame.
+    pub frame_stops: bool,
 }
 
 /// A third-party component inside a core and its licence notice.
@@ -611,11 +614,17 @@ pub trait Machine {
     ///
     /// Input and media changes made since the last return take effect
     /// first, at `now()`. A deadline is met at the core's next boundary, so
-    /// `now()` may pass `limit.until` by less than one step; a run never
-    /// returns before a limit without an event. Fails with
+    /// `now()` may pass `limit.until` by less than one step. A core that
+    /// turns the deadline into a budget of steps may also answer
+    /// `Stop::Deadline` with `now()` short of `limit.until` by less than
+    /// one step; the front end runs again while it is short. Otherwise a
+    /// run never returns before a limit without an event. Fails with
     /// `ErrorKind::Guest` when the emulated machine cannot continue and
     /// with `ErrorKind::Storage` when a host write failed; either leaves
-    /// the status `Failed`.
+    /// the status `Failed`, except that a `Storage` failure while the guest
+    /// halts may leave it `Halted`, so the session can still be finished.
+    /// `stop_on_frame` on a machine whose features do not list
+    /// `frame_stops` fails with `ErrorKind::Unsupported`.
     fn run(&mut self, limit: RunLimit) -> Result<Stop, Error>;
 
     // Output: §3.6. Input: §3.7. Media: §3.8. Control: §3.9.
@@ -978,7 +987,9 @@ picker's library are store data (`image-store`) and provider rules
 pub trait Machine {
     /// Reset the machine. Fails with `Unsupported` for a kind the
     /// description does not list, and with `Usage` when the kind is not
-    /// possible in the current status.
+    /// possible in the current status. A `Storage` or `Guest` failure of the
+    /// reset itself leaves the status as it was (a halted machine stays
+    /// `Halted`, so its session can still be finished).
     fn reset(&mut self, kind: ResetKind) -> Result<(), Error>;
 
     /// A token naming everything a saved state depends on: the core's
@@ -1510,13 +1521,132 @@ Order, each a series of small beads under the same rules as §7.5:
    views) and the desktop-wide glyph and mark tests, in a test-only
    `shell_icons` module, because they read the window's sources and menu
    marks. Test names are unchanged apart from the crate (3902 tests).
-2. **The contract, `unemu-pc-core` (stage A) and `machine-view`.** The
+2. **Done.** **The contract, `unemu-pc-core` (stage A) and `machine-view`.** The
    session has few inbound arrows (the shell and the media dialogs), so it
    comes out early, and it is where the contract first carries real
    traffic. Its tests go with it: the sound-level tests (44 s of test
    time), the host-audio and session tests. A library change stops
    running them, and a session change runs only them: about 80 s of
-   desktop tests down to about 15–20 s.
+   desktop tests down to about 15–20 s. As landed:
+   - `unemu-core-api` (`crates/core-api`, layer `contract`, no dependency of
+     any kind) holds §3 as written, with `CONTRACT` 0.1 and `drives`, unit
+     tests of the version rule and a scripted core and machine driven only
+     as `&dyn Core` and `Box<dyn Machine>`.
+   - `unemu-pc-core` (`crates/pc-core`, layer `emulation`) holds
+     `PcMachine::from_assembled`, `PcMachine::assembled` and `PcCore`, whose
+     platform lists no config type and whose `create` answers
+     `Unsupported`. From `window` came the set-1 encoder with the 8042
+     back-pressure and the reset chord (`keyboard`, now keyed by HID
+     usage), the device half of the mouse (`mouse::PcMouse`: button
+     transitions, coalescing, `inject_mouse` back-pressure), `run_cap`
+     (`pacing`), the rasteriser, `font`, the CC BY-SA fonts with their
+     notice and `FONT_NOTICE`, the sink (`RasterSink`, formerly
+     `WindowSink`) and drive-activity sampling, with their tests and the
+     `presentation` test binary. Its own tests compare a session through
+     `dyn Machine` with the same keys and caps on the assembled machine.
+   - `machine-view` (`crates/machine-view`, layer `neutral`, counted as a
+     window crate by the boundary check) holds `Session`, the former
+     `Presenter` loop over the contract, `pacing` (now at the rate the
+     machine describes), `host_audio` (fed by `drain_audio`),
+     `system_keys`, `macos_keys`, `keys` (winit key code to HID usage) and
+     `pointer` (capture, release chord, swallowed click, count carry). Its
+     tests: the host-audio ring, pacing, system-key and macOS-key tests,
+     the key map, and session tests against a scripted machine.
+   - `window` keeps a `Presenter` that is a `Session<PcMachine>` plus the
+     PC catalogue model (the machine config and the floppy slots) that the
+     media dialogs, catalogue menus and drive chips edit, and the hold of
+     the status-bar drive lights, which belongs to the drive chips (step
+     5). All 3902 test names are unchanged apart from the crate (47 tests
+     moved to `machine-view`, 39 to `unemu-pc-core`), and 26 tests were
+     added, among them a table test that composes the key map with the
+     encoder and gives the window's former winit table key for key.
+
+   Deviations from §3 to §5, each forced by keeping the step free of
+   behaviour change or by the layer rules:
+   - **Additions to the contract**, all additive: named HID usages as
+     associated constants (`Key::A`, `Key::ARROW_UP`, …), so the key map
+     and the encoder cannot disagree on a number; `new`/`with_…`
+     constructors (`const` where a core builds a static description),
+     `Features::NONE`, `Outputs::NONE`, `ContractVersion::new` and its
+     `Display`; `Rate::new` reduces to lowest terms; the usual derives
+     (`Clone`, `Debug`, `PartialEq`) on the data types.
+   - **`Session<M: Machine + ?Sized = dyn Machine>`** instead of a session
+     that can hold only `Box<dyn Machine>`. The session's code calls the
+     contract alone, and its tests drive a scripted machine, but the
+     window names `Session<PcMachine>`: the media dialogs, catalogue menus
+     and drive chips still append floppies and read the catalogue through
+     `PcMachine::assembled` until step 5 moves them behind `add_medium`.
+     For the same reason `PcMachine::add_medium` answers `Unsupported` in
+     stage A, and its slot catalogues carry each floppy's name and write
+     kind (read-only, discarded or kept, as the controller holds the
+     medium) but no digest, size or format yet: those stay in the
+     provider's machine config.
+   - **The PC core names its platform id** (`ibm-pc`) in its
+     `PlatformDescription`; the platform-id scan of `image-store`
+     (`tests/platform_ids.rs`) lists `pc-core/src/core.rs` among the files
+     that may spell it out.
+   - **PC calls beyond §4**: `assembled_ref`, `keyboard`, `ctrl_alt_del`
+     (the keyboard-owned reset chord reaches an inhibited keyboard whole;
+     three key events would not), `inserted_floppy`, `drive_activity`, the
+     reset counters and summary, `RASTER_SCALE` for integer scaling, and
+     test hooks behind a `test-support` feature (the delivered-input logs
+     the replay tests read).
+   - **What a core may answer** (contract text of §3.5 and §3.9 changed to
+     match, the contract being 0.1 and unpublished): `Stop::Deadline` may
+     come back with `now()` short of `until` by less than one step (the
+     PC's cap rounds halted time down; the session runs again while it is
+     short); a `Storage` failure while the guest halts, and a failure of
+     `reset` itself, leave the status `Halted` rather than `Failed`, which
+     the session relies on to still finish a halted machine's media.
+   - **`Features::frame_stops`**, a new field: `RunLimit::stop_on_frame`
+     is honoured only by a machine that lists it and refused with
+     `Unsupported` otherwise. The PC does not list it.
+   - **Where a run ends.** `PcMachine::run` ends at the retired-instruction
+     cap a deadline gives, as each window chunk did; when halted time leaves
+     `now()` a fraction of a tick short of `until`, it still answers
+     `Stop::Deadline` and the session runs the next chunk, as the window
+     loop always did. Exhausted virtual time answers `Stop::PoweredOff`. A
+     guest-requested reset happens inside the run, which then continues to
+     the same deadline, so after a guest reset the chunk ends where it was
+     going to end rather than a millisecond after the reset.
+   - **Media keys** change the first and the second removable slot of the
+     description, for the PC A: and B:; a machine with a B: but no A: would
+     now change B: with the unshifted chord.
+   - **Pointer release** with several guest buttons held sends one packet
+     per released button where one packet released them all; focus loss of
+     a running session still releases everything at once
+     (`InputEvent::ReleaseAll`).
+   - **Tests that need a real PC stay in `window`**: the three sound-level
+     tests, the six host-audio tests that run a PC, the session tests of
+     `main.rs` and the mouse tests, which now join `pointer` with
+     `PcMouse` in a test shim. A `neutral` crate may not have a PC crate
+     among its test dependencies (§7.3), so `machine-view` cannot run a PC.
+     `caps_respect_configured_rates_and_saturate_without_overflow` moved
+     to `unemu-pc-core` with `run_cap`, and its one `frame_target` check
+     joined `overload_drops_debt_once_and_an_ahead_guest_does_no_work`.
+   - **Sound at 48 kHz only**: the session plays what `drain_audio` returns
+     as 48 kHz stereo, the rate the PC describes, and resamples only to the
+     host device's rate. A machine that describes another rate gets no host
+     device and one `audio disabled` warning; resampling such a source
+     comes with the core that has one.
+   - **Pictures** are copied out of the machine only when `Frame::serial`
+     moved, and the PC moves it only when the rasterised pixels changed:
+     MEASURED over 30 paints of an idle screen, 30 copies before, 1 after
+     (`an_unchanged_screen_is_copied_once_across_paints`).
+   - **The lights' hold** (`drive_chips::DriveLights`) stays with the drive
+     chips in `window`; `machine-view` takes the activity
+     (`Session::take_slot_activity`) and the window feeds its lights.
+
+   The expected time effect did not come with this step, because the tests
+   that need a real PC stay in `window` and `window` depends on
+   `machine-view`. MEASURED with the affected-test runner on a loaded
+   development host: a change to `crates/machine-view/src/session.rs` runs
+   `machine-view` and `window` (787 tests, one ignored test by name) in
+   114 s; a change to `crates/window/src/shell_model.rs` runs `window` (731
+   tests, three ignored tests by name) in 114 s. What moved out is the 47
+   fast tests that need no machine, so a window change no longer builds or
+   runs them; the 44 s of sound-level tests move only with a PC-side crate
+   of their own, or once the media dialogs leave the window.
 3. **The library model and worker**, without egui: types the views and
    the worker share move down first, which cuts the
    `library_worker` ↔ `library_view` cycle.

@@ -74,7 +74,7 @@ planner='
 # Crates whose change can alter emulated behaviour; a change to one of them
 # selects the golden tier.
 def emulation_crates: ["assembly", "audio", "bus", "chipset", "cpu", "device",
-  "devices", "machine", "machine-file", "media", "testkit", "video"];
+  "devices", "machine", "machine-file", "media", "testkit", "unemu-pc-core", "video"];
 # Files that hold the machine runners and the disk builder the goldens drive,
 # and the command line the front-end goldens drive (the program, the
 # dispatch of the neutral command line and every PC command); a path ending
@@ -736,14 +736,25 @@ if [[ $mode == crates || $mode == full ]]; then
   fi
   run_tests tests "$selection" "${packages[@]}"
 
-  # nextest does not run doctests.
-  if [[ $runner == nextest ]]; then
+  # nextest does not run doctests. Only a library has doctests, and cargo
+  # refuses `--doc` for a selection of binary-only packages (the desktop).
+  if [[ $mode == full ]]; then
+    doc_packages=(--workspace)
+  else
+    doc_packages=()
+    while IFS= read -r crate; do doc_packages+=(-p "$crate"); done < <(
+      jq -r --argjson affected "$(field '.affected' | jq -c .)" '.packages[]
+        | select(.name as $n | $affected | index($n))
+        | select(any(.targets[]?; .kind | index("lib")))
+        | .name' "$work/metadata.json")
+  fi
+  if [[ $runner == nextest && ${#doc_packages[@]} -gt 0 ]]; then
     libtest=()
     case "$selection" in
       goldens) libtest=(--include-ignored --skip user_rom_) ;;
       all) libtest=(--include-ignored) ;;
     esac
-    step doctests cargo "${cargo_cmd[@]}" test --locked "${packages[@]}" --doc --no-fail-fast \
+    step doctests cargo "${cargo_cmd[@]}" test --locked "${doc_packages[@]}" --doc --no-fail-fast \
       -- ${libtest[@]+"${libtest[@]}"}
   fi
 

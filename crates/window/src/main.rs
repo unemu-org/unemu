@@ -1,70 +1,86 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Desktop shell and paced machine session (design/spec.md §9.4).
+//! Desktop shell and the window of a running PC (design/spec.md §9.4).
 //!
-//! The host frontend reads a monotonic clock for cadence and slice deadlines. A pure policy
-//! converts elapsed time to bounded PIT targets and virtual-time run caps.
-//! Input enters only at run boundaries; observation captures the completed
-//! boundary. An opt-in PS/2 or serial mouse uses raw relative events while captured;
-//! Command+G on macOS (Ctrl+Alt+G elsewhere) and focus loss release the host grab.
-//! Host audio opens only with the window, renders at each run boundary, and uses
-//! a bounded playback ring.
-//! Command+Shift+M on macOS (Ctrl+Alt+M elsewhere) toggles mute. Command+F on
-//! macOS (Ctrl+Alt+F elsewhere) inserts the next A: medium (wraps to the first);
-//! Command+E on macOS (Ctrl+Alt+E elsewhere)
-//! ejects A:. Hold Shift for B:.
-//! These host keys queue media events for the next run boundary; their make,
-//! repeat and break codes never reach the guest. The Media menu names both media.
-//! After each run chunk the presenter reads every drive's busy state for the
-//! status-bar lights. Reaching the controllers through `device_mut` syncs them
-//! to the bus clock and clears their cached deadlines, which only repeats the
-//! settle the next run starts with; the read itself changes no device state.
-//! Audio never paces execution. See
-//! `backlog/docs/design/observation.md` § Window pacing and § Host input.
+//! The paced session is `machine_view::Session`, which drives the machine
+//! through the front-end contract (`backlog/docs/design/core-contract.md`
+//! §5): pacing against the host clock, host audio, pointer capture, the media
+//! and mute chords. The machine is a `unemu_pc_core::PcMachine` wrapping the
+//! PC the provider assembled; it encodes keys and pointer motion for the 8042
+//! and the mouse, rasterises the text modes and samples the drives' activity
+//! after each run chunk for the status-bar lights. `Presenter` adds the PC
+//! catalogue model the media dialogs append to. The Media menu names both
+//! floppy media. See `backlog/docs/design/observation.md` § Window pacing and
+//! § Host input.
 
 use assembly::{AssembledMachine, DeviceId, ObservationPolicy, ObservationRequest, OutputKind};
-use machine::RunOutcome;
+use machine_view::Session;
 #[cfg(test)]
 use std::path::Path;
-use std::{
-    error::Error,
-    ffi::OsStr,
-    io,
-    num::{NonZeroU16, NonZeroU64},
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{error::Error, ffi::OsStr, io, path::PathBuf, time::Duration};
 use ui_kit::{EGUI_FONT_NOTICE, SYMBOL_FONT_NOTICE};
-use window::{HostKeyboard, HostMouse, WindowSink, FONT_NOTICE};
+use unemu_core_api::DisplayId;
+use unemu_pc_core::{PcMachine, FONT_NOTICE};
+#[cfg(test)]
 use winit::{
     event::{ElementState, MouseButton},
     keyboard::KeyCode,
-    window::{CursorGrabMode, Window},
 };
+
+/// The session's pacing, and the AT's tick rate for the tests that pace by it.
+mod pacing {
+    #[cfg(test)]
+    pub(crate) use machine_view::pacing::next_frame;
+    pub(crate) use machine_view::pacing::{wake, Speed};
+
+    /// The AT's timer input, 14.31818 MHz divided by twelve (IBM Personal
+    /// Computer AT Technical Reference, System Board, "System Timers"): the
+    /// tick rate every PC describes.
+    #[cfg(test)]
+    pub(crate) const PIT: unemu_core_api::Rate = unemu_core_api::Rate::new(105_000_000, 88);
+
+    #[cfg(test)]
+    pub(crate) fn frame_target(
+        elapsed: std::time::Duration,
+        clock: u64,
+        dropped: u128,
+        ratio: u32,
+    ) -> (u64, u128) {
+        machine_view::pacing::frame_target(elapsed, clock, dropped, ratio, PIT)
+    }
+
+    /// Elapsed host time as ticks of the AT's timer input.
+    #[cfg(test)]
+    pub(crate) fn virtual_ticks(elapsed: std::time::Duration) -> u128 {
+        machine_view::pacing::virtual_ticks(elapsed, PIT)
+    }
+}
+pub(crate) use machine_view::system_keys;
 
 mod app_menu;
 mod catalogue_menu;
 mod created_media;
 mod drive_chips;
 mod firmware_choices;
+#[cfg(test)]
 mod host_audio;
 mod image_settings;
 mod kept_catalogue;
+#[cfg(test)]
+mod key_table_tests;
 mod layers_dialog;
 #[cfg(test)]
 mod library_test_support;
 mod library_view;
 mod library_worker;
 #[cfg(target_os = "macos")]
-mod macos_keys;
-#[cfg(target_os = "macos")]
 mod macos_menu;
 mod media_create;
 mod media_dialog;
 mod media_picker;
+#[cfg(test)]
+mod mouse;
 mod new_machine;
 mod new_machine_view;
-mod pacing;
 mod preferences;
 mod preferences_sheet;
 mod registries_model;
@@ -81,17 +97,23 @@ mod shell_icons;
 mod shell_model;
 #[cfg(test)]
 mod sound_levels_tests;
-mod system_keys;
-
-const SINK_SCALE: u16 = 2;
-
-use host_audio::HostAudio;
 
 #[cfg(test)]
-use pacing::frame_target;
+use pacing::{wake, Speed};
+
+/// The set-1 codes of a host key: the session's mapping to a keyboard usage,
+/// then the PC core's encoder, as the guest receives them.
 #[cfg(test)]
-use pacing::wake;
-use pacing::{run_cap, CpuRate, Pacing, Speed};
+fn set1_scancodes(key: KeyCode, state: ElementState) -> Option<Vec<u8>> {
+    unemu_pc_core::set1_scancodes(
+        machine_view::keys::key_usage(key)?,
+        if state == ElementState::Pressed {
+            unemu_core_api::KeyState::Pressed
+        } else {
+            unemu_core_api::KeyState::Released
+        },
+    )
+}
 #[cfg(test)]
 const BIOS_FIXTURE: &str = "vendor/kiselev-bios/bios-xi8088.bin";
 #[cfg(test)]
@@ -143,58 +165,37 @@ mod test_wait {
     }
 }
 
-#[cfg(test)]
-type InputLogEntry = (u64, Vec<u8>, Vec<std::ops::Range<usize>>);
-
+/// The desktop's session of one PC: the contract session, and the PC
+/// catalogue model the media dialogs edit beside it.
+///
+/// The session drives the machine through the contract alone. The media
+/// dialogs, the catalogue menus and the drive chips still read and append the
+/// PC's floppy catalogue through [`PcMachine::assembled`], with the machine
+/// config and the drives' catalogues kept here.
 struct Presenter {
-    assembled: AssembledMachine,
+    session: Session<PcMachine>,
+    /// The card the session shows; the tests check which one a machine file
+    /// selects.
+    #[cfg_attr(not(test), allow(dead_code))]
     display: DeviceId,
-    sink: WindowSink,
-    audio: HostAudio,
-    mute_key_held: bool,
-    mute_modifiers: [bool; 4],
-    suppress_m: bool,
-    media_keys: [bool; 2],
-    media_held: [bool; 2],
-    shift_keys: [bool; 2],
-    media_events: Vec<(u8, assembly::FloppyAction)>,
     media_slots: [Option<media_dialog::FloppySlot>; 2],
     media_config: assembly::MachineConfig,
-    /// Drive busy state combined over the run boundaries since the shell took it.
-    drive_busy: drive_chips::DriveBusy,
     /// Status-bar drive lights; host UI time only, never read by the machine.
     drive_lights: drive_chips::DriveLights,
-    audio_error_reported: bool,
-    window: Option<Arc<Window>>,
-    running: bool,
-    /// The guest halted with interrupts off, as a clone AT BIOS does after
-    /// "No ROM BASIC" while it waits for the reset button. Its media stay
-    /// open: a floppy can still go in, and [`Presenter::reset_halted`] runs
-    /// POST again on the same session.
-    halted: bool,
-    /// The shell reported a host error for this session: it takes no more
-    /// input, but Stop still finishes the media of a halted one.
-    host_failed: bool,
-    reset_requests: u64,
-    cpu_resets: u64,
-    maintenance_reported: bool,
-    keyboard: HostKeyboard,
-    mouse: HostMouse,
-    error: Option<Box<dyn Error>>,
-    rate: CpuRate,
-    pacing: Pacing,
-    started: Option<Instant>,
-    next_paint: Option<Duration>,
-    occluded_since: Option<Duration>,
-    #[cfg(test)]
-    input_log: Vec<InputLogEntry>,
-    #[cfg(test)]
-    mouse_log: Vec<(u64, Vec<window::MouseInput>)>,
-    /// Run every slice to its paced virtual target, as an infinitely fast host
-    /// would, so a test that drives the shell sees the same machine on a loaded
-    /// host. At Unlimited speed a slice then ends only when the guest stops.
-    #[cfg(test)]
-    full_slices: bool,
+}
+
+impl std::ops::Deref for Presenter {
+    type Target = Session<PcMachine>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.session
+    }
+}
+
+impl std::ops::DerefMut for Presenter {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.session
+    }
 }
 
 impl Presenter {
@@ -219,32 +220,13 @@ impl Presenter {
         Self::from_assembled(config, assembled, DeviceId::Mda, warnings)
     }
 
+    /// Wrap a machine assembled with `display` as its one observed card.
     fn from_assembled(
         config: &assembly::MachineConfig,
-        mut assembled: AssembledMachine,
+        assembled: AssembledMachine,
         display: DeviceId,
         warnings: &mut impl io::Write,
     ) -> Result<Self, Box<dyn Error>> {
-        for unlisted in &assembled.unlisted_firmware {
-            writeln!(warnings, "{unlisted}")?;
-        }
-        if assembled.observation.speaker_trace_enabled() {
-            writeln!(
-                warnings,
-                "speaker trace on: machine assembled, guest time starts at 0"
-            )?;
-        }
-        let clock = &config.clock;
-        // HLT must wait for an IRQ; the pacing cap already bounds idle time.
-        assembled.machine.set_idle_limit(Some(u64::MAX));
-        let sink = WindowSink::new(NonZeroU16::new(SINK_SCALE).ok_or("invalid scale")?)?;
-        assembled
-            .observation
-            .subscribe(display, Box::new(sink.clone()))?;
-        let audio = HostAudio::new();
-        assembled
-            .observation
-            .subscribe_audio(Box::new(audio.sink()));
         let mut media_slots = media_dialog::FloppySlot::from_config(config);
         for (unit, slot) in media_slots.iter_mut().enumerate() {
             if let (Some(slot), Some(names)) = (
@@ -256,527 +238,92 @@ impl Presenter {
                 }
             }
         }
+        let machine = PcMachine::from_assembled(config, assembled)?;
+        #[cfg_attr(not(test), allow(unused_mut))]
+        let mut session = Session::new(Box::new(machine), DisplayId(0), warnings)?;
+        // The shell tests start real machines, whose BIOS plays its POST
+        // melody: on a developer's machine that came out of the speakers at
+        // random moments during a test run. Tests behave as a host without
+        // an output device does.
+        #[cfg(test)]
+        session
+            .audio
+            .refuse_device("host audio output is not opened in tests");
         Ok(Self {
-            assembled,
+            session,
             display,
-            sink,
-            audio,
-            mute_key_held: false,
-            mute_modifiers: [false; 4],
-            suppress_m: false,
-            media_keys: [false; 2],
-            media_held: [false; 2],
-            shift_keys: [false; 2],
-            media_events: Vec::new(),
             media_slots,
             media_config: config.clone(),
-            drive_busy: [false; drive_chips::DRIVES],
             drive_lights: drive_chips::DriveLights::default(),
-            audio_error_reported: false,
-            window: None,
-            running: true,
-            halted: false,
-            host_failed: false,
-            reset_requests: 0,
-            cpu_resets: 0,
-            maintenance_reported: false,
-            keyboard: HostKeyboard::default(),
-            mouse: HostMouse::new(config.devices.iter().any(|device| {
-                matches!(&device.kind, assembly::DeviceKind::Keyboard(controller) if controller.mouse)
-                    || matches!(&device.kind, assembly::DeviceKind::Uart(uart) if uart.mouse)
-            })),
-            error: None,
-            rate: CpuRate {
-                numerator: NonZeroU64::new(clock.retired_per_pit_clock).ok_or("zero CPU rate")?,
-                denominator: NonZeroU64::new(clock.retired_per_pit_clock_denominator)
-                    .ok_or("zero CPU rate denominator")?,
-            },
-            pacing: Pacing::default(),
-            started: None,
-            next_paint: None,
-            occluded_since: None,
-            #[cfg(test)]
-            input_log: Vec::new(),
-            #[cfg(test)]
-            mouse_log: Vec::new(),
-            #[cfg(test)]
-            full_slices: false,
         })
     }
 
-    fn advance(&mut self, elapsed: Duration) -> Result<(), Box<dyn Error>> {
-        self.advance_with_warnings(elapsed, &mut io::stderr())
+    fn assembled(&mut self) -> &mut AssembledMachine {
+        self.session.machine_mut().assembled()
     }
 
-    fn advance_with_warnings(
+    fn assembled_ref(&self) -> &AssembledMachine {
+        self.session.machine().assembled_ref()
+    }
+
+    /// The machine, its config and the drives' catalogues at once, for the
+    /// media dialogs that append to all three.
+    fn media_parts(
         &mut self,
-        elapsed: Duration,
-        warnings: &mut impl io::Write,
-    ) -> Result<(), Box<dyn Error>> {
-        #[cfg(test)]
-        if self.full_slices {
-            return self.advance_fully_with_warnings(elapsed, warnings);
-        }
-        let started = Instant::now();
-        self.advance_with_slice_clock(elapsed, warnings, || started.elapsed())
+    ) -> (
+        &mut AssembledMachine,
+        &mut assembly::MachineConfig,
+        &mut [Option<media_dialog::FloppySlot>; 2],
+    ) {
+        (
+            self.session.machine_mut().assembled(),
+            &mut self.media_config,
+            &mut self.media_slots,
+        )
     }
 
+    /// The PC's keyboard FIFO, for the tests that watch what waits for the 8042.
     #[cfg(test)]
-    fn advance_fully(&mut self, elapsed: Duration) -> Result<(), Box<dyn Error>> {
-        self.advance_fully_with_warnings(elapsed, &mut io::sink())
+    fn keyboard(&self) -> &unemu_pc_core::HostKeyboard {
+        self.session.machine().keyboard()
     }
 
-    #[cfg(test)]
-    fn advance_fully_with_warnings(
-        &mut self,
-        elapsed: Duration,
-        warnings: &mut impl io::Write,
-    ) -> Result<(), Box<dyn Error>> {
-        self.advance_with_slice_clock(elapsed, warnings, || Duration::ZERO)
+    /// The catalogue entry floppy drive `unit` holds now.
+    fn inserted_floppy(&mut self, unit: usize) -> Option<usize> {
+        self.session.machine_mut().inserted_floppy(unit)
     }
 
-    fn advance_with_slice_clock(
-        &mut self,
-        elapsed: Duration,
-        warnings: &mut impl io::Write,
-        mut spent: impl FnMut() -> Duration,
-    ) -> Result<(), Box<dyn Error>> {
-        self.audio.check_failure(warnings);
-        if !self.running || self.occluded_since.is_some() {
-            return Ok(());
-        }
-        self.assembled.check_persistence()?;
-        // Refresh consumer availability before devices can prune new history.
-        self.capture_audio(warnings);
-        let frame_period = self.pacing.frame_period(elapsed);
-        let target = self
-            .pacing
-            .target(elapsed, self.assembled.machine.clock().0);
-        while self.running
-            && target.is_none_or(|target| self.assembled.machine.clock().0 < target)
-            && self.pacing.slice_open(spent(), frame_period)
-        {
-            let clock = self.assembled.machine.clock().0;
-            let time = self.assembled.machine.virtual_time();
-            let chunk = self.pacing.chunk_target(clock, target);
-            let cap = run_cap(chunk, clock, time, self.rate);
-            if cap == time {
-                self.running = false;
-                break;
-            }
-            self.assembled.check_persistence()?;
-            self.apply_media_events()?;
-            let delivered = self.keyboard.inject_at_boundary(&mut self.assembled);
-            #[cfg(test)]
-            if !delivered.is_empty() {
-                self.input_log
-                    .push((time, delivered, self.keyboard.typed_ranges().to_vec()));
-            }
-            #[cfg(not(test))]
-            drop(delivered);
-            let mouse_input = self.mouse.inject_at_boundary(&mut self.assembled);
-            #[cfg(test)]
-            if !mouse_input.is_empty() {
-                self.mouse_log.push((time, mouse_input));
-            }
-            #[cfg(not(test))]
-            drop(mouse_input);
-            let outcome = self.assembled.machine.run_bounded(Some(cap));
-            self.sample_drive_busy();
-            if outcome.is_err() {
-                self.assembled.flush_persistence()?;
-            }
-            if matches!(outcome, Ok(RunOutcome::ResetRequested)) {
-                self.reset_requests = self.reset_requests.saturating_add(1);
-            }
-            self.assembled.check_persistence()?;
-            if outcome.is_ok() {
-                self.capture_audio(warnings);
-            }
-            match outcome {
-                Ok(RunOutcome::RetiredCapReached) => self.running = cap < u64::MAX,
-                Ok(RunOutcome::ResetRequested) => {
-                    self.assembled.before_cpu_reset()?;
-                    self.assembled.reset_cpu(assembly::ResetCause::Requested)?;
-                    self.record_cpu_reset(warnings);
-                }
-                Ok(RunOutcome::Halted) => {
-                    self.running = false;
-                    self.halted = true;
-                    // The session stays open for a reset, but what the guest
-                    // wrote up to the halt becomes durable now, as before a
-                    // reset: changed CMOS RAM and completed ATA sectors.
-                    self.assembled.before_cpu_reset()?;
-                    eprintln!("machine halted");
-                }
-                Err(error) => {
-                    self.running = false;
-                    eprintln!("machine stopped: {error}");
-                    self.error = Some(error.into());
-                }
-            }
-            self.write_speaker_trace(warnings);
-        }
-        if !self.running {
-            self.release_pointer();
-            // A halted guest can still be reset, so its session ends at Stop.
-            if self.error.is_none() && !self.halted {
-                self.finish_persistence(warnings)?;
-            }
-        }
-        self.pacing
-            .observe(elapsed, self.assembled.machine.clock().0);
-        // Even a CPU error must leave the screen at its last completed boundary.
-        self.assembled.capture_text(self.display)?;
-        if let Some(error) = self.sink.error() {
-            return Err(error.into());
-        }
-        Ok(())
-    }
-
-    fn fdc(&mut self) -> Option<&mut devices::Upd765> {
-        let index = *self.assembled.device_index.get(&DeviceId::Fdc)?;
-        self.assembled
-            .machine
-            .bus_mut()
-            .device_mut(index)?
-            .as_any_mut()?
-            .downcast_mut()
-    }
-
-    fn ata(&mut self) -> Option<&mut devices::Ata> {
-        let index = *self.assembled.device_index.get(&DeviceId::Ide)?;
-        self.assembled
-            .machine
-            .bus_mut()
-            .device_mut(index)?
-            .as_any_mut()?
-            .downcast_mut()
-    }
-
-    /// Read each drive's busy state at a completed run boundary, as the
-    /// presenter's frame observation for the status-bar lights. `device_mut`
-    /// syncs each controller to the bus clock and clears its cached deadline,
-    /// which only repeats the settle the next run starts with; the accessors
-    /// themselves change no device state.
-    fn sample_drive_busy(&mut self) {
-        let floppy: [bool; 2] =
-            std::array::from_fn(|unit| self.fdc().is_some_and(|fdc| fdc.drive_active(unit)));
-        let fixed: [bool; 2] =
-            std::array::from_fn(|unit| self.ata().is_some_and(|ata| ata.activity(unit)));
-        for (seen, busy) in self
-            .drive_busy
-            .iter_mut()
-            .zip(floppy.into_iter().chain(fixed))
-        {
-            *seen |= busy;
-        }
-    }
-
-    /// Hand this frame's busy samples to the lights at host time `now`.
+    /// Hand this frame's busy drives to the lights at host time `now`.
     fn observe_drive_lights(&mut self, now: Duration) {
-        let busy = std::mem::replace(&mut self.drive_busy, [false; drive_chips::DRIVES]);
+        let mut busy = [false; drive_chips::DRIVES];
+        for slot in self.session.take_slot_activity() {
+            if let Some(seen) = busy.get_mut(usize::from(slot.0)) {
+                *seen = true;
+            }
+        }
         self.drive_lights.observe(busy, now);
     }
 
     /// Every drive with the medium it holds now.
     fn drive_views(&mut self, origin: &drive_chips::Origin) -> Vec<drive_chips::DriveView> {
         let inserted = std::array::from_fn(|unit| {
-            let index = self.fdc()?.inserted_medium(unit)?;
-            Some((index, self.assembled.floppy_name(DeviceId::Fdc, unit as u8)))
+            let index = self.inserted_floppy(unit)?;
+            Some((
+                index,
+                self.assembled().floppy_name(DeviceId::Fdc, unit as u8),
+            ))
         });
         drive_chips::drive_views(&self.media_config, &self.media_slots, &inserted, origin)
     }
 
-    fn apply_media_events(&mut self) -> Result<(), assembly::FloppyError> {
-        let events = std::mem::take(&mut self.media_events);
-        for (unit, action) in events {
-            match self.assembled.change_floppy(DeviceId::Fdc, unit, action) {
-                Err(assembly::FloppyError::Unavailable) => {}
-                result => result?,
-            }
-        }
-        Ok(())
-    }
-
-    fn capture_audio(&mut self, warnings: &mut impl io::Write) {
-        if let Err(error) = self.assembled.capture_audio() {
-            if !self.audio_error_reported {
-                let _ = writeln!(warnings, "audio observation failed: {error}; continuing");
-                self.audio_error_reported = true;
-            }
-        }
-    }
-
-    fn finish_persistence(
-        &mut self,
-        warnings: &mut impl io::Write,
-    ) -> Result<(), assembly::PersistenceError> {
-        let result = self.assembled.finish_persistence();
-        if !self.maintenance_reported {
-            for handle in &self.assembled.persistence {
-                if let Some(outcome) = handle.maintenance_failure() {
-                    let _ = writeln!(warnings, "warning: {}: {outcome}", handle.owner());
-                }
-            }
-            self.maintenance_reported = true;
-        }
-        result
-    }
-
-    /// Whether the drives take media changes now: while the guest runs, and
-    /// while it waits halted for a reset.
-    fn takes_media(&self) -> bool {
-        (self.running || self.halted) && self.error.is_none() && !self.host_failed
-    }
-
-    /// Whether Ctrl+Alt+Del restarts the machine rather than reaching the
-    /// guest: it halted with interrupts off and no error ended the session.
-    fn awaits_reset(&self) -> bool {
-        self.halted && self.error.is_none() && !self.host_failed
-    }
-
-    /// Restart a halted machine. This asserts only the CPU reset line, the one
-    /// the 8042 output-port pulse and the shutdown cycle assert (IBM Personal
-    /// Computer AT Technical Reference, System Board, Keyboard Controller
-    /// Output Port); unlike a hardware reset button it resets no board device.
-    /// The CPU restarts at its reset vector, RAM, the devices and the inserted
-    /// media keep their state, and POST initialises the board again. Queued
-    /// media changes go in first. The reset takes no virtual time, so the run
-    /// stays deterministic.
-    fn reset_halted(&mut self, diagnostics: &mut impl io::Write) -> Result<(), Box<dyn Error>> {
-        if !self.awaits_reset() {
-            return Ok(());
-        }
-        self.apply_media_events()?;
-        self.assembled.before_cpu_reset()?;
-        self.assembled.reset_cpu(assembly::ResetCause::Host)?;
-        self.record_cpu_reset(diagnostics);
-        self.write_speaker_trace(diagnostics);
-        // Keys held or queued before the halt belong to the old boot; none of
-        // them may reach the new POST.
-        self.keyboard = HostKeyboard::default();
-        self.halted = false;
-        self.running = true;
-        Ok(())
-    }
-
-    /// One line per traced speaker or reset event; nothing without the trace.
-    fn write_speaker_trace(&self, diagnostics: &mut impl io::Write) {
-        let clock = self.assembled.machine.clock();
-        for event in self.assembled.observation.take_speaker_trace(clock) {
-            let _ = writeln!(diagnostics, "{event}");
-        }
-    }
-
-    fn record_cpu_reset(&mut self, diagnostics: &mut impl io::Write) {
-        self.cpu_resets = self.cpu_resets.saturating_add(1);
-        if self.cpu_resets == 1 {
-            let _ = writeln!(diagnostics, "cpu reset");
-        }
+    /// Seal the machine's journals and write its warnings once.
+    fn finish_persistence(&mut self, warnings: &mut impl io::Write) -> Result<(), Box<dyn Error>> {
+        self.session.finish(warnings)
     }
 
     fn write_reset_summary(&self, diagnostics: &mut impl io::Write) {
-        if self.cpu_resets != 0 {
-            let _ = writeln!(diagnostics, "cpu resets in session: {}", self.cpu_resets);
-        }
-    }
-
-    fn occlusion_changed(&mut self, occluded: bool, elapsed: Duration) {
-        if occluded {
-            self.occluded_since.get_or_insert(elapsed);
-            self.next_paint = None;
-        } else if self.occluded_since.take().is_some() {
-            self.pacing
-                .resync(elapsed, self.assembled.machine.clock().0);
-            self.next_paint = Some(elapsed);
-        }
-    }
-
-    fn select_speed(&mut self, speed: Speed, elapsed: Duration) {
-        self.pacing
-            .select(speed, elapsed, self.assembled.machine.clock().0);
-        self.audio
-            .set_speed_muted(!self.pacing.effective().audio_enabled());
-    }
-
-    fn hold_fast_forward(&mut self, held: bool, elapsed: Duration) {
-        self.pacing
-            .hold(held, elapsed, self.assembled.machine.clock().0);
-        self.audio
-            .set_speed_muted(!self.pacing.effective().audio_enabled());
-    }
-
-    fn speed_status(&self) -> String {
-        if self.running {
-            self.pacing.status()
-        } else {
-            format!("Speed {}", self.pacing.selected().label())
-        }
-    }
-
-    fn key_event(&mut self, key: KeyCode, state: ElementState) {
-        let modifier = match key {
-            KeyCode::ControlLeft => Some(0),
-            KeyCode::ControlRight => Some(1),
-            KeyCode::AltLeft => Some(2),
-            KeyCode::AltRight => Some(3),
-            _ => None,
-        };
-        if let Some(index) = modifier {
-            self.mute_modifiers[index] = state == ElementState::Pressed;
-        }
-        match key {
-            KeyCode::ShiftLeft => self.shift_keys[0] = state == ElementState::Pressed,
-            KeyCode::ShiftRight => self.shift_keys[1] = state == ElementState::Pressed,
-            _ => {}
-        }
-        if let Some(index) = match key {
-            KeyCode::KeyF => Some(0),
-            KeyCode::KeyE => Some(1),
-            _ => None,
-        } {
-            let fresh = state == ElementState::Pressed && !self.media_held[index];
-            self.media_held[index] = state == ElementState::Pressed;
-            if self.media_keys[index] {
-                if state == ElementState::Released {
-                    self.media_keys[index] = false;
-                }
-                return;
-            }
-            if fresh
-                && self.mute_modifiers[..2].contains(&true)
-                && self.mute_modifiers[2..].contains(&true)
-            {
-                self.media_keys[index] = true;
-                if self.takes_media() {
-                    self.media_events.push((
-                        u8::from(self.shift_keys.contains(&true)),
-                        if index == 0 {
-                            assembly::FloppyAction::Next
-                        } else {
-                            assembly::FloppyAction::Eject
-                        },
-                    ));
-                }
-                return;
-            }
-        }
-        if key == KeyCode::KeyM {
-            let fresh = state == ElementState::Pressed && !self.mute_key_held;
-            self.mute_key_held = state == ElementState::Pressed;
-            if self.suppress_m {
-                self.suppress_m = state != ElementState::Released;
-                return;
-            }
-            if fresh
-                && self.audio.available()
-                && self.mute_modifiers[..2].contains(&true)
-                && self.mute_modifiers[2..].contains(&true)
-            {
-                self.audio.toggle_mute();
-                self.suppress_m = true;
-                return;
-            }
-        }
-        if self.running && self.error.is_none() {
-            let was_captured = self.mouse.captured();
-            if !self.mouse.key_event(key, state) {
-                self.keyboard.key_event(key, state);
-            }
-            if was_captured && !self.mouse.captured() {
-                self.restore_pointer();
-            }
-        }
-    }
-
-    fn focus_changed(&mut self, focused: bool) {
-        if !focused {
-            self.media_keys = [false; 2];
-            self.media_held = [false; 2];
-            self.shift_keys = [false; 2];
-            self.mute_key_held = false;
-            self.mute_modifiers = [false; 4];
-            self.suppress_m = false;
-        }
-        let was_captured = self.mouse.captured();
-        self.mouse.focus_changed(focused);
-        if was_captured && !self.mouse.captured() {
-            self.restore_pointer();
-        }
-        if !focused && self.running && self.error.is_none() {
-            self.keyboard.release_all();
-        }
-    }
-
-    fn mouse_button(&mut self, button: MouseButton, state: ElementState) {
-        let grab = Self::host_grab(self.window.clone());
-        self.mouse_button_with_grab(button, state, grab);
-    }
-
-    fn host_grab(
-        window: Option<Arc<Window>>,
-    ) -> impl FnOnce() -> Result<(), winit::error::ExternalError> {
-        move || {
-            if let Some(window) = window {
-                window
-                    .set_cursor_grab(CursorGrabMode::Locked)
-                    .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))?;
-            }
-            Ok(())
-        }
-    }
-
-    fn mouse_button_with_grab(
-        &mut self,
-        button: MouseButton,
-        state: ElementState,
-        grab: impl FnOnce() -> Result<(), winit::error::ExternalError>,
-    ) {
-        if self.running && self.error.is_none() && self.mouse.button_event(button, state) {
-            self.complete_grab(grab);
-        }
-    }
-
-    /// Resume a capture that a shell question interrupted, without a click.
-    fn recapture_pointer(&mut self) {
-        if self.running && self.error.is_none() && self.mouse.recapture() {
-            let grab = Self::host_grab(self.window.clone());
-            self.complete_grab(grab);
-        }
-    }
-
-    fn complete_grab(&mut self, grab: impl FnOnce() -> Result<(), winit::error::ExternalError>) {
-        if let Err(error) = grab() {
-            eprintln!("cannot capture pointer: {error}");
-            self.release_pointer();
-            return;
-        }
-        if let Some(window) = &self.window {
-            window.set_cursor_visible(false);
-        }
-    }
-
-    fn mouse_motion(&mut self, dx: f64, dy: f64) {
-        if self.running && self.error.is_none() {
-            self.mouse.motion(dx, dy);
-        }
-    }
-
-    fn restore_pointer(&mut self) {
-        if let Some(window) = &self.window {
-            if let Err(error) = window.set_cursor_grab(CursorGrabMode::None) {
-                eprintln!("cannot release pointer: {error}");
-            }
-            window.set_cursor_visible(true);
-        }
-    }
-
-    fn release_pointer(&mut self) {
-        let was_captured = self.mouse.captured();
-        self.mouse.release();
-        if was_captured {
-            self.restore_pointer();
+        if let Some(summary) = self.session.machine().reset_summary() {
+            let _ = writeln!(diagnostics, "{summary}");
         }
     }
 }
@@ -1017,6 +564,39 @@ mod tests {
     use super::*;
     use assembly::assemble_with_observation;
 
+    /// An idle screen is copied out of the machine once, not on every paint.
+    #[test]
+    fn an_unchanged_screen_is_copied_once_across_paints() {
+        let mut rom = vec![0u8; 0x8000];
+        rom[..2].copy_from_slice(&[0xEB, 0xFE]);
+        let mut config = assembly::bios(rom, None);
+        config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
+        let mut presenter = test_presenter(&config).unwrap();
+        for frame in 1..=30 {
+            presenter
+                .advance_fully(Duration::from_nanos(frame * 16_666_667))
+                .unwrap();
+        }
+        assert!(presenter.running);
+        assert_eq!(presenter.picture_copies, 1);
+    }
+
+    /// A wrong pin of a core's contract fails here, not in a user's hands.
+    #[test]
+    fn every_compiled_in_core_implements_the_contract_the_desktop_drives() {
+        let cores: [&dyn unemu_core_api::Core; 1] = [&unemu_pc_core::PcCore];
+        for core in cores {
+            let description = core.description();
+            assert!(
+                unemu_core_api::CONTRACT.drives(description.implements),
+                "core {} implements contract {}; this program needs {}",
+                description.id,
+                description.implements,
+                unemu_core_api::CONTRACT
+            );
+        }
+    }
+
     #[test]
     fn speaker_trace_is_off_unless_the_switch_is_exactly_one() {
         assert!(!speaker_trace_requested(None));
@@ -1132,26 +712,39 @@ mod tests {
         presenter.key_event(KeyCode::KeyF, Released);
         assert_eq!(
             presenter.media_events,
-            vec![(0, assembly::FloppyAction::Next)]
+            vec![(unemu_core_api::SlotId(0), unemu_core_api::MediaAction::Next)]
         );
-        assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 0), "one.img");
+        assert_eq!(
+            presenter.assembled().floppy_name(DeviceId::Fdc, 0),
+            "one.img"
+        );
         presenter.advance_fully(Duration::ZERO).unwrap();
-        assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 0), "one.img");
+        assert_eq!(
+            presenter.assembled().floppy_name(DeviceId::Fdc, 0),
+            "one.img"
+        );
         advance_frame(&mut presenter);
-        assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 0), "two.img");
+        assert_eq!(
+            presenter.assembled().floppy_name(DeviceId::Fdc, 0),
+            "two.img"
+        );
         presenter.key_event(KeyCode::ShiftLeft, Pressed);
         presenter.key_event(KeyCode::KeyE, Pressed);
         presenter.key_event(KeyCode::ControlLeft, Released);
         presenter.key_event(KeyCode::KeyE, Released);
         advance_frame(&mut presenter);
-        assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 1), "empty");
-        assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 0), "two.img");
+        assert_eq!(presenter.assembled().floppy_name(DeviceId::Fdc, 1), "empty");
+        assert_eq!(
+            presenter.assembled().floppy_name(DeviceId::Fdc, 0),
+            "two.img"
+        );
         assert!(presenter
+            .machine()
             .input_log
             .iter()
             .flat_map(|(_, codes, _)| codes)
             .all(|code| ![0x21, 0xa1, 0x12, 0x92].contains(code)));
-        presenter.assembled.finish_persistence().unwrap();
+        presenter.assembled().finish_persistence().unwrap();
     }
 
     /// A machine whose firmware counts each start in RAM byte 0500h, then
@@ -1191,7 +784,7 @@ mod tests {
     }
 
     pub(super) fn starts_counted(presenter: &Presenter) -> u8 {
-        match cpu::Cpu::guest_dma_read(presenter.assembled.machine.cpu(), 0x500) {
+        match cpu::Cpu::guest_dma_read(presenter.assembled_ref().machine.cpu(), 0x500) {
             cpu::DmaAccess::Complete(count) => count,
             cpu::DmaAccess::Mmio => panic!("0500h is RAM"),
         }
@@ -1217,25 +810,31 @@ mod tests {
         }
         assert_eq!(
             presenter.media_events,
-            vec![(0, assembly::FloppyAction::Next)]
+            vec![(unemu_core_api::SlotId(0), unemu_core_api::MediaAction::Next)]
         );
-        let time = presenter.assembled.machine.virtual_time();
+        let time = presenter.assembled().machine.virtual_time();
         let mut diagnostics = Vec::new();
         presenter.reset_halted(&mut diagnostics).unwrap();
         // The queued change goes in before the CPU leaves reset; the reset
         // itself takes no virtual time.
-        assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 0), "two.img");
-        assert_eq!(presenter.assembled.machine.virtual_time(), time);
+        assert_eq!(
+            presenter.assembled().floppy_name(DeviceId::Fdc, 0),
+            "two.img"
+        );
+        assert_eq!(presenter.assembled().machine.virtual_time(), time);
         assert!(presenter.running);
         assert!(!presenter.halted);
-        assert_eq!(presenter.cpu_resets, 1);
+        assert_eq!(presenter.machine().cpu_resets(), 1);
         assert_eq!(diagnostics, b"cpu reset\n");
         presenter.advance_fully(Duration::from_millis(40)).unwrap();
         // The firmware ran again from the reset vector with RAM kept, and the
         // inserted disk stayed in its drive.
         assert!(presenter.halted);
         assert_eq!(starts_counted(&presenter), 2);
-        assert_eq!(presenter.assembled.floppy_name(DeviceId::Fdc, 0), "two.img");
+        assert_eq!(
+            presenter.assembled().floppy_name(DeviceId::Fdc, 0),
+            "two.img"
+        );
         presenter.finish_persistence(&mut io::sink()).unwrap();
     }
 
@@ -1244,13 +843,13 @@ mod tests {
         let mut presenter = counting_halt_presenter();
         presenter.reset_halted(&mut io::sink()).unwrap();
         assert!(presenter.running);
-        assert_eq!(presenter.cpu_resets, 0);
+        assert_eq!(presenter.machine().cpu_resets(), 0);
         presenter.advance_fully(Duration::from_millis(20)).unwrap();
         presenter.error = Some("cpu failure".into());
         presenter.reset_halted(&mut io::sink()).unwrap();
         assert!(!presenter.running);
         assert!(!presenter.takes_media());
-        assert_eq!(presenter.cpu_resets, 0);
+        assert_eq!(presenter.machine().cpu_resets(), 0);
         assert_eq!(starts_counted(&presenter), 1);
     }
 
@@ -1345,7 +944,7 @@ mod tests {
     fn assert_stream_click_survives(previous_unread: bool) {
         use ElementState::{Pressed, Released};
         let mut presenter = mouse_presenter(true);
-        let bus = presenter.assembled.machine.bus_mut();
+        let bus = presenter.assembled().machine.bus_mut();
         bus.port_write(0x64, 1, 0xD4).unwrap();
         bus.port_write(0x60, 1, 0xF4).unwrap();
         advance_frame(&mut presenter);
@@ -1354,31 +953,31 @@ mod tests {
         presenter.mouse_button(MouseButton::Left, Released);
         presenter.mouse_motion(5.0, -7.0);
         if previous_unread {
-            presenter.mouse.inject_at_boundary(&mut presenter.assembled);
-            let time = presenter.assembled.machine.virtual_time();
+            presenter.machine_mut().deliver_pointer_for_test();
+            let time = presenter.assembled().machine.virtual_time();
             presenter
-                .assembled
+                .assembled()
                 .machine
                 .run_bounded(Some(time + 1))
                 .unwrap();
         }
         presenter.mouse_button(MouseButton::Left, Pressed);
         presenter.mouse_button(MouseButton::Left, Released);
-        presenter.mouse.inject_at_boundary(&mut presenter.assembled);
+        presenter.machine_mut().deliver_pointer_for_test();
         for _ in 0..3 {
             advance_frame(&mut presenter);
         }
         let mut bytes = [0; 13];
         presenter
-            .assembled
+            .assembled()
             .machine
             .cpu()
             .read_mem(0x2000, &mut bytes)
             .unwrap();
         assert_eq!(bytes, [0xFA, 8, 5, 7, 9, 0, 0, 8, 0, 0, 0, 0, 0]);
         assert!(presenter
-            .mouse
-            .inject_at_boundary(&mut presenter.assembled)
+            .machine_mut()
+            .deliver_pointer_for_test()
             .is_empty());
         assert!(presenter.window.is_none());
     }
@@ -1397,8 +996,8 @@ mod tests {
             panic!("the capture-click release must not attempt another grab")
         });
         assert!(presenter
-            .mouse
-            .inject_at_boundary(&mut presenter.assembled)
+            .machine_mut()
+            .deliver_pointer_for_test()
             .is_empty());
         let mut retried = false;
         presenter.mouse_button_with_grab(MouseButton::Left, Pressed, || {
@@ -1409,12 +1008,12 @@ mod tests {
         assert!(presenter.mouse.captured());
         presenter.mouse_button(MouseButton::Left, Released);
         assert!(presenter
-            .mouse
-            .inject_at_boundary(&mut presenter.assembled)
+            .machine_mut()
+            .deliver_pointer_for_test()
             .is_empty());
         presenter.mouse_button(MouseButton::Left, Pressed);
         presenter.mouse_button(MouseButton::Left, Released);
-        let delivered = presenter.mouse.inject_at_boundary(&mut presenter.assembled);
+        let delivered = presenter.machine_mut().deliver_pointer_for_test();
         assert_eq!(
             delivered
                 .iter()
@@ -1428,30 +1027,30 @@ mod tests {
     #[test]
     fn mouse_readiness_query_preserves_controller_state_and_checks_its_own_output() {
         let mut presenter = mouse_presenter(true);
-        assert!(presenter.assembled.mouse_input_ready());
-        let bus = presenter.assembled.machine.bus_mut();
+        assert!(presenter.assembled().mouse_input_ready());
+        let bus = presenter.assembled().machine.bus_mut();
         bus.port_write(0x64, 1, 0xD4).unwrap();
         bus.port_write(0x60, 1, 0xF4).unwrap();
         advance_frame(&mut presenter);
-        let index = presenter.assembled.device_index[&DeviceId::Keyboard];
+        let index = presenter.assembled().device_index[&DeviceId::Keyboard];
         assert!(assembly::inject_mouse(
-            &mut presenter.assembled.machine,
+            &mut presenter.assembled().machine,
             index,
             1,
             2,
             0
         ));
         let before = presenter
-            .assembled
+            .assembled()
             .machine
             .bus()
             .device(index)
             .unwrap()
             .save();
-        assert!(!presenter.assembled.mouse_input_ready());
+        assert!(!presenter.assembled().mouse_input_ready());
         assert_eq!(
             presenter
-                .assembled
+                .assembled()
                 .machine
                 .bus()
                 .device(index)
@@ -1460,21 +1059,24 @@ mod tests {
             before
         );
         advance_frame(&mut presenter);
-        assert!(presenter.assembled.mouse_input_ready());
+        assert!(presenter.assembled().mouse_input_ready());
         assert!(assembly::try_inject_scancode(
-            &mut presenter.assembled.machine,
+            &mut presenter.assembled().machine,
             index,
             0x1E
         ));
-        assert!(presenter.assembled.mouse_input_ready());
+        assert!(presenter.assembled().mouse_input_ready());
         assert_eq!(
-            assembly::keyboard_leds_if_ready(&mut presenter.assembled.machine, index),
+            assembly::keyboard_leds_if_ready(&mut presenter.assembled().machine, index),
             None
         );
         let mut absent = mouse_presenter(false);
-        assert!(!absent.assembled.mouse_input_ready());
-        presenter.assembled.device_index.remove(&DeviceId::Keyboard);
-        assert!(!presenter.assembled.mouse_input_ready());
+        assert!(!absent.assembled().mouse_input_ready());
+        presenter
+            .assembled()
+            .device_index
+            .remove(&DeviceId::Keyboard);
+        assert!(!presenter.assembled().mouse_input_ready());
     }
 
     #[test]
@@ -1489,19 +1091,19 @@ mod tests {
 
     #[test]
     fn mouse_presenter_injects_only_at_run_boundaries_and_guest_reads_coalesced_counts() {
-        use window::MouseInput;
+        use unemu_pc_core::MouseInput;
         use ElementState::{Pressed, Released};
         let mut presenter = mouse_presenter(true);
         advance_frame(&mut presenter);
-        let index = presenter.assembled.device_index[&DeviceId::Keyboard];
+        let index = presenter.assembled().device_index[&DeviceId::Keyboard];
         let before = presenter
-            .assembled
+            .assembled()
             .machine
             .bus()
             .device(index)
             .unwrap()
             .save();
-        let time = presenter.assembled.machine.virtual_time();
+        let time = presenter.assembled().machine.virtual_time();
         presenter.mouse.pointer_inside(true);
         presenter.mouse_button(MouseButton::Left, Pressed);
         presenter.mouse_button(MouseButton::Left, Released);
@@ -1512,7 +1114,7 @@ mod tests {
         presenter.mouse_motion(5.0, -2.0);
         assert_eq!(
             presenter
-                .assembled
+                .assembled()
                 .machine
                 .bus()
                 .device(index)
@@ -1521,10 +1123,10 @@ mod tests {
             before
         );
         presenter.advance_fully(Duration::ZERO).unwrap();
-        assert!(presenter.mouse_log.is_empty());
+        assert!(presenter.machine().mouse_log.is_empty());
         advance_frame(&mut presenter);
         assert_eq!(
-            presenter.mouse_log,
+            presenter.machine().mouse_log,
             [(
                 time,
                 vec![
@@ -1541,19 +1143,19 @@ mod tests {
                 ]
             )]
         );
-        let bus = presenter.assembled.machine.bus_mut();
+        let bus = presenter.assembled().machine.bus_mut();
         bus.port_write(0x64, 1, 0xD4).unwrap();
         bus.port_write(0x60, 1, 0xEB).unwrap();
         advance_frame(&mut presenter);
         let mut bytes = [0; 7];
         presenter
-            .assembled
+            .assembled()
             .machine
             .cpu()
             .read_mem(0x2000, &mut bytes)
             .unwrap();
         assert_eq!(bytes, [0xFA, 0x2A, 13, 254, 0, 0, 0]);
-        assert_eq!(presenter.mouse_log.len(), 1);
+        assert_eq!(presenter.machine().mouse_log.len(), 1);
         assert!(presenter.window.is_none());
     }
 
@@ -1578,10 +1180,10 @@ mod tests {
                 presenter.key_event(KeyCode::AltLeft, Released);
             }
             assert!(!presenter.mouse.captured());
-            assert_eq!(presenter.keyboard.pending_events(), 4);
+            assert_eq!(presenter.keyboard().pending_events(), 4);
             advance_frame(&mut presenter);
             assert_eq!(
-                presenter.mouse_log[0]
+                presenter.machine().mouse_log[0]
                     .1
                     .iter()
                     .map(|input| input.buttons)
@@ -1594,8 +1196,8 @@ mod tests {
             presenter.mouse_motion(20.0, 30.0);
             assert!(!presenter.mouse.captured());
             assert!(presenter
-                .mouse
-                .inject_at_boundary(&mut presenter.assembled)
+                .machine_mut()
+                .deliver_pointer_for_test()
                 .is_empty());
             assert!(presenter.window.is_none());
         }
@@ -1605,9 +1207,9 @@ mod tests {
     fn mouse_presenter_without_mouse_preserves_keyboard_and_device_state() {
         use ElementState::{Pressed, Released};
         let mut presenter = mouse_presenter(false);
-        let index = presenter.assembled.device_index[&DeviceId::Keyboard];
+        let index = presenter.assembled().device_index[&DeviceId::Keyboard];
         let before = presenter
-            .assembled
+            .assembled()
             .machine
             .bus()
             .device(index)
@@ -1619,12 +1221,12 @@ mod tests {
         presenter.mouse_button(MouseButton::Left, Released);
         assert!(!presenter.mouse.captured());
         assert!(presenter
-            .mouse
-            .inject_at_boundary(&mut presenter.assembled)
+            .machine_mut()
+            .deliver_pointer_for_test()
             .is_empty());
         assert_eq!(
             presenter
-                .assembled
+                .assembled()
                 .machine
                 .bus()
                 .device(index)
@@ -1636,7 +1238,7 @@ mod tests {
             presenter.key_event(key, Pressed);
             presenter.key_event(key, Released);
         }
-        assert_eq!(presenter.keyboard.pending_events(), 6);
+        assert_eq!(presenter.keyboard().pending_events(), 6);
         assert!(presenter.window.is_none());
     }
 
@@ -1667,7 +1269,7 @@ mod tests {
         let presenter = setup(&args, &mut io::sink()).unwrap();
         assert_eq!(presenter.display, DeviceId::Mda);
         assert!(presenter.window.is_none());
-        assert_eq!(presenter.assembled.machine.virtual_time(), 0);
+        assert_eq!(presenter.assembled_ref().machine.virtual_time(), 0);
     }
 
     #[test]
@@ -1694,8 +1296,11 @@ mod tests {
         ] {
             let presenter = setup(&args_for(name), &mut io::sink()).unwrap();
             assert_eq!(presenter.display, expected);
-            assert_eq!(presenter.assembled.observation.routes()[0].device, expected);
-            assert!(presenter.assembled.capture_text(expected).is_ok());
+            assert_eq!(
+                presenter.assembled_ref().observation.routes()[0].device,
+                expected
+            );
+            assert!(presenter.assembled_ref().capture_text(expected).is_ok());
             assert!(presenter.window.is_none());
         }
         assert!(setup(&args_for(Some("missing")), &mut io::sink()).is_err());
@@ -1756,7 +1361,7 @@ mod tests {
         .is_err());
         let mut warnings = Vec::new();
         let presenter = Presenter::new(&config, options, &mut warnings).unwrap();
-        assert_eq!(presenter.assembled.unlisted_firmware.len(), 1);
+        assert_eq!(presenter.assembled_ref().unlisted_firmware.len(), 1);
         assert_eq!(String::from_utf8(warnings).unwrap(), "warning: running unlisted firmware (sha256 c35020473aed1b4642cd726cad727b63fff2824ad68cedd7ffb73c7cbd890479)\n");
     }
 
@@ -1829,7 +1434,7 @@ mod tests {
                 }
                 assert!(!presenter.running);
                 assert!(presenter.error.is_none());
-                assert_eq!(presenter.cpu_resets, 1);
+                assert_eq!(presenter.machine().cpu_resets(), 1);
                 // A halted guest can still be reset; Stop ends its session.
                 assert!(presenter.halted);
                 presenter.finish_persistence(&mut io::sink()).unwrap();
@@ -1969,7 +1574,7 @@ mod tests {
         for millis in [8, 16, 17, 33, 50, 66, 83, 100] {
             paced.advance_fully(Duration::from_millis(millis)).unwrap();
             assert!(paced.running);
-            for (seen, busy) in seen.iter_mut().zip(paced.drive_busy) {
+            for (seen, busy) in seen.iter_mut().zip(paced.machine().drive_activity()) {
                 *seen |= busy;
             }
             paced.observe_drive_lights(Duration::from_millis(millis));
@@ -1981,7 +1586,7 @@ mod tests {
         );
         let mut rounds = [0; 2];
         paced
-            .assembled
+            .assembled()
             .machine
             .cpu()
             .read_mem(0x7C95, &mut rounds)
@@ -1990,8 +1595,8 @@ mod tests {
             u16::from_le_bytes(rounds) >= 3,
             "the guest finished several IDE and floppy rounds"
         );
-        let final_time = paced.assembled.machine.virtual_time();
-        let expected = guest_state(&mut paced.assembled);
+        let final_time = paced.assembled().machine.virtual_time();
+        let expected = guest_state(paced.assembled());
         for chunk in [137, 997] {
             let mut headless = observed_machine(&config);
             run_to(&mut headless, final_time, chunk);
@@ -2003,12 +1608,21 @@ mod tests {
     fn drive_busy_is_sampled_at_run_boundaries_and_lights_hold_in_host_time() {
         let ms = Duration::from_millis;
         let mut presenter = test_presenter(&busy_drives_config()).unwrap();
-        assert_eq!(presenter.drive_busy, [false; drive_chips::DRIVES]);
+        assert_eq!(
+            presenter.machine().drive_activity(),
+            [false; drive_chips::DRIVES]
+        );
         presenter.advance_fully(ms(20)).unwrap();
         assert!(presenter.running);
-        assert_eq!(presenter.drive_busy, [true, false, true, false]);
+        assert_eq!(
+            presenter.machine().drive_activity(),
+            [true, false, true, false]
+        );
         presenter.observe_drive_lights(ms(20));
-        assert_eq!(presenter.drive_busy, [false; drive_chips::DRIVES]);
+        assert_eq!(
+            presenter.machine().drive_activity(),
+            [false; drive_chips::DRIVES]
+        );
         let lit = |presenter: &Presenter, now| -> Vec<bool> {
             (0..drive_chips::DRIVES)
                 .map(|slot| presenter.drive_lights.lit(slot, now))
@@ -2016,13 +1630,16 @@ mod tests {
         };
         assert_eq!(lit(&presenter, ms(20)), [true, false, true, false]);
         // The host stops the motor and takes the sector, so later boundaries are idle.
-        let bus = presenter.assembled.machine.bus_mut();
+        let bus = presenter.assembled().machine.bus_mut();
         bus.port_write(0x3F2, 1, 0x0C).unwrap();
         for _ in 0..256 {
             bus.port_read(0x1F0, 2).unwrap();
         }
         presenter.advance_fully(ms(40)).unwrap();
-        assert_eq!(presenter.drive_busy, [false; drive_chips::DRIVES]);
+        assert_eq!(
+            presenter.machine().drive_activity(),
+            [false; drive_chips::DRIVES]
+        );
         presenter.observe_drive_lights(ms(40));
         assert_eq!(lit(&presenter, ms(219)), [true, false, true, false]);
         assert_eq!(lit(&presenter, ms(220)), [false; drive_chips::DRIVES]);
@@ -2189,41 +1806,41 @@ mod tests {
             let mut reference = test_presenter(&config).unwrap();
             assert_eq!(
                 reference
-                    .assembled
+                    .assembled()
                     .machine
                     .run_bounded(Some(10_000))
                     .unwrap(),
-                RunOutcome::ResetRequested
+                machine::RunOutcome::ResetRequested
             );
-            let boundary = reference.assembled.machine.virtual_time();
+            let boundary = reference.assembled().machine.virtual_time();
             config.drives[0].write = assembly::WriteMode::journal(&journal);
             let mut presenter = test_presenter(&config).unwrap();
             let mut diagnostics = Vec::new();
             if fail {
-                presenter.assembled.persistence[0].fail_output();
+                presenter.assembled().persistence[0].fail_output();
                 let error = presenter
                     .advance_fully_with_warnings(Duration::from_millis(20), &mut diagnostics)
                     .unwrap_err();
                 assert!(error.to_string().contains("drive 0 persistence"), "{error}");
-                assert_eq!(presenter.assembled.machine.virtual_time(), boundary);
-                assert_eq!(presenter.assembled.machine.cpu().code_segment(), 0);
+                assert_eq!(presenter.assembled().machine.virtual_time(), boundary);
+                assert_eq!(presenter.assembled().machine.cpu().code_segment(), 0);
                 assert!(presenter.advance_fully(Duration::from_millis(40)).is_err());
-                assert_eq!(presenter.assembled.machine.virtual_time(), boundary);
+                assert_eq!(presenter.assembled().machine.virtual_time(), boundary);
                 assert_eq!(std::fs::read(journal).unwrap().len(), 128);
             } else {
                 presenter
                     .advance_fully_with_warnings(Duration::from_millis(20), &mut diagnostics)
                     .unwrap();
-                assert_eq!(presenter.assembled.machine.virtual_time(), boundary + 2);
-                assert_eq!(presenter.assembled.machine.cpu().code_segment(), 0xF000);
+                assert_eq!(presenter.assembled().machine.virtual_time(), boundary + 2);
+                assert_eq!(presenter.assembled().machine.cpu().code_segment(), 0xF000);
                 assert_eq!(
-                    cpu::Cpu::reg(presenter.assembled.machine.cpu(), cpu::CpuReg::Rax) & 0xFF,
+                    cpu::Cpu::reg(presenter.assembled().machine.cpu(), cpu::CpuReg::Rax) & 0xFF,
                     0x66
                 );
                 assert!(!presenter.running);
             }
-            assert_eq!(presenter.reset_requests, 1);
-            assert_eq!(presenter.cpu_resets, u64::from(!fail));
+            assert_eq!(presenter.machine().reset_requests(), 1);
+            assert_eq!(presenter.machine().cpu_resets(), u64::from(!fail));
             if fail {
                 presenter.write_reset_summary(&mut diagnostics);
                 assert!(diagnostics.is_empty());
@@ -2296,12 +1913,13 @@ mod tests {
             keep_generations: 1,
         };
         let mut presenter = test_presenter(&config).unwrap();
-        presenter.assembled.persistence[0]
-            .checkpoint(&mut presenter.assembled.machine)
+        let assembled = presenter.assembled();
+        assembled.persistence[0]
+            .checkpoint(&mut assembled.machine)
             .unwrap();
-        presenter.assembled.persistence[0].fail_retention("temporary write");
+        presenter.assembled().persistence[0].fail_retention("temporary write");
         presenter
-            .assembled
+            .assembled()
             .change_floppy(DeviceId::Fdc, 0, assembly::FloppyAction::Insert(0))
             .unwrap();
         let mut warnings = Vec::new();
@@ -2338,12 +1956,13 @@ mod tests {
                 };
                 config.drives.push(second);
                 let mut presenter = test_presenter(&config).unwrap();
-                for handle in &mut presenter.assembled.persistence {
-                    handle.checkpoint(&mut presenter.assembled.machine).unwrap();
+                let assembled = presenter.assembled();
+                for handle in &mut assembled.persistence {
+                    handle.checkpoint(&mut assembled.machine).unwrap();
                 }
-                presenter.assembled.persistence[0].fail_retention(operation);
+                presenter.assembled().persistence[0].fail_retention(operation);
                 if both_fail {
-                    presenter.assembled.persistence[1].fail_retention("temporary write");
+                    presenter.assembled().persistence[1].fail_retention("temporary write");
                 }
                 let mut warnings = Vec::new();
                 presenter
@@ -2379,7 +1998,7 @@ mod tests {
     const TEST_FRAME_CLOCKS: u64 = 14_318;
 
     fn advance_frame(presenter: &mut Presenter) {
-        let target = presenter.assembled.machine.clock().0 + TEST_FRAME_CLOCKS;
+        let target = presenter.assembled().machine.clock().0 + TEST_FRAME_CLOCKS;
         let frequency = device::clock::PIT_HZ;
         let nanos = (u128::from(target) * u128::from(frequency.denominator()) * 1_000_000_000)
             .div_ceil(
@@ -2577,19 +2196,19 @@ mod tests {
         let mut presenter = test_presenter(&assembly::bios(vec![0; 0x8000], None)).unwrap();
         presenter.running = false;
         presenter.key_event(KeyCode::ShiftLeft, ElementState::Pressed);
-        assert_eq!(presenter.keyboard.pending_events(), 0);
+        assert_eq!(presenter.keyboard().pending_events(), 0);
         presenter.running = true;
         presenter.error = Some("presentation failed".into());
         presenter.key_event(KeyCode::ShiftLeft, ElementState::Pressed);
-        assert_eq!(presenter.keyboard.pending_events(), 0);
+        assert_eq!(presenter.keyboard().pending_events(), 0);
         presenter.error = None;
         presenter.key_event(KeyCode::ShiftLeft, ElementState::Pressed);
         presenter.focus_changed(true);
-        assert_eq!(presenter.keyboard.pending_events(), 1);
+        assert_eq!(presenter.keyboard().pending_events(), 1);
         presenter.focus_changed(false);
-        assert_eq!(presenter.keyboard.pending_events(), 2);
+        assert_eq!(presenter.keyboard().pending_events(), 2);
         presenter.key_event(KeyCode::ShiftLeft, ElementState::Released);
-        assert_eq!(presenter.keyboard.pending_events(), 2);
+        assert_eq!(presenter.keyboard().pending_events(), 2);
     }
 
     #[test]
@@ -2626,7 +2245,7 @@ mod tests {
             assert!(presenter.running, "a prompt is not a machine stop");
         }
         let video::Frame::Text(frame) = presenter
-            .assembled
+            .assembled()
             .capture_text(DeviceId::Mda)
             .unwrap()
             .frame
@@ -2640,11 +2259,11 @@ mod tests {
         advance_frame(&mut presenter);
         assert!(presenter.running);
         assert_eq!(
-            presenter.assembled.machine.virtual_time(),
+            presenter.assembled().machine.virtual_time(),
             3 * TEST_FRAME_CLOCKS
         );
         let video::Frame::Text(frame) = presenter
-            .assembled
+            .assembled()
             .capture_text(DeviceId::Mda)
             .unwrap()
             .frame
@@ -2652,7 +2271,7 @@ mod tests {
             panic!("expected text frame")
         };
         assert!(frame.to_dump().contains("Enter new date (mm-dd-[cc]yy):!"));
-        assert!(presenter.sink.frame().is_some());
+        assert!(presenter.picture().is_some());
         assert!(presenter.window.is_none());
     }
 
@@ -2664,10 +2283,16 @@ mod tests {
         presenter.write_reset_summary(&mut diagnostics);
         assert!(diagnostics.is_empty());
         for _ in 0..10_000 {
-            presenter.record_cpu_reset(&mut diagnostics);
+            presenter.machine_mut().record_cpu_reset();
+        }
+        let mut messages = Vec::new();
+        unemu_core_api::Machine::drain_messages(presenter.machine_mut(), &mut messages);
+        for message in messages {
+            io::Write::write_all(&mut diagnostics, format!("{}\n", message.text).as_bytes())
+                .unwrap();
         }
         assert_eq!(diagnostics, b"cpu reset\n");
-        assert_eq!(presenter.cpu_resets, 10_000);
+        assert_eq!(presenter.machine().cpu_resets(), 10_000);
         presenter.write_reset_summary(&mut diagnostics);
         assert_eq!(diagnostics, b"cpu reset\ncpu resets in session: 10000\n");
         assert!(presenter.window.is_none());
@@ -2682,20 +2307,24 @@ mod tests {
         config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
         let mut presenter = test_presenter(&config).unwrap();
         advance_frame(&mut presenter);
-        assert!(presenter.reset_requests > 1_000);
+        assert!(presenter.machine().reset_requests() > 1_000);
         assert!(presenter.running);
         assert_eq!(
-            presenter.assembled.machine.virtual_time(),
+            presenter.assembled().machine.virtual_time(),
             TEST_FRAME_CLOCKS
         );
-        let count = presenter.reset_requests;
+        let count = presenter.machine().reset_requests();
         advance_frame(&mut presenter);
-        assert!(presenter.reset_requests > count);
+        assert!(presenter.machine().reset_requests() > count);
         let mut summary = Vec::new();
         presenter.write_reset_summary(&mut summary);
         assert_eq!(
             summary,
-            format!("cpu resets in session: {}\n", presenter.cpu_resets).as_bytes()
+            format!(
+                "cpu resets in session: {}\n",
+                presenter.machine().cpu_resets()
+            )
+            .as_bytes()
         );
         assert!(presenter.window.is_none());
     }
@@ -2711,10 +2340,10 @@ mod tests {
         let mut presenter = test_presenter(&config).unwrap();
         advance_frame(&mut presenter);
         assert_eq!(
-            presenter.assembled.machine.cpu().reg(CpuReg::Rax) & 0xFF,
+            presenter.assembled().machine.cpu().reg(CpuReg::Rax) & 0xFF,
             0x55
         );
-        assert_eq!(presenter.assembled.machine.virtual_time(), 5);
+        assert_eq!(presenter.assembled().machine.virtual_time(), 5);
         assert!(!presenter.running);
         assert!(presenter.window.is_none());
     }
@@ -2736,13 +2365,13 @@ mod tests {
         config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
         config.cpu.segments = assembly::SegmentSeed::flat(0);
         let mut presenter = test_presenter(&config).unwrap();
-        presenter.keyboard.key_event(KeyCode::KeyF, Pressed);
-        presenter.keyboard.key_event(KeyCode::KeyG, Pressed);
-        assert_eq!(presenter.keyboard.pending_events(), 2);
-        assert_eq!(presenter.assembled.machine.virtual_time(), 0);
+        presenter.guest_key(KeyCode::KeyF, Pressed);
+        presenter.guest_key(KeyCode::KeyG, Pressed);
+        assert_eq!(presenter.keyboard().pending_events(), 2);
+        assert_eq!(presenter.assembled().machine.virtual_time(), 0);
         assert_eq!(
             presenter
-                .assembled
+                .assembled()
                 .machine
                 .bus_mut()
                 .port_read(0x64, 1)
@@ -2761,10 +2390,10 @@ mod tests {
                 }
             })
             .unwrap();
-        let first_time = presenter.assembled.machine.virtual_time();
+        let first_time = presenter.assembled().machine.virtual_time();
         assert!(first_time > 0);
-        assert_eq!(presenter.keyboard.pending_events(), 1);
-        let first = presenter.assembled.capture_text(DeviceId::Mda).unwrap();
+        assert_eq!(presenter.keyboard().pending_events(), 1);
+        let first = presenter.assembled().capture_text(DeviceId::Mda).unwrap();
         let video::Frame::Text(first) = first.frame else {
             panic!("expected text frame")
         };
@@ -2774,17 +2403,17 @@ mod tests {
             "second byte must wait for another boundary"
         );
         advance_frame(&mut presenter);
-        assert_eq!(presenter.keyboard.pending_events(), 0);
-        let second = presenter.assembled.capture_text(DeviceId::Mda).unwrap();
+        assert_eq!(presenter.keyboard().pending_events(), 0);
+        let second = presenter.assembled().capture_text(DeviceId::Mda).unwrap();
         let video::Frame::Text(second) = second.frame else {
             panic!("expected text frame")
         };
         assert!(second.to_dump().starts_with("1!\""));
         assert_eq!(
-            presenter.assembled.machine.virtual_time(),
+            presenter.assembled().machine.virtual_time(),
             first_time + TEST_FRAME_CLOCKS
         );
-        assert!(presenter.sink.frame().is_some());
+        assert!(presenter.picture().is_some());
         assert!(presenter.window.is_none());
     }
 
@@ -2797,7 +2426,7 @@ mod tests {
             .bus_mut()
             .port_write(0x64, 1, 0xAD)
             .unwrap();
-        let mut keyboard = HostKeyboard::default();
+        let mut keyboard = unemu_pc_core::HostKeyboard::default();
         keyboard.ctrl_alt_del();
         let bytes = keyboard.inject_at_boundary(&mut original);
         let log = vec![(0, bytes, keyboard.typed_ranges().to_vec())];
@@ -2815,7 +2444,7 @@ mod tests {
 
     fn replay_input(
         assembled: &mut AssembledMachine,
-        log: &[InputLogEntry],
+        log: &[unemu_pc_core::InputLogEntry],
         final_time: u64,
         chunk: u64,
     ) {
@@ -2845,7 +2474,7 @@ mod tests {
             let cap = (assembled.machine.virtual_time() + chunk).min(time);
             assert_eq!(
                 assembled.machine.run_bounded(Some(cap)).unwrap(),
-                RunOutcome::RetiredCapReached
+                machine::RunOutcome::RetiredCapReached
             );
         }
         assert_eq!(assembled.machine.virtual_time(), time);
@@ -2910,7 +2539,10 @@ mod tests {
                 })
                 .unwrap();
             assert!(host_time >= Duration::from_millis(8), "{mode:?}");
-            assert!(presenter.assembled.machine.clock().0 >= target, "{mode:?}");
+            assert!(
+                presenter.assembled().machine.clock().0 >= target,
+                "{mode:?}"
+            );
         }
     }
 
@@ -2933,18 +2565,18 @@ mod tests {
             host_time < period,
             "Unlimited must yield before the next paint"
         );
-        let clock = presenter.assembled.machine.clock().0;
+        let clock = presenter.assembled().machine.clock().0;
         assert!(clock > 0);
         assert!(clock < pacing::virtual_ticks(period) as u64);
         presenter
             .advance_with_slice_clock(Duration::ZERO, &mut io::sink(), || period)
             .unwrap();
-        assert_eq!(presenter.assembled.machine.clock().0, clock);
+        assert_eq!(presenter.assembled().machine.clock().0, clock);
         presenter.select_speed(Speed::Normal, Duration::from_secs(100));
         presenter
             .advance_with_slice_clock(Duration::from_secs(100), &mut io::sink(), || Duration::ZERO)
             .unwrap();
-        assert_eq!(presenter.assembled.machine.clock().0, clock);
+        assert_eq!(presenter.assembled().machine.clock().0, clock);
     }
 
     #[test]
@@ -2969,11 +2601,11 @@ mod tests {
         let replay = |mode| {
             let mut assembled = observed_machine(&config);
             let keyboard = assembled.device_index[&DeviceId::Keyboard];
-            let mut policy = Pacing::default();
+            let mut policy = machine_view::pacing::Pacing::new(pacing::PIT);
             policy.select(mode, Duration::ZERO, 0);
-            let rate = CpuRate {
-                numerator: NonZeroU64::new(1).unwrap(),
-                denominator: NonZeroU64::new(1).unwrap(),
+            let rate = unemu_pc_core::pacing::CpuRate {
+                numerator: std::num::NonZeroU64::new(1).unwrap(),
+                denominator: std::num::NonZeroU64::new(1).unwrap(),
             };
             let mut elapsed = Duration::ZERO;
             let mut caps = Vec::new();
@@ -3007,9 +2639,14 @@ mod tests {
                     let input_boundary = script
                         .get(delivered.len())
                         .map_or(final_time, |event| event.0);
-                    let cap = run_cap(policy.chunk_target(clock, target), clock, time, rate)
-                        .min(input_boundary)
-                        .min(final_time);
+                    let cap = unemu_pc_core::pacing::run_cap(
+                        policy.chunk_target(clock, target),
+                        clock,
+                        time,
+                        rate,
+                    )
+                    .min(input_boundary)
+                    .min(final_time);
                     assert!(cap > time);
                     caps.push(cap);
                     run_to(&mut assembled, cap, cap - time);
@@ -3112,19 +2749,20 @@ mod tests {
                 assert!(paced.running);
             }
             assert!(paced.pacing.dropped > 0, "the fake stall must drop backlog");
-            assert_eq!(paced.keyboard.pending_events(), 0);
+            assert_eq!(paced.keyboard().pending_events(), 0);
             let bytes: Vec<_> = paced
+                .machine()
                 .input_log
                 .iter()
                 .flat_map(|(_, bytes, _)| bytes.clone())
                 .collect();
             assert_eq!(bytes, [0x21, 0x22, 0xA1, 0xA2, 0xE0, 0x4D, 0xE0, 0xCD]);
-            assert_eq!(paced.input_log[0].0, 0);
-            let final_time = paced.assembled.machine.virtual_time();
-            let expected = guest_state(&mut paced.assembled);
+            assert_eq!(paced.machine().input_log[0].0, 0);
+            let final_time = paced.assembled().machine.virtual_time();
+            let expected = guest_state(paced.assembled());
             for chunk in [137, 997] {
                 let mut headless = observed_machine(&config);
-                replay_input(&mut headless, &paced.input_log, final_time, chunk);
+                replay_input(&mut headless, &paced.machine().input_log, final_time, chunk);
                 assert_eq!(
                     guest_state(&mut headless),
                     expected,
@@ -3134,6 +2772,7 @@ mod tests {
             // Prove that this guest/state oracle is sensitive to timing, rather
             // than merely checking that the same byte string eventually arrives.
             let shifted: Vec<_> = paced
+                .machine()
                 .input_log
                 .iter()
                 .map(|(time, bytes, typed)| (time + 17, bytes.clone(), typed.clone()))
@@ -3153,14 +2792,14 @@ mod tests {
             let mut presenter = test_presenter(&config).unwrap();
             for frame in 1..=180 {
                 let elapsed = Duration::from_nanos(frame * 16_666_667);
-                let (target, _) = frame_target(
+                let (target, _) = pacing::frame_target(
                     elapsed,
-                    presenter.assembled.machine.clock().0,
+                    presenter.assembled().machine.clock().0,
                     presenter.pacing.dropped,
                     1,
                 );
                 presenter.advance_fully(elapsed).unwrap();
-                let clock = presenter.assembled.machine.clock().0;
+                let clock = presenter.assembled().machine.clock().0;
                 assert!(presenter.running);
                 assert!(
                     target <= clock && clock <= target + b.div_ceil(a),
@@ -3175,16 +2814,16 @@ mod tests {
         let mut presenter = test_presenter(&timer_guest_config()).unwrap();
         let visible = Duration::from_millis(10);
         presenter.advance_fully(visible).unwrap();
-        let before = guest_state(&mut presenter.assembled);
+        let before = guest_state(presenter.assembled());
         presenter.key_event(KeyCode::KeyF, ElementState::Pressed);
         presenter.occlusion_changed(true, visible);
         // Repeated notifications cannot shorten the hidden interval.
         presenter.occlusion_changed(true, Duration::from_secs(1));
         let resumed = Duration::from_secs(120);
         presenter.advance_fully(resumed).unwrap();
-        assert_eq!(guest_state(&mut presenter.assembled), before);
-        assert_eq!(presenter.keyboard.pending_events(), 1);
-        assert!(presenter.input_log.is_empty());
+        assert_eq!(guest_state(presenter.assembled()), before);
+        assert_eq!(presenter.keyboard().pending_events(), 1);
+        assert!(presenter.machine().input_log.is_empty());
         assert_eq!(
             wake(
                 resumed,
@@ -3197,12 +2836,12 @@ mod tests {
         assert_eq!(presenter.pacing.dropped, 0);
         assert!(wake(resumed, presenter.next_paint, true).0);
         presenter.advance_fully(resumed).unwrap();
-        assert_eq!(guest_state(&mut presenter.assembled), before);
+        assert_eq!(guest_state(presenter.assembled()), before);
         presenter
             .advance_fully(resumed + Duration::from_millis(10))
             .unwrap();
-        assert!(presenter.assembled.machine.clock().0 > before.clock);
-        assert_eq!(presenter.keyboard.pending_events(), 0);
+        assert!(presenter.assembled().machine.clock().0 > before.clock);
+        assert_eq!(presenter.keyboard().pending_events(), 0);
     }
 
     #[test]
@@ -3212,10 +2851,10 @@ mod tests {
         let mut presenter = test_presenter(&config).unwrap();
         presenter.key_event(KeyCode::KeyF, ElementState::Pressed);
         presenter.advance_fully(Duration::ZERO).unwrap();
-        assert_eq!(presenter.assembled.machine.clock().0, 0);
-        assert_eq!(presenter.assembled.machine.virtual_time(), 0);
-        assert_eq!(presenter.keyboard.pending_events(), 1);
-        assert!(presenter.input_log.is_empty());
+        assert_eq!(presenter.assembled().machine.clock().0, 0);
+        assert_eq!(presenter.assembled().machine.virtual_time(), 0);
+        assert_eq!(presenter.keyboard().pending_events(), 1);
+        assert!(presenter.machine().input_log.is_empty());
     }
 
     #[test]
@@ -3259,7 +2898,7 @@ mod tests {
         let config = loaded.config;
         let args = parse_args(["--machine".into(), machine.into_os_string()]).unwrap();
         let mut presenter = setup(&args, &mut io::sink()).unwrap();
-        let assembled = &mut presenter.assembled;
+        let assembled = presenter.assembled();
         let delivered = Rc::new(RefCell::new(String::new()));
         assembled
             .observation
@@ -3300,11 +2939,12 @@ mod tests {
             presenter.key_event(key, Pressed);
             presenter.key_event(key, Released);
         }
-        let start = presenter.assembled.machine.virtual_time();
+        let start = presenter.assembled().machine.virtual_time();
         for _ in 0..400 {
             advance_frame(&mut presenter);
             assert!(presenter.running);
-            if delivered.borrow().contains("2 file(s)") && presenter.keyboard.pending_events() == 0
+            if delivered.borrow().contains("2 file(s)")
+                && presenter.keyboard().pending_events() == 0
             {
                 break;
             }
@@ -3320,15 +2960,20 @@ mod tests {
             assert!(frame.contains(needle), "missing {needle:?}:\n{frame}");
         }
         drop(frame);
-        assert_eq!(presenter.keyboard.pending_events(), 0);
-        assert!(presenter.assembled.machine.virtual_time() > start);
-        assert!(presenter.sink.frame().is_some());
+        assert_eq!(presenter.keyboard().pending_events(), 0);
+        assert!(presenter.assembled().machine.virtual_time() > start);
+        assert!(presenter.picture().is_some());
         assert!(presenter.window.is_none());
-        let final_time = presenter.assembled.machine.virtual_time();
-        let expected = guest_state(&mut presenter.assembled);
+        let final_time = presenter.assembled().machine.virtual_time();
+        let expected = guest_state(presenter.assembled());
         let mut replay = observed_machine(&config);
         replay.machine.set_idle_limit(Some(u64::MAX));
-        replay_input(&mut replay, &presenter.input_log, final_time, 31_337);
+        replay_input(
+            &mut replay,
+            &presenter.machine().input_log,
+            final_time,
+            31_337,
+        );
         assert_eq!(guest_state(&mut replay), expected);
     }
 
@@ -3369,7 +3014,7 @@ mod tests {
         for chunk in 1..=3 {
             advance_frame(&mut presenter);
             assert!(presenter.running);
-            let capture = presenter.assembled.capture_text(DeviceId::Mda).unwrap();
+            let capture = presenter.assembled().capture_text(DeviceId::Mda).unwrap();
             assert_eq!(capture.virtual_time, chunk * TEST_FRAME_CLOCKS);
             assert!(
                 capture.retired > previous_retired,
@@ -3380,7 +3025,7 @@ mod tests {
                 "HLT must account for idle time"
             );
             previous_retired = capture.retired;
-            assert!(presenter.sink.frame().is_some());
+            assert!(presenter.picture().is_some());
         }
         assert!(presenter.window.is_none());
     }
