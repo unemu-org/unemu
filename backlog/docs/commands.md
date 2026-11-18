@@ -421,6 +421,7 @@ tests too:
 ```sh
 cargo test --offline -p pc-image --test revision
 cargo test --offline -p image-store --test store version_tags
+cargo test --offline -p library-model -- save_image
 cargo test --offline -p window -- save_image image_settings layers_dialog \
   library_view::tests::save_as library_view::tests::settings_revision
 ```

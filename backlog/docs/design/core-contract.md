@@ -2190,9 +2190,9 @@ cycle.
 
 | # | Move | Cut before it moves | Tests | Proof and effect |
 |---|---|---|---|---|
-| 3.1 | **Two helpers into `image-store`.** `Precedence` and `precedence` go from `pc_image::template` to `image_store::tag`, re-exported where they were. A `TempDir` like `assembly::test_support::TempDir` (which stays for the emulation crates) goes behind `image-store`'s `test-support` feature | none | the tests that call only `precedence` move with it | The five call sites in `remote_browse` and `remotes` name `image_store::tag`. Plan: `image-store` and its dependents, as any `image-store` change |
-| 3.2 | **`library-model` starts with `registries_model`** (1 145 lines, no sibling module, no PC reference). The window re-exports it | none | 16 move, with the temp directory of 3.1 in place of `assembly`'s (6 uses); the one test of `merge_tests` names the application's `preferences` and stays | The first neutral desktop model by Cargo. The script's window family gains `library-model` |
-| 3.3 | **Listing and the save form.** `ImageRow`, `Listed`, `listed`, `Source`, `source`, `human_size`, `delete_tag`, `host_last_run` and the short digest (`firmware::short`) go to `library_model::listing`; the model of `save_image` (457 of 629 lines: `Target`, `TagLevel`, `TagCheck`, `check_tag`, `next_version`, `local_tags`, `SaveAsImage`) to `library_model::save_image`. `library_view` and `save_image` re-export them | none | the 11 tests of `save_image` move; the listing has none of its own | Cuts ten arrows into `library_view` (`human_size`) and the arrows of `image_settings` and the worker to `ImageRow` |
+| 3.1 | **Done.** **Two helpers into `image-store`.** `Precedence` and `precedence` go from `pc_image::template` to `image_store::tag`, re-exported where they were. A `TempDir` like `assembly::test_support::TempDir` (which stays for the emulation crates) goes behind `image-store`'s `test-support` feature | none | the tests that call only `precedence` move with it | The five call sites in `remote_browse` and `remotes` name `image_store::tag`. Plan: `image-store` and its dependents, as any `image-store` change |
+| 3.2 | **Done.** **`library-model` starts with `registries_model`** (1 145 lines, no sibling module, no PC reference). The window re-exports it | none | 16 move, with the temp directory of 3.1 in place of `assembly`'s (6 uses); the one test of `merge_tests` names the application's `preferences` and stays | The first neutral desktop model by Cargo. The script's window family gains `library-model` |
+| 3.3 | **Done.** **Listing and the save form.** `ImageRow`, `Listed`, `listed`, `Source`, `source`, `human_size`, `delete_tag`, `host_last_run` and the short digest (`firmware::short`) go to `library_model::listing`; the model of `save_image` (457 of 629 lines: `Target`, `TagLevel`, `TagCheck`, `check_tag`, `next_version`, `local_tags`, `SaveAsImage`) to `library_model::save_image`. `library_view` and `save_image` re-export them | none | the 11 tests of `save_image` move; the listing has none of its own | Cuts ten arrows into `library_view` (`human_size`) and the arrows of `image_settings` and the worker to `ImageRow` |
 | 3.4 | **`registry_transfer` on the seam, into `library-model`.** `DesktopPlatform`, `PlatformFacts` and `PcDesktop` appear (the last in the window until 3.11); the provider list moves to `pc-image` | the catalogue and the two labels (7 references), §8.1.4 | its 18 tests (15.2 s) hold a `LibraryView` and build stores with `PcProvider`; they stay, in a test-only `registry_transfer` module | The tests that pin the plan's lines, the refusals and the blob labels pass unchanged; the test that the PC core's platform equals `pc-image`'s is new |
 | 3.5 | **`remote_browse` and `remote_pull`, into `library-model`** | the platform's name and id, the format name, the tag order (6); the drive's geometry (3), §8.1.4 | the 28 tests of `remote_browse` name the worker and stay; the 9 of `remote_pull/tests` draw the transfer view and stay with it | After this move about 6 100 production lines of registry models have no PC dependency. Plan for a file of them: `library-model`, `window` |
 | 3.6 | **`pc-media` starts.** `media_dialog`, `created_media`, `kept_catalogue`, `drive_chips` move whole, with the model items of `catalogue_menu` (`SetDisk`, `set_disk`, `short_name`) and of `media_picker` (`Disk`, `SetEntry`, `CatalogueDisk`, `format_name`, `drive_name`, `title_parts`, `label_without_file`) that they name; both view files re-export them. The rest of `catalogue_menu` that builds without a toolkit (`Catalogue`, its rows and marks) may come in the same move | `BlankDisk::default()` becomes a constructor that takes the machine-file directory, and the shell passes `machines_dir()` (1 use) | `created_media` 5, `kept_catalogue` 7, `drive_chips` 14 move; the 22 of `media_dialog` name `Presenter` and the library fixture and stay | The four move together because they name each other. Plan for a media model file: `pc-media`, `window` |
@@ -2202,6 +2202,53 @@ cycle.
 | 3.10 | **`Snapshot` and `snapshot`** (with `facets_for`, `sort_value`) into `pc-library` | none | stay with the frame | After this move the worker names nothing of `library_view` |
 | 3.11 | **The worker.** `library_worker`, `layers_dialog::SourceImage`, `PcDesktop` and the test support (`library_test_support` without its three egui helpers, the synthetic firmware catalogue, `test_wait`) into `pc-library`; the support goes behind `test-support` | `Wake` in place of `egui::Context` (6) | its 30 tests (44.4 s) move, but for those that call test helpers of `layers_dialog` and `image_settings`, which follow in 6.2 | The cycle is cut by Cargo: `pc-library` cannot name the window. `crates/pc-harness/tests/support/` and `vendor/` gain `pc-library` in the runner's rules |
 | 3.12 | **The tests left behind whose modules are now all in or below `pc-library`** move there, under the same paths: those of `remote_browse` (28, 9.8 s), and of `hardware` and `image_settings` where they name no view. The 18 of `registry_transfer` hold a `LibraryView` in their fixture and wait for the frame (6.4) | none | about 40 tests, about 12 s | No production code changes |
+
+As landed, 3.1 to 3.3 (one bead each, no behaviour change; the workspace
+lists the same 3958 test names apart from the crate, MEASURED with
+`cargo nextest list --workspace --run-ignored all`):
+
+- **3.1.** `Precedence` and `precedence` are in `image_store::tag`, and
+  `pc_image::template` re-exports them; the five named call sites in
+  `remote_browse.rs` and `library_view/remotes.rs` name `image_store::tag`.
+  The two other callers (the frame in `library_view.rs`, `image_settings.rs`)
+  keep the old path through the re-export; both move to `pc` crates. The
+  temporary directory is `image_store::test_support::TempDir`, behind the
+  feature. Deviation: no test moved. The one precedence test,
+  `template::tests::versions_order_by_semantic_version_precedence`, also
+  names `template::ALIAS`, so by rule 2 it stays in `pc-image`, where it
+  runs through the re-export.
+- **3.2.** `library-model` (`crates/library-model`, layer `neutral`,
+  counted as a window crate by the boundary check, with a self-test
+  fixture) holds `registries_model`; the window's `registries_model.rs`
+  re-exports it and keeps `merge_tests`. 15 tests moved, not 16: the
+  sixteenth is the one of `merge_tests`, which stays as planned. All six
+  uses of the temporary directory, the stayed test's included, are the
+  store's. The stayed test imports by name what it took from the old
+  module's own `use` lines; its body is unchanged. `RegistriesPage::wait`
+  is behind `library-model`'s `test-support` feature, since the window's
+  tests call it. `ENV_HINT` and `checks` stay private to the crate.
+- **3.3.** `library_model::listing` holds `ImageRow`, `Listed`, `listed`,
+  `Source`, `source`, `human_size`, `delete_tag`, `host_last_run` and
+  `short`, with the private `tags` and `last_run_utc` they call;
+  `library_model::save_image` holds the form's model with `Prompt`, its
+  own `short` and its private helpers. `library_view.rs` re-exports the
+  listing but `Source`, which no window file names (the import would be
+  unused); `library_view/firmware.rs` re-exports `short`; `save_image.rs`
+  keeps `form`, `prompts` and their helpers and re-exports the model.
+  Visibility: `ImageRow::repository`, `Listed::references` and
+  `SaveAsImage::source_repo` became `pub`, since the frame and the form
+  name them. 10 tests of `save_image` moved, not 11:
+  `the_form_and_both_questions_render_without_a_window` draws the form with
+  egui and stays in the window's `save_image::tests`, with copies of its
+  two fixture helpers (`digest`, `tags`). The window's test that formats a
+  last run reaches `last_run_utc` through
+  `library_model::listing::test_support`, behind the feature.
+
+Time (MEASURED on a loaded development host): the 25 moved tests take
+2.4 s added up (`cargo nextest run -p library-model`). The runner's plan
+for a change to `crates/library-model/src/registries_model.rs` or
+`save_image.rs` is `library-model` and `window`; for the window's
+`save_image.rs` it is `window` alone, which no longer builds or runs them.
 
 Effect of step 3 (ASSUMED from §8.1.1): about 115 tests and 55 to 60 s of
 the 288 s leave the application's test binary (the worker 44 s, the tests

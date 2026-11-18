@@ -5,6 +5,17 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — The desktop library's first neutral models:** moves 3.1
+  to 3.3 of the window split (design/core-contract.md §8.1.6). A new crate,
+  `library-model` (layer `neutral`, no toolkit, no PC crate), holds the
+  Preferences › Registries page model, the rows of the image lists and the
+  Save as new image… form's model; the window re-exports them under their
+  old paths and keeps the views. The version-tag order (`precedence`) moved
+  from `pc-image` to `image_store::tag`, and `image-store`'s
+  `test-support` feature gained a `TempDir`. The boundary check counts
+  `library-model` with the window crates. No behaviour changes: the
+  workspace lists the same test names apart from the crate (25 tests moved
+  to `library-model`).
 - **2026-11-18 — The command line in three crates:** steps 5 and 6 of
   the CLI split (design/core-contract.md §7.1, §7.5). `cli` is gone:
   `cli-core` (layer neutral) holds the platform-neutral command line, its

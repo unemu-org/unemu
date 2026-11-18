@@ -332,13 +332,7 @@ fn fits(f: &FirmwareSummary) -> String {
         parts.join(" · ")
     }
 }
-pub(super) fn short(hash: &str) -> String {
-    if hash.len() > 12 {
-        format!("{}…{}", &hash[..8], &hash[hash.len() - 4..])
-    } else {
-        hash.into()
-    }
-}
+pub(super) use library_model::listing::short;
 
 /// A package row's icon and its warning, before and after the name.
 pub(super) fn lead(row: &FirmwareRow) -> super::Lead {

@@ -1031,8 +1031,8 @@ fn newest_first(repository: &RepositoryRow) -> Vec<String> {
             return by_set();
         }
         match (
-            pc_image::template::precedence(a),
-            pc_image::template::precedence(b),
+            image_store::tag::precedence(a),
+            image_store::tag::precedence(b),
         ) {
             (Some(a), Some(b)) => b.cmp(&a),
             (Some(_), None) => std::cmp::Ordering::Less,

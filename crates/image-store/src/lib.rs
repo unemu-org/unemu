@@ -30,6 +30,8 @@ pub mod platform;
 mod store;
 pub mod summary;
 pub mod tag;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 pub mod workspace;
 
 pub use artifact::{

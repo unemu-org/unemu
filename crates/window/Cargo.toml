@@ -31,6 +31,9 @@ assembly.workspace = true
 winit.workspace = true
 # The desktop's skin, icons, panes, file dialogs and clipboard shortcuts.
 ui-kit = { path = "../ui-kit", version = "0.0.2" }
+# The library's platform-neutral models: registry accounts, the image
+# listing and the save form.
+library-model = { path = "../library-model", version = "0.0.2" }
 # The contract the machine window drives, the session over it, and the PC
 # behind it.
 unemu-core-api.workspace = true
@@ -56,6 +59,7 @@ pc-image = { path = "../pc-image", version = "0.0.2", features = ["test-support"
 assembly = { workspace = true, features = ["test-support"] }
 cpu.workspace = true
 ui-kit = { path = "../ui-kit", version = "0.0.2", features = ["test-support"] }
+library-model = { path = "../library-model", version = "0.0.2", features = ["test-support"] }
 machine-view = { workspace = true, features = ["test-support"] }
 unemu-pc-core = { workspace = true, features = ["test-support"] }
 

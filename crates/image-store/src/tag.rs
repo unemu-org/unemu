@@ -21,7 +21,7 @@
 //!
 //! Machine images keep their own rule: semantic versions never move and
 //! every other tag, `latest` included, is an alias that moves when confirmed
-//! (machine-images §5.5).
+//! (machine-images §5.5); [`precedence`] orders their version tags.
 //!
 //! Tags written by earlier releases still read: a set tag such as `1.4` is
 //! an alias of release `1.4`, `1.4-r2` its second revision, and a firmware
@@ -292,6 +292,59 @@ pub fn newest_first(a: &str, b: &str) -> Ordering {
         (None, Some(_)) => Ordering::Greater,
         (None, None) => (b == LATEST).cmp(&(a == LATEST)).then_with(|| a.cmp(b)),
     }
+}
+
+/// A version tag's precedence, Semantic Versioning 2.0.0 §11: the numeric
+/// core, then a release above its pre-releases, whose dot-separated
+/// identifiers compare numerically when numeric and as text otherwise,
+/// numeric ones first and a shorter list first. Build metadata is ignored.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Precedence {
+    core: [u64; 3],
+    release: bool,
+    pre: Vec<Identifier>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Identifier {
+    Numeric(u64),
+    Text(String),
+}
+
+impl Precedence {
+    /// A release, not a pre-release.
+    pub fn is_release(&self) -> bool {
+        self.release
+    }
+}
+
+/// The precedence of a version-shaped tag; `None` for any other tag.
+pub fn precedence(tag: &str) -> Option<Precedence> {
+    if !crate::Store::is_version_tag(tag) {
+        return None;
+    }
+    let tag = tag.split('+').next()?;
+    let (core, pre) = match tag.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (tag, None),
+    };
+    let mut numbers = core.split('.').map(|n| n.parse::<u64>().ok());
+    let core = [numbers.next()??, numbers.next()??, numbers.next()??];
+    let pre = pre
+        .map(|pre| {
+            pre.split('.')
+                .map(|id| match id.parse::<u64>() {
+                    Ok(n) if id.bytes().all(|b| b.is_ascii_digit()) => Identifier::Numeric(n),
+                    _ => Identifier::Text(id.to_owned()),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(Precedence {
+        core,
+        release: tag.split_once('-').is_none(),
+        pre,
+    })
 }
 
 #[cfg(test)]

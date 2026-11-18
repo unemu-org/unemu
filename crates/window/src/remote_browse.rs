@@ -413,7 +413,7 @@ pub(crate) fn candidates(tags: &[String]) -> Vec<String> {
         let mut versions: Vec<_> = tags
             .iter()
             .filter_map(|tag| {
-                pc_image::template::precedence(tag)
+                image_store::tag::precedence(tag)
                     .filter(|p| p.is_release() == release)
                     .map(|p| (p, tag.clone()))
             })
@@ -452,7 +452,7 @@ pub(crate) fn representative(tags: &[String]) -> Option<String> {
 pub(crate) fn compare_tags(artifact_type: &str, a: &str, b: &str) -> Option<Order> {
     match artifact_type {
         mt::MACHINE => {
-            Some(pc_image::template::precedence(a)?.cmp(&pc_image::template::precedence(b)?))
+            Some(image_store::tag::precedence(a)?.cmp(&image_store::tag::precedence(b)?))
         }
         mt::MEDIA_SET | mt::FIRMWARE => image_store::tag::compare(a, b),
         _ => None,

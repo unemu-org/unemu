@@ -1887,6 +1887,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
+name = "library-model"
+version = "0.0.2"
+dependencies = [
+ "image-registry",
+ "image-store",
+ "toml",
+]
+
+[[package]]
 name = "libredox"
 version = "0.1.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4240,6 +4249,7 @@ dependencies = [
  "egui",
  "image-registry",
  "image-store",
+ "library-model",
  "machine",
  "machine-file",
  "machine-view",

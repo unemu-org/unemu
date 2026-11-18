@@ -531,58 +531,10 @@ pub fn local_tag(repository: &str, tag: &str) -> String {
     format!("{name}:{tag}")
 }
 
-/// A version tag's precedence, Semantic Versioning 2.0.0 §11: the numeric
-/// core, then a release above its pre-releases, whose dot-separated
-/// identifiers compare numerically when numeric and as text otherwise,
-/// numeric ones first and a shorter list first. Build metadata is ignored.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Precedence {
-    core: [u64; 3],
-    release: bool,
-    pre: Vec<Identifier>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Identifier {
-    Numeric(u64),
-    Text(String),
-}
-
-impl Precedence {
-    /// A release, not a pre-release.
-    pub fn is_release(&self) -> bool {
-        self.release
-    }
-}
-
-/// The precedence of a version-shaped tag; `None` for any other tag.
-pub fn precedence(tag: &str) -> Option<Precedence> {
-    if !Store::is_version_tag(tag) {
-        return None;
-    }
-    let tag = tag.split('+').next()?;
-    let (core, pre) = match tag.split_once('-') {
-        Some((core, pre)) => (core, Some(pre)),
-        None => (tag, None),
-    };
-    let mut numbers = core.split('.').map(|n| n.parse::<u64>().ok());
-    let core = [numbers.next()??, numbers.next()??, numbers.next()??];
-    let pre = pre
-        .map(|pre| {
-            pre.split('.')
-                .map(|id| match id.parse::<u64>() {
-                    Ok(n) if id.bytes().all(|b| b.is_ascii_digit()) => Identifier::Numeric(n),
-                    _ => Identifier::Text(id.to_owned()),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    Some(Precedence {
-        core,
-        release: tag.split_once('-').is_none(),
-        pre,
-    })
-}
+/// A version tag's precedence moved to the platform-neutral store, which
+/// already orders set and package tags; the desktop's registry views order
+/// versions by it too.
+pub use image_store::tag::{precedence, Precedence};
 
 /// Asked with the image's reference, manifest and config bytes before the
 /// image is tagged: `repository:VERSION` for a template, `repository:r1`
