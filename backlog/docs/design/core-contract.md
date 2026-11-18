@@ -7,6 +7,15 @@ contract crate of §3 and the PC core of §4 in its stage A came with §8 step
 2); the other steps land one at a time. §8.1, the plan of steps 3 to 6 of
 §8, was accepted by the maintainer on 2026-11-18. The decision record is
 [decision-40](<../../decisions/decision-40 - Front ends drive emulator cores through one contract crate.md>).
+§12 (embeddable cores, storage objects as contract 0.2, the core's own
+command line `unemupc` and the front end's binary `unemu`) was
+**accepted** on 2026-11-18 under
+[decision-41](<../../decisions/decision-41 - Emulator cores embed like libretro cores and each has its own command line.md>),
+with the recommended answers of §12.13. §13 (the second platform: the
+contract's own repository, what a NES core adds to the contract, the front
+end's generic launch path and the registration of cores) was **accepted**
+on 2026-11-18 (design step of `upc-dfs.27`), with the recommended answers
+of §13.9.
 
 Markers: **[REPO]** = read in this repository at `896c5d9`, with the path;
 **COUNTED** = counted for this document by a throwaway script over the
@@ -1162,13 +1171,15 @@ that would bring it in:
 
 - **Validation through the core** (`Core::validate`), so a simple core
   needs no provider crate. Add when the NES provider's `ConfigValidator`
-  proves to be a thin wrapper around its core (§6).
+  proves to be a thin wrapper around its core (§6). §13.2 brings it in
+  with contract 0.2, beside `Core::identify`.
 - **Settings as data** (the `describe`, `choices`, `validate_draft`,
   `preview` calls of machine-images §6). Add when a second platform needs
   a settings dialog.
 - **Storage handed in as objects** instead of a session directory, so a
   core does no host I/O. Add with layered disk images or a build without a
-  file system (§11 Q4).
+  file system (§11 Q4). Decision-41 brings it forward: §12.5 designs it as
+  contract 0.2.
 
 ## 4. The PC core on the contract
 
@@ -2423,7 +2434,7 @@ The 22 tests of `media_dialog` stay with the session until
 | 6.2 | **`pc-ui` starts with the dialogs**: the PC half of `pane`, `settings_sheet`, `new_machine_view`, `layers_dialog`. The three egui test helpers of the library fixture (`settled_modal`, `Pointer`, `painted_at`) go to `ui-kit`'s `test-support`, since they name no PC | none | `settings_sheet` 6, `layers_dialog` 14, and the tests of `image_settings`, `new_machine` and the worker that waited for these views; those that drive the frame wait for 6.4 | |
 | 6.3 | **Commands and machine files down.** `State`, `Command`, `Enablement` (159 lines, which name only `machine_view::pacing::Speed`) go to `pc_ui::commands`; `LibraryEntry` and what builds it (`spawn_library_check`, `machine_paths`, `select_machine`, the diagnostics) go to `pc_library::machine_files`. `shell_model` keeps the hotkeys, the status-bar widths and the texture, and re-exports the rest | none | the 17 tests of `shell_model` go with what they test; the move lists the paths that change | After this move the frame names nothing of the application |
 | 6.4 | **The frame.** `library_view` with the views of `machines`, `firmware`, `firmware_metadata`, `install_media`, `layout_tests`, and every test left behind whose modules are now in or below `pc-ui` | none: a move of whole files, about 9 000 production lines and 20 000 lines of tests | `library_view` 37, `layout_tests` 27, the collections 51, Remotes 39, `remote_pull` 9, `registry_transfer` 18 and its view's 1; the few that name `preferences` or the shell's hotkeys stay | **This is where the desktop's test time splits.** 140 s of tests move to `pc-ui` with this move (the frame 48.0, its layout tests 40.1, the collections 30.3, the registry and Remotes tests that drive the frame 21.7; MEASURED, `*`), beside the dialogs' of 6.1 and 6.2. A shell change then runs the application alone: about 70 s added up as measured here, about 110 s with the sound-level tests at their preliminary 44 s, so 20 to 30 s of wall time where it is 76 s now. A change to a library view runs `pc-ui` and the application |
-| 6.5 | **What is left is the application**: `shell`, `shell_model`, `app_menu`, `macos_menu`, `preferences`, `preferences_sheet`, `main`. Optionally the package takes the name `unemupc`, with the changes §7.5 step 6 lists for the command line (CI, the release workflow, `scripts/third-party-licenses.sh`, the reasons in `deny.toml`, the runner's rules, the script's window family, `commands.md`, `architecture.md`) | none | none move | No time effect |
+| 6.5 | **What is left is the application**: `shell`, `shell_model`, `app_menu`, `macos_menu`, `preferences`, `preferences_sheet`, `main`. Optionally the package takes the name `unemupc` (`unemu` since decision-41, where `unemupc` is the core's command line: §12.9 and step 4 of §12.10), with the changes §7.5 step 6 lists for the command line (CI, the release workflow, `scripts/third-party-licenses.sh`, the reasons in `deny.toml`, the runner's rules, the script's window family, `commands.md`, `architecture.md`) | none | none move | No time effect |
 
 Order. Step 3 comes first and step 4 needs only 3.1 to 3.5. Steps 5 and 6
 do not depend on each other; step 6 brings the time, so it may go before
@@ -2508,6 +2519,10 @@ What must be true first:
    lookup takes a small trait the provider implements over the store.
 4. `media` is settled (§11 Q4).
 5. The contract is 1.0 and comes from one source.
+
+§12 adds to this list: the core opens no file (§12.5, which settles item
+4 for the journal half of `media`), and the crates that go with the core
+depend on nothing of the front end (the core-side rule of §12.8).
 
 Decision-30 then needs one sentence of care: `unemu.min-app-version` names
 the oldest release of the program that provides the manifest's platform.
@@ -2596,3 +2611,2204 @@ font assets, their notices and the `deny.toml` exception move from
 Recommendation: **(a)**. A text grid with MDA and VGA attributes is PC
 vocabulary in the contract, and every other front end would need the fonts
 again.
+
+## 12. Embeddable cores and the core's own command line
+
+Status: **Accepted** on 2026-11-18 (design step `upc-dfs.26`), with the
+recommended answer of every question of §12.13. The
+principle is decided and recorded in
+[decision-41](<../../decisions/decision-41 - Emulator cores embed like libretro cores and each has its own command line.md>):
+a core embeds like a libretro core, with as few host dependencies as
+possible; each core has its own small command line; the front end's binary
+is `unemu` and a core's binary carries the core's name. This section is the
+design that follows. The questions of §12.13 are open. Nothing here is
+implemented.
+
+Markers in this section: **[REPO]** = read on `main` at `26142ea`, with
+the path; **MEASURED** = produced for this section by `cargo tree`, by
+`cargo metadata` read with a throwaway script, or by `grep`, as each place
+says; **COUNTED** = counted by a throwaway script that reads each source
+file up to its first `#[cfg(test)]` and skips comment lines, so the figures
+are lower bounds; **[X86JIT]** = read in the x86jit sources at the pinned
+revision `cf32ec2e`, not run; **ASSUMED** = not verified.
+
+### 12.1. The rule
+
+"The core" is the contract crate, the crates of the `emulation` layer
+(§7.3) and the CPU core they pin. It is a library that touches the host
+only through what its embedder hands it. It needs Rust's `std` with an
+allocator, and nothing else of the host.
+
+| Subject | A core may not | It gets instead | Checked by |
+|---|---|---|---|
+| Picture, sound, input devices | depend on a windowing, graphics, host audio or input crate | `frame`, `drain_audio`, `input` (§3.6, §3.7) | the external-crate list (§12.3) |
+| Network, async run times | depend on one | nothing: a core has no use for either | the external-crate list |
+| Time | read the host clock: nothing of `std::time` on any path | virtual ticks and steps (§3.5); the start of an emulated clock is part of the config | the host-interface check (§12.3) |
+| Randomness | use a random source, or let a result depend on the order of a randomly seeded map | seeds in the config, when a machine needs one | the host-interface check for random sources; goldens for the order |
+| Threads | start one | the embedder's thread: a machine lives on the thread that created it (§3.5) | the host-interface check |
+| Process-wide state | keep mutable statics or thread-locals that two machines would share | fields of the machine | the host-interface check |
+| Files | open a path, scan a directory, read an environment variable | content by digest (§3.4) and storage objects (§12.5) | the host-interface check |
+| Standard streams, process exit | print or exit | `drain_messages` and `Error` (§3.10) | the host-interface check |
+| Host-specific code | carry `unsafe`, foreign functions or code for one operating system | nothing; the CPU core is the one stated exception (§12.7) | `#![forbid(unsafe_code)]` in every crate of the two layers; the host-interface check for `cfg` on an operating system |
+
+Tests are outside the rule: a core's tests may use temporary files and the
+host's environment. Their dependencies are inside it: a test dependency of
+a core crate is listed like any other (§12.3).
+
+The crates that go with the PC core to its repository but are not the
+library an embedder links (`machine-file`, `pc-harness`, the command line
+of §12.8) are host programs and tools. They open files and print. Their
+rule is the other one: they depend on nothing of the front end (§12.8).
+
+### 12.2. What the core touches of the host today
+
+COUNTED over the production code of each crate: mentions of `std::fs` and
+file opens; of `std::env`; of `std::time`, `Instant`, `SystemTime`; of
+`std::thread`; of `println!`, `eprintln!`, `dbg!` and the standard stream
+handles; of mutable or lazily set statics and `thread_local!`. `unsafe` is
+MEASURED by `grep` over each crate's `src` and `tests`.
+
+| Crate | Layer | Files | Environment | Host clock | Threads | Standard streams | Process-wide state | `unsafe` |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `unemu-core-api` | contract | 3 signatures, no call | 0 | 0 | 0 | 0 | 0 | 0, forbidden |
+| `device`, `bus`, `cpu`, `video`, `audio`, `devices`, `chipset`, `machine`, `testkit` | emulation | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `unemu-pc-core` | emulation | 0 | 0 | 0 | 0 | 0 | 0 | 0, forbidden |
+| `assembly` | emulation | 25 | 6 | 5 | 0 | 0 | 3 | 0 |
+| `media` (reached through the allowed crossing `assembly` → `media`) | neutral | 46 | 0 | 0 | 0 | 0 | 2 (test counters) | 7 (one test's counting allocator) |
+| `machine-file` | pc, goes with the core | 24 | 0 | 0 | 0 | 1 | 0 | 7 (one test's counting allocator) |
+| `pc-harness` | pc, goes with the core | 0 | 0 | 0 | 0 | 1 | 0 | 0 |
+
+Ten of the eleven emulation crates touch nothing of the host. What
+`assembly` and the contract hold [REPO]:
+
+- **The contract** names `std::fs::File` in `Content::File` and
+  `std::path::Path` in `CreateRequest::session` and `WriteTarget::Kept`
+  [`crates/core-api/src/core.rs`, `media.rs`]. No core implements any of
+  the three yet: `PcCore::create` and `PcMachine::add_medium` answer
+  `Unsupported` (§8 step 2).
+- **Images by path.** `assemble.rs` reads a ROM or a disk image named by
+  `ImageSource::File(path)` and opens disk bases itself (seven places).
+  The other way already exists beside it:
+  `assemble_with_verified_bases` takes bases the provider verified and
+  opened.
+- **Journals by path.** `persistence.rs` mounts a journal at the path of
+  `WriteMode::Journal { path, .. }` through `media::JournalMedia`, and
+  validates every output path before it opens one: canonical names,
+  aliases of the base, lock sidecars.
+- **Firmware discovery.** `firmware_discovery` and its two submodules scan
+  ROM folders, read `UNEMUPC_USER_ROMS_DIR`, `HOME`, `XDG_CACHE_HOME` and
+  `LOCALAPPDATA`, keep a hash index in the user's cache directory with
+  `SystemTime` to detect files changed within the clock's resolution, and
+  hold a process-wide `OnceLock<Mutex<HashCache>>` and a thread-local
+  session cache. None of it runs while a machine runs; all of it is in the
+  emulation layer.
+- **Hash maps.** `assembly` and `devices` use `std::collections::HashMap`
+  (26 mentions in their sources, MEASURED), whose default hasher takes its
+  keys from the host's random source. No golden depends on the order
+  today. A core that must run where no random source exists uses an
+  ordered map; nothing asks for that yet.
+
+So the host reaches the core in three places: `assembly` opening images
+and journals, firmware discovery, and `media`. The steps of §12.10 move
+each behind the contract's objects or out of the core.
+
+### 12.3. External crates: the list per layer
+
+MEASURED with `cargo metadata` on the locked graph, normal and build
+dependencies, every target, test dependencies left out. The emulation
+layer reaches 26 external crates at run time and 8 at build time. The
+contract reaches none.
+
+| Crate | Arrives through | Why it is acceptable |
+|---|---|---|
+| `thiserror` | declared by seven emulation crates | Error enums (conventions.md). Generated code only; no host access |
+| `x86jit-core` | declared by `cpu` | The CPU core, pinned to a revision. Its host needs are in §12.7 |
+| `iced-x86`, `lazy_static` | `x86jit-core` | The instruction decoder and its immutable tables. Pure Rust |
+| `sha2` | declared by `assembly`; `media` | SHA-256 of journal frames and headers and of firmware bytes. Pure Rust with CPU intrinsics |
+| `digest`, `block-buffer`, `crypto-common`, `generic-array`, `typenum`, `cfg-if` | `sha2` | Pure Rust; no host access |
+| `cpufeatures` | `sha2` | Asks the processor once which SHA instructions it has. No file, no clock, no thread |
+| `libc` | `cpufeatures` on AArch64 Linux, Android and Apple targets and on LoongArch64 Linux; `media` on Unix | Declarations of the host's C library. Through `cpufeatures` it is one capability query on targets that have a C library by definition. Through `media` it is file flags and error numbers, and leaves with the journal split (§12.4) |
+| `serde`, `serde_core`, `toml`, `toml_datetime`, `toml_parser`, `toml_writer`, `serde_spanned`, `winnow`, `indexmap`, `hashbrown`, `equivalent`, `foldhash`, `memchr` | `media` only | The disk-layer descriptor and the FAT12 builder's formats. Host-side code today inside a crate the core links. All thirteen leave with the journal split |
+| Build time: `thiserror-impl`, `serde_derive`, `proc-macro2`, `quote`, `syn` (two versions), `unicode-ident`, `version_check` | derive macros and one build script | They run on the build host and are not linked into the core. `serde_derive` and the second `syn` leave with `media` |
+
+After the journal split the emulation layer's run-time list is 13 crates:
+`thiserror`, `x86jit-core`, `iced-x86`, `lazy_static`, `sha2` and its
+seven, and `libc` on the four target families above (MEASURED: the same
+graph walked without `media`). No emulation crate declares an external
+test dependency today (MEASURED).
+
+**The check.** `scripts/crate-boundaries.sh` gains a second input and a
+second list:
+
+1. It reads `cargo metadata --format-version 1 --offline --locked` beside
+   the `--no-deps` document it reads today: the resolved graph, from the
+   lock file, for every target. MEASURED: 0.27 s.
+2. `scripts/crate-boundaries.external` lists the external crates a layer
+   may reach, one per line: `LAYER: CRATE (run|build|test): REASON`. The
+   list has entries for `contract` (none) and `emulation` only; the other
+   layers are not limited by it.
+3. For every workspace package of a listed layer the script walks its
+   normal and build dependencies through the resolved graph, workspace
+   crates included, and fails on an external crate that the layer's list
+   does not name, printing the path once:
+   `assembly → media → toml → winnow`. A crate reached only through a
+   procedural macro or a build script is of kind `build`. A crate declared
+   as a test dependency of a package of the layer is of kind `test`.
+4. A listed crate that the layer no longer reaches fails, as a stale line
+   of the allow list does today: the list is exact, and it shrinks when a
+   step removes a crate.
+5. The contract's rule stays as it is: any dependency at all fails.
+6. `--self-test` gets fixtures: a new external crate declared by an
+   emulation crate; one that arrives through a listed crate; a stale line;
+   an external test dependency; a crate that is `build` in the list and
+   reached at run time.
+
+The list names crates, not versions: the lock file and `cargo deny`
+already own versions and licences. A new crate is a line someone reviews
+against §12.1, with its reason; a host-touching crate has no acceptable
+reason.
+
+**The host-interface check.** A crate list cannot see `std`. A second
+script, working name `scripts/core-host-guard.sh`, reads the layer of each
+package from the same metadata and scans the production sources of the
+`contract` and `emulation` crates (a file up to its first `#[cfg(test)]`;
+no `tests/` directory) for: `std::fs`, `std::env`, `std::net`,
+`std::process`, `std::thread`, `std::time::Instant`, `SystemTime`,
+`std::os`, `std::path` in the contract, `println!`, `eprintln!`, `dbg!`,
+`io::stdout`, `io::stderr`, `static mut`, `thread_local!`, `OnceLock`,
+`LazyLock`, `extern "C"` and `cfg` on `unix`, `windows` or `target_os`.
+`scripts/core-host-guard.allow` lists today's uses as
+`CRATE/FILE: PATTERN: REASON`; a line whose use is gone fails, so the list
+only shrinks. It starts with the lines of §12.2: the contract's three
+signatures, and `assembly`'s `assemble.rs`, `persistence.rs`,
+`firmware_discovery` and the temporary directory of its test support. It
+runs in the `guard` lane beside the publication guard, with a self-test
+over planted files, as that guard has.
+
+Considered instead: Clippy's `disallowed_types`, `disallowed_methods` and
+`disallowed_macros`, which resolve paths exactly. They are configured by
+one `clippy.toml` per crate directory, so eleven copies of one list, and
+they also fire on the crates' unit tests. The scan is coarser and in one
+place; if it proves too coarse, the Clippy lists replace it.
+
+With the same step every emulation crate gets `#![forbid(unsafe_code)]`,
+which `unemu-core-api` and `unemu-pc-core` already carry. No emulation
+crate contains `unsafe` today (MEASURED), so the attribute changes nothing
+and stops the first one.
+
+### 12.4. The libc audit
+
+`media` is the only crate the core links that uses `libc` directly
+(MEASURED: `grep` for `libc::`), in five places of production code [REPO]:
+
+| Where | What | For |
+|---|---|---|
+| `offline.rs`, `open_input` | `O_NONBLOCK` on open | An offline tool must not block on a FIFO named as a base or a journal; it then refuses what is not a regular file |
+| `offline.rs`, `hard_link_unsupported` | `EPERM`, `ENOTSUP`, `EXDEV` | A clearer message when the output file system has no hard links |
+| `sink.rs`, `inspection_lock` | `EACCES`, `EPERM`, `EROFS` | Inspecting a journal on read-only storage without creating a lock |
+| `temporary.rs` | `O_NOFOLLOW`, `O_NONBLOCK` | Opening a leftover temporary file for cleanup without following a link |
+| `fat12/layout.rs` | `O_NOFOLLOW`, `O_NONBLOCK` | Reading host files into a new FAT12 disk without following links |
+
+None of the five is emulation. Each belongs to code that handles host
+files: locks, temporary files, the offline tools, the FAT12 builder. The
+answer is therefore not to replace `libc` (most of the error numbers have
+a `std::io::ErrorKind` now; the open flags have no `std` spelling), but
+to take the host-file code out of what the core links:
+
+- The journal's **format and logic** (`codec`, `scan`, `history`,
+  `overlay`, and the sink's append, recovery and retention) need bytes and
+  barriers, not files. They become a core crate over the records of
+  §12.5, with `sha2` and `thiserror` as its only external crates.
+- The **host-file half** (the file-backed records with their locks,
+  temporary names, canonical paths and alias checks; the offline tools;
+  `fat12`, `create`, `layer`) stays host-side and keeps `libc`.
+
+`cpufeatures` is the other way `libc` arrives. Options: (a) accept it,
+listed with its reason; (b) patch or fork `sha2` to drop run-time
+detection, since its manifest declares `cpufeatures` for x86 and AArch64
+whatever the features (READ in `sha2` 0.10.9); (c) stop hashing in the
+core. (c) is not available: version-1 journals checksum every header and
+frame with SHA-256 [REPO: `crates/media/src/codec.rs`]. Recommendation:
+**(a)**. The call is one capability query, it exists only on targets with
+a C library, and a target without one (a WebAssembly host, say) does not
+get the dependency at all, because Cargo applies it by target.
+
+`x86jit-core` declares its own foreign functions instead of depending on
+`libc`; §12.7 lists them.
+
+### 12.5. Storage handed in as objects: contract 0.2
+
+Contract 0.1 leaves "storage handed in as objects" out (§3.12). It comes
+in now, as minor version 0.2. While the major is 0 a minor may break
+(§3.2), and nothing implements the three path forms of 0.1 (§12.2), so
+0.2 **replaces** them instead of standing beside them. After 0.2 the
+contract names no type of `std::fs` or `std::path`. The same release
+carries what a second platform adds (§13.2), and it is made in the
+contract's own repository (§13.1).
+
+```rust
+/// The contract this source defines.
+pub const CONTRACT: ContractVersion = ContractVersion { major: 0, minor: 2 };
+
+/// Verified read-only content a core reads at any offset: a disk base, a
+/// cartridge, a large ROM set.
+///
+/// The object stands for exactly the bytes whose SHA-256 and length the
+/// front end verified in full before it handed the object over. What is
+/// behind it is the front end's: a file, a buffer in memory, a
+/// decompressing reader, a chain of hash-linked disk layers. A core cannot
+/// tell, never writes through it and never hashes it again.
+pub trait ContentReader {
+    /// The length in bytes. Constant for the object's life.
+    fn size(&self) -> u64;
+
+    /// Fill `buf` with the bytes at `offset`. Reading past `size()` fails
+    /// with `ErrorKind::Usage`. Fails with `ErrorKind::Content` when the
+    /// bytes are no longer the verified ones, such as when the file behind
+    /// the object changed, and with `ErrorKind::Storage` when the host
+    /// read failed. The guest sees neither: the core reports the failure
+    /// at the next run boundary.
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error>;
+}
+
+/// Verified read-only content.
+#[non_exhaustive]
+pub enum Content {
+    /// Small content, in memory.
+    Bytes(Vec<u8>),
+    /// Large content, read at any offset. Replaces `File` of 0.1.
+    Reader(Box<dyn ContentReader>),
+}
+
+/// Where a machine keeps what must outlive a run: written sectors,
+/// non-volatile memory, battery-backed cartridge memory.
+///
+/// The front end owns the storage and decides what a record is: a file in
+/// the machine's session directory, a row of a database, a key of a
+/// browser's storage, a buffer in memory. The core owns the format of a
+/// record's bytes. A core opens no file, directory or path.
+///
+/// A machine and its storage live on one thread.
+pub trait Storage {
+    /// Open the record `name` for this machine's exclusive use, until the
+    /// returned object is dropped. A record that does not exist yet opens
+    /// empty.
+    ///
+    /// A name is 1 to 64 bytes of `a-z`, `0-9`, `-` and `.`, starting with
+    /// a letter or a digit. The core chooses the names of what its config
+    /// describes, and the same config gives the same names in every
+    /// release of the core, because a name is how a later run finds what
+    /// an earlier one kept. Fails with `ErrorKind::Usage` when the record
+    /// is already open, here or in another program, and with
+    /// `ErrorKind::Storage` when the host failed.
+    fn open(&self, name: &str) -> Result<Box<dyn Record>, Error>;
+}
+
+/// One durable sequence of bytes, held exclusively.
+///
+/// Dropping the object releases the record. It promises nothing about
+/// bytes appended since the last `sync`.
+pub trait Record {
+    /// The length in bytes now.
+    fn size(&self) -> Result<u64, Error>;
+
+    /// Fill `buf` with the bytes at `offset`. Reading past the end fails
+    /// with `ErrorKind::Usage`.
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), Error>;
+
+    /// Add `bytes` at the end. They are durable only after `sync`.
+    fn append(&mut self, bytes: &[u8]) -> Result<(), Error>;
+
+    /// Cut the record to its first `size` bytes. Durable only after `sync`.
+    fn truncate(&mut self, size: u64) -> Result<(), Error>;
+
+    /// Make everything appended and cut so far durable. When this returns
+    /// `Ok`, the host has confirmed the bytes as far as it confirms
+    /// anything. A host that cannot confirm fails; it never pretends.
+    fn sync(&mut self) -> Result<(), Error>;
+
+    /// Start new contents for this record beside the old ones. The record
+    /// keeps its old bytes, readable and appendable, until the replacement
+    /// is committed. One replacement exists at a time.
+    fn replace(&mut self) -> Result<Box<dyn Replacement>, Error>;
+}
+
+/// New contents of a record, while they are written.
+pub trait Replacement {
+    /// The length of the new contents now.
+    fn size(&self) -> Result<u64, Error>;
+
+    /// Fill `buf` with the new contents at `offset`, to check them before
+    /// they are committed.
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), Error>;
+
+    /// Add `bytes` at the end of the new contents.
+    fn append(&mut self, bytes: &[u8]) -> Result<(), Error>;
+
+    /// Make the new contents durable and put them in place of the old ones
+    /// in one step: after a crash the record holds the old bytes or the
+    /// new ones, complete, never a mixture. On `Ok` the record this came
+    /// from reads and appends to the new contents.
+    ///
+    /// A failure before anything was put in place is `ErrorKind::Storage`
+    /// and leaves the record as it was. When the host cannot say which
+    /// contents the record holds now, the failure is
+    /// `ErrorKind::StorageUncertain`, and the record must be opened again
+    /// before it is written. Dropping a replacement without `commit`
+    /// discards it.
+    fn commit(self: Box<Self>) -> Result<(), Error>;
+}
+
+/// Everything a core needs to build one machine.
+#[non_exhaustive]
+pub struct CreateRequest<'a> {
+    pub platform: &'a str,
+    pub config: ConfigDocument<'a>,
+    /// Verified content by digest: firmware, disk bases, media.
+    pub content: &'a dyn ContentSource,
+    /// Where the machine keeps what must outlive the run. The machine
+    /// holds it for its whole life and opens a record when it needs one,
+    /// such as when a medium is inserted. Replaces `session` of 0.1.
+    pub storage: Rc<dyn Storage>,
+    pub options: &'a [(&'a str, &'a str)],
+}
+
+/// Where a guest's writes to a new medium go.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteTarget<'a> {
+    ReadOnly,
+    Discarded,
+    /// Keep written sectors in this record of the machine's storage, named
+    /// by the front end under the rules of `Storage::open`. The core owns
+    /// the record's format; the base is never changed. Replaces the file
+    /// path of 0.1.
+    Kept { record: &'a str },
+}
+
+#[non_exhaustive]
+pub enum ErrorKind {
+    // … the kinds of 0.1, and:
+    /// A host write failed in a way that leaves it unknown whether it took
+    /// effect. The object it was made on must be opened again before it is
+    /// written.
+    StorageUncertain,
+}
+```
+
+`ContentSource`, `NewMedium` and `Machine` keep their signatures;
+`NewMedium::content` carries the new `Content`. The contract crate still
+has no dependency, forbids unsafe code, and gains a scripted storage in
+memory behind its `test-support` feature, for its own tests and for every
+core's.
+
+Why records and not a file system. libretro hands a core a virtual file
+system: open, rename, remove, stat and directory listing by path. That
+would let today's journal code move unchanged, and it would put paths,
+rename semantics, links and locks into the contract for every core and
+every embedder. The journal needs four things of its host and no more
+[REPO: `crates/media/src/sink.rs`, the private `JournalIo`, `Filesystem`
+and `ToolIo` traits]:
+
+| The journal does today | With a record |
+|---|---|
+| Takes a stable `<journal>.lock` beside the file and holds it for the session | Exclusive use is what `Storage::open` gives; a file-backed storage takes the same lock |
+| Creates a journal by writing a header to a temporary file, synchronizing it and linking it into place, so that a journal with half a header never exists | A record of size 0 is new: `replace`, append the header, `commit` |
+| Appends the frames of one guest command, then `File::sync_all` | `append`, then `sync`, at the same points |
+| Truncates an invalid tail at mount | `truncate`, then `sync` |
+| Retention: writes the retained generations to a temporary file, verifies every recovery point in it, renames it over the journal and synchronizes the directory | `replace`, append, `read_at` to verify, `commit` |
+| A failed retention is either "failed before publication" or "completion uncertain; reopen required" | `ErrorKind::Storage` or `ErrorKind::StorageUncertain` from `commit` |
+| Compares the base file's size and times before and after each read (`check_unchanged`) | The `ContentReader` over a file does the same and answers `ErrorKind::Content` |
+| Validates output paths, canonical names and aliases of the base | The file-backed storage does, where the paths are |
+
+The version-1 journal's bytes, its place on disk and its recovery rules do
+not change. A session written before the change opens after it.
+
+**How layered disk images fit** (the requirement of
+[deferred.md](../deferred.md), Layered disk images, and of
+[machine-images.md](machine-images.md) §4):
+
+- **A base is read-only and identified by its SHA-256.** It reaches the
+  core as `Content` with the digest and length the front end verified in
+  full. The contract offers no way to write a base, and `ContentSource`'s
+  rule stands: the whole content is hashed, never a prefix or a sample,
+  however large the disk.
+- **Written sectors stay separate.** They go to a `Record`. The record
+  binds the base by its digest and length in its header, as the version-1
+  journal does.
+- **Nothing rewrites a base.** Commit, export and sealing a layer are
+  front-end operations: they read the record with the core's journal
+  crate, write a new base or a new layer as new content, and leave the old
+  base as it was. `Replacement` replaces a record, which holds only
+  written sectors.
+- **One overlay interface.** Inside the core, sector contents are reached
+  through `SectorSource` and `SparseOverlay` only [REPO:
+  `crates/media/src/overlay.rs`]: the overlay of written sectors over a
+  base that is a `ContentReader`. A chain of hash-linked layers stands
+  behind the `ContentReader` (the front end builds it, as
+  `media::layer::Chain` does today for sealed layers), so the core reads
+  one flat base whose identity is the chain head's `result_sha256`. A
+  later journal that binds a chain head changes one header check and
+  neither interface.
+- A zero base is a `ContentReader` that answers zeros and has no bytes. A
+  disposable session is `WriteTarget::Discarded`, or a storage in memory.
+
+**How the PC core moves its journals behind it.** Four moves, each a step
+of §12.10:
+
+1. **The journal over records, inside `media`.** `JournalMedia` opens over
+   a `Record` and a base that is a `SectorSource`; the code that touches
+   files today (`HostFilesystem`, `HostIo`, the temporary-file cleanup,
+   `platform_sync`) becomes the file-backed `Storage`, `Record` and
+   `ContentReader`. The constructors that take a path stay as thin
+   wrappers, so `assembly`, the offline tools and every test call what
+   they call today.
+2. **A mount seam in `assembly`.** `assembly` asks one object for the
+   bytes of an `ImageSource::File`, the base of a disk and the record of a
+   journal, instead of opening them. The file-backed implementation is
+   still in `assembly` in this move, so nothing else changes.
+   `MachineConfig` keeps its paths: `ImageSource::File` and
+   `WriteMode::Journal` are named about 200 and 105 times in seven crates
+   (MEASURED: `grep`), and a path in the PC's host-side description of a
+   machine is not a file the core opens.
+3. **The crates split.** The journal's format and logic become the crate
+   `journal`, layer `emulation`, over the contract's `Record` and
+   `ContentReader`. The file-backed objects go to `unemu-core-files`:
+   the contract's objects over host files, which the front end and every
+   core's command line use, and which an embedder without a file system
+   leaves out. That crate exists by then, in the contract's repository,
+   because the launch path of the second platform needs it first (§13.1,
+   step 6 of §13.6); this move puts the journal's file code onto it and
+   extends it where the journal needs more. The offline tools become
+   `journal-files` (working name), layer `pc`, on the core's side: they
+   need both. `media` keeps `fat12`, `create` and `layer`. The file-backed
+   mount of move 2, the validation of output paths and the tests of
+   `assembly` that need real files move to `machine-file`. Both lines of
+   the allow list (`assembly` → `media`) are deleted.
+4. **Firmware discovery leaves `assembly`** for the host side
+   (`machine-file`, or a crate of its own if the module names collide).
+   The catalogue and the identity checks over bytes stay.
+
+After these moves `PcCore::create` (§4 stage B) has what it needs below
+it: content from a `ContentSource`, journals in a `Storage`.
+
+One consequence for the command line: the journal's format is the PC
+core's own, so its offline tools (`media generations`, `verify`,
+`rollback`, `commit`) are the PC's commands, not neutral ones. Today they
+are in `cli-core`, a `neutral` crate, which may not depend on an
+`emulation` crate (§7.3). They move to `cli-pc` and to `unemupc` with
+their words, output and exit codes; with one platform `upcli media verify`
+reads as before. §11 Q4 left the home of the journal half "decided finally
+at extraction"; the embeddability rule decides it now (§12.13 Q4).
+
+### 12.6. Threads, time and process-wide state
+
+- **Threads.** A core starts none. `Core` is `Send + Sync` and stateless;
+  a `Machine` need not be `Send` and lives on the thread that created it
+  (§3.3, §3.5). An embedder may run several machines, each on a thread of
+  its own. The library worker, the host audio stream and the registry
+  transfers are the front end's threads and stay there.
+- **Time.** Decision-5 and decision-14 stand: virtual time is retired
+  instructions plus the clocks that pass while the CPU is halted, and
+  devices tick off it. The host clock is read in one place, the front
+  end's pacing (§5). A machine that shows a date takes its start from its
+  config, never from the host ([machine-images.md](machine-images.md) §2:
+  "RTC start stays in the resolved machine config, never the host
+  clock"); a front end that wants today's date writes it into the config
+  it hands over.
+- **Process-wide state.** Two machines in one process share nothing
+  mutable. Today's only such state in the core is the firmware hash cache
+  and its thread-local session cache in `assembly` (§12.2), which leave
+  with firmware discovery, and the statics of `x86jit-core` (§12.7).
+  Immutable tables, such as the decoder's, are fine.
+- **Errors.** A core reports through `Error` and `drain_messages`. It
+  does not print, and it does not end the process; a panic is a bug.
+
+### 12.7. What the PC core needs from x86jit
+
+[X86JIT], for the way `cpu` uses the core [REPO:
+`crates/cpu/src/x86jit_backend.rs`]: `Vm::new(VmConfig::flat(bytes))`,
+`CpuMode::Real16` or `CpuModel::I80286`, one `Vcpu` on one thread, never a
+backend. The x86jit README states that 16-bit code and every CPU model run
+on the interpreter whichever backend is configured, so a JIT backend would
+add nothing for the PC today.
+
+| x86jit-core needs | When | On the PC's path |
+|---|---|---|
+| The allocator, for guest memory (no `mmap`) | `Vm::new` | yes |
+| `getpagesize`, cached | first instruction fetch, on Unix; a constant elsewhere | yes |
+| A process-wide barrier probe: `membarrier` on Linux and FreeBSD, a Mach port query on macOS | `Vm::new` | yes, once |
+| A `membarrier` call and a clock read for its statistics | when a block is lifted over newly tagged code pages, on Linux and FreeBSD | yes on Linux; the clock value feeds a counter, not the guest |
+| Reading and writing the floating-point control register, inline assembly | every run entry, on x86-64 and AArch64 | yes |
+| A few statics and thread-locals: the page size, a pending-fault record, time statistics | every run | yes; set once or per run, not shared guest state |
+| The host clock for time statistics | only after `Vm::set_time_accounting(true)` | no |
+| Host-fault recovery: assembly routines, memory-map queries | only after `Memory::set_host_fault_recovery(true)` | no |
+| Environment variables and a trace file | only through `Trace::from_environment()`, under the default feature `environment` | no |
+| `pthread_atfork`, the process id, a global code map | a JIT backend or a child view | no |
+| Signal handlers | never installed by the library | no |
+| Threads | none outside tests | no |
+| Executable memory (`mmap` with `PROT_EXEC`, `MAP_JIT` and the write-protect switch on macOS, instruction-cache flushes), `libc`, `memmap2`, `region`, Cranelift, a compile thread | the JIT backend crate, `x86jit-cranelift` | no: the PC does not depend on it |
+
+What follows:
+
+1. **Here: `default-features = false` on `x86jit-core`.** The feature
+   `environment` gates the environment variables, the trace file and a
+   Linux memory-map read; `cpu` calls none of them (MEASURED: `grep` for
+   `from_environment`, `set_time_accounting`, `set_host_fault_recovery`,
+   `child_view` in `crates/` finds nothing). Step 3 of §12.10.
+2. **Asked of x86jit, in its own tracker and under its own rules** (not
+   work of this repository): a way to build a machine for one thread that
+   makes no process-wide barrier registration, no barrier call and no
+   clock read. The barrier orders code publication between threads; a
+   machine that runs on one thread has nobody to order against. The mode
+   is fixed by a probe today and has no public setter (READ in
+   `process_barrier.rs`). And: the table above, kept in x86jit's own
+   documentation, so that an embedder knows what each path costs.
+3. **The JIT stays optional for good.** When a protected-mode profile
+   wants it, it is a feature of the PC core that is off by default, with
+   the compile thread supplied by the embedder (x86jit-cranelift lets the
+   embedder replace how its worker is started) and virtual time unchanged,
+   because it counts retired instructions and not blocks. An embedder that
+   cannot map executable memory runs the interpreter with the same guest
+   results.
+
+### 12.8. The core's own command line: `unemupc`
+
+A small program that runs and checks PC machines without the front end:
+no image store, no registry, no recipes, no window. It is how the core is
+tried, debugged and tested on its own, and what stays usable in the core's
+repository once the front end has left it.
+
+**The crate.** Package `unemupc` in `crates/unemupc`, layer `pc`, with a
+library (parse, usage, the commands) and the binary `unemupc`. It is in
+the `pc` layer, not `application`, so that `cli-pc` may call its library
+(§12.9). It depends on `pc-harness` (the runners the goldens pin),
+`machine-file`, `unemu-pc-core` (the core's description, notices and key
+names), the emulation crates the commands name (`assembly`, `machine`,
+`device`, `video`), `journal-files` once it exists, and `anyhow`. It does
+not depend on `cli-core`: its parser is the one function that moves from
+`cli-pc`, and its `main` reads the arguments, runs the command and exits
+with its code.
+
+**The core's side, checked.** The crates §9 sends to the PC core's
+repository say so in their manifests:
+
+```toml
+[package.metadata.unemu]
+layer = "pc"
+side = "core"     # every `emulation` crate is on the core's side without saying so
+```
+
+`machine-file`, `pc-harness`, `journal-files` and `unemupc` carry it. The
+boundary check gains one rule: **a crate on the core's side depends only
+on the contract, on crates on the core's side and on `unemu-core-files`**
+(the contract's objects over files, which travel with the contract: a
+second crate of the contract's repository, §13.1). Its
+allow list starts with what is true today (MEASURED from the manifests):
+`machine-file` → `image-store` (firmware packages from the store; removed
+by item 3 of §9, step 7 of §12.10), `machine-file` → `media` (journal
+inspection; removed by the journal split) and, as a test dependency,
+`pc-harness` → `media` (the FAT12 reader with which the goldens check
+disks the guest wrote; it stays until that reader has a home on the core's
+side, which is settled at extraction with the rest of `media`). Until
+step 7 `unemupc` therefore still compiles
+`image-store` through `machine-file`, with its Zstandard C library
+(MEASURED: the closure of `machine-file` holds `zstd-sys`, `cc` and
+`serde_json`); it calls nothing of it.
+
+**The commands.** All are today's, moved with their words. The machine
+commands come with the crate (step 5 of §12.10), the journal tools with
+the journal split (step 11):
+
+```text
+unemupc --boot
+unemupc --bios PATH [--allow-unlisted-firmware]
+unemupc machine check FILE [--allow-unlisted-firmware] [--rom-dir DIR]...
+unemupc run --machine FILE [--rom-dir DIR]... [--max-steps N] [--idle-limit N]
+            [--print CARD] [--allow-unlisted-firmware]
+unemupc media generations --base IMG --journal J
+unemupc media verify --base IMG --journal J [--repair-tail --backup PATH]
+unemupc media rollback --base IMG --journal J --to N --backup PATH
+unemupc media commit (alias compact) --base IMG --journal J --to N --output OUT
+unemupc --version | --about
+```
+
+| Command | What it runs | Output |
+|---|---|---|
+| `--boot` | The built-in Real16 timer demo (`pc_harness::run_boot`) | The serial bytes on standard output |
+| `--bios PATH` | A BIOS ROM on the IBM 5170 board profile with a blank disk attached; writes are volatile (`pc_harness::run_bios_file`) | COM1 on standard output; warnings and `stopped: REASON` on standard error |
+| `machine check FILE` | Loads a machine file, resolves ROMs in the `--rom-dir` folders, validates, inspects journals; runs nothing | Warnings and notes on standard error |
+| `run --machine FILE` | A machine file, headless, to a natural stop, to `--max-steps` (the core's steps: instruction equivalents of virtual time) or to `--idle-limit` halted clocks | With `--print CARD`: the card's text grid or the serial bytes on standard output; `stopped: REASON` on standard error |
+| `media …` | The offline journal tools (§12.5) | As today |
+| `--version`, `--about` | The core's id, release and the contract it implements, from `PcCore`'s description; the licence, the source pointer and the notices of what is compiled into the core | Text on standard output |
+
+Exit codes are today's: 0 for a run that stopped as a run may (halt,
+reset requested, budget exhausted), 1 for a failed stop or a refused
+check, 2 for a usage error.
+
+**How the output relates to `upcli`'s.** For the four machine commands and
+the four journal commands, standard output, standard error and the exit
+code of `unemupc WORDS` are byte for byte those of `upcli WORDS` today.
+Three differences, all stated:
+
+- `run --machine` has no `--store` and no `--no-store`: `unemupc` has no
+  store. `unemupc run --machine FILE` is `upcli run --machine FILE
+  --no-store`: firmware comes from the paths in the machine file and from
+  `--rom-dir`. A machine file that takes firmware from a package of the
+  store is the front end's to run (§12.9).
+- The usage text is `unemupc`'s own and names `unemupc`.
+- `--version` and `--about` name the core, not `upcli`, and list the
+  core's notices only (no registry or store crates).
+
+The code moves; it is not rewritten: `crates/cli-pc/src/run.rs` (296
+lines with its tests: `check_machine`, `run_machine`, `run_bios`,
+`bios_stop`, `display_dump`), the machine words of `cli_pc::parse` with
+their parser tests, and their usage lines [REPO]. The runners stay in
+`pc-harness`, so a golden still pins what the binary does.
+
+**Room for more.** The command line is where the core's own diagnostics
+go, because they need no store and no window. None of them is designed
+here, and each is a new feature that waits for the maintainer under the
+feature freeze:
+
+- **Scripted input and limits in virtual time.** `run` gains
+  `--keys FILE` and `--max-time DURATION`. The runners already drive a
+  guest with scripted keys after a prompt appears
+  (`assembly::RunPolicy` with `StopCondition::PromptThen` and
+  `KeyboardStimulus`, used by the DOS goldens); a key script is those
+  values as text. Its vocabulary (wait for a text on a card, press named
+  keys, type characters, run for a virtual time) should be the one the
+  Machinefile's input steps use later ([recipes.md](recipes.md) §11), so
+  it is fixed together with them. New limits count virtual time, not
+  instruction equivalents (decision-22 §5).
+- **Raw images.** `run --bios ROM [--floppy IMAGE] [--disk IMAGE]`: the
+  board profile of `--bios` with read-only bases and volatile writes,
+  for a boot sector or a test floppy without a machine file
+  (`pc_harness::run_bios_boot` exists as a library call).
+- **The exception trace (`upc-x83.17`) and the debugger and tracing
+  (`upc-x83.18`).** Their beads are not quoted here (their text is not in
+  the docs; ASSUMED from their titles). They attach to `run` as options
+  (`--trace-exceptions`, `--trace WHAT`) and as one more command
+  (`unemupc debug --machine FILE`), over the observation and trace policy
+  the core already has ([observation.md](observation.md)).
+
+### 12.9. The front end's side: `unemu`
+
+The desktop binary, `unemupc` today, becomes `unemu`. What follows for
+each command of `upcli`:
+
+| Today in `upcli` | After |
+|---|---|
+| `--boot`, `--bios PATH`, `machine check FILE` | `unemupc` only (§12.13 Q2). They need nothing of the store |
+| `run --machine FILE [--store DIR \| --no-store] …` | Stays a PC command of the front end, because it adds the store: it takes firmware packages for the machine file from the store, then calls the run of `unemupc`'s library. One implementation, so the two cannot drift |
+| `media generations`, `verify`, `rollback`, `commit` | PC commands in `cli-pc` that call `journal-files`; the same words and output; also in `unemupc` |
+| `image run NAME:TAG`, `image machine run ID` | PC provider commands until `PcCore::create` reads stored configs (§4 stage B). Then they move to `cli-core` and drive the machine through the contract, for any platform: `core.create(&request)` with a `ContentSource` over the store's receipts and a file-backed `Storage` over the workspace, `run(RunLimit::steps(max))`, `finish` (§5) |
+| Every other `image`, `media create` and `recipe` command | Unchanged |
+| `--version`, `--about` | The front end's: its own release, and each compiled-in core's id, release, contract version and notices from `CoreDescription` |
+
+Whether the command line is part of the `unemu` binary or a second binary
+is §12.13 Q1. Either way the crates stay as §7.1 has them: the split is
+what keeps a CLI-only change fast, and the binary is where they are
+composed.
+
+What the rename covers, and what it does not:
+
+- **Renamed to `unemu`:** the binary of the `window` package (the package
+  may take the name `unemu` with move 6.5 of §8.1.9, which said
+  `unemupc`), the window title, the application menu ("About", "Hide",
+  "Quit"), the Linux window class and Wayland application id, the usage
+  and `--version` text, the lines the desktop prints with its own name,
+  the release workflow and what it packs, `scripts/third-party-licenses.sh`,
+  the binary ids in the runner's self-test, the window family of
+  `scripts/crate-boundaries.sh` (where `unemupc` now means the core's
+  command line), README.md, `commands.md`, `machines/README.md` and
+  `architecture.md`. There is no macOS application bundle in the
+  repository today (MEASURED: `grep` finds no `Info.plist` and no bundle
+  step); when one is added it is named `unemu`.
+- **Not renamed:** the repository and the release archive
+  (`unemupc-<version>-<target>.tar.gz`) while both programs ship from it;
+  "Needs unemupc X or newer" and `image_store::compat::PROGRAM`, which
+  name the core's release (§9, decision-30); the environment variables
+  `UNEMUPC_*`; the host directories (§12.13 Q5).
+
+### 12.10. Steps
+
+Each step is one bead under the rules of §7.5: it lands alone on `main`
+with the full gate, changes no behaviour unless the row says so, and moves
+tests with the code they test. Sizes are ASSUMED.
+
+| # | Step | Behaviour | What proves it |
+|---|---|---|---|
+| 1 | **The external-crate list.** `scripts/crate-boundaries.external` with today's 26 run-time and 8 build-time crates of the emulation layer and their reasons (§12.3); the script reads the resolved graph; fixtures | None; no code moves | The check passes on `main`; the self-test's five planted cases fail as expected; a planted `libc` dependency in `device` fails with its path; the gate grows by about 0.3 s |
+| 2 | **The host-interface check and `forbid(unsafe_code)`.** `scripts/core-host-guard.sh` with its allow list of today's uses (§12.2) and its self-test, in the `guard` lane; the attribute in the nine emulation crates that lack it | None | The guard passes with exactly the listed lines; a planted `std::time::Instant` in `devices` and a planted `unsafe` block each fail; deleting a line whose use still exists fails |
+| 3 | **`x86jit-core` without default features** | None: only API the PC never calls goes away | Build; the goldens tier, because the CPU dependency's configuration changed; `cargo tree -e features` shows no `environment` |
+| 4 | **The desktop binary becomes `unemu`** (§12.9) | **Stated:** the program's name everywhere §12.9 lists. No directory, variable or file format changes | The tests that pin the name (`--version`, usage, the menu titles) change with it and are listed in the bead; the runner's self-test; the release workflow run by hand on a test tag; `git grep` for the old binary name leaves only the lines §12.9 keeps |
+| 5 | **The `unemupc` crate and binary.** `run.rs`, the machine words and their usage lines move from `cli-pc` to `crates/unemupc`; `cli-pc` calls the library for the four commands, so `upcli` does not change; the binary `unemupc` with the four machine commands, `--version` and `--about`; the core-side rule in the boundary check with its three allowed crossings (§12.8). Needs step 4: two packages cannot build a binary of one name | `upcli`: none. New: the binary `unemupc` | `upcli`'s `command_line_pin` (usage and the parse of 215 lines) passes unchanged; for the four commands, standard output, standard error and exit code of `unemupc` equal `upcli`'s over the invocations of §7.5 step 4 that use them (`run` with `--no-store`); the moved tests keep their names; a planted `unemupc` → `image-registry` dependency fails the check |
+| 6 | **The raw commands leave the front end** (if Q2 is answered as recommended). `--boot`, `--bios` and `machine check` go from `cli-pc`; their tests (`machine_check`, the `--bios` cases of `firmware_catalogue`, the `--boot` cases of `timing_adoption` and `media_tools`) move to the `unemupc` package and run that binary; a front-end golden that mixes them with image commands (`at_games`) calls the library; `run --machine` stays and calls the library | **Stated:** `upcli` no longer has three commands; its usage text and pin change | Every moved test passes against `unemupc` with its assertions unchanged; `command_line_pin` changes only by the three removed forms |
+| 7 | **`machine-file` off `image-store`** (item 3 of §9). The firmware-package lookup becomes a small trait in `machine-file` that `pc-image` implements over the store | None | The front end's `run --machine` with `--store` reads the same packages (its tests in `machine_commands` unchanged); the crossing `machine-file` → `image-store` leaves the allow list; the closure of `unemupc` loses `image-store` and `zstd-sys` (MEASURED by the bead) |
+| 8 | **Contract 0.2.** The types of §12.5 in `unemu-core-api`; `Content::File`, `CreateRequest::session` and the path of `WriteTarget::Kept` go; `CONTRACT` is 0.2 and `PcCore` states 0.2; a storage in memory behind `test-support`. Since §13 this step is made in the contract's repository together with the additions of §13.2 (steps 4 and 5 of §13.6), and this repository moves its pin in step 7 there | None: `create` and `add_medium` still answer `Unsupported` | The contract's tests: a record's append, sync, truncate; a replacement that is committed, dropped, and failed in both ways; `drives` refuses a 0.1 core. The contract's lines leave the host guard's list, and the guard then refuses `std::fs` and `std::path` in the contract |
+| 9 | **The journal over records, inside `media`** (move 1 of §12.5) | None | `media`'s own tests pass unchanged, the ones that record the order of writes, barriers and renames among them; the journal goldens (`ide_journal_golden`, `dos_write_golden`, `media_files_golden`) pass; a new test runs one session over the file-backed storage and over the storage in memory and compares the records byte for byte; a journal written before the step mounts after it |
+| 10 | **The mount seam in `assembly`** (move 2) | None | `assembly`'s persistence and image-source tests pass unchanged; the slow goldens; the new seam has a test with a mount that serves from memory |
+| 11 | **The crates split** (move 3), as three beads: `journal`; the journal's file code onto `unemu-core-files`, which exists since step 6 of §13.6; `journal-files` with the journal commands moving from `cli-core` to `cli-pc` and `unemupc` | None in `upcli`'s output: the journal commands change crate, and with one platform their words, output and exit codes are the same. New: the four journal commands of `unemupc` | Test names unchanged apart from the crate (§8.1.5 rule 3); `media_tools` and `media_fifo` pass in their new package; both `assembly` → `media` lines leave the allow list; the external list loses the thirteen crates of `media` and `libc` keeps one way in; `persistence.rs` and `assemble.rs` leave the host guard's list |
+| 12 | **Firmware discovery leaves `assembly`** (move 4) | None | The discovery tests move with the module and pass; the user-ROM helper of the tests keeps working from its new place; `assembly` has no line left in the host guard's list, and the list is empty |
+| 13 | **The command line joins `unemu`**, or `upcli` is renamed, as Q1 is answered: the binary, the release workflow, the `setup-upcli` action and its docs | **Stated:** the program name in usage and in the release | `command_line_pin` changes only in the program's name; the action's own workflow installs and runs the new binary |
+
+Not steps of this plan, and where each is:
+
+- **`PcMachine::add_medium` and catalogues through the contract**: the
+  media dialogs' move behind `add_medium` (§8 step 2, with `upc-dfs.25.7`
+  and step 5 of §8). It uses the `NewMedium` of 0.2 and needs step 9.
+- **`PcCore::create`** (§4 stage B) and, after it, `image run` through the
+  contract (§12.9). It needs steps 8 to 12 and the config codec below the
+  contract. One more thing to plan with it: the part of `machine-file` the
+  codec needs (the schema and its lowering, TOML only) becomes part of
+  what an embedder links, so it must pass the list of §12.3; `serde` and
+  `toml` are pure Rust and pass, the YAML reader and the path handling
+  stay on the host side.
+- **The requests to x86jit** (§12.7), in x86jit's tracker.
+- **New options of `unemupc`** (§12.8, Room for more): features, after the
+  freeze.
+
+### 12.11. Where the steps fit
+
+- **Steps 1 to 3** touch scripts, lists, one attribute per crate and one
+  line of the root manifest. They can land now. Step 1 and every
+  crate-creating move of §8.1 edit `scripts/crate-boundaries.sh` and its
+  fixtures, so they go one after another, not side by side.
+- **Step 4** is small and textual, and every later step and document
+  names the binaries, so it goes early. It edits strings in `shell.rs`,
+  `app_menu.rs` and `main.rs`, which the moves of §8.1 step 6 also touch;
+  it lands between two of them. It takes over the optional rename of move
+  6.5.
+- **Steps 5 to 7** are in `cli-pc`, `upcli`, `machine-file` and the new
+  crate. They share nothing with the window split. They share the usage
+  text and its pin with the recipe track's command beads
+  ([recipes.md](recipes.md) §19), so a bead that changes the pin and a
+  recipe bead that adds a command go one after the other.
+- **Steps 8 to 12** change `assembly` and `media`, which every PC crate
+  and the desktop build on, and each of them runs the slow goldens. They
+  are the first half of §4 stage B. They go after the worker and the
+  session have settled where they call `assembly` (§8.1 move 3.11 and
+  `upc-dfs.25.7`), so that a moved call site is not edited twice. Step 8
+  alone touches only the contract and can land at any time; it is steps
+  4 and 5 of §13.6 now.
+- **Step 13** waits for Q1 and is best done with the first release that
+  ships `unemu`.
+- **The recipe track** is on the front end's side and needs none of these
+  steps. Two later meetings: the Machinefile's input steps and
+  `unemupc`'s key script should be one vocabulary (§12.8), and a recipe
+  that runs a machine will want a storage in memory or in a temporary
+  directory, which 0.2 gives it.
+
+Two workers can hold steps 1 to 3 and steps 4 to 7 at the same time as
+the window split, if the beads that edit one file are ordered.
+
+### 12.12. Not required now
+
+| Not required | Why not now | When it is worth it |
+|---|---|---|
+| `no_std` | It would replace `thiserror`, the maps, `Rc` and the I/O traits in every core crate and in x86jit, for no target that exists. `std` without its host interfaces is what the checks of §12.3 enforce | A target without `std`: bare metal, a console SDK. The checks make the remaining distance small and known |
+| A build for a host without an operating system, such as `wasm32-unknown-unknown`, in CI | It needs a second target in the devShell and proves little more than the two checks while `media` is still linked | After step 11, as the cheap proof that nothing needs a C library: one `cargo build -p unemu-pc-core --target …` in the gate |
+| A C ABI | No embedder is written in another language | When one is. It is a wrapper crate (a `cdylib`) over the contract; the contract is object-safe and generic-free so that the wrapper is mechanical |
+| A libretro wrapper | libretro assumes one core instance per process, a frame-stepped console and one save file. The PC needs a keyboard and a mouse, media catalogues and journals, and it has no frame stops yet (§8 step 2) | After contract 1.0, first for the NES core, whose machine is what libretro models. For the PC only on request (§12.13 Q3) |
+| Cores loaded at run time | Out of scope since §1: cores are compiled in at pinned versions | With the C ABI, if ever |
+
+### 12.13. Questions answered by the maintainer
+
+Answered on 2026-11-18, each with the recommendation: Q1 (a) one binary
+`unemu`; Q2 the front end keeps only `run --machine`, and `--boot`,
+`--bios` and `machine check` live in `unemupc` only; Q3 a libretro wrapper
+after contract 1.0, the NES core first; Q4 the journal moves to the PC
+core now; Q5 the front end's host directories move to `unemu` with a
+one-time read of the old place. The options are kept for the record.
+
+**Q1. Is `unemu` one binary or two?**
+
+- (a) **One.** `unemu` with no arguments, or with the desktop's options
+  (`--machine FILE`, `--display CARD`), opens the window; `unemu image
+  ls`, `unemu media create …`, `unemu recipe check …` are the command
+  line. The two do not collide once `--boot` and `--bios` have left: a
+  command starts with a word, a window option with `--`. `upcli` goes.
+- (b) **Two.** `unemu` is the window; the command line is its own binary,
+  `unemu-cli`, built without a toolkit.
+- (c) **One name, two builds.** As (a), with a Cargo feature that leaves
+  the window out, for a headless package.
+
+Recommendation: **(a)**, with (c) as the known way out. It is one name to
+learn, install and document, and it is what the maintainer's sentence says:
+the front end's binary is `unemu`. The cost is on Linux hosts without a
+desktop: the binary links the system's audio library (ALSA) and will not
+start without it, even for `unemu image ls` (READ: the lock file holds
+`alsa-sys` for the host-audio crate; step 13 measures it in a bare
+container). A CI job installs one package, or takes the headless build of
+(c). The five-minute criterion of §1 is not affected: it is met by the
+crates, which stay split.
+
+**Q2. Do the raw run commands stay in the front end?**
+
+- (a) **Only in `unemupc`.** `--boot`, `--bios`, `machine check` and
+  `run --machine` all leave. A machine file is imported before the front
+  end runs it.
+- (b) **In both.** The front end keeps all four and calls `unemupc`'s
+  library.
+- (c) **The front end keeps `run --machine` only**, because that command
+  adds something the core's command line cannot: firmware packages from
+  the store. The other three live in `unemupc`.
+
+Recommendation: **(c)**. The three commands need nothing of the front end
+and are the core's own business; keeping them twice is two usage texts to
+keep equal. `run --machine` with the store is a real front-end feature and
+costs one call into the library that `unemupc` uses.
+
+**Q3. When a libretro wrapper, if ever?**
+
+- (a) Never; the contract is the interface.
+- (b) After contract 1.0, for the NES core first; for the PC only when
+  someone asks.
+- (c) Now, for the PC, as the proof that the core embeds.
+
+Recommendation: **(b)**. The proof that the core embeds is the two checks
+and, later, the build for a host without an operating system; they cost
+minutes. A wrapper for the PC would spend its effort on what libretro
+lacks (catalogues, journals, a keyboard-first machine).
+
+**Q4. The journal format's home is the PC core, now.** §11 Q4 answered
+(a) "for now, decided finally at extraction". The embeddability rule needs
+the answer earlier: the journal's format and logic become a core crate
+(`journal`), the code that touches files leaves the core, and the four
+offline journal commands become PC commands (in `cli-pc` and `unemupc`)
+instead of neutral ones.
+
+- (a) As designed in §12.5.
+- (b) Keep `media` whole and neutral until extraction, with the
+  `assembly` → `media` crossing and `libc`, `serde` and `toml` listed as
+  exceptions of the core until then. Steps 9 to 11 wait.
+
+Recommendation: **(a)**. (b) leaves the core opening files, which is the
+one thing the principle forbids that the core still does.
+
+**Q5. Do the host directories follow the rename?** The store is already
+in `unemu` under the platform's data directory. The preferences directory,
+the machine-file directory and the firmware index are in `unemupc`
+[REPO: `crates/image-store/src/location/preferences.rs`,
+`crates/window/src/main.rs`, `crates/assembly/src/firmware_discovery/persistent.rs`].
+
+- (a) Leave them until the front end has its own repository; step 4
+  renames the program only.
+- (b) Move the front end's two (preferences, machine files) to `unemu`
+  with step 4, reading the old place once, as the rename from the former
+  project name did. The firmware index stays `unemupc`: it is the PC
+  core's cache.
+
+Recommendation: **(b)**, as a bead of its own right after step 4. The
+maintainer is the only user, the move is already written once, and after
+it every directory says whose it is.
+
+## 13. The second platform
+
+Status: **Accepted** on 2026-11-18 (design step `upc-dfs.27`), with the
+recommended answer of every question of §13.9. The maintainer's decisions
+of that day are binding and restated in §13.0. Nothing here is
+implemented yet. This section
+changes four places of §12 and adds one sentence to §3.12; §13.8 lists
+them.
+
+Markers in this section: **[REPO]** = read on `main` at `beb6558`, with
+the path; **MEASURED** = produced for this section by `git log`, `grep` or
+a manifest read, as each place says; **READ** = read in a file outside
+this repository, named there; **ASSUMED** = not verified.
+
+### 13.0. What is decided, and what this section adds
+
+Decided by the maintainer on 2026-11-18:
+
+1. unemunes, a NES core in its own repository, starts now, as a second
+   and completely different platform, as soon as the front end can drive
+   a core through the contract.
+2. The contract gets its own repository, `unemu-core-api`, in the
+   `unemu-org` organisation on GitHub, created from this workspace after
+   this design. Until then it lives in `crates/core-api`.
+3. The 6502 processor is a crate inside unemunes, written so that it can
+   leave later as its own library, for a Commodore 64 core for example.
+4. The front end's binary is `unemu`; a core's binary carries the core's
+   name (decision-41).
+
+What the unemunes side said the same day: its processor, picture and sound
+crates need no contract; it depends on `unemu-core-api` only in its
+adapter step and needs the contract's own repository before then, never a
+revision of this repository and never a second copy. The gaps it expects:
+an absolute pointer for the light gun, `Core::validate`, and sound at a
+rational rate.
+
+The feature freeze of 2026-11-15 stands for everything else. The generic
+launch path of §13.3 is new behaviour that decision 1 asks for; nothing
+beyond what a second platform needs to start is added here.
+
+What the code is today, in the four places this section changes [REPO]:
+
+- **One way to start a machine.** The shell holds
+  `presenter: Option<Presenter>`, and `Presenter` is a
+  `Session<PcMachine>` with the PC's floppy catalogue beside it
+  [`crates/window/src/main.rs`, `shell.rs`]. Every start is the PC
+  library's (`poll_images`: `SessionTransfer::restore`,
+  `assemble_with_verified_bases`, `Presenter::from_assembled`) or a PC
+  machine file's. `shell.rs` names `self.presenter` 97 times (MEASURED:
+  `grep`).
+- **Sound at 48 kHz only.** `Session::new` refuses the host device for a
+  machine that describes another rate, and the converter in
+  `host_audio.rs` takes its source rate from the constant
+  `FRAMES_PER_SECOND` [`crates/machine-view/src/session.rs`,
+  `host_audio.rs`].
+- **A 4:3 picture.** The shell sizes the screen with the literals `4.0 /
+  3.0` and scales by `unemu_pc_core::RASTER_SCALE`; `Frame::aspect`
+  reaches `Picture` and is not read [`crates/window/src/shell.rs`,
+  `display`].
+- **No list of cores.** `platforms` names the PC's image providers and
+  the licence notice; the one place that lists a `Core` is a test in
+  `crates/window/src/main.rs`. `DesktopPlatform` and `CliPlatform` are
+  store-side seams: validators, the push guard, format names
+  [`crates/library-model/src/platform.rs`, `crates/cli-core/src/lib.rs`].
+
+The session itself is ready: `Session<M: Machine + ?Sized = dyn Machine>`
+calls the contract alone and picks its keyboard, its pointer and its
+removable slots from the description.
+
+### 13.1. The contract's repository
+
+**Name and place.** Repository `unemu-core-api` in the `unemu-org`
+organisation, public, beside `unemupc` and `x86jit`. The crate keeps its
+name, `unemu-core-api` (§11 Q2).
+
+**Layout.** The package is at the repository's root, which is where a
+history-preserving export of `crates/core-api` puts it. The root manifest
+also declares a workspace, so that a second member can join without
+moving the first.
+
+```text
+unemu-core-api/
+  Cargo.toml          the package `unemu-core-api` and `[workspace]`
+  src/                the contract, as `crates/core-api/src` is today
+  files/              later: the package `unemu-core-files` (below)
+  docs/
+    versioning.md     the rules of "Versions" below
+    embedding.md      how a core and a front end depend on the crate
+    conformance.md    what a core must hold: the checklist of §13.5
+  CHANGELOG.md
+  README.md
+  LICENSE…            as §13.9 Q1 is answered
+  .github/workflows/ci.yml
+```
+
+- **One crate at the start.** `unemu-core-api`, with no dependency of any
+  kind, tests included, as today [REPO: `crates/core-api/Cargo.toml`].
+- **A second crate with contract 0.2: `unemu-core-files`**, the
+  contract's objects over host files (`Storage`, `Record`, `Replacement`
+  and `ContentReader` of §12.5). §12.8 already says it travels with the
+  contract: a core's own command line needs it and may not depend on the
+  front end. It is the one crate of the repository that touches the host,
+  and no core library links it. §13.9 Q4 asks whether it lives here.
+- **Tests.** The contract's unit tests move with it (the version rule,
+  the rates, a scripted core and machine driven only as `&dyn Core` and
+  `Box<dyn Machine>`). The storage in memory of §12.5 stays behind the
+  crate's `test-support` feature.
+- **Docs.** After the move the normative text is the crate's
+  documentation comments and `CHANGELOG.md`. §3 of this document stays
+  as the record of the design and gets one line at its top that names the
+  repository and the release it describes. The three files under `docs/`
+  are short and say only what the comments cannot: the rules for
+  versions, for depending on the crate, and for a core.
+- **CHANGELOG.** One section per release, newest first. Every entry is
+  marked **breaking** or **added**, and every release names the commit a
+  consumer pins.
+- **Tracking.** Work on the contract is tracked in this repository's
+  beads, under the epic that holds this design, until the front end has
+  a repository of its own. The unemunes side asks for a change by naming
+  it to the supervisor; it does not edit the contract.
+
+**Licence.** `crates/core-api` is AGPL-3.0-or-later today: its manifest
+takes `license.workspace = true` and every file carries the SPDX line
+[REPO: `Cargo.toml`, `crates/core-api/src/*.rs`]. It has no third-party
+code: no dependency, and the key names are those of the USB HID usage
+tables.
+
+The contract is the one crate that every core and every front end links.
+Under the AGPL, as it is usually read, a program that links the contract
+is a combined work under the AGPL as a whole. That is no burden for
+unemupc and the front end, which are AGPL already. It is one for the
+principle of decision-41: a core that "anyone can integrate easily" could
+then be integrated only by AGPL programs, whatever licence its author
+chose for the core, because nothing drives it without the contract. The
+interface libretro cores are written against is under a permissive
+licence for this reason, and x86jit, the other library of this family
+that others are meant to embed, is `MIT OR Apache-2.0` (READ: its
+manifest at the pinned revision). `deny.toml` already allows both
+[REPO].
+
+A permissive licence on the contract does not change the licence of any
+core or front end. unemupc's crates stay AGPL. The contract holds
+signatures, data types and a few dozen lines of arithmetic; what is worth
+protecting is on either side of it.
+
+This is the maintainer's decision, and it comes before the repository is
+public, because the first public commit states the licence: §13.9 Q1.
+ASSUMED: the maintainer holds the whole copyright of `crates/core-api`
+and can relicense it alone.
+
+**Versions.**
+
+- The package version is the contract's: `0.1.0` for `CONTRACT` 0.1.
+  Today the crate carries the workspace's `0.0.2` [REPO].
+- **0.1** is the contract as on `main`. It moves unchanged.
+- **0.2** is one release with two parts: the storage objects of §12.5,
+  which are breaking, and the additions of §13.2. They go together
+  because of the rule below: during major 0 every minor is a meeting of
+  all cores and the front end, and because the NES adapter is then
+  written once, against the storage and content objects it will keep.
+- **Before 1.0**, as §3.2 has it: every minor may break, and a front end
+  drives only cores that state its own minor
+  (`ContractVersion::drives`). A minor is any change to what a core
+  implements or to what a front end may call or read: a method, a field,
+  a variant, a rule in a documentation comment that a core must hold. A
+  patch changes neither: documentation, tests, a `test-support` helper, a
+  named constant for a value that already existed, a release of
+  `unemu-core-files`.
+- **From 1.0**: a minor only adds, a major breaks, and the crate is
+  published to crates.io with SemVer requirements (§11 Q1). 1.0 comes
+  when the PC core and a second core both run on the contract (§10).
+- **Release tags** are `vMAJOR.MINOR.PATCH` on `main`, signed. `main`
+  between two tags may carry half of the next minor; nobody pins it.
+
+**How a consumer depends on it.** As this repository pins x86jit:
+
+```toml
+# The contract between front ends and cores, at the commit of release v0.2.0.
+unemu-core-api = { version = "0.2", git = "https://github.com/unemu-org/unemu-core-api", rev = "<the 40 hex digits of the tag's commit>" }
+```
+
+- The pin is an **exact revision**, never a branch and never a tag name
+  (a tag can be moved), and it is the commit of a release tag.
+- A bare `path` dependency is banned, as for x86jit: it breaks CI and
+  every other checkout. To work against a local checkout, a gitignored
+  `.cargo/config.toml` patches the URL, as `dev-setup.md` § CPU core
+  describes for x86jit:
+
+  ```toml
+  [patch."https://github.com/unemu-org/unemu-core-api"]
+  unemu-core-api = { path = "<your checkout>" }
+  ```
+
+  The patch applies to the whole graph, so a pinned core that names the
+  same URL builds against the local checkout too.
+- unemunes writes the same line in its own manifest. It never names a
+  revision of unemupc and never copies the crate.
+
+**One copy, and how it is guaranteed.** Cargo builds one copy of a git
+dependency for one URL and one revision. Two revisions are two crates
+with the same name, and a core built against one does not implement the
+trait of the other (§3.2). Four things keep the build at one copy, the
+first by construction and the others as readable failures:
+
+1. **The compiler.** A front end that pins the contract at revision B and
+   a core that pins it at revision A does not build: the line of
+   `platforms` that lists the core (§13.4) fails, because the core's
+   `impl Core` is for another crate.
+2. **The boundary check.** `scripts/crate-boundaries.sh` gains one rule
+   over the resolved graph (`cargo metadata --offline --locked`, the
+   second input §12.3 plans; this rule brings it if step 1 of §12.10 has
+   not landed): the graph holds exactly one package named
+   `unemu-core-api`; otherwise it prints both sources and which crates
+   depend on each. This turns the compiler's long error into one line.
+3. **The start-up check and its test.** `CONTRACT.drives(implements)` for
+   every compiled-in core, and the test that asserts it (§3.2 items 2
+   and 3), catch a core that was built against the right copy and states
+   another minor.
+4. **The protocol for moving the pin**, below: the contract and every
+   pinned core move in one commit of the front end.
+
+**Moving to a new release of the contract**, while cores are pinned by
+revision:
+
+1. The release is tagged in the contract's repository.
+2. Each core's repository re-pins, edits its `implements` literal and its
+   code, and names the resulting revision to the supervisor. Nothing
+   changes for the front end yet: it still pins the old contract and the
+   old core revisions.
+3. One commit of the front end moves the contract's pin, every external
+   core's pin and `PcCore`'s `implements` literal together. The goldens
+   pinned to a core's revision run, as they do when the x86jit pin moves.
+
+A core that has not re-pinned blocks step 3, not the other cores' work.
+
+**CI of the contract's repository**, on every push and pull request:
+
+| Job | What it checks |
+|---|---|
+| Format and lint | `cargo fmt --check`; `cargo clippy --all-targets --all-features -- -D warnings` |
+| Tests | `cargo test`, and again with `--all-features` |
+| Documentation | `cargo doc --no-deps` with warnings denied: every public item has its comment |
+| No dependency | `cargo metadata` shows no dependency of `unemu-core-api`, of any kind. This is rule 4 of §7.4, which leaves this repository with the crate |
+| No host | `cargo build -p unemu-core-api --target wasm32-unknown-unknown`: the contract builds where there is no operating system. After 0.2 a `grep` also refuses `std::fs` and `std::path` in `src/` (the host guard's contract lines of §12.3) |
+| Oldest toolchain | the build with the `rust-version` the manifest states. It starts at this repository's (1.99) and is lowered when a consumer needs it, never raised above the lowest consumer's |
+| Publication | the mechanical publication rules of this repository's `scripts/publication-guard.sh`, copied with their self-test |
+
+`unemu-core-files`, once it exists, is tested on Linux, macOS and
+Windows, because it is the crate with code for each.
+
+**The extraction.** The supervisor runs it. Creating this repository is
+the maintainer's decision of 2026-11-18 and the one exception to the rule
+that publishing a repository is the maintainer's step.
+
+1. The maintainer answers §13.9 Q1 (the licence). The repository does not
+   become public before that.
+2. In a scratch clone of this repository at `main`:
+   `git subtree split --prefix=crates/core-api`, onto a branch of the
+   clone. The branch holds the history of that directory and nothing
+   else, with the package at its root. Today that history is one commit,
+   `705b1af` (MEASURED: `git log -- crates/core-api`). Nothing is
+   written to this repository.
+3. The branch becomes `main` of the new repository. Commits on top of
+   it, each small:
+   - the manifest with its own fields in place of the workspace's
+     (`version = "0.1.0"`, edition, `rust-version`, licence, the new
+     repository URL, the description, `publish = false` until 1.0) and
+     the `[workspace]` table;
+   - the licence files and SPDX lines as Q1 is answered;
+   - `README.md`, `CHANGELOG.md` with the 0.1.0 entry, `docs/`;
+   - the CI workflow and the publication guard.
+4. CI passes; the commit is tagged `v0.1.0`.
+5. One bead in this repository (step 3 of §13.6): the root manifest's
+   `unemu-core-api` line becomes the git pin above; the member and the
+   directory `crates/core-api` go; `deny.toml` allows the new git source
+   beside x86jit's; the boundary check changes as below; `dev-setup.md`
+   gains the patch paragraph; `architecture.md` and §3 of this document
+   name the repository.
+6. The supervisor names the URL and the revision to the unemunes side.
+
+**What this workspace keeps.** No source of the contract. It keeps the PC
+adapter (`unemu-pc-core`), the test that every compiled-in core states a
+contract the front end drives, the one-copy rule, and this document as
+the design's record. Every dependent crate already names the contract
+through the workspace (`unemu-core-api.workspace = true` in `pc-core`,
+`machine-view`, `library-model`, `pc-media` and `window`; MEASURED:
+`grep`), so the pin is one line.
+
+The boundary check after the move: the layer `contract` has no workspace
+package any more, so rule 4 of §7.4 goes to the contract's CI; the
+external-crate list of §12.3, when it exists, names `unemu-core-api` for
+the `emulation` layer, with the reason "the contract"; the one-copy rule
+is new; the self-test gets a fixture with two copies.
+
+### 13.2. Contract 0.2: what a second platform adds
+
+Contract 0.2 is the storage objects of §12.5 and the additions below.
+Each addition is marked on its own merits: **added** means it would be a
+minor after 1.0 (a method with a default body, a field with a "nothing"
+value, a variant of a `#[non_exhaustive]` enum); **breaking** means a
+core or a front end written for 0.1 must be edited. The release as a
+whole is breaking, because of §12.5.
+
+| Addition | Kind | Who must act |
+|---|---|---|
+| Content kinds: `ContentKind`, `PlatformDescription::content` | added | a core that opens content states them |
+| `Core::identify` | added | such a core implements it |
+| `Core::validate` | added | a core whose `create` reads configs implements it |
+| An absolute pointer: `InputEvent::PointerPosition`, `InputKind::AbsolutePointer` | added | a front end ignores a port it does not serve |
+| Sound at any rate: the rule on `AudioDescription::rate` | no signature changes; **breaking** for a front end that assumed one rate | `machine-view` (step 1 of §13.6) |
+| The picture: `Frame::visible`; the rule on a finished frame | added | a front end that ignores `visible` shows the whole picture |
+| Pads: the rule on port order | no signature changes | none |
+| Battery-backed memory | nothing beyond §12.5 | a core keeps it in a record |
+
+#### Content a person opens
+
+A stored image names its platform, and the front end knows which core
+runs it. A file on disk names nothing. The core says which kinds of file
+it opens, as data, and decides about one file by reading it.
+
+```rust
+/// A kind of content a person opens directly to start a machine: a
+/// cartridge image, a tape image, a program file.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContentKind {
+    /// Stable id of the kind within its platform, such as `ines`.
+    pub id: &'static str,
+    /// The kind's name for people, in the plural, as the filter of a file
+    /// dialog says it: `NES cartridge images`.
+    pub name: &'static str,
+    /// File name extensions of the kind, in lower case and without the
+    /// dot. A hint: a front end uses them to filter a file dialog and to
+    /// decide which core to ask first. They prove nothing; `identify`
+    /// decides.
+    pub extensions: &'static [&'static str],
+}
+
+impl ContentKind {
+    pub const fn new(
+        id: &'static str,
+        name: &'static str,
+        extensions: &'static [&'static str],
+    ) -> Self;
+}
+
+#[non_exhaustive]
+pub struct PlatformDescription {
+    // … the fields of 0.1, and:
+    /// The kinds of content a person can open to start a machine of this
+    /// platform. Empty for a platform whose machines start only from a
+    /// config, such as a computer that is assembled from parts.
+    pub content: &'static [ContentKind],
+}
+
+impl PlatformDescription {
+    pub const fn with_content(mut self, content: &'static [ContentKind]) -> Self;
+}
+
+pub trait Core: Send + Sync {
+    // … `description` and `create`, and:
+
+    /// Say whether this core runs `content`, and as what.
+    ///
+    /// `Ok(None)`: the bytes are not content this core opens; the front
+    /// end asks the next core. `Ok(Some(..))`: the platform, the kind and
+    /// the config of a machine that runs the content with the platform's
+    /// defaults. Fails with `ErrorKind::Unsupported` when the core
+    /// recognises the content and cannot run it, such as a cartridge
+    /// board it does not model; the message names what is missing, and
+    /// the front end shows it instead of "unknown file". Fails with
+    /// `Content` or `Storage` as `ContentReader::read_at` did.
+    ///
+    /// The core reads what it needs through `content.bytes`: a header,
+    /// or all of it. It keeps nothing: the call builds no machine and
+    /// changes no state. The same bytes give the same answer in every
+    /// run of one release of the core.
+    fn identify(&self, content: &OfferedContent<'_>) -> Result<Option<Identified>, Error> {
+        let _ = content;
+        Ok(None)
+    }
+
+    /// Check a config document without building a machine, and name the
+    /// content it needs.
+    ///
+    /// Fails with `ErrorKind::Config`, with diagnostics, as `create`
+    /// would for the same document, and with `Unsupported` for a platform
+    /// or a config type the core does not read. On success `create` asks
+    /// its `ContentSource` for exactly the listed content. A front end
+    /// verifies that content before it calls `create`; a store-side
+    /// validator can be written over this call alone.
+    fn validate(&self, platform: &str, config: ConfigDocument<'_>) -> Result<Validated, Error> {
+        let _ = (platform, config);
+        Err(Error::new(ErrorKind::Unsupported, "this core does not validate configs"))
+    }
+}
+
+/// A file a person asked to open, as the front end hands it to a core.
+#[non_exhaustive]
+pub struct OfferedContent<'a> {
+    /// The file's name as the person sees it, without any directory. A
+    /// hint for the kind and for a title; never a path, and nothing the
+    /// core can open.
+    pub name: &'a str,
+    /// SHA-256 of the whole content, computed by the front end over all
+    /// of its bytes.
+    pub sha256: [u8; 32],
+    pub size: u64,
+    /// The bytes with that digest and size.
+    pub bytes: &'a dyn ContentReader,
+}
+
+/// What a core makes of offered content.
+#[non_exhaustive]
+pub struct Identified {
+    /// The platform that runs it: an id of this core's description.
+    pub platform: &'static str,
+    /// The kind it is: the id of one of that platform's content kinds.
+    pub kind: &'static str,
+    /// The config of a machine that runs the content with the platform's
+    /// defaults, in one of the platform's `config_types`. It names the
+    /// content by digest and size, never by name. `validate` accepts it
+    /// and lists the content; `create` reads it.
+    pub config: ConfigDocumentBuf,
+    /// The content's own title, when it carries one. A front end shows
+    /// the file's name otherwise.
+    pub title: Option<String>,
+    /// What a person should know before the machine starts, such as a
+    /// header that contradicts the content.
+    pub notes: Vec<Message>,
+}
+
+/// A config document a core wrote.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigDocumentBuf {
+    pub media_type: &'static str,
+    pub bytes: Vec<u8>,
+}
+
+impl ConfigDocumentBuf {
+    pub fn new(media_type: &'static str, bytes: Vec<u8>) -> Self;
+    pub fn as_document(&self) -> ConfigDocument<'_>;
+}
+
+/// What a valid config needs.
+#[non_exhaustive]
+pub struct Validated {
+    /// Every piece of content `create` will ask its `ContentSource` for.
+    pub content: Vec<ContentRef>,
+}
+
+/// One piece of content a config names.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContentRef {
+    pub sha256: [u8; 32],
+    pub size: u64,
+    /// What it is, for messages: `cartridge`, `firmware`.
+    pub label: String,
+}
+```
+
+`create` keeps its one input form, the config document (§3.4). Opening a
+file is two calls: `identify` writes the config, `create` reads it. So a
+machine started from a file and one started later from a stored image
+with the same config are the same machine, and the replay rule of §3.11
+covers both.
+
+A platform that opens content lists at least one config type, because
+`identify` answers in one. A platform with neither is the PC of stage A:
+no front end offers it (§4).
+
+#### An absolute pointer
+
+A light gun, a light pen or a touch screen points at a place on the
+picture. The relative pointer of 0.1 cannot say where.
+
+```rust
+#[non_exhaustive]
+pub enum InputEvent {
+    // … the variants of 0.1, and:
+    /// Where an absolute pointing device points now.
+    ///
+    /// `position` is a place on the whole picture of the port's display
+    /// (never only its `visible` part): `x` from the left edge and `y`
+    /// from the top edge, each a fraction of 65 536, so that pixel column
+    /// `x * width / 65 536` and pixel row `y * height / 65 536` are meant
+    /// whatever size the picture has when the event takes effect. `None`
+    /// while the device points off the picture. The position holds until
+    /// the next event for the port. The port's buttons are
+    /// `PointerButton` events.
+    PointerPosition { port: PortId, position: Option<(u16, u16)> },
+}
+
+#[non_exhaustive]
+pub enum InputKind {
+    // … the kinds of 0.1, and:
+    /// A device that points at a place on one display: a light gun, a
+    /// light pen, a touch screen. The front end sends where the host
+    /// pointer is over that display's picture and does not capture it.
+    AbsolutePointer { display: DisplayId, buttons: u8 },
+}
+```
+
+`InputEvent::ReleaseAll` releases the port's buttons and leaves its
+position; a front end that loses focus sends `PointerPosition` with
+`None`. What the device senses there (the beam's time, the brightness
+under the gun) is the core's business.
+
+#### Sound at any rate
+
+`AudioDescription::rate` is already an exact fraction, and
+`drain_audio` already hands over frames at that rate. Nothing in the
+signatures changes. What 0.1 left unsaid, and `machine-view` filled in
+with "48 kHz or no sound", is said in 0.2:
+
+```rust
+#[non_exhaustive]
+pub struct AudioDescription {
+    /// Stereo frames per second, exact, from 8 000 to 192 000: the rate
+    /// natural to the machine. A core never resamples to suit a host
+    /// device; the front end converts to whatever it plays.
+    ///
+    /// A machine whose sound generator runs faster than 192 000 Hz (a
+    /// chip clocked at the processor's rate) filters and divides by a
+    /// whole number inside the core, because only the core knows its
+    /// signal, and states the divided rate. It is still an exact
+    /// fraction: 19 687 500/11 Hz divided by 40 is 984 375/22 Hz.
+    ///
+    /// A machine with one sound channel puts it in both samples of a
+    /// frame.
+    pub rate: Rate,
+}
+```
+
+And on `Machine::drain_audio`: the number of frames a machine has handed
+over since it was created differs from `now() * rate / clock` by less
+than one frame, at every return of `run`. A front end may rely on that to
+keep sound and picture together. ASSUMED for the PC adapter, which mixes
+at 48 000 Hz off virtual time; step 1 of §13.6 adds the test, and if the
+PC cannot hold it the rule is weakened before step 5 writes it into the
+contract.
+
+#### The picture
+
+`Frame::aspect` already carries the shape of the whole picture, so a
+256 × 240 picture with 8:7 pixels states 128:105 and nothing is added for
+it. The front end must honour it (§13.3). Two things are added:
+
+```rust
+/// A rectangle of a picture, in its pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameArea {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[non_exhaustive]
+pub struct Frame<'a> {
+    // … the fields of 0.1, and:
+    /// The part of the picture that a display of the machine's time
+    /// showed for certain; the rest is overscan, which may hold garbage.
+    /// The whole picture when the core has nothing to say, which is what
+    /// `Frame::new` sets. A front end may show only this part. `aspect`
+    /// is always the shape of the whole picture, and the pixels keep
+    /// their shape when a front end crops.
+    pub visible: FrameArea,
+}
+
+impl<'a> Frame<'a> {
+    pub fn with_visible(mut self, visible: FrameArea) -> Self;
+}
+```
+
+And on `Machine::frame`: a machine that draws its picture line by line
+returns the last picture it **finished**, never one it is still drawing.
+"The picture at the last completed boundary" of 0.1 was written for a
+text grid that is whole at any instant. With this rule a front end that
+runs by deadline, as the session does, shows whole frames without using
+`RunLimit::stop_on_frame`.
+
+Cropping is the front end's choice (a view option), not a setting of the
+machine: the core always hands over the whole picture, so a saved state,
+a replay and a screenshot do not depend on it.
+
+#### Pads
+
+Nothing is added. Three things are stated:
+
+- **What is plugged in is the machine's.** Which device sits in a
+  controller port (a pad, a light gun, nothing) is part of the machine's
+  config, and the machine's description shows the result as its input
+  ports, constant for the machine's life (§3.5).
+- **Port order is player order.** The ports of kind `Pad` are the
+  players, first to last, in ascending `PortId`.
+- **Which host key or button is which control is the front end's.** No
+  core carries a key map, a dead zone or a turbo setting. The mapping is
+  data of the front end (§13.3).
+
+`PadControl` has what a NES pad needs (`Up`, `Down`, `Left`, `Right`,
+`A`, `B`, `Start`, `Select`).
+
+#### Battery-backed memory
+
+Nothing beyond §12.5. A cartridge's battery-backed memory is one record
+of the machine's `Storage`, under a name the core fixes. The rules a core
+holds:
+
+- The record is opened only when the content has such memory.
+- It is written with `replace` and `commit`, so that it holds the old
+  memory or the new one, whole.
+- It is written at `finish`, and also when `run` returns with the memory
+  changed and ten seconds of **virtual** time gone since the last write,
+  so that a power cut loses little. The host clock is not involved, so a
+  replay writes at the same points.
+- A machine dropped without `finish` keeps what the last write made
+  durable (§3.9).
+
+#### Deliberately left out of 0.2
+
+| Left out | Why | What brings it in |
+|---|---|---|
+| Choosing what is plugged into a port from the front end | It is a setting of the machine, and settings as data are out since §3.12. Until then a machine opened from a file has the devices `identify` chose, and the core's own command line can choose others | "Settings as data": a second platform with a settings dialog |
+| Re-plugging a device while the machine runs | No machine needs it yet | A core that models it |
+| Analogue axes, paddles, rumble, a microphone | No first-run need of the NES | The first core that has one: new variants, each a minor |
+| Host game controllers | A front-end matter, and a new external crate in `machine-view`, which the maintainer decides | After the keyboard path works; the binding table of §13.3 already has room for a second kind of source |
+| A media type per content kind, for the store | Store vocabulary; nothing stores NES content yet | §13.4, "When NES images enter the store" |
+| Content of several files, archives | The front end hands over one file's bytes. Unpacking is a front-end matter | Asked for |
+| Content that needs more than itself: a disk system's firmware | `validate` can list it, and a front end with a store can supply it; a plain "open file" cannot | §13.4, the same |
+| A fast path for rewind and run-ahead; cheats; netplay | Features | Asked for |
+| The number of sound channels, sample formats other than `i16` | Two channels of `i16` carry every machine in sight | A machine they do not carry |
+
+### 13.3. The front end's generic launch path
+
+"Open a file and run it": a content file, a core that says it runs it, a
+machine made by `Core::create`, the session of `machine-view` over
+`dyn Machine`, the window. No line of it names a platform.
+
+**Three new crates and one grown one.** The path is built beside the PC's
+and touches the PC's shell only where the two meet.
+
+| Crate | Layer | Toolkit | Holds |
+|---|---|---|---|
+| `unemu-test-core` (`crates/test-core`) | neutral | none | A scripted core that implements all of contract 0.2 and emulates nothing; the front end's tests run against it ("Testing before a NES exists", below) |
+| `core-launch` (`crates/core-launch`) | neutral | none | From a file and a list of cores to a machine: which cores to ask, hashing, `identify`, the content source, the machine's storage, `create`. Not a window crate: a later `image run` through the contract (§12.9) starts here too |
+| `player-ui` (`crates/player-ui`) | neutral, a window crate | egui | The view of one running machine driven through the contract alone: the screen, the status line, the machine's menu built from its description, the Input dialog |
+| `machine-view` (exists) | neutral | winit | Grows: sound at any rate, pads from the keyboard, the absolute pointer, reset by kind, saved state, the visible part of a picture |
+
+`core-launch` depends on `unemu-core-api`, `unemu-core-files` and `sha2`;
+`player-ui` on `machine-view`, `core-launch`, `ui-kit` and
+`unemu-core-api`. None of them may name a PC crate, in its tests either
+(§7.3), which is what `unemu-test-core` is for.
+
+**The path, step by step.**
+
+```rust
+// core-launch
+
+/// The cores a program was built with, checked against the contract it
+/// drives. A core that states another contract is kept with the reason,
+/// for the About text, and is never asked anything.
+pub struct Cores { /* … */ }
+
+impl Cores {
+    pub fn new(cores: &'static [&'static dyn Core]) -> Self;
+    /// The cores this program can drive, in the order of the list.
+    pub fn usable(&self) -> impl Iterator<Item = &'static dyn Core> + '_;
+    /// The cores it cannot, each with "core NAME implements contract A.B;
+    /// this program needs C.D".
+    pub fn refused(&self) -> &[(&'static CoreDescription, String)];
+    pub fn by_id(&self, id: &str) -> Option<&'static dyn Core>;
+    /// One file-dialog filter per platform that opens content, then one
+    /// for everything any core opens.
+    pub fn filters(&self) -> Vec<Filter>;
+}
+
+/// A file-dialog filter: a name for people and the extensions it shows.
+pub struct Filter {
+    pub name: String,
+    pub extensions: Vec<&'static str>,
+}
+
+/// Why a file did not become a machine to start: it could not be read,
+/// no core opens it, a core recognised it and cannot run it, the named
+/// core is not compiled in, or it needs content beyond itself. Each
+/// carries the sentence the application shows.
+pub enum LaunchError { /* … */ }
+
+/// Where the front end keeps what machines started from files leave
+/// behind. The application chooses the directories; this crate names no
+/// host location.
+pub struct HostDirs {
+    /// Machines' records: `saves/CORE/aa/DIGEST/`.
+    pub saves: PathBuf,
+    /// Saved states: `states/CORE/aa/DIGEST/`.
+    pub states: PathBuf,
+}
+
+/// Everything decided about one file, ready to start. `Send`: it is made
+/// on a worker thread.
+pub struct Prepared { /* the core, the platform and kind, the title, the
+    notes, the config, the verified content, the storage directory */ }
+
+pub enum Outcome {
+    Ready(Prepared),
+    /// More than one core runs the file, and nothing chose between them.
+    Choose(Vec<Prepared>),
+}
+
+/// Open `path`, hash all of it, and ask the cores. `wanted` is a core id
+/// the person named.
+pub fn prepare(
+    path: &Path,
+    cores: &Cores,
+    wanted: Option<&str>,
+    dirs: &HostDirs,
+) -> Result<Outcome, LaunchError>;
+
+/// Build the machine. On the thread that will drive it: a machine need
+/// not be `Send` (§3.5).
+pub fn start(prepared: &Prepared) -> Result<Box<dyn Machine>, Error>;
+```
+
+1. **Open….** File › Open… shows the host's file dialog with the filters
+   of `Cores::filters`: "NES cartridge images (*.nes)", …, "All supported
+   files", "All files". The same path starts from the command line:
+   `unemu --open FILE [--core ID]`, beside today's `--machine FILE`
+   (§13.9 Q3).
+2. **Hash, on a worker thread.** `prepare` opens the file once, computes
+   the SHA-256 of all of it, and wraps it as a `ContentReader` of
+   `unemu-core-files`, which refuses with `ErrorKind::Content` if the
+   file changes afterwards (§12.5). The whole file is hashed whatever
+   its size; a cartridge takes no time, a disc image takes what it takes.
+3. **Choose the core.** With `wanted`, only that core is asked. Without,
+   the cores whose content kinds list the file's extension are asked
+   first, in the order of the list, then the others: an extension is a
+   hint, and `identify` decides. Outcomes:
+   - no core answers: "No core in this program opens FILE", with the
+     kinds the cores do open; if a core answered `Unsupported`, its
+     message is shown instead ("recognised, cannot run: …");
+   - one core answers: `Outcome::Ready`;
+   - several answer: `Outcome::Choose`. The application refuses with a
+     message that names the cores and `--core`. A dialog that asks, and a
+     remembered answer per kind, come when two compiled-in cores open one
+     kind; until then no one can meet the case.
+4. **Check.** `prepare` calls `validate` on the config that `identify`
+   wrote and requires that it lists the file's digest and nothing else.
+   Content that needs more than itself is refused with the labels of
+   what is missing (§13.2, left out).
+5. **Create, on the UI thread.** `start` builds the `CreateRequest`: the
+   platform, the config, a `ContentSource` that answers the one digest
+   with the verified reader, and a `Storage` over the directory
+   `saves/CORE/aa/DIGEST/`, where `CORE` is the core's id, `DIGEST` the
+   content's SHA-256 in hex and `aa` its first two digits. A save
+   therefore follows the content, not the file's name or place. A second
+   machine on the same content cannot share a record with the first:
+   `Storage::open` answers `ErrorKind::Usage` for a record that is held
+   (§12.5).
+6. **The session.** `Session::new(machine, display, warnings)` over the
+   boxed `dyn Machine`, on the machine's first display.
+7. **The window.** The application holds the result as a
+   `player_ui::Player` and shows it where the PC's screen is shown.
+
+**Later: a library entry.** A stored image of a platform whose core lists
+`config_types` starts through the same `start`, with a `Prepared` made
+from the store instead of a file: the config from the image, the digests
+from `validate`, a `ContentSource` over the store's receipts, a `Storage`
+over the machine's workspace. That is the neutral start of §5, and it is
+§13.4's last part, not this one.
+
+**Beside the PC's path.** The PC stays on its provider path until §4
+stage B: its library, machine files, media dialogs and `Presenter`
+(`Session<PcMachine>`) are untouched.
+
+- The shell holds at most one running machine, as today: either the PC's
+  `presenter` or a `player`. Starting one while the other runs asks to
+  stop it first, with today's stop prompt.
+- The shell's parts that meet a running machine ask whichever is there:
+  the commands Pause, Stop, Reset, Power cycle, Mute, Speed, Fast
+  forward, Release and Fullscreen; `tick`; the central panel; the title
+  and status line; the routing of raw key and pointer events. While a
+  player runs, the PC's Machine and Media menus are replaced by the
+  player's, and the PC's commands (Insert…, Layers, Save as image…) are
+  disabled.
+- The library window does not list what was opened from a file. A list
+  of recent files is not part of this design.
+- When the PC reaches stage B it becomes one more core on this path, and
+  `Presenter` keeps only what the contract does not carry.
+
+**What a running machine offers**, each control enabled from the
+machine's description and never by trying a call (§3.3):
+
+| Control | From | Does |
+|---|---|---|
+| Pause, Resume | always | The front end stops calling `advance` and re-anchors its pacing on resume (§3.9), as the shell does today |
+| Reset | `features.resets` lists `Soft` | `reset(Soft)`. A `Usage` answer (not possible in this status) is a status-line message |
+| Power cycle | always | `reset(Hard)` when listed; otherwise `finish`, then `start` again from the same `Prepared` |
+| Stop | always | `finish`, then back to the library |
+| Mute, Speed, Fast forward, Fullscreen | always | As today (`Session`) |
+| Save state, Load state | `features.saved_state` | Below |
+| A menu per removable slot | `slots` with `removable` | Eject, Next and the catalogue's entries, from `slot_states()`; `change_medium` at the next boundary. Adding a medium from a file is not part of the first steps |
+| Input… | a port of kind `Pad` | The Input dialog, below |
+| Show overscan | the picture's `visible` is smaller than the picture | A view option, off by default: the screen shows the visible part |
+| Pointer capture | a `RelativePointer` port | As today |
+| Aiming | an `AbsolutePointer` port | Below |
+
+**The picture.** The player sizes the screen from `Picture`'s aspect and
+visible part: the shown rectangle has the shape
+`aspect × (visible.width / width) ÷ (visible.height / height)`, as large
+as the panel allows; with integer scaling on, the height is a whole
+multiple of the visible rows. The literals 4:3 and `RASTER_SCALE` stay in
+the PC's path.
+
+**Sound.** `HostAudio` learns the machine's rate from the description and
+converts from it to the host device's rate. The converter keeps its
+method, linear interpolation with an exact position carried across
+blocks, and takes the source rate `n/d` where it has the constant today:
+per input frame it emits while `phase <= r·d` and adds `n`, then
+subtracts `r·d`, with `r` the device's rate. For `n/d` = 48 000/1 that is
+today's arithmetic, so the PC's sound is unchanged bit for bit. The
+warning "audio disabled" remains only for a rate outside the contract's
+bounds. A converter with a proper low-pass filter is a later quality
+bead, judged by the sound-level tests; it changes nothing in the
+contract.
+
+**Pads from the keyboard.** A table in `machine-view`, front-end data:
+
+```rust
+/// Which host keys work which pad control, per player. Front-end data:
+/// no core sees it.
+pub struct PadBindings { /* per player: control → keys */ }
+
+impl PadBindings {
+    /// Player 1: the arrow keys; `X` is A and `Z` is B; `S` is X and `A`
+    /// is Y; `Q` and `W` are L and R; Enter is Start and the right Shift
+    /// is Select. No other player has keys.
+    pub fn defaults() -> Self;
+    /// The player and control a key works, if any.
+    pub fn control(&self, key: Key) -> Option<(usize, PadControl)>;
+    pub fn bind(&mut self, player: usize, control: PadControl, key: Key);
+    pub fn unbind(&mut self, player: usize, control: PadControl);
+    /// Every binding, for a dialog and for the preferences file.
+    pub fn entries(&self) -> impl Iterator<Item = (usize, PadControl, Key)> + '_;
+}
+```
+
+- Keys are the contract's `Key` (HID usages). `machine-view` gives each a
+  name (`keys::name`, `keys::by_name`: the names of the contract's
+  constants), and the application writes the bindings to the preferences
+  file by those names, so the file does not depend on the toolkit and
+  `machine-view` gains no dependency.
+- The session gives a key to a pad when the machine has **no keyboard
+  port** and the key is bound: it sends
+  `InputEvent::Pad { port, control, pressed }` to the player's port and
+  nothing else. Host repeats are dropped. A machine with a keyboard port
+  gets its keys as today; a machine with both is decided when one
+  exists.
+- Host chords (mute, media keys, the release chord) are taken first, as
+  today.
+- The bindings are one table for all cores, under the key `pads` of the
+  preferences file, which the application owns as it owns the other keys
+  [REPO: `crates/window/src/preferences.rs`].
+- **The Input dialog**, minimal: one tab per pad port of the running
+  machine, by the port's label; a row per control the port lists, with
+  its keys; click a row and press a key to bind it; "Defaults". Nothing
+  else.
+
+**The absolute pointer.** For a machine with an `AbsolutePointer` port
+the session does not capture the pointer. While the host pointer is over
+the screen rectangle it sends `PointerPosition` with the place on the
+**whole** picture (mapped back through the visible part when overscan is
+hidden), and `None` when the pointer leaves the rectangle or the window
+loses focus. The primary button is button 0. The cursor over the screen
+is a cross-hair.
+
+**Saved state.** One quick slot per content and core. Save state writes
+`states/CORE/aa/DIGEST/quick.state`: a first line `unemu-state 1`, the
+machine's `state_identity()` on the second line, then the core's bytes,
+through a temporary file and a rename. Load state is enabled when the
+file exists; it compares the identity line with the running machine's and
+refuses another ("this state was saved by another release of the core, or
+for another setup"), then calls `load_state`. Named slots, thumbnails and
+states in the store (machine-images §2) are not part of this design.
+
+**GUI first as mock-ups.** File › Open…, the player's menu and status
+line, the Input dialog and the refusal messages are new parts of the
+desktop. Their look is approved by the maintainer as mock-ups before any
+of it is implemented (step 11 of §13.6). The crates without a toolkit do
+not wait for that.
+
+**Testing before a NES exists.** `unemu-test-core` is a core for tests.
+It is in this workspace, depends on the contract alone, forbids unsafe
+code, touches nothing of the host, and is never in the list of a release
+build (§13.4).
+
+- **Its content** is a text file whose first line is
+  `unemu-test-core 1`, with the extension `utc`; the lines after it
+  script the machine: the picture's size, aspect and visible part; the
+  clock; the sound's rate; the input ports (pads, a keyboard, a relative
+  or an absolute pointer); slots with a catalogue; the features (resets,
+  saved state, frame stops); a battery record; and events at a virtual
+  time (`halt`, `power-off`, `fail`, a message).
+- **Its machine** is exact and trivially predictable. The picture is a
+  pattern of the frame count, with a field whose colour is the set of
+  held pad controls and a cross at the pointer's place, so a test reads
+  pixels to see that an input arrived. The sound is a square wave whose
+  frame count is exactly `now × rate / clock`, so a test counts frames
+  and measures the tone after conversion. The battery record counts the
+  machine's starts. A saved state is the counters.
+- **Its `identify`** answers `None` for a file without the first line and
+  `Unsupported` for a line `unsupported REASON`, so both refusals of step
+  3 above have a test.
+
+What is tested with it, and where:
+
+| Crate | Tests |
+|---|---|
+| `machine-view` | Sound at 984 375/22 Hz and 44 100 Hz reaches the ring at the device's rate with the tone's frequency kept and no frame lost or invented over ten virtual seconds; a 48 000 Hz source gives the bytes it gives today. A bound key becomes a pad event and reaches no keyboard; an unbound one reaches nobody. The pointer's place maps to the whole picture with overscan hidden and shown, and to `None` outside. Reset by kind; a state saved, changed and loaded |
+| `core-launch` | The order cores are asked in; each outcome of step 3; a file that changes after hashing is refused; a second machine on content whose record the first holds is refused; the record written in one session is read in the next |
+| `player-ui` | Headless, as the shell's tests draw without a window: each control of the table above is present exactly when the description says so; the screen's rectangle for 128:105 with and without overscan; the Input dialog binds a key and the next press of it moves the test machine's field |
+| `window` | With the test core in the shell's list: `--open` and File › Open… start a player; starting the PC while a player runs asks to stop it; Pause, Stop and Power cycle; the PC's own tests unchanged |
+
+The scripted machine of `machine-view`'s session tests
+[REPO: `crates/machine-view/src/session/tests.rs`] stays for the tests
+that script a machine's answers call by call; the test core is for tests
+that need a whole core.
+
+**The command line.** Nothing new runs a machine from the front end's
+command line yet (§13.9 Q3):
+
+- The desktop takes `--open FILE [--core ID]`, as it takes `--machine
+  FILE`.
+- A headless run of a core is the core's own command line (decision-41,
+  item 8): `unemunes` for the NES, as `unemupc` for the PC.
+- `--about` of both programs lists every compiled-in core with its id,
+  release and contract (§12.9), from `Cores`.
+- A neutral `run` of the front end comes with `image run` through the
+  contract (§12.9), when a second platform has a stored image to run:
+  one command for a file and for an image, designed once.
+
+### 13.4. Registering cores
+
+**The list.** `platforms` is the one place that names what is compiled in
+(§7.1). It gains the cores:
+
+```rust
+/// Every core compiled into the programs, in the order they are asked
+/// about a file and listed for people.
+pub fn cores() -> &'static [&'static dyn Core] {
+    static CORES: [&dyn Core; 1] = [&unemu_pc_core::PcCore];
+    &CORES
+}
+```
+
+- A core from another repository is one more line here and one pinned
+  git dependency in the manifest of `platforms`, with the revision, as
+  the contract is pinned: `&unemunes_core::NesCore` (the crate's name is
+  unemunes's to choose).
+- The test that every compiled-in core states a contract this program
+  drives moves from `crates/window/src/main.rs` to `platforms` and runs
+  over `cores()`. It also asserts that core ids, platform ids and, per
+  platform, content-kind ids are unique.
+- Both binaries make one `core_launch::Cores` from the list and pass it
+  down. No neutral crate calls `platforms` (§5).
+- `unemu-test-core` is not in the list. The tests of `core-launch`,
+  `player-ui` and `window` build their own list with it. For trying the
+  generic path by hand before a NES core exists, `platforms` has a Cargo
+  feature `test-core`, off by default and never set by the release
+  workflow, that adds it.
+
+**What the description feeds.**
+
+| In the UI | From |
+|---|---|
+| The filters of File › Open… | each platform's `name` and its content kinds' `name` and `extensions` |
+| Which core is asked about a file first | `extensions` |
+| The window title of a running machine: TITLE, then the platform | `Identified::title` or the file's name; `PlatformDescription::name` |
+| The About text: one line per core, then its notices | `CoreDescription::id`, `name`, `version`, `implements`, `notices`. The PC's two notices already come this way [REPO: `crates/pc-core/src/core.rs`] |
+| A core shown as unusable, with the reason | `Cores::refused` |
+| The machine's menu, the status line, the Input dialog | `MachineDescription`, as the table of §13.3 |
+
+**Cores and store-side providers are two lists.** A core is the run-time
+half of a platform: the contract. A provider is the store-side half:
+`DesktopPlatform` and `CliPlatform`, which answer for artifacts
+(validators, the push guard, format names, the platform's own commands).
+The PC has both. A NES core has the first only, at first.
+
+| | PC | NES at first |
+|---|---|---|
+| In `platforms::cores()` | yes; `create` unsupported until stage B | yes |
+| Opens a file through §13.3 | no: it lists no content kind | yes |
+| A `DesktopPlatform`, a `CliPlatform`, validators | yes (`pc-library`, `cli-pc`, `pc-image`) | none |
+| In the library, in Remotes, in `image` commands | yes | no. A registry image that names the platform `nes` is listed as another platform's, as any foreign one is today, because `PlatformFacts::runs` reads the providers |
+
+Nothing has to change in `DesktopPlatform` or `CliPlatform` for a core
+without a provider: the neutral code that takes a list of them works with
+the PC's alone. `PlatformFacts::family` ("this release runs …s") keeps
+naming the first provider's platform.
+
+**When NES images enter the store**, later and as a design of its own,
+this is what is needed, and none of it is in the steps of §13.6:
+
+1. **An artifact shape.** The machine image of a content platform: the
+   config that `identify` writes as the image's config, the content as
+   one payload blob, a media type for that payload, and the platform id
+   in the manifest (machine-images §1). The platform id joins the alias
+   table of `image_store::platform` (decision-32).
+2. **A provider written once for every such core**, in a neutral crate:
+   a `ConfigValidator` over `Core::validate` (its digest list is what
+   `validate` returns) and a `DesktopPlatform` and `CliPlatform` over the
+   core's description. This is what §3.12 left `Core::validate` out of
+   0.1 for and what §6 predicted: a simple platform ships no provider
+   crate.
+3. **An import** from a file to an image, with the mark that the content
+   is the user's own, so that the push guard holds it back: cartridge
+   images are almost never free to redistribute. Whether a core may
+   name content that is (a list of open titles by digest) is decided
+   there.
+4. **The neutral start** of §5 and the `LibraryPlatform` sketch of
+   §8.1.4, with `Storage` over the machine's workspace; the library's
+   listing and details for a platform that has no settings.
+5. **Firmware for content that needs it** (a disk system): the
+   `FirmwareRules` seam, or a generic one over `validate`'s labels.
+
+### 13.5. The unemunes side
+
+Not a design of the NES emulator (§1). Two things the two sides must
+agree on.
+
+**The rule for the 6502 crate.** The processor is a crate of unemunes's
+workspace that knows nothing of a NES: no picture or sound chip, no
+cartridge board, no memory map, and no dependency on another crate of
+unemunes or on the contract. It reaches memory through a bus trait it
+defines, one call per bus cycle, so that a machine can advance its other
+chips cycle by cycle; the interrupt, reset and ready lines are inputs it
+samples where the processor does. What differs between the chips of the
+family (no decimal mode in the NES's processor, an I/O port in the
+Commodore 64's, the CMOS instructions) is a parameter of the model, not
+conditional compilation and not a fork. Its state is plain data a
+machine can save. It has its own tests, against a published per-
+instruction test set for the processor and not only through NES
+programs, and its own documentation, which cites the processor's data
+sheet as this repository's device crates do. It forbids unsafe code and
+holds the rules of §12.1. Kept so, leaving for its own repository is a
+move of one directory.
+
+**The checklist for the adapter step.** The crate that implements the
+contract over the NES machine:
+
+1. **The dependency.** `unemu-core-api` by the exact revision of a
+   release tag, the line of §13.1, never a path, a branch or a copy; a
+   gitignored patch for local work. `implements` is the literal
+   `ContractVersion::new(0, 2)`.
+2. **The description.** Core id `unemunes`. One platform; its id is the
+   one artifacts will name later, so it is chosen once (proposed: `nes`,
+   with the region in the config). Content kinds with their extensions.
+   A config type of its own. `features`: both resets, `frame_stops`,
+   `saved_state` once it holds. Its notices.
+3. **`identify` and `validate`** as §13.2 has them: `None` for foreign
+   bytes, `Unsupported` with a reason for a board it does not model, a
+   config that names the cartridge by digest and size.
+4. **`create`.** Content only from the `ContentSource`, by the digest in
+   the config. What outlives a run only in records of the `Storage`,
+   under names fixed for good. No file, no path, no environment
+   variable.
+5. **The machine's description.** An exact clock (`Rate`), a step unit,
+   one display, the sound's rate within the bounds of §13.2, one `Pad`
+   port per controller in player order with exactly the controls it
+   has, the cartridge as a slot that is not removable, with its digest.
+6. **`run`.** Deadlines and step limits as §3.5; `Stop::Frame` when
+   asked. `frame` returns the last finished picture, with `aspect` for
+   the whole picture and `visible` for its safe part, and a serial that
+   moves only when the pixels did.
+7. **Input** takes effect at run boundaries. `ReleaseAll` releases every
+   control.
+8. **Sound.** The exact frame count of §13.2; division by a whole number
+   inside the core when the generator is faster than the bound.
+9. **Determinism.** No host clock, no random source (the memory a
+   powered-on machine shows is fixed, or seeded from the config), no
+   thread, no process-wide state; the replay rule of §3.11 as a test:
+   the same request and calls give the same pictures and sound.
+10. **Battery memory** by the rules of §13.2; `finish` makes it durable.
+11. **Messages, not prints**; errors by kind.
+12. **Embeddability** (§12.1): the adapter and what it links forbid
+    unsafe code and add no host-touching crate.
+13. **A test that the description is honest**: no call the description
+    promises answers `Unsupported` (§3.3), driven as `&dyn Core` and
+    `Box<dyn Machine>` with the contract's storage in memory.
+14. **Its own command line**, `unemunes` (decision-41), a separate crate
+    that may open files and uses `unemu-core-files`.
+15. **The hand-over**: the revision to pin, the contract revision it was
+    built against, and the licences of everything it links, for this
+    repository's `deny.toml` and third-party notices.
+
+### 13.6. Steps
+
+Each step is one bead under the rules of §7.5: it lands alone with the
+full gate, changes no behaviour unless its row says so, and comes with
+tests that fail before it. A step "in the contract's repository" lands
+there, under that repository's CI, and changes nothing here until a later
+step moves the pin. Sizes are ASSUMED.
+
+| # | Step | Needs | Behaviour | What proves it |
+|---|---|---|---|---|
+| 1 | **Sound at any rate.** `HostAudio` takes the machine's rate; the converter takes `n/d`; `Session::new` refuses only a rate outside 8 000 to 192 000 Hz (§13.3). A test in `unemu-pc-core` that the PC holds the frame-count rule of §13.2 | nothing: contract 0.1 already carries the rate | None for the PC. A machine at another rate now sounds | The host-audio and sound-level tests pass unchanged; a new test compares the ring's bytes for a 48 000 Hz source with a recording made before the change; scripted machines at 984 375/22 Hz and 44 100 Hz give the device's rate, the tone's frequency and the exact frame count. If the PC's count is off by a frame or more, the rule of §13.2 is weakened before step 5 writes it |
+| 2 | **Pads from the keyboard.** `machine_view::pads` (`PadBindings`, the defaults), `keys::name` and `by_name`, and the session's routing (§13.3) | nothing: 0.1 has `InputEvent::Pad` | None for the PC: it has a keyboard port | A scripted machine with two pad ports and no keyboard gets pad events for bound keys and nothing for others; one with a keyboard gets today's key events for the same keys, and the existing key tests pass unchanged; every `Key` constant has a unique name that reads back |
+| 3 | **The contract's repository, at 0.1.** The extraction of §13.1; this repository pins `v0.1.0` and drops `crates/core-api` | §13.9 Q1 answered | None | The contract's tests pass in its own CI under their names. Here: the full gate; the workspace's test list is the same without the contract's own tests; `cargo tree -i unemu-core-api` shows one source; a fixture with two copies fails the new rule of the boundary check; `cargo deny` accepts the new git source |
+| 4 | **Storage objects**, in the contract's repository: the types of §12.5 with the storage in memory behind `test-support`. This is step 8 of §12.10, moved | 3 | None here | The proofs of §12.10 step 8; the contract builds for a host without an operating system |
+| 5 | **The second platform's additions**, in the contract's repository: §13.2, with `CONTRACT` 0.2 | 4 | None here | Tests: `identify` answers `None` and `validate` answers `Unsupported` by default; a scripted core that implements both; `Frame::new` marks the whole picture visible; the pointer's fraction maps to the first and the last pixel for three picture sizes; `drives` refuses 0.1 |
+| 6 | **`unemu-core-files`**, in the contract's repository (§13.9 Q4), then the tag `v0.2.0` | 5 | None here | A record's append, sync and truncate over files; a replacement committed, dropped, and failed both ways with a planted file-system seam; a record held by one storage is refused to a second, in the same process and in another; a reader refuses a file that changed; one scripted sequence over the storage in memory and over files leaves equal bytes; Linux, macOS and Windows in CI |
+| 7 | **This repository on 0.2.** The pin moves; `PcCore` states 0.2; `Picture` carries the visible part | 6 | None: `PcCore::create` and `add_medium` still answer `Unsupported` | The full gate; the test over every compiled-in core; the contract's three path signatures are gone from what this workspace builds |
+| 8 | **Core registration.** `platforms::cores()`, the moved and widened test, `core_launch::Cores` with the About lines of both programs (§13.4). `core-launch` starts with `Cores` alone | 7 | **Stated:** `--about` of both programs lists the compiled-in cores; its pins change | The pins change only by the core lines; a core that states another contract is listed as unusable with the sentence of §3.2, in a test with a scripted core; ids are unique |
+| 9 | **The test core.** `unemu-test-core` (§13.3) | 7 | None: it is in no binary | Its own tests: the replay rule; no promised call answers `Unsupported`; the three answers of `identify`; a record written by one machine is read by the next, over the storage in memory; a state saved, changed and loaded; the exact frame count of the sound. The boundary check passes with its layer `neutral` and no dependency but the contract |
+| 10 | **`machine-view` on 0.2.** The absolute pointer, the visible part in the screen's geometry (a function the views call), reset by kind, saving and loading a state | 9 | None for the PC | The `machine-view` row of §13.3's test table, against the test core |
+| 11 | **The look, as mock-ups**: File › Open…, the player's menu and status line, the Input dialog, the refusals. Not a code bead: the maintainer approves it | nothing; best early | None | The maintainer's approval, recorded on the bead |
+| 12 | **`core-launch`**: `prepare`, `start`, `HostDirs` (§13.3) | 6, 8, 9 | None: nothing calls it yet | The `core-launch` row of the test table |
+| 13 | **`player-ui`**: the player (§13.3) | 10, 11, 12 | None: nothing shows it yet | The `player-ui` row of the test table; the boundary check counts it as a window crate |
+| 14 | **Open… in the application.** `--open FILE [--core ID]`, File › Open…, the shell holds a player beside the PC's presenter, the `test-core` feature of `platforms`, the two host directories | 13 | **Stated:** one new option and one new menu item. With the release's list, which has no core that opens files yet, the item is disabled and says so | The `window` row of the test table; the usage text's pin changes by one line; the PC's shell tests pass unchanged |
+| 15 | **Saved state in the player**: the quick slot (§13.3) | 14 | **Stated:** Save state and Load state work for a machine that lists `saved_state`; the PC's stay disabled | With the test core: save, run on, load, and the picture is the saved one; a state with another identity is refused with its message |
+| 16 | **The NES core, compiled in.** One line in `platforms::cores()`, the pinned revision, the git source in `deny.toml`, its notices and licences in the third-party list | 14, and milestone N5 below | **Stated:** the program opens NES cartridge images | A test builds a small cartridge image from bytes of our own (a header and a program that loops), opens it through `core-launch`, runs a fixed number of frames and compares the frame count and the picture's digest, both pinned for the pinned revision of unemunes, as goldens are pinned to x86jit's; the one-copy rule; the test over every compiled-in core |
+
+Steps 1 and 2 can start today. Steps 4 to 6 are the only ones that change
+the contract; they are finished before any core but the PC's and the
+test core states a version, which is when a change is cheapest.
+
+**Milestones of unemunes**, and what each needs from here:
+
+| # | Milestone | Needs from this repository |
+|---|---|---|
+| N1 | The processor crate under the rule of §13.5, with its own tests | nothing |
+| N2 | The picture and sound chips, the cartridge boards and the machine, with unemunes's own goldens; no contract | nothing |
+| N3 | The adapter, by the checklist of §13.5 | step 3 to read the contract where it will live; the tag of step 6 to pin |
+| N4 | The command line `unemunes` | the tag of step 6, for `unemu-core-files` |
+| N5 | The first revision for the front end, with the hand-over of item 15 | nothing more; step 16 here follows it |
+| N6 | Later, each on its own: the light gun, saved state, a disk system, the PAL machine | the light gun needs nothing new; a disk system's firmware needs §13.4's store work |
+
+Dependencies between the two:
+
+- unemunes waits for this repository twice: for the contract's
+  repository (step 3) before N3 begins, and for `v0.2.0` (step 6) before
+  N3 can pin. N1 and N2 wait for nothing.
+- This repository waits for unemunes once: step 16 needs N5. Steps 1 to
+  15 are tested with the test core.
+- A gap the adapter finds in 0.2 goes to the supervisor as a request, and
+  becomes 0.3 by the protocol of §13.1. It is cheap until step 16 has
+  landed, because until then only `PcCore` and the test core re-state
+  their version.
+
+### 13.7. Where the steps fit
+
+**With §12.10.**
+
+- Step 8 of §12.10 (contract 0.2) is steps 4 and 5 here: made in the
+  contract's repository, and wider by §13.2.
+- Step 11 of §12.10 planned to create `unemu-core-files` out of
+  `media`'s file code. The crate now exists first, small and new (step 6
+  here), because the launch path needs a file-backed storage long before
+  the journal moves. Steps 9 and 11 of §12.10 then move the journal's
+  file half **onto** it, and extend it where the journal needs more (the
+  lock beside a journal, opens that do not follow links). Until then the
+  two do not meet: the PC's journals keep their own file code.
+- Step 1 of §12.10 and step 3 here both edit
+  `scripts/crate-boundaries.sh` and its fixtures; they go one after the
+  other, in either order.
+- Step 4 of §12.10 (the desktop binary becomes `unemu`) and step 14 here
+  both edit strings in `shell.rs`, `app_menu.rs` and `main.rs`; one after
+  the other. The option is `--open` under either name.
+- Steps 9 to 12 of §12.10 and §4 stage B are not needed by anything
+  here. When stage B lands, the PC lists a config type and becomes one
+  more core on the path of §13.3.
+
+**With the rest of the window split (§8.1, moves 3.11 to 6.5).**
+
+- Steps 1, 2 and 10 edit `machine-view` only. No remaining move touches
+  that crate, so they run beside the split.
+- Steps 8, 9, 12 and 13 add crates. Each adds its line to the boundary
+  check (and `player-ui` to its window family), as moves 4.1, 5.2 and
+  6.2 do; a bead that adds a crate and a move that adds one go one after
+  the other.
+- Step 14 is the one that meets the split: it edits `shell.rs`,
+  `main.rs`, `app_menu.rs` and the shell's command vocabulary. Move 6.3
+  takes that vocabulary to `pc_ui::commands`; the one new shell command
+  (open a file) is a variant of it wherever it lives then. The player's
+  own commands are `player-ui`'s and never enter it. Step 14 goes
+  between two moves of step 6, not beside one (§13.9 Q2).
+- `upc-dfs.25.7` (a crate for `Presenter` and its tests) and this design
+  do not meet: the player is not a `Presenter`.
+
+**People.** Two workers can hold steps 1 and 2, and steps 3 to 7, at the
+same time as the window split. The contract's repository is worked from
+this repository's supervisor, like any other step.
+
+### 13.8. Edits to earlier sections
+
+This design changes the text above in these places, and nowhere else:
+
+1. **The status paragraph at the top** names §13.
+2. **§3.12**, the bullet on `Core::validate`: one sentence that §13.2
+   brings it in with contract 0.2.
+3. **§12.5**, first paragraph: 0.2 also carries §13.2 and is made in the
+   contract's repository. Move 3: `unemu-core-files` exists before the
+   split; the journal's file half moves onto it.
+4. **§12.8**: `unemu-core-files` is named as a crate of the contract's
+   repository.
+5. **§12.10**, the rows of steps 8 and 11, to match 3.
+6. **§12.11**: step 8 is steps 4 and 5 of §13.6.
+
+### 13.9. Questions answered by the maintainer
+
+Answered on 2026-11-18, each with the recommendation: Q1 the contract is
+licensed `MIT OR Apache-2.0` and its repository is public under
+unemu-org; Q2 the generic launch path goes now, beside the window split;
+Q3 no front-end command to run content yet (the desktop's `--open`, the
+cores' own command lines); Q4 `unemu-core-files` is a second crate of the
+contract's repository. The options are kept for the record.
+
+**Q1. The contract's licence**, to be answered before its repository is
+public.
+
+- (a) **`MIT OR Apache-2.0`**, as x86jit. Any core and any front end may
+  link the contract, whatever their own licence. The first commit after
+  the export changes the SPDX lines and adds the two licence texts; the
+  export's earlier commit stays as it was published in this repository.
+- (b) **AGPL-3.0-or-later**, as today. Nothing to relicense. Every core
+  that implements the contract and every program that drives one is then
+  bound by the AGPL as a whole, so a third party can embed a core only in
+  an AGPL program.
+- (c) **A weak copyleft** (MPL-2.0, or the LGPL): changes to the contract
+  stay open, linking is free. One more licence for `deny.toml` and for
+  everyone who reads the notices.
+
+Recommendation: **(a)**. Decision-41 wants cores that anyone can
+integrate, and the contract is what integrating means. It holds
+interfaces, not emulation; the family's other embeddable library already
+carries this licence; this repository's licence policy already allows
+it. It decides nothing about unemupc's own licence or unemunes's.
+`unemu-core-files` and `unemu-test-core` follow the same reasoning: the
+first takes the contract's licence, the second stays with the front end.
+
+Also to say with the answer: whether the supervisor creates the
+repository public, or private for the maintainer to open. It must be
+anonymously fetchable before step 3 lands here, because CI fetches it.
+
+**Q2. Does the generic launch path wait for the window split?**
+
+- (a) **It goes now.** Steps 1 to 13 are in `machine-view`, in new crates
+  and in the contract's repository, none of which a remaining move of the
+  split touches. Step 14 alone edits the shell, and is placed between two
+  moves.
+- (b) **It waits** until move 6.5 has left only the application in
+  `window`. No bead is ordered against a move; unemunes's adapter then
+  meets a front end that cannot show it for as long as the split takes.
+
+Recommendation: **(a)**. The split never moves `shell.rs`: it stays in
+the application at the end (§8.1.9, move 6.5), so waiting removes no
+conflict from step 14, only postpones it. Everything before step 14 is
+out of the split's way by construction.
+
+**Q3. Does the front end's command line run content?**
+
+- (a) **Not yet.** The desktop takes `--open FILE [--core ID]`. A
+  headless run of a core is the core's own command line. A neutral `run`
+  comes with `image run` through the contract (§12.9), designed once for
+  a file and for a stored image.
+- (b) **Now**: `run CONTENT [--core ID] [--max-steps N]` in `cli-core`,
+  over `core-launch`. It would print the stop and the messages; what else
+  a headless run of any core should print (a picture's digest, the
+  sound's) has no answer yet.
+- (c) **Now, for tests only**, hidden from the usage text.
+
+Recommendation: **(a)**. The command would be a second headless runner
+beside each core's own, with nothing to print that a person wants, and
+its words would be fixed before the store-side run they must share them
+with exists. The window's tests and `core-launch`'s cover the path.
+
+**Q4. Where does `unemu-core-files` live?**
+
+- (a) **In the contract's repository**, as its second crate. Cores'
+  command lines and the front end take it from one pinned source, and one
+  revision covers the contract and its file objects.
+- (b) **In the front end** (this workspace, layer `neutral`). The
+  contract's repository stays one crate with no host code. Each core's
+  command line then writes its own file-backed storage or keeps its
+  records in memory and copies them to files itself.
+- (c) **In a repository of its own.** A third pin to move together.
+
+Recommendation: **(a)**. §12.8 already lets a core-side crate depend on
+it, which only works if it does not live in the front end. Its cost is
+that the contract's repository has one crate with operating-system code,
+tested on three systems; the contract crate itself still has no
+dependency and no host code, which its CI checks.
+
+**What this design assumes of the open questions of §12.13**, until they
+are answered:
+
+| §12.13 | Assumed here | If answered otherwise |
+|---|---|---|
+| Q1, `unemu` one binary or two | (a) one: the desktop's options start with `--`, so `--open` fits | With two binaries `--open` is the window binary's option; nothing else changes |
+| Q2, the raw run commands | nothing depends on it | |
+| Q3, a libretro wrapper | (b), after 1.0. `identify`, frame stops and one record per machine are what such a wrapper needs for a NES core | |
+| Q4, the journal's home now | (a). Under (b), `unemu-core-files` is still made in step 6, since the launch path needs it, and the journal joins it at extraction | Steps 9 to 11 of §12.10 wait; nothing here does |
+| Q5, the host directories | The two new directories, `saves` and `states`, are created beside the store, in the front end's `unemu` data directory, under either answer | |
+
+Decision-41's names (`unemu`, and a core's binary named as the core) are
+taken as decided.
