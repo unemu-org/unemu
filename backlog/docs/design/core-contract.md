@@ -4,7 +4,8 @@ Status: **Accepted** by the maintainer on 2026-11-17 (design step of
 `upc-dfs.24`, with `upc-3bm`), with the recommended answer to each question
 of §11. Steps 1 to 3 of §7.5 and steps 1 and 2 of §8 are implemented (the
 contract crate of §3 and the PC core of §4 in its stage A came with §8 step
-2); the other steps land one at a time. The decision record is
+2); the other steps land one at a time. §8.1, the plan of steps 3 to 6 of
+§8, was accepted by the maintainer on 2026-11-18. The decision record is
 [decision-40](<../../decisions/decision-40 - Front ends drive emulator cores through one contract crate.md>).
 
 Markers: **[REPO]** = read in this repository at `896c5d9`, with the path;
@@ -1501,6 +1502,11 @@ Target crates:
 | `pc-ui` | PC | `new_machine`, `new_machine_view`, `settings_model`, `settings_sheet`, `image_settings`, `firmware_choices`, `layers_dialog`, `library_view/hardware`, `library_view/firmware`, `firmware_metadata` |
 | `unemupc` | application | `shell`, `shell_model`, `app_menu`, `macos_menu`, `preferences`, `preferences_sheet`, `main` |
 
+§8.1 plans steps 3 to 6 move by move. It changes the last four rows of
+this table, for reasons counted there, and moves the PC dialogs and the
+library's frame together in step 6; the maintainer accepted it on
+2026-11-18 (§8.1.11), so §8.1.3's crates replace the last four rows above.
+
 Order, each a series of small beads under the same rules as §7.5:
 
 1. **Done.** **`ui-kit`.** Almost every arrow into `shell` is one of six helpers
@@ -1665,6 +1671,639 @@ second platform needs it.
 The contract crate and the adapter can start as soon as this design is
 approved, in parallel with §7: they add crates and move nothing until
 `machine-view` exists.
+
+### 8.1. Steps 3 to 6 in detail
+
+Status: **Accepted** by the maintainer on 2026-11-18 (planning step
+`upc-dfs.25`), with the recommended answers of §8.1.11: Q1 (a) and the
+crate names of Q2. It keeps the rules of §7.3 and of §8 and changes the
+last four rows of §8's table, for the reasons counted in §8.1.1 and
+§8.1.2. The provider list already moved to `pc-image` with the CLI split
+(`pc_image::with_providers`, step 6 of §7.5), so move 3.4 only uses it.
+
+Markers in this section: **[REPO]** = read on `main` at `705b1af`, with
+the path; **COUNTED** = counted for this section by throwaway scripts over
+`crates/window/src` (a file's production part ends at its first test
+module; a reference is a path that starts at a crate's name, so a `use`
+that brings in several names counts once and the figures are lower
+bounds); **MEASURED** = one `cargo nextest run -p window` on this commit,
+four tests at once, on a loaded development host: 732 tests and 4 ignored,
+75.8 s of wall time, 287.7 s when each test's own time is added up. 57 of
+them failed at once because one firmware fixture was not fetched in that
+checkout (38 of the 57 are tests of the PC dialogs, 11 of the frame, 8
+elsewhere), so every figure marked `*` is a lower bound; **ASSUMED** = not
+verified.
+
+#### 8.1.1. Inventory of the library, media and PC modules
+
+"PC references" are references in production code to `assembly`,
+`pc_image`, `machine_file`, `devices`, `device`, `machine`, `video`,
+`audio`, `cpu`, `unemu_pc_core` or `platforms`. `media`, `image_store`,
+`image_registry`, `unemu_core_api`, `machine_view` and `ui_kit` are
+neutral or the contract and are not counted. "View lines" are the lines of
+the top-level items that name `egui`, `eframe`, `ui_kit` or `winit`; a
+file with none builds without a toolkit. Seconds are each module's tests
+added up (MEASURED); the lines and references are COUNTED.
+
+| Group | Module | Lines with tests | Production | View lines | PC references | Tests | Seconds |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Registries and Remotes | `registries_model` | 1 978 | 1 145 | 0 | 0 | 16 | 1.6 |
+| | `registry_transfer` | 2 889 | 1 548 | 0 | 7 | 18 | 15.2 |
+| | `remote_browse` | 3 993 | 1 939 | 0 | 6 | 28 | 9.8 |
+| | `remote_pull` with `remote_pull/tests` | 1 790 | 947 | 0 | 3 | 9 | 0.6 |
+| | `save_image` | 879 | 629 | 158 | 0 | 11 | 0.7 |
+| | `registry_transfer_view` | 1 078 | 789 | 763 | 0 | 1 | 0.6 |
+| | `library_view/remotes` with its `tests` | 4 577 | 1 803 | 1 046 | 2 | 39 | 5.3 |
+| | `library_view/remotes/details` | 896 | 896 | 705 | 0 | 0 | 0 |
+| | **sum** | 18 080 | 9 696 | 2 672 | **18** | 122 | 33.8 |
+| Local library | `library_worker` | 4 632 | 2 207 | (6 uses of `egui::Context`) | 124 | 30 | 44.4 |
+| | `library_view` (the frame) | 6 320 | 3 998 | 3 093 | 10 | 37 | 48.0 `*` |
+| | `library_view/layout_tests` | 2 517 | 0 | | | 27 | 40.1 |
+| | `library_view/machines` | 2 499 | 1 962 | 1 249 | 14 | 12 | 1.2 |
+| | `library_view/firmware` | 2 871 | 1 806 | 1 065 | 13 | 14 | 9.6 |
+| | `library_view/firmware_metadata` | 2 585 | 1 521 | 847 | 10 | 9 | 6.9 |
+| | `library_view/install_media` | 2 844 | 1 665 | 929 | 15 | 16 | 12.6 |
+| | `library_view/hardware` | 710 | 504 | 0 | 15 | 5 | 1.8 |
+| | `library_view/pane` (the PC half; the rest is in `ui-kit`) | 135 | 135 | 109 | 0 | 0 | 0 |
+| | **sum** | 25 113 | 13 798 | | **201** | 150 | 164.6 `*` |
+| PC dialogs | `new_machine` | 2 295 | 1 416 | 0 | 20 | 21 | 1.2 `*` |
+| | `new_machine_view` | 1 207 | 1 207 | 1 167 | 5 | 0 | 0 |
+| | `settings_model` | 1 782 | 735 | 0 | 6 | 25 | 2.8 `*` |
+| | `settings_sheet` | 1 461 | 1 067 | 939 | 13 | 6 | 0.4 `*` |
+| | `image_settings` | 1 536 | 805 | 0 | 13 | 15 | 1.1 `*` |
+| | `firmware_choices` | 511 | 447 | 0 | 9 | 2 | 0.1 |
+| | `layers_dialog` | 1 919 | 957 | 450 | 8 | 14 | 4.1 `*` |
+| | **sum** | 10 711 | 6 634 | | **74** | 83 | 9.7 `*` |
+| Media | `media_picker` | 4 161 | 2 445 | 1 567 | 1 | 27 | 3.7 |
+| | `media_dialog` | 2 559 | 561 | 0 | 10 | 22 | 8.3 |
+| | `media_create` | 1 718 | 1 451 | 837 | 8 | 4 | 0.4 |
+| | `created_media` | 916 | 744 | 0 | 26 | 5 | 0.7 |
+| | `kept_catalogue` | 1 394 | 1 083 | 0 | 18 | 7 | 0.6 |
+| | `catalogue_menu` | 1 196 | 624 | 172 | 6 | 11 | 0.9 |
+| | `drive_chips` | 1 033 | 545 | 0 | 1 | 14 | 1.0 |
+| | **sum** | 12 977 | 7 453 | | **70** | 90 | 15.6 |
+| Shell and session | `shell`, `shell_model`, `main`, `app_menu`, `macos_menu`, `preferences`, `preferences_sheet` and the test-only `host_audio`, `mouse`, `key_table_tests`, `sound_levels_tests`, `shell_icons` | 22 349 | 8 258 | | 84 | 287 | 64.0 `*` |
+
+`kept_catalogue` is newer than §2.5 and belongs to the media group. The
+library's test fixture, `library_test_support` (471 lines), is in no row.
+The preliminary figures of §2.8 put the three sound-level tests at 44 s;
+here two of the three failed at once.
+
+What each group takes from the PC crates, and why [REPO, in the named
+file]:
+
+- **Registries and Remotes: 18 references of six kinds.** None of them is
+  PC behaviour; each is a name or a list a platform can state.
+  - The push guard's catalogue: `registry_transfer::run`, `plan` and
+    `run_push` take `catalogue: &[assembly::FirmwareEntry]` and call
+    `platforms::push_plan` (5 references).
+  - Two labels of blob kinds, `pc_image::CMOS` and `pc_image::DISK_ZERO`,
+    in the transfer's list of blobs (2, `registry_transfer.rs`).
+  - Which platform this program runs: `pc_image::PLATFORM_NAME` and
+    `pc_image::is_pc` in `TagRecord::other_platform` (2,
+    `remote_browse.rs`).
+  - The name of a medium's format: `pc_image::media_set::format_name` (1,
+    `remote_browse.rs`).
+  - The order of version tags: `pc_image::template::precedence` (3 in
+    `remote_browse.rs`, 2 in `library_view/remotes.rs`). It is a SemVer
+    comparison over `Store::is_version_tag` and names nothing of a PC
+    [REPO: `crates/pc-image/src/template.rs`].
+  - Which drives take a pulled set: `assembly::FloppyGeometry` and
+    `assembly::descriptors::FLOPPY_TYPES` in `remote_pull::Drive` and
+    `drives_for` (3).
+- **The library worker: 124 references to about 70 distinct PC items.** Of
+  its 33 requests, 24 are answered by PC code, and so is each of the 16
+  machine jobs; 21 of its 41 events carry a PC type (`ImageDetails`,
+  `SessionTransfer`, `revision::Plan`, `machine::Settings`, the firmware
+  and media-import reports, the created and kept disks). What is neutral
+  in it is the loop: the thread, the channels, the cancel counter, the
+  summary cache and the snapshot after each job. The nine neutral requests
+  are `Query`, `Delete`, `Edit`, `Finish`, `Assembled`, `ReadHost`,
+  `Shutdown`, and `Transfer` and `Browse` through the modules above. Its
+  three start flows (an image, a machine, a Gaming-mode copy of a machine)
+  each call PC code before, during and after the session they serve
+  (`prepare_pinned`, `machine::prepare`, `prepare_copy`, `resume_copy`,
+  `created_media::apply`, `kept_catalogue::restore`, `machine::confirm`).
+- **The frame, `LibraryView`: 10 references of its own, PC by what it
+  owns.** Of its 64 fields, 28 are typed by a PC crate or by a PC module
+  of the window (the readiness of the selected image, the launched
+  `SessionTransfer`, the wizard, the settings sheet, the layers dialog,
+  the firmware and media dialogs, the machine rows) and 4 by the registry
+  dialogs and Remotes. It is implemented in six files: `library_view.rs`,
+  `machines.rs`, `firmware.rs`, `install_media.rs`, `remotes.rs` and
+  `remotes/details.rs` each hold an `impl LibraryView` block.
+- **The collections.** `machines` holds `pc_image::machine::Listing` rows
+  with the floppy drives, created and kept disks of each machine;
+  `firmware` and `firmware_metadata` are the PC firmware catalogue and
+  `pc_image::firmware_import`; `install_media` is
+  `pc_image::media_import` (15 of its references); `hardware` reads
+  `assembly::capabilities` and has no view line at all.
+- **The media group: 70 references, no neutral module.** `media_dialog`,
+  `created_media`, `kept_catalogue` and `drive_chips` have no view line
+  and are the PC's floppy catalogue (`assembly::FloppyMedium`,
+  `WriteMode`, `ImageSource`, `pc_image::machine`,
+  `pc_image::workspace::PreparedSession`). `media_picker` names a PC crate
+  once, but stands on `media_create` and `created_media`.
+- **The PC dialogs** are what §8 says they are; three of them
+  (`new_machine`, `settings_model`, `image_settings`) and
+  `firmware_choices` have no view line.
+
+How the modules point at each other (COUNTED, production code):
+
+- `library_worker` takes from `library_view`: `ImageRow`, `Query`,
+  `snapshot`, `delete_tag`, `host_last_run`, and from its children the
+  model halves of `firmware` (`ScanReport`, `Outcome`, `scan_folder`,
+  `preview_set`, `import_selected`), `firmware_metadata` (`Verdict`,
+  `EditSource`, `PackageDetails`, `open_edit`, `preview_edit`,
+  `publish_edit`, `read_package`), `install_media` (`Pick`, `Control`,
+  `Sources`, `Outcome`, `inspect`, `import`) and `machines`
+  (`MachineRow`). `library_view` takes back `Request`, `Event`,
+  `MachineJob`, `Worker`, `Recovery`, `Finish`, `WorkspaceKind`,
+  `CheckedImage`, `regular_name`. That is the cycle of §8 step 3.
+- The worker also takes `created_media` and `kept_catalogue` (22
+  references), `image_settings::describe`, `layers_dialog::SourceImage`,
+  `save_image::{Target, local_tags}`, `registry_transfer::run` and
+  `remote_browse::run`.
+- The media models form their own knot: `created_media` and
+  `kept_catalogue` name `media_dialog`, and model items that live in two
+  view files (`catalogue_menu::{SetDisk, set_disk, short_name}`,
+  `media_picker::{SetEntry, CatalogueDisk, drive_name}`); `media_dialog`
+  names `created_media::Verified`.
+- `human_size` (in `library_view`) is named by ten modules.
+- The library views and `catalogue_menu` push the shell's `Command` (they
+  name it 36 times, tests included), and the frame lists the shell's
+  `LibraryEntry`; both are defined in `shell_model`.
+- The session, `Presenter` in `main.rs`, names `drive_chips` in two
+  methods (`drive_views`, `observe_drive_lights`); no media or library
+  module names `Presenter` outside its tests.
+
+#### 8.1.2. What the counts decide
+
+1. **The registry side is neutral and gets a small seam.** 9 696
+   production lines with 18 references that a platform can answer as
+   data. This is the part of the desktop that matches the neutral half of
+   the command line (`image push`, `pull`, `remote ls`, `login`,
+   `registry set`), and its seam shares four hooks with `CliPlatform`:
+   the platform, `validators`, `restricted` and `medium_format`.
+2. **The worker's loop is neutral, its jobs are not, and they are not
+   pulled apart now.** Making the worker neutral means one of two things.
+   Either its PC requests and events become values the worker cannot read
+   (the pattern of `PlatformCommand`), with the three start flows turned
+   inside out so that PC code calls the neutral loop while it holds a
+   session; or machines, settings, firmware import, media import and
+   readiness become neutral data, which is option (b) of §11 Q3, refused
+   there, and the "settings as data" that §3.12 leaves out of version 0.1.
+   Both are generalisation for one platform, with nothing but the PC's
+   own tests (the worker's 30, the frame's 64) to check the new seam
+   against. The worker stays whole and moves to the `pc` layer; §8.1.4
+   says how it grows a seam when a second platform has a library.
+3. **The frame is PC and moves last.** It owns the PC dialogs as fields,
+   so it cannot sit below them, and a neutral frame would need every
+   collection behind a trait. `machines` and `install_media`, which §8
+   listed with the neutral views, follow it: their counts are 14 and 15.
+4. **Nothing in the media group is neutral.** §8's `media-ui` keeps its
+   name and its contents and changes its layer to `pc`.
+5. **Model and view are mixed inside files**, not only between them.
+   Step 3 therefore splits nine files (`save_image`, `library_view`,
+   `firmware`, `firmware_metadata`, `install_media`, `machines`,
+   `layers_dialog`, `catalogue_menu`, `media_picker`), and the compiler
+   draws the line: an item is model when it builds without `egui` and
+   `ui-kit`.
+6. **Most tests of the neutral modules need a real PC.** The test modules
+   of `registry_transfer`, `remote_browse`, `remote_pull`, Remotes and the
+   transfer view (95 of the 122 tests of the registry side) take their
+   fixtures from `pc_image` (`PcProvider`, `PLATFORM`, the synthetic
+   firmware), from the worker or from the frame: the fixture of
+   `registry_transfer`'s tests holds a `LibraryView`. §7.3 forbids a
+   neutral crate a PC test dependency, so they stay in `pc` crates, as the
+   tests that need a real PC stayed in `window` in step 2.
+
+#### 8.1.3. Target crates
+
+These rows replace the rows `library-ui`, `media-ui`, `pc-ui` and
+`unemupc` of §8's table; `ui-kit` and `machine-view` stand as landed.
+
+| Crate | Layer | Toolkit | From today's modules |
+|---|---|---|---|
+| `library-model` (new) | neutral | none | `registries_model`, `registry_transfer`, `remote_browse`, `remote_pull`, the model half of `save_image`, the listing types of `library_view` (`ImageRow`, `Listed`, `listed`, `Source`, `source`, `human_size`, `delete_tag`, `host_last_run`), and the provider seam (`DesktopPlatform`, `PlatformFacts`, §8.1.4) |
+| `library-ui` | neutral | egui | The table helpers of `library_view` (`Cell`, `Columns`, `fit_columns`, `table_width`, `sort_header`, `draw_cells`, `draw_cells_with_hints`, `group_row`, `name_cell`, `Lead`), the view half of `save_image`, `registry_transfer_view`, `library_view/remotes` and `remotes/details` |
+| `pc-media` (new) | pc | none | `media_dialog`, `created_media`, `kept_catalogue`, `drive_chips`, and the model items of `catalogue_menu` and `media_picker` those four name |
+| `pc-library` (new) | pc | none | `library_worker`, `firmware_choices`, `hardware`, `image_settings`, the model halves of `firmware`, `firmware_metadata`, `install_media` and `machines`, `Query`, `Filter`, `Snapshot` and `snapshot`, `new_machine`, `settings_model`, the machine-file list of `shell_model` (`LibraryEntry` and what builds it), the PC's `DesktopPlatform`, and the library's test support behind a `test-support` feature |
+| `media-ui` | pc | egui | `media_picker`, `media_create`, the view of `catalogue_menu` |
+| `pc-ui` | pc | egui | The frame (`library_view` with the views of `machines`, `firmware`, `firmware_metadata`, `install_media`, the PC half of `pane`, `layout_tests`), `settings_sheet`, `new_machine_view`, `layers_dialog`, and the shell's command vocabulary (`Command`, `State`, `Enablement`) |
+| `unemupc` (today the package `window`) | application | egui | `shell`, the rest of `shell_model`, `app_menu`, `macos_menu`, `preferences`, `preferences_sheet`, `main`; the session (`Presenter`) until `upc-dfs.25.7` gives it a crate (§8.1.10) |
+
+What each depends on inside the workspace:
+
+```text
+library-model   image-store, image-registry, unemu-core-api
+library-ui      library-model, ui-kit
+pc-media        pc-image, assembly, machine-file, media, image-store
+pc-library      pc-media, library-model, pc-image, assembly, machine-file,
+                unemu-pc-core (the platform's description)
+media-ui        pc-media, ui-kit
+pc-ui           pc-library, pc-media, library-ui, library-model, ui-kit,
+                machine-view (the `Speed` a command carries)
+unemupc         all of the above, machine-view, unemu-pc-core, platforms
+```
+
+What changed against §8's table, and why:
+
+| §8 | Here | Why |
+|---|---|---|
+| `library-ui`, neutral, holds the model, the worker and the views | Two neutral crates, `library-model` without a toolkit and `library-ui` with egui | Step 3 is "without egui". A model crate that links no toolkit keeps the registry models and their tests out of every view change, and lets the `pc` model crates below the views depend on it |
+| `library_worker` in neutral `library-ui` | `pc-library`, layer `pc` | 124 PC references; 24 of 33 requests and 21 of 41 events are PC (§8.1.2, 2) |
+| `library_view`, `machines`, `install_media` in neutral `library-ui` | `pc-ui` and `pc-library` | 28 of the frame's 64 fields are PC; 14 and 15 PC references (§8.1.2, 3) |
+| `media-ui`, neutral with PC pieces split off | `media-ui`, layer `pc`, and its models in `pc-media` | 70 PC references; the one module that names a PC crate only once, `media_picker`, stands on two that name them 8 and 26 times. The worker and the session need the media models below them, without a toolkit |
+| `drive_chips`, `created_media` in `media-ui` | `pc-media` | No view line; the worker names `created_media` and `kept_catalogue`, the session names `drive_chips` |
+| `image_settings`, `firmware_choices`, `library_view/hardware`, `new_machine`, `settings_model` in `pc-ui` | `pc-library` | No view line; the worker names the first three |
+| The PC views move in step 6, the library views in step 4 | The PC dialogs and the frame move together in step 6; step 4 moves the neutral views | The frame owns the dialogs as fields, so it cannot land in a crate below them |
+
+Six crates come out of the window instead of three. Each line between
+them is one the rules force: neutral against `pc` (§7.3), with a toolkit
+against without (step 3), and the media views beside the library views,
+which do not name each other (§8).
+
+#### 8.1.4. The desktop's provider seam
+
+The neutral crates ask a platform five things. The trait lives in
+`library-model`, and whoever calls a neutral function hands the platforms
+in, as `upcli` hands `&[&dyn CliPlatform]` to the neutral command line. In
+steps 3 to 6 the caller is the PC library, whose worker runs the transfers
+and whose frame owns Remotes, so the list holds the PC alone; a list the
+application builds arrives with a neutral worker (the last part of this
+section).
+
+```rust
+use image_store::{ConfigValidator, Digest, Manifest, Store};
+use unemu_core_api::PlatformDescription;
+
+/// One platform's part of the desktop library: what the platform-neutral
+/// registry and Remotes code asks about artifacts it cannot read itself.
+///
+/// The desktop's counterpart of the command line's `CliPlatform`
+/// (core-contract.md §7.2): `validators`, `restricted` and `medium_format`
+/// mean what they mean there. The caller hands the platforms in; no
+/// neutral crate names one.
+pub trait DesktopPlatform {
+    /// The platform as its core describes it: the id artifacts name, in its
+    /// current spelling, and the name people read. Ids are compared with
+    /// `image_store::platform::same` only.
+    fn description(&self) -> &'static PlatformDescription;
+
+    /// Validators for every artifact type of the platform. Push and pull
+    /// pick the one whose artifact type and platform match the manifest.
+    fn validators(&self) -> Vec<&dyn ConfigValidator>;
+
+    /// Digests of a manifest's blobs the platform knows must not be
+    /// redistributed, whatever the image's own marks say: the input of the
+    /// push guard, for the dry run and for the push.
+    fn restricted(&self, store: &Store, manifest: &Manifest) -> image_store::Result<Vec<Digest>>;
+
+    /// The name of a medium's format, from its table in a media set's
+    /// config, as Remotes lists a set's media; `None` for a table the
+    /// platform does not read.
+    fn medium_format(&self, format: &toml::Table) -> Option<&'static str>;
+
+    /// The platform's own payload media types with a name for each, as a
+    /// transfer lists the blobs of an image. A type no platform names is
+    /// shown by its media type.
+    fn payload_labels(&self) -> &'static [(&'static str, &'static str)];
+}
+
+/// What the views and the registry models read of the compiled-in
+/// platforms without calling them. Plain data: the frame makes it once and
+/// the dialogs clone it, so nothing on the UI thread borrows a platform.
+#[derive(Clone, Debug, Default)]
+pub struct PlatformFacts {
+    platforms: Vec<&'static PlatformDescription>,
+    payload_labels: Vec<(&'static str, &'static str)>,
+}
+
+impl PlatformFacts {
+    pub fn of(platforms: &[&dyn DesktopPlatform]) -> Self;
+
+    /// Whether a compiled-in platform runs artifacts that name `id`.
+    pub fn runs(&self, id: &str) -> bool;
+
+    /// The name of the machines this program runs, as "this release runs
+    /// …s" says it: the first platform's name.
+    pub fn family(&self) -> &str;
+
+    /// The name of a payload media type, when a platform states one.
+    pub fn payload_label(&self, media_type: &str) -> Option<&'static str>;
+}
+```
+
+The functions that take it, in `library-model`:
+
+```rust
+// registry_transfer: `platforms` replaces `providers` and `catalogue`.
+pub fn run(
+    store: &Store,
+    request: TransferRequest,
+    platforms: &[&dyn DesktopPlatform],
+    send: &(dyn Fn(TransferEvent) + Sync),
+    repaint: &(dyn Fn() + Sync),
+);
+pub fn kind_label(facts: &PlatformFacts, descriptor: &Descriptor) -> String;
+
+// remote_browse
+pub fn run(
+    store: &Store,
+    request: BrowseRequest,
+    platforms: &[&dyn DesktopPlatform],
+    send: &dyn Fn(BrowseEvent),
+);
+impl TagRecord {
+    pub fn other_platform(&self, facts: &PlatformFacts) -> Option<String>;
+    pub fn not_runnable(&self, facts: &PlatformFacts) -> Option<String>;
+}
+
+// remote_pull: a drive of a stopped machine, as data.
+pub struct Drive {
+    /// The machine's id and name.
+    pub machine: String,
+    pub name: String,
+    pub unit: u8,
+    /// The drive as its platform names it, such as `A:`.
+    pub slot: String,
+    /// The drive's own format name, such as `1.44M`.
+    pub format: String,
+    /// Format names of the media the drive takes, its own first: what
+    /// `SlotDescription::formats` (§3.8) says of a running machine's slot.
+    pub takes: Vec<String>,
+    pub holds: Option<String>,
+}
+```
+
+How each hook is cut, with the words on the screen unchanged:
+
+| Today | Becomes |
+|---|---|
+| `platforms::push_plan(store, tag, target, entry, catalogue)` | `image_registry::push::plan_with_catalogue(store, tag, target, entry, \|manifest\| …)` with the digests every platform's `restricted` returns, joined |
+| `providers: &[&dyn ConfigValidator]` | every platform's `validators`, in the order of the list |
+| `pc_image::CMOS => "CMOS"`, `pc_image::DISK_ZERO => "disk base (zero)"` | `PlatformFacts::payload_label`, after the neutral media types |
+| `pc_image::is_pc(id)`, `pc_image::PLATFORM_NAME` | `PlatformFacts::runs(id)`, `PlatformFacts::family()`. The PC core already describes itself as `ibm-pc`, "IBM PC compatible" [REPO: `crates/pc-core/src/core.rs`]; a test in `pc-library` asserts that these equal `pc_image::PLATFORM` and `PLATFORM_NAME` |
+| `pc_image::media_set::format_name(table).ok()` | the first platform's `medium_format(table)` |
+| `pc_image::template::precedence` | `image_store::tag::precedence`: the function moves to the neutral crate that already holds `tag::compare` and `tag::newest_first`, and `pc_image::template` re-exports it |
+| `Drive::geometry` with `accepted_media()` and `FLOPPY_TYPES` | `Drive::format` and `Drive::takes`, filled by the PC code that lists a stopped machine's drives (`shell.rs`, two places, and `stopped_drives` of the frame) |
+
+With one platform every text is byte for byte today's. A hook that names
+one artifact asks the first platform, as the command line does (§7.5
+step 4); the choice among several is made with the second platform. No
+new file spells the platform id out: the neutral crates read it from the
+description, so the platform-id scan of `image-store` needs no new entry.
+
+The PC's implementation, in `pc-library`:
+
+```rust
+/// The PC's part of the desktop library.
+pub struct PcDesktop<'a> {
+    validators: &'a [&'a dyn ConfigValidator],
+    catalogue: &'a [assembly::FirmwareEntry],
+}
+
+impl<'a> PcDesktop<'a> {
+    /// `validators` is the PC's provider list; `catalogue` is the firmware
+    /// catalogue whose proprietary images restrict a push.
+    pub fn new(
+        validators: &'a [&'a dyn ConfigValidator],
+        catalogue: &'a [assembly::FirmwareEntry],
+    ) -> Self;
+
+    /// The PC's facts, for the frame and its dialogs.
+    pub fn facts() -> PlatformFacts;
+}
+
+impl DesktopPlatform for PcDesktop<'_> { /* description: PcCore's platform;
+    restricted: pc_image::firmware::restricted(manifest, self.catalogue);
+    medium_format: pc_image::media_set::format_name(table).ok();
+    payload_labels: (pc_image::CMOS, "CMOS"), (pc_image::DISK_ZERO, "disk base (zero)") */ }
+```
+
+The worker builds it where it runs a transfer, from the two things its
+`Backend` already supplies there, so the tests' synthetic catalogue and
+the injected crash keep working and a transfer still looks the catalogue
+up once [REPO: `library_worker.rs`, `Request::Transfer`]:
+
+```rust
+Request::Transfer(job) => backend.with_providers(|providers| {
+    let pc = PcDesktop::new(providers, backend.firmware_catalogue());
+    library_model::registry_transfer::run(&store, job, &[&pc], &send_transfer, &repaint)
+}),
+```
+
+Two supporting moves keep the layers legal:
+
+- **The PC's provider list moves from `platforms` to `pc-image`**
+  (`pc_image::with_providers`, landed with the CLI split), and `platforms` forwards to it. A
+  `pc` crate may not depend on `platforms`, which is `application`, in
+  its tests either; the worker and the tests of the registry models need
+  the list. The future `cli-pc` needs the same move (§7.1).
+- **The worker's wake-up is a function, not an `egui::Context`**:
+  `pub type Wake = Arc<dyn Fn() + Send + Sync>`. The frame passes
+  `move || ctx.request_repaint()`. This is the worker's only use of the
+  toolkit (6 references).
+
+**What the seam does not cover, and what brings each part in.** A neutral
+library would also list local images, show their details, act on them and
+start them. In steps 3 to 6 the neutral crates do none of the four; the
+PC library does, as today.
+
+| Part | Stays PC because | Enters the seam when |
+|---|---|---|
+| Listing local images | `snapshot` folds the firmware and installation-media collections and the firmware replacement hints into one answer (`firmware_choices`, the catalogue). The row type and the table are neutral already (`library-model`, `library-ui`) | a second platform lists images: `snapshot` splits into the neutral rows and one hook for the hints |
+| Details | a readiness check answers `pc_image::inspection::ImageDetails` and a `capabilities::Draft` | a second platform has a details pane: the check returns the platform's own value, and the platform draws it |
+| Actions | 24 requests and 16 machine jobs with PC arguments | a second platform has a worker job: the platform's requests and events become associated types the loop passes through |
+| Launch | the three start flows interleave PC calls with the session they serve; the shell assembles the machine from a `SessionTransfer` and keeps a `Session<PcMachine>` with the PC catalogue model beside it (§8 step 2) | §4 stage B, when `PcCore::create` reads stored configs: the neutral start of §5 |
+
+For that later step the shape is recorded here so that nothing in steps 3
+to 6 works against it; it is **not** part of them:
+
+```rust
+/// A platform whose library the neutral worker serves. Sketch.
+pub trait LibraryPlatform: DesktopPlatform + Send + 'static {
+    /// The platform's own requests and answers; the worker passes them
+    /// through unread, as the command line passes a `PlatformCommand`.
+    type Job: Send + 'static;
+    type Event: Send + 'static;
+    /// A verified start, made on the worker thread. A `Machine` need not
+    /// be `Send` (§3.5), so the machine itself is made on the UI thread
+    /// from this value: by `Core::create` over the receipts it carries, or
+    /// by the provider, which returns its own session.
+    type Prepared: Send + 'static;
+
+    fn run(&self, store: &Store, job: Self::Job, send: &dyn Fn(Self::Event)) -> Result<(), String>;
+    fn prepare(&self, session: &Workspace<'_>, image: &Descriptor) -> Result<Self::Prepared, String>;
+}
+```
+
+#### 8.1.5. Rules of every move
+
+Each move below is one bead under the rules of §7.5. In addition:
+
+1. **Names stay.** A module that moves whole keeps its name in its new
+   crate. A module that is split leaves its view half in its file, which
+   re-exports the model half (`pub use`), so no other file changes its
+   paths in the same bead. Renaming is never part of a move.
+2. **A test moves with its module when it builds there.** A test that
+   names a module still above its module's new crate, or, in a neutral
+   crate, any PC crate, stays where it is, in a test-only module of the
+   same path (as `shell_icons` stayed in step 1), and follows in the move
+   that brings the last module it names down. No test is rewritten,
+   dropped or weakened. A test's body changes only where a function it
+   calls gained a parameter the move states.
+3. **The name proof.** `cargo nextest list --workspace` before and after:
+   with the package and binary prefix removed, and the renames the move
+   states applied, the two sorted lists are equal. Today the window has
+   732 tests and 4 ignored ones (MEASURED).
+4. **The layer proof.** The new crate declares its layer;
+   `scripts/crate-boundaries.sh` passes with the allow list unchanged. No
+   move adds a line to the allow list: a test that would need one stays
+   behind by rule 2. The move that creates a crate adds its name to the
+   window family of the script (the `family` function, the comment above
+   it and a self-test fixture), so the rule against CLI crates covers it.
+5. **The runner.** A move whose tests read `vendor/`, `machines/` or
+   `crates/pc-harness/tests/support/` adds the new crate to those data
+   rules of `scripts/affected-tests.sh`; the runner's self-test fails on a
+   path no rule covers. The bead's report gives
+   `scripts/affected-tests.sh --plan` for one file of the moved module,
+   before and after.
+6. **Visibility.** `pub(crate)` and `pub(super)` become `pub` only for
+   what another crate names. What only a test left behind names goes
+   behind the crate's `test-support` feature, as in `ui-kit`,
+   `machine-view` and `unemu-pc-core`.
+7. **Time is reported, not promised.** Every time below is ASSUMED from
+   the MEASURED per-module seconds of §8.1.1; at four tests at once the
+   wall time is about a quarter of the sum. A move that adds more than a
+   few seconds to the clean build says why (§10).
+8. **A new crate** follows `conventions.md`: the SPDX line, a `//!` that
+   says what the crate holds and names this section, and a `description`
+   in its manifest.
+
+#### 8.1.6. Step 3: the models and the worker, without egui
+
+Twelve moves. 3.1 to 3.5 make the registry side neutral; 3.6 to 3.12 take
+the PC models and the worker out from under the views, which cuts the
+cycle.
+
+| # | Move | Cut before it moves | Tests | Proof and effect |
+|---|---|---|---|---|
+| 3.1 | **Two helpers into `image-store`.** `Precedence` and `precedence` go from `pc_image::template` to `image_store::tag`, re-exported where they were. A `TempDir` like `assembly::test_support::TempDir` (which stays for the emulation crates) goes behind `image-store`'s `test-support` feature | none | the tests that call only `precedence` move with it | The five call sites in `remote_browse` and `remotes` name `image_store::tag`. Plan: `image-store` and its dependents, as any `image-store` change |
+| 3.2 | **`library-model` starts with `registries_model`** (1 145 lines, no sibling module, no PC reference). The window re-exports it | none | 16 move, with the temp directory of 3.1 in place of `assembly`'s (6 uses); the one test of `merge_tests` names the application's `preferences` and stays | The first neutral desktop model by Cargo. The script's window family gains `library-model` |
+| 3.3 | **Listing and the save form.** `ImageRow`, `Listed`, `listed`, `Source`, `source`, `human_size`, `delete_tag`, `host_last_run` and the short digest (`firmware::short`) go to `library_model::listing`; the model of `save_image` (457 of 629 lines: `Target`, `TagLevel`, `TagCheck`, `check_tag`, `next_version`, `local_tags`, `SaveAsImage`) to `library_model::save_image`. `library_view` and `save_image` re-export them | none | the 11 tests of `save_image` move; the listing has none of its own | Cuts ten arrows into `library_view` (`human_size`) and the arrows of `image_settings` and the worker to `ImageRow` |
+| 3.4 | **`registry_transfer` on the seam, into `library-model`.** `DesktopPlatform`, `PlatformFacts` and `PcDesktop` appear (the last in the window until 3.11); the provider list moves to `pc-image` | the catalogue and the two labels (7 references), §8.1.4 | its 18 tests (15.2 s) hold a `LibraryView` and build stores with `PcProvider`; they stay, in a test-only `registry_transfer` module | The tests that pin the plan's lines, the refusals and the blob labels pass unchanged; the test that the PC core's platform equals `pc-image`'s is new |
+| 3.5 | **`remote_browse` and `remote_pull`, into `library-model`** | the platform's name and id, the format name, the tag order (6); the drive's geometry (3), §8.1.4 | the 28 tests of `remote_browse` name the worker and stay; the 9 of `remote_pull/tests` draw the transfer view and stay with it | After this move about 6 100 production lines of registry models have no PC dependency. Plan for a file of them: `library-model`, `window` |
+| 3.6 | **`pc-media` starts.** `media_dialog`, `created_media`, `kept_catalogue`, `drive_chips` move whole, with the model items of `catalogue_menu` (`SetDisk`, `set_disk`, `short_name`) and of `media_picker` (`Disk`, `SetEntry`, `CatalogueDisk`, `format_name`, `drive_name`, `title_parts`, `label_without_file`) that they name; both view files re-export them. The rest of `catalogue_menu` that builds without a toolkit (`Catalogue`, its rows and marks) may come in the same move | `BlankDisk::default()` becomes a constructor that takes the machine-file directory, and the shell passes `machines_dir()` (1 use) | `created_media` 5, `kept_catalogue` 7, `drive_chips` 14 move; the 22 of `media_dialog` name `Presenter` and the library fixture and stay | The four move together because they name each other. Plan for a media model file: `pc-media`, `window` |
+| 3.7 | **`pc-library` starts** with `firmware_choices`, `hardware` (with `CheckedImage` from the worker and `firmware::is_rom`) and `image_settings` | none: after 3.3 they name only each other and `library-model` | `firmware_choices` 2 move; `hardware` 5 and `image_settings` 15 name the worker, the fixture or `settings_sheet` and stay | |
+| 3.8 | **`Query` and `Filter`, then the model halves of `firmware` and `firmware_metadata`** (712 and 650 lines: the rows, facets and labels, `ScanReport`, `Outcome`, `scan_folder`, `preview_set`, `import_selected`, `Verdict`, `EditSource`, `PackageDetails`, `open_edit`, `preview_edit`, `publish_edit`, `read_package`) into `pc-library` | `firmware_metadata` plans its push with `plan_with_catalogue` and `pc_image::firmware::restricted` in place of `platforms::push_plan` (1) | stay with the views: they drive the frame | The fields of `Query` become `pub` |
+| 3.9 | **The model halves of `install_media` and `machines`** (703 and 690 lines: `MediaRow`, `Availability`, `rows`, `all_rows`, `picker_set`, `Control`, `Pick`, `Sources`, `inspect`, `import`; `MachineRow`, `facets`, `visible`, `name_problem`, `id_for`, `setting_diffs`) into `pc-library` | none | stay with the views | |
+| 3.10 | **`Snapshot` and `snapshot`** (with `facets_for`, `sort_value`) into `pc-library` | none | stay with the frame | After this move the worker names nothing of `library_view` |
+| 3.11 | **The worker.** `library_worker`, `layers_dialog::SourceImage`, `PcDesktop` and the test support (`library_test_support` without its three egui helpers, the synthetic firmware catalogue, `test_wait`) into `pc-library`; the support goes behind `test-support` | `Wake` in place of `egui::Context` (6) | its 30 tests (44.4 s) move, but for those that call test helpers of `layers_dialog` and `image_settings`, which follow in 6.2 | The cycle is cut by Cargo: `pc-library` cannot name the window. `crates/pc-harness/tests/support/` and `vendor/` gain `pc-library` in the runner's rules |
+| 3.12 | **The tests left behind whose modules are now all in or below `pc-library`** move there, under the same paths: those of `remote_browse` (28, 9.8 s), and of `hardware` and `image_settings` where they name no view. The 18 of `registry_transfer` hold a `LibraryView` in their fixture and wait for the frame (6.4) | none | about 40 tests, about 12 s | No production code changes |
+
+Effect of step 3 (ASSUMED from §8.1.1): about 115 tests and 55 to 60 s of
+the 288 s leave the application's test binary (the worker 44 s, the tests
+of `remote_browse` 10 s, the small models). A change to the shell or to a
+view then runs about 230 s of tests added up, about 60 s of wall time
+where it is 76 s now. A change to a model runs its crate and everything
+above it, as now. Four test binaries are linked in place of one.
+
+#### 8.1.7. Step 4: the neutral library views
+
+| # | Move | Cut before it moves | Tests | Proof and effect |
+|---|---|---|---|---|
+| 4.1 | **`library-ui` starts** with the table helpers of `library_view`, the view of `save_image` (`form`, `prompts`) and `registry_transfer_view` (789 lines) | `kind_label` takes the facts, which the push and pull dialogs keep | the one test of `registry_transfer_view` builds a PC store and stays | The frame and the collections draw their tables from the crate |
+| 4.2 | **Remotes off the frame, in place.** The `impl LibraryView` blocks of `remotes.rs` and `remotes/details.rs` (about 1 150 lines) become methods of `RemotesView`. What they read of the frame comes in as one borrowed value (the facts, the skin, whether the worker lives, the local tags, the stopped machines' drives as `remote_pull::Drive`, a function that sends a `BrowseRequest`); what they did to the frame goes out as a list of actions the frame applies (select an image, show a tag in the library, New machine from a pulled image, begin a pull, open a registry's login, open the picker on a set) | this move is the cut: the two blocks touch 19 fields of the frame besides `self.remote`, and four of its methods defined elsewhere (`send`, `select_image`, `pending_label`, `new_machine_named`) (COUNTED) | the 39 tests of `library_view::remotes::tests` drive the frame and pass unchanged | No crate changes; the diff is confined to the two files and the frame's calls into them |
+| 4.3 | **Remotes into `library-ui`**: `remotes` and `remotes/details` | none after 4.2; the kit's pane items come from `ui_kit::pane` | stay with the frame, which re-exports the module | About 3 600 lines of registry views (Remotes, push, pull, the save form) have no PC dependency by Cargo |
+
+Effect: none in time, since the tests of these views drive the frame. The
+step is for the boundary.
+
+#### 8.1.8. Step 5: the media picker and dialogs
+
+| # | Move | Cut before it moves | Tests | Proof and effect |
+|---|---|---|---|---|
+| 5.1 | **The catalogue menu answers with its own choice.** `catalogue_menu::item` returns which disk was chosen, or "all disks", and the shell pushes `Command::CatalogueDisk` and `CatalogueAll` | the two uses of the shell's `Command` | the 11 tests of `catalogue_menu` pass unchanged or gain the returned value where they read the pushed command | In place |
+| 5.2 | **`media-ui` starts** with `media_picker` (the picker's state and view), `media_create` and the view of `catalogue_menu`; the pane colours come from `ui_kit::pane` | none after 5.1 | `media_picker` 27, `media_create` 4, `catalogue_menu` 11 move, but for the one that names the library fixture | Plan for a media view file: `media-ui`, `window`: about 5 s of its own tests, then the shell's |
+
+The 22 tests of `media_dialog` stay with the session until
+`upc-dfs.25.7`.
+
+#### 8.1.9. Step 6: the PC views, and what is left
+
+| # | Move | Cut before it moves | Tests | Proof and effect |
+|---|---|---|---|---|
+| 6.1 | **The dialog models into `pc-library`**: `new_machine` (1 416 lines) and `settings_model` (735) | `SettingsModel::open` takes the machine-file directory, as `open_with_library` does already; the shell passes `machines_dir()` | `settings_model` 25 move, but for the one that names `machines_dir_from`; of `new_machine`'s 21 those that draw `new_machine_view` stay | |
+| 6.2 | **`pc-ui` starts with the dialogs**: the PC half of `pane`, `settings_sheet`, `new_machine_view`, `layers_dialog`. The three egui test helpers of the library fixture (`settled_modal`, `Pointer`, `painted_at`) go to `ui-kit`'s `test-support`, since they name no PC | none | `settings_sheet` 6, `layers_dialog` 14, and the tests of `image_settings`, `new_machine` and the worker that waited for these views; those that drive the frame wait for 6.4 | |
+| 6.3 | **Commands and machine files down.** `State`, `Command`, `Enablement` (159 lines, which name only `machine_view::pacing::Speed`) go to `pc_ui::commands`; `LibraryEntry` and what builds it (`spawn_library_check`, `machine_paths`, `select_machine`, the diagnostics) go to `pc_library::machine_files`. `shell_model` keeps the hotkeys, the status-bar widths and the texture, and re-exports the rest | none | the 17 tests of `shell_model` go with what they test; the move lists the paths that change | After this move the frame names nothing of the application |
+| 6.4 | **The frame.** `library_view` with the views of `machines`, `firmware`, `firmware_metadata`, `install_media`, `layout_tests`, and every test left behind whose modules are now in or below `pc-ui` | none: a move of whole files, about 9 000 production lines and 20 000 lines of tests | `library_view` 37, `layout_tests` 27, the collections 51, Remotes 39, `remote_pull` 9, `registry_transfer` 18 and its view's 1; the few that name `preferences` or the shell's hotkeys stay | **This is where the desktop's test time splits.** 140 s of tests move to `pc-ui` with this move (the frame 48.0, its layout tests 40.1, the collections 30.3, the registry and Remotes tests that drive the frame 21.7; MEASURED, `*`), beside the dialogs' of 6.1 and 6.2. A shell change then runs the application alone: about 70 s added up as measured here, about 110 s with the sound-level tests at their preliminary 44 s, so 20 to 30 s of wall time where it is 76 s now. A change to a library view runs `pc-ui` and the application |
+| 6.5 | **What is left is the application**: `shell`, `shell_model`, `app_menu`, `macos_menu`, `preferences`, `preferences_sheet`, `main`. Optionally the package takes the name `unemupc`, with the changes §7.5 step 6 lists for the command line (CI, the release workflow, `scripts/third-party-licenses.sh`, the reasons in `deny.toml`, the runner's rules, the script's window family, `commands.md`, `architecture.md`) | none | none move | No time effect |
+
+Order. Step 3 comes first and step 4 needs only 3.1 to 3.5. Steps 5 and 6
+do not depend on each other; step 6 brings the time, so it may go before
+step 5. Inside step 3 the two halves (3.1 to 3.5, 3.6 to 3.11) are
+independent until 3.11, which needs both, so two workers can hold one
+each.
+
+#### 8.1.10. Where `upc-dfs.25.7` fits
+
+`upc-dfs.25.7` plans a `pc` crate for the session tests that need a real
+PC and stayed in the window in step 2: the session tests of `main.rs` (50
+tests, 16.8 s), the three sound-level tests (44 s, PRELIMINARY), the six
+host-audio tests and the mouse tests. They are the tests of `Presenter`,
+so that crate is where `Presenter` lives.
+
+- It depends on this plan in one place: `Presenter` names `drive_chips`
+  (`drive_views`, `observe_drive_lights`), which is in `pc-media` after
+  3.6. So it can start after 3.6 and needs nothing else of steps 3 to 6.
+- It should sit **below** `pc-media`, with those two methods becoming
+  functions of `drive_chips` over the session. The other way round, every
+  change to a media model would run the sound-level tests.
+- The 22 tests of `media_dialog` that put pending media into a
+  `Presenter`, and the shell's start of a session (`poll_images` in
+  `shell.rs`: `SessionTransfer::restore`, `assemble_with_verified_bases`,
+  `Presenter::from_assembled`), are its natural next contents; neither is
+  moved by steps 3 to 6.
+- With it, the application's own tests after 6.4 are the shell's: about
+  45 s added up, about 12 s of wall time.
+
+#### 8.1.11. Questions answered by the maintainer
+
+Answered on 2026-11-18: Q1 (a), neutral by count; Q2, the names as
+proposed. The options are kept for the record.
+
+**Q1. How much of the local library becomes neutral now?** §8 placed the
+library model, the worker and the views of machines and installation
+media in a neutral `library-ui`. Counted, they are PC (§8.1.2).
+
+- (a) **Neutral by count.** The registry models and views, the listing
+  types, the tables and the save form become neutral, behind the five
+  hooks of §8.1.4. The worker, the frame and the collections move to `pc`
+  crates as they are. The worker gets its seam when a second platform has
+  a library (§8.1.4, last part). This is the plan above.
+- (b) **The worker's loop neutral now.** As (a), and after 3.11 the loop
+  moves to `library-model` with the PC requests and events as associated
+  types and the three start flows calling it. About four more beads in
+  the worker and its 30 tests; no gain in time; the frame stays PC.
+- (c) **A neutral frame now.** As (b), and every collection, pane and
+  dialog of the frame behind a platform trait.
+
+Recommendation: **(a)**. It is the direction as stated: platform GUI stays
+in per-platform modules and is generalised when a second platform needs
+it. (b) and (c) design a library seam against one platform, which is how
+the CLI seam was *not* designed: there the neutral half existed first and
+the hooks were found by counting. Under (a) every `pc` crate still leaves
+for the front-end repository with the rest (§9), so nothing here blocks
+the extraction.
+
+**Q2. The names** `library-model`, `pc-media`, `pc-library`, and
+`media-ui` for a crate of layer `pc`. They are working names; a rename is
+one bead at any time.
+
+Recommendation: keep them. `pc-media-ui` would say the layer, but §8
+named the crate, and the layer is in its manifest.
 
 ## 9. Towards two repositories
 
