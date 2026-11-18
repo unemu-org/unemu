@@ -73,6 +73,24 @@ fn u32_at(bytes: &[u8], at: usize) -> u32 {
 pub(crate) fn list(path: &Path) -> io::Result<Vec<Member>> {
     let mut file = File::open(path)?;
     let length = file.metadata()?.len();
+    Ok(directory(&mut file, length)?
+        .into_iter()
+        .map(|entry| entry.member)
+        .collect())
+}
+
+/// One file member and the DOS date and time its central directory states
+/// (PKWARE APPNOTE §4.4.6: last mod file time and date).
+#[derive(Clone, Debug)]
+pub(crate) struct Listed {
+    pub member: Member,
+    pub time: u16,
+    pub date: u16,
+}
+
+/// The file members of an archive of `length` bytes, in central-directory
+/// order, with their DOS times. Folder entries are skipped.
+fn directory<R: Read + Seek>(file: &mut R, length: u64) -> io::Result<Vec<Listed>> {
     let tail_length = length.min(65_535 + 22);
     let mut tail = vec![0u8; tail_length as usize];
     file.seek(SeekFrom::Start(length - tail_length))?;
@@ -135,26 +153,31 @@ pub(crate) fn list(path: &Path) -> io::Result<Vec<Member>> {
             None
         };
         if !name.ends_with('/') {
-            members.push(Member {
-                name,
-                raw_name: raw.iter().map(|b| format!("{b:02x}")).collect(),
-                size: u64::from(size),
-                crc32: format!("{:08x}", u32_at(header, 16)),
-                method: u16_at(header, 10),
-                compressed: u64::from(compressed),
-                offset: u64::from(offset),
-                encrypted: flags & 1 != 0,
-                problem,
+            members.push(Listed {
+                member: Member {
+                    name,
+                    raw_name: raw.iter().map(|b| format!("{b:02x}")).collect(),
+                    size: u64::from(size),
+                    crc32: format!("{:08x}", u32_at(header, 16)),
+                    method: u16_at(header, 10),
+                    compressed: u64::from(compressed),
+                    offset: u64::from(offset),
+                    encrypted: flags & 1 != 0,
+                    problem,
+                },
+                time: u16_at(header, 12),
+                date: u16_at(header, 14),
             });
         }
         at += 46 + skip;
     }
     // Two members of one name: which one a recipe means cannot be told.
     let mut seen = std::collections::BTreeMap::new();
-    for member in &members {
-        *seen.entry(member.name.clone()).or_insert(0usize) += 1;
+    for listed in &members {
+        *seen.entry(listed.member.name.clone()).or_insert(0usize) += 1;
     }
-    for member in &mut members {
+    for listed in &mut members {
+        let member = &mut listed.member;
         if seen[&member.name] > 1 && member.problem.is_none() {
             member.problem = Some("a name two members share: ambiguous".to_owned());
         }
@@ -165,23 +188,48 @@ pub(crate) fn list(path: &Path) -> io::Result<Vec<Member>> {
 /// The SHA-256 of a member's bytes, lower-case hex, after its size and
 /// CRC-32 were checked against the central directory.
 pub(crate) fn hash(path: &Path, member: &Member) -> io::Result<String> {
+    let mut sha = Sha256::new();
+    decode(&mut File::open(path)?, member, &mut |chunk| {
+        sha.update(chunk);
+        Ok(())
+    })?;
+    Ok(format!("{:x}", sha.finalize()))
+}
+
+/// Hand a member's bytes to `sink`, checked against the size and CRC-32 of
+/// the central directory as they are decoded; the sink has seen the whole
+/// member only when this returns `Ok`.
+pub(crate) fn extract(
+    path: &Path,
+    member: &Member,
+    sink: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+) -> io::Result<()> {
+    decode(&mut File::open(path)?, member, sink)
+}
+
+/// Decode one member of the archive `input`, checking the size and CRC-32
+/// the central directory states, and stopping as soon as the output passes
+/// the stated size.
+fn decode<R: Read + Seek>(
+    input: &mut R,
+    member: &Member,
+    sink: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+) -> io::Result<()> {
     if member.encrypted {
         return Err(bad(format!("{}: an encrypted member", member.name)));
     }
-    let mut file = File::open(path)?;
-    file.seek(SeekFrom::Start(member.offset))?;
+    input.seek(SeekFrom::Start(member.offset))?;
     let mut local = [0u8; 30];
-    file.read_exact(&mut local)?;
+    input.read_exact(&mut local)?;
     if u32_at(&local, 0) != 0x0403_4b50 {
         return Err(bad(format!("{}: no local header", member.name)));
     }
     let data = member.offset + 30 + u64::from(u16_at(&local, 26)) + u64::from(u16_at(&local, 28));
-    file.seek(SeekFrom::Start(data))?;
-    let compressed = file.take(member.compressed);
-    let mut sha = Sha256::new();
+    input.seek(SeekFrom::Start(data))?;
+    let compressed = input.take(member.compressed);
     let mut crc = Crc32::default();
     let mut size = 0u64;
-    let mut sink = |chunk: &[u8]| {
+    let mut checked = |chunk: &[u8]| {
         size += chunk.len() as u64;
         if size > member.size {
             return Err(bad(format!(
@@ -189,13 +237,12 @@ pub(crate) fn hash(path: &Path, member: &Member) -> io::Result<String> {
                 member.name, member.size
             )));
         }
-        sha.update(chunk);
         crc.update(chunk);
-        Ok(())
+        sink(chunk)
     };
     match member.method {
-        0 => copy(compressed, &mut sink)?,
-        8 => deflated(compressed, &mut sink)?,
+        0 => copy(compressed, &mut checked)?,
+        8 => deflated(compressed, &mut checked)?,
         method => {
             return Err(bad(format!(
                 "{}: compression method {method}; only stored and deflate are read",
@@ -209,7 +256,34 @@ pub(crate) fn hash(path: &Path, member: &Member) -> io::Result<String> {
             member.name
         )));
     }
-    Ok(format!("{:x}", sha.finalize()))
+    Ok(())
+}
+
+/// An archive held in memory, as an `unpack` step reads it: its directory
+/// and each member's bytes.
+pub(crate) struct Archive<'a> {
+    bytes: &'a [u8],
+    pub entries: Vec<Listed>,
+}
+
+impl<'a> Archive<'a> {
+    pub(crate) fn open(bytes: &'a [u8]) -> io::Result<Self> {
+        let entries = directory(&mut io::Cursor::new(bytes), bytes.len() as u64)?;
+        Ok(Self { bytes, entries })
+    }
+
+    /// A member's bytes, checked against its size and CRC-32.
+    pub(crate) fn read(&self, member: &Member) -> io::Result<Vec<u8>> {
+        // The stated size is the archive's claim; deflate expands at most
+        // 1032 to 1, so a claim beyond that is not reserved up front.
+        let bound = member.compressed.saturating_mul(1032).saturating_add(64);
+        let mut out = Vec::with_capacity(usize::try_from(member.size.min(bound)).unwrap_or(0));
+        decode(&mut io::Cursor::new(self.bytes), member, &mut |chunk| {
+            out.extend_from_slice(chunk);
+            Ok(())
+        })?;
+        Ok(out)
+    }
 }
 
 /// Decode raw DEFLATE data, handing the output on in chunks. The sink may

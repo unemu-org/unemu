@@ -939,7 +939,7 @@ impl Origin {
 }
 
 /// RFC 3986 §5.2 reference resolution against an absolute base URL.
-fn resolve(base: &str, reference: &str) -> Option<String> {
+pub(crate) fn resolve(base: &str, reference: &str) -> Option<String> {
     let reference = reference.trim();
     let reference = reference.split('#').next().unwrap_or_default();
     let (scheme, rest) = base.split_once("://")?;

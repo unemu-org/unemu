@@ -2423,6 +2423,83 @@ and the three FreeDOS recipes build artifacts whose configs equal the ones
 `image firmware import` and `image media import` make today; nothing is
 tagged when an input is missing; no step can reach the network or the
 host clock (a test build runs with both denied).
+Done on 2026-11-18 (`upc-5pw.113.7`). The neutral part is in
+`crates/recipe`: `steps` holds the three steps as pure functions of bytes
+and keys (`unpack`, `text`, `fat`), and `build` the phases around them:
+check and plan, fetch with consent, gather (every value read where the plan
+found it and checked against its size and SHA-256 again), run the steps,
+stage the outputs and publish them through the provider's `Publisher`. The
+`ibm-pc` side is `pc_image::recipe` (the `fat` step through
+`media::fat12::plan_volumes`) and `pc_image::recipe_build` (the publisher:
+`media_import::plan_with` and `publish`, `firmware_import::scan` and
+`publish_as`). The download is the registry crate's HTTPS transport
+(`image_registry::download`). `upcli recipe build FILE [--fetch] [--library
+DIR]... [--store DIR] [--config FILE] [--keep-as TAG]` exits 0 when the
+artifact is tagged, 1 when it is not (findings, a missing input, a failed
+download, read, step or import), 2 on a usage error (commands.md, Building
+recipes). Decisions taken while building it:
+- The seam of §6.12: the steps get the gathered bytes, the recipe's keys
+  and the provider's volume profile, and nothing else; the fetch and every
+  read of the store, the download cache, the bundle and the libraries
+  happen before them. A test runs the steps twice on the same bytes, a test
+  checks that the step code names no clock, network, file, environment,
+  process or thread interface, and a test builds a recipe of all three
+  steps twice into two stores with a fetcher that fails the test on any
+  request and the library files' host times changed between the builds:
+  the same manifest digest.
+- `--fetch` downloads only when every input the plan reports missing has a
+  URL, so a download is never made for a build that cannot complete; the
+  list (inputs, sizes, SHA-256, URLs) is printed before the first request.
+  A download goes to a partial file of its own,
+  `cache/downloads/.partial-<sha256>-<process>-<n>`, so concurrent builds
+  never share one, and is renamed to `cache/downloads/<sha256>` only with
+  the pinned size and SHA-256; the plan then runs again, and the cache is
+  source 2 of every later plan. Besides the per-read timeout, a whole
+  download must average at least 32 KiB/s (120 s plus one second per
+  32 KiB). A build starts by removing staging folders of processes that no
+  longer run and partial downloads older than a day. A
+  test serves the inputs from a loopback HTTP server for the `https` host
+  the recipe names: only the missing input is requested, other bytes are
+  not kept and nothing is tagged.
+- `unpack` opens the archive only when a member an output reads is still
+  missing, and then checks it whole: a member name that is absolute, holds
+  a backslash in its stored bytes, names
+  a drive, has an empty, `.` or `..` part, is not ASCII or flagged UTF-8,
+  or is shared by two members refuses the archive; every listed member's
+  stated size, hash and time must equal the archive's (its DOS date and
+  time). Without the archive the tree holds the members found.
+- The outputs are staged as files under their file names in the store's
+  `cache/recipe-build/<process>` and handed to the importers, which take
+  paths; the staging folder is removed. Medium ids are the recipe's
+  (`media_import::Plan::name_media`); a firmware recipe holds one ROM, which
+  the catalogue must know by its bytes, as `image firmware import` needs;
+  an extra whose stated kind differs from the one the importer gives it by
+  its file name is refused. Without `[license]` a package is
+  user-supplied.
+- `--keep-as TAG` keeps the result under another revision tag of the
+  recipe's own repository, so the title id and the work id still agree;
+  the recipe's own tag is refused.
+- Attachments are not built: the manifest codec has no `subject` yet. The
+  output names each one.
+- Values are held in memory while the steps run.
+- The title id (ruled 2026-11-18): the installation-set import writes the
+  last component of the set's repository as the title record's id, as §6.4
+  says, instead of `title`; a build hands the merged record through
+  unchanged, so the two writers agree. Sets made before keep `title`; when
+  one is published again with catalogue edits, its title takes the new
+  repository's id and the personal data under `title` moves with it
+  (`Store::publish_overlay`).
+- The corpus gained the firmware recipes of the open video BIOS and the
+  fixed-disk option ROM, so that the three open packages of the templates
+  each have one. MEASURED: they build the packages
+  `template::build_firmware` imports, manifest for manifest, and the three
+  FreeDOS recipes build sets whose configs equal byte for byte those
+  `template::build_media` imports, the edition archive not needed because
+  its disks are found loose (`pc-image` test `recipe_build`). Ken's
+  Labyrinth builds from the user's 19 files to the disk B3 pinned
+  (`16992a33…`), with a licence text of the test's own in place of
+  unemu-media's bundled `licenses.txt`, which the corpus lacks; AZURAMON
+  builds its ten disks from the user's folder, twice to the same artifact.
 
 **B8. The lock and pinning.**
 Scope: `upcli recipe pin`; the lock directory; the checks of §3.8,

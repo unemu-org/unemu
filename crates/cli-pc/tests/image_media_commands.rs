@@ -164,18 +164,20 @@ fn media_set_cli_file_order_determinism_and_fail_closed_import() {
             ],
         )
     };
-    let (code, _, err) = import("test-first:r1");
+    // Two revisions of one repository: the title id is the repository's, so
+    // the same files give the same set.
+    let (code, _, err) = import("test-order:r1");
     assert_eq!(code, 0, "{err}");
-    let (code, _, err) = import("test-second:r1");
+    let (code, _, err) = import("test-order:r2");
     assert_eq!(code, 0, "{err}");
     let store = Store::open_existing(p.join("store")).unwrap();
     let first = store
-        .resolve("test-first:r1", &Validator(&PcMediaFormats))
+        .resolve("test-order:r1", &Validator(&PcMediaFormats))
         .unwrap();
     assert_eq!(
         first.image.digest,
         store
-            .resolve("test-second:r1", &Validator(&PcMediaFormats))
+            .resolve("test-order:r2", &Validator(&PcMediaFormats))
             .unwrap()
             .image
             .digest
@@ -609,10 +611,12 @@ fn an_open_statement_goes_together_and_names_a_licence_reference_and_an_extra() 
 
 #[test]
 fn a_set_imported_without_metadata_flags_keeps_its_manifest_bytes() {
-    // The same inputs as the shared import's pinned set, so the command line's
-    // default title is the shared default: measured before set-level metadata
-    // flags existed, and moved once by the rename of the platform id to
-    // `ibm-pc` and once by the layers' export file names.
+    // The same inputs and tag as the shared import's pinned set, so the
+    // command line's default title is the shared default: measured before
+    // set-level metadata flags existed, and moved once by the rename of the
+    // platform id to `ibm-pc`, once by the layers' export file names and once
+    // by the title id, which is now the repository's last component, `test`,
+    // instead of `title`.
     let t = Temp::new();
     let p = &t.0;
     let disk = raw_disk(&p.join("disk.img"), 0x5a);
@@ -626,7 +630,7 @@ fn a_set_imported_without_metadata_flags_keeps_its_manifest_bytes() {
             "--title",
             "Pinned set",
             "--tag",
-            "test-pinned:r1",
+            "test:set-r1",
             "--extra",
             &format!("{}:MANUAL.TXT", manual.display()),
             "--no-compress",
@@ -639,7 +643,7 @@ fn a_set_imported_without_metadata_flags_keeps_its_manifest_bytes() {
         format!(
             "media order:\n1\t\"disk.img\"\t{disk:?}\t360K\n\
              extra\t\"MANUAL.TXT\"\tSome(\"MANUAL.TXT\")\n\
-             test-pinned:r1\tsha256:889392e9bd24bf2f9cc5f9ca842d53b106233bbda0685d2e9816a785856b1cb1\n"
+             test:set-r1\tsha256:fd0d9ac8ee837a9db484568e36c6d27c22e78649062bf34729386ac10ade437d\n"
         )
     );
 }

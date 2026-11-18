@@ -1,7 +1,9 @@
 usage: upcli recipe check FILE|FOLDER...
        upcli recipe show FILE
        upcli recipe plan FILE [--json] [--library DIR]... [--store DIR] [--config FILE]
+       upcli recipe build FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] [--keep-as TAG]
   check: checks recipes and work files; a folder is checked with every *.media.toml, *.firmware.toml, *.machine.toml and *.work.toml below it
   show: prints a media recipe's title record merged with its work file, with a comment on each value that came from the work file
-  plan: where each input is found (the store, beside the recipe, the libraries of the preferences, then each --library) or why not, the steps that would run and the outputs
-  exit 0: no findings, or for plan every input found; 1: findings, which show and plan print instead, or for plan an input missing; 2: usage or a file that cannot be read
+  plan: where each input is found (the store, the download cache, beside the recipe, the libraries of the preferences, then each --library) or why not, the steps that would run and the outputs
+  build: builds a draft and tags it <name>:<tag> in the store, or <name>:TAG with --keep-as; --fetch downloads the missing inputs from their URLs into the store's download cache, after printing what it downloads
+  exit 0: no findings, for plan every input found, for build the artifact tagged; 1: findings, which show, plan and build print instead, for plan and build an input missing, for build a failed download, read, step or import, with nothing tagged; 2: usage or a file that cannot be read

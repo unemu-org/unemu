@@ -26,7 +26,9 @@
 //!   SHA-256 through the store's streaming import, and sets the local tag by
 //!   compare-and-swap only after the closure is complete ([`pull`]);
 //! - browsing reads what a tag offers from its manifest and small config
-//!   record, in memory and without any layer ([`browse`]).
+//!   record, in memory and without any layer ([`browse`]);
+//! - a plain download of one file over HTTPS, for the inputs a recipe
+//!   build fetches with the user's consent ([`download`]).
 //!
 //! The crate knows no emulator: platform providers supply the
 //! [`image_store::ConfigValidator`] that checks a closure before it is tagged.
@@ -37,6 +39,7 @@ pub mod client;
 pub mod config;
 pub mod credential_store;
 pub mod credentials;
+pub mod download;
 pub mod guard;
 mod http;
 pub mod pull;

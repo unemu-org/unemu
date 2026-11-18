@@ -105,7 +105,9 @@ pub struct ExtraSource {
 #[derive(Clone, Debug)]
 pub struct Request {
     pub tag: String,
-    /// The set's one catalogue title; its id is always `title`.
+    /// The set's one catalogue title. Its stable id is set from the tag:
+    /// the last component of the set's repository, the work id of a set
+    /// that names its work (recipes §6.4), whatever id the request gives.
     pub title: Title,
     pub labels: Vec<String>,
     pub media: Vec<Source>,
@@ -341,6 +343,25 @@ impl Plan {
     pub fn min_app_version(&self) -> Option<AppVersion> {
         self.min_app_version
     }
+    /// Give the media the ids a recipe states (recipes §6.10), in disk
+    /// order, instead of `disk-1`, `disk-2`, …; refused unless there is one
+    /// id per medium, each in the media-id grammar and none twice.
+    pub fn name_media(&mut self, ids: &[String]) -> Result<()> {
+        ensure(ids.len() == self.config.media.len(), || {
+            format!(
+                "{} medium ids for {} media",
+                ids.len(),
+                self.config.media.len()
+            )
+        })?;
+        let mut config = self.config.clone();
+        for (medium, id) in config.media.iter_mut().zip(ids) {
+            medium.id.clone_from(id);
+        }
+        config.encode().context(|| format!("medium ids {ids:?}"))?;
+        self.config = config;
+        Ok(())
+    }
     /// Each medium's source beside its config entry, in disk order.
     pub fn media(&self) -> impl Iterator<Item = (&Path, &Medium)> {
         self.media
@@ -463,7 +484,7 @@ pub fn plan_with(request: &Request, open: Option<&OpenStatement>) -> Result<Plan
     let mut metadata = Metadata::new(&config.platform);
     metadata.labels.clone_from(&request.labels);
     metadata.titles.push(Title {
-        id: "title".into(),
+        id: title_id(&request.tag),
         ..request.title.clone()
     });
     metadata.encode(&[]).map_err(catalogue)?;
@@ -512,16 +533,39 @@ fn check_catalogue(title: &Title) -> Result<()> {
     Ok(())
 }
 
+/// The repository of a tag and its last component.
+fn repository_of(tag: &str) -> (&str, &str) {
+    let repository = tag
+        .rsplit_once(':')
+        .map_or(tag, |(repository, _)| repository);
+    (
+        repository,
+        repository.rsplit('/').next().unwrap_or(repository),
+    )
+}
+
+/// The stable id of a set's title record: the last component of the
+/// repository it is tagged in (recipes §6.4), which is the work id of a set
+/// that names its work, so a recipe build and an import of the same set
+/// write one id. Earlier releases wrote [`LEGACY_TITLE_ID`] for every set;
+/// their sets keep it, and the library moves their personal data to the new
+/// id when such a set is published again
+/// ([`image_store::Store::publish_overlay`]).
+pub fn title_id(tag: &str) -> String {
+    image_store::metadata::title_id(tag)
+        .unwrap_or(LEGACY_TITLE_ID)
+        .to_owned()
+}
+
+pub use image_store::metadata::LEGACY_TITLE_ID;
+
 /// The work is the repository (recipes §6.16): a set that names its work is
 /// tagged in the repository whose last component is the work id.
 fn check_work(title: &Title, tag: &str) -> Result<()> {
     let Some(work) = &title.work_id else {
         return Ok(());
     };
-    let repository = tag
-        .rsplit_once(':')
-        .map_or(tag, |(repository, _)| repository);
-    let last = repository.rsplit('/').next().unwrap_or(repository);
+    let (repository, last) = repository_of(tag);
     ensure(work == last, || {
         format!(
             "work {work:?}: the releases of a work are tagged in the repository named after it, \
@@ -1663,8 +1707,10 @@ mod tests {
     fn a_set_imported_without_a_statement_keeps_its_manifest_bytes() {
         // Measured with the import as it was before open statements existed:
         // the default marks, and so every set digest, are unchanged. The
-        // rename of the platform id to `ibm-pc` moved it once, and the
-        // layers' export file names once more.
+        // rename of the platform id to `ibm-pc` moved it once, the layers'
+        // export file names once more, and the title id, now the
+        // repository's last component (`test`) instead of `title`, once
+        // more.
         let temp = Temp::new("pinned");
         let disk = temp.0.join("disk.img");
         floppy(&disk, 0x5a);
@@ -1681,21 +1727,29 @@ mod tests {
         let published = publish(&store, &plan(&set).unwrap(), &|_, _| {}, &|| false).unwrap();
         assert_eq!(
             published.descriptor().digest.to_string(),
-            "sha256:889392e9bd24bf2f9cc5f9ca842d53b106233bbda0685d2e9816a785856b1cb1"
+            "sha256:fd0d9ac8ee837a9db484568e36c6d27c22e78649062bf34729386ac10ade437d"
         );
         // Without the file names, which releases 0.0.1 and 0.0.2 did not
-        // write, the test support that makes artifacts naming the retired id
-        // gives this set as those releases wrote it, byte for byte: the pin
-        // of those releases.
-        use image_store::BlobSource;
-        let mut untitled = Manifest::decode(
-            &store
-                .read_verified(published.descriptor(), image_store::MAX_SMALL_BLOB)
-                .unwrap(),
-        )
-        .unwrap();
+        // write, and with the title id they wrote for every set, `title`,
+        // the test support that makes artifacts naming the retired id gives
+        // this set as those releases wrote it, byte for byte: the pin of
+        // those releases. Nothing but the id and the names changed since.
+        let resolved = store
+            .resolve_descriptor(published.descriptor(), &Validator(&PcMediaFormats))
+            .unwrap();
+        let mut metadata = Metadata::decode(&resolved.metadata, &resolved.manifest.layers).unwrap();
+        assert_eq!(metadata.titles[0].id, "test");
+        metadata.titles[0].id = LEGACY_TITLE_ID.into();
+        let legacy = store
+            .import(metadata.encode(&[]).unwrap().as_slice(), None)
+            .unwrap();
+        let mut untitled = resolved.manifest.clone();
         for layer in &mut untitled.layers {
             layer.annotations.remove(export_name::TITLE);
+            if layer.media_type == mt::METADATA {
+                layer.digest = legacy.digest.clone();
+                layer.size = legacy.size;
+            }
         }
         let untitled = store.import_manifest(&untitled).unwrap();
         let old = image_store::platform::with_platform_id(
@@ -2104,7 +2158,7 @@ mod tests {
         assert_eq!(
             metadata.titles,
             [Title {
-                id: "title".into(),
+                id: "test".into(),
                 ..set.title.clone()
             }]
         );

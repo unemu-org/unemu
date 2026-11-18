@@ -211,6 +211,12 @@ Ok(Line(Recipe(Plan(PlanOptions { path: "FILE", json: false, libraries: [], stor
 $ recipe plan FILE --json --library DIR --library DIR2 --store DIR --config FILE
 Ok(Line(Recipe(Plan(PlanOptions { path: "FILE", json: true, libraries: ["DIR", "DIR2"], store: Some("DIR"), config: Some("FILE") }))))
 
+$ recipe build FILE
+Ok(Line(Recipe(Build(BuildOptions { path: "FILE", fetch: false, libraries: [], store: None, config: None, keep_as: None }))))
+
+$ recipe build FILE --fetch --library DIR --library DIR2 --store DIR --config FILE --keep-as TAG
+Ok(Line(Recipe(Build(BuildOptions { path: "FILE", fetch: true, libraries: ["DIR", "DIR2"], store: Some("DIR"), config: Some("FILE"), keep_as: Some("TAG") }))))
+
 $ recipe
 Ok(Line(Recipe(Usage)))
 
@@ -645,6 +651,15 @@ Ok(Line(Recipe(Check(["my.media.toml", "other.firmware.toml"]))))
 
 $ recipe show backlog/docs/design/recipe-corpus/kenslab-2.01/kenslab-2.01.media.toml
 Ok(Line(Recipe(Show("backlog/docs/design/recipe-corpus/kenslab-2.01/kenslab-2.01.media.toml"))))
+
+$ recipe build my.media.toml --library /path/to/games
+Ok(Line(Recipe(Build(BuildOptions { path: "my.media.toml", fetch: false, libraries: ["/path/to/games"], store: None, config: None, keep_as: None }))))
+
+$ recipe build my.media.toml --fetch --store /path/to/store
+Ok(Line(Recipe(Build(BuildOptions { path: "my.media.toml", fetch: true, libraries: [], store: Some("/path/to/store"), config: None, keep_as: None }))))
+
+$ recipe build my.media.toml --keep-as 1.0-mine-r1
+Ok(Line(Recipe(Build(BuildOptions { path: "my.media.toml", fetch: false, libraries: [], store: None, config: None, keep_as: Some("1.0-mine-r1") }))))
 
 $ media create floppy --type 1.44M --format --label TRANSFER /path/to/transfer.img
 Ok(Line(Platform(Create(CreateCommand { output: "/path/to/transfer.img", force: false, kind: Floppy { format: Hd144, formatted: true, label: Some([84, 82, 65, 78, 83, 70, 69, 82, 32, 32, 32]), files: None } }))))

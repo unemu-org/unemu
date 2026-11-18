@@ -22,8 +22,16 @@
 //! ([`store_index`]), beside the recipe, and in the user's libraries
 //! ([`library`]), whose index keeps the hashes it computed. [`plan`] says
 //! where each input was found or why not, which steps would run and what can
-//! be built. Building and fetching are not here.
+//! be built.
+//!
+//! [`build::build_path`] builds a draft from a recipe that passes the
+//! checks (recipes §3.1, §6.14): the plan, the downloads the user consents
+//! to, the steps of [`steps`] as pure functions of the bytes found, and the
+//! outputs handed to the platform's importers through its
+//! [`build::Publisher`]. The network is reached only through the caller's
+//! [`build::Fetcher`], before any step runs.
 
+pub mod build;
 mod check;
 mod finding;
 pub mod library;
@@ -34,6 +42,7 @@ pub mod plan;
 pub mod provider;
 pub mod schema;
 pub mod spec;
+pub mod steps;
 pub mod store_index;
 mod syntax;
 mod zip;
@@ -46,7 +55,7 @@ pub use provider::Providers;
 pub use syntax::MAX_FILE;
 
 use finding::{Sink, Source};
-use model::{Document, WorkFile};
+use model::{Document, Recipe, WorkFile};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -318,6 +327,46 @@ pub(crate) fn parse_text(text: &str) -> Option<Document> {
     let source = Source::new("test.media.toml", text.to_owned());
     let mut sink = Sink::new(&source);
     syntax::parse(&mut sink).and_then(|root| parse::document(&mut sink, &root))
+}
+
+/// What [`load`] gives for one file.
+pub(crate) enum Opened {
+    Refused(Report),
+    Work,
+    /// A recipe that passes the checks, and the work file it names.
+    Recipe(Box<Recipe>, Option<Box<WorkFile>>),
+}
+
+/// Check one recipe file, as [`check_paths`] does, and read a recipe that
+/// passes, with its work file. An I/O error is a file that cannot be read,
+/// or one that no longer reads as it did when it was checked.
+pub(crate) fn load(path: &Path, providers: Providers<'_>) -> io::Result<Opened> {
+    let report = check_paths(&[path.to_path_buf()], providers)?;
+    if !report.is_clean() {
+        return Ok(Opened::Refused(report));
+    }
+    match report.files.first().and_then(|f| f.what) {
+        Some(What::Media | What::Firmware) => {}
+        Some(What::Work) => return Ok(Opened::Work),
+        None => return Err(changed(path)),
+    }
+    let Some(Document::Recipe(recipe)) = document(path)? else {
+        return Err(changed(path));
+    };
+    let work = match &recipe.work {
+        Some(id) => {
+            let file = path
+                .parent()
+                .unwrap_or(Path::new(""))
+                .join(format!("{}.work.toml", id.value));
+            match document(&file)? {
+                Some(Document::Work(work)) => Some(work),
+                _ => return Err(changed(&file)),
+            }
+        }
+        None => None,
+    };
+    Ok(Opened::Recipe(recipe, work))
 }
 
 /// A file that passed the checks and then no longer read as it did.

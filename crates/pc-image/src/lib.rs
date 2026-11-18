@@ -21,6 +21,7 @@ pub mod media_set;
 pub mod needs;
 mod provider;
 pub mod recipe;
+pub mod recipe_build;
 pub mod revision;
 pub mod template;
 #[cfg(feature = "test-support")]

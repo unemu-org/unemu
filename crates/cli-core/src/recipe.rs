@@ -7,8 +7,11 @@
 //! `upcli recipe plan`: where each input of a recipe is found, or why not,
 //! which steps would run and what can be built (recipes §3.4, §3.5), from
 //! the store, the recipe's folder and the libraries of the preferences and
-//! of `--library`. The recipe providers are the platforms'
-//! ([`super::CliPlatform::recipes`]).
+//! of `--library`. `upcli recipe build`: the draft build of recipes §3.1,
+//! from the same sources plus the download cache, with downloads only on
+//! `--fetch`, the user's consent (recipes §6.13); the outputs go through the
+//! platform's importers and the artifact is tagged last. The recipe
+//! providers are the platforms' ([`super::CliPlatform::recipes`]).
 
 use super::{library, CliPlatform, HostSources, Io};
 use recipe::library::Library;
@@ -20,10 +23,12 @@ use std::path::{Path, PathBuf};
 const USAGE: &str = "usage: upcli recipe check FILE|FOLDER...
        upcli recipe show FILE
        upcli recipe plan FILE [--json] [--library DIR]... [--store DIR] [--config FILE]
+       upcli recipe build FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] [--keep-as TAG]
   check: checks recipes and work files; a folder is checked with every *.media.toml, *.firmware.toml, *.machine.toml and *.work.toml below it
   show: prints a media recipe's title record merged with its work file, with a comment on each value that came from the work file
-  plan: where each input is found (the store, beside the recipe, the libraries of the preferences, then each --library) or why not, the steps that would run and the outputs
-  exit 0: no findings, or for plan every input found; 1: findings, which show and plan print instead, or for plan an input missing; 2: usage or a file that cannot be read
+  plan: where each input is found (the store, the download cache, beside the recipe, the libraries of the preferences, then each --library) or why not, the steps that would run and the outputs
+  build: builds a draft and tags it <name>:<tag> in the store, or <name>:TAG with --keep-as; --fetch downloads the missing inputs from their URLs into the store's download cache, after printing what it downloads
+  exit 0: no findings, for plan every input found, for build the artifact tagged; 1: findings, which show, plan and build print instead, for plan and build an input missing, for build a failed download, read, step or import, with nothing tagged; 2: usage or a file that cannot be read
 ";
 
 /// A parsed `upcli recipe` command line.
@@ -32,6 +37,7 @@ pub enum RecipeCommand {
     Check(Vec<PathBuf>),
     Show(PathBuf),
     Plan(PlanOptions),
+    Build(BuildOptions),
     /// Words `recipe` does not take: its own usage text, exit 2.
     Usage,
 }
@@ -45,6 +51,55 @@ pub struct PlanOptions {
     pub libraries: Vec<PathBuf>,
     pub store: Option<PathBuf>,
     pub config: Option<PathBuf>,
+}
+
+/// The words of `upcli recipe build`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct BuildOptions {
+    pub path: PathBuf,
+    /// The user's consent to download missing inputs.
+    pub fetch: bool,
+    pub libraries: Vec<PathBuf>,
+    pub store: Option<PathBuf>,
+    pub config: Option<PathBuf>,
+    pub keep_as: Option<String>,
+}
+
+fn build_options(args: &[OsString]) -> Option<BuildOptions> {
+    let mut words = Vec::new();
+    let mut fetch = false;
+    let mut keep_as = None;
+    let mut rest = args.iter();
+    while let Some(word) = rest.next() {
+        if word == "--fetch" {
+            if fetch {
+                return None;
+            }
+            fetch = true;
+        } else if word == "--keep-as" {
+            let tag = rest.next()?.to_str()?.to_owned();
+            if keep_as.replace(tag).is_some() {
+                return None;
+            }
+        } else {
+            words.push(word.clone());
+            if word == "--library" || word == "--store" || word == "--config" {
+                words.push(rest.next()?.clone());
+            }
+        }
+    }
+    let plan = plan_options(&words)?;
+    if plan.json {
+        return None;
+    }
+    Some(BuildOptions {
+        path: plan.path,
+        fetch,
+        libraries: plan.libraries,
+        store: plan.store,
+        config: plan.config,
+        keep_as,
+    })
 }
 
 fn plan_options(args: &[OsString]) -> Option<PlanOptions> {
@@ -99,6 +154,9 @@ pub fn parse(args: &[OsString]) -> RecipeCommand {
         [command, rest @ ..] if command == "plan" => {
             plan_options(rest).map_or(RecipeCommand::Usage, RecipeCommand::Plan)
         }
+        [command, rest @ ..] if command == "build" => {
+            build_options(rest).map_or(RecipeCommand::Usage, RecipeCommand::Build)
+        }
         _ => RecipeCommand::Usage,
     }
 }
@@ -120,6 +178,27 @@ pub fn execute(
         RecipeCommand::Check(paths) => check(&paths, providers, &mut io.output, &mut io.errors),
         RecipeCommand::Show(path) => show(&path, providers, &mut io.output, &mut io.errors),
         RecipeCommand::Plan(options) => plan(&options, providers, host, io),
+        RecipeCommand::Build(options) => {
+            let fetcher = if options.fetch {
+                match image_registry::download::Downloader::new() {
+                    Ok(downloader) => Some(HttpsFetcher(downloader)),
+                    Err(error) => {
+                        let _ = writeln!(io.errors, "upcli recipe build: {error}");
+                        return 2;
+                    }
+                }
+            } else {
+                None
+            };
+            build(
+                &options,
+                providers,
+                host,
+                platforms,
+                fetcher.as_ref().map(|d| d as &dyn recipe::build::Fetcher),
+                io,
+            )
+        }
         RecipeCommand::Usage => {
             let _ = io.errors.write_all(USAGE.as_bytes());
             2
@@ -216,79 +295,42 @@ fn plan(
             ),
         );
     }
-    let configured =
-        match library::preferences(&options.config).and_then(|path| library::configured(&path)) {
-            Ok(dirs) => dirs,
-            Err(error) => return fail(io, &error),
-        };
-    // A store named with --store must open; the default one is used when
-    // it exists.
-    let store = match (&options.store, library::store_root(&None, host)) {
-        (Some(root), _) => match image_store::Store::open_existing(root) {
+    let store = match &options.store {
+        Some(root) => match image_store::Store::open_existing(root) {
             Ok(store) => Some(store),
             Err(error) => return fail(io, &format!("{}: {error}", root.display())),
         },
-        (None, Some(root)) => image_store::Store::open_existing(root).ok(),
-        (None, None) => None,
+        None => library::store_root(&None, host)
+            .and_then(|root| image_store::Store::open_existing(root).ok()),
     };
     let index = match store.as_ref().map(recipe::store_index::StoreIndex::load) {
         Some(Ok(index)) => Some(index),
         Some(Err(error)) => return fail(io, &error),
         None => None,
     };
-    let mut seen = std::collections::BTreeSet::new();
-    let mut libraries = Vec::new();
-    let mut caches = Vec::new();
-    let named = configured
-        .iter()
-        .map(|dir| (dir, true))
-        .chain(options.libraries.iter().map(|dir| (dir, false)));
-    for (dir, from_preferences) in named {
-        let absolute = match dir.canonicalize() {
-            Ok(path) => path,
-            // A library of the preferences may be on a disk not attached
-            // now; one named on the command line must be there.
-            Err(error) if from_preferences => {
-                let _ = writeln!(
-                    io.errors,
-                    "upcli recipe plan: warning: library {} skipped: {error}",
-                    dir.display()
-                );
-                continue;
-            }
-            Err(error) => return fail(io, &format!("{}: {error}", dir.display())),
-        };
-        if !seen.insert(absolute.clone()) {
-            continue;
-        }
-        let cache = store
-            .as_ref()
-            .map(|s| recipe::library::cache_file(s.root(), &absolute));
-        match Library::scan(dir, cache.as_deref()) {
-            Ok(library) => libraries.push(library),
-            Err(error) => return fail(io, &error),
-        }
-        caches.push(cache);
-    }
+    let (mut libraries, caches) = match open_libraries(
+        &options.config,
+        &options.libraries,
+        store.as_ref(),
+        "plan",
+        io,
+    ) {
+        Ok(opened) => opened,
+        Err(error) => return fail(io, &error),
+    };
+    let downloads = store
+        .as_ref()
+        .map(|s| s.root().join(recipe::build::DOWNLOADS));
     let planned = recipe::plan_path(
         &options.path,
         providers,
         recipe::plan::Sources {
             store: index.as_ref(),
+            downloads: downloads.as_deref(),
             libraries: &mut libraries,
         },
     );
-    for (library, cache) in libraries.iter().zip(&caches) {
-        if let Some(cache) = cache {
-            if let Err(error) = library.save(cache) {
-                let _ = writeln!(
-                    io.errors,
-                    "upcli recipe plan: warning: the index of {} was not kept: {error}",
-                    library.named.display()
-                );
-            }
-        }
-    }
+    save_libraries(&libraries, &caches, "plan", io);
     let (text, code) = match planned {
         Ok(recipe::Planned::Plan(plan)) => {
             let code = u8::from(!plan.complete());
@@ -312,6 +354,190 @@ fn plan(
                 io,
                 &format!(
                     "{}: a work file; plan takes a recipe",
+                    options.path.display()
+                ),
+            )
+        }
+        Err(error) => return fail(io, &error),
+    };
+    if io.output.write_all(text.as_bytes()).is_err() {
+        return 2;
+    }
+    code
+}
+
+/// The libraries a plan or build searches: the preferences' first, then
+/// each `--library`, a folder named twice searched once, each scanned with
+/// its index cache in `store`. A library of the preferences that is not
+/// there is skipped with a warning; one named on the command line must be
+/// there.
+#[allow(clippy::type_complexity)]
+fn open_libraries(
+    config: &Option<PathBuf>,
+    named: &[PathBuf],
+    store: Option<&image_store::Store>,
+    command: &str,
+    io: &mut Io<'_>,
+) -> anyhow::Result<(Vec<Library>, Vec<Option<PathBuf>>)> {
+    let configured = library::preferences(config).and_then(|path| library::configured(&path))?;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut libraries = Vec::new();
+    let mut caches = Vec::new();
+    let all = configured
+        .iter()
+        .map(|dir| (dir, true))
+        .chain(named.iter().map(|dir| (dir, false)));
+    for (dir, from_preferences) in all {
+        let absolute = match dir.canonicalize() {
+            Ok(path) => path,
+            Err(error) if from_preferences => {
+                let _ = writeln!(
+                    io.errors,
+                    "upcli recipe {command}: warning: library {} skipped: {error}",
+                    dir.display()
+                );
+                continue;
+            }
+            Err(error) => anyhow::bail!("{}: {error}", dir.display()),
+        };
+        if !seen.insert(absolute.clone()) {
+            continue;
+        }
+        let cache = store.map(|s| recipe::library::cache_file(s.root(), &absolute));
+        libraries.push(Library::scan(dir, cache.as_deref())?);
+        caches.push(cache);
+    }
+    Ok((libraries, caches))
+}
+
+/// Keep the hashes a plan or build computed in the libraries' index caches.
+fn save_libraries(
+    libraries: &[Library],
+    caches: &[Option<PathBuf>],
+    command: &str,
+    io: &mut Io<'_>,
+) {
+    for (library, cache) in libraries.iter().zip(caches) {
+        if let Some(cache) = cache {
+            if let Err(error) = library.save(cache) {
+                let _ = writeln!(
+                    io.errors,
+                    "upcli recipe {command}: warning: the index of {} was not kept: {error}",
+                    library.named.display()
+                );
+            }
+        }
+    }
+}
+
+/// The downloads of `--fetch`: the registry crate's HTTPS client.
+pub struct HttpsFetcher(pub image_registry::download::Downloader);
+
+impl recipe::build::Fetcher for HttpsFetcher {
+    fn fetch(&self, url: &str, size: u64, sink: &mut dyn Write) -> Result<(), String> {
+        self.0.fetch(url, size, sink)
+    }
+}
+
+/// Build a recipe into the store: `--store`, or the default store, created
+/// when it does not exist yet.
+fn build(
+    options: &BuildOptions,
+    providers: recipe::Providers<'_>,
+    host: &HostSources,
+    platforms: &[&dyn CliPlatform],
+    fetcher: Option<&dyn recipe::build::Fetcher>,
+    io: &mut Io<'_>,
+) -> u8 {
+    let fail = |io: &mut Io<'_>, error: &dyn std::fmt::Display| {
+        let _ = writeln!(io.errors, "upcli recipe build: {error:#}");
+        2
+    };
+    if options.path.is_dir() {
+        return fail(
+            io,
+            &format!(
+                "{}: a folder; build takes one recipe file",
+                options.path.display()
+            ),
+        );
+    }
+    let Some(root) = library::store_root(&options.store, host) else {
+        return fail(io, &"a build needs a store: name one with --store");
+    };
+    let store = match image_store::Store::open(&root) {
+        Ok(store) => store,
+        Err(error) => return fail(io, &format!("{}: {error}", root.display())),
+    };
+    let index = match recipe::store_index::StoreIndex::load(&store) {
+        Ok(index) => index,
+        Err(error) => return fail(io, &error),
+    };
+    let (mut libraries, caches) = match open_libraries(
+        &options.config,
+        &options.libraries,
+        Some(&store),
+        "build",
+        io,
+    ) {
+        Ok(opened) => opened,
+        Err(error) => return fail(io, &error),
+    };
+    let content = recipe::build::StoreContent::new(
+        &store,
+        platforms.iter().flat_map(|p| p.validators()).collect(),
+    );
+    // The fetch's list is printed as it is made, before the first download.
+    let output = &mut *io.output;
+    let outcome = recipe::build::build_path(
+        recipe::build::Request {
+            path: &options.path,
+            providers,
+            store: &store,
+            index: Some(&index),
+            store_read: Some(&content),
+            libraries: &mut libraries,
+            fetcher,
+            keep_as: options.keep_as.as_deref(),
+        },
+        &mut |line| {
+            let _ = writeln!(output, "{line}");
+            let _ = output.flush();
+        },
+    );
+    save_libraries(&libraries, &caches, "build", io);
+    let (text, code) = match outcome {
+        Ok(recipe::build::Outcome::Built(report)) => (report.render(), 0),
+        Ok(recipe::build::Outcome::Missing(plan)) => (
+            format!(
+                "{}not built: {}; nothing was tagged{}\n",
+                plan.render(),
+                plan.summary(),
+                if fetcher.is_none() && plan.inputs.iter().any(|i| !i.urls.is_empty()) {
+                    "; --fetch downloads the inputs that have URLs"
+                } else {
+                    ""
+                }
+            ),
+            1,
+        ),
+        Ok(recipe::build::Outcome::Failed { plan, error }) => {
+            let _ = writeln!(io.errors, "upcli recipe build: {error}");
+            (
+                format!(
+                    "{}: not built: {}; nothing was tagged\n",
+                    plan.file,
+                    plan.name.as_deref().unwrap_or("(no name)")
+                ),
+                1,
+            )
+        }
+        Ok(recipe::build::Outcome::Refused(report)) => (report.render(), 1),
+        Ok(recipe::build::Outcome::NotRecipe) => {
+            return fail(
+                io,
+                &format!(
+                    "{}: a work file; build takes a recipe",
                     options.path.display()
                 ),
             )

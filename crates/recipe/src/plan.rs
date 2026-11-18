@@ -5,8 +5,8 @@
 //!
 //! **Resolution order.** A value with a stated size and SHA-256 is looked
 //! for in: (1) the store, by the decoded digest of its layers
-//! ([`StoreIndex`]); (2) the download cache, which does not exist until
-//! downloads do; (3) the recipe's bundle, a file of the input's name beside
+//! ([`StoreIndex`]); (2) the download cache, a folder of files named by
+//! their SHA-256 that a build with `--fetch` fills; (3) the recipe's bundle, a file of the input's name beside
 //! the recipe, for an input with `bundle = true`; (4) the libraries in the
 //! order given, each searched as [`Library::find`] says. The first match
 //! wins. URLs (5) are listed, never fetched.
@@ -34,6 +34,8 @@ const NEAR_MISSES: usize = 8;
 /// Where the plan looks.
 pub struct Sources<'a> {
     pub store: Option<&'a StoreIndex>,
+    /// The download cache: files named by their lower-case SHA-256.
+    pub downloads: Option<&'a Path>,
     pub libraries: &'a mut [Library],
 }
 
@@ -42,6 +44,8 @@ pub struct Sources<'a> {
 pub enum Found {
     /// Content of images in the store, under these tags.
     Store { tags: Vec<String> },
+    /// A file of the download cache, named by its SHA-256.
+    Download { path: PathBuf },
     /// A file of the input's name beside the recipe.
     Bundle { path: PathBuf },
     /// A file or zip member of a library.
@@ -52,6 +56,7 @@ impl std::fmt::Display for Found {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Store { tags } => write!(f, "in the store ({})", tags.join(", ")),
+            Self::Download { path } => write!(f, "in the download cache: {}", path.display()),
             Self::Bundle { path } => write!(f, "beside the recipe: {}", path.display()),
             Self::Library { library, place } => {
                 write!(f, "in library {}: {place}", library.display())
@@ -304,6 +309,15 @@ impl<'r, 's> Planner<'r, 's> {
                 tags: tags.to_vec(),
             });
             return value;
+        }
+        if let Some(folder) = self.sources.downloads {
+            let path = folder.join(sha256);
+            let matches = std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() == size)
+                && file_sha256(&path).is_ok_and(|hash| hash == sha256);
+            if matches {
+                value.found = Some(Found::Download { path });
+                return value;
+            }
         }
         if let (Some(name), Some(folder)) = (bundle, self.bundle) {
             let path = folder.join(name);
@@ -700,6 +714,22 @@ pub fn plan(recipe: &Recipe, file: &str, bundle: Option<&Path>, sources: Sources
     }
 }
 
+/// The lower-case SHA-256 of a file, read in pieces.
+pub(crate) fn file_sha256(path: &Path) -> std::io::Result<String> {
+    use sha2::Digest as _;
+    use std::io::Read as _;
+    let mut input = std::fs::File::open(path)?;
+    let mut sha = sha2::Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let n = input.read(&mut buffer)?;
+        if n == 0 {
+            return Ok(format!("{:x}", sha.finalize()));
+        }
+        sha.update(&buffer[..n]);
+    }
+}
+
 /// Why an input no output needs is not needed: it is the archive of unpack
 /// steps whose members were all found, or nothing uses it.
 fn not_needed(
@@ -1030,6 +1060,9 @@ fn places(files: &[(String, Value)]) -> String {
     for found in files.iter().filter_map(|(_, v)| v.found.as_ref()) {
         let (source, place) = match found {
             Found::Store { tags } => ("the store".to_owned(), tags.join(",")),
+            Found::Download { path } => {
+                ("the download cache".to_owned(), path.display().to_string())
+            }
             Found::Bundle { path } => ("the bundle".to_owned(), path.display().to_string()),
             Found::Library { library, place } => {
                 (format!("library {}", library.display()), place.to_string())
@@ -1067,6 +1100,9 @@ fn misses(out: &mut String, value: &Value, indent: &str) {
 fn found_json(found: &Found) -> Json {
     match found {
         Found::Store { tags } => json!({"source": "store", "tags": tags}),
+        Found::Download { path } => {
+            json!({"source": "download-cache", "path": path.display().to_string()})
+        }
         Found::Bundle { path } => json!({"source": "bundle", "path": path.display().to_string()}),
         Found::Library { library, place } => json!({
             "source": "library",
@@ -1222,6 +1258,7 @@ mod tests {
             None,
             Sources {
                 store: None,
+                downloads: None,
                 libraries: &mut libraries,
             },
         );
@@ -1266,6 +1303,7 @@ mod tests {
             None,
             Sources {
                 store: None,
+                downloads: None,
                 libraries: &mut libraries,
             },
         );
@@ -1311,6 +1349,7 @@ mod tests {
             None,
             Sources {
                 store: None,
+                downloads: None,
                 libraries: &mut libraries,
             },
         );
@@ -1371,6 +1410,7 @@ mod tests {
             Some(&temp.0),
             Sources {
                 store: Some(&store),
+                downloads: None,
                 libraries: &mut libraries,
             },
         );
@@ -1427,6 +1467,7 @@ mod tests {
             None,
             Sources {
                 store: None,
+                downloads: None,
                 libraries: &mut libraries,
             },
         );

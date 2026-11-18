@@ -578,6 +578,18 @@ Personal `user_rating` (optional integer 0–5) and free-text `notes` live only 
 They are absent from the metadata blob, archives and pushes; editing them never
 creates an image revision or triggers a push.
 
+An installation set has one title record, and its stable id is the last
+component of the repository the set is tagged in ([recipes](recipes.md)
+§6.4): `freedos` for `unemu/media/ibm-pc/freedos:1.4-r1`, the work id of a
+set that names its work. The import (`image media import`, the library's
+import dialog) and a recipe build write the same id for the same set
+(ruled 2026-11-18). Releases up to 0.0.2 wrote `title` for every set; such a
+set keeps its id, and the personal fields kept under it stay with it. When
+one is published again with catalogue edits (`Store::publish_overlay`), its
+title takes the id of the new tag's repository and the personal fields move
+to that id on the new image. The importer's pinned set digests moved once
+with this change.
+
 Suggested genres: action, adventure, RPG, strategy, simulation, sports, racing,
 puzzle, platformer, shooter, educational, demo and utility. This is a suggestion
 list, not a closed vocabulary; free genres are allowed.
@@ -1746,8 +1758,9 @@ library's machines that take the set and opens the picker on one (§3.2,
 Desktop library). Add to machine… stays disabled: a machine keeps a floppy
 catalogue only as the desktop kept it at its last Stop (§3.2 Start), which
 no set adds to yet.
-The dialog and `image media import` share one plan-and-publish function and its
-refusals. Both write the set's one title record: title, publishers, genres,
+The dialog, `image media import` and `upcli recipe build` share one
+plan-and-publish function and its refusals. All write the set's one title
+record, whose id is the last component of the set's repository (§2.1): title, publishers, genres,
 release year, software platform and description, and on the command line also
 developers (`--publisher`, `--developer`, `--genre` repeatable in order,
 `--year`, `--platform`, `--description`, implemented 2026-11-15). The shared

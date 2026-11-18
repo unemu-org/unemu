@@ -1993,6 +1993,101 @@ fn media_set(store: &Store, label: &[u8]) -> Descriptor {
     store.import_manifest(&manifest).unwrap()
 }
 
+/// A set imported before the title id followed the repository has the id
+/// `title` (recipes §6.4). Published again, with a catalogue edit, its title
+/// takes the id of the new tag's repository, and the personal data kept
+/// under `title` moves to the new image under that id; nothing is left
+/// behind under the old image. A title that is not the legacy one keeps its
+/// id.
+#[test]
+fn a_set_with_the_legacy_title_id_takes_its_repository_id_when_published_again() {
+    use image_store::library::{Personal, TitleEdit};
+    use image_store::media_set::{Config, Medium};
+    use image_store::metadata::Metadata;
+    let dir = Temp::new();
+    let store = dir.store();
+    let sets = image_store::media_set::Validator(&Floppies);
+    let set = |id: &str| {
+        let medium = put(&store, mt::FLOPPY, b"a floppy");
+        let config = Config {
+            schema: 1,
+            platform: "zx-spectrum".into(),
+            media: vec![Medium {
+                id: "disk-1".into(),
+                label: "Disk 1".into(),
+                format: toml::Table::new(),
+                blob: medium.digest.clone(),
+            }],
+            extras: Vec::new(),
+        };
+        let config = put(&store, mt::MEDIA_SET_CONFIG, &config.encode().unwrap());
+        let metadata = put(
+            &store,
+            mt::METADATA,
+            format!(r#"{{"schema":1,"platform":"zx-spectrum","titles":[{{"id":"{id}","title":"A game"}}]}}"#)
+                .as_bytes(),
+        );
+        let manifest =
+            Manifest::new_media_set("zx-spectrum", config, vec![medium, metadata]).unwrap();
+        store.import_manifest(&manifest).unwrap()
+    };
+    let personal = Personal {
+        user_rating: Some(4),
+        notes: Some("kept across the rename".into()),
+    };
+    let titles = |image: &Descriptor| -> Vec<String> {
+        let resolved = store.resolve_descriptor(image, &sets).unwrap();
+        Metadata::decode(&resolved.metadata, &resolved.manifest.layers)
+            .unwrap()
+            .titles
+            .into_iter()
+            .map(|t| t.id)
+            .collect()
+    };
+    let edit = |image: &Descriptor, id: &str| {
+        store
+            .edit_library(&image.digest, |entry| {
+                let mut description = TitleEdit::default();
+                description.set("description", serde_json::json!("Edited"))?;
+                entry.catalogue.titles.insert(id.into(), description);
+                entry.personal.insert(id.into(), personal.clone());
+                Ok(())
+            })
+            .unwrap();
+    };
+
+    let legacy = set("title");
+    store
+        .update_tag("games/lab:1.0-r1", &legacy, None, &sets)
+        .unwrap();
+    edit(&legacy, "title");
+    let published = store
+        .publish_overlay(&legacy, "games/lab:1.0-r2", &sets)
+        .unwrap();
+    assert_eq!(titles(&published), ["lab"]);
+    let library = store.read_library().unwrap();
+    assert_eq!(
+        library.images[&published.digest].personal,
+        BTreeMap::from([("lab".to_owned(), personal.clone())])
+    );
+    assert!(!library.images.contains_key(&legacy.digest));
+
+    // A set that already has another id keeps it.
+    let other = set("other");
+    store
+        .update_tag("games/elsewhere:1.0-r1", &other, None, &sets)
+        .unwrap();
+    edit(&other, "other");
+    let published = store
+        .publish_overlay(&other, "games/elsewhere:1.0-r2", &sets)
+        .unwrap();
+    assert_eq!(titles(&published), ["other"]);
+    assert_eq!(
+        store.read_library().unwrap().images[&published.digest].personal,
+        BTreeMap::from([("other".to_owned(), personal)])
+    );
+}
+
 /// The tags of sets and packages: a revision tag (`[<release>-]rN`) never
 /// moves, not even from the confirmed digest, and no set takes one that names
 /// another image; writing a revision moves the alias of its release forward

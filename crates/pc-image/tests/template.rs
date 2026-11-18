@@ -967,19 +967,23 @@ fn another_file_at_a_media_fixture_path_is_refused_before_any_set_is_tagged() {
 /// layer does, so the sets read back from the registry before that push have
 /// other digests. The local build must give these digests: a pin that fails
 /// means the two repositories no longer build the same set, and a set's
-/// revision tag never moves.
+/// revision tag never moves. The pins moved once more, on 2026-11-18, when
+/// the import began to give a set's title record the id of its repository,
+/// `freedos`, instead of `title` (recipes.md §6.4): the metadata layer
+/// changed and nothing else. The sets published before that carry `title`
+/// and are replaced, as before the first public release.
 const MEDIA_PINNED: [(&str, &str); 3] = [
     (
         "unemu/media/ibm-pc/freedos:1.4-r1",
-        "sha256:545f287b5967093633426446465a48900b59d2049112666c2a4d509a0856de1f",
+        "sha256:2ee5d72d786f38a045aa16b2ece05fa36c488d7a9ec5af60d77b9ab595f3b7b0",
     ),
     (
         "unemu/media/ibm-pc/freedos:1.4-1.2m-r1",
-        "sha256:53e81e4e4ef207feba6b32745157d1b1c8c2e6cbb4e9f69ce013ccee3e6e5924",
+        "sha256:1320a2879fafc3ad55c36925557bf6a619b32fcd75f30fbec98fd71a1a9f5f6d",
     ),
     (
         "unemu/media/ibm-pc/freedos:1.4-720k-r1",
-        "sha256:29c2d9d224ec41aae0b3b5efe228d53e41c3d4bffd1a912cbc6534c5cfc4d5dc",
+        "sha256:bd3a30078c09e13299484449930377ff0234f06cea8c2922b331526305c35e57",
     ),
 ];
 

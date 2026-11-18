@@ -8,7 +8,7 @@
 //! The neutral commands are `image ls`, `sweep`, `compress`, `image
 //! workspace ls` and `discard`, `image media ls` and `show`, `image firmware
 //! ls` and `show`, the registry commands (`image push`, `pull`, `remote ls`,
-//! `login`, `registry set`), `recipe check`, `show` and `plan`, the
+//! `login`, `registry set`), `recipe check`, `show`, `plan` and `build`, the
 //! library commands (`library ls`, `add`, `remove`, `scan`), and the journal
 //! commands `media generations`, `verify`, `rollback` and `commit`. What they
 //! need of a platform (the validators of its artifact types, the blobs it
@@ -199,6 +199,7 @@ pub fn usage(platforms: &[&dyn CliPlatform]) -> String {
         "       upcli recipe check FILE|FOLDER... (the static checks of recipes and work files; exit 0 clean, 1 with findings)\n",
         "       upcli recipe show FILE (a media recipe's title record merged with its work file; exit 1 with the check's findings)\n",
         "       upcli recipe plan FILE [--json] [--library DIR]... [--store DIR] [--config FILE] (where each input is found, or why not; exit 0 all found, 1 missing)\n",
+        "       upcli recipe build FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] [--keep-as TAG] (builds a draft and tags it; --fetch downloads missing inputs; exit 0 tagged, 1 not built)\n",
         "       upcli library ls [--store DIR] [--config FILE]\n",
         "       upcli library add|remove DIR [--config FILE]\n",
         "       upcli library scan [DIR...] [--store DIR] [--config FILE] (lists files, zip directories and catalogues into the index; hashes nothing)\n",

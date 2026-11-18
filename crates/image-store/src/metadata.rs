@@ -26,6 +26,23 @@ use std::collections::{BTreeMap, BTreeSet};
 /// one is shown read-only.
 pub const SCHEMA: u32 = 2;
 
+/// The id earlier releases gave the one title record of every installation
+/// set, whatever its repository. Sets that carry it keep it; a set published
+/// again takes [`title_id`].
+pub const LEGACY_TITLE_ID: &str = "title";
+
+/// The stable id of an installation set's title record (recipes §6.4): the
+/// last component of the repository `reference` names, which is the work id
+/// of a set that names its work. `None` when the reference names no
+/// repository.
+pub fn title_id(reference: &str) -> Option<&str> {
+    let repository = reference
+        .rsplit_once(':')
+        .map_or(reference, |(repository, _)| repository);
+    let last = repository.rsplit('/').next().unwrap_or(repository);
+    (!last.is_empty()).then_some(last)
+}
+
 /// Canonical software-environment choices. Stored strings remain extensible so
 /// a newer provider's vocabulary survives round trips and remains searchable.
 pub const SOFTWARE_PLATFORMS: &[&str] = &[

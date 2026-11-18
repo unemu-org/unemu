@@ -11,14 +11,26 @@
 //! ROM roles, lanes, boards and firmware catalogue of [`crate::firmware`],
 //! and the needs vocabulary of [`crate::needs`].
 //!
+//! A `fat` step builds its volumes with the deterministic FAT12 builder of
+//! `media::fat12` ([`media::fat12::plan_volumes`]), the provider's volume
+//! profile for the four diskette formats. A built artifact is published by
+//! [`crate::recipe_build`], through the importers' shared plan-and-publish
+//! functions.
+//!
 //! The software platforms and `[ids]` catalogues an `ibm-pc` title may name
 //! are this provider's own lists. Both are append-only, as published
 //! recipes name them (recipes §9), and both stay within what metadata
 //! schema 1 and 2 writers accept (`image_store::metadata`).
 
 use image_store::media_set::MediaFormats;
-use media::fat12::{FloppyFormat, ShortName, MAX_FOLDER_PATH};
-use recipe::provider::{CatalogueEntry, FirmwareProfile, MediaProfile, Provider, VolumeProfile};
+use media::fat12::{
+    plan_volumes, volume_label, DosTime, Entry, FloppyFormat, Order, ShortName, Volume,
+    DEFAULT_SERIAL, MAX_FOLDER_PATH,
+};
+use recipe::model::LocalTime;
+use recipe::provider::{
+    CatalogueEntry, FirmwareProfile, MediaProfile, Provider, VolumeFile, VolumeKeys, VolumeProfile,
+};
 
 /// The `ibm-pc` recipe provider.
 pub struct PcRecipes;
@@ -65,6 +77,9 @@ impl Provider for PcRecipes {
     fn work_id_catalogues(&self) -> &[&str] {
         image_store::metadata::WORK_ID_KINDS
     }
+    fn publisher(&self) -> Option<&dyn recipe::build::Publisher> {
+        Some(&crate::recipe_build::PcPublisher)
+    }
 }
 
 impl MediaProfile for PcRecipes {
@@ -93,6 +108,16 @@ impl MediaProfile for PcRecipes {
             .iter()
             .find(|v| v.0.name() == format)
             .map(|v| v as &dyn VolumeProfile)
+    }
+
+    /// `.iso` for a CD-ROM image, `.img` for a diskette, as the importers
+    /// propose the formats from those extensions.
+    fn file_name(&self, id: &str, format: &str) -> String {
+        if format == OPTICAL {
+            format!("{id}.iso")
+        } else {
+            format!("{id}.img")
+        }
     }
 
     fn dos_name_fault(&self, name: &str) -> Option<String> {
@@ -132,6 +157,46 @@ impl VolumeProfile for FatVolume {
         label.chars().find(char::is_ascii_lowercase).map(|lower| {
             format!("the lower-case letter {lower:?} is not allowed: a label is stored in upper case, so write it as it is on the disk")
         })
+    }
+
+    /// The FAT12 builder's volumes: names as stored, never converted, in
+    /// name or listed order, with the stated times, serial and label
+    /// (Microsoft FAT Specification, FAT Directory Structure).
+    fn build(&self, files: &[VolumeFile<'_>], keys: &VolumeKeys) -> Result<Vec<Vec<u8>>, String> {
+        let time = |t: LocalTime| {
+            DosTime::new(t.year, t.month, t.day, t.hour, t.minute, t.second)
+                .map_err(|fault| format!("the time {t:?}: {fault}"))
+        };
+        let volume = Volume {
+            format: self.0,
+            label: keys
+                .label
+                .as_deref()
+                .map(volume_label)
+                .transpose()
+                .map_err(|fault| format!("the label: {fault}"))?,
+            serial: keys.serial.unwrap_or(DEFAULT_SERIAL),
+            order: if keys.listed {
+                Order::Listed
+            } else {
+                Order::Name
+            },
+            time: keys.time.map(time).transpose()?.unwrap_or(DosTime::EPOCH),
+            volumes: keys.volumes,
+        };
+        let entries = files
+            .iter()
+            .map(|file| {
+                Ok(Entry {
+                    path: file.path.to_owned(),
+                    contents: Some(file.bytes.to_vec()),
+                    time: file.time.map(time).transpose()?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        plan_volumes(entries, &volume)
+            .and_then(|plan| plan.images())
+            .map_err(|error| error.to_string())
     }
 }
 

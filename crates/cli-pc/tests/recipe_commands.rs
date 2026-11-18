@@ -27,6 +27,8 @@ fn the_ibm_pc_recipes_of_the_corpus_pass_with_exit_0() {
         "azuramon",
         "windows-3.0",
         "unemu-at-bios",
+        "vgabios",
+        "xtide-universal-bios",
         "ibm-5170-bios",
     ]
     .map(|f| format!("{CORPUS}/{f}"));
@@ -35,7 +37,7 @@ fn the_ibm_pc_recipes_of_the_corpus_pass_with_exit_0() {
     let (code, output, errors) = upcli(&args);
     assert_eq!((code, errors.as_str()), (0, ""), "{output}");
     assert!(
-        output.ends_with("12 files checked, 0 findings\n"),
+        output.ends_with("14 files checked, 0 findings\n"),
         "{output}"
     );
     assert!(output.contains(&format!(
@@ -57,7 +59,7 @@ fn the_whole_corpus_has_one_finding_per_recipe_of_a_platform_without_provider() 
         .iter()
         .all(|f| f.contains("/contra-nes/") && f.contains("platform `nes`")));
     assert!(
-        output.ends_with("18 files checked, 5 findings\n"),
+        output.ends_with("20 files checked, 5 findings\n"),
         "{output}"
     );
 }

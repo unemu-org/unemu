@@ -85,6 +85,9 @@ run --machine machines/at-freedos.toml --max-steps 12000000 --idle-limit 1000000
 recipe check backlog/docs/design/recipe-corpus
 recipe check my.media.toml other.firmware.toml
 recipe show backlog/docs/design/recipe-corpus/kenslab-2.01/kenslab-2.01.media.toml
+recipe build my.media.toml --library /path/to/games
+recipe build my.media.toml --fetch --store /path/to/store
+recipe build my.media.toml --keep-as 1.0-mine-r1
 media create floppy --type 1.44M --format --label TRANSFER /path/to/transfer.img
 media create floppy --type 1.44M --add /path/to/GAME --label GAME /path/to/game.img
 media create floppy --type 1.44M --add /path/to/PLAY.EXE --add /path/to/DATA.DAT --top MYGAME /path/to/mygame.img

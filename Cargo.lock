@@ -2961,6 +2961,7 @@ name = "recipe"
 version = "0.0.2"
 dependencies = [
  "image-store",
+ "libc",
  "miniz_oxide 0.9.1",
  "serde",
  "serde_json",

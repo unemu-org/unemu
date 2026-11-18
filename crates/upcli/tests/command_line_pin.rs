@@ -91,6 +91,8 @@ const USAGE_FORMS: &[&str] = &[
     "recipe show FILE",
     "recipe plan FILE",
     "recipe plan FILE --json --library DIR --library DIR2 --store DIR --config FILE",
+    "recipe build FILE",
+    "recipe build FILE --fetch --library DIR --library DIR2 --store DIR --config FILE --keep-as TAG",
     "recipe",
     "library ls",
     "library ls --store DIR --config FILE",

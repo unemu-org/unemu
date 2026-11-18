@@ -1555,8 +1555,10 @@ cargo run --offline -p upcli -- library remove /path/to/games
   there, `not scanned` without an index).
 - `recipe plan FILE` checks the recipe (a recipe with findings prints the
   check's report and exits 1), then looks for each value in the store
-  (images whose layers hold the content, compressed or not), beside the
-  recipe (an input with `bundle = true`, by its name), and in the libraries
+  (images whose layers hold the content, compressed or not), in the store's
+  download cache (files a `recipe build --fetch` downloaded, named by their
+  SHA-256), beside the recipe (an input with `bundle = true`, by its name),
+  and in the libraries
   of the preferences followed by each `--library DIR`, in that order. The
   members of an `unpack` step that state size and SHA-256 are looked for
   before their archive, which is then needed only for the members still
@@ -1635,8 +1637,9 @@ indented; these keys are stable:
   `near_misses`; a file set adds `files` (each with `path`, `size`,
   `sha256`, `found`, `near_misses`), `found_files` and `places` (the
   distinct files or members they were found in);
-- `found`: null, or `{source: "store", tags}`, `{source: "bundle", path}`
-  or `{source: "library", library, path, member}` (`member` null for a
+- `found`: null, or `{source: "store", tags}`, `{source: "download-cache",
+  path}`, `{source: "bundle", path}` or `{source: "library", library, path,
+  member}` (`member` null for a
   file, the member's name inside the zip archive at `path` otherwise);
 - `near_misses[]`: `kind` (`name-other-size`, `name-other-hash`,
   `size-other-hash`), `library`, `path`, `member`, `size`, `sha256` (null
@@ -1667,6 +1670,81 @@ read or written, `remove` of a folder that is not a library, `scan`
 without a store), and 2 on a usage error. A library of the preferences
 that is not there is a warning for `library scan`, which scans the others,
 and `library ls` prints it as `missing`.
+
+## Building recipes
+
+`upcli recipe build` builds a draft of a recipe into the store
+([design/recipes.md](design/recipes.md) §3.1, §6.9, §6.12, §6.14): it plans
+as `recipe plan` does, reads every value it found and checks it against its
+size and SHA-256 again, runs the steps (`unpack`, `text`, `fat`) and hands
+the outputs to the importers, the same plan-and-publish functions `image
+media import` and `image firmware import` end in. The importer copies and
+hashes every file and tags the artifact last.
+
+```sh
+cargo run --offline -p upcli -- recipe build my.media.toml --library /path/to/games
+cargo run --offline -p upcli -- recipe build my.media.toml --fetch --store /path/to/store
+cargo run --offline -p upcli -- recipe build my.media.toml --keep-as 1.0-mine-r1
+```
+
+- The tag is `<name>:<release>-r<revision>` (`<name>:r<revision>` without a
+  release), in the store of `--store DIR` or the default store, created
+  when it does not exist yet. `--keep-as TAG` tags the result
+  `<name>:TAG` instead, a revision tag of the recipe's own repository other
+  than the recipe's tag. A recipe without `digest` is a draft: nothing is
+  compared with a pin, and the output ends `draft`.
+- `--fetch` is the consent to download (recipes §6.13). Without it a
+  missing input is reported, as `recipe plan` reports it, and nothing is
+  downloaded. With it, every URL of an input the plan reports missing is
+  tried in order, and only when every missing input has a URL; the list of
+  what will be downloaded is printed first (`fetch: downloading N inputs
+  (BYTES bytes), as --fetch allows:`, then one line per input with its
+  size, SHA-256 and URLs). When a missing input has no URL, nothing is
+  downloaded and the build says `fetch: nothing downloaded: input ID has no
+  URL`. Only `https` is fetched, redirects only to `https`, at most the
+  pinned size; connecting may take 30 s, each read 60 s, and a whole
+  download 120 s plus one second per 32 KiB of the pinned size (an average
+  of at least 32 KiB/s). A download is written to
+  `cache/downloads/.partial-<sha256>-<process>-<n>`, a file of its own, and
+  renamed to `cache/downloads/<sha256>` only when its size and SHA-256 are
+  the pinned ones; the plan then runs again and takes it from there, and so
+  does every later plan and build.
+- A value is read from where the plan found it: the store, the download
+  cache, beside the recipe or a library (a zip member decoded no further
+  than its stated size). The members of an `unpack` step found elsewhere
+  stand for the archive; the archive is opened only for a member still
+  missing, and then checked whole: no member name absolute, with a drive,
+  `..` or an ambiguous spelling, and every stated size, hash and time
+  equal to the archive's. A step reads only the bytes and keys it is
+  given: no clock, no network, no host name or time.
+- The outputs are written to `cache/recipe-build/<process>-<n>` in the
+  store under their file names, handed to the importer and removed, also
+  when the build fails. A file name that is not one path component on
+  every host (a `/` or `\`, a `:`, `.` or `..`) is refused. When a build
+  starts it removes the staging folders of processes that no longer run
+  (on Unix) and `.partial-*` downloads older than a day. A media
+  recipe's set takes the media ids, labels, formats and file names, the
+  extras' DOS names and kinds, the `[license]` statement and the title
+  record merged with the work file (`recipe show`), unchanged. A firmware
+  recipe's ROM is identified in the firmware catalogue by its bytes, as
+  `image firmware import` identifies it; `[package]` gives the metadata
+  flags and the `[license]` source the `--source` archive. Attachments are
+  not built in this version; the output names each one.
+
+After a build, one line per input says how it is kept (§3.10 of the
+design): `kept as stored`, `kept as files` (built into a volume), `kept as
+text with DOS line ends`, `not needed: …` (an archive whose members were
+found), with `not kept: N members unused` for an opened archive's members
+the recipe did not take. The last line is `built NAME:TAG<TAB>DIGEST<TAB>draft`,
+or `already built …` when the tag names this artifact already.
+
+Exit status: 0 when the artifact is tagged or was already; 1 when the
+recipe has findings (the check's report is printed), an input is missing
+(the plan is printed, then `not built: missing M of N inputs; nothing was
+tagged`), or a download, a read, a step or the importer fails (the reason on
+standard error); 2 on a usage error, a folder, a recipe or work file that
+cannot be read, or a store that cannot be opened. Nothing is tagged unless
+the exit status is 0.
 
 ## Creating disk images
 

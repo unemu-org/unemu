@@ -4,8 +4,10 @@
 //! library files fail closed and remain untouched rather than losing personal data.
 
 use crate::{
-    filesystem as host, invalid, media_type, metadata::Metadata, store::read_bounded,
-    ConfigValidator, Descriptor, Digest, Error, Result, Store, MAX_SMALL_BLOB,
+    filesystem as host, invalid, media_type,
+    metadata::{Metadata, LEGACY_TITLE_ID},
+    store::read_bounded,
+    ConfigValidator, Descriptor, Digest, Error, Manifest, Result, Store, MAX_SMALL_BLOB,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -301,6 +303,25 @@ impl Library {
     }
 }
 
+/// The id an installation set's title takes when it is published again:
+/// a set imported before the id followed the repository has the one title
+/// [`LEGACY_TITLE_ID`], which becomes the last component of `new_tag`'s
+/// repository (recipes §6.4). The new id, or `None` when nothing changes.
+fn legacy_title(metadata: &mut Metadata, manifest: &Manifest, new_tag: &str) -> Option<String> {
+    if manifest.artifact_type() != media_type::MEDIA_SET {
+        return None;
+    }
+    let [title] = metadata.titles.as_mut_slice() else {
+        return None;
+    };
+    let id = crate::metadata::title_id(new_tag)?;
+    if title.id != LEGACY_TITLE_ID || id == LEGACY_TITLE_ID {
+        return None;
+    }
+    title.id = id.to_owned();
+    Some(title.id.clone())
+}
+
 impl Store {
     pub fn read_library(&self) -> Result<Library> {
         let _lease = self.lease()?;
@@ -398,6 +419,9 @@ impl Store {
     /// Verify the source closure once, then only new metadata/artwork. Immutable
     /// source payloads stay covered by that verification and the retained lease.
     /// On success consume the catalogue edits and move local data by stable id.
+    /// An installation set whose one title still has the id earlier releases
+    /// gave every set, [`LEGACY_TITLE_ID`], takes the id of the new tag's
+    /// repository (recipes §6.4), and its personal data moves to that id.
     /// An I/O error after tag publication can leave the tag visible; original local
     /// data remains intact if its atomic replacement fails.
     pub fn publish_overlay(
@@ -427,6 +451,7 @@ impl Store {
         } else {
             source_metadata
         };
+        let mut renamed = None;
         if !metadata.warnings().is_empty() {
             return Err(invalid(metadata.warnings().join("; ")));
         }
@@ -444,6 +469,7 @@ impl Store {
             // source's.
             metadata.platform = crate::platform::canonical(&metadata.platform).into();
             manifest.canonicalize_platform()?;
+            renamed = legacy_title(&mut metadata, &manifest, new_tag);
             let mut available = self.clean_artwork(&entry.catalogue.artwork)?;
             available.extend(manifest.layers.clone());
             let bytes = metadata.encode(&available)?;
@@ -516,11 +542,15 @@ impl Store {
             let to = library.images.entry(image.digest.clone()).or_default();
             let previous_to = to.clone();
             for (id, personal) in std::mem::take(&mut from.personal) {
-                if metadata.titles.iter().any(|t| t.id == id) {
-                    if to.personal.get(&id).is_some_and(|p| p != &personal) {
+                let target = match &renamed {
+                    Some(new) if id == LEGACY_TITLE_ID => new.clone(),
+                    _ => id.clone(),
+                };
+                if metadata.titles.iter().any(|t| t.id == target) {
+                    if to.personal.get(&target).is_some_and(|p| p != &personal) {
                         return Err(Error::LibraryConflict);
                     }
-                    to.personal.insert(id, personal);
+                    to.personal.insert(target, personal);
                 } else {
                     from.personal.insert(id, personal);
                 }

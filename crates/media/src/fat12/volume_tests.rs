@@ -548,3 +548,42 @@ fn an_empty_tree_is_a_formatted_volume() {
     blank.resize(format.image_bytes() as usize, 0);
     assert_eq!(image, [blank]);
 }
+
+/// The volume path a recipe's `fat` step runs ([`plan_volumes`], then
+/// `Plan::images`) names no clock, network, environment, process or thread,
+/// and its own files read no host file. `tree.rs` and `layout.rs` also hold
+/// the host-file builder of `media create`, which reads folders and writes
+/// images; the volume path builds its tree from entries in memory and lays
+/// the images out in memory, so those two are checked for the clock and the
+/// rest only.
+#[test]
+fn the_volume_path_reaches_no_clock_network_or_host() {
+    let sources = [
+        ("volume.rs", include_str!("volume.rs"), true),
+        ("split.rs", include_str!("split.rs"), true),
+        ("names.rs", include_str!("names.rs"), true),
+        ("time.rs", include_str!("time.rs"), true),
+        ("boot.rs", include_str!("boot.rs"), true),
+        ("tree.rs", include_str!("tree.rs"), false),
+        ("layout.rs", include_str!("layout.rs"), false),
+    ];
+    for (name, source, no_files) in sources {
+        let code = source.split("#[cfg(test)]").next().unwrap();
+        for forbidden in [
+            "std::time",
+            "Instant",
+            "SystemTime",
+            "std::net",
+            "std::env",
+            "std::process",
+            "std::thread",
+        ] {
+            assert!(!code.contains(forbidden), "{name} names {forbidden}");
+        }
+        if no_files {
+            for forbidden in ["std::fs", "fs::"] {
+                assert!(!code.contains(forbidden), "{name} names {forbidden}");
+            }
+        }
+    }
+}

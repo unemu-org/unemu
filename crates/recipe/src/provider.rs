@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! What the platform provider of a recipe's `platform` supplies to the
-//! checks (recipes §10): media formats and the sizes they hold, a volume
-//! profile per format a `fat` step can build, the rule for DOS names of
-//! extras, firmware roles, lanes, boards and the catalogue, the needs
-//! vocabulary, and the software platforms and `[ids]` catalogues a title may
-//! name.
+//! checks and the build (recipes §10): media formats and the sizes they
+//! hold, a volume profile per format a `fat` step can build, which also
+//! builds the volumes, the rule for DOS names of extras, firmware roles,
+//! lanes, boards and the catalogue, the needs vocabulary, the software
+//! platforms and `[ids]` catalogues a title may name, and the publisher that
+//! hands a built artifact to the platform's importers (recipes §6.14).
 //!
 //! The engine never names a platform: everything here is data the provider
 //! answers. Each provider's vocabularies are append-only, as published
 //! recipes name them (recipes §9).
 
+use crate::model::LocalTime;
 use image_store::needs::Vocabulary;
 
 /// The provider of one platform family.
@@ -25,6 +27,12 @@ pub trait Provider {
     fn software_platforms(&self) -> &[&str];
     /// The catalogues whose ids `[ids]` may hold (recipes §6.8).
     fn work_id_catalogues(&self) -> &[&str];
+    /// What publishes a built artifact through the platform's importers;
+    /// `None` when this build of the program can check the platform's
+    /// recipes but not build them.
+    fn publisher(&self) -> Option<&dyn crate::build::Publisher> {
+        None
+    }
 }
 
 /// Media formats and what they hold.
@@ -39,6 +47,12 @@ pub trait MediaProfile {
     fn volume_profile(&self, format: &str) -> Option<&dyn VolumeProfile>;
     /// Why `name` is not a DOS name an extra may carry, or `None`.
     fn dos_name_fault(&self, name: &str) -> Option<String>;
+    /// The export file name of a medium that states none (recipes §6.10):
+    /// its id with the extension the provider gives the format.
+    fn file_name(&self, id: &str, format: &str) -> String {
+        let _ = format;
+        id.to_owned()
+    }
 }
 
 /// How a file system step lays out a volume of one format: here, which
@@ -50,6 +64,35 @@ pub trait VolumeProfile {
     fn path_fault(&self, path: &str) -> Option<String>;
     /// Why `label` cannot be the volume label, or `None`.
     fn label_fault(&self, label: &str) -> Option<String>;
+    /// The images of the volumes that hold `files` as the keys of a `fat`
+    /// step say: one image, or exactly [`VolumeKeys::volumes`]. A name the
+    /// profile refuses, a tree that does not fit, or another number of
+    /// volumes than the split fills is an error in the profile's words.
+    /// The bytes depend on the arguments alone.
+    fn build(&self, files: &[VolumeFile<'_>], keys: &VolumeKeys) -> Result<Vec<Vec<u8>>, String>;
+}
+
+/// One file of a volume a `fat` step builds: its path from the root, `/`
+/// separators, its bytes and the time the recipe states for it.
+#[derive(Clone, Copy, Debug)]
+pub struct VolumeFile<'a> {
+    pub path: &'a str,
+    pub bytes: &'a [u8],
+    pub time: Option<LocalTime>,
+}
+
+/// The keys of a `fat` step besides its tree and format (recipes §6.9).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VolumeKeys {
+    pub label: Option<String>,
+    /// `None`: the builder's fixed serial.
+    pub serial: Option<u32>,
+    /// `order = "listed"`; otherwise name order.
+    pub listed: bool,
+    /// `None`: the FAT epoch, 1980-01-01 00:00:00.
+    pub time: Option<LocalTime>,
+    /// Split over exactly this many volumes, from 2.
+    pub volumes: Option<usize>,
 }
 
 /// One entry of the provider's firmware catalogue, as the checks need it.

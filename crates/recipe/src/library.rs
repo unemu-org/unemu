@@ -811,6 +811,33 @@ impl Library {
         out
     }
 
+    /// The bytes at a place, for a build: a file read whole, or a member
+    /// decoded and checked against its archive's directory. The caller
+    /// checks them against the size and SHA-256 it wants; the index is not
+    /// trusted for that (recipes §3.4: a value is hashed again when used).
+    pub fn read(&self, place: &Place) -> io::Result<Vec<u8>> {
+        let path = self.root.join(&place.path);
+        match &place.member {
+            None => fs::read(&path),
+            Some(name) => {
+                let member = match self.files.get(&place.path).and_then(|f| f.zip.as_ref()) {
+                    Some(Listing::Members(members)) => members
+                        .iter()
+                        .find(|m| &m.member.name == name)
+                        .map(|m| m.member.clone()),
+                    _ => None,
+                }
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, place.to_string()))?;
+                let mut out = Vec::new();
+                zip::extract(&path, &member, &mut |chunk| {
+                    out.extend_from_slice(chunk);
+                    Ok(())
+                })?;
+                Ok(out)
+            }
+        }
+    }
+
     /// Write the index to `path`, by rename from a temporary sibling.
     pub fn save(&self, path: &Path) -> io::Result<()> {
         let file = CacheFile {

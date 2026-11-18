@@ -5,6 +5,29 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — Recipe builds:** step B7 of design/recipes.md §19.2.
+  `upcli recipe build FILE [--fetch] [--library DIR]... [--store DIR]
+  [--keep-as TAG]` builds a draft: the plan, the downloads `--fetch`
+  consents to (HTTPS only, listed first, kept in the store's
+  `cache/downloads/` by SHA-256 only with the pinned size and hash), every
+  value read and checked again, the steps `unpack` (zip, stored and
+  deflate, names checked, never guessed), `text` (ASCII, CR LF) and `fat`
+  (the FAT12 builder) as pure functions of the bytes, then the importers'
+  own plan-and-publish functions, which tag last; nothing is tagged when an
+  input is missing or anything fails. The installation-set import now gives
+  a set's title record the id of its repository's last component (recipes
+  §6.4) instead of `title`; older sets keep theirs until published again
+  with catalogue edits, which moves their personal data to the new id.
+  The metadata layer of every imported set changed with it, so the FreeDOS
+  set pins moved: `1.4-r1` `545f287b…` → `2ee5d72d…`, `1.4-1.2m-r1`
+  `53e81e4e…` → `1320a287…`, `1.4-720k-r1` `29c2d9d2…` → `bd3a3007…`
+  (the firmware packages and templates keep theirs). The published sets
+  must be rebuilt and pushed again with the release. MEASURED: the open firmware recipes (the corpus gained the video BIOS and
+  the option ROM) build the template packages digest for digest; the three
+  FreeDOS recipes build sets with the importer's configs byte for byte;
+  Ken's Labyrinth and AZURAMON build from a user's own files, Ken's disk the
+  one the FAT goldens pin. Attachments are not built yet. commands.md,
+  Building recipes.
 - **2026-11-18 — CPU stop report:** when the CPU core refuses an operation
   (`unsupported cpu system operation LegacyPrivilegeTransition`, say), an
   instruction it does not lift or a fault it returns outward, the stop now
@@ -350,7 +373,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   (`unemu-at-bios-1.0.2-unemu.3:r1` `e3c226ae…`,
   `vgabios-0.9d-unemu.1-std:r1` `179a11db…`, `xub-r638-xtp-ata1f0:r1`
   `7d42e80e…`), the three FreeDOS sets (`1.4-r1` `545f287b…`, `1.4-1.2m-r1`
-  `53e81e4e…`, `1.4-720k-r1` `29c2d9d2…`), the two templates, which carry
+  `53e81e4e…`, `1.4-720k-r1` `29c2d9d2…`; superseded by the title-id
+  change of 2026-11-18, see "Recipe builds"), the two templates, which carry
   the packages' named ROM and source layers and their digests (`open-at`
   `750981c2…`, `open-at-games` `01028f9c…`), and the pinned uncompressed
   synthetic set of the import tests (`889392e9…`). The six published

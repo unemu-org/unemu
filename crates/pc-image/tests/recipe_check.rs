@@ -239,7 +239,7 @@ fn the_corpus_passes_on_ibm_pc_and_names_the_platforms_it_lacks() {
             refused("contra-usa.media.toml", 10, "nes"),
         ]
     );
-    assert_eq!(report.files.len(), 18, "15 recipes and 3 work files");
+    assert_eq!(report.files.len(), 20, "17 recipes and 3 work files");
 }
 
 /// Rule 5: Windows 3.0's manual is the one input only an attachment uses.
@@ -379,7 +379,7 @@ fn the_whole_corpus_passes_with_a_provider_for_every_platform() {
     };
     let report = check(&[CORPUS], &[&PcRecipes, &nes, &amiga]);
     assert!(report.is_clean(), "{}", report.render());
-    assert!(report.render().ends_with("18 files checked, 0 findings\n"));
+    assert!(report.render().ends_with("20 files checked, 0 findings\n"));
 }
 
 /// The JSON Schema in the design folder is the one the key tables and the

@@ -30,9 +30,24 @@ host path.
 | [`freedos-1.4-livecd`](freedos-1.4-livecd/README.md) | A CD-ROM taken unmodified | not stated | An optical medium, a set of mixed formats |
 | [`windows-3.0`](windows-3.0/README.md) | Windows 3.0 installation disks | no | Private inputs, database ids, an optional attachment |
 | [`unemu-at-bios`](unemu-at-bios/README.md) | The open AT BIOS package | yes | A Firmwarefile without steps |
+| [`vgabios`](vgabios/README.md) | The open VGA BIOS package | yes | A Firmwarefile without steps (added with the build, B7) |
+| [`xtide-universal-bios`](xtide-universal-bios/README.md) | The open fixed-disk option ROM package | yes | A Firmwarefile without steps (added with the build, B7) |
 | [`ibm-5170-bios`](ibm-5170-bios/README.md) | IBM 5170 BIOS from chip dumps | no | A ROM in parts, MAME ids |
 | [`contra-nes`](contra-nes/README.md) | Contra and Probotector, NES | no | A future platform: regions, a work id |
 | [`amiga-adf`](amiga-adf/README.md) | An Amiga disk image | no | A future platform: an unmodified medium, no release |
+
+## The first builds (2026-11-18)
+
+`upcli recipe build` (recipes.md §19.2, B7) builds these drafts. Two
+firmware recipes were added then, for the video BIOS and the fixed-disk
+option ROM of the open templates, so that the three open firmware packages
+the templates bind each have a recipe; they have no HCL copy. MEASURED: the
+three build the packages `pc_image::template::build_firmware` imports from
+the same fixtures, digest for digest, and the three FreeDOS recipes build
+sets whose configs equal byte for byte those the importer makes from the
+same disks (a test in `pc-image`, `recipe_build`). Ken's Labyrinth and
+AZURAMON build from a user's own files; AZURAMON's split fills exactly the
+ten volumes its recipe assumed.
 
 ## Second round: work files, TOML only (2026-11-17)
 

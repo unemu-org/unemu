@@ -24,3 +24,7 @@ toml.workspace = true
 # The parser inside `toml`, at the version the lock already pins: its event
 # stream is where the TOML 1.1 forms that `toml` accepts are refused.
 toml_parser = "1.1.5"
+
+# Whether the process that left a staging folder still runs.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
