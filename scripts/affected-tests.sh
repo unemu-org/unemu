@@ -76,9 +76,11 @@ planner='
 def emulation_crates: ["assembly", "audio", "bus", "chipset", "cpu", "device",
   "devices", "machine", "machine-file", "media", "testkit", "video"];
 # Files that hold the machine runners and the disk builder the goldens drive,
-# and the command module the front-end goldens drive; a path ending in "/"
-# covers every file under it.
+# and the command line the front-end goldens drive (the program, the
+# dispatch of the neutral command line and every PC command); a path ending
+# in "/" covers every file under it.
 def runner_files: ["crates/pc-harness/src/", "crates/cli/src/command.rs",
+  "crates/cli/src/cli_core/mod.rs", "crates/cli/src/cli_pc/",
   "crates/pc-image/src/media_create.rs"];
 # Paths that crates read outside their own directory: test support shared
 # with #[path], shipped machine files, fixture scripts and pins, assets.

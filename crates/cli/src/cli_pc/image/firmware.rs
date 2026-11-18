@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Firmware package import, metadata revisions and inspection; machine-images §5.3.
+//! `image firmware import` and `edit`: firmware packages from ROM files and
+//! their metadata revisions; machine-images §5.3.
 //! Folder hashing shares the persistent ROM index; sources remain untouched.
 //! Licences are explicit statements: `--open` needs `--license`, and the
 //! catalogue's own classification of a ROM always wins.
 
-use image_registry::guard;
+use crate::cli_core::{image::min_app_version, HostSources};
 use image_store::{
-    firmware::{Config, Provenance, ProvenanceKind, Validator},
-    license, media_type,
-    summary::{ArtifactKind, SummaryCache},
-    Digest, Store,
+    firmware::{Provenance, ProvenanceKind},
+    media_type, Digest, Store,
 };
 use pc_image::{
-    firmware::{catalogue, PcFirmwareRules},
+    firmware::catalogue,
     firmware_import::{self, Attachment, ReadmeChoice, Statement},
 };
 use std::{ffi::OsString, io::Write, path::PathBuf};
@@ -70,7 +69,7 @@ pub fn parse(args: &[OsString]) -> Result<FirmwareCommand, &'static str> {
     let action = args
         .first()
         .and_then(|s| s.to_str())
-        .filter(|s| matches!(*s, "import" | "ls" | "show" | "edit"))
+        .filter(|s| matches!(*s, "import" | "edit"))
         .ok_or("expected image firmware import, edit, ls or show")?;
     let mut command = FirmwareCommand {
         action: action.into(),
@@ -99,7 +98,7 @@ pub fn parse(args: &[OsString]) -> Result<FirmwareCommand, &'static str> {
         if !arg.as_encoded_bytes().starts_with(b"--") {
             if action == "import" {
                 command.files.push(arg.into());
-            } else if matches!(action, "show" | "edit") && command.tag.is_empty() {
+            } else if action == "edit" && command.tag.is_empty() {
                 command.tag = arg.to_str().ok_or("invalid firmware tag")?.into();
             } else {
                 return Err("unexpected firmware argument");
@@ -187,7 +186,7 @@ pub fn parse(args: &[OsString]) -> Result<FirmwareCommand, &'static str> {
                 }
             }
             Some("--min-app-version") if describes && statement.min_app_version.is_none() => {
-                statement.min_app_version = Some(super::min_app_version(value)?)
+                statement.min_app_version = Some(min_app_version(value)?)
             }
             Some("--revision") if describes => once(&mut provenance.revision, text(value)?)?,
             Some("--url") if describes => once(&mut provenance.url, text(value)?)?,
@@ -239,7 +238,7 @@ pub fn parse(args: &[OsString]) -> Result<FirmwareCommand, &'static str> {
     if action == "import" && command.files.is_empty() {
         return Err("firmware import requires a folder or files");
     }
-    if matches!(action, "show" | "edit") && command.tag.is_empty() {
+    if action == "edit" && command.tag.is_empty() {
         return Err("firmware show and edit require NAME:TAG");
     }
     let single = command.selected.is_some() || command.unlisted.is_some();
@@ -266,7 +265,7 @@ pub fn parse(args: &[OsString]) -> Result<FirmwareCommand, &'static str> {
 pub fn execute(
     mut command: FirmwareCommand,
     output: &mut impl Write,
-    sources: &crate::command::FirmwareSources,
+    sources: &HostSources,
 ) -> anyhow::Result<()> {
     if command.store.as_os_str().is_empty() {
         command.store = sources
@@ -289,153 +288,7 @@ pub fn execute(
         );
     }
     let store = Store::open_existing(&command.store)?;
-    if command.action == "edit" {
-        return edit(&store, command, output, catalogue());
-    }
-    if command.action == "show" {
-        show(&store, &command.tag, output)?;
-    } else {
-        let mut summaries = SummaryCache::open(&store)?;
-        while !summaries.pending().is_empty() {
-            summaries.rebuild(&store, 64, &[], &[])?;
-        }
-        for tag in summaries.tags() {
-            if let Some(row) = summaries
-                .summary(&tag.manifest.digest)
-                .filter(|s| s.kind == ArtifactKind::Firmware)
-            {
-                writeln!(
-                    output,
-                    "{}\t{}\t{:?}\t{:?}{}",
-                    tag.name,
-                    tag.manifest.digest,
-                    row.name,
-                    row.firmware.as_ref().map(Listed),
-                    super::requirement_columns(&store, &tag.manifest)
-                )?;
-            }
-        }
-        for tag in summaries.tags() {
-            if let Some(failure) = summaries.failure(&tag.manifest.digest) {
-                writeln!(
-                    output,
-                    "unavailable\t{}\t{:?}",
-                    failure.image, failure.reason
-                )?;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// One package in full: identity, descriptive fields, ROM bindings, every
-/// layer's licence and mark, and where its own marks allow it to be pushed.
-fn show(store: &Store, tag: &str, output: &mut impl Write) -> anyhow::Result<()> {
-    let image = store.resolve(tag, &Validator(&PcFirmwareRules(catalogue())))?;
-    let config = Config::decode(&image.config)?;
-    writeln!(output, "{}\t{}\t{:?}", tag, image.image.digest, config.name)?;
-    super::write_min_app_version(output, &image.manifest)?;
-    writeln!(output, "fits\t{:?}", config.fits)?;
-    for rom in &config.roms {
-        writeln!(
-            output,
-            "{}\t{}\t{}\t{}",
-            rom.id, rom.role, rom.size, rom.sha256
-        )?;
-        if !rom.requires.is_empty() {
-            writeln!(output, "requires\t{}\t{:?}", rom.id, rom.requires)?;
-        }
-        for p in &rom.parts {
-            writeln!(
-                output,
-                "chip\t{:?}\t{}\t{}\t{}",
-                p.position, p.lane, p.offset, p.blob
-            )?;
-        }
-    }
-    for e in &config.extras {
-        writeln!(output, "extra\t{:?}\t{}\t{}", e.filename, e.size, e.blob)?;
-    }
-    for (key, value) in [
-        ("vendor", &config.vendor),
-        ("version", &config.version),
-        ("date", &config.date),
-        ("description", &config.description),
-        ("notes", &config.notes),
-    ] {
-        if let Some(value) = value {
-            writeln!(output, "{key}\t{value:?}")?;
-        }
-    }
-    if !config.labels.is_empty() {
-        writeln!(output, "labels\t{:?}", config.labels)?;
-    }
-    if let Some(p) = &config.provenance {
-        writeln!(
-            output,
-            "provenance\t{}\t{:?}\trevision:{}\turl:{}\tdate:{}",
-            p.kind.map_or("unstated", ProvenanceKind::as_str),
-            p.from,
-            p.revision.as_deref().unwrap_or("-"),
-            p.url.as_deref().unwrap_or("-"),
-            p.date.as_deref().unwrap_or("-")
-        )?;
-    }
-    for source in &config.sources {
-        writeln!(
-            output,
-            "source\t{:?}\t{}\t{}\t{}\t{:?}",
-            source.filename,
-            source.format.as_str(),
-            source.size,
-            source.blob,
-            source.roms
-        )?;
-    }
-    if let Some(readme) = &config.readme {
-        writeln!(output, "readme\t{}\t{}", readme.blob, readme.size)?;
-    }
-    let class = |d: &image_store::Descriptor| match license::open_license(d) {
-        Some(l) => format!("open\t{l}"),
-        None => "user-supplied\t-".into(),
-    };
-    writeln!(
-        output,
-        "layer\tconfig\t{}\t{}",
-        image.manifest.config.digest,
-        class(&image.manifest.config)
-    )?;
-    for d in &image.manifest.layers {
-        let kind = match d.decoded_media_type() {
-            media_type::FIRMWARE => "rom",
-            media_type::TAR | media_type::ZIP => "source",
-            media_type::MARKDOWN => "readme",
-            _ => "extra",
-        };
-        writeln!(
-            output,
-            "layer\t{kind}\t{}\t{}",
-            d.decoded_digest()?,
-            class(d)
-        )?;
-    }
-    // The guard's own classification: local marks and the catalogue included.
-    let marks = super::registry::guard_marks(store, &image.manifest, catalogue())?;
-    let closure = guard::closure(&image.manifest, &marks);
-    writeln!(
-        output,
-        "push\t{}",
-        match guard::reach(&closure) {
-            guard::Reach::UserSupplied => {
-                "private registries outside unemu/ only: user-supplied layers"
-            }
-            guard::Reach::CopyleftWithoutSource => {
-                "private registries outside unemu/ only: copyleft ROM without its source archive"
-            }
-            guard::Reach::Anywhere => "any configured registry, including unemu/",
-        }
-    )?;
-    Ok(())
+    edit(&store, command, output, catalogue())
 }
 
 fn edit(
@@ -466,20 +319,6 @@ fn edit(
     Ok(())
 }
 
-/// The `ls` facets column keeps the fields it was introduced with; the summary's
-/// descriptive fields, ROM bindings and extras belong to `show`.
-struct Listed<'a>(&'a image_store::summary::FirmwareSummary);
-impl std::fmt::Debug for Listed<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FirmwareSummary")
-            .field("roles", &self.0.roles)
-            .field("boards", &self.0.boards)
-            .field("machine_classes", &self.0.machine_classes)
-            .field("catalogue_ids", &self.0.catalogue_ids)
-            .field("hashes", &self.0.hashes)
-            .finish()
-    }
-}
 fn import(
     command: FirmwareCommand,
     output: &mut impl Write,
@@ -629,6 +468,8 @@ fn import(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image_store::firmware::Validator;
+    use pc_image::firmware::PcFirmwareRules;
     use std::path::Path;
     fn entry(id: &'static str, byte: u8) -> assembly::FirmwareEntry {
         let hash = Box::leak(
@@ -847,14 +688,19 @@ mod tests {
         let store = Store::open(root.join("store")).unwrap();
         let scan = firmware_import::scan(std::slice::from_ref(&file), &cat).unwrap();
         let package = firmware_import::publish(&store, &scan.candidates[0], &[], &cat).unwrap();
-        let mut listing = command(store.root(), &file);
-        listing.action = "ls".into();
+        // The neutral listing, through the PC platform's validators.
+        let listing = crate::cli_core::image::firmware::FirmwareCommand::List {
+            store: Some(store.root().to_owned()),
+        };
         let mut out = Vec::new();
-        execute(
-            listing,
-            &mut out,
-            &crate::command::FirmwareSources::default(),
-        )
+        crate::cli_pc::with_platform(|pc| {
+            crate::cli_core::image::firmware::execute(
+                listing,
+                &mut out,
+                &HostSources::default(),
+                &[pc],
+            )
+        })
         .unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),

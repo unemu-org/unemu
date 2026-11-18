@@ -19,7 +19,7 @@
   },
   {
     "name": "cli-only change runs the command line alone, with its front-end goldens by name",
-    "changed": ["crates/cli/src/image.rs"],
+    "changed": ["crates/cli/src/cli_core/image.rs"],
     "expect": {
       "mode": "crates", "seeds": ["cli"], "affected": ["cli"], "tier": "fast",
       "targeted": [
@@ -60,6 +60,22 @@
     "expect": {
       "mode": "crates", "seeds": ["cli"], "affected": ["cli"], "tier": "goldens",
       "golden_reasons": ["crates/cli/src/command.rs: machine runner the goldens drive"]
+    }
+  },
+  {
+    "name": "a PC command module of the command line selects the goldens",
+    "changed": ["crates/cli/src/cli_pc/run.rs"],
+    "expect": {
+      "mode": "crates", "seeds": ["cli"], "affected": ["cli"], "tier": "goldens",
+      "golden_reasons": ["crates/cli/src/cli_pc/run.rs: machine runner the goldens drive"]
+    }
+  },
+  {
+    "name": "the neutral command line's dispatch selects the goldens",
+    "changed": ["crates/cli/src/cli_core/mod.rs"],
+    "expect": {
+      "mode": "crates", "seeds": ["cli"], "affected": ["cli"], "tier": "goldens",
+      "golden_reasons": ["crates/cli/src/cli_core/mod.rs: machine runner the goldens drive"]
     }
   },
   {

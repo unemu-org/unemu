@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Opt-in local image commands; machine-images §§2–3, §5.1 and §8.
+//! The image commands that need no emulator; machine-images §§2–3, §5.1 and
+//! §8: `image ls`, `sweep`, `compress`, `image workspace ls` and `discard`,
+//! and through the submodules `image media ls` and `show`, `image firmware
+//! ls` and `show`, and the registry commands. The other `image` words are a
+//! platform's; [`parse`] leaves them to the platforms. The helpers the
+//! platforms' image commands share with these (the `--min-app-version`
+//! value, the listing columns of a minimum release, the refusal of a
+//! machine's workspace) live here too.
 
-mod firmware;
-mod machine;
-mod media;
-mod registry;
-mod template;
+pub mod firmware;
+pub mod media;
+pub mod registry;
 
-pub use registry::{push_plan, registry_client, registry_probe_client, with_image_providers};
-pub use template::build as build_templates;
-
+use super::{CliPlatform, HostSources, Io};
+use image_registry::guard;
+use image_store::{Manifest, Store};
 use std::{ffi::OsString, io::Write, path::PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -19,13 +24,6 @@ pub enum ImageCommand {
         source: String,
         tag: String,
     },
-    Run {
-        store: PathBuf,
-        tag: String,
-        workspace: String,
-        max_steps: u64,
-        fresh: bool,
-    },
     Workspaces {
         store: PathBuf,
     },
@@ -34,28 +32,9 @@ pub enum ImageCommand {
         workspace: String,
         yes: bool,
     },
-    Abandon {
-        store: PathBuf,
-        workspace: String,
-    },
-    Publish {
-        store: PathBuf,
-        workspace: String,
-        tag: String,
-        flatten: bool,
-    },
     Media(media::MediaCommand),
-    Machine(machine::MachineCommand),
     Firmware(firmware::FirmwareCommand),
     Registry(registry::RegistryCommand),
-    Template(template::TemplateCommand),
-    Import {
-        machine: PathBuf,
-        store: PathBuf,
-        tag: String,
-        create: bool,
-        options: pc_image::ImportOptions,
-    },
     List {
         store: PathBuf,
     },
@@ -63,60 +42,68 @@ pub enum ImageCommand {
         store: PathBuf,
     },
 }
-pub fn parse(args: &[OsString]) -> Result<ImageCommand, &'static str> {
+
+/// Parse the words after `image`: `Ok(None)` when they are a platform's.
+pub fn parse(args: &[OsString]) -> Result<Option<ImageCommand>, &'static str> {
     if args
         .first()
         .is_some_and(|s| matches!(s.to_str(), Some("run" | "workspace" | "publish")))
     {
-        return parse_workspace(args);
+        let platform = matches!(args[0].to_str(), Some("run" | "publish"))
+            || (args[0] == "workspace" && args.get(1).is_some_and(|a| a == "abandon-publication"));
+        if platform {
+            return Ok(None);
+        }
+        let words = parse_workspace(args)?;
+        return Ok(match (words.action, words.sub) {
+            ("workspace", Some("ls")) => Some(ImageCommand::Workspaces { store: words.store }),
+            ("workspace", Some("discard")) => Some(ImageCommand::Discard {
+                store: words.store,
+                workspace: words.workspace.ok_or("workspace required")?,
+                yes: words.yes,
+            }),
+            _ => return Err("invalid image command"),
+        });
     }
     if args.first().is_some_and(|a| a == "firmware") {
-        return firmware::parse(&args[1..]).map(ImageCommand::Firmware);
+        return firmware::parse(&args[1..]).map(|c| c.map(ImageCommand::Firmware));
     }
     if args.first().is_some_and(|a| a == "media") {
-        return media::parse(&args[1..]).map(ImageCommand::Media);
+        return media::parse(&args[1..]).map(|c| c.map(ImageCommand::Media));
     }
-    if args.first().is_some_and(|a| a == "machine") {
-        return machine::parse(&args[1..]).map(ImageCommand::Machine);
-    }
-    if args.first().is_some_and(|a| a == "template") {
-        return template::parse(&args[1..]).map(ImageCommand::Template);
+    if args
+        .first()
+        .is_some_and(|a| a == "machine" || a == "template")
+    {
+        return Ok(None);
     }
     if let Some(action @ ("push" | "pull" | "remote" | "login" | "registry")) =
         args.first().and_then(|a| a.to_str())
     {
-        return registry::parse(action, &args[1..]).map(ImageCommand::Registry);
+        return registry::parse(action, &args[1..]).map(|c| Some(ImageCommand::Registry(c)));
     }
     let action = args
         .first()
         .and_then(|a| a.to_str())
         .ok_or("expected image import, compress, ls or sweep")?;
-    let (machine, start) = match action {
-        "import" | "compress" => (
-            Some(PathBuf::from(
+    let (source, start) = match action {
+        "import" => return Ok(None),
+        "compress" => (
+            Some(
                 args.get(1)
                     .filter(|s| !s.is_empty() && !s.as_encoded_bytes().starts_with(b"--"))
                     .ok_or("image import requires a machine file")?,
-            )),
+            ),
             2,
         ),
         "ls" | "sweep" => (None, 1),
         _ => return Err("expected image import, compress, ls or sweep"),
     };
-    let (mut store, mut tag, mut create) = (None, None, false);
-    let mut options = pc_image::ImportOptions::default();
+    let (mut store, mut tag) = (None, None);
     let mut args = args[start..].iter();
     while let Some(option) = args.next() {
-        if option == "--no-compress" && action == "import" && !options.no_compress {
-            options.no_compress = true;
-            continue;
-        }
         if option == "--create" {
-            if action != "import" || create {
-                return Err("--create requires image import and is accepted once");
-            }
-            create = true;
-            continue;
+            return Err("--create requires image import and is accepted once");
         }
         let value = args
             .next()
@@ -124,151 +111,39 @@ pub fn parse(args: &[OsString]) -> Result<ImageCommand, &'static str> {
             .ok_or("missing image option value")?;
         match option.to_str() {
             Some("--store") if store.is_none() => store = Some(PathBuf::from(value)),
-            Some("--tag") if matches!(action, "import" | "compress") && tag.is_none() => {
+            Some("--tag") if action == "compress" && tag.is_none() => {
                 tag = Some(value.to_str().ok_or("invalid image tag")?.to_owned())
-            }
-            Some("--rom-dir") if action == "import" => options.rom_dirs.push(PathBuf::from(value)),
-            Some("--min-app-version")
-                if action == "import" && options.min_app_version.is_none() =>
-            {
-                options.min_app_version = Some(min_app_version(value)?)
-            }
-            Some("--recover") if action == "import" => {
-                let (id, choice) = value
-                    .to_str()
-                    .and_then(|s| s.split_once('='))
-                    .ok_or("recover expects MEDIUM=tip or MEDIUM=generation:N")?;
-                if id.is_empty()
-                    || id.len() > 32
-                    || !id
-                        .bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-                {
-                    return Err("invalid recovery medium id");
-                }
-                let choice = if choice == "tip" {
-                    pc_image::RecoveryChoice::Recover
-                } else {
-                    let n = choice
-                        .strip_prefix("generation:")
-                        .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
-                        .and_then(|s| s.parse().ok())
-                        .ok_or("recover expects MEDIUM=tip or MEDIUM=generation:N")?;
-                    pc_image::RecoveryChoice::Generation(n)
-                };
-                if options.recovery.insert(id.into(), choice).is_some() {
-                    return Err("duplicate recovery medium");
-                }
             }
             _ => return Err("unknown or duplicate image option"),
         }
     }
     let store = store.ok_or("image commands require --store DIR")?;
-    if action == "compress" {
-        return Ok(ImageCommand::Compress {
+    Ok(Some(match source {
+        Some(source) => ImageCommand::Compress {
             store,
-            source: machine
-                .ok_or("source tag required")?
-                .to_string_lossy()
-                .into_owned(),
+            source: source.to_string_lossy().into_owned(),
             tag: tag.ok_or("image compress requires --tag NAME:TAG")?,
-        });
-    }
-    if action == "sweep" {
-        return Ok(ImageCommand::Sweep { store });
-    }
-    match machine {
-        Some(machine) => Ok(ImageCommand::Import {
-            machine,
-            store,
-            tag: tag.ok_or("image import requires --tag NAME:TAG")?,
-            create,
-            options,
-        }),
-        None => Ok(ImageCommand::List { store }),
-    }
+        },
+        None if action == "sweep" => ImageCommand::Sweep { store },
+        None => ImageCommand::List { store },
+    }))
 }
-/// Host callers explicitly supply the default firmware store and persistent ROM
-/// index; library callers and tests can disable both.
-pub fn execute_with_firmware_sources(
+
+pub fn execute(
     command: ImageCommand,
-    output: &mut impl Write,
-    errors: &mut impl Write,
-    firmware: &crate::command::FirmwareSources,
+    io: &mut Io<'_>,
+    host: &HostSources,
+    platforms: &[&dyn CliPlatform],
 ) -> anyhow::Result<u8> {
+    let output = &mut io.output;
     match command {
         ImageCommand::Compress { store, source, tag } => {
-            use image_store::BlobSource;
-            let store = image_store::Store::open_existing(store)?;
-            let descriptor = store.tag_descriptor(&source)?;
-            let manifest = image_store::Manifest::decode_for_summary(
-                &store.read_verified(&descriptor, image_store::MAX_SMALL_BLOB)?,
-            )?;
-            let result = match manifest.artifact_type() {
-                image_store::media_type::MEDIA_SET => store.compress_image(
-                    &source,
-                    &tag,
-                    &image_store::media_set::Validator(&pc_image::media_set::PcMediaFormats),
-                )?,
-                // Packages from older stores keep raw ROMs until compressed.
-                image_store::media_type::FIRMWARE => store.compress_image(
-                    &source,
-                    &tag,
-                    &image_store::firmware::Validator(&pc_image::firmware::PcFirmwareRules(
-                        pc_image::firmware::catalogue(),
-                    )),
-                )?,
-                _ => pc_image::compress_image(&store, &source, &tag)?,
-            };
+            let store = Store::open_existing(store)?;
+            let result = super::platform_of(platforms)?.compress(&store, &source, &tag)?;
             writeln!(output, "{tag}\t{}", result.digest)?;
         }
-
-        ImageCommand::Run {
-            store,
-            tag,
-            workspace,
-            max_steps,
-            fresh,
-        } => {
-            let store = image_store::Store::open_existing(store)?;
-            if store.read_machines()?.get(&workspace).is_some() {
-                // A machine's workspace starts as the machine does: with its
-                // settings, pending inserts and last run.
-                if fresh {
-                    anyhow::bail!("--new requires a fresh workspace name");
-                }
-                let pinned = pc_image::machine::pinned_image(&store, &workspace)?;
-                match store.tag_descriptor(&tag) {
-                    Ok(requested) if requested.digest != pinned.digest => anyhow::bail!(
-                        "workspace pins {}; requested tag points to {}",
-                        pinned.digest,
-                        requested.digest
-                    ),
-                    Ok(_) | Err(image_store::Error::TagNotFound(_)) => (),
-                    Err(error) => return Err(error.into()),
-                }
-                let owner = pc_image::machine::own(&store, &workspace)?;
-                machine::run_owned(&owner, max_steps, "workspace", output, errors)?;
-                return Ok(0);
-            }
-            let owner = store.workspace(&workspace)?;
-            let prepared = pc_image::workspace::prepare_start(&owner, &tag, fresh)?;
-            writeln!(output, "pinned-image:{}", prepared.image)?;
-            let mut machine = assembly::assemble_with_verified_bases(
-                &prepared.machine,
-                &assembly::ObservationPolicy::default(),
-                assembly::AssemblyOptions::default(),
-                &prepared.bases,
-            )?;
-            let result = machine.run_session(&assembly::RunPolicy::natural(
-                Some(max_steps),
-                Some(1_000_000),
-            ));
-            crate::finish_persistence(&mut machine, errors)?;
-            writeln!(output, "workspace:{workspace}\t{:?}", result?)?;
-        }
         ImageCommand::Workspaces { store } => {
-            let store = image_store::Store::open_existing(store)?;
+            let store = Store::open_existing(store)?;
             for name in store.list_workspaces()? {
                 writeln!(output, "{name}")?;
             }
@@ -278,7 +153,7 @@ pub fn execute_with_firmware_sources(
             workspace,
             yes,
         } => {
-            let store = image_store::Store::open_existing(store)?;
+            let store = Store::open_existing(store)?;
             // A machine's changes include its settings and pending inserts,
             // which only the machine command drops with its journals.
             refuse_machine(&store, &workspace, "image machine reset ID --yes")?;
@@ -291,60 +166,9 @@ pub fn execute_with_firmware_sources(
             }
             owner.discard()?;
         }
-        ImageCommand::Abandon { store, workspace } => {
-            let store = image_store::Store::open_existing(store)?;
-            let owner = store.open_workspace(&workspace)?;
-            pc_image::workspace::abandon_publication(&owner)?;
-        }
-        ImageCommand::Publish {
-            store,
-            workspace,
-            tag,
-            flatten,
-        } => {
-            let store = image_store::Store::open_existing(store)?;
-            // A machine's settings belong in its new image, and its record
-            // follows the publication; only the machine command does both.
-            refuse_machine(&store, &workspace, "image machine commit ID --tag NAME:TAG")?;
-            let owner = store.open_workspace(&workspace)?;
-            let manifest =
-                pc_image::workspace::publish_with_options(&owner, &tag, None, flatten, |_| Ok(()))?;
-            writeln!(output, "{tag}\t{}", manifest.digest)?;
-        }
-        ImageCommand::Media(command) => media::execute(command, output)?,
-        ImageCommand::Machine(command) => machine::execute(command, output, errors)?,
-        ImageCommand::Firmware(command) => firmware::execute(command, output, firmware)?,
-        ImageCommand::Registry(command) => registry::execute(command, output)?,
-        ImageCommand::Template(command) => template::execute(command, output)?,
-        ImageCommand::Import {
-            machine,
-            store,
-            tag,
-            create,
-            options,
-        } => {
-            let store = if create {
-                image_store::Store::open(store)?
-            } else {
-                image_store::Store::open_existing(store)?
-            };
-            let record = pc_image::import_machine(&store, &machine, &tag, &options)?;
-            for warning in record.warnings {
-                writeln!(errors, "warning: {warning}")?;
-            }
-            writeln!(output, "{tag}\t{}", record.manifest.digest)?;
-            for g in record.generations {
-                write!(output, "{}\tpolicy:{}", g.medium, g.policy.as_str())?;
-                if let Some(generation) = g.generation {
-                    write!(
-                        output,
-                        "\tgeneration:{generation}\trecovered:{}",
-                        g.recovered
-                    )?;
-                }
-                writeln!(output)?;
-            }
-        }
+        ImageCommand::Media(command) => media::execute(command, output, platforms)?,
+        ImageCommand::Firmware(command) => firmware::execute(command, output, host, platforms)?,
+        ImageCommand::Registry(command) => registry::execute(command, output, platforms)?,
         ImageCommand::List { store } => {
             let store = image_store::Store::open_existing(store)?;
             let mut after = None;
@@ -402,8 +226,12 @@ pub fn execute_with_firmware_sources(
             writeln!(output, "materialized:{}", store.materialized_bytes()?)?;
         }
         ImageCommand::Sweep { store } => {
-            let store = image_store::Store::open_existing(store)?;
-            let sweep = pc_image::workspace::sweep_materialized(&store)?;
+            let store = Store::open_existing(store)?;
+            let mut pinned = Vec::new();
+            for platform in platforms {
+                pinned.extend(platform.pinned(&store)?);
+            }
+            let sweep = store.sweep_materialized(&pinned)?;
             writeln!(
                 output,
                 "removed:{}\tbytes:{}\tkept:{}",
@@ -417,7 +245,7 @@ pub fn execute_with_firmware_sources(
 /// The value of `--min-app-version`: a release `MAJOR.MINOR.PATCH`, from
 /// the first release up to this one, refused before anything is read or
 /// copied.
-fn min_app_version(value: &OsString) -> Result<image_store::compat::AppVersion, &'static str> {
+pub fn min_app_version(value: &OsString) -> Result<image_store::compat::AppVersion, &'static str> {
     use image_store::compat::{level, AppVersion, BASELINE};
     let version: AppVersion = value
         .to_str()
@@ -444,7 +272,7 @@ fn min_app_version(value: &OsString) -> Result<image_store::compat::AppVersion, 
 /// read from its manifest alone: `min-app-version:X.Y.Z` when it declares
 /// one, then `Needs unemupc X.Y.Z or newer` when this build does not read it.
 /// Empty for an image without the annotation.
-fn requirement_columns(store: &image_store::Store, image: &image_store::Descriptor) -> String {
+pub fn requirement_columns(store: &image_store::Store, image: &image_store::Descriptor) -> String {
     use image_store::{compat::Requirement, BlobSource};
     let Ok(bytes) = store.read_verified(image, image_store::MAX_SMALL_BLOB) else {
         return String::new();
@@ -468,7 +296,7 @@ fn requirement_columns(store: &image_store::Store, image: &image_store::Descript
 }
 
 /// The `min-app-version` line of a `show` command, when the image declares one.
-fn write_min_app_version(
+pub fn write_min_app_version(
     output: &mut impl Write,
     manifest: &image_store::Manifest,
 ) -> std::io::Result<()> {
@@ -482,7 +310,7 @@ fn write_min_app_version(
 
 /// Refuse a workspace command on a machine's workspace, naming the machine
 /// command that does it with the machine's own rules.
-fn refuse_machine(
+pub fn refuse_machine(
     store: &image_store::Store,
     workspace: &str,
     instead: &str,
@@ -496,7 +324,55 @@ fn refuse_machine(
     Ok(())
 }
 
-fn parse_workspace(args: &[OsString]) -> Result<ImageCommand, &'static str> {
+/// Every local mark of `store`, plus a restriction for each blob of
+/// `manifest` a platform knows must not be redistributed: the push guard's
+/// own classification, which `show` reports beside a set or package.
+pub fn guard_marks(
+    store: &Store,
+    manifest: &Manifest,
+    platforms: &[&dyn CliPlatform],
+) -> image_registry::Result<guard::LocalMarks> {
+    let mut marks = guard::LocalMarks::scan(store)?;
+    for digest in restricted(store, manifest, platforms)? {
+        marks.restrict_catalogue(digest);
+    }
+    Ok(marks)
+}
+
+/// The blobs of `manifest` that some platform knows must not be
+/// redistributed ([`CliPlatform::restricted`]), in platform order: what
+/// `show` and `push` add to the store's own marks.
+pub fn restricted(
+    store: &Store,
+    manifest: &Manifest,
+    platforms: &[&dyn CliPlatform],
+) -> image_store::Result<Vec<image_store::Digest>> {
+    let mut digests = Vec::new();
+    for platform in platforms {
+        digests.extend(platform.restricted(store, manifest)?);
+    }
+    Ok(digests)
+}
+
+/// The words of `image run`, `image workspace` and `image publish`, which
+/// share their options: the neutral workspace commands and a platform's run
+/// and publication commands read them the same way.
+#[derive(Debug)]
+pub struct WorkspaceWords<'a> {
+    pub action: &'a str,
+    pub sub: Option<&'a str>,
+    pub tag: Option<String>,
+    pub workspace: Option<String>,
+    pub store: PathBuf,
+    pub max_steps: Option<u64>,
+    pub fresh: bool,
+    pub flatten: bool,
+    pub yes: bool,
+}
+
+/// Read the words of a workspace command; `args` starts with `run`,
+/// `workspace` or `publish`.
+pub fn parse_workspace(args: &[OsString]) -> Result<WorkspaceWords<'_>, &'static str> {
     let action = args[0].to_str().ok_or("invalid image action")?;
     let mut index = 1;
     let mut tag = None;
@@ -581,31 +457,76 @@ fn parse_workspace(args: &[OsString]) -> Result<ImageCommand, &'static str> {
             _ => return Err("unknown or duplicate image option"),
         }
     }
-    let store = store.ok_or("image commands require --store DIR")?;
-    match (action, sub) {
-        ("workspace", Some("ls")) => Ok(ImageCommand::Workspaces { store }),
-        ("workspace", Some("discard")) => Ok(ImageCommand::Discard {
-            store,
-            workspace: workspace.ok_or("workspace required")?,
-            yes,
-        }),
-        ("workspace", Some("abandon-publication")) => Ok(ImageCommand::Abandon {
-            store,
-            workspace: workspace.ok_or("workspace required")?,
-        }),
-        ("run", _) => Ok(ImageCommand::Run {
-            store,
-            tag: tag.ok_or("tag required")?,
-            workspace: workspace.ok_or("--workspace required")?,
-            max_steps: max_steps.unwrap_or(1_000_000),
-            fresh,
-        }),
-        ("publish", _) => Ok(ImageCommand::Publish {
-            store,
-            tag: tag.ok_or("--tag required")?,
-            workspace: workspace.ok_or("--from-workspace required")?,
-            flatten,
-        }),
-        _ => Err("invalid image command"),
+    Ok(WorkspaceWords {
+        action,
+        sub,
+        tag,
+        workspace,
+        store: store.ok_or("image commands require --store DIR")?,
+        max_steps,
+        fresh,
+        flatten,
+        yes,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli_core::tests::Toy;
+    use image_store::{license, media_type, Descriptor, Digest};
+
+    /// The push guard of `show` and `push` adds what each platform knows
+    /// must not be redistributed to the store's own marks.
+    #[test]
+    fn the_guard_marks_add_each_platforms_restrictions() {
+        let dir = std::env::temp_dir().join(format!("cli-core-guard-marks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir).unwrap();
+        let rom = Digest::of(b"rom");
+        // A ROM the image itself marks open under MIT.
+        let mut layer = Descriptor::new(media_type::FIRMWARE, rom.clone(), 3);
+        layer.annotations.extend([
+            (license::REDISTRIBUTION.into(), license::OPEN.into()),
+            (license::LICENSE.into(), "MIT".into()),
+        ]);
+        let manifest = Manifest::new(
+            "toy",
+            Descriptor::new(media_type::CONFIG, Digest::of(b"config"), 6),
+            vec![
+                layer,
+                Descriptor::new(media_type::METADATA, Digest::of(b"{}"), 2),
+            ],
+        )
+        .unwrap();
+        let source = |platforms: &[&dyn CliPlatform]| {
+            let marks = guard_marks(&store, &manifest, platforms).unwrap();
+            let entry = guard::closure(&manifest, &marks)
+                .into_iter()
+                .find(|entry| entry.descriptor.digest == rom)
+                .unwrap();
+            (entry.effective, entry.source)
+        };
+        let restricting = Toy {
+            restricted: vec![rom.clone()],
+        };
+        let open = (guard::Redistribution::Open, guard::MarkSource::ThisImage);
+        assert_eq!(
+            source(&[&restricting]),
+            (
+                guard::Redistribution::UserSupplied,
+                guard::MarkSource::Catalogue
+            )
+        );
+        assert_eq!(
+            source(&[&Toy::default(), &restricting]),
+            (
+                guard::Redistribution::UserSupplied,
+                guard::MarkSource::Catalogue
+            )
+        );
+        assert_eq!(source(&[&Toy::default()]), open);
+        assert_eq!(source(&[]), open);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

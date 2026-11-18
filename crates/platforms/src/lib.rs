@@ -6,7 +6,7 @@
 //! providers and firmware catalogue live in `pc-image`.
 
 use image_registry::{push, Reference, RegistryEntry};
-use image_store::{firmware, media_set, ConfigValidator, Store};
+use image_store::{firmware, media_set, ConfigValidator, Digest, Manifest, Store};
 use pc_image::{
     compat::WithPcRows,
     firmware::{catalogue, PcFirmwareRules},
@@ -31,11 +31,12 @@ pub fn with_image_providers<T>(job: impl FnOnce(&[&dyn ConfigValidator]) -> T) -
     ])
 }
 
-/// The push plan of `local_tag` that the command line and the desktop shell
-/// both use: every local mark, plus a restriction for each blob whose bytes,
-/// stored or decoded, the firmware `catalogue` lists as a proprietary image
-/// or chip ([`push::plan_with_catalogue`]). Binding the platform-neutral plan
-/// to the catalogue here keeps either program from planning a push without it.
+/// The push plan of `local_tag` that the desktop shell uses: every local
+/// mark, plus a restriction for each blob [`restricted`] names
+/// ([`push::plan_with_catalogue`]). Binding the platform-neutral plan to the
+/// catalogue here keeps the desktop from planning a push without it; the
+/// command line plans through its PC platform, which restricts with
+/// [`restricted`] too.
 pub fn push_plan(
     store: &Store,
     local_tag: &str,
@@ -44,8 +45,18 @@ pub fn push_plan(
     catalogue: &[assembly::FirmwareEntry],
 ) -> image_registry::Result<push::PushPlan> {
     push::plan_with_catalogue(store, local_tag, target, entry, |manifest| {
-        pc_image::firmware::restricted(manifest, catalogue)
+        restricted(manifest, catalogue)
     })
+}
+
+/// The blobs of `manifest` whose bytes, stored or decoded, the firmware
+/// `catalogue` lists as a proprietary image or chip: what the push guard of
+/// both programs restricts, whatever the image's own marks say.
+pub fn restricted(
+    manifest: &Manifest,
+    catalogue: &[assembly::FirmwareEntry],
+) -> image_store::Result<Vec<Digest>> {
+    pc_image::firmware::restricted(manifest, catalogue)
 }
 
 /// The program's licence, where the source of this very build is and where

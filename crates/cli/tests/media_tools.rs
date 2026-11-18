@@ -2,7 +2,7 @@
 //! Offline floppy journal contracts from persistent-media.md § Offline commands.
 //! All images are generated; temporary directories live outside the repository.
 
-use cli::command::{parse, run, Command};
+use cli::command::run;
 use media::offline::{Access, JournalTool};
 use media::{
     ClosingReason, Frame, Header, JournalMedia, Record, SinkStatus, FRAME_LEN, HEADER_LEN,
@@ -537,7 +537,10 @@ fn usage_errors_are_two_and_boot_still_runs() {
         assert!(out.is_empty());
         assert!(String::from_utf8(err).unwrap().contains("usage:"));
     }
-    assert_eq!(parse(&["--boot".into()]).unwrap(), Command::Boot);
+    assert_eq!(
+        cli::cli_pc::parse(&["--boot".into()]),
+        Some(Ok(cli::cli_pc::PcCommand::Boot))
+    );
     let (mut out, mut err) = (Vec::new(), Vec::new());
     assert_eq!(run(&["--boot".into()], &mut out, &mut err), 0);
     assert_eq!(out, b".....");
@@ -552,7 +555,7 @@ fn usage_errors_are_two_and_boot_still_runs() {
 fn parser_preserves_non_utf8_paths() {
     use std::os::unix::ffi::OsStringExt;
     let base = OsString::from_vec(vec![b'i', 0xff]);
-    let command = parse(&[
+    let command = cli::cli_core::journal::parse(&[
         "media".into(),
         "verify".into(),
         "--base".into(),
@@ -561,9 +564,6 @@ fn parser_preserves_non_utf8_paths() {
         "j".into(),
     ])
     .unwrap();
-    let Command::Media(command) = command else {
-        panic!("expected media command")
-    };
     assert_eq!(command.base, Path::new(&base));
 }
 

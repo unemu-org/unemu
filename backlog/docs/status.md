@@ -5,6 +5,18 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — The command line's provider seam:** step 4 of the CLI
+  split (design/core-contract.md §7.2, §7.5). Inside the `cli` crate the
+  platform-neutral command line (`cli::cli_core`: the top-level parser,
+  the usage text, the exit codes, the neutral image, registry, recipe and
+  journal commands) reaches a platform only through the `CliPlatform` and
+  `PlatformCommand` traits, and the PC's part (`cli::cli_pc`) owns every
+  PC command and answers the neutral commands' questions: validators,
+  catalogue restrictions, compression, pinned images, the recipe provider
+  and media format names. A source test keeps the neutral modules free of
+  emulator crates, and a pin test holds the usage text and the parse of
+  every documented command line. No behaviour changes: output, exit codes
+  and written files are byte-identical over 319 invocations (MEASURED).
 - **2026-11-18 — Work files merge, and `upcli recipe show`:** a media
   recipe and the work file it names merge into one description record,
   field by field as design/recipes.md §6.16 rules (B5): a single value is

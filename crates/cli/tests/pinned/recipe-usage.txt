@@ -1,0 +1,5 @@
+usage: upcli recipe check FILE|FOLDER...
+       upcli recipe show FILE
+  check: checks recipes and work files; a folder is checked with every *.media.toml, *.firmware.toml, *.machine.toml and *.work.toml below it
+  show: prints a media recipe's title record merged with its work file, with a comment on each value that came from the work file
+  exit 0: no findings; 1: findings, which show prints instead of the record; 2: usage or a file that cannot be read

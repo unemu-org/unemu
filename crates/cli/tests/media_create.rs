@@ -293,11 +293,11 @@ fn malformed_or_unaddressable_requests_fail_before_creating_output() {
 
 #[test]
 fn size_boundaries_defaults_and_options_after_output_are_explicit() {
-    use cli::command::Command;
+    use cli::cli_pc::PcCommand;
     use cli::create::ImageKind;
     for (size, cylinders) in [("1", 3), ("32MiB", 66), ("504MiB", 1024)] {
         let args = ["media", "create", "hd", "--size", size, "out.img"].map(OsString::from);
-        let Command::Create(command) = parse(&args).unwrap() else {
+        let Some(Ok(PcCommand::Create(command))) = cli::cli_pc::parse(&args) else {
             panic!("expected create");
         };
         let ImageKind::HardDisk(geometry) = command.kind else {

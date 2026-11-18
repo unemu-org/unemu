@@ -238,7 +238,9 @@ fn row(store: &image_store::Store, listing: &Listing) -> String {
         line.push_str(&format!("\tproblem:{problem}"));
     }
     // What the machine's image needs, as `image ls` shows it.
-    line.push_str(&super::requirement_columns(store, &m.image));
+    line.push_str(&crate::cli_core::image::requirement_columns(
+        store, &m.image,
+    ));
     line
 }
 
@@ -419,7 +421,7 @@ pub fn run_owned(
         Some(max_steps),
         Some(1_000_000),
     ));
-    crate::finish_persistence(&mut assembled, errors)?;
+    pc_harness::finish_persistence(&mut assembled, errors)?;
     writeln!(output, "{label}:{}\t{:?}", owner.name(), result?)?;
     Ok(())
 }

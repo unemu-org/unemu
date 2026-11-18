@@ -5,8 +5,11 @@
 //! only. `image login` goes through the same accounts functions and credential
 //! store as the desktop shell's Registries page, so a login in one is visible
 //! in the other, and `image registry set` writes the same keys as the page's
-//! Add and Edit dialog.
+//! Add and Edit dialog. Transfers validate with every platform's
+//! validators, and the push guard adds each platform's restrictions to the
+//! local marks ([`super::super::CliPlatform::restricted`]).
 
+use super::super::CliPlatform;
 use anyhow::Context;
 pub use image_registry::accounts::{registry_client, registry_probe_client};
 use image_registry::{
@@ -16,9 +19,7 @@ use image_registry::{
     credentials::{EnvCredentials, HOST_ENV, PASSWORD_ENV, USER_ENV},
     pull, push, Client, Reference,
 };
-use image_store::{ConfigValidator, Store};
-use pc_image::firmware::catalogue;
-pub use platforms::{push_plan, with_image_providers};
+use image_store::Store;
 use std::{
     ffi::OsString,
     io::Write,
@@ -193,22 +194,6 @@ fn load(options: &Common) -> anyhow::Result<(RegistryConfig, String)> {
     Ok((config, host))
 }
 
-/// Every local mark plus the firmware catalogue's: a blob whose bytes, stored
-/// or decoded, the catalogue lists as a proprietary image or chip stays
-/// user-supplied whatever the image's own marks say, so a pulled foreign
-/// package that marks such a ROM open still cannot leave a private registry.
-pub(super) fn guard_marks(
-    store: &Store,
-    manifest: &image_store::Manifest,
-    catalogue: &[assembly::FirmwareEntry],
-) -> image_registry::Result<image_registry::guard::LocalMarks> {
-    let mut marks = image_registry::guard::LocalMarks::scan(store)?;
-    for digest in pc_image::firmware::restricted(manifest, catalogue)? {
-        marks.restrict_catalogue(digest);
-    }
-    Ok(marks)
-}
-
 fn client(
     config: &RegistryConfig,
     host: &str,
@@ -231,15 +216,12 @@ fn conflicting_registry(options: &Common, reference: &Reference) -> anyhow::Resu
     Ok(())
 }
 
-pub fn execute(command: RegistryCommand, output: &mut impl Write) -> anyhow::Result<()> {
-    with_image_providers(|providers| execute_with(command, output, providers))
-}
-
-fn execute_with(
+pub fn execute(
     command: RegistryCommand,
     output: &mut impl Write,
-    providers: &[&dyn ConfigValidator],
+    platforms: &[&dyn CliPlatform],
 ) -> anyhow::Result<()> {
+    let providers = &super::super::validators(platforms)[..];
     let secrets = credential_store::detect();
     match command {
         RegistryCommand::Push {
@@ -257,7 +239,10 @@ fn execute_with(
                 conflicting_registry(&options, &target)?;
             }
             let entry = config.entry(&target.host);
-            let plan = push_plan(&store, &local_tag, target, entry.as_ref(), catalogue())?;
+            let plan =
+                push::plan_with_catalogue(&store, &local_tag, target, entry.as_ref(), |m| {
+                    super::restricted(&store, m, platforms)
+                })?;
             if dry_run {
                 writeln!(output, "target:{}", plan.target())?;
                 writeln!(output, "image:{}", plan.image().digest)?;
@@ -628,11 +613,124 @@ mod tests {
     use super::*;
     use image_registry::{
         credential_store::{SessionStore, StoreKind},
-        credentials::Anonymous,
         test_support::{MockRegistry, Policy},
     };
-    use image_store::firmware;
-    use pc_image::firmware::PcFirmwareRules;
+
+    /// A store holding `toy/rom:1`, a toy machine image every blob of which
+    /// it marks open, among them one ROM; returns the ROM's digest.
+    fn open_toy_image(store: &Store) -> image_store::Digest {
+        use image_store::{license, media_type, BlobSource, ConfigValidator, Descriptor, Manifest};
+        struct ToyImages;
+        impl ConfigValidator for ToyImages {
+            fn platform(&self) -> &str {
+                "toy"
+            }
+            fn validate(
+                &self,
+                _: &toml::Table,
+                descriptors: &[Descriptor],
+                _: &dyn BlobSource,
+            ) -> image_store::Result<Vec<image_store::Digest>> {
+                Ok(descriptors
+                    .iter()
+                    .filter(|d| d.media_type == media_type::FIRMWARE)
+                    .map(|d| d.digest.clone())
+                    .collect())
+            }
+        }
+        let open = |media: &str, bytes: &[u8]| {
+            let blob = store.import(bytes, None).unwrap();
+            let mut descriptor = Descriptor::new(media, blob.digest, blob.size);
+            descriptor.annotations.extend([
+                (license::REDISTRIBUTION.into(), license::OPEN.into()),
+                (license::LICENSE.into(), "MIT".into()),
+            ]);
+            descriptor
+        };
+        let config = open(media_type::CONFIG, b"schema = 1\nplatform = \"toy\"\n");
+        let rom = open(media_type::FIRMWARE, b"synthetic rom");
+        let metadata = image_store::metadata::Metadata::new("toy")
+            .encode(&[])
+            .unwrap();
+        let metadata = open(media_type::METADATA, &metadata);
+        let manifest = Manifest::new("toy", config, vec![rom.clone(), metadata]).unwrap();
+        let image = store.import_manifest(&manifest).unwrap();
+        store
+            .update_tag("toy/rom:1", &image, None, &ToyImages)
+            .unwrap();
+        rom.digest
+    }
+
+    /// The push guard of `image push` adds each platform's restrictions to
+    /// the store's marks: a ROM the image marks open but a platform restricts
+    /// is user-supplied by the catalogue, so a dry run to a private registry
+    /// lists it so and one to the official namespace is refused. Dry runs
+    /// plan only; nothing is sent.
+    #[test]
+    fn a_push_keeps_what_a_platform_restricts_user_supplied() {
+        use crate::cli_core::tests::Toy;
+        let temp =
+            Dir(std::env::temp_dir().join(format!("cli-push-restricted-{}", std::process::id())));
+        let _ = std::fs::remove_dir_all(&temp.0);
+        let store = Store::open(temp.0.join("store")).unwrap();
+        let rom = open_toy_image(&store);
+        let config = temp.0.join("preferences.toml");
+        std::fs::write(
+            &config,
+            "[[registries]]\nhost = \"registry.example\"\nprivate = true\n",
+        )
+        .unwrap();
+        let push = |target: &str, platforms: &[&dyn CliPlatform]| {
+            let args: Vec<OsString> = [
+                "toy/rom:1".into(),
+                target.into(),
+                "--store".into(),
+                temp.0.join("store").into_os_string(),
+                "--dry-run".into(),
+                "--config".into(),
+                config.clone().into_os_string(),
+            ]
+            .into();
+            let mut output = Vec::new();
+            let result = execute(parse("push", &args).unwrap(), &mut output, platforms);
+            (result.is_ok(), String::from_utf8(output).unwrap())
+        };
+        let rom_line = |output: &str| {
+            output
+                .lines()
+                .find(|line| line.contains(&rom.to_string()))
+                .unwrap()
+                .to_owned()
+        };
+        let restricting = Toy {
+            restricted: vec![rom.clone()],
+        };
+        let (ok, output) = push("registry.example/team/rom:1", &[&restricting]);
+        assert!(ok, "{output}");
+        assert!(
+            rom_line(&output).ends_with("\tuser-supplied\tfirmware catalogue"),
+            "{output}"
+        );
+        assert!(output.ends_with("guard:allowed\n"), "{output}");
+        let (ok, output) = push("registry.example/unemu/rom:1", &[&restricting]);
+        assert!(!ok);
+        assert!(output.ends_with("guard:refused\n"), "{output}");
+        // Every platform is asked, not the first alone.
+        let (ok, output) = push(
+            "registry.example/unemu/rom:1",
+            &[&Toy::default(), &restricting],
+        );
+        assert!(!ok);
+        assert!(output.ends_with("guard:refused\n"), "{output}");
+        // Without the restriction the same image may go anywhere.
+        let (ok, output) = push("registry.example/unemu/rom:1", &[&Toy::default()]);
+        assert!(ok, "{output}");
+        assert!(
+            rom_line(&output).ends_with("\topen\tthis image"),
+            "{output}"
+        );
+        assert!(output.ends_with("guard:allowed\n"), "{output}");
+    }
 
     const SECRET: &str = "synthetic-secret";
 
@@ -851,113 +949,5 @@ mod tests {
             "a session-only store points to the environment variables"
         );
         assert!(!path.exists());
-    }
-
-    /// A firmware package made where the catalogue does not know its ROM,
-    /// marking it open under MIT, pushed to a registry and pulled back into
-    /// another store. There the catalogue lists the same bytes as proprietary,
-    /// so the guard keeps the pulled copy private whatever its marks say.
-    #[test]
-    fn a_pulled_package_marking_proprietary_firmware_open_cannot_leave() {
-        let temp = assembly::test_support::TempDir::new("pulled-foreign-firmware");
-        let bytes = vec![0x6b; 8192];
-        let rom = temp.path().join("rom.bin");
-        std::fs::write(&rom, &bytes).unwrap();
-        let foreign = Store::open(temp.path().join("foreign")).unwrap();
-        let candidate =
-            pc_image::firmware_import::unlisted(&rom, "foreign-rom", "option-rom", &[]).unwrap();
-        let statement = pc_image::firmware_import::Statement {
-            open: true,
-            license: Some("MIT".into()),
-            ..Default::default()
-        };
-        pc_image::firmware_import::publish_with(&foreign, &candidate, &[], &statement, &[])
-            .unwrap();
-        let rules = PcFirmwareRules(&[]);
-        let validator = firmware::Validator(&rules);
-        let providers: [&dyn ConfigValidator; 1] = [&validator];
-        let registry = MockRegistry::start(Policy {
-            anonymous_read: vec!["*".into()],
-            anonymous_write: vec!["*".into()],
-            ..Policy::default()
-        });
-        let entry = registry.entry(false);
-        let client = Client::new(&entry, Box::new(Anonymous)).unwrap();
-        let reference = Reference::parse(
-            &format!("{}/owner/rom:r1", registry.host()),
-            "unused.example",
-        )
-        .unwrap();
-        let plan = push::plan(
-            &foreign,
-            "private/firmware/ibm-pc/foreign-rom:r1",
-            reference.clone(),
-            Some(&entry),
-        )
-        .unwrap();
-        assert_eq!(plan.verdict(), &Ok(()), "all open where the ROM is unknown");
-        push::push(
-            &foreign,
-            &plan,
-            &providers,
-            &client,
-            &push::PushOptions::default(),
-            &mut |_, _| {},
-        )
-        .unwrap();
-        let local = Store::open(temp.path().join("local")).unwrap();
-        pull::pull(
-            &local,
-            &client,
-            &reference,
-            "pulled/rom:1",
-            &providers,
-            &|_| {},
-        )
-        .unwrap();
-        let catalogue = [assembly::FirmwareEntry {
-            id: "synthetic-vendor-option-rom",
-            kind: assembly::FirmwareKind::OptionRom,
-            sha256: Box::leak(
-                image_store::Digest::of(&bytes)
-                    .hex()
-                    .to_owned()
-                    .into_boxed_str(),
-            ),
-            size: 8192,
-            distribution: assembly::FirmwareDistribution::UserSupplied,
-            ..assembly::KISELEV_XI8088
-        }];
-        let image = local.tag_descriptor("pulled/rom:1").unwrap();
-        let manifest = image_store::Manifest::decode_for_summary(
-            &image_store::BlobSource::read_verified(&local, &image, image_store::MAX_SMALL_BLOB)
-                .unwrap(),
-        )
-        .unwrap();
-        for (target, refusal) in [
-            ("owner/rom:2", "not marked private"),
-            ("unemu/rom:r1", "official namespace"),
-        ] {
-            let target =
-                Reference::parse(&format!("{}/{target}", registry.host()), "unused.example")
-                    .unwrap();
-            let marks = guard_marks(&local, &manifest, &catalogue).unwrap();
-            let plan =
-                push::plan_with_marks(&local, "pulled/rom:1", target, Some(&entry), marks).unwrap();
-            let rom = plan
-                .closure()
-                .iter()
-                .find(|c| c.descriptor.decoded_media_type() == image_store::media_type::FIRMWARE)
-                .unwrap();
-            assert_eq!(rom.mark, image_registry::guard::Redistribution::Open);
-            assert_eq!(rom.source, image_registry::guard::MarkSource::Catalogue);
-            let error = plan.verdict().clone().unwrap_err().to_string();
-            assert!(error.contains(refusal), "{error}");
-        }
-        // Without the catalogue's knowledge the pulled copy reads as open.
-        let marks = guard_marks(&local, &manifest, &[]).unwrap();
-        let plan =
-            push::plan_with_marks(&local, "pulled/rom:1", reference, Some(&entry), marks).unwrap();
-        assert_eq!(plan.verdict(), &Ok(()));
     }
 }

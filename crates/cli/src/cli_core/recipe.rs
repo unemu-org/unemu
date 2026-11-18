@@ -3,8 +3,10 @@
 //! recipe, its work file and whether its lock exists, and no input
 //! (`backlog/docs/design/recipes.md` §6.11 and §6.15). `upcli recipe show`:
 //! a media recipe's description merged with its work file (recipes §6.16),
-//! printed as `upcli image media show` prints a set's title metadata.
+//! printed as `upcli image media show` prints a set's title metadata. The
+//! recipe providers are the platforms' ([`super::CliPlatform::recipes`]).
 
+use super::{CliPlatform, Io};
 use recipe::merge::{Merged, Origin, Sourced};
 use std::ffi::OsString;
 use std::io::Write;
@@ -17,34 +19,56 @@ const USAGE: &str = "usage: upcli recipe check FILE|FOLDER...
   exit 0: no findings; 1: findings, which show prints instead of the record; 2: usage or a file that cannot be read
 ";
 
-/// The platforms whose recipes this build checks.
-fn providers() -> [&'static dyn recipe::provider::Provider; 1] {
-    [&pc_image::recipe::PcRecipes]
+/// A parsed `upcli recipe` command line.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RecipeCommand {
+    Check(Vec<PathBuf>),
+    Show(PathBuf),
+    /// Words `recipe` does not take: its own usage text, exit 2.
+    Usage,
 }
 
-/// Run `upcli recipe ARGS...`; returns the exit code.
-pub(crate) fn run(args: &[OsString], output: &mut impl Write, errors: &mut impl Write) -> u8 {
+/// Parse the words after `recipe`.
+pub fn parse(args: &[OsString]) -> RecipeCommand {
     let operand = |p: &OsString| !p.is_empty() && !p.as_encoded_bytes().starts_with(b"-");
     match args {
         [command, paths @ ..]
             if command == "check" && !paths.is_empty() && paths.iter().all(operand) =>
         {
-            check(paths, output, errors)
+            RecipeCommand::Check(paths.iter().map(PathBuf::from).collect())
         }
         [command, path] if command == "show" && operand(path) => {
-            show(Path::new(path), output, errors)
+            RecipeCommand::Show(PathBuf::from(path))
         }
-        _ => {
-            let _ = errors.write_all(USAGE.as_bytes());
+        _ => RecipeCommand::Usage,
+    }
+}
+
+/// Run a parsed recipe command with every platform's recipe provider;
+/// returns the exit code.
+pub fn execute(command: RecipeCommand, io: &mut Io<'_>, platforms: &[&dyn CliPlatform]) -> u8 {
+    let providers: Vec<&dyn recipe::provider::Provider> = platforms
+        .iter()
+        .filter_map(|platform| platform.recipes())
+        .collect();
+    let providers = recipe::Providers(&providers);
+    match command {
+        RecipeCommand::Check(paths) => check(&paths, providers, &mut io.output, &mut io.errors),
+        RecipeCommand::Show(path) => show(&path, providers, &mut io.output, &mut io.errors),
+        RecipeCommand::Usage => {
+            let _ = io.errors.write_all(USAGE.as_bytes());
             2
         }
     }
 }
 
-fn check(paths: &[OsString], output: &mut impl Write, errors: &mut impl Write) -> u8 {
-    let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
-    let providers = providers();
-    let report = match recipe::check_paths(&paths, recipe::Providers(&providers)) {
+fn check(
+    paths: &[PathBuf],
+    providers: recipe::Providers<'_>,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> u8 {
+    let report = match recipe::check_paths(paths, providers) {
         Ok(report) => report,
         Err(error) => {
             let _ = writeln!(errors, "upcli recipe check: {error}");
@@ -57,7 +81,12 @@ fn check(paths: &[OsString], output: &mut impl Write, errors: &mut impl Write) -
     u8::from(!report.is_clean())
 }
 
-fn show(path: &Path, output: &mut impl Write, errors: &mut impl Write) -> u8 {
+fn show(
+    path: &Path,
+    providers: recipe::Providers<'_>,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> u8 {
     if path.is_dir() {
         let _ = writeln!(
             errors,
@@ -66,8 +95,7 @@ fn show(path: &Path, output: &mut impl Write, errors: &mut impl Write) -> u8 {
         );
         return 2;
     }
-    let providers = providers();
-    let text = match recipe::merge_path(path, recipe::Providers(&providers)) {
+    let text = match recipe::merge_path(path, providers) {
         Ok(recipe::Shown::Merged(merged)) => record(&merged),
         // The check's own report: the findings, then the file's line.
         Ok(recipe::Shown::Refused(report)) => {

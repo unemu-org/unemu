@@ -1395,7 +1395,7 @@ and the `user_rom_` name prefix; no test attribute changes for them:
 | Tier | Runs | Chosen |
 | --- | --- | --- |
 | fast | the affected crates' tests that are not ignored, plus some ignored ones by name (below) | by default |
-| goldens | plus every ignored test except `user_rom_*` | automatically when an emulation crate (`assembly`, `audio`, `bus`, `chipset`, `cpu`, `device`, `devices`, `machine`, `machine-file`, `media`, `testkit`, `video`), the machine runners (`crates/pc-harness/src/`), the command module the front-end goldens drive (`crates/cli/src/command.rs`), the disk builder (`crates/pc-image/src/media_create.rs`), a shipped machine file, a fixture under `vendor/`, the shared golden test support, the workspace manifest, the lock file, the toolchain, a `[patch]` override or a path no rule knows changed; or `--tier goldens` |
+| goldens | plus every ignored test except `user_rom_*` | automatically when an emulation crate (`assembly`, `audio`, `bus`, `chipset`, `cpu`, `device`, `devices`, `machine`, `machine-file`, `media`, `testkit`, `video`), the machine runners (`crates/pc-harness/src/`), the command line the front-end goldens drive (`crates/cli/src/command.rs`, `crates/cli/src/cli_core/mod.rs` and `crates/cli/src/cli_pc/`), the disk builder (`crates/pc-image/src/media_create.rs`), a shipped machine file, a fixture under `vendor/`, the shared golden test support, the workspace manifest, the lock file, the toolchain, a `[patch]` override or a path no rule knows changed; or `--tier goldens` |
 | user-roms | auto plus the ignored `user_rom_*` tests | `--tier user-roms`, with `UNEMUPC_USER_ROMS_DIR` set |
 | all | goldens and user-ROM tests | `--tier all`; before a release with `--all` |
 
@@ -1408,7 +1408,7 @@ that off too. A crate in the affected set only through its dependencies does
 not select the goldens: an `image-store` change runs the fast tests of
 `image-store`, `image-registry`, `machine-file`, `pc-image`, `pc-harness`,
 `platforms`, `cli` and `window`, and the ignored tests that name
-`image_store::`. A change to the command line alone (`crates/cli/src/image.rs`,
+`image_store::`. A change to the command line alone (`crates/cli/src/cli_core/image.rs`,
 say) runs `cli`'s own tests and, by name, the seven ignored tests of its
 front-end goldens; the emulation goldens in `pc-harness` are not rebuilt. The goldens need
 the fetched fixtures; the bead gate sets `UNEMUPC_REQUIRE_FIXTURES=1` so a

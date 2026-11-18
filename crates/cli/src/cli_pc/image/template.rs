@@ -82,7 +82,7 @@ fn official_guard<'a>(
         }
         for store in stores {
             let marks =
-                super::registry::guard_marks(store, manifest, pc_image::firmware::catalogue())
+                crate::cli_pc::guard_marks(store, manifest, pc_image::firmware::catalogue())
                     .map_err(|e| e.to_string())?;
             let closure = guard::closure(manifest, &marks);
             guard::check(Some(&entry), &target, &closure).map_err(|e| e.to_string())?;
