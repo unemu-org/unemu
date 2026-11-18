@@ -5,6 +5,20 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — Sound at any rate, pads from the keyboard:** steps 1 and 2
+  of design/core-contract.md §13.6, in `machine-view`. The session plays a
+  machine's sound at the exact rate its description states, any rate from
+  8 000 to 192 000 frames a second (984 375/22 Hz, the NES's, included),
+  converted to the device's rate; only a rate outside those bounds disables
+  audio, with one warning. A 48 kHz source converts with the arithmetic it
+  had, so the PC's sound is unchanged bit for bit (MEASURED against digests
+  recorded before the change), and the PC holds the contract's frame-count
+  rule (MEASURED). A machine without a keyboard port gets its pads from
+  bound keys: by default the first player has the arrow keys, X = A, Z = B, S = X,
+  A = Y, Q = L, W = R, Enter = Start and right Shift = Select
+  (`machine_view::pads`); keys have stable names for a preferences file
+  (`keys::name`, `keys::by_name`). The PC has a keyboard port: its keys are
+  unchanged. Nothing in the desktop shows a pad machine yet.
 - **2026-11-18 — The library's worker leaves the window:** moves 3.11 and
   3.12 of the window split (design/core-contract.md §8.1.6). `pc-library`
   (layer pc, no toolkit) now holds the library's worker thread

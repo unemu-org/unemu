@@ -4,10 +4,12 @@
 //! `backlog/docs/design/core-contract.md` §5 and §8.
 //!
 //! [`session::Session`] drives a [`unemu_core_api::Machine`]: it paces runs
-//! against the host clock ([`pacing`]), plays the drained sound
-//! ([`host_audio`]), maps the window's physical keys to keyboard usages
-//! ([`keys`]), captures the pointer for a machine with a relative pointing
-//! device ([`pointer`](mod@pointer)) and takes the drives' activity for their lights.
+//! against the host clock ([`pacing`]), plays the drained sound at whatever
+//! exact rate the machine states ([`host_audio`]), maps the window's physical
+//! keys to keyboard usages ([`keys`]), works the pads of a machine without a
+//! keyboard from bound keys ([`pads`]), captures the pointer for a machine
+//! with a relative pointing device ([`pointer`](mod@pointer)) and takes the
+//! drives' activity for their lights.
 //! [`system_keys`] decides which macOS system shortcuts the guest may take,
 //! through the opt-in keyboard tap of `macos_keys`.
 //!
@@ -22,6 +24,7 @@ pub mod keys;
 #[cfg(target_os = "macos")]
 mod macos_keys;
 pub mod pacing;
+pub mod pads;
 pub mod pointer;
 pub mod session;
 pub mod system_keys;

@@ -5,8 +5,8 @@ use super::*;
 use std::io::{Read, Write};
 use unemu_core_api::{
     AudioDescription, DisplayDescription, Error, Features, Finished, Frame, InputPortDescription,
-    MachineDescription, MessageLevel, NewMedium, Outputs, Rate, SlotDescription, SlotKind,
-    SlotState, Status,
+    Key, MachineDescription, MessageLevel, NewMedium, Outputs, PadControl, Rate, SlotDescription,
+    SlotKind, SlotState, Status,
 };
 use winit::event::ElementState::{Pressed, Released};
 
@@ -28,6 +28,11 @@ struct Scripted {
     resets: u32,
     active: Vec<SlotId>,
     pixels: Vec<u32>,
+    /// Drain a 1 kHz tone at the described rate, exactly `now × rate / clock`
+    /// frames in all, instead of one fixed frame per drain.
+    tone: bool,
+    /// Frames of the tone handed over so far.
+    handed: u64,
 }
 
 fn scripted() -> Box<Scripted> {
@@ -63,6 +68,8 @@ fn scripted() -> Box<Scripted> {
         resets: 0,
         active: Vec::new(),
         pixels: vec![0],
+        tone: false,
+        handed: 0,
     })
 }
 
@@ -109,7 +116,23 @@ impl Machine for Scripted {
         if let Some(kind) = self.audio_failure {
             return Err(Error::new(kind, "no sound"));
         }
-        out.push([1, -1]);
+        if !self.tone {
+            out.push([1, -1]);
+            return Ok(());
+        }
+        let rate = self.description.audio.unwrap().rate;
+        let clock = self.description.clock;
+        let due = u128::from(self.now) * u128::from(rate.numerator) * u128::from(clock.denominator)
+            / (u128::from(rate.denominator) * u128::from(clock.numerator));
+        while u128::from(self.handed) < due {
+            let seconds = self.handed as f64 * rate.denominator as f64 / rate.numerator as f64;
+            let phase = std::f64::consts::TAU * 1000.0 * seconds;
+            out.push([
+                (12000.0 * phase.sin()).round() as i16,
+                (9000.0 * phase.cos()).round() as i16,
+            ]);
+            self.handed += 1;
+        }
         Ok(())
     }
 
@@ -423,7 +446,7 @@ fn sound_at_a_rate_the_window_does_not_play_disables_audio_with_one_warning() {
     machine.description = machine
         .description
         .clone()
-        .with_audio(Some(AudioDescription::new(Rate::new(44_100, 1))));
+        .with_audio(Some(AudioDescription::new(Rate::new(384_001, 2))));
     let mut session = session(machine);
     let mut warnings = Vec::new();
     session.audio.open(&mut warnings);
@@ -433,7 +456,7 @@ fn sound_at_a_rate_the_window_does_not_play_disables_audio_with_one_warning() {
         .unwrap();
     assert_eq!(
         String::from_utf8(warnings).unwrap(),
-        "audio disabled: the machine's sound runs at 44100/1 Hz; the window plays 48000 Hz\n"
+        "audio disabled: the machine's sound runs at 384001/2 Hz; the window plays 8000 to 192000 Hz\n"
     );
     assert!(!session.audio.available());
     assert!(session
@@ -441,4 +464,274 @@ fn sound_at_a_rate_the_window_does_not_play_disables_audio_with_one_warning() {
         .outputs
         .iter()
         .all(|outputs| !outputs.audio));
+}
+
+/// Ten virtual seconds of a scripted machine's tone at `rate`, through the
+/// session to a device at 48 kHz, taken out of the ring after every advance.
+fn played_through_a_session(rate: Rate) -> Vec<[i16; 2]> {
+    let mut machine = scripted();
+    machine.description = machine
+        .description
+        .clone()
+        .with_audio(Some(AudioDescription::new(rate)));
+    machine.tone = true;
+    let mut session = session(machine);
+    assert_eq!(session.audio.source(), rate);
+    session.audio.configure_for_test(48_000);
+    session.audio.activate_for_test();
+    let mut played = Vec::new();
+    for millis in (10..=10_000).step_by(10) {
+        session.advance_fully(ms(millis)).unwrap();
+        played.extend(session.audio.drain_for_test());
+    }
+    assert_eq!(session.machine().now, 10_000_000);
+    played
+}
+
+#[test]
+fn sound_at_any_rate_the_contract_allows_reaches_the_device_whole() {
+    for rate in [Rate::new(984_375, 22), Rate::new(44_100, 1)] {
+        let played = played_through_a_session(rate);
+        // The machine handed over now × rate / clock frames; the converter
+        // played every place up to the newest one, at 48 kHz.
+        let (n, d) = (u128::from(rate.numerator), u128::from(rate.denominator));
+        let handed = 10 * n / d;
+        assert_eq!(
+            played.len() as u128,
+            (handed - 1) * 48_000 * d / n + 1,
+            "{rate:?}"
+        );
+        let rising = played
+            .windows(2)
+            .filter(|pair| pair[0][0] < 0 && pair[1][0] >= 0)
+            .count();
+        let periods = 1000.0 * played.len() as f64 / 48_000.0;
+        assert!((rising as f64 - periods).abs() <= 1.0, "{rate:?}: {rising}");
+        let omega_t = std::f64::consts::TAU * 1000.0 * d as f64 / n as f64;
+        let tolerance = 12000.0 * omega_t * omega_t / 8.0 + 2.0;
+        for (index, frame) in played.iter().enumerate() {
+            let phase = std::f64::consts::TAU * 1000.0 * index as f64 / 48_000.0;
+            assert!(
+                (f64::from(frame[0]) - 12000.0 * phase.sin()).abs() <= tolerance,
+                "{rate:?}: frame {index}"
+            );
+        }
+    }
+}
+
+/// Two pads, listed out of port order, and no keyboard.
+fn two_pads() -> Box<Scripted> {
+    let mut machine = scripted();
+    let all = vec![
+        PadControl::Up,
+        PadControl::Down,
+        PadControl::Left,
+        PadControl::Right,
+        PadControl::A,
+        PadControl::B,
+        PadControl::Start,
+        PadControl::Select,
+    ];
+    machine.description = machine.description.clone().with_inputs(vec![
+        InputPortDescription::new(
+            PortId(6),
+            InputKind::Pad {
+                controls: all.clone(),
+            },
+            "Controller 2",
+        ),
+        InputPortDescription::new(
+            PortId(2),
+            InputKind::Pad {
+                controls: all[..6].to_vec(),
+            },
+            "Controller 1",
+        ),
+    ]);
+    machine
+}
+
+/// The default pad keys with `extra` bound on top.
+fn bound(extra: &[(usize, PadControl, Key)]) -> PadBindings {
+    let mut bindings = PadBindings::defaults();
+    for &(player, control, key) in extra {
+        bindings.bind(player, control, key);
+    }
+    bindings
+}
+
+fn pad(port: u8, control: PadControl, pressed: bool) -> InputEvent {
+    InputEvent::Pad {
+        port: PortId(port),
+        control,
+        pressed,
+    }
+}
+
+#[test]
+fn bound_keys_work_the_pads_of_a_machine_without_a_keyboard_and_others_reach_nobody() {
+    let mut session = session(two_pads());
+    session.set_pad_bindings(bound(&[(1, PadControl::Start, Key::DIGIT_1)]));
+    for (key, state) in [
+        (KeyCode::KeyX, Pressed),
+        (KeyCode::KeyX, Pressed),
+        (KeyCode::ArrowLeft, Pressed),
+        (KeyCode::KeyX, Released),
+        // Unbound: nobody gets it.
+        (KeyCode::KeyK, Pressed),
+        (KeyCode::KeyK, Released),
+        // Player 0's Start: its port lists no Start.
+        (KeyCode::Enter, Pressed),
+        (KeyCode::Enter, Released),
+        // Player 1 is the second port in port order.
+        (KeyCode::Digit1, Pressed),
+        (KeyCode::Digit1, Released),
+    ] {
+        session.key_event(key, state);
+    }
+    session.focus_changed(false);
+    assert_eq!(
+        session.machine().inputs,
+        [
+            pad(2, PadControl::A, true),
+            pad(2, PadControl::Left, true),
+            pad(2, PadControl::A, false),
+            pad(6, PadControl::Start, true),
+            pad(6, PadControl::Start, false),
+            InputEvent::ReleaseAll,
+        ]
+    );
+}
+
+#[test]
+fn a_pad_control_with_two_keys_stays_held_until_both_are_up_and_chords_stay_the_hosts() {
+    let mut session = session(two_pads());
+    session.set_pad_bindings(bound(&[
+        (0, PadControl::A, Key::SPACE),
+        (0, PadControl::Up, Key::M),
+    ]));
+    session.audio.set_active_for_test(true);
+    for (key, state) in [
+        (KeyCode::KeyX, Pressed),
+        (KeyCode::Space, Pressed),
+        (KeyCode::KeyX, Released),
+        (KeyCode::Space, Released),
+        (KeyCode::ControlLeft, Pressed),
+        (KeyCode::AltLeft, Pressed),
+        (KeyCode::KeyM, Pressed),
+        (KeyCode::KeyM, Released),
+    ] {
+        session.key_event(key, state);
+    }
+    assert!(session.audio.muted(), "the mute chord is the host's");
+    assert_eq!(
+        session.machine().inputs,
+        [pad(2, PadControl::A, true), pad(2, PadControl::A, false)]
+    );
+    // Focus loss forgets held keys: the next press is fresh.
+    session.key_event(KeyCode::KeyZ, Pressed);
+    session.focus_changed(false);
+    session.focus_changed(true);
+    session.key_event(KeyCode::KeyZ, Pressed);
+    let inputs = &session.machine().inputs;
+    assert_eq!(
+        inputs[2..],
+        [
+            pad(2, PadControl::B, true),
+            InputEvent::ReleaseAll,
+            pad(2, PadControl::B, true),
+        ]
+    );
+}
+
+/// A machine with a keyboard, the PC's case, gets the bound keys as keys,
+/// even when it also has a pad port.
+#[test]
+fn a_machine_with_a_keyboard_gets_bound_keys_as_todays_key_events() {
+    let mut machine = scripted();
+    let mut inputs = machine.description.inputs.clone();
+    inputs.push(InputPortDescription::new(
+        PortId(5),
+        InputKind::Pad {
+            controls: vec![PadControl::A, PadControl::Start],
+        },
+        "Controller",
+    ));
+    machine.description = machine.description.clone().with_inputs(inputs);
+    for machine in [scripted(), machine] {
+        let mut session = session(machine);
+        for key in [
+            KeyCode::ArrowUp,
+            KeyCode::KeyX,
+            KeyCode::KeyZ,
+            KeyCode::Enter,
+            KeyCode::ShiftRight,
+        ] {
+            session.key_event(key, Pressed);
+            session.key_event(key, Pressed);
+            session.key_event(key, Released);
+        }
+        let keys: Vec<_> = session
+            .machine()
+            .inputs
+            .iter()
+            .map(|event| match event {
+                InputEvent::Key { port, key, state } => (*port, key.0, *state),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        let mut expected = Vec::new();
+        for usage in [0x52, 0x1B, 0x1D, 0x28, 0xE5] {
+            expected.extend([
+                (PortId(3), usage, KeyState::Pressed),
+                (PortId(3), usage, KeyState::Pressed),
+                (PortId(3), usage, KeyState::Released),
+            ]);
+        }
+        assert_eq!(keys, expected);
+    }
+}
+
+#[test]
+fn new_pad_bindings_release_the_held_controls_and_the_next_press_is_fresh() {
+    let mut session = session(two_pads());
+    session.key_event(KeyCode::KeyX, Pressed);
+    session.key_event(KeyCode::Space, Pressed);
+    // X now works B: the A it held is released at once.
+    session.set_pad_bindings(bound(&[(0, PadControl::B, Key::X)]));
+    assert_eq!(
+        session.pad_bindings().control(Key::X),
+        Some((0, PadControl::B))
+    );
+    session.key_event(KeyCode::KeyX, Released);
+    session.key_event(KeyCode::KeyX, Pressed);
+    session.key_event(KeyCode::KeyX, Released);
+    assert_eq!(
+        session.machine().inputs,
+        [
+            pad(2, PadControl::A, true),
+            pad(2, PadControl::A, false),
+            pad(2, PadControl::B, true),
+            pad(2, PadControl::B, false),
+        ]
+    );
+}
+
+#[test]
+fn a_reset_forgets_the_pad_keys_held_when_the_machine_halted() {
+    let mut machine = two_pads();
+    machine.next.push(Ok(Stop::Halted));
+    let mut session = session(machine);
+    session.key_event(KeyCode::KeyX, Pressed);
+    session.advance_fully(ms(1)).unwrap();
+    assert!(session.awaits_reset());
+    // The key comes up while the machine is halted: nobody hears it.
+    session.key_event(KeyCode::KeyX, Released);
+    session.reset_halted(&mut Vec::new()).unwrap();
+    session.key_event(KeyCode::KeyX, Pressed);
+    assert_eq!(
+        session.machine().inputs,
+        [pad(2, PadControl::A, true), pad(2, PadControl::A, true)],
+        "the press after the reset is not a repeat"
+    );
 }

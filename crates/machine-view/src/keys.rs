@@ -8,6 +8,12 @@
 //! keyboard page has the key. A key without a keyboard usage (media,
 //! browser and launch keys, which live on the consumer page, and Fn) maps to
 //! nothing and never reaches a machine.
+//!
+//! [`name`] and [`by_name`] give each usage the contract names a stable name
+//! for files people keep, such as the pad bindings of a preferences file
+//! (core-contract.md §13.3): the name of the contract's constant (`A`,
+//! `ARROW_UP`, `SHIFT_RIGHT`), which depends on neither the toolkit nor the
+//! host's layout.
 
 use unemu_core_api::Key;
 use winit::keyboard::KeyCode;
@@ -164,10 +170,205 @@ pub fn key_usage(code: KeyCode) -> Option<Key> {
     })
 }
 
+/// The name of `key`: the name of its constant on [`Key`], if the contract
+/// names it.
+pub fn name(key: Key) -> Option<&'static str> {
+    NAMES
+        .binary_search_by_key(&key, |&(known, _)| known)
+        .ok()
+        .map(|index| NAMES[index].1)
+}
+
+/// The key [`name`] calls `name`, exactly as written.
+pub fn by_name(name: &str) -> Option<Key> {
+    NAMES
+        .iter()
+        .find(|&&(_, known)| known == name)
+        .map(|&(key, _)| key)
+}
+
+/// Every key the contract names, in ascending usage. Kept by hand: the
+/// contract offers no list of its constants, so a constant added to [`Key`]
+/// is added here in the same change, under the same name, or a preferences
+/// file cannot name it.
+const NAMES: [(Key, &str); 144] = [
+    (Key::A, "A"),
+    (Key::B, "B"),
+    (Key::C, "C"),
+    (Key::D, "D"),
+    (Key::E, "E"),
+    (Key::F, "F"),
+    (Key::G, "G"),
+    (Key::H, "H"),
+    (Key::I, "I"),
+    (Key::J, "J"),
+    (Key::K, "K"),
+    (Key::L, "L"),
+    (Key::M, "M"),
+    (Key::N, "N"),
+    (Key::O, "O"),
+    (Key::P, "P"),
+    (Key::Q, "Q"),
+    (Key::R, "R"),
+    (Key::S, "S"),
+    (Key::T, "T"),
+    (Key::U, "U"),
+    (Key::V, "V"),
+    (Key::W, "W"),
+    (Key::X, "X"),
+    (Key::Y, "Y"),
+    (Key::Z, "Z"),
+    (Key::DIGIT_1, "DIGIT_1"),
+    (Key::DIGIT_2, "DIGIT_2"),
+    (Key::DIGIT_3, "DIGIT_3"),
+    (Key::DIGIT_4, "DIGIT_4"),
+    (Key::DIGIT_5, "DIGIT_5"),
+    (Key::DIGIT_6, "DIGIT_6"),
+    (Key::DIGIT_7, "DIGIT_7"),
+    (Key::DIGIT_8, "DIGIT_8"),
+    (Key::DIGIT_9, "DIGIT_9"),
+    (Key::DIGIT_0, "DIGIT_0"),
+    (Key::ENTER, "ENTER"),
+    (Key::ESCAPE, "ESCAPE"),
+    (Key::BACKSPACE, "BACKSPACE"),
+    (Key::TAB, "TAB"),
+    (Key::SPACE, "SPACE"),
+    (Key::MINUS, "MINUS"),
+    (Key::EQUAL, "EQUAL"),
+    (Key::BRACKET_LEFT, "BRACKET_LEFT"),
+    (Key::BRACKET_RIGHT, "BRACKET_RIGHT"),
+    (Key::BACKSLASH, "BACKSLASH"),
+    (Key::NON_US_HASH, "NON_US_HASH"),
+    (Key::SEMICOLON, "SEMICOLON"),
+    (Key::QUOTE, "QUOTE"),
+    (Key::BACKQUOTE, "BACKQUOTE"),
+    (Key::COMMA, "COMMA"),
+    (Key::PERIOD, "PERIOD"),
+    (Key::SLASH, "SLASH"),
+    (Key::CAPS_LOCK, "CAPS_LOCK"),
+    (Key::F1, "F1"),
+    (Key::F2, "F2"),
+    (Key::F3, "F3"),
+    (Key::F4, "F4"),
+    (Key::F5, "F5"),
+    (Key::F6, "F6"),
+    (Key::F7, "F7"),
+    (Key::F8, "F8"),
+    (Key::F9, "F9"),
+    (Key::F10, "F10"),
+    (Key::F11, "F11"),
+    (Key::F12, "F12"),
+    (Key::PRINT_SCREEN, "PRINT_SCREEN"),
+    (Key::SCROLL_LOCK, "SCROLL_LOCK"),
+    (Key::PAUSE, "PAUSE"),
+    (Key::INSERT, "INSERT"),
+    (Key::HOME, "HOME"),
+    (Key::PAGE_UP, "PAGE_UP"),
+    (Key::DELETE, "DELETE"),
+    (Key::END, "END"),
+    (Key::PAGE_DOWN, "PAGE_DOWN"),
+    (Key::ARROW_RIGHT, "ARROW_RIGHT"),
+    (Key::ARROW_LEFT, "ARROW_LEFT"),
+    (Key::ARROW_DOWN, "ARROW_DOWN"),
+    (Key::ARROW_UP, "ARROW_UP"),
+    (Key::NUM_LOCK, "NUM_LOCK"),
+    (Key::NUMPAD_DIVIDE, "NUMPAD_DIVIDE"),
+    (Key::NUMPAD_MULTIPLY, "NUMPAD_MULTIPLY"),
+    (Key::NUMPAD_SUBTRACT, "NUMPAD_SUBTRACT"),
+    (Key::NUMPAD_ADD, "NUMPAD_ADD"),
+    (Key::NUMPAD_ENTER, "NUMPAD_ENTER"),
+    (Key::NUMPAD_1, "NUMPAD_1"),
+    (Key::NUMPAD_2, "NUMPAD_2"),
+    (Key::NUMPAD_3, "NUMPAD_3"),
+    (Key::NUMPAD_4, "NUMPAD_4"),
+    (Key::NUMPAD_5, "NUMPAD_5"),
+    (Key::NUMPAD_6, "NUMPAD_6"),
+    (Key::NUMPAD_7, "NUMPAD_7"),
+    (Key::NUMPAD_8, "NUMPAD_8"),
+    (Key::NUMPAD_9, "NUMPAD_9"),
+    (Key::NUMPAD_0, "NUMPAD_0"),
+    (Key::NUMPAD_DECIMAL, "NUMPAD_DECIMAL"),
+    (Key::NON_US_BACKSLASH, "NON_US_BACKSLASH"),
+    (Key::APPLICATION, "APPLICATION"),
+    (Key::POWER, "POWER"),
+    (Key::NUMPAD_EQUAL, "NUMPAD_EQUAL"),
+    (Key::F13, "F13"),
+    (Key::F14, "F14"),
+    (Key::F15, "F15"),
+    (Key::F16, "F16"),
+    (Key::F17, "F17"),
+    (Key::F18, "F18"),
+    (Key::F19, "F19"),
+    (Key::F20, "F20"),
+    (Key::F21, "F21"),
+    (Key::F22, "F22"),
+    (Key::F23, "F23"),
+    (Key::F24, "F24"),
+    (Key::HELP, "HELP"),
+    (Key::MENU, "MENU"),
+    (Key::SELECT, "SELECT"),
+    (Key::STOP, "STOP"),
+    (Key::AGAIN, "AGAIN"),
+    (Key::UNDO, "UNDO"),
+    (Key::CUT, "CUT"),
+    (Key::COPY, "COPY"),
+    (Key::PASTE, "PASTE"),
+    (Key::FIND, "FIND"),
+    (Key::MUTE, "MUTE"),
+    (Key::VOLUME_UP, "VOLUME_UP"),
+    (Key::VOLUME_DOWN, "VOLUME_DOWN"),
+    (Key::NUMPAD_COMMA, "NUMPAD_COMMA"),
+    (Key::INTERNATIONAL_1, "INTERNATIONAL_1"),
+    (Key::INTERNATIONAL_2, "INTERNATIONAL_2"),
+    (Key::INTERNATIONAL_3, "INTERNATIONAL_3"),
+    (Key::INTERNATIONAL_4, "INTERNATIONAL_4"),
+    (Key::INTERNATIONAL_5, "INTERNATIONAL_5"),
+    (Key::LANG_1, "LANG_1"),
+    (Key::LANG_2, "LANG_2"),
+    (Key::LANG_3, "LANG_3"),
+    (Key::LANG_4, "LANG_4"),
+    (Key::LANG_5, "LANG_5"),
+    (Key::CONTROL_LEFT, "CONTROL_LEFT"),
+    (Key::SHIFT_LEFT, "SHIFT_LEFT"),
+    (Key::ALT_LEFT, "ALT_LEFT"),
+    (Key::GUI_LEFT, "GUI_LEFT"),
+    (Key::CONTROL_RIGHT, "CONTROL_RIGHT"),
+    (Key::SHIFT_RIGHT, "SHIFT_RIGHT"),
+    (Key::ALT_RIGHT, "ALT_RIGHT"),
+    (Key::GUI_RIGHT, "GUI_RIGHT"),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use KeyCode::*;
+
+    #[test]
+    fn every_named_key_has_one_name_that_reads_back() {
+        assert!(NAMES.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        let mut names = std::collections::BTreeSet::new();
+        for (key, known) in NAMES {
+            assert!(names.insert(known), "{known} twice");
+            assert_eq!(name(key), Some(known));
+            assert_eq!(by_name(known), Some(key));
+        }
+        for usage in 0..=u16::MAX {
+            if let Some(known) = name(Key(usage)) {
+                assert_eq!(by_name(known), Some(Key(usage)));
+            }
+        }
+        // Every key a host key reaches a machine as can be bound by name.
+        for code in ALL_CODES {
+            if let Some(key) = key_usage(code) {
+                assert!(name(key).is_some(), "{code:?}");
+            }
+        }
+        assert_eq!(name(Key::ARROW_UP), Some("ARROW_UP"));
+        assert_eq!(by_name("SHIFT_RIGHT"), Some(Key::SHIFT_RIGHT));
+        assert_eq!(by_name("shift_right"), None);
+        assert_eq!(by_name(""), None);
+        assert_eq!(name(Key(0x74)), None);
+    }
 
     #[test]
     fn keys_keep_their_usage_and_no_two_codes_share_one() {

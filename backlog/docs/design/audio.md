@@ -286,27 +286,35 @@ persistence checks and before handling a CPU reset. A pre-run capture refreshes
 consumer availability before speaker history can be pruned after enable/unmute.
 No assembly API change is needed.
 
-The supported-config search first selects **48 kHz, at least two channels**,
-preferring signed i16 over f32. If unavailable, it accepts the device's default
+The supported-config search first selects **the source's rate, at least two
+channels** (48 kHz for the PC, and for a source whose rate is not a whole
+number), preferring signed i16 over f32. If unavailable, it accepts the device's default
 output configuration when it has at least two channels, a positive sample rate
-and i16/f32 samples. Otherwise it chooses the supported rate nearest 48 kHz
+and i16/f32 samples. Otherwise it chooses the supported rate nearest that rate
 (clamped to each range); ties prefer i16, fewer channels, then the higher rate.
 An unusable default or failure to query it does not prevent the range fallback.
 No compatible configuration or stream creation/playback failure leaves the window
-silent with one clear diagnostic. A selected rate other than 48 kHz prints one
-informational line: `audio: converting 48000 Hz to <rate> Hz for <device>`.
+silent with one clear diagnostic. A selected rate other than the source's prints
+one informational line: `audio: converting 48000 Hz to <rate> Hz for <device>`
+(the source's rate as `N/D Hz` when it is not whole).
 On macOS, opening a 48 kHz stream may switch the shared audio device's rate,
 affecting other applications using that device.
 
 The emulated stream and headless captures remain **48,000 Hz stereo i16**.
+Another machine drains at the exact rate its description states, from 8 000 to
+192 000 frames a second (core-contract.md §13.2, "Sound at any rate"); the
+window refuses a rate outside those bounds with one diagnostic.
 On the producer side, before frames enter the ring, a streaming linear
 interpolator converts to the device rate. It keeps the previous stereo frame
-and an integer fractional phase with the exact step **48000/device_rate** across
+and an integer fractional phase with the exact step **(n/d)/device_rate** for a
+source at `n/d` Hz across
 blocks, including empty blocks; chunking cannot reset the phase or cause drift.
+For a 48 000/1 source the arithmetic is the one the 48 kHz-only converter used,
+so the PC's frames are unchanged bit for bit.
 The first frame is emitted unchanged at time zero. Fractional positions wait for
 the next input frame, so the unflushed tail is less than one input-frame interval
-(20.84 microseconds); no synthetic end padding is added. At 48 kHz the producer
-copies frames unchanged. Conversion uses bounded stack scratch with no per-block
+(20.84 microseconds at 48 kHz); no synthetic end padding is added. When the
+device plays the source's own rate the producer copies frames unchanged. Conversion uses bounded stack scratch with no per-block
 allocation and takes place outside the ring lock, never in the real-time callback.
 This inexpensive presentation converter has integer quantization and linear
 interpolation's high-frequency attenuation; it has **no anti-alias low-pass**,

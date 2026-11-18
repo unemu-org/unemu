@@ -23,11 +23,20 @@
 //! Failed grabs leave input free; application exit restores the pointer.
 //! Focus loss releases all held keys; stopped-machine input is ignored. See
 //! `backlog/docs/design/observation.md` § Window pacing and § Host input.
+//!
+//! A machine with a keyboard port gets the guest's keys there. A machine
+//! without one but with pad ports gets its pads from the keys bound in
+//! [`Session::set_pad_bindings`] (core-contract.md §13.3, "Pads from the
+//! keyboard"): a bound key becomes a pad event for its player's port, if
+//! that port lists the control, and nothing else; host repeats are dropped,
+//! and a control stays held while any of its keys is. Host chords are taken
+//! first, as for a keyboard.
 
 use crate::{
-    host_audio::{HostAudio, FRAMES_PER_SECOND},
+    host_audio::HostAudio,
     keys::key_usage,
     pacing::{Pacing, Speed},
+    pads::PadBindings,
     pointer::PointerCapture,
 };
 use std::{
@@ -37,8 +46,8 @@ use std::{
     time::{Duration, Instant},
 };
 use unemu_core_api::{
-    DisplayId, ErrorKind, InputEvent, InputKind, KeyState, Machine, MediaAction, Message, PortId,
-    Rate, ResetKind, RunLimit, SlotId, Status, Stop, Ticks,
+    DisplayId, ErrorKind, InputEvent, InputKind, Key, KeyState, Machine, MediaAction, Message,
+    PadControl, PortId, ResetKind, RunLimit, SlotId, Status, Stop, Ticks,
 };
 use winit::{
     event::{ElementState, MouseButton},
@@ -70,6 +79,14 @@ pub struct Session<M: Machine + ?Sized = dyn Machine> {
     machine: Box<M>,
     display: DisplayId,
     keyboard: Option<PortId>,
+    /// The pad ports, one per player in ascending port number, each with
+    /// the controls it lists.
+    pads: Vec<(PortId, Vec<PadControl>)>,
+    /// The bound keys held now, for a machine whose pads take the keys.
+    pad_keys: Vec<Key>,
+    /// Which host key works which pad control: [`PadBindings::defaults`]
+    /// until the application sets its own with [`Session::set_pad_bindings`].
+    pad_bindings: PadBindings,
     picture: Option<Picture>,
     pub audio: HostAudio,
     audio_frames: Vec<[i16; 2]>,
@@ -132,6 +149,15 @@ impl<M: Machine + ?Sized> Session<M> {
             .iter()
             .find(|port| matches!(port.kind, InputKind::RelativePointer { .. }))
             .map(|port| port.id);
+        let mut pads: Vec<_> = description
+            .inputs
+            .iter()
+            .filter_map(|port| match &port.kind {
+                InputKind::Pad { controls } => Some((port.id, controls.clone())),
+                _ => None,
+            })
+            .collect();
+        pads.sort_by_key(|(port, _)| *port);
         let media_slots = description
             .slots
             .iter()
@@ -140,18 +166,16 @@ impl<M: Machine + ?Sized> Session<M> {
             .take(2)
             .collect();
         let pacing = Pacing::new(description.clock);
-        let mut audio = HostAudio::new();
-        let played = Rate::new(u64::from(FRAMES_PER_SECOND), 1);
-        if let Some(sound) = description.audio.filter(|sound| sound.rate != played) {
-            audio.refuse_device(format!(
-                "the machine's sound runs at {}/{} Hz; the window plays {FRAMES_PER_SECOND} Hz",
-                sound.rate.numerator, sound.rate.denominator
-            ));
-        }
+        let audio = description
+            .audio
+            .map_or_else(HostAudio::new, |sound| HostAudio::for_source(sound.rate));
         Ok(Self {
             machine,
             display,
             keyboard,
+            pads,
+            pad_keys: Vec::new(),
+            pad_bindings: PadBindings::defaults(),
             picture: None,
             audio,
             audio_frames: Vec::new(),
@@ -408,9 +432,42 @@ impl<M: Machine + ?Sized> Session<M> {
         self.machine.drain_messages(&mut messages);
         let _ = write_messages(&messages, diagnostics);
         reset?;
+        // The reset released the pads; a key still down must press again.
+        self.pad_keys.clear();
         self.halted = false;
         self.running = true;
         Ok(())
+    }
+
+    /// Which host key works which pad control.
+    pub fn pad_bindings(&self) -> &PadBindings {
+        &self.pad_bindings
+    }
+
+    /// Take a new table of pad keys. Every control a held key works is
+    /// released first, so no control stays down under a key that no longer
+    /// works it, and the next press of any key is fresh.
+    pub fn set_pad_bindings(&mut self, bindings: PadBindings) {
+        let mut released: Vec<(usize, PadControl)> = Vec::new();
+        for key in std::mem::take(&mut self.pad_keys) {
+            if let Some(held) = self.pad_bindings.control(key) {
+                if !released.contains(&held) {
+                    released.push(held);
+                }
+            }
+        }
+        if self.running && self.error.is_none() {
+            for (player, control) in released {
+                if let Some(&(port, _)) = self.pads.get(player) {
+                    self.machine.input(InputEvent::Pad {
+                        port,
+                        control,
+                        pressed: false,
+                    });
+                }
+            }
+        }
+        self.pad_bindings = bindings;
     }
 
     pub fn occlusion_changed(&mut self, occluded: bool, elapsed: Duration) {
@@ -457,7 +514,11 @@ impl<M: Machine + ?Sized> Session<M> {
     }
 
     fn send_key(&mut self, key: KeyCode, state: ElementState) {
-        let (Some(port), Some(key)) = (self.keyboard, key_usage(key)) else {
+        let Some(key) = key_usage(key) else {
+            return;
+        };
+        let Some(port) = self.keyboard else {
+            self.send_pad(key, state == ElementState::Pressed);
             return;
         };
         self.machine.input(InputEvent::Key {
@@ -469,6 +530,43 @@ impl<M: Machine + ?Sized> Session<M> {
                 KeyState::Released
             },
         });
+    }
+
+    /// Work the pad control `key` is bound to, if its player's port lists
+    /// it. A press of a held key is a host repeat; a control changes only
+    /// with the first of its keys pressed and the last released.
+    fn send_pad(&mut self, key: Key, pressed: bool) {
+        let Some((player, control)) = self.pad_bindings.control(key) else {
+            return;
+        };
+        let Some((port, controls)) = self.pads.get(player) else {
+            return;
+        };
+        if !controls.contains(&control) {
+            return;
+        }
+        let port = *port;
+        let held = self.pad_keys.contains(&key);
+        if pressed == held {
+            return;
+        }
+        if pressed {
+            self.pad_keys.push(key);
+        } else {
+            self.pad_keys.retain(|&other| other != key);
+        }
+        let bindings = &self.pad_bindings;
+        let still_held = self
+            .pad_keys
+            .iter()
+            .any(|&other| other != key && bindings.control(other) == Some((player, control)));
+        if !still_held {
+            self.machine.input(InputEvent::Pad {
+                port,
+                control,
+                pressed,
+            });
+        }
     }
 
     /// Hand the pointer's queued guest events to the machine.
@@ -565,6 +663,7 @@ impl<M: Machine + ?Sized> Session<M> {
             self.mute_key_held = false;
             self.mute_modifiers = [false; 4];
             self.suppress_m = false;
+            self.pad_keys.clear();
         }
         let release_all = !focused && self.running && self.error.is_none();
         let was_captured = self.mouse.captured();

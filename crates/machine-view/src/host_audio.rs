@@ -8,16 +8,47 @@
 //! silence on underrun and drop oldest frames on overrun. Playback prefills
 //! 50 ms and trims above 70 ms; recoverable host/source errors leave the
 //! window running.
+//!
+//! A machine drains its sound at the exact rate its description states, any
+//! rate from 8 000 to 192 000 frames a second ([`SOURCE_RATES`];
+//! core-contract.md §13.2, "Sound at any rate"). The device plays whatever
+//! rate the host offers, and the producer converts between the two by linear
+//! interpolation at an exact rational position. A 48 kHz source, the PC's,
+//! takes the arithmetic it took when it was the only rate.
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     FromSample, SampleFormat, SizedSample, SupportedStreamConfig, SupportedStreamConfigRange,
 };
+use unemu_core_api::Rate;
 /// One stereo frame of signed 16-bit samples, left then right.
 pub type StereoFrame = [i16; 2];
 
-/// The rate of the sound the session plays, in stereo frames per second: the
-/// rate machines drain their sound at (the PC mixes at 48 kHz).
+/// The device rate the session asks the host for first, in stereo frames per
+/// second, and the source rate of a [`HostAudio::new`] (the PC mixes at
+/// 48 kHz).
 pub const FRAMES_PER_SECOND: u32 = 48_000;
+
+/// The source rates the window plays, in whole frames per second, inclusive:
+/// the bounds the contract sets on `AudioDescription::rate`.
+pub const SOURCE_RATES: std::ops::RangeInclusive<u64> = 8_000..=192_000;
+
+/// Whether the window plays sound drained at `rate`: an exact rate within
+/// [`SOURCE_RATES`].
+pub fn plays(rate: Rate) -> bool {
+    let (numerator, denominator) = (u128::from(rate.numerator), u128::from(rate.denominator));
+    denominator != 0
+        && numerator >= u128::from(*SOURCE_RATES.start()) * denominator
+        && numerator <= u128::from(*SOURCE_RATES.end()) * denominator
+}
+
+/// A rate for people: `44100 Hz`, or `984375/22 Hz` when it is not whole.
+fn hertz(rate: Rate) -> String {
+    if rate.denominator == 1 {
+        format!("{} Hz", rate.numerator)
+    } else {
+        format!("{}/{} Hz", rate.numerator, rate.denominator)
+    }
+}
 
 use std::{
     error::Error,
@@ -30,38 +61,56 @@ use std::{
 
 /// Linear interpolation carries an exact rational position across input blocks.
 /// Only the producer uses this state; see audio.md §Host output for quality limits.
+///
+/// With the source at `n/d` frames a second and the device at `r`, one input
+/// interval is `r·d` units of position and one output interval is `n`. Per
+/// input frame the converter emits while the position is at most `r·d`,
+/// adding `n` per output, then takes `r·d` off. For a 48 000/1 source that
+/// is the arithmetic of the converter that knew only 48 kHz. Wide integers
+/// keep any denominator a description may state exact.
 struct RateConverter {
+    source: Rate,
     rate: u32,
     previous: Option<StereoFrame>,
-    phase: u64,
+    phase: u128,
 }
 
 impl RateConverter {
-    fn new(rate: u32) -> Self {
+    /// A converter from `source`, which [`plays`] accepts, to a device at
+    /// `rate`.
+    fn new(source: Rate, rate: u32) -> Self {
         Self {
+            source,
             rate,
             previous: None,
             phase: 0,
         }
     }
 
+    /// Whether the device plays the source's rate, so frames need no
+    /// conversion.
+    fn passes_through(&self) -> bool {
+        self.source.denominator == 1 && self.source.numerator == u64::from(self.rate)
+    }
+
     fn process(&mut self, frames: &[StereoFrame], mut emit: impl FnMut(StereoFrame)) {
-        let rate = u64::from(self.rate);
+        let span = u128::from(self.rate) * u128::from(self.source.denominator);
+        let step = u128::from(self.source.numerator);
         for &current in frames {
             if let Some(previous) = self.previous {
-                while self.phase <= rate {
+                while self.phase <= span {
                     let frame = std::array::from_fn(|channel| {
-                        let left = i64::from(previous[channel]);
-                        let right = i64::from(current[channel]);
-                        (left + (right - left) * self.phase as i64 / i64::from(self.rate)) as i16
+                        let left = i128::from(previous[channel]);
+                        let right = i128::from(current[channel]);
+                        (left + (right - left) * self.phase as i128 / span as i128) as i16
                     });
                     emit(frame);
-                    self.phase += u64::from(FRAMES_PER_SECOND);
+                    self.phase += step;
                 }
-                self.phase -= rate;
+                self.phase -= span;
             } else {
                 emit(current);
-                self.phase = u64::from(FRAMES_PER_SECOND);
+                self.phase = step;
             }
             self.previous = Some(current);
         }
@@ -153,10 +202,10 @@ pub struct WindowAudioSink {
 }
 
 impl WindowAudioSink {
-    fn new(capacity: usize, rate: u32) -> Self {
+    fn new(capacity: usize, source: Rate, rate: u32) -> Self {
         Self {
             ring: Arc::new(Mutex::new(Ring::new(capacity, rate))),
-            converter: Arc::new(Mutex::new(RateConverter::new(rate))),
+            converter: Arc::new(Mutex::new(RateConverter::new(source, rate))),
             active: Arc::new(AtomicBool::new(false)),
             muted: Arc::new(AtomicBool::new(false)),
         }
@@ -164,7 +213,7 @@ impl WindowAudioSink {
 
     fn configure(&self, rate: u32) {
         if let Ok(mut converter) = self.converter.lock() {
-            *converter = RateConverter::new(rate);
+            *converter = RateConverter::new(converter.source, rate);
             if let Ok(mut ring) = self.ring.lock() {
                 *ring = Ring::new(rate as usize / 5, rate);
             }
@@ -201,7 +250,7 @@ impl WindowAudioSink {
             return;
         }
         if let Ok(mut converter) = self.converter.lock() {
-            if converter.rate == FRAMES_PER_SECOND {
+            if converter.passes_through() {
                 if let Ok(mut ring) = self.ring.lock() {
                     ring.push(frames);
                 }
@@ -233,9 +282,13 @@ impl WindowAudioSink {
     }
 }
 
+/// The device configuration to open: stereo or more, i16 before f32, at
+/// `preferred` frames a second when a range offers it, else the host's
+/// default, else the supported rate nearest `preferred`.
 fn select_config(
     ranges: &[SupportedStreamConfigRange],
     default: Option<&SupportedStreamConfig>,
+    preferred: u32,
 ) -> Option<SupportedStreamConfig> {
     let supported = |channels, rate, format| {
         channels >= 2 && rate > 0 && matches!(format, SampleFormat::I16 | SampleFormat::F32)
@@ -245,7 +298,7 @@ fn select_config(
         .find_map(|format| {
             ranges.iter().find_map(|range| {
                 (range.channels() >= 2 && range.sample_format() == format)
-                    .then(|| range.try_with_sample_rate(FRAMES_PER_SECOND))
+                    .then(|| range.try_with_sample_rate(preferred))
                     .flatten()
             })
         })
@@ -272,12 +325,12 @@ fn select_config(
                 })
                 .map(|range| {
                     range.with_sample_rate(
-                        FRAMES_PER_SECOND.clamp(range.min_sample_rate(), range.max_sample_rate()),
+                        preferred.clamp(range.min_sample_rate(), range.max_sample_rate()),
                     )
                 })
                 .min_by_key(|config| {
                     (
-                        config.sample_rate().abs_diff(FRAMES_PER_SECOND),
+                        config.sample_rate().abs_diff(preferred),
                         u8::from(config.sample_format() != SampleFormat::I16),
                         config.channels(),
                         std::cmp::Reverse(config.sample_rate()),
@@ -299,6 +352,9 @@ pub struct HostAudio {
     speed_muted: bool,
     /// Why no host device may be opened, if one may not.
     device_refused: Option<String>,
+    /// The rate the machine drains its sound at, as described, even when
+    /// the window does not play it.
+    source: Rate,
 }
 
 impl Default for HostAudio {
@@ -308,9 +364,33 @@ impl Default for HostAudio {
 }
 
 impl HostAudio {
+    /// Playback of sound drained at [`FRAMES_PER_SECOND`].
     pub fn new() -> Self {
+        Self::playing(Rate::new(u64::from(FRAMES_PER_SECOND), 1))
+    }
+
+    /// Playback of sound drained at `source`, a machine's described rate. A
+    /// rate the window does not play ([`plays`]) refuses the device, so
+    /// [`Self::open`] reports it once and the machine is never asked for
+    /// sound.
+    pub fn for_source(source: Rate) -> Self {
+        if plays(source) {
+            return Self::playing(source);
+        }
+        let mut audio = Self::new();
+        audio.source = source;
+        audio.refuse_device(format!(
+            "the machine's sound runs at {}; the window plays {} to {} Hz",
+            hertz(source),
+            SOURCE_RATES.start(),
+            SOURCE_RATES.end()
+        ));
+        audio
+    }
+
+    fn playing(source: Rate) -> Self {
         Self {
-            sink: WindowAudioSink::new(FRAMES_PER_SECOND as usize / 5, FRAMES_PER_SECOND),
+            sink: WindowAudioSink::new(FRAMES_PER_SECOND as usize / 5, source, FRAMES_PER_SECOND),
             stream: None,
             attempted: false,
             reported: false,
@@ -320,6 +400,7 @@ impl HostAudio {
             user_muted: false,
             speed_muted: false,
             device_refused: None,
+            source,
         }
     }
 
@@ -328,6 +409,12 @@ impl HostAudio {
     /// for sound at a rate it does not play.
     pub fn refuse_device(&mut self, reason: impl Into<String>) {
         self.device_refused = Some(reason.into());
+    }
+
+    /// The rate the sound arrives at, in frames a second, as the machine
+    /// describes it; also a rate the window refused.
+    pub fn source(&self) -> Rate {
+        self.source
     }
 
     pub fn sink(&self) -> WindowAudioSink {
@@ -459,7 +546,7 @@ impl HostAudio {
         // Keep callbacks silent until old samples and interpolation history are gone.
         self.sink.muted.store(true, Ordering::Relaxed);
         if let Ok(mut converter) = self.sink.converter.lock() {
-            *converter = RateConverter::new(converter.rate);
+            *converter = RateConverter::new(converter.source, converter.rate);
             if let Ok(mut ring) = self.sink.ring.lock() {
                 ring.len = 0;
                 ring.primed = false;
@@ -494,7 +581,14 @@ impl HostAudio {
             .ok_or("no default output device")?;
         let ranges: Vec<_> = device.supported_output_configs()?.collect();
         let default = device.default_output_config().ok();
-        let config = select_config(&ranges, default.as_ref())
+        let source = self.source();
+        // A device at the source's own rate plays it unconverted; a rate that
+        // is not whole is converted from whatever the host offers first.
+        let preferred = match (source.denominator, u32::try_from(source.numerator)) {
+            (1, Ok(whole)) => whole,
+            _ => FRAMES_PER_SECOND,
+        };
+        let config = select_config(&ranges, default.as_ref(), preferred)
             .ok_or("output with at least two channels (i16/f32) is unavailable")?;
         let rate = config.sample_rate();
         self.sink.configure(rate);
@@ -504,14 +598,15 @@ impl HostAudio {
             _ => self.build_stream::<f32>(&device, config)?,
         };
         self.stream = Some(stream);
-        if rate != FRAMES_PER_SECOND {
+        if source != Rate::new(u64::from(rate), 1) {
             let name = device
                 .description()
                 .map(|description| description.name().to_owned())
                 .unwrap_or_else(|_| "default output device".to_owned());
             let _ = writeln!(
                 warnings,
-                "audio: converting {FRAMES_PER_SECOND} Hz to {rate} Hz for {name}"
+                "audio: converting {} to {rate} Hz for {name}",
+                hertz(source)
             );
         }
         Ok(())

@@ -333,3 +333,59 @@ fn a_halt_leaves_no_stop_report() {
     );
     assert!(machine.cpu_stop_report().is_none());
 }
+
+/// The contract's frame-count rule on `drain_audio`: at every return of
+/// `run`, the frames handed over since the machine was created differ from
+/// `now() × rate / clock` by less than one frame. The PC hands over exactly
+/// the frames completed by `now()`, the floor of that product. The PC mixes
+/// at 48 kHz off virtual time, so the deadlines are placed a tick before, on
+/// and a tick after the edges of chosen frames, out to frame 9 600 (a fifth
+/// of a virtual second).
+#[test]
+fn the_sound_handed_over_is_the_floor_of_virtual_time_times_the_rate() {
+    let config = assembly::at_keyboard(vec![0xEB, 0xFE]);
+    let mut machine =
+        PcMachine::from_assembled(&config, assembly::assemble(&config).unwrap()).unwrap();
+    machine
+        .assembled()
+        .add_audio_source(Box::new(audio::EdgeSource::new([1234, -2345])));
+    machine.set_outputs(Outputs::NONE.with_audio(true));
+    let description = machine.description().clone();
+    let rate = description.audio.unwrap().rate;
+    let clock = description.clock;
+    // Frame k ends at tick k·clock/rate; one frame is `one_frame` in the
+    // scaled units below.
+    let ticks_per_frame = (
+        u128::from(clock.numerator) * u128::from(rate.denominator),
+        u128::from(clock.denominator) * u128::from(rate.numerator),
+    );
+    let mut deadlines = std::collections::BTreeSet::new();
+    for k in [1u128, 2, 3, 7, 22, 100, 1_001, 4_800, 4_801, 9_599, 9_600] {
+        let floor = k * ticks_per_frame.0 / ticks_per_frame.1;
+        let ceil = (k * ticks_per_frame.0).div_ceil(ticks_per_frame.1);
+        for tick in [floor - 1, floor, ceil, ceil + 1] {
+            deadlines.insert(tick as u64);
+        }
+    }
+    let mut handed = 0u128;
+    let mut out = Vec::new();
+    for until in deadlines {
+        assert_eq!(
+            machine.run(RunLimit::until(Ticks(until))),
+            Ok(Stop::Deadline)
+        );
+        out.clear();
+        machine.drain_audio(&mut out).unwrap();
+        handed += out.len() as u128;
+        let now = u128::from(machine.now().0);
+        // handed ≤ now·rate/clock < handed + 1, cleared of fractions.
+        let scaled_handed = handed * ticks_per_frame.0;
+        let scaled_due = now * ticks_per_frame.1;
+        assert!(
+            scaled_handed <= scaled_due && scaled_due - scaled_handed < ticks_per_frame.0,
+            "at tick {now}: {handed} frames handed over, {} due",
+            scaled_due as f64 / ticks_per_frame.0 as f64
+        );
+    }
+    assert!(handed >= 9_600, "{handed} frames");
+}
