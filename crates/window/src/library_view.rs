@@ -20,9 +20,13 @@ pub(crate) mod remotes;
 
 use crate::{
     layers_dialog::LayersDialog,
+    registry_transfer::Accounts,
+    remote_browse::{BrowseEvent, BrowseRequest},
+    remote_pull::{Drive, Mode},
     shell_model::{Command, LibraryEntry},
 };
-use image_store::{Descriptor, Digest, Store};
+use image_store::{media_type as mt, Descriptor, Digest, Store};
+use remotes::{RemotesAction, RemotesContext};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -56,6 +60,14 @@ pub(super) use library_model::listing::delete_tag;
 pub(super) use pc_library::snapshot::snapshot;
 use pc_library::snapshot::{image_rights, redistribution, Filter, ViewRow};
 pub(super) use pc_library::snapshot::{Query, Snapshot};
+// The list tables are the neutral library views'; the frame and its
+// collections keep naming them here.
+#[cfg(test)]
+use library_ui::table::test_support::{CHILD_INDENT, NAME_ICON_ROOM, SCROLL_ROOM};
+use library_ui::table::{
+    draw_cells, draw_cells_with_hints, fit_columns, group_row, sort_header, table_width, Cell,
+    Columns, Lead,
+};
 
 /// The Images list's columns, as the machines mock-up lists images, with the
 /// remotes mock-up's Source column after the name.
@@ -156,28 +168,6 @@ fn row_cells(row: &ViewRow, machines: usize) -> [String; 7] {
             .unwrap_or_else(|| "Pending".into()),
     ]
 }
-/// What a list row's name cell shows around the name, as the machines
-/// mock-up draws it: the row kind's icon before the name, a warning and a
-/// favourite star after it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct Lead {
-    pub icon: Option<Icon>,
-    /// A row inside an expanded repository group, set in under its header.
-    pub child: bool,
-    /// The row cannot be used as it is: unreadable, or its firmware is missing.
-    pub warning: bool,
-    pub favourite: bool,
-}
-
-/// The warning badge after a name, as the main-window mock-up marks a
-/// machine that cannot start.
-const WARNING_BADGE: &str = " ⚠";
-const FAVOURITE_BADGE: &str = " ★";
-/// The set-in of a group's child rows.
-const CHILD_INDENT: f32 = 16.0;
-/// The icon's 16 points, its 2-point margin and the mock-up's 5-point gap
-/// (rounded) before the name.
-const NAME_ICON_ROOM: f32 = 21.0;
 
 fn image_lead(row: &ViewRow) -> Lead {
     Lead {
@@ -198,396 +188,6 @@ fn tree_icon(filter: &Filter) -> Option<Icon> {
         Filter::Firmware => Some(Icon::Firmware),
         _ => None,
     }
-}
-
-/// A list header cell's height.
-const HEADER_HEIGHT: f32 = 22.0;
-/// The room the library mock-up's list header keeps beside each label. Its
-/// 3 px above and below are what centring the label in [`HEADER_HEIGHT`]
-/// leaves.
-const HEADER_INSET: f32 = 6.0;
-
-/// A list's column headers as the library mock-up's list header draws them:
-/// cells edge to edge on the face colour, each inside the skin's raised
-/// outline and sunk while pressed, labels left-aligned and truncated with an
-/// ellipsis. Each cell starts where its column's cells start and reaches the
-/// next column, so the gap the rows keep between two columns belongs to the
-/// cell before it; the last one runs on over the scroll bar's room to the
-/// list's edge. A click sorts by a column, and on the sorted column reverses
-/// it. The `plain` columns are headers only: their list cannot sort by them,
-/// so they look the same but take no click.
-fn sort_header<const N: usize>(
-    ui: &mut egui::Ui,
-    labels: &[&str; N],
-    widths: &[f32; N],
-    plain: &[usize],
-    classic: bool,
-    sort: &mut usize,
-    descending: &mut bool,
-) -> bool {
-    // The rows' gap between columns, taken before the header drops it.
-    let gap = ui.spacing().item_spacing.x;
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        for (column, label) in labels.iter().enumerate() {
-            let sortable = !plain.contains(&column);
-            let width = if column + 1 < N {
-                widths[column] + gap
-            } else {
-                ui.available_width().max(widths[column] + SCROLL_ROOM)
-            };
-            let sense = if sortable {
-                egui::Sense::click()
-            } else {
-                egui::Sense::hover()
-            };
-            let (rect, response) = ui.allocate_exact_size(egui::vec2(width, HEADER_HEIGHT), sense);
-            let text = if sortable && *sort == column {
-                format!("{label} {}", if *descending { "▼" } else { "▲" })
-            } else {
-                (*label).to_owned()
-            };
-            let role = if sortable {
-                egui::Role::Button
-            } else {
-                egui::Role::Label
-            };
-            response.widget_info(|| egui::WidgetInfo::labeled(role, ui.is_enabled(), &text));
-            // A plain header keeps a resting header's text colour, so it
-            // reads like the others.
-            let ink = if sortable {
-                ui.style().interact(&response).text_color()
-            } else {
-                ui.visuals().widgets.inactive.text_color()
-            };
-            let truncated = header_face(ui, rect, &text, ink);
-            if classic && response.is_pointer_button_down_on() {
-                pane::inset(ui, rect, true);
-            } else if classic || column == 0 {
-                pane::outset(ui, rect, classic);
-            } else {
-                // The mock-up draws the modern line outside each cell, so
-                // neighbours share one line: this cell's starts on the last
-                // pixel of the cell before it.
-                pane::outset(ui, rect.with_min_x(rect.left() - 1.0), classic);
-            }
-            let response = if truncated {
-                response.on_hover_text(&text)
-            } else {
-                response
-            };
-            if response.clicked() {
-                if *sort == column {
-                    *descending = !*descending;
-                } else {
-                    *sort = column;
-                    *descending = false;
-                }
-                changed = true;
-            }
-        }
-    });
-    changed
-}
-
-/// A header cell's ground in the face colour and its label in the mock-up's
-/// padding, left-aligned and truncated with an ellipsis to the cell. Returns
-/// whether the label was truncated.
-fn header_face(ui: &egui::Ui, rect: egui::Rect, text: &str, ink: egui::Color32) -> bool {
-    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-    painter.rect_filled(rect, 0.0, ui.visuals().panel_fill);
-    let mut job = egui::text::LayoutJob::single_section(
-        text.to_owned(),
-        egui::TextFormat::simple(egui::TextStyle::Button.resolve(ui.style()), ink),
-    );
-    job.wrap =
-        egui::text::TextWrapping::truncate_at_width((rect.width() - 2.0 * HEADER_INSET).max(0.0));
-    let galley = ui.painter().layout_job(job);
-    let truncated = galley.elided;
-    painter.galley(
-        egui::pos2(
-            rect.left() + HEADER_INSET,
-            rect.center().y - galley.size().y / 2.0,
-        ),
-        galley,
-        ink,
-    );
-    truncated
-}
-
-/// Room a list keeps beside its columns for the vertical scroll bar.
-const SCROLL_ROOM: f32 = 12.0;
-/// The sort mark a header adds after its label.
-const SORT_MARK: &str = " ▼";
-
-/// How a list cell draws its text, as the mock-ups' tables do.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Cell {
-    Text,
-    /// Digests, tags and ids in the code style.
-    Mono,
-    /// Counts and sizes, right-aligned.
-    Number,
-    /// The open or user-supplied chip.
-    Badge,
-}
-
-/// A list's columns: headers, designed widths, how cells draw, and a value
-/// each column always shows whole (a size, a count, a mark).
-pub(super) struct Columns<const N: usize> {
-    pub labels: [&'static str; N],
-    pub widths: [f32; N],
-    pub cells: [Cell; N],
-    pub samples: [&'static str; N],
-}
-
-fn cell_font(ui: &egui::Ui, cell: Cell) -> egui::FontId {
-    match cell {
-        Cell::Mono => egui::TextStyle::Monospace.resolve(ui.style()),
-        _ => egui::TextStyle::Body.resolve(ui.style()),
-    }
-}
-
-/// Room a badge adds around its text.
-const BADGE_PADDING: f32 = 10.0;
-
-/// The narrowest each column may get: its header with the sort mark in the
-/// header cell's padding, and its sample value whole.
-fn column_floors<const N: usize>(ui: &egui::Ui, columns: &Columns<N>) -> [f32; N] {
-    let width = |text: &str, font: egui::FontId| {
-        ui.painter()
-            .layout_no_wrap(text.to_owned(), font, egui::Color32::WHITE)
-            .size()
-            .x
-    };
-    let button = egui::TextStyle::Button.resolve(ui.style());
-    let padding = 2.0 * HEADER_INSET;
-    std::array::from_fn(|i| {
-        let header = width(&format!("{}{SORT_MARK}", columns.labels[i]), button.clone()) + padding;
-        let sample = width(columns.samples[i], cell_font(ui, columns.cells[i]))
-            + if columns.cells[i] == Cell::Badge {
-                BADGE_PADDING
-            } else {
-                4.0
-            };
-        header.max(sample).ceil()
-    })
-}
-
-/// A list's column widths for the room the list has. Each column gets at
-/// least its floor, so headers, counts, sizes and marks never truncate; the
-/// room left is shared out by the designed widths, so the table fills its
-/// area as the mock-ups' tables do. With less room than the floors take,
-/// the list keeps them and scrolls sideways in its own area.
-fn fit_columns<const N: usize>(ui: &egui::Ui, columns: &Columns<N>) -> [f32; N] {
-    let floors = column_floors(ui, columns);
-    let gaps = ui.spacing().item_spacing.x * (N.saturating_sub(1)) as f32;
-    let room = ui.available_width() - gaps - SCROLL_ROOM;
-    let needed: f32 = floors.iter().sum();
-    if room <= needed {
-        return floors;
-    }
-    let designed: f32 = columns.widths.iter().sum();
-    std::array::from_fn(|i| (floors[i] + (room - needed) * columns.widths[i] / designed).floor())
-}
-
-/// The width a row of `widths` takes, with the gaps between its cells.
-fn table_width<const N: usize>(ui: &egui::Ui, widths: &[f32; N]) -> f32 {
-    widths.iter().sum::<f32>() + ui.spacing().item_spacing.x * (N.saturating_sub(1)) as f32
-}
-
-/// A repository's group row, as wide as the table: the machines mock-up's
-/// bold title with the repository and its image count after it. Returns
-/// whether it was clicked, which opens or closes the group.
-fn group_row(ui: &mut egui::Ui, open: bool, title: &str, detail: &str, width: f32) -> bool {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 20.0), egui::Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), title));
-    if ui.is_rect_visible(rect) {
-        let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-        // The mock-up's group row has its own ground, apart from the stripes.
-        painter.rect_filled(rect, 0.0, pane::group_colour(ui.visuals()));
-        let font = egui::TextStyle::Body.resolve(ui.style());
-        let ink = ui.visuals().strong_text_color();
-        let mut job = egui::text::LayoutJob::default();
-        job.append(
-            &format!("{} {title}", if open { "−" } else { "+" }),
-            0.0,
-            egui::TextFormat::simple(font.clone(), ink),
-        );
-        job.append(
-            &format!("  {detail}"),
-            0.0,
-            egui::TextFormat::simple(font, ui.visuals().weak_text_color()),
-        );
-        job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 8.0).max(0.0));
-        let galley = ui.painter().layout_job(job);
-        painter.galley(
-            egui::pos2(rect.left() + 4.0, rect.center().y - galley.size().y / 2.0),
-            galley,
-            ink,
-        );
-    }
-    response.clicked()
-}
-fn draw_cells<const N: usize>(
-    ui: &mut egui::Ui,
-    cells: &[String; N],
-    widths: &[f32; N],
-    kinds: &[Cell; N],
-    selected: bool,
-    striped: bool,
-    lead: Lead,
-) -> (bool, bool) {
-    draw_cells_with_hints(ui, cells, widths, kinds, selected, striped, lead, &[])
-}
-/// [`draw_cells`] where a cell's tooltip may say more than its text, as the
-/// quiet "↑ newer BIOS" badge's hint does.
-#[allow(clippy::too_many_arguments)]
-fn draw_cells_with_hints<const N: usize>(
-    ui: &mut egui::Ui,
-    cells: &[String; N],
-    widths: &[f32; N],
-    kinds: &[Cell; N],
-    selected: bool,
-    striped: bool,
-    lead: Lead,
-    hints: &[Option<String>],
-) -> (bool, bool) {
-    let mut clicked = false;
-    let mut double = false;
-    let fill = if selected {
-        ui.visuals().selection.bg_fill
-    } else if striped {
-        ui.visuals().faint_bg_color
-    } else {
-        egui::Color32::TRANSPARENT
-    };
-    // On the selection fill, text takes the selection stroke colour, as
-    // egui's own selectable items do; every skin keeps that pair legible.
-    let selected_text = selected.then(|| ui.visuals().selection.stroke.color);
-    egui::Frame::new().fill(fill).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            for (column, (text, width)) in cells.iter().zip(widths.iter().copied()).enumerate() {
-                let response = if column == 0 {
-                    name_cell(ui, text, width, selected_text, lead)
-                } else {
-                    cell(ui, text, width, kinds[column], selected_text)
-                };
-                let hint = hints.get(column).and_then(Option::as_deref).unwrap_or(text);
-                let response = response.on_hover_text(hint);
-                clicked |= response.clicked();
-                double |= response.double_clicked();
-            }
-        });
-    });
-    (clicked, double)
-}
-
-/// One list cell, painted left-aligned, numbers right-aligned, digests in
-/// the code style and marks as the mock-ups' chip, truncated to the column.
-fn cell(
-    ui: &mut egui::Ui,
-    text: &str,
-    width: f32,
-    kind: Cell,
-    selected_text: Option<egui::Color32>,
-) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 20.0), egui::Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), text));
-    if text.is_empty() || !ui.is_rect_visible(rect) {
-        return response;
-    }
-    let ink = selected_text.unwrap_or_else(|| match kind {
-        Cell::Badge if text == "open" => pane::good_colour(ui.visuals()),
-        Cell::Badge => ui.visuals().warn_fg_color,
-        _ => ui.style().interact(&response).text_color(),
-    });
-    let room = rect.shrink2(egui::vec2(2.0, 0.0));
-    let inner = if kind == Cell::Badge {
-        room.width() - BADGE_PADDING
-    } else {
-        room.width()
-    };
-    let mut job = egui::text::LayoutJob::single_section(
-        text.to_owned(),
-        egui::TextFormat::simple(cell_font(ui, kind), ink),
-    );
-    job.wrap = egui::text::TextWrapping::truncate_at_width(inner.max(0.0));
-    let galley = ui.painter().layout_job(job);
-    let size = galley.size();
-    let left = match kind {
-        Cell::Number => room.right() - size.x,
-        Cell::Badge => room.left() + BADGE_PADDING / 2.0,
-        _ => room.left(),
-    };
-    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-    let at = egui::pos2(left, rect.center().y - size.y / 2.0);
-    if kind == Cell::Badge {
-        painter.rect_stroke(
-            egui::Rect::from_min_size(at, size).expand2(egui::vec2(BADGE_PADDING / 2.0 - 1.0, 0.0)),
-            0.0,
-            egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
-            egui::StrokeKind::Inside,
-        );
-    }
-    painter.galley(at, galley, ink);
-    response
-}
-
-/// The name cell as the machines mock-up draws it: left-aligned, the row's
-/// icon (after a group's indent), the name, then its badges, truncated
-/// together to the column. It is painted rather than a centred label, because
-/// a centred egui label drops the space the icon and the indent need.
-fn name_cell(
-    ui: &mut egui::Ui,
-    text: &str,
-    width: f32,
-    selected_text: Option<egui::Color32>,
-    lead: Lead,
-) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 20.0), egui::Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, ui.is_enabled(), text));
-    // The colour an interactive label's text takes; the icon shares it.
-    let ink = selected_text.unwrap_or_else(|| ui.style().interact(&response).text_color());
-    let indent = if lead.child { CHILD_INDENT } else { 0.0 };
-    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-    let mut left = rect.left() + indent;
-    if let Some(icon) = lead.icon {
-        let at = egui::Rect::from_min_size(
-            egui::pos2(left + 2.0, rect.center().y - 8.0),
-            egui::Vec2::splat(16.0),
-        );
-        ui_kit::shell_icons::paint(&painter, at, icon, ink, ui.visuals());
-        left += NAME_ICON_ROOM;
-    }
-    let font = egui::TextStyle::Body.resolve(ui.style());
-    let mut job = egui::text::LayoutJob::default();
-    job.append(text, 0.0, egui::TextFormat::simple(font.clone(), ink));
-    for (on, badge, color) in [
-        (lead.warning, WARNING_BADGE, ui.visuals().warn_fg_color),
-        (
-            lead.favourite,
-            FAVOURITE_BADGE,
-            ui_kit::shell_icons::STAR_GOLD,
-        ),
-    ] {
-        if on {
-            job.append(
-                badge,
-                0.0,
-                egui::TextFormat::simple(font.clone(), selected_text.unwrap_or(color)),
-            );
-        }
-    }
-    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.right() - left).max(0.0));
-    let galley = ui.painter().layout_job(job);
-    painter.galley(
-        egui::pos2(left, rect.center().y - galley.size().y / 2.0),
-        galley,
-        ink,
-    );
-    response
 }
 
 #[cfg(test)]
@@ -1648,6 +1248,266 @@ impl LibraryView {
         }
         self.worker_dead = true;
     }
+    /// Give Remotes the logins of Preferences › Registries; registries
+    /// already open read their list from these preferences again.
+    pub fn attach_remotes(&mut self, accounts: Accounts) {
+        self.remote.attach_remotes(accounts);
+    }
+    /// A registry's node is shown instead of a library collection.
+    pub fn remote_shown(&self) -> bool {
+        self.remote.remote_shown()
+    }
+    fn on_browse(&mut self, event: BrowseEvent) {
+        self.remote.on_browse(event);
+    }
+    /// Stop every registry's listing and reads, as before every start of a
+    /// machine: the worker answers one request at a time, so a slow registry
+    /// must not hold the start behind it.
+    pub(crate) fn stop_remotes(&mut self) {
+        self.remote.stop_remotes();
+    }
+    /// The worker is gone: every running registry job ends with `message`.
+    fn fail_remotes(&mut self, message: &str) {
+        self.remote.fail_remotes(message);
+    }
+    /// The library's tags changed: Remotes compares every read tag with them
+    /// again.
+    fn remote_library_changed(&mut self) {
+        let actions = self.remote.remote_library_changed();
+        self.apply_remotes(actions, &mut None);
+    }
+    /// Preferences closed: the registries are read again, and the one whose
+    /// Log in… opened them lists again.
+    fn remote_preferences_closed(&mut self) {
+        let actions = self.remote.remote_preferences_closed();
+        self.apply_remotes(actions, &mut None);
+    }
+    /// F5 and the toolbar's Refresh: list the shown registry again.
+    pub fn refresh_remote(&mut self) {
+        let actions = self.remote.refresh_remote();
+        self.apply_remotes(actions, &mut None);
+    }
+    /// File › Get templates… and the empty library's button: Remotes › the
+    /// default registry › `unemu/` › Machine images, listed first if this
+    /// session has not.
+    pub fn show_templates(&mut self, accounts: Accounts, selected_file: &mut Option<usize>) {
+        let actions = self.remote.show_templates(accounts);
+        self.apply_remotes(actions, selected_file);
+    }
+    /// Show a remote node. It replaces the library's selection, so Start
+    /// never targets something no longer shown, and lists its registry the
+    /// first time in this session.
+    fn select_remote(&mut self, node: remotes::Node, selected_file: &mut Option<usize>) {
+        self.selected = None;
+        self.machine = None;
+        self.machine_settings = None;
+        self.readiness = None;
+        self.pending_launch = None;
+        self.firmware_selected = None;
+        self.media_selected = None;
+        *selected_file = None;
+        let actions = self.remote.select_remote(node);
+        self.apply_remotes(actions, selected_file);
+    }
+    /// The Remotes group under Library in the tree.
+    fn remote_tree(&mut self, ui: &mut egui::Ui, selected_file: &mut Option<usize>) {
+        let actions = self.remote.remote_tree(ui);
+        self.apply_remotes(actions, selected_file);
+    }
+    /// The list of the shown remote node.
+    fn remote_list(&mut self, ui: &mut egui::Ui) {
+        let drives = self.stopped_drives();
+        let context = RemotesContext {
+            facts: &self.platform_facts,
+            classic: self.classic,
+            tags: &self.snapshot.tags,
+            drives: &drives,
+        };
+        let actions = self.remote.remote_list(ui, &context);
+        self.apply_remotes(actions, &mut None);
+    }
+    /// What the list asked for, as if it had been drawn and clicked.
+    #[cfg(test)]
+    fn apply_list(&mut self, host: &str, answer: remotes::ListAnswer) {
+        let drives = self.stopped_drives();
+        let context = RemotesContext {
+            facts: &self.platform_facts,
+            classic: self.classic,
+            tags: &self.snapshot.tags,
+            drives: &drives,
+        };
+        let actions = self.remote.apply_list(host, answer, &context);
+        self.apply_remotes(actions, &mut None);
+    }
+    /// Whether Pull… has something to pull: a selected tag it can pull, or
+    /// of several, one it does not leave out.
+    pub fn can_pull_remote(&self) -> bool {
+        // The shell asks every frame; whether a tag can be pulled does not
+        // depend on the drives, so they are not listed here.
+        let context = RemotesContext {
+            facts: &self.platform_facts,
+            classic: self.classic,
+            tags: &self.snapshot.tags,
+            drives: &[],
+        };
+        self.remote.can_pull_remote(&context)
+    }
+    /// Pull…, Pull and create machine… or Pull and insert… of the selected
+    /// tags: the dialog opens, and pulls once the user confirms.
+    pub fn begin_remote_pull(&mut self, mode: Mode) {
+        let drives = self.stopped_drives();
+        let context = RemotesContext {
+            facts: &self.platform_facts,
+            classic: self.classic,
+            tags: &self.snapshot.tags,
+            drives: &drives,
+        };
+        self.remote
+            .begin_remote_pull(mode, &context, &mut self.remote_pull);
+    }
+    /// The details pane while a remote node is shown.
+    fn remote_details(&mut self, ui: &mut egui::Ui) {
+        let drives = self.stopped_drives();
+        let context = RemotesContext {
+            facts: &self.platform_facts,
+            classic: self.classic,
+            tags: &self.snapshot.tags,
+            drives: &drives,
+        };
+        let actions = self.remote.remote_details(ui, &context);
+        self.apply_remotes(actions, &mut None);
+    }
+    /// Contents… of a remote tag, while it is open.
+    fn remote_contents(&mut self, ctx: &egui::Context, classic: bool) {
+        if self.remote.contents.is_none() {
+            return;
+        }
+        let drives = self.stopped_drives();
+        let context = RemotesContext {
+            facts: &self.platform_facts,
+            classic,
+            tags: &self.snapshot.tags,
+            drives: &drives,
+        };
+        self.remote.remote_contents(ctx, &context);
+    }
+    /// Send a browsing request to the worker; a worker that is gone ends it
+    /// at once with the reason, so the registry says why it lists nothing.
+    fn send_browse(&mut self, request: BrowseRequest) {
+        let ended = remotes::unsent(&request);
+        self.send(Request::Browse(request));
+        if self.worker_dead {
+            let message = self
+                .error
+                .clone()
+                .unwrap_or_else(|| "Image store worker stopped".into());
+            self.on_browse(ended(message));
+        }
+    }
+    /// What Remotes asked of the library, in its order. Only the tree and
+    /// File › Get templates… show a node, which clears `selected_file`.
+    fn apply_remotes(&mut self, actions: Vec<RemotesAction>, selected_file: &mut Option<usize>) {
+        for action in actions {
+            match action {
+                RemotesAction::Browse(request) => self.send_browse(request),
+                RemotesAction::Select(node) => self.select_remote(node, selected_file),
+                RemotesAction::ShowInLibrary {
+                    tag,
+                    artifact_type,
+                    image,
+                } => self.show_in_library(&tag, &artifact_type, image),
+                RemotesAction::NewMachine { tag, image, name } => {
+                    self.new_machine_from(&tag, image, &name)
+                }
+                RemotesAction::BeginPull(mode) => self.begin_remote_pull(mode),
+                RemotesAction::LogIn(host) => self.login_wanted = Some(host),
+                RemotesAction::Insert { machine, unit, set } => {
+                    self.picker_wanted = Some((machine, unit, set))
+                }
+            }
+        }
+    }
+    /// The floppy drives of the library's machines that are stopped: every
+    /// one but the machine that runs.
+    fn stopped_drives(&self) -> Vec<Drive> {
+        let running = self.active_machine.as_ref().map(|(id, _)| id.as_str());
+        self.machines
+            .iter()
+            .filter(|machine| Some(machine.id()) != running)
+            .flat_map(|machine: &machines::MachineRow| {
+                machine.drives.iter().map(|&(unit, geometry)| {
+                    let letter = crate::media_picker::drive_name(unit);
+                    let pending = machine
+                        .listing
+                        .machine
+                        .pending
+                        .iter()
+                        .find(|p| p.drive == letter)
+                        .map(|p| self.pending_label(p));
+                    let created = machine
+                        .created
+                        .iter()
+                        .find(|c| c.drive == letter)
+                        .map(|c| c.title.clone());
+                    crate::remote_pull::pc_drive(
+                        machine.id().to_owned(),
+                        machine.name().to_owned(),
+                        unit,
+                        geometry,
+                        pending.or(created),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// Select `tag` in the library collection of its artifact type: an image
+    /// at once, a set or a package once the library lists it.
+    fn show_in_library(&mut self, tag: &str, artifact_type: &str, image: Descriptor) {
+        match artifact_type {
+            mt::MEDIA_SET | mt::FIRMWARE => {
+                self.remote.node = None;
+                self.selected = None;
+                self.machine = None;
+                self.machine_settings = None;
+                self.readiness = None;
+                self.pending_launch = None;
+                self.clear_file_selection = true;
+                self.query.text.clear();
+                if artifact_type == mt::FIRMWARE {
+                    self.query.filter = Filter::Firmware;
+                    self.media_selected = None;
+                    self.firmware_reselect = Some(tag.to_owned());
+                } else {
+                    self.query.filter = Filter::Media;
+                    self.firmware_selected = None;
+                    self.media_reselect = Some(tag.to_owned());
+                }
+                self.send(Request::Query(self.query.clone()));
+            }
+            _ => self.select_image(ImageRow {
+                reference: tag.to_owned(),
+                aliases: Vec::new(),
+                descriptor: image,
+                summary: None,
+                failure: None,
+            }),
+        }
+    }
+
+    /// New machine from image… on a pulled image, selected in Images.
+    fn new_machine_from(&mut self, tag: &str, image: Descriptor, name: &str) {
+        let row = ImageRow {
+            reference: tag.to_owned(),
+            aliases: Vec::new(),
+            descriptor: image,
+            summary: None,
+            failure: None,
+        };
+        self.select_image(row.clone());
+        self.new_machine_named(row, name);
+    }
+
     /// The machine of image `digest`, once a check has read it.
     pub fn selected_machine(&self, digest: &Digest) -> Option<&assembly::MachineConfig> {
         self.checked

@@ -21,18 +21,18 @@
 //! Pull… for all of them, which leaves out, with the reason, the ones it
 //! cannot pull.
 
-use super::{type_label, Group, LibraryView};
-use crate::{
-    library_view::{human_size, machines::MachineRow, pane, Filter, ImageRow, Request},
-    registry_transfer::kind_label,
-    remote_browse::{LocalState, TagRow},
-    remote_pull::{drives_for, refusal, Drive, Mode, Pick, RemotePull},
-};
+use super::{type_label, Group, RemotesAction, RemotesContext, RemotesView};
 use egui::RichText;
 use image_registry::DEFAULT_REGISTRY;
 use image_store::{license, media_type as mt, Descriptor, Digest};
-use library_model::PlatformFacts;
-use ui_kit::shell_icons::Icon;
+use library_model::{
+    listing::human_size,
+    registry_transfer::kind_label,
+    remote_browse::{LocalState, TagRow},
+    remote_pull::{drives_for, refusal, Mode, Pick, RemotePull},
+    PlatformFacts,
+};
+use ui_kit::{pane, shell_icons::Icon};
 
 const DESCRIPTION: &str = "org.opencontainers.image.description";
 const VENDOR: &str = "org.opencontainers.image.vendor";
@@ -92,7 +92,7 @@ fn takes(pick: &Pick<'_>) -> bool {
 
 /// The short digest the panes show.
 fn short(digest: &Digest) -> String {
-    format!("sha256:{}", pane::short_digest(digest.hex()))
+    format!("sha256:{}", library_model::listing::short(digest.hex()))
 }
 
 /// A descriptor's redistribution mark is open unless it says user-supplied.
@@ -194,53 +194,18 @@ fn release_alias(row: &TagRow) -> bool {
         )
 }
 
-impl LibraryView {
-    /// The floppy drives of the library's machines that are stopped: every
-    /// one but the machine that runs.
-    pub(in crate::library_view) fn stopped_drives(&self) -> Vec<Drive> {
-        let running = self.active_machine.as_ref().map(|(id, _)| id.as_str());
-        self.machines
-            .iter()
-            .filter(|machine| Some(machine.id()) != running)
-            .flat_map(|machine: &MachineRow| {
-                machine.drives.iter().map(|&(unit, geometry)| {
-                    let letter = crate::media_picker::drive_name(unit);
-                    let pending = machine
-                        .listing
-                        .machine
-                        .pending
-                        .iter()
-                        .find(|p| p.drive == letter)
-                        .map(|p| self.pending_label(p));
-                    let created = machine
-                        .created
-                        .iter()
-                        .find(|c| c.drive == letter)
-                        .map(|c| c.title.clone());
-                    crate::remote_pull::pc_drive(
-                        machine.id().to_owned(),
-                        machine.name().to_owned(),
-                        unit,
-                        geometry,
-                        pending.or(created),
-                    )
-                })
-            })
-            .collect()
-    }
-
+impl RemotesView {
     /// The selected tags of the shown registry as the model read them;
     /// with `tags`, each one's repository's tags for the pane's table.
-    fn remote_selected(&self, tags: bool) -> Vec<Selected> {
-        let (Some(model), Some(node)) = (&self.remote.model, &self.remote.node) else {
+    fn remote_selected(&self, tags: bool, facts: &PlatformFacts) -> Vec<Selected> {
+        let (Some(model), Some(node)) = (&self.model, &self.node) else {
             return Vec::new();
         };
         let Some(registry) = model.registry(&node.host) else {
             return Vec::new();
         };
         let blocked = registry.pull_blocked();
-        self.remote
-            .selection()
+        self.selection()
             .into_iter()
             .filter_map(|(repository, tag)| {
                 let listed = registry.repository(&repository)?;
@@ -261,7 +226,7 @@ impl LibraryView {
                     repository,
                     tag,
                     blocked: blocked.clone(),
-                    facts: self.platform_facts.clone(),
+                    facts: facts.clone(),
                 })
             })
             .collect()
@@ -269,11 +234,11 @@ impl LibraryView {
 
     /// Whether Pull… has something to pull: a selected tag it can pull, or
     /// of several, one it does not leave out.
-    pub fn can_pull_remote(&self) -> bool {
-        if self.remote.node.is_none() || self.remote.model.is_none() {
+    pub fn can_pull_remote(&self, context: &RemotesContext<'_>) -> bool {
+        if self.node.is_none() || self.model.is_none() {
             return false;
         }
-        let selected = self.remote_selected(false);
+        let selected = self.remote_selected(false, context.facts);
         let picks: Vec<Pick<'_>> = selected.iter().map(Selected::pick).collect();
         match picks.as_slice() {
             [] => false,
@@ -283,78 +248,35 @@ impl LibraryView {
     }
 
     /// Pull…, Pull and create machine… or Pull and insert… of the selected
-    /// tags: the dialog opens, and pulls once the user confirms.
-    pub fn begin_remote_pull(&mut self, mode: Mode) {
-        let Some(accounts) = self.remote.model.as_ref().map(|m| m.accounts().clone()) else {
+    /// tags: the dialog opens in `dialog`, and pulls once the user confirms.
+    /// Before the shell hands over the logins, `dialog` stays as it is.
+    pub fn begin_remote_pull(
+        &self,
+        mode: Mode,
+        context: &RemotesContext<'_>,
+        dialog: &mut Option<RemotePull>,
+    ) {
+        let Some(accounts) = self.model.as_ref().map(|m| m.accounts().clone()) else {
             return;
         };
-        let selected = self.remote_selected(false);
+        let selected = self.remote_selected(false, context.facts);
         let picks: Vec<Pick<'_>> = selected.iter().map(Selected::pick).collect();
-        let drives = self.stopped_drives();
-        self.remote_pull =
-            RemotePull::open(accounts, mode, &picks, self.snapshot.tags.clone(), &drives);
-    }
-
-    /// Select `tag` in the library collection of its artifact type: an image
-    /// at once, a set or a package once the library lists it.
-    pub(in crate::library_view) fn show_in_library(
-        &mut self,
-        tag: &str,
-        artifact_type: &str,
-        image: Descriptor,
-    ) {
-        match artifact_type {
-            mt::MEDIA_SET | mt::FIRMWARE => {
-                self.remote.node = None;
-                self.selected = None;
-                self.machine = None;
-                self.machine_settings = None;
-                self.readiness = None;
-                self.pending_launch = None;
-                self.clear_file_selection = true;
-                self.query.text.clear();
-                if artifact_type == mt::FIRMWARE {
-                    self.query.filter = Filter::Firmware;
-                    self.media_selected = None;
-                    self.firmware_reselect = Some(tag.to_owned());
-                } else {
-                    self.query.filter = Filter::Media;
-                    self.firmware_selected = None;
-                    self.media_reselect = Some(tag.to_owned());
-                }
-                self.send(Request::Query(self.query.clone()));
-            }
-            _ => self.select_image(ImageRow {
-                reference: tag.to_owned(),
-                aliases: Vec::new(),
-                descriptor: image,
-                summary: None,
-                failure: None,
-            }),
-        }
-    }
-
-    /// New machine from image… on a pulled image, selected in Images.
-    pub(in crate::library_view) fn new_machine_from(
-        &mut self,
-        tag: &str,
-        image: Descriptor,
-        name: &str,
-    ) {
-        let row = ImageRow {
-            reference: tag.to_owned(),
-            aliases: Vec::new(),
-            descriptor: image,
-            summary: None,
-            failure: None,
-        };
-        self.select_image(row.clone());
-        self.new_machine_named(row, name);
+        *dialog = RemotePull::open(
+            accounts,
+            mode,
+            &picks,
+            context.tags.to_vec(),
+            context.drives,
+        );
     }
 
     /// The details pane while a remote node is shown.
-    pub(in crate::library_view) fn remote_details(&mut self, ui: &mut egui::Ui) {
-        let selected = self.remote_selected(true);
+    pub fn remote_details(
+        &mut self,
+        ui: &mut egui::Ui,
+        context: &RemotesContext<'_>,
+    ) -> Vec<RemotesAction> {
+        let selected = self.remote_selected(true, context.facts);
         let action = match selected.as_slice() {
             [] => {
                 pane::meta(
@@ -363,50 +285,52 @@ impl LibraryView {
                 );
                 None
             }
-            [one] => self.one_tag(ui, one),
+            [one] => self.one_tag(ui, one, context),
             several => several_tags(ui, several),
         };
         let Some(action) = action else {
-            return;
+            return Vec::new();
         };
         match action {
-            PaneAction::Pull(mode) => self.begin_remote_pull(mode),
+            PaneAction::Pull(mode) => vec![RemotesAction::BeginPull(mode)],
             PaneAction::Contents => {
                 if let [one] = selected.as_slice() {
-                    self.remote.contents =
+                    self.contents =
                         Some((one.host.clone(), one.repository.clone(), one.tag.clone()));
                 }
+                Vec::new()
             }
             PaneAction::Pick(tag) => {
                 // As a click on the tag's row: the repository opens and
                 // reads its other tags, and the tag reads its metadata.
-                if let [one] = selected.as_slice() {
-                    let mut requests = Vec::new();
-                    if let Some(model) = &mut self.remote.model {
-                        requests.push(model.select(&one.host, &one.repository, &tag));
-                        requests.push(model.expand(&one.host, &one.repository));
-                    }
-                    self.remote
-                        .expanded
-                        .insert((one.host.clone(), one.repository.clone()));
-                    self.remote.pick(
-                        &one.host,
-                        one.repository.clone(),
-                        tag,
-                        egui::Modifiers::NONE,
-                    );
-                    for request in requests {
-                        self.send_browse(request);
-                    }
+                let [one] = selected.as_slice() else {
+                    return Vec::new();
+                };
+                let mut requests = Vec::new();
+                if let Some(model) = &mut self.model {
+                    requests.push(model.select(&one.host, &one.repository, &tag));
+                    requests.push(model.expand(&one.host, &one.repository));
                 }
+                self.expanded
+                    .insert((one.host.clone(), one.repository.clone()));
+                self.pick(
+                    &one.host,
+                    one.repository.clone(),
+                    tag,
+                    egui::Modifiers::NONE,
+                );
+                requests.into_iter().flat_map(super::browse).collect()
             }
-            PaneAction::ClearSelection => self.remote.multi.clear(),
+            PaneAction::ClearSelection => {
+                self.multi.clear();
+                Vec::new()
+            }
             PaneAction::ShowInLibrary | PaneAction::NewMachine | PaneAction::Insert => {
                 let [one] = selected.as_slice() else {
-                    return;
+                    return Vec::new();
                 };
                 let Some(Ok(record)) = one.row.as_ref().map(|r| &r.record) else {
-                    return;
+                    return Vec::new();
                 };
                 let local_tag = one
                     .row
@@ -416,21 +340,31 @@ impl LibraryView {
                 let image =
                     Descriptor::new(mt::MANIFEST, record.digest.clone(), record.manifest_size);
                 match action {
-                    PaneAction::ShowInLibrary => {
-                        self.show_in_library(&local_tag, &record.artifact_type, image)
-                    }
+                    PaneAction::ShowInLibrary => vec![RemotesAction::ShowInLibrary {
+                        tag: local_tag,
+                        artifact_type: record.artifact_type.clone(),
+                        image,
+                    }],
                     PaneAction::NewMachine => {
                         let name = record.title.clone().unwrap_or_else(|| local_tag.clone());
-                        self.new_machine_from(&local_tag, image, &name);
+                        vec![RemotesAction::NewMachine {
+                            tag: local_tag,
+                            image,
+                            name,
+                        }]
                     }
                     _ => {
                         // Insert… of a set in the library: the media picker on
                         // the first stopped drive that takes it, the set chosen.
-                        let drives = self.stopped_drives();
-                        if let Some(drive) = drives_for(&record.formats, &drives).first() {
-                            self.picker_wanted =
-                                Some((drive.machine.clone(), drive.unit, record.digest.clone()));
-                        }
+                        drives_for(&record.formats, context.drives)
+                            .first()
+                            .map(|drive| RemotesAction::Insert {
+                                machine: drive.machine.clone(),
+                                unit: drive.unit,
+                                set: record.digest.clone(),
+                            })
+                            .into_iter()
+                            .collect()
                     }
                 }
             }
@@ -438,7 +372,12 @@ impl LibraryView {
     }
 
     /// The pane of one selected tag.
-    fn one_tag(&self, ui: &mut egui::Ui, selected: &Selected) -> Option<PaneAction> {
+    fn one_tag(
+        &self,
+        ui: &mut egui::Ui,
+        selected: &Selected,
+        context: &RemotesContext<'_>,
+    ) -> Option<PaneAction> {
         let Some(row) = &selected.row else {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -658,8 +597,7 @@ impl LibraryView {
         let blocked =
             record.not_runnable(&selected.facts).is_some() || (refused.is_some() && !in_library);
         let formats = &record.formats;
-        let drives = self.stopped_drives();
-        let fits = !drives_for(formats, &drives).is_empty();
+        let fits = !drives_for(formats, context.drives).is_empty();
         let mut why = refused.clone();
         pane::actions(ui, |ui| {
             if in_library {
@@ -734,12 +672,11 @@ impl LibraryView {
     /// Contents… of a remote tag: every descriptor of its manifest, with
     /// the size and redistribution mark it carries and whether the store
     /// holds it, read from the manifest alone.
-    pub(in crate::library_view) fn remote_contents(&mut self, ctx: &egui::Context, classic: bool) {
-        let Some((host, repository, tag)) = self.remote.contents.clone() else {
+    pub fn remote_contents(&mut self, ctx: &egui::Context, context: &RemotesContext<'_>) {
+        let Some((host, repository, tag)) = self.contents.clone() else {
             return;
         };
         let row = self
-            .remote
             .model
             .as_ref()
             .and_then(|m| m.registry(&host))
@@ -750,11 +687,12 @@ impl LibraryView {
             let record = r.record.clone();
             (r, record)
         }) else {
-            self.remote.contents = None;
+            self.contents = None;
             return;
         };
         let mut close = false;
-        let facts = &self.platform_facts;
+        let facts = context.facts;
+        let classic = context.classic;
         egui::Modal::new(egui::Id::unique("remote-contents")).show(ctx, |ui| {
             // The mock-up's wide dialog, narrower in a narrow window.
             ui.set_width((ctx.content_rect().width() - 48.0).clamp(320.0, 760.0));
@@ -838,7 +776,7 @@ impl LibraryView {
             });
         });
         if close || ctx.input_mut(ui_kit::skin::escape_pressed) {
-            self.remote.contents = None;
+            self.contents = None;
         }
     }
 }

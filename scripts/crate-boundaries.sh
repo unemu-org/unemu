@@ -24,8 +24,8 @@
 #   application  anything
 #
 # and no window crate (window, window-*, ui-kit, machine-view, library-model,
-# pc-media, pc-library, unemupc) depends on a CLI crate (cli, cli-*, upcli), nor
-# the other way round.
+# library-ui, pc-media, pc-library, unemupc) depends on a CLI crate (cli, cli-*,
+# upcli), nor the other way round.
 #
 # The contract crate, unemu-core-api, lives in its own repository and comes in
 # as a pinned git dependency, so no workspace package has the contract layer
@@ -88,7 +88,8 @@ def article: if test("^[aeiou]") then "an \(.)" else "a \(.)" end;
 def family:
   if . == "cli" or . == "upcli" or startswith("cli-") then "CLI"
   elif . == "window" or . == "unemupc" or . == "ui-kit" or . == "machine-view"
-       or . == "library-model" or . == "pc-media" or . == "pc-library"
+       or . == "library-model" or . == "library-ui" or . == "pc-media"
+       or . == "pc-library"
        or startswith("window-") then "window"
   else null end;
 

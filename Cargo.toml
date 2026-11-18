@@ -19,6 +19,7 @@ members = [
     "crates/window",
     "crates/ui-kit",
     "crates/library-model",
+    "crates/library-ui",
     "crates/pc-core",
     "crates/machine-view",
     "crates/pc-media",

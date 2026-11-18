@@ -2489,9 +2489,100 @@ above it, as now. Four test binaries are linked in place of one.
 
 | # | Move | Cut before it moves | Tests | Proof and effect |
 |---|---|---|---|---|
-| 4.1 | **`library-ui` starts** with the table helpers of `library_view`, the view of `save_image` (`form`, `prompts`) and `registry_transfer_view` (789 lines) | `kind_label` takes the facts, which the push and pull dialogs keep | the one test of `registry_transfer_view` builds a PC store and stays | The frame and the collections draw their tables from the crate |
-| 4.2 | **Remotes off the frame, in place.** The `impl LibraryView` blocks of `remotes.rs` and `remotes/details.rs` (about 1 150 lines) become methods of `RemotesView`. What they read of the frame comes in as one borrowed value (the facts, the skin, whether the worker lives, the local tags, the stopped machines' drives as `remote_pull::Drive`, a function that sends a `BrowseRequest`); what they did to the frame goes out as a list of actions the frame applies (select an image, show a tag in the library, New machine from a pulled image, begin a pull, open a registry's login, open the picker on a set) | this move is the cut: the two blocks touch 19 fields of the frame besides `self.remote`, and four of its methods defined elsewhere (`send`, `select_image`, `pending_label`, `new_machine_named`) (COUNTED) | the 39 tests of `library_view::remotes::tests` drive the frame and pass unchanged | No crate changes; the diff is confined to the two files and the frame's calls into them |
-| 4.3 | **Remotes into `library-ui`**: `remotes` and `remotes/details` | none after 4.2; the kit's pane items come from `ui_kit::pane` | stay with the frame, which re-exports the module | About 3 600 lines of registry views (Remotes, push, pull, the save form) have no PC dependency by Cargo |
+| 4.1 | **Done.** **`library-ui` starts** with the table helpers of `library_view`, the view of `save_image` (`form`, `prompts`) and `registry_transfer_view` (789 lines) | `kind_label` takes the facts, which the push and pull dialogs keep | the one test of `registry_transfer_view` builds a PC store and stays | The frame and the collections draw their tables from the crate. As landed: see below the table |
+| 4.2 | **Done.** **Remotes off the frame, in place.** The `impl LibraryView` blocks of `remotes.rs` and `remotes/details.rs` (about 1 150 lines) become methods of `RemotesView`. What they read of the frame comes in as one borrowed value (the facts, the skin, whether the worker lives, the local tags, the stopped machines' drives as `remote_pull::Drive`, a function that sends a `BrowseRequest`); what they did to the frame goes out as a list of actions the frame applies (select an image, show a tag in the library, New machine from a pulled image, begin a pull, open a registry's login, open the picker on a set) | this move is the cut: the two blocks touch 19 fields of the frame besides `self.remote`, and four of its methods defined elsewhere (`send`, `select_image`, `pending_label`, `new_machine_named`) (COUNTED) | the 39 tests of `library_view::remotes::tests` drive the frame and pass unchanged | No crate changes; the diff is confined to the two files and the frame's calls into them. As landed: see below the table |
+| 4.3 | **Done.** **Remotes into `library-ui`**: `remotes` and `remotes/details` | none after 4.2; the kit's pane items come from `ui_kit::pane` | stay with the frame, which re-exports the module | About 3 600 lines of registry views (Remotes, push, pull, the save form) have no PC dependency by Cargo. As landed: see below the table |
+
+As landed, 4.1 to 4.3 (one bead, three moves, each built and tested
+before the next; no behaviour change). MEASURED with `cargo nextest list
+--workspace --run-ignored all`: the workspace lists the same 4074 test
+names apart from the crate; one test moved (below), so `library-ui` has 1
+and the window 598 where it had 599. `library-ui` (`crates/library-ui`,
+layer `neutral`, egui, `ui-kit`, `library-model`, `image-store`,
+`image-registry`) is counted as a window crate by the boundary check, with
+a self-test fixture, and the window's glyph test reads
+`library_ui::source_dir()` too (`test-support`, as in `ui-kit`).
+
+- **4.1.** `library_ui::table` holds the table helpers whole: `Lead`,
+  `Cell`, `Columns`, `sort_header`, `fit_columns`, `table_width`,
+  `group_row`, `draw_cells`, `draw_cells_with_hints`, `name_cell` and their
+  private helpers and figures; the frame's `image_lead` and `tree_icon`
+  name its rows and stay. `library_view.rs` imports what the frame, the
+  collections and Remotes name; `CHILD_INDENT`, `NAME_ICON_ROOM` and `SCROLL_ROOM`, which only the
+  frame's tests and `layout_tests` name, are behind `test-support`
+  (`table::test_support`). `library_ui::save_image` holds `form` and
+  `prompts` with their two helpers; the window's `save_image.rs` re-exports
+  them beside the model. `library_ui::registry_transfer_view` holds the
+  dialogs whole but the test module, which stays in the window's
+  `registry_transfer_view::tests` as planned (it plans a push of a PC image)
+  and imports by name the dialog types it took from the old module's own
+  `use` lines. The cut was already made: `kind_label` took the facts in
+  3.4. Deviation: `the_form_and_both_questions_render_without_a_window`
+  moved, by rule 2: it draws the form over the model alone, so it is
+  `save_image::tests` in `library-ui`. The two tests of the frame that
+  draw only table cells (`selected_rows_and_items_are_legible_in_every_skin_and_theme`,
+  `the_name_cell_draws_its_icon_and_badges`) stay in `library_view::tests`,
+  whose module stays, as the tests of the split files did in 3.8 to 3.10.
+- **4.2.** `RemotesView` holds every method of the two `impl LibraryView`
+  blocks under its old name. What they read of the frame comes in as
+  `RemotesContext` (the facts, the skin, the local tags, the stopped
+  machines' drives); what they did to the frame goes out as an ordered
+  `Vec<RemotesAction>` (`Browse`, `Select` a node, `ShowInLibrary`,
+  `NewMachine`, `BeginPull`, `LogIn`, `Insert`), which the frame's
+  `apply_remotes` carries out in that order. The frame keeps thin methods
+  of the same names (`attach_remotes`, `select_remote`, `remote_list`,
+  `apply_list` for the tests, …), so the shell and the 39 tests of
+  `library_view::remotes::tests` are unchanged, and it took the three
+  methods that are its own: `stopped_drives`, `show_in_library` and
+  `new_machine_from`. Deviations: the browsing requests go out as
+  `Browse` actions instead of a function in the context, and "whether the
+  worker lives" stays with the frame: the frame's `send` fails the imports
+  and transfers of the whole frame when the worker is gone, which a
+  function lent beside `&mut self.remote` cannot do, so the frame sends
+  each request and, with no worker, hands Remotes the ended event at once
+  (`send_browse`, with `unsent`), as before. Showing a node is an action
+  too (`Select`), so the frame clears its selection and the shell's
+  selected file before Remotes shows the node, after any request the same
+  frame sent before it, as before. `begin_remote_pull` writes the dialog
+  into a slot it is lent, so a frame without logins keeps the dialog it
+  has, as before. The frame lists the drives for each call that lends the
+  context while Remotes is shown or Contents… is open, where before only
+  the details pane and Pull… listed them; `can_pull_remote`, which the
+  shell asks every frame, lends no drives, since whether a tag can be
+  pulled does not depend on them.
+- **4.3.** `library_ui::remotes` and its `details` hold the module whole,
+  with the kit's pane items from `ui_kit::pane` and the short digest from
+  `library_model::listing::short`; the window's `library_view/remotes.rs`
+  re-exports it and keeps `mod tests` (the 39 tests, unchanged), with the
+  names they took from the old module's own `use` lines. Visibility: the
+  types and methods the frame names became `pub`; `RemotesView` gained a
+  `Default` (clippy's `new_without_default` for a public type). For the
+  stayed tests, `RemotesView::{open, expanded, selected, multi, contents}`,
+  `selection`, `Node::registry`, every field of `ListAnswer` (a test builds
+  one with `..ListAnswer::default()`), `TreeLine::{label, tail}` and `Tail`
+  became `pub`, and `ROW`, `COLUMNS`, `tree_lines`, `action_label`,
+  `namespace_key`, `type_label` and `newest_first` are behind
+  `test-support` (`remotes::test_support`). Deviation from rule 6 of
+  §8.1.5: the fields and methods only the stayed tests name
+  (`RemotesView::{open, expanded, selected, multi}`, `selection`,
+  `Node::registry`, `ListAnswer` and its fields, `RemotesView::apply_list`,
+  `TreeLine::{label, tail}`, `Tail`) are `pub` for every build, not behind
+  `test-support`: a field, or a method the frame also calls, cannot be
+  made public behind a feature without wrapping it under another name, and
+  the tests would then change their bodies, which rule 2 forbids. The
+  fields that became `pub` for stayed tests in 3.7 to 3.10 are the
+  precedent. No test moved: 38 of them
+  drive a `LibraryView`, and
+  `expanded_tags_list_by_release_with_the_alias_before_its_revisions`
+  builds its records with `pc_image::PLATFORM`.
+
+Time (MEASURED, `cargo nextest run -p library-ui -p window`, four tests at
+once on a loaded development host): 595 tests in 51 to 53 s of wall time
+after each move, as before. The runner's plan for any `library-ui` file
+(`table.rs`, `remotes.rs`, `registry_transfer_view.rs`) is `library-ui` and
+`window`, where the plan for the window's `registry_transfer_view.rs`,
+`save_image.rs` or `library_view/remotes.rs` was `window` alone; it still
+is for the window's `library_view/remotes.rs`, which now holds the tests.
 
 Effect: none in time, since the tests of these views drive the frame. The
 step is for the boundary.

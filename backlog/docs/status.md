@@ -5,6 +5,21 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — The library's neutral views leave the window:** moves 4.1
+  to 4.3 of the window split (design/core-contract.md §8.1.7). A new
+  neutral crate, `library-ui` (egui, no PC crate), holds the list tables
+  every collection and Remotes draw with (`table`), the Save as new image…
+  form and its questions (`save_image`), the Push…, Pull by reference… and
+  Pull… dialogs (`registry_transfer_view`) and the Remotes group with its
+  details pane (`remotes`). Remotes no longer reaches into the library
+  frame: the frame lends it the platform facts, the skin, the local tags
+  and the stopped machines' drives for one call and applies, in their
+  order, the browsing requests and the frame changes it asks for. About
+  3 600 lines of registry views have no PC dependency by Cargo. No
+  behaviour changes: every test keeps its name (4074; MEASURED); the save
+  form's drawing test moved to `library-ui`, and the tests of Remotes and
+  the dialogs, which drive the frame or plan PC images, stay with the
+  window.
 - **2026-11-18 — Recipe locks and pinning:** step B8 of design/recipes.md
   §19.2. `upcli recipe pin FILE` builds a draft, then writes its lock,
   `FILE.lock/sha256/<hex>` (the manifest, the config and every layer no

@@ -120,6 +120,7 @@ mod tests {
         );
         walk(&pc_media::source_dir(), &mut out);
         walk(&pc_library::source_dir(), &mut out);
+        walk(&library_ui::source_dir(), &mut out);
         walk(&ui_kit::shell_icons::source_dir(), &mut out);
         assert!(out.len() > 20, "the desktop sources were not found");
         out
