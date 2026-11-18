@@ -6,6 +6,7 @@
 //! `backlog/docs/design/machine-images.md` §7.
 
 use crate::{
+    media_dialog::{ApplyPending as _, LibraryInsertView as _},
     shell_model::{self, Command, Enablement, LibraryEntry, State},
     Args, Presenter,
 };
@@ -6346,7 +6347,7 @@ mod tests {
             shell.blank_disk = Some(crate::media_dialog::BlankDisk {
                 directory: "/machines".into(),
                 output: typed.into(),
-                ..Default::default()
+                ..crate::media_dialog::BlankDisk::new(crate::machines_dir())
             });
             let former = (
                 Kind::Save,
@@ -6651,7 +6652,8 @@ mod tests {
             (
                 "blank disk, open",
                 |shell, _| {
-                    shell.blank_disk = Some(Default::default());
+                    shell.blank_disk =
+                        Some(crate::media_dialog::BlankDisk::new(crate::machines_dir()));
                     shell.ask_file(FileFor::BlankDisk);
                 },
                 unchanged,

@@ -23,8 +23,9 @@
 #   pc           contract, neutral, emulation, pc
 #   application  anything
 #
-# and no window crate (window, window-*, ui-kit, machine-view, library-model, unemupc)
-# depends on a CLI crate (cli, cli-*, upcli), nor the other way round.
+# and no window crate (window, window-*, ui-kit, machine-view, library-model,
+# pc-media, pc-library, unemupc) depends on a CLI crate (cli, cli-*, upcli), nor
+# the other way round.
 #
 # The check reads the dependencies each manifest declares (optional and
 # target-specific ones included), not a resolved build. From each crate it
@@ -68,7 +69,8 @@ def article: if test("^[aeiou]") then "an \(.)" else "a \(.)" end;
 def family:
   if . == "cli" or . == "upcli" or startswith("cli-") then "CLI"
   elif . == "window" or . == "unemupc" or . == "ui-kit" or . == "machine-view"
-       or . == "library-model" or startswith("window-") then "window"
+       or . == "library-model" or . == "pc-media" or . == "pc-library"
+       or startswith("window-") then "window"
   else null end;
 
 # The rule $from breaks by depending on $to, if any. A crate without a known

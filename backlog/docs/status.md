@@ -5,6 +5,18 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — The desktop's PC media models and firmware choices
+  leave the window:** moves 3.6 and 3.7 of the window split
+  (design/core-contract.md §8.1.6). `pc-media` (layer pc, no toolkit)
+  holds the floppy catalogue drafts, the blank-disk form and the pending
+  floppies of `media_dialog`, `created_media`, `kept_catalogue`,
+  `drive_chips`, and the sets and short disk names of the picker and the
+  Catalogue submenu they use; `pc-library` (layer pc, no toolkit) starts
+  with `firmware_choices`. The window re-exports both under the old module
+  paths; the Insert dialog's library form and Start's insert of pending
+  floppies stay in the window. `hardware` and `image_settings` wait for the
+  listing types of move 3.3. No behaviour changes: every test keeps its
+  name (3958 before and after, 40 now in the two new crates; MEASURED).
 - **2026-11-18 — The desktop library's first neutral models:** moves 3.1
   to 3.3 of the window split (design/core-contract.md §8.1.6). A new crate,
   `library-model` (layer `neutral`, no toolkit, no PC crate), holds the

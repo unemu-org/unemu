@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "pc-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "The desktop's PC media models: floppy catalogue drafts, blank disks, pending and created media, the kept catalogue and the drive chips, without a toolkit (core-contract.md §8.1)."
+
+[package.metadata.unemu]
+layer = "pc"
+
+[features]
+# The library insert's prepared entries without a progress callback and this
+# crate's source folder, for the desktop's tests: those that drive the media
+# dialog with a library and the one that checks every drawn string's glyphs.
+test-support = []
+
+[dependencies]
+assembly.workspace = true
+devices.workspace = true
+image-store = { path = "../image-store", version = "0.0.2" }
+machine-file.workspace = true
+media.workspace = true
+pc-image = { path = "../pc-image", version = "0.0.2" }
+serde.workspace = true
+sha2.workspace = true
+toml.workspace = true
+unemu-core-api.workspace = true
+
+[dev-dependencies]
+assembly = { workspace = true, features = ["test-support"] }

@@ -72,7 +72,7 @@ const RECORD: &str = "catalogue.toml";
 /// disk's own format (`360K`), which the waiting lists show.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
-pub(crate) enum KeptDisk {
+pub enum KeptDisk {
     /// One of the image's own disks, with the image's write setting.
     Own {
         name: String,
@@ -172,7 +172,7 @@ impl KeptDisk {
 /// One floppy drive's kept catalogue.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct KeptDrive {
+pub struct KeptDrive {
     /// The drive as the guest names it, `A:` or `B:`.
     pub drive: String,
     /// The disk in the drive at Stop, by its place in `disk`; none when the
@@ -208,7 +208,7 @@ fn record_path(workspace: &Path) -> PathBuf {
 
 /// The catalogues a stopped machine had at its last Stop, read from its
 /// workspace folder; none when it never stopped with one.
-pub(crate) fn read(workspace: &Path) -> Result<Vec<KeptDrive>> {
+pub fn read(workspace: &Path) -> Result<Vec<KeptDrive>> {
     let text = match fs::read_to_string(record_path(workspace)) {
         Ok(text) => text,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -262,7 +262,7 @@ fn publish(folder: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
 
 /// Choose the kept disk that goes into `drive` of a stopped machine at its
 /// next Start, by its place in the kept catalogue.
-pub(crate) fn set_in_drive(workspace: &Path, drive: &str, index: usize) -> Result<()> {
+pub fn set_in_drive(workspace: &Path, drive: &str, index: usize) -> Result<()> {
     let mut drives = read(workspace)?;
     let kept = drives
         .iter_mut()
@@ -278,7 +278,7 @@ pub(crate) fn set_in_drive(workspace: &Path, drive: &str, index: usize) -> Resul
 /// A disk of a running drive's catalogue, as the window hands it over at
 /// Stop.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct StoppedDisk {
+pub struct StoppedDisk {
     pub name: String,
     /// The library set and medium of a set's disk.
     pub source: Option<CatalogueSource>,
@@ -297,7 +297,7 @@ pub(crate) struct StoppedDisk {
 /// A running floppy drive's catalogue in order, and the place of the disk
 /// in it, none while the drive is empty.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct StoppedDrive {
+pub struct StoppedDrive {
     pub unit: u8,
     pub disks: Vec<StoppedDisk>,
     pub in_drive: Option<usize>,
@@ -307,7 +307,7 @@ pub(crate) struct StoppedDrive {
 /// the next run boundary (`queued`) are in: a Stop before that boundary
 /// keeps the disk the user put in, not the one before it. `now` is the
 /// index it holds and `count` its catalogue's length, as Next counts it.
-pub(crate) fn after_queued(
+pub fn after_queued(
     unit: u8,
     now: Option<usize>,
     count: usize,
@@ -327,10 +327,7 @@ pub(crate) fn after_queued(
 
 /// The running drives' catalogues as This machine lists them, with the
 /// catalogue index each drive holds (`inserted`), for the record at Stop.
-pub(crate) fn stopped(
-    slots: &[Option<FloppySlot>; 2],
-    inserted: [Option<usize>; 2],
-) -> Vec<StoppedDrive> {
+pub fn stopped(slots: &[Option<FloppySlot>; 2], inserted: [Option<usize>; 2]) -> Vec<StoppedDrive> {
     (0u8..)
         .zip(slots)
         .filter_map(|(unit, slot)| {
@@ -559,11 +556,7 @@ fn keep_disk(
 /// next Start takes them back; the record replaces the last one, unless a
 /// newer version wrote that one. Each disk that cannot be kept is named in
 /// a note, and the others are kept; the same disk is kept once.
-pub(crate) fn keep(
-    store: &Store,
-    workspace: &Path,
-    drives: Vec<StoppedDrive>,
-) -> Result<Vec<String>> {
+pub fn keep(store: &Store, workspace: &Path, drives: Vec<StoppedDrive>) -> Result<Vec<String>> {
     let previous = match read(workspace) {
         Ok(previous) => previous,
         Err(error) if newer_record(workspace) => {
@@ -612,7 +605,7 @@ pub(crate) fn keep(
 
 /// A set's disk the kept catalogue brought back, for the window.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RestoredSet {
+pub struct RestoredSet {
     /// Its place in the drive's catalogue.
     pub index: usize,
     pub source: CatalogueSource,
@@ -625,7 +618,7 @@ pub(crate) struct RestoredSet {
 /// What [`restore`] did to one drive, for the window once the machine has
 /// assembled.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RestoredDrive {
+pub struct RestoredDrive {
     pub unit: u8,
     /// The set disks the kept catalogue brought back.
     pub sets: Vec<RestoredSet>,
@@ -633,7 +626,7 @@ pub(crate) struct RestoredDrive {
 
 /// What [`restore`] did: the drives it changed, and what it left out.
 #[derive(Debug, Default)]
-pub(crate) struct Restored {
+pub struct Restored {
     pub drives: Vec<RestoredDrive>,
     pub notes: Vec<String>,
 }
@@ -964,7 +957,7 @@ fn restore_drive(
 /// disks' (those for a drive with a listed insert stayed out). Nothing here
 /// stops the Start: a record that cannot be read leaves every catalogue out
 /// with a note, and a disk that cannot come back stays out with one.
-pub(crate) fn restore(
+pub fn restore(
     session: &mut pc_image::workspace::PreparedSession,
     store: &Store,
     workspace: &Path,
@@ -1013,7 +1006,7 @@ pub(crate) fn restore(
 /// `first`. `machine` names the machine in the write words; `find` looks a
 /// library set up by its digest; `skip` leaves out the kept disks a pending
 /// insert brings itself.
-pub(crate) fn waiting_disks(
+pub fn waiting_disks(
     kept: &KeptDrive,
     geometry: assembly::FloppyGeometry,
     machine: &str,

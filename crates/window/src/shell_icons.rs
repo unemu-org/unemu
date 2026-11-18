@@ -95,8 +95,8 @@ mod tests {
         assert_eq!(found, "✓✗⏏▶");
     }
 
-    /// Every source file of the desktop crate and of the ui kit it draws
-    /// with, by path.
+    /// Every source file of the desktop crate, of the model crates whose
+    /// strings it draws and of the ui kit it draws with, by path.
     fn sources() -> Vec<(std::path::PathBuf, String)> {
         fn walk(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, String)>) {
             let mut entries: Vec<_> = std::fs::read_dir(dir)
@@ -118,6 +118,8 @@ mod tests {
             &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
             &mut out,
         );
+        walk(&pc_media::source_dir(), &mut out);
+        walk(&pc_library::source_dir(), &mut out);
         walk(&ui_kit::shell_icons::source_dir(), &mut out);
         assert!(out.len() > 20, "the desktop sources were not found");
         out

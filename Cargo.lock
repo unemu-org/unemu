@@ -2654,6 +2654,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "pc-library"
+version = "0.0.2"
+dependencies = [
+ "assembly",
+ "image-store",
+ "pc-image",
+ "toml",
+]
+
+[[package]]
+name = "pc-media"
+version = "0.0.2"
+dependencies = [
+ "assembly",
+ "devices",
+ "image-store",
+ "machine-file",
+ "media",
+ "pc-image",
+ "serde",
+ "sha2",
+ "toml",
+ "unemu-core-api",
+]
+
+[[package]]
 name = "peniko"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4258,6 +4284,8 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "pc-image",
+ "pc-library",
+ "pc-media",
  "platforms",
  "serde",
  "sha2",

@@ -29,6 +29,9 @@ devices.workspace = true
 machine-file.workspace = true
 assembly.workspace = true
 winit.workspace = true
+# The PC media and library models below the desktop's views.
+pc-media = { path = "../pc-media", version = "0.0.2" }
+pc-library = { path = "../pc-library", version = "0.0.2" }
 # The desktop's skin, icons, panes, file dialogs and clipboard shortcuts.
 ui-kit = { path = "../ui-kit", version = "0.0.2" }
 # The library's platform-neutral models: registry accounts, the image
@@ -60,6 +63,8 @@ assembly = { workspace = true, features = ["test-support"] }
 cpu.workspace = true
 ui-kit = { path = "../ui-kit", version = "0.0.2", features = ["test-support"] }
 library-model = { path = "../library-model", version = "0.0.2", features = ["test-support"] }
+pc-media = { path = "../pc-media", version = "0.0.2", features = ["test-support"] }
+pc-library = { path = "../pc-library", version = "0.0.2", features = ["test-support"] }
 machine-view = { workspace = true, features = ["test-support"] }
 unemu-pc-core = { workspace = true, features = ["test-support"] }
 

@@ -33,7 +33,9 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | `unemu-core-api` | The contract between front ends and emulator cores ([core contract](design/core-contract.md) §3): `Core` with its `CoreDescription`, the `Machine` a front end drives (run to a limit, picture and sound, input by USB HID usage, media slots, reset, saved state, finish, messages), the `CONTRACT` version and its `drives` rule. `std` only, object-safe, every type `#[non_exhaustive]` | None | None |
 | `unemu-pc-core` | The PC core behind the contract (§4, stage A): `PcMachine` wraps an assembled machine and runs it to tick deadlines, with the set-1 scan-code encoder and the 8042 back-pressure (`keyboard`), the pointing-device queue (`mouse`), the deadline-to-cap conversion (`pacing`), the CP437 text rasteriser and its CC BY-SA fonts (`raster`, `font`) and drive-activity sampling; `PcCore` describes the PC and cannot create machines yet | `unemu-core-api`, `assembly`, `audio`, `device`, `devices`, `machine`, `video` | None |
 | `machine-view` | The desktop's session of one machine over `dyn Machine` alone (§5, §8): `Session` with pacing against the host clock, the host audio ring, the winit key-code to HID usage map, pointer capture, the host media and mute chords, the macOS system-key tap and the drives' activity | `unemu-core-api`, `winit`, `cpal`, `objc2*` (macOS) | None |
-| `window` | The egui desktop shell, the machine library and the PC dialogs; its machine window is a `machine_view::Session` over a `unemu_pc_core::PcMachine`, which the media dialogs reach through `PcMachine::assembled` | `assembly`, `machine`, `winit`, `egui`, `eframe`, `image-store`, `image-registry`, `pc-image`, `platforms`, `ui-kit`, `library-model`, `unemu-core-api`, `machine-view`, `unemu-pc-core` | `cpu`, `assembly/test-support`, `image-store/test-support`, `media/test-support`, `pc-image/test-support`, `ui-kit/test-support`, `library-model/test-support`, `machine-view/test-support`, `unemu-pc-core/test-support` |
+| `window` | The egui desktop shell, the machine library and the PC dialogs; its machine window is a `machine_view::Session` over a `unemu_pc_core::PcMachine`, which the media dialogs reach through `PcMachine::assembled`. The PC media and library models it draws come from `pc-media` and `pc-library`, re-exported under their old module paths | `assembly`, `machine`, `winit`, `egui`, `eframe`, `image-store`, `image-registry`, `pc-image`, `platforms`, `ui-kit`, `library-model`, `pc-media`, `pc-library`, `unemu-core-api`, `machine-view`, `unemu-pc-core` | `cpu`, `assembly/test-support`, `image-store/test-support`, `media/test-support`, `pc-image/test-support`, `ui-kit/test-support`, `library-model/test-support`, `machine-view/test-support`, `unemu-pc-core/test-support` |
+| `pc-media` | The desktop's PC media models without a toolkit ([core contract](design/core-contract.md) §8.1): the Insert floppy dialog's catalogue drafts, the library insert, the blank-disk form and the floppies that wait for a Start (`media_dialog`), Create from files… and its pending record (`created_media`), the catalogue a library machine keeps at Stop (`kept_catalogue`), the status bar's drive views (`drive_chips`), and the sets, disks and short names of the picker and the Catalogue submenu that these name (`media_picker`, `catalogue_menu`) | `assembly`, `devices`, `image-store`, `machine-file`, `media`, `pc-image`, `unemu-core-api`, `serde`, `sha2`, `toml` | `assembly/test-support` |
+| `pc-library` | The desktop's PC library models without a toolkit ([core contract](design/core-contract.md) §8.1); for now the firmware choices of Settings… and the newer-firmware hint (`firmware_choices`) | `assembly`, `image-store`, `pc-image`, `toml` | None |
 | `ui-kit` | The desktop's skin and widget helpers, free of any machine: the classic and modern skins (`skin`: visuals, fonts, title strips, bevels, the one-Escape rule, the text marks), the mock-up icons and their tested inventory (`shell_icons`), the library's details panes (`pane`), the brand logo, host file dialogs and clipboard shortcuts ([core contract](design/core-contract.md) §8) | `egui`, `winit`, `image`, `rfd`, `arboard` | `toml` |
 | `library-model` | The desktop library's platform-neutral models, without a toolkit ([core contract](design/core-contract.md) §8.1): the Preferences › Registries page (`registries_model`), the rows of the image lists with their source, sizes, short digests and last-run time (`listing`) and the Save as new image… form and its tag rules (`save_image`). The desktop re-exports them under their old paths and draws them | `image-store`, `image-registry`, `toml` | `image-store/test-support`, `image-registry/test-support` |
 | `machine-file` | Schema 1 TOML/YAML parsing, source origins, image hashing and lowering through assembly validation; merging remains deferred ([schema](design/machine-files.md#schema-field-by-field)) | `assembly`, `image-store`, `serde`, `sha2`, `toml`, `serde-saphyr`, `thiserror` | None |
@@ -53,7 +55,7 @@ and `scripts/crate-boundaries.sh` keeps the layers apart
 | `contract` | `unemu-core-api` | nothing at all |
 | `neutral` | `media`, `image-store`, `image-registry`, `recipe`, `ui-kit`, `machine-view`, `library-model`, `cli-core` | `contract`, `neutral` |
 | `emulation` | `device`, `bus`, `cpu`, `video`, `audio`, `devices`, `chipset`, `machine`, `testkit`, `assembly`, `unemu-pc-core` | `contract`, `emulation` |
-| `pc` | `machine-file`, `pc-image`, `pc-harness`, `cli-pc` | `contract`, `neutral`, `emulation`, `pc` |
+| `pc` | `machine-file`, `pc-image`, `pc-harness`, `cli-pc`, `pc-media`, `pc-library` | `contract`, `neutral`, `emulation`, `pc` |
 | `application` | `upcli`, `window`, `platforms` | anything |
 
 The rules cover test dependencies too, and no window crate depends on a CLI
@@ -144,7 +146,7 @@ Summary cache version 3 distinguishes machines from media sets and retains the
 same metadata/title facet projection for both. `image media` imports sources by
 streaming full hashes, deduplicates descriptors and publishes only verified sets.
 
-The shell's `media_dialog` model resolves a pinned set descriptor, checks every
+The `media_dialog` model (`crates/pc-media`) resolves a pinned set descriptor, checks every
 format before modifying a catalogue, and submits entries through
 `AssembledMachine::append_floppy`. It queues the initial selection through the
 existing floppy event path. Journal paths belong to the receiving machine's
@@ -709,7 +711,7 @@ each lamp for 200 ms of host UI time, which never reaches the machine. Headless
 CLI runs do not depend on the shell and retain their existing behavior. See
 `design/machine-images.md` §7.
 
-`src/drive_chips.rs` is the pure model behind the status-bar drive chips and
+`crates/pc-media/src/drive_chips.rs` is the pure model behind the status-bar drive chips and
 the Media menu's drive labels. It builds one view per A:–D: drive from the live
 media configuration, the Insert dialog's floppy slots and the FDC's inserted
 medium, naming the image, format, write mode, source (machine file or image,

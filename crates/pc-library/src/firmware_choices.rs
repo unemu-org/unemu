@@ -17,7 +17,7 @@ use toml::{Table, Value};
 
 /// A firmware choice of the settings sheet's Firmware tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum Slot {
+pub enum Slot {
     /// The system BIOS at the top of the first MiB.
     System,
     /// The video card's BIOS at C0000h.
@@ -48,11 +48,11 @@ impl Slot {
 }
 
 /// The catalogue the library offers: the PC board's reviewed builds.
-pub(crate) fn catalogue() -> &'static [FirmwareEntry] {
+pub fn catalogue() -> &'static [FirmwareEntry] {
     pc_image::firmware::catalogue()
 }
 
-pub(crate) fn entry(id: &str) -> Option<&'static FirmwareEntry> {
+pub fn entry(id: &str) -> Option<&'static FirmwareEntry> {
     catalogue().iter().find(|e| e.id == id)
 }
 
@@ -81,7 +81,7 @@ fn is_video(rom: &Table) -> bool {
 }
 
 /// The ROM table of a slot in hardware tables.
-pub(crate) fn rom_table(machine: &Table, slot: Slot) -> Option<&Table> {
+pub fn rom_table(machine: &Table, slot: Slot) -> Option<&Table> {
     let firmware = firmware(machine)?;
     match slot {
         Slot::System => firmware.get("bios")?.as_table(),
@@ -96,7 +96,7 @@ pub(crate) fn rom_table(machine: &Table, slot: Slot) -> Option<&Table> {
 
 /// The option ROMs other than the video BIOS, by catalogue name: they follow
 /// the card they serve (the XTIDE build follows its disk adapter).
-pub(crate) fn option_roms(machine: &Table) -> Vec<String> {
+pub fn option_roms(machine: &Table) -> Vec<String> {
     firmware(machine)
         .and_then(|f| f.get("option_roms"))
         .and_then(Value::as_array)
@@ -112,14 +112,14 @@ pub(crate) fn option_roms(machine: &Table) -> Vec<String> {
 }
 
 /// The catalogue entry hardware tables bind in a slot.
-pub(crate) fn current(machine: &Table, slot: Slot) -> Option<&'static FirmwareEntry> {
+pub fn current(machine: &Table, slot: Slot) -> Option<&'static FirmwareEntry> {
     entry_of(rom_table(machine, slot)?, slot.kind())
 }
 
 /// Put `rom` into the slot: the system BIOS table, or the video BIOS in
 /// place of the current one among the option ROMs (first when there is none,
 /// as New machine… orders them).
-pub(crate) fn replace(machine: &mut Table, slot: Slot, rom: Table) -> Result<(), String> {
+pub fn replace(machine: &mut Table, slot: Slot, rom: Table) -> Result<(), String> {
     let firmware = machine
         .entry("firmware")
         .or_insert_with(|| Value::Table(Table::new()))
@@ -147,7 +147,7 @@ pub(crate) fn replace(machine: &mut Table, slot: Slot, rom: Table) -> Result<(),
 /// The ROM table New machine… would write for a package ROM, with logical
 /// asset names taken from the bytes' SHA-256, so a new binding never clashes
 /// with a name the image already uses.
-pub(crate) fn package_table(rom: &PackageRom) -> Result<Table, String> {
+pub fn package_table(rom: &PackageRom) -> Result<Table, String> {
     let mut table = rom.table(0).map_err(|e| e.to_string())?;
     let name = |table: &Table| {
         table
@@ -175,11 +175,7 @@ pub(crate) fn package_table(rom: &PackageRom) -> Result<Table, String> {
 /// The package ROM of the local store that holds an entry's bytes: its
 /// SHA-256 and size must be the catalogue's, whatever catalogue id the
 /// package claims; a ROM naming the entry's id, then an open package, wins.
-pub(crate) fn package_rom(
-    packages: &[Package],
-    entry: &FirmwareEntry,
-    slot: Slot,
-) -> Option<PackageRom> {
+pub fn package_rom(packages: &[Package], entry: &FirmwareEntry, slot: Slot) -> Option<PackageRom> {
     let mut found: Vec<(bool, PackageRom)> = packages
         .iter()
         .flat_map(|p| {
@@ -203,7 +199,7 @@ pub(crate) fn package_rom(
 
 /// The SHA-256 of every ROM hardware tables name (a ROM in chips by its
 /// assembled bytes), for telling which packages a machine's settings use.
-pub(crate) fn rom_hashes(machine: &Table) -> Vec<String> {
+pub fn rom_hashes(machine: &Table) -> Vec<String> {
     let Some(firmware) = firmware(machine) else {
         return Vec::new();
     };
@@ -223,7 +219,7 @@ pub(crate) fn rom_hashes(machine: &Table) -> Vec<String> {
 
 /// A firmware choice of a machine's own settings, with its mark.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Own {
+pub struct Own {
     pub slot: Slot,
     pub entry: &'static FirmwareEntry,
     pub open: bool,
@@ -232,7 +228,7 @@ pub(crate) struct Own {
 /// The catalogue entries a machine's settings tables bind, each marked as
 /// the package blob the settings record carries it (every chip open), or by
 /// the catalogue's distribution where the record has none.
-pub(crate) fn own_choices(settings: &Table) -> Vec<Own> {
+pub fn own_choices(settings: &Table) -> Vec<Own> {
     let blobs = pc_image::revision::bound_blobs(settings);
     Slot::ALL
         .into_iter()
@@ -269,19 +265,19 @@ pub(crate) fn own_choices(settings: &Table) -> Vec<Own> {
 }
 
 /// Whether a catalogue entry replaces a superseded one.
-pub(crate) fn replaces_any(entry: &FirmwareEntry) -> bool {
+pub fn replaces_any(entry: &FirmwareEntry) -> bool {
     catalogue()
         .iter()
         .any(|old| old.superseded_by.is_some_and(|s| s.by == entry.id))
 }
 
 /// Whether every blob of a package ROM is open.
-pub(crate) fn rom_open(rom: &PackageRom) -> bool {
+pub fn rom_open(rom: &PackageRom) -> bool {
     rom.rom().is_ok_and(|r| rom.package.open(r))
 }
 
 /// The entry's name as the catalogue labels it, without the superseded mark.
-pub(crate) fn name(entry: &FirmwareEntry) -> String {
+pub fn name(entry: &FirmwareEntry) -> String {
     thread_local! {
         // The labels come from the capabilities API, which reads them from
         // the board's catalogue; one draft serves every lookup.
@@ -302,7 +298,7 @@ pub(crate) fn name(entry: &FirmwareEntry) -> String {
 
 /// The entry's release as the hint names it: `1.0.2-unemu.3`, `0.9d-unemu.1`,
 /// `1985-06-10`.
-pub(crate) fn release(entry: &FirmwareEntry) -> String {
+pub fn release(entry: &FirmwareEntry) -> String {
     let id = entry.id;
     for prefix in [
         "unemu-at-bios-",
@@ -331,7 +327,7 @@ pub(crate) fn release(entry: &FirmwareEntry) -> String {
 
 /// The family a system BIOS choice is listed under; the entries of one family
 /// share a CMOS layout.
-pub(crate) fn family(layout: Option<CmosLayout>) -> &'static str {
+pub fn family(layout: Option<CmosLayout>) -> &'static str {
     match layout {
         Some(CmosLayout::OpenAtBios) => "Open AT BIOS (unemu-at-bios)",
         Some(CmosLayout::KiselevXi8088) => "Kiselev 8088_bios (Xi 8088 builds)",
@@ -342,19 +338,19 @@ pub(crate) fn family(layout: Option<CmosLayout>) -> &'static str {
 }
 
 /// Whether the catalogue lists an entry as open firmware.
-pub(crate) fn catalogue_open(entry: &FirmwareEntry) -> bool {
+pub fn catalogue_open(entry: &FirmwareEntry) -> bool {
     matches!(entry.distribution, FirmwareDistribution::Open { .. })
 }
 
 /// The release a superseded entry names as its replacement, and why.
-pub(crate) fn replacement(entry: &FirmwareEntry) -> Option<(&'static FirmwareEntry, &'static str)> {
+pub fn replacement(entry: &FirmwareEntry) -> Option<(&'static FirmwareEntry, &'static str)> {
     let supersession = entry.superseded_by?;
     Some((self::entry(supersession.by)?, supersession.reason))
 }
 
 /// One superseded release a machine or an image uses.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Newer {
+pub struct Newer {
     pub slot: Slot,
     pub old: &'static FirmwareEntry,
     pub by: &'static FirmwareEntry,
@@ -380,7 +376,7 @@ impl Newer {
 
 /// The catalogue entries an image binds, by slot, read from its library
 /// summary: each firmware layer whose decoded digest is a catalogued ROM.
-pub(crate) fn in_summary(
+pub fn in_summary(
     summary: &image_store::summary::ImageSummary,
 ) -> Vec<(Slot, &'static FirmwareEntry)> {
     let mut found: Vec<(Slot, &'static FirmwareEntry)> = summary
@@ -401,7 +397,7 @@ pub(crate) fn in_summary(
 
 /// The entries a machine runs: its own settings' firmware where it has
 /// settings, else its image's.
-pub(crate) fn machine_firmware(
+pub fn machine_firmware(
     settings: Option<&Table>,
     summary: Option<&image_store::summary::ImageSummary>,
 ) -> Vec<(Slot, &'static FirmwareEntry)> {
@@ -416,7 +412,7 @@ pub(crate) fn machine_firmware(
 
 /// The superseded releases among catalogue entries a machine or an image
 /// binds, as (slot, entry) pairs.
-pub(crate) fn newer_of(entries: &[(Slot, &'static FirmwareEntry)]) -> Vec<Newer> {
+pub fn newer_of(entries: &[(Slot, &'static FirmwareEntry)]) -> Vec<Newer> {
     entries
         .iter()
         .filter_map(|(slot, old)| {
@@ -432,7 +428,7 @@ pub(crate) fn newer_of(entries: &[(Slot, &'static FirmwareEntry)]) -> Vec<Newer>
 }
 
 /// The quiet row badge's tooltip: every hint, one sentence each.
-pub(crate) fn badge_tooltip(newer: &[Newer]) -> Option<String> {
+pub fn badge_tooltip(newer: &[Newer]) -> Option<String> {
     (!newer.is_empty()).then(|| {
         newer
             .iter()
@@ -443,7 +439,7 @@ pub(crate) fn badge_tooltip(newer: &[Newer]) -> Option<String> {
 }
 
 /// The quiet badge after a machine's state or an image's name.
-pub(crate) const BADGE: &str = "↑ newer BIOS";
+pub const BADGE: &str = "↑ newer BIOS";
 
 #[cfg(test)]
 mod tests {

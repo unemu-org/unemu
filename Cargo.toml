@@ -22,6 +22,8 @@ members = [
     "crates/core-api",
     "crates/pc-core",
     "crates/machine-view",
+    "crates/pc-media",
+    "crates/pc-library",
     "crates/media",
     "crates/machine-file",
     "crates/image-store",

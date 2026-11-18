@@ -42,7 +42,7 @@ const PENDING: &str = "pending.toml";
 /// One created disk of a pending insert.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct CreatedDisk {
+pub struct CreatedDisk {
     /// The image's SHA-256 in lower-case hex, which names its file.
     pub sha256: String,
     /// The disk's name in the drive's catalogue.
@@ -54,7 +54,7 @@ pub(crate) struct CreatedDisk {
 /// order after it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct CreatedInsert {
+pub struct CreatedInsert {
     /// The drive as the guest names it, `A:` or `B:`.
     pub drive: String,
     /// What the disks are called together, as the drive chips show it.
@@ -89,7 +89,7 @@ struct PendingFile {
 /// What Create and insert asks for: the read host items, laid out as the
 /// view showed them, and where the disks go.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct CreateOrder {
+pub struct CreateOrder {
     pub unit: u8,
     pub items: Vec<HostItem>,
     pub top: Option<ShortName>,
@@ -105,7 +105,7 @@ pub(crate) struct CreateOrder {
 
 /// Where the library worker puts the created images.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Place {
+pub enum Place {
     /// A media folder: the running session's, or a stopped machine file's.
     Folder(PathBuf),
     /// A stopped library machine, by id: the drive's pending insert.
@@ -116,7 +116,7 @@ pub(crate) enum Place {
 /// identity and metadata, so the window puts it into a drive without reading
 /// and hashing it again.
 #[derive(Clone)]
-pub(crate) struct Verified(std::sync::Arc<(fs::File, media::Header, fs::Metadata)>);
+pub struct Verified(std::sync::Arc<(fs::File, media::Header, fs::Metadata)>);
 
 impl Verified {
     /// Hash the file at `path` in full; it must still be the image `digest`.
@@ -165,7 +165,7 @@ impl Eq for Verified {}
 
 /// What the worker made of an order.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Created {
+pub struct Created {
     pub order: CreateOrder,
     pub place: Place,
     /// Each disk's image file, SHA-256 and name, in catalogue order.
@@ -179,7 +179,7 @@ pub(crate) struct Created {
     pub keep_failed: Option<String>,
 }
 
-pub(crate) fn hex(digest: &[u8; 32]) -> String {
+pub fn hex(digest: &[u8; 32]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
@@ -192,7 +192,7 @@ pub(crate) fn geometry(format: FloppyFormat) -> Option<assembly::FloppyGeometry>
 }
 
 /// The diskette format of a drive geometry.
-pub(crate) fn format_of(geometry: assembly::FloppyGeometry) -> Option<FloppyFormat> {
+pub fn format_of(geometry: assembly::FloppyGeometry) -> Option<FloppyFormat> {
     assembly::descriptors::FLOPPY_TYPES
         .iter()
         .find(|kind| kind.geometry == geometry)
@@ -201,7 +201,7 @@ pub(crate) fn format_of(geometry: assembly::FloppyGeometry) -> Option<FloppyForm
 
 /// Disk `index` of `count`, as its catalogue entry names it: the short name
 /// a disk of a set has, "AZURAMON 3 of 10".
-pub(crate) fn disk_name(title: &str, index: usize, count: usize) -> String {
+pub fn disk_name(title: &str, index: usize, count: usize) -> String {
     crate::catalogue_menu::short_name(
         Some(crate::catalogue_menu::SetDisk {
             title,
@@ -256,7 +256,7 @@ fn pending_path(workspace: &Path) -> PathBuf {
 
 /// The created disks a stopped machine's drives take at its next Start, read
 /// from its workspace folder.
-pub(crate) fn read_pending(workspace: &Path) -> Result<Vec<CreatedInsert>> {
+pub fn read_pending(workspace: &Path) -> Result<Vec<CreatedInsert>> {
     let text = match fs::read_to_string(pending_path(workspace)) {
         Ok(text) => text,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -299,11 +299,7 @@ fn write_pending(workspace: &Path, inserts: Vec<CreatedInsert>) -> Result<()> {
 /// next Start; the machine's other drives keep theirs. A record that cannot
 /// be read, or that a newer version wrote, is replaced: nothing of it would
 /// go in at Start anyway.
-pub(crate) fn set_pending(
-    workspace: &Path,
-    drive: &str,
-    insert: Option<CreatedInsert>,
-) -> Result<()> {
+pub fn set_pending(workspace: &Path, drive: &str, insert: Option<CreatedInsert>) -> Result<()> {
     let mut inserts = read_pending(workspace).unwrap_or_default();
     inserts.retain(|other| other.drive != drive);
     inserts.extend(insert);
@@ -312,7 +308,7 @@ pub(crate) fn set_pending(
 
 /// Choose the created disk waiting for `drive` that goes in at the next
 /// Start, by its place; the others follow in order.
-pub(crate) fn set_first(workspace: &Path, drive: &str, first: usize) -> Result<()> {
+pub fn set_first(workspace: &Path, drive: &str, first: usize) -> Result<()> {
     let mut inserts = read_pending(workspace)?;
     let insert = inserts
         .iter_mut()
@@ -326,7 +322,7 @@ pub(crate) fn set_first(workspace: &Path, drive: &str, first: usize) -> Result<(
 }
 
 /// Drop the pending inserts a launch put in, once its machine assembled.
-pub(crate) fn confirm(workspace: &Path, inserted: &[CreatedInsert]) -> Result<()> {
+pub fn confirm(workspace: &Path, inserted: &[CreatedInsert]) -> Result<()> {
     let mut inserts = read_pending(workspace)?;
     let before = inserts.len();
     inserts.retain(|insert| !inserted.contains(insert));
@@ -339,7 +335,7 @@ pub(crate) fn confirm(workspace: &Path, inserted: &[CreatedInsert]) -> Result<()
 /// What [`apply`] did: the inserts that are done with (put in, or replaced
 /// by a pending insert of the machine list) and what went wrong, in words.
 #[derive(Debug, Default)]
-pub(crate) struct Applied {
+pub struct Applied {
     pub done: Vec<CreatedInsert>,
     pub notes: Vec<String>,
 }
@@ -351,7 +347,7 @@ pub(crate) struct Applied {
 /// a pending insert of the machine list (`listed`) keeps that one. Nothing
 /// here stops the Start: a record that cannot be read, or an insert whose
 /// image is gone or changed, stays out with a note.
-pub(crate) fn apply(
+pub fn apply(
     session: &mut pc_image::workspace::PreparedSession,
     workspace: &Path,
     listed: &[String],
@@ -487,10 +483,7 @@ fn apply_one(
 /// machine's own disks: read-only bases pinned by SHA-256, with guest writes
 /// in the folder's journals (`retention` closed generations kept) or
 /// refused.
-pub(crate) fn entries(
-    created: &Created,
-    retention: u32,
-) -> Vec<crate::media_dialog::CatalogueEntry> {
+pub fn entries(created: &Created, retention: u32) -> Vec<crate::media_dialog::CatalogueEntry> {
     let Place::Folder(media) = &created.place else {
         return Vec::new();
     };
@@ -537,11 +530,7 @@ pub(crate) fn entries(
 /// Build the order's disks and store them where `place` says: for a stopped
 /// library machine, as the drive's pending insert in its workspace. With
 /// `keep`, the disks also become an installation media set of the library.
-pub(crate) fn create(
-    store: &image_store::Store,
-    order: CreateOrder,
-    place: Place,
-) -> Result<Created> {
+pub fn create(store: &image_store::Store, order: CreateOrder, place: Place) -> Result<Created> {
     let survey = Survey::new(&order.items, order.top, order.format, order.label)
         .map_err(|e| e.to_string())?;
     let plan = if order.split {

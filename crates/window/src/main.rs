@@ -55,16 +55,15 @@ mod pacing {
     }
 }
 pub(crate) use machine_view::system_keys;
+// The PC media and library models, under the paths the desktop names them by.
+use pc_library::firmware_choices;
+use pc_media::{created_media, drive_chips, kept_catalogue};
 
 mod app_menu;
 mod catalogue_menu;
-mod created_media;
-mod drive_chips;
-mod firmware_choices;
 #[cfg(test)]
 mod host_audio;
 mod image_settings;
-mod kept_catalogue;
 #[cfg(test)]
 mod key_table_tests;
 mod layers_dialog;

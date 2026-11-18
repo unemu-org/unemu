@@ -18,7 +18,7 @@ use std::time::Duration;
 
 /// Drive slots A:, B:, C: and D:: floppy units 0 and 1, then the IDE master
 /// and slave.
-pub(crate) const DRIVES: usize = 4;
+pub const DRIVES: usize = 4;
 
 /// Busy state of A:, B:, C: and D:, combined over every completed run
 /// boundary since the shell last took it.
@@ -29,7 +29,7 @@ pub(crate) const CHIP_MAX: f32 = 300.0;
 
 /// Where the running machine came from; names the source of its own media.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Origin {
+pub enum Origin {
     /// A machine file, by its library name.
     MachineFile(String),
     /// A machine image, by its reference (`name:tag`).
@@ -54,7 +54,7 @@ impl Origin {
 
 /// A drive bay of the running machine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Bay {
+pub enum Bay {
     Floppy {
         unit: u8,
         geometry: FloppyGeometry,
@@ -67,7 +67,7 @@ pub(crate) enum Bay {
 
 /// The medium in a drive now.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Medium {
+pub struct Medium {
     pub name: String,
     /// Library media set, machine file or image, or a file chosen with Browse….
     pub source: String,
@@ -85,7 +85,7 @@ pub(crate) struct Medium {
 
 /// One drive as the status bar and the Media menu show it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DriveView {
+pub struct DriveView {
     pub bay: Bay,
     /// `None` is an empty floppy drive; a fixed disk always has its medium.
     pub medium: Option<Medium>,
@@ -96,7 +96,7 @@ pub(crate) struct DriveView {
 }
 
 impl DriveView {
-    /// Position among A:, B:, C: and D:, which also indexes [`DriveBusy`].
+    /// Position among A:, B:, C: and D:, which also indexes `DriveBusy`.
     pub fn slot(&self) -> usize {
         match self.bay {
             Bay::Floppy { unit, .. } => usize::from(unit),
@@ -268,7 +268,7 @@ fn medium_rows(rows: &mut Vec<(&'static str, String)>, medium: &Medium) {
 }
 
 /// An IDE drive's place on its cable: unit 0 is the master, unit 1 the slave.
-pub(crate) fn role(unit: u8) -> &'static str {
+pub fn role(unit: u8) -> &'static str {
     if unit == 0 {
         "master"
     } else {
@@ -326,7 +326,7 @@ pub(crate) fn short_sha256(digest: &[u8; 32]) -> String {
 
 /// The dialog row of the medium a drive catalogue entry belongs to. A row keeps
 /// the entries of its earlier write modes as alternates.
-pub(crate) fn entry_position(slot: &FloppySlot, index: usize) -> Option<usize> {
+pub fn entry_position(slot: &FloppySlot, index: usize) -> Option<usize> {
     slot.entries.iter().position(|entry| {
         entry.index == Some(index) || entry.alternates.iter().any(|(_, other)| *other == index)
     })
@@ -334,7 +334,7 @@ pub(crate) fn entry_position(slot: &FloppySlot, index: usize) -> Option<usize> {
 
 /// Every A:–D: drive of `config` in letter order. `inserted` holds each
 /// floppy unit's catalogue index and host label, `None` for an open door.
-pub(crate) fn drive_views(
+pub fn drive_views(
     config: &MachineConfig,
     slots: &[Option<FloppySlot>; 2],
     inserted: &[Option<(usize, String)>; 2],
@@ -471,7 +471,7 @@ fn fixed_medium(drive: &DriveConfig, origin: &Origin) -> Medium {
 /// Each light stays on for a short host-time hold after its last busy sample.
 /// Host UI time only: the machine never reads it.
 #[derive(Debug, Default)]
-pub(crate) struct DriveLights {
+pub struct DriveLights {
     until: [Option<Duration>; DRIVES],
 }
 
@@ -508,13 +508,13 @@ impl DriveLights {
 }
 
 /// Chip widths inside the fixed drive area. Each chip wants its natural width
-/// up to [`CHIP_MAX`] and needs at least `minimum`, the width that still shows
+/// up to `CHIP_MAX` and needs at least `minimum`, the width that still shows
 /// its format and write mode. When the wants do not all fit, every chip keeps
 /// its minimum and the rest is shared, narrow demands first. When even the
 /// minimums do not fit, all chips shrink in proportion. The widths never sum
 /// past `area`, so no chip starts beyond its edge; the area itself never grows,
 /// so the cells beside it keep their places whatever the drives hold.
-pub(crate) fn chip_widths(area: f32, natural: &[f32], minimum: &[f32]) -> Vec<f32> {
+pub fn chip_widths(area: f32, natural: &[f32], minimum: &[f32]) -> Vec<f32> {
     let area = area.max(0.0);
     let wanted: Vec<f32> = natural.iter().map(|width| width.min(CHIP_MAX)).collect();
     if wanted.iter().sum::<f32>() <= area {
