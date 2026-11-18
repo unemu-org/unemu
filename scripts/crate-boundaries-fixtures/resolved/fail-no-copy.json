@@ -1,0 +1,50 @@
+{
+  "self_test": {
+    "expect": "fail",
+    "message": "one copy: the resolved graph has no package named unemu-core-api"
+  },
+  "packages": [
+    {
+      "name": "unemu-pc-core",
+      "version": "0.0.2",
+      "id": "path+file:///workspace/crates/pc-core#unemu-pc-core@0.0.2",
+      "source": null,
+      "manifest_path": "/workspace/crates/pc-core/Cargo.toml"
+    },
+    {
+      "name": "machine-view",
+      "version": "0.0.2",
+      "id": "path+file:///workspace/crates/machine-view#0.0.2",
+      "source": null,
+      "manifest_path": "/workspace/crates/machine-view/Cargo.toml"
+    },
+    {
+      "name": "platforms",
+      "version": "0.0.2",
+      "id": "path+file:///workspace/crates/platforms#0.0.2",
+      "source": null,
+      "manifest_path": "/workspace/crates/platforms/Cargo.toml"
+    }
+  ],
+  "resolve": {
+    "nodes": [
+      {
+        "id": "path+file:///workspace/crates/pc-core#unemu-pc-core@0.0.2",
+        "deps": []
+      },
+      {
+        "id": "path+file:///workspace/crates/machine-view#0.0.2",
+        "deps": []
+      },
+      {
+        "id": "path+file:///workspace/crates/platforms#0.0.2",
+        "deps": [
+          {
+            "name": "unemu_pc_core",
+            "pkg": "path+file:///workspace/crates/pc-core#unemu-pc-core@0.0.2"
+          }
+        ]
+      }
+    ]
+  }
+}

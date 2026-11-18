@@ -116,6 +116,24 @@ After one successful fetch the checkout is cached and builds work offline. Movin
 (edit the `rev` in `Cargo.toml`, then update `Cargo.lock`) is its own bead: the Definition of Done
 plus the slow goldens. See decision-13.
 
+### The contract: unemu-core-api
+
+The contract between front ends and emulator cores, `unemu-core-api`, lives in its own repository,
+[unemu-org/unemu-core-api](https://github.com/unemu-org/unemu-core-api) (`MIT OR Apache-2.0`), and
+is pinned the same way: a git dependency at the exact commit of a release tag, never a bare `path`
+dependency. To work against a local checkout, add a second override beside x86jit's in the
+gitignored `.cargo/config.toml`:
+
+```toml
+[patch."https://github.com/unemu-org/unemu-core-api"]
+unemu-core-api = { path = "<your unemu-core-api checkout>" }
+```
+
+The package is at the repository's root. The override applies to the whole graph, so a pinned core
+that names the same URL builds against the checkout too. A build must hold exactly one copy of the
+contract; `scripts/crate-boundaries.sh` fails otherwise and names each copy's source. Moving the pin
+is its own bead: the contract and every pinned core move in one commit (core contract §13.1).
+
 ## CI
 
 GitHub Actions runs `.github/workflows/ci.yml` on pushes to `main`, on pull

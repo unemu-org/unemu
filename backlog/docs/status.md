@@ -5,6 +5,17 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — The contract has its own repository:** step 3 of
+  design/core-contract.md §13.6. `unemu-core-api` is no longer a workspace
+  crate: the workspace pins release v0.1.0 of
+  [unemu-org/unemu-core-api](https://github.com/unemu-org/unemu-core-api)
+  (`MIT OR Apache-2.0`) by its exact commit, as it pins x86jit, and
+  `crates/core-api` is gone. Its source there equals the old directory but
+  for the licence lines, so nothing behaves differently; its seven unit tests
+  run in that repository's CI. `scripts/crate-boundaries.sh` now also fails
+  when a build holds more or fewer than one copy of the contract, naming each
+  copy's source and users. A local checkout is used through a gitignored
+  `[patch]` (dev-setup.md, "The contract: unemu-core-api").
 - **2026-11-18 — Sound at any rate, pads from the keyboard:** steps 1 and 2
   of design/core-contract.md §13.6, in `machine-view`. The session plays a
   machine's sound at the exact rate its description states, any rate from

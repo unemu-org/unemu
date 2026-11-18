@@ -30,7 +30,7 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | `machine` | Generic `Machine<C: Cpu>` and execution/clock/IRQ/DMA loop | `cpu`, `bus`, `device`, `thiserror` | `testkit`, `devices` |
 | `video` | `FrameSink`, text frames/grids, text-mode renderer and capture sink | `device` | None |
 | `assembly` | `MachineConfig`, validation, presets, image/device construction, wiring, and `RunPolicy` driver | `machine`, `cpu`, `bus`, `device`, `devices`, `video`, `chipset`, `media`, `sha2`, `thiserror` | `media/test-support` |
-| `unemu-core-api` | The contract between front ends and emulator cores ([core contract](design/core-contract.md) §3): `Core` with its `CoreDescription`, the `Machine` a front end drives (run to a limit, picture and sound, input by USB HID usage, media slots, reset, saved state, finish, messages), the `CONTRACT` version and its `drives` rule. `std` only, object-safe, every type `#[non_exhaustive]` | None | None |
+| `unemu-core-api` (external) | Not a workspace crate: a git dependency pinned to release v0.1.0 of its own repository, [unemu-org/unemu-core-api](https://github.com/unemu-org/unemu-core-api) (`MIT OR Apache-2.0`). The contract between front ends and emulator cores ([core contract](design/core-contract.md) §3, §13.1): `Core` with its `CoreDescription`, the `Machine` a front end drives (run to a limit, picture and sound, input by USB HID usage, media slots, reset, saved state, finish, messages), the `CONTRACT` version and its `drives` rule. `std` only, object-safe, every type `#[non_exhaustive]` | None | None |
 | `unemu-pc-core` | The PC core behind the contract (§4, stage A): `PcMachine` wraps an assembled machine and runs it to tick deadlines, with the set-1 scan-code encoder and the 8042 back-pressure (`keyboard`), the pointing-device queue (`mouse`), the deadline-to-cap conversion (`pacing`), the CP437 text rasteriser and its CC BY-SA fonts (`raster`, `font`) and drive-activity sampling; `PcCore` describes the PC and cannot create machines yet | `unemu-core-api`, `assembly`, `audio`, `device`, `devices`, `machine`, `video` | None |
 | `machine-view` | The desktop's session of one machine over `dyn Machine` alone (§5, §8): `Session` with pacing against the host clock, the host audio ring, the winit key-code to HID usage map, pointer capture, the host media and mute chords, the macOS system-key tap and the drives' activity | `unemu-core-api`, `winit`, `cpal`, `objc2*` (macOS) | None |
 | `window` | The egui desktop shell, the machine library and the PC dialogs; its machine window is a `machine_view::Session` over a `unemu_pc_core::PcMachine`, which the media dialogs reach through `PcMachine::assembled`. The PC media and library models it draws and the library's worker come from `pc-media` and `pc-library`, the neutral library models from `library-model`, re-exported under their old module paths; the frame wakes the worker's events with a repaint function | `assembly`, `machine`, `winit`, `egui`, `eframe`, `image-store`, `image-registry`, `pc-image`, `platforms`, `ui-kit`, `library-model`, `pc-media`, `pc-library`, `unemu-core-api`, `machine-view`, `unemu-pc-core` | `cpu`, `assembly/test-support`, `image-store/test-support`, `media/test-support`, `pc-image/test-support`, `ui-kit/test-support`, `library-model/test-support`, `pc-media/test-support`, `pc-library/test-support`, `machine-view/test-support`, `unemu-pc-core/test-support` |
@@ -52,7 +52,7 @@ and `scripts/crate-boundaries.sh` keeps the layers apart
 
 | Layer | Crates | May depend on |
 | --- | --- | --- |
-| `contract` | `unemu-core-api` | nothing at all |
+| `contract` | none here: the contract, `unemu-core-api`, is in its own repository, whose CI keeps it free of dependencies | nothing at all |
 | `neutral` | `media`, `image-store`, `image-registry`, `recipe`, `ui-kit`, `machine-view`, `library-model`, `cli-core` | `contract`, `neutral` |
 | `emulation` | `device`, `bus`, `cpu`, `video`, `audio`, `devices`, `chipset`, `machine`, `testkit`, `assembly`, `unemu-pc-core` | `contract`, `emulation` |
 | `pc` | `machine-file`, `pc-image`, `pc-harness`, `cli-pc`, `pc-media`, `pc-library` | `contract`, `neutral`, `emulation`, `pc` |
@@ -70,6 +70,9 @@ the licence notice and the push plan, which binds
 (`pc_image::firmware::restricted`) so neither program can plan a push
 without it. The one known crossing, `assembly` → `media` for the journals the
 running machine writes, is listed in `scripts/crate-boundaries.allow`.
+The same script holds the resolved build to one copy of the contract: exactly
+one package named `unemu-core-api`, else it prints each copy's source and the
+crates that use it.
 
 Concrete hardware selection lives in `assembly` and the frontend. `machine`
 does not depend on `chipset`, `devices`, `video`, or x86jit directly. `Bus` is a

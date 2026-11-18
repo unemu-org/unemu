@@ -169,8 +169,8 @@
       "mode": "full",
       "affected": ["assembly", "audio", "bus", "chipset", "cli-core", "cli-pc", "cpu", "device",
         "devices", "image-registry", "image-store", "machine", "machine-file", "machine-view",
-        "media", "pc-harness", "pc-image", "platforms", "testkit", "ui-kit", "unemu-core-api",
-        "unemu-pc-core", "upcli", "video", "window"],
+        "media", "pc-harness", "pc-image", "platforms", "testkit", "ui-kit", "unemu-pc-core",
+        "upcli", "video", "window"],
       "tier": "goldens", "deny": true, "release_devices": true, "cli": true, "scan_tests": [],
       "targeted": []
     }
@@ -294,11 +294,15 @@
     }
   },
   {
-    "name": "a contract change runs every crate that implements or drives it",
-    "changed": ["crates/core-api/src/machine.rs"],
+    "name": "the contract comes from its own repository: a new contract is a moved pin in the workspace manifest, so everything",
+    "changed": ["Cargo.toml", "Cargo.lock"],
     "expect": {
-      "mode": "crates", "seeds": ["unemu-core-api"],
-      "affected": ["machine-view", "unemu-core-api", "unemu-pc-core", "window"], "tier": "fast"
+      "mode": "full", "seeds": [],
+      "affected": ["assembly", "audio", "bus", "chipset", "cli-core", "cli-pc", "cpu", "device",
+        "devices", "image-registry", "image-store", "machine", "machine-file", "machine-view",
+        "media", "pc-harness", "pc-image", "platforms", "testkit", "ui-kit", "unemu-pc-core",
+        "upcli", "video", "window"],
+      "tier": "goldens", "deny": true
     }
   },
   {

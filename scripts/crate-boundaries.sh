@@ -27,6 +27,19 @@
 # pc-media, pc-library, unemupc) depends on a CLI crate (cli, cli-*, upcli), nor
 # the other way round.
 #
+# The contract crate, unemu-core-api, lives in its own repository and comes in
+# as a pinned git dependency, so no workspace package has the contract layer
+# any more: the rule that a contract crate depends on nothing is checked by the
+# contract's own CI, and here it only applies if such a package comes back.
+#
+# One copy of the contract. Two revisions of unemu-core-api in one build are
+# two different crates, and a core built against one does not implement the
+# other's traits; the compiler then fails with a long error far from the
+# cause. So the resolved dependency graph (`cargo metadata --offline --locked`,
+# every package the lock file pins) must hold exactly one package named
+# unemu-core-api; otherwise the check prints each copy's source and the
+# packages that depend on it.
+#
 # The check reads the dependencies each manifest declares (optional and
 # target-specific ones included), not a resolved build. From each crate it
 # follows the crate's own dependencies of every kind, then the normal and build
@@ -43,15 +56,21 @@
 #   scripts/crate-boundaries.sh                  check the workspace
 #   scripts/crate-boundaries.sh --self-test      run the rules over the fixtures
 #   scripts/crate-boundaries.sh --metadata FILE [--allow FILE]
-#                                                check `cargo metadata` output
+#                                                check `cargo metadata --no-deps` output
+#   scripts/crate-boundaries.sh --resolved FILE  check one copy of the contract in
+#                                                full `cargo metadata` output
 #
 # Needs cargo and jq (both in the devShell). The workspace check reads one
-# `cargo metadata --no-deps`, which resolves nothing and takes well under a second.
+# `cargo metadata --no-deps`, which resolves nothing, and one resolved
+# `cargo metadata --offline --locked`, which reads the lock file and the local
+# dependency cache; both take well under a second.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 default_allow="$root/scripts/crate-boundaries.allow"
 fixtures="$root/scripts/crate-boundaries-fixtures"
+# The crate every core and front end must link exactly once.
+contract_crate=unemu-core-api
 
 # Prints {"errors": [...], "packages": N, "allowed": N} for one metadata
 # document and one allow list.
@@ -161,6 +180,46 @@ def walk($graph; $layer; $valid; $from):
   }
 JQ
 
+# Prints {"errors": [...], "source": S} for one resolved metadata document:
+# an error unless exactly one package is named $crate.
+read -r -d '' one_copy_program <<'JQ' || true
+(.packages // []) as $packages
+| ($packages | map({key: .id, value: .name}) | from_entries) as $name_of
+| [$packages[] | select(.name == $crate)] as $copies
+| def where: .source // "path \(.manifest_path | rtrimstr("/Cargo.toml"))";
+  def users($id):
+    [(.resolve.nodes // [])[] | select(any(.deps[]?; .pkg == $id)) | $name_of[.id]]
+    | unique | if . == [] then "no package" else join(", ") end;
+  . as $doc
+| {
+    source: (if ($copies | length) == 1 then ($copies[0] | where) else null end),
+    errors: (
+      if ($copies | length) == 1 then []
+      elif $copies == [] then
+        ["one copy: the resolved graph has no package named \($crate)"]
+      else
+        ["one copy: \($copies | length) copies of \($crate) in the resolved graph; every core and front end must link the same one"]
+        + [$copies[] | "    \(.version) from \(where), used by \(.id as $id | $doc | users($id))"]
+      end)
+  }
+JQ
+
+# check_one_copy METADATA: print each error, or the contract's source; fail
+# unless the graph holds exactly one copy.
+check_one_copy() {
+    local result
+    result=$(jq -c --arg crate "$contract_crate" "$one_copy_program" "$1") || {
+        echo "crate boundaries: cannot read the resolved metadata $1" >&2
+        return 2
+    }
+    jq -r '.errors[]' <<<"$result"
+    if [[ $(jq '.errors | length' <<<"$result") -ne 0 ]]; then
+        echo "crate boundaries: not exactly one copy of $contract_crate" >&2
+        return 1
+    fi
+    jq -r --arg crate "$contract_crate" '"crate boundaries: one copy of \($crate), from \(.source)"' <<<"$result"
+}
+
 # check METADATA ALLOW: print each error and a summary; fail on any error.
 check() {
     local result count
@@ -202,15 +261,37 @@ self_test() {
             failed=1
         fi
     done
+    # Fixtures of resolved metadata for the one-copy rule, with the same
+    # "self_test" expectation (without "errors").
+    for fixture in "$fixtures"/resolved/*.json; do
+        name=resolved/$(basename "$fixture" .json)
+        expect=$(jq -r '.self_test.expect' "$fixture")
+        message=$(jq -r '.self_test.message // ""' "$fixture")
+        status=0
+        output=$(check_one_copy "$fixture" 2>&1) || status=$?
+        if [[ $expect == pass && $status -eq 0 ]] ||
+            [[ $expect == fail && $status -ne 0 && $output == *"$message"* ]]; then
+            echo "self-test $name: ${expect}ed as expected"
+        else
+            echo "self-test $name: expected $expect${message:+ with \"$message\"}, got status $status:" >&2
+            printf '%s\n' "$output" | sed 's/^/    /' >&2
+            failed=1
+        fi
+    done
     return "$failed"
 }
 
 case "${1:-}" in
     "")
         metadata=$(mktemp)
-        trap 'rm -f "$metadata"' EXIT
+        resolved=$(mktemp)
+        trap 'rm -f "$metadata" "$resolved"' EXIT
         (cd "$root" && cargo metadata --format-version 1 --no-deps) >"$metadata"
-        check "$metadata" "$default_allow"
+        (cd "$root" && cargo metadata --format-version 1 --offline --locked) >"$resolved"
+        status=0
+        check "$metadata" "$default_allow" || status=$?
+        check_one_copy "$resolved" || { s=$?; [[ $status -ne 0 ]] || status=$s; }
+        exit "$status"
         ;;
     --self-test)
         [[ $# -eq 1 ]] || { echo "usage: $0 --self-test" >&2; exit 2; }
@@ -221,8 +302,12 @@ case "${1:-}" in
             { echo "usage: $0 --metadata FILE [--allow FILE]" >&2; exit 2; }
         check "$2" "${4:-/dev/null}"
         ;;
+    --resolved)
+        [[ $# -eq 2 ]] || { echo "usage: $0 --resolved FILE" >&2; exit 2; }
+        check_one_copy "$2"
+        ;;
     *)
-        echo "usage: $0 [--self-test | --metadata FILE [--allow FILE]]" >&2
+        echo "usage: $0 [--self-test | --metadata FILE [--allow FILE] | --resolved FILE]" >&2
         exit 2
         ;;
 esac

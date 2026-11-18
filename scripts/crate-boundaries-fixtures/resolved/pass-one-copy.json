@@ -1,0 +1,70 @@
+{
+  "self_test": {
+    "expect": "pass"
+  },
+  "packages": [
+    {
+      "name": "unemu-core-api",
+      "version": "0.1.0",
+      "id": "git+https://github.com/unemu-org/unemu-core-api?rev=1111111111111111111111111111111111111111#unemu-core-api@0.1.0",
+      "source": "git+https://github.com/unemu-org/unemu-core-api?rev=1111111111111111111111111111111111111111#1111111111111111111111111111111111111111",
+      "manifest_path": "/cargo/git/checkouts/unemu-core-api-0000/1111111/Cargo.toml"
+    },
+    {
+      "name": "unemu-pc-core",
+      "version": "0.0.2",
+      "id": "path+file:///workspace/crates/pc-core#unemu-pc-core@0.0.2",
+      "source": null,
+      "manifest_path": "/workspace/crates/pc-core/Cargo.toml"
+    },
+    {
+      "name": "machine-view",
+      "version": "0.0.2",
+      "id": "path+file:///workspace/crates/machine-view#0.0.2",
+      "source": null,
+      "manifest_path": "/workspace/crates/machine-view/Cargo.toml"
+    },
+    {
+      "name": "platforms",
+      "version": "0.0.2",
+      "id": "path+file:///workspace/crates/platforms#0.0.2",
+      "source": null,
+      "manifest_path": "/workspace/crates/platforms/Cargo.toml"
+    }
+  ],
+  "resolve": {
+    "nodes": [
+      {
+        "id": "git+https://github.com/unemu-org/unemu-core-api?rev=1111111111111111111111111111111111111111#unemu-core-api@0.1.0",
+        "deps": []
+      },
+      {
+        "id": "path+file:///workspace/crates/pc-core#unemu-pc-core@0.0.2",
+        "deps": [
+          {
+            "name": "unemu_core_api",
+            "pkg": "git+https://github.com/unemu-org/unemu-core-api?rev=1111111111111111111111111111111111111111#unemu-core-api@0.1.0"
+          }
+        ]
+      },
+      {
+        "id": "path+file:///workspace/crates/machine-view#0.0.2",
+        "deps": [
+          {
+            "name": "unemu_core_api",
+            "pkg": "git+https://github.com/unemu-org/unemu-core-api?rev=1111111111111111111111111111111111111111#unemu-core-api@0.1.0"
+          }
+        ]
+      },
+      {
+        "id": "path+file:///workspace/crates/platforms#0.0.2",
+        "deps": [
+          {
+            "name": "unemu_pc_core",
+            "pkg": "path+file:///workspace/crates/pc-core#unemu-pc-core@0.0.2"
+          }
+        ]
+      }
+    ]
+  }
+}

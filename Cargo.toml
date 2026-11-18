@@ -19,7 +19,6 @@ members = [
     "crates/window",
     "crates/ui-kit",
     "crates/library-model",
-    "crates/core-api",
     "crates/pc-core",
     "crates/machine-view",
     "crates/pc-media",
@@ -66,6 +65,12 @@ cpal = "=0.18.2"
 # nix build and CI. To develop against a local x86jit checkout, add a gitignored
 # [patch] override instead of editing this line.
 x86jit-core = { version = "0.3", git = "https://github.com/unemu-org/x86jit", rev = "cf32ec2ea7426da1cb90f8e96f67a1f45b73a8da" }
+# The contract between front ends and emulator cores, at the commit of release
+# v0.1.0. Every core and front end in one build must link the same copy, so the
+# pin is an exact revision, moved together with every pinned core. A bare path
+# dependency breaks nix build and CI. To develop against a local checkout of the
+# contract, add a gitignored [patch] override instead of editing this line.
+unemu-core-api = { version = "0.1", git = "https://github.com/unemu-org/unemu-core-api", rev = "4e2dd8325b54ce652bf4884fd85da602b14ae726" }
 
 # Internal crates share the workspace version.
 assembly = { path = "crates/assembly", version = "0.0.2" }
@@ -80,7 +85,6 @@ devices = { path = "crates/devices", version = "0.0.2" }
 video = { path = "crates/video", version = "0.0.2" }
 audio = { path = "crates/audio", version = "0.0.2" }
 testkit = { path = "crates/testkit", version = "0.0.2" }
-unemu-core-api = { path = "crates/core-api", version = "0.0.2" }
 unemu-pc-core = { path = "crates/pc-core", version = "0.0.2" }
 machine-view = { path = "crates/machine-view", version = "0.0.2" }
 

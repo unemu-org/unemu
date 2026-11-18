@@ -3755,7 +3755,8 @@ dependencies = [
 
 [[package]]
 name = "unemu-core-api"
-version = "0.0.2"
+version = "0.1.0"
+source = "git+https://github.com/unemu-org/unemu-core-api?rev=4e2dd8325b54ce652bf4884fd85da602b14ae726#4e2dd8325b54ce652bf4884fd85da602b14ae726"
 
 [[package]]
 name = "unemu-pc-core"
