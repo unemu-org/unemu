@@ -618,18 +618,16 @@ fn real_mode_and_application_reports_name_no_descriptors() {
     }
 }
 
-/// A privilege or gate refusal at an instruction that cannot make that
-/// transfer came while delivering an interrupt or exception; the report says
-/// the instruction may be the interrupted one. Other refusals do not.
+/// A gate refusal at an instruction that cannot make that transfer came
+/// while delivering an interrupt or exception; the report says the
+/// instruction may be the interrupted one. Other refusals do not.
 #[test]
 fn a_refusal_the_instruction_cannot_make_notes_interrupt_delivery() {
-    let cases: [(&str, &[u8], bool); 9] = [
-        ("LegacyPrivilegeTransition", &[0x90], true),
-        ("LegacyPrivilegeTransition", &[0xEA, 0, 0, 0x20, 0], true),
-        ("LegacyPrivilegeTransition", &[0x9A, 0, 0, 0x20, 0], false),
-        ("LegacyPrivilegeTransition", &[0xCB], false),
-        ("LegacyPrivilegeTransition", &[0xCD, 0x21], false),
+    let cases: [(&str, &[u8], bool); 7] = [
+        ("LegacyGateOrTaskTransfer", &[0x90], true),
         ("LegacyGateOrTaskTransfer", &[0xCB], true),
+        ("LegacyGateOrTaskTransfer", &[0x9A, 0, 0, 0x20, 0], false),
+        ("LegacyGateOrTaskTransfer", &[0xCD, 0x21], false),
         ("LegacyGateOrTaskTransfer", &[0xEA, 0, 0, 0x20, 0], false),
         ("LegacyTaskReturn", &[0x90], false),
         ("LegacyInstruction", &[0x90], false),

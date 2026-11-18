@@ -18,7 +18,9 @@ set of machine paths, and this program exercises the same paths:
 
 The undocumented LOADALL, the other way such a manager reaches extended
 memory on an 80286, has its own program:
-[`at-loadall-test.md`](at-loadall-test.md).
+[`at-loadall-test.md`](at-loadall-test.md). Code at CPL 3 and the ring
+transitions of a protected-mode kernel have another:
+[`at-privilege-test.md`](at-privilege-test.md).
 
 Build and fixture details are in
 [`vendor/at-pm-test/README.md`](../../../vendor/at-pm-test/README.md), the

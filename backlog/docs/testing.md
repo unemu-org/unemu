@@ -55,7 +55,11 @@ through the 8042 and the BIOS's INT 15h AH=88h and AH=87h, reported line
 by line on COM1. The open AT LOADALL test
 ([`design/at-loadall-test.md`](design/at-loadall-test.md)) moves a block
 above 1 MiB and back from real mode through the 80286 LOADALL, as a 286
-extended-memory manager does.
+extended-memory manager does. The open AT privilege-level test
+([`design/at-privilege-test.md`](design/at-privilege-test.md)) runs code at
+CPL 3: IRET from ring 0 to ring 3, INT n and #GP back to ring 0 on the
+TSS's ring-0 stack, and the null selector an outward IRET leaves in a
+segment register of a lower DPL.
 
 ### 5. Golden / trace tests
 

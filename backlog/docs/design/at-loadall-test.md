@@ -128,3 +128,6 @@ loaded, and for the read the buffer still zero), `bios move FAIL 0002`
 (nothing was written at `150000h`), `0f04 int 06` and `failures 3`, after
 6,412,499 retired instructions. The golden fails there,
 as it should.
+
+**x86jit `b4e64dff` — MEASURED (2026-11-18).** The pin that adds code at
+CPL 1–3 keeps the transcript and the retired count above.

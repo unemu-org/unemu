@@ -978,10 +978,12 @@ mod tests {
         ));
     }
 
-    /// The core refuses RETF to an outer ring; the report shows the return
-    /// frame and the ring-3 CS and SS it names.
+    /// RETF to an outer ring runs: the guest reaches ring 3 on the stack the
+    /// return frame names. A far CALL through the call gate there is still
+    /// refused, and the report shows CPL 3, the ring-3 stack and the gate.
     #[test]
-    fn a_refused_outward_return_reports_the_frame_and_both_descriptors() {
+    fn an_outward_return_reaches_ring_3_where_a_gate_call_is_refused() {
+        use crate::stop_report::TransferForm;
         let mut cpu = protected_guest(&[
             0x68, 0x33, 0x00, // PUSH 33h (ring-3 SS)
             0x68, 0x00, 0x30, // PUSH 3000h (ring-3 SP)
@@ -989,26 +991,25 @@ mod tests {
             0x68, 0x00, 0x20, // PUSH 2000h (ring-3 IP)
             0xCB, // RETF
         ]);
+        // CALL FAR 0023:0000, the call gate with RPL 3.
+        cpu.write_mem(0x2000, &[0x9A, 0, 0, 0x23, 0]).unwrap();
         let error = cpu.run_steps(20, StepRunOptions::default()).unwrap_err();
         assert!(
-            matches!(&error, CpuError::UnsupportedSystem { operation, ip: 0x1029, .. }
-                if operation == "LegacyPrivilegeTransition"),
+            matches!(&error, CpuError::UnsupportedSystem { operation, cs: 0x2B, ip: 0x2000 }
+                if operation == "LegacyGateOrTaskTransfer"),
             "{error}"
         );
         let report = cpu.stop_report(&error).unwrap();
-        let frame: Vec<_> = report
-            .stack
-            .iter()
-            .map(|word| (word.label, word.offset, word.value))
-            .collect();
+        let system = report.system.expect("the machine profile");
+        assert_eq!((system.cs.selector, system.cpl), (0x2B, 3));
+        assert_eq!((report.ss, report.sp), (0x33, 0x3000));
         assert_eq!(
-            frame,
-            [
-                ("ip", 0x6FF8, Some(0x2000)),
-                ("cs", 0x6FFA, Some(0x2B)),
-                ("outer sp", 0x6FFC, Some(0x3000)),
-                ("outer ss", 0x6FFE, Some(0x33)),
-            ]
+            report.form,
+            Some(TransferForm::FarDirect {
+                call: true,
+                selector: 0x23,
+                offset: 0
+            })
         );
         let named: Vec<_> = report
             .descriptors
@@ -1017,7 +1018,7 @@ mod tests {
             .collect();
         assert_eq!(
             named,
-            [("return cs", 0x2B, Ok(0xFA)), ("return ss", 0x33, Ok(0xF2))]
+            [("target", 0x23, Ok(0xE4)), ("gate target", 0x08, Ok(0x9B))]
         );
         assert_eq!(report.tss.unwrap().stacks[0], (0x10, 0x6000));
     }

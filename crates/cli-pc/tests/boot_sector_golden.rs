@@ -75,7 +75,7 @@ fn data_disk() -> Vec<u8> {
 
 fn boots_the_data_disk_and_retries_after_a_key(profile: &std::path::Path, firmware: &[&str]) {
     assert!(include_str!("../../../Cargo.lock")
-        .contains("rev=cf32ec2ea7426da1cb90f8e96f67a1f45b73a8da"));
+        .contains("rev=b4e64dffe8443c03a86459a98721afeb37084790"));
     for fixture in firmware {
         if fixtures::fixture(fixture).is_none() {
             return;

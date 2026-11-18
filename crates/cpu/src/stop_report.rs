@@ -523,22 +523,12 @@ pub struct CpuStopReport {
 }
 
 /// Whether `form` cannot itself make the transfer the core refused as
-/// `operation`: a privilege change comes from a far CALL, INT, RETF or IRET;
-/// a gate or task transfer from a far CALL or JMP or an INT. Other refusals
-/// are never ascribed to delivery.
+/// `operation`: a gate or task transfer comes from a far CALL or JMP or an
+/// INT. Other refusals are never ascribed to delivery (the pinned core runs
+/// privilege changes, so it no longer refuses them).
 fn foreign_refusal(operation: &str, form: Option<TransferForm>) -> bool {
     use TransferForm::*;
     match operation {
-        "LegacyPrivilegeTransition" => !matches!(
-            form,
-            Some(
-                FarDirect { call: true, .. }
-                    | FarIndirect { call: true, .. }
-                    | Interrupt { .. }
-                    | FarReturn { .. }
-                    | InterruptReturn
-            )
-        ),
         "LegacyGateOrTaskTransfer" => !matches!(
             form,
             Some(FarDirect { .. } | FarIndirect { .. } | Interrupt { .. })

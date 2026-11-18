@@ -5,6 +5,28 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — The 80286 runs code at CPL 1–3; the CPU pin moves to
+  `b4e64dff`:** Windows 3.1 Standard mode stopped with `unsupported cpu
+  system operation LegacyPrivilegeTransition` at its first IRET from ring 0
+  to ring 3. x86jit `b4e64dff` runs protected-mode code at CPL 1–3 on its
+  80286 model: RETF and IRET to an outer ring (a data segment register of a
+  lower DPL becomes null), interrupts, exceptions, IRQs and NMI through a
+  gate to an inner ring on the TSS's ring stack, task switches into rings
+  1–3, and the CPL and IOPL checks (CLI/STI, POPF/IRET, port I/O, the
+  system instructions, LOCK). A far CALL or JMP through a call gate is
+  still refused (`LegacyGateOrTaskTransfer`). Cargo.toml, Cargo.lock (only
+  x86jit-core moves) and every golden's CPU revision follow. A new open
+  floppy, `vendor/at-privilege-test` (design/at-privilege-test.md), IRETs
+  to ring 3 with IOPL 3, takes INT 40h back to ring 0 on SS0:SP0, IRETs to
+  ring 3 again with a DPL-0 ES that the return nulls, and takes #GP(0) for
+  CLI at ring 3 with IOPL 0. MEASURED with the open AT BIOS: every line
+  passes, 6,390,307 retired instructions; at the previous pin it stops with
+  `LegacyPrivilegeTransition` at the first IRET. Every other open golden
+  keeps its outcome and retired count (the user-ROM goldens are run
+  separately). Two tests that used a refused outward
+  RETF as their CPU failure changed: the CPU stop report test now reaches
+  ring 3 and is refused at a call gate there, and two `upcli run` tests
+  fail on a LOADALL table the core refuses.
 - **2026-11-18 — This repository on contract 0.2:** step 7 of
   design/core-contract.md §13.6. The workspace pins release v0.2.0 of
   `unemu-core-api` (commit `56c4640`), where content and storage are

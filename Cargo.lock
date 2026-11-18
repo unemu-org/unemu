@@ -4646,7 +4646,7 @@ checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 [[package]]
 name = "x86jit-core"
 version = "0.3.0"
-source = "git+https://github.com/unemu-org/x86jit?rev=cf32ec2ea7426da1cb90f8e96f67a1f45b73a8da#cf32ec2ea7426da1cb90f8e96f67a1f45b73a8da"
+source = "git+https://github.com/unemu-org/x86jit?rev=b4e64dffe8443c03a86459a98721afeb37084790#b4e64dffe8443c03a86459a98721afeb37084790"
 dependencies = [
  "iced-x86",
 ]

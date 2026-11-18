@@ -24,7 +24,7 @@ Evidence vocabulary throughout:
 - **ASSUMED:** a proposed scope choice or inference requiring later acceptance
   tests. In particular, no complete DOS extender was run.
 
-The current CPU pin is `cf32ec2ea7426da1cb90f8e96f67a1f45b73a8da`.
+The current CPU pin is `b4e64dffe8443c03a86459a98721afeb37084790`.
 `Vm::set_cpu_model(CpuModel::I80286)` selects the machine profile on
 `ibm-5170`, fixes the model for the VM lifetime and defaults to
 `ExceptionDelivery::InGuest`. The separate I80386 core model is not selected
@@ -39,8 +39,16 @@ LAR/LSL/VERR/VERW, ARPL and LTR/STR are available, with atomic descriptor
 busy/accessed-bit writes; descriptor tables must reside in RAM. CPL-0 hardware
 task switches (far JMP/CALL to a TSS or task gate, IRET
 with NT, and IDT task gates), busy bits and MSW.TS are supported by
-`xj-srh.18 (x86jit)` under `decision-24 (x86jit)` (READ). Privilege
-transitions, V86 and paging remain outside this machine's scope.
+`xj-srh.18 (x86jit)` under `decision-24 (x86jit)` (READ). Since
+`b4e64dff`, `xj-srh.9 (x86jit)` runs protected-mode code at CPL 1–3:
+RETF, RETF n and IRET to an outer ring, interrupts, exceptions, IRQs and NMI
+through a gate to an inner ring on the TSS's ring stack, task switches into
+rings 1–3, and the CPL and IOPL checks of CLI/STI, POPF/IRET, port I/O, the
+system instructions and (on the 286) LOCK (READ; the open privilege-level
+test, [`at-privilege-test.md`](at-privilege-test.md), MEASURED). A far CALL
+or JMP through a call gate is still refused as `LegacyGateOrTaskTransfer`,
+and LOADALL with a CS DPL of 1–3 as `I286LoadallTable`. V86 and paging
+remain outside this machine's scope.
 Real-mode exceptions (#DE, #UD, CS fetch/word limit faults, BOUND and INTO)
 are delivered through the IVT. Real-mode TF delivers vector 1 after the
 successor of a TF-setting POPF/IRET; only SS loads inhibit one instruction.

@@ -94,6 +94,10 @@ target/
 # vendor/at-loadall-test/build.sh.
 /vendor/at-loadall-test/build/
 /vendor/at-loadall-test/at-loadall-test-1200.img
+# Open AT privilege-level test floppy: assembled from the committed source by
+# vendor/at-privilege-test/build.sh.
+/vendor/at-privilege-test/build/
+/vendor/at-privilege-test/at-privilege-test-1200.img
 
 # repoctx local index (generated)
 .repoctx/

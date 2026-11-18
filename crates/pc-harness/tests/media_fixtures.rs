@@ -72,6 +72,11 @@ const PINNED_SCRIPTS: &[(&str, &str, &str)] = &[
         include_str!("../../../vendor/at-loadall-test/build.sh"),
         "check_sha256 \"$IMAGE\" \"",
     ),
+    (
+        "at-privilege-test/at-privilege-test-1200.img",
+        include_str!("../../../vendor/at-privilege-test/build.sh"),
+        "check_sha256 \"$IMAGE\" \"",
+    ),
 ];
 
 use fixtures::parse_pin;
@@ -176,9 +181,9 @@ fn assert_pinned(vendor: &Path, checked: &[(&str, &str)]) {
 fn volatile_boots_preserve_pinned_fixture_hashes_and_vendor_entries() {
     let vendor = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor");
     // The CI fixture gate fetches the boot/CPU inputs. Auxiliary ATA/option-ROM
-    // images and the protected-mode and LOADALL test floppies, which these
-    // boots do not use, remain optional, but a file present initially must
-    // survive the run.
+    // images and the protected-mode, LOADALL and privilege-level test
+    // floppies, which these boots do not use, remain optional, but a file
+    // present initially must survive the run.
     let checked: Vec<_> = fixture_pins()
         .into_iter()
         .filter(|&(relative, _)| {
@@ -187,6 +192,7 @@ fn volatile_boots_preserve_pinned_fixture_hashes_and_vendor_entries() {
                 && !relative.starts_with("ltemm/")
                 && !relative.starts_with("at-pm-test/")
                 && !relative.starts_with("at-loadall-test/")
+                && !relative.starts_with("at-privilege-test/")
                 || vendor.join(relative).symlink_metadata().is_ok()
         })
         .collect();
