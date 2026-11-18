@@ -819,7 +819,9 @@ dependencies = [
 name = "core-launch"
 version = "0.0.2"
 dependencies = [
+ "sha2",
  "unemu-core-api",
+ "unemu-core-files",
  "unemu-test-core",
 ]
 
@@ -3818,6 +3820,14 @@ dependencies = [
 name = "unemu-core-api"
 version = "0.2.0"
 source = "git+https://github.com/unemu-org/unemu-core-api?rev=56c4640146339e967b69925b724bbec0cf878df8#56c4640146339e967b69925b724bbec0cf878df8"
+
+[[package]]
+name = "unemu-core-files"
+version = "0.2.0"
+source = "git+https://github.com/unemu-org/unemu-core-api?rev=56c4640146339e967b69925b724bbec0cf878df8#56c4640146339e967b69925b724bbec0cf878df8"
+dependencies = [
+ "unemu-core-api",
+]
 
 [[package]]
 name = "unemu-pc-core"

@@ -5,6 +5,23 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — The launch path from a file to a machine:** step 12 of
+  design/core-contract.md §13.6. `core-launch` gains `prepare`, `start`,
+  `HostDirs`, `Prepared`, `Outcome`, `LaunchError` and `Cores::filters`
+  (§13.3). `prepare` opens the file once and hashes all of it through the
+  `unemu-core-files` reader the machine gets later (a file whose length or
+  time changes is refused as changed), asks the named core alone or the
+  cores that list the file's extension first, then the others, and checks
+  that `validate` on the config the core wrote names the file and nothing
+  else; a core that fails is left out and heard only when no core is
+  left. `start` creates the machine with a content source that answers the
+  file's digest alone and a `FileStorage` over `saves/CORE/aa/DIGEST/`. The
+  refusals carry the mock-up's sentences (no core opens it, with what the
+  cores open; recognised and cannot run it; several cores, with `--core`;
+  needs more than itself; already running elsewhere). No behaviour changes:
+  nothing calls it yet. New dependencies of `core-launch`:
+  `unemu-core-files` (the contract's repository at the pinned revision)
+  and `sha2`.
 - **2026-11-18 — The 80286 runs calls through call gates; the CPU pin
   moves to `a11353e6`:** Windows 3.1 Standard mode stopped with
   `LegacyGateOrTaskTransfer` at a far CALL from ring 3 through a DPL-3 286

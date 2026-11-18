@@ -53,7 +53,16 @@ const SOFTWARE_PLATFORM: &[(&str, &str)] = &[
 /// A core's check of the platform a front end asks it for: the contract
 /// hands a core its platform id in the current spelling, so the core compares
 /// exactly. The file and code its logical line contains.
-const CORE_OWN_PLATFORM: &[(&str, &str)] = &[("test-core/src/lib.rs", "if platform == PLATFORM {")];
+/// The launch path's lookup of the platform a core's `identify` answered
+/// with, in that same core's description, is the same kind of check: both
+/// sides are the core's own current spelling.
+const CORE_OWN_PLATFORM: &[(&str, &str)] = &[
+    ("test-core/src/lib.rs", "if platform == PLATFORM {"),
+    (
+        "core-launch/src/launch.rs",
+        ".find(|platform| platform.id == identified.platform)",
+    ),
+];
 /// This file, whose detector tests quote the forms it flags.
 const SELF: &str = "image-store/tests/platform_ids.rs";
 
