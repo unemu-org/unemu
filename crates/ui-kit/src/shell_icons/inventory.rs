@@ -55,12 +55,18 @@ const TEMPLATES: &str = "get-templates.html";
 const PICKER: &str = "media-picker.html";
 const FIRMWARE_SETTINGS: &str = "firmware-settings.html";
 const REMOTES: &str = "remotes.html";
+const PLAYER: &str = "player.html";
 
 const TOOLBAR_ONLY_MACHINE: &str =
     "the app has one toolbar, the main-window mock-up's machine toolbar; \
      this command is not on it (it is in the menus and the details pane)";
 const SYSTEM_TITLE_BAR: &str =
     "a window button; the system title bar draws it (the classic title strip has none)";
+const PLAYER_LATER: &str =
+    "the player window is built in a later step, in crates/player-ui; nothing draws it yet";
+const PLAYER_LATER_SAME_ART: &str =
+    "the player window is built in a later step, in crates/player-ui; the desktop already \
+     paints the same art for its own toolbar";
 const CLOSE: &str =
     "dialog close buttons where the app's dialogs have one (Settings, Preferences, New machine, Edit metadata)";
 
@@ -267,6 +273,44 @@ pub const INVENTORY: &[Entry] = &[
     glyph(REMOTES, '⌘', "the macOS Command key", Place::Text("macOS menu shortcuts")),
     glyph(REMOTES, '×', "close", Place::Text(CLOSE)),
     glyph(REMOTES, '□', "maximise", Place::Missing(SYSTEM_TITLE_BAR)),
+    // player.html: the window of a machine opened from a file.
+    svg(PLAYER, "fill=\"#c9d6e8\" stroke=\"#0b1a33\"", "application", Place::Missing(PLAYER_LATER_SAME_ART)),
+    svg(
+        PLAYER,
+        "aria-label=\"Test pattern drawn for this mock-up\"",
+        "the emulated screen, a test pattern the mock-up's script draws",
+        Place::Missing("a stand-in for the machine's own picture, which the player shows in its place"),
+    ),
+    svg(PLAYER, "M4 2l10 6-10 6z", "Start, and Resume", Place::Missing(PLAYER_LATER_SAME_ART)),
+    svg(PLAYER, "x=\"9.5\" y=\"2\" width=\"3.5\"", "Pause", Place::Missing(PLAYER_LATER_SAME_ART)),
+    svg(PLAYER, "width=\"10\" height=\"10\" fill=\"#b23a2b\"", "Stop", Place::Missing(PLAYER_LATER_SAME_ART)),
+    svg(PLAYER, "fill=\"#3a3f4a\"", "insert into A: or B:", Place::Missing(PLAYER_LATER_SAME_ART)),
+    svg(PLAYER, "M8 1v3M8 12v3", "Settings", Place::Missing(PLAYER_LATER_SAME_ART)),
+    svg(PLAYER, "M8 2l6 3-6 3-6-3z\" fill=\"#4b79c1\"", "Disk layers", Place::Missing(PLAYER_LATER_SAME_ART)),
+    svg(
+        PLAYER,
+        "M13 8a5 5 0 1 1-1.5-3.5",
+        "Refresh",
+        Place::Missing("the player window is built in a later step, in crates/player-ui; its arrow head differs from the Remotes mock-up's Refresh"),
+    ),
+    svg(
+        PLAYER,
+        "x=\"2\" y=\"2.5\" width=\"12\" height=\"4\"",
+        "Registries",
+        Place::Missing("the player window is built in a later step, in crates/player-ui; its drive bays differ from the Remotes mock-up's registry"),
+    ),
+    glyph(PLAYER, '⏏', "Eject, on the toolbar and in the Media menu", Place::Missing(PLAYER_LATER)),
+    glyph(PLAYER, 'Ⅱ', "Pause in the Machine menu", Place::Missing(PLAYER_LATER)),
+    glyph(PLAYER, '■', "Stop in the Machine menu", Place::Missing(PLAYER_LATER)),
+    glyph(PLAYER, '●', "the disk in a slot, the chosen scale, the chosen speed", Place::Missing(PLAYER_LATER)),
+    glyph(PLAYER, '✓', "View › Toolbar, Status bar and Show overscan are on", Place::Missing(PLAYER_LATER)),
+    glyph(PLAYER, '▸', "a submenu", Place::Missing(PLAYER_LATER)),
+    glyph(PLAYER, '▾', "the file type and speed drop-downs", Place::Missing(PLAYER_LATER)),
+    glyph(PLAYER, '✕', "a file the player refuses to open", Place::Missing(PLAYER_LATER)),
+    glyph(PLAYER, '🔊', "audio playing or stopped", Place::Missing(PLAYER_LATER)),
+    glyph(PLAYER, '🔇', "audio muted", Place::Missing(PLAYER_LATER)),
+    glyph(PLAYER, '×', "close, and the times sign of picture sizes", Place::Missing(PLAYER_LATER)),
+    glyph(PLAYER, '□', "maximise", Place::Missing(SYSTEM_TITLE_BAR)),
 ];
 
 /// Characters the app paints instead of writing, because no font has them.
@@ -294,7 +338,7 @@ mod tests {
             .filter(|path| path.extension().is_some_and(|e| e == "html"))
             .collect();
         files.sort();
-        assert_eq!(files.len(), 13, "the approved mock-ups in {dir:?}");
+        assert_eq!(files.len(), 14, "the approved mock-ups in {dir:?}");
         files
             .into_iter()
             .map(|path| {
