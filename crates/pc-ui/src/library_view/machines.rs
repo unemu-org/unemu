@@ -14,16 +14,16 @@ use super::{
     human_size, pane, Filter, ImageRow, Lead, LibraryView,
 };
 use crate::{
+    commands::Command,
     library_worker::{MachineJob, Recovery, Request},
     save_image::{self, SaveAsImage, TagLevel, Target},
-    shell_model::Command,
 };
 use image_store::machine::unique_among;
 use ui_kit::shell_icons::Icon;
 
 // The collection's rows, facets, search and names are the PC library's;
 // this file draws them and turns choices into worker jobs.
-pub(crate) use pc_library::machines::*;
+pub use pc_library::machines::*;
 
 /// A machine row's icon, warning and favourite mark, before and after its
 /// name in the list.
@@ -261,7 +261,7 @@ impl LibraryView {
     }
 
     /// Show the Machines collection with `id` selected and visible.
-    pub(crate) fn show_machine(&mut self, id: String, row: ImageRow) {
+    pub fn show_machine(&mut self, id: String, row: ImageRow) {
         self.remote.node = None;
         if !self.query.filter.is_machines() {
             self.query.filter = Filter::Machines;
@@ -275,16 +275,16 @@ impl LibraryView {
     }
 
     /// Tests: the machines as a listing would give them.
-    #[cfg(test)]
-    pub(crate) fn set_machines(&mut self, rows: Vec<MachineRow>) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_machines(&mut self, rows: Vec<MachineRow>) {
         self.machines = std::sync::Arc::new(rows);
         self.machines_revision += 1;
     }
 
     /// Tests: a snapshot of `cache`, as the worker sends one.
-    #[cfg(test)]
-    pub(crate) fn use_snapshot(&mut self, cache: &image_store::summary::SummaryCache) {
-        self.snapshot = std::sync::Arc::new(super::snapshot(cache, &self.query));
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn use_snapshot(&mut self, cache: &image_store::summary::SummaryCache) {
+        self.snapshot = std::sync::Arc::new(pc_library::snapshot::snapshot(cache, &self.query));
     }
 
     /// The table of the Machines collection with its sort header.
@@ -1596,18 +1596,20 @@ fn drive_rows(
     rows
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    //! A machine row as a listing gives one, for this collection's tests and
+    //! the application's.
+
+    use super::MachineRow;
     use image_store::{media_type as mt, Descriptor, Digest};
     use pc_image::machine::{Listing, State};
-    use std::sync::Arc;
 
-    pub(crate) fn image(name: &str) -> Descriptor {
+    pub fn image(name: &str) -> Descriptor {
         Descriptor::new(mt::MANIFEST, Digest::of(name.as_bytes()), 1)
     }
 
-    pub(crate) fn row(id: &str, name: &str, image_name: &str, tags: &[&str]) -> MachineRow {
+    pub fn row(id: &str, name: &str, image_name: &str, tags: &[&str]) -> MachineRow {
         let source = tags.first().map_or("games:1.0.0", |t| t).to_owned();
         let machine = image_store::machine::Machine::new(
             name,
@@ -1635,6 +1637,17 @@ pub(crate) mod tests {
             kept: Vec::new(),
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use pc_image::machine::State;
+    use std::sync::Arc;
+
+    // The row the application's tests build too lives in `test_support`;
+    // the tests here name it as before.
+    pub(crate) use super::test_support::{image, row};
 
     /// Names follow the store's rules: 1–64 characters, unique ignoring
     /// case; the default adds " (2)", and the id hint is a free slug.

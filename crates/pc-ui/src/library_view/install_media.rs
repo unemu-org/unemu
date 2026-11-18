@@ -28,7 +28,7 @@ use std::{
 
 // The collection's rows, facets, labels, availability and the worker's
 // sides of an import are the PC library's; this file draws them.
-pub(crate) use pc_library::install_media::*;
+pub use pc_library::install_media::*;
 
 fn format_detail(summary: &ImageSummary, medium: &Medium) -> String {
     let name = format_name(summary, medium);
@@ -1221,35 +1221,41 @@ impl ImportDialog {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::super::{firmware::Redistribution, Filter, ImageRow, Query};
-    use super::*;
-    use crate::library_test_support::{import_media_set, Medium as SetMedium};
-    use crate::library_view::{snapshot, Snapshot};
-    use image_store::Digest;
-    use image_store::{media_type, summary::SummaryCache, Descriptor};
-    use pc_library::install_media::test_support::{formats, is_set_payload};
-    use std::collections::BTreeSet;
-    use std::{fs, sync::Arc, time::Duration};
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    //! Installation media sets in a fixture library, as this collection's
+    //! tests and the application's tests insert from them, and the
+    //! collection's selection and import review as they read them.
 
-    pub(crate) const FLOPPY_1440: usize = 1_474_560;
+    use super::super::{Filter, LibraryView};
+    use image_store::{summary::SummaryCache, Store};
+    use pc_library::library_test_support::{import_media_set, Fixture, Medium as SetMedium};
+    use pc_library::snapshot::snapshot;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::Arc,
+    };
+
+    pub const FLOPPY_1440: usize = 1_474_560;
 
     /// A raw floppy image of one repeated byte, at an exact standard size.
-    fn disk(path: &Path, size: usize, byte: u8) {
+    pub fn disk(path: &Path, size: usize, byte: u8) {
         fs::write(path, vec![byte; size]).unwrap();
     }
-    pub(crate) fn warm(store: &Store) -> SummaryCache {
+
+    pub fn warm(store: &Store) -> SummaryCache {
         let mut cache = SummaryCache::open(store).unwrap();
         while !cache.pending().is_empty() {
             cache.rebuild(store, 8, &[], &[]).unwrap();
         }
         cache
     }
+
     /// Three sets beside the fixture's machine: a two-disk 1.44M set with a
     /// manual and a patch, a 1.2M set and an optical set.
-    pub(crate) fn library() -> (crate::library_test_support::Fixture, SummaryCache) {
-        let f = crate::library_test_support::Fixture::new();
+    pub fn library() -> (Fixture, SummaryCache) {
+        let f = Fixture::new();
         let root = f.temp.path();
         let (one, two) = (root.join("setup.img"), root.join("world.img"));
         disk(&one, FLOPPY_1440, 1);
@@ -1290,6 +1296,54 @@ pub(crate) mod tests {
         let cache = warm(&f.store);
         (f, cache)
     }
+
+    impl LibraryView {
+        /// Enter the Installation media collection and select a set, as a click does.
+        pub fn select_set(
+            &mut self,
+            cache: &SummaryCache,
+            reference: &str,
+            selected_file: &mut Option<usize>,
+        ) {
+            self.set_filter(Filter::Media, selected_file);
+            self.snapshot = Arc::new(snapshot(cache, &self.query));
+            let row = self
+                .snapshot
+                .media_rows
+                .iter()
+                .find(|r| r.image.reference == reference)
+                .unwrap()
+                .clone();
+            self.select_media(&row, selected_file);
+        }
+        /// The disk files the Import installation media… review lists once
+        /// the worker has listed the last pick; `None` while it lists or with
+        /// the dialog closed.
+        pub fn reviewed_media(&self) -> Option<Vec<PathBuf>> {
+            let dialog = self.media_import.as_ref()?;
+            dialog
+                .waiting
+                .is_none()
+                .then(|| dialog.disks.iter().map(|disk| disk.path.clone()).collect())
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::super::{firmware::Redistribution, Filter, ImageRow, Query};
+    use super::*;
+    use crate::library_view::{snapshot, Snapshot};
+    use image_store::Digest;
+    use image_store::{media_type, summary::SummaryCache, Descriptor};
+    use pc_library::install_media::test_support::{formats, is_set_payload};
+    use std::collections::BTreeSet;
+    use std::{fs, sync::Arc, time::Duration};
+
+    // The sets the application's tests insert from are built in
+    // `test_support`; the tests here name them as before.
+    pub(crate) use super::test_support::{disk, library, warm, FLOPPY_1440};
+
     fn query(filter: Filter, text: &str) -> Query {
         Query {
             text: text.into(),
@@ -1369,36 +1423,6 @@ pub(crate) mod tests {
         panic!("worker did not finish; error {:?}", view.error);
     }
     const DRIVE_A: [(u8, FloppyGeometry); 1] = [(0, FloppyGeometry::HD_1_44)];
-    impl LibraryView {
-        /// Enter the Installation media collection and select a set, as a click does.
-        pub(crate) fn select_set(
-            &mut self,
-            cache: &SummaryCache,
-            reference: &str,
-            selected_file: &mut Option<usize>,
-        ) {
-            self.set_filter(Filter::Media, selected_file);
-            self.snapshot = Arc::new(snapshot(cache, &self.query));
-            let row = self
-                .snapshot
-                .media_rows
-                .iter()
-                .find(|r| r.image.reference == reference)
-                .unwrap()
-                .clone();
-            self.select_media(&row, selected_file);
-        }
-        /// The disk files the Import installation media… review lists once
-        /// the worker has listed the last pick; `None` while it lists or with
-        /// the dialog closed.
-        pub(crate) fn reviewed_media(&self) -> Option<Vec<PathBuf>> {
-            let dialog = self.media_import.as_ref()?;
-            dialog
-                .waiting
-                .is_none()
-                .then(|| dialog.disks.iter().map(|disk| disk.path.clone()).collect())
-        }
-    }
 
     #[test]
     fn media_rows_facets_and_search_come_from_summaries_without_blob_reads() {
@@ -1915,7 +1939,7 @@ pub(crate) mod tests {
             .is_some_and(|r| r.same(&target)));
         assert!(view.selected.is_none() && file.is_none());
         assert!(
-            !commands.contains(&crate::shell_model::Command::Start),
+            !commands.contains(&crate::commands::Command::Start),
             "{commands:?}"
         );
     }

@@ -56,20 +56,20 @@ mod pacing {
 }
 pub(crate) use machine_view::system_keys;
 // The PC media and library models, under the paths the desktop names them by.
-use pc_library::{firmware_choices, library_worker, new_machine, pc_desktop};
+use pc_library::library_worker;
+#[cfg(test)]
+use pc_library::pc_desktop;
 use pc_media::{created_media, drive_chips, kept_catalogue};
 // The PC media views, under the path the shell names them by.
 use media_ui::catalogue_menu;
-// The PC dialogs, under the paths the library frame and the shell name them by.
-use pc_ui::{new_machine_view, settings_sheet};
+// The PC dialogs and Pull… from Remotes, under the paths the shell names them by.
+use pc_ui::{remote_pull, settings_sheet};
 
 mod app_menu;
 #[cfg(test)]
 mod host_audio;
-mod image_settings;
 #[cfg(test)]
 mod key_table_tests;
-mod layers_dialog;
 #[cfg(test)]
 mod library_test_support;
 mod library_view;
@@ -83,10 +83,10 @@ mod preferences;
 mod preferences_sheet;
 mod registries_model;
 mod registry_transfer;
+#[cfg(test)]
 mod registry_transfer_view;
+#[cfg(test)]
 mod remote_browse;
-mod remote_pull;
-mod save_image;
 mod settings_model;
 mod shell;
 #[cfg(test)]

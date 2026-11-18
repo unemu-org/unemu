@@ -481,7 +481,7 @@ pub(super) fn details(
 
 /// Which statement a picked source archive belongs to.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum SourceTarget {
+pub enum SourceTarget {
     /// A set of the Import ROM folder… review, by catalogue id, and the
     /// scanned folder the picker opens in.
     Import(String, PathBuf),
@@ -1213,6 +1213,63 @@ impl ImportDialog {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    //! The Firmware collection's fixtures that the application's tests use
+    //! too: an open package in a fixture library, the selection of the
+    //! first package, and a wait on the frame's worker.
+
+    use super::super::{Filter, LibraryView};
+    use image_store::summary::SummaryCache;
+    use pc_image::firmware_import;
+    pub use pc_library::library_test_support::warm;
+    use pc_library::library_test_support::{synthetic_catalogue, Fixture};
+    use pc_library::snapshot::snapshot;
+    use std::{fs, path::Path, sync::Arc, time::Duration};
+
+    /// The open single-image package alone, for shell tests.
+    pub fn publish_open_package(f: &Fixture) {
+        let folder = f.temp.path().join("open-rom");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("open.bin"), [0xf4; 32768]).unwrap();
+        let cat = synthetic_catalogue();
+        let scan = firmware_import::scan(&[folder], cat).unwrap();
+        firmware_import::publish(&f.store, &scan.candidates[0], &[], cat).unwrap();
+    }
+
+    impl LibraryView {
+        /// Enter the Firmware collection and select its first package, as a click does.
+        pub fn select_first_package(
+            &mut self,
+            cache: &SummaryCache,
+            selected_file: &mut Option<usize>,
+        ) {
+            self.set_filter(Filter::Firmware, selected_file);
+            self.snapshot = Arc::new(snapshot(cache, &self.query));
+            let row = self.snapshot.firmware_rows[0].clone();
+            self.select_firmware(&row, selected_file);
+        }
+        /// The source archive Edit metadata… states, once the package is
+        /// read; `None` until then or with the dialog closed.
+        pub fn firmware_edit_source(&self) -> Option<Option<&Path>> {
+            let draft = self.firmware_edit.as_ref()?.draft.as_ref()?;
+            Some(draft.fields.source.as_deref())
+        }
+    }
+
+    pub fn poll_until(view: &mut LibraryView, mut done: impl FnMut(&LibraryView) -> bool) {
+        let ctx = egui::Context::default();
+        for _ in pc_library::test_wait::rounds() {
+            view.poll(&ctx);
+            if done(view) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        panic!("worker did not finish; error {:?}", view.error);
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::super::{Filter, ImageRow, Query};
@@ -1230,40 +1287,16 @@ pub(crate) mod tests {
     pub(crate) use pc_library::library_test_support::{
         pinned_tar, single, synthetic_catalogue, tar, two_chip, warm,
     };
+    // The fixtures the application's tests use too live in `test_support`;
+    // the tests here name them as before.
+    pub(crate) use super::test_support::poll_until;
+
     pub(crate) fn chip_folder(root: &Path) -> PathBuf {
         let folder = root.join("roms");
         fs::create_dir_all(&folder).unwrap();
         fs::write(folder.join("a"), [0x31; 16384]).unwrap();
         fs::write(folder.join("b"), [0x72; 16384]).unwrap();
         folder
-    }
-    /// The open single-image package alone, for shell tests.
-    pub(crate) fn publish_open_package(f: &Fixture) {
-        let folder = f.temp.path().join("open-rom");
-        fs::create_dir_all(&folder).unwrap();
-        fs::write(folder.join("open.bin"), [0xf4; 32768]).unwrap();
-        let cat = synthetic_catalogue();
-        let scan = firmware_import::scan(&[folder], cat).unwrap();
-        firmware_import::publish(&f.store, &scan.candidates[0], &[], cat).unwrap();
-    }
-    impl LibraryView {
-        /// Enter the Firmware collection and select its first package, as a click does.
-        pub(crate) fn select_first_package(
-            &mut self,
-            cache: &SummaryCache,
-            selected_file: &mut Option<usize>,
-        ) {
-            self.set_filter(Filter::Firmware, selected_file);
-            self.snapshot = Arc::new(snapshot(cache, &self.query));
-            let row = self.snapshot.firmware_rows[0].clone();
-            self.select_firmware(&row, selected_file);
-        }
-        /// The source archive Edit metadata… states, once the package is
-        /// read; `None` until then or with the dialog closed.
-        pub(crate) fn firmware_edit_source(&self) -> Option<Option<&Path>> {
-            let draft = self.firmware_edit.as_ref()?.draft.as_ref()?;
-            Some(draft.fields.source.as_deref())
-        }
     }
     /// A synthetic machine plus a described two-chip package with a document
     /// and an open single-image package holding the machine's BIOS bytes.
@@ -1646,21 +1679,9 @@ pub(crate) mod tests {
         assert!(view.selected.is_none());
         assert!(file.is_none());
         assert!(
-            !commands.contains(&crate::shell_model::Command::Start),
+            !commands.contains(&crate::commands::Command::Start),
             "{commands:?}"
         );
-    }
-
-    pub(crate) fn poll_until(view: &mut LibraryView, mut done: impl FnMut(&LibraryView) -> bool) {
-        let ctx = egui::Context::default();
-        for _ in crate::test_wait::rounds() {
-            view.poll(&ctx);
-            if done(view) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        panic!("worker did not finish; error {:?}", view.error);
     }
 
     #[test]

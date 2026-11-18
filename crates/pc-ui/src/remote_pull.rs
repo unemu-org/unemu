@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Pull… from Remotes' model is `library_model::remote_pull`, re-exported
-//! here under its old path, with the PC's description of a stopped machine's
-//! floppy drive. Its tests read PC artifacts or draw the dialog and stay
-//! with the window.
+//! here under the path the library frame names it by, with the PC's
+//! description of a stopped machine's floppy drive. Its tests read PC
+//! artifacts and live here, beside the frame.
 
-pub(crate) use library_model::remote_pull::*;
+pub use library_model::remote_pull::*;
 
 /// A floppy drive of a stopped PC as Pull and insert… offers it: named by
 /// its letter and format, and taking the formats its drive type reads (IBM

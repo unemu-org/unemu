@@ -5,6 +5,20 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — The library frame leaves the window; what is left is the
+  application:** moves 6.4 and 6.5 of the window split
+  (design/core-contract.md §8.1.9). `pc-ui` takes the machine library's
+  frame (`library_view` with the Machines, Firmware and Installation media
+  collections, Edit metadata…, Remotes and the layout tests) and the tests
+  of the push, pull and Pull… models that drive it (`registry_transfer`,
+  `remote_pull`); the fixtures the shell's tests drive the frame with are
+  behind `pc-ui`'s `test-support`. The window keeps the shell, its menus,
+  the preferences and `main`, the media dialogs' session half, re-exports
+  under the old paths, and the seven tests that name the application (its
+  preferences, the shell's hotkeys, the program's provider list). No
+  behaviour changes: the workspace lists the same 4132 test names
+  (MEASURED); 172 tests moved to `pc-ui`. The window's own tests take 26 s
+  of wall time where they took 50 s (MEASURED, on a loaded host).
 - **2026-11-18 — Core registration:** step 8 of design/core-contract.md
   §13.6. `platforms::cores()` is the one list of the cores compiled into
   both programs: the PC core alone, plus `unemu-test-core` with the

@@ -2728,17 +2728,22 @@ name = "pc-ui"
 version = "0.0.2"
 dependencies = [
  "assembly",
+ "cpu",
+ "device",
  "egui",
  "image-registry",
  "image-store",
  "library-model",
  "library-ui",
  "machine-view",
+ "media",
+ "media-ui",
  "pc-image",
  "pc-library",
  "pc-media",
  "toml",
  "ui-kit",
+ "video",
 ]
 
 [[package]]

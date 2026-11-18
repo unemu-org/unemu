@@ -7,16 +7,21 @@ license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "The desktop's PC dialogs, drawn with egui: Settings… of a machine file and of an image with its review, File › New machine…, the disk-layer dialog, the PC parts of the details panes and the desktop's command vocabulary (core-contract.md §8.1)."
+description = "The desktop's PC views, drawn with egui: the machine library's frame with its collections and Remotes, Settings… of a machine file and of an image with its review, File › New machine…, the disk-layer dialog, the PC parts of the details panes and the desktop's command vocabulary (core-contract.md §8.1)."
 
 [package.metadata.unemu]
 layer = "pc"
 
 [features]
 # This crate's source folder, for the desktop's test that checks every drawn
-# string's glyphs, and the disk-layer dialog's helpers that the desktop's
-# tests of the library frame drive it with.
-test-support = []
+# string's glyphs, the disk-layer dialog's helpers, and the library frame's
+# fixtures that the desktop's tests drive the frame with (the library's own
+# fixtures, a mock registry and the Remotes model's test helpers).
+test-support = [
+    "image-registry/test-support",
+    "library-model/test-support",
+    "pc-library/test-support",
+]
 
 [dependencies]
 assembly.workspace = true
@@ -29,6 +34,8 @@ library-ui = { path = "../library-ui", version = "0.0.2" }
 pc-image = { path = "../pc-image", version = "0.0.2" }
 # The speed a command carries.
 machine-view.workspace = true
+# The host files the frame reads for Create from files….
+media.workspace = true
 # The PC library and media models these dialogs draw.
 pc-library = { path = "../pc-library", version = "0.0.2" }
 pc-media = { path = "../pc-media", version = "0.0.2" }
@@ -37,7 +44,18 @@ ui-kit = { path = "../ui-kit", version = "0.0.2" }
 
 [dev-dependencies]
 assembly = { workspace = true, features = ["test-support"] }
+cpu.workspace = true
+device.workspace = true
+image-registry = { path = "../registry", version = "0.0.2", features = ["test-support"] }
+image-store = { path = "../image-store", version = "0.0.2", features = ["test-support"] }
+library-model = { path = "../library-model", version = "0.0.2", features = ["test-support"] }
+library-ui = { path = "../library-ui", version = "0.0.2", features = ["test-support"] }
+# The media picker's fixture, which a test of the Installation media
+# collection builds a set with.
+media-ui = { path = "../media-ui", version = "0.0.2", features = ["test-support"] }
+media = { workspace = true, features = ["test-support"] }
 pc-image = { path = "../pc-image", version = "0.0.2", features = ["test-support"] }
 pc-library = { path = "../pc-library", version = "0.0.2", features = ["test-support"] }
 toml.workspace = true
 ui-kit = { path = "../ui-kit", version = "0.0.2", features = ["test-support"] }
+video.workspace = true

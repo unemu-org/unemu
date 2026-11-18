@@ -2,9 +2,10 @@
 
 Status: **Accepted** by the maintainer on 2026-11-17 (design step of
 `upc-dfs.24`, with `upc-3bm`), with the recommended answer to each question
-of §11. Steps 1 to 3 of §7.5 and steps 1 and 2 of §8 are implemented (the
+of §11. Steps 1 to 3 of §7.5 and steps 1 to 6 of §8 are implemented (the
 contract crate of §3 and the PC core of §4 in its stage A came with §8 step
-2); the other steps land one at a time. §8.1, the plan of steps 3 to 6 of
+2; steps 3 to 6 as §8.1 plans them, which leaves the session's crate of
+§8.1.10); the other steps land one at a time. §8.1, the plan of steps 3 to 6 of
 §8, was accepted by the maintainer on 2026-11-18. The decision record is
 [decision-40](<../../decisions/decision-40 - Front ends drive emulator cores through one contract crate.md>).
 §12 (embeddable cores, storage objects as contract 0.2, the core's own
@@ -1672,15 +1673,16 @@ Order, each a series of small beads under the same rules as §7.5:
    fast tests that need no machine, so a window change no longer builds or
    runs them; the 44 s of sound-level tests move only with a PC-side crate
    of their own, or once the media dialogs leave the window.
-3. **The library model and worker**, without egui: types the views and
-   the worker share move down first, which cuts the
+3. **Done** (§8.1.6). **The library model and worker**, without egui:
+   types the views and the worker share move down first, which cuts the
    `library_worker` ↔ `library_view` cycle.
-4. **The library and Remotes views.** The largest part: with the model
-   and worker about 150 s of the 294 s of per-test time. After this a
-   change to the shell or to the session no longer runs them.
-5. **The media picker and dialogs.**
-6. **The PC views** into `pc-ui`. What remains in `unemupc` is the shell
-   and the composition.
+4. **Done** (§8.1.7; the frame moved with step 6). **The library and
+   Remotes views.** The largest part: with the model and worker about
+   150 s of the 294 s of per-test time. After this a change to the shell
+   or to the session no longer runs them.
+5. **Done** (§8.1.8). **The media picker and dialogs.**
+6. **Done** (§8.1.9). **The PC views** into `pc-ui`. What remains in
+   `unemupc` is the shell and the composition.
 
 `library-ui` and `media-ui` reach PC knowledge through provider objects
 passed in by the application, as the command line does. A view that only
@@ -2680,8 +2682,8 @@ listed, 557 + 41, of which 4 are ignored), in
 | 6.1 | **Done.** **The dialog models into `pc-library`**: `new_machine` (1 416 lines) and `settings_model` (735) | `SettingsModel::open` takes the machine-file directory, as `open_with_library` does already; the shell passes `machines_dir()` | `settings_model` 25 move, but for the one that names `machines_dir_from`; of `new_machine`'s 21 those that draw `new_machine_view` stay | As landed: see below the table |
 | 6.2 | **Done.** **`pc-ui` starts with the dialogs**: the PC half of `pane`, `settings_sheet`, `new_machine_view`, `layers_dialog`. The three egui test helpers of the library fixture (`settled_modal`, `Pointer`, `painted_at`) go to `ui-kit`'s `test-support`, since they name no PC | none | `settings_sheet` 6, `layers_dialog` 14, and the tests of `image_settings`, `new_machine` and the worker that waited for these views; those that drive the frame wait for 6.4 | As landed: see below the table |
 | 6.3 | **Done.** **Commands and machine files down.** `State`, `Command`, `Enablement` (159 lines, which name only `machine_view::pacing::Speed`) go to `pc_ui::commands`; `LibraryEntry` and what builds it (`spawn_library_check`, `machine_paths`, `select_machine`, the diagnostics) go to `pc_library::machine_files`. `shell_model` keeps the hotkeys, the status-bar widths and the texture, and re-exports the rest | none | the 17 tests of `shell_model` go with what they test; the move lists the paths that change | After this move the frame names nothing of the application. As landed: see below the table |
-| 6.4 | **The frame.** `library_view` with the views of `machines`, `firmware`, `firmware_metadata`, `install_media`, `layout_tests`, and every test left behind whose modules are now in or below `pc-ui` | none: a move of whole files, about 9 000 production lines and 20 000 lines of tests | `library_view` 37, `layout_tests` 27, the collections 51, Remotes 39, `remote_pull` 9, `registry_transfer` 18 and its view's 1; the few that name `preferences` or the shell's hotkeys stay | **This is where the desktop's test time splits.** 140 s of tests move to `pc-ui` with this move (the frame 48.0, its layout tests 40.1, the collections 30.3, the registry and Remotes tests that drive the frame 21.7; MEASURED, `*`), beside the dialogs' of 6.1 and 6.2. A shell change then runs the application alone: about 70 s added up as measured here, about 110 s with the sound-level tests at their preliminary 44 s, so 20 to 30 s of wall time where it is 76 s now. A change to a library view runs `pc-ui` and the application |
-| 6.5 | **What is left is the application**: `shell`, `shell_model`, `app_menu`, `macos_menu`, `preferences`, `preferences_sheet`, `main`. Optionally the package takes the name `unemupc` (`unemu` since decision-41, where `unemupc` is the core's command line: §12.9 and step 4 of §12.10), with the changes §7.5 step 6 lists for the command line (CI, the release workflow, `scripts/third-party-licenses.sh`, the reasons in `deny.toml`, the runner's rules, the script's window family, `commands.md`, `architecture.md`) | none | none move | No time effect |
+| 6.4 | **Done.** **The frame.** `library_view` with the views of `machines`, `firmware`, `firmware_metadata`, `install_media`, `layout_tests`, and every test left behind whose modules are now in or below `pc-ui` | none: a move of whole files, about 9 000 production lines and 20 000 lines of tests | `library_view` 37, `layout_tests` 27, the collections 51, Remotes 39, `remote_pull` 9, `registry_transfer` 18 and its view's 1; the few that name `preferences` or the shell's hotkeys stay | **This is where the desktop's test time splits.** 140 s of tests move to `pc-ui` with this move (the frame 48.0, its layout tests 40.1, the collections 30.3, the registry and Remotes tests that drive the frame 21.7; MEASURED, `*`), beside the dialogs' of 6.1 and 6.2. A shell change then runs the application alone: about 70 s added up as measured here, about 110 s with the sound-level tests at their preliminary 44 s, so 20 to 30 s of wall time where it is 76 s now. A change to a library view runs `pc-ui` and the application. As landed: see below the table |
+| 6.5 | **Done.** **What is left is the application**: `shell`, `shell_model`, `app_menu`, `macos_menu`, `preferences`, `preferences_sheet`, `main`. Optionally the package takes the name `unemupc` (`unemu` since decision-41, where `unemupc` is the core's command line: §12.9 and step 4 of §12.10), with the changes §7.5 step 6 lists for the command line (CI, the release workflow, `scripts/third-party-licenses.sh`, the reasons in `deny.toml`, the runner's rules, the script's window family, `commands.md`, `architecture.md`) | none | none move | No time effect. As landed: see below the table |
 
 As landed, 6.1 to 6.3 (one bead, three moves, each built and tested before
 the next; no behaviour change). MEASURED with `cargo nextest list
@@ -2793,6 +2795,104 @@ host): 685 tests in 64 to 73 s of wall time after each move (622 of
 file is `pc-ui` and `window`; for `crates/pc-library/src/new_machine.rs`
 or `machine_files.rs` it is `pc-library`, `pc-ui` and `window`; for the
 window's `settings_sheet.rs` or `shell_model.rs` it was `window` alone.
+
+As landed, 6.4 and 6.5 (one bead, two moves, each built and tested before
+the next; no behaviour change). MEASURED with `cargo nextest list
+--workspace --run-ignored all`: the workspace lists the same 4132 test
+names apart from the crate, with no rename; the window has 304 where it
+had 476 and `pc-ui` 201 where it had 29. No data rule of the runner and no
+line of the boundary check's allow list changed: no moved source names a
+path outside its crate, and the rules that name `pc-library` reach `pc-ui`
+as its dependent.
+
+- **6.4.** `pc_ui::library_view` holds the frame with its collections
+  (`machines`, `firmware`, `firmware_metadata`, `install_media`, `hardware`,
+  `pane`, `remotes`) and `layout_tests`, whole; `pc_ui::registry_transfer`
+  and `pc_ui::remote_pull` re-export the neutral models with the tests that
+  drive them through the frame (`remote_pull` with `pc_drive`, the PC's
+  description of a stopped machine's drive). The frame names
+  `pc_ui::commands::Command` and `pc_library::machine_files::LibraryEntry`
+  in place of the window's `shell_model` re-exports, and its two tests that
+  read `crate::shell_model::Command::Start` read `crate::commands` (a path
+  the new crate names otherwise). In `pc-ui`, `media_picker` and
+  `registry_transfer_view` are private modules under the paths the frame
+  names, as `image_settings` and `save_image` are: the first re-exports
+  `pc_media::media_picker` with `media-ui`'s fixture `set`, the second
+  `library_ui::registry_transfer_view` with copies of the five drawing
+  helpers (`texts`, `render`, `escape`, `shows`, `click`) the Remotes
+  tests use. The window's `library_view.rs` and `registry_transfer.rs`
+  re-export the moved modules and keep the tests that stay, and its
+  `registry_transfer_view.rs` keeps its test without `click`, which only
+  the moved tests called; `image_settings.rs`,
+  `layers_dialog.rs`, `save_image.rs`, `remote_pull.rs` and their tests are
+  gone from the window, since nothing there names them any more
+  (`remote_pull` is `use pc_ui::remote_pull` at the crate root), and
+  `registry_transfer_view` and `remote_browse` are test-only modules. 172
+  tests moved: 36 of `library_view::tests`, the 27 layout tests, the 51 of
+  the collections, 38 of Remotes, the 9 of `remote_pull` and 11 of
+  `registry_transfer`. Seven stayed, by rule 2:
+  `library_view::tests::platform_default_store_paths_and_preference_round_trip`
+  (the application's `preferences`),
+  `library_view::remotes::tests::refresh_lists_the_shown_registry_again`
+  (the shell's `hotkey`), four of `registry_transfer::tests`
+  (`the_guard_refuses_without_override_and_a_forged_job_reaches_no_registry`,
+  `push_and_pull_name_the_namespace_and_the_guard_decides_per_namespace`,
+  `a_package_marking_catalogued_proprietary_firmware_open_cannot_leave`,
+  `a_move_or_stale_answer_after_cancel_shows_the_cancel`), which run a
+  transfer through their helper `run_here` with
+  `platforms::with_image_providers`, an `application` crate, and
+  `registry_transfer_view::tests::push_and_pull_render_every_stage_without_a_window`,
+  which calls it in its body (the precedent of 3.12). The fixtures that the
+  stayed tests and the shell's tests build with are behind `pc-ui`'s
+  `test-support` (which turns on `pc-library`'s, `library-model`'s and
+  `image-registry`'s): `registry_transfer::test_support` (the push `Lab`
+  with `accounts_for`, `login_policy`, `open_push`, `push_settled`,
+  `wait_pumping` and the two constants), `library_view::remotes::test_support`
+  (the `Rig`, its `preferences`, the sample listing and its helpers),
+  `firmware::test_support` (`publish_open_package`, `poll_until`,
+  `warm`, `select_first_package`, `firmware_edit_source`),
+  `install_media::test_support` (the sets `library`, `disk`, `warm`,
+  `FLOPPY_1440`, `select_set`, `reviewed_media`) and
+  `machines::test_support` (`image`, `row`); the test modules re-export
+  them under the old paths, and their bodies are unchanged. The test-only
+  frame methods the shell's tests call (`synthetic`, `pump_until`,
+  `pump_queued`, `set_machines`, `use_snapshot`) are `pub` behind the
+  feature too. Visibility: what the window names became `pub` (`LibraryView`, `Request`,
+  `default_store_path`, the four collection modules
+  with their re-exported models, `SourceTarget`, `show_machine`,
+  `stop_remotes`, `recheck`, and `remote_pull`'s re-export). The module
+  `registry_transfer` holds the model's re-export for the frame, which
+  names it; the window names only its `test_support`, in its tests. Deviations: `LibraryView::remote` is `pub` for every build,
+  although only the shell's tests read it, since it is a field (the
+  precedent of 4.3); `pc-ui` also depends on `media` (the frame reads host
+  files for Create from files…), and as test dependencies on `cpu`,
+  `device`, `video`, `media`, `image-store`, `image-registry`,
+  `library-model` and `library-ui` with their test support, and on
+  `media-ui`'s `test-support` for the picker's `set`, which one
+  Installation media test builds a set with (a `pc` crate beside `pc-ui`,
+  not above it); §8.1.3 lists none of these.
+- **6.5.** What is left in the window is the application: `shell`,
+  `shell_model`, `app_menu`, `macos_menu`, `preferences`,
+  `preferences_sheet` and `main`, with the test-only `host_audio`, `mouse`,
+  `key_table_tests`, `sound_levels_tests`, `shell_icons` and
+  `library_test_support`. Besides them it holds only re-exports under old
+  paths with the tests that stay (`library_view`, `media_picker`,
+  `registries_model`, `registry_transfer`, `registry_transfer_view`,
+  `remote_browse`, `settings_model`) and `media_dialog`, whose session half
+  stays with `Presenter` until `upc-dfs.25.7` (§8.1.10). The package keeps
+  the name `window`: the rename goes with the step that names the desktop
+  binary `unemu` (§12.11, step 4 of §12.10).
+
+Time (MEASURED, `cargo nextest run -p window` and `-p pc-ui` before and
+after, four tests at once on a loaded development host): before, the
+window ran 473 tests in 49.7 s of wall time (551 s added up) and `pc-ui`
+29 in 3.9 s (47 s); after, the window runs 301 in 26.2 s (141 s added up)
+and `pc-ui` 201 in 29.2 s (388 s). A change to the shell now runs the
+window's tests alone. The runner's plan for
+`crates/pc-ui/src/library_view/machines.rs` is `pc-ui` and `window`,
+where the plan for the window's `library_view/machines.rs` was `window`
+alone. The whole runner over this change (full plan, since `Cargo.lock`
+changed, goldens tier): 4116 tests passed in 420 s.
 
 Order. Step 3 comes first and step 4 needs only 3.1 to 3.5. Steps 5 and 6
 do not depend on each other; step 6 brings the time, so it may go before

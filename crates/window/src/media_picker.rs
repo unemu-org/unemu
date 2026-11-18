@@ -10,5 +10,5 @@ pub(crate) use media_ui::media_picker::*;
 // The picker's fixtures, under the path the desktop's tests name them by.
 #[cfg(test)]
 pub(crate) mod tests {
-    pub(crate) use media_ui::media_picker::test_support::{set, set_outcome};
+    pub(crate) use media_ui::media_picker::test_support::set_outcome;
 }

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Image › Push…, Image › Pull by reference… and Pull… from the library's
 //! Remotes are drawn by `library_ui::registry_transfer_view`, re-exported
-//! here under its old path. Its test, which plans a push of a PC image, stays
-//! with the window, with the drawing helpers other tests of the window use.
+//! here under its old path. Its test, which plans a push of a PC image with
+//! the program's provider list, stays with the window, with the drawing
+//! helpers it uses.
 
 pub(crate) use library_ui::registry_transfer_view::*;
 
@@ -253,50 +254,5 @@ pub(crate) mod tests {
         let (_, shown) = draw(&mut pull, vec![]);
         assert!(shows(&shown, "Cancelled. The local tag was not set."));
         assert!(shows(&shown, "Pull another"));
-    }
-
-    /// Click the text `label` as a pointer would, after the frames that lay
-    /// the modal out; the result of the frame that releases the button.
-    pub(crate) fn click<T>(
-        ctx: &egui::Context,
-        label: &str,
-        mut draw: impl FnMut(&egui::Context) -> T,
-    ) -> T {
-        fn find(shape: &egui::Shape, label: &str) -> Option<egui::Pos2> {
-            match shape {
-                egui::Shape::Text(text) if text.galley.text() == label => {
-                    Some(text.visual_bounding_rect().center())
-                }
-                egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| find(s, label)),
-                _ => None,
-            }
-        }
-        let mut frame = |events: Vec<egui::Event>| {
-            let mut result = None;
-            let mut output = ctx.run_ui(
-                egui::RawInput {
-                    events,
-                    ..Default::default()
-                },
-                |ui| result = Some(draw(ui.ctx())),
-            );
-            output.textures_delta.clear();
-            (result.unwrap(), output)
-        };
-        frame(vec![]);
-        let (_, output) = frame(vec![]);
-        let at = output
-            .shapes
-            .iter()
-            .find_map(|shape| find(&shape.shape, label))
-            .unwrap_or_else(|| panic!("{label} is not shown"));
-        let button = |pressed| egui::Event::PointerButton {
-            pos: at,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
-        frame(vec![egui::Event::PointerMoved(at), button(true)]);
-        frame(vec![button(false)]).0
     }
 }

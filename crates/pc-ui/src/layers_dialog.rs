@@ -959,7 +959,7 @@ pub mod test_support {
             pending: None,
         }
     }
-    /// Finish saving <tag>, as its button asks.
+    /// Finish saving `<tag>`, as its button asks.
     pub fn finish(dialog: &LayersDialog) -> Option<Action> {
         dialog.finish_pending()
     }
@@ -995,7 +995,7 @@ pub mod test_support {
 pub(crate) mod tests {
     use super::*;
     // The helpers live in the test support; other tests name them here.
-    pub(crate) use super::test_support::{reviewed_publication, source};
+    pub(crate) use super::test_support::{finish, reviewed_publication, source};
     fn details() -> ImageDetails {
         ImageDetails {
             media: vec![],

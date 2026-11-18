@@ -15,7 +15,7 @@ pub(crate) mod tests {
     use pc_image::revision::Source;
     // The helpers live with the model; this crate's tests name them here.
     pub(crate) use pc_library::image_settings::test_support::{
-        open_image, open_new_image, opened, reviewed,
+        open_image, open_new_image, opened, reviewed, write_c,
     };
 
     /// Every text a frame of `draw` paints in a central panel.

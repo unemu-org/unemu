@@ -1,20 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The library's Remotes group is drawn by `library_ui::remotes`,
 //! re-exported here under its old path. Its tests drive the whole library
-//! frame and its worker, and stay with the frame.
+//! frame and its worker, and stay with the frame; the rig they drive it
+//! with is in `test_support`, behind the `test-support` feature.
 
-pub(crate) use library_ui::remotes::*;
+pub use library_ui::remotes::*;
 
 // What the tests took from the module's own imports when it lived here.
 #[cfg(test)]
 use super::{pane, LibraryView, Request};
 #[cfg(test)]
-use crate::{
-    registry_transfer::Accounts,
-    remote_browse::{
-        Action, BrowseEvent, BrowseRequest, LocalState, RegistryView, Remotes, RepositoryRow,
-        State, TagRecord, TagRow,
-    },
+use crate::remote_browse::{
+    Action, BrowseEvent, BrowseRequest, LocalState, State, TagRecord, TagRow,
 };
 #[cfg(test)]
 use egui::{Color32, Rect};
@@ -27,5 +24,7 @@ use library_ui::remotes::test_support::{
     action_label, namespace_key, newest_first, tree_lines, type_label, COLUMNS, ROW,
 };
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 #[cfg(test)]
 mod tests;
