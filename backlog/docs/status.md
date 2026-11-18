@@ -5,6 +5,20 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — The library's PC models leave the window:** the rest of
+  move 3.7 and moves 3.8 to 3.10 of the window split
+  (design/core-contract.md §8.1.6). `pc-library` (layer pc, no toolkit)
+  now also holds the frame's query and the worker's snapshot of every
+  list (`snapshot`), the Machines, Firmware and Installation media
+  collections' rows, facets, labels, scans and imports (`machines`,
+  `firmware`, `install_media`), a firmware package's statement and the
+  worker's sides of Edit metadata… (`firmware_metadata`), the details
+  panes' hardware facts (`hardware`) and Settings… on an image
+  (`image_settings`). The window keeps the views and re-exports the models
+  under their old paths; the statement editor's and a machine row's
+  drawing methods became window traits. Every item the library worker
+  names of the frame now lives below it. No behaviour changes: every test
+  keeps its name and place (3962; MEASURED).
 - **2026-11-18 — Recipe libraries, the index and the plan:** step B6 of
   design/recipes.md §19.2. `upcli recipe plan FILE [--json]` resolves every
   input of a recipe that passes the checks: from the store (by the decoded

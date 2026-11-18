@@ -2196,10 +2196,10 @@ cycle.
 | 3.4 | **Done.** **`registry_transfer` on the seam, into `library-model`.** `DesktopPlatform`, `PlatformFacts` and `PcDesktop` appear (the last in the window until 3.11); the provider list moves to `pc-image` | the catalogue and the two labels (7 references), §8.1.4 | its 18 tests (15.2 s) hold a `LibraryView` and build stores with `PcProvider`; they stay, in a test-only `registry_transfer` module | The tests that pin the plan's lines, the refusals and the blob labels pass unchanged; the test that the PC core's platform equals `pc-image`'s is new. As landed: see below the table |
 | 3.5 | **Done.** **`remote_browse` and `remote_pull`, into `library-model`** | the platform's name and id, the format name, the tag order (6); the drive's geometry (3), §8.1.4 | the 28 tests of `remote_browse` name the worker and stay; the 9 of `remote_pull/tests` draw the transfer view and stay with it | After this move about 6 100 production lines of registry models have no PC dependency. Plan for a file of them: `library-model`, `window`. As landed: see below the table |
 | 3.6 | **Done.** **`pc-media` starts.** `media_dialog`, `created_media`, `kept_catalogue`, `drive_chips` move whole, with the model items of `catalogue_menu` (`SetDisk`, `set_disk`, `short_name`) and of `media_picker` (`Disk`, `SetEntry`, `CatalogueDisk`, `format_name`, `drive_name`, `title_parts`, `label_without_file`) that they name; both view files re-export them. The rest of `catalogue_menu` that builds without a toolkit (`Catalogue`, its rows and marks) may come in the same move | `BlankDisk::default()` becomes a constructor that takes the machine-file directory, and the shell passes `machines_dir()` (1 use) | `created_media` 5, `kept_catalogue` 7, `drive_chips` 14 move; the 22 of `media_dialog` name `Presenter` and the library fixture and stay | The four move together because they name each other. Plan for a media model file: `pc-media`, `window`. As landed: `crates/pc-media` (layer `pc`, no toolkit) holds `created_media`, `kept_catalogue` and `drive_chips` whole, `media_dialog` but for two methods, the named items of `media_picker` (`SetEntry`'s `words` and `facet` became `pub` for the picker's search) and of `catalogue_menu` with `own_name`, which `short_name` calls and the picker's `disk_name` names; the rest of `catalogue_menu` stayed. `BlankDisk::new` takes the directory as an `Option`; `for_machine` passes none, since it sets its own. Deviations: the two methods of `media_dialog` that need the desktop stay in the window's `media_dialog.rs`, which re-exports the model: `InsertDialog::library_ui` draws with egui (a view line §8.1.1 missed, as it sits after the file's first test module) and `PendingMedia::apply` takes the session's `Presenter`; they are methods of two window traits (`LibraryInsertView`, `ApplyPending`), so their two callers in `shell.rs` keep their calls and import the traits. Of the 22 tests of `media_dialog`, the 12 of `media_dialog::tests` name neither `Presenter` nor the fixture and moved by rule 2; the 10 of `media_set_tests` and `review_tests` stay, and for them `LibraryMessage`, `LibraryInsert::{refresh, snapshot, pending}` and `PendingMedia::inserts` are `pub`, and the test-only `LibraryInsert::entries` is behind `test-support`. The glyph test of the window reads `pc_media::source_dir()` too (`test-support`, as in `ui-kit`). MEASURED: 38 tests in `pc-media`; plan for `crates/pc-media/src/drive_chips.rs`: `pc-media`, `window`, where it was `window` alone |
-| 3.7 | **Done**, in part. **`pc-library` starts** with `firmware_choices`, `hardware` (with `CheckedImage` from the worker and `firmware::is_rom`) and `image_settings` | none: after 3.3 they name only each other and `library-model` | `firmware_choices` 2 move; `hardware` 5 and `image_settings` 15 name the worker, the fixture or `settings_sheet` and stay | As landed: `crates/pc-library` (layer `pc`, no toolkit) holds `firmware_choices` with its 2 tests; the window's glyph test reads `pc_library::source_dir()` too. Deviation: `hardware` and `image_settings` stay in the window, with `CheckedImage` and `firmware::is_rom`: they name `human_size`, `ImageRow` and `SaveAsImage`, which reach `library-model` with 3.3, carried out beside this move and not yet under it; they follow once 3.3 has landed. MEASURED: plan for `crates/pc-library/src/firmware_choices.rs`: `pc-library`, `window` |
-| 3.8 | **`Query` and `Filter`, then the model halves of `firmware` and `firmware_metadata`** (712 and 650 lines: the rows, facets and labels, `ScanReport`, `Outcome`, `scan_folder`, `preview_set`, `import_selected`, `Verdict`, `EditSource`, `PackageDetails`, `open_edit`, `preview_edit`, `publish_edit`, `read_package`) into `pc-library` | `firmware_metadata` plans its push with `plan_with_catalogue` and `pc_image::firmware::restricted` in place of `platforms::push_plan` (1) | stay with the views: they drive the frame | The fields of `Query` become `pub` |
-| 3.9 | **The model halves of `install_media` and `machines`** (703 and 690 lines: `MediaRow`, `Availability`, `rows`, `all_rows`, `picker_set`, `Control`, `Pick`, `Sources`, `inspect`, `import`; `MachineRow`, `facets`, `visible`, `name_problem`, `id_for`, `setting_diffs`) into `pc-library` | none | stay with the views | |
-| 3.10 | **`Snapshot` and `snapshot`** (with `facets_for`, `sort_value`) into `pc-library` | none | stay with the frame | After this move the worker names nothing of `library_view` |
+| 3.7 | **Done.** **`pc-library` starts** with `firmware_choices`, `hardware` (with `CheckedImage` from the worker and `firmware::is_rom`) and `image_settings` | none: after 3.3 they name only each other and `library-model` | `firmware_choices` 2 move; `hardware` 5 and `image_settings` 15 name the worker, the fixture or `settings_sheet` and stay | As landed: `crates/pc-library` (layer `pc`, no toolkit) holds `firmware_choices` with its 2 tests; the window's glyph test reads `pc_library::source_dir()` too. Deviation: `hardware` and `image_settings` stay in the window, with `CheckedImage` and `firmware::is_rom`: they name `human_size`, `ImageRow` and `SaveAsImage`, which reach `library-model` with 3.3, carried out beside this move and not yet under it; they follow once 3.3 has landed. MEASURED: plan for `crates/pc-library/src/firmware_choices.rs`: `pc-library`, `window`. The rest, `hardware` and `image_settings`, landed with 3.8 to 3.10: see below the table |
+| 3.8 | **Done.** **`Query` and `Filter`, then the model halves of `firmware` and `firmware_metadata`** (712 and 650 lines: the rows, facets and labels, `ScanReport`, `Outcome`, `scan_folder`, `preview_set`, `import_selected`, `Verdict`, `EditSource`, `PackageDetails`, `open_edit`, `preview_edit`, `publish_edit`, `read_package`) into `pc-library` | `firmware_metadata` plans its push with `plan_with_catalogue` and `pc_image::firmware::restricted` in place of `platforms::push_plan` (1) | stay with the views: they drive the frame | The fields of `Query` become `pub`. As landed: see below the table |
+| 3.9 | **Done.** **The model halves of `install_media` and `machines`** (703 and 690 lines: `MediaRow`, `Availability`, `rows`, `all_rows`, `picker_set`, `Control`, `Pick`, `Sources`, `inspect`, `import`; `MachineRow`, `facets`, `visible`, `name_problem`, `id_for`, `setting_diffs`) into `pc-library` | none | stay with the views | As landed: see below the table |
+| 3.10 | **Done.** **`Snapshot` and `snapshot`** (with `facets_for`, `sort_value`) into `pc-library` | none | stay with the frame | After this move the worker names nothing of `library_view` but through re-exports. As landed: see below the table |
 | 3.11 | **The worker.** `library_worker`, `layers_dialog::SourceImage`, `PcDesktop` and the test support (`library_test_support` without its three egui helpers, the synthetic firmware catalogue, `test_wait`) into `pc-library`; the support goes behind `test-support` | `Wake` in place of `egui::Context` (6) | its 30 tests (44.4 s) move, but for those that call test helpers of `layers_dialog` and `image_settings`, which follow in 6.2 | The cycle is cut by Cargo: `pc-library` cannot name the window. `crates/pc-harness/tests/support/` and `vendor/` gain `pc-library` in the runner's rules |
 | 3.12 | **The tests left behind whose modules are now all in or below `pc-library`** move there, under the same paths: those of `remote_browse` (20 after 3.5 moved 8 of the 28 to `library-model`; the 28 took 9.8 s), and of `hardware` and `image_settings` where they name no view. The 15 of `registry_transfer` left after 3.4 hold a `LibraryView` in their fixture and wait for the frame (6.4) | none | about 40 tests, about 12 s | No production code changes |
 
@@ -2319,6 +2319,73 @@ library-model`): the 38 tests of the crate take 3.9 s added up, under a
 second of wall time. The runner's plan for `crates/library-model/src/remote_browse.rs`,
 `registry_transfer.rs`, `remote_pull.rs` or `platform.rs` is `library-model`
 and `window`; for the window's `registry_transfer.rs` it is `window` alone.
+
+As landed, the rest of 3.7 and 3.8 to 3.10 (one bead, four moves, each
+built and tested before the next; no behaviour change; no test moved, as
+planned, so the workspace lists the same 3962 test names, the window 660
+and `pc-library` 2, MEASURED with `cargo nextest list --workspace
+--run-ignored all`). Every split file keeps its view half and re-exports
+the model with `pub(crate) use pc_library::<module>::*`; the stayed test
+modules import by name what they took from the old module's own `use`
+lines, and their bodies are unchanged. An item that only a view uses
+stays with its view, even where it builds without a toolkit.
+
+- **3.7, the rest.** `pc_library::hardware` holds the module whole, with
+  `CheckedImage`, which the worker fills and re-exports;
+  `pc_library::image_settings` holds the model whole, and the window's
+  `image_settings.rs` keeps its test module (whose helpers other tests
+  use). `is_rom` went to `pc_library::firmware`, which 3.8 filled.
+  Visibility: `ImageSettings::{source, machine, floppies}` became `pub`,
+  since the stayed tests read them.
+- **3.8.** `Query` and `Filter` are in `pc_library::snapshot` (`Filter`
+  and its three predicates `pub`). `pc_library::firmware` holds the
+  facets and labels, `Redistribution`, `FirmwareRow`, `MachineRoms`,
+  `add_facets`, `rows`, the cells and their sort, and the scan and import
+  (`ScanReport`, `CandidateView`, `CandidateState`, `Outcome`,
+  `scan_folder`, `preview_set`, `import_selected`); the columns, the row
+  lead, the pane with its helpers, `PaneAction`, `SourceTarget` (which
+  the shell names) and the import dialog stay.
+  `pc_library::firmware_metadata` holds the statement (`Rights`,
+  `Catalogue`, `LicenseChoice`, `ProvenanceFields`, `SourceFile`,
+  `Facts`, `Fields`), the verdict and the reason texts, `PackageDetails`
+  and the worker's sides (`read_package`, `open_edit`, `preview_edit`,
+  `publish_edit`); `read_package` plans with `plan_with_catalogue` over
+  `pc_image::firmware::restricted`, as planned. Deviation: `EditSource`
+  holds a `Draft`, so the editor's state, `Draft`, moved too, with its
+  model methods; its four drawing methods and the licence picker of
+  `LicenseChoice` became two window traits (`DraftView`, `LicensePicker`),
+  so their callers keep their calls. For the views, four fields of
+  `Draft` and the private methods and items the views call became `pub`;
+  `provenance_hint`, which only the editor names, stays with it. For the stayed
+  tests, `ProvenanceFields::{revision, url, statement}`,
+  `MachineRoms::users` and `Redistribution::value` became `pub`, and
+  `USER_SUPPLIED` and `class` are behind `test-support`.
+- **3.9.** `pc_library::install_media` holds the facets and format
+  labels, `MediaRow`, `Availability` with `availability`, `add_facets`,
+  `rows`, `all_rows`, `picker_set`, the cells and their sort, and the
+  import (`Control`, `Pick`, `Sources`, `inspect`, `Outcome`, `import`);
+  `formats` and `is_set_payload` are behind `test-support` for the stayed
+  tests. `pc_library::machines` holds `MachineRow` (but its lead),
+  `FACETS`, `facets`, `visible`, `name_problem`, `id_for`, `SettingDiff`,
+  `setting_diffs` and `pending_name`. Deviation: `MachineRow::lead`
+  draws the toolkit's icon in the table's `Lead`, so it is a window trait
+  (`MachineLead`). `pc-library` now depends on `pc-media`, as §8.1.3
+  lists, for the media picker's `SetEntry` and a machine's created and
+  kept disks.
+- **3.10.** `pc_library::snapshot` holds `ViewRow`, `Snapshot` (fields
+  `pub`), `facets_for`, `sort_value` and `snapshot`, with `image_rights`
+  and `redistribution`, which the sort names. Every item the worker names
+  through `library_view` now lives in `pc-library` or `library-model`; the
+  worker's paths change when it moves (3.11).
+
+`platforms::push_plan` has no caller in the programs after 3.8 (the
+command line's test names it in a comment); removing it is left to the
+move that empties `platforms`. Time (MEASURED, `cargo nextest run -p
+window -p pc-library` after each move, four tests at once on a loaded
+development host): 660 tests in 60 to 66 s of wall time, as before. The
+runner's plan for `crates/pc-library/src/hardware.rs` (or any other
+`pc-library` file) is `pc-library` and `window`, where the plan for the
+window's `library_view/hardware.rs` was `window` alone.
 
 Effect of step 3 (ASSUMED from §8.1.1): about 115 tests and 55 to 60 s of
 the 288 s leave the application's test binary (the worker 44 s, the tests

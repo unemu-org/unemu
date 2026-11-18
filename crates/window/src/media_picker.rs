@@ -20,8 +20,10 @@ use image_store::{Descriptor, Digest};
 use std::collections::{BTreeMap, BTreeSet};
 
 // The sets, disks and names the media models share live below the desktop.
+#[cfg(test)]
+pub(crate) use pc_media::media_picker::Disk;
 pub(crate) use pc_media::media_picker::{
-    drive_name, format_name, label_without_file, title_parts, CatalogueDisk, Disk, SetEntry,
+    drive_name, format_name, label_without_file, title_parts, CatalogueDisk, SetEntry,
 };
 
 /// The picker's facets, in the mock-up's order.

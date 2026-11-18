@@ -7,6 +7,7 @@
 
 use super::*;
 use crate::library_test_support::Fixture;
+use image_store::summary::SummaryCache;
 use pc_image::machine::{Change, State};
 
 /// The window widths every layout is checked at; at 760 px the details

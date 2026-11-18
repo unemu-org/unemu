@@ -2659,8 +2659,12 @@ name = "pc-library"
 version = "0.0.2"
 dependencies = [
  "assembly",
+ "image-registry",
  "image-store",
+ "library-model",
+ "machine-file",
  "pc-image",
+ "pc-media",
  "toml",
 ]
 

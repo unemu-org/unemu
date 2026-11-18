@@ -423,20 +423,9 @@ impl Drop for Worker {
 pub(super) fn regular_name(image: &Digest) -> String {
     format!("regular-{}", &image.hex()[..56])
 }
-/// What a readiness check reads beside an image's details, for the details
-/// panes and for floppies inserted before Start.
-#[derive(Clone, Debug, Default)]
-pub(super) struct CheckedImage {
-    /// The capabilities draft with empty floppy catalogues, as Settings reads
-    /// it: the drives a floppy goes into and the names of the hardware.
-    pub draft: Option<assembly::capabilities::Draft>,
-    /// Every card of the configuration by its id, with its kind.
-    pub cards: Vec<(String, String)>,
-    /// The manifest's description.
-    pub description: Option<String>,
-    /// The image this one was saved from, as the manifest records it.
-    pub base: Option<Digest>,
-}
+// What a readiness check reads beside an image's details is the PC
+// library's; the worker fills it.
+pub(super) use pc_library::hardware::CheckedImage;
 
 /// The OCI manifest annotations the details panes show.
 const DESCRIPTION: &str = "org.opencontainers.image.description";
