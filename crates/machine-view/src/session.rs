@@ -46,8 +46,8 @@ use std::{
     time::{Duration, Instant},
 };
 use unemu_core_api::{
-    DisplayId, ErrorKind, InputEvent, InputKind, Key, KeyState, Machine, MediaAction, Message,
-    PadControl, PortId, ResetKind, RunLimit, SlotId, Status, Stop, Ticks,
+    DisplayId, ErrorKind, FrameArea, InputEvent, InputKind, Key, KeyState, Machine, MediaAction,
+    Message, PadControl, PortId, ResetKind, RunLimit, SlotId, Status, Stop, Ticks,
 };
 use winit::{
     event::{ElementState, MouseButton},
@@ -67,6 +67,10 @@ pub struct Picture {
     pub aspect: (u32, u32),
     /// Changes whenever the machine's picture changed.
     pub serial: u64,
+    /// The part of the picture the emulated display showed for certain, as
+    /// the machine states it; the whole picture when it states nothing. The
+    /// screen still shows the whole picture.
+    pub visible: FrameArea,
 }
 
 /// One machine in the window, paced against the host clock.
@@ -340,6 +344,7 @@ impl<M: Machine + ?Sized> Session<M> {
                 pixels: frame.pixels.to_vec(),
                 aspect: frame.aspect,
                 serial: frame.serial,
+                visible: frame.visible,
             });
             #[cfg(any(test, feature = "test-support"))]
             {
@@ -382,7 +387,13 @@ impl<M: Machine + ?Sized> Session<M> {
         let result = self.machine.drain_audio(&mut self.audio_frames);
         self.audio.push(&self.audio_frames);
         match result {
-            Err(error) if error.kind == ErrorKind::Storage => return Err(error.into()),
+            // A host write of unknown outcome fails the session as a failed
+            // one does: the machine must be created again before it writes.
+            Err(error)
+                if matches!(error.kind, ErrorKind::Storage | ErrorKind::StorageUncertain) =>
+            {
+                return Err(error.into())
+            }
             Err(error) => {
                 if !self.audio_error_reported {
                     let _ = writeln!(warnings, "audio observation failed: {error}; continuing");

@@ -32,3 +32,6 @@ video.workspace = true
 [dev-dependencies]
 # The protected-mode guest the CPU stop report tests run.
 assembly = { workspace = true, features = ["test-support"] }
+# The contract's storage and content in memory, for the refusals of create
+# and identify.
+unemu-core-api = { workspace = true, features = ["test-support"] }

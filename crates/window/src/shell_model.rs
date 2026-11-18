@@ -1227,6 +1227,12 @@ mod tests {
             pixels: vec![0xff0000, 0x00ff00, 0x0000ff, 0x123456],
             aspect: (4, 3),
             serial: 0,
+            visible: unemu_core_api::FrameArea {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
         });
         assert_eq!(image.size, [2, 2]);
         assert_eq!(

@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use super::*;
 use assembly::{ObservationPolicy, ObservationRequest};
-use unemu_core_api::{Core, Key, KeyState, CONTRACT};
+use unemu_core_api::{
+    test_support::{MemoryContent, MemoryStorage},
+    ContractVersion, Core, FrameArea, Key, KeyState, OfferedContent, WriteTarget, CONTRACT,
+};
 
 fn observed(config: &MachineConfig, display: DeviceId) -> AssembledMachine {
     assembly::assemble_with_observation_and_options(
@@ -103,6 +106,16 @@ fn the_picture_is_the_rasterised_text_of_the_completed_boundary() {
     let frame = machine.frame(DisplayId(0)).unwrap();
     assert_eq!((frame.width, frame.height), (1280, 800));
     assert_eq!(frame.aspect, (4, 3));
+    // The PC states no overscan: the whole picture is the visible part.
+    assert_eq!(
+        frame.visible,
+        FrameArea {
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 800
+        }
+    );
     let first = frame.serial;
     for y in 0..800 {
         for x in 0..1280 {
@@ -237,11 +250,14 @@ fn a_drive_without_a_controller_refuses_changes_as_a_usage_error() {
 fn the_pc_core_describes_its_platform_and_creates_no_machine_yet() {
     let core: &dyn Core = &crate::PcCore;
     let description = core.description();
+    assert_eq!(description.implements, ContractVersion::new(0, 2));
     assert!(CONTRACT.drives(description.implements));
     assert_eq!(description.id, "unemupc");
     assert_eq!(description.platforms.len(), 1);
     assert_eq!(description.platforms[0].id, "ibm-pc");
     assert!(description.platforms[0].config_types.is_empty());
+    // A PC starts from a config, never from a file a person opens.
+    assert!(description.platforms[0].content.is_empty());
     assert!(description
         .notices
         .iter()
@@ -252,16 +268,67 @@ fn the_pc_core_describes_its_platform_and_creates_no_machine_yet() {
             Err(Error::new(ErrorKind::Content, "nothing"))
         }
     }
+    let storage = std::rc::Rc::new(MemoryStorage::new());
     let request = unemu_core_api::CreateRequest::new(
         "ibm-pc",
         unemu_core_api::ConfigDocument::new("application/toml", b""),
         &Nothing,
-        std::path::Path::new("session"),
+        storage.clone(),
     );
     assert_eq!(
         core.create(&request).err().map(|error| error.kind),
         Some(ErrorKind::Unsupported)
     );
+    assert!(
+        storage.names().is_empty(),
+        "a refused create writes nothing"
+    );
+    let bytes = MemoryContent::new(vec![0; 512]);
+    let offered = OfferedContent::new("disk.img", [0; 32], 512, &bytes);
+    assert!(matches!(core.identify(&offered), Ok(None)));
+    assert_eq!(
+        core.validate(
+            "ibm-pc",
+            unemu_core_api::ConfigDocument::new("application/toml", b"")
+        )
+        .err()
+        .map(|error| error.kind),
+        Some(ErrorKind::Unsupported)
+    );
+}
+
+/// Media join a running PC through its provider, so the contract's
+/// `add_medium` is refused whatever the medium, including one whose writes
+/// are kept in a record of the machine's storage.
+#[test]
+fn the_pc_refuses_media_through_the_contract() {
+    let config = assembly::at_keyboard(vec![0xF4]);
+    let mut machine =
+        PcMachine::from_assembled(&config, assembly::assemble(&config).unwrap()).unwrap();
+    for writes in [
+        WriteTarget::ReadOnly,
+        WriteTarget::Discarded,
+        WriteTarget::Kept {
+            record: "kept-floppy-0",
+        },
+    ] {
+        let medium = NewMedium::new(
+            "blank.img",
+            unemu_core_api::Content::Bytes(vec![0; 512]),
+            [0; 32],
+            512,
+            "raw",
+            writes,
+        );
+        assert_eq!(
+            machine
+                .add_medium(SlotId(0), medium)
+                .err()
+                .map(|error| error.kind),
+            Some(ErrorKind::Unsupported),
+            "{writes:?}"
+        );
+    }
 }
 
 /// A CPU refusal fails the machine with the core's one-line error, and the
@@ -334,10 +401,11 @@ fn a_halt_leaves_no_stop_report() {
     assert!(machine.cpu_stop_report().is_none());
 }
 
-/// The contract's frame-count rule on `drain_audio`: at every return of
-/// `run`, the frames handed over since the machine was created differ from
-/// `now() × rate / clock` by less than one frame. The PC hands over exactly
-/// the frames completed by `now()`, the floor of that product. The PC mixes
+/// The contract's rule on `drain_audio`: sound keeps its place in virtual
+/// time, and at every return of `run`, once `drain_audio` has been called,
+/// the next frame it will hand over has index `floor(now() × rate / clock)`,
+/// within one frame. The PC hands over exactly the frames completed by
+/// `now()`, so the next index is that floor exactly. The PC mixes
 /// at 48 kHz off virtual time, so the deadlines are placed a tick before, on
 /// and a tick after the edges of chosen frames, out to frame 9 600 (a fifth
 /// of a virtual second).

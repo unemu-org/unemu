@@ -5,6 +5,11 @@
 //! [`crate::PcMachine::from_assembled`]; [`Core::create`] cannot read a
 //! stored config yet, so the platform lists no config type and no front end
 //! offers it.
+//!
+//! A PC is assembled from parts and starts only from a config, so the
+//! platform lists no content kind a person opens directly, and the core
+//! keeps the contract's answers to [`Core::identify`] (it recognises
+//! nothing) and [`Core::validate`] (unsupported).
 
 use crate::machine::PC_FEATURES;
 use unemu_core_api::{
@@ -24,7 +29,7 @@ static NOTICES: [Notice; 2] = [
 ];
 
 static DESCRIPTION: CoreDescription = CoreDescription::new(
-    ContractVersion::new(0, 1),
+    ContractVersion::new(0, 2),
     "unemupc",
     "unemupc",
     env!("CARGO_PKG_VERSION"),

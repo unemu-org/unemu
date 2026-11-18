@@ -5,6 +5,17 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — This repository on contract 0.2:** step 7 of
+  design/core-contract.md §13.6. The workspace pins release v0.2.0 of
+  `unemu-core-api` (commit `56c4640`), where content and storage are
+  objects a front end hands in and the contract names no path. The PC core
+  states contract 0.2, lists no content kind a person opens (a PC starts
+  from a config) and still refuses `create` and `add_medium`, so the PC is
+  started by its provider as before and nothing it does changes. The
+  desktop's picture now carries the visible part a machine states (the
+  whole picture for the PC); nothing shows it yet. MEASURED: one copy of
+  the contract in the build, and none of the contract's old path
+  signatures in it or in this workspace.
 - **2026-11-18 — The library's neutral views leave the window:** moves 4.1
   to 4.3 of the window split (design/core-contract.md §8.1.7). A new
   neutral crate, `library-ui` (egui, no PC crate), holds the list tables

@@ -4,9 +4,9 @@
 use super::*;
 use std::io::{Read, Write};
 use unemu_core_api::{
-    AudioDescription, DisplayDescription, Error, Features, Finished, Frame, InputPortDescription,
-    Key, MachineDescription, MessageLevel, NewMedium, Outputs, PadControl, Rate, SlotDescription,
-    SlotKind, SlotState, Status,
+    AudioDescription, DisplayDescription, Error, Features, Finished, Frame, FrameArea,
+    InputPortDescription, Key, MachineDescription, MessageLevel, NewMedium, Outputs, PadControl,
+    Rate, SlotDescription, SlotKind, SlotState, Status,
 };
 use winit::event::ElementState::{Pressed, Released};
 
@@ -28,6 +28,10 @@ struct Scripted {
     resets: u32,
     active: Vec<SlotId>,
     pixels: Vec<u32>,
+    /// The picture's width and height; `pixels` holds that many.
+    size: (u32, u32),
+    /// The visible part the frame states, if any.
+    visible: Option<FrameArea>,
     /// Drain a 1 kHz tone at the described rate, exactly `now × rate / clock`
     /// frames in all, instead of one fixed frame per drain.
     tone: bool,
@@ -68,6 +72,8 @@ fn scripted() -> Box<Scripted> {
         resets: 0,
         active: Vec::new(),
         pixels: vec![0],
+        size: (1, 1),
+        visible: None,
         tone: false,
         handed: 0,
     })
@@ -109,7 +115,11 @@ impl Machine for Scripted {
 
     fn frame(&mut self, _display: DisplayId) -> Result<Frame<'_>, Error> {
         self.pixels[0] = self.now as u32;
-        Ok(Frame::new(1, 1, &self.pixels, (4, 3), self.now))
+        let frame = Frame::new(self.size.0, self.size.1, &self.pixels, (4, 3), self.now);
+        Ok(match self.visible {
+            Some(visible) => frame.with_visible(visible),
+            None => frame,
+        })
     }
 
     fn drain_audio(&mut self, out: &mut Vec<[i16; 2]>) -> Result<(), Error> {
@@ -227,6 +237,16 @@ fn a_session_runs_one_millisecond_chunks_to_the_paced_target_and_keeps_the_pictu
         (1, 1, 10_000)
     );
     assert_eq!(picture.pixels, [10_000]);
+    assert_eq!(
+        picture.visible,
+        FrameArea {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1
+        },
+        "a machine that states nothing has the whole picture visible"
+    );
     assert!(session.running);
     // A paused (occluded) session neither runs nor drains.
     session.occlusion_changed(true, ms(10));
@@ -289,6 +309,26 @@ fn a_machine_switched_off_is_finished_with_its_warnings() {
 }
 
 #[test]
+fn the_picture_carries_the_visible_part_the_machine_states() {
+    let mut machine = scripted();
+    machine.size = (4, 2);
+    machine.pixels = vec![0; 8];
+    let visible = FrameArea {
+        x: 1,
+        y: 0,
+        width: 2,
+        height: 2,
+    };
+    machine.visible = Some(visible);
+    let mut session = session(machine);
+    session.advance_fully(ms(1)).unwrap();
+    let picture = session.picture().unwrap();
+    assert_eq!((picture.width, picture.height), (4, 2));
+    assert_eq!(picture.pixels.len(), 8, "the whole picture is copied");
+    assert_eq!(picture.visible, visible);
+}
+
+#[test]
 fn storage_failures_are_returned_and_audio_failures_are_reported_once() {
     let mut machine = scripted();
     machine.audio_failure = Some(ErrorKind::Unsupported);
@@ -306,6 +346,11 @@ fn storage_failures_are_returned_and_audio_failures_are_reported_once() {
     );
     session.machine_mut().audio_failure = Some(ErrorKind::Storage);
     let error = session.advance_fully(ms(5)).unwrap_err();
+    assert_eq!(error.to_string(), "no sound");
+    session.machine_mut().audio_failure = Some(ErrorKind::StorageUncertain);
+    let error = session
+        .advance_fully_with_warnings(ms(5), &mut warnings)
+        .unwrap_err();
     assert_eq!(error.to_string(), "no sound");
     session.machine_mut().audio_failure = None;
     session
