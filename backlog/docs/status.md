@@ -5,6 +5,25 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — `machine-view` on contract 0.2:** step 10 of
+  design/core-contract.md §13.6. A new module, `machine_view::screen`,
+  is the geometry every view but the PC's will show a picture with:
+  `layout` gives the shown part (the visible part, or the whole picture
+  with overscan shown) and its rectangle in a panel, in the shape
+  `aspect × (shown width / width) ÷ (shown height / height)`, with the
+  height a whole multiple of the shown rows under integer scaling;
+  `ScreenLayout::pointer_position` maps a host point back to a place on
+  the whole picture, or `None` off the screen. The session aims at a
+  machine's absolute pointer instead of capturing (`Session::pointer_at`,
+  buttons through `mouse_button`, `None` at focus loss), resets by kind
+  (`Session::reset`, which paces a halted machine from the reset) and
+  saves and loads a state (`Session::save_state`,
+  `load_state`, which re-anchors pacing, drops the sound queued before
+  the load, shows the loaded picture at once and releases held input; a
+  state of another identity is refused with the core's message). Tested
+  against `unemu-test-core`, the `machine-view` row of §13.3's test
+  table. No behaviour changes: the PC keeps its 4:3 screen, nothing calls
+  the new calls yet, and no PC test or pin changed.
 - **2026-11-18 — The PC media views leave the window:** moves 5.1 and 5.2
   of the window split (design/core-contract.md §8.1.8). A drive's
   Catalogue submenu now answers with the disk chosen, or All N disks…, and

@@ -280,6 +280,21 @@ impl WindowAudioSink {
     pub fn enabled(&self) -> bool {
         self.active.load(Ordering::Relaxed) && !self.muted.load(Ordering::Relaxed)
     }
+
+    /// Empty the ring and the converter's history, then leave the sink
+    /// `muted` or not.
+    fn restart(&self, muted: bool) {
+        // Keep callbacks silent until old samples and interpolation history are gone.
+        self.muted.store(true, Ordering::Relaxed);
+        if let Ok(mut converter) = self.converter.lock() {
+            *converter = RateConverter::new(converter.source, converter.rate);
+            if let Ok(mut ring) = self.ring.lock() {
+                ring.len = 0;
+                ring.primed = false;
+            }
+        }
+        self.muted.store(muted, Ordering::Relaxed);
+    }
 }
 
 /// The device configuration to open: stereo or more, i16 before f32, at
@@ -543,16 +558,15 @@ impl HostAudio {
         if self.muted() == muted {
             return;
         }
-        // Keep callbacks silent until old samples and interpolation history are gone.
-        self.sink.muted.store(true, Ordering::Relaxed);
-        if let Ok(mut converter) = self.sink.converter.lock() {
-            *converter = RateConverter::new(converter.source, converter.rate);
-            if let Ok(mut ring) = self.sink.ring.lock() {
-                ring.len = 0;
-                ring.primed = false;
-            }
-        }
-        self.sink.muted.store(muted, Ordering::Relaxed);
+        self.sink.restart(muted);
+    }
+
+    /// Drop the sound queued and not yet played, with the converter's
+    /// history, so what is pushed next plays as a new stream. After a saved
+    /// state is loaded the machine's sound jumps in time; what it drained
+    /// before the load is not played after it.
+    pub fn discard_pending(&self) {
+        self.sink.restart(self.muted());
     }
 
     pub fn open(&mut self, warnings: &mut impl io::Write) {

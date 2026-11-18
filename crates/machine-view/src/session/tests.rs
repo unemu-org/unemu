@@ -26,6 +26,8 @@ struct Scripted {
     finish_warnings: Vec<String>,
     finished: u32,
     resets: u32,
+    /// How many media changes had arrived at each reset.
+    changes_at_reset: Vec<usize>,
     active: Vec<SlotId>,
     pixels: Vec<u32>,
     /// The picture's width and height; `pixels` holds that many.
@@ -70,6 +72,7 @@ fn scripted() -> Box<Scripted> {
         finish_warnings: Vec::new(),
         finished: 0,
         resets: 0,
+        changes_at_reset: Vec::new(),
         active: Vec::new(),
         pixels: vec![0],
         size: (1, 1),
@@ -178,6 +181,7 @@ impl Machine for Scripted {
     fn reset(&mut self, kind: ResetKind) -> Result<(), Error> {
         assert_eq!(kind, ResetKind::Soft);
         self.resets += 1;
+        self.changes_at_reset.push(self.changes.len());
         self.status = Status::Ready;
         self.messages
             .push(Message::new(MessageLevel::Note, "reset"));
@@ -779,4 +783,16 @@ fn a_reset_forgets_the_pad_keys_held_when_the_machine_halted() {
         [pad(2, PadControl::A, true), pad(2, PadControl::A, true)],
         "the press after the reset is not a repeat"
     );
+}
+
+#[test]
+fn a_reset_puts_the_queued_media_changes_in_first() {
+    let mut session = session(scripted());
+    session.media_events.push((SlotId(8), MediaAction::Next));
+    session
+        .reset(ResetKind::Soft, ms(0), &mut Vec::new())
+        .unwrap();
+    assert!(session.media_events.is_empty());
+    assert_eq!(session.machine().changes, [(SlotId(8), MediaAction::Next)]);
+    assert_eq!(session.machine().changes_at_reset, [1]);
 }

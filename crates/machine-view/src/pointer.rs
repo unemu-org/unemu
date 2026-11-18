@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Host pointer capture for a machine's relative pointing device (spec.md §9.4).
+//! Host pointer capture for a machine's relative pointing device (spec.md §9.4),
+//! and the uncaptured host pointer for an absolute one ([`Aiming`]).
 //!
 //! A machine with a relative pointer captures on a client-area click, and
 //! that click is swallowed. Command+G on macOS (Ctrl+Alt+G elsewhere), focus
@@ -173,6 +174,12 @@ impl PointerCapture {
         }
     }
 
+    /// The machine released every button by itself ([`InputEvent::ReleaseAll`]
+    /// without a focus loss): none is held any more and capture stays.
+    pub fn buttons_released(&mut self) {
+        self.buttons = 0;
+    }
+
     /// Keep queued input, then release any guest buttons at the next boundary.
     pub fn release(&mut self) {
         self.captured = false;
@@ -215,5 +222,118 @@ impl PointerCapture {
             return;
         }
         self.events.push(InputEvent::PointerMotion { port, dx, dy });
+    }
+}
+
+/// The host pointer over the screen for a machine's absolute pointing device,
+/// a light gun, a light pen or a touch screen (core-contract.md §13.3, "The
+/// absolute pointer"). Nothing is captured: the view says where the pointer
+/// is on the picture ([`crate::screen::ScreenLayout::pointer_position`]) and
+/// which clicks are meant for the machine.
+///
+/// A place is sent only when it changes, and `None` when the pointer leaves
+/// the screen or the window loses focus. The buttons are the host's left,
+/// right and middle as 0, 1 and 2, as many as the port has; button 0 is the
+/// primary one. A press counts wherever the pointer is, since aiming off the
+/// picture and pulling the trigger is a thing a light gun does.
+pub struct Aiming {
+    port: Option<PortId>,
+    buttons: u8,
+    /// The place the machine was last told, or `None` when it is unknown:
+    /// before the first move, and after the machine's state was replaced.
+    sent: Option<Option<(u16, u16)>>,
+    /// The machine's held buttons as bits, button 0 in bit 0.
+    held: u8,
+    events: Vec<InputEvent>,
+}
+
+impl Aiming {
+    /// Aim only for a machine with an absolute pointer on `port`, with
+    /// `buttons` buttons.
+    pub fn new(port: Option<(PortId, u8)>) -> Self {
+        Self {
+            port: port.map(|(port, _)| port),
+            buttons: port.map_or(0, |(_, buttons)| buttons),
+            sent: None,
+            held: 0,
+            events: Vec::new(),
+        }
+    }
+
+    /// Whether the machine has a device to aim.
+    pub fn aims(&self) -> bool {
+        self.port.is_some()
+    }
+
+    /// The guest events queued since the last call, in order.
+    pub fn take_events(&mut self) -> Vec<InputEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// The host pointer is now at `position` on the whole picture, or off
+    /// it.
+    pub fn moved(&mut self, position: Option<(u16, u16)>) {
+        let Some(port) = self.port else {
+            return;
+        };
+        if self.sent == Some(position) {
+            return;
+        }
+        self.sent = Some(position);
+        self.events
+            .push(InputEvent::PointerPosition { port, position });
+    }
+
+    /// A host button the view meant for the machine.
+    pub fn button_event(&mut self, button: MouseButton, state: ElementState) {
+        let Some(port) = self.port else {
+            return;
+        };
+        let number = match button {
+            MouseButton::Left => 0,
+            MouseButton::Right => 1,
+            MouseButton::Middle => 2,
+            _ => return,
+        };
+        if number >= self.buttons {
+            return;
+        }
+        let bit = 1 << number;
+        let pressed = state == ElementState::Pressed;
+        if pressed == (self.held & bit != 0) {
+            return;
+        }
+        self.held ^= bit;
+        self.events.push(InputEvent::PointerButton {
+            port,
+            button: number,
+            pressed,
+        });
+    }
+
+    /// The window lost focus and the machine was told to release
+    /// everything ([`InputEvent::ReleaseAll`]), which leaves an absolute
+    /// pointer's place: the device now points nowhere.
+    pub fn focus_lost(&mut self) {
+        self.held = 0;
+        self.moved(None);
+    }
+
+    /// The machine's device starts again from what it was told before: its
+    /// state was loaded or it was switched off and on. Nothing is held, and
+    /// the host pointer's last place, if one was sent, is sent again.
+    pub fn restate(&mut self) {
+        self.held = 0;
+        if let (Some(port), Some(position)) = (self.port, self.sent) {
+            self.events
+                .push(InputEvent::PointerPosition { port, position });
+        }
+    }
+
+    /// Input stopped reaching the machine while the host pointer moved on.
+    /// Nothing is held and the next place is sent whatever it is.
+    pub fn forget(&mut self) {
+        self.held = 0;
+        self.sent = None;
     }
 }

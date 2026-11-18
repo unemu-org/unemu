@@ -31,17 +31,26 @@
 //! that port lists the control, and nothing else; host repeats are dropped,
 //! and a control stays held while any of its keys is. Host chords are taken
 //! first, as for a keyboard.
+//!
+//! A machine with an absolute pointer on the shown display is aimed at, not
+//! captured ([`Session::pointer_at`], core-contract.md §13.3, "The absolute
+//! pointer"): the view says where the host pointer is on the picture, with
+//! the geometry of [`crate::screen`], and the session sends the place when
+//! it changes and `None` when the pointer leaves the screen or the window
+//! loses focus. The machine's resets ([`Session::reset`]) and saved states
+//! ([`Session::save_state`], [`Session::load_state`]) go through the session,
+//! so it keeps its pacing, sound and held input in step with the machine.
 
 use crate::{
     host_audio::HostAudio,
     keys::key_usage,
     pacing::{Pacing, Speed},
     pads::PadBindings,
-    pointer::PointerCapture,
+    pointer::{Aiming, PointerCapture},
 };
 use std::{
     error::Error,
-    io,
+    io::{self, Read, Write},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -69,7 +78,8 @@ pub struct Picture {
     pub serial: u64,
     /// The part of the picture the emulated display showed for certain, as
     /// the machine states it; the whole picture when it states nothing. The
-    /// screen still shows the whole picture.
+    /// PC's screen shows the whole picture; other machines' views show this
+    /// part unless overscan is shown ([`crate::screen::layout`]).
     pub visible: FrameArea,
 }
 
@@ -116,6 +126,8 @@ pub struct Session<M: Machine + ?Sized = dyn Machine> {
     /// input, but Stop still finishes the media of a halted one.
     pub host_failed: bool,
     pub mouse: PointerCapture,
+    /// The absolute pointer, for a machine that has one on the display.
+    aim: Aiming,
     pub error: Option<Box<dyn Error>>,
     pub pacing: Pacing,
     pub started: Option<Instant>,
@@ -153,6 +165,13 @@ impl<M: Machine + ?Sized> Session<M> {
             .iter()
             .find(|port| matches!(port.kind, InputKind::RelativePointer { .. }))
             .map(|port| port.id);
+        let aimed = description.inputs.iter().find_map(|port| match port.kind {
+            InputKind::AbsolutePointer {
+                display: aimed,
+                buttons,
+            } if aimed == display => Some((port.id, buttons)),
+            _ => None,
+        });
         let mut pads: Vec<_> = description
             .inputs
             .iter()
@@ -197,6 +216,7 @@ impl<M: Machine + ?Sized> Session<M> {
             halted: false,
             host_failed: false,
             mouse: PointerCapture::new(pointer),
+            aim: Aiming::new(aimed),
             error: None,
             pacing,
             started: None,
@@ -332,6 +352,12 @@ impl<M: Machine + ?Sized> Session<M> {
         }
         self.pacing.observe(elapsed, self.machine.now().0);
         // Even a guest error must leave the screen at its last completed boundary.
+        self.copy_picture()?;
+        Ok(())
+    }
+
+    /// Copy the machine's picture out when it changed.
+    fn copy_picture(&mut self) -> Result<(), unemu_core_api::Error> {
         let frame = self.machine.frame(self.display)?;
         if self
             .picture
@@ -448,6 +474,122 @@ impl<M: Machine + ?Sized> Session<M> {
         self.halted = false;
         self.running = true;
         Ok(())
+    }
+
+    /// The kinds of reset the machine lists, for the Reset and Power cycle
+    /// controls.
+    pub fn resets(&self) -> &'static [ResetKind] {
+        self.machine.description().features.resets
+    }
+
+    /// Reset the machine by `kind` at host time `elapsed`, while it runs or
+    /// waits halted. Queued media changes go in first, and the machine's
+    /// messages go to `diagnostics`. A reset takes no virtual time, so a
+    /// running machine's pacing goes on as it was; held keys and buttons stay
+    /// held, as the machine keeps them, except that a hard reset starts the
+    /// absolute pointer afresh at the host pointer's place. A halted machine
+    /// runs again as its status says, paced from `elapsed`, so the time it
+    /// waited is not caught up. The machine's refusal (a kind it does not
+    /// list is `Unsupported`, one not possible now is `Usage`) is returned
+    /// for the caller to show, and leaves the session as it was.
+    pub fn reset(
+        &mut self,
+        kind: ResetKind,
+        elapsed: Duration,
+        diagnostics: &mut impl io::Write,
+    ) -> Result<(), unemu_core_api::Error> {
+        self.check_live()?;
+        self.apply_media_events()?;
+        let reset = self.machine.reset(kind);
+        let mut messages = Vec::new();
+        self.machine.drain_messages(&mut messages);
+        let _ = write_messages(&messages, diagnostics);
+        reset?;
+        if kind == ResetKind::Hard {
+            self.aim.restate();
+            self.forward_pointer();
+        }
+        if self.halted {
+            // Keys that came up while it was halted reached nobody; the
+            // next press of any key must be fresh.
+            self.pad_keys.clear();
+            let status = self.machine.status();
+            self.halted = status == Status::Halted;
+            self.running = status == Status::Ready;
+            self.pacing.resync(elapsed, self.machine.now().0);
+        }
+        Ok(())
+    }
+
+    /// Whether the machine saves and loads state, for the Save state and
+    /// Load state controls.
+    pub fn saves_state(&self) -> bool {
+        self.machine.description().features.saved_state
+    }
+
+    /// The token a saved state of this machine carries; a state loads only
+    /// into a machine with an equal one. `None` when it saves no state.
+    pub fn state_identity(&self) -> Option<String> {
+        self.machine.state_identity()
+    }
+
+    /// Write the machine's whole state at the current boundary, while it
+    /// runs or waits halted.
+    pub fn save_state(&mut self, out: &mut dyn Write) -> Result<(), unemu_core_api::Error> {
+        self.check_live()?;
+        self.machine.save_state(out)
+    }
+
+    /// Replace the machine's state with a saved one, at host time `elapsed`,
+    /// while it runs or waits halted.
+    ///
+    /// A refusal is returned for the caller to show, and leaves the machine
+    /// and the session as they were: [`ErrorKind::State`] for a state of
+    /// another identity or a damaged one. Loaded, the machine's virtual time
+    /// jumps, so pacing is anchored again at `elapsed`; the sound the session
+    /// queued before the load is dropped, as the machine drops what it had
+    /// not handed over; the screen takes the loaded picture at once; and the
+    /// machine is told to release everything, so no control stays held under
+    /// a key the host does not hold and the next press is fresh, and the
+    /// absolute pointer is told the host pointer's place again. A state saved
+    /// while the machine waited halted leaves it halted again, with the
+    /// pointer released as when a machine stops; any status but `Ready` and
+    /// `Halted` leaves the session stopped.
+    pub fn load_state(
+        &mut self,
+        state: &mut dyn Read,
+        elapsed: Duration,
+    ) -> Result<(), unemu_core_api::Error> {
+        self.check_live()?;
+        self.machine.load_state(state)?;
+        self.audio.discard_pending();
+        self.pacing.resync(elapsed, self.machine.now().0);
+        self.pad_keys.clear();
+        self.machine.input(InputEvent::ReleaseAll);
+        self.mouse.buttons_released();
+        // ReleaseAll leaves an absolute pointer where the saved state had it.
+        self.aim.restate();
+        self.forward_pointer();
+        let status = self.machine.status();
+        self.halted = status == Status::Halted;
+        self.running = status == Status::Ready;
+        if !self.running {
+            self.release_pointer();
+        }
+        self.copy_picture()
+    }
+
+    /// `Usage` unless the machine runs or waits halted and nothing ended
+    /// its session.
+    fn check_live(&self) -> Result<(), unemu_core_api::Error> {
+        if (self.running || self.halted) && self.error.is_none() && !self.host_failed {
+            Ok(())
+        } else {
+            Err(unemu_core_api::Error::new(
+                ErrorKind::Usage,
+                "the machine is not running",
+            ))
+        }
     }
 
     /// Which host key works which pad control.
@@ -580,10 +722,31 @@ impl<M: Machine + ?Sized> Session<M> {
         }
     }
 
-    /// Hand the pointer's queued guest events to the machine.
+    /// Hand the pointers' queued guest events to the machine.
     fn forward_pointer(&mut self) {
         for event in self.mouse.take_events() {
             self.machine.input(event);
+        }
+        for event in self.aim.take_events() {
+            self.machine.input(event);
+        }
+    }
+
+    /// Whether the machine has an absolute pointer on the shown display: the
+    /// view then aims instead of capturing, and shows a cross-hair over the
+    /// screen.
+    pub fn aims(&self) -> bool {
+        self.aim.aims()
+    }
+
+    /// Where the host pointer is on the whole picture, as
+    /// [`crate::screen::ScreenLayout::pointer_position`] gives it: `None`
+    /// once it leaves the screen's rectangle. Only a change reaches the
+    /// machine.
+    pub fn pointer_at(&mut self, position: Option<(u16, u16)>) {
+        if self.running && self.error.is_none() {
+            self.aim.moved(position);
+            self.forward_pointer();
         }
     }
 
@@ -685,6 +848,11 @@ impl<M: Machine + ?Sized> Session<M> {
         }
         if release_all {
             self.machine.input(InputEvent::ReleaseAll);
+            // ReleaseAll leaves an absolute pointer's place.
+            self.aim.focus_lost();
+            self.forward_pointer();
+        } else if !focused {
+            self.aim.forget();
         }
     }
 
@@ -712,8 +880,11 @@ impl<M: Machine + ?Sized> Session<M> {
         state: ElementState,
         grab: impl FnOnce() -> Result<(), winit::error::ExternalError>,
     ) {
-        if self.running && self.error.is_none() && self.mouse.button_event(button, state) {
-            self.complete_grab(grab);
+        if self.running && self.error.is_none() {
+            if self.mouse.button_event(button, state) {
+                self.complete_grab(grab);
+            }
+            self.aim.button_event(button, state);
         }
         self.forward_pointer();
     }
@@ -771,5 +942,7 @@ fn write_messages(messages: &[Message], out: &mut impl io::Write) -> io::Result<
     Ok(())
 }
 
+#[cfg(test)]
+mod core_tests;
 #[cfg(test)]
 mod tests;

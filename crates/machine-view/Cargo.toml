@@ -7,7 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "The desktop's machine session over the front-end contract: pacing, host audio, keys, pointer capture (§9.4)."
+description = "The desktop's machine session over the front-end contract: pacing, host audio, keys, pads, pointers, resets, saved state, the screen's geometry (§9.4)."
 
 [package.metadata.unemu]
 layer = "neutral"
@@ -31,6 +31,12 @@ objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFMachPort", "CFRunLoop"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEvent", "CGEventTypes"] }
+
+[dev-dependencies]
+# The session's tests against a whole core, through the contract alone, with
+# the contract's storage in memory.
+unemu-test-core = { path = "../test-core", version = "0.0.2" }
+unemu-core-api = { workspace = true, features = ["test-support"] }
 
 # Synthetic key events for the keyboard tap's decoding tests.
 [target.'cfg(target_os = "macos")'.dev-dependencies]
