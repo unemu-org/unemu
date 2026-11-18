@@ -1353,9 +1353,12 @@ file order (MDA in the shipped machine). Positional BIOS/floppy paths are remove
 use an extending file as shown in `machines/README.md`. From outside the
 workspace, Cargo also needs `--manifest-path /path/to/workspace/Cargo.toml`.
 `--help`, `--version` and `--about` include the embedded fonts' attribution and
-the Nuked-OPL3 notice; `--version` and `--about` also print the licence, the
-source URL and where the full licence texts are. `upcli --version` (or
-`--about`) prints the same for the command line.
+the Nuked-OPL3 notice; `--version` and `--about` also print one line per
+compiled-in core, such as `core unemupc 0.0.2 (unemupc), contract 0.2` (a core
+built for another contract ends its line with `, unusable: ` and the reason),
+then the licence, the source URL and where the full licence texts are.
+`upcli --version` (or `--about`) prints the same for the command line, the core
+lines after its first two lines.
 On Linux the window requires the host's X11 or Wayland client libraries at run
 time; a bare Nix devShell may not put them on the dynamic loader's search path.
 

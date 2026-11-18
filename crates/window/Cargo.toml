@@ -17,8 +17,11 @@ layer = "application"
 image-store = { path = "../image-store", version = "0.0.2" }
 image-registry = { path = "../registry", version = "0.0.2" }
 pc-image = { path = "../pc-image", version = "0.0.2" }
-# The platforms compiled in: their image providers and the licence notice.
+# The platforms compiled in: their cores, their image providers and the
+# licence notice.
 platforms = { path = "../platforms", version = "0.0.2" }
+# The cores this program can drive, and their About lines.
+core-launch = { path = "../core-launch", version = "0.0.2" }
 media.workspace = true
 sha2.workspace = true
 serde.workspace = true

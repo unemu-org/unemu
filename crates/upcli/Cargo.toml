@@ -19,8 +19,10 @@ path = "src/main.rs"
 [dependencies]
 cli-core = { path = "../cli-core", version = "0.0.2" }
 cli-pc = { path = "../cli-pc", version = "0.0.2" }
-# The platforms compiled in: the licence notice.
+# The platforms compiled in: their cores and the licence notice.
 platforms = { path = "../platforms", version = "0.0.2" }
+# The cores this program can drive, and their About lines.
+core-launch = { path = "../core-launch", version = "0.0.2" }
 # The host's default store and firmware index, which the executable supplies.
 image-store = { path = "../image-store", version = "0.0.2" }
 assembly.workspace = true

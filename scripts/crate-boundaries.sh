@@ -25,7 +25,10 @@
 #
 # and no window crate (window, window-*, ui-kit, machine-view, library-model,
 # library-ui, pc-media, pc-library, media-ui, pc-ui, unemupc) depends on a CLI
-# crate (cli, cli-*, upcli), nor the other way round.
+# crate (cli, cli-*, upcli), nor the other way round. The launch crate,
+# core-launch, is neutral and in neither family: both programs make their
+# list of cores with it, and the command line will start machines through it
+# too.
 #
 # The test core, unemu-test-core, is what the front end's crates test against
 # instead of a real platform, so it declares no dependency of any kind but the

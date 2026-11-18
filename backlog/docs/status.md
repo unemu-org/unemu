@@ -5,6 +5,24 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — Core registration:** step 8 of design/core-contract.md
+  §13.6. `platforms::cores()` is the one list of the cores compiled into
+  both programs: the PC core alone, plus `unemu-test-core` with the
+  `test-core` feature of `platforms`, which is off by default and which
+  no release build sets. A new neutral crate, `core-launch`, starts with
+  `Cores`: each core checked against the contract this program drives
+  (`usable`, `refused` with "core NAME implements contract A.B; this
+  program needs C.D", `by_id`) and the About lines. `upcli` and `unemupc`
+  each make one `Cores` from the list, and their `--version` and
+  `--about` print one line per core after the program's own lines:
+  `core unemupc 0.0.2 (unemupc), contract 0.2`; a refused core's line
+  ends with `, unusable: ` and the reason. Nothing else in either text
+  changed, and `--help` and the usage text are unchanged (MEASURED: the
+  binaries' output before and after differs by that one line). The test
+  that every compiled-in core states a contract this program drives moved
+  from the desktop to `platforms`, runs over `cores()` and also checks
+  that core ids, platform ids and each platform's content-kind ids are
+  unique. The About dialog of the desktop's menu is unchanged.
 - **2026-11-18 — The PC dialogs and the command vocabulary leave the
   window:** moves 6.1 to 6.3 of the window split
   (design/core-contract.md §8.1.9). `pc-library` takes the models of File ›

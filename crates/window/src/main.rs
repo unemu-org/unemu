@@ -307,7 +307,15 @@ impl Presenter {
     }
 }
 
+/// `--help`, `--version` or `--about` with the program's own list of cores.
+#[cfg(test)]
 fn informational_output(arg: &OsStr) -> Option<String> {
+    informational_text(arg, &core_launch::Cores::new(platforms::cores()))
+}
+
+/// The text of `--help`, `--version` or `--about`; `--version` and `--about`
+/// list each of `cores`.
+fn informational_text(arg: &OsStr, cores: &core_launch::Cores) -> Option<String> {
     let opl3 = devices::OPL3_NOTICE;
     let shown = shown_path;
     if arg == "--help" {
@@ -315,8 +323,13 @@ fn informational_output(arg: &OsStr) -> Option<String> {
             "usage: unemupc [--machine FILE] [--display CARD] [--rom-dir DIR]... [--allow-unlisted-firmware]\n\ndefault selection: {} (opens the machine library; --machine starts immediately)\nmachine files: {} (set {MACHINES_DIR_VAR} to use another directory)\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}\n\n{opl3}", shown(default_machine()), shown(machines_dir())
         ))
     } else if arg == "--version" || arg == "--about" {
+        let mut lines = String::new();
+        for line in cores.about_lines() {
+            lines.push_str(&line);
+            lines.push('\n');
+        }
         Some(format!(
-            "unemupc {}\n{}\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}\n\n{opl3}",
+            "unemupc {}\n{lines}{}\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}\n\n{opl3}",
             env!("CARGO_PKG_VERSION"),
             platforms::licence_notice(),
         ))
@@ -515,8 +528,9 @@ fn setup_loaded(
 
 fn run() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let cores = core_launch::Cores::new(platforms::cores());
     if let [arg] = args.as_slice() {
-        if let Some(output) = informational_output(arg) {
+        if let Some(output) = informational_text(arg, &cores) {
             println!("{output}");
             return Ok(());
         }
@@ -558,22 +572,6 @@ mod tests {
         }
         assert!(presenter.running);
         assert_eq!(presenter.picture_copies, 1);
-    }
-
-    /// A wrong pin of a core's contract fails here, not in a user's hands.
-    #[test]
-    fn every_compiled_in_core_implements_the_contract_the_desktop_drives() {
-        let cores: [&dyn unemu_core_api::Core; 1] = [&unemu_pc_core::PcCore];
-        for core in cores {
-            let description = core.description();
-            assert!(
-                unemu_core_api::CONTRACT.drives(description.implements),
-                "core {} implements contract {}; this program needs {}",
-                description.id,
-                description.implements,
-                unemu_core_api::CONTRACT
-            );
-        }
     }
 
     #[test]
@@ -2011,6 +2009,33 @@ mod tests {
             ] {
                 assert!(output.contains(expected), "{option}: {expected}");
             }
+        }
+    }
+
+    /// `--version` and `--about` with the release's list of cores, pinned with
+    /// the parts that change on their own (the release, the licence notice
+    /// whose source line names the build, the third-party notices) replaced
+    /// by names: the program's line, one line per compiled-in core, then the
+    /// notices.
+    #[test]
+    fn version_and_about_are_pinned() {
+        for option in ["--version", "--about"] {
+            let text = informational_output(OsStr::new(option))
+                .unwrap()
+                .replace(&platforms::licence_notice(), "LICENCE NOTICE")
+                .replace(FONT_NOTICE, "FONT NOTICE")
+                .replace(EGUI_FONT_NOTICE, "EGUI FONT NOTICE")
+                .replace(SYMBOL_FONT_NOTICE, "SYMBOL FONT NOTICE")
+                .replace(devices::OPL3_NOTICE, "OPL3 NOTICE")
+                .replace(env!("CARGO_PKG_VERSION"), "VERSION");
+            assert_eq!(
+                text,
+                "unemupc VERSION\n\
+                 core unemupc VERSION (unemupc), contract 0.2\n\
+                 LICENCE NOTICE\n\nFONT NOTICE\n\nEGUI FONT NOTICE\n\n\
+                 SYMBOL FONT NOTICE\n\nOPL3 NOTICE",
+                "{option}"
+            );
         }
     }
 

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The command line as it is documented, pinned so that moving its code
 //! between crates cannot change it (`backlog/docs/design/core-contract.md`
-//! §7.5): the usage text byte for byte, the `recipe` usage, and how every
-//! documented command line parses: each form of each usage line, every
-//! `upcli` example of `backlog/docs/commands.md`, and a few refused lines
-//! whose reason depends on which part of the command line reads them.
+//! §7.5): the usage text byte for byte, the `recipe` usage, the
+//! `--version` and `--about` text, and how every documented command line
+//! parses: each form of each usage line, every `upcli` example of
+//! `backlog/docs/commands.md`, and a few refused lines whose reason depends
+//! on which part of the command line reads them.
 //!
 //! `pinned/usage.txt` and `pinned/recipe-usage.txt` are the texts the
 //! program printed before the command line was split into a neutral part
@@ -277,6 +278,29 @@ fn the_usage_text_is_unchanged() {
     );
     assert!(output.is_empty());
     assert_pinned("recipe-usage.txt", &String::from_utf8(errors).unwrap());
+}
+
+/// `pinned/about.txt` is `--version` and `--about` with the release's list
+/// of cores, and with the parts that change on their own (the release, the
+/// licence notice whose source line names the build, the OPL3 notice)
+/// replaced by names: the program's lines, one line per compiled-in core,
+/// then the notices.
+#[test]
+fn the_about_text_is_pinned() {
+    for option in ["--version", "--about"] {
+        let (mut output, mut errors) = (Vec::new(), Vec::new());
+        assert_eq!(
+            upcli::command::run(&[option.into()], &mut output, &mut errors),
+            0
+        );
+        assert!(errors.is_empty(), "{option}");
+        let text = String::from_utf8(output)
+            .unwrap()
+            .replace(&platforms::licence_notice(), "LICENCE NOTICE")
+            .replace(devices::OPL3_NOTICE, "OPL3 NOTICE")
+            .replace(env!("CARGO_PKG_VERSION"), "VERSION");
+        assert_pinned("about.txt", &text);
+    }
 }
 
 #[test]

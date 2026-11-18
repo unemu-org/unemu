@@ -816,6 +816,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-launch"
+version = "0.0.2"
+dependencies = [
+ "unemu-core-api",
+ "unemu-test-core",
+]
+
+[[package]]
 name = "core_detect"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2860,9 +2868,13 @@ name = "platforms"
 version = "0.0.2"
 dependencies = [
  "assembly",
+ "core-launch",
  "image-registry",
  "image-store",
  "pc-image",
+ "unemu-core-api",
+ "unemu-pc-core",
+ "unemu-test-core",
 ]
 
 [[package]]
@@ -3866,6 +3878,7 @@ dependencies = [
  "assembly",
  "cli-core",
  "cli-pc",
+ "core-launch",
  "cpu",
  "devices",
  "image-registry",
@@ -4335,6 +4348,7 @@ version = "0.0.2"
 dependencies = [
  "assembly",
  "audio",
+ "core-launch",
  "cpu",
  "device",
  "devices",

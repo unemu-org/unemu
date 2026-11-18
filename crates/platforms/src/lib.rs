@@ -1,12 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The emulator platforms compiled into the programs, named in one place so
-//! the command line and the desktop accept the same artifacts and print the
-//! same licence notice (core-contract.md §7.1), and push with the same
-//! guard. Today that is one platform, the IBM PC/AT family, whose image
-//! providers and firmware catalogue live in `pc-image`.
+//! the command line and the desktop list the same cores, accept the same
+//! artifacts and print the same licence notice (core-contract.md §7.1,
+//! §13.4), and push with the same guard. Today that is one platform, the
+//! IBM PC/AT family: its core is `unemu-pc-core`, its image providers and
+//! firmware catalogue live in `pc-image`.
 
 use image_registry::{push, Reference, RegistryEntry};
 use image_store::{ConfigValidator, Digest, Manifest, Store};
+use unemu_core_api::Core;
+
+/// Every core compiled into the programs, in the order they are asked about
+/// a file and listed for people. Each program makes one list of usable cores
+/// from this (`core_launch::Cores`) and hands it down; no other crate keeps
+/// a list of cores.
+///
+/// The scripted test core is in the list only with the `test-core` feature,
+/// which no release build sets.
+pub fn cores() -> &'static [&'static dyn Core] {
+    #[cfg(not(feature = "test-core"))]
+    static CORES: [&dyn Core; 1] = [&unemu_pc_core::PcCore];
+    #[cfg(feature = "test-core")]
+    static CORES: [&dyn Core; 2] = [&unemu_pc_core::PcCore, &unemu_test_core::TestCore];
+    &CORES
+}
 
 /// Run `job` with every platform provider a registry transfer may need: PC
 /// machine images, PC media sets and PC firmware packages
@@ -85,6 +102,102 @@ fn commit_line(commit: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unemu_core_api::{
+        ContentKind, ContractVersion, CoreDescription, CreateRequest, Error, ErrorKind, Machine,
+        PlatformDescription,
+    };
+
+    /// A wrong pin of a core's contract fails here, not in a user's hands
+    /// (core-contract.md §3.2): the programs make their list with the same
+    /// check.
+    #[test]
+    fn every_compiled_in_core_states_a_contract_this_program_drives() {
+        let checked = core_launch::Cores::new(cores());
+        assert_eq!(checked.refused().len(), 0, "{:?}", checked.refused());
+        assert_eq!(checked.usable().count(), cores().len());
+    }
+
+    #[test]
+    fn the_ids_of_the_compiled_in_cores_are_unique() {
+        assert_eq!(repeated_ids(cores()), Vec::<String>::new());
+    }
+
+    /// Only the PC core ships; the test core joins with its feature alone.
+    #[test]
+    fn the_list_is_the_pc_core_and_the_test_core_only_with_its_feature() {
+        let ids: Vec<_> = cores().iter().map(|core| core.description().id).collect();
+        if cfg!(feature = "test-core") {
+            assert_eq!(ids, ["unemupc", "unemu-test-core"]);
+        } else {
+            assert_eq!(ids, ["unemupc"]);
+        }
+    }
+
+    /// Each id that `list` repeats: a core id, a platform id across all
+    /// cores (an artifact names its platform, not its core), or a content
+    /// kind's id within its platform.
+    fn repeated_ids(list: &[&dyn Core]) -> Vec<String> {
+        fn repeats<'a>(what: &str, ids: impl Iterator<Item = &'a str>) -> Vec<String> {
+            let mut seen = std::collections::BTreeSet::new();
+            ids.filter(|id| !seen.insert(*id))
+                .map(|id| format!("{what} {id}"))
+                .collect()
+        }
+        let descriptions = || list.iter().map(|core| core.description());
+        let platforms = || descriptions().flat_map(|core| core.platforms);
+        let mut found = repeats("core", descriptions().map(|core| core.id));
+        found.extend(repeats("platform", platforms().map(|platform| platform.id)));
+        for platform in platforms() {
+            let what = format!("content kind of {}", platform.id);
+            found.extend(repeats(&what, platform.content.iter().map(|kind| kind.id)));
+        }
+        found
+    }
+
+    /// A core that is its description and nothing else.
+    struct Described(CoreDescription);
+
+    impl Core for Described {
+        fn description(&self) -> &CoreDescription {
+            &self.0
+        }
+
+        fn create(&self, _request: &CreateRequest<'_>) -> Result<Box<dyn Machine>, Error> {
+            Err(Error::new(ErrorKind::Unsupported, "a scripted description"))
+        }
+    }
+
+    static KINDS: [ContentKind; 3] = [
+        ContentKind::new("tape", "Tapes", &["tap"]),
+        ContentKind::new("disk", "Disks", &["dsk"]),
+        ContentKind::new("tape", "Tape images", &["tzx"]),
+    ];
+    static SECOND_PC: [PlatformDescription; 1] = [PlatformDescription::new("ibm-pc", "Another PC")];
+    static HOME: [PlatformDescription; 2] = [
+        PlatformDescription::new("home", "Home computer").with_content(&KINDS),
+        PlatformDescription::new("console", "Console").with_content(&KINDS),
+    ];
+    static OTHER_PC: Described = Described(
+        CoreDescription::new(ContractVersion::new(0, 2), "other-pc", "Other PC", "1.0.0")
+            .with_platforms(&SECOND_PC),
+    );
+    static HOME_CORE: Described = Described(
+        CoreDescription::new(ContractVersion::new(0, 2), "home", "Home", "1.0.0")
+            .with_platforms(&HOME),
+    );
+
+    #[test]
+    fn a_repeated_core_platform_or_content_kind_id_is_found() {
+        let pc: &dyn Core = &unemu_pc_core::PcCore;
+        assert_eq!(repeated_ids(&[pc, pc]), ["core unemupc", "platform ibm-pc"]);
+        assert_eq!(repeated_ids(&[pc, &OTHER_PC]), ["platform ibm-pc"]);
+        // A kind's id is unique within its platform; two platforms may each
+        // have a kind of the same id.
+        assert_eq!(
+            repeated_ids(&[pc, &HOME_CORE]),
+            ["content kind of home tape", "content kind of console tape"]
+        );
+    }
 
     #[test]
     fn every_platform_artifact_type_has_a_provider() {

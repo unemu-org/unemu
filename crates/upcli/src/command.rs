@@ -6,6 +6,7 @@
 //! that pin the composed command line come through here.
 
 use cli_core::{CliPlatform, Io};
+use core_launch::Cores;
 use std::ffi::OsString;
 use std::io::Write;
 
@@ -50,21 +51,28 @@ pub fn run_with_firmware_sources(
     errors: &mut impl Write,
     sources: &FirmwareSources,
 ) -> u8 {
-    cli_pc::with_platform(|pc| run_program(args, &mut Io { output, errors }, sources, &[pc]))
+    let cores = Cores::new(platforms::cores());
+    cli_pc::with_platform(|pc| {
+        run_program(args, &mut Io { output, errors }, sources, &[pc], &cores)
+    })
 }
 
-/// Run an `upcli` command line with `platforms`: the program's notices, or
-/// the command line of [`cli_core::run`].
+/// Run an `upcli` command line with `platforms` and `cores`: the program's
+/// notices, or the command line of [`cli_core::run`].
 pub fn run_program(
     args: &[OsString],
     io: &mut Io<'_>,
     host: &FirmwareSources,
     platforms: &[&dyn CliPlatform],
+    cores: &Cores,
 ) -> u8 {
     if !about(args) {
         return cli_core::run(args, io, host, platforms);
     }
-    match io.output.write_all(crate::about::upcli_notice().as_bytes()) {
+    match io
+        .output
+        .write_all(crate::about::upcli_notice(cores).as_bytes())
+    {
         Ok(()) => 0,
         Err(error) => {
             let _ = writeln!(io.errors, "{error}");
