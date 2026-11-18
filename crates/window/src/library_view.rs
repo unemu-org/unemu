@@ -1127,6 +1127,9 @@ pub(super) struct LibraryView {
     pub start_catalogue: Vec<crate::kept_catalogue::RestoredDrive>,
     /// The Remotes group: the registries, the node shown and its rows.
     pub(crate) remote: remotes::RemotesView,
+    /// What the registry dialogs and Remotes read of the compiled-in
+    /// platforms, made once.
+    pub(crate) platform_facts: library_model::PlatformFacts,
 }
 impl LibraryView {
     pub fn new(root: Option<PathBuf>) -> Self {
@@ -1199,6 +1202,7 @@ impl LibraryView {
             start_notes: Vec::new(),
             start_catalogue: Vec::new(),
             remote: remotes::RemotesView::new(),
+            platform_facts: crate::pc_desktop::PcDesktop::facts(),
         }
     }
     /// Whether the worker runs, to read host files and build disks for
@@ -2268,7 +2272,11 @@ impl LibraryView {
         } else {
             self.selected.as_ref().map(|row| row.reference.clone())
         };
-        let (dialog, request) = crate::registry_transfer::PushDialog::open(accounts, selected);
+        let (dialog, request) = crate::registry_transfer::PushDialog::open(
+            accounts,
+            self.platform_facts.clone(),
+            selected,
+        );
         self.push = Some(dialog);
         self.send(Request::Transfer(request));
     }
@@ -2286,7 +2294,10 @@ impl LibraryView {
     }
     /// Image › Pull by reference…: a reference into the local store.
     pub fn begin_pull(&mut self, accounts: crate::registry_transfer::Accounts) {
-        self.pull = Some(crate::registry_transfer::PullDialog::open(accounts));
+        self.pull = Some(crate::registry_transfer::PullDialog::open(
+            accounts,
+            self.platform_facts.clone(),
+        ));
     }
     /// Preferences closed: a registry whose Log in… opened them lists again.
     pub fn preferences_closed(&mut self) {

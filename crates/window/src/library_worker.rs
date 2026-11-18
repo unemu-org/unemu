@@ -441,6 +441,14 @@ pub(super) struct CheckedImage {
 /// The OCI manifest annotations the details panes show.
 const DESCRIPTION: &str = "org.opencontainers.image.description";
 
+/// The PC as Remotes asks it while browsing: what a read tag's platform is
+/// and how its media formats are named. Browsing validates and pushes
+/// nothing, so it reads neither the provider list nor the firmware
+/// catalogue.
+fn browsing_platform() -> crate::pc_desktop::PcDesktop<'static> {
+    crate::pc_desktop::PcDesktop::new(&[], &[])
+}
+
 /// Read an image's draft, cards and manifest annotations. Only the manifest
 /// and configuration are read; no workspace is opened.
 fn checked_image(store: &Store, row: &ImageRow) -> Option<Box<CheckedImage>> {
@@ -1516,7 +1524,9 @@ fn serve_session<B: Backend>(
             }
             // Browsing reads registries and local tags only; no session lock.
             Ok(Request::Browse(job)) => {
-                crate::remote_browse::run(store, job, &|event| send(Event::Browse(event)))
+                crate::remote_browse::run(store, job, &[&browsing_platform()], &|event| {
+                    send(Event::Browse(event))
+                })
             }
             // Settings on another, stopped image.
             Ok(Request::PublishRevision(plan, target)) => {
@@ -2058,18 +2068,23 @@ fn run<B: Backend>(
                     // Every registry request of the dialogs runs here, on the
                     // worker thread, never in the frame loop.
                     Request::Transfer(job) => backend.with_providers(|providers| {
+                        let pc = crate::pc_desktop::PcDesktop::new(
+                            providers,
+                            backend.firmware_catalogue(),
+                        );
                         crate::registry_transfer::run(
                             &store,
                             job,
-                            providers,
-                            backend.firmware_catalogue(),
+                            &[&pc],
                             &|event| send(Event::Transfer(event)),
                             &|| wake.request_repaint(),
                         )
                     }),
                     // Browsing reads registries only, so no snapshot follows.
                     Request::Browse(job) => {
-                        crate::remote_browse::run(&store, job, &|event| send(Event::Browse(event)));
+                        crate::remote_browse::run(&store, job, &[&browsing_platform()], &|event| {
+                            send(Event::Browse(event))
+                        });
                         quiet = true;
                     }
                     Request::ScanFirmware(folder, index, control) => {

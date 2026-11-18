@@ -442,7 +442,7 @@ pub(crate) fn show_pull(ctx: &egui::Context, dialog: &mut PullDialog, classic: b
                 for (descriptor, have) in &live.receiving {
                     ui.label(format!(
                         "{} · {} of {}",
-                        crate::registry_transfer::kind_label(descriptor),
+                        crate::registry_transfer::kind_label(&dialog.facts, descriptor),
                         human_size(*have),
                         human_size(descriptor.size)
                     ));
@@ -450,7 +450,7 @@ pub(crate) fn show_pull(ctx: &egui::Context, dialog: &mut PullDialog, classic: b
                 for descriptor in live.fetched.iter().rev().take(6) {
                     ui.label(format!(
                         "{} · {} ✓",
-                        crate::registry_transfer::kind_label(descriptor),
+                        crate::registry_transfer::kind_label(&dialog.facts, descriptor),
                         human_size(descriptor.size)
                     ));
                 }
@@ -792,6 +792,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::{
         library_test_support::Fixture,
+        pc_desktop::PcDesktop,
         registry_transfer::{self, tests::accounts_for, PullFailure, PushFailure, TransferEvent},
     };
     use image_registry::credential_store::SessionStore;
@@ -856,15 +857,16 @@ pub(crate) mod tests {
         let accounts = accounts_for(f.temp.path(), host, true, Arc::new(SessionStore::default()));
         // The dry run comes from the function the worker runs.
         let planned = |tag: &str| {
-            let (mut dialog, request) = PushDialog::open(accounts.clone(), Some(tag.into()));
+            let (mut dialog, request) =
+                PushDialog::open(accounts.clone(), PcDesktop::facts(), Some(tag.into()));
             let events = Mutex::new(Vec::new());
             pc_image::test_support::with_synthetic_firmware(|| {
                 platforms::with_image_providers(|providers| {
+                    let pc = PcDesktop::new(providers, &[]);
                     registry_transfer::run(
                         &f.store,
                         request,
-                        providers,
-                        &[],
+                        &[&pc],
                         &|event| events.lock().unwrap().push(event),
                         &|| {},
                     )
@@ -981,7 +983,7 @@ pub(crate) mod tests {
         let (action, _) = push(&mut dialog, escape());
         assert!(matches!(action, Action::Close));
 
-        let mut pull = PullDialog::open(accounts);
+        let mut pull = PullDialog::open(accounts, PcDesktop::facts());
         let draw =
             |pull: &mut PullDialog, events| render(&ctx, events, |ctx| show_pull(ctx, pull, false));
         let (_, shown) = draw(&mut pull, vec![]);

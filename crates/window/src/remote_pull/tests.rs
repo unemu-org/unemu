@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::{
+    pc_desktop::PcDesktop,
     registry_transfer::PullFailure,
     remote_browse::{local_tag_of, TagRecord},
 };
@@ -14,6 +15,13 @@ use image_registry::{
     credentials::EnvCredentials,
     pull::{PullOutcome, PullReport},
 };
+use image_store::{machine::PendingInsert, media_type as mt, Descriptor, Digest};
+use library_model::{
+    registry_transfer::{Accounts, TransferEvent, TransferRequest},
+    remote_browse::{LocalState, TagRow},
+    PlatformFacts,
+};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 const LAN: &str = "registry.lan.example";
@@ -70,6 +78,12 @@ fn not_pulled() -> LocalState {
     LocalState::NotPulled { same_as: None }
 }
 
+/// The PC's facts, which every pick of these tests reads.
+fn facts() -> &'static PlatformFacts {
+    static FACTS: std::sync::LazyLock<PlatformFacts> = std::sync::LazyLock::new(PcDesktop::facts);
+    &FACTS
+}
+
 fn pick<'a>(repository: &'a str, row: &'a TagRow) -> Pick<'a> {
     Pick {
         host: LAN,
@@ -77,6 +91,7 @@ fn pick<'a>(repository: &'a str, row: &'a TagRow) -> Pick<'a> {
         tag: &row.tag,
         row: Some(row),
         blocked: None,
+        facts: facts(),
     }
 }
 
@@ -443,12 +458,14 @@ fn pull_and_insert_leaves_the_first_disk_in_a_drive_that_takes_the_set() {
             .unwrap()
             .geometry
     };
-    let drive = |machine: &str, unit, format: &str| Drive {
-        machine: machine.to_lowercase(),
-        name: machine.into(),
-        unit,
-        geometry: geometry(format),
-        holds: None,
+    let drive = |machine: &str, unit, format: &str| {
+        pc_drive(
+            machine.to_lowercase(),
+            machine.into(),
+            unit,
+            geometry(format),
+            None,
+        )
     };
     let drives = [
         drive("Games", 0, "1.2M"),
@@ -741,13 +758,13 @@ fn done_replaced_disks_cd_sets_and_unread_tags_say_so() {
     assert!(dialog.unchanged());
     assert_eq!(dialog.go_label(), "Done");
 
-    let drive = Drive {
-        machine: "games".into(),
-        name: "Games".into(),
-        unit: 1,
-        geometry: assembly::descriptors::FLOPPY_TYPES[0].geometry,
-        holds: Some("FreeDOS — Disk 1".into()),
-    };
+    let drive = pc_drive(
+        "games".into(),
+        "Games".into(),
+        1,
+        assembly::descriptors::FLOPPY_TYPES[0].geometry,
+        Some("FreeDOS — Disk 1".into()),
+    );
     assert_eq!(
         drive.label(),
         "Games — B: 1.44M — replaces FreeDOS — Disk 1"
@@ -775,6 +792,7 @@ fn done_replaced_disks_cd_sets_and_unread_tags_say_so() {
         tag: "0.9.0",
         row: None,
         blocked: None,
+        facts: facts(),
     };
     assert_eq!(
         refusal(&unread).as_deref(),

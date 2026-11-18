@@ -2193,15 +2193,15 @@ cycle.
 | 3.1 | **Done.** **Two helpers into `image-store`.** `Precedence` and `precedence` go from `pc_image::template` to `image_store::tag`, re-exported where they were. A `TempDir` like `assembly::test_support::TempDir` (which stays for the emulation crates) goes behind `image-store`'s `test-support` feature | none | the tests that call only `precedence` move with it | The five call sites in `remote_browse` and `remotes` name `image_store::tag`. Plan: `image-store` and its dependents, as any `image-store` change |
 | 3.2 | **Done.** **`library-model` starts with `registries_model`** (1 145 lines, no sibling module, no PC reference). The window re-exports it | none | 16 move, with the temp directory of 3.1 in place of `assembly`'s (6 uses); the one test of `merge_tests` names the application's `preferences` and stays | The first neutral desktop model by Cargo. The script's window family gains `library-model` |
 | 3.3 | **Done.** **Listing and the save form.** `ImageRow`, `Listed`, `listed`, `Source`, `source`, `human_size`, `delete_tag`, `host_last_run` and the short digest (`firmware::short`) go to `library_model::listing`; the model of `save_image` (457 of 629 lines: `Target`, `TagLevel`, `TagCheck`, `check_tag`, `next_version`, `local_tags`, `SaveAsImage`) to `library_model::save_image`. `library_view` and `save_image` re-export them | none | the 11 tests of `save_image` move; the listing has none of its own | Cuts ten arrows into `library_view` (`human_size`) and the arrows of `image_settings` and the worker to `ImageRow` |
-| 3.4 | **`registry_transfer` on the seam, into `library-model`.** `DesktopPlatform`, `PlatformFacts` and `PcDesktop` appear (the last in the window until 3.11); the provider list moves to `pc-image` | the catalogue and the two labels (7 references), §8.1.4 | its 18 tests (15.2 s) hold a `LibraryView` and build stores with `PcProvider`; they stay, in a test-only `registry_transfer` module | The tests that pin the plan's lines, the refusals and the blob labels pass unchanged; the test that the PC core's platform equals `pc-image`'s is new |
-| 3.5 | **`remote_browse` and `remote_pull`, into `library-model`** | the platform's name and id, the format name, the tag order (6); the drive's geometry (3), §8.1.4 | the 28 tests of `remote_browse` name the worker and stay; the 9 of `remote_pull/tests` draw the transfer view and stay with it | After this move about 6 100 production lines of registry models have no PC dependency. Plan for a file of them: `library-model`, `window` |
+| 3.4 | **Done.** **`registry_transfer` on the seam, into `library-model`.** `DesktopPlatform`, `PlatformFacts` and `PcDesktop` appear (the last in the window until 3.11); the provider list moves to `pc-image` | the catalogue and the two labels (7 references), §8.1.4 | its 18 tests (15.2 s) hold a `LibraryView` and build stores with `PcProvider`; they stay, in a test-only `registry_transfer` module | The tests that pin the plan's lines, the refusals and the blob labels pass unchanged; the test that the PC core's platform equals `pc-image`'s is new. As landed: see below the table |
+| 3.5 | **Done.** **`remote_browse` and `remote_pull`, into `library-model`** | the platform's name and id, the format name, the tag order (6); the drive's geometry (3), §8.1.4 | the 28 tests of `remote_browse` name the worker and stay; the 9 of `remote_pull/tests` draw the transfer view and stay with it | After this move about 6 100 production lines of registry models have no PC dependency. Plan for a file of them: `library-model`, `window`. As landed: see below the table |
 | 3.6 | **Done.** **`pc-media` starts.** `media_dialog`, `created_media`, `kept_catalogue`, `drive_chips` move whole, with the model items of `catalogue_menu` (`SetDisk`, `set_disk`, `short_name`) and of `media_picker` (`Disk`, `SetEntry`, `CatalogueDisk`, `format_name`, `drive_name`, `title_parts`, `label_without_file`) that they name; both view files re-export them. The rest of `catalogue_menu` that builds without a toolkit (`Catalogue`, its rows and marks) may come in the same move | `BlankDisk::default()` becomes a constructor that takes the machine-file directory, and the shell passes `machines_dir()` (1 use) | `created_media` 5, `kept_catalogue` 7, `drive_chips` 14 move; the 22 of `media_dialog` name `Presenter` and the library fixture and stay | The four move together because they name each other. Plan for a media model file: `pc-media`, `window`. As landed: `crates/pc-media` (layer `pc`, no toolkit) holds `created_media`, `kept_catalogue` and `drive_chips` whole, `media_dialog` but for two methods, the named items of `media_picker` (`SetEntry`'s `words` and `facet` became `pub` for the picker's search) and of `catalogue_menu` with `own_name`, which `short_name` calls and the picker's `disk_name` names; the rest of `catalogue_menu` stayed. `BlankDisk::new` takes the directory as an `Option`; `for_machine` passes none, since it sets its own. Deviations: the two methods of `media_dialog` that need the desktop stay in the window's `media_dialog.rs`, which re-exports the model: `InsertDialog::library_ui` draws with egui (a view line §8.1.1 missed, as it sits after the file's first test module) and `PendingMedia::apply` takes the session's `Presenter`; they are methods of two window traits (`LibraryInsertView`, `ApplyPending`), so their two callers in `shell.rs` keep their calls and import the traits. Of the 22 tests of `media_dialog`, the 12 of `media_dialog::tests` name neither `Presenter` nor the fixture and moved by rule 2; the 10 of `media_set_tests` and `review_tests` stay, and for them `LibraryMessage`, `LibraryInsert::{refresh, snapshot, pending}` and `PendingMedia::inserts` are `pub`, and the test-only `LibraryInsert::entries` is behind `test-support`. The glyph test of the window reads `pc_media::source_dir()` too (`test-support`, as in `ui-kit`). MEASURED: 38 tests in `pc-media`; plan for `crates/pc-media/src/drive_chips.rs`: `pc-media`, `window`, where it was `window` alone |
 | 3.7 | **Done**, in part. **`pc-library` starts** with `firmware_choices`, `hardware` (with `CheckedImage` from the worker and `firmware::is_rom`) and `image_settings` | none: after 3.3 they name only each other and `library-model` | `firmware_choices` 2 move; `hardware` 5 and `image_settings` 15 name the worker, the fixture or `settings_sheet` and stay | As landed: `crates/pc-library` (layer `pc`, no toolkit) holds `firmware_choices` with its 2 tests; the window's glyph test reads `pc_library::source_dir()` too. Deviation: `hardware` and `image_settings` stay in the window, with `CheckedImage` and `firmware::is_rom`: they name `human_size`, `ImageRow` and `SaveAsImage`, which reach `library-model` with 3.3, carried out beside this move and not yet under it; they follow once 3.3 has landed. MEASURED: plan for `crates/pc-library/src/firmware_choices.rs`: `pc-library`, `window` |
 | 3.8 | **`Query` and `Filter`, then the model halves of `firmware` and `firmware_metadata`** (712 and 650 lines: the rows, facets and labels, `ScanReport`, `Outcome`, `scan_folder`, `preview_set`, `import_selected`, `Verdict`, `EditSource`, `PackageDetails`, `open_edit`, `preview_edit`, `publish_edit`, `read_package`) into `pc-library` | `firmware_metadata` plans its push with `plan_with_catalogue` and `pc_image::firmware::restricted` in place of `platforms::push_plan` (1) | stay with the views: they drive the frame | The fields of `Query` become `pub` |
 | 3.9 | **The model halves of `install_media` and `machines`** (703 and 690 lines: `MediaRow`, `Availability`, `rows`, `all_rows`, `picker_set`, `Control`, `Pick`, `Sources`, `inspect`, `import`; `MachineRow`, `facets`, `visible`, `name_problem`, `id_for`, `setting_diffs`) into `pc-library` | none | stay with the views | |
 | 3.10 | **`Snapshot` and `snapshot`** (with `facets_for`, `sort_value`) into `pc-library` | none | stay with the frame | After this move the worker names nothing of `library_view` |
 | 3.11 | **The worker.** `library_worker`, `layers_dialog::SourceImage`, `PcDesktop` and the test support (`library_test_support` without its three egui helpers, the synthetic firmware catalogue, `test_wait`) into `pc-library`; the support goes behind `test-support` | `Wake` in place of `egui::Context` (6) | its 30 tests (44.4 s) move, but for those that call test helpers of `layers_dialog` and `image_settings`, which follow in 6.2 | The cycle is cut by Cargo: `pc-library` cannot name the window. `crates/pc-harness/tests/support/` and `vendor/` gain `pc-library` in the runner's rules |
-| 3.12 | **The tests left behind whose modules are now all in or below `pc-library`** move there, under the same paths: those of `remote_browse` (28, 9.8 s), and of `hardware` and `image_settings` where they name no view. The 18 of `registry_transfer` hold a `LibraryView` in their fixture and wait for the frame (6.4) | none | about 40 tests, about 12 s | No production code changes |
+| 3.12 | **The tests left behind whose modules are now all in or below `pc-library`** move there, under the same paths: those of `remote_browse` (20 after 3.5 moved 8 of the 28 to `library-model`; the 28 took 9.8 s), and of `hardware` and `image_settings` where they name no view. The 15 of `registry_transfer` left after 3.4 hold a `LibraryView` in their fixture and wait for the frame (6.4) | none | about 40 tests, about 12 s | No production code changes |
 
 As landed, 3.1 to 3.3 (one bead each, no behaviour change; the workspace
 lists the same 3958 test names apart from the crate, MEASURED with
@@ -2244,11 +2244,81 @@ lists the same 3958 test names apart from the crate, MEASURED with
   last run reaches `last_run_utc` through
   `library_model::listing::test_support`, behind the feature.
 
-Time (MEASURED on a loaded development host): the 25 moved tests take
+Time of 3.1 to 3.3 (MEASURED on a loaded development host): the 25 moved tests take
 2.4 s added up (`cargo nextest run -p library-model`). The runner's plan
 for a change to `crates/library-model/src/registries_model.rs` or
 `save_image.rs` is `library-model` and `window`; for the window's
 `save_image.rs` it is `window` alone, which no longer builds or runs them.
+
+As landed, 3.4 and 3.5 (one bead each, no behaviour change; MEASURED with
+`cargo nextest list --workspace --run-ignored all`: the workspace lists the
+same 3958 test names apart from the crate, plus the four new tests below,
+3962 in all; `library-model` has 38 tests, the window 662):
+
+- **3.4.** `library_model::platform` holds `DesktopPlatform` and
+  `PlatformFacts` as §8.1.4 has them, with two helpers that join every
+  platform's `validators` and `restricted` in list order;
+  `library_model::registry_transfer` holds the model, whose `run` takes
+  `platforms` and plans a push with `plan_with_catalogue` over the joined
+  restrictions, and whose `kind_label` takes the facts. `PcDesktop` is the
+  window's `pc_desktop` module; the worker builds it per transfer from its
+  `Backend`'s providers and catalogue, as planned. The provider list was
+  already `pc_image::with_providers`; the worker still reaches it through
+  `platforms::with_image_providers`, which forwards to it. Deviations: the
+  push and pull dialogs keep the facts for their blob labels, so
+  `PushDialog::open` and `PullDialog::open` take them; the frame makes them
+  once (`LibraryView::platform_facts`) and its dialogs clone them. 3 of the
+  18 tests moved, not none, by rule 2: they name neither the window nor a
+  PC crate (`a_refused_local_tag_says_what_is_wrong_with_it`,
+  `blob_status_names_the_chunk_and_what_a_cancel_waits_for`, and
+  `the_default_registry_follows_the_environment_and_a_bad_one_stops_both_dialogs`
+  with `image-store`'s temporary directory and empty facts); the texts the
+  15 stayed tests compare with are behind `test-support`
+  (`registry_transfer::test_support`). The new tests: the PC core's platform
+  equals `pc-image`'s, and the PC's payload blobs keep their names, both in
+  the window beside `PcDesktop` until it moves (3.11); and two of the facts
+  and the joined restrictions in `library-model`, over two toy platforms.
+- **3.5.** `library_model::remote_browse` and `remote_pull` hold the two
+  models. `remote_browse::run` takes `platforms`: a read tag's media
+  formats come from the first platform's `medium_format`, and
+  `TagRecord::other_platform` and `not_runnable` take the facts. Remotes
+  browses with a `PcDesktop` over no validators and no catalogue: browsing
+  asks only the description and the format names, and reading the
+  catalogue would count against the worker tests' injected crash. `Drive`
+  is the data of §8.1.4; the window's `remote_pull::pc_drive` fills it from
+  a PC drive, `takes` with the standard format names of the drive's
+  `accepted_media`, so `drives_for` answers as before. Deviations: `Pick`
+  carries the facts (`refusal` and `RemotePull::open` keep their
+  signatures; the dialog keeps a clone for its progress line); the views
+  that state a tag's local state (`state_parts`, `repository_row`,
+  `tag_row`, `state_text`) take the facts. The only PC code that lists a
+  stopped machine's drives for this dialog is `stopped_drives` of the
+  frame: the two places in `shell.rs` build the media picker's own `Drive`.
+  8 of the 28 tests of `remote_browse` moved, not none, by rule 2, with the
+  helpers only they use (`closed_port`, `row`, `view`, `grouped`, `digest`)
+  and copies of `Setup` (over `image-store`'s temporary directory, browsing
+  with no platform), `plain`, `open_registry`, `ended` and `names`:
+  `roots_put_the_default_registry_first_and_contact_none`,
+  `the_catalog_is_read_fifty_repositories_a_page`,
+  `an_unreachable_registry_lists_nothing`,
+  `log_in_is_offered_only_for_a_basic_challenge`,
+  `whole_registry_entries_group_repositories_by_their_first_path_component`,
+  `local_names_carry_the_host_except_for_the_family_default_registry`,
+  `local_states_compare_within_one_host_qualified_name` and
+  `a_failed_next_page_keeps_the_pages_before_it`. The 20 others build PC
+  artifacts or browse through the worker and stay; so do the 9 of
+  `remote_pull/tests`, which all build records of PC artifacts. For them
+  `representative` and `Remotes::touch` are behind `test-support`, with the
+  page sizes and annotation keys (`remote_browse::test_support`). Test
+  bodies changed only where a function gained the stated parameter
+  (`run`'s platforms, the facts), where a `Pick` gained its field and where
+  a `Drive` literal became a `pc_drive` call (2).
+
+Time of 3.4 and 3.5 (MEASURED on a loaded development host, `cargo nextest run -p
+library-model`): the 38 tests of the crate take 3.9 s added up, under a
+second of wall time. The runner's plan for `crates/library-model/src/remote_browse.rs`,
+`registry_transfer.rs`, `remote_pull.rs` or `platform.rs` is `library-model`
+and `window`; for the window's `registry_transfer.rs` it is `window` alone.
 
 Effect of step 3 (ASSUMED from §8.1.1): about 115 tests and 55 to 60 s of
 the 288 s leave the application's test binary (the worker 44 s, the tests

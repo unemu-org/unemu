@@ -48,6 +48,7 @@ use crate::{
 use egui::{AtomExt, Color32, Rect, RichText, Sense, Stroke, Vec2};
 use image_registry::{reference::OFFICIAL_NAMESPACE, DEFAULT_REGISTRY};
 use image_store::media_type as mt;
+use library_model::PlatformFacts;
 use std::collections::BTreeSet;
 use ui_kit::shell_icons::Icon;
 
@@ -858,12 +859,12 @@ fn type_label(artifact_type: &str, repository: &str) -> &'static str {
 }
 
 /// The Local state cell of a read tag, and whether the row is muted.
-fn state_parts(row: &TagRow) -> (Vec<Part>, bool) {
+fn state_parts(row: &TagRow, facts: &PlatformFacts) -> (Vec<Part>, bool) {
     let record = match &row.record {
         Ok(record) => record,
         Err(reason) => return (vec![(format!("⚠ {reason}"), Tone::Warn)], false),
     };
-    if let Some(reason) = record.not_runnable() {
+    if let Some(reason) = record.not_runnable(facts) {
         return (vec![(reason, Tone::Warn)], true);
     }
     let parts = match &row.local {
@@ -906,7 +907,12 @@ fn licence(record: &TagRecord) -> Vec<Part> {
 
 /// A repository's row: its name with the tag count, and the cells of the tag
 /// it stands for.
-fn repository_row(host: &str, repository: &RepositoryRow, open: bool) -> RowCells {
+fn repository_row(
+    host: &str,
+    repository: &RepositoryRow,
+    open: bool,
+    facts: &PlatformFacts,
+) -> RowCells {
     let multi = repository.tags.len() > 1;
     let mut name = vec![(repository.name.clone(), Tone::Plain)];
     if multi {
@@ -939,7 +945,7 @@ fn repository_row(host: &str, repository: &RepositoryRow, open: bool) -> RowCell
         return row;
     };
     row.parts[3] = vec![(tag.tag.clone(), Tone::Code)];
-    let (mut state, muted) = state_parts(tag);
+    let (mut state, muted) = state_parts(tag, facts);
     row.muted = muted;
     let in_library = repository
         .read
@@ -982,7 +988,7 @@ fn newer_needs(repository: &RepositoryRow) -> Vec<Part> {
 }
 
 /// One tag's row under its expanded repository.
-fn tag_row(host: &str, repository: &RepositoryRow, tag: &str) -> RowCells {
+fn tag_row(host: &str, repository: &RepositoryRow, tag: &str, facts: &PlatformFacts) -> RowCells {
     let mut parts: [Vec<Part>; 8] = Default::default();
     parts[0] = vec![(format!(":{tag}"), Tone::Code)];
     parts[1] = vec![(host.into(), Tone::Plain)];
@@ -997,7 +1003,7 @@ fn tag_row(host: &str, repository: &RepositoryRow, tag: &str) -> RowCells {
         row.parts[7] = vec![("Reading…".into(), Tone::Muted)];
         return row;
     };
-    let (state, muted) = state_parts(read);
+    let (state, muted) = state_parts(read, facts);
     row.parts[7] = state;
     row.muted = muted;
     if let Ok(record) = &read.record {
@@ -1559,6 +1565,7 @@ impl LibraryView {
     /// instead of them, and the paging line.
     pub(super) fn remote_list(&mut self, ui: &mut egui::Ui) {
         let classic = self.classic;
+        let facts = self.platform_facts.clone();
         let mut answer = ListAnswer::default();
         let host;
         {
@@ -1660,7 +1667,8 @@ impl LibraryView {
                                                     } else {
                                                         picked.is_some()
                                                     };
-                                                let cells = repository_row(&host, repository, open);
+                                                let cells =
+                                                    repository_row(&host, repository, open, &facts);
                                                 (
                                                     cells,
                                                     repository.representative.clone(),
@@ -1674,7 +1682,7 @@ impl LibraryView {
                                                     picked.is_some_and(|(_, _, t)| t == tag)
                                                 };
                                                 (
-                                                    tag_row(&host, repository, tag),
+                                                    tag_row(&host, repository, tag, &facts),
                                                     Some(tag.clone()),
                                                     is_selected,
                                                 )

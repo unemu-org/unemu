@@ -31,6 +31,7 @@ use crate::{
 use egui::RichText;
 use image_registry::DEFAULT_REGISTRY;
 use image_store::{license, media_type as mt, Descriptor, Digest};
+use library_model::PlatformFacts;
 use ui_kit::shell_icons::Icon;
 
 const DESCRIPTION: &str = "org.opencontainers.image.description";
@@ -62,6 +63,8 @@ struct Selected {
     /// The repository's tags, newest first, with the rows read so far.
     tags: Vec<(String, Option<TagRow>)>,
     blocked: Option<String>,
+    /// The platforms this program runs, to tell a tag it cannot run.
+    facts: PlatformFacts,
 }
 
 impl Selected {
@@ -72,6 +75,7 @@ impl Selected {
             tag: &self.tag,
             row: self.row.as_ref(),
             blocked: self.blocked.clone(),
+            facts: &self.facts,
         }
     }
 }
@@ -122,14 +126,14 @@ fn media_line(media: &[(String, String)]) -> String {
 }
 
 /// The Local state as the list says it, in words for the table.
-fn state_text(row: Option<&TagRow>) -> String {
+fn state_text(row: Option<&TagRow>, facts: &PlatformFacts) -> String {
     let Some(row) = row else {
         return "Not read yet".into();
     };
     let Ok(record) = &row.record else {
         return "Could not be read".into();
     };
-    if let Some(reason) = record.not_runnable() {
+    if let Some(reason) = record.not_runnable(facts) {
         return reason;
     }
     match &row.local {
@@ -213,13 +217,13 @@ impl LibraryView {
                         .iter()
                         .find(|c| c.drive == letter)
                         .map(|c| c.title.clone());
-                    Drive {
-                        machine: machine.id().to_owned(),
-                        name: machine.name().to_owned(),
+                    crate::remote_pull::pc_drive(
+                        machine.id().to_owned(),
+                        machine.name().to_owned(),
                         unit,
                         geometry,
-                        holds: pending.or(created),
-                    }
+                        pending.or(created),
+                    )
                 })
             })
             .collect()
@@ -257,6 +261,7 @@ impl LibraryView {
                     repository,
                     tag,
                     blocked: blocked.clone(),
+                    facts: self.platform_facts.clone(),
                 })
             })
             .collect()
@@ -635,7 +640,7 @@ impl LibraryView {
                                 .and_then(|o| o.record.as_ref().ok())
                                 .map_or_else(|| "—".into(), |r| short(&r.digest));
                             ui.label(pane::mono(digest));
-                            ui.label(state_text(other.as_ref()));
+                            ui.label(state_text(other.as_ref(), &selected.facts));
                             ui.end_row();
                         }
                     });
@@ -650,7 +655,8 @@ impl LibraryView {
         let refused = refusal(&selected.pick());
         // A tag in the library still makes machines and goes into drives,
         // unless this release cannot run it.
-        let blocked = record.not_runnable().is_some() || (refused.is_some() && !in_library);
+        let blocked =
+            record.not_runnable(&selected.facts).is_some() || (refused.is_some() && !in_library);
         let formats = &record.formats;
         let drives = self.stopped_drives();
         let fits = !drives_for(formats, &drives).is_empty();
@@ -748,6 +754,7 @@ impl LibraryView {
             return;
         };
         let mut close = false;
+        let facts = &self.platform_facts;
         egui::Modal::new(egui::Id::unique("remote-contents")).show(ctx, |ui| {
             // The mock-up's wide dialog, narrower in a narrow window.
             ui.set_width((ctx.content_rect().width() - 48.0).clamp(320.0, 760.0));
@@ -798,7 +805,7 @@ impl LibraryView {
                 changed: false,
             }];
             for descriptor in &record.descriptors {
-                let kind = kind_label(descriptor);
+                let kind = kind_label(facts, descriptor);
                 rows.push(pane::Row {
                     head: descriptor
                         .annotations
@@ -863,7 +870,7 @@ fn several_tags(ui: &mut egui::Ui, selected: &[Selected]) -> Option<PaneAction> 
                         .map_or_else(|| "—".into(), |r| human_size(r.size)),
                     pane::Tone::Body,
                 )],
-                vec![(state_text(s.row.as_ref()), pane::Tone::Body)],
+                vec![(state_text(s.row.as_ref(), &s.facts), pane::Tone::Body)],
             ],
             changed: false,
         })

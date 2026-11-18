@@ -5,6 +5,17 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — Push, pull and Remotes' models leave the window:** moves
+  3.4 and 3.5 of the window split (design/core-contract.md §8.1.6).
+  `library-model` (layer neutral) now also holds Image › Push… and Pull…
+  (`registry_transfer`), browsing Remotes (`remote_browse`) and Pull… from
+  them (`remote_pull`), and the desktop's provider seam (`DesktopPlatform`,
+  `PlatformFacts`, §8.1.4): what the models ask of a platform (validators,
+  the blobs it restricts, its name and id, its media format names and
+  payload labels) the caller hands in. The PC's answer, `PcDesktop`, stays
+  in the window until the worker moves. The window re-exports the models
+  under their old paths. No behaviour changes: every test keeps its name;
+  11 tests moved to `library-model` and 4 are new (3962; MEASURED).
 - **2026-11-18 — The desktop's PC media models and firmware choices
   leave the window:** moves 3.6 and 3.7 of the window split
   (design/core-contract.md §8.1.6). `pc-media` (layer pc, no toolkit)

@@ -80,6 +80,7 @@ mod media_picker;
 mod mouse;
 mod new_machine;
 mod new_machine_view;
+mod pc_desktop;
 mod preferences;
 mod preferences_sheet;
 mod registries_model;

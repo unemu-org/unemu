@@ -1893,6 +1893,7 @@ dependencies = [
  "image-registry",
  "image-store",
  "toml",
+ "unemu-core-api",
 ]
 
 [[package]]
