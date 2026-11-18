@@ -185,7 +185,13 @@ the whole frame of the 244-byte floppy one. Boundary vectors go through the
 same import path: 4095 bytes stay raw and 4096 bytes become `+zstd` (frame
 pinned), and a media-set floppy of exactly 2880 KiB is encoded while one byte
 more stays raw; image-store's two payload-type tables and the threshold are
-compared by value. The same file checks the frame header fields above; shows
+compared by value. The PC provider's share of profile 1 is pinned the same way
+in `crates/pc-image/tests/zstd_profile.rs`, part of profile 1 like the file
+above: `pc_image::provider::PAYLOAD_TYPES` compared by value (every media type
+with its limit and whether it is a `+zstd` variant), and a PC floppy through
+that table at 4095 and 4096 bytes and one byte under, exactly at and one byte
+over its 1440 KiB limit, each case's raw-or-`+zstd` outcome and stored length
+and SHA-256 pinned. The same image-store file checks the frame header fields above; shows
 that changing one setting (level 2 or 4, checksum or content size off, no
 pledge, an intermediate flush, window log 20 or 22, long-distance matching, a
 dictionary) moves at least one pinned digest; and compares the `Cargo.lock`
