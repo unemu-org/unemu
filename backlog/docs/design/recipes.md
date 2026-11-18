@@ -2306,6 +2306,113 @@ including "found instead of made"; `upcli recipe plan` with `--json`;
 a wanted size (counted in a test); a stale index entry is dropped, never
 trusted; the plan for AZURAMON finds 561 entries from 204 files; a near
 miss is reported.
+Done on 2026-11-18 (`upc-5pw.113.6`). The neutral code is in
+`crates/recipe`: `library` (the scan, the index and its cache), `zip` and
+`inflate` (a zip archive's central directory and its members' bytes),
+`store_index` (the store's decoded digests) and `plan` (resolution and the
+report), with `recipe::plan_path` checking a recipe before it plans it;
+the commands are in `crates/cli-core` (`recipe plan`, and `library` in
+its own module). `upcli recipe plan FILE [--json] [--library DIR]...
+[--store DIR] [--config FILE]` prints the report of §3.5 and exits 0 when
+every input the artifact needs is found or not needed, 1 when one is
+missing or the recipe has findings (the check's report is printed
+instead), 2 on a usage error or a file that cannot be read; `upcli library
+ls|add|remove|scan` keeps the list and the index (commands.md, Planning
+recipes and libraries). MEASURED: with the user's copy of the game folder as a library
+(`vendor/user-roms`), AZURAMON's plan finds all 561 entries in 204 files,
+one per distinct content, hashing exactly those 204 and nothing else; a
+second plan hashes nothing (the test `user_rom_azuramoon_plan_finds_561_entries_from_204_files` in `cli-pc`).
+Decisions taken while building it:
+- Spellings, as commands.md has them: `library ls` for §6.15's `library
+  list`, `library scan` for `library index`, and `library remove`, which
+  §6.15 lacks. `--catalogue FILE` is not taken: a catalogue is read where
+  it lies in a library, by its name (below). `recipe plan` takes a file;
+  `REF` waits for recipe artifacts (B10).
+- Libraries are the preferences key `libraries`, absolute paths in search
+  order, which `library add` and `remove` change under the preferences
+  lock as every writer does; `--library DIR` (repeatable) adds folders
+  after them for one run, a folder named twice searched once. A library of
+  the preferences that is not there (a disk not attached) is skipped with a
+  warning; one named with `--library` must be there.
+- The index: one JSON file per library in the store's
+  `cache/libraries/`, named by the SHA-256 of the library's absolute path,
+  with each file's path, stamp and, once computed, SHA-256, and each zip
+  archive's members (name, raw name bytes, size, CRC-32, method, offsets,
+  a problem that keeps it from the search, SHA-256 once computed, or why
+  hashing it failed) or why the archive could not be listed. The stamp is size and
+  modification time, and on Unix also the inode, the device and the change
+  time. An entry whose stamp no longer matches its file is dropped and the
+  file hashed again when wanted, never trusted. What is detectable: on Unix
+  a rewrite that keeps the size and puts the modification time back still
+  moves the change time, which no ordinary program can set, so it is seen
+  (a test does exactly that); elsewhere the stamp is size and modification
+  time only and such a rewrite is not seen until the file is used, which
+  hashes it again (R4, R9). Without a store the index lives for one run.
+- A scan (`library scan`, and the listing a plan starts with) reads
+  directory entries, zip central directories and catalogues and hashes
+  nothing. The plan hashes a file only when a value of its size is wanted,
+  and then the candidates of that size one by one in the order of §3.4
+  until one matches, the path a file set gives first, so a copy of a whole
+  folder is hashed once per distinct content. A test counts the hashes.
+- Zip members: the central directory is read by our own code by the rules
+  of §6.9; deflated members are decoded by `miniz_oxide` (ruled by the
+  supervisor: the version already in the lock, MIT OR Zlib OR Apache-2.0,
+  one well-tested decoder for untrusted archives), streaming, so a member
+  of a wanted size is hashed in bounded memory. An archive is untrusted:
+  decoding stops with an error as soon as the output passes the size the
+  directory states, then the size and CRC-32 are checked; a member that
+  fails is recorded as failed under the archive's stamp and not tried
+  again until the archive changes (a test decodes a member that would
+  expand to 258 MB from a stated 10 bytes and stops in well under half a
+  second; without the bound it ran 3.5 s and failed only at the CRC). ZIP64
+  is not read in v1: an archive whose directory needs it is unreadable, and
+  a member whose sizes or offset hold the ZIP64 marker is listed with that
+  problem, never with the marker as its size. B7's `unpack` can use the
+  same module.
+- Zip member names are reported as they are stored, never cleaned: the
+  index keeps each name's raw bytes beside its decoded form, and a name
+  that is neither ASCII nor flagged UTF-8, or that two members share, is
+  listed as ambiguous and never searched. B7 must sanitise names when it
+  unpacks (no `..`, no drive or leading `/`, the rules of §6.9) and must
+  not guess between ambiguous members.
+- Nothing is skipped silently: a folder or entry the scan cannot read
+  (a folder without permission, a dangling link) is reported with its
+  relative path and the error, and the scan goes on; failed hash attempts
+  are counted apart from hashes. A tag of the store whose manifest cannot
+  be read is left out of the store's index with a warning, and a cache
+  that cannot be written is a warning; neither stops a plan. A library of
+  the preferences that is not there is a warning for `library scan` and
+  `recipe plan`; a folder named on the command line must be there.
+- Catalogues read in v1: a CSV whose header names `path`, `size` and
+  `sha256` (and optionally `crc32`, `sha1`, `md5`), and `SHA256SUMS` or
+  `*.sha256` files, paths relative to the catalogue's folder. A row moves
+  its file ahead in the candidates for a value it claims (or whose weaker
+  hash it shares); the file is hashed all the same, and a row that leads to
+  other bytes is reported as stale. The Logiqx DAT is left for later.
+- The store's decoded digests are read from the layer descriptors of the
+  tagged manifests (a compressed layer names its content in
+  `unemu.decoded.digest` and `unemu.decoded.size`), cached per manifest in
+  `cache/decoded/index.json`; no payload is opened. A store hit is trusted
+  by its address for the plan, as the store verified it when it wrote it;
+  the build verifies what it reads.
+- Sources as built: 1 the store, 2 the download cache (none until B7
+  brings downloads), 3 the bundle as a file of the input's name beside the
+  recipe for `bundle = true` (a layer of the recipe artifact with B10), 4
+  the libraries in order, 5 URLs listed only.
+- Found instead of made, as built: the members of `unpack` steps that state
+  size and SHA-256 and that an output reads are looked for first; the
+  archive is looked for only when one of them is missing (the step then
+  says it `opens ARCHIVE for N of M members`), and is otherwise `not
+  needed: its N members were found`. The payload blobs of a locked recipe
+  join with the lock (B8). `fat` and `text` steps always run when an
+  output needs them.
+- Near misses, reported and never used, at most eight per value: a file or
+  member with one of the value's names and another size, one with its name
+  and size and another hash, and one of its size that was hashed and holds
+  other bytes.
+- `recipe plan` writes nothing but the two caches. The summary line counts
+  the inputs the artifact needs; inputs only an attachment uses are
+  optional and do not change the exit status.
 
 **B7. Steps and the draft build.**
 Scope: `unpack` (zip), `text`, `fat` through B3; outputs handed to the

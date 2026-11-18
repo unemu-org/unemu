@@ -8,7 +8,7 @@
 //!
 //! `pinned/usage.txt` and `pinned/recipe-usage.txt` are the texts the
 //! program printed before the command line was split into a neutral part
-//! and the PC's. `pinned/documented.txt` holds the examples of commands.md
+//! and the PC's, with the lines of commands added since. `pinned/documented.txt` holds the examples of commands.md
 //! as they were written then, the arguments after `-p cli --` (the package then) of each
 //! `cargo run` and each line that starts with `upcli `, without a trailing
 //! comment; the test keeps its own copy so that editing the documentation
@@ -89,7 +89,15 @@ const USAGE_FORMS: &[&str] = &[
     "image template build --store DIR --vendor DIR --dry-run",
     "recipe check FILE FOLDER",
     "recipe show FILE",
+    "recipe plan FILE",
+    "recipe plan FILE --json --library DIR --library DIR2 --store DIR --config FILE",
     "recipe",
+    "library ls",
+    "library ls --store DIR --config FILE",
+    "library add DIR --config FILE",
+    "library remove DIR",
+    "library scan",
+    "library scan DIR DIR2 --store DIR --config FILE",
     "media create floppy --type 1.44M OUT",
     "media create floppy --type 360K OUT --format --label NAME --force",
     "media create floppy --type 720K OUT --add PATH --add PATH2 --top NAME --label NAME --split --force",
@@ -141,6 +149,9 @@ const USAGE_FORMS: &[&str] = &[
     "image run --store DIR",
     "image publish --store DIR",
     "image publish",
+    "library",
+    "library add",
+    "library add DIR --store DIR",
 ];
 
 /// Split a shell command line into words: whitespace separates, single and

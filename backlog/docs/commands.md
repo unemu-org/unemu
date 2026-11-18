@@ -1514,6 +1514,147 @@ usage error, a file that cannot be read, a folder, or a file that is not a
 media recipe (a firmware recipe or a work file has no title record to
 merge).
 
+## Planning recipes and libraries
+
+`upcli recipe plan` resolves every input of a recipe without building
+anything ([design/recipes.md](design/recipes.md) §3.4, §3.5): for each
+input, where it was found or why not; the steps that would run; the outputs
+that can be built. Libraries are folders where the user keeps files; the
+plan finds an input in them by size and SHA-256, whatever the file is
+called, and looks inside zip archives.
+
+```sh
+cargo run --offline -p upcli -- library add /path/to/games
+cargo run --offline -p upcli -- library scan
+cargo run --offline -p upcli -- library ls
+cargo run --offline -p upcli -- recipe plan my.media.toml
+cargo run --offline -p upcli -- recipe plan my.media.toml --json --library /path/to/more --store /path/to/store
+cargo run --offline -p upcli -- library remove /path/to/games
+```
+
+- `library add DIR` and `library remove DIR` change the list of libraries,
+  the key `libraries` of the shared preferences file (`--config FILE` for
+  another file), absolute paths in search order. Other keys are kept.
+- `library scan [DIR...]` lists the files of the libraries (or of the
+  folders named), the central directory of each `*.zip` and the rows of
+  each catalogue into the index, and hashes nothing. `library ls` prints
+  each library and what its index holds (`missing` when the folder is not
+  there, `not scanned` without an index).
+- `recipe plan FILE` checks the recipe (a recipe with findings prints the
+  check's report and exits 1), then looks for each value in the store
+  (images whose layers hold the content, compressed or not), beside the
+  recipe (an input with `bundle = true`, by its name), and in the libraries
+  of the preferences followed by each `--library DIR`, in that order. The
+  members of an `unpack` step that state size and SHA-256 are looked for
+  before their archive, which is then needed only for the members still
+  missing. A file is hashed only when a value of its size is wanted, and
+  the hash is kept in the index under the file's size and change times, so
+  the next plan does not hash it again; a file whose size or times changed
+  is hashed again, never trusted. A value not found lists its near misses:
+  a file with its name and another size or hash, and one of its size with
+  another hash. URLs are listed, never fetched.
+
+Catalogues in a library are hints, never proof: a CSV whose header names
+`path`, `size` and `sha256` (optionally `crc32`, `sha1`, `md5`), and
+`SHA256SUMS` or `*.sha256` files (`<hex>  <path>`), paths relative to the
+catalogue's folder. A row moves its file ahead of the others of that size;
+a row whose file holds other bytes is printed as a stale catalogue row.
+
+The index is a rebuildable cache in the store (`--store DIR`, else the
+default store): `cache/libraries/<SHA-256 of the library's path>.json` per
+library, and `cache/decoded/index.json` for the store's own content.
+`library scan` creates the store when it is missing; `recipe plan` uses it
+when it exists and otherwise keeps the index for the one run. The plan
+writes nothing else.
+
+The text form, for a recipe whose archive is missing, one of its members
+found inside another copy of the archive, and its manual bundled beside
+it:
+
+```text
+recipes/missing.media.toml: media recipe private/media/ibm-pc/demo
+store: store
+library lib: 2 files, 1 zip archives (2 members), 0 catalogue rows; hashed 2, kept 0, dropped 0
+inputs:
+  game (GAME.ZIP): missing: 290 bytes, sha256 448fcc77…
+    near miss (same name, another size): library lib: games/GAME.ZIP, 289 bytes
+    used for: Disk 1 of 1
+    url: https://example.org/GAME.ZIP
+  manual (manual.txt): found beside the recipe: recipes/manual.txt
+members found instead of made:
+  files/GAME/RUN.COM: not found, taken from the archive
+    near miss (same name and size, another hash): library lib: games/GAME.ZIP!GAME/RUN.COM, 81 bytes, sha256 8cbc1ab5…
+  files/GAME/LEVEL.DAT: found in library lib: games/GAME.ZIP!GAME/LEVEL.DAT
+steps:
+  files: unpack game: blocked: missing game (opens game for 1 of 2 members)
+  disk: fat files: blocked: missing game
+outputs:
+  medium disk-1 "Disk 1 of 1": blocked: missing game
+  extra manual "MANUAL.TXT": can build
+missing 1 of 2 inputs
+```
+
+A file set prints one line, `found 561 of 561 files, read from 204 places
+(library DIR: 204)`, and a line for each file it misses. The last line is
+the summary: `can build: all N inputs found` (`or not needed` when an
+archive is not needed), or `missing M of N inputs`, with `; K optional
+inputs not found` for inputs only an attachment uses.
+
+`--json` prints the same as one JSON object, keys sorted, two-space
+indented; these keys are stable:
+
+- top level: `recipe`, `kind` (`media`, `firmware`), `name`, `complete`
+  (the exit status is 0 exactly when it is true), `summary`, `store` (path
+  or null), `store_warnings` (tags of the store left out because their
+  manifest cannot be read, a cache not kept), `libraries`, `inputs`,
+  `members`, `steps`, `outputs`;
+- `libraries[]`: `path`, `files`, `archives`, `members`, `catalogue_rows`,
+  `hashed` (hashed in this run), `failed` (`[{path, error}]`, hash attempts
+  that failed in this run), `kept` (hashes reused from the index),
+  `dropped` (stale entries), `stale` (`[{catalogue, path}]`),
+  `unreadable` (`[{path, error}]`: folders and entries the scan could not
+  read, archives it could not list, members with ZIP64 fields or an
+  ambiguous name, members that failed before);
+- `inputs[]`: `id`, `name`, `form` (`file`, `files`), `optional`, `status`
+  (`found`, `missing`, `not-needed`), `reason` (why not needed, or null),
+  `used_by` (labels of the outputs that need it), `urls`, `ids`
+  (`[{db, set, name}]`); a `file` adds `size`, `sha256`, `found`,
+  `near_misses`; a file set adds `files` (each with `path`, `size`,
+  `sha256`, `found`, `near_misses`), `found_files` and `places` (the
+  distinct files or members they were found in);
+- `found`: null, or `{source: "store", tags}`, `{source: "bundle", path}`
+  or `{source: "library", library, path, member}` (`member` null for a
+  file, the member's name inside the zip archive at `path` otherwise);
+- `near_misses[]`: `kind` (`name-other-size`, `name-other-hash`,
+  `size-other-hash`), `library`, `path`, `member`, `size`, `sha256` (null
+  when not hashed);
+- `members[]`: `step`, `path`, `size`, `sha256`, `found`, `near_misses`;
+- `steps[]`: `id`, `verb` (`unpack`, `fat`, `text`), `operand`, `status`
+  (`runs`, `blocked`, `not-needed`), `reason`, `missing` (input ids),
+  `detail` (`opens ARCHIVE for N of M members`, or null);
+- `outputs[]`: `kind` (`medium`, `rom`, `extra`, `attachment`), `id`,
+  `label`, `from`, `optional`, `status` (`ready`, `blocked`), `missing`.
+
+A recipe with findings prints `{recipe, complete: false, summary:
+"refused: N findings", findings}` with `--json`. Exit status: 0 when every
+input the artifact needs is found or not needed, 1 when one is missing or
+the recipe has findings, 2 on a usage error, a file or a `--library`
+folder that cannot be read, or a `--store` that is not a store.
+
+Zip member names are printed as the archive stores them. A member whose
+name is neither ASCII nor flagged UTF-8, or that another member shares, is
+reported as ambiguous and never searched, as is one with ZIP64 fields. A
+deflated member is decoded only up to the size the archive's directory
+states: one that expands further fails, is reported, and is not tried
+again until the archive changes.
+
+The `library` commands exit 0 on success, 1 on a failure (a folder named
+on the command line that is not there, a preferences file that cannot be
+read or written, `remove` of a folder that is not a library, `scan`
+without a store), and 2 on a usage error. A library of the preferences
+that is not there is a warning for `library scan`, which scans the others,
+and `library ls` prints it as `missing`.
+
 ## Creating disk images
 
 ```sh

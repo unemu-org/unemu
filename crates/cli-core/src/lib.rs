@@ -8,7 +8,8 @@
 //! The neutral commands are `image ls`, `sweep`, `compress`, `image
 //! workspace ls` and `discard`, `image media ls` and `show`, `image firmware
 //! ls` and `show`, the registry commands (`image push`, `pull`, `remote ls`,
-//! `login`, `registry set`), `recipe check` and `show`, and the journal
+//! `login`, `registry set`), `recipe check`, `show` and `plan`, the
+//! library commands (`library ls`, `add`, `remove`, `scan`), and the journal
 //! commands `media generations`, `verify`, `rollback` and `commit`. What they
 //! need of a platform (the validators of its artifact types, the blobs it
 //! knows must not be redistributed, how it compresses an image, what its
@@ -23,6 +24,7 @@
 
 pub mod image;
 pub mod journal;
+pub mod library;
 pub mod recipe;
 
 use image_store::{ConfigValidator, Descriptor, Digest, Manifest, Store};
@@ -111,6 +113,7 @@ pub enum Command {
     /// No arguments: the usage text on standard output.
     Usage,
     Recipe(recipe::RecipeCommand),
+    Library(library::LibraryCommand),
     Image(image::ImageCommand),
     Journal(journal::JournalCommand),
     /// A command a platform took.
@@ -129,6 +132,9 @@ pub fn parse(args: &[OsString], platforms: &[&dyn CliPlatform]) -> Result<Comman
     }
     if args.is_empty() {
         return Ok(Command::Usage);
+    }
+    if args[0] == "library" {
+        return library::parse(&args[1..]).map(Command::Library);
     }
     if args[0] == "image" {
         return match image::parse(&args[1..])? {
@@ -192,6 +198,10 @@ pub fn usage(platforms: &[&dyn CliPlatform]) -> String {
     text.push_str(concat!(
         "       upcli recipe check FILE|FOLDER... (the static checks of recipes and work files; exit 0 clean, 1 with findings)\n",
         "       upcli recipe show FILE (a media recipe's title record merged with its work file; exit 1 with the check's findings)\n",
+        "       upcli recipe plan FILE [--json] [--library DIR]... [--store DIR] [--config FILE] (where each input is found, or why not; exit 0 all found, 1 missing)\n",
+        "       upcli library ls [--store DIR] [--config FILE]\n",
+        "       upcli library add|remove DIR [--config FILE]\n",
+        "       upcli library scan [DIR...] [--store DIR] [--config FILE] (lists files, zip directories and catalogues into the index; hashes nothing)\n",
     ));
     slot(&mut text, UsageSlot::AfterRecipe);
     text.push_str(concat!(
@@ -226,7 +236,11 @@ pub fn run(
         }
     };
     match command {
-        Command::Recipe(command) => recipe::execute(command, io, platforms),
+        Command::Recipe(command) => recipe::execute(command, io, host, platforms),
+        Command::Library(command) => {
+            let result = library::execute(command, &mut *io.output, &mut *io.errors, host);
+            finish(result, io)
+        }
         Command::Usage => match io.output.write_all(usage(platforms).as_bytes()) {
             Ok(()) => 0,
             Err(error) => {

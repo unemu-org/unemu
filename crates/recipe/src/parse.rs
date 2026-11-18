@@ -854,6 +854,26 @@ fn input(id: &At<String>, node: &Node) -> Input {
         id: id.clone(),
         name: node.str("name"),
         form,
+        names: node.strings("names"),
+        crc32: node.str("crc32"),
+        md5: node.str("md5"),
+        sha1: node.str("sha1"),
+        ids: node
+            .get("ids")
+            .map(|ids| {
+                ids.items()
+                    .iter()
+                    .filter_map(|id| {
+                        Some(DbId {
+                            db: id.str("db")?,
+                            set: id.str("set")?,
+                            name: id.str("name")?,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        urls: node.strings("urls"),
         bundle: node.boolean("bundle"),
         disclosable: node.boolean("disclosable"),
     }

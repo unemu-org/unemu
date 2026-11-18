@@ -205,8 +205,32 @@ Ok(Line(Recipe(Check(["FILE", "FOLDER"]))))
 $ recipe show FILE
 Ok(Line(Recipe(Show("FILE"))))
 
+$ recipe plan FILE
+Ok(Line(Recipe(Plan(PlanOptions { path: "FILE", json: false, libraries: [], store: None, config: None }))))
+
+$ recipe plan FILE --json --library DIR --library DIR2 --store DIR --config FILE
+Ok(Line(Recipe(Plan(PlanOptions { path: "FILE", json: true, libraries: ["DIR", "DIR2"], store: Some("DIR"), config: Some("FILE") }))))
+
 $ recipe
 Ok(Line(Recipe(Usage)))
+
+$ library ls
+Ok(Line(Library(List { store: None, config: None })))
+
+$ library ls --store DIR --config FILE
+Ok(Line(Library(List { store: Some("DIR"), config: Some("FILE") })))
+
+$ library add DIR --config FILE
+Ok(Line(Library(Add { dir: "DIR", config: Some("FILE") })))
+
+$ library remove DIR
+Ok(Line(Library(Remove { dir: "DIR", config: None })))
+
+$ library scan
+Ok(Line(Library(Scan { dirs: [], store: None, config: None })))
+
+$ library scan DIR DIR2 --store DIR --config FILE
+Ok(Line(Library(Scan { dirs: ["DIR", "DIR2"], store: Some("DIR"), config: Some("FILE") })))
 
 $ media create floppy --type 1.44M OUT
 Ok(Line(Platform(Create(CreateCommand { output: "OUT", force: false, kind: Floppy { format: Hd144, formatted: false, label: None, files: None } }))))
@@ -351,6 +375,15 @@ Err("--tag required")
 
 $ image publish
 Err("image commands require --store DIR")
+
+$ library
+Err("expected library ls, add, remove or scan")
+
+$ library add
+Err("expected library add|remove DIR [--config FILE]")
+
+$ library add DIR --store DIR
+Err("expected library add|remove DIR [--config FILE]")
 
 $ image import machines/at-freedos.toml --store /path/to/store --tag dos-lab:1.0 --create
 Ok(Line(Platform(Image(Import { machine: "machines/at-freedos.toml", store: "/path/to/store", tag: "dos-lab:1.0", create: true, options: ImportOptions { recovery: {}, rom_dirs: [], no_compress: false, min_app_version: None } }))))

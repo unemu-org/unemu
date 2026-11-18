@@ -15,18 +15,28 @@
 //! their tables, their recipe version and their vocabulary against the
 //! platform of each such recipe. [`merge_path`] merges a recipe that passes
 //! the checks with its work file into one description record
-//! ([`merge::Merged`]), the title metadata a build writes. Building,
-//! fetching and planning are not here.
+//! ([`merge::Merged`]), the title metadata a build writes.
+//!
+//! [`plan_path`] resolves the inputs of a recipe that passes the checks
+//! (recipes §3.4, §3.5): in the store's index of decoded digests
+//! ([`store_index`]), beside the recipe, and in the user's libraries
+//! ([`library`]), whose index keeps the hashes it computed. [`plan`] says
+//! where each input was found or why not, which steps would run and what can
+//! be built. Building and fetching are not here.
 
 mod check;
 mod finding;
+pub mod library;
 pub mod merge;
 pub mod model;
 mod parse;
+pub mod plan;
 pub mod provider;
 pub mod schema;
 pub mod spec;
+pub mod store_index;
 mod syntax;
+mod zip;
 
 pub use check::{
     Split, DISCLOSABLE_BELOW, MAX_BUNDLE, MAX_FILE_SET_ENTRIES, MAX_INPUTS, MAX_OUTPUTS, MAX_STEPS,
@@ -259,6 +269,55 @@ pub fn merge_path(path: &Path, providers: Providers<'_>) -> io::Result<Shown> {
         Some(merged) => Ok(Shown::Merged(Box::new(merged))),
         None => Err(changed(path)),
     }
+}
+
+/// What [`plan_path`] gives for one file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Planned {
+    /// The recipe passes the checks: its plan.
+    Plan(Box<plan::Plan>),
+    /// The file does not pass the checks: their report, with findings.
+    Refused(Report),
+    /// The file passes the checks but is a work file, which has no inputs.
+    NotRecipe,
+}
+
+/// Check one recipe file, as [`check_paths`] does, and plan a recipe that
+/// passes with `sources` ([`plan::plan`]); its bundled inputs are looked for
+/// beside it. An I/O error is a file that cannot be read at all, or one that
+/// no longer reads as it did when it was checked (`InvalidData`).
+pub fn plan_path(
+    path: &Path,
+    providers: Providers<'_>,
+    sources: plan::Sources<'_>,
+) -> io::Result<Planned> {
+    let report = check_paths(&[path.to_path_buf()], providers)?;
+    if !report.is_clean() {
+        return Ok(Planned::Refused(report));
+    }
+    match report.files.first().and_then(|f| f.what) {
+        Some(What::Media | What::Firmware) => {}
+        Some(What::Work) => return Ok(Planned::NotRecipe),
+        None => return Err(changed(path)),
+    }
+    let Some(Document::Recipe(recipe)) = document(path)? else {
+        return Err(changed(path));
+    };
+    Ok(Planned::Plan(Box::new(plan::plan(
+        &recipe,
+        &path.display().to_string(),
+        path.parent(),
+        sources,
+    ))))
+}
+
+/// The document a recipe text holds, for tests that plan without a
+/// provider.
+#[cfg(test)]
+pub(crate) fn parse_text(text: &str) -> Option<Document> {
+    let source = Source::new("test.media.toml", text.to_owned());
+    let mut sink = Sink::new(&source);
+    syntax::parse(&mut sink).and_then(|root| parse::document(&mut sink, &root))
 }
 
 /// A file that passed the checks and then no longer read as it did.

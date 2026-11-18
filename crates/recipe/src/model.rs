@@ -165,8 +165,28 @@ pub struct Input {
     pub id: At<String>,
     pub name: Option<At<String>>,
     pub form: InputForm,
+    /// Other names the file or folder is known under: hints for a search.
+    pub names: Vec<At<String>>,
+    /// Weaker hashes a catalogue carries, lower-case hex: hints for choosing
+    /// candidates, never proof.
+    pub crc32: Option<At<String>>,
+    pub md5: Option<At<String>>,
+    pub sha1: Option<At<String>>,
+    /// The dump's entries in the catalogues of dumps.
+    pub ids: Vec<DbId>,
+    /// `https` URLs that serve exactly these bytes, in order.
+    pub urls: Vec<At<String>>,
     pub bundle: Option<At<bool>>,
     pub disclosable: Option<At<bool>>,
+}
+
+/// One entry of an input's `ids`: a dump in No-Intro, Redump, TOSEC or
+/// MAME (recipes §6.8).
+#[derive(Clone, Debug)]
+pub struct DbId {
+    pub db: At<String>,
+    pub set: At<String>,
+    pub name: At<String>,
 }
 
 /// A single file or a file set.

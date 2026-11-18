@@ -5,6 +5,23 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — Recipe libraries, the index and the plan:** step B6 of
+  design/recipes.md §19.2. `upcli recipe plan FILE [--json]` resolves every
+  input of a recipe that passes the checks: from the store (by the decoded
+  digests of its layers), beside the recipe (bundled inputs) and from the
+  user's libraries, including members of zip archives (stored and deflate,
+  our own central-directory reader and `miniz_oxide`, decoding no further
+  than the size the archive states), with members of an
+  `unpack` step found instead of made; it reports where each input was
+  found or why not, near misses, the steps that would run and the outputs;
+  exit 0 when everything resolves, 1 when something is missing.
+  `upcli library ls|add|remove|scan` keeps the list (the preferences key
+  `libraries`) and the index, a rebuildable cache in the store's
+  `cache/libraries/` that keeps each file's hash under its size and change
+  times and hashes only files of a wanted size. CSV and `SHA256SUMS`
+  catalogues are hints. MEASURED: AZURAMON's plan finds all 561 entries in
+  204 files of the user's copy, 204 hashes, and none on a second plan.
+  commands.md, Planning recipes and libraries.
 - **2026-11-18 — Push, pull and Remotes' models leave the window:** moves
   3.4 and 3.5 of the window split (design/core-contract.md §8.1.6).
   `library-model` (layer neutral) now also holds Image › Push… and Pull…
