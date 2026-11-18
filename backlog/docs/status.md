@@ -5,6 +5,24 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — A scripted test core, `unemu-test-core`:** step 9 of
+  design/core-contract.md §13.6. A new neutral crate, `crates/test-core`,
+  whose only dependency is the contract: `TestCore` implements all of
+  contract 0.2 and emulates nothing. Its content is a `utc` text script
+  (first line `unemu-test-core 1`) that sets the picture's size, aspect
+  and visible part, the clock, the sound's rate and tone, the input ports
+  (keyboard, relative and absolute pointers, pads), slots with a
+  catalogue, the features, battery memory and events at a virtual time
+  (halt, power-off, a guest reset, a failure, a message); the grammar is
+  in the crate's documentation. `identify` answers `None` without the
+  first line, `Unsupported` for an `unsupported REASON` line and otherwise
+  a config naming the script by digest. Its picture shows the frame
+  count, the held pad controls and a cross per pointer; its sound is a
+  square wave with exactly `floor(now × rate / clock)` frames; its battery
+  record counts the machine's starts; a saved state is its counters. It
+  is in no program's list of cores, so nothing a program does changes;
+  the front end's crates will test against it. The boundary check gains
+  the rule that the test core depends on the contract alone.
 - **2026-11-18 — The 80286 runs code at CPL 1–3; the CPU pin moves to
   `b4e64dff`:** Windows 3.1 Standard mode stopped with `unsupported cpu
   system operation LegacyPrivilegeTransition` at its first IRET from ring 0

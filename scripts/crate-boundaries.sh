@@ -27,6 +27,10 @@
 # library-ui, pc-media, pc-library, unemupc) depends on a CLI crate (cli, cli-*,
 # upcli), nor the other way round.
 #
+# The test core, unemu-test-core, is what the front end's crates test against
+# instead of a real platform, so it declares no dependency of any kind but the
+# contract, unemu-core-api, not even one from outside the workspace.
+#
 # The contract crate, unemu-core-api, lives in its own repository and comes in
 # as a pinned git dependency, so no workspace package has the contract layer
 # any more: the rule that a contract crate depends on nothing is checked by the
@@ -172,6 +176,9 @@ def walk($graph; $layer; $valid; $from):
         | "unknown layer: \(.name) declares layer \($layer[.name] | tojson); use one of \(layers | join(", "))" ]
       + [ $packages[] | select($layer[.name] == "contract") | .name as $from | .dependencies[]?
         | "forbidden: \($from) (contract) depends on \(.name) (\(.kind // "normal") dependency); rule: a contract crate depends on nothing" ]
+      + [ $packages[] | select(.name == "unemu-test-core") | .name as $from | .dependencies[]?
+        | select(.name != "unemu-core-api")
+        | "forbidden: \($from) depends on \(.name) (\(.kind // "normal") dependency); rule: the test core depends on the contract alone" ]
       + $forbidden
       + [ $checked[] | select(.live | not)
           | "stale allow entry, line \(.line): \(.text); that dependency is gone or no longer forbidden, so delete the line" ]

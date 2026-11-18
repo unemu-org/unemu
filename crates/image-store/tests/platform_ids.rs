@@ -50,6 +50,10 @@ const SOFTWARE_PLATFORM: &[(&str, &str)] = &[
         "ensure(SOFTWARE_PLATFORMS.contains(&platform.as_str()), || {",
     ),
 ];
+/// A core's check of the platform a front end asks it for: the contract
+/// hands a core its platform id in the current spelling, so the core compares
+/// exactly. The file and code its logical line contains.
+const CORE_OWN_PLATFORM: &[(&str, &str)] = &[("test-core/src/lib.rs", "if platform == PLATFORM {")];
 /// This file, whose detector tests quote the forms it flags.
 const SELF: &str = "image-store/tests/platform_ids.rs";
 
@@ -444,6 +448,7 @@ fn platform_ids_are_never_compared_exactly() {
         for (number, code) in logical_lines(&text) {
             if SOFTWARE_PLATFORM
                 .iter()
+                .chain(CORE_OWN_PLATFORM)
                 .any(|(path, line)| *path == relative && code.contains(line))
             {
                 continue;
