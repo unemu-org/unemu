@@ -43,8 +43,10 @@
 //! with a low reset entry. Host memory APIs and ISA DMA bypass the CPU gate.
 //! CPU reset retains both an effective line and a pending boundary change.
 
+pub mod stop_report;
 pub mod x86jit_backend;
 
+pub use stop_report::CpuStopReport;
 pub use x86jit_backend::X86JitCpu;
 
 use thiserror::Error;

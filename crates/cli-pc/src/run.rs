@@ -127,6 +127,7 @@ pub(super) fn run_machine(
         }
         Ok(outcome)
     });
+    let report = cpu_stop_report(&assembled, &result);
     let mut stop = pc_harness::classify_bios_stop(&assembled.machine, result);
     let captured = match selected {
         Some(DeviceId::Uart) => assembled
@@ -148,8 +149,28 @@ pub(super) fn run_machine(
     };
     let (message, failed) = bios_stop(&stop);
     writeln!(errors, "{}", message.replace(['\r', '\n'], " "))?;
+    if let Some(report) = report {
+        write!(errors, "{report}")?;
+    }
     output.write_all(&bytes)?;
     Ok(u8::from(failed))
+}
+
+/// The CPU stop report of a run the CPU core ended by refusing an
+/// instruction, read before anything else touches the CPU; see
+/// `backlog/docs/design/observation.md` §CPU stop report.
+fn cpu_stop_report(
+    assembled: &assembly::AssembledMachine,
+    result: &Result<machine::RunOutcome, assembly::RunError>,
+) -> Option<String> {
+    let Err(assembly::RunError::Machine(machine::MachineError::Cpu(error))) = result else {
+        return None;
+    };
+    assembled
+        .machine
+        .cpu()
+        .stop_report(error)
+        .map(|report| report.to_string())
 }
 
 pub(super) fn run_bios(
@@ -254,6 +275,28 @@ mod tests {
             .starts_with("stopped: execution error: unmapped guest access at 0x100000; cs:ip "));
         assert_eq!(message.lines().count(), 1);
         assert!(message.ends_with('\n'));
+    }
+
+    /// `run` prints the stop report of a CPU refusal after its one-line
+    /// stop; other stops print none.
+    #[test]
+    fn a_cpu_refusal_has_a_stop_report_and_a_halt_has_none() {
+        let mut assembled =
+            assembly::assemble(&assembly::test_support::refused_gate_call()).unwrap();
+        let result = assembled.run_session(&assembly::RunPolicy::natural(Some(100_000), None));
+        let report = cpu_stop_report(&assembled, &result).expect("the refusal has a report");
+        assert!(report.starts_with(
+            "cpu stop report\nstop     unsupported cpu system operation LegacyGateOrTaskTransfer at 0008:7c1e\n"
+        ));
+        assert!(
+            report.contains("desc     target 0020 (gdt) 23 7c 08 00 02 e4 00 00: 286 call gate")
+        );
+        assert!(report.ends_with("ss2:sp2 0030:4000\n"));
+
+        let mut assembled = assembly::assemble(&assembly::at_boot(vec![0xFA, 0xF4])).unwrap();
+        let result = assembled.run_session(&assembly::RunPolicy::natural(Some(100_000), None));
+        assert!(result.is_ok());
+        assert_eq!(cpu_stop_report(&assembled, &result), None);
     }
 
     #[test]

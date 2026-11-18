@@ -307,6 +307,37 @@ pub(super) fn run(args: Args, autostart: bool) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// The CPU stop report of a failed session: the text the Machine error
+/// dialog shows in monospace, and where it was saved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ErrorReport {
+    text: String,
+    /// "cpu stop report saved to …", or why it was not.
+    saved: String,
+}
+
+/// The name of the CPU stop report in the machine's workspace; each failed
+/// session replaces the last one.
+const CPU_STOP_REPORT_FILE: &str = "last-cpu-stop.txt";
+
+/// The workspace folder that holds the report. Discarding or clearing an
+/// image's workspace removes every folder in it, so the report goes with the
+/// session it describes.
+const CPU_STOP_REPORT_DIR: &str = "diagnostics";
+
+/// OK and Copy for a message dialog. Copy puts `copy` on the host clipboard
+/// through egui's copy output; returns whether OK was pressed.
+fn message_buttons(ui: &mut egui::Ui, copy: &str) -> bool {
+    ui.horizontal(|ui| {
+        let ok = ui.button("OK").clicked();
+        if ui.button("Copy").clicked() {
+            ui.ctx().copy_text(copy.to_owned());
+        }
+        ok
+    })
+    .inner
+}
+
 struct Shell {
     args: Args,
     library: Vec<LibraryEntry>,
@@ -323,6 +354,8 @@ struct Shell {
     fullscreen: bool,
     integer_scale: bool,
     dialog: Option<(&'static str, String)>,
+    /// The CPU stop report the Machine error dialog shows under its message.
+    error_report: Option<ErrorReport>,
     message: String,
     texture: Option<egui::TextureHandle>,
     logo: Option<ui_kit::logo::Logo>,
@@ -2620,6 +2653,7 @@ impl Shell {
             fullscreen: false,
             integer_scale: false,
             dialog: None,
+            error_report: None,
             message,
             texture: None,
             logo: None,
@@ -3227,6 +3261,8 @@ impl Shell {
 
     fn started(&mut self, mut presenter: Presenter) {
         self.reset_keyboard();
+        // A report belongs to the session it describes; this one saves its own.
+        self.error_report = None;
         self.session = self.session.wrapping_add(1);
         self.events.borrow_mut().session = self.session;
         presenter.window = self.window.clone();
@@ -3341,7 +3377,52 @@ impl Shell {
         }
     }
 
+    /// A CPU stop report saved into [`CPU_STOP_REPORT_FILE`] in the machine's
+    /// workspace, or the one already shown when Stop shows again the failure
+    /// the same session's run reported. Call it while the session is open.
+    fn saved_report(&mut self, text: String) -> ErrorReport {
+        match self.error_report.take() {
+            Some(shown) if shown.text == text => shown,
+            _ => {
+                let saved = self.save_cpu_stop_report(&text);
+                ErrorReport { text, saved }
+            }
+        }
+    }
+
+    /// Show a session's failure; a CPU refusal's stop report goes in the
+    /// dialog, and the status line says where it was saved.
+    fn show_machine_failure(&mut self, error: String, report: Option<ErrorReport>) {
+        self.show_error(error);
+        if let Some(report) = report {
+            self.message = format!("{} — {}", self.message, report.saved);
+            self.error_report = Some(report);
+        }
+    }
+
+    /// Write the report beside the session's media, in
+    /// [`CPU_STOP_REPORT_DIR`] of the image's workspace or of the machine
+    /// file's local folder. Returns the status-line words.
+    fn save_cpu_stop_report(&self, text: &str) -> String {
+        let saved = self.library_media_dir().and_then(|media| {
+            let folder = media
+                .parent()
+                .ok_or("the session has no workspace folder")?
+                .join(CPU_STOP_REPORT_DIR);
+            let path = folder.join(CPU_STOP_REPORT_FILE);
+            std::fs::create_dir_all(&folder)
+                .and_then(|()| std::fs::write(&path, text))
+                .map_err(|error| error.to_string())?;
+            Ok(path)
+        });
+        match saved {
+            Ok(path) => format!("cpu stop report saved to {}", path.display()),
+            Err(error) => format!("cpu stop report not saved: {error}"),
+        }
+    }
+
     fn show_error(&mut self, error: String) {
+        self.error_report = None;
         self.insert_dialog = None;
         self.blank_disk = None;
         self.stop_prompt = None;
@@ -3388,6 +3469,14 @@ impl Shell {
         self.start_request = None;
         let mut failure = None;
         let had_session = self.presenter.is_some();
+        let report = self
+            .presenter
+            .as_ref()
+            .filter(|presenter| presenter.error.is_some())
+            .and_then(|presenter| presenter.machine().cpu_stop_report())
+            .map(ToString::to_string);
+        // The workspace is found while the session is still open.
+        let report = report.map(|text| self.saved_report(text));
         let mut catalogue = Vec::new();
         if let Some(mut presenter) = self.presenter.take() {
             // The drives' catalogues as they are now, with the media changes
@@ -3428,7 +3517,7 @@ impl Shell {
         }
         self.sync_routing();
         if let Some(error) = failure {
-            self.show_error(error);
+            self.show_machine_failure(error, report);
             false
         } else {
             if had_session {
@@ -4845,7 +4934,12 @@ impl Shell {
             }
             if let Some(error) = &presenter.error {
                 let error = error.to_string();
-                self.show_error(error);
+                let report = presenter
+                    .machine()
+                    .cpu_stop_report()
+                    .map(ToString::to_string);
+                let report = report.map(|text| self.saved_report(text));
+                self.show_machine_failure(error, report);
                 return;
             }
             if !presenter.running {
@@ -5033,6 +5127,25 @@ impl eframe::App for Shell {
                     .show(ui, |ui| {
                         ui.label(text);
                     });
+                // Copy takes the message, and the report under it.
+                let mut copy = text.clone();
+                if let Some(report) = self
+                    .error_report
+                    .as_ref()
+                    .filter(|_| *title == "Machine error")
+                {
+                    ui.label(&report.saved);
+                    egui::ScrollArea::both()
+                        .id_salt("cpu-stop-report")
+                        .max_height(320.0)
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(&report.text).monospace())
+                                    .extend(),
+                            );
+                        });
+                    copy = format!("{text}\n\n{}", report.text);
+                }
                 if *title == "Open machine file" {
                     ui.label("Machine file path (.toml, .yaml, .yml)");
                     ui.text_edit_singleline(&mut self.open_path);
@@ -5143,7 +5256,7 @@ impl eframe::App for Shell {
                     if ui.button("Locate firmware…").clicked() {
                         commands.push(Command::FirmwareFolders);
                     }
-                    if ui.button("OK").clicked() {
+                    if message_buttons(ui, &copy) {
                         close_dialog = true;
                     }
                 } else if *title == "Image store folder" {
@@ -5175,7 +5288,7 @@ impl eframe::App for Shell {
                     if ui.button("Cancel").clicked() {
                         close_dialog = true;
                     }
-                } else if ui.button("OK").clicked() {
+                } else if message_buttons(ui, &copy) {
                     close_dialog = true;
                 }
             });
@@ -5644,6 +5757,7 @@ mod tests {
             fullscreen: false,
             integer_scale: false,
             dialog: None,
+            error_report: None,
             message: String::new(),
             texture: None,
             logo: None,
@@ -10658,6 +10772,182 @@ kind='mda'
                 Some("Open machine file")
             );
         }
+    }
+
+    /// A shell whose machine file lives in `temp` and whose machine is the
+    /// protected-mode guest the CPU core refuses.
+    fn refusing_shell(temp: &assembly::test_support::TempDir) -> Shell {
+        let mut shell = shell();
+        shell.args.machine = temp.path().join("refusal.toml");
+        shell.presenter = Some(refusing_presenter());
+        shell
+    }
+
+    /// A session of the protected-mode guest the CPU core refuses.
+    fn refusing_presenter() -> Presenter {
+        let config = assembly::test_support::refused_gate_call();
+        let assembled = assembly::assemble_with_observation_and_options(
+            &config,
+            &assembly::ObservationPolicy {
+                routes: vec![assembly::ObservationRequest {
+                    device: assembly::DeviceId::Vga,
+                    output: assembly::OutputKind::TextScanout,
+                    byte_limit: 0,
+                }],
+                ..assembly::ObservationPolicy::default()
+            },
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+        )
+        .unwrap();
+        Presenter::from_assembled(&config, assembled, assembly::DeviceId::Vga, &mut io::sink())
+            .unwrap()
+    }
+
+    /// Runs the shell's session to its refusal, as the frame's tick does.
+    fn tick_to_refusal(shell: &mut Shell) {
+        let presenter = shell.presenter.as_mut().unwrap();
+        presenter.full_slices = true;
+        presenter.next_paint = Some(std::time::Duration::ZERO);
+        shell.tick(
+            &egui::Context::default(),
+            false,
+            std::time::Duration::from_millis(20),
+        );
+    }
+
+    /// Clicks the dialog button labelled `label` through two headless passes
+    /// of the whole shell.
+    fn click_dialog_button(
+        shell: &mut Shell,
+        host: &mut ui_kit::text_clipboard::fake::Host,
+        label: &str,
+    ) -> Vec<(String, egui::Rect)> {
+        let mut frame = eframe::Frame::_new_kittest();
+        host.pass(Vec::new(), |ui| eframe::App::ui(shell, ui, &mut frame));
+        let painted = host.pass(Vec::new(), |ui| eframe::App::ui(shell, ui, &mut frame));
+        let (_, button) = painted
+            .iter()
+            .rev()
+            .find(|(text, _)| text == label)
+            .unwrap_or_else(|| panic!("no {label} button among {painted:?}"));
+        let at = button.center();
+        host.click(at, |ui| eframe::App::ui(shell, ui, &mut frame));
+        painted
+    }
+
+    /// A CPU refusal ends the session with the core's one-line error; the
+    /// Machine error dialog shows the stop report under it, the report is
+    /// saved in the machine's workspace and the status line says where, and
+    /// Copy puts the message and the report on the clipboard.
+    #[test]
+    fn a_cpu_refusal_shows_saves_and_copies_its_stop_report() {
+        use std::time::Duration;
+        let temp = assembly::test_support::TempDir::new("window-cpu-stop-report");
+        let mut shell = refusing_shell(&temp);
+        let ctx = egui::Context::default();
+        shell.presenter.as_mut().unwrap().full_slices = true;
+        shell.presenter.as_mut().unwrap().next_paint = Some(Duration::ZERO);
+        shell.tick(&ctx, false, Duration::from_millis(20));
+        let error = "cpu: unsupported cpu system operation LegacyGateOrTaskTransfer at 0008:7c1e";
+        assert_eq!(shell.dialog, Some(("Machine error", error.to_string())));
+        let report = shell
+            .error_report
+            .clone()
+            .expect("the refusal has a report");
+        assert!(
+            report.text.starts_with("cpu stop report\n"),
+            "{}",
+            report.text
+        );
+        assert!(report
+            .text
+            .contains("286 call gate, selector 0008, offset 7c23"));
+        let saved = temp
+            .path()
+            .join("refusal.toml.local")
+            .join(CPU_STOP_REPORT_DIR)
+            .join(CPU_STOP_REPORT_FILE);
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), report.text);
+        assert_eq!(
+            report.saved,
+            format!("cpu stop report saved to {}", saved.display())
+        );
+        assert_eq!(shell.message, format!("{error} — {}", report.saved));
+
+        let mut host = ui_kit::text_clipboard::fake::Host::new("");
+        let painted = click_dialog_button(&mut shell, &mut host, "Copy");
+        assert!(painted.iter().any(|(text, _)| text == &report.text));
+        assert_eq!(host.writes(), 1);
+        assert_eq!(host.text(), format!("{error}\n\n{}", report.text));
+        assert!(shell.dialog.is_some(), "Copy leaves the dialog open");
+
+        // Stop shows the failure again with the same report, saved once.
+        std::fs::remove_file(&saved).unwrap();
+        assert!(!shell.stop());
+        assert_eq!(shell.dialog, Some(("Machine error", error.to_string())));
+        assert_eq!(shell.error_report, Some(report.clone()));
+        assert!(!saved.exists());
+        click_dialog_button(&mut shell, &mut host, "OK");
+        assert_eq!(shell.dialog, None);
+
+        // Any other failure shows no stale report.
+        shell.show_error("storage failed".into());
+        assert_eq!(shell.error_report, None);
+        assert_eq!(shell.message, "storage failed");
+    }
+
+    /// A new session saves its own report: after the workspace was discarded,
+    /// the same refusal writes the file again and the status line names a
+    /// file that exists.
+    #[test]
+    fn a_new_session_saves_its_own_stop_report() {
+        let temp = assembly::test_support::TempDir::new("window-cpu-stop-again");
+        let mut shell = refusing_shell(&temp);
+        tick_to_refusal(&mut shell);
+        assert!(!shell.stop());
+        shell.dialog = None;
+        let folder = temp.path().join("refusal.toml.local");
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        shell.started(refusing_presenter());
+        assert_eq!(shell.error_report, None);
+        tick_to_refusal(&mut shell);
+        let saved = folder.join(CPU_STOP_REPORT_DIR).join(CPU_STOP_REPORT_FILE);
+        let report = shell.error_report.clone().unwrap();
+        assert_eq!(std::fs::read_to_string(&saved).unwrap(), report.text);
+        assert!(shell
+            .message
+            .ends_with(&format!("cpu stop report saved to {}", saved.display())));
+        assert!(!shell.stop());
+    }
+
+    /// The report's folder is one that clearing or discarding an image's
+    /// workspace removes, so a discarded session leaves no report behind.
+    #[test]
+    fn clearing_a_workspace_removes_its_stop_report() {
+        let fixture = crate::library_test_support::Fixture::new();
+        let workspace = fixture.store.workspace("crashed-session").unwrap();
+        let folder = workspace.path().join(CPU_STOP_REPORT_DIR);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(CPU_STOP_REPORT_FILE), "cpu stop report\n").unwrap();
+        workspace.clear().unwrap();
+        assert!(!folder.exists());
+    }
+
+    /// Every message dialog has Copy beside OK, which copies its text.
+    #[test]
+    fn a_message_dialog_copies_its_text() {
+        let mut shell = shell();
+        assert!(shell.stop());
+        shell.dialog = Some(("Insert disk", "This machine has no floppy drive.".into()));
+        let mut host = ui_kit::text_clipboard::fake::Host::new("before");
+        click_dialog_button(&mut shell, &mut host, "Copy");
+        assert_eq!(host.text(), "This machine has no floppy drive.");
+        click_dialog_button(&mut shell, &mut host, "OK");
+        assert_eq!(shell.dialog, None);
+        assert_eq!(host.writes(), 1);
     }
 
     #[test]

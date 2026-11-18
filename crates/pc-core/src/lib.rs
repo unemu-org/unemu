@@ -75,6 +75,7 @@ pub mod pacing;
 pub mod raster;
 
 pub use crate::core::PcCore;
+pub use cpu::CpuStopReport;
 pub use font::{FontAtlas, FontError, MDA_FONT, VGA_FONT};
 pub use keyboard::{set1_scancodes, HostKeyboard};
 #[cfg(feature = "test-support")]

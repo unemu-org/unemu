@@ -22,7 +22,13 @@ test-support = []
 unemu-core-api.workspace = true
 assembly.workspace = true
 audio.workspace = true
+# The stop report of a CPU refusal, kept for the front end.
+cpu.workspace = true
 device.workspace = true
 devices.workspace = true
 machine.workspace = true
 video.workspace = true
+
+[dev-dependencies]
+# The protected-mode guest the CPU stop report tests run.
+assembly = { workspace = true, features = ["test-support"] }

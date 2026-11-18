@@ -1159,6 +1159,19 @@ display is chosen, then the first UART, or no output if neither is configured.
 UART capture is bounded to 1 MiB; overflow is an error. Normal halt and budget
 exhaustion finish journal persistence and print maintenance warnings on stderr.
 Execution errors leave unsealed commands for recovery on the next mount.
+When the CPU core refuses an operation (an unsupported system operation such
+as `LegacyPrivilegeTransition`, an instruction it does not lift, or a fault it
+returns outward), `run --machine` follows the `stopped: ...` line with a
+multi-line CPU stop report on stderr: CS:IP, MSW, CPL, A20, the CS and SS
+caches, GDTR, IDTR, LDTR and TR, the 16 bytes at CS:IP, and for a far
+CALL/JMP, INT n or RETF/IRET the descriptors the instruction reaches with
+their 8 bytes and the current 286 TSS's ring stacks. The window shows the same
+report in the Machine error dialog (Copy puts the message and the report on
+the clipboard) and writes it to `diagnostics/last-cpu-stop.txt` in the
+machine's workspace: the image's workspace for a library session (discarding
+the workspace removes it), `FILE.local/` beside a machine file; the status
+line names the path. The format is described in
+design/observation.md §CPU stop report.
 A configured card without printable output is an argument error (exit 2). Both file commands accept
 `--allow-unlisted-firmware` for development. Existing `--boot`, `--bios` and
 `media` commands retain their contracts. The FreeDOS prompt, DIR and file-write

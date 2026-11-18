@@ -3757,6 +3757,7 @@ version = "0.0.2"
 dependencies = [
  "assembly",
  "audio",
+ "cpu",
  "device",
  "devices",
  "machine",

@@ -312,6 +312,105 @@ impl X86JitCpu {
         Ok(())
     }
 
+    /// The diagnosis of a stop this CPU returned, for the errors that name
+    /// an instruction: an unsupported system operation, an unsupported
+    /// instruction and an outward fault; `None` for every other error.
+    ///
+    /// Call it right after the failed run, before anything else runs the
+    /// CPU: the core refuses without a guest effect, so the registers and
+    /// descriptor caches are those of the refused instruction. See
+    /// [`crate::stop_report`] for the contents. Only RAM and ROM are read,
+    /// through the CPU's own map and its address lines: the 80286's 24-bit
+    /// bus and, in the machine profile, the A20 gate (IBM PC AT Technical
+    /// Reference, Keyboard Controller, Output Port). Trapped windows are
+    /// never read, so the report has no device side effect.
+    pub fn stop_report(&self, error: &CpuError) -> Option<crate::CpuStopReport> {
+        use x86jit_core::legacy::SegmentCache;
+        let (cs, ip, operation) = match error {
+            CpuError::UnsupportedSystem { cs, ip, operation } => {
+                (*cs, *ip, Some(operation.clone()))
+            }
+            CpuError::UnsupportedInstruction { cs, addr, .. } => (*cs, *addr, None),
+            CpuError::Fault { cs, ip, .. } => (*cs, *ip, None),
+            _ => return None,
+        };
+        let state = &self.cpu.cpu;
+        let machine = self.vm.execution_profile() == ExecutionProfile::Machine;
+        let word = |reg| self.cpu.reg(reg) as u16;
+        let registers = crate::stop_report::AddressRegisters {
+            bx: word(Reg::Rbx),
+            bp: word(Reg::Rbp),
+            si: word(Reg::Rsi),
+            di: word(Reg::Rdi),
+        };
+        let legacy = &state.legacy;
+        let view = |selector: u16, cache: SegmentCache| crate::stop_report::SegmentView {
+            selector,
+            base: cache.base,
+            limit: cache.limit,
+            attributes: cache.attributes,
+            unusable: cache.unusable != 0,
+        };
+        let system = machine.then(|| crate::stop_report::SystemState {
+            msw: legacy.cr0 as u16,
+            cpl: legacy.cpl,
+            a20: self.cpu.a20_enabled(),
+            cs: view(state.cs, legacy.segments[0]),
+            ss: view(state.ss, legacy.segments[3]),
+            gdtr: crate::stop_report::TableView {
+                base: legacy.gdtr.base,
+                limit: legacy.gdtr.limit,
+            },
+            idtr: crate::stop_report::TableView {
+                base: legacy.idtr.base,
+                limit: legacy.idtr.limit,
+            },
+            ldtr: view(legacy.ldtr.selector, legacy.ldtr.cache),
+            tr: view(legacy.tr.selector, legacy.tr.cache),
+        });
+        // The machine profile keeps hidden bases; the application profiles
+        // address real-mode style from the visible selectors.
+        let bases = if machine {
+            [2, 0, 3, 1].map(|segment| legacy.segments[segment].base)
+        } else {
+            [state.es, state.cs, state.ss, state.ds].map(|selector| u32::from(selector) << 4)
+        };
+        // The model's formed physical address: 24 bits on the 80286.
+        let address_mask = self.vm.cpu_model().map_or(u64::MAX, |model| {
+            (1u64 << model.profile().physical_bits) - 1
+        });
+        let a20 = !machine || self.cpu.a20_enabled();
+        let read = |linear: u32| -> Option<u8> {
+            let mut physical = u64::from(linear) & address_mask;
+            if !a20 {
+                physical &= !0x10_0000;
+            }
+            let address = u32::try_from(physical).ok()?;
+            match self.dma_region_kind(address)? {
+                RegionKind::Ram | RegionKind::Rom => {
+                    let mut byte = [0];
+                    self.vm.read_bytes(physical, &mut byte).ok()?;
+                    Some(byte[0])
+                }
+                _ => None,
+            }
+        };
+        Some(crate::CpuStopReport::build(
+            crate::stop_report::Snapshot {
+                stop: error.to_string(),
+                operation,
+                cs,
+                ip,
+                ss: state.ss,
+                sp: word(Reg::Rsp),
+                registers,
+                bases,
+                system,
+            },
+            read,
+        ))
+    }
+
     fn dma_region_kind(&self, addr: u32) -> Option<RegionKind> {
         self.dma_regions
             .iter()
@@ -786,6 +885,185 @@ mod tests {
         assert_eq!(cpu.retired(), 10);
     }
 
+    /// A protected-mode guest at CPL 0 with a GDT at 800h (ring-0 code 08h
+    /// and data 10h, a 286 TSS 18h at 600h, a ring-3 call gate 20h to
+    /// 0008:1100h, ring-3 code 28h and data 30h) that loads TR, then runs
+    /// `tail`. The TSS's ring stacks are 0010:6000, 0030:5000 and 0030:4000.
+    fn protected_guest(tail: &[u8]) -> X86JitCpu {
+        let mut code = vec![
+            0x0F, 0x01, 0x16, 0x00, 0x0F, // LGDT [0F00h]
+            0xB8, 1, 0, 0x0F, 0x01, 0xF0, // MOV AX,1; LMSW AX
+            0xEA, 0x10, 0x10, 0x08, 0x00, // JMP 0008:1010
+            0xB8, 0x10, 0x00, 0x8E, 0xD0, 0x8E, 0xD8, // MOV AX,10h; MOV SS,AX; MOV DS,AX
+            0xB8, 0x18, 0x00, 0x0F, 0x00, 0xD8, // MOV AX,18h; LTR AX
+        ];
+        code.extend_from_slice(tail);
+        let mut cpu = i286_guest(&code);
+        cpu.write_mem(0x0F00, &[0x37, 0x00, 0x00, 0x08, 0x00, 0x00])
+            .unwrap();
+        let gdt: [[u8; 8]; 6] = [
+            [0xFF, 0xFF, 0, 0, 0, 0x9A, 0, 0],
+            [0xFF, 0xFF, 0, 0, 0, 0x92, 0, 0],
+            [0x2B, 0, 0x00, 0x06, 0, 0x81, 0, 0],
+            [0x00, 0x11, 0x08, 0, 0x02, 0xE4, 0, 0],
+            [0xFF, 0xFF, 0, 0, 0, 0xFA, 0, 0],
+            [0xFF, 0xFF, 0, 0, 0, 0xF2, 0, 0],
+        ];
+        for (index, descriptor) in gdt.iter().enumerate() {
+            cpu.write_mem(0x808 + 8 * index as u64, descriptor).unwrap();
+        }
+        cpu.write_mem(
+            0x600,
+            &[
+                0, 0, 0x00, 0x60, 0x10, 0, 0x00, 0x50, 0x30, 0, 0x00, 0x40, 0x30, 0,
+            ],
+        )
+        .unwrap();
+        cpu
+    }
+
+    /// The core refuses a far CALL through a call gate; the report names the
+    /// gate, the code segment behind it and the ring stacks of the TSS.
+    #[test]
+    fn a_refused_gate_call_reports_the_gate_its_target_and_the_tss_stacks() {
+        use crate::stop_report::{Descriptor, DescriptorKind, TransferForm};
+        // CALL FAR 0020:0000; HLT.
+        let mut cpu = protected_guest(&[0x9A, 0, 0, 0x20, 0, 0xF4]);
+        let error = cpu.run_steps(20, StepRunOptions::default()).unwrap_err();
+        assert!(
+            matches!(&error, CpuError::UnsupportedSystem { operation, cs: 8, ip: 0x101D }
+                if operation == "LegacyGateOrTaskTransfer"),
+            "{error}"
+        );
+        let report = cpu.stop_report(&error).expect("a refusal has a report");
+        let system = report.system.expect("the machine profile");
+        assert!(system.protected());
+        assert_eq!((system.cpl, system.a20), (0, true));
+        assert_eq!((system.gdtr.base, system.gdtr.limit), (0x800, 0x37));
+        assert_eq!((system.tr.selector, system.tr.base), (0x18, 0x600));
+        assert_eq!(
+            (system.cs.selector, report.ss, report.sp),
+            (0x08, 0x10, 0x7000)
+        );
+        assert_eq!(report.code_linear, 0x101D);
+        assert_eq!(&report.code[..6], &[0x9A, 0, 0, 0x20, 0, 0xF4].map(Some));
+        assert_eq!(
+            report.form,
+            Some(TransferForm::FarDirect {
+                call: true,
+                selector: 0x20,
+                offset: 0
+            })
+        );
+        assert_eq!(report.descriptors.len(), 2);
+        assert_eq!(
+            report.descriptors[0].entry,
+            Ok(Descriptor([0x00, 0x11, 0x08, 0, 0x02, 0xE4, 0, 0]))
+        );
+        assert_eq!(
+            report.descriptors[0].entry.unwrap().kind(),
+            DescriptorKind::Gate {
+                name: "286 call gate",
+                selector: 0x08,
+                offset: Some(0x1100),
+                words: Some(2)
+            }
+        );
+        assert_eq!(report.descriptors[1].role, "gate target");
+        assert_eq!(report.descriptors[1].selector, 0x08);
+        let tss = report.tss.expect("TR holds a 286 TSS");
+        assert_eq!(tss.stacks, [(0x10, 0x6000), (0x30, 0x5000), (0x30, 0x4000)]);
+        assert!(report.to_string().starts_with(
+            "cpu stop report\nstop     unsupported cpu system operation LegacyGateOrTaskTransfer at 0008:101d\n"
+        ));
+    }
+
+    /// The core refuses RETF to an outer ring; the report shows the return
+    /// frame and the ring-3 CS and SS it names.
+    #[test]
+    fn a_refused_outward_return_reports_the_frame_and_both_descriptors() {
+        let mut cpu = protected_guest(&[
+            0x68, 0x33, 0x00, // PUSH 33h (ring-3 SS)
+            0x68, 0x00, 0x30, // PUSH 3000h (ring-3 SP)
+            0x68, 0x2B, 0x00, // PUSH 2Bh (ring-3 CS)
+            0x68, 0x00, 0x20, // PUSH 2000h (ring-3 IP)
+            0xCB, // RETF
+        ]);
+        let error = cpu.run_steps(20, StepRunOptions::default()).unwrap_err();
+        assert!(
+            matches!(&error, CpuError::UnsupportedSystem { operation, ip: 0x1029, .. }
+                if operation == "LegacyPrivilegeTransition"),
+            "{error}"
+        );
+        let report = cpu.stop_report(&error).unwrap();
+        let frame: Vec<_> = report
+            .stack
+            .iter()
+            .map(|word| (word.label, word.offset, word.value))
+            .collect();
+        assert_eq!(
+            frame,
+            [
+                ("ip", 0x6FF8, Some(0x2000)),
+                ("cs", 0x6FFA, Some(0x2B)),
+                ("outer sp", 0x6FFC, Some(0x3000)),
+                ("outer ss", 0x6FFE, Some(0x33)),
+            ]
+        );
+        let named: Vec<_> = report
+            .descriptors
+            .iter()
+            .map(|named| (named.role, named.selector, named.entry.map(|d| d.access())))
+            .collect();
+        assert_eq!(
+            named,
+            [("return cs", 0x2B, Ok(0xFA)), ("return ss", 0x33, Ok(0xF2))]
+        );
+        assert_eq!(report.tss.unwrap().stacks[0], (0x10, 0x6000));
+    }
+
+    /// The report forms physical addresses as the model does: the 80286's
+    /// 24 address lines drop bit 24 of a linear address.
+    #[test]
+    fn the_report_reads_through_the_models_address_width() {
+        let mut cpu = i286_guest(&[0xF4]);
+        cpu.cpu.cpu.legacy.segments[0].base = 0x0100_0000;
+        let fault = CpuError::Fault {
+            vector: 13,
+            error_code: Some(0),
+            cs: 0,
+            ip: 0x1000,
+        };
+        let report = cpu.stop_report(&fault).unwrap();
+        assert_eq!(report.code_linear, 0x0100_1000);
+        assert_eq!(report.code[0], Some(0xF4));
+    }
+
+    /// Other errors carry no instruction, so they have no report.
+    #[test]
+    fn only_errors_at_an_instruction_have_a_report() {
+        let cpu = i286_guest(&[0xF4]);
+        for error in [
+            CpuError::Unmapped { addr: 0x9000 },
+            CpuError::Memory("refused".into()),
+            CpuError::UnexpectedExit {
+                what: "interrupted".into(),
+            },
+        ] {
+            assert!(cpu.stop_report(&error).is_none(), "{error}");
+        }
+        let fault = CpuError::Fault {
+            vector: 13,
+            error_code: Some(0),
+            cs: 0,
+            ip: 0x1000,
+        };
+        let report = cpu.stop_report(&fault).unwrap();
+        assert_eq!(report.code[0], Some(0xF4));
+        assert!(!report.system.unwrap().protected());
+        assert_eq!(report.tss, Err("real mode"));
+    }
+
     #[test]
     fn i286_bad_protected_selector_returns_typed_fault() {
         let mut vm = Vm::new(VmConfig::flat(0x10000));
@@ -1157,6 +1435,31 @@ mod tests {
             error.to_string(),
             "unsupported instruction at 0700:072b (bytes 0f 20 c0)"
         );
+    }
+
+    /// A real-mode refusal in the application profile: the report keeps the
+    /// bytes at CS:IP and marks the ones in a trapped window, which it never
+    /// reads.
+    #[test]
+    fn a_real_mode_unsupported_instruction_reports_its_bytes_without_reading_mmio() {
+        let mut cpu =
+            X86JitCpu::new_real16_bare(0x20000, 0x0600, 0x0FFD, RealSegments::flat(0)).unwrap();
+        cpu.map_ram(0, 0x7000).unwrap();
+        cpu.map_mmio(0x7000, 0x1000).unwrap();
+        // MOV EAX, CR0, as in the test above, ending at the trapped window.
+        cpu.write_mem(0x6FFD, &[0x0F, 0x20, 0xC0]).unwrap();
+        let error = cpu.run(None).unwrap_err();
+        let report = cpu.stop_report(&error).unwrap();
+        assert_eq!(
+            (report.cs, report.ip, report.code_linear),
+            (0x600, 0xFFD, 0x6FFD)
+        );
+        assert_eq!(report.system, None);
+        assert_eq!(&report.code[..3], &[Some(0x0F), Some(0x20), Some(0xC0)]);
+        assert!(report.code[3..].iter().all(Option::is_none));
+        let text = report.to_string();
+        assert!(text.contains("code     0f 20 c0 ?? ??"), "{text}");
+        assert!(text.contains("mode     application profile"), "{text}");
     }
 
     /// Games swap bytes with video memory (`XCHG ES:[DI], AL`), and a device

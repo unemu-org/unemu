@@ -664,6 +664,82 @@ boundary and with an unread packet from an earlier boundary. Grab-failure retry
 and release during the held capture click are tested without a host window.
 No CLI, golden, CPU dependency or default machine profile changes are needed.
 
+## CPU stop report
+
+When the CPU core refuses an operation it does not support (x86jit's
+`UnsupportedSystemContext` exit, surfaced as `CpuError::UnsupportedSystem`
+with the operation's name), meets an instruction it does not lift, or returns
+a fault outward, the error states only the operation and CS:IP. The core
+refuses without a guest effect, so at that moment the CPU still holds the
+refused instruction's state. `X86JitCpu::stop_report` reads it into a
+`CpuStopReport` (`crates/cpu/src/stop_report.rs`): plain data, rendered as
+plain text by its `Display`.
+
+The report holds CS:IP and its linear address; in the machine profile the
+MSW, CPL and A20, the CS and SS caches (selector, base, limit, attributes),
+GDTR and IDTR (base, limit), LDTR and TR (selector and cache); SS:SP; the 16
+bytes at CS:IP with the first instruction disassembled; and, when the
+instruction is one of the control transfers a privilege or gate refusal comes
+from, what it names:
+
+| Instruction | Shown |
+|---|---|
+| far CALL/JMP `ptr16:16` (9A, EA) | the target selector's descriptor |
+| far CALL/JMP `m16:16` (FF /3, FF /5) | the pointer's address and value, then the target's descriptor |
+| INT n, INT 3, INTO | the IDT entry |
+| RETF, RETF n | the words at SS:SP (IP, CS, then the outer SP and SS past the released bytes) and the return CS's descriptor, with the return SS's for a return to an outer ring |
+| IRET | IP, CS, FLAGS, outer SP and SS at SS:SP, and the descriptors as for RETF |
+
+A gate leads on to the descriptor it names (`gate target`, or `task gate
+tss`). Each descriptor shows its 8 bytes and its decoded 80286 fields: type,
+DPL, present, base and limit, or for a gate its selector, offset and word
+count. When TR holds a 286 TSS, the report shows its back link and SS0:SP0,
+SS1:SP1 and SS2:SP2. Descriptors are named only in protected mode. IRET with
+NT set is a task return through that back link, so the frame shown at SS:SP
+is then not the one the processor uses.
+
+The core also refuses a privilege or gate transition while it delivers a
+hardware interrupt or an exception through an inner-ring gate; CS:IP is then
+the interrupted instruction and the refusal names no vector. When the
+instruction shown cannot itself make the refused kind of transfer (a
+privilege change needs a far CALL, INT, RETF or IRET; a gate or task transfer
+a far CALL or JMP or an INT), the report adds a `note` line saying the
+instruction may be the interrupted one.
+
+Bytes come from RAM and ROM through the CPU's own map, with the 80286's 24-bit
+bus and the A20 gate applied; a trapped (MMIO) or unmapped address is shown as
+`??` or "unavailable" and is never read, so a report has no device side effect.
+An example, from the synthetic guest `assembly::test_support::refused_gate_call`
+(a far CALL through a ring-3 call gate, which the core refuses):
+
+```text
+cpu stop report
+stop     unsupported cpu system operation LegacyGateOrTaskTransfer at 0008:7c1e
+cs:ip    0008:7c1e (linear 007c1e)
+mode     protected, cpl 0, msw fff1, a20 on
+cs       0008 base 000000 limit 0000ffff attr 009b
+ss       0010 base 000000 limit 0000ffff attr 0093
+ss:sp    0010:7000
+gdtr     base 007d00 limit 0037
+idtr     base 000000 limit 03ff
+ldtr     0000 base 000000 limit 00000000 attr 0000
+tr       0018 base 007e00 limit 0000002b attr 0083
+code     9a 00 00 20 00 f4 00 00 00 00 00 00 00 00 00 00
+decoded  lcall $0x20,$0x0
+form     far call ptr16:16 0020:0000
+desc     target 0020 (gdt) 23 7c 08 00 02 e4 00 00: 286 call gate, selector 0008, offset 7c23, 2 words, dpl 3, present
+desc     gate target 0008 (gdt) ff ff 00 00 00 9b 00 00: code segment type b, base 000000, limit ffff, dpl 0, present
+tss      link 0000, ss0:sp0 0010:6000, ss1:sp1 0030:5000, ss2:sp2 0030:4000
+```
+
+The PC core keeps the report of the refusal that failed it
+(`PcMachine::cpu_stop_report`); the desktop shows it in the Machine error
+dialog and saves it as `diagnostics/last-cpu-stop.txt` in the machine's
+workspace (a folder that discarding or clearing an image's workspace
+removes; a new session always writes its own), and
+`upcli run --machine` prints it after its `stopped:` line (commands.md, Build
+/ run / test).
+
 ## Implemented access trace policy
 
 `device::TracePolicy` has two modes: `Off` (the default) and

@@ -98,6 +98,8 @@ pub struct PcMachine {
     reset_requests: u64,
     cpu_resets: u64,
     maintenance_reported: bool,
+    /// The diagnosis of the CPU refusal that failed the machine.
+    cpu_stop_report: Option<cpu::CpuStopReport>,
     /// Keyboard bytes delivered at each boundary, for the tests' replays.
     #[cfg(feature = "test-support")]
     pub input_log: Vec<InputLogEntry>,
@@ -264,6 +266,7 @@ impl PcMachine {
             reset_requests: 0,
             cpu_resets: 0,
             maintenance_reported: false,
+            cpu_stop_report: None,
             #[cfg(feature = "test-support")]
             input_log: Vec::new(),
             #[cfg(feature = "test-support")]
@@ -327,6 +330,16 @@ impl PcMachine {
     /// CPU resets performed so far, guest-requested and from the host.
     pub fn cpu_resets(&self) -> u64 {
         self.cpu_resets
+    }
+
+    /// The diagnosis of the stop when the CPU core refused an operation, met
+    /// an instruction it does not lift or faulted outward and so failed the
+    /// machine: registers, descriptor tables, the bytes at CS:IP and the
+    /// descriptors the instruction reaches; see [`cpu::stop_report`]. `None`
+    /// while the machine runs and after any other failure. A front end shows
+    /// it beside the error, which states only the operation and CS:IP.
+    pub fn cpu_stop_report(&self) -> Option<&cpu::CpuStopReport> {
+        self.cpu_stop_report.as_ref()
     }
 
     /// The session's reset total, for its end; nothing when none happened.
@@ -545,6 +558,11 @@ impl Machine for PcMachine {
                 }
                 Err(failure) => {
                     self.status = Status::Failed;
+                    // The core refuses without a guest effect, so the CPU still
+                    // holds the state of the refused instruction.
+                    if let machine::MachineError::Cpu(refusal) = &failure {
+                        self.cpu_stop_report = self.assembled.machine.cpu().stop_report(refusal);
+                    }
                     self.take_speaker_trace();
                     return Err(error(ErrorKind::Guest, failure));
                 }

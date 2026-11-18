@@ -5,6 +5,20 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — CPU stop report:** when the CPU core refuses an operation
+  (`unsupported cpu system operation LegacyPrivilegeTransition`, say), an
+  instruction it does not lift or a fault it returns outward, the stop now
+  carries a report: CS:IP, MSW, CPL, A20, the CS and SS caches, GDTR, IDTR,
+  LDTR, TR, the 16 bytes at CS:IP, and for far CALL/JMP, INT n and RETF/IRET
+  the descriptors they reach with their 8 bytes (a gate and its target), the
+  return frame at SS:SP and the 286 TSS's ring stacks. Only RAM and ROM are
+  read. The Machine error dialog shows it in monospace; every message dialog
+  now has Copy beside OK. It is saved as `diagnostics/last-cpu-stop.txt` in
+  the machine's workspace (the status line names the path), and a refusal
+  the instruction shown cannot make is noted as one that may have come while
+  delivering an interrupt or exception. `upcli run --machine`
+  prints it on stderr. No change for running guests. design/observation.md
+  §CPU stop report; commands.md, Build / run / test.
 - **2026-11-18 — The library's PC models leave the window:** the rest of
   move 3.7 and moves 3.8 to 3.10 of the window split
   (design/core-contract.md §8.1.6). `pc-library` (layer pc, no toolkit)
