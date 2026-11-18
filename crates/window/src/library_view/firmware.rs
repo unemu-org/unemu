@@ -1226,100 +1226,16 @@ pub(crate) mod tests {
     use std::path::Path;
     use std::{fs, sync::Arc, time::Duration};
 
-    pub(crate) fn leaked(text: String) -> &'static str {
-        Box::leak(text.into_boxed_str())
-    }
-    pub(crate) fn hash(bytes: &[u8]) -> &'static str {
-        leaked(Digest::of(bytes).hex().into())
-    }
-    fn two_chip(id: &'static str, even: u8, odd: u8) -> assembly::FirmwareEntry {
-        let part = |label, part_number, lane, byte: u8| assembly::KnownPart {
-            label,
-            part_number,
-            lane,
-            offset: 0,
-            size: 16384,
-            sha256: hash(&[byte; 16384]),
-        };
-        let layout: &'static [assembly::KnownPart] = Box::leak(Box::new([
-            part("U27", "test-even", assembly::Lane::Even, even),
-            part("U47", "test-odd", assembly::Lane::Odd, odd),
-        ]));
-        assembly::FirmwareEntry {
-            id,
-            sha256: hash(&[even, odd].repeat(16384)),
-            size: 32768,
-            parts: Box::leak(Box::new([layout])),
-            distribution: assembly::FirmwareDistribution::UserSupplied,
-            ..assembly::KISELEV_XI8088
-        }
-    }
-    pub(crate) fn single(id: &'static str, byte: u8, open: bool) -> assembly::FirmwareEntry {
-        assembly::FirmwareEntry {
-            id,
-            sha256: hash(&[byte; 32768]),
-            size: 32768,
-            distribution: if open {
-                assembly::FirmwareDistribution::Open {
-                    fetch: "synthetic/fetch.sh",
-                    license: "MIT",
-                    provenance: "synthetic build",
-                    source_archive_sha256: None,
-                }
-            } else {
-                assembly::FirmwareDistribution::UserSupplied
-            },
-            ..assembly::KISELEV_XI8088
-        }
-    }
-    /// A POSIX tar archive (ustar magic at offset 257) of `size` bytes, `fill`
-    /// after the header, as the synthetic copyleft BIOS's source.
-    pub(crate) fn tar(size: usize, fill: u8) -> Vec<u8> {
-        let mut bytes = vec![fill; size.max(512)];
-        bytes[..257].fill(0);
-        bytes[..10].copy_from_slice(b"src/a.asm\0");
-        bytes[257..263].copy_from_slice(b"ustar\0");
-        bytes
-    }
-    /// The archive the synthetic catalogue pins for its copyleft BIOS.
-    pub(crate) fn pinned_tar() -> Vec<u8> {
-        tar(6000, 0x5a)
-    }
-    /// The open image has the bytes of the synthetic machine BIOS, so that
-    /// machine is a "Used by" entry of the open package.
-    pub(crate) fn synthetic_catalogue() -> &'static [assembly::FirmwareEntry] {
-        static CATALOGUE: std::sync::OnceLock<Vec<assembly::FirmwareEntry>> =
-            std::sync::OnceLock::new();
-        CATALOGUE.get_or_init(|| {
-            vec![
-                two_chip("synthetic-two-chip-bios", 0x31, 0x72),
-                two_chip("synthetic-incomplete-bios", 0x41, 0x82),
-                single("synthetic-open-bios", 0xf4, true),
-                assembly::FirmwareEntry {
-                    distribution: assembly::FirmwareDistribution::Open {
-                        fetch: "synthetic/copyleft-fetch.sh",
-                        license: "GPL-3.0-or-later",
-                        provenance: "synthetic copyleft build",
-                        source_archive_sha256: Some(hash(&pinned_tar())),
-                    },
-                    ..single("synthetic-copyleft-bios", 0xc5, true)
-                },
-            ]
-        })
-    }
+    // The synthetic firmware catalogue the library's worker tests share.
+    pub(crate) use pc_library::library_test_support::{
+        pinned_tar, single, synthetic_catalogue, tar, two_chip, warm,
+    };
     pub(crate) fn chip_folder(root: &Path) -> PathBuf {
         let folder = root.join("roms");
         fs::create_dir_all(&folder).unwrap();
         fs::write(folder.join("a"), [0x31; 16384]).unwrap();
         fs::write(folder.join("b"), [0x72; 16384]).unwrap();
         folder
-    }
-    pub(crate) fn warm(store: &Store) -> SummaryCache {
-        let mut cache = SummaryCache::open(store).unwrap();
-        while !cache.pending().is_empty() {
-            cache.rebuild(store, 8, &[], &[]).unwrap();
-        }
-        cache
     }
     /// The open single-image package alone, for shell tests.
     pub(crate) fn publish_open_package(f: &Fixture) {

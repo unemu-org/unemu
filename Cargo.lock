@@ -2663,9 +2663,14 @@ dependencies = [
  "image-store",
  "library-model",
  "machine-file",
+ "media",
  "pc-image",
  "pc-media",
+ "serde",
+ "sha2",
  "toml",
+ "unemu-core-api",
+ "unemu-pc-core",
 ]
 
 [[package]]

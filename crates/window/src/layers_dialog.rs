@@ -557,18 +557,9 @@ pub(super) enum Action {
     Publish(String, Target),
     Discard(String),
 }
-/// The image the workspace's session pins: its reference, digest and title,
-/// read by the library worker.
-#[derive(Clone, Debug, Default)]
-pub(super) struct SourceImage {
-    pub reference: String,
-    pub digest: Option<Digest>,
-    pub title: Option<String>,
-    /// Every local tag, for the tag rules.
-    pub tags: Vec<(String, Digest)>,
-    /// An unfinished save of this workspace: its tag and expected digest.
-    pub pending: Option<(String, Option<Digest>)>,
-}
+// The image the workspace's session pins is the library's model; the
+// worker reads it.
+pub(super) use pc_library::layers_dialog::SourceImage;
 pub(super) struct LayersDialog {
     workspace: Option<String>,
     kind: WorkspaceKind,

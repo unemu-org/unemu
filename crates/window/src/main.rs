@@ -56,7 +56,7 @@ mod pacing {
 }
 pub(crate) use machine_view::system_keys;
 // The PC media and library models, under the paths the desktop names them by.
-use pc_library::firmware_choices;
+use pc_library::{firmware_choices, pc_desktop};
 use pc_media::{created_media, drive_chips, kept_catalogue};
 
 mod app_menu;
@@ -80,7 +80,6 @@ mod media_picker;
 mod mouse;
 mod new_machine;
 mod new_machine_view;
-mod pc_desktop;
 mod preferences;
 mod preferences_sheet;
 mod registries_model;
@@ -143,27 +142,9 @@ fn read_fixture(path: &Path, fetch: &str) -> io::Result<Vec<u8>> {
     })
 }
 
-/// Waiting on background threads in tests.
-///
-/// A loaded CI runner can take many seconds for work that takes milliseconds
-/// on an idle machine, so no test outcome may depend on how soon a worker
-/// answers. The only wall-clock bound is this hang guard, which ends a test
-/// whose worker never answers instead of letting it run forever.
+/// Waiting on background threads in tests: the library's hang guard.
 #[cfg(test)]
-mod test_wait {
-    use std::time::{Duration, Instant};
-
-    /// How long a test waits for a background thread before it reports a hang.
-    pub(crate) const HANG_GUARD: Duration = Duration::from_secs(300);
-
-    /// Rounds of a polling loop until the hang guard has passed. The loop
-    /// pauses between rounds itself, and its own check after the loop
-    /// reports a hang.
-    pub(crate) fn rounds() -> impl Iterator<Item = ()> {
-        let deadline = Instant::now() + HANG_GUARD;
-        std::iter::from_fn(move || (Instant::now() < deadline).then_some(()))
-    }
-}
+use pc_library::test_wait;
 
 /// The desktop's session of one PC: the contract session, and the PC
 /// catalogue model the media dialogs edit beside it.

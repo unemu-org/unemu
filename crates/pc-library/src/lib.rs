@@ -10,8 +10,11 @@
 //! hardware, drives and firmware for the details panes; [`image_settings`]
 //! is Settings… on an image; [`firmware_choices`] names the firmware a
 //! machine's or an image's hardware tables bind, offers the catalogue's
-//! other builds and marks superseded firmware. The library's worker and the
-//! PC's provider seam join them as the desktop split goes on; the views that
+//! other builds and marks superseded firmware. [`library_worker`] is the
+//! library's worker thread, which runs every store, registry and machine job
+//! off the desktop's frame loop; [`pc_desktop`] is the PC's part of the
+//! platform-neutral registry and Remotes models; [`layers_dialog`] holds what
+//! the worker reads for the disk-layer dialog's save form. The views that
 //! draw them stay with the desktop.
 //!
 //! The crate is PC: it reads the PC firmware catalogue and machine tables
@@ -30,5 +33,36 @@ pub mod firmware_metadata;
 pub mod hardware;
 pub mod image_settings;
 pub mod install_media;
+pub mod layers_dialog;
+#[cfg(any(test, feature = "test-support"))]
+pub mod library_test_support;
+pub mod library_worker;
 pub mod machines;
+pub mod pc_desktop;
+// The tests of Remotes' model that read PC artifacts or browse through the
+// worker.
+#[cfg(test)]
+mod remote_browse;
 pub mod snapshot;
+
+/// Waiting on background threads in tests.
+///
+/// A loaded CI runner can take many seconds for work that takes milliseconds
+/// on an idle machine, so no test outcome may depend on how soon a worker
+/// answers. The only wall-clock bound is this hang guard, which ends a test
+/// whose worker never answers instead of letting it run forever.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_wait {
+    use std::time::{Duration, Instant};
+
+    /// How long a test waits for a background thread before it reports a hang.
+    pub const HANG_GUARD: Duration = Duration::from_secs(300);
+
+    /// Rounds of a polling loop until the hang guard has passed. The loop
+    /// pauses between rounds itself, and its own check after the loop
+    /// reports a hang.
+    pub fn rounds() -> impl Iterator<Item = ()> {
+        let deadline = Instant::now() + HANG_GUARD;
+        std::iter::from_fn(move || (Instant::now() < deadline).then_some(()))
+    }
+}

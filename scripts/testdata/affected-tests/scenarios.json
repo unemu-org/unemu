@@ -207,8 +207,10 @@
     "changed": ["machines/at-freedos.toml"],
     "expect": {
       "mode": "crates",
-      "seeds": ["cli-pc", "machine-file", "pc-harness", "pc-image", "upcli", "window"],
-      "affected": ["cli-pc", "machine-file", "pc-harness", "pc-image", "platforms", "upcli", "window"],
+      "seeds": ["cli-pc", "machine-file", "pc-harness", "pc-image", "pc-library", "upcli", "window"],
+      "affected": [
+        "cli-pc", "machine-file", "pc-harness", "pc-image", "pc-library", "platforms", "upcli", "window"
+      ],
       "tier": "goldens"
     }
   },
@@ -225,7 +227,9 @@
     "changed": ["vendor/kiselev-bios/fetch.sh"],
     "expect": {
       "mode": "crates",
-      "seeds": ["assembly", "cli-pc", "machine-file", "pc-harness", "pc-image", "upcli", "window"],
+      "seeds": [
+        "assembly", "cli-pc", "machine-file", "pc-harness", "pc-image", "pc-library", "upcli", "window"
+      ],
       "tier": "goldens", "shell": ["vendor/kiselev-bios/fetch.sh"]
     }
   },
@@ -234,7 +238,9 @@
     "changed": ["crates/pc-harness/tests/support/fixtures.rs"],
     "expect": {
       "mode": "crates",
-      "seeds": ["assembly", "cli-pc", "machine-file", "pc-harness", "pc-image", "upcli", "window"],
+      "seeds": [
+        "assembly", "cli-pc", "machine-file", "pc-harness", "pc-image", "pc-library", "upcli", "window"
+      ],
       "tier": "goldens"
     }
   },

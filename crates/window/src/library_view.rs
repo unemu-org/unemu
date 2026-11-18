@@ -45,11 +45,17 @@ use crate::library_worker::{regular_name, Event, Finish, Recovery, Worker, Works
 use library_model::listing::test_support::last_run_utc;
 // The image rows, their sources and the shared texts are the library
 // model's; the frame and its collections keep naming them here.
-pub(super) use library_model::listing::{delete_tag, host_last_run, human_size, source, ImageRow};
+pub(super) use library_model::listing::{human_size, source, ImageRow};
+// The worker, which deletes tags and lists snapshots, is the PC library's
+// too; the frame's tests still call both here.
+#[cfg(test)]
+pub(super) use library_model::listing::delete_tag;
 // The query the frame sends the worker and the snapshot it answers with
 // are the PC library's.
+#[cfg(test)]
+pub(super) use pc_library::snapshot::snapshot;
 use pc_library::snapshot::{image_rights, redistribution, Filter, ViewRow};
-pub(super) use pc_library::snapshot::{snapshot, Query, Snapshot};
+pub(super) use pc_library::snapshot::{Query, Snapshot};
 
 /// The Images list's columns, as the machines mock-up lists images, with the
 /// remotes mock-up's Source column after the name.
@@ -966,7 +972,11 @@ impl LibraryView {
     pub fn poll(&mut self, ctx: &egui::Context) {
         if self.worker.is_none() && !self.worker_dead {
             if let Some(root) = self.root.clone() {
-                self.worker = Some(Worker::spawn(root, ctx.clone()));
+                let ctx = ctx.clone();
+                self.worker = Some(Worker::spawn(
+                    root,
+                    std::sync::Arc::new(move || ctx.request_repaint()),
+                ));
             }
         }
         let mut events = Vec::new();
@@ -4587,7 +4597,7 @@ pub(super) mod tests {
         let Some(firmware) = crate::library_test_support::FirmwareStore::new(false) else {
             return;
         };
-        let worker = Worker::spawn(firmware.store.root().to_owned(), egui::Context::default());
+        let worker = Worker::spawn(firmware.store.root().to_owned(), std::sync::Arc::new(|| {}));
         let next = |wanted: &dyn Fn(&Event) -> bool| loop {
             match worker.receive.recv_timeout(crate::test_wait::HANG_GUARD) {
                 Ok(Event::Error(error)) => panic!("worker: {error}"),
@@ -4743,7 +4753,7 @@ pub(super) mod tests {
         let (image, _, _) = wizard.request().unwrap();
         let first =
             pc_image::create::create(&firmware.store, &image, "open-at:1.0.0", None).unwrap();
-        let worker = Worker::spawn(firmware.store.root().to_owned(), egui::Context::default());
+        let worker = Worker::spawn(firmware.store.root().to_owned(), std::sync::Arc::new(|| {}));
         worker_events(&worker, &|e| matches!(e, Event::Recoveries(_)));
         let row = ImageRow {
             reference: "open-at:1.0.0".into(),
@@ -4993,7 +5003,7 @@ pub(super) mod tests {
             .unwrap()
             .manifest
             .annotations;
-        let worker = Worker::spawn(firmware.store.root().to_owned(), egui::Context::default());
+        let worker = Worker::spawn(firmware.store.root().to_owned(), std::sync::Arc::new(|| {}));
         worker_events(&worker, &|e| matches!(e, Event::Recoveries(_)));
         let mut row = row;
         for (tag, title, base) in [

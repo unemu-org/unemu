@@ -5,6 +5,18 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — The library's worker leaves the window:** moves 3.11 and
+  3.12 of the window split (design/core-contract.md §8.1.6). `pc-library`
+  (layer pc, no toolkit) now holds the library's worker thread
+  (`library_worker`), which wakes the frame through a plain function
+  instead of an egui context, the PC's part of the registry models
+  (`pc_desktop`) and the image a workspace pins for the save form
+  (`layers_dialog::SourceImage`); behind its `test-support` feature, the
+  library's fixtures, the synthetic firmware catalogue and the tests' hang
+  guard. Cargo now keeps the worker from naming the window. The worker's
+  tests and those of `image_settings`, `hardware` and `remote_browse` that
+  draw nothing moved with it: 67 tests leave the window's test binary.
+  No behaviour changes: every test keeps its name (4044; MEASURED).
 - **2026-11-18 — Recipe builds:** step B7 of design/recipes.md §19.2.
   `upcli recipe build FILE [--fetch] [--library DIR]... [--store DIR]
   [--keep-as TAG]` builds a draft: the plan, the downloads `--fetch`

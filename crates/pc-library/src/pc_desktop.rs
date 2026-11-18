@@ -19,7 +19,7 @@ const PAYLOAD_LABELS: &[(&str, &str)] = &[
 ];
 
 /// The PC's part of the desktop library.
-pub(crate) struct PcDesktop<'a> {
+pub struct PcDesktop<'a> {
     validators: &'a [&'a dyn ConfigValidator],
     catalogue: &'a [assembly::FirmwareEntry],
 }
@@ -27,7 +27,7 @@ pub(crate) struct PcDesktop<'a> {
 impl<'a> PcDesktop<'a> {
     /// `validators` is the PC's provider list; `catalogue` is the firmware
     /// catalogue whose proprietary images restrict a push.
-    pub(crate) fn new(
+    pub fn new(
         validators: &'a [&'a dyn ConfigValidator],
         catalogue: &'a [assembly::FirmwareEntry],
     ) -> Self {
@@ -38,7 +38,7 @@ impl<'a> PcDesktop<'a> {
     }
 
     /// The PC's facts, for the frame and its dialogs.
-    pub(crate) fn facts() -> PlatformFacts {
+    pub fn facts() -> PlatformFacts {
         PlatformFacts::of(&[&PcDesktop::new(&[], &[])])
     }
 }
@@ -90,8 +90,9 @@ mod tests {
         let blob = |media_type: &str| {
             image_store::Descriptor::new(media_type, Digest::of(media_type.as_bytes()), 1)
         };
-        let label =
-            |media_type: &str| crate::registry_transfer::kind_label(&facts, &blob(media_type));
+        let label = |media_type: &str| {
+            library_model::registry_transfer::kind_label(&facts, &blob(media_type))
+        };
         assert_eq!(label(pc_image::CMOS), "CMOS");
         assert_eq!(label(pc_image::DISK_ZERO), "disk base (zero)");
         assert_eq!(label(&format!("{}+zstd", pc_image::CMOS)), "CMOS, zstd");

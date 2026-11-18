@@ -2211,8 +2211,8 @@ cycle.
 | 3.8 | **Done.** **`Query` and `Filter`, then the model halves of `firmware` and `firmware_metadata`** (712 and 650 lines: the rows, facets and labels, `ScanReport`, `Outcome`, `scan_folder`, `preview_set`, `import_selected`, `Verdict`, `EditSource`, `PackageDetails`, `open_edit`, `preview_edit`, `publish_edit`, `read_package`) into `pc-library` | `firmware_metadata` plans its push with `plan_with_catalogue` and `pc_image::firmware::restricted` in place of `platforms::push_plan` (1) | stay with the views: they drive the frame | The fields of `Query` become `pub`. As landed: see below the table |
 | 3.9 | **Done.** **The model halves of `install_media` and `machines`** (703 and 690 lines: `MediaRow`, `Availability`, `rows`, `all_rows`, `picker_set`, `Control`, `Pick`, `Sources`, `inspect`, `import`; `MachineRow`, `facets`, `visible`, `name_problem`, `id_for`, `setting_diffs`) into `pc-library` | none | stay with the views | As landed: see below the table |
 | 3.10 | **Done.** **`Snapshot` and `snapshot`** (with `facets_for`, `sort_value`) into `pc-library` | none | stay with the frame | After this move the worker names nothing of `library_view` but through re-exports. As landed: see below the table |
-| 3.11 | **The worker.** `library_worker`, `layers_dialog::SourceImage`, `PcDesktop` and the test support (`library_test_support` without its three egui helpers, the synthetic firmware catalogue, `test_wait`) into `pc-library`; the support goes behind `test-support` | `Wake` in place of `egui::Context` (6) | its 30 tests (44.4 s) move, but for those that call test helpers of `layers_dialog` and `image_settings`, which follow in 6.2 | The cycle is cut by Cargo: `pc-library` cannot name the window. `crates/pc-harness/tests/support/` and `vendor/` gain `pc-library` in the runner's rules |
-| 3.12 | **The tests left behind whose modules are now all in or below `pc-library`** move there, under the same paths: those of `remote_browse` (20 after 3.5 moved 8 of the 28 to `library-model`; the 28 took 9.8 s), and of `hardware` and `image_settings` where they name no view. The 15 of `registry_transfer` left after 3.4 hold a `LibraryView` in their fixture and wait for the frame (6.4) | none | about 40 tests, about 12 s | No production code changes |
+| 3.11 | **Done.** **The worker.** `library_worker`, `layers_dialog::SourceImage`, `PcDesktop` and the test support (`library_test_support` without its three egui helpers, the synthetic firmware catalogue, `test_wait`) into `pc-library`; the support goes behind `test-support` | `Wake` in place of `egui::Context` (6) | its 30 tests (44.4 s) move, but for those that call test helpers of `layers_dialog` and `image_settings`, which follow in 6.2 | The cycle is cut by Cargo: `pc-library` cannot name the window. `crates/pc-harness/tests/support/` and `vendor/` gain `pc-library` in the runner's rules. As landed: see below the table |
+| 3.12 | **Done.** **The tests left behind whose modules are now all in or below `pc-library`** move there, under the same paths: those of `remote_browse` (20 after 3.5 moved 8 of the 28 to `library-model`; the 28 took 9.8 s), and of `hardware` and `image_settings` where they name no view. The 15 of `registry_transfer` left after 3.4 hold a `LibraryView` in their fixture and wait for the frame (6.4) | none | about 40 tests, about 12 s | No production code changes. As landed: see below the table |
 
 As landed, 3.1 to 3.3 (one bead each, no behaviour change; the workspace
 lists the same 3958 test names apart from the crate, MEASURED with
@@ -2397,6 +2397,80 @@ development host): 660 tests in 60 to 66 s of wall time, as before. The
 runner's plan for `crates/pc-library/src/hardware.rs` (or any other
 `pc-library` file) is `pc-library` and `window`, where the plan for the
 window's `library_view/hardware.rs` was `window` alone.
+
+As landed, 3.11 and 3.12 (one bead, two moves, each built and tested
+before the next; no behaviour change). MEASURED with `cargo nextest list
+--workspace --run-ignored all`: the workspace lists the same 4044 test
+names apart from the crate, with one rename the move implies: the five
+tests of the window's `library_view::hardware::tests` are
+`hardware::tests` in `pc-library`, the path the module has had there
+since 3.7. `pc-library` has 69 tests where it had 2, the window 599 where
+it had 666. Moved test bodies changed only in paths to modules the new
+crate names otherwise (`crate::created_media` is `pc_media::created_media`
+there, `crate::kept_catalogue`, `crate::remote_pull` and
+`crate::registry_transfer` likewise, `crate::library_view::hardware` is
+`crate::hardware`) and where a worker is spawned with a `Wake`.
+
+- **3.11.** `pc_library::library_worker` holds the worker whole, and the
+  window's `library_worker.rs` re-exports it. `Worker::spawn` takes a
+  `Wake` (`Arc<dyn Fn() + Send + Sync>`): the frame passes a closure that
+  asks its `egui::Context` for a repaint; the tests that spawned a worker
+  with a fresh context pass one that does nothing (three in the frame's
+  tests, three in the worker's). The worker reaches the provider list
+  through `pc_image::with_providers` instead of `platforms`, which only
+  forwarded to it. `SourceImage` is `pc_library::layers_dialog`'s, which
+  the dialog re-exports. `PcDesktop` is `pc_library::pc_desktop` with its
+  two tests, which the window imports by that name. Behind `test-support`
+  (which turns on `assembly`'s and `pc-image`'s, which the fixtures use):
+  `pc_library::library_test_support` holds `Fixture`, `FirmwareStore`,
+  `Medium`, `import_media_set` and `source_archive`, the synthetic
+  firmware catalogue with the helpers that build it (`single`, `two_chip`,
+  `tar`, `pinned_tar`) and `warm` (3.12); the window's
+  `library_test_support.rs` keeps the three egui helpers and re-exports
+  the rest, and `library_view::firmware::tests` re-exports the catalogue's
+  helpers. `pc_library::test_wait` is the hang guard; the window imports
+  it. The worker's test constructors and backends (`Worker::synthetic`,
+  `recording`, `firmware_crash`, `media_crash`, `checked`) are behind the
+  feature too. Visibility: the worker's items were crate-wide
+  (`pub(super)` at the crate root, or `pub(crate)`) and the window names
+  them, so they are `pub`. Deviation: 29 of the 30 tests moved, not "all
+  but those that call test helpers of `layers_dialog` and
+  `image_settings`": `the_save_form_starts_from_the_image_the_workspace_session_pins`
+  calls `image_settings`' helpers, which 3.12 brings down, so it moved
+  there by rule 2. `keep_publishes_then_removes_disposable_but_regular_publication_keeps_workspace`
+  reviews the publication with `layers_dialog::tests` and stays in the
+  window's `library_worker::tests`, with copies of the five helpers it
+  calls (`until`, `worker`, `restarted`, `launch`, `finish`). The
+  runner's data rules gain `pc-library` for `machines/` as well: the
+  self-test requires both `machines/` and `vendor/` of a crate that builds
+  paths from the repository root, as the firmware store does for the
+  source archives.
+- **3.12.** The 12 tests of `image_settings` that draw no sheet are
+  `pc_library::image_settings::tests`; the three that call
+  `settings_sheet` stay in the window's `image_settings::tests`, with the
+  two drawing helpers. The helpers that build images for other tests
+  (`open_new_image`, `open_image`, `write_c`, `opened`, `reviewed`) are
+  `pc_library::image_settings::test_support`; both test modules re-export
+  them under the old path. The five tests of `hardware` are
+  `pc_library::hardware::tests`; their summary helper takes the cache
+  from `library_test_support::warm`, which `library_view::firmware::tests`
+  re-exports. 19 of the 20 tests of `remote_browse` are in a test-only
+  `remote_browse` module of `pc-library`, as `shell_icons` stayed in step
+  1. Deviation: `a_tag_needing_a_newer_release_is_refused_before_any_blob`
+  pulls with `platforms::with_image_providers`, an `application` crate,
+  so by rule 2 it stays in the window's `remote_browse::tests`, with the
+  helpers it calls (`Image`, `blob`, `machine`, `metadata_of`, `machine_of`,
+  `Setup`, `plain`, `open_registry`, `blob_requests`). No production code
+  changed in this move.
+
+Time (MEASURED, `cargo nextest run -p pc-library -p window`, four tests at
+once on a loaded development host): 664 tests in 62 s of wall time; the 69
+of `pc-library` take 159 s added up, the 595 the window runs 621 s (both
+sums inflated by the load). The runner's plan for
+`crates/pc-library/src/library_worker.rs` (or `remote_browse.rs`) is
+`pc-library` and `window`; for the window's `library_worker.rs` it stays
+`window` alone. The whole runner over this change (full plan, since
+`Cargo.lock` changed): 4028 tests passed in 317 s.
 
 Effect of step 3 (ASSUMED from §8.1.1): about 115 tests and 55 to 60 s of
 the 288 s leave the application's test binary (the worker 44 s, the tests
