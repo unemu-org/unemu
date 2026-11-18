@@ -56,6 +56,6 @@ if [ "$SIGNATURE" != "55aa" ]; then
 	echo "missing boot signature 55aa (found $SIGNATURE)" >&2
 	exit 1
 fi
-check_sha256 "$IMAGE" "1aa0c42ee15a6348b5ce9c27f736f6261c5a8ea6d19890ae09fe9ff95a2aa578"
+check_sha256 "$IMAGE" "7b06bb0c93c13eec949222b5b2a5f8335bc6f8f5ec26f0b660c481bf516830e8"
 mv -f "$IMAGE" "$OUT"
 echo "built $OUT ($SIZE bytes)"

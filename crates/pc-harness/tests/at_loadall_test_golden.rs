@@ -7,15 +7,17 @@
 //! The guest is the project's own floppy,
 //! `vendor/at-loadall-test/at-loadall-test.asm`, built by
 //! `vendor/at-loadall-test/build.sh`. It prints one line for the A20 gate,
-//! one for each direction of the move, an informational line for 0F 04 and
-//! a failure count, to the BIOS teletype and to COM1, then halts with
-//! interrupts disabled. The golden compares the COM1 bytes exactly. See
+//! one for each direction of the move, one for a BIOS block move (INT 15h
+//! AH=87h) that reads the block back from its physical place, an
+//! informational line for 0F 04 and a failure count, to the BIOS teletype
+//! and to COM1, then halts with interrupts disabled. The golden compares the COM1 bytes exactly. See
 //! `backlog/docs/design/at-loadall-test.md` for what each line checks.
 //!
 //! Intel, "Undocumented iAPX 286 Test Instruction": LOADALL encoding (p. 2),
 //! the 102-byte table at physical 800h and its layout (pp. 1-3), the table
 //! requirements (p. 4). IBM Personal Computer AT Technical Reference,
-//! System Board, Keyboard Controller (output port bit 1 gates A20).
+//! System Board, Keyboard Controller (output port bit 1 gates A20), and BIOS
+//! listing, INT 15h AH=87h (BLOCKMOVE).
 
 use assembly::test_support::TempDir;
 use assembly::{
@@ -40,18 +42,19 @@ const OPEN_BIOS_SHA256: &str = "6938dc8b665fa120f33775163ab6bacc559389525db87ade
 const CAP: u64 = 100_000_000;
 // One POST, one floppy boot and the program with the open AT BIOS. Measured
 // at the CPU pin above.
-const GOLDEN_RETIRED: u64 = 6_404_154;
+const GOLDEN_RETIRED: u64 = 6_407_714;
 
 // The open AT BIOS reads the display switch with the IBM polarity; the mono
 // position selects the preset's MDA, where the screen check reads.
 const BOARD: &str = "[board]\ndisplay_switch = \"mono\"";
 
-/// The transcript of a CPU that executes LOADALL: every counted line passes
-/// and 0F 04 raises interrupt 6.
+/// The transcript of a CPU that executes LOADALL: every counted line passes,
+/// the BIOS finds the block at 150000h, and 0F 04 raises interrupt 6.
 const EXPECTED: &str = "at-loadall-test\r\n\
      a20 ok\r\n\
      loadall write ok\r\n\
      loadall read ok\r\n\
+     bios move ok\r\n\
      0f04 int 06\r\n\
      failures 0\r\n";
 
@@ -168,7 +171,8 @@ fn uses_the_game_profile_bios_and_the_pinned_image() {
 /// 150000h under the selector 5000h, REP MOVSW writes the block there, a
 /// second LOADALL loads a DS cache with that base and the block comes back
 /// unchanged, while the conventional memory at 50000h (the selector's
-/// real-mode base and the A20-masked alias) keeps its guard words.
+/// real-mode base and the A20-masked alias) keeps its guard words. The BIOS
+/// block move then finds the same block at physical 150000h.
 #[test]
 #[ignore = "slow golden: open BIOS POST, then the LOADALL moves"]
 fn open_bios_loadall_moves_a_block_above_one_mebibyte_and_back() {

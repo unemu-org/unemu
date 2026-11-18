@@ -8,8 +8,11 @@
 ; extended-memory manager does without leaving real mode: it writes a
 ; LOADALL table at physical 800h whose ES (or DS) descriptor cache has a
 ; base above 1 MiB, executes LOADALL (0F 05) and runs REP MOVSW through
-; that cache. A real-mode segment load then ends the cache. Last, it
-; reports what 0F 04 does, for information. Results go to the BIOS teletype
+; that cache. A real-mode segment load then ends the cache. The BIOS block
+; move then reads 150000h back on its own, so the block's physical place is
+; checked without LOADALL. Last, it reports what 0F 04 does, for
+; information, with a LOADALL table that resumes after it in place, so a
+; CPU that runs 0F 04 as LOADALL does not loop. Results go to the BIOS teletype
 ; and, byte for byte, to COM1. The program halts with interrupts disabled
 ; after its last line. See vendor/at-loadall-test/README.md.
 ;
@@ -31,6 +34,12 @@
 ; - IBM Personal Computer AT Technical Reference, System Board, Keyboard
 ;   Controller: command D1h writes the output port; bit 1 gates A20. BIOS
 ;   listing, GATE_A20 (BIOS1): output-port data DFh turns A20 on.
+; - IBM Personal Computer AT Technical Reference, BIOS listing, INT 15h
+;   AH=87h (BLOCKMOVE, BIOS1): CX words from the source to the target
+;   descriptor of the caller's six-entry GDT at ES:SI (entries 2 and 3:
+;   limit, 24-bit base, access rights, a reserved word); the BIOS fills the
+;   other entries, returns AH = 00h and CF clear when the move is done, and
+;   leaves A20 off.
 ; - Intel UPI-41A/41AH/42/42AH User's Manual, Data Bus Buffer status:
 ;   wait for IBF clear before a write.
 ; - National Semiconductor PC16550D datasheet, Line Control Register (DLAB),
@@ -50,6 +59,7 @@ STACK_TOP       equ 0xFFF0
 MOVE_WORDS      equ 128
 MOVE_SRC        equ 0x1000
 MOVE_BACK       equ 0x1400
+MOVE_BIOS       equ 0x1800              ; the copy the BIOS block move reads back
 MOVE_PATTERN    equ 0x4C05              ; first word; each next one adds 0101h
 
 ; The block above 1 MiB, past the high memory area, so no real-mode address
@@ -110,6 +120,10 @@ LA_REGS         equ 0x0002              ; AX, BX, CX, DX or BP not loaded
 LA_FLAGS        equ 0x0004              ; CF not loaded
 LA_ALIAS        equ 0x0008              ; the guard at the alias changed
 LA_DATA         equ 0x0010              ; the block read back differs
+
+; Result bits of the BIOS block move line.
+BM_STATUS       equ 0x0001              ; AH not 00h, or CF set
+BM_DATA         equ 0x0002              ; the block the BIOS read back differs
 
 A20_WRAP        equ 0x0001              ; FFFF:0010h still aliases 0000:0000h
 
@@ -217,6 +231,9 @@ start:
         mov cx, MOVE_WORDS
         xor ax, ax
         rep stosw
+        mov di, MOVE_BIOS
+        mov cx, MOVE_WORDS
+        rep stosw
         mov ax, ALIAS_SEG
         mov es, ax
         xor di, di
@@ -319,19 +336,75 @@ read_loaded:
         call report
 
 ;--------------------------------------------------------------------------
-; 0F 04, for information: the vector it raised, or "none".
+; The BIOS block move copies physical 150000h to a zeroed buffer through
+; protected mode, without LOADALL, so the block is checked at its physical
+; place, not only through a loaded cache.
+;--------------------------------------------------------------------------
+        mov ax, ds
+        mov es, ax
+        mov si, move_gdt
+        mov cx, MOVE_WORDS
+        mov ah, 0x87
+        int 0x15
+        ; The BIOS returns with interrupts enabled.
+        cli
+        mov dx, 0
+        jc .move_status
+        test ah, ah
+        jz .move_done
+.move_status:
+        or dx, BM_STATUS
+.move_done:
+        mov ax, ds
+        mov es, ax
+        mov si, MOVE_SRC
+        mov di, MOVE_BIOS
+        mov cx, MOVE_WORDS
+        repe cmpsw
+        je .move_same
+        or dx, BM_DATA
+.move_same:
+        mov si, name_bios_move
+        call report
+
+;--------------------------------------------------------------------------
+; 0F 04, for information: "loads" if it ran as LOADALL, "int 06" if it
+; raised interrupt 6, else "none". The table resumes right after it with
+; the program's segments and stack and loads the AX marker, so neither
+; outcome loops back into an earlier phase.
 ;--------------------------------------------------------------------------
         mov si, name_0f04
         call print
+        xor ax, ax
+        mov es, ax
+        call table_common
+        mov word [es:T_DS], LOAD_SEG
+        mov di, T_DS_CACHE
+        mov ax, LOAD_BASE & 0xFFFF
+        mov dl, LOAD_BASE >> 16
+        call put_data_cache
+        mov word [es:T_ES], LOAD_SEG
+        mov di, T_ES_CACHE
+        mov ax, LOAD_BASE & 0xFFFF
+        mov dl, LOAD_BASE >> 16
+        call put_data_cache
+        mov word [es:T_IP], probe_done
+        mov [es:T_SP], sp
         mov byte [ud_seen], 0
+        xor ax, ax
         db 0x0F, 0x04
-        cmp byte [ud_seen], 0
-        je .no_vector
+probe_done:
         mov si, msg_int06
-        jmp .vector_done
-.no_vector:
+        cmp byte [ud_seen], 0
+        jne .probe_print
+        mov si, msg_loads
+        cmp ax, MARK_AX
+        je .probe_print
         mov si, msg_none
-.vector_done:
+.probe_print:
+        mov bx, cs
+        mov ds, bx
+        mov es, bx
         call print
 
         mov si, msg_failures
@@ -655,10 +728,25 @@ msg_fail        db ' FAIL ', 0
 msg_crlf        db 13, 10, 0
 msg_int06       db ' int 06', 13, 10, 0
 msg_none        db ' none', 13, 10, 0
+msg_loads       db ' loads', 13, 10, 0
 name_a20        db 'a20', 0
 name_write      db 'loadall write', 0
 name_read       db 'loadall read', 0
+name_bios_move  db 'bios move', 0
 name_0f04       db '0f04', 0
+
+; The caller's GDT of the BIOS block move: the dummy and the GDT entry, the
+; source (the block at HIGH_BASE) and the target (the MOVE_BIOS buffer),
+; then the BIOS code and stack entries. The BIOS fills entries 1, 4 and 5.
+move_gdt:
+        times 16 db 0
+        dw MOVE_WORDS * 2 - 1, HIGH_BASE & 0xFFFF
+        db HIGH_BASE >> 16, RIGHTS_DATA
+        dw 0
+        dw MOVE_WORDS * 2 - 1, (LOAD_BASE + MOVE_BIOS) & 0xFFFF
+        db (LOAD_BASE + MOVE_BIOS) >> 16, RIGHTS_DATA
+        dw 0
+        times 16 db 0
 
 prog_end:
         ; Fails to assemble if the program outgrows the sectors the boot

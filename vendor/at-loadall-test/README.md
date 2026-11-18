@@ -12,8 +12,11 @@ on through the 8042, then moves a 128-word block from conventional memory to
 physical `150000h` and back with the undocumented 80286 LOADALL (0F 05): a
 table at physical `800h` loads an ES (then a DS) descriptor cache whose base
 lies above 1 MiB, and REP MOVSW runs through it, as a 286 extended-memory
-manager does. Last, it reports what 0F 04 does, for information only. It
-prints one line per check plus a failure count, on the BIOS teletype and on
+manager does. The BIOS block move (INT 15h AH=87h) then reads `150000h`
+back into a third buffer, which checks the block's physical place without
+LOADALL. Last, it reports what 0F 04 does, for information only, with a
+LOADALL table that resumes right after it, so a CPU that runs 0F 04 as
+LOADALL does not loop. It prints one line per check plus a failure count, on the BIOS teletype and on
 COM1 (`3F8h`, 115200 baud, 8N1), then halts with interrupts disabled. What
 each line checks, and why, is in
 [`backlog/docs/design/at-loadall-test.md`](../../backlog/docs/design/at-loadall-test.md).
@@ -31,7 +34,7 @@ timestamps or host data; the image is the boot sector, the program padded to
 4 sectors and zero bytes up to 1,228,800 bytes. SHA-256 of the image:
 
 ```text
-1aa0c42ee15a6348b5ce9c27f736f6261c5a8ea6d19890ae09fe9ff95a2aa578
+7b06bb0c93c13eec949222b5b2a5f8335bc6f8f5ec26f0b660c481bf516830e8
 ```
 
 The script checks size, the `55AAh` boot signature and this hash before it

@@ -43,7 +43,9 @@ yet run).
   instruction.
 - **IBM Personal Computer AT Technical Reference**, System Board, Keyboard
   Controller (output port bit 1 gates A20; command D1h), and BIOS listing,
-  GATE_A20 (data DFh turns A20 on).
+  GATE_A20 (data DFh turns A20 on) and INT 15h AH=87h (BLOCKMOVE: CX words
+  from the source to the target descriptor of the caller's six-entry GDT at
+  ES:SI; AH = 00h and CF clear when done; A20 off afterwards).
 
 ## Program and output
 
@@ -61,6 +63,7 @@ at-loadall-test
 a20 ok
 loadall write ok
 loadall read ok
+bios move ok
 0f04 int 06
 failures 0
 ```
@@ -70,7 +73,7 @@ checks. The program then halts with interrupts disabled.
 
 The block is 128 words. The source at `0800:1000h` holds a numbered pattern
 (each word 0101h more than the one before); a read-back buffer at
-`0800:1400h` starts zeroed. The target is physical `150000h`, above the high
+`0800:1400h` and one for the BIOS block move at `0800:1800h` start zeroed. The target is physical `150000h`, above the high
 memory area, so no real-mode address reaches it. The table gives its cache
 the selector `5000h`, whose real-mode base, `50000h`, is also the A20-masked
 alias of `150000h`; that area holds a guard word. A move that used the
@@ -88,28 +91,40 @@ IP the instruction after LOADALL. Then:
 | `a20` | D1h/DFh, then the wrap test of the protected-mode test. | 1 `FFFF:0010h` still aliases `0000:0000h` |
 | `loadall write` | DS is the program segment; ES is selector `5000h` with a cache at base `150000h`. SI and DI point at the source and offset 0. After LOADALL it checks interrupt 6 and the markers, runs REP MOVSW, loads DS and ES from CS, checks the CF that LOADALL loaded and then the guard at `5000:0000h`. | 1 0F 05 raised interrupt 6 (the move is skipped), 2 AX, BX, CX, DX or BP not loaded (the move is skipped), 4 CF not loaded, 8 the guard changed |
 | `loadall read` | DS is selector `5000h` with a cache at base `150000h`; ES is the program segment. REP MOVSW copies the block back to the read-back buffer, which must equal the source. | 1, 2 and 4 as above, 10h the buffer differs from the source |
-| `0f04` (informational) | Executes 0F 04 and prints `int 06` if it raised interrupt 6, else `none`. Never counted. | none |
+| `bios move` | INT 15h AH=87h with a GDT in the program: source descriptor base `150000h`, target the zeroed buffer at `0800:1800h`, limit 255, rights 93h, CX the word count. The buffer must equal the source. | 1 AH not 00h or CF set, 2 the buffer differs from the source |
+| `0f04` (informational) | Builds a table like the moves', with DS and ES at the program segment and IP the instruction after 0F 04, clears AX and executes 0F 04. Prints `int 06` if it raised interrupt 6, `loads` if AX holds the table's marker (it ran as LOADALL), else `none`. Never counted. | none |
 
 The guard check runs after `mov es, ax` reloaded ES with `5000h`. If that
 real-mode load did not end the loaded cache, the check would read the block
 at `150000h` instead of the guard and fail, so the line also covers the
-end of a LOADALL cache. Between LOADALL and REP MOVSW the program runs
+end of a LOADALL cache. The `bios move` line reaches `150000h` through
+the BIOS's own protected-mode descriptors, not a loaded cache, so it shows
+the write landed at that physical address and not only somewhere a loaded
+cache maps the same way for both moves. The BIOS turns A20 off when it
+returns; nothing after it needs A20. The 0F 04 table resumes in place
+because the Intel document also calls LOADALL 0F04H (p. 13): on a CPU that
+took that reading, a table left from the read move would jump back into
+it and print forever. Between LOADALL and REP MOVSW the program runs
 comparisons, a call and a return through SS, so the cache outlives other
 instructions, as an extended-memory manager needs.
 
 ## Results
 
-**Open profile — MEASURED (2026-11-17, x86jit `cf32ec2e`).** The golden
+**Open profile — MEASURED (2026-11-18, x86jit `cf32ec2e`).** The golden
 runs the at-games-open BIOS (unemu-at-bios, as the protected-mode test does)
 on the same board, memory map (640 KiB + 1 MiB extended), RTC seed and
 display switch, without the game cards. Every counted line passes:
-`a20 ok`, `loadall write ok`, `loadall read ok`, then `0f04 int 06` and
-`failures 0`. The run halts after 6,404,154 retired instructions: one POST,
-one floppy boot and the program.
+`a20 ok`, `loadall write ok`, `loadall read ok`, `bios move ok`, then
+`0f04 int 06` and `failures 0`. The run halts after 6,407,714 retired
+instructions: one POST, one floppy boot and the program. With 0F 04
+replaced by 0F 05 in a scratch build (not committed), the probe line reads
+`0f04 loads` and the run still halts, after 6,407,489 retired
+instructions, so the in-place table works.
 
 **Previous CPU pin — MEASURED.** At x86jit `ae12d43e`, which raised
 interrupt 6 for 0F 05 on the 80286, the same image printed
 `loadall write FAIL 0005` and `loadall read FAIL 0015` (interrupt 6, CF not
-loaded, and for the read the buffer still zero), `0f04 int 06` and
-`failures 2`, after 6,407,327 retired instructions. The golden fails there,
+loaded, and for the read the buffer still zero), `bios move FAIL 0002`
+(nothing was written at `150000h`), `0f04 int 06` and `failures 3`, after
+6,412,499 retired instructions. The golden fails there,
 as it should.
