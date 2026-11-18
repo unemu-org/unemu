@@ -1,6 +1,6 @@
 # FreeDOS 1.4 Floppy Edition, the 1.2M disks: unemu/media/ibm-pc/freedos:1.4-1.2m-r1.
 # Open. The disks are the edition's images, unmodified, in installer order.
-# Real data from unemu-media's media.toml and build.sh. A draft: no digest.
+# Real data from unemu-media's media.toml and build.sh. Pinned: digest and the .lock folder beside it.
 
 recipe = "0.1"
 work = "freedos"
@@ -10,6 +10,7 @@ name = "unemu/media/ibm-pc/freedos"
 platform = "ibm-pc"
 release = "1.4-1.2m"
 revision = 1
+digest = "sha256:c8129f6cab7975c273c3ce208ceeb5f449607e5c48203e0105268cbd76757640"
 
 [title]
 version = "1.4"

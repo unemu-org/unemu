@@ -30,14 +30,23 @@
 //! outputs handed to the platform's importers through its
 //! [`build::Publisher`]. The network is reached only through the caller's
 //! [`build::Fetcher`], before any step runs.
+//!
+//! [`pin::pin_path`] pins a draft: it builds it, writes its lock
+//! ([`lock`]) beside it and its manifest digest into it. A pinned recipe
+//! builds the lock's manifest, config and metadata unchanged after its
+//! payloads matched them, so every later build of the program publishes the
+//! digest it was pinned to (recipes §3.1, §3.8); [`pin::conformance`]
+//! builds a folder of pinned recipes and compares the digests.
 
 pub mod build;
 mod check;
 mod finding;
 pub mod library;
+pub mod lock;
 pub mod merge;
 pub mod model;
 mod parse;
+pub mod pin;
 pub mod plan;
 pub mod provider;
 pub mod schema;
@@ -78,6 +87,10 @@ pub struct FileReport {
     /// The inputs a recipe's artifact needs and those only an attachment
     /// uses (rule 5).
     pub split: Option<Split>,
+    /// A pinned media recipe's title fields where its work file now differs
+    /// from the lock (recipes §6.16): not findings, as the lock wins, but
+    /// changes the next revision will take up.
+    pub drift: Vec<lock::Difference>,
 }
 
 /// The result of `recipe check`: every file and every finding, sorted by
@@ -123,6 +136,11 @@ impl Report {
                 }
             }
             out.push('\n');
+            for drift in &file.drift {
+                out.push_str(&format!(
+                    "  drift: {drift}; a build writes the lock's value until a new revision is pinned\n"
+                ));
+            }
         }
         let files = self.files.len();
         out.push_str(&format!(
@@ -278,6 +296,57 @@ pub fn merge_path(path: &Path, providers: Providers<'_>) -> io::Result<Shown> {
         Some(merged) => Ok(Shown::Merged(Box::new(merged))),
         None => Err(changed(path)),
     }
+}
+
+/// What [`show_path`] gives for one file: [`Shown`], or for a pinned media
+/// recipe the record its lock holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Showing {
+    /// A draft, or a file that is not shown: as [`merge_path`] gives it.
+    Shown(Shown),
+    /// A pinned media recipe: the lock's title record and set labels, which
+    /// a build writes, with today's identity, and the work file's fields
+    /// that now differ from the lock.
+    Locked {
+        record: Box<merge::Merged>,
+        drift: Vec<lock::Difference>,
+    },
+}
+
+/// The record `upcli recipe show` prints (recipes §6.15, §6.16): for a
+/// draft the merge with today's work file ([`merge_path`]); for a pinned
+/// recipe the record of its lock, which a build writes, whatever the work
+/// file says today.
+pub fn show_path(path: &Path, providers: Providers<'_>) -> io::Result<Showing> {
+    let merged = match merge_path(path, providers)? {
+        Shown::Merged(merged) => merged,
+        other => return Ok(Showing::Shown(other)),
+    };
+    let Some(digest) = merged.digest.as_deref() else {
+        return Ok(Showing::Shown(Shown::Merged(merged)));
+    };
+    // The checks passed, so the lock opens and agrees with the recipe.
+    let invalid = |e: String| io::Error::new(io::ErrorKind::InvalidData, e);
+    let locked = lock::open(digest, &lock::dir(path)).map_err(invalid)?;
+    let bytes = locked
+        .metadata
+        .as_deref()
+        .ok_or_else(|| invalid("the lock holds no metadata".into()))?;
+    let metadata = image_store::metadata::Metadata::decode(bytes, &locked.manifest.layers)
+        .map_err(|e| invalid(format!("the locked metadata: {e}")))?;
+    let record = merged
+        .locked(&metadata)
+        .ok_or_else(|| invalid("the locked metadata holds other than one title".into()))?;
+    let drift = check_paths(&[path.to_path_buf()], providers)?
+        .files
+        .into_iter()
+        .next()
+        .map(|f| f.drift)
+        .unwrap_or_default();
+    Ok(Showing::Locked {
+        record: Box::new(record),
+        drift,
+    })
 }
 
 /// What [`plan_path`] gives for one file.
@@ -500,6 +569,7 @@ fn check_file(
         file: name.to_owned(),
         what: None,
         split: None,
+        drift: Vec::new(),
     };
     let (source, found) = read(name, bytes);
     findings.extend(found);
@@ -568,11 +638,67 @@ fn check_file(
                 }
             };
             report.split = Some(split);
+            // Rule 8, points 1 to 3 of recipes §3.8: only for a recipe that
+            // passes everything else, so that a finding is not repeated as a
+            // disagreement with its lock.
+            if let (Some(path), Some(digest), true) = (path, recipe.identity.digest.as_ref(), lock)
+            {
+                if sink.findings.is_empty() {
+                    let work = recipe.work.as_ref().and_then(|id| {
+                        let file = path
+                            .parent()
+                            .unwrap_or(Path::new(""))
+                            .join(format!("{}.work.toml", id.value));
+                        works.get(&file)?.as_ref()?.work.as_ref()
+                    });
+                    report.drift = lock_findings(path, &recipe, work, digest, providers, &mut sink);
+                }
+            }
         }
         None => {}
     }
     findings.extend(sink.findings);
     report
+}
+
+/// Compare a pinned recipe with its lock: a lock that cannot be opened or
+/// that disagrees with the recipe is a finding at its `digest`; the drift of
+/// its work file is returned.
+fn lock_findings(
+    path: &Path,
+    recipe: &Recipe,
+    work: Option<&WorkFile>,
+    digest: &model::At<String>,
+    providers: Providers<'_>,
+    sink: &mut Sink<'_>,
+) -> Vec<lock::Difference> {
+    let merged = match recipe.kind {
+        model::Kind::Media => merge::merge(recipe, work),
+        model::Kind::Firmware => None,
+    };
+    let provider = recipe
+        .identity
+        .platform
+        .as_ref()
+        .and_then(|p| providers.get(&p.value));
+    match lock::open(&digest.value, &lock::dir(path)) {
+        Err(error) => {
+            sink.report(Rule::Lock, &digest.span, &digest.path, error);
+            Vec::new()
+        }
+        Ok(locked) => {
+            let comparison = lock::compare(recipe, merged.as_ref(), &locked, provider);
+            for difference in &comparison.errors {
+                sink.report(
+                    Rule::Lock,
+                    &digest.span,
+                    &digest.path,
+                    format!("the lock disagrees with the recipe: {difference}"),
+                );
+            }
+            comparison.drift
+        }
+    }
 }
 
 #[cfg(test)]

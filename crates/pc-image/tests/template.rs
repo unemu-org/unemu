@@ -971,7 +971,11 @@ fn another_file_at_a_media_fixture_path_is_refused_before_any_set_is_tagged() {
 /// the import began to give a set's title record the id of its repository,
 /// `freedos`, instead of `title` (recipes.md §6.4): the metadata layer
 /// changed and nothing else. The sets published before that carry `title`
-/// and are replaced, as before the first public release.
+/// and are replaced, as before the first public release. The corpus's
+/// pinned FreeDOS recipes (recipes.md §19.2, B8) pin other digests for the
+/// same tags: their sets carry the recipe's title record merged with its work
+/// file, so the metadata layer differs while the config and the payloads are
+/// these sets'.
 const MEDIA_PINNED: [(&str, &str); 3] = [
     (
         "unemu/media/ibm-pc/freedos:1.4-r1",

@@ -1238,6 +1238,7 @@ the set of commands is the proposal.
 | `upcli recipe plan FILE\|REF [--json]` | Resolves every input and prints the report of §3.5. Writes nothing. |
 | `upcli recipe build FILE\|REF [--fetch] [--library DIR]…` | Builds and tags the artifact and every attachment whose inputs are found. `--fetch` is the consent of R15. |
 | `upcli recipe pin FILE` | The author's build: writes `digest` into the file and the lock beside it. |
+| `upcli recipe conformance FILE\|FOLDER…` | Builds every pinned recipe named into a scratch store from the libraries and compares the digests (B8). |
 | `upcli recipe scaffold FILE\|DIR…` | Writes the `[input]` tables, member lists and file sets for files the author has, with sizes, hashes and an archive's times. The author adds the description. |
 | `upcli recipe inputs FILE --format dat\|csv\|sha256sums` | The inputs as a Logiqx DAT, a CSV or a checksum file, for a ROM manager or `sha256sum -c`. |
 | `upcli recipe push FILE REF`, `recipe pull REF` | The recipe artifact (§7). |
@@ -2512,6 +2513,141 @@ metadata, which a build writes, rather than the merge with today's work file
 one build of `upcli` builds the same manifest digest with another whose
 manifest writer was deliberately changed; a changed work file is reported
 and does not change the result.
+
+Done on 2026-11-18 (`upc-5pw.113.8`). A2, which B8 depends on, is met: the
+Zstandard encoder was frozen as profile 1 on 2026-11-17 (status.md), so a
+pinned build re-encodes a `+zstd` payload with profile 1 and compares the
+stored digest. The neutral code is `recipe::lock` (the lock folder, points
+1 to 5 of §3.8, writing a verified lock's artifact into the store and the
+tag) and `recipe::pin` (`pin_path` and the conformance harness); the build
+takes the pinned path in `recipe::build::build_path`, and the `ibm-pc`
+publisher tags a locked manifest with its validators
+(`PcPublisher::tag_locked`). Commands: `upcli recipe pin FILE`, `upcli
+recipe conformance FILE|FOLDER...`; `check`, `show` and `build` read the
+lock of a pinned recipe (commands.md, Pinning recipes and Recipe
+conformance). Decisions taken while building it:
+- The lock is the folder `<recipe file>.lock` with `sha256/<hex>` files, as
+  §7.2 says, each named by the SHA-256 of its bytes: the manifest, its
+  config and every other layer of the manifest that no step made. §7.2's
+  "three files" are a set's manifest, config and metadata; a firmware
+  package has no metadata layer but a generated README, which is then the
+  third file. The files are the bytes the store holds after the draft
+  build, so the lock is deterministic. Hidden entries (a desktop's
+  `.DS_Store`) are skipped; any other entry, a file over 1 MiB, a file
+  whose bytes are not its name, or one the manifest does not name is an
+  error.
+- `recipe pin` builds and tags the draft as `recipe build` does, writes the
+  lock (beside the old one, then renamed into place), then writes `digest`
+  on the line after `revision` in the file's own line ends, and checks the
+  file again; on failure the file is restored and the lock removed. A
+  recipe that already has a `digest` is not pinned again: a changed
+  artifact is a new revision. A pinned recipe whose lock is lost fails
+  rule 8 (since B4); §7.2's fallback of building with this release's
+  writers and accepting an equal digest is not taken: the lock is restored
+  from where the recipe was published.
+- Points 1 to 3 run in the checks (rule 8), only for a recipe with no
+  other finding, so a broken lock refuses a build before any input is
+  read; each disagreement is a finding at `digest`, worded `FIELD: the lock
+  has X, the recipe has Y`. The fields: artifact type; platform (by
+  `platform::same`); the media in order with id, label, format (the
+  provider's config table, `MediaProfile::format_table`) and export file
+  name; the extras in order with file name, and kind and DOS name when
+  stated; the ROMs with id, role, catalogue id when stated and chip
+  count, the `[license]` source archive, and the `[package]` fields the
+  recipe states; and the whole title record and set labels. A title field
+  differs as an error when today's value is the recipe's own, and as drift
+  otherwise (the work file states it, or nothing does any more); labels
+  are an error only when a label the recipe states is missing from the
+  lock. A locked title with tags, cover, screenshots or launch data, which
+  no recipe writes, is an error.
+- Points 4 and 5 run after the steps and before anything is written: each
+  output is matched with its descriptor through the locked config (media
+  in order, extras by file name, a package's source archive by file name,
+  ROMs and their chips in order), its decoded SHA-256 and size compared,
+  then the stored ones after encoding (`codec::describe`, raw or profile
+  1). Every layer must be an output or a lock file; a mismatched output is
+  reported once, at the output. Only when all match are the payloads, the
+  lock files and the manifest imported and the tag written last, with the
+  platform's validator, which resolves and so verifies the closure once
+  more. No writer of the build is called for a pinned recipe.
+- A release other than the one that pinned it: the pinned path uses no
+  writer of the running release, so its spelling of manifests, configs and
+  metadata cannot reach the result. MEASURED (`pc-image` test
+  `recipe_lock`, `a_pinned_recipe_builds_its_digest_with_another_builds_manifest_writer`):
+  a publisher whose manifest writer puts an extra annotation first, out of
+  sorted order, and breaks the lines, gets another digest for its draft of
+  the recipe and the pinned digest, the lock's manifest byte for byte, for
+  the pinned recipe. Tags follow decision-38: the pinned build tags the
+  recipe's `<release>-rN` (the store moves the release alias with it), a
+  tag that names another image is refused because an `rN` never moves, and
+  `--keep-as TAG` keeps a differing result under `TAG` only.
+- The work-file drift report: `check` prints `  drift: FIELD: the lock has
+  X, NAME.work.toml has Y; …` after the file's line (not a finding), the
+  build prints the same per field before its last line, and `show` prints
+  the lock's record with a `# locked:` line and one `# drift:` line per
+  field. A pinned build publishes the lock's metadata whatever the work
+  file says (test `a_changed_work_file_is_reported_and_does_not_change_the_result`;
+  the same recipe as a draft takes the edit and gets another digest).
+- `recipe show` of a pinned recipe: the merged record's identity with the
+  lock's title record and labels, every value marked `Origin::Lock`, so no
+  `# from` comment is printed (the lock does not say which file a value
+  came from).
+- The conformance harness: `upcli recipe conformance` builds every pinned
+  recipe of the files and folders named into a scratch store under the
+  store's `cache/recipe-conformance/`, from the libraries only, and
+  compares the digests; drafts are listed and skipped, work files ignored;
+  exit 1 when one differs or cannot be built. The corpus's six open
+  recipes are pinned, their locks beside them (the three FreeDOS floppy
+  sets and the three firmware packages, whose digests are the template
+  packages'; the FreeDOS sets' digests differ from the template sets', as
+  their metadata is the recipe's merged record, B7). The test
+  `the_pinned_corpus_builds_the_digests_it_pins` runs the harness on them
+  from `vendor/` and `vendor/freedos`; unemu-media runs `upcli recipe
+  conformance RECIPES --library DIR` against its own library.
+- Fix round after review: the licence marks are part of point 3, because
+  the push guard trusts them. Without `[license]` no descriptor is open,
+  links terms or a source, or is listed in the manifest's licences; with
+  it, an open payload layer is open under exactly the recipe's expression
+  and an open layer only the lock holds under the generated-text licence
+  `CC0-1.0` (`lock::GENERATED_LICENSE`, kept equal to the provider's by a
+  test), every terms or source link names the decoded digest of the
+  recipe's own terms or source extra (found through the locked config), a
+  set's open payloads carry those links and a package's open ROMs its
+  source link, and the manifest's licence list is its open layers'. A lock
+  may be more restrictive than its recipe, never less. A package's README,
+  which states the marks, is regenerated from the lock's config and marks
+  through the provider (`FirmwareProfile::readme`) and compared byte for
+  byte. MEASURED: the reviewer's forgery, a recipe without `[license]`
+  whose lock was edited to mark every layer open and re-hashed, is refused
+  by rule 8 for a set and for a package (`recipe_lock` tests), and nothing
+  is tagged.
+- Also from the review: a title field that nothing states any more is an
+  error, drift only when today's value is the work file's; an extra's kind
+  and DOS name, a package's fields and a ROM's catalogue id are compared
+  with the importer's default when the recipe leaves them out (the kind by
+  `MediaProfile::extra_kind`, the id by the catalogue entry its bytes
+  belong to); a package's boards and machine classes, and a chip's
+  position, part number, lane and offset, when stated; media formats by name
+  (`MediaProfile::format_name`), not by the config's table. A build compares
+  the lock again after the steps and refuses a disagreement found then. A
+  pin that fails after its build puts back a lock the draft had beside it;
+  the tag the build wrote stays, as it names what `recipe build` makes of
+  the draft. `recipe conformance` that finds no pinned recipe exits 1.
+- Second fix round: which layers are generated text is decided by the
+  manifest's structure (its config, its metadata layer, the layer a
+  package's config names as its README), never by which files a lock
+  holds, and a lock that holds any other file, a payload above all, is
+  refused when it is opened: a lock holds no payload byte. MEASURED: a
+  forged lock holding an open package's ROM and source archive relabelled
+  `CC0-1.0`, without the manifest's licence list, is refused and nothing
+  is tagged (`recipe_lock`, `a_lock_that_holds_a_payload_is_refused`). A
+  package's provenance and each ROM's required devices, which the importer
+  copies from the firmware catalogue, are compared with the catalogue
+  entry, so a lock cannot put text of its own into the generated config or
+  README; a package without a README is refused.
+- Not done here: §3.4's "found instead of made" for the payload blobs of a
+  locked recipe (B6 left it to B8): a pinned build always runs the steps;
+  looking the locked blobs up in the store first is left for a later bead.
 
 **B9. `scaffold` and `inputs`.**
 Scope: `upcli recipe scaffold` (input tables, member lists with sizes,

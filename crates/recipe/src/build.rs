@@ -30,7 +30,15 @@
 //! Nothing is tagged when an input is missing, a fetch fails, a value read
 //! is not the one pinned, or a step or the importer refuses. A recipe
 //! without a `digest` is a draft: its result is tagged and its digest
-//! printed, and nothing is compared with a pin (that is the lock's job).
+//! printed, and nothing is compared with a pin.
+//!
+//! **A pinned recipe** (one with a `digest`, recipes §3.1, §3.8) runs the
+//! same phases up to the steps; then, instead of the importers, its outputs
+//! are checked against the lock ([`crate::lock::verify`]) and the lock's
+//! manifest, config and metadata are published unchanged
+//! ([`crate::lock::store`], [`Publisher::tag_locked`]). So a later build
+//! of the program, whose writers spell those files differently, still
+//! publishes the pinned digest. A mismatch tags nothing ([`Outcome::Mismatch`]).
 //!
 //! **Limits of this version.** Values are held in memory while the steps
 //! run. Attachments (recipes §3.9) are not built: their manifests need a
@@ -160,6 +168,20 @@ pub trait Publisher {
     /// A tag that already names exactly this artifact is reported as
     /// present, not written again; any refusal is in the importer's words.
     fn publish(&self, store: &Store, artifact: &Staged) -> Result<Published, String>;
+
+    /// Tag the locked manifest of a pinned build, already stored with its
+    /// whole closure ([`crate::lock::store`]), as `reference`, with the
+    /// platform's validator of its artifact type ([`crate::lock::tag`]).
+    /// The publisher writes no manifest, config or metadata of its own.
+    fn tag_locked(
+        &self,
+        store: &Store,
+        reference: &str,
+        manifest: &Descriptor,
+    ) -> Result<Published, String> {
+        let _ = (store, reference, manifest);
+        Err("this build cannot publish a locked artifact of this platform".into())
+    }
 }
 
 /// What a publication did.
@@ -928,6 +950,15 @@ pub struct Report {
     pub kept: Vec<Kept>,
     /// Attachments the recipe declares, not built in this version.
     pub attachments: Vec<String>,
+    /// The recipe is pinned: the lock's manifest, config and metadata were
+    /// published unchanged after every payload matched it.
+    pub locked: bool,
+    /// The work file's fields that differ from the lock (recipes §6.16);
+    /// the lock's values were published.
+    pub drift: Vec<crate::lock::Difference>,
+    /// The lower-case SHA-256 of every output the steps made: the payloads,
+    /// which a lock never holds.
+    pub outputs: BTreeSet<String>,
 }
 
 /// What [`build_path`] gives.
@@ -944,6 +975,15 @@ pub enum Outcome {
     Failed {
         plan: Box<Plan>,
         error: String,
+    },
+    /// A pinned recipe whose payloads do not match its lock (recipes §3.8,
+    /// points 4 and 5): nothing was tagged under the recipe's tag. With
+    /// `--keep-as` the result this build's writers make is kept under that
+    /// tag.
+    Mismatch {
+        plan: Box<Plan>,
+        mismatches: Vec<String>,
+        kept: Option<(String, Published)>,
     },
     Built(Box<Report>),
 }
@@ -1058,29 +1098,125 @@ pub fn build_path(request: Request<'_>, log: &mut dyn FnMut(&str)) -> io::Result
         Ok(built) => built,
         Err(error) => return failed(plan, error),
     };
-    let staging = StagingFolder(request.store.root().join(STAGING).join(unique("")));
-    let staged = stage(&recipe, merged.as_ref(), &built, &reference, &staging.0);
-    let result = staged
-        .map_err(|e| format!("staging the outputs in {}: {e}", staging.0.display()))
-        .and_then(|staged| publisher.publish(request.store, &staged));
-    drop(staging);
-    let published = match result {
-        Ok(published) => published,
-        Err(error) => return failed(plan, error),
-    };
+    let outputs = outputs(&built);
     let kept = kept(&recipe, &plan, &built);
     let attachments = recipe
         .attachments
         .iter()
         .filter_map(|a| a.id.as_ref().map(|id| id.value.clone()))
         .collect();
+    let mut drift = Vec::new();
+    let published = match &recipe.identity.digest {
+        // A draft: the outputs go through the platform's importers.
+        None => match draft(
+            &request,
+            publisher,
+            &recipe,
+            merged.as_ref(),
+            &built,
+            &reference,
+        ) {
+            Ok(published) => published,
+            Err(error) => return failed(plan, error),
+        },
+        // Pinned: the payloads are checked against the lock and the lock's
+        // bytes are published; no writer of this build is used.
+        Some(digest) => {
+            let locked = match crate::lock::open(&digest.value, &crate::lock::dir(request.path)) {
+                Ok(locked) => locked,
+                Err(error) => return failed(plan, error),
+            };
+            // The checks compared the lock already; the files may have
+            // changed since, so a disagreement found now refuses too.
+            let comparison =
+                crate::lock::compare(&recipe, merged.as_ref(), &locked, Some(provider));
+            if !comparison.errors.is_empty() {
+                let errors: Vec<String> =
+                    comparison.errors.iter().map(ToString::to_string).collect();
+                return failed(
+                    plan,
+                    format!("the lock disagrees with the recipe: {}", errors.join("; ")),
+                );
+            }
+            drift = comparison.drift;
+            match crate::lock::verify(&recipe, &locked, &built) {
+                Ok(payloads) => {
+                    let result = crate::lock::store(request.store, &locked, &payloads).and_then(
+                        |manifest| publisher.tag_locked(request.store, &reference, &manifest),
+                    );
+                    match result {
+                        Ok(published) => published,
+                        Err(error) => return failed(plan, error),
+                    }
+                }
+                Err(mismatches) => {
+                    let kept = match request.keep_as {
+                        Some(_) => match draft(
+                            &request,
+                            publisher,
+                            &recipe,
+                            merged.as_ref(),
+                            &built,
+                            &reference,
+                        ) {
+                            Ok(published) => Some((reference, published)),
+                            Err(error) => return failed(plan, error),
+                        },
+                        None => None,
+                    };
+                    return Ok(Outcome::Mismatch {
+                        plan: Box::new(plan),
+                        mismatches,
+                        kept,
+                    });
+                }
+            }
+        }
+    };
     Ok(Outcome::Built(Box::new(Report {
         plan,
         reference,
         published,
         kept,
         attachments,
+        locked: recipe.identity.digest.is_some(),
+        drift,
+        outputs,
     })))
+}
+
+/// The lower-case SHA-256 of every output the steps made.
+fn outputs(built: &Built) -> BTreeSet<String> {
+    built
+        .media
+        .iter()
+        .map(|m| &m.bytes)
+        .chain(
+            built
+                .roms
+                .iter()
+                .flat_map(|r| r.files.iter().map(|f| &f.bytes)),
+        )
+        .chain(built.extras.iter().map(|e| &e.bytes))
+        .map(|bytes| steps::sha256(bytes))
+        .collect()
+}
+
+/// Stage the outputs and hand them to the platform's importers, which
+/// write the config, metadata and manifest with this build's writers and
+/// tag `reference` last.
+fn draft(
+    request: &Request<'_>,
+    publisher: &dyn Publisher,
+    recipe: &Recipe,
+    merged: Option<&Merged>,
+    built: &Built,
+    reference: &str,
+) -> Result<Published, String> {
+    let staging = StagingFolder(request.store.root().join(STAGING).join(unique("")));
+    stage(recipe, merged, built, reference, &staging.0)
+        .map_err(|e| format!("staging the outputs in {}: {e}", staging.0.display()))
+        .and_then(|staged| publisher.publish(request.store, &staged))
 }
 
 enum FetchError {
@@ -1326,15 +1462,21 @@ impl Report {
                 "  attachment {attachment}: not built; this version builds no attachments\n"
             ));
         }
+        for drift in &self.drift {
+            out.push_str(&format!(
+                "  drift: {drift}; the lock's value was published, a new revision takes the change up\n"
+            ));
+        }
         out.push_str(&format!(
-            "{} {}\t{}\tdraft\n",
+            "{} {}\t{}\t{}\n",
             if self.published.created {
                 "built"
             } else {
                 "already built"
             },
             self.reference,
-            self.published.descriptor.digest
+            self.published.descriptor.digest,
+            if self.locked { "locked" } else { "draft" }
         ));
         out
     }

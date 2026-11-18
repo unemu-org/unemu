@@ -1171,6 +1171,21 @@ pub fn current_rom_license(config: &Config, manifest: &Manifest) -> Option<Expre
         .and_then(|l| l.into_iter().next())
 }
 
+/// The kind a document attached to a package gets from its file name.
+pub fn extra_kind(path: &Path) -> ExtraKind {
+    let extension = path
+        .extension()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "txt" | "pdf" | "md" | "doc" => ExtraKind::Document,
+        "zip" | "7z" | "arj" | "rar" => ExtraKind::Archive,
+        "exe" | "com" | "bat" => ExtraKind::Executable,
+        _ => ExtraKind::Other,
+    }
+}
+
 /// The README the program generates for a stored package from its config
 /// and its layers' marks, as an import or edit with no hand-written README
 /// would write it; a stored README that differs was written by hand.
@@ -1369,18 +1384,7 @@ fn plan(
             assembly::firmware_discovery::hash_firmware_file(&extra.path)?
         )
         .parse()?;
-        let extension = extra
-            .path
-            .extension()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_ascii_lowercase();
-        let kind = match extension.as_str() {
-            "txt" | "pdf" | "md" | "doc" => ExtraKind::Document,
-            "zip" | "7z" | "arj" | "rar" => ExtraKind::Archive,
-            "exe" | "com" | "bat" => ExtraKind::Executable,
-            _ => ExtraKind::Other,
-        };
+        let kind = extra_kind(&extra.path);
         config.extras.push(Extra {
             blob: digest.clone(),
             filename,

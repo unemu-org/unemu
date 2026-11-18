@@ -1,7 +1,7 @@
 # The unemu VGA BIOS 0.9d-unemu.1, standard VGA: unemu/firmware/ibm-pc/vgabios-0.9d-unemu.1-std:r1.
 # Open. The ROM and its source archive are what vendor/vgabios/fetch.sh builds, taken
 # unmodified: no step. Real data from the firmware catalogue and pc_image::template::FIRMWARE.
-# A draft: no digest. No URL: the fetch script builds both files from the fork's repository.
+# Pinned: digest and the .lock folder beside it. No URL: the fetch script builds both files from the fork's repository.
 
 recipe = "0.1"
 
@@ -9,6 +9,7 @@ recipe = "0.1"
 name = "unemu/firmware/ibm-pc/vgabios-0.9d-unemu.1-std"
 platform = "ibm-pc"
 revision = 1
+digest = "sha256:179a11dbd20741e1e3775388ed42bdf9de2b62e9136c0467271d34271b769d57"
 
 [package]
 title = "unemu VGA BIOS 0.9d-unemu.1, standard VGA"

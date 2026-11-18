@@ -97,6 +97,14 @@
     }
   },
   {
+    "name": "a neutral command module no golden drives, the recipe commands, keeps the fast tier",
+    "changed": ["crates/cli-core/src/recipe.rs"],
+    "expect": {
+      "mode": "crates", "seeds": ["cli-core"], "affected": ["cli-core", "cli-pc", "upcli"],
+      "tier": "fast"
+    }
+  },
+  {
     "name": "image-store change pulls in its dependents and the ignored tests that name image_store::",
     "changed": ["crates/image-store/src/library.rs"],
     "expect": {

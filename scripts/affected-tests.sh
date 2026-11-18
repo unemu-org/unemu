@@ -76,11 +76,13 @@ planner='
 def emulation_crates: ["assembly", "audio", "bus", "chipset", "cpu", "device",
   "devices", "machine", "machine-file", "media", "testkit", "unemu-pc-core", "video"];
 # Files that hold the machine runners and the disk builder the goldens drive,
-# and the command line the front-end goldens drive: the neutral command line
-# (its dispatch, and the journal tools a golden runs) and every PC command; a
-# path ending in "/" covers every file under it.
-def runner_files: ["crates/pc-harness/src/", "crates/cli-core/src/",
-  "crates/cli-pc/src/", "crates/pc-image/src/media_create.rs"];
+# and the command line the front-end goldens drive: of the neutral command
+# line its dispatch and the journal tools a golden runs (no golden drives its
+# recipe, image or library commands), and every PC command; a path ending in
+# "/" covers every file under it.
+def runner_files: ["crates/pc-harness/src/", "crates/cli-core/src/lib.rs",
+  "crates/cli-core/src/journal.rs", "crates/cli-pc/src/",
+  "crates/pc-image/src/media_create.rs"];
 # Paths that crates read outside their own directory: test support shared
 # with #[path], shipped machine files, fixture scripts and pins, assets.
 # The self-test checks that every path a crate source names outside its

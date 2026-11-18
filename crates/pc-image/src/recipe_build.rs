@@ -17,12 +17,16 @@
 //!   attached documents; then [`crate::firmware_import::publish_as`] under
 //!   the recipe's tag. Without `[license]` the package is user-supplied,
 //!   as an import that states nothing open leaves it (recipes §6.6).
+//! - A pinned recipe's locked manifest, which the recipe crate has stored
+//!   unchanged after its payloads matched the lock, is tagged with the
+//!   validator of its artifact type ([`PcPublisher::tag_locked`]); no
+//!   importer writes anything for it.
 
 use crate::firmware_import::{self, Attachment, Statement};
 use crate::media_import::{self, ExtraSource, OpenStatement, Outcome, Request, Source};
 use image_store::compat::AppVersion;
 use image_store::media_set::ExtraKind;
-use image_store::Store;
+use image_store::{Descriptor, Store};
 use recipe::build::{Published, Publisher, Staged};
 use recipe::model::Kind;
 use std::path::PathBuf;
@@ -35,6 +39,40 @@ impl Publisher for PcPublisher {
         match artifact.kind {
             Kind::Media => media(store, artifact),
             Kind::Firmware => firmware(store, artifact),
+        }
+    }
+
+    /// The tag of a pinned build, written with the validator `image media
+    /// import` or `image firmware import` writes its tag with.
+    fn tag_locked(
+        &self,
+        store: &Store,
+        reference: &str,
+        manifest: &Descriptor,
+    ) -> Result<Published, String> {
+        use image_store::BlobSource as _;
+        let bytes = store
+            .read_verified(manifest, image_store::MAX_SMALL_BLOB)
+            .map_err(|e| e.to_string())?;
+        let kind = image_store::Manifest::decode_for_summary(&bytes)
+            .map_err(|e| e.to_string())?
+            .artifact_type()
+            .to_owned();
+        if kind == image_store::media_type::FIRMWARE {
+            let rules = crate::firmware::PcFirmwareRules(crate::firmware::catalogue());
+            recipe::lock::tag(
+                store,
+                reference,
+                manifest,
+                &image_store::firmware::Validator(&rules),
+            )
+        } else {
+            recipe::lock::tag(
+                store,
+                reference,
+                manifest,
+                &image_store::media_set::Validator(&crate::media_set::PcMediaFormats),
+            )
         }
     }
 }

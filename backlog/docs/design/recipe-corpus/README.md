@@ -4,8 +4,9 @@ Status: **drafts** for the design in [`../recipes.md`](../recipes.md)
 (`upc-5pw.113`), 2026-11-17. Nine recipes, each in the chosen syntax (TOML
 1.0, `*.toml`) and in the strongest alternative (an HCL literal subset,
 `*.hcl`). They exist to test the syntax and the model against real cases
-before anything freezes (recipes.md §14). No builder exists, so every recipe
-is a draft without a `digest`, and none has been built.
+before anything freezes (recipes.md §14). When it was written no builder
+existed, so every recipe was a draft without a `digest`; the open ones are
+pinned now (The pins, below).
 
 Both syntaxes are written by one generator from one data model, so a pair
 differs in syntax only. Every TOML file parses with a TOML 1.0 parser
@@ -48,6 +49,23 @@ sets whose configs equal byte for byte those the importer makes from the
 same disks (a test in `pc-image`, `recipe_build`). Ken's Labyrinth and
 AZURAMON build from a user's own files; AZURAMON's split fills exactly the
 ten volumes its recipe assumed.
+
+## The pins (2026-11-18)
+
+`upcli recipe pin` (recipes.md §19.2, B8) pinned the six open recipes: the
+three FreeDOS 1.4 floppy sets and the three firmware packages. Each now
+states `digest` and has its lock beside it, `NAME.toml.lock/sha256/`, which
+holds the manifest, the config and the metadata (a firmware package: its
+README) as the pin wrote them, and no payload byte. The other recipes stay
+drafts. `upcli recipe conformance` builds the pinned ones from the fixtures
+and compares the digests (a test in `pc-image`, `recipe_lock`). A change to
+one of their payload builders that alters a byte fails that test; a change
+to how a release writes manifests, configs or metadata does not, as a pinned
+build publishes the lock's bytes. To change a pinned artifact, raise
+`revision`, remove `digest` and pin again. The FreeDOS pins are not the digests of the
+template sets of the same tags (`pc-image` test `template`, `MEDIA_PINNED`):
+a recipe's set carries the recipe's title record merged with its work file,
+so its metadata layer differs, while its config and payloads are the same.
 
 ## Second round: work files, TOML only (2026-11-17)
 

@@ -217,6 +217,18 @@ Ok(Line(Recipe(Build(BuildOptions { path: "FILE", fetch: false, libraries: [], s
 $ recipe build FILE --fetch --library DIR --library DIR2 --store DIR --config FILE --keep-as TAG
 Ok(Line(Recipe(Build(BuildOptions { path: "FILE", fetch: true, libraries: ["DIR", "DIR2"], store: Some("DIR"), config: Some("FILE"), keep_as: Some("TAG") }))))
 
+$ recipe pin FILE
+Ok(Line(Recipe(Pin(BuildOptions { path: "FILE", fetch: false, libraries: [], store: None, config: None, keep_as: None }))))
+
+$ recipe pin FILE --fetch --library DIR --library DIR2 --store DIR --config FILE
+Ok(Line(Recipe(Pin(BuildOptions { path: "FILE", fetch: true, libraries: ["DIR", "DIR2"], store: Some("DIR"), config: Some("FILE"), keep_as: None }))))
+
+$ recipe conformance FILE FOLDER
+Ok(Line(Recipe(Conformance(ConformanceOptions { paths: ["FILE", "FOLDER"], libraries: [], store: None, config: None }))))
+
+$ recipe conformance FOLDER --library DIR --library DIR2 --store DIR --config FILE
+Ok(Line(Recipe(Conformance(ConformanceOptions { paths: ["FOLDER"], libraries: ["DIR", "DIR2"], store: Some("DIR"), config: Some("FILE") }))))
+
 $ recipe
 Ok(Line(Recipe(Usage)))
 

@@ -1476,7 +1476,7 @@ both `machines/` and `vendor/`.
 
 `upcli recipe check` runs the static checks of a recipe
 ([design/recipes.md](design/recipes.md) §6.11): it reads the recipe, the
-work file it names and whether its lock exists, and no input.
+work file it names and, for a pinned recipe, its lock, and no input.
 
 ```sh
 cargo run --offline -p upcli -- recipe check backlog/docs/design/recipe-corpus
@@ -1496,6 +1496,39 @@ only an attachment uses). Exit status: 0 without findings, 1 with findings,
 `ibm-pc` provider only: on the corpus the `ibm-pc` files pass and the NES
 and Amiga recipes each get the one rule-7 finding that no provider of
 their platform is in this build, with nothing behind it reported.
+
+A pinned recipe (one with `digest`) is checked against its lock (rule 8,
+points 1 to 3 of design/recipes.md §3.8, see Pinning recipes below): the
+lock must hold the manifest the digest names and the config and metadata
+that manifest names, each file's bytes must have the SHA-256 its name
+says, and the lock's decoded fields must agree with the recipe: the
+artifact type, the platform, the media in order (id, label, format by name,
+file name), the extras (file name, kind and DOS name, a kind or DOS name the
+recipe leaves out compared with the importer's default), the ROMs (id, role,
+catalogue id, chips and their stated position, part number, lane and
+offset), a package's fields (one the recipe leaves out must be empty in the
+lock; boards and machine classes when stated) and its generated README
+(regenerated from the lock's config and marks and compared byte for byte),
+and the title record. The licence marks the push guard trusts are checked
+too: without `[license]` no descriptor may be open or link terms or a source
+archive and the manifest names no licences; with it, an open payload layer is
+open under exactly the recipe's expression and an open generated layer
+(config, metadata, README) under `CC0-1.0`, every terms or source link names
+the recipe's own terms or source extra, a set's open payloads carry those
+links, and the manifest's licence list is its open layers'. A lock may be
+more restrictive than its recipe, never less. Which layers are generated text follows
+from the manifest (its config, its metadata layer, the layer a package's
+config names as its README); a lock that holds any other file is refused, as
+a lock holds no payload byte. A package's provenance and each ROM's required
+devices must be the firmware catalogue's. Each disagreement is a finding
+at the recipe's `digest` (`the lock disagrees with the recipe:
+medium[1].label: the lock has "The game", the recipe has "Another
+label"`). A field the recipe or its work file no longer states is a finding
+too (`title.year: the lock has 1993, the recipe has nothing`). A title field
+whose value today comes from the work file and differs from the lock is not
+a finding: the line after the file's line reads `  drift:
+FIELD: the lock has …, NAME.work.toml has …; a build writes the lock's value
+until a new revision is pinned`.
 
 The JSON Schema `design/recipe-schema-0.1.json` is written from the
 parser's key tables and the providers; a test in `pc-image` compares it.
@@ -1526,6 +1559,13 @@ does not, `show` prints the check's report instead and exits 1. Exit 2 on a
 usage error, a file that cannot be read, a folder, or a file that is not a
 media recipe (a firmware recipe or a work file has no title record to
 merge).
+
+For a pinned recipe `show` prints the record of its lock, which a build
+writes, not today's merge: the first line names the digest, the second is
+`# locked: the record of DIGEST, which a build writes; the work file's
+edits wait for a new revision`, then one `# drift: …` line per field where
+the work file now differs from the lock, then the lock's values, with no
+`# from` comments (the lock does not say which file a value came from).
 
 ## Planning recipes and libraries
 
@@ -1673,7 +1713,7 @@ and `library ls` prints it as `missing`.
 
 ## Building recipes
 
-`upcli recipe build` builds a draft of a recipe into the store
+`upcli recipe build` builds a recipe into the store
 ([design/recipes.md](design/recipes.md) §3.1, §6.9, §6.12, §6.14): it plans
 as `recipe plan` does, reads every value it found and checks it against its
 size and SHA-256 again, runs the steps (`unpack`, `text`, `fat`) and hands
@@ -1692,7 +1732,8 @@ cargo run --offline -p upcli -- recipe build my.media.toml --keep-as 1.0-mine-r1
   when it does not exist yet. `--keep-as TAG` tags the result
   `<name>:TAG` instead, a revision tag of the recipe's own repository other
   than the recipe's tag. A recipe without `digest` is a draft: nothing is
-  compared with a pin, and the output ends `draft`.
+  compared with a pin, and the output ends `draft`. A pinned recipe is
+  built as Pinning recipes below says, and the output ends `locked`.
 - `--fetch` is the consent to download (recipes §6.13). Without it a
   missing input is reported, as `recipe plan` reports it, and nothing is
   downloaded. With it, every URL of an input the plan reports missing is
@@ -1735,16 +1776,106 @@ After a build, one line per input says how it is kept (§3.10 of the
 design): `kept as stored`, `kept as files` (built into a volume), `kept as
 text with DOS line ends`, `not needed: …` (an archive whose members were
 found), with `not kept: N members unused` for an opened archive's members
-the recipe did not take. The last line is `built NAME:TAG<TAB>DIGEST<TAB>draft`,
-or `already built …` when the tag names this artifact already.
+the recipe did not take. The last line is `built NAME:TAG<TAB>DIGEST<TAB>draft`
+(`locked` for a pinned recipe), or `already built …` when the tag names this
+artifact already. A pinned build whose work file has changed since the pin
+prints one `  drift: …` line per field before it.
 
 Exit status: 0 when the artifact is tagged or was already; 1 when the
 recipe has findings (the check's report is printed), an input is missing
 (the plan is printed, then `not built: missing M of N inputs; nothing was
 tagged`), or a download, a read, a step or the importer fails (the reason on
-standard error); 2 on a usage error, a folder, a recipe or work file that
-cannot be read, or a store that cannot be opened. Nothing is tagged unless
-the exit status is 0.
+standard error), or a pinned recipe's outputs differ from its lock (each
+mismatch on standard error, then `FILE: not built: NAME differs from its
+lock; nothing was tagged under its tag`); 2 on a usage error, a folder, a
+recipe or work file that cannot be read, or a store that cannot be opened.
+Nothing is tagged unless the exit status is 0, except the `--keep-as` tag of
+a pinned build whose outputs differ.
+
+## Pinning recipes
+
+`upcli recipe pin FILE` is the author's build, once per revision
+([design/recipes.md](design/recipes.md) §3.1, §3.8, §7.2): it builds the
+draft as `recipe build` does (same options, without `--keep-as`), tags it,
+then writes the lock beside the recipe and the manifest digest into it.
+
+```sh
+cargo run --offline -p upcli -- recipe pin my.media.toml --library /path/to/games
+cargo run --offline -p upcli -- recipe pin backlog/docs/design/recipe-corpus/vgabios/vgabios-0.9d-unemu.1-std.firmware.toml --library vendor
+```
+
+- **The lock** is the folder `FILE.lock` beside the recipe, holding
+  `sha256/<hex>` files, each named by the lower-case SHA-256 of its bytes:
+  the manifest the importer wrote, its config, and every other layer no
+  step made (the title metadata of a set; the generated README of a
+  firmware package), exactly the bytes the store holds. It holds no payload
+  byte. Written again from the same artifact it is the same files; a new
+  lock is written beside the old one and renamed into place.
+- **The digest** goes into the recipe as `digest = "sha256:…"` on the line
+  after `revision`, in the file's own line ends; nothing else in the file
+  changes. The recipe is then checked again, lock included; if that fails,
+  the file is restored and the lock removed.
+- If the check after writing fails, the recipe file is restored, the new
+  lock removed and any lock the draft had beside it put back. The tag the
+  build wrote stays: it names exactly what `recipe build` makes of the
+  draft, and a revision tag never moves or goes.
+- A recipe that already has `digest` is not pinned again (exit 1, `already
+  pinned to …`): an artifact that changes is a new revision, so raise
+  `revision`, remove `digest` and pin. A recipe whose lock is lost fails its
+  checks (rule 8); restore the lock from where the recipe was published.
+- The last line is `pinned NAME:TAG: digest DIGEST written into FILE, lock
+  FILE.lock (N files)`. Exit status as `recipe build`'s.
+
+**Building a pinned recipe.** `recipe build` checks the lock before it reads
+any input (as `recipe check` does), runs the steps, then compares every
+output with its descriptor in the locked manifest, found through the locked
+config (media in order, extras by file name, ROMs and their chips): the
+decoded SHA-256 and size, then the stored SHA-256 and size after encoding
+it as the descriptor says (raw, or Zstandard encoder profile 1 for a
+`+zstd` type). Every layer must be an output or a lock file. Only then is
+anything written: the payloads, the lock files and the manifest go into the
+store unchanged and the tag is written last. No writer of this build
+writes a manifest, config or metadata, so a later release, whose writers
+spell those files differently, publishes the digest the recipe was pinned
+to. The title record is the lock's whatever the work file says today. A
+mismatch names the output, the expected and the actual SHA-256, and tags
+nothing; with `--keep-as TAG` the result this build's writers make is kept
+under `NAME:TAG`, never under the recipe's tag. On a pinned build that
+matches its lock, `--keep-as TAG` tags the locked artifact `NAME:TAG`
+instead of the recipe's tag, as it does for a draft. The build compares the
+lock with the recipe again after the steps, so a lock or recipe file
+changed since the checks refuses it too.
+
+## Recipe conformance
+
+`upcli recipe conformance FILE|FOLDER... [--library DIR]... [--store DIR]
+[--config FILE]` builds every pinned recipe of the files and folders named
+into a scratch store, from the libraries only (the preferences' first, then
+each `--library`; no download, no other store), and compares the digest it
+publishes with the recipe's `digest` ([design/recipes.md](design/recipes.md)
+§6.12, §9). The scratch store is `cache/recipe-conformance/<process>` in
+the store of `--store DIR` or the default store, and is removed when the
+run ends; the store keeps only the libraries' index caches. Drafts are
+listed and not built; work files are skipped.
+
+```sh
+# this repository: the pinned open recipes of the corpus, from the fixtures
+cargo run --offline -p upcli -- recipe conformance backlog/docs/design/recipe-corpus --library vendor/freedos --library vendor
+# a repository of recipes, against a release of upcli and its own library
+upcli recipe conformance recipes/ --library /path/to/library --store ./conformance-store
+```
+
+One line per recipe: `FILE: conforms: NAME:TAG<TAB>DIGEST`, `FILE: differs:
+…` (the mismatches), `FILE: not built: …` (an input missing, or why it
+failed) or `FILE: draft, not built`; then `N pinned recipes: C conform, D
+differ, M not built; K drafts skipped`. Exit status: 0 when every pinned
+recipe conforms, 1 when one differs or was not built or when no pinned
+recipe was found (`upcli recipe conformance: no pinned recipe found …` on
+standard error: a run that finds nothing proves nothing), 2 on a usage error
+or a store or file that cannot be opened. The test
+`the_pinned_corpus_builds_the_digests_it_pins` (`pc-image`, `recipe_lock`)
+runs the same harness on the corpus's six pinned open recipes, the three
+FreeDOS 1.4 floppy sets and the three open firmware packages.
 
 ## Creating disk images
 

@@ -53,6 +53,23 @@ pub trait MediaProfile {
         let _ = format;
         id.to_owned()
     }
+    /// The name of the format a set's config describes with `table`, one of
+    /// [`Self::formats`], or `None` when it is none of them: a lock's media
+    /// formats are compared with the recipe's by name (recipes §3.8, point
+    /// 3). A provider that cannot say leaves every pinned medium's format
+    /// unmatched, the safe direction.
+    fn format_name(&self, table: &toml::Table) -> Option<String> {
+        let _ = table;
+        None
+    }
+    /// The kind (`document`, `archive`, `executable`, `other`) the importer
+    /// of `artifact` gives an extra of this file name when the recipe states
+    /// none; `None` when the provider does not say, and the kind is then
+    /// compared only when stated.
+    fn extra_kind(&self, artifact: crate::model::Kind, file_name: &str) -> Option<String> {
+        let _ = (artifact, file_name);
+        None
+    }
 }
 
 /// How a file system step lays out a volume of one format: here, which
@@ -105,6 +122,12 @@ pub struct CatalogueEntry {
     /// The SPDX expression of open firmware; `None` when the catalogue
     /// lists the ROM as user-supplied.
     pub license: Option<String>,
+    /// The provenance text the importer writes into a package of open
+    /// firmware; `None` for user-supplied firmware.
+    pub provenance: Option<String>,
+    /// The device kinds the ROM requires, sorted, as the importer writes
+    /// them.
+    pub requires: Vec<String>,
 }
 
 /// Firmware rules of a provider.
@@ -124,6 +147,17 @@ pub trait FirmwareProfile {
     /// size), or one chip of one of its layouts has this SHA-256 and size.
     /// A ROM is known by its bytes, whatever id a recipe gives it or not.
     fn identify(&self, sha256: &str, size: u64) -> Option<(String, CatalogueEntry)>;
+    /// The README the importer generates for a package of this config and
+    /// manifest, whose marks it states; `None` when the provider does not
+    /// say, and a lock's README is then not compared.
+    fn readme(
+        &self,
+        config: &image_store::firmware::Config,
+        manifest: &image_store::Manifest,
+    ) -> Option<String> {
+        let _ = (config, manifest);
+        None
+    }
 }
 
 /// The providers a check may ask, found by the platform a recipe names.

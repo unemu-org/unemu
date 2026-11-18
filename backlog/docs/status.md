@@ -5,6 +5,31 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — Recipe locks and pinning:** step B8 of design/recipes.md
+  §19.2. `upcli recipe pin FILE` builds a draft, then writes its lock,
+  `FILE.lock/sha256/<hex>` (the manifest, the config and every layer no
+  step made, the bytes the store holds), and `digest = "sha256:…"` after
+  `revision`. A pinned recipe's build checks the lock before reading any
+  input (also in `recipe check`, rule 8: each file's hash, the descriptors,
+  and the lock's decoded fields against the recipe), runs the steps,
+  checks every output against the locked manifest (decoded, then stored
+  SHA-256 and size under encoder profile 1) and publishes the lock's bytes
+  unchanged; a mismatch names the output and both hashes and tags nothing
+  (`--keep-as` keeps this build's result under its own tag). A work file
+  edited since the pin is drift: listed by `check`, `build` and `show`,
+  never published; `recipe show` of a pinned recipe prints the lock's
+  record. `upcli recipe conformance FILE|FOLDER... --library DIR` builds
+  every pinned recipe into a scratch store and compares digests. The
+  corpus's six open recipes are pinned: FreeDOS `1.4-r1` `1edc14e3…`,
+  `1.4-1.2m-r1` `c8129f6c…`, `1.4-720k-r1` `dd65877d…`, and the firmware
+  packages `unemu-at-bios` `e3c226ae…`, `vgabios` `179a11db…`, `xub`
+  `7d42e80e…` (the template packages' digests). MEASURED: a pinned recipe
+  builds its digest, the lock's manifest byte for byte, with a publisher
+  whose manifest writer differs (another annotation, another order, other
+  whitespace), whose own draft of the recipe gets another digest; the
+  corpus pins conform from the fixtures. Not yet: locked payload blobs are
+  not looked for in the store before the steps run ("found instead of
+  made"). commands.md, Pinning recipes and Recipe conformance.
 - **2026-11-18 — The contract has its own repository:** step 3 of
   design/core-contract.md §13.6. `unemu-core-api` is no longer a workspace
   crate: the workspace pins release v0.1.0 of

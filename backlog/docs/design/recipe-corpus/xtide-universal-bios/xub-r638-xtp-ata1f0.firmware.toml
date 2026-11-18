@@ -1,7 +1,7 @@
 # The XTIDE Universal BIOS r638, XT+ build for ATA at 1F0h: unemu/firmware/ibm-pc/xub-r638-xtp-ata1f0:r1.
 # Open. The ROM and its source archive are what vendor/xtide-universal-bios/fetch.sh makes,
 # taken unmodified: no step. Real data from the firmware catalogue and
-# pc_image::template::FIRMWARE. A draft: no digest. No URL: the fetch script configures and
+# pc_image::template::FIRMWARE. Pinned: digest and the .lock folder beside it. No URL: the fetch script configures and
 # pads the project's download and builds the source archive from its Subversion trunk.
 
 recipe = "0.1"
@@ -10,6 +10,7 @@ recipe = "0.1"
 name = "unemu/firmware/ibm-pc/xub-r638-xtp-ata1f0"
 platform = "ibm-pc"
 revision = 1
+digest = "sha256:7d42e80e6297cadbd2c08c1c26a19a4a68c33c9651aceec2c98053bf81f90547"
 
 [package]
 title = "XTIDE Universal BIOS r638, XT+ build for ATA at 1F0h"

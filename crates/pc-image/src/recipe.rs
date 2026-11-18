@@ -120,6 +120,34 @@ impl MediaProfile for PcRecipes {
         }
     }
 
+    /// The format whose table `image media import` stores is `table`.
+    fn format_name(&self, table: &toml::Table) -> Option<String> {
+        FORMATS
+            .iter()
+            .find(|name| crate::media_set::format(name).ok().as_ref() == Some(table))
+            .map(|name| (*name).to_owned())
+    }
+
+    /// The kind `image media import` or `image firmware import` gives an
+    /// extra by its file name.
+    fn extra_kind(&self, artifact: recipe::model::Kind, file_name: &str) -> Option<String> {
+        let path = std::path::Path::new(file_name);
+        let kind = match artifact {
+            recipe::model::Kind::Media => crate::media_import::extra_kind(path),
+            recipe::model::Kind::Firmware => crate::firmware_import::extra_kind(path),
+        };
+        use image_store::media_set::ExtraKind;
+        Some(
+            match kind {
+                ExtraKind::Document => "document",
+                ExtraKind::Archive => "archive",
+                ExtraKind::Executable => "executable",
+                ExtraKind::Other => "other",
+            }
+            .to_owned(),
+        )
+    }
+
     fn dos_name_fault(&self, name: &str) -> Option<String> {
         crate::media_set::PcMediaFormats
             .validate_name(name)
@@ -201,6 +229,14 @@ impl VolumeProfile for FatVolume {
 }
 
 impl FirmwareProfile for PcRecipes {
+    /// The README `image firmware import` generates.
+    fn readme(
+        &self,
+        config: &image_store::firmware::Config,
+        manifest: &image_store::Manifest,
+    ) -> Option<String> {
+        Some(crate::firmware_import::generated_readme(config, manifest))
+    }
     fn roles(&self) -> &[&str] {
         crate::firmware::ROLES
     }
@@ -236,6 +272,19 @@ fn catalogue_entry(entry: &assembly::FirmwareEntry) -> CatalogueEntry {
         license: match entry.distribution {
             assembly::FirmwareDistribution::Open { license, .. } => Some(license.to_owned()),
             assembly::FirmwareDistribution::UserSupplied => None,
+        },
+        provenance: match entry.distribution {
+            assembly::FirmwareDistribution::Open { provenance, .. } => Some(provenance.to_owned()),
+            assembly::FirmwareDistribution::UserSupplied => None,
+        },
+        requires: {
+            let mut kinds: Vec<String> = entry
+                .requires
+                .iter()
+                .map(|part| crate::firmware::device_kind(*part).to_owned())
+                .collect();
+            kinds.sort();
+            kinds
         },
     }
 }

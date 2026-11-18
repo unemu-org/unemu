@@ -1,6 +1,6 @@
 # The unemu AT BIOS 1.0.2-unemu.3: unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1.
 # Open. The ROM and its source archive are release assets, taken unmodified: no step.
-# Real data from unemu-media's firmware.toml and build.sh. A draft: no digest.
+# Real data from unemu-media's firmware.toml and build.sh. Pinned: digest and the .lock folder beside it.
 
 recipe = "0.1"
 
@@ -8,6 +8,7 @@ recipe = "0.1"
 name = "unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3"
 platform = "ibm-pc"
 revision = 1
+digest = "sha256:e3c226ae2cb8935ffacf9fb806124d1c1219388c8af4f0fb60ef5a96fbd86c58"
 
 [package]
 title = "unemu AT BIOS 1.0.2-unemu.3"

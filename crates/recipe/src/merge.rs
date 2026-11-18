@@ -28,6 +28,9 @@ use image_store::metadata::{self, Metadata};
 pub enum Origin {
     Recipe,
     Work,
+    /// The lock of a pinned recipe (recipes §6.16): a build writes the
+    /// locked record, whatever the work file says today.
+    Lock,
 }
 
 /// A merged value and the file it came from.
@@ -311,6 +314,61 @@ impl Merged {
                 .collect(),
             ..metadata::Title::default()
         }
+    }
+
+    /// The record a pinned build writes: this merge's identity with the
+    /// title record and set labels of the lock's `metadata`, every value
+    /// marked [`Origin::Lock`]. `None` when the metadata holds other than
+    /// one title record.
+    pub fn locked(&self, metadata: &Metadata) -> Option<Merged> {
+        let [title] = metadata.titles.as_slice() else {
+            return None;
+        };
+        fn lock<T>(value: T) -> Sourced<T> {
+            Sourced {
+                value,
+                from: Origin::Lock,
+            }
+        }
+        let one = |v: &Option<String>| v.clone().map(lock);
+        let many = |v: &Vec<String>| (!v.is_empty()).then(|| lock(v.clone()));
+        Some(Merged {
+            title: lock(title.title.clone()),
+            sort_title: one(&title.sort_title),
+            series: one(&title.series),
+            software_platform: one(&title.platform),
+            players: title.players.as_ref().map(|p| {
+                lock(Players {
+                    min: i64::from(p.min),
+                    max: i64::from(p.max),
+                })
+            }),
+            publishers: many(&title.publishers),
+            developers: many(&title.developers),
+            genres: many(&title.genres),
+            labels: metadata.labels.iter().cloned().map(lock).collect(),
+            synopsis: title.synopsis.clone(),
+            description: one(&title.description),
+            version: title.version.clone(),
+            edition: title.edition.clone(),
+            year: title.release_year,
+            languages: title.languages.clone(),
+            regions: title.regions.clone(),
+            source_media: title.source_media.clone(),
+            requirements: title.requirements.clone(),
+            ids: title
+                .work_ids
+                .iter()
+                .map(|(k, v)| (k.clone(), lock(v.clone())))
+                .collect(),
+            needs: title
+                .needs
+                .iter()
+                .map(|(k, v)| (k.clone(), lock(v.clone())))
+                .collect(),
+            work: title.work_id.clone(),
+            ..self.clone()
+        })
     }
 
     /// The set's whole metadata: the platform by its current id, the merged

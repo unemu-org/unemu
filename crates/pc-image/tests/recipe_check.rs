@@ -191,8 +191,11 @@ fn every_fixture_has_its_expected_findings() {
     }
 }
 
+/// A lock folder alone no longer satisfies rule 8: the lock must hold the
+/// manifest the digest names (recipes §3.8, point 1). A lock that agrees
+/// with its recipe passes; `recipe_lock` tests that with a real pin.
 #[test]
-fn a_digest_with_its_lock_is_not_reported() {
+fn a_digest_with_an_empty_lock_is_reported() {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("recipe-lock");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("x.media.toml.lock")).unwrap();
@@ -202,7 +205,14 @@ fn a_digest_with_its_lock_is_not_reported() {
     )
     .unwrap();
     let report = check(&[dir.to_str().unwrap()], &[&PcRecipes]);
-    assert!(report.is_clean(), "{}", report.render());
+    let findings: Vec<String> = report.findings.iter().map(|f| f.message.clone()).collect();
+    assert_eq!(findings.len(), 1, "{}", report.render());
+    assert!(
+        findings[0].ends_with("x.media.toml.lock: no sha256 folder"),
+        "{}",
+        report.render()
+    );
+    assert_eq!(report.findings[0].rule, recipe::Rule::Lock);
 }
 
 /// With the `ibm-pc` provider, every recipe of the corpus passes except the
