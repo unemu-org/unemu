@@ -76,12 +76,11 @@ planner='
 def emulation_crates: ["assembly", "audio", "bus", "chipset", "cpu", "device",
   "devices", "machine", "machine-file", "media", "testkit", "unemu-pc-core", "video"];
 # Files that hold the machine runners and the disk builder the goldens drive,
-# and the command line the front-end goldens drive (the program, the
-# dispatch of the neutral command line and every PC command); a path ending
-# in "/" covers every file under it.
-def runner_files: ["crates/pc-harness/src/", "crates/cli/src/command.rs",
-  "crates/cli/src/cli_core/mod.rs", "crates/cli/src/cli_pc/",
-  "crates/pc-image/src/media_create.rs"];
+# and the command line the front-end goldens drive: the neutral command line
+# (its dispatch, and the journal tools a golden runs) and every PC command; a
+# path ending in "/" covers every file under it.
+def runner_files: ["crates/pc-harness/src/", "crates/cli-core/src/",
+  "crates/cli-pc/src/", "crates/pc-image/src/media_create.rs"];
 # Paths that crates read outside their own directory: test support shared
 # with #[path], shipped machine files, fixture scripts and pins, assets.
 # The self-test checks that every path a crate source names outside its
@@ -89,24 +88,24 @@ def runner_files: ["crates/pc-harness/src/", "crates/cli/src/command.rs",
 # repository root reads both machines/ and vendor/.
 def data_rules: [
   {prefix: "crates/pc-harness/tests/support/", goldens: true,
-   crates: ["assembly", "cli", "machine-file", "pc-harness", "pc-image", "window"],
+   crates: ["assembly", "cli-pc", "machine-file", "pc-harness", "pc-image", "upcli", "window"],
    why: "golden test support shared by several crates"},
   {prefix: "crates/pc-image/tests/support/", goldens: false,
-   crates: ["cli", "pc-image"], why: "test support shared with cli"},
+   crates: ["cli-pc", "pc-image"], why: "test support shared with the PC command line"},
   {prefix: "machines/README.md", goldens: false,
-   crates: ["cli", "machine-file", "pc-image", "window"],
+   crates: ["cli-pc", "machine-file", "pc-image", "window"],
    why: "machine-file guide that tests quote"},
   {prefix: "machines/", goldens: true,
-   crates: ["cli", "machine-file", "pc-harness", "pc-image", "window"],
+   crates: ["cli-pc", "machine-file", "pc-harness", "pc-image", "upcli", "window"],
    why: "shipped machine file"},
   {prefix: "vendor/", except: "[.]md$", goldens: true,
-   crates: ["assembly", "cli", "machine-file", "pc-harness", "pc-image", "window"],
+   crates: ["assembly", "cli-pc", "machine-file", "pc-harness", "pc-image", "upcli", "window"],
    why: "fixture script, pin or notice"},
   {prefix: "assets/", goldens: false, crates: ["ui-kit"], why: "brand asset the ui kit embeds"},
   {prefix: "backlog/docs/design/mockups/", goldens: false, crates: ["ui-kit"],
    why: "approved mock-ups the icon tests of the ui kit read"},
   {prefix: "backlog/docs/design/recipe-corpus/", goldens: false,
-   crates: ["cli", "pc-harness", "pc-image"],
+   crates: ["cli-pc", "pc-harness", "pc-image"],
    why: "recipes the recipe checks and the user-file volume tests read"},
   {prefix: "backlog/docs/design/recipe-schema-0.1.json", goldens: false,
    crates: ["pc-image"], why: "the recipe schema a test compares with the generated one"}
@@ -222,7 +221,7 @@ else
        | select(.watch as $w | $changed | any(test($w)))
        | "\(.package):\(.test)"] end),
     release_devices: ($affected | has("devices") and ($mode == "crates" or $mode == "full")),
-    cli: ($affected | has("cli") and ($mode == "crates" or $mode == "full")),
+    cli: ($affected | has("upcli") and ($mode == "crates" or $mode == "full")),
     deny: ($files | any(.deny)),
     docs: [$files[] | select(.class == "docs") | .path],
     shell: [$changed[] | select(test("[.]sh$"))],

@@ -32,6 +32,24 @@ pub use import::{import_machine, ChosenGeneration, ImportOptions, ImportRecord, 
 pub use machine_file::firmware_package::PLATFORM;
 pub use provider::{compress_image, resolve, PcProvider, CMOS, DISK_ZERO, PAYLOAD_TYPES};
 
+const MEDIA_SETS: image_store::media_set::Validator<'static> =
+    image_store::media_set::Validator(&media_set::PcMediaFormats);
+
+/// Run `job` with every image provider of this platform: machine images,
+/// media sets and firmware packages, each rating an artifact with the PC rows
+/// of the compatibility table, which the push guard of `unemu/` checks. The
+/// command line's PC platform and the programs' list of every platform
+/// compiled in both take the PC's providers from here.
+pub fn with_providers<T>(job: impl FnOnce(&[&dyn image_store::ConfigValidator]) -> T) -> T {
+    let firmware_rules = firmware::PcFirmwareRules(firmware::catalogue());
+    let firmware = image_store::firmware::Validator(&firmware_rules);
+    job(&[
+        &PcProvider,
+        &compat::WithPcRows(&MEDIA_SETS),
+        &compat::WithPcRows(&firmware),
+    ])
+}
+
 /// What a person reads for this platform, whichever of its ids an artifact
 /// names.
 pub const PLATFORM_NAME: &str = "IBM PC compatible";

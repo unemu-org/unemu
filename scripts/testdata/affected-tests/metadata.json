@@ -215,9 +215,36 @@
       "dependencies": []
     },
     {
-      "name": "cli",
-      "id": "path+file:///workspace/crates/cli#0.0.2",
-      "manifest_path": "/workspace/crates/cli/Cargo.toml",
+      "name": "cli-core",
+      "id": "path+file:///workspace/crates/cli-core#0.0.2",
+      "manifest_path": "/workspace/crates/cli-core/Cargo.toml",
+      "dependencies": [
+        {
+          "name": "image-registry",
+          "kind": null,
+          "path": "/workspace/crates/registry"
+        },
+        {
+          "name": "image-store",
+          "kind": null,
+          "path": "/workspace/crates/image-store"
+        },
+        {
+          "name": "media",
+          "kind": null,
+          "path": "/workspace/crates/media"
+        },
+        {
+          "name": "image-registry",
+          "kind": "dev",
+          "path": "/workspace/crates/registry"
+        }
+      ]
+    },
+    {
+      "name": "cli-pc",
+      "id": "path+file:///workspace/crates/cli-pc#0.0.2",
+      "manifest_path": "/workspace/crates/cli-pc/Cargo.toml",
       "dependencies": [
         {
           "name": "assembly",
@@ -225,19 +252,14 @@
           "path": "/workspace/crates/assembly"
         },
         {
-          "name": "cpu",
+          "name": "cli-core",
           "kind": null,
-          "path": "/workspace/crates/cpu"
+          "path": "/workspace/crates/cli-core"
         },
         {
           "name": "device",
           "kind": null,
           "path": "/workspace/crates/device"
-        },
-        {
-          "name": "devices",
-          "kind": null,
-          "path": "/workspace/crates/devices"
         },
         {
           "name": "image-registry",
@@ -275,11 +297,6 @@
           "path": "/workspace/crates/pc-image"
         },
         {
-          "name": "platforms",
-          "kind": null,
-          "path": "/workspace/crates/platforms"
-        },
-        {
           "name": "video",
           "kind": null,
           "path": "/workspace/crates/video"
@@ -288,6 +305,16 @@
           "name": "assembly",
           "kind": "dev",
           "path": "/workspace/crates/assembly"
+        },
+        {
+          "name": "cpu",
+          "kind": "dev",
+          "path": "/workspace/crates/cpu"
+        },
+        {
+          "name": "devices",
+          "kind": "dev",
+          "path": "/workspace/crates/devices"
         },
         {
           "name": "image-registry",
@@ -303,6 +330,68 @@
           "name": "media",
           "kind": "dev",
           "path": "/workspace/crates/media"
+        }
+      ]
+    },
+    {
+      "name": "upcli",
+      "id": "path+file:///workspace/crates/upcli#0.0.2",
+      "manifest_path": "/workspace/crates/upcli/Cargo.toml",
+      "dependencies": [
+        {
+          "name": "assembly",
+          "kind": null,
+          "path": "/workspace/crates/assembly"
+        },
+        {
+          "name": "cli-core",
+          "kind": null,
+          "path": "/workspace/crates/cli-core"
+        },
+        {
+          "name": "cli-pc",
+          "kind": null,
+          "path": "/workspace/crates/cli-pc"
+        },
+        {
+          "name": "devices",
+          "kind": null,
+          "path": "/workspace/crates/devices"
+        },
+        {
+          "name": "image-store",
+          "kind": null,
+          "path": "/workspace/crates/image-store"
+        },
+        {
+          "name": "platforms",
+          "kind": null,
+          "path": "/workspace/crates/platforms"
+        },
+        {
+          "name": "cpu",
+          "kind": "dev",
+          "path": "/workspace/crates/cpu"
+        },
+        {
+          "name": "image-registry",
+          "kind": "dev",
+          "path": "/workspace/crates/registry"
+        },
+        {
+          "name": "machine",
+          "kind": "dev",
+          "path": "/workspace/crates/machine"
+        },
+        {
+          "name": "pc-harness",
+          "kind": "dev",
+          "path": "/workspace/crates/pc-harness"
+        },
+        {
+          "name": "pc-image",
+          "kind": "dev",
+          "path": "/workspace/crates/pc-image"
         }
       ]
     },
@@ -713,7 +802,9 @@
     "path+file:///workspace/crates/audio#0.0.2",
     "path+file:///workspace/crates/assembly#0.0.2",
     "path+file:///workspace/crates/media#0.0.2",
-    "path+file:///workspace/crates/cli#0.0.2",
+    "path+file:///workspace/crates/cli-core#0.0.2",
+    "path+file:///workspace/crates/cli-pc#0.0.2",
+    "path+file:///workspace/crates/upcli#0.0.2",
     "path+file:///workspace/crates/registry#image-registry@0.0.2",
     "path+file:///workspace/crates/image-store#0.0.2",
     "path+file:///workspace/crates/machine-file#0.0.2",

@@ -6,29 +6,16 @@
 //! providers and firmware catalogue live in `pc-image`.
 
 use image_registry::{push, Reference, RegistryEntry};
-use image_store::{firmware, media_set, ConfigValidator, Digest, Manifest, Store};
-use pc_image::{
-    compat::WithPcRows,
-    firmware::{catalogue, PcFirmwareRules},
-};
-
-const MEDIA_SETS: media_set::Validator<'static> =
-    media_set::Validator(&pc_image::media_set::PcMediaFormats);
+use image_store::{ConfigValidator, Digest, Manifest, Store};
 
 /// Run `job` with every platform provider a registry transfer may need: PC
-/// machine images, PC media sets and PC firmware packages. Push and pull pick
-/// the one whose artifact type and platform match the manifest. The command
-/// line and the desktop shell both take the list from here, so they accept
-/// the same artifacts. Each rates an artifact with the PC rows of the
-/// compatibility table, which the push guard of `unemu/` checks.
+/// machine images, PC media sets and PC firmware packages
+/// ([`pc_image::with_providers`]). Push and pull pick the one whose artifact
+/// type and platform match the manifest. The desktop shell takes the list
+/// from here and the command line's PC platform takes the PC's list from
+/// `pc-image` too, so both accept the same artifacts.
 pub fn with_image_providers<T>(job: impl FnOnce(&[&dyn ConfigValidator]) -> T) -> T {
-    let firmware_rules = PcFirmwareRules(catalogue());
-    let firmware = firmware::Validator(&firmware_rules);
-    job(&[
-        &pc_image::PcProvider,
-        &WithPcRows(&MEDIA_SETS),
-        &WithPcRows(&firmware),
-    ])
+    pc_image::with_providers(job)
 }
 
 /// The push plan of `local_tag` that the desktop shell uses: every local

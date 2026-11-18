@@ -679,23 +679,35 @@ dependencies = [
 ]
 
 [[package]]
-name = "cli"
+name = "cli-core"
+version = "0.0.2"
+dependencies = [
+ "anyhow",
+ "image-registry",
+ "image-store",
+ "libc",
+ "media",
+ "recipe",
+ "toml",
+]
+
+[[package]]
+name = "cli-pc"
 version = "0.0.2"
 dependencies = [
  "anyhow",
  "assembly",
+ "cli-core",
  "cpu",
  "device",
  "devices",
  "image-registry",
  "image-store",
- "libc",
  "machine",
  "machine-file",
  "media",
  "pc-harness",
  "pc-image",
- "platforms",
  "recipe",
  "toml",
  "video",
@@ -3744,6 +3756,23 @@ name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
+
+[[package]]
+name = "upcli"
+version = "0.0.2"
+dependencies = [
+ "assembly",
+ "cli-core",
+ "cli-pc",
+ "cpu",
+ "devices",
+ "image-registry",
+ "image-store",
+ "machine",
+ "pc-harness",
+ "pc-image",
+ "platforms",
+]
 
 [[package]]
 name = "ureq"

@@ -125,7 +125,7 @@ jobs:
           export UNEMUPC_SOURCE_COMMIT
           export CFLAGS="-ffile-prefix-map=$GITHUB_WORKSPACE=/build/unemupc -ffile-prefix-map=$cargo_home/registry/src=/cargo/registry/src -ffile-prefix-map=$cargo_home/git/checkouts=/cargo/git/checkouts"
           cargo build --locked --release --target "$TARGET" \
-            -p cli -p window --bin upcli --bin unemupc
+            -p upcli -p window --bin upcli --bin unemupc
 
       - name: Check the binaries
         run: |

@@ -5,6 +5,19 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — The command line in three crates:** steps 5 and 6 of
+  the CLI split (design/core-contract.md §7.1, §7.5). `cli` is gone:
+  `cli-core` (layer neutral) holds the platform-neutral command line, its
+  provider seam and the journal tools' tests; `cli-pc` (layer pc) the PC's
+  platform, every PC command, the PC command tests and the front-end
+  goldens; `upcli` the binary, its `--version` and `--about`, the tests that
+  run the binary and the pin of the documented command lines. The crate
+  boundary check now keeps the neutral command line free of PC and
+  emulator crates, so the source scan shrank to `#[path]` and `include!`.
+  The PC's provider list is `pc_image::with_providers`, which `platforms`
+  calls. Build and lint with `-p upcli`. No behaviour changes: every test
+  keeps its name and the binary's output over 319 invocations is
+  byte-identical (MEASURED).
 - **2026-11-18 — The desktop's machine window drives a `dyn Machine`:**
   second step of the window split (design/core-contract.md §8). Three new
   crates: `unemu-core-api`, the front-end contract of §3 (layer

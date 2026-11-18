@@ -5,40 +5,40 @@ Everyday commands for this project. Keep this file **flat and copy-pasteable** �
 ## Local machine images
 
 ```sh
-cargo run --offline -p cli -- image import machines/at-freedos.toml --store /path/to/store --tag dos-lab:1.0 --create
-cargo run --offline -p cli -- image import /path/to/machine.yaml --store /path/to/store --tag dos-lab:recovered --recover medium-0=tip
-cargo run --offline -p cli -- image import /path/to/machine.toml --store /path/to/store --tag dos-lab:checkpoint --recover medium-0=generation:1
-cargo run --offline -p cli -- image import /path/to/machine.toml --store /path/to/store --tag dos-lab:1.1 --min-app-version 0.0.3
-cargo run --offline -p cli -- image compress dos-lab:1.0 --tag dos-lab:compressed --store /path/to/store
-cargo run --offline -p cli -- image ls --store /path/to/store
-cargo run --offline -p cli -- image sweep --store /path/to/store
-cargo run --offline -p cli -- image run dos-lab:1.0 --store /path/to/store --workspace play --max-steps 1000000
-cargo run --offline -p cli -- image run dos-lab:1.0 --store /path/to/store --workspace disposable --new --max-steps 1000000
-cargo run --offline -p cli -- image workspace ls --store /path/to/store
-cargo run --offline -p cli -- image workspace abandon-publication play --store /path/to/store
-cargo run --offline -p cli -- image publish --from-workspace play --store /path/to/store --tag dos-lab:flat --flatten
-cargo run --offline -p cli -- image publish --from-workspace play --store /path/to/store --tag dos-lab:1.1
-cargo run --offline -p cli -- image workspace discard play --store /path/to/store --yes
-cargo run --offline -p cli -- image machine ls --store /path/to/store
-cargo run --offline -p cli -- image machine new dos-lab:1.0 --store /path/to/store --name "DOS games"
-cargo run --offline -p cli -- image machine rename dos-games "Keen" --store /path/to/store
-cargo run --offline -p cli -- image machine duplicate dos-games --store /path/to/store --name "Keen copy"
-cargo run --offline -p cli -- image machine settings dos-games --store /path/to/store --set memory.extended_kib=3072 --dry-run
-cargo run --offline -p cli -- image machine settings dos-games --store /path/to/store --set memory.extended_kib=3072
-cargo run --offline -p cli -- image machine settings dos-games --store /path/to/store --clear
-cargo run --offline -p cli -- image machine run dos-games --store /path/to/store --max-steps 1000000
-cargo run --offline -p cli -- image machine commit dos-games --store /path/to/store --tag dos-games:1.0.0
-cargo run --offline -p cli -- image machine commit dos-games --store /path/to/store --tag dos-games:1.1.0 --title "DOS games" --keep-on-old-image
-cargo run --offline -p cli -- image machine reset dos-games --store /path/to/store --yes
-cargo run --offline -p cli -- image machine rm dos-games --store /path/to/store --yes
-cargo run --offline -p cli -- image media import /path/to/disks --title "Installation set" --tag private/media/ibm-pc/install:1.0-r1 --store /path/to/store --create
-cargo run --offline -p cli -- image media import /path/to/disk1.img /path/to/disk2.img --title "Installation set" --tag private/media/ibm-pc/install:2.0-r1 --label '1=Setup' --extra /path/to/manual.txt:MANUAL.TXT --store /path/to/store
-cargo run --offline -p cli -- image media import /path/to/disc.iso --title "Optical set" --tag private/media/ibm-pc/optical:1.0-r1 --format 1=iso-2048 --store /path/to/store
-cargo run --offline -p cli -- image media import /path/to/game.img --title "Game" --tag private/media/ibm-pc/game:1.0-r1 --need cpu=286+ --need memory=640K --need video=ega,vga --need sound=adlib,pc-speaker,none --requirements "IBM AT or compatible; 640K; EGA or VGA" --work game --synopsis "What the game is." --work-id mobygames=game --store /path/to/store
-cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag private/media/ibm-pc/wolf3d-shareware:1.4-r1 --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1992 --genre "first-person shooter" --platform DOS --description 'Wolfenstein 3-D, episode 1, Escape from Wolfenstein, version 1.4, the shareware episode of a first-person shooter with texture-mapped VGA graphics by id Software, published by Apogee Software. As B.J. Blazkowicz the player escapes from Castle Wolfenstein through ten floors, one of them secret. It needs a 286 or better. The disk holds the files of the original Apogee shareware archive 1wolf14.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store --create
-cargo run --offline -p cli -- image media ls --store /path/to/store
-cargo run --offline -p cli -- image media show private/media/ibm-pc/install:1.0 --store /path/to/store
-cargo run --offline -p cli -- image push private/media/ibm-pc/wolf3d-shareware:1.4-r1 unemu/media/ibm-pc/wolf3d-shareware:1.4-r1 --store /path/to/store --dry-run
+cargo run --offline -p upcli -- image import machines/at-freedos.toml --store /path/to/store --tag dos-lab:1.0 --create
+cargo run --offline -p upcli -- image import /path/to/machine.yaml --store /path/to/store --tag dos-lab:recovered --recover medium-0=tip
+cargo run --offline -p upcli -- image import /path/to/machine.toml --store /path/to/store --tag dos-lab:checkpoint --recover medium-0=generation:1
+cargo run --offline -p upcli -- image import /path/to/machine.toml --store /path/to/store --tag dos-lab:1.1 --min-app-version 0.0.3
+cargo run --offline -p upcli -- image compress dos-lab:1.0 --tag dos-lab:compressed --store /path/to/store
+cargo run --offline -p upcli -- image ls --store /path/to/store
+cargo run --offline -p upcli -- image sweep --store /path/to/store
+cargo run --offline -p upcli -- image run dos-lab:1.0 --store /path/to/store --workspace play --max-steps 1000000
+cargo run --offline -p upcli -- image run dos-lab:1.0 --store /path/to/store --workspace disposable --new --max-steps 1000000
+cargo run --offline -p upcli -- image workspace ls --store /path/to/store
+cargo run --offline -p upcli -- image workspace abandon-publication play --store /path/to/store
+cargo run --offline -p upcli -- image publish --from-workspace play --store /path/to/store --tag dos-lab:flat --flatten
+cargo run --offline -p upcli -- image publish --from-workspace play --store /path/to/store --tag dos-lab:1.1
+cargo run --offline -p upcli -- image workspace discard play --store /path/to/store --yes
+cargo run --offline -p upcli -- image machine ls --store /path/to/store
+cargo run --offline -p upcli -- image machine new dos-lab:1.0 --store /path/to/store --name "DOS games"
+cargo run --offline -p upcli -- image machine rename dos-games "Keen" --store /path/to/store
+cargo run --offline -p upcli -- image machine duplicate dos-games --store /path/to/store --name "Keen copy"
+cargo run --offline -p upcli -- image machine settings dos-games --store /path/to/store --set memory.extended_kib=3072 --dry-run
+cargo run --offline -p upcli -- image machine settings dos-games --store /path/to/store --set memory.extended_kib=3072
+cargo run --offline -p upcli -- image machine settings dos-games --store /path/to/store --clear
+cargo run --offline -p upcli -- image machine run dos-games --store /path/to/store --max-steps 1000000
+cargo run --offline -p upcli -- image machine commit dos-games --store /path/to/store --tag dos-games:1.0.0
+cargo run --offline -p upcli -- image machine commit dos-games --store /path/to/store --tag dos-games:1.1.0 --title "DOS games" --keep-on-old-image
+cargo run --offline -p upcli -- image machine reset dos-games --store /path/to/store --yes
+cargo run --offline -p upcli -- image machine rm dos-games --store /path/to/store --yes
+cargo run --offline -p upcli -- image media import /path/to/disks --title "Installation set" --tag private/media/ibm-pc/install:1.0-r1 --store /path/to/store --create
+cargo run --offline -p upcli -- image media import /path/to/disk1.img /path/to/disk2.img --title "Installation set" --tag private/media/ibm-pc/install:2.0-r1 --label '1=Setup' --extra /path/to/manual.txt:MANUAL.TXT --store /path/to/store
+cargo run --offline -p upcli -- image media import /path/to/disc.iso --title "Optical set" --tag private/media/ibm-pc/optical:1.0-r1 --format 1=iso-2048 --store /path/to/store
+cargo run --offline -p upcli -- image media import /path/to/game.img --title "Game" --tag private/media/ibm-pc/game:1.0-r1 --need cpu=286+ --need memory=640K --need video=ega,vga --need sound=adlib,pc-speaker,none --requirements "IBM AT or compatible; 640K; EGA or VGA" --work game --synopsis "What the game is." --work-id mobygames=game --store /path/to/store
+cargo run --offline -p upcli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag private/media/ibm-pc/wolf3d-shareware:1.4-r1 --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1992 --genre "first-person shooter" --platform DOS --description 'Wolfenstein 3-D, episode 1, Escape from Wolfenstein, version 1.4, the shareware episode of a first-person shooter with texture-mapped VGA graphics by id Software, published by Apogee Software. As B.J. Blazkowicz the player escapes from Castle Wolfenstein through ten floors, one of them secret. It needs a 286 or better. The disk holds the files of the original Apogee shareware archive 1wolf14.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store --create
+cargo run --offline -p upcli -- image media ls --store /path/to/store
+cargo run --offline -p upcli -- image media show private/media/ibm-pc/install:1.0 --store /path/to/store
+cargo run --offline -p upcli -- image push private/media/ibm-pc/wolf3d-shareware:1.4-r1 unemu/media/ibm-pc/wolf3d-shareware:1.4-r1 --store /path/to/store --dry-run
 ```
 
 Machines (machine-images §3.2) are named local instances of images: the
@@ -247,9 +247,9 @@ extension. To use the published sets, pull them instead (Official template
 images, below).
 
 ```sh
-cargo run --offline -p cli -- image media import vendor/freedos/floppy-1.4/144m/x86BOOT.img vendor/freedos/floppy-1.4/144m/x86DSK01.img vendor/freedos/floppy-1.4/144m/x86DSK02.img vendor/freedos/floppy-1.4/144m/x86DSK03.img vendor/freedos/floppy-1.4/144m/x86DSK04.img vendor/freedos/floppy-1.4/144m/x86DSK05.img vendor/freedos/floppy-1.4/144m/x86DSK06.img --title FreeDOS --tag unemu/media/ibm-pc/freedos:1.4-r1 --label '1=Disk 1 of 7 - boot disk and installer (x86BOOT.img)' --format 1=1.44M --label '2=Disk 2 of 7 - packages (x86DSK01.img)' --format 2=1.44M --label '3=Disk 3 of 7 - packages (x86DSK02.img)' --format 3=1.44M --label '4=Disk 4 of 7 - packages (x86DSK03.img)' --format 4=1.44M --label '5=Disk 5 of 7 - packages (x86DSK04.img)' --format 5=1.44M --label '6=Disk 6 of 7 - packages (x86DSK05.img)' --format 6=1.44M --label '7=Disk 7 of 7 - packages (x86DSK06.img)' --format 7=1.44M --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher 'The FreeDOS Project' --developer 'The FreeDOS Project' --year 2025 --genre 'operating system' --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on seven 3.5-inch 1.44M diskettes, unmodified: the boot disk with the floppy installer, then six disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition 'Floppy Edition' --set-label freedos --set-label open-source --set-label operating-system --open --license 'GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other' --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
-cargo run --offline -p cli -- image media import vendor/freedos/floppy-1.4/120m/x86BOOT.img vendor/freedos/floppy-1.4/120m/x86DSK01.img vendor/freedos/floppy-1.4/120m/x86DSK02.img vendor/freedos/floppy-1.4/120m/x86DSK03.img vendor/freedos/floppy-1.4/120m/x86DSK04.img vendor/freedos/floppy-1.4/120m/x86DSK05.img vendor/freedos/floppy-1.4/120m/x86DSK06.img vendor/freedos/floppy-1.4/120m/x86DSK07.img --title FreeDOS --tag unemu/media/ibm-pc/freedos:1.4-1.2m-r1 --label '1=Disk 1 of 8 - boot disk and installer (x86BOOT.img)' --format 1=1.2M --label '2=Disk 2 of 8 - packages (x86DSK01.img)' --format 2=1.2M --label '3=Disk 3 of 8 - packages (x86DSK02.img)' --format 3=1.2M --label '4=Disk 4 of 8 - packages (x86DSK03.img)' --format 4=1.2M --label '5=Disk 5 of 8 - packages (x86DSK04.img)' --format 5=1.2M --label '6=Disk 6 of 8 - packages (x86DSK05.img)' --format 6=1.2M --label '7=Disk 7 of 8 - packages (x86DSK06.img)' --format 7=1.2M --label '8=Disk 8 of 8 - packages (x86DSK07.img)' --format 8=1.2M --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher 'The FreeDOS Project' --developer 'The FreeDOS Project' --year 2025 --genre 'operating system' --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on eight 5.25-inch 1.2M diskettes, unmodified: the boot disk with the floppy installer, then seven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition 'Floppy Edition' --set-label freedos --set-label open-source --set-label operating-system --open --license 'GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other' --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
-cargo run --offline -p cli -- image media import vendor/freedos/floppy-1.4/720k/x86BOOT.img vendor/freedos/floppy-1.4/720k/x86DSK01.img vendor/freedos/floppy-1.4/720k/x86DSK02.img vendor/freedos/floppy-1.4/720k/x86DSK03.img vendor/freedos/floppy-1.4/720k/x86DSK04.img vendor/freedos/floppy-1.4/720k/x86DSK05.img vendor/freedos/floppy-1.4/720k/x86DSK06.img vendor/freedos/floppy-1.4/720k/x86DSK07.img vendor/freedos/floppy-1.4/720k/x86DSK08.img vendor/freedos/floppy-1.4/720k/x86DSK09.img vendor/freedos/floppy-1.4/720k/x86DSK10.img vendor/freedos/floppy-1.4/720k/x86DSK11.img --title FreeDOS --tag unemu/media/ibm-pc/freedos:1.4-720k-r1 --label '1=Disk 1 of 12 - boot disk and installer (x86BOOT.img)' --format 1=720K --label '2=Disk 2 of 12 - packages (x86DSK01.img)' --format 2=720K --label '3=Disk 3 of 12 - packages (x86DSK02.img)' --format 3=720K --label '4=Disk 4 of 12 - packages (x86DSK03.img)' --format 4=720K --label '5=Disk 5 of 12 - packages (x86DSK04.img)' --format 5=720K --label '6=Disk 6 of 12 - packages (x86DSK05.img)' --format 6=720K --label '7=Disk 7 of 12 - packages (x86DSK06.img)' --format 7=720K --label '8=Disk 8 of 12 - packages (x86DSK07.img)' --format 8=720K --label '9=Disk 9 of 12 - packages (x86DSK08.img)' --format 9=720K --label '10=Disk 10 of 12 - packages (x86DSK09.img)' --format 10=720K --label '11=Disk 11 of 12 - packages (x86DSK10.img)' --format 11=720K --label '12=Disk 12 of 12 - packages (x86DSK11.img)' --format 12=720K --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher 'The FreeDOS Project' --developer 'The FreeDOS Project' --year 2025 --genre 'operating system' --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on twelve 3.5-inch 720K diskettes, unmodified: the boot disk with the floppy installer, then eleven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition 'Floppy Edition' --set-label freedos --set-label open-source --set-label operating-system --open --license 'GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other' --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
+cargo run --offline -p upcli -- image media import vendor/freedos/floppy-1.4/144m/x86BOOT.img vendor/freedos/floppy-1.4/144m/x86DSK01.img vendor/freedos/floppy-1.4/144m/x86DSK02.img vendor/freedos/floppy-1.4/144m/x86DSK03.img vendor/freedos/floppy-1.4/144m/x86DSK04.img vendor/freedos/floppy-1.4/144m/x86DSK05.img vendor/freedos/floppy-1.4/144m/x86DSK06.img --title FreeDOS --tag unemu/media/ibm-pc/freedos:1.4-r1 --label '1=Disk 1 of 7 - boot disk and installer (x86BOOT.img)' --format 1=1.44M --label '2=Disk 2 of 7 - packages (x86DSK01.img)' --format 2=1.44M --label '3=Disk 3 of 7 - packages (x86DSK02.img)' --format 3=1.44M --label '4=Disk 4 of 7 - packages (x86DSK03.img)' --format 4=1.44M --label '5=Disk 5 of 7 - packages (x86DSK04.img)' --format 5=1.44M --label '6=Disk 6 of 7 - packages (x86DSK05.img)' --format 6=1.44M --label '7=Disk 7 of 7 - packages (x86DSK06.img)' --format 7=1.44M --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher 'The FreeDOS Project' --developer 'The FreeDOS Project' --year 2025 --genre 'operating system' --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on seven 3.5-inch 1.44M diskettes, unmodified: the boot disk with the floppy installer, then six disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition 'Floppy Edition' --set-label freedos --set-label open-source --set-label operating-system --open --license 'GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other' --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
+cargo run --offline -p upcli -- image media import vendor/freedos/floppy-1.4/120m/x86BOOT.img vendor/freedos/floppy-1.4/120m/x86DSK01.img vendor/freedos/floppy-1.4/120m/x86DSK02.img vendor/freedos/floppy-1.4/120m/x86DSK03.img vendor/freedos/floppy-1.4/120m/x86DSK04.img vendor/freedos/floppy-1.4/120m/x86DSK05.img vendor/freedos/floppy-1.4/120m/x86DSK06.img vendor/freedos/floppy-1.4/120m/x86DSK07.img --title FreeDOS --tag unemu/media/ibm-pc/freedos:1.4-1.2m-r1 --label '1=Disk 1 of 8 - boot disk and installer (x86BOOT.img)' --format 1=1.2M --label '2=Disk 2 of 8 - packages (x86DSK01.img)' --format 2=1.2M --label '3=Disk 3 of 8 - packages (x86DSK02.img)' --format 3=1.2M --label '4=Disk 4 of 8 - packages (x86DSK03.img)' --format 4=1.2M --label '5=Disk 5 of 8 - packages (x86DSK04.img)' --format 5=1.2M --label '6=Disk 6 of 8 - packages (x86DSK05.img)' --format 6=1.2M --label '7=Disk 7 of 8 - packages (x86DSK06.img)' --format 7=1.2M --label '8=Disk 8 of 8 - packages (x86DSK07.img)' --format 8=1.2M --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher 'The FreeDOS Project' --developer 'The FreeDOS Project' --year 2025 --genre 'operating system' --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on eight 5.25-inch 1.2M diskettes, unmodified: the boot disk with the floppy installer, then seven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition 'Floppy Edition' --set-label freedos --set-label open-source --set-label operating-system --open --license 'GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other' --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
+cargo run --offline -p upcli -- image media import vendor/freedos/floppy-1.4/720k/x86BOOT.img vendor/freedos/floppy-1.4/720k/x86DSK01.img vendor/freedos/floppy-1.4/720k/x86DSK02.img vendor/freedos/floppy-1.4/720k/x86DSK03.img vendor/freedos/floppy-1.4/720k/x86DSK04.img vendor/freedos/floppy-1.4/720k/x86DSK05.img vendor/freedos/floppy-1.4/720k/x86DSK06.img vendor/freedos/floppy-1.4/720k/x86DSK07.img vendor/freedos/floppy-1.4/720k/x86DSK08.img vendor/freedos/floppy-1.4/720k/x86DSK09.img vendor/freedos/floppy-1.4/720k/x86DSK10.img vendor/freedos/floppy-1.4/720k/x86DSK11.img --title FreeDOS --tag unemu/media/ibm-pc/freedos:1.4-720k-r1 --label '1=Disk 1 of 12 - boot disk and installer (x86BOOT.img)' --format 1=720K --label '2=Disk 2 of 12 - packages (x86DSK01.img)' --format 2=720K --label '3=Disk 3 of 12 - packages (x86DSK02.img)' --format 3=720K --label '4=Disk 4 of 12 - packages (x86DSK03.img)' --format 4=720K --label '5=Disk 5 of 12 - packages (x86DSK04.img)' --format 5=720K --label '6=Disk 6 of 12 - packages (x86DSK05.img)' --format 6=720K --label '7=Disk 7 of 12 - packages (x86DSK06.img)' --format 7=720K --label '8=Disk 8 of 12 - packages (x86DSK07.img)' --format 8=720K --label '9=Disk 9 of 12 - packages (x86DSK08.img)' --format 9=720K --label '10=Disk 10 of 12 - packages (x86DSK09.img)' --format 10=720K --label '11=Disk 11 of 12 - packages (x86DSK10.img)' --format 11=720K --label '12=Disk 12 of 12 - packages (x86DSK11.img)' --format 12=720K --extra vendor/freedos/floppy-1.4/LICENSES.TXT:LICENSES.TXT --extra vendor/freedos/floppy-1.4/freedos-1.4-floppy-src.tar:FD14SRC.TAR --publisher 'The FreeDOS Project' --developer 'The FreeDOS Project' --year 2025 --genre 'operating system' --platform DOS --description 'The official FreeDOS 1.4 Floppy Edition on twelve 3.5-inch 720K diskettes, unmodified: the boot disk with the floppy installer, then eleven disks of packages in a Slicer archive. It installs FreeDOS 1.4 with a set of programs suited to classic PCs, the 80286 included, on any PC that runs FreeDOS with EGA or better graphics. Released by the FreeDOS Project on 2 April 2025. GPL and other open source licences, listed per program in LICENSES.TXT; the set carries the official FreeDOS source packages of its programs.' --version 1.4 --edition 'Floppy Edition' --set-label freedos --set-label open-source --set-label operating-system --open --license 'GPL-1.0-only AND GPL-1.0-or-later AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-or-later AND LGPL-2.1-or-later AND MIT AND BSD-2-Clause AND MPL-2.0 AND Watcom-1.0 AND Info-ZIP AND Artistic-1.0 AND GFDL-1.1-or-later AND Zlib AND LicenseRef-FreeDOS-other' --license-text LICENSES.TXT --source freedos-1.4-floppy-src.tar --store /path/to/store --create
 ```
 
 A redistributable set (decision-26 amendment of 2026-11-15, for example a
@@ -294,14 +294,14 @@ Firmware packages use the same store, with the shared default data root when
 `--store` is omitted:
 
 ```sh
-cargo run --offline -p cli -- image firmware import /path/to/roms --store /path/to/store --create --dry-run
-cargo run --offline -p cli -- image firmware import /path/to/even.bin /path/to/odd.bin --store /path/to/store
-cargo run --offline -p cli -- image firmware import /path/to/roms --rescan --for ibm-5170-bios-1985-06-10 --extra /path/to/manual.pdf --store /path/to/store
-cargo run --offline -p cli -- image firmware import /path/to/roms --for kiselev-xi8088-1.0.2-atreset --source vendor/kiselev-bios/kiselev-bios-a4af458-atreset-src.tar --label open-source --label xi8088 --store /path/to/store
-cargo run --offline -p cli -- image firmware import /path/to/rom.bin --unlisted my-option-rom --role option-rom --open --license MIT --built-from "example/option-rom" --revision r7 --store /path/to/store
-cargo run --offline -p cli -- image firmware edit private/firmware/ibm-pc/kiselev-xi8088-1.0.2:r1 --source vendor/kiselev-bios/kiselev-bios-a4af458-atreset-src.tar --store /path/to/store
-cargo run --offline -p cli -- image firmware ls --store /path/to/store
-cargo run --offline -p cli -- image firmware show private/firmware/ibm-pc/ibm-5170-bios-1985-06-10:r1 --store /path/to/store
+cargo run --offline -p upcli -- image firmware import /path/to/roms --store /path/to/store --create --dry-run
+cargo run --offline -p upcli -- image firmware import /path/to/even.bin /path/to/odd.bin --store /path/to/store
+cargo run --offline -p upcli -- image firmware import /path/to/roms --rescan --for ibm-5170-bios-1985-06-10 --extra /path/to/manual.pdf --store /path/to/store
+cargo run --offline -p upcli -- image firmware import /path/to/roms --for kiselev-xi8088-1.0.2-atreset --source vendor/kiselev-bios/kiselev-bios-a4af458-atreset-src.tar --label open-source --label xi8088 --store /path/to/store
+cargo run --offline -p upcli -- image firmware import /path/to/rom.bin --unlisted my-option-rom --role option-rom --open --license MIT --built-from "example/option-rom" --revision r7 --store /path/to/store
+cargo run --offline -p upcli -- image firmware edit private/firmware/ibm-pc/kiselev-xi8088-1.0.2:r1 --source vendor/kiselev-bios/kiselev-bios-a4af458-atreset-src.tar --store /path/to/store
+cargo run --offline -p upcli -- image firmware ls --store /path/to/store
+cargo run --offline -p upcli -- image firmware show private/firmware/ibm-pc/ibm-5170-bios-1985-06-10:r1 --store /path/to/store
 ```
 
 Firmware import recursively enumerates files in stable name order (32 directory
@@ -473,7 +473,7 @@ Its headless tests, with the shared import and the CLI contract:
 ```sh
 cargo test --offline -p window install_media
 cargo test --offline -p pc-image media_import
-cargo test --offline -p cli --test image_media_commands
+cargo test --offline -p cli-pc --test image_media_commands
 ```
 
 In the Insert dialog only entries declared in the machine file show
@@ -612,20 +612,20 @@ cargo test --offline -p pc-image compat
 ## Registry push and pull
 
 ```sh
-cargo run --offline -p cli -- image push dos-lab:1.0.0 --store /path/to/store --dry-run
-cargo run --offline -p cli -- image push dos-lab:1.0.0 private/dos-lab:1.0.0 --store /path/to/store
-cargo run --offline -p cli -- image push dos-lab:latest private/dos-lab:latest --store /path/to/store --move
-cargo run --offline -p cli -- image pull private/dos-lab:1.0.0 --store /path/to/store
-cargo run --offline -p cli -- image pull nas.example:5000/private/games:1 --store /path/to/new-store --create --tag games:1
-cargo run --offline -p cli -- image push private/firmware/ibm-pc/kiselev-xi8088-1.0.2:r1 nas.example:5000/private/firmware/ibm-pc/kiselev-xi8088-1.0.2:r1 --store /path/to/store --dry-run
-cargo run --offline -p cli -- image pull nas.example:5000/private/firmware/ibm-pc/kiselev-xi8088-1.0.2:r1 --store /path/to/store
-cargo run --offline -p cli -- image pull unemu/media/ibm-pc/freedos:1.4 --store /path/to/store
-cargo run --offline -p cli -- image remote ls private/dos-lab
-cargo run --offline -p cli -- image remote ls registry.unemu.dev
-cargo run --offline -p cli -- image login registry.unemu.dev --user NAME
-printf '%s\n' "$TOKEN" | cargo run --offline -p cli -- image login nas.example:5000 --user NAME
-cargo run --offline -p cli -- image registry set registry.unemu.dev --namespace unemu --namespace private:private
-cargo run --offline -p cli -- image registry set nas.example:5000 --private
+cargo run --offline -p upcli -- image push dos-lab:1.0.0 --store /path/to/store --dry-run
+cargo run --offline -p upcli -- image push dos-lab:1.0.0 private/dos-lab:1.0.0 --store /path/to/store
+cargo run --offline -p upcli -- image push dos-lab:latest private/dos-lab:latest --store /path/to/store --move
+cargo run --offline -p upcli -- image pull private/dos-lab:1.0.0 --store /path/to/store
+cargo run --offline -p upcli -- image pull nas.example:5000/private/games:1 --store /path/to/new-store --create --tag games:1
+cargo run --offline -p upcli -- image push private/firmware/ibm-pc/kiselev-xi8088-1.0.2:r1 nas.example:5000/private/firmware/ibm-pc/kiselev-xi8088-1.0.2:r1 --store /path/to/store --dry-run
+cargo run --offline -p upcli -- image pull nas.example:5000/private/firmware/ibm-pc/kiselev-xi8088-1.0.2:r1 --store /path/to/store
+cargo run --offline -p upcli -- image pull unemu/media/ibm-pc/freedos:1.4 --store /path/to/store
+cargo run --offline -p upcli -- image remote ls private/dos-lab
+cargo run --offline -p upcli -- image remote ls registry.unemu.dev
+cargo run --offline -p upcli -- image login registry.unemu.dev --user NAME
+printf '%s\n' "$TOKEN" | cargo run --offline -p upcli -- image login nas.example:5000 --user NAME
+cargo run --offline -p upcli -- image registry set registry.unemu.dev --namespace unemu --namespace private:private
+cargo run --offline -p upcli -- image registry set nas.example:5000 --private
 UNEMU_REGISTRY_LIVE=1 cargo test --offline -p image-registry -- --ignored live_
 UNEMU_KEYCHAIN_TEST=1 cargo test --offline -p image-registry -- --ignored keychain_
 ```
@@ -843,8 +843,8 @@ names another host. It deletes its repository content afterwards.
 bash vendor/unemu-at-bios/fetch.sh
 bash vendor/vgabios/fetch.sh
 bash vendor/xtide-universal-bios/fetch.sh
-cargo run --offline -p cli -- image template build --store /path/to/templates --dry-run
-cargo run --offline -p cli -- image template build --store /path/to/templates
+cargo run --offline -p upcli -- image template build --store /path/to/templates --dry-run
+cargo run --offline -p upcli -- image template build --store /path/to/templates
 ```
 
 `image template build` builds the two template machines and nothing else. It
@@ -958,15 +958,15 @@ the version tags and the aliases:
 
 ```sh
 S=/path/to/templates
-cargo run --offline -p cli -- image push open-at:1.2.0 unemu/open-at:1.2.0 --store "$S" --dry-run
-cargo run --offline -p cli -- image push open-at-games:1.2.0 unemu/open-at-games:1.2.0 --store "$S" --dry-run
-cargo run --offline -p cli -- image push open-at:latest unemu/open-at:latest --store "$S" --dry-run
-cargo run --offline -p cli -- image push open-at-games:latest unemu/open-at-games:latest --store "$S" --dry-run
+cargo run --offline -p upcli -- image push open-at:1.2.0 unemu/open-at:1.2.0 --store "$S" --dry-run
+cargo run --offline -p upcli -- image push open-at-games:1.2.0 unemu/open-at-games:1.2.0 --store "$S" --dry-run
+cargo run --offline -p upcli -- image push open-at:latest unemu/open-at:latest --store "$S" --dry-run
+cargo run --offline -p upcli -- image push open-at-games:latest unemu/open-at-games:latest --store "$S" --dry-run
 
-cargo run --offline -p cli -- image push open-at:1.2.0 unemu/open-at:1.2.0 --store "$S"
-cargo run --offline -p cli -- image push open-at-games:1.2.0 unemu/open-at-games:1.2.0 --store "$S"
-cargo run --offline -p cli -- image push open-at:latest unemu/open-at:latest --store "$S"
-cargo run --offline -p cli -- image push open-at-games:latest unemu/open-at-games:latest --store "$S"
+cargo run --offline -p upcli -- image push open-at:1.2.0 unemu/open-at:1.2.0 --store "$S"
+cargo run --offline -p upcli -- image push open-at-games:1.2.0 unemu/open-at-games:1.2.0 --store "$S"
+cargo run --offline -p upcli -- image push open-at:latest unemu/open-at:latest --store "$S"
+cargo run --offline -p upcli -- image push open-at-games:latest unemu/open-at-games:latest --store "$S"
 ```
 
 Each dry run must end in `guard:allowed` with every blob `open`. A version tag
@@ -988,10 +988,10 @@ vendor/shareware/keen4/fetch.sh                # Commander Keen 4 1.4: keen4-sw1
 vendor/shareware/wolf3d/fetch.sh               # Wolfenstein 3-D 1.4: wolf3d-sw14-1440.img, extras/
 vendor/shareware/duke2/fetch.sh                # Duke Nukem II 1.0: duke2-sw10-1440.img, extras/
 SHAREWARE_ARCHIVE=/path/to/1wolf14.zip vendor/shareware/wolf3d/fetch.sh   # your own copy; no network
-cargo run --offline -p cli -- image media import vendor/shareware/keen4/keen4-sw14-1440.img --title "Commander Keen 4: Secret of the Oracle (shareware 1.4)" --tag private/media/ibm-pc/keen4-shareware:1.4-r1 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/keen4/extras/README.DOC:README.DOC --extra vendor/shareware/keen4/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1991 --genre platformer --platform DOS --description 'Commander Keen 4: Secret of the Oracle, version 1.4, the shareware episode of a side-scrolling platform game in EGA graphics by id Software, distributed by Apogee Software. Keen searches the Shadowlands of Gnosticus IV for the eight missing Council Members. The disk holds the files of the original Apogee shareware archive 4keen.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-readme-keen4-v1.4 --license-text README.DOC --store /path/to/store --create
-cargo run --offline -p cli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag private/media/ibm-pc/wolf3d-shareware:1.4-r1 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1992 --genre "first-person shooter" --platform DOS --description 'Wolfenstein 3-D, episode 1, Escape from Wolfenstein, version 1.4, the shareware episode of a first-person shooter with texture-mapped VGA graphics by id Software, published by Apogee Software. As B.J. Blazkowicz the player escapes from Castle Wolfenstein through ten floors, one of them secret. It needs a 286 or better. The disk holds the files of the original Apogee shareware archive 1wolf14.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store
-cargo run --offline -p cli -- image media import vendor/shareware/duke2/duke2-sw10-1440.img --title "Duke Nukem II: Episode 1 (shareware 1.0)" --tag private/media/ibm-pc/duke2-shareware:1.0-r1 --label '1=Disk 1 of 1 - Shareware v1.0 installation' --extra vendor/shareware/duke2/extras/LICENSE.DOC:LICENSE.DOC --extra vendor/shareware/duke2/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "Apogee Software" --year 1993 --genre platformer --platform DOS --description 'Duke Nukem II, episode 1, version 1.0, the shareware episode of a side-scrolling platform game by Todd Replogle and Apogee Software, in which Duke fights the alien Rigelatins. It needs VGA graphics and a 286 or better. The disk holds the files of the original Apogee shareware archive 4duke.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-license-v12.01.93 --license-text LICENSE.DOC --store /path/to/store
-cargo run --offline -p cli -- image push private/media/ibm-pc/wolf3d-shareware:1.4-r1 unemu/media/ibm-pc/wolf3d-shareware:1.4-r1 --store /path/to/store --dry-run   # guard verdict for the official path
+cargo run --offline -p upcli -- image media import vendor/shareware/keen4/keen4-sw14-1440.img --title "Commander Keen 4: Secret of the Oracle (shareware 1.4)" --tag private/media/ibm-pc/keen4-shareware:1.4-r1 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/keen4/extras/README.DOC:README.DOC --extra vendor/shareware/keen4/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1991 --genre platformer --platform DOS --description 'Commander Keen 4: Secret of the Oracle, version 1.4, the shareware episode of a side-scrolling platform game in EGA graphics by id Software, distributed by Apogee Software. Keen searches the Shadowlands of Gnosticus IV for the eight missing Council Members. The disk holds the files of the original Apogee shareware archive 4keen.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-readme-keen4-v1.4 --license-text README.DOC --store /path/to/store --create
+cargo run --offline -p upcli -- image media import vendor/shareware/wolf3d/wolf3d-sw14-1440.img --title "Wolfenstein 3-D: Episode 1 (shareware 1.4)" --tag private/media/ibm-pc/wolf3d-shareware:1.4-r1 --label '1=Disk 1 of 1 - Shareware v1.4 installation' --extra vendor/shareware/wolf3d/extras/VENDOR.DOC:VENDOR.DOC --extra vendor/shareware/wolf3d/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "id Software" --year 1992 --genre "first-person shooter" --platform DOS --description 'Wolfenstein 3-D, episode 1, Escape from Wolfenstein, version 1.4, the shareware episode of a first-person shooter with texture-mapped VGA graphics by id Software, published by Apogee Software. As B.J. Blazkowicz the player escapes from Castle Wolfenstein through ten floors, one of them secret. It needs a 286 or better. The disk holds the files of the original Apogee shareware archive 1wolf14.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-vendor-v11.01.92 --license-text VENDOR.DOC --store /path/to/store
+cargo run --offline -p upcli -- image media import vendor/shareware/duke2/duke2-sw10-1440.img --title "Duke Nukem II: Episode 1 (shareware 1.0)" --tag private/media/ibm-pc/duke2-shareware:1.0-r1 --label '1=Disk 1 of 1 - Shareware v1.0 installation' --extra vendor/shareware/duke2/extras/LICENSE.DOC:LICENSE.DOC --extra vendor/shareware/duke2/extras/ORDER.FRM:ORDER.FRM --publisher "Apogee Software" --developer "Apogee Software" --year 1993 --genre platformer --platform DOS --description 'Duke Nukem II, episode 1, version 1.0, the shareware episode of a side-scrolling platform game by Todd Replogle and Apogee Software, in which Duke fights the alien Rigelatins. It needs VGA graphics and a 286 or better. The disk holds the files of the original Apogee shareware archive 4duke.zip, unmodified; INSTALL.BAT installs the game onto a chosen drive.' --open --license LicenseRef-apogee-license-v12.01.93 --license-text LICENSE.DOC --store /path/to/store
+cargo run --offline -p upcli -- image push private/media/ibm-pc/wolf3d-shareware:1.4-r1 unemu/media/ibm-pc/wolf3d-shareware:1.4-r1 --store /path/to/store --dry-run   # guard verdict for the official path
 ```
 
 Each script downloads the publisher's original shareware archive from a pinned
@@ -1026,11 +1026,11 @@ stay local, in `extras/`.
 
 ```sh
 cargo build                                  # build the workspace
-cargo run -p cli -- --boot                   # Real16 timer demo; no args print usage
-cargo run --offline -p cli -- --bios vendor/kiselev-bios/bios-xi8088.bin
-cargo run --offline -p cli -- --bios /path/to/bios.bin --allow-unlisted-firmware
-cargo run --offline -p cli -- machine check machines/at-freedos.toml
-cargo run --offline -p cli -- run --machine machines/at-freedos.toml --max-steps 12000000 --idle-limit 1000000 --print mda
+cargo run -p upcli -- --boot                   # Real16 timer demo; no args print usage
+cargo run --offline -p upcli -- --bios vendor/kiselev-bios/bios-xi8088.bin
+cargo run --offline -p upcli -- --bios /path/to/bios.bin --allow-unlisted-firmware
+cargo run --offline -p upcli -- machine check machines/at-freedos.toml
+cargo run --offline -p upcli -- run --machine machines/at-freedos.toml --max-steps 12000000 --idle-limit 1000000 --print mda
 cargo run --offline -p window --bin unemupc -- --machine machines/at-freedos.toml --display mda
 cargo test --workspace                       # unit + golden + integration
 cargo test --release -p devices              # release-only device behaviour (CI runs it too)
@@ -1045,7 +1045,7 @@ UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test dos_interac
 UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test dos_write_golden -- --ignored --nocapture
 # FreeDOS lists and types a B: floppy built by media create --add, then enters a
 # two-disk --split set with CD and rebuilds it with XCOPY:
-UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli --test media_files_golden -- --ignored --nocapture
+UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p cli-pc --test media_files_golden -- --ignored --nocapture
 # FreeDOS boots A: with the open AT BIOS and XT+ ROM, then lists readonly C:
 UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test ide_freedos_golden -- --ignored --nocapture
 # Open AT protected-mode test floppy: INT 15h 88h/87h, PM entry, 8042/triple-fault resets, A20 (design/at-pm-test.md)
@@ -1064,11 +1064,15 @@ VGA, EMS, the sound cards, the scheduler A/B tests) live in
 `crates/pc-harness/tests/`, beside the machine runners they drive, with the
 test support other crates include by `#[path]` in
 `crates/pc-harness/tests/support/`: run them with `-p pc-harness`. The
-goldens that need the command line, the `upcli` binary or the image store
-(`at_games`, `boot_sector_golden`, `firmware_catalogue`,
-`freedos_install_golden`, `ide_journal_golden`, `machine_freedos_golden`,
-`media_files_golden`, `timing_adoption`) and the command tests stay in
-`crates/cli/tests/`: run them with `-p cli`.
+goldens that need the command line or the image store (`at_games`,
+`boot_sector_golden`, `freedos_install_golden`, `ide_journal_golden`,
+`machine_freedos_golden`, `media_files_golden`) and the PC command tests
+live in `crates/cli-pc/tests/`: run them with `-p cli-pc`. The tests that
+run the `upcli` binary (`firmware_catalogue`, `timing_adoption`,
+`machine_commands`, `image_registry_commands`) and the pin of the whole
+command line (`command_line_pin`) live in `crates/upcli/tests/` (`-p
+upcli`), and the journal tools' tests (`media_tools`, `media_fifo`) with the
+neutral command line in `crates/cli-core/tests/` (`-p cli-core`).
 
 Ordinary tests and ignored goldens share compiled artifacts because both are
 `cargo test` runs in the same profile. The default `test` profile inherits the
@@ -1395,7 +1399,7 @@ and the `user_rom_` name prefix; no test attribute changes for them:
 | Tier | Runs | Chosen |
 | --- | --- | --- |
 | fast | the affected crates' tests that are not ignored, plus some ignored ones by name (below) | by default |
-| goldens | plus every ignored test except `user_rom_*` | automatically when an emulation crate (`assembly`, `audio`, `bus`, `chipset`, `cpu`, `device`, `devices`, `machine`, `machine-file`, `media`, `testkit`, `video`), the machine runners (`crates/pc-harness/src/`), the command line the front-end goldens drive (`crates/cli/src/command.rs`, `crates/cli/src/cli_core/mod.rs` and `crates/cli/src/cli_pc/`), the disk builder (`crates/pc-image/src/media_create.rs`), a shipped machine file, a fixture under `vendor/`, the shared golden test support, the workspace manifest, the lock file, the toolchain, a `[patch]` override or a path no rule knows changed; or `--tier goldens` |
+| goldens | plus every ignored test except `user_rom_*` | automatically when an emulation crate (`assembly`, `audio`, `bus`, `chipset`, `cpu`, `device`, `devices`, `machine`, `machine-file`, `media`, `testkit`, `video`), the machine runners (`crates/pc-harness/src/`), the command line the front-end goldens drive (`crates/cli-core/src/`, the neutral command line whose journal tools a golden runs, and `crates/cli-pc/src/`, every PC command), the disk builder (`crates/pc-image/src/media_create.rs`), a shipped machine file, a fixture under `vendor/`, the shared golden test support, the workspace manifest, the lock file, the toolchain, a `[patch]` override or a path no rule knows changed; or `--tier goldens` |
 | user-roms | auto plus the ignored `user_rom_*` tests | `--tier user-roms`, with `UNEMUPC_USER_ROMS_DIR` set |
 | all | goldens and user-ROM tests | `--tier all`; before a release with `--all` |
 
@@ -1407,10 +1411,12 @@ or `pc-image` change runs `machine_freedos_golden`). `--tier fast` turns
 that off too. A crate in the affected set only through its dependencies does
 not select the goldens: an `image-store` change runs the fast tests of
 `image-store`, `image-registry`, `machine-file`, `pc-image`, `pc-harness`,
-`platforms`, `cli` and `window`, and the ignored tests that name
-`image_store::`. A change to the command line alone (`crates/cli/src/cli_core/image.rs`,
-say) runs `cli`'s own tests and, by name, the seven ignored tests of its
-front-end goldens; the emulation goldens in `pc-harness` are not rebuilt. The goldens need
+`platforms`, `cli-core`, `cli-pc`, `upcli` and `window`, and the ignored
+tests that name `image_store::`. A change to a test of the PC command line
+(`crates/cli-pc/tests/image_commands.rs`, say) runs the tests of `cli-pc`
+and `upcli` and, by name, the seven ignored tests of the front-end goldens;
+a change to the program alone (`crates/upcli/src/about.rs`) runs `upcli`'s
+tests only; the emulation goldens in `pc-harness` are not rebuilt. The goldens need
 the fetched fixtures; the bead gate sets `UNEMUPC_REQUIRE_FIXTURES=1` so a
 missing one fails instead of skipping.
 
@@ -1435,7 +1441,7 @@ the sources' ignored tests, the scenarios and their expected plans).
 
 `scripts/bead-gate.sh` gates one change: `cargo fmt --check`, the publication
 guard, clippy with `-D warnings` on the affected crates (`--all-targets
---all-features`, plus the production `upcli` binary when `cli` is affected),
+--all-features`, plus the production `upcli` binary when `upcli` is affected),
 the affected tests in their tier, rustdoc with `-D warnings` for the
 affected crates, and `cargo deny` only when `Cargo.lock`, a manifest or
 `deny.toml` changed. Every step runs after a failure; the summary gives each
@@ -1459,8 +1465,8 @@ both `machines/` and `vendor/`.
 work file it names and whether its lock exists, and no input.
 
 ```sh
-cargo run --offline -p cli -- recipe check backlog/docs/design/recipe-corpus
-cargo run --offline -p cli -- recipe check my.media.toml other.firmware.toml
+cargo run --offline -p upcli -- recipe check backlog/docs/design/recipe-corpus
+cargo run --offline -p upcli -- recipe check my.media.toml other.firmware.toml
 ```
 
 A folder is checked with every `*.media.toml`, `*.firmware.toml`,
@@ -1490,7 +1496,7 @@ the work file it names, by the rules of design/recipes.md §6.16, as the
 build will write the set's title metadata:
 
 ```sh
-cargo run --offline -p cli -- recipe show backlog/docs/design/recipe-corpus/kenslab-2.01/kenslab-2.01.media.toml
+cargo run --offline -p upcli -- recipe show backlog/docs/design/recipe-corpus/kenslab-2.01/kenslab-2.01.media.toml
 ```
 
 The first line is `NAME:TAG`, the digest or `draft`, and the platform; then
@@ -1510,11 +1516,11 @@ merge).
 ## Creating disk images
 
 ```sh
-cargo run --offline -p cli -- media create floppy --type 1.44M --format --label TRANSFER /path/to/transfer.img
-cargo run --offline -p cli -- media create floppy --type 1.44M --add /path/to/GAME --label GAME /path/to/game.img
-cargo run --offline -p cli -- media create floppy --type 1.44M --add /path/to/PLAY.EXE --add /path/to/DATA.DAT --top MYGAME /path/to/mygame.img
-cargo run --offline -p cli -- media create floppy --type 1.44M --add /path/to/BIGGAME --label BIGGAME --split /path/to/big.img
-cargo run --offline -p cli -- media create hd --size 32MiB /path/to/disk.img
+cargo run --offline -p upcli -- media create floppy --type 1.44M --format --label TRANSFER /path/to/transfer.img
+cargo run --offline -p upcli -- media create floppy --type 1.44M --add /path/to/GAME --label GAME /path/to/game.img
+cargo run --offline -p upcli -- media create floppy --type 1.44M --add /path/to/PLAY.EXE --add /path/to/DATA.DAT --top MYGAME /path/to/mygame.img
+cargo run --offline -p upcli -- media create floppy --type 1.44M --add /path/to/BIGGAME --label BIGGAME --split /path/to/big.img
+cargo run --offline -p upcli -- media create hd --size 32MiB /path/to/disk.img
 ```
 
 `--add PATH` (repeatable; folders whole, symbolic links never followed) builds
@@ -1541,11 +1547,11 @@ rules: `machines/README.md` § Building a floppy from host files.
 ## Offline persistent media
 
 ```sh
-cargo run -p cli -- media generations --base disk.img --journal disk.img.upfj
-cargo run -p cli -- media verify --base disk.img --journal disk.img.upfj
-cargo run -p cli -- media verify --base disk.img --journal disk.img.upfj --repair-tail --backup before-repair.upfj
-cargo run -p cli -- media rollback --base disk.img --journal disk.img.upfj --to 1 --backup before-rollback.upfj
-cargo run -p cli -- media commit --base disk.img --journal disk.img.upfj --to 1 --output restored.img
+cargo run -p upcli -- media generations --base disk.img --journal disk.img.upfj
+cargo run -p upcli -- media verify --base disk.img --journal disk.img.upfj
+cargo run -p upcli -- media verify --base disk.img --journal disk.img.upfj --repair-tail --backup before-repair.upfj
+cargo run -p upcli -- media rollback --base disk.img --journal disk.img.upfj --to 1 --backup before-rollback.upfj
+cargo run -p upcli -- media commit --base disk.img --journal disk.img.upfj --to 1 --output restored.img
 ```
 
 The same `media generations`, `verify`, `verify --repair-tail`, `rollback`,
@@ -1628,7 +1634,7 @@ that integration is in progress, and their run arguments have no journal flag.
 This runnable Rust example uses the small WRITE DATA preset: it programs DMA
 channel 2, writes one sector, drains the controller result and halts. Run from
 the repository root in the devShell. Generated media and the example project's
-build output stay in a new temporary directory; `cargo build -p cli` uses the
+build output stay in a new temporary directory; `cargo build -p upcli` uses the
 repository's `target/` directory.
 
 ```sh
@@ -1678,7 +1684,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 RS
 cargo run --offline --manifest-path "$demo/Cargo.toml" -- "$demo" 17
 cargo run --offline --manifest-path "$demo/Cargo.toml" -- "$demo" 34
-cargo build --offline -p cli
+cargo build --offline -p upcli
 (
   cd "$demo"
   "$repo_dir/target/debug/upcli" media generations --base disk.img --journal disk.upfj
@@ -1732,7 +1738,7 @@ for the measured macOS/APFS behavior and storage assumptions.
 
 ```sh
 cargo clippy --all-targets --all-features -- -D warnings
-cargo clippy --locked -p cli --bin upcli -- -D warnings # production, no reference-scheduler
+cargo clippy --locked -p upcli --bin upcli -- -D warnings # production, no reference-scheduler
 cargo fmt --all
 cargo fmt --all -- --check                   # CI check
 cargo deny --all-features list               # inspect dependency licences

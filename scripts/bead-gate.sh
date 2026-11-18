@@ -4,7 +4,7 @@
 #
 # scripts/affected-tests.sh plans the change; this gate then runs formatting,
 # the publication guard, clippy on the affected crates (and on the production
-# command-line binary when cli is affected), the affected tests in their tier,
+# command-line binary when upcli is affected), the affected tests in their tier,
 # rustdoc of the affected crates, and cargo deny when the lock file, a
 # manifest or the dependency policy changed. Documentation, script and
 # configuration changes build nothing: they run the guard and their own
@@ -110,7 +110,7 @@ if [[ $mode == crates || $mode == full ]]; then
   step clippy "${cargo_cmd[@]}" clippy --locked "${packages[@]}" --all-targets --all-features -- -D warnings
   if [[ $(var cli) == 1 ]]; then
     # The production binary without the dev-dependency features tests unify in.
-    step clippy-upcli "${cargo_cmd[@]}" clippy --locked -p cli --bin upcli -- -D warnings
+    step clippy-upcli "${cargo_cmd[@]}" clippy --locked -p upcli --bin upcli -- -D warnings
   fi
 else
   skip clippy "no crate affected"

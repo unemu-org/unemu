@@ -32,7 +32,7 @@ case "$step" in
     clippy)
         gate_command+=(bash -euc '
             cargo clippy --locked --all-targets --all-features -- -D warnings
-            cargo clippy --locked -p cli --bin upcli -- -D warnings
+            cargo clippy --locked -p upcli --bin upcli -- -D warnings
         ')
         ;;
     deny) gate_command+=(cargo deny --all-features check advisories licenses bans sources) ;;

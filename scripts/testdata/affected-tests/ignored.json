@@ -10,14 +10,14 @@
       "machine"
     ]
   },
-  "crates/cli/tests/at_games.rs": {
+  "crates/cli-pc/tests/at_games.rs": {
     "tests": [
       "open_game_profile_boots_freedos",
       "open_game_profile_reads_720k_in_b_and_360k_in_a"
     ],
     "mentions": [
       "assembly",
-      "cli",
+      "cli_pc",
       "cpu",
       "device",
       "devices",
@@ -27,13 +27,13 @@
       "video"
     ]
   },
-  "crates/cli/tests/freedos_install_golden.rs": {
+  "crates/cli-pc/tests/freedos_install_golden.rs": {
     "tests": [
       "freedos_installs_and_boots_from_a_blank_hard_disk"
     ],
     "mentions": [
       "assembly",
-      "cli",
+      "cli_pc",
       "cpu",
       "devices",
       "machine_file",
@@ -42,13 +42,13 @@
       "video"
     ]
   },
-  "crates/cli/tests/ide_journal_golden.rs": {
+  "crates/cli-pc/tests/ide_journal_golden.rs": {
     "tests": [
       "freedos_ide_journal_survives_a_fresh_assembly_without_changing_base"
     ],
     "mentions": [
       "assembly",
-      "cli",
+      "cli_pc",
       "devices",
       "machine_file",
       "media",
@@ -56,7 +56,7 @@
       "video"
     ]
   },
-  "crates/cli/tests/machine_freedos_golden.rs": {
+  "crates/cli-pc/tests/machine_freedos_golden.rs": {
     "tests": [
       "freedos_writes_persist_in_a_machine_until_reset"
     ],
@@ -70,14 +70,14 @@
       "video"
     ]
   },
-  "crates/cli/tests/media_files_golden.rs": {
+  "crates/cli-pc/tests/media_files_golden.rs": {
     "tests": [
       "freedos_reads_a_floppy_built_from_host_files",
       "freedos_enters_and_rebuilds_a_split_set_with_xcopy"
     ],
     "mentions": [
       "assembly",
-      "cli",
+      "cli_pc",
       "machine",
       "machine_file",
       "pc_harness",

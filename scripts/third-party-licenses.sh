@@ -26,7 +26,7 @@
 # expression from LICENSES/ and its `authors` as the copyright holders.
 #
 # A crate counts when the binaries link it: normal dependencies followed from
-# the cli and window packages, for the features a release build of those two
+# the upcli and window packages, for the features a release build of those two
 # packages enables (cargo tree). Build and dev dependencies and procedural
 # macros run only while compiling and are left out.
 set -euo pipefail
@@ -60,7 +60,7 @@ fi
 # cargo metadata unifies the features of every workspace target, tests included;
 # cargo tree resolves them as building the two binaries does. Its "name vX.Y.Z"
 # lines are the packages such a build can contain.
-cargo tree --locked -e normal -p cli -p window --target "${target:-all}" \
+cargo tree --locked -e normal -p upcli -p window --target "${target:-all}" \
   --prefix none --format '{p}' |
   LC_ALL=C awk '{ sub(/^v/, "", $2); print $1 " " $2 }' | LC_ALL=C sort -u > "$work/built.txt"
 
@@ -78,7 +78,7 @@ jq -r --rawfile built "$work/built.txt" '
        | select(any(.dep_kinds[]; .kind == null))
        | .pkg
        | select(in_build(.) and (proc_macro(.) | not))];
-  [.packages[] | select(.source == null and (.name == "cli" or .name == "window")) | .id] as $roots
+  [.packages[] | select(.source == null and (.name == "upcli" or .name == "window")) | .id] as $roots
   | {seen: {}, todo: $roots}
   | until(.todo | length == 0;
       .todo[0] as $id

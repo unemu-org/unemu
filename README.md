@@ -131,7 +131,7 @@ binaries. On other platforms, build from source as below.
 nix develop                                   # toolchain and fixture tools (or let direnv load it)
 bash scripts/ci-gate.sh fixtures              # build the open firmware and fixture images
 cargo run --release -p window --bin unemupc
-cargo run --release -p cli -- run --machine machines/at-freedos.toml --print mda
+cargo run --release -p upcli -- run --machine machines/at-freedos.toml --print mda
 cargo test --workspace                        # unit, golden and integration tests
 ```
 

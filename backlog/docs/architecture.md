@@ -37,9 +37,11 @@ crate: `machine-file` reads and hashes declared images into inline buffers,
 | `ui-kit` | The desktop's skin and widget helpers, free of any machine: the classic and modern skins (`skin`: visuals, fonts, title strips, bevels, the one-Escape rule, the text marks), the mock-up icons and their tested inventory (`shell_icons`), the library's details panes (`pane`), the brand logo, host file dialogs and clipboard shortcuts ([core contract](design/core-contract.md) §8) | `egui`, `winit`, `image`, `rfd`, `arboard` | `toml` |
 | `machine-file` | Schema 1 TOML/YAML parsing, source origins, image hashing and lowering through assembly validation; merging remains deferred ([schema](design/machine-files.md#schema-field-by-field)) | `assembly`, `image-store`, `serde`, `sha2`, `toml`, `serde-saphyr`, `thiserror` | None |
 | `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
-| `platforms` | The one place that names the platforms compiled into both programs: the image providers a transfer or listing uses (`with_image_providers`), the push plan bound to the PC firmware catalogue (`push_plan`) and the program's licence notice | `assembly`, `image-store`, `image-registry`, `pc-image` | None |
+| `platforms` | The one place that names the platforms compiled into both programs: the image providers a transfer or listing uses (`with_image_providers`, the PC's from `pc_image::with_providers`), the push plan bound to the PC firmware catalogue (`push_plan`) and the program's licence notice | `assembly`, `image-store`, `image-registry`, `pc-image` | None |
 | `pc-harness` | Machine runners for the PC/AT goldens and the command line: hand-encoded guest programs, key scripts, assembly/policy selection, output capture and stop diagnostics (`StopReason`). Its `tests/` hold the emulation goldens (BIOS POST, FreeDOS boots and sessions, floppy, IDE, VGA, EMS, sound, the scheduler A/B tests) and `tests/support/`, which other crates include with `#[path]` | `assembly`, `device`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow` | `bus`, `testkit`, `toml`, `machine-file`, `media/test-support`, `machine/reference-scheduler`, `assembly/reference-scheduler`, `assembly/test-support` |
-| `cli` | The `upcli` binary and its commands; `--boot`, `--bios` and `run` call the runners of `pc-harness`. Its `tests/` hold the command tests and the goldens that need the command line, the binary or the store | `pc-harness`, `assembly`, `device`, `cpu`, `machine`, `machine-file`, `media`, `devices`, `video`, `anyhow`, `pc-image`, `image-store`, `image-registry`, `platforms`, `recipe`, `toml` | `assembly/test-support`, `media/test-support`, `image-store/test-support`, `image-registry/test-support` |
+| `cli-core` | The platform-neutral command line ([core contract](design/core-contract.md) §7.1, §7.2): the top-level parser, the usage text, the exit codes, the commands that need no emulator (image listing, sweep, compress, workspaces, media and firmware listing and show, push, pull, remotes, login, registry settings, `recipe check` and `show`, the journal tools) and the provider seam (`CliPlatform`, `PlatformCommand`) through which each platform adds its commands. Its `tests/` hold the journal tools' tests, run without a platform | `image-store`, `image-registry`, `media`, `recipe`, `anyhow`, `toml`, `libc` (Unix) | `image-registry/test-support` |
+| `cli-pc` | The PC's `CliPlatform`: every PC command (`--boot`, `--bios`, `machine check`, `run`, image import, run and publish, the machine commands, media and firmware import, firmware edit, template build, `media create`) and the PC's answers to the neutral commands; `--boot`, `--bios` and `run` call the runners of `pc-harness`. `cli_pc::command` is the command line with this platform alone. Its `tests/` hold the PC command tests and the goldens that need the command line or the store | `cli-core`, `pc-harness`, `pc-image`, `image-store`, `image-registry`, `recipe`, `machine-file`, `assembly`, `device`, `machine`, `media`, `video`, `anyhow`, `toml` | `cpu`, `devices`, `assembly/test-support`, `media/test-support`, `image-store/test-support`, `image-registry/test-support` |
+| `upcli` | The `upcli` binary: `main` with the host's paths and the platforms compiled in, the program's `--version` and `--about`, and `upcli::command`, the composed command line. Its `tests/` hold the tests that run the binary and the pin of the usage text and of every documented command line | `cli-core`, `cli-pc`, `platforms`, `image-store`, `assembly`, `devices` | `pc-harness`, `pc-image`, `cpu`, `machine`, `image-registry/test-support` |
 
 Each crate names its layer in its manifest (`[package.metadata.unemu] layer`),
 and `scripts/crate-boundaries.sh` keeps the layers apart
@@ -48,18 +50,19 @@ and `scripts/crate-boundaries.sh` keeps the layers apart
 | Layer | Crates | May depend on |
 | --- | --- | --- |
 | `contract` | `unemu-core-api` | nothing at all |
-| `neutral` | `media`, `image-store`, `image-registry`, `recipe`, `ui-kit`, `machine-view` | `contract`, `neutral` |
+| `neutral` | `media`, `image-store`, `image-registry`, `recipe`, `ui-kit`, `machine-view`, `cli-core` | `contract`, `neutral` |
 | `emulation` | `device`, `bus`, `cpu`, `video`, `audio`, `devices`, `chipset`, `machine`, `testkit`, `assembly`, `unemu-pc-core` | `contract`, `emulation` |
-| `pc` | `machine-file`, `pc-image`, `pc-harness` | `contract`, `neutral`, `emulation`, `pc` |
-| `application` | `cli`, `window`, `platforms` | anything |
+| `pc` | `machine-file`, `pc-image`, `pc-harness`, `cli-pc` | `contract`, `neutral`, `emulation`, `pc` |
+| `application` | `upcli`, `window`, `platforms` | anything |
 
 The rules cover test dependencies too, and no window crate depends on a CLI
 crate or the other way round. The desktop takes what it shares with the
 command line from the libraries that own it: registry clients from
 `image_registry::accounts`, the preferences path from
 `image_store::location::preferences`, image creation from
-`pc_image::media_create`, and from `platforms` the provider list, the
-licence notice and the push plan, which binds
+`pc_image::media_create`, and from `platforms` the provider list (whose PC
+part, `pc_image::with_providers`, the command line's PC platform holds too),
+the licence notice and the push plan, which binds
 `image_registry::push::plan_with_catalogue` to the PC firmware catalogue
 (`pc_image::firmware::restricted`) so neither program can plan a push
 without it. The one known crossing, `assembly` → `media` for the journals the

@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 const RETIRED_ID: &[&str] = &[
     "image-store/src/platform.rs",
     "image-store/src/compat.rs",
-    "cli/tests/platform_alias.rs",
+    "cli-pc/tests/platform_alias.rs",
 ];
 /// The production files that may spell out the current PC id: its
 /// definition, the alias table, the compatibility rows, the metadata of a
