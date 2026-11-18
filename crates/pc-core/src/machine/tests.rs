@@ -343,7 +343,7 @@ fn a_cpu_refusal_keeps_its_stop_report() {
     assert_eq!(failure.kind, ErrorKind::Guest);
     assert_eq!(
         failure.message,
-        "cpu: unsupported cpu system operation LegacyGateOrTaskTransfer at 0008:7c1e"
+        "cpu: unsupported cpu system operation LegacyInstruction at 002b:7c2b"
     );
     assert_eq!(machine.status(), Status::Failed);
     let report = machine
@@ -351,11 +351,11 @@ fn a_cpu_refusal_keeps_its_stop_report() {
         .expect("a refusal keeps its report");
     assert_eq!(
         (report.cs, report.ip, report.code_linear),
-        (0x08, 0x7C1E, 0x7C1E)
+        (0x2B, 0x7C2B, 0x7C2B)
     );
     let system = report.system.unwrap();
-    assert_eq!((system.msw & 1, system.cpl), (1, 0));
-    assert_eq!((system.gdtr.base, system.gdtr.limit), (0x7D00, 0x37));
+    assert_eq!((system.msw & 1, system.cpl), (1, 3));
+    assert_eq!((system.gdtr.base, system.gdtr.limit), (0x7D00, 0x3F));
     assert_eq!(system.tr.selector, 0x18);
     let named: Vec<_> = report
         .descriptors
@@ -365,21 +365,21 @@ fn a_cpu_refusal_keeps_its_stop_report() {
     assert_eq!(
         named,
         [
-            ("target", 0x20, Ok([0x23, 0x7C, 0x08, 0, 0x02, 0xE4, 0, 0])),
+            ("target", 0x23, Ok([0x23, 0x7C, 0x08, 0, 0x1F, 0xE4, 0, 0])),
             // The far jump into protected mode set the accessed bit.
             ("gate target", 0x08, Ok([0xFF, 0xFF, 0, 0, 0, 0x9B, 0, 0])),
         ]
     );
     assert_eq!(
         report.tss.unwrap().stacks,
-        [(0x10, 0x6000), (0x30, 0x5000), (0x30, 0x4000)]
+        [(0x38, 0x0F00), (0x30, 0x5000), (0x30, 0x4000)]
     );
     let text = report.to_string();
     for line in [
-        "stop     unsupported cpu system operation LegacyGateOrTaskTransfer at 0008:7c1e\n",
-        "form     far call ptr16:16 0020:0000\n",
-        "desc     target 0020 (gdt) 23 7c 08 00 02 e4 00 00: 286 call gate, selector 0008, offset 7c23, 2 words, dpl 3, present\n",
-        "tss      link 0000, ss0:sp0 0010:6000, ss1:sp1 0030:5000, ss2:sp2 0030:4000\n",
+        "stop     unsupported cpu system operation LegacyInstruction at 002b:7c2b\n",
+        "form     far call ptr16:16 0023:0000\n",
+        "desc     target 0023 (gdt) 23 7c 08 00 1f e4 00 00: 286 call gate, selector 0008, offset 7c23, 31 words, dpl 3, present\n",
+        "tss      link 0000, ss0:sp0 0038:0f00, ss1:sp1 0030:5000, ss2:sp2 0030:4000\n",
     ] {
         assert!(text.contains(line), "{line:?} missing from\n{text}");
     }

@@ -286,10 +286,10 @@ mod tests {
         let result = assembled.run_session(&assembly::RunPolicy::natural(Some(100_000), None));
         let report = cpu_stop_report(&assembled, &result).expect("the refusal has a report");
         assert!(report.starts_with(
-            "cpu stop report\nstop     unsupported cpu system operation LegacyGateOrTaskTransfer at 0008:7c1e\n"
+            "cpu stop report\nstop     unsupported cpu system operation LegacyInstruction at 002b:7c2b\n"
         ));
         assert!(
-            report.contains("desc     target 0020 (gdt) 23 7c 08 00 02 e4 00 00: 286 call gate")
+            report.contains("desc     target 0023 (gdt) 23 7c 08 00 1f e4 00 00: 286 call gate")
         );
         assert!(report.ends_with("ss2:sp2 0030:4000\n"));
 

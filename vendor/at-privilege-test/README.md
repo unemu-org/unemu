@@ -13,8 +13,10 @@ SS0:SP0, enters 80286 protected mode and loads TR. Then it returns to ring 3
 with IRET (IOPL 3), comes back to ring 0 through INT 40h and a DPL-3
 interrupt gate on the TSS's ring-0 stack, returns to ring 3 with IRET again
 (IOPL 0, ES holding a DPL-0 segment, which the return nulls) and executes
-CLI there, which raises #GP(0) to a ring-0 handler. It prints one line per
-case plus a failure count, on COM1 (`3F8h`, 115200 baud, 8N1) and straight
+CLI there, which raises #GP(0) to a ring-0 handler. That handler returns to
+ring 3, which makes a far CALL through a DPL-3 286 call gate that copies two
+parameter words onto the ring-0 stack, and the handler returns with RETF 4.
+It prints one line per case plus a failure count, on COM1 (`3F8h`, 115200 baud, 8N1) and straight
 into the text screen, then halts in protected mode with interrupts
 disabled. What each line checks, and why, is in
 [`backlog/docs/design/at-privilege-test.md`](../../backlog/docs/design/at-privilege-test.md).
@@ -32,7 +34,7 @@ timestamps or host data; the image is the boot sector, the program padded to
 6 sectors and zero bytes up to 1,228,800 bytes. SHA-256 of the image:
 
 ```text
-dad57a8b9289cc399f0c57b0eaa54916cc8d36a5b6381d6d5c4baca82d57bf60
+ac7ba0ab687b574c0908e88bb9708183c4851f01f1a695ac56e2438fd1f79f04
 ```
 
 The script checks size, the `55AAh` boot signature and this hash before it

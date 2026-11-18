@@ -69,7 +69,7 @@ cpal = "=0.18.2"
 # Every build and golden trace runs against a known CPU. A bare path dependency breaks
 # nix build and CI. To develop against a local x86jit checkout, add a gitignored
 # [patch] override instead of editing this line.
-x86jit-core = { version = "0.3", git = "https://github.com/unemu-org/x86jit", rev = "b4e64dffe8443c03a86459a98721afeb37084790" }
+x86jit-core = { version = "0.3", git = "https://github.com/unemu-org/x86jit", rev = "a11353e6850c4fe7b5c3ddde504052647ce897c1" }
 # The contract between front ends and emulator cores, at the commit of release
 # v0.2.0. Every core and front end in one build must link the same copy, so the
 # pin is an exact revision, moved together with every pinned core. A bare path

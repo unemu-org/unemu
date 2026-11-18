@@ -5,6 +5,30 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — The 80286 runs calls through call gates; the CPU pin
+  moves to `a11353e6`:** Windows 3.1 Standard mode stopped with
+  `LegacyGateOrTaskTransfer` at a far CALL from ring 3 through a DPL-3 286
+  call gate to DPL-0 code. x86jit `a11353e6` runs far CALL and JMP through
+  call gates: an inward CALL onto the TSS stack of the target ring with the
+  outer SS:SP, the gate's parameter words and CS:IP pushed, RETF n back,
+  same-level and conforming targets without a stack switch, JMP to the same
+  level only, the PRMs' faults; a 386 gate on the 80286 is #GP(selector).
+  `LegacyGateOrTaskTransfer` is no longer produced; an inward CALL whose
+  frame copy needs more than the core's 64 retry-ledger entries is refused
+  as `LegacyInstruction`. Cargo.toml, Cargo.lock (only x86jit-core moves)
+  and every golden's CPU revision follow; the 80286's identity is
+  unchanged. The open privilege-level floppy gains case (e)
+  (design/at-privilege-test.md): from ring 3, a far CALL through a DPL-3
+  call gate copying two words to a DPL-0 handler, which checks SS0:SP0 and
+  the frame order (outer SS, SP, the words, CS, IP), then RETF 4 back.
+  MEASURED with the open AT BIOS: every line passes, 6,391,138 retired
+  instructions, image SHA-256 `ac7ba0ab…f79f04`; at the previous pin it stops
+  with `LegacyGateOrTaskTransfer at 0033:00f1`. Every other open golden keeps its outcome and retired count (the user-ROM goldens are run separately). The CPU
+  stop report drops its note for a refusal during interrupt delivery (no
+  refusal the core still makes is ascribed to it), and its test guest
+  (`refused_gate_call`) now reaches ring 3 and calls through a gate with 31
+  words with both stacks in the trapped text buffer, a frame the core
+  refuses.
 - **2026-11-18 — The library frame leaves the window; what is left is the
   application:** moves 6.4 and 6.5 of the window split
   (design/core-contract.md §8.1.9). `pc-ui` takes the machine library's

@@ -138,11 +138,15 @@ pub mod test_support {
 
     /// The AT boot preset with a protected-mode guest whose last instruction
     /// the CPU core refuses: it enters protected mode with LMSW, loads SS, DS
-    /// and TR (a 286 TSS at 7E00h with ring stacks 0010:6000, 0030:5000 and
-    /// 0030:4000), then makes a far CALL at 0008:7C1E through the ring-3 call
-    /// gate 0020h to 0008:7C23, copying two words. The GDT at 7D00h holds
-    /// ring-0 code 08h and data 10h, the TSS 18h, the gate 20h, and ring-3
-    /// code 28h and data 30h. For the tests of the CPU stop report.
+    /// and TR (a 286 TSS at 7E00h with ring stacks 0038:0F00, 0030:5000 and
+    /// 0030:4000), returns to ring 3 with RETF on the stack 0033:0400, then
+    /// makes a far CALL at 002B:7C2B through the ring-3 call gate 0023h to
+    /// 0008:7C23, copying 31 words. The GDT at 7D00h holds ring-0 code 08h and
+    /// data 10h, the TSS 18h, the gate 20h, ring-3 code 28h, and ring-3 data
+    /// 30h and ring-0 data 38h at the colour text buffer B8000h, which the
+    /// card traps. With both stacks on a device, the core cannot record the
+    /// frame copy and refuses the call before it touches either stack. For the
+    /// tests of the CPU stop report.
     pub fn refused_gate_call() -> crate::MachineConfig {
         let mut blob = vec![
             0xFA, // CLI
@@ -151,27 +155,41 @@ pub mod test_support {
             0xEA, 0x11, 0x7C, 0x08, 0x00, // JMP 0008:7C11
             0xB8, 0x10, 0x00, 0x8E, 0xD0, 0x8E, 0xD8, // MOV AX,10h; MOV SS,AX; MOV DS,AX
             0xB8, 0x18, 0x00, 0x0F, 0x00, 0xD8, // MOV AX,18h; LTR AX
-            0x9A, 0x00, 0x00, 0x20, 0x00, // CALL FAR 0020:0000
+            0x68, 0x33, 0x00, // PUSH 33h (ring-3 SS)
+            0x68, 0x00, 0x04, // PUSH 0400h (ring-3 SP)
+            0x68, 0x2B, 0x00, // PUSH 2Bh (ring-3 CS)
+            0x68, 0x2B, 0x7C, // PUSH 7C2Bh (ring-3 IP)
+            0xCB, // RETF
+            0x9A, 0x00, 0x00, 0x23, 0x00, // CALL FAR 0023:0000
             0xF4, // HLT
         ];
         blob.resize(0x210, 0);
-        blob[0xF0..0xF6].copy_from_slice(&[0x37, 0x00, 0x00, 0x7D, 0x00, 0x00]);
-        let gdt: [[u8; 8]; 6] = [
+        blob[0xF0..0xF6].copy_from_slice(&[0x3F, 0x00, 0x00, 0x7D, 0x00, 0x00]);
+        let gdt: [[u8; 8]; 7] = [
             [0xFF, 0xFF, 0, 0, 0, 0x9A, 0, 0],
             [0xFF, 0xFF, 0, 0, 0, 0x92, 0, 0],
             [0x2B, 0, 0x00, 0x7E, 0, 0x81, 0, 0],
-            [0x23, 0x7C, 0x08, 0, 0x02, 0xE4, 0, 0],
+            [0x23, 0x7C, 0x08, 0, 0x1F, 0xE4, 0, 0],
             [0xFF, 0xFF, 0, 0, 0, 0xFA, 0, 0],
-            [0xFF, 0xFF, 0, 0, 0, 0xF2, 0, 0],
+            [0xFF, 0x7F, 0x00, 0x80, 0x0B, 0xF2, 0, 0],
+            [0xFF, 0x7F, 0x00, 0x80, 0x0B, 0x92, 0, 0],
         ];
         for (index, descriptor) in gdt.iter().enumerate() {
             let at = 0x108 + 8 * index;
             blob[at..at + 8].copy_from_slice(descriptor);
         }
         blob[0x200..0x20E].copy_from_slice(&[
-            0, 0, 0x00, 0x60, 0x10, 0, 0x00, 0x50, 0x30, 0, 0x00, 0x40, 0x30, 0,
+            0, 0, 0x00, 0x0F, 0x38, 0, 0x00, 0x50, 0x30, 0, 0x00, 0x40, 0x30, 0,
         ]);
-        crate::at_boot(blob)
+        let mut config = crate::at_boot(blob);
+        let text = devices::vga_text::TEXT_BUFFER_BASE;
+        let length = devices::vga_text::TEXT_BUFFER_LEN as u64;
+        config.memory = crate::MemoryConfig {
+            address_space_bytes: text + length,
+            ram: vec![crate::RamRegion::new(0, text)],
+            mmio: vec![crate::MmioWindow::new(text, length, crate::DeviceId::Vga)],
+        };
+        config
     }
 
     /// SHA-256 of visible row-major glyph/attribute pairs, excluding cursor and style.

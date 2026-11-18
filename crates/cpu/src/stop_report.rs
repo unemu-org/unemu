@@ -7,8 +7,8 @@
 //! the operation and CS:IP. The report adds what explains the stop: the
 //! machine status word, CPL and A20; the descriptor-table registers GDTR and
 //! IDTR; LDTR and TR with their hidden caches; the 16 bytes at CS:IP; and, for
-//! the control transfers a privilege or gate refusal comes from, the operands
-//! the instruction names with the 8 bytes of every descriptor it reaches.
+//! a far control transfer, an interrupt or a far return, the operands the
+//! instruction names with the 8 bytes of every descriptor it reaches.
 //!
 //! The decoded forms are those of the Intel 80286 Programmer's Reference
 //! Manual, Appendix B: far CALL and JMP with a direct pointer (`ptr16:16`,
@@ -23,12 +23,6 @@
 //! SS1:SP1 and SS2:SP2 (offsets 2–13, §8.2 Task State Segment) and its back
 //! link are shown. IRET with NT set is a task return through that back link:
 //! the frame shown at SS:SP is then not the one the processor uses.
-//!
-//! The core also refuses a privilege or gate transition while it delivers a
-//! hardware interrupt or an exception, and then CS:IP is the interrupted
-//! instruction and no vector is named. When the instruction shown cannot make
-//! the refused kind of transfer itself, the report says so
-//! ([`CpuStopReport::maybe_interrupted`]).
 //!
 //! Every byte comes from guest RAM or ROM through the CPU's own memory map; a
 //! trapped (memory-mapped I/O) or unmapped address is shown as unavailable and
@@ -516,33 +510,12 @@ pub struct CpuStopReport {
     pub descriptors: Vec<NamedDescriptor>,
     /// The current task's ring stacks, or why they are not shown.
     pub tss: Result<TssStacks, &'static str>,
-    /// The refused operation is a transfer the instruction shown cannot make,
-    /// so the refusal may have come while delivering an interrupt or an
-    /// exception to it.
-    pub maybe_interrupted: bool,
-}
-
-/// Whether `form` cannot itself make the transfer the core refused as
-/// `operation`: a gate or task transfer comes from a far CALL or JMP or an
-/// INT. Other refusals are never ascribed to delivery (the pinned core runs
-/// privilege changes, so it no longer refuses them).
-fn foreign_refusal(operation: &str, form: Option<TransferForm>) -> bool {
-    use TransferForm::*;
-    match operation {
-        "LegacyGateOrTaskTransfer" => !matches!(
-            form,
-            Some(FarDirect { .. } | FarIndirect { .. } | Interrupt { .. })
-        ),
-        _ => false,
-    }
 }
 
 /// What the report is built from: the stopping CPU's registers and a reader
 /// of its memory by linear address.
 pub(crate) struct Snapshot {
     pub stop: String,
-    /// The core's name of a refused system operation.
-    pub operation: Option<String>,
     pub cs: u16,
     pub ip: u64,
     pub ss: u16,
@@ -559,7 +532,6 @@ impl CpuStopReport {
     pub(crate) fn build(snapshot: Snapshot, read: impl Fn(u32) -> Option<u8>) -> Self {
         let Snapshot {
             stop,
-            operation,
             cs,
             ip,
             ss,
@@ -682,7 +654,6 @@ impl CpuStopReport {
             stack,
             descriptors,
             tss,
-            maybe_interrupted: operation.is_some_and(|operation| foreign_refusal(&operation, form)),
         }
     }
 }
@@ -960,13 +931,6 @@ impl fmt::Display for CpuStopReport {
                 Ok(descriptor) => writeln!(f, "{descriptor}")?,
                 Err(why) => writeln!(f, "unavailable: {why}")?,
             }
-        }
-        if self.maybe_interrupted {
-            writeln!(
-                f,
-                "note     the instruction shown may be the interrupted one: a refusal \
-                 while delivering an interrupt or exception names no vector"
-            )?;
         }
         match &self.tss {
             Ok(tss) => {

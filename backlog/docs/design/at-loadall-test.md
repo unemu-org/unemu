@@ -131,3 +131,6 @@ as it should.
 
 **x86jit `b4e64dff` — MEASURED (2026-11-18).** The pin that adds code at
 CPL 1–3 keeps the transcript and the retired count above.
+
+**x86jit `a11353e6` — MEASURED (2026-11-18).** The pin that adds call gates
+keeps them too.

@@ -1054,7 +1054,7 @@ UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test ide_freedos
 UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test at_pm_test_golden -- --include-ignored --nocapture
 # Open AT LOADALL test floppy: real-mode moves above 1 MiB through LOADALL caches (design/at-loadall-test.md)
 UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test at_loadall_test_golden -- --include-ignored --nocapture
-# Open AT privilege-level test floppy: IRET to ring 3, INT and #GP back to ring 0 on SS0:SP0 (design/at-privilege-test.md)
+# Open AT privilege-level test floppy: IRET to ring 3, INT, #GP and a call gate back to ring 0 on SS0:SP0 (design/at-privilege-test.md)
 UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test at_privilege_test_golden -- --include-ignored --nocapture
 cargo test -p devices                        # one crate's tests
 cargo build --offline -p window --bin unemupc
@@ -1163,7 +1163,7 @@ UART capture is bounded to 1 MiB; overflow is an error. Normal halt and budget
 exhaustion finish journal persistence and print maintenance warnings on stderr.
 Execution errors leave unsealed commands for recovery on the next mount.
 When the CPU core refuses an operation (an unsupported system operation such
-as `LegacyGateOrTaskTransfer`, an instruction it does not lift, or a fault it
+as `LegacyInstruction`, an instruction it does not lift, or a fault it
 returns outward), `run --machine` follows the `stopped: ...` line with a
 multi-line CPU stop report on stderr: CS:IP, MSW, CPL, A20, the CS and SS
 caches, GDTR, IDTR, LDTR and TR, the 16 bytes at CS:IP, and for a far

@@ -13,7 +13,11 @@
 ; (c) returns from that handler with IRET to ring 3 with IOPL 0, ES holding
 ;     a DPL-0 data segment and DS a DPL-3 one;
 ; (d) at ring 3 with IOPL 0 executes CLI, which raises #GP(0) to a ring-0
-;     handler.
+;     handler, which returns to ring 3 with IRET past the CLI;
+; (e) from ring 3 pushes two words and makes a far CALL through a DPL-3 286
+;     call gate that copies them to a DPL-0 non-conforming handler, which
+;     records the stack it runs on and the frame, then returns to ring 3
+;     with RETF 4.
 ; Ring 3 records what it sees in the program's variables through its own
 ; DPL-3 data segment. Back at CPL 0, the program prints one line per case
 ; and a failure count, to COM1 and straight into the text screen, then
@@ -32,6 +36,19 @@
 ;   CS and IP, then an error code for #GP; an interrupt gate clears IF;
 ;   INT n faults #GP when the gate's DPL is below CPL; exceptions ignore
 ;   the gate's DPL.
+; - Intel 80286 Programmer's Reference Manual, Control Transfer, call gates
+;   (sections 7.5.1.1 and 7.5.1.4): a call gate holds the target offset, the target code
+;   selector, a word count in bits 4-0 of byte 4, and the access rights byte
+;   (type 4: 286 call gate); a CALL through it to a non-conforming segment
+;   of higher privilege switches to the stack of the new level from the TSS,
+;   pushes the old SS and SP, copies the word count's parameters from the
+;   old stack in their order, then pushes CS and IP.
+; - Intel 80286 Programmer's Reference Manual, Appendix B, CALL and RET: the
+;   CALL checks the gate's DPL against CPL and RPL; RET n to an outer level
+;   pops IP and CS, releases n bytes, then pops SP and SS of that level.
+; - Intel 80286 Programmer's Reference Manual, section 7.5.2 (p. 7-21) and
+;   Table 7-4 (p. 7-22): the outer SS:SP is then adjusted by the n bytes of
+;   the RET too.
 ; - Intel 80286 Programmer's Reference Manual, Multitasking: the 286 TSS
 ;   holds SP0, SS0, SP1, SS1, SP2 and SS2 at offsets 2 to 0Ch; LTR loads TR.
 ; - Intel 80286 Programmer's Reference Manual, Appendix B, IRET: a return
@@ -65,7 +82,8 @@ SEL_TSS         equ 0x28
 SEL_CODE3       equ 0x33
 SEL_DATA3       equ 0x3B
 SEL_STACK3      equ 0x43
-GDT_ENTRIES     equ 9
+SEL_GATE3       equ 0x4B                ; the call gate of case (e)
+GDT_ENTRIES     equ 10
 
 ; The ring stacks lie apart from the program, so a frame on the wrong one
 ; shows in its selector and its offset.
@@ -82,9 +100,10 @@ RIGHTS_DATA3    equ 0xF3                ; present, DPL 3, read/write
 RIGHTS_TSS      equ 0x81                ; present, DPL 0, available 286 TSS
 GATE_INT0       equ 0x86                ; present, DPL 0, 286 interrupt gate
 GATE_INT3       equ 0xE6                ; present, DPL 3, 286 interrupt gate
+GATE_CALL3      equ 0xE4                ; present, DPL 3, 286 call gate
 
 VEC_TO_RING0    equ 0x40                ; case (b)
-VEC_LEAVE       equ 0x41                ; ring 3 gives up: no #GP in case (d)
+VEC_LEAVE       equ 0x41                ; ring 3 is done after case (e)
 IDT_ENTRIES     equ 0x42
 
 ; FLAGS images. Bit 1 always reads 1; IF stays clear throughout, so no
@@ -92,6 +111,12 @@ IDT_ENTRIES     equ 0x42
 FLAGS_RING3     equ 0x3002              ; case (a): IOPL 3
 FLAGS_INT       equ 0x3003              ; POPF before INT 40h: CF as a marker
 FLAGS_IOPL0     equ 0x0003              ; case (c): the handler clears IOPL
+
+; Case (e): the parameters ring 3 pushes, first then second, and how many
+; words the gate copies.
+E_PARAM1        equ 0xE1A5
+E_PARAM2        equ 0xE25A
+E_WORDS         equ 2
 
 ; Result bits, per line.
 NOT_REACHED     equ 0x0001
@@ -113,6 +138,12 @@ D_RETURN        equ 0x0004              ; pushed CS:IP not the CLI
 D_OUTER         equ 0x0008              ; pushed SS:SP not the ring-3 stack
 D_STACK         equ 0x0010              ; not on SS0:SP0 less the frame
 D_FLAGS         equ 0x0020              ; pushed FLAGS not ring 3's
+E_CS            equ 0x0002              ; the handler's CS is not ring 0
+E_STACK         equ 0x0004              ; not on SS0:SP0 less the frame
+E_RETURN        equ 0x0008              ; pushed CS:IP not the ring-3 return
+E_PARAMS        equ 0x0010              ; copied words not the pushed ones
+E_OUTER         equ 0x0020              ; pushed SS:SP not the ring-3 stack
+E_BACK          equ 0x0040              ; after RETF: not ring 3, or SP kept
 
 ;--------------------------------------------------------------------------
 ; Boot sector, loaded by INT 19h at 0000:7C00h.
@@ -285,11 +316,26 @@ ring3_after_int:
         mov [c_seen + 10], es
         mov byte [c_reached], 1
 
-        ; (d) CLI at ring 3 with IOPL 0.
+        ; (d) CLI at ring 3 with IOPL 0. The #GP handler returns to
+        ; ring3_call; without a #GP, ring 3 goes on there by itself.
         mov byte [gp_expected], 1
 ring3_cli:
         cli
         mov byte [gp_expected], 0
+
+        ; (e) Two words on the ring-3 stack, then CALL FAR through the
+        ; DPL-3 call gate; the offset in the instruction is ignored.
+ring3_call:
+        push word E_PARAM1
+        push word E_PARAM2
+        call SEL_GATE3:0
+ring3_after_call:
+        ; Back from RETF 4.
+        mov ax, cs
+        mov [e_back + 0], ax
+        mov [e_back + 2], ss
+        mov [e_back + 4], sp
+        mov byte [e_returned], 1
         int VEC_LEAVE
 
 ;--------------------------------------------------------------------------
@@ -358,9 +404,45 @@ gp_handler:
         mov ax, [ss:bp + 14]
         mov [d_frame + 10], ax
         mov byte [d_reached], 1
-        jmp ring0_resume
+        ; On to case (e): IRET to ring 3 past the CLI, IOPL 0, DS and ES the
+        ; DPL-3 data segment. The next inward transfer takes SS0:SP0 from the
+        ; TSS again, so what this stack holds no longer matters.
+        mov ax, SEL_DATA3
+        mov ds, ax
+        mov es, ax
+        push word SEL_STACK3
+        push word RING3_SP
+        push word FLAGS_IOPL0
+        push word SEL_CODE3
+        push word ring3_call
+        iret
 
-; INT 41h: ring 3 ran past the CLI without a #GP.
+; (e) CALL FAR from ring 3 through the call gate. DS is still ring 3's DPL-3
+; data segment, which ring 0 may also use; the frame is copied before
+; anything else moves SP. RETF 4 releases the two copied words here and the
+; two pushed ones on the ring-3 stack.
+call_gate_handler:
+        mov [e_seen + 0], ss
+        mov [e_seen + 2], sp
+        mov ax, cs
+        mov [e_seen + 4], ax
+        mov bp, sp
+        mov ax, [ss:bp + 0]
+        mov [e_frame + 0], ax
+        mov ax, [ss:bp + 2]
+        mov [e_frame + 2], ax
+        mov ax, [ss:bp + 4]
+        mov [e_frame + 4], ax
+        mov ax, [ss:bp + 6]
+        mov [e_frame + 6], ax
+        mov ax, [ss:bp + 8]
+        mov [e_frame + 8], ax
+        mov ax, [ss:bp + 10]
+        mov [e_frame + 10], ax
+        mov byte [e_called], 1
+        retf E_WORDS * 2
+
+; INT 41h: ring 3 is done after case (e).
 leave_handler:
         jmp ring0_resume
 
@@ -532,6 +614,58 @@ ring0_resume:
         or dx, D_STACK
 .d_report:
         mov si, name_d
+        call report
+
+        ; (e)
+        mov dx, NOT_REACHED
+        cmp byte [e_called], 0
+        je .e_report
+        xor dx, dx
+        cmp word [e_seen + 4], SEL_CODE0
+        je .e_cs
+        or dx, E_CS
+.e_cs:
+        cmp word [e_seen + 0], SEL_STACK0
+        jne .e_stack_bad
+        cmp word [e_seen + 2], SP0 - 8 - E_WORDS * 2
+        je .e_stack
+.e_stack_bad:
+        or dx, E_STACK
+.e_stack:
+        cmp word [e_frame + 0], ring3_after_call
+        jne .e_return_bad
+        cmp word [e_frame + 2], SEL_CODE3
+        je .e_return
+.e_return_bad:
+        or dx, E_RETURN
+.e_return:
+        ; The copy keeps the words' order: the one pushed last is lowest.
+        cmp word [e_frame + 4], E_PARAM2
+        jne .e_params_bad
+        cmp word [e_frame + 6], E_PARAM1
+        je .e_params
+.e_params_bad:
+        or dx, E_PARAMS
+.e_params:
+        cmp word [e_frame + 8], RING3_SP - E_WORDS * 2
+        jne .e_outer_bad
+        cmp word [e_frame + 10], SEL_STACK3
+        je .e_outer
+.e_outer_bad:
+        or dx, E_OUTER
+.e_outer:
+        cmp byte [e_returned], 0
+        je .e_back_bad
+        cmp word [e_back + 0], SEL_CODE3
+        jne .e_back_bad
+        cmp word [e_back + 2], SEL_STACK3
+        jne .e_back_bad
+        cmp word [e_back + 4], RING3_SP
+        je .e_report
+.e_back_bad:
+        or dx, E_BACK
+.e_report:
+        mov si, name_e
         call report
 
         cmp byte [u_reached], 0
@@ -750,6 +884,8 @@ a_reached       db 0
 b_reached       db 0
 c_reached       db 0
 d_reached       db 0
+e_called        db 0
+e_returned      db 0
 u_reached       db 0
 a_seen          times 4 dw 0            ; CS, SS, SP, FLAGS
 b_seen          times 3 dw 0            ; SS, SP, CS in the handler
@@ -757,6 +893,9 @@ b_frame         times 5 dw 0            ; IP, CS, FLAGS, SP, SS
 c_seen          times 6 dw 0            ; CS, SS, SP, FLAGS, DS, ES
 d_seen          times 2 dw 0            ; SS, SP of the frame
 d_frame         times 6 dw 0            ; error, IP, CS, FLAGS, SP, SS
+e_seen          times 3 dw 0            ; SS, SP, CS in the handler
+e_frame         times 6 dw 0            ; IP, CS, two words, SP, SS
+e_back          times 3 dw 0            ; CS, SS, SP after RETF 4
 u_seen          times 4 dw 0            ; vector, three frame words
 
 msg_header      db 'at-privilege-test', 13, 10, 0
@@ -769,6 +908,7 @@ name_a          db 'iret to ring 3', 0
 name_b          db 'int to ring 0', 0
 name_c          db 'iret nulls es', 0
 name_d          db 'cli gp at ring 3', 0
+name_e          db 'call gate to ring 0', 0
 
 ; Pseudo-descriptors for LGDT and LIDT: limit, then the 24-bit base. The
 ; program lies below 64 KiB of physical memory, so the top byte is zero.
@@ -811,6 +951,10 @@ gdt:
                 dw 0
                 dw 0xFFFF, STACK3_BASE & 0xFFFF ; SEL_STACK3
                 db STACK3_BASE >> 16, RIGHTS_DATA3
+                dw 0
+; Gate: offset, selector, word count, rights, reserved.
+                dw call_gate_handler, SEL_CODE0 ; SEL_GATE3
+                db E_WORDS, GATE_CALL3
                 dw 0
 
 ; The IDT, filled at start.

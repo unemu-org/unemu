@@ -8,8 +8,10 @@
 //! `vendor/at-privilege-test/build.sh`. It enters protected mode with a GDT,
 //! an IDT and a 286 TSS, returns to ring 3 with IRET, takes INT 40h back to
 //! ring 0 on the TSS's ring-0 stack, returns to ring 3 again with a DPL-0 ES
-//! that the return nulls, and takes #GP(0) for CLI at ring 3 with IOPL 0. It
-//! prints one line per case and a failure count, to COM1 and to the text
+//! that the return nulls, takes #GP(0) for CLI at ring 3 with IOPL 0, and
+//! makes a far CALL from ring 3 through a DPL-3 286 call gate that copies two
+//! parameter words to ring 0, then returns with RETF 4. It prints one line
+//! per case and a failure count, to COM1 and to the text
 //! screen, then halts in protected mode with interrupts disabled. The golden
 //! compares the COM1 bytes exactly. See
 //! `backlog/docs/design/at-privilege-test.md` for what each line checks.
@@ -17,8 +19,11 @@
 //! Intel 80286 Programmer's Reference Manual: Protection (DPL, RPL and CPL;
 //! descriptor access rights), Interrupts and Exceptions (an interrupt gate
 //! to an inner level switches to the TSS's stack and pushes SS, SP, FLAGS,
-//! CS and IP, then the #GP error code), Multitasking (the 286 TSS's SS0:SP0)
-//! and Appendix B (IRET to an outer level; CLI at CPL > IOPL raises #GP(0)).
+//! CS and IP, then the #GP error code), Control Transfer (§7.5.1.1 and §7.5.1.4 call gates:
+//! an inward CALL switches to the TSS's stack and pushes SS, SP, the copied
+//! parameters, CS and IP), Multitasking (the 286 TSS's SS0:SP0) and
+//! Appendix B (IRET and RET n to an outer level; CALL through a call gate;
+//! CLI at CPL > IOPL raises #GP(0)).
 
 use assembly::test_support::TempDir;
 use assembly::{
@@ -33,7 +38,7 @@ use std::path::{Path, PathBuf};
 #[path = "support/fixtures.rs"]
 mod fixtures;
 
-const CPU_REV: &str = "b4e64dffe8443c03a86459a98721afeb37084790";
+const CPU_REV: &str = "a11353e6850c4fe7b5c3ddde504052647ce897c1";
 const IMAGE: &str = "at-privilege-test/at-privilege-test-1200.img";
 const OPEN_BIOS: &str = "unemu-at-bios/bios-unemu-at.bin";
 // The BIOS image of machines/at-games-open.toml, as in the at-pm-test golden.
@@ -44,7 +49,7 @@ const OPEN_BIOS_SHA256: &str = "6938dc8b665fa120f33775163ab6bacc559389525db87ade
 const CAP: u64 = 100_000_000;
 // One POST, one floppy boot and the program with the open AT BIOS. Measured
 // at the CPU pin above.
-const GOLDEN_RETIRED: u64 = 6_390_307;
+const GOLDEN_RETIRED: u64 = 6_391_138;
 
 // The open AT BIOS reads the display switch with the IBM polarity; the mono
 // position selects the preset's MDA, where the screen check reads.
@@ -57,6 +62,7 @@ const EXPECTED: &str = "at-privilege-test\r\n\
      int to ring 0 ok\r\n\
      iret nulls es ok\r\n\
      cli gp at ring 3 ok\r\n\
+     call gate to ring 0 ok\r\n\
      failures 0\r\n";
 
 fn vendor(relative: &str) -> PathBuf {
@@ -169,8 +175,10 @@ fn uses_the_game_profile_bios_and_the_pinned_image() {
 
 /// The open AT BIOS boots the floppy; the program reaches ring 3 with IRET,
 /// comes back to ring 0 through a DPL-3 interrupt gate on SS0:SP0 with the
-/// ring-3 frame, returns to ring 3 with ES nulled and IOPL 0, and takes
-/// #GP(0) for CLI there. The text screen shows the same lines as COM1.
+/// ring-3 frame, returns to ring 3 with ES nulled and IOPL 0, takes #GP(0)
+/// for CLI there, and calls ring 0 through a call gate with two parameter
+/// words and returns with RETF 4. The text screen shows the same lines as
+/// COM1.
 #[test]
 #[ignore = "slow golden: open BIOS POST, then the ring transitions"]
 fn open_bios_program_runs_at_ring_3_and_returns_to_ring_0() {

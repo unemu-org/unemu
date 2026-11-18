@@ -10865,7 +10865,7 @@ kind='mda'
         shell.presenter.as_mut().unwrap().full_slices = true;
         shell.presenter.as_mut().unwrap().next_paint = Some(Duration::ZERO);
         shell.tick(&ctx, false, Duration::from_millis(20));
-        let error = "cpu: unsupported cpu system operation LegacyGateOrTaskTransfer at 0008:7c1e";
+        let error = "cpu: unsupported cpu system operation LegacyInstruction at 002b:7c2b";
         assert_eq!(shell.dialog, Some(("Machine error", error.to_string())));
         let report = shell
             .error_report

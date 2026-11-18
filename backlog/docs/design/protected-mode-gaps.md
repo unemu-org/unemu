@@ -24,7 +24,7 @@ Evidence vocabulary throughout:
 - **ASSUMED:** a proposed scope choice or inference requiring later acceptance
   tests. In particular, no complete DOS extender was run.
 
-The current CPU pin is `b4e64dffe8443c03a86459a98721afeb37084790`.
+The current CPU pin is `a11353e6850c4fe7b5c3ddde504052647ce897c1`.
 `Vm::set_cpu_model(CpuModel::I80286)` selects the machine profile on
 `ibm-5170`, fixes the model for the VM lifetime and defaults to
 `ExceptionDelivery::InGuest`. The separate I80386 core model is not selected
@@ -45,10 +45,18 @@ RETF, RETF n and IRET to an outer ring, interrupts, exceptions, IRQs and NMI
 through a gate to an inner ring on the TSS's ring stack, task switches into
 rings 1–3, and the CPL and IOPL checks of CLI/STI, POPF/IRET, port I/O, the
 system instructions and (on the 286) LOCK (READ; the open privilege-level
-test, [`at-privilege-test.md`](at-privilege-test.md), MEASURED). A far CALL
-or JMP through a call gate is still refused as `LegacyGateOrTaskTransfer`,
-and LOADALL with a CS DPL of 1–3 as `I286LoadallTable`. V86 and paging
-remain outside this machine's scope.
+test, [`at-privilege-test.md`](at-privilege-test.md), MEASURED). Since
+`a11353e6` (the second landing of that x86jit work), the core runs far CALL and JMP through a call gate in the
+GDT or LDT: 286 gates on both models (a 386 gate is #GP(selector) on the
+80286), an inward CALL onto the target ring's TSS stack that pushes the old
+SS:SP, copies the gate's parameter words and pushes CS:IP, RETF n back,
+same-level calls and conforming targets without a stack switch, and JMP
+through a gate to the same level only (READ; case (e) of the open
+privilege-level test, MEASURED). `LegacyGateOrTaskTransfer` is no longer
+produced. Still refused: an inward call-gate CALL whose frame copy would need
+more than the core's 64 retry-ledger entries (parameters and frame on a
+device), as `LegacyInstruction`, and LOADALL with a CS DPL of 1–3 as
+`I286LoadallTable`. V86 and paging remain outside this machine's scope.
 Real-mode exceptions (#DE, #UD, CS fetch/word limit faults, BOUND and INTO)
 are delivered through the IVT. Real-mode TF delivers vector 1 after the
 successor of a TF-setting POPF/IRET; only SS loads inhibit one instruction.

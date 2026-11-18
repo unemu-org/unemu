@@ -326,12 +326,10 @@ impl X86JitCpu {
     /// never read, so the report has no device side effect.
     pub fn stop_report(&self, error: &CpuError) -> Option<crate::CpuStopReport> {
         use x86jit_core::legacy::SegmentCache;
-        let (cs, ip, operation) = match error {
-            CpuError::UnsupportedSystem { cs, ip, operation } => {
-                (*cs, *ip, Some(operation.clone()))
-            }
-            CpuError::UnsupportedInstruction { cs, addr, .. } => (*cs, *addr, None),
-            CpuError::Fault { cs, ip, .. } => (*cs, *ip, None),
+        let (cs, ip) = match error {
+            CpuError::UnsupportedSystem { cs, ip, .. } => (*cs, *ip),
+            CpuError::UnsupportedInstruction { cs, addr, .. } => (*cs, *addr),
+            CpuError::Fault { cs, ip, .. } => (*cs, *ip),
             _ => return None,
         };
         let state = &self.cpu.cpu;
@@ -398,7 +396,6 @@ impl X86JitCpu {
         Some(crate::CpuStopReport::build(
             crate::stop_report::Snapshot {
                 stop: error.to_string(),
-                operation,
                 cs,
                 ip,
                 ss: state.ss,
@@ -922,87 +919,54 @@ mod tests {
         cpu
     }
 
-    /// The core refuses a far CALL through a call gate; the report names the
-    /// gate, the code segment behind it and the ring stacks of the TSS.
-    #[test]
-    fn a_refused_gate_call_reports_the_gate_its_target_and_the_tss_stacks() {
-        use crate::stop_report::{Descriptor, DescriptorKind, TransferForm};
-        // CALL FAR 0020:0000; HLT.
-        let mut cpu = protected_guest(&[0x9A, 0, 0, 0x20, 0, 0xF4]);
-        let error = cpu.run_steps(20, StepRunOptions::default()).unwrap_err();
-        assert!(
-            matches!(&error, CpuError::UnsupportedSystem { operation, cs: 8, ip: 0x101D }
-                if operation == "LegacyGateOrTaskTransfer"),
-            "{error}"
-        );
-        let report = cpu.stop_report(&error).expect("a refusal has a report");
-        let system = report.system.expect("the machine profile");
-        assert!(system.protected());
-        assert_eq!((system.cpl, system.a20), (0, true));
-        assert_eq!((system.gdtr.base, system.gdtr.limit), (0x800, 0x37));
-        assert_eq!((system.tr.selector, system.tr.base), (0x18, 0x600));
-        assert_eq!(
-            (system.cs.selector, report.ss, report.sp),
-            (0x08, 0x10, 0x7000)
-        );
-        assert_eq!(report.code_linear, 0x101D);
-        assert_eq!(&report.code[..6], &[0x9A, 0, 0, 0x20, 0, 0xF4].map(Some));
-        assert_eq!(
-            report.form,
-            Some(TransferForm::FarDirect {
-                call: true,
-                selector: 0x20,
-                offset: 0
-            })
-        );
-        assert_eq!(report.descriptors.len(), 2);
-        assert_eq!(
-            report.descriptors[0].entry,
-            Ok(Descriptor([0x00, 0x11, 0x08, 0, 0x02, 0xE4, 0, 0]))
-        );
-        assert_eq!(
-            report.descriptors[0].entry.unwrap().kind(),
-            DescriptorKind::Gate {
-                name: "286 call gate",
-                selector: 0x08,
-                offset: Some(0x1100),
-                words: Some(2)
-            }
-        );
-        assert_eq!(report.descriptors[1].role, "gate target");
-        assert_eq!(report.descriptors[1].selector, 0x08);
-        let tss = report.tss.expect("TR holds a 286 TSS");
-        assert_eq!(tss.stacks, [(0x10, 0x6000), (0x30, 0x5000), (0x30, 0x4000)]);
-        assert!(report.to_string().starts_with(
-            "cpu stop report\nstop     unsupported cpu system operation LegacyGateOrTaskTransfer at 0008:101d\n"
-        ));
-    }
-
     /// RETF to an outer ring runs: the guest reaches ring 3 on the stack the
-    /// return frame names. A far CALL through the call gate there is still
-    /// refused, and the report shows CPL 3, the ring-3 stack and the gate.
+    /// return frame names. There a far CALL through the call gate, with 31
+    /// parameter words and both the ring-3 stack and the TSS's ring-0 stack in
+    /// a device window, is refused: copying that frame would need more
+    /// device-transfer records than the core keeps for one instruction. The
+    /// report shows CPL 3, the ring-3 stack, the gate, the code segment behind
+    /// it and the ring stacks of the TSS.
     #[test]
     fn an_outward_return_reaches_ring_3_where_a_gate_call_is_refused() {
-        use crate::stop_report::TransferForm;
+        use crate::stop_report::{Descriptor, DescriptorKind, TransferForm};
         let mut cpu = protected_guest(&[
             0x68, 0x33, 0x00, // PUSH 33h (ring-3 SS)
-            0x68, 0x00, 0x30, // PUSH 3000h (ring-3 SP)
+            0x68, 0x00, 0x04, // PUSH 0400h (ring-3 SP)
             0x68, 0x2B, 0x00, // PUSH 2Bh (ring-3 CS)
             0x68, 0x00, 0x20, // PUSH 2000h (ring-3 IP)
             0xCB, // RETF
         ]);
         // CALL FAR 0023:0000, the call gate with RPL 3.
         cpu.write_mem(0x2000, &[0x9A, 0, 0, 0x23, 0]).unwrap();
+        // The gate copies 31 words. Ring-3 data 30h and a new ring-0 data
+        // segment 38h start at 10000h, a device window; SS0:SP0 is 0038:0F00.
+        cpu.map_mmio(0x1_0000, 0x1000).unwrap();
+        let gate = [0x00, 0x11, 0x08, 0, 0x1F, 0xE4, 0, 0];
+        cpu.write_mem(0x820, &gate).unwrap();
+        cpu.write_mem(0x830, &[0xFF, 0xFF, 0, 0, 0x01, 0xF2, 0, 0])
+            .unwrap();
+        cpu.write_mem(0x838, &[0xFF, 0xFF, 0, 0, 0x01, 0x92, 0, 0])
+            .unwrap();
+        cpu.write_mem(0x0F00, &[0x3F, 0x00]).unwrap();
+        cpu.write_mem(0x602, &[0x00, 0x0F, 0x38, 0x00]).unwrap();
         let error = cpu.run_steps(20, StepRunOptions::default()).unwrap_err();
         assert!(
             matches!(&error, CpuError::UnsupportedSystem { operation, cs: 0x2B, ip: 0x2000 }
-                if operation == "LegacyGateOrTaskTransfer"),
+                if operation == "LegacyInstruction"),
             "{error}"
         );
-        let report = cpu.stop_report(&error).unwrap();
+        let report = cpu.stop_report(&error).expect("a refusal has a report");
         let system = report.system.expect("the machine profile");
-        assert_eq!((system.cs.selector, system.cpl), (0x2B, 3));
-        assert_eq!((report.ss, report.sp), (0x33, 0x3000));
+        assert!(system.protected());
+        assert_eq!(
+            (system.cs.selector, system.cpl, system.a20),
+            (0x2B, 3, true)
+        );
+        assert_eq!((system.gdtr.base, system.gdtr.limit), (0x800, 0x3F));
+        assert_eq!((system.tr.selector, system.tr.base), (0x18, 0x600));
+        assert_eq!((report.ss, report.sp), (0x33, 0x0400));
+        assert_eq!(report.code_linear, 0x2000);
+        assert_eq!(&report.code[..5], &[0x9A, 0, 0, 0x23, 0].map(Some));
         assert_eq!(
             report.form,
             Some(TransferForm::FarDirect {
@@ -1020,7 +984,21 @@ mod tests {
             named,
             [("target", 0x23, Ok(0xE4)), ("gate target", 0x08, Ok(0x9B))]
         );
-        assert_eq!(report.tss.unwrap().stacks[0], (0x10, 0x6000));
+        assert_eq!(report.descriptors[0].entry, Ok(Descriptor(gate)));
+        assert_eq!(
+            report.descriptors[0].entry.unwrap().kind(),
+            DescriptorKind::Gate {
+                name: "286 call gate",
+                selector: 0x08,
+                offset: Some(0x1100),
+                words: Some(31)
+            }
+        );
+        let tss = report.tss.expect("TR holds a 286 TSS");
+        assert_eq!(tss.stacks, [(0x38, 0x0F00), (0x30, 0x5000), (0x30, 0x4000)]);
+        assert!(report.to_string().starts_with(
+            "cpu stop report\nstop     unsupported cpu system operation LegacyInstruction at 002b:2000\n"
+        ));
     }
 
     /// The report forms physical addresses as the model does: the 80286's

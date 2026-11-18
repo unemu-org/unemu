@@ -108,7 +108,6 @@ fn protected_system() -> SystemState {
 fn snapshot(ip: u16, sp: u16, system: Option<SystemState>) -> Snapshot {
     Snapshot {
         stop: "unsupported cpu system operation Example at 0008:7c40".into(),
-        operation: None,
         cs: 0x08,
         ip: u64::from(ip),
         ss: 0x10,
@@ -616,45 +615,4 @@ fn real_mode_and_application_reports_name_no_descriptors() {
             assert!(!text.contains("gdtr"));
         }
     }
-}
-
-/// A gate refusal at an instruction that cannot make that transfer came
-/// while delivering an interrupt or exception; the report says the
-/// instruction may be the interrupted one. Other refusals do not.
-#[test]
-fn a_refusal_the_instruction_cannot_make_notes_interrupt_delivery() {
-    let cases: [(&str, &[u8], bool); 7] = [
-        ("LegacyGateOrTaskTransfer", &[0x90], true),
-        ("LegacyGateOrTaskTransfer", &[0xCB], true),
-        ("LegacyGateOrTaskTransfer", &[0x9A, 0, 0, 0x20, 0], false),
-        ("LegacyGateOrTaskTransfer", &[0xCD, 0x21], false),
-        ("LegacyGateOrTaskTransfer", &[0xEA, 0, 0, 0x20, 0], false),
-        ("LegacyTaskReturn", &[0x90], false),
-        ("LegacyInstruction", &[0x90], false),
-    ];
-    for (operation, code, interrupted) in cases {
-        let mut memory = protected_memory();
-        memory.put(0x7C40, code);
-        let mut snapshot = snapshot(0x7C40, 0x7BF0, Some(protected_system()));
-        snapshot.operation = Some(operation.into());
-        let report = CpuStopReport::build(snapshot, memory.read());
-        assert_eq!(
-            report.maybe_interrupted, interrupted,
-            "{operation} {code:02x?}"
-        );
-        assert_eq!(
-            report.to_string().contains(
-                "note     the instruction shown may be the interrupted one: a refusal while \
-                 delivering an interrupt or exception names no vector\n"
-            ),
-            interrupted
-        );
-    }
-    let mut memory = protected_memory();
-    memory.put(0x7C40, &[0x90]);
-    let report = CpuStopReport::build(
-        snapshot(0x7C40, 0x7BF0, Some(protected_system())),
-        memory.read(),
-    );
-    assert!(!report.maybe_interrupted, "an error without an operation");
 }
