@@ -15,8 +15,9 @@ description = "The desktop's skin and widget helpers: themes, fonts, icons, titl
 layer = "neutral"
 
 [features]
-# Scripted file dialogs and clipboards, and the mock-up icon inventory, for
-# the tests of the crates that draw with this kit.
+# Scripted file dialogs and clipboards, the mock-up icon inventory and the
+# helpers that drive egui frame by frame, for the tests of the crates that
+# draw with this kit.
 test-support = []
 
 [dependencies]

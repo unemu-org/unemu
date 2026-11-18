@@ -14,8 +14,11 @@
 //! library's worker thread, which runs every store, registry and machine job
 //! off the desktop's frame loop; [`pc_desktop`] is the PC's part of the
 //! platform-neutral registry and Remotes models; [`layers_dialog`] holds what
-//! the worker reads for the disk-layer dialog's save form. The views that
-//! draw them stay with the desktop.
+//! the worker reads for the disk-layer dialog's save form. [`new_machine`]
+//! is File › New machine…'s wizard and [`settings_model`] the property
+//! sheet of a machine file, both without their views; [`machine_files`]
+//! lists the machine-file directory and checks each machine's readiness off
+//! the frame loop. The views that draw them are in `pc_ui`.
 //!
 //! The crate is PC: it reads the PC firmware catalogue and machine tables
 //! (layer `pc`, `scripts/crate-boundaries.sh`).
@@ -37,12 +40,15 @@ pub mod layers_dialog;
 #[cfg(any(test, feature = "test-support"))]
 pub mod library_test_support;
 pub mod library_worker;
+pub mod machine_files;
 pub mod machines;
+pub mod new_machine;
 pub mod pc_desktop;
 // The tests of Remotes' model that read PC artifacts or browse through the
 // worker.
 #[cfg(test)]
 mod remote_browse;
+pub mod settings_model;
 pub mod snapshot;
 
 /// Waiting on background threads in tests.

@@ -7,14 +7,14 @@ use crate::new_machine::{self as model, Offer, Slot, TagLevel, Wizard, STEPS};
 use assembly::capabilities::{self as caps, Value};
 use pc_image::create::{self, Chs, Serial, Video};
 
-pub(crate) enum Action {
+pub enum Action {
     None,
     Cancel,
     Create,
     ImportRoms,
 }
 
-pub(crate) fn show(ctx: &egui::Context, wizard: &mut Wizard, classic: bool) -> Action {
+pub fn show(ctx: &egui::Context, wizard: &mut Wizard, classic: bool) -> Action {
     let mut action = Action::None;
     egui::Modal::new(egui::Id::unique("new-machine-wizard")).show(ctx, |ui| {
         ui.set_width(860.0);
@@ -1001,7 +1001,7 @@ fn disk(ui: &mut egui::Ui, wizard: &mut Wizard, unit: usize, name: &str) {
                 Some(*c),
                 format!(
                     "{} · {}/{}/{}",
-                    crate::library_view::human_size(c.bytes()),
+                    library_model::listing::human_size(c.bytes()),
                     c.cylinders,
                     c.heads,
                     c.sectors
@@ -1060,7 +1060,7 @@ fn disk(ui: &mut egui::Ui, wizard: &mut Wizard, unit: usize, name: &str) {
             ui,
             format!(
                 "{} · CHS addressing",
-                crate::library_view::human_size(c.bytes())
+                library_model::listing::human_size(c.bytes())
             ),
         );
     }

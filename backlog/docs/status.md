@@ -5,6 +5,22 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-18 — The PC dialogs and the command vocabulary leave the
+  window:** moves 6.1 to 6.3 of the window split
+  (design/core-contract.md §8.1.9). `pc-library` takes the models of File ›
+  New machine… (`new_machine`) and of a machine file's Settings…
+  (`settings_model`, which now opens with the library's machine-file
+  directory that the shell passes), and the machine-file list with its
+  readiness check (`machine_files`). A new `pc` crate, `pc-ui` (egui),
+  holds Settings… with the image review (`settings_sheet`), the New
+  machine wizard's view (`new_machine_view`), the disk-layer dialog
+  (`layers_dialog`), the PC parts of the details panes (`pane`) and the
+  desktop's command vocabulary (`commands`); the egui test helpers of the
+  library fixture are `ui_kit::test_support`. The window re-exports
+  everything under its old paths. No behaviour changes: every test keeps
+  its name (4117; MEASURED) but for ten tests of `shell_model` that went
+  with their code to `machine_files` and `commands`; 51 tests moved to
+  `pc-library`, 29 to `pc-ui` and the picker's size test to `media-ui`.
 - **2026-11-18 — `machine-view` on contract 0.2:** step 10 of
   design/core-contract.md §13.6. A new module, `machine_view::screen`,
   is the geometry every view but the PC's will show a picture with:

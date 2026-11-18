@@ -591,6 +591,7 @@ impl Shell {
             match crate::settings_model::SettingsModel::open(
                 &self.library[index].path,
                 self.presenter.is_some(),
+                crate::machines_dir(),
             ) {
                 Ok(model) => self.settings = Some(model),
                 Err(error) => self.dialog = Some(("Settings", error)),

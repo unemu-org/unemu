@@ -25,6 +25,7 @@ members = [
     "crates/machine-view",
     "crates/pc-media",
     "crates/pc-library",
+    "crates/pc-ui",
     "crates/media",
     "crates/machine-file",
     "crates/image-store",

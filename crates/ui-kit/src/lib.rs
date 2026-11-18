@@ -8,7 +8,9 @@
 //! [`shell_icons`] paints the approved mock-ups' icons, [`pane`] draws the
 //! library's details panes, [`logo`] decodes the embedded brand art,
 //! [`file_dialog`] runs host file dialogs without a nested event loop and
-//! [`text_clipboard`] gives cut, copy and paste back to text fields.
+//! [`text_clipboard`] gives cut, copy and paste back to text fields. Behind
+//! the `test-support` feature, `test_support` drives egui frame by frame for
+//! the tests of the crates that draw with the kit.
 //!
 //! The crate knows no platform, machine or image format, and the boundary
 //! check keeps it so (layer `neutral`, `scripts/crate-boundaries.sh`).
@@ -43,4 +45,6 @@ pub mod logo;
 pub mod pane;
 pub mod shell_icons;
 pub mod skin;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod text_clipboard;

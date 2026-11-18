@@ -20,7 +20,7 @@ use std::{
     rc::Rc,
 };
 
-pub(crate) const STEPS: [&str; 7] = [
+pub const STEPS: [&str; 7] = [
     "Machine class",
     "Motherboard",
     "CPU and memory",
@@ -29,16 +29,16 @@ pub(crate) const STEPS: [&str; 7] = [
     "Name and tag",
     "Summary",
 ];
-pub(crate) const MOTHERBOARD: usize = 1;
-pub(crate) const CPU_MEMORY: usize = 2;
-pub(crate) const DEVICES: usize = 3;
-pub(crate) const DRIVES: usize = 4;
-pub(crate) const NAME: usize = 5;
-pub(crate) const SUMMARY: usize = 6;
+pub const MOTHERBOARD: usize = 1;
+pub const CPU_MEMORY: usize = 2;
+pub const DEVICES: usize = 3;
+pub const DRIVES: usize = 4;
+pub const NAME: usize = 5;
+pub const SUMMARY: usize = 6;
 
 /// A firmware picker: which package role it offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Slot {
+pub enum Slot {
     Bios,
     Video,
     OptionRom,
@@ -57,11 +57,11 @@ impl Slot {
 }
 
 /// A selected ROM: its package manifest digest and logical ROM id.
-pub(crate) type RomRef = (Digest, String);
+pub type RomRef = (Digest, String);
 
 /// One package ROM offered by a picker, with the reasons it does not fit.
 #[derive(Clone, Debug)]
-pub(crate) struct Offer {
+pub struct Offer {
     pub rom: RomRef,
     pub name: String,
     pub vendor: String,
@@ -76,7 +76,7 @@ pub(crate) struct Offer {
 
 /// The selections that determine the machine document.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Selection {
+pub struct Selection {
     pub class: &'static str,
     pub hardware: Hardware,
     pub bios: Option<RomRef>,
@@ -84,7 +84,8 @@ pub(crate) struct Selection {
     pub option_rom: Option<RomRef>,
 }
 
-pub(crate) use crate::save_image::{short, TagCheck, TagLevel};
+use library_model::save_image::TagCheck;
+pub use library_model::save_image::{short, TagLevel};
 
 /// A prospective manifest, or why the ROM bytes refuse the machine.
 pub(crate) type Preview = Result<Rc<image_store::Manifest>, String>;
@@ -127,7 +128,7 @@ impl image_store::BlobSource for Roms<'_> {
     }
 }
 
-pub(crate) struct Wizard {
+pub struct Wizard {
     pub step: usize,
     pub visited: usize,
     selection: Selection,
@@ -1102,7 +1103,7 @@ impl Wizard {
     }
     /// The next free minor version of a repository, or 1.0.0.
     pub fn next_version(&self, repo: &str) -> String {
-        crate::save_image::next_version(repo, &self.tags)
+        library_model::save_image::next_version(repo, &self.tags)
     }
     /// A descriptive tag of the chosen hardware, such as `6mhz-1mb-2mbems`.
     pub fn hardware_tag(&self) -> String {
@@ -1130,9 +1131,13 @@ impl Wizard {
     /// Store and registry tag rules: the OCI grammar, version tags never move,
     /// other tags move only after a confirmation.
     pub fn tag_check(&self) -> TagCheck {
-        crate::save_image::check_tag(&self.repo, &self.tag, &self.tags, "Create will ask", || {
-            self.next_version(self.repo.trim())
-        })
+        library_model::save_image::check_tag(
+            &self.repo,
+            &self.tag,
+            &self.tags,
+            "Create will ask",
+            || self.next_version(self.repo.trim()),
+        )
     }
 
     // ---- redistribution and summary ----------------------------------------
@@ -1240,7 +1245,7 @@ impl Wizard {
             |c| {
                 format!(
                     "new blank disk · {} · {}/{}/{} · zero base, nothing stored until written",
-                    crate::library_view::human_size(c.bytes()),
+                    library_model::listing::human_size(c.bytes()),
                     c.cylinders,
                     c.heads,
                     c.sectors
@@ -1385,10 +1390,7 @@ impl Wizard {
     /// Why the machine's name cannot be used, when Create makes one.
     pub fn machine_problem(&self) -> Option<String> {
         let name = self.machine_choice()??;
-        crate::library_view::machines::name_problem(
-            &name,
-            self.machine_names.iter().map(String::as_str),
-        )
+        crate::machines::name_problem(&name, self.machine_names.iter().map(String::as_str))
     }
     /// The image to create, its reference and the digest a confirmed move
     /// replaces. Refuses while any step has a problem.
@@ -1411,6 +1413,13 @@ impl Wizard {
             return Ok((self.image(), self.reference(), Some(current)));
         }
         Ok((self.image(), self.reference(), None))
+    }
+}
+
+// A public type with `new` offers `Default` too.
+impl Default for Wizard {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -2033,98 +2042,6 @@ mod tests {
         assert!(wizard.problems().iter().any(|(step, _)| *step == DRIVES));
     }
 
-    #[test]
-    fn every_step_renders_without_a_window() {
-        let Some(store) = FirmwareStore::new(true) else {
-            return;
-        };
-        let mut wizard = wizard(&store);
-        let ctx = egui::Context::default();
-        for step in 0..STEPS.len() {
-            wizard.go(step);
-            for classic in [true, false] {
-                let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                    assert!(matches!(
-                        crate::new_machine_view::show(ui.ctx(), &mut wizard, classic),
-                        crate::new_machine_view::Action::None
-                    ));
-                });
-                output.textures_delta.clear();
-            }
-        }
-        let mut empty = Wizard::new();
-        empty.set_store(Default::default());
-        empty.go(MOTHERBOARD);
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let _ = crate::new_machine_view::show(ui.ctx(), &mut empty, true);
-        });
-        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text().contains("Import ROM folder"))));
-        output.textures_delta.clear();
-    }
-
-    /// A greyed option in a list says why on hover, as its line under the
-    /// field does without hovering.
-    #[test]
-    fn an_unavailable_option_says_why_on_hover_and_in_its_line() {
-        use crate::library_test_support::{painted_at, Pointer};
-        let Some(store) = FirmwareStore::new(false) else {
-            return;
-        };
-        let mut wizard = wizard(&store);
-        wizard.go(CPU_MEMORY);
-        let path = "card[lotech-ems].frame";
-        let frame = wizard.hardware().ems.unwrap().frame;
-        assert_eq!(enabled(&wizard, path, Value::Integer(0xE000)), Some(false));
-        let why = reason(&wizard, path, Value::Integer(0xE000));
-        let draft = wizard.draft().unwrap();
-        let label = |value: u16| caps::value_label(&draft, path, &Value::Integer(value.into()));
-        let (current, blocked) = (label(frame), label(0xE000));
-        let tooltip = crate::new_machine_view::capitalized(&why);
-        let pointer = Pointer::new(egui::vec2(1040.0, 900.0));
-        let mut draw = |ui: &mut egui::Ui| {
-            let _ = crate::new_machine_view::show(ui.ctx(), &mut wizard, false);
-        };
-        // A new modal settles over its first frames.
-        let mut shown = Vec::new();
-        for _ in 0..3 {
-            shown = pointer.frame(Vec::new(), &mut draw);
-        }
-        painted_at(&shown, &format!("{blocked}: {why}"));
-        assert!(!shown.iter().any(|(t, _)| *t == tooltip));
-        pointer.click(painted_at(&shown, &current).center(), &mut draw);
-        pointer.frame(Vec::new(), &mut draw);
-        let popup = pointer.frame(Vec::new(), &mut draw);
-        let hovered = pointer.hover(
-            painted_at(&popup, &format!("{blocked} — unavailable")).center(),
-            &mut draw,
-        );
-        painted_at(&hovered, &tooltip);
-    }
-
-    #[test]
-    fn the_wizard_keeps_one_height_inside_the_viewport() {
-        let store = FirmwareStore::new(true);
-        let mut wizard = match &store {
-            Some(store) => wizard(store),
-            None => {
-                let mut empty = Wizard::new();
-                empty.set_store(Default::default());
-                empty
-            }
-        };
-        let id = egui::Id::unique("new-machine-wizard");
-        for size in [egui::vec2(1040.0, 700.0), egui::vec2(1040.0, 500.0)] {
-            for step in 0..STEPS.len() {
-                wizard.go(step);
-                for classic in [true, false] {
-                    crate::library_test_support::settled_modal(id, size, |ctx| {
-                        let _ = crate::new_machine_view::show(ctx, &mut wizard, classic);
-                    });
-                }
-            }
-        }
-    }
-
     /// A machine rebuilt from each official template, open firmware and the
     /// template's hardware, gets a repository of its own: named after its
     /// title, or after its firmware while untitled, but never an official
@@ -2238,58 +2155,6 @@ mod tests {
         ] {
             assert_eq!(vendor_repo(vendor), repo, "{vendor:?}");
             Store::validate_tag_name(&format!("{repo}:1.0.0")).unwrap();
-        }
-    }
-
-    /// The Name and tag step never offers an official template's name as an
-    /// example repository: the user's own image is not the template.
-    #[test]
-    fn the_name_step_never_suggests_a_template_name() {
-        let mut wizard = Wizard::new();
-        wizard.set_store(Default::default());
-        wizard.go(NAME);
-        let ctx = egui::Context::default();
-        let mut pass = || {
-            let input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1040.0, 900.0),
-                )),
-                ..Default::default()
-            };
-            let mut output = ctx.run_ui(input, |ui| {
-                let _ = crate::new_machine_view::show(ui.ctx(), &mut wizard, false);
-            });
-            output.textures_delta.clear();
-            output
-        };
-        // A new modal settles over its first frames.
-        pass();
-        pass();
-        let output = pass();
-        fn texts(shape: &egui::Shape, out: &mut Vec<String>) {
-            match shape {
-                egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
-                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| texts(s, out)),
-                _ => (),
-            }
-        }
-        let mut shown = Vec::new();
-        for clipped in &output.shapes {
-            texts(&clipped.shape, &mut shown);
-        }
-        assert!(
-            shown.iter().any(|text| text.contains("Repository name")),
-            "{shown:?}"
-        );
-        for text in &shown {
-            for word in text.split_whitespace() {
-                let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
-                assert!(
-                    pc_image::template::TEMPLATES.iter().all(|t| t.name != word),
-                    "{text:?} names the template {word:?}"
-                );
-            }
         }
     }
 }

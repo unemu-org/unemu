@@ -56,10 +56,12 @@ mod pacing {
 }
 pub(crate) use machine_view::system_keys;
 // The PC media and library models, under the paths the desktop names them by.
-use pc_library::{firmware_choices, pc_desktop};
+use pc_library::{firmware_choices, library_worker, new_machine, pc_desktop};
 use pc_media::{created_media, drive_chips, kept_catalogue};
 // The PC media views, under the path the shell names them by.
 use media_ui::catalogue_menu;
+// The PC dialogs, under the paths the library frame and the shell name them by.
+use pc_ui::{new_machine_view, settings_sheet};
 
 mod app_menu;
 #[cfg(test)]
@@ -71,15 +73,12 @@ mod layers_dialog;
 #[cfg(test)]
 mod library_test_support;
 mod library_view;
-mod library_worker;
 #[cfg(target_os = "macos")]
 mod macos_menu;
 mod media_dialog;
 mod media_picker;
 #[cfg(test)]
 mod mouse;
-mod new_machine;
-mod new_machine_view;
 mod preferences;
 mod preferences_sheet;
 mod registries_model;
@@ -89,7 +88,6 @@ mod remote_browse;
 mod remote_pull;
 mod save_image;
 mod settings_model;
-mod settings_sheet;
 mod shell;
 #[cfg(test)]
 mod shell_icons;

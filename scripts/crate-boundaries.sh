@@ -24,8 +24,8 @@
 #   application  anything
 #
 # and no window crate (window, window-*, ui-kit, machine-view, library-model,
-# library-ui, pc-media, pc-library, media-ui, unemupc) depends on a CLI crate
-# (cli, cli-*, upcli), nor the other way round.
+# library-ui, pc-media, pc-library, media-ui, pc-ui, unemupc) depends on a CLI
+# crate (cli, cli-*, upcli), nor the other way round.
 #
 # The test core, unemu-test-core, is what the front end's crates test against
 # instead of a real platform, so it declares no dependency of any kind but the
@@ -93,7 +93,7 @@ def family:
   if . == "cli" or . == "upcli" or startswith("cli-") then "CLI"
   elif . == "window" or . == "unemupc" or . == "ui-kit" or . == "machine-view"
        or . == "library-model" or . == "library-ui" or . == "pc-media"
-       or . == "pc-library" or . == "media-ui"
+       or . == "pc-library" or . == "media-ui" or . == "pc-ui"
        or startswith("window-") then "window"
   else null end;
 

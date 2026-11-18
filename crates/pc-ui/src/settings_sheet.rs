@@ -44,13 +44,13 @@ impl Sheet for ImageSettings {
     }
 }
 
-pub(crate) enum Action {
+pub enum Action {
     None,
     Cancel,
     Save { close: bool },
 }
 
-pub(crate) fn show(ctx: &egui::Context, model: &mut SettingsModel, classic: bool) -> Action {
+pub fn show(ctx: &egui::Context, model: &mut SettingsModel, classic: bool) -> Action {
     let mut action = Action::None;
     egui::Modal::new(egui::Id::unique("machine-settings")).show(ctx, |ui| {
         ui.set_width(660.0);
@@ -203,7 +203,7 @@ pub(crate) fn show(ctx: &egui::Context, model: &mut SettingsModel, classic: bool
     action
 }
 
-pub(crate) enum ImageAction {
+pub enum ImageAction {
     None,
     Cancel,
     Review,
@@ -215,7 +215,7 @@ pub(crate) enum ImageAction {
 }
 
 /// An edit the Firmware tab asked for.
-pub(crate) enum FirmwareEdit {
+pub enum FirmwareEdit {
     Set(Slot, &'static str),
     ImportRoms,
 }
@@ -279,7 +279,7 @@ fn unavailable_line(ui: &mut egui::Ui, choice: &FirmwareChoice, read_only: bool)
 /// with a BIOS of its own, and the option ROMs, which follow their cards.
 /// Every choice is a catalogue entry that fits the board; an entry that
 /// cannot be chosen says why.
-pub(crate) fn firmware_tab(
+pub fn firmware_tab(
     ui: &mut egui::Ui,
     model: &mut ImageSettings,
     machine: bool,
@@ -548,11 +548,7 @@ fn floppy_label(kind: Option<&str>) -> String {
 }
 
 /// The `Settings — repository:tag (image)` property sheet over an image's hardware.
-pub(crate) fn show_image(
-    ctx: &egui::Context,
-    model: &mut ImageSettings,
-    classic: bool,
-) -> ImageAction {
+pub fn show_image(ctx: &egui::Context, model: &mut ImageSettings, classic: bool) -> ImageAction {
     let mut action = ImageAction::None;
     let mut close = false;
     let reference = model.row.reference.clone();
@@ -789,7 +785,7 @@ pub(crate) fn show_image(
     action
 }
 
-pub(crate) enum ReviewAction {
+pub enum ReviewAction {
     None,
     Back,
     Cancel,
@@ -814,7 +810,7 @@ fn blob_kind(descriptor: &image_store::Descriptor) -> &'static str {
 
 /// Publish new image revision: the configuration diff, the CMOS bytes SETUP
 /// would rewrite, the bindings and the name, confirmed before anything is written.
-pub(crate) fn show_review(
+pub fn show_review(
     ctx: &egui::Context,
     model: &mut ImageSettings,
     busy: bool,
@@ -1158,7 +1154,7 @@ mod tests {
             let reference = "no-video-bios:1.0.0";
             let descriptor =
                 pc_image::create::create(&store.store, &image, reference, None).unwrap();
-            crate::library_view::ImageRow {
+            library_model::listing::ImageRow {
                 reference: reference.into(),
                 aliases: Vec::new(),
                 descriptor,
@@ -1366,7 +1362,7 @@ mod tests {
         std::fs::create_dir(temp.path().join("machines")).unwrap();
         let path = temp.path().join("machines/example.toml");
         std::fs::write(&path, "schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='missing.bin'\n[[card]]\nkind='sb16'\n[[card]]\nkind='lotech-ems'\nframe=0xD000\n").unwrap();
-        let mut model = SettingsModel::open(&path, false).unwrap();
+        let mut model = SettingsModel::open(&path, false, None).unwrap();
         let ctx = egui::Context::default();
         for tab in caps::Group::ALL {
             model.tab = tab;
@@ -1400,7 +1396,7 @@ mod tests {
             "schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='missing.bin'\n",
         )
         .unwrap();
-        let mut model = SettingsModel::open(&path, false).unwrap();
+        let mut model = SettingsModel::open(&path, false, None).unwrap();
         model.set("memory.extended_kib", Value::Integer(1024));
         let ctx = egui::Context::default();
         let mut frame = |events| {

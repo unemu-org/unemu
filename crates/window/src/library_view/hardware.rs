@@ -3,6 +3,4 @@
 //! firmware: the PC library's model (`pc_library::hardware`), re-exported
 //! under its old path, with its tests.
 
-pub(crate) use pc_library::hardware::{
-    controller_name, letter, medium_name, DriveFact, FirmwareFact, ImageFacts, CMOS,
-};
+pub(crate) use pc_library::hardware::{DriveFact, ImageFacts, CMOS};

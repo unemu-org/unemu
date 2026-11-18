@@ -32,3 +32,4 @@ ui-kit = { path = "../ui-kit", version = "0.0.2" }
 
 [dev-dependencies]
 assembly = { workspace = true, features = ["test-support"] }
+ui-kit = { path = "../ui-kit", version = "0.0.2", features = ["test-support"] }

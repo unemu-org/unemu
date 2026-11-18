@@ -2677,11 +2677,122 @@ listed, 557 + 41, of which 4 are ignored), in
 
 | # | Move | Cut before it moves | Tests | Proof and effect |
 |---|---|---|---|---|
-| 6.1 | **The dialog models into `pc-library`**: `new_machine` (1 416 lines) and `settings_model` (735) | `SettingsModel::open` takes the machine-file directory, as `open_with_library` does already; the shell passes `machines_dir()` | `settings_model` 25 move, but for the one that names `machines_dir_from`; of `new_machine`'s 21 those that draw `new_machine_view` stay | |
-| 6.2 | **`pc-ui` starts with the dialogs**: the PC half of `pane`, `settings_sheet`, `new_machine_view`, `layers_dialog`. The three egui test helpers of the library fixture (`settled_modal`, `Pointer`, `painted_at`) go to `ui-kit`'s `test-support`, since they name no PC | none | `settings_sheet` 6, `layers_dialog` 14, and the tests of `image_settings`, `new_machine` and the worker that waited for these views; those that drive the frame wait for 6.4 | |
-| 6.3 | **Commands and machine files down.** `State`, `Command`, `Enablement` (159 lines, which name only `machine_view::pacing::Speed`) go to `pc_ui::commands`; `LibraryEntry` and what builds it (`spawn_library_check`, `machine_paths`, `select_machine`, the diagnostics) go to `pc_library::machine_files`. `shell_model` keeps the hotkeys, the status-bar widths and the texture, and re-exports the rest | none | the 17 tests of `shell_model` go with what they test; the move lists the paths that change | After this move the frame names nothing of the application |
+| 6.1 | **Done.** **The dialog models into `pc-library`**: `new_machine` (1 416 lines) and `settings_model` (735) | `SettingsModel::open` takes the machine-file directory, as `open_with_library` does already; the shell passes `machines_dir()` | `settings_model` 25 move, but for the one that names `machines_dir_from`; of `new_machine`'s 21 those that draw `new_machine_view` stay | As landed: see below the table |
+| 6.2 | **Done.** **`pc-ui` starts with the dialogs**: the PC half of `pane`, `settings_sheet`, `new_machine_view`, `layers_dialog`. The three egui test helpers of the library fixture (`settled_modal`, `Pointer`, `painted_at`) go to `ui-kit`'s `test-support`, since they name no PC | none | `settings_sheet` 6, `layers_dialog` 14, and the tests of `image_settings`, `new_machine` and the worker that waited for these views; those that drive the frame wait for 6.4 | As landed: see below the table |
+| 6.3 | **Done.** **Commands and machine files down.** `State`, `Command`, `Enablement` (159 lines, which name only `machine_view::pacing::Speed`) go to `pc_ui::commands`; `LibraryEntry` and what builds it (`spawn_library_check`, `machine_paths`, `select_machine`, the diagnostics) go to `pc_library::machine_files`. `shell_model` keeps the hotkeys, the status-bar widths and the texture, and re-exports the rest | none | the 17 tests of `shell_model` go with what they test; the move lists the paths that change | After this move the frame names nothing of the application. As landed: see below the table |
 | 6.4 | **The frame.** `library_view` with the views of `machines`, `firmware`, `firmware_metadata`, `install_media`, `layout_tests`, and every test left behind whose modules are now in or below `pc-ui` | none: a move of whole files, about 9 000 production lines and 20 000 lines of tests | `library_view` 37, `layout_tests` 27, the collections 51, Remotes 39, `remote_pull` 9, `registry_transfer` 18 and its view's 1; the few that name `preferences` or the shell's hotkeys stay | **This is where the desktop's test time splits.** 140 s of tests move to `pc-ui` with this move (the frame 48.0, its layout tests 40.1, the collections 30.3, the registry and Remotes tests that drive the frame 21.7; MEASURED, `*`), beside the dialogs' of 6.1 and 6.2. A shell change then runs the application alone: about 70 s added up as measured here, about 110 s with the sound-level tests at their preliminary 44 s, so 20 to 30 s of wall time where it is 76 s now. A change to a library view runs `pc-ui` and the application |
 | 6.5 | **What is left is the application**: `shell`, `shell_model`, `app_menu`, `macos_menu`, `preferences`, `preferences_sheet`, `main`. Optionally the package takes the name `unemupc` (`unemu` since decision-41, where `unemupc` is the core's command line: §12.9 and step 4 of §12.10), with the changes §7.5 step 6 lists for the command line (CI, the release workflow, `scripts/third-party-licenses.sh`, the reasons in `deny.toml`, the runner's rules, the script's window family, `commands.md`, `architecture.md`) | none | none move | No time effect |
+
+As landed, 6.1 to 6.3 (one bead, three moves, each built and tested before
+the next; no behaviour change). MEASURED with `cargo nextest list
+--workspace --run-ignored all`: the workspace lists the same 4117 test
+names apart from the crate, with the renames of 6.3 below; the window has
+476 where it had 557, `pc-library` 120 where it had 69, `media-ui` 42 where
+it had 41, and the new `pc-ui` 29. `pc-ui` (`crates/pc-ui`, layer `pc`,
+egui) is counted as a window crate by the boundary check, with a self-test
+fixture, and the window's glyph test reads `pc_ui::source_dir()` too
+(`test-support`, as in `ui-kit`). No data rule of the runner changed: no
+`pc-ui` source names a path outside its directory, and the rules that name
+`pc-library` reach `pc-ui` as its dependent.
+
+- **6.1.** `pc_library::new_machine` and `pc_library::settings_model` hold
+  the two models whole; the window's files re-export them and keep the
+  tests that stay. `SettingsModel::open` takes the machine-file directory
+  (`Option<PathBuf>`) and the shell passes `machines_dir()`; the tests that
+  open a file pass none, since every file they open lies in a `machines`
+  directory, which is all the directory is asked for. 18 of the 22 tests of
+  `new_machine` moved (the plan's 21 and the ignored user-ROM test); the
+  four that draw `new_machine_view` stayed, with copies of the three
+  helpers they call (`wizard`, `enabled`, `reason`). 24 of the 25 of
+  `settings_model` moved; `custom_layer_of_a_file_outside_machines_stays_out_of_the_build_tree`
+  names the application's `machines_dir_from` and stays in the window's
+  `settings_model::tests`. Visibility: what the window names became `pub`
+  (the wizard's steps, `Slot`, `RomRef`, `Offer`, `Selection`, `Wizard`
+  and the re-exported `short` and `TagLevel`; `SettingsModel`); `Preview`
+  stays crate-wide. `Wizard` gained a `Default` (clippy's
+  `new_without_default` for a public type). Deviations: the model opened
+  itself again in two places (the staged child it checks before a save,
+  and the saved child after it), which asked `machines_dir()` each time;
+  it now keeps the directory it was opened with in a private field and
+  passes that. `open_with_library`, which only the stayed test calls, is a
+  name for `open` behind `test-support`, so the test body is unchanged. The
+  two tests of `settings_sheet` that open a model pass none too (a function
+  they call gained the stated parameter).
+- **6.2.** `pc-ui` holds `settings_sheet`, `new_machine_view` and
+  `layers_dialog` whole, and the PC half of the panes as `pc_ui::pane`,
+  which re-exports `ui_kit::pane` as the window's module did; the window's
+  `library_view/pane.rs` and `layers_dialog.rs` re-export them, and the
+  window names `settings_sheet` and `new_machine_view` at its crate root
+  (`use pc_ui::{…}`), as it now names `library_worker` and `new_machine`
+  (`use pc_library::{…}`), since no test stays in those four files. In
+  `pc-ui`, `image_settings`, `library_worker` and `new_machine` are private
+  modules that re-export the model beside the tests that came down, under
+  the paths they had; `save_image` joins the form's model and view, and a
+  test-only `library_test_support` joins the library's fixtures and the
+  kit's helpers. `ui_kit::test_support` (behind `test-support`) holds
+  `settled_modal`, `Pointer` and `painted_at`, which the window's
+  `library_test_support` re-exports (only `settled_modal` is still named
+  there). Tests moved: the 6 of `settings_sheet`, the 14 of
+  `layers_dialog`, the 3 of `image_settings` that draw the sheet, the 4 of
+  `new_machine` that draw the wizard, and the worker's
+  `keep_publishes_then_removes_disposable_but_regular_publication_keeps_workspace`;
+  and, by rule 2, `the_picker_keeps_its_size_frame_after_frame`, which
+  waited only for `settled_modal`, to `media-ui`'s `media_picker::tests`.
+  The disk-layer dialog's helpers that the frame's tests call (`finish`,
+  `reviewed_publication`, and `source`, which the worker's test calls) are
+  `layers_dialog::test_support` behind `test-support`; both crates'
+  `layers_dialog::tests` re-export them under the old path. Moved test
+  bodies changed only in paths the new crate names otherwise
+  (`crate::library_view::ImageRow` is `library_model::listing::ImageRow`,
+  `crate::library_view::firmware::tests::warm` is the fixture's `warm`, the
+  picker's `settled_modal` is `ui_kit::test_support`'s). Visibility: what
+  the window names became `pub` (the sheet's `show`, `show_image`,
+  `show_review`, `firmware_tab` with `FirmwareEdit`, and their actions; the
+  wizard's `show` and `Action`; `LayersDialog`, its `Action` and the
+  re-exported `SourceImage`; the pane's `short_digest`, `newer_hint` with
+  `HintAction` and `firmware_section`); `Sheet`, `why_disabled` and
+  `capitalized`, which only `pc-ui` names now, stay crate-wide. The
+  window's `library_view::hardware` re-export dropped the four names only
+  the dialog used. Deviations: `firmware_tab` is `pub` for every build,
+  although only the window's layout tests name it outside the crate, since
+  the image sheet calls it too (the precedent of 4.3 and 5.2); `pc-ui`
+  also depends on `assembly`, `image-store`, `image-registry` and
+  `pc-image`, which the moved views name directly, and `media-ui` gains
+  `ui-kit/test-support` as a test dependency.
+- **6.3.** `pc_ui::commands` holds `State`, `Command` and `Enablement`
+  (the speed is `machine_view::pacing::Speed`, so `pc-ui` depends on
+  `machine-view`); `pc_library::machine_files` holds `LibraryEntry`,
+  `PreparedEntry`, `LibraryCheck`, `spawn_library_check`, `machine_paths`,
+  `select_machine` and the diagnostics (`relative_diagnostic`,
+  `failed_firmware_paths`, `source_revision`). `shell_model` keeps the
+  hotkeys, the status-bar widths and the texture and re-exports the rest,
+  so the frame, the menus and the shell keep their paths. The 17 tests went
+  with what they test; the paths that change: the nine of the machine-file
+  list are `machine_files::tests::*` in `pc-library`
+  (`a_missing_default_machine_is_neither_listed_nor_selected`,
+  `cause_specific_hints_distinguish_media_firmware_and_integrity`,
+  `discovery_includes_local_and_yaml_but_not_nested_or_non_machine_files`,
+  `firmware_readiness_is_lazy_and_runs_on_a_host_worker`,
+  `fix_round_library_ignores_dotfiles_and_pending_files`,
+  `invalid_machine_is_visible_with_start_blocked`,
+  `missing_local_media_names_the_media_cause_and_shortens_resolved_paths`,
+  `row_warnings_exclude_pending_checks_and_skipped_roots`,
+  `selection_keeps_a_missing_requested_machine_instead_of_starting_another`),
+  `enablement_requires_ready_firmware_and_live_capabilities` is
+  `commands::tests::*` in `pc-ui`, and the seven of the hotkeys, the
+  status bar and the texture stay. `LibraryEntry::inspect_with_rom_dirs`,
+  which the shell's tests call, is behind `pc-library`'s `test-support`;
+  `inspect` stays test-only and `relative_diagnostic` crate-wide. What the
+  frame names of `shell_model` now lives in `pc-ui` and `pc-library`; its
+  paths change to those crates when it moves (6.4).
+
+Time (MEASURED, `cargo nextest run` of `ui-kit`, `media-ui`, `pc-ui`,
+`pc-library` and the window, four tests at once on a loaded development
+host): 685 tests in 64 to 73 s of wall time after each move (622 of
+`pc-library` and the window after 6.1). The runner's plan for a `pc-ui`
+file is `pc-ui` and `window`; for `crates/pc-library/src/new_machine.rs`
+or `machine_files.rs` it is `pc-library`, `pc-ui` and `window`; for the
+window's `settings_sheet.rs` or `shell_model.rs` it was `window` alone.
 
 Order. Step 3 comes first and step 4 needs only 3.1 to 3.5. Steps 5 and 6
 do not depend on each other; step 6 brings the time, so it may go before

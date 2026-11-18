@@ -2,9 +2,9 @@
 //! Host image-store jobs and recoverable desktop sessions; machine-images §§3–4, 7.
 //!
 //! The library's worker lives with the PC library models
-//! (`pc_library::library_worker`) and is re-exported here under its old path.
-//! One of its tests stays here, since it reviews a publication with the
-//! disk-layer dialog's helpers.
+//! (`pc_library::library_worker`) and is re-exported here under the path the
+//! disk-layer dialog names it by. One of its tests is here, since it reviews
+//! a publication with the disk-layer dialog's helpers.
 
 pub(crate) use pc_library::library_worker::*;
 

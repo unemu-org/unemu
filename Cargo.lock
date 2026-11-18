@@ -2716,6 +2716,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "pc-ui"
+version = "0.0.2"
+dependencies = [
+ "assembly",
+ "egui",
+ "image-registry",
+ "image-store",
+ "library-model",
+ "library-ui",
+ "machine-view",
+ "pc-image",
+ "pc-library",
+ "pc-media",
+ "toml",
+ "ui-kit",
+]
+
+[[package]]
 name = "peniko"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4337,6 +4355,7 @@ dependencies = [
  "pc-image",
  "pc-library",
  "pc-media",
+ "pc-ui",
  "platforms",
  "serde",
  "sha2",

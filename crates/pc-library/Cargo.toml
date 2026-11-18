@@ -7,7 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "The desktop's PC library without a toolkit: its worker thread, the machines, firmware and installation media collections, the snapshot the frame lists, the image details, Settings on an image, its firmware choices and the PC's part of the registry models (core-contract.md §8.1)."
+description = "The desktop's PC library without a toolkit: its worker thread, the machines, firmware and installation media collections, the snapshot the frame lists, the image details, Settings on an image, its firmware choices, the New machine wizard, a machine file's settings, the machine-file list and the PC's part of the registry models (core-contract.md §8.1)."
 
 [package.metadata.unemu]
 layer = "pc"
@@ -16,7 +16,8 @@ layer = "pc"
 # This crate's source folder, for the desktop's test that checks every drawn
 # string's glyphs, the private labels and helpers the desktop's tests of
 # these collections compare with, and the library's fixtures: synthetic
-# stores, firmware and catalogue, test workers and the hang guard.
+# stores, firmware and catalogue, test workers, machine rows read at once and
+# the hang guard.
 test-support = ["assembly/test-support", "pc-image/test-support"]
 
 [dependencies]
