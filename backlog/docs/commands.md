@@ -1060,6 +1060,10 @@ cargo test -p devices                        # one crate's tests
 cargo build --offline -p window --bin unemupc
 cargo run --offline -p window --bin unemupc # lists machines/, selects at-freedos.toml
 cargo run --offline -p window --bin unemupc -- --machine machines/local.toml --allow-unlisted-firmware
+cargo run --offline -p window --bin unemupc -- --open FILE [--core ID] # a file, run by whichever compiled-in core opens it
+# Trying File › Open… and --open by hand before a core that opens files is in
+# the release: the scripted test core (it emulates nothing), never in a release.
+cargo run --offline -p window --bin unemupc --features platforms/test-core -- --open machine.utc
 cargo tree --offline -i window               # window is a leaf frontend
 ```
 
@@ -1359,6 +1363,20 @@ built for another contract ends its line with `, unusable: ` and the reason),
 then the licence, the source URL and where the full licence texts are.
 `upcli --version` (or `--about`) prints the same for the command line, the core
 lines after its first two lines.
+`--open FILE [--core ID]` starts a machine from a file as File › Open… does:
+the file is hashed whole on a worker thread, the cores that list its
+extension are asked first, then the others (only `ID` with `--core`), and a
+file no core runs, or that several run, is refused with a message box.
+`--core` without `--open`, and `--open` with `--machine`, are usage errors.
+What such a machine leaves behind goes under `unemupc/saves/CORE/aa/DIGEST/`
+in the platform data directory (and saved states, later, under
+`unemupc/states/`), keyed by the content's SHA-256, not its name or place.
+The release's only core, the PC, opens no files, so there File › Open… is
+greyed ("No core in this release opens files") and `--open` refuses every
+file; `--features platforms/test-core` adds the scripted test core, whose
+`.utc` scripts it runs (`crates/test-core/src/lib.rs` has the grammar, and
+`unemu-test-core 1` on the first line is a whole script). With that feature
+the `--about` pins of both programs fail by the test core's line.
 On Linux the window requires the host's X11 or Wayland client libraries at run
 time; a bare Nix devShell may not put them on the dynamic loader's search path.
 

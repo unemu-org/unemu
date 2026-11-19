@@ -81,7 +81,7 @@ pub(crate) fn hotkey(
             (End, false) => Some(Reset),
             (Enter, false) => Some(Fullscreen),
             (KeyN, false) => Some(Placeholder("New machine")),
-            (KeyO, false) => Some(Placeholder("Open machine file")),
+            (KeyO, false) => Some(Command::Open),
             (Comma, false) => Some(Settings),
             (Slash, true) => Some(Shortcuts),
             _ => None,
@@ -110,7 +110,7 @@ pub(crate) fn hotkey(
             KeyN if shift => Some(NewFromImage),
             KeyD if !shift => Some(Duplicate),
             KeyN => Some(Placeholder("New machine")),
-            KeyO => Some(Placeholder("Open machine file")),
+            KeyO => Some(Command::Open),
             Comma => Some(Settings),
             _ => None,
         };
@@ -245,7 +245,7 @@ mod tests {
             ("g", false, Release),
             ("p", false, Pause),
             ("n", false, Placeholder("New machine")),
-            ("o", false, Placeholder("Open machine file")),
+            ("o", false, Open),
             (",", false, Settings),
             ("?", true, Shortcuts),
         ] {
@@ -483,11 +483,7 @@ mod tests {
                 for (key, ctrl, command) in [
                     (KeyCode::F1, false, Command::Shortcuts),
                     (KeyCode::KeyN, true, Command::Placeholder("New machine")),
-                    (
-                        KeyCode::KeyO,
-                        true,
-                        Command::Placeholder("Open machine file"),
-                    ),
+                    (KeyCode::KeyO, true, Command::Open),
                     (KeyCode::Comma, true, Command::Settings),
                 ] {
                     assert_eq!(

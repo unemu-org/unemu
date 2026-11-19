@@ -5,6 +5,29 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — Open… in the application:** step 14 of
+  design/core-contract.md §13.6. The desktop takes `--open FILE [--core ID]`
+  beside `--machine FILE` (the usage line changes by that, and `--core`
+  alone or `--open` with `--machine` is a usage error) and has File ›
+  Open… (Ctrl+O) above Open machine file…, which loses its key. The file
+  is prepared by `core_launch::prepare` on a worker thread, opens in the
+  host's dialog on "All supported files", and a file that does not start
+  (no core opens it, a core cannot run it, several cores run it, it needs
+  more) shows its refusal in the player's message box and leaves a running
+  machine alone; one that starts asks to stop a running machine first with
+  the stop prompt, as starting the PC does while a file's machine runs.
+  The shell holds a `player_ui::Player` beside the PC's presenter, one
+  machine at a time: Pause, Stop, Reset, Power cycle, Mute, Speed, Fast
+  forward, Release and Full screen, the tick, the central panel, the title
+  (content — platform — unemupc), the status line and raw keys and pointer
+  go to whichever runs; the player's Machine, Media and View menus replace
+  the PC's, the PC's commands are greyed and the toolbar's Ctrl+Alt+Del
+  button reads Reset. Pad keys are read from and written to `pads` in the
+  preferences; a file's machine keeps its records under `unemupc/saves`
+  (states later under `unemupc/states`) in the data directory. With the
+  release's cores (the PC alone, which opens no files) File › Open… is
+  greyed with "No core in this release opens files"; the `test-core`
+  feature of `platforms` adds the scripted test core for trying it by hand.
 - **2026-11-19 — The player, the view of a machine started from a file:**
   step 13 of design/core-contract.md §13.6. The new crate `player-ui`
   (neutral, a window crate) holds one `dyn Machine` started from a

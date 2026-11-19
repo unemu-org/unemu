@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Host-only ROM folder and presentation preferences; machine-images.md §7.
+//! The keys that work game pads are here too, under `pads`, by the names of
+//! the contract's key usages (core-contract.md §13.3, "Pads from the
+//! keyboard"), so the file depends on no toolkit.
 
+use machine_view::pads::PadBindings;
 use serde::{Deserialize, Serialize};
 use std::{
     io::{self, Write},
     path::{Path, PathBuf},
 };
+use unemu_core_api::PadControl;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -16,11 +21,80 @@ pub(super) struct Preferences {
     /// Off by default: taking macOS system shortcuts for the guest needs the
     /// Accessibility privilege, which only the user may decide to grant.
     pub send_system_shortcuts: bool,
+    /// The keys of every pad, one entry per key; absent for the defaults of
+    /// [`PadBindings::defaults`]. An entry whose control or key has no
+    /// known name is skipped when read.
+    pub pads: Option<Vec<PadKey>>,
     #[serde(flatten)]
     extra: std::collections::BTreeMap<String, toml::Value>,
 }
 
+/// One key of a pad: `player` counts the machine's pad ports from 0. A
+/// field left out reads as empty, so the entry is skipped rather than the
+/// whole file refused.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct PadKey {
+    pub player: usize,
+    /// `up`, `down`, `left`, `right`, `a`, `b`, `x`, `y`, `l`, `r`,
+    /// `start` or `select`.
+    pub control: String,
+    /// The key's name, from `machine_view::keys::name`.
+    pub key: String,
+}
+
+/// The names the file gives pad controls.
+const CONTROL_NAMES: [(PadControl, &str); 12] = [
+    (PadControl::Up, "up"),
+    (PadControl::Down, "down"),
+    (PadControl::Left, "left"),
+    (PadControl::Right, "right"),
+    (PadControl::A, "a"),
+    (PadControl::B, "b"),
+    (PadControl::X, "x"),
+    (PadControl::Y, "y"),
+    (PadControl::L, "l"),
+    (PadControl::R, "r"),
+    (PadControl::Start, "start"),
+    (PadControl::Select, "select"),
+];
+
 impl Preferences {
+    /// The pad keys of the file, or the defaults when it names none.
+    pub fn pad_bindings(&self) -> PadBindings {
+        let Some(pads) = &self.pads else {
+            return PadBindings::defaults();
+        };
+        let mut bindings = PadBindings::empty();
+        for entry in pads {
+            let control = CONTROL_NAMES
+                .iter()
+                .find(|(_, name)| *name == entry.control)
+                .map(|(control, _)| *control);
+            if let (Some(control), Some(key)) = (control, machine_view::keys::by_name(&entry.key)) {
+                bindings.bind(entry.player, control, key);
+            }
+        }
+        bindings
+    }
+
+    /// Keep `bindings` as the file's pad keys.
+    pub fn set_pad_bindings(&mut self, bindings: &PadBindings) {
+        self.pads = Some(
+            bindings
+                .entries()
+                .filter_map(|(player, control, key)| {
+                    let (_, name) = CONTROL_NAMES.iter().find(|(c, _)| *c == control)?;
+                    Some(PadKey {
+                        player,
+                        control: (*name).to_owned(),
+                        key: machine_view::keys::name(key)?.to_owned(),
+                    })
+                })
+                .collect(),
+        );
+    }
+
     pub fn load(path: &Path) -> io::Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(text) => toml::from_str(&text).map_err(io::Error::other),
@@ -126,11 +200,12 @@ impl Preferences {
 }
 
 /// The keys this shell writes; every other key belongs to another writer.
-const OWNED_KEYS: [&str; 4] = [
+const OWNED_KEYS: [&str; 5] = [
     "store_root",
     "rom_dirs",
     "reduced_motion",
     "send_system_shortcuts",
+    "pads",
 ];
 
 /// Advisory lock on the sibling `<file>.lock`, shared with the command-line
@@ -177,6 +252,50 @@ mod tests {
         prefs.send_system_shortcuts = false;
         prefs.save(&path).unwrap();
         assert!(!Preferences::load(&path).unwrap().send_system_shortcuts);
+    }
+
+    #[test]
+    fn pad_keys_are_stored_by_name_and_the_defaults_need_no_entry() {
+        use machine_view::keys;
+        use unemu_core_api::Key;
+        let temp = assembly::test_support::TempDir::new("shell-pad-keys");
+        let path = temp.path().join("preferences.toml");
+        let mut prefs = Preferences::load(&path).unwrap();
+        assert_eq!(prefs.pad_bindings(), PadBindings::defaults());
+        let mut bindings = PadBindings::empty();
+        bindings.bind(0, PadControl::A, Key::SHIFT_RIGHT);
+        bindings.bind(1, PadControl::Start, Key::ENTER);
+        prefs.set_pad_bindings(&bindings);
+        prefs.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        for name in [keys::name(Key::SHIFT_RIGHT).unwrap(), "start", "[[pads]]"] {
+            assert!(text.contains(name), "{name} in {text}");
+        }
+        let restored = Preferences::load(&path).unwrap();
+        assert_eq!(restored.pad_bindings(), bindings);
+        // A name this release does not know is skipped, not an error.
+        std::fs::write(
+            &path,
+            format!(
+                "{text}\n[[pads]]\nplayer = 0\ncontrol = \"turbo\"\nkey = \"X\"\n\n[[pads]]\nplayer = 0\ncontrol = \"b\"\nkey = \"NoSuchKey\"\n"
+            ),
+        )
+        .unwrap();
+        assert_eq!(Preferences::load(&path).unwrap().pad_bindings(), bindings);
+        // An entry missing a field is skipped, and the file still loads.
+        std::fs::write(
+            &path,
+            format!("{text}\n[[pads]]\nplayer = 1\nkey = \"X\"\n"),
+        )
+        .unwrap();
+        assert_eq!(Preferences::load(&path).unwrap().pad_bindings(), bindings);
+        // No key at all is kept as no key, not as the defaults.
+        prefs.set_pad_bindings(&PadBindings::empty());
+        prefs.save(&path).unwrap();
+        assert_eq!(
+            Preferences::load(&path).unwrap().pad_bindings(),
+            PadBindings::empty()
+        );
     }
 
     #[test]

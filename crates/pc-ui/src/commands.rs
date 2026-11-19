@@ -14,6 +14,8 @@ pub enum State {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     Start,
+    /// File › Open…: a file, run by whichever compiled-in core opens it.
+    Open,
     GamingMode,
     Layers,
     ImportImage,

@@ -230,7 +230,11 @@ impl ApplicationHandler<eframe::UserEvent> for Runner<'_> {
     }
 }
 
-pub(super) fn run(args: Args, autostart: bool) -> Result<(), Box<dyn Error>> {
+pub(super) fn run(
+    args: Args,
+    autostart: bool,
+    cores: core_launch::Cores,
+) -> Result<(), Box<dyn Error>> {
     let events = Rc::new(RefCell::new(Events::default()));
     let shell_events = events.clone();
     let errors = Rc::new(RefCell::new(None::<String>));
@@ -287,11 +291,13 @@ pub(super) fn run(args: Args, autostart: bool) -> Result<(), Box<dyn Error>> {
                 shell_errors,
                 cc.winit_window().cloned(),
                 assembly::firmware_discovery::default_firmware_roots(),
+                cores,
             );
             shell.logo = Some(ui_kit::logo::Logo::load(&cc.egui_ctx)?);
             if autostart {
                 shell.start();
             }
+            shell.open_on_start(&cc.egui_ctx);
             Ok(Box::new(shell))
         }),
         &event_loop,
@@ -428,7 +434,33 @@ struct Shell {
     /// Create and insert while the library worker builds the disks: whose
     /// drives they go into once made.
     creating: Option<DriveOwner>,
+    /// The compiled-in cores, which File › Open… and `--open` ask.
+    cores: Arc<core_launch::Cores>,
+    /// Where machines started from a file keep what they leave behind, or
+    /// why this host has no such place.
+    host_dirs: Result<core_launch::HostDirs, String>,
+    /// The machine started from a file. The shell runs one machine at a
+    /// time: this one or `presenter`.
+    player: Option<player_ui::Player>,
+    /// What the player's menus asked for in this pass, carried out once
+    /// the menus have drawn.
+    player_commands: Vec<player_ui::Command>,
+    /// The file File › Open… or `--open` prepares on a worker thread:
+    /// hashing a large file must not hold up the window.
+    /// The status line's message before "Opening FILE…" took its place.
+    opening: Option<(std::sync::mpsc::Receiver<OpenResult>, String)>,
+    /// A prepared file waiting for the stop prompt's answer.
+    opened: Option<core_launch::Prepared>,
+    /// Why a file did not open, or its machine did not start.
+    open_refusal: Option<player_ui::MessageBox>,
+    /// What the player's machine said while it ran, which a test reads
+    /// where the program writes it to standard error.
+    #[cfg(test)]
+    player_log: Vec<u8>,
 }
+
+/// What preparing a file gave: a machine to start, or why not.
+type OpenResult = Result<core_launch::Outcome, core_launch::LaunchError>;
 
 /// Who asked for the host file dialog; the answer goes back there on a later
 /// frame. Each variant says when its answer is dropped instead.
@@ -463,6 +495,9 @@ enum FileFor {
     CreateFiles,
     /// Add folder… of the media picker's Create view, as Add files….
     CreateFolder,
+    /// File › Open…: the file is prepared for a machine whatever the shell
+    /// shows meanwhile.
+    Open,
 }
 
 /// Whose drives a picked image goes into.
@@ -480,6 +515,8 @@ enum DriveOwner {
 enum StopPrompt {
     Library,
     OpenMachine,
+    /// Start the machine of the file Open… prepared, held in `opened`.
+    OpenFile,
     Exit,
 }
 
@@ -516,6 +553,17 @@ impl Shell {
         if let Some(transfer) = self.image_library.launched.take() {
             let inserts = std::mem::take(&mut self.image_library.launched_inserts);
             let kept = std::mem::take(&mut self.image_library.start_catalogue);
+            if self.player.is_some() {
+                // A Start the library worker had under way when a file's
+                // machine began: its workspace is closed and kept as it was,
+                // and nothing starts beside the running machine.
+                drop(transfer);
+                self.image_library.start_notes.clear();
+                self.image_library.finish_with_failure(true, false);
+                self.message =
+                    "The machine did not start: a machine opened from a file runs".into();
+                return;
+            }
             self.selected = None;
             let prepared = match transfer.restore() {
                 Ok(prepared) => prepared,
@@ -653,6 +701,11 @@ impl Shell {
             || self.settings.is_some()
             || self.preferences_dialog.is_some()
             || self.image_library.has_dialog()
+            || self.open_refusal.is_some()
+            || self
+                .player
+                .as_ref()
+                .is_some_and(player_ui::Player::has_dialog)
     }
 
     fn confirm_insert(&mut self) {
@@ -1156,12 +1209,37 @@ impl Shell {
             FileFor::RomFolder => Request::new(Kind::Folder, "Locate firmware folder"),
             FileFor::CreateFiles => Request::new(Kind::Files, "Add files to the disk"),
             FileFor::CreateFolder => Request::new(Kind::Folder, "Add a folder to the disk"),
+            FileFor::Open => {
+                // The host's dialog shows its first filter at first, and the
+                // approved look opens on everything the cores open; then
+                // each platform's, then every file.
+                let mut filters = self.cores.filters();
+                if let Some(all) = filters
+                    .iter()
+                    .position(|filter| filter.name.starts_with("All supported files"))
+                {
+                    let all = filters.remove(all);
+                    filters.insert(0, all);
+                }
+                filters
+                    .iter()
+                    .fold(Request::new(Kind::File, "Open"), |request, filter| {
+                        request.filter(&filter.name, &filter.extensions)
+                    })
+            }
         })
     }
 
     /// Take a closed file dialog's answer to the place that asked for it.
     fn poll_file_dialog(&mut self, ctx: &egui::Context) {
         if let Some((asker, answer)) = self.file_dialogs.poll(ctx) {
+            if asker == FileFor::Open {
+                // The worker wakes the window through `ctx` once prepared.
+                if let Some(path) = answer.and_then(|paths| paths.into_iter().next()) {
+                    self.open_file(path, None, ctx);
+                }
+                return;
+            }
             self.file_chosen(asker, answer);
         }
     }
@@ -1248,6 +1326,9 @@ impl Shell {
                     picker.create.add(answer.unwrap_or_default());
                 }
             }
+            // Taken in `poll_file_dialog`, which has the context the worker
+            // wakes the window with.
+            FileFor::Open => {}
             FileFor::RomFolder => {
                 let open = self
                     .dialog
@@ -2602,6 +2683,7 @@ impl Shell {
         errors: Rc<RefCell<Option<String>>>,
         window: Option<Arc<Window>>,
         default_firmware_roots: Vec<assembly::firmware_discovery::FirmwareRoot>,
+        cores: core_launch::Cores,
     ) -> Self {
         let root = crate::machines_dir();
         // Finding the path may copy the file from the project's former
@@ -2711,6 +2793,15 @@ impl Shell {
             clipboard: Box::<ui_kit::text_clipboard::SystemClipboard>::default(),
             file_dialogs: file_dialog::FileDialogs::native(),
             creating: None,
+            cores: Arc::new(cores),
+            host_dirs: crate::host_dirs(),
+            player: None,
+            player_commands: Vec::new(),
+            opening: None,
+            opened: None,
+            open_refusal: None,
+            #[cfg(test)]
+            player_log: Vec::new(),
         };
         // Remotes lists the registries of Preferences › Registries; nothing
         // contacts them until a node opens.
@@ -2720,7 +2811,13 @@ impl Shell {
     }
 
     fn state(&self) -> State {
-        if self.presenter.is_none() {
+        if let Some(player) = &self.player {
+            if player.paused() {
+                State::Paused
+            } else {
+                State::Running
+            }
+        } else if self.presenter.is_none() {
             State::Stopped
         } else if self.paused {
             State::Paused
@@ -2730,6 +2827,12 @@ impl Shell {
     }
 
     fn command_allowed(&self, command: Command) -> bool {
+        if let Some(player) = &self.player {
+            return self.player_allows(player, command);
+        }
+        if command == Command::Open {
+            return self.opens_files();
+        }
         self.enablement().allows(command)
             && match command {
                 Command::GamingMode | Command::ImageStart | Command::ImageGaming => {
@@ -2813,6 +2916,42 @@ impl Shell {
                 }
                 _ => true,
             }
+    }
+
+    /// What a command does while a machine started from a file runs. The
+    /// commands that meet a running machine ask the player; the PC's own
+    /// (Insert…, Layers, Save as image…, Settings, Start) wait until it
+    /// stops; the rest stay as they are while the PC runs.
+    fn player_allows(&self, player: &player_ui::Player, command: Command) -> bool {
+        use Command::*;
+        match command {
+            Pause => player.running(),
+            Reset => player.offers().reset,
+            Stop | PowerCycle | Mute | Speed(_) | FastForward | Release | Fullscreen => true,
+            // The media keys work the first two removable slots.
+            Next(unit) | Eject(unit) => player.offers().media.len() > usize::from(unit),
+            Open => self.opens_files(),
+            Start | GamingMode | ImageStart | ImageGaming | Layers | ImageLayers | SaveImage
+            | Settings | SaveState | Insert(_) | CreateFromFiles(_) | InsertFile(_)
+            | InsertSet(_) | WriteMode(_) | CatalogueDisk(..) | CatalogueAll(_) => false,
+            Library | Exit | Minimize | Shortcuts | About | Preferences | Placeholder(_)
+            | FirmwareFolders | CreateBlank | StoreFolder => true,
+            // The library's commands, which wait for a stopped machine as
+            // they do while the PC runs.
+            _ => false,
+        }
+    }
+
+    /// Whether a compiled-in core opens files: one lists a kind of content.
+    /// The PC starts only from its machines, so a release with the PC
+    /// alone keeps File › Open… greyed.
+    fn opens_files(&self) -> bool {
+        self.cores.usable().any(|core| {
+            core.description()
+                .platforms
+                .iter()
+                .any(|platform| platform.content.iter().any(|kind| kind.is_valid()))
+        })
     }
 
     /// Tools › Preferences… on its Registries page. Log in… of a registry in
@@ -2911,7 +3050,11 @@ impl Shell {
         events.captured = self
             .presenter
             .as_ref()
-            .is_some_and(|presenter| presenter.mouse.captured());
+            .is_some_and(|presenter| presenter.mouse.captured())
+            || self
+                .player
+                .as_ref()
+                .is_some_and(player_ui::Player::pointer_captured);
         events.window = self.window.clone();
     }
 
@@ -2919,15 +3062,30 @@ impl Shell {
         if let Some(presenter) = &mut self.presenter {
             presenter.release_pointer();
         }
+        if let Some(player) = &mut self.player {
+            player.release_pointer();
+        }
         self.sync_routing();
+    }
+
+    /// Let go of Hold for Unlimited, of whichever machine runs.
+    fn end_fast_forward(&mut self) {
+        let elapsed = self.elapsed();
+        if let Some(presenter) = &mut self.presenter {
+            presenter.hold_fast_forward(false, elapsed);
+        }
+        if let Some(player) = &mut self.player {
+            player.command(
+                player_ui::Command::FastForward(false),
+                elapsed,
+                &mut io::stderr(),
+            );
+        }
     }
 
     fn modifiers_changed(&mut self, modifiers: ModifiersState) {
         if self.host_modifiers.super_key() && !modifiers.super_key() {
-            let elapsed = self.elapsed();
-            if let Some(presenter) = &mut self.presenter {
-                presenter.hold_fast_forward(false, elapsed);
-            }
+            self.end_fast_forward();
             self.fast_forward_key = None;
         }
         // Guest focus resets must not erase modifiers still held by the host.
@@ -2935,10 +3093,12 @@ impl Shell {
     }
 
     fn reset_keyboard(&mut self) {
-        let elapsed = self.elapsed();
+        self.end_fast_forward();
         if let Some(presenter) = &mut self.presenter {
-            presenter.hold_fast_forward(false, elapsed);
             presenter.focus_changed(false);
+        }
+        if let Some(player) = &mut self.player {
+            player.focus_changed(false);
         }
         self.modifiers = [false; 8];
         self.fast_forward_key = None;
@@ -2953,6 +3113,9 @@ impl Shell {
             self.guest_focus = true;
             if let Some(presenter) = &mut self.presenter {
                 presenter.focus_changed(true);
+            }
+            if let Some(player) = &mut self.player {
+                player.focus_changed(true);
             }
         }
         self.sync_routing();
@@ -2976,10 +3139,14 @@ impl Shell {
             && !self.hidden
             && !self.minimized
             && !self.has_dialog()
-            && self
+            && (self
                 .presenter
                 .as_ref()
                 .is_some_and(|presenter| presenter.running && presenter.error.is_none())
+                || self
+                    .player
+                    .as_ref()
+                    .is_some_and(|player| player.running() && !player.paused()))
     }
 
     fn sync_system_keys(&mut self) {
@@ -3046,6 +3213,9 @@ impl Shell {
     }
 
     fn elapsed(&self) -> std::time::Duration {
+        if let Some(player) = &self.player {
+            return player.elapsed();
+        }
         self.presenter
             .as_ref()
             .and_then(|presenter| presenter.started)
@@ -3261,6 +3431,14 @@ impl Shell {
     }
 
     fn started(&mut self, mut presenter: Presenter) {
+        // The shell runs one machine: a PC whose start was under way when a
+        // file's machine began is finished, not shown.
+        if self.player.is_some() {
+            if let Err(error) = presenter.finish_persistence(&mut io::stderr()) {
+                eprintln!("{error}");
+            }
+            return;
+        }
         self.reset_keyboard();
         // A report belongs to the session it describes; this one saves its own.
         self.error_report = None;
@@ -3427,6 +3605,7 @@ impl Shell {
         self.insert_dialog = None;
         self.blank_disk = None;
         self.stop_prompt = None;
+        self.opened = None;
         self.release();
         if let Some(presenter) = &mut self.presenter {
             presenter.running = false;
@@ -3468,6 +3647,11 @@ impl Shell {
         self.session = self.session.wrapping_add(1);
         self.events.borrow_mut().session = self.session;
         self.start_request = None;
+        self.drop_opening();
+        self.opened = None;
+        if let Some(player) = self.player.take() {
+            return self.stop_player(player);
+        }
         let mut failure = None;
         let had_session = self.presenter.is_some();
         let report = self
@@ -3529,6 +3713,220 @@ impl Shell {
         }
     }
 
+    /// Finish the machine started from a file and show the library, as
+    /// [`Shell::stop`] does for the PC: a failure to finish, or the guest's
+    /// failure that ended the run, is shown and makes the stop fail.
+    fn stop_player(&mut self, mut player: player_ui::Player) -> bool {
+        let elapsed = player.elapsed();
+        let failure = match player.command(player_ui::Command::Stop, elapsed, &mut io::stderr()) {
+            Some(player_ui::Request::Stopped { failure }) => failure,
+            _ => None,
+        };
+        drop(player);
+        self.texture = None;
+        self.paused = false;
+        self.modal_paused = false;
+        self.message = "Ready".into();
+        self.sync_routing();
+        match failure {
+            Some(error) => {
+                self.show_error(error);
+                false
+            }
+            None => {
+                *self.errors.borrow_mut() = None;
+                self.dialog = None;
+                true
+            }
+        }
+    }
+
+    /// `--open FILE [--core ID]`: the file is prepared as File › Open…
+    /// prepares it, once the window shows.
+    fn open_on_start(&mut self, ctx: &egui::Context) {
+        if let Some(path) = self.args.open.clone() {
+            let core = self.args.core.clone();
+            self.open_file(path, core, ctx);
+        }
+    }
+
+    /// Prepare `path` on a worker thread: hash it, ask the cores (only
+    /// `core` when named) and check what the answering core wrote. The
+    /// answer wakes the window through `ctx`. A file asked for later
+    /// replaces one still being prepared.
+    fn open_file(&mut self, path: std::path::PathBuf, core: Option<String>, ctx: &egui::Context) {
+        let dirs = match &self.host_dirs {
+            Ok(dirs) => dirs.clone(),
+            Err(reason) => {
+                self.open_refusal = Some(player_ui::MessageBox::refusal("Open", reason.clone()));
+                return;
+            }
+        };
+        let cores = self.cores.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let wake = ctx.clone();
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let spawned = std::thread::Builder::new()
+            .name("open-file".into())
+            .spawn(move || {
+                let _ = sender.send(core_launch::prepare(&path, &cores, core.as_deref(), &dirs));
+                wake.request_repaint();
+            });
+        match spawned {
+            Ok(_) => {
+                // A file replaced while it is prepared keeps the first
+                // message to come back to.
+                let before = match self.opening.take() {
+                    Some((_, before)) => before,
+                    None => std::mem::take(&mut self.message),
+                };
+                self.message = format!("Opening {name}…");
+                self.opening = Some((receiver, before));
+            }
+            Err(error) => {
+                self.open_refusal = Some(player_ui::MessageBox::refusal(
+                    "Open",
+                    format!("The file could not be opened: {error}"),
+                ));
+            }
+        }
+    }
+
+    /// Take the prepared file, once the worker has it.
+    fn poll_opening(&mut self) {
+        let Some((receiver, _)) = &self.opening else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => Some(result),
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+        };
+        self.drop_opening();
+        if let Some(result) = result {
+            self.opened_file(result);
+        }
+    }
+
+    /// Forget the file being prepared, and give the status line back its
+    /// message.
+    fn drop_opening(&mut self) {
+        if let Some((_, before)) = self.opening.take() {
+            self.message = before;
+        }
+    }
+
+    /// A file that cannot start shows its refusal and leaves a running
+    /// machine alone; one that can asks to stop a running machine first,
+    /// with the stop prompt, then starts.
+    fn opened_file(&mut self, result: OpenResult) {
+        // The question already asked, or the exit under way, decides what
+        // happens next; a file prepared meanwhile is dropped, not slipped
+        // under the answer.
+        if self.stop_prompt.is_some() || self.exit_requested {
+            return;
+        }
+        let prepared = match result.and_then(core_launch::Outcome::into_ready) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.open_refusal = Some(player_ui::MessageBox::refusal("Open", error.to_string()));
+                return;
+            }
+        };
+        if self.ask_before_stopping(StopPrompt::OpenFile) {
+            self.opened = Some(prepared);
+            return;
+        }
+        if (self.presenter.is_some() || self.player.is_some()) && !self.stop() {
+            return;
+        }
+        self.start_player(prepared);
+    }
+
+    /// Build the prepared file's machine on this thread, which drives it,
+    /// with the pad keys of the preferences.
+    fn start_player(&mut self, prepared: core_launch::Prepared) {
+        let bindings = self.preferences.pad_bindings();
+        let mut player = match player_ui::Player::start(prepared, bindings, &mut io::stderr()) {
+            Ok(player) => player,
+            Err(error) => {
+                self.open_refusal = Some(player_ui::MessageBox::refusal("Open", error.to_string()));
+                return;
+            }
+        };
+        // The tests play no sound, as for the PC's machines.
+        if !cfg!(test) {
+            player.open_audio(&mut io::stderr());
+        }
+        player.set_window(self.window.clone());
+        player.set_look(self.classic, self.macos_shortcuts);
+        // A machine file still loading for Start never starts beside this
+        // one; an image's start in flight is dropped when it arrives.
+        self.abandon_start();
+        self.reset_keyboard();
+        self.error_report = None;
+        self.session = self.session.wrapping_add(1);
+        self.events.borrow_mut().session = self.session;
+        self.insert_dialog = None;
+        self.picker = None;
+        self.player = Some(player);
+        self.paused = false;
+        self.guest_focus = true;
+        self.modal_paused = false;
+        self.texture = None;
+        *self.errors.borrow_mut() = None;
+        self.dialog = None;
+        self.sync_routing();
+    }
+
+    /// Carry out a command of the player's own menus, or one of the shell's
+    /// hotkeys and toolbar that meets the running player.
+    fn player_command(&mut self, command: player_ui::Command, ctx: &egui::Context) {
+        match command {
+            player_ui::Command::Stop => {
+                self.stop();
+            }
+            player_ui::Command::Fullscreen => self.command(Command::Fullscreen, ctx),
+            command => {
+                let Some(player) = &mut self.player else {
+                    return;
+                };
+                let elapsed = player.elapsed();
+                let request = player.command(command, elapsed, &mut io::stderr());
+                self.player_request(request, ctx);
+            }
+        }
+        self.sync_routing();
+    }
+
+    /// What the application does after a command or a dialog of the player.
+    fn player_request(&mut self, request: Option<player_ui::Request>, ctx: &egui::Context) {
+        match request {
+            None => {}
+            Some(player_ui::Request::Stopped { .. }) => {
+                self.stop();
+            }
+            Some(player_ui::Request::Fullscreen) => self.command(Command::Fullscreen, ctx),
+            Some(player_ui::Request::PadBindings) => {
+                let Some(player) = &self.player else {
+                    return;
+                };
+                self.preferences.set_pad_bindings(player.pad_bindings());
+                self.preferences_draft
+                    .set_pad_bindings(player.pad_bindings());
+                let saved = self
+                    .preferences_file()
+                    .and_then(|path| self.preferences.save(path));
+                if let Err(error) = saved {
+                    self.message = format!("Cannot save preferences: {error}");
+                }
+            }
+        }
+    }
+
     fn stop_for_image_action(&mut self, action: &crate::library_view::Request) -> bool {
         use crate::library_view::Request;
         let target = match action {
@@ -3570,6 +3968,7 @@ impl Shell {
 
     fn exit(&mut self, ctx: &egui::Context) {
         self.exit_requested = true;
+        self.drop_opening();
         let stopped = self.stop();
         if !stopped && self.events.borrow().native.system_quit_pending() {
             // Logout or shutdown would take the error dialog away unseen, so
@@ -3670,6 +4069,9 @@ impl Shell {
     }
 
     fn session_name(&self) -> Option<&str> {
+        if let Some(player) = &self.player {
+            return Some(player.prepared().title());
+        }
         if let Some((_, name)) = &self.image_library.active_machine {
             return Some(name);
         }
@@ -3694,11 +4096,13 @@ impl Shell {
             .active
             .as_ref()
             .is_some_and(|(_, _, kind)| kind.disposable());
-        !disposable
-            && self
-                .presenter
-                .as_ref()
-                .is_some_and(|presenter| presenter.running && presenter.error.is_none())
+        let player = self.player.as_ref().is_some_and(player_ui::Player::running);
+        player
+            || (!disposable
+                && self
+                    .presenter
+                    .as_ref()
+                    .is_some_and(|presenter| presenter.running && presenter.error.is_none()))
     }
 
     /// Pause the running machine and ask before `action` ends the session.
@@ -3712,7 +4116,11 @@ impl Shell {
                 self.guest_focus,
                 self.presenter
                     .as_ref()
-                    .is_some_and(|presenter| presenter.mouse.captured()),
+                    .is_some_and(|presenter| presenter.mouse.captured())
+                    || self
+                        .player
+                        .as_ref()
+                        .is_some_and(player_ui::Player::pointer_captured),
             );
         }
         self.release();
@@ -3734,6 +4142,7 @@ impl Shell {
         let Some(action) = self.stop_prompt.take() else {
             return;
         };
+        let opened = self.opened.take();
         if !stop {
             self.restore_input = Some(self.stop_prompt_input);
             return;
@@ -3743,6 +4152,13 @@ impl Shell {
                 self.stop();
             }
             StopPrompt::OpenMachine => self.open_machine_path(),
+            StopPrompt::OpenFile => {
+                if let Some(prepared) = opened {
+                    if self.stop() {
+                        self.start_player(prepared);
+                    }
+                }
+            }
             StopPrompt::Exit => self.exit(ctx),
         }
     }
@@ -3829,7 +4245,7 @@ impl Shell {
         let Some((focus, captured)) = self.restore_input.take() else {
             return;
         };
-        if self.presenter.is_none() {
+        if self.presenter.is_none() && self.player.is_none() {
             return;
         }
         if focus {
@@ -3838,6 +4254,9 @@ impl Shell {
         if captured {
             if let Some(presenter) = &mut self.presenter {
                 presenter.recapture_pointer();
+            }
+            if let Some(player) = &mut self.player {
+                player.recapture_pointer();
             }
             self.sync_routing();
         }
@@ -3855,9 +4274,14 @@ impl Shell {
         if !self.command_allowed(command) {
             return;
         }
+        if let Some(command) = self.for_player(command) {
+            self.player_command(command, ctx);
+            return;
+        }
         let elapsed = self.elapsed();
         use Command::*;
         match command {
+            Open => { self.release(); self.ask_file(FileFor::Open); },
             Speed(speed) => if let Some(presenter) = &mut self.presenter { presenter.select_speed(speed, elapsed); },
             FastForward => if let Some(presenter) = &mut self.presenter { presenter.hold_fast_forward(true, elapsed); },
             Start => self.start(),
@@ -3969,6 +4393,29 @@ impl Shell {
         self.sync_routing();
     }
 
+    /// The player's command for a shell command that meets the running
+    /// machine, while a machine started from a file runs: from the toolbar,
+    /// the hotkeys and the application menu. The media keys work the first
+    /// two removable slots.
+    fn for_player(&self, command: Command) -> Option<player_ui::Command> {
+        use player_ui::Command as Player;
+        let player = self.player.as_ref()?;
+        let slot = |unit: u8| player.offers().media.get(usize::from(unit)).copied();
+        Some(match command {
+            Command::Pause => Player::Pause,
+            Command::Reset => Player::Reset,
+            Command::PowerCycle => Player::PowerCycle,
+            Command::Stop => Player::Stop,
+            Command::Mute => Player::Mute,
+            Command::Speed(speed) => Player::Speed(speed),
+            Command::FastForward => Player::FastForward(true),
+            Command::Release => Player::Release,
+            Command::Next(unit) => Player::Next(slot(unit)?),
+            Command::Eject(unit) => Player::Eject(slot(unit)?),
+            _ => return None,
+        })
+    }
+
     fn item(
         &self,
         ui: &mut egui::Ui,
@@ -4048,8 +4495,9 @@ impl Shell {
         // Delete tag… also takes the selected firmware package.
         let image = self.image_library.selected.is_some()
             || (command == DeleteTag && self.image_library.can_delete_package());
-        let running = self.presenter.is_some();
+        let running = self.presenter.is_some() || self.player.is_some();
         Some(match command {
+            Open if !self.opens_files() => "No core in this release opens files",
             Rename | Duplicate | DeleteMachine | ResetMachine | ShowSource if !machine => {
                 "Select a machine"
             }
@@ -4079,11 +4527,8 @@ impl Shell {
                 for (label, shortcut, command) in [
                     ("New machine…", "Ctrl+N", Placeholder("New machine")),
                     ("Get templates…", "", GetTemplates),
-                    (
-                        "Open machine file…",
-                        "Ctrl+O",
-                        Placeholder("Open machine file"),
-                    ),
+                    ("Open…", "Ctrl+O", Open),
+                    ("Open machine file…", "", Placeholder("Open machine file")),
                     ("Import image…", "", ImportImage),
                     ("Import installation media…", "", ImportMedia),
                     ("Import ROM folder…", "", ImportFirmware),
@@ -4143,209 +4588,21 @@ impl Shell {
                 self.item(ui, "Pull…", "Enter", Pull, commands);
                 self.item(ui, "Pull by reference…", "", PullReference, commands);
             });
-            ui.menu_button("Machine", |ui| {
-                let target = match (
-                    &self.image_library.active_machine,
-                    self.image_library.selected_machine_row(),
-                ) {
-                    (Some((_, name)), _) => format!("For the machine: {name} (running)"),
-                    (None, Some(row)) => format!("For the machine: {}", row.name()),
-                    (None, None) if self.presenter.is_some() => {
-                        "A machine file or a gaming copy is running".into()
-                    }
-                    (None, None) => "Select a machine".into(),
-                };
-                ui.add_enabled(false, egui::Label::new(target));
-                let reset = if self
-                    .presenter
-                    .as_ref()
-                    .is_some_and(|presenter| presenter.awaits_reset())
-                {
-                    "Reset halted machine"
-                } else {
-                    "Send Ctrl+Alt+Del"
-                };
-                for (mark, label, shortcut, command) in [
-                    (machine_menu_mark(Start), "Start", "Enter", Start),
-                    (machine_menu_mark(GamingMode), "Gaming mode", "", GamingMode),
-                    (
-                        machine_menu_mark(Pause),
-                        if self.paused { "Resume" } else { "Pause" },
-                        "Ctrl+Alt+P",
-                        Pause,
-                    ),
-                    (machine_menu_mark(Reset), reset, "Ctrl+Alt+End", Reset),
-                    (machine_menu_mark(PowerCycle), "Power cycle", "", PowerCycle),
-                    (machine_menu_mark(Stop), "Stop", "Ctrl+Alt+Q", Stop),
-                ] {
-                    self.marked_item(ui, mark, label, shortcut, command, commands);
-                }
-                ui.separator();
-                self.marked_item(
+            // A machine started from a file has the player's Machine, Media
+            // and View menus where the PC's stand.
+            if let Some(player) = &self.player {
+                player.menus(
                     ui,
-                    "",
-                    "Save state (not yet available)",
-                    "",
-                    SaveState,
-                    commands,
+                    player_ui::ViewChrome {
+                        toolbar: &mut self.toolbar,
+                        status_bar: &mut self.statusbar,
+                        classic: &mut self.classic,
+                    },
+                    &mut self.player_commands,
                 );
-                ui.separator();
-                self.marked_item(ui, "", "Settings…", "Ctrl+,", Settings, commands);
-                if self.presenter.is_none() && self.image_library.machine.is_some() {
-                    self.marked_item(ui, "", "Insert media…", "", Insert(0), commands);
-                }
-                self.marked_item(ui, "", "Disk layers…", "", Layers, commands);
-                self.marked_item(ui, "", "Save as new image…", "", SaveImage, commands);
-                ui.separator();
-                self.marked_item(ui, "", "Duplicate…", "Ctrl+D", Duplicate, commands);
-                self.marked_item(ui, "", "Rename…", "F2", Rename, commands);
-                self.marked_item(ui, "", "Reset to image…", "", ResetMachine, commands);
-                self.marked_item(ui, "", "Delete machine…", "Delete", DeleteMachine, commands);
-                self.marked_item(ui, "", "Show source image", "", ShowSource, commands);
-            });
-            ui.menu_button("Media", |ui| {
-                let drives = self.drive_views();
-                let in_drives = self.floppy_inserted();
-                for unit in 0..2 {
-                    let drive = if unit == 0 { "A:" } else { "B:" };
-                    let present = self.enablement().floppy[unit as usize];
-                    let view = drives.iter().find(|view| view.floppy_unit() == Some(unit));
-                    let inserted = view.is_some_and(|view| view.medium.is_some());
-                    let label = view.map_or_else(
-                        || {
-                            format!(
-                                "Drive {drive} — {}",
-                                if self.presenter.is_none() {
-                                    "machine stopped"
-                                } else {
-                                    "not installed"
-                                }
-                            )
-                        },
-                        crate::drive_chips::DriveView::menu_label,
-                    );
-                    ui.add_enabled(present, egui::Label::new(label));
-                    let pending = view.is_some_and(|view| view.at_start);
-                    // One Insert… per drive opens the media picker.
-                    self.marked_item(
-                        ui,
-                        "",
-                        "Insert…",
-                        self.insert_shortcut(unit),
-                        Insert(unit),
-                        commands,
-                    );
-                    self.marked_item(
-                        ui,
-                        "",
-                        "Create from files…",
-                        "",
-                        CreateFromFiles(unit),
-                        commands,
-                    );
-                    self.catalogue_item(ui, unit, in_drives, false, commands);
-                    self.marked_item(
-                        ui,
-                        "",
-                        "Next disk in catalogue",
-                        if unit == 0 {
-                            "Ctrl+Alt+F"
-                        } else {
-                            "Ctrl+Alt+Shift+F"
-                        },
-                        Next(unit),
-                        commands,
-                    );
-                    ui.add_enabled_ui(inserted, |ui| {
-                        self.marked_item(
-                            ui,
-                            EJECT_MARK,
-                            &if pending {
-                                "Take out again (pending)".to_owned()
-                            } else {
-                                format!("Eject {drive}")
-                            },
-                            eject_shortcut(unit),
-                            Eject(unit),
-                            commands,
-                        );
-                    });
-                    if present && self.presenter.is_none() {
-                        ui.add_enabled(
-                            false,
-                            egui::Label::new(
-                                "Stopped: a disk inserted now goes in at the next Start.",
-                            ),
-                        );
-                    }
-                    ui.separator();
-                }
-                let mut fixed = drives
-                    .iter()
-                    .filter(|view| view.floppy_unit().is_none())
-                    .map(crate::drive_chips::DriveView::menu_label)
-                    .peekable();
-                if fixed.peek().is_none() {
-                    ui.add_enabled(
-                        false,
-                        egui::Label::new(if self.presenter.is_none() {
-                            "C: — machine stopped"
-                        } else {
-                            "C: — no fixed disk"
-                        }),
-                    );
-                }
-                for label in fixed {
-                    ui.add_enabled(false, egui::Label::new(label));
-                }
-                self.marked_item(ui, "", "Disk layers…", "", Layers, commands);
-                ui.add_enabled(
-                    false,
-                    egui::Button::new("CD-ROM — unsupported (no controller)"),
-                );
-            });
-            ui.menu_button("View", |ui| {
-                ui.checkbox(&mut self.toolbar, "Toolbar");
-                ui.checkbox(&mut self.statusbar, "Status bar");
-                ui.separator();
-                ui.selectable_value(&mut self.integer_scale, false, "Scale to window, 4:3");
-                ui.selectable_value(&mut self.integer_scale, true, "Integer scale");
-                self.item(ui, "Full screen", "Ctrl+Alt+Enter", Fullscreen, commands);
-                self.item(ui, "Refresh remote", "F5", RefreshRemote, commands);
-                let mute = self
-                    .presenter
-                    .as_ref()
-                    .map_or("Mute audio", |p| p.audio.mute_label());
-                self.item(ui, mute, "Ctrl+Alt+M", Mute, commands);
-                ui.menu_button("Speed", |ui| {
-                    let mut selected = self.selected_speed();
-                    for speed in crate::pacing::Speed::ALL {
-                        let response = ui
-                            .add_enabled_ui(self.enablement().allows(Speed(speed)), |ui| {
-                                ui.selectable_value(&mut selected, speed, speed.label())
-                            })
-                            .inner;
-                        if response.clicked() {
-                            commands.push(Speed(speed));
-                            ui.close();
-                        }
-                    }
-                    ui.separator();
-                    ui.add_enabled(
-                        false,
-                        egui::Button::new("Hold for Unlimited").shortcut_text(
-                            shell_model::shortcut_text("Ctrl+Alt+T", self.macos_shortcuts),
-                        ),
-                    );
-                });
-                ui.menu_button("Skin", |ui| {
-                    ui.selectable_value(&mut self.classic, true, "Classic");
-                    ui.selectable_value(&mut self.classic, false, "Modern");
-                });
-                ui.menu_button("Theme", |ui| {
-                    egui::widgets::global_theme_preference_buttons(ui);
-                });
-            });
+            } else {
+                self.pc_menus(ui, commands);
+            }
             ui.menu_button("Tools", |ui| {
                 self.item(ui, "Image store folder…", "", StoreFolder, commands);
                 self.item(ui, "Import ROM folder…", "", ImportFirmware, commands);
@@ -4377,13 +4634,223 @@ impl Shell {
         });
     }
 
+    /// The PC's Machine, Media and View menus.
+    fn pc_menus(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
+        use Command::*;
+        ui.menu_button("Machine", |ui| {
+            let target = match (
+                &self.image_library.active_machine,
+                self.image_library.selected_machine_row(),
+            ) {
+                (Some((_, name)), _) => format!("For the machine: {name} (running)"),
+                (None, Some(row)) => format!("For the machine: {}", row.name()),
+                (None, None) if self.presenter.is_some() => {
+                    "A machine file or a gaming copy is running".into()
+                }
+                (None, None) => "Select a machine".into(),
+            };
+            ui.add_enabled(false, egui::Label::new(target));
+            let reset = if self
+                .presenter
+                .as_ref()
+                .is_some_and(|presenter| presenter.awaits_reset())
+            {
+                "Reset halted machine"
+            } else {
+                "Send Ctrl+Alt+Del"
+            };
+            for (mark, label, shortcut, command) in [
+                (machine_menu_mark(Start), "Start", "Enter", Start),
+                (machine_menu_mark(GamingMode), "Gaming mode", "", GamingMode),
+                (
+                    machine_menu_mark(Pause),
+                    if self.paused { "Resume" } else { "Pause" },
+                    "Ctrl+Alt+P",
+                    Pause,
+                ),
+                (machine_menu_mark(Reset), reset, "Ctrl+Alt+End", Reset),
+                (machine_menu_mark(PowerCycle), "Power cycle", "", PowerCycle),
+                (machine_menu_mark(Stop), "Stop", "Ctrl+Alt+Q", Stop),
+            ] {
+                self.marked_item(ui, mark, label, shortcut, command, commands);
+            }
+            ui.separator();
+            self.marked_item(
+                ui,
+                "",
+                "Save state (not yet available)",
+                "",
+                SaveState,
+                commands,
+            );
+            ui.separator();
+            self.marked_item(ui, "", "Settings…", "Ctrl+,", Settings, commands);
+            if self.presenter.is_none() && self.image_library.machine.is_some() {
+                self.marked_item(ui, "", "Insert media…", "", Insert(0), commands);
+            }
+            self.marked_item(ui, "", "Disk layers…", "", Layers, commands);
+            self.marked_item(ui, "", "Save as new image…", "", SaveImage, commands);
+            ui.separator();
+            self.marked_item(ui, "", "Duplicate…", "Ctrl+D", Duplicate, commands);
+            self.marked_item(ui, "", "Rename…", "F2", Rename, commands);
+            self.marked_item(ui, "", "Reset to image…", "", ResetMachine, commands);
+            self.marked_item(ui, "", "Delete machine…", "Delete", DeleteMachine, commands);
+            self.marked_item(ui, "", "Show source image", "", ShowSource, commands);
+        });
+        ui.menu_button("Media", |ui| {
+            let drives = self.drive_views();
+            let in_drives = self.floppy_inserted();
+            for unit in 0..2 {
+                let drive = if unit == 0 { "A:" } else { "B:" };
+                let present = self.enablement().floppy[unit as usize];
+                let view = drives.iter().find(|view| view.floppy_unit() == Some(unit));
+                let inserted = view.is_some_and(|view| view.medium.is_some());
+                let label = view.map_or_else(
+                    || {
+                        format!(
+                            "Drive {drive} — {}",
+                            if self.presenter.is_none() {
+                                "machine stopped"
+                            } else {
+                                "not installed"
+                            }
+                        )
+                    },
+                    crate::drive_chips::DriveView::menu_label,
+                );
+                ui.add_enabled(present, egui::Label::new(label));
+                let pending = view.is_some_and(|view| view.at_start);
+                // One Insert… per drive opens the media picker.
+                self.marked_item(
+                    ui,
+                    "",
+                    "Insert…",
+                    self.insert_shortcut(unit),
+                    Insert(unit),
+                    commands,
+                );
+                self.marked_item(
+                    ui,
+                    "",
+                    "Create from files…",
+                    "",
+                    CreateFromFiles(unit),
+                    commands,
+                );
+                self.catalogue_item(ui, unit, in_drives, false, commands);
+                self.marked_item(
+                    ui,
+                    "",
+                    "Next disk in catalogue",
+                    if unit == 0 {
+                        "Ctrl+Alt+F"
+                    } else {
+                        "Ctrl+Alt+Shift+F"
+                    },
+                    Next(unit),
+                    commands,
+                );
+                ui.add_enabled_ui(inserted, |ui| {
+                    self.marked_item(
+                        ui,
+                        EJECT_MARK,
+                        &if pending {
+                            "Take out again (pending)".to_owned()
+                        } else {
+                            format!("Eject {drive}")
+                        },
+                        eject_shortcut(unit),
+                        Eject(unit),
+                        commands,
+                    );
+                });
+                if present && self.presenter.is_none() {
+                    ui.add_enabled(
+                        false,
+                        egui::Label::new("Stopped: a disk inserted now goes in at the next Start."),
+                    );
+                }
+                ui.separator();
+            }
+            let mut fixed = drives
+                .iter()
+                .filter(|view| view.floppy_unit().is_none())
+                .map(crate::drive_chips::DriveView::menu_label)
+                .peekable();
+            if fixed.peek().is_none() {
+                ui.add_enabled(
+                    false,
+                    egui::Label::new(if self.presenter.is_none() {
+                        "C: — machine stopped"
+                    } else {
+                        "C: — no fixed disk"
+                    }),
+                );
+            }
+            for label in fixed {
+                ui.add_enabled(false, egui::Label::new(label));
+            }
+            self.marked_item(ui, "", "Disk layers…", "", Layers, commands);
+            ui.add_enabled(
+                false,
+                egui::Button::new("CD-ROM — unsupported (no controller)"),
+            );
+        });
+        ui.menu_button("View", |ui| {
+            ui.checkbox(&mut self.toolbar, "Toolbar");
+            ui.checkbox(&mut self.statusbar, "Status bar");
+            ui.separator();
+            ui.selectable_value(&mut self.integer_scale, false, "Scale to window, 4:3");
+            ui.selectable_value(&mut self.integer_scale, true, "Integer scale");
+            self.item(ui, "Full screen", "Ctrl+Alt+Enter", Fullscreen, commands);
+            self.item(ui, "Refresh remote", "F5", RefreshRemote, commands);
+            let mute = self
+                .presenter
+                .as_ref()
+                .map_or("Mute audio", |p| p.audio.mute_label());
+            self.item(ui, mute, "Ctrl+Alt+M", Mute, commands);
+            ui.menu_button("Speed", |ui| {
+                let mut selected = self.selected_speed();
+                for speed in crate::pacing::Speed::ALL {
+                    let response = ui
+                        .add_enabled_ui(self.enablement().allows(Speed(speed)), |ui| {
+                            ui.selectable_value(&mut selected, speed, speed.label())
+                        })
+                        .inner;
+                    if response.clicked() {
+                        commands.push(Speed(speed));
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                ui.add_enabled(
+                    false,
+                    egui::Button::new("Hold for Unlimited").shortcut_text(
+                        shell_model::shortcut_text("Ctrl+Alt+T", self.macos_shortcuts),
+                    ),
+                );
+            });
+            ui.menu_button("Skin", |ui| {
+                ui.selectable_value(&mut self.classic, true, "Classic");
+                ui.selectable_value(&mut self.classic, false, "Modern");
+            });
+            ui.menu_button("Theme", |ui| {
+                egui::widgets::global_theme_preference_buttons(ui);
+            });
+        });
+    }
+
     fn toolbar(&self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
         ui.horizontal_wrapped(|ui| {
             use ui_kit::shell_icons::Icon;
             // The main-window mock-up sets Ctrl+Alt+Del as code text, without an icon.
+            // A machine started from a file keeps the same buttons: the PC's
+            // stay in place, greyed, and Ctrl+Alt+Del reads Reset.
+            let player = self.player.as_ref();
+            let paused = self.paused || player.is_some_and(player_ui::Player::paused);
             for (label, icon, command) in [
                 (
-                    if self.presenter.is_none() {
+                    if self.presenter.is_none() && player.is_none() {
                         self.image_library.start_label()
                     } else {
                         "Start"
@@ -4392,20 +4859,31 @@ impl Shell {
                     Command::Start,
                 ),
                 (
-                    if self.paused { "Resume" } else { "Pause" },
-                    Some(if self.paused { Icon::Play } else { Icon::Pause }),
+                    if paused { "Resume" } else { "Pause" },
+                    Some(if paused { Icon::Play } else { Icon::Pause }),
                     Command::Pause,
                 ),
                 ("Stop", Some(Icon::Stop), Command::Stop),
-                ("Ctrl+Alt+Del", None, Command::Reset),
+                (
+                    if player.is_some() {
+                        "Reset"
+                    } else {
+                        "Ctrl+Alt+Del"
+                    },
+                    None,
+                    Command::Reset,
+                ),
                 ("A:", Some(Icon::Floppy), Command::Insert(0)),
                 ("B:", Some(Icon::Floppy), Command::Insert(1)),
                 ("Eject", Some(Icon::Eject), Command::Eject(0)),
                 ("Settings", Some(Icon::Settings), Command::Settings),
                 ("Layers", Some(Icon::Layers), Command::Layers),
             ] {
+                // Eject is the PC's button; the player's slots take the
+                // media keys only.
+                let pc_only = player.is_some() && matches!(command, Command::Eject(_));
                 let response = ui
-                    .add_enabled_ui(self.command_allowed(command), |ui| {
+                    .add_enabled_ui(self.command_allowed(command) && !pc_only, |ui| {
                         toolbar_button(ui, self.classic, label, icon)
                     })
                     .inner;
@@ -4422,7 +4900,9 @@ impl Shell {
             // Remotes its Pull… comes first, and takes the room of the speed
             // control, which applies to a running machine only: the toolbar
             // keeps to one line at the window's default width.
-            let remotes = self.presenter.is_none() && self.image_library.remote_shown();
+            let remotes = self.presenter.is_none()
+                && self.player.is_none()
+                && self.image_library.remote_shown();
             ui.separator();
             let pull = remotes.then_some(("Pull…", Icon::Pull, Command::Pull));
             for (label, icon, command) in pull.into_iter().chain([
@@ -4450,6 +4930,9 @@ impl Shell {
 
     /// The selection View › Speed checks; a held fast-forward leaves it unchanged.
     fn selected_speed(&self) -> crate::pacing::Speed {
+        if let Some(player) = &self.player {
+            return player.selected_speed();
+        }
         self.presenter
             .as_ref()
             .map_or(crate::pacing::Speed::Normal, |p| p.pacing.selected())
@@ -4458,6 +4941,9 @@ impl Shell {
     /// The toolbar shows the mode in effect, so it reads Unlimited while the
     /// fast-forward chord is held and the selected mode again after release.
     fn toolbar_speed(&self) -> crate::pacing::Speed {
+        if let Some(player) = &self.player {
+            return player.selected_speed();
+        }
         self.presenter
             .as_ref()
             .map_or(crate::pacing::Speed::Normal, |p| p.pacing.effective())
@@ -4492,7 +4978,9 @@ impl Shell {
     }
 
     fn title(&self) -> String {
-        if self.presenter.is_some() {
+        if let Some(player) = &self.player {
+            player.title("unemupc")
+        } else if self.presenter.is_some() {
             match (
                 &self.image_library.active_machine,
                 &self.image_library.active,
@@ -4545,6 +5033,22 @@ impl Shell {
             self.image_library
                 .show(ui, &self.library, &mut self.selected),
         );
+    }
+
+    /// The player's screen in the central panel; a click on the picture
+    /// gives the machine the keyboard.
+    fn player_screen(&mut self, ui: &mut egui::Ui) {
+        let Some(player) = &mut self.player else {
+            return;
+        };
+        let clicked = egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(Color32::BLACK))
+            .show(ui, |ui| player.screen(ui).clicked())
+            .inner;
+        self.screen = player.screen_rect().unwrap_or(egui::Rect::NOTHING);
+        if clicked {
+            self.focus_guest();
+        }
     }
 
     fn display(&mut self, ui: &mut egui::Ui) {
@@ -4628,10 +5132,17 @@ impl Shell {
                         if let Some(presenter) = &mut self.presenter {
                             presenter.mouse_motion(dx, dy);
                         }
+                        if let Some(player) = &mut self.player {
+                            player.mouse_motion(dx, dy);
+                        }
                     }
                     continue;
                 }
             };
+            if self.player.is_some() {
+                self.player_window_event(event, blocked, ctx);
+                continue;
+            }
             match event {
                 WindowEvent::ModifiersChanged(modifiers) if self.macos_shortcuts => {
                     self.modifiers_changed(modifiers.state());
@@ -4701,6 +5212,56 @@ impl Shell {
         self.answer_system_quit(self.exit_progress(), ctx);
     }
 
+    /// A window event while a machine started from a file runs: the same
+    /// routing as for the PC, to the player.
+    fn player_window_event(&mut self, event: WindowEvent, blocked: bool, ctx: &egui::Context) {
+        match event {
+            WindowEvent::ModifiersChanged(modifiers) if self.macos_shortcuts => {
+                self.modifiers_changed(modifiers.state());
+            }
+            WindowEvent::Focused(false) => self.focus_lost(),
+            WindowEvent::Focused(true) => self.release(),
+            // The player's tick holds the machine while the window is hidden.
+            WindowEvent::Occluded(hidden) => self.hidden = hidden,
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer = egui::pos2(
+                    position.x as f32 / ctx.pixels_per_point(),
+                    position.y as f32 / ctx.pixels_per_point(),
+                );
+                let inside = self.screen.contains(self.pointer);
+                if let Some(player) = &mut self.player {
+                    player.pointer_inside(inside);
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                if let Some(player) = &mut self.player {
+                    player.pointer_inside(false);
+                }
+            }
+            WindowEvent::MouseInput { button, state, .. } => {
+                let captured = self
+                    .player
+                    .as_ref()
+                    .is_some_and(player_ui::Player::pointer_captured);
+                if !blocked && !captured && self.screen.contains(self.pointer) {
+                    self.focus_guest();
+                    if let Some(player) = &mut self.player {
+                        player.pointer_inside(true);
+                    }
+                } else if (blocked || !captured) && state == ElementState::Pressed {
+                    self.release();
+                    return;
+                }
+                // A captured pointer's buttons, a click on the screen, and
+                // every release, so no button stays held.
+                if let Some(player) = &mut self.player {
+                    player.mouse_button(button, state);
+                }
+            }
+            _ => {}
+        }
+    }
+
     #[cfg(test)]
     fn key(&mut self, key: KeyCode, state: ElementState, blocked: bool, ctx: &egui::Context) {
         self.keyboard(
@@ -4719,6 +5280,21 @@ impl Shell {
     }
 
     fn send_guest_key(&mut self, key: KeyCode, state: ElementState) {
+        if let Some(player) = &mut self.player {
+            if state == ElementState::Pressed {
+                self.guest_held.insert(key);
+            } else if !self.guest_held.remove(&key) {
+                return;
+            }
+            // As for the PC: on macOS the keys go past the session's host
+            // chords, which the shell's Command shortcuts replace.
+            if self.macos_shortcuts {
+                player.guest_key(key, state);
+            } else {
+                player.key_event(key, state);
+            }
+            return;
+        }
         if let Some(presenter) = &mut self.presenter {
             if state == ElementState::Pressed {
                 self.guest_held.insert(key);
@@ -4803,14 +5379,18 @@ impl Shell {
         if command_modifier {
             return;
         }
+        // The Input dialog takes the next key pressed, raw, so a key such as
+        // the right Shift can be bound; nothing reaches the machine.
+        if fresh {
+            if let Some(player) = self.player.as_mut().filter(|player| player.has_dialog()) {
+                player.key_event(key, state);
+            }
+        }
         if self.consumed.contains(&key) {
             if !pressed {
                 if self.fast_forward_key == Some(key) {
                     self.fast_forward_key = None;
-                    let elapsed = self.elapsed();
-                    if let Some(presenter) = &mut self.presenter {
-                        presenter.hold_fast_forward(false, elapsed);
-                    }
+                    self.end_fast_forward();
                 }
                 self.consumed.remove(&key);
             }
@@ -4885,6 +5465,10 @@ impl Shell {
             .presenter
             .as_ref()
             .is_some_and(|presenter| presenter.mouse.captured())
+            || self
+                .player
+                .as_ref()
+                .is_some_and(player_ui::Player::pointer_captured)
         {
             ctx.set_cursor_icon(egui::CursorIcon::None);
         }
@@ -4906,6 +5490,17 @@ impl Shell {
     fn tick(&mut self, ctx: &egui::Context, blocked: bool, elapsed: std::time::Duration) {
         let tick_started = Instant::now();
         let has_dialog = self.has_dialog();
+        if let Some(player) = &mut self.player {
+            // The player holds its machine for its own dialogs and pause; the
+            // shell's dialogs, a menu and a hidden window hold it too.
+            let hold = blocked || has_dialog || self.hidden || self.minimized;
+            #[cfg(test)]
+            let warnings = &mut self.player_log;
+            #[cfg(not(test))]
+            let warnings = &mut io::stderr();
+            player.tick(ctx, hold, elapsed, warnings);
+            return;
+        }
         let Some(presenter) = &mut self.presenter else {
             return;
         };
@@ -5073,6 +5668,7 @@ impl eframe::App for Shell {
         // Before anything draws: a file dialog opened later in this frame
         // then already wakes the shell with its answer.
         self.poll_file_dialog(ctx);
+        self.poll_opening();
         self.poll_images(ctx);
         self.poll_readiness(ctx);
         self.sync_pending_media();
@@ -5100,11 +5696,19 @@ impl eframe::App for Shell {
                 self.toolbar(ui, &mut commands);
             }
         });
+        if let Some(player) = &mut self.player {
+            player.set_look(self.classic, self.macos_shortcuts);
+        }
         if self.statusbar {
-            egui::Panel::bottom("statusbar").show(ui, |ui| self.status(ui, &mut commands));
+            egui::Panel::bottom("statusbar").show(ui, |ui| match &self.player {
+                Some(player) => player.status(ui),
+                None => self.status(ui, &mut commands),
+            });
         }
         self.screen = egui::Rect::NOTHING;
-        if self.presenter.is_some() {
+        if self.player.is_some() {
+            self.player_screen(ui);
+        } else if self.presenter.is_some() {
             self.display(ui);
         } else {
             self.welcome(ui, &mut commands);
@@ -5278,7 +5882,9 @@ impl eframe::App for Shell {
                     ui.text_edit_singleline(&mut self.store_path_input);
                     if ui
                         .add_enabled(
-                            self.presenter.is_none() && !self.image_library.busy,
+                            self.presenter.is_none()
+                                && self.player.is_none()
+                                && !self.image_library.busy,
                             egui::Button::new("Save"),
                         )
                         .clicked()
@@ -5362,6 +5968,15 @@ impl eframe::App for Shell {
             }
             self.image_library.send(action);
         }
+        if let Some(player) = &mut self.player {
+            let request = player.dialogs(&ctx);
+            self.player_request(request, &ctx);
+        }
+        if let Some(refusal) = &self.open_refusal {
+            if refusal.show(&ctx, self.classic) {
+                self.open_refusal = None;
+            }
+        }
         if let Some(stop) = self.stop_prompt_modal(&ctx, stop_escape) {
             self.answer_stop_prompt(stop, &ctx);
         }
@@ -5405,9 +6020,16 @@ impl eframe::App for Shell {
         if menu_open || had_dialog {
             self.release();
         }
-        self.input(&ctx, menu_open || had_dialog || !commands.is_empty());
+        let player_commands = std::mem::take(&mut self.player_commands);
+        self.input(
+            &ctx,
+            menu_open || had_dialog || !commands.is_empty() || !player_commands.is_empty(),
+        );
         for command in commands {
             self.command(command, &ctx);
+        }
+        for command in player_commands {
+            self.player_command(command, &ctx);
         }
         let blocked = menu_open || had_dialog || self.has_dialog();
         if blocked {
@@ -5419,7 +6041,7 @@ impl eframe::App for Shell {
         self.sync_system_keys();
         {
             let mut events = self.events.borrow_mut();
-            events.screen = if blocked || self.presenter.is_none() {
+            events.screen = if blocked || (self.presenter.is_none() && self.player.is_none()) {
                 None
             } else {
                 Some(self.screen)
@@ -5693,7 +6315,7 @@ fn shortcuts_help(macos: bool) -> String {
         ("F5", "Refresh remote (the registry the library shows)"),
         ("Ctrl+D", "Duplicate… (machine)"),
         ("Delete", "Delete machine… / Delete tag… (image)"),
-        ("Ctrl+O", "open machine file"),
+        ("Ctrl+O", "Open… a file, with whichever core runs it"),
         (
             "Ctrl+,",
             "Settings… (the selected machine; images use Image › Settings…)",
@@ -5831,6 +6453,14 @@ mod tests {
                 file_dialog::fake::Host::default().boxed(),
             ),
             creating: None,
+            cores: Arc::new(core_launch::Cores::new(platforms::cores())),
+            host_dirs: Err("no host directories in tests".into()),
+            player: None,
+            player_commands: Vec::new(),
+            opening: None,
+            opened: None,
+            open_refusal: None,
+            player_log: Vec::new(),
         }
     }
 
@@ -7700,7 +8330,7 @@ mod tests {
             (End, false, Command::Reset),
             (Enter, false, Command::Fullscreen),
             (KeyN, false, Command::Placeholder("New machine")),
-            (KeyO, false, Command::Placeholder("Open machine file")),
+            (KeyO, false, Command::Open),
             (Comma, false, Command::Settings),
             (Slash, true, Command::Shortcuts),
             (KeyQ, false, Command::Exit),
@@ -7764,6 +8394,8 @@ mod tests {
                         shell.image_library.close_dialogs();
                     }
                     Command::Placeholder(_) | Command::Shortcuts => assert!(shell.dialog.is_some()),
+                    // No core of the release opens files.
+                    Command::Open => assert!(!shell.file_dialogs.is_open()),
                     Command::Minimize => assert!(!shell.guest_focus),
                     Command::Settings => assert!(!shell.guest_focus),
                     Command::Release => {
@@ -10658,6 +11290,7 @@ kind='mda'
                 StopPrompt::Library => Command::Library,
                 StopPrompt::OpenMachine => Command::Placeholder("Open machine file"),
                 StopPrompt::Exit => Command::Exit,
+                StopPrompt::OpenFile => unreachable!("a file's prompt has its own test"),
             };
             // Open machine file asks only once a path is confirmed.
             let trigger = |shell: &mut Shell, ctx: &egui::Context| {
@@ -10737,6 +11370,7 @@ kind='mda'
                     StopPrompt::Exit => {
                         assert!(commands.contains(&egui::ViewportCommand::Close))
                     }
+                    StopPrompt::OpenFile => unreachable!(),
                 }
             }
         }
@@ -15076,5 +15710,524 @@ kind='mda'
         assert!(shell.stop());
         let pass = status_pass(&ctx, &mut shell, 1040.0, Vec::new());
         assert!(pass.text.iter().any(|(text, _)| text == "🔊 stopped"));
+    }
+
+    /// The PC, whose platform opens no files, and the test core, which
+    /// opens its scripts: a release once a core that opens files is in.
+    static OPENING_CORES: [&dyn unemu_core_api::Core; 2] =
+        [&unemu_pc_core::PcCore, &unemu_test_core::TestCore];
+
+    /// The test core twice: two cores answer for one file.
+    static TWO_ANSWERS: [&dyn unemu_core_api::Core; 2] =
+        [&unemu_test_core::TestCore, &unemu_test_core::TestCore];
+
+    /// A stopped shell whose cores open the test core's scripts, keeping
+    /// what machines leave behind under `temp`.
+    fn opening_shell(temp: &assembly::test_support::TempDir) -> Shell {
+        let mut shell = shell();
+        shell.presenter = None;
+        shell.guest_focus = false;
+        shell.cores = Arc::new(core_launch::Cores::new(&OPENING_CORES));
+        shell.host_dirs = Ok(crate::host_dirs_in(temp.path()));
+        shell
+    }
+
+    /// A script of the test core, its first line written for it.
+    fn script(
+        temp: &assembly::test_support::TempDir,
+        name: &str,
+        lines: &str,
+    ) -> std::path::PathBuf {
+        let path = temp.path().join(name);
+        std::fs::write(&path, format!("unemu-test-core 1\n{lines}\n")).unwrap();
+        path
+    }
+
+    /// Wait for the worker that prepares the file, and take its answer as a
+    /// frame of the shell does.
+    fn finish_opening(shell: &mut Shell) {
+        let started = Instant::now();
+        while shell.opening.is_some() {
+            shell.poll_opening();
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(60),
+                "the file was never prepared"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    fn open(shell: &mut Shell, path: &std::path::Path, ctx: &egui::Context) {
+        shell.open_file(path.to_owned(), None, ctx);
+        finish_opening(shell);
+    }
+
+    #[test]
+    fn dash_open_and_file_open_start_a_player() {
+        let temp = assembly::test_support::TempDir::new("shell-open-file");
+        let path = script(&temp, "machine.utc", "title Scripted machine");
+        let ctx = egui::Context::default();
+        // --open FILE --core ID, once the window shows.
+        let mut shell = opening_shell(&temp);
+        shell.args = crate::parse_args([
+            "--open".into(),
+            path.clone().into_os_string(),
+            "--core".into(),
+            "unemu-test-core".into(),
+        ])
+        .unwrap();
+        shell.open_on_start(&ctx);
+        finish_opening(&mut shell);
+        assert!(shell.player.is_some());
+        assert!(shell.presenter.is_none());
+        assert_eq!(shell.state(), State::Running);
+        assert_eq!(shell.title(), "Scripted machine — Test machine — unemupc");
+        assert!(shell.stop());
+        assert!(shell.player.is_none());
+
+        // File › Open…: above Open machine file…, which has lost Ctrl+O.
+        let mut shell = opening_shell(&temp);
+        let host = file_dialog::fake::Host::default();
+        shell.file_dialogs = file_dialog::FileDialogs::with_host(host.boxed());
+        let drawn = draw(&ctx, &mut shell, Vec::new());
+        click(&ctx, &mut shell, label_rect(&drawn.text, "File").center());
+        let drawn = draw(&ctx, &mut shell, Vec::new());
+        let item = label_rect(&drawn.text, "Open…");
+        let machine_file = label_rect(&drawn.text, "Open machine file…");
+        assert!(item.bottom() <= machine_file.top());
+        assert_eq!(
+            drawn
+                .text
+                .iter()
+                .filter(|(text, _)| text == "Ctrl+O")
+                .count(),
+            1
+        );
+        let key = label_rect(&drawn.text, "Ctrl+O");
+        assert!(key.center().y > item.top() && key.center().y < item.bottom());
+        assert_eq!(click(&ctx, &mut shell, item.center()), [Command::Open]);
+        shell.command(Command::Open, &ctx);
+        // The host's dialog opens on everything the cores open.
+        let request = host.requests.borrow().last().cloned().unwrap();
+        let filters: Vec<&str> = request
+            .filters
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(
+            filters,
+            [
+                "All supported files (*.utc)",
+                "unemu test core scripts (*.utc)",
+                "All files (*.*)"
+            ]
+        );
+        host.answer(Some(vec![path]));
+        shell.poll_file_dialog(&ctx);
+        finish_opening(&mut shell);
+        assert_eq!(
+            shell
+                .player
+                .as_ref()
+                .map(|player| player.prepared().title()),
+            Some("Scripted machine")
+        );
+        assert!(shell.stop());
+    }
+
+    #[test]
+    fn open_is_greyed_and_says_why_while_no_compiled_in_core_opens_files() {
+        let mut shell = shell();
+        shell.presenter = None;
+        assert!(!shell.command_allowed(Command::Open));
+        // The item explains itself by its hover text, as a pointer finds it.
+        let pointer = ui_kit::test_support::Pointer::new(Vec2::new(1040.0, 700.0));
+        let mut commands = Vec::new();
+        let mut menus = |ui: &mut egui::Ui| shell.menus(ui, &mut commands);
+        let shown = pointer.frame(Vec::new(), &mut menus);
+        pointer.click(
+            ui_kit::test_support::painted_at(&shown, "File").center(),
+            &mut menus,
+        );
+        let shown = pointer.frame(Vec::new(), &mut menus);
+        let item = ui_kit::test_support::painted_at(&shown, "Open…").center();
+        let hover = pointer.hover(item, &mut menus);
+        assert!(shows(&hover, "No core in this release opens files"));
+        pointer.click(item, &mut menus);
+        assert!(commands.is_empty());
+        let ctx = egui::Context::default();
+        // Ctrl+O is Open…'s, and asks for no file either.
+        shell.command(Command::Open, &ctx);
+        assert!(!shell.file_dialogs.is_open());
+        // A core that opens files enables it.
+        shell.cores = Arc::new(core_launch::Cores::new(&OPENING_CORES));
+        assert!(shell.command_allowed(Command::Open));
+        assert_eq!(shell.disabled_reason(Command::Open), None);
+    }
+
+    #[test]
+    fn a_player_and_the_pc_ask_to_stop_each_other_with_the_stop_prompt() {
+        let temp = assembly::test_support::TempDir::new("shell-open-prompt");
+        let path = script(&temp, "machine.utc", "title Scripted machine");
+        let ctx = egui::Context::default();
+        // Starting the PC while a player runs: the library, then Start, or
+        // a machine file.
+        for prompt in [StopPrompt::Library, StopPrompt::OpenMachine] {
+            let mut shell = opening_shell(&temp);
+            open(&mut shell, &path, &ctx);
+            assert!(!shell.command_allowed(Command::Start));
+            match prompt {
+                StopPrompt::Library => shell.command(Command::Library, &ctx),
+                _ => {
+                    shell.open_path = "picked.toml".into();
+                    shell.open_machine();
+                }
+            }
+            assert_eq!(shell.stop_prompt, Some(prompt));
+            assert_eq!(shell.session_name(), Some("Scripted machine"));
+            assert!(shell.player.is_some());
+            shell.answer_stop_prompt(false, &ctx);
+            assert!(shell.player.as_ref().unwrap().running());
+            shell.command(Command::Library, &ctx);
+            shell.answer_stop_prompt(true, &ctx);
+            assert!(shell.player.is_none());
+            assert_eq!(shell.state(), State::Stopped);
+        }
+        // Open… while the PC runs: the file is prepared first, then the
+        // prompt; Cancel keeps the PC, Stop machine starts the file's.
+        let mut shell = opening_shell(&temp);
+        shell.presenter = shell_with_presenter();
+        open(&mut shell, &path, &ctx);
+        assert_eq!(shell.stop_prompt, Some(StopPrompt::OpenFile));
+        assert!(shell.player.is_none());
+        shell.answer_stop_prompt(false, &ctx);
+        assert!(shell.presenter.is_some());
+        assert!(shell.opened.is_none());
+        open(&mut shell, &path, &ctx);
+        shell.answer_stop_prompt(true, &ctx);
+        assert!(shell.presenter.is_none());
+        assert_eq!(
+            shell
+                .player
+                .as_ref()
+                .map(|player| player.prepared().title()),
+            Some("Scripted machine")
+        );
+        assert!(shell.stop());
+    }
+
+    /// The PC of `shell()`, running.
+    fn shell_with_presenter() -> Option<Presenter> {
+        shell().presenter.take()
+    }
+
+    #[test]
+    fn pause_reset_power_cycle_and_stop_reach_the_players_machine() {
+        let temp = assembly::test_support::TempDir::new("shell-player-commands");
+        let path = script(
+            &temp,
+            "machine.utc",
+            "title Scripted machine\nresets soft,hard\nbattery\nslot 0 tape removable tp Tape deck",
+        );
+        let ctx = egui::Context::default();
+        let mut shell = opening_shell(&temp);
+        open(&mut shell, &path, &ctx);
+        // The PC's commands wait; the toolbar keeps its buttons and its
+        // Ctrl+Alt+Del button reads Reset.
+        for command in [
+            Command::Insert(0),
+            Command::Layers,
+            Command::SaveImage,
+            Command::Settings,
+        ] {
+            assert!(!shell.command_allowed(command), "{command:?}");
+        }
+        let drawn = draw(&ctx, &mut shell, Vec::new());
+        assert!(!shows(&drawn.text, "Ctrl+Alt+Del"));
+        for button in ["A:", "B:", "Eject", "Settings", "Layers"] {
+            assert!(click(&ctx, &mut shell, label_rect(&drawn.text, button).center()).is_empty());
+        }
+        let reset = label_rect(&drawn.text, "Reset").center();
+        assert_eq!(click(&ctx, &mut shell, reset), [Command::Reset]);
+        // The player's Machine menu stands where the PC's does.
+        click(
+            &ctx,
+            &mut shell,
+            label_rect(&drawn.text, "Machine").center(),
+        );
+        let menu = draw(&ctx, &mut shell, Vec::new());
+        assert!(shows(
+            &menu.text,
+            "For the machine: Scripted machine (running)"
+        ));
+        assert!(!shows(&menu.text, "Disk layers…"));
+        egui::Popup::close_all(&ctx);
+
+        shell.command(Command::Pause, &ctx);
+        assert!(shell.player.as_ref().unwrap().paused());
+        assert_eq!(shell.state(), State::Paused);
+        shell.command(Command::Pause, &ctx);
+        assert_eq!(shell.state(), State::Running);
+        shell.command(Command::Reset, &ctx);
+        assert_eq!(shell.player.as_ref().unwrap().message(), "Reset");
+        shell.command(Command::PowerCycle, &ctx);
+        assert_eq!(shell.player.as_ref().unwrap().message(), "Power cycled");
+        let saves = shell
+            .player
+            .as_ref()
+            .unwrap()
+            .prepared()
+            .saves_dir()
+            .to_owned();
+        shell.command(Command::Stop, &ctx);
+        assert!(shell.player.is_none());
+        assert_eq!(shell.state(), State::Stopped);
+        // Stop finished the machine: its battery counts the start and the
+        // power cycle's hard reset.
+        let records: Vec<String> = std::fs::read_dir(&saves)
+            .unwrap()
+            .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap_or_default())
+            .collect();
+        assert!(
+            records.iter().any(|record| record.ends_with("starts 2\n")),
+            "{records:?}"
+        );
+    }
+
+    #[test]
+    fn a_refused_file_shows_its_box_and_leaves_a_running_machine_alone() {
+        let temp = assembly::test_support::TempDir::new("shell-open-refused");
+        let notes = temp.path().join("notes.txt");
+        std::fs::write(&notes, "hello\n").unwrap();
+        let odd = script(&temp, "odd.utc", "unsupported board 5 is not modelled");
+        let good = script(&temp, "machine.utc", "title Scripted machine");
+        let ctx = egui::Context::default();
+        let refused = |shell: &mut Shell, path: &std::path::Path| {
+            open(shell, path, &ctx);
+            let refusal = shell.open_refusal.take().expect("a refusal");
+            assert_eq!(refusal.title, "Open");
+            assert_eq!(shell.stop_prompt, None);
+            refusal.text
+        };
+        // While the PC runs.
+        let mut shell = opening_shell(&temp);
+        shell.presenter = shell_with_presenter();
+        assert!(refused(&mut shell, &notes)
+            .starts_with("No core in this program opens notes.txt. This program opens: unemu test core scripts (*.utc)"));
+        assert!(refused(&mut shell, &odd)
+            .contains("recognised odd.utc and cannot run it: board 5 is not modelled"));
+        assert!(shell.presenter.as_ref().unwrap().running);
+        assert!(shell.player.is_none());
+        // While a player runs.
+        open(&mut shell, &good, &ctx);
+        shell.answer_stop_prompt(true, &ctx);
+        refused(&mut shell, &notes);
+        assert!(shell.player.as_ref().unwrap().running());
+        // Two cores answer: refused, naming them and --core.
+        shell.cores = Arc::new(core_launch::Cores::new(&TWO_ANSWERS));
+        let several = refused(&mut shell, &good);
+        assert!(several.starts_with("More than one core in this program runs machine.utc"));
+        assert!(several.contains("--open FILE --core ID"));
+        assert!(shell.player.as_ref().unwrap().running());
+        // The box shows until OK.
+        shell.open_refusal = Some(player_ui::MessageBox::refusal("Open", several));
+        assert!(shell.has_dialog());
+        assert!(shell.stop());
+    }
+
+    #[test]
+    fn pad_keys_come_from_the_preferences_and_the_input_dialog_stores_them() {
+        use unemu_core_api::{Key, PadControl};
+        let temp = assembly::test_support::TempDir::new("shell-player-pads");
+        let path = script(&temp, "pads.utc", "pad 0 a,b Controller 1");
+        let ctx = egui::Context::default();
+        let mut shell = opening_shell(&temp);
+        let file = temp.path().join("preferences.toml");
+        shell.preferences_path = Some(file.clone());
+        let mut keys = machine_view::pads::PadBindings::empty();
+        keys.bind(0, PadControl::A, Key::SHIFT_RIGHT);
+        shell.preferences.set_pad_bindings(&keys);
+        open(&mut shell, &path, &ctx);
+        assert_eq!(shell.player.as_ref().unwrap().pad_bindings(), &keys);
+        // The Input dialog's OK asks the shell to store the player's keys.
+        shell.preferences = Default::default();
+        shell.player_request(Some(player_ui::Request::PadBindings), &ctx);
+        assert_eq!(
+            crate::preferences::Preferences::load(&file)
+                .unwrap()
+                .pad_bindings(),
+            keys
+        );
+        assert!(shell.stop());
+    }
+
+    fn player_log(shell: &Shell) -> String {
+        String::from_utf8_lossy(&shell.player_log).into_owned()
+    }
+
+    #[test]
+    fn a_file_prepared_late_never_replaces_a_question_or_an_exit() {
+        let temp = assembly::test_support::TempDir::new("shell-open-late");
+        let path = script(&temp, "machine.utc", "title Scripted machine");
+        let ctx = egui::Context::default();
+        // The library's question stays the library's: Stop machine stops
+        // the PC and opens nothing.
+        let mut shell = opening_shell(&temp);
+        shell.presenter = shell_with_presenter();
+        shell.command(Command::Library, &ctx);
+        assert_eq!(shell.stop_prompt, Some(StopPrompt::Library));
+        open(&mut shell, &path, &ctx);
+        assert_eq!(shell.stop_prompt, Some(StopPrompt::Library));
+        assert!(shell.opened.is_none());
+        shell.answer_stop_prompt(true, &ctx);
+        assert!(shell.presenter.is_none());
+        assert!(shell.player.is_none());
+        // Quitting keeps asking to quit.
+        let mut shell = opening_shell(&temp);
+        shell.presenter = shell_with_presenter();
+        shell.command(Command::Exit, &ctx);
+        open(&mut shell, &path, &ctx);
+        assert_eq!(shell.stop_prompt, Some(StopPrompt::Exit));
+        assert_eq!(shell.exit_progress(), crate::app_menu::ExitProgress::Asking);
+        // Stop forgets a file still being prepared, and the status line
+        // gets its message back.
+        let mut shell = opening_shell(&temp);
+        shell.presenter = shell_with_presenter();
+        shell.message = "Running".into();
+        shell.open_file(path.clone(), None, &ctx);
+        assert_eq!(shell.message, "Opening machine.utc…");
+        assert!(shell.stop());
+        assert!(shell.opening.is_none());
+        finish_opening(&mut shell);
+        assert!(shell.player.is_none());
+        assert_eq!(shell.stop_prompt, None);
+    }
+
+    #[test]
+    fn a_file_started_while_a_pc_start_is_under_way_stays_the_only_machine() {
+        let temp = assembly::test_support::TempDir::new("shell-open-start");
+        let path = script(&temp, "machine.utc", "title Scripted machine");
+        let ctx = egui::Context::default();
+        let mut shell = opening_shell(&temp);
+        // A machine file waiting for its readiness check to start.
+        shell.start_request = Some(0);
+        open(&mut shell, &path, &ctx);
+        assert!(shell.player.is_some());
+        assert_eq!(shell.start_request, None);
+        // A PC that arrives anyway is finished, not shown beside it.
+        shell.started(shell_with_presenter().unwrap());
+        assert!(shell.presenter.is_none());
+        assert!(shell.player.is_some());
+        assert!(shell.stop());
+    }
+
+    #[test]
+    fn host_keys_reach_the_players_pad_and_its_input_dialog_raw() {
+        use unemu_core_api::{Key, PadControl};
+        let temp = assembly::test_support::TempDir::new("shell-player-keys");
+        let path = script(
+            &temp,
+            "pads.utc",
+            "pad 0 up,down,left,right,a,b,start,select Controller 1\necho-input",
+        );
+        let ctx = egui::Context::default();
+        let mut shell = opening_shell(&temp);
+        open(&mut shell, &path, &ctx);
+        shell.focus_guest();
+        // X is the first pad's A by default.
+        shell.key(KeyCode::KeyX, Pressed, false, &ctx);
+        shell.tick(&ctx, false, std::time::Duration::from_millis(50));
+        let log = player_log(&shell);
+        assert!(log.contains("control: A, pressed: true"), "{log}");
+        shell.key(KeyCode::KeyX, Released, false, &ctx);
+        // The Input dialog takes the right Shift, which only a raw key
+        // event names, for the row that waits.
+        shell.player_command(player_ui::Command::Input, &ctx);
+        assert!(shell.has_dialog());
+        let pointer = ui_kit::test_support::Pointer::new(Vec2::new(1000.0, 800.0));
+        let mut requests = Vec::new();
+        let mut dialog = |ui: &mut egui::Ui| {
+            requests.extend(shell.player.as_mut().unwrap().dialogs(ui.ctx()));
+        };
+        let mut shown = Vec::new();
+        for _ in 0..3 {
+            shown = pointer.frame(Vec::new(), &mut dialog);
+        }
+        pointer.click(
+            ui_kit::test_support::painted_at(&shown, "Up").center(),
+            &mut dialog,
+        );
+        drop(dialog);
+        shell.key(KeyCode::ShiftRight, Pressed, false, &ctx);
+        shell.key(KeyCode::ShiftRight, Released, false, &ctx);
+        let mut dialog = |ui: &mut egui::Ui| {
+            requests.extend(shell.player.as_mut().unwrap().dialogs(ui.ctx()));
+        };
+        let shown = pointer.frame(Vec::new(), &mut dialog);
+        pointer.click(
+            ui_kit::test_support::painted_at(&shown, "OK").center(),
+            &mut dialog,
+        );
+        drop(dialog);
+        assert_eq!(requests, [player_ui::Request::PadBindings]);
+        assert_eq!(
+            shell
+                .player
+                .as_ref()
+                .unwrap()
+                .pad_bindings()
+                .control(Key::SHIFT_RIGHT),
+            Some((0, PadControl::Up))
+        );
+        assert!(shell.stop());
+    }
+
+    #[test]
+    fn a_click_on_the_screen_works_an_aimed_players_trigger() {
+        let temp = assembly::test_support::TempDir::new("shell-player-gun");
+        let path = script(&temp, "gun.utc", "absolute 0 1 Light gun\necho-input");
+        let ctx = egui::Context::default();
+        let mut shell = opening_shell(&temp);
+        open(&mut shell, &path, &ctx);
+        shell.screen = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(640.0, 480.0));
+        shell.pointer = egui::pos2(100.0, 100.0);
+        shell
+            .events
+            .borrow_mut()
+            .window(button(winit::event::MouseButton::Left, Pressed));
+        shell.input(&ctx, false);
+        shell.tick(&ctx, false, std::time::Duration::from_millis(50));
+        let log = player_log(&shell);
+        assert!(log.contains("PointerButton"), "{log}");
+        assert!(log.contains("pressed: true"), "{log}");
+        assert!(shell.guest_focus);
+        assert!(shell.stop());
+    }
+
+    #[test]
+    fn a_shell_dialog_holds_the_players_machine() {
+        use std::time::Duration;
+        let temp = assembly::test_support::TempDir::new("shell-player-hold");
+        let path = script(&temp, "timed.utc", "at 6000 note a tenth of a second in");
+        let ctx = egui::Context::default();
+        let mut shell = opening_shell(&temp);
+        open(&mut shell, &path, &ctx);
+        // Ticks a sixtieth of a second apart, as the window paints: the
+        // pacing never sees a stall it would skip.
+        let mut at = Duration::ZERO;
+        let mut run_for = |shell: &mut Shell, ms: u64| {
+            let end = at + Duration::from_millis(ms);
+            while at < end {
+                at = (at + Duration::from_micros(16_667)).min(end);
+                shell.tick(&ctx, false, at);
+            }
+        };
+        shell.dialog = Some(("About unemupc", String::new()));
+        run_for(&mut shell, 400);
+        assert!(!player_log(&shell).contains("a tenth"));
+        shell.dialog = None;
+        run_for(&mut shell, 400);
+        assert!(player_log(&shell).contains("a tenth of a second in"));
+        assert!(shell.stop());
     }
 }

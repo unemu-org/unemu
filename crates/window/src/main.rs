@@ -14,9 +14,13 @@
 
 use assembly::{AssembledMachine, DeviceId, ObservationPolicy, ObservationRequest, OutputKind};
 use machine_view::Session;
-#[cfg(test)]
-use std::path::Path;
-use std::{error::Error, ffi::OsStr, io, path::PathBuf, time::Duration};
+use std::{
+    error::Error,
+    ffi::OsStr,
+    io,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use ui_kit::{EGUI_FONT_NOTICE, SYMBOL_FONT_NOTICE};
 use unemu_core_api::DisplayId;
 use unemu_pc_core::{PcMachine, FONT_NOTICE};
@@ -320,7 +324,7 @@ fn informational_text(arg: &OsStr, cores: &core_launch::Cores) -> Option<String>
     let shown = shown_path;
     if arg == "--help" {
         Some(format!(
-            "usage: unemupc [--machine FILE] [--display CARD] [--rom-dir DIR]... [--allow-unlisted-firmware]\n\ndefault selection: {} (opens the machine library; --machine starts immediately)\nmachine files: {} (set {MACHINES_DIR_VAR} to use another directory)\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}\n\n{opl3}", shown(default_machine()), shown(machines_dir())
+            "usage: unemupc [--machine FILE] [--open FILE [--core ID]] [--display CARD] [--rom-dir DIR]... [--allow-unlisted-firmware]\n\ndefault selection: {} (opens the machine library; --machine starts immediately)\nmachine files: {} (set {MACHINES_DIR_VAR} to use another directory)\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}\n\n{opl3}", shown(default_machine()), shown(machines_dir())
         ))
     } else if arg == "--version" || arg == "--about" {
         let mut lines = String::new();
@@ -385,9 +389,36 @@ fn default_machine() -> Option<PathBuf> {
     machines_dir().map(|directory| directory.join("at-freedos.toml"))
 }
 
+/// Where machines started from a file keep what they leave behind:
+/// `unemupc/saves` and `unemupc/states` in the platform data directory,
+/// beside the machine files. `core_launch::start` creates a machine's own
+/// directory under `saves` when the machine first starts; nothing is made
+/// before. The reason is shown when Open… meets a host without a data
+/// directory.
+fn host_dirs() -> Result<core_launch::HostDirs, String> {
+    image_store::location::data_directory()
+        .map(|data| host_dirs_in(&data))
+        .map_err(|error| {
+            format!("Files cannot be opened: the host has no data directory ({error})")
+        })
+}
+
+fn host_dirs_in(data: &Path) -> core_launch::HostDirs {
+    let root = data.join("unemupc");
+    core_launch::HostDirs {
+        saves: root.join("saves"),
+        states: root.join("states"),
+    }
+}
+
 #[derive(Debug)]
 struct Args {
     machine: PathBuf,
+    /// `--open FILE`: a file to run at startup with whichever compiled-in
+    /// core opens it, as File › Open… does.
+    open: Option<PathBuf>,
+    /// `--core ID`: the one core asked about the file of `--open`.
+    core: Option<String>,
     rom_dirs: Vec<PathBuf>,
     display: Option<String>,
     options: assembly::AssemblyOptions,
@@ -409,6 +440,8 @@ fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Args
         // Without a data directory there is no default; the library then
         // selects nothing, and starting needs --machine.
         machine: default_machine().unwrap_or_default(),
+        open: None,
+        core: None,
         rom_dirs: Vec::new(),
         display: None,
         options: assembly::AssemblyOptions::default(),
@@ -423,7 +456,7 @@ fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Args
                 let path = args.next().filter(|path| !path.is_empty() && !path.as_encoded_bytes().starts_with(b"--")).ok_or("missing ROM directory")?;
                 result.rom_dirs.push(path.into());
             }
-            Some("--machine" | "--display") => {
+            Some("--machine" | "--display" | "--open" | "--core") => {
                 let value = args.next().filter(|value| !value.is_empty() && !value.as_encoded_bytes().starts_with(b"--"))
                     .ok_or("missing option value")?;
                 if arg == "--machine" && !machine_seen {
@@ -431,12 +464,23 @@ fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Args
                     machine_seen = true;
                 } else if arg == "--display" && result.display.is_none() {
                     result.display = Some(value.into_string().map_err(|_| "invalid card id")?);
+                } else if arg == "--open" && result.open.is_none() {
+                    result.open = Some(value.into());
+                } else if arg == "--core" && result.core.is_none() {
+                    result.core = Some(value.into_string().map_err(|_| "invalid core id")?);
                 } else {
                     return Err("duplicate option");
                 }
             }
-            _ => return Err("expected --machine FILE, --display CARD or --allow-unlisted-firmware; positional paths are no longer supported"),
+            _ => return Err("expected --machine FILE, --open FILE [--core ID], --display CARD or --allow-unlisted-firmware; positional paths are no longer supported"),
         }
+    }
+    // Each starts a machine, and the window runs one at a time.
+    if machine_seen && result.open.is_some() {
+        return Err("--machine and --open each start a machine; give one");
+    }
+    if result.core.is_some() && result.open.is_none() {
+        return Err("--core names the core for --open FILE");
     }
     Ok(result)
 }
@@ -538,7 +582,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut args = parse_args(args)?;
     args.speaker_trace = speaker_trace_requested(std::env::var_os(SPEAKER_TRACE_VAR).as_deref());
     let autostart = std::env::args_os().skip(1).any(|arg| arg == "--machine");
-    shell::run(args, autostart)?;
+    shell::run(args, autostart, cores)?;
     Ok(())
 }
 
@@ -1283,6 +1327,8 @@ mod tests {
         assert!(setup(&args_for(Some("missing")), &mut io::sink()).is_err());
         let missing = Args {
             machine: temp.path().join("missing.toml"),
+            open: None,
+            core: None,
             rom_dirs: Vec::new(),
             display: None,
             options: assembly::AssemblyOptions::default(),
@@ -2037,6 +2083,62 @@ mod tests {
                 "{option}"
             );
         }
+    }
+
+    /// `--help` whole, with the default paths and the notices replaced by
+    /// names: the usage line, the defaults, then the notices.
+    #[test]
+    fn help_is_pinned() {
+        let text = informational_output(OsStr::new("--help"))
+            .unwrap()
+            .replace(&shown_path(default_machine()), "DEFAULT")
+            .replace(&shown_path(machines_dir()), "MACHINES")
+            .replace(FONT_NOTICE, "FONT NOTICE")
+            .replace(EGUI_FONT_NOTICE, "EGUI FONT NOTICE")
+            .replace(SYMBOL_FONT_NOTICE, "SYMBOL FONT NOTICE")
+            .replace(devices::OPL3_NOTICE, "OPL3 NOTICE");
+        assert_eq!(
+            text,
+            "usage: unemupc [--machine FILE] [--open FILE [--core ID]] [--display CARD] [--rom-dir DIR]... [--allow-unlisted-firmware]\n\n\
+             default selection: DEFAULT (opens the machine library; --machine starts immediately)\n\
+             machine files: MACHINES (set UNEMUPC_MACHINES_DIR to use another directory)\n\n\
+             FONT NOTICE\n\nEGUI FONT NOTICE\n\nSYMBOL FONT NOTICE\n\nOPL3 NOTICE"
+        );
+    }
+
+    #[test]
+    fn open_takes_a_file_and_names_a_core_only_with_it() {
+        let parse = |args: &[&str]| parse_args(args.iter().map(Into::into));
+        let args = parse(&["--open", "game.utc"]).unwrap();
+        assert_eq!(args.open, Some(PathBuf::from("game.utc")));
+        assert_eq!(args.core, None);
+        let args = parse(&["--core", "unemu-test-core", "--open", "game.utc"]).unwrap();
+        assert_eq!(args.open, Some(PathBuf::from("game.utc")));
+        assert_eq!(args.core.as_deref(), Some("unemu-test-core"));
+        assert_eq!(
+            parse(&["--core", "unemu-test-core"]).unwrap_err(),
+            "--core names the core for --open FILE"
+        );
+        assert_eq!(
+            parse(&["--machine", "machine.toml", "--open", "game.utc"]).unwrap_err(),
+            "--machine and --open each start a machine; give one"
+        );
+        for args in [
+            &["--open"][..],
+            &["--open", "--core", "x"],
+            &["--open", "a.utc", "--open", "b.utc"],
+            &["--open", "a.utc", "--core", "x", "--core", "y"],
+            &["--open", "a.utc", "--core"],
+        ] {
+            assert!(parse(args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn files_opened_keep_their_saves_and_states_in_the_data_directory() {
+        let dirs = host_dirs_in(Path::new("/data/user"));
+        assert_eq!(dirs.saves, PathBuf::from("/data/user/unemupc/saves"));
+        assert_eq!(dirs.states, PathBuf::from("/data/user/unemupc/states"));
     }
 
     #[test]

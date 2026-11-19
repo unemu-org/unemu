@@ -22,6 +22,8 @@ pc-image = { path = "../pc-image", version = "0.0.2" }
 platforms = { path = "../platforms", version = "0.0.2" }
 # The cores this program can drive, and their About lines.
 core-launch = { path = "../core-launch", version = "0.0.2" }
+# The view of a machine started from a file: File › Open… and --open.
+player-ui = { path = "../player-ui", version = "0.0.2" }
 media.workspace = true
 sha2.workspace = true
 serde.workspace = true
@@ -82,6 +84,9 @@ pc-library = { path = "../pc-library", version = "0.0.2", features = ["test-supp
 pc-ui = { path = "../pc-ui", version = "0.0.2", features = ["test-support"] }
 machine-view = { workspace = true, features = ["test-support"] }
 unemu-pc-core = { workspace = true, features = ["test-support"] }
+# A core that opens files, for the tests of File › Open… and --open: the
+# release's list has none yet.
+unemu-test-core = { path = "../test-core", version = "0.0.2" }
 
 [[bin]]
 name = "unemupc"
