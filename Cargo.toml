@@ -40,7 +40,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 rust-version = "1.99"
@@ -89,20 +89,20 @@ unemu-core-files = { version = "0.2", git = "https://github.com/unemu-org/unemu-
 unemu-nes-core = { version = "0.0.1", git = "https://github.com/unemu-org/unemunes", rev = "3aa955802a568a58b9bf8f5c29a0e23f44866a45" }
 
 # Internal crates share the workspace version.
-assembly = { path = "crates/assembly", version = "0.0.2" }
-device = { path = "crates/device", version = "0.0.2" }
-bus = { path = "crates/bus", version = "0.0.2" }
-chipset = { path = "crates/chipset", version = "0.0.2" }
-cpu = { path = "crates/cpu", version = "0.0.2" }
-machine = { path = "crates/machine", version = "0.0.2" }
-machine-file = { path = "crates/machine-file", version = "0.0.2" }
-media = { path = "crates/media", version = "0.0.2" }
-devices = { path = "crates/devices", version = "0.0.2" }
-video = { path = "crates/video", version = "0.0.2" }
-audio = { path = "crates/audio", version = "0.0.2" }
-testkit = { path = "crates/testkit", version = "0.0.2" }
-unemu-pc-core = { path = "crates/pc-core", version = "0.0.2" }
-machine-view = { path = "crates/machine-view", version = "0.0.2" }
+assembly = { path = "crates/assembly", version = "0.0.3" }
+device = { path = "crates/device", version = "0.0.3" }
+bus = { path = "crates/bus", version = "0.0.3" }
+chipset = { path = "crates/chipset", version = "0.0.3" }
+cpu = { path = "crates/cpu", version = "0.0.3" }
+machine = { path = "crates/machine", version = "0.0.3" }
+machine-file = { path = "crates/machine-file", version = "0.0.3" }
+media = { path = "crates/media", version = "0.0.3" }
+devices = { path = "crates/devices", version = "0.0.3" }
+video = { path = "crates/video", version = "0.0.3" }
+audio = { path = "crates/audio", version = "0.0.3" }
+testkit = { path = "crates/testkit", version = "0.0.3" }
+unemu-pc-core = { path = "crates/pc-core", version = "0.0.3" }
+machine-view = { path = "crates/machine-view", version = "0.0.3" }
 
 # Keep hardware preconditions and arithmetic checked even in optimized dev/test code.
 [profile.dev]

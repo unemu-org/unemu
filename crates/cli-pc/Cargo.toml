@@ -13,13 +13,13 @@ description = "The IBM PC/AT family's part of the command line: its machine runs
 layer = "pc"
 
 [dependencies]
-cli-core = { path = "../cli-core", version = "0.0.2" }
+cli-core = { path = "../cli-core", version = "0.0.3" }
 # The machine runners behind --boot, --bios and run.
-pc-harness = { path = "../pc-harness", version = "0.0.2" }
-pc-image = { path = "../pc-image", version = "0.0.2" }
-image-store = { path = "../image-store", version = "0.0.2" }
-image-registry = { path = "../registry", version = "0.0.2" }
-recipe = { path = "../recipe", version = "0.0.2" }
+pc-harness = { path = "../pc-harness", version = "0.0.3" }
+pc-image = { path = "../pc-image", version = "0.0.3" }
+image-store = { path = "../image-store", version = "0.0.3" }
+image-registry = { path = "../registry", version = "0.0.3" }
+recipe = { path = "../recipe", version = "0.0.3" }
 toml.workspace = true
 machine-file.workspace = true
 anyhow.workspace = true
@@ -34,7 +34,7 @@ cpu.workspace = true
 devices.workspace = true
 # The FAT12 reader that checks disks built from host files.
 media = { workspace = true, features = ["test-support"] }
-image-registry = { path = "../registry", version = "0.0.2", features = ["test-support"] }
+image-registry = { path = "../registry", version = "0.0.3", features = ["test-support"] }
 # Tags an image as a newer release would, in a store both share.
-image-store = { path = "../image-store", version = "0.0.2", features = ["test-support"] }
+image-store = { path = "../image-store", version = "0.0.3", features = ["test-support"] }
 assembly = { workspace = true, features = ["test-support"] }

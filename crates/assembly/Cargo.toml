@@ -14,7 +14,7 @@ layer = "emulation"
 
 [dependencies]
 thiserror.workspace = true
-media = { path = "../media", version = "0.0.2" }
+media = { path = "../media", version = "0.0.3" }
 sha2.workspace = true
 # The seams whose types the configuration names. The config is declarative data
 # about these crates' hardware; the assembler (a later task) turns it into the
@@ -37,4 +37,4 @@ reference-scheduler = ["machine/reference-scheduler"]
 
 [dev-dependencies]
 testkit.workspace = true
-media = { path = "../media", version = "0.0.2", features = ["test-support"] }
+media = { path = "../media", version = "0.0.3", features = ["test-support"] }

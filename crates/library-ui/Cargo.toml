@@ -20,9 +20,9 @@ test-support = []
 
 [dependencies]
 egui = { workspace = true, features = ["monochrome_emoji_fonts"] }
-image-registry = { path = "../registry", version = "0.0.2" }
-image-store = { path = "../image-store", version = "0.0.2" }
+image-registry = { path = "../registry", version = "0.0.3" }
+image-store = { path = "../image-store", version = "0.0.3" }
 # The models these views draw.
-library-model = { path = "../library-model", version = "0.0.2" }
+library-model = { path = "../library-model", version = "0.0.3" }
 # The desktop's skin, icons and panes.
-ui-kit = { path = "../ui-kit", version = "0.0.2" }
+ui-kit = { path = "../ui-kit", version = "0.0.3" }

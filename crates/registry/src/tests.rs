@@ -3130,7 +3130,9 @@ fn the_release_guard_reads_the_marker_and_names_the_computed_release() {
     let registry = MockRegistry::start(open_policy());
     let official = target(&registry, "unemu/lab:1.0.0");
     let private = target(&registry, "private/lab:1.0.0");
-    let next = image_store::compat::NEXT_RELEASE;
+    // The release the rows of 0.0.3 name, written as a literal so the test
+    // keeps meaning it after the release commit raises NEXT_RELEASE.
+    let next = image_store::compat::AppVersion::new(0, 0, 3);
     let baseline = image_store::compat::BASELINE;
     use crate::guard::check_release;
     assert!(check_release(&official, &manifest(None), baseline).is_ok());

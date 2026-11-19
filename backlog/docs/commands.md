@@ -553,9 +553,9 @@ set's value the same way.
 The PC platform id `ibm-pc` is itself a row: release 0.0.3 first reads it,
 because 0.0.1 and 0.0.2 compare platform ids exactly and know only the
 retired id `ibm-pc-at` (machine-images §1). Every PC writer writes `ibm-pc`,
-so everything written since declares 0.0.3. This build's level is therefore
-0.0.3 while its package version is still 0.0.2 (the release commit updates
-this sentence; see Releases). Artifacts that name `ibm-pc-at` carry no value
+so everything written since declares 0.0.3. This build's level is 0.0.3,
+its package version since release 0.0.3 (the release commit updates this
+sentence; see Releases). Artifacts that name `ibm-pc-at` carry no value
 and stay readable.
 
 `--min-app-version X.Y.Z` on `image import`, `image media import`,

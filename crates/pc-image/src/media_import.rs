@@ -1257,7 +1257,7 @@ mod tests {
     /// raise a PC set above it; the shared tables' tests raise one.
     #[test]
     fn a_stated_minimum_release_raises_the_marker_and_never_lowers_it() {
-        use image_store::compat::{level, Requirement, BASELINE, PACKAGE};
+        use image_store::compat::{level, AppVersion, Requirement, BASELINE};
         let computed = AppVersion::new(0, 0, 3);
         let temp = Temp::new("min-app-version");
         let disk = temp.0.join("disk.img");
@@ -1276,7 +1276,7 @@ mod tests {
         );
 
         let mut raised = plan(&request(std::slice::from_ref(&disk), "Raised set")).unwrap();
-        for lower in [AppVersion::new(0, 0, 0), BASELINE, PACKAGE] {
+        for lower in [AppVersion::new(0, 0, 0), BASELINE, AppVersion::new(0, 0, 2)] {
             let refusal = raised.raise_min_app_version(lower).unwrap_err().to_string();
             assert!(
                 refusal.contains(&lower.to_string()) && refusal.contains(&computed.to_string()),

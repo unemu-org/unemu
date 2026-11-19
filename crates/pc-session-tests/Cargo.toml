@@ -31,6 +31,6 @@ unemu-core-api.workspace = true
 unemu-pc-core = { workspace = true, features = ["test-support"] }
 winit.workspace = true
 # The open games template image, built and started as the library starts it.
-image-store = { path = "../image-store", version = "0.0.2" }
-pc-image = { path = "../pc-image", version = "0.0.2" }
-pc-library = { path = "../pc-library", version = "0.0.2" }
+image-store = { path = "../image-store", version = "0.0.3" }
+pc-image = { path = "../pc-image", version = "0.0.3" }
+pc-library = { path = "../pc-library", version = "0.0.3" }

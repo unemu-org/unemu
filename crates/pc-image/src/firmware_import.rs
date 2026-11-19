@@ -2035,7 +2035,7 @@ mod tests {
     /// package's marker and never lowers it.
     #[test]
     fn a_stated_minimum_release_marks_a_package_and_an_edit_keeps_it() {
-        use image_store::compat::{level, AppVersion, Requirement, BASELINE, PACKAGE};
+        use image_store::compat::{level, AppVersion, Requirement, BASELINE};
         let computed = AppVersion::new(0, 0, 3);
         let root = std::env::temp_dir().join(format!(
             "pc-image-firmware-min-app-version-{}",
@@ -2071,7 +2071,7 @@ mod tests {
             requirement("firmware/plain:r1"),
             Requirement::Release(computed)
         );
-        for lower in [AppVersion::new(0, 0, 0), BASELINE, PACKAGE] {
+        for lower in [AppVersion::new(0, 0, 0), BASELINE, AppVersion::new(0, 0, 2)] {
             let refusal = publish_as(
                 &store,
                 &candidate,

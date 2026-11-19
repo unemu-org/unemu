@@ -5,6 +5,14 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — Release 0.0.3:** the workspace version is 0.0.3 and
+  `image_store::compat::NEXT_RELEASE` is 0.0.4, so a row for a feature this
+  release does not read now names 0.0.4. The release carries the `ibm-pc`
+  platform id, the repository paths and revision tags, the frozen Zstandard
+  profile, export file names on every layer, recipes through the lock and on
+  a registry, the second platform (the NES core) and the delivery-stall stop.
+  The maintainer tags and publishes it; then the six published artifacts are
+  pushed again under the new paths.
 - **2026-11-19 — A guest stuck delivering exceptions stops the machine with a report instead
   of freezing it; x86jit moves to `7a9ea390`:** (`upc-f7j.15`; design/observation.md §CPU
   stop report). On the 286 AT a protected-mode guest whose exception handler faulted at its

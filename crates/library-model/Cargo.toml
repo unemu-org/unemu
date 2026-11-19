@@ -13,15 +13,15 @@ description = "The desktop library's platform-neutral models, without a toolkit:
 layer = "neutral"
 
 [dependencies]
-image-store = { path = "../image-store", version = "0.0.2" }
-image-registry = { path = "../registry", version = "0.0.2" }
+image-store = { path = "../image-store", version = "0.0.3" }
+image-registry = { path = "../registry", version = "0.0.3" }
 # The platform descriptions the provider seam hands in.
 unemu-core-api.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
-image-store = { path = "../image-store", version = "0.0.2", features = ["test-support"] }
-image-registry = { path = "../registry", version = "0.0.2", features = ["test-support"] }
+image-store = { path = "../image-store", version = "0.0.3", features = ["test-support"] }
+image-registry = { path = "../registry", version = "0.0.3", features = ["test-support"] }
 
 [features]
 # Waits for a page's background jobs, and the texts and helpers the tests

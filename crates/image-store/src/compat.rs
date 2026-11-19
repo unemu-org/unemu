@@ -100,12 +100,12 @@ impl fmt::Display for AppVersion {
 /// Release 0.0.1, the first one. Every feature it reads is the baseline, and
 /// an artifact that needs nothing newer carries no annotation.
 pub const BASELINE: AppVersion = AppVersion::new(0, 0, 1);
-/// The release after the newest published one (0.0.2): the version a row for
+/// The release after the newest published one (0.0.3): the version a row for
 /// a feature that release does not read takes. A row writes it as a literal,
 /// `AppVersion::new(0, 0, 3)`, never as this constant, so it keeps naming 0.0.3
 /// after 0.0.3 ships. The release commit raises this constant past the new
 /// package version; a test refuses a value that is not above it.
-pub const NEXT_RELEASE: AppVersion = AppVersion::new(0, 0, 3);
+pub const NEXT_RELEASE: AppVersion = AppVersion::new(0, 0, 4);
 /// The newest version any row of this build's tables names, shared or
 /// provider-owned. A provider's tests pin it, so a development build that
 /// adds a row for the next release reads what it writes.
@@ -920,7 +920,7 @@ mod tests {
         // A build whose tables rate an artifact 0.0.3 writes 0.0.3. A row
         // above this build's level is the build's own mistake.
         let mut next = machine();
-        set(&mut next, NEXT_RELEASE);
+        set(&mut next, AppVersion::new(0, 0, 3));
         assert_eq!(next.annotations[MIN_APP_VERSION], "0.0.3");
         let beyond = AppVersion::new(level().major, level().minor, level().patch + 1);
         let mistake = stamp(&mut machine(), beyond, None).unwrap_err().to_string();
