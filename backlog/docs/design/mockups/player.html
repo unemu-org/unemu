@@ -293,6 +293,11 @@ dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
       <li><strong>Open… while a machine runs: ask to stop first, or check the file first?</strong> <em>Recommendation: check first.</em> A file that would be refused then shows its refusal and leaves the running machine alone; the stop prompt appears only for a file that can start.</li>
       <li><strong>Clearing a binding in the Input dialog.</strong> The design gives the dialog rows, a key press and Defaults. <em>Recommendation:</em> while a row waits for a key, Esc leaves it as it was and Delete clears it, so those two keys cannot be bound; and a key press replaces the row’s keys instead of adding a second one. One line of text under the list says so.</li>
     </ol>
+    <p class="rev-h">Decided by the maintainer after the build (2026-11-19)</p>
+    <ol>
+      <li><strong>The mark of a refused Load state.</strong> The red ✕ of every other refusal, not a separate amber “!”: the box above now draws it so.</li>
+      <li><strong>When a slot’s chip is lit.</strong> While the slot is busy (activity), as the PC’s drive lights; an occupied but idle slot stays dark, and its chip’s text names the medium.</li>
+    </ol>
     <p class="rev-h">Out of scope of this page</p>
     <ul>
       <li>Named state slots and thumbnails, host game controllers, choosing what is plugged into a port, a dialog that picks between two cores, adding a medium from a file, recent files, and content in the library.</li>
@@ -545,7 +550,7 @@ var REFUSALS = {
   'r-unsupported': ['Open', 'stop', '✕', '<p>The core unemunes recognised <strong>odd-board.nes</strong> and cannot run it:</p><span class="quote">cartridge board 5 (MMC5) is not modelled</span>'],
   'r-several': ['Open', 'stop', '✕', '<p>More than one core in this program runs <strong>test-pattern.nes</strong>:</p><span class="quote">unemunes (<code>unemunes</code>)<br>Second NES core (<code>nes-two</code>)</span><p>Name one on the command line: <code>--open FILE --core ID</code>.</p>'],
   'r-needs': ['Open', 'stop', '✕', '<p><strong>disk-side-a.fds</strong> needs more than itself to run. Missing:</p><span class="quote">firmware</span><p>Open… hands a machine the one file and nothing else.</p>'],
-  'r-state': ['Load state', 'warn', '!', '<p>The state was not loaded: this state was saved by another release of the core, or for another setup.</p><p class="hint">The machine runs on as it was.</p>'],
+  'r-state': ['Load state', 'stop', '✕', '<p>The state was not loaded: this state was saved by another release of the core, or for another setup.</p><p class="hint">The machine runs on as it was.</p>'],
   'r-held': ['Open', 'stop', '✕', '<p><strong>test-pattern.nes</strong> is already running in another machine, here or in another program, and its saved data is in use.</p><p>Stop that machine first.</p>']
 };
 function inputHtml() {
