@@ -83,34 +83,30 @@ impl AssembledMachine {
         self.machine.enable_delivery_log()
     }
 
-    /// Start the bounded trace of every exception and interrupt the guest
-    /// takes (`machine::DeliveryTrace`), with each IRQ named by its 8259
-    /// input; its text comes from `machine.take_delivery_trace()`. Retired
-    /// counts and every guest effect are unchanged.
-    pub fn enable_delivery_trace(&mut self) -> Result<(), cpu::DeliveryLogError> {
+    /// Start recording every exception and interrupt the guest takes
+    /// (`machine::DeliveryRecording`), with each IRQ named by its 8259
+    /// input; its text comes from `machine.delivery_recording()` and
+    /// `machine.stop_delivery_recording()`. Retired counts and every guest
+    /// effect are unchanged.
+    pub fn start_delivery_recording(&mut self) -> Result<(), cpu::DeliveryLogError> {
         self.name_irq_inputs();
-        self.machine.enable_delivery_trace()
+        self.machine.start_delivery_recording()
     }
 
     /// Name an IRQ vector's input from the vector bases the 8259s hold,
-    /// read from their snapshot images: the master's eight vectors are IRQ
-    /// 0 to 7, the slave's IRQ 8 to 15 (Intel 8259A datasheet, ICW2; IBM
-    /// Personal Computer AT Technical Reference, System Board, Interrupts).
+    /// read from their snapshot images once per run slice that delivered
+    /// an IRQ: the master's eight vectors are IRQ 0 to 7, the slave's IRQ 8
+    /// to 15 (Intel 8259A datasheet, ICW2; IBM Personal Computer AT
+    /// Technical Reference, System Board, Interrupts).
     fn name_irq_inputs(&mut self) {
         let master = self.device_index.get(&DeviceId::MasterPic).copied();
         let slave = self.device_index.get(&DeviceId::SlavePic).copied();
         self.machine
-            .set_irq_input_of(Box::new(move |bus: &bus::Bus, vector: u8| {
-                let base = |index: Option<usize>| {
+            .set_irq_bases_of(Box::new(move |bus: &bus::Bus| {
+                [master, slave].map(|index| {
                     let snapshot = bus.device(index?)?.save();
-                    Some(devices::Pic8259::diagnostic_from_snapshot(&snapshot)?.vector_base & 0xF8)
-                };
-                [(master, 0), (slave, 8)]
-                    .into_iter()
-                    .find_map(|(index, first)| {
-                        let offset = vector.checked_sub(base(index)?)?;
-                        (offset < 8).then_some(first + offset)
-                    })
+                    Some(devices::Pic8259::diagnostic_from_snapshot(&snapshot)?.vector_base)
+                })
             }));
     }
 
@@ -270,13 +266,14 @@ impl fmt::Display for MachineDiagnostic {
             Some(deliveries) => {
                 writeln!(
                     f,
-                    "delivery the last {} of {} exceptions and interrupts, oldest first ({} dropped before they were read)",
-                    deliveries.records.len(),
+                    "delivery the last {} of {} exceptions and interrupts in {} entries, oldest first ({} dropped before they were read)",
+                    deliveries.kept,
                     deliveries.total,
+                    deliveries.entries.len(),
                     deliveries.dropped
                 )?;
-                for record in &deliveries.records {
-                    writeln!(f, "delivery {record}")?;
+                for entry in &deliveries.entries {
+                    writeln!(f, "{entry}")?;
                 }
             }
         }
@@ -492,7 +489,7 @@ mod tests {
         assert_eq!(
             section,
             [
-                "delivery the last 4 of 4 exceptions and interrupts, oldest first (0 dropped before they were read)",
+                "delivery the last 4 of 4 exceptions and interrupts in 4 entries, oldest first (0 dropped before they were read)",
                 "delivery 12 fault #UD vector 06 at f800:002e linear 0f802e error - cpl 0->0 bytes 0f ff cd 60 b0 11 e6 20",
                 "delivery 18 software INT 60h vector 60 at f800:0032 linear 0f8032 error - cpl 0->0 bytes b0 11 e6 20 b0 08 e6 21",
                 "delivery 37 irq IRQ 0 vector 08 at f800:0054 linear 0f8054 error - cpl 0->0 bytes fa b0 ff e6 21 2e 0f 01",
@@ -510,13 +507,13 @@ mod tests {
     /// same CPU, time and device snapshots. The reports fall at halted
     /// moments, with keyboard bytes queued in the 8042 and counter 2's GATE
     /// low, the states whose lazy device timing a report's borrow could
-    /// disturb. The diagnosed machine also keeps the delivery log and the
-    /// delivery trace, which see every timer interrupt, named IRQ 0.
+    /// disturb. The diagnosed machine also keeps the delivery log and a
+    /// delivery recording, which see every timer interrupt, named IRQ 0.
     #[test]
     fn taking_reports_leaves_every_device_as_a_twin_without_them() {
         let mut plain = machine();
         let mut diagnosed = machine();
-        diagnosed.enable_delivery_trace().unwrap();
+        diagnosed.start_delivery_recording().unwrap();
         diagnosed.enable_delivery_log().unwrap();
         assert!(plain.diagnostic_report("running").deliveries.is_none());
         let mut halted = 0;
@@ -542,15 +539,23 @@ mod tests {
         assert!(halted > 10, "only {halted} reports at a halt");
         let deliveries = diagnosed.diagnostic_report("running").deliveries.unwrap();
         assert!(deliveries.total >= 10, "{}", deliveries.total);
-        assert_eq!(deliveries.records.len() as u64, deliveries.total);
+        assert_eq!(deliveries.kept, deliveries.total);
         assert_eq!(deliveries.dropped, 0);
-        for record in &deliveries.records {
-            assert_eq!(record.name(), cpu::DeliveryName::Irq(0), "{record}");
-            assert_eq!((record.vector, record.cs), (0x08, 0xF800), "{record}");
+        for entry in &deliveries.entries {
+            let machine::DeliveryEntry::Deliveries { last, .. } = entry else {
+                panic!("{entry}");
+            };
+            assert_eq!(last.name(), cpu::DeliveryName::Irq(0), "{entry}");
+            assert_eq!((last.vector, last.cs), (0x08, 0xF800), "{entry}");
         }
-        let trace = diagnosed.machine.take_delivery_trace().unwrap();
-        assert_eq!(trace.lines().count() as u64, deliveries.total);
-        assert!(trace.starts_with("delivery "), "{trace}");
+        let recording = diagnosed.machine.delivery_recording().unwrap();
+        assert!(
+            recording.contains(&format!(
+                "\nsummary  {0} deliveries, {0} of them in the entries kept, 0 dropped before they were read\nsummary  IRQ 0: {0}\n",
+                deliveries.total
+            )),
+            "{recording}"
+        );
         let snapshots = |machine: &mut crate::AssembledMachine| {
             let bus = machine.machine.bus_mut();
             bus.settle();
@@ -566,5 +571,96 @@ mod tests {
         assert!(report.deliveries.take().is_some());
         assert_eq!(plain.diagnostic_report("running"), report);
         assert!(plain.device_index.contains_key(&DeviceId::Keyboard));
+    }
+
+    /// The cost of the code trail and the report's delivery log on a load
+    /// heavy in interrupts and port accesses: an open guest programs PIT
+    /// counter 0 to count 40h (about 18,600 IRQ 0 a second of virtual time,
+    /// one every few hundred instructions) and loops on `IN AL,61h`, so a
+    /// run slice ends every four instructions. Machines without either,
+    /// with the trail, and with the trail and the log run interleaved, three
+    /// of each, to the same virtual time; all end at the same retired
+    /// count, and the wall times are printed. Run it in release:
+    /// `cargo test --release -p assembly --lib high_irq -- --ignored --nocapture`.
+    ///
+    /// ```text
+    /// 0000 FA               cli
+    /// 0001 31C0 8ED8 8ED0   xor ax, ax; mov ds, ax; mov ss, ax
+    /// 0007 BC0070           mov sp, 7000h
+    /// 000A C70620004000     mov word [0020h], 0040h   ; INT 8 offset
+    /// 0010 C706220000F8     mov word [0022h], 0F800h
+    /// 0016 B011E620 ...     ICW1 11h, ICW2 08h, ICW3 04h, ICW4 01h
+    /// 0026 B0FEE621         OCW1: only IRQ0
+    /// 002A B034E643         counter 0, mode 2
+    /// 002E B040E640 B000E640 count 0040h
+    /// 0036 FB               sti
+    /// 0037 41               inc cx
+    /// 0038 01CB             add bx, cx
+    /// 003A E461             in al, 61h
+    /// 003C EBF9             jmp 0037h
+    /// 0040 50 B020 E620 58 CF  push ax; mov al, 20h; out 20h, al; pop ax; iret
+    /// 7FF0 EA000000F8       jmp F800:0000h
+    /// ```
+    #[ignore = "a measurement: run in release with --nocapture"]
+    #[test]
+    fn the_delivery_log_cost_on_a_high_irq_load() {
+        let mut rom = vec![0; 0x8000];
+        let code: &[u8] = &[
+            0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xD0, 0xBC, 0x00, 0x70, //
+            0xC7, 0x06, 0x20, 0x00, 0x40, 0x00, 0xC7, 0x06, 0x22, 0x00, 0x00, 0xF8, //
+            0xB0, 0x11, 0xE6, 0x20, 0xB0, 0x08, 0xE6, 0x21, 0xB0, 0x04, 0xE6, 0x21, //
+            0xB0, 0x01, 0xE6, 0x21, 0xB0, 0xFE, 0xE6, 0x21, 0xB0, 0x34, 0xE6, 0x43, //
+            0xB0, 0x40, 0xE6, 0x40, 0xB0, 0x00, 0xE6, 0x40, 0xFB, //
+            0x41, 0x01, 0xCB, 0xE4, 0x61, 0xEB, 0xF9,
+        ];
+        rom[..code.len()].copy_from_slice(code);
+        rom[0x40..0x46].copy_from_slice(&[0x50, 0xB0, 0x20, 0xE6, 0x20, 0x58]);
+        rom[0x46] = 0xCF;
+        rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0x00, 0x00, 0x00, 0xF8]);
+        let run = |trail: bool, log: bool| {
+            let config = crate::bios(rom.clone(), None);
+            let mut assembled = crate::assemble_with_observation_and_options(
+                &config,
+                &crate::ObservationPolicy::default(),
+                crate::AssemblyOptions {
+                    allow_unlisted_firmware: true,
+                },
+            )
+            .unwrap();
+            if trail {
+                assembled.machine.enable_code_trail();
+            }
+            if log {
+                assembled.enable_delivery_log().unwrap();
+            }
+            let started = std::time::Instant::now();
+            assembled.machine.run_bounded(Some(60_000_000)).unwrap();
+            let elapsed = started.elapsed();
+            let total = assembled.machine.recent_deliveries().map_or(0, |d| d.total);
+            (cpu::Cpu::retired(assembled.machine.cpu()), elapsed, total)
+        };
+        let (mut off, mut trail, mut on) = (Vec::new(), Vec::new(), Vec::new());
+        for _ in 0..3 {
+            off.push(run(false, false));
+            trail.push(run(true, false));
+            on.push(run(true, true));
+        }
+        for runs in [&trail, &on] {
+            for (plain, diagnosed) in off.iter().zip(runs) {
+                assert_eq!(plain.0, diagnosed.0);
+            }
+        }
+        assert!(on[0].2 > 10_000, "{} deliveries", on[0].2);
+        let times = |runs: &[(u64, std::time::Duration, u64)]| {
+            runs.iter().map(|run| run.1).collect::<Vec<_>>()
+        };
+        eprintln!(
+            "retired {}, {} IRQ deliveries; plain {:?}; with the trail {:?}; with the trail and the log {:?}",
+            on[0].0,
+            on[0].2,
+            times(&off),
+            times(&trail),
+            times(&on)
+        );
     }
 }

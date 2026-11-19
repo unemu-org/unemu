@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `upcli run --machine --trace-exceptions` writes a line per exception and
-//! interrupt delivery to stderr, bounded, with a summary at the end, and
-//! `--diag-at N` adds the last deliveries to the diagnostic report
+//! `upcli run --machine --trace-exceptions` records the exception and
+//! interrupt deliveries and writes the last entries to stderr when the run
+//! ends, consecutive identical deliveries folded into one, with a summary,
+//! and `--diag-at N` adds the last deliveries to the diagnostic report
 //! (commands.md, Build / run / test; `backlog/docs/design/observation.md`
 //! §Exception and interrupt deliveries). The system ROMs are the project's
 //! own bytes from `assembly::test_support`: `deliveries_rom` takes a #UD, a
 //! software interrupt, an IRQ0 tick and a protected-mode #GP;
-//! `delivery_overrun_rom` faults in a loop until its stack overruns.
+//! `delivery_overrun_rom` faults in a loop until its stack overruns;
+//! `delivery_ring_rom` takes 12,000 software interrupts that never fold.
 
 use std::ffi::OsString;
 
@@ -44,6 +46,24 @@ fn trace_lines(errors: &str) -> Vec<&str> {
         .collect()
 }
 
+/// The recording's two header lines, checked, then the rest.
+fn after_header<'a>(lines: &'a [&'a str], entries: usize) -> &'a [&'a str] {
+    assert!(
+        lines[0].starts_with(
+            "trace    exceptions and interrupts the guest took from retired 0 to retired "
+        ),
+        "{}",
+        lines[0]
+    );
+    assert_eq!(
+        lines[1],
+        format!(
+            "trace    the last {entries} entries, oldest first; an entry with a range and xN stands for N identical deliveries in a row"
+        )
+    );
+    &lines[2..]
+}
+
 /// One delivery of each kind, each with its retired count, saved CS:IP and
 /// the bytes there: the #UD saves the invalid opcode itself, INT 60h the
 /// instruction after it, IRQ0 the CLI after the HLT it ended, and the #GP
@@ -54,14 +74,15 @@ fn the_trace_of_one_delivery_of_each_kind_is_exact() {
     let rom = assembly::test_support::deliveries_rom();
     let (code, errors) = run(&rom, &["--trace-exceptions"]);
     assert_eq!(code, 0, "{errors}");
+    let lines = trace_lines(&errors);
     assert_eq!(
-        trace_lines(&errors),
+        after_header(&lines, 4),
         [
             "delivery 12 fault #UD vector 06 at f800:002e linear 0f802e error - cpl 0->0 bytes 0f ff cd 60 b0 11 e6 20",
             "delivery 18 software INT 60h vector 60 at f800:0032 linear 0f8032 error - cpl 0->0 bytes b0 11 e6 20 b0 08 e6 21",
             "delivery 37 irq IRQ 0 vector 08 at f800:0054 linear 0f8054 error - cpl 0->0 bytes fa b0 ff e6 21 2e 0f 01",
             "delivery 54 fault #GP vector 0d at 0008:007b linear 0f807b error 00f8 cpl 0->0 bytes 8e d8 f4 55 89 e5 83 46",
-            "summary  4 deliveries, 4 lines written, 0 dropped before they were read",
+            "summary  4 deliveries, 4 of them in the entries kept, 0 dropped before they were read",
             "summary  #UD: 1",
             "summary  #GP: 1",
             "summary  IRQ 0: 1",
@@ -85,7 +106,7 @@ fn diag_at_lists_the_last_deliveries() {
     assert_eq!(code, 0, "{errors}");
     assert!(
         errors.contains(
-            "\ndelivery the last 2 of 2 exceptions and interrupts, oldest first (0 dropped before they were read)\n\
+            "\ndelivery the last 2 of 2 exceptions and interrupts in 2 entries, oldest first (0 dropped before they were read)\n\
              delivery 12 fault #UD vector 06 at f800:002e linear 0f802e error - cpl 0->0 bytes 0f ff cd 60 b0 11 e6 20\n\
              delivery 18 software INT 60h vector 60 at f800:0032 linear 0f8032 error - cpl 0->0 bytes b0 11 e6 20 b0 08 e6 21\n\
              pic      master "
@@ -95,31 +116,23 @@ fn diag_at_lists_the_last_deliveries() {
 }
 
 /// A guest that faults in a loop until its stack overruns and the CPU
-/// shuts down writes the first 10,000 lines, the note that lines stop, and
-/// the summary of all 10,922 #UDs; the run goes on through the reset to
-/// the halt exactly as without the trace.
+/// shuts down: the first #UD, then the 10,921 at the handler folded into
+/// one entry, and the summary of all 10,922. Its range `12..12` is a run at
+/// one retired count: each delivery faults again before an instruction
+/// retires; the run goes on through the
+/// reset to the halt exactly as without the trace.
 #[test]
-fn a_fault_loop_writes_the_bound_and_a_summary() {
+fn a_fault_loop_folds_into_one_entry() {
     let rom = assembly::test_support::delivery_overrun_rom();
     let (code, errors) = run(&rom, &["--trace-exceptions"]);
     assert_eq!(code, 0, "{errors}");
     let lines = trace_lines(&errors);
-    assert_eq!(lines.len(), 10_000 + 4, "{:?}", &lines[10_000..]);
     assert_eq!(
-        lines[0],
-        "delivery 12 fault #UD vector 06 at f800:0024 linear 0f8024 error - cpl 0->0 bytes 0f ff f4 00 00 00 00 00"
-    );
-    for line in &lines[1..10_000] {
-        assert_eq!(
-            *line,
-            "delivery 12 fault #UD vector 06 at f800:0040 linear 0f8040 error - cpl 0->0 bytes 0f ff 00 00 00 00 00 00"
-        );
-    }
-    assert_eq!(
-        &lines[10_000..],
+        after_header(&lines, 2),
         [
-            "trace    10000 delivery lines written; from here a count line every 1000000 deliveries",
-            "summary  10922 deliveries, 10000 lines written, 0 dropped before they were read",
+            "delivery 12 fault #UD vector 06 at f800:0024 linear 0f8024 error - cpl 0->0 bytes 0f ff f4 00 00 00 00 00",
+            "delivery 12..12 x10921 fault #UD vector 06 at f800:0040 linear 0f8040 error - cpl 0->0 bytes 0f ff 00 00 00 00 00 00",
+            "summary  10922 deliveries, 10922 of them in the entries kept, 0 dropped before they were read",
             "summary  #UD: 10922",
             "stopped: halt",
         ]
@@ -129,28 +142,72 @@ fn a_fault_loop_writes_the_bound_and_a_summary() {
     assert_eq!(trace_lines(&plain), ["stopped: halt"]);
 }
 
+/// 12,000 deliveries that never fold: the recording keeps exactly the
+/// last 10,000, oldest first, each at its retired count, and the summary
+/// counts all 12,000, 6,000 per vector.
+#[test]
+fn the_recording_keeps_the_last_entries() {
+    let rom = assembly::test_support::delivery_ring_rom();
+    let (code, errors) = run(&rom, &["--trace-exceptions"]);
+    assert_eq!(code, 0, "{errors}");
+    let lines = trace_lines(&errors);
+    let rest = after_header(&lines, 10_000);
+    for (index, line) in rest[..10_000].iter().enumerate() {
+        let n = 2_000 + index as u64;
+        let (vector, ip) = if n.is_multiple_of(2) {
+            (0x60, 0x27)
+        } else {
+            (0x61, 0x29)
+        };
+        let retired = 12 + 5 * (n / 2) + 2 * (n % 2);
+        assert!(
+            line.starts_with(&format!(
+                "delivery {retired} software INT {vector:02X}h vector {vector:02x} at f800:{ip:04x} "
+            )),
+            "{index}: {line}"
+        );
+    }
+    assert_eq!(
+        rest[10_000..],
+        [
+            "summary  12000 deliveries, 10000 of them in the entries kept, 0 dropped before they were read",
+            "summary  INT 60h: 6000",
+            "summary  INT 61h: 6000",
+            "stopped: halt",
+        ]
+    );
+}
+
 /// A guest stuck delivering #GP stops with the delivery-stall error; the
-/// deliveries of the slice that failed are still traced, bounded, before
-/// the stop line and the CPU stop report.
+/// deliveries of the slice that failed are still recorded, the first at
+/// the load and every other at the handler, folded, before the stop line
+/// and the CPU stop report.
 #[test]
 fn a_delivery_stall_is_traced_up_to_its_stop() {
     let rom = assembly::test_support::delivery_stall_rom();
     let (code, errors) = run(&rom, &["--trace-exceptions"]);
     assert_eq!(code, 1, "{errors}");
     let lines = trace_lines(&errors);
-    assert!(lines[..10_000]
-        .iter()
-        .all(|line| line.starts_with("delivery 11 fault #GP vector 0d at 0008:00")));
+    let rest = after_header(&lines, 2);
+    assert!(
+        rest[0].starts_with("delivery 11 fault #GP vector 0d at 0008:0023 "),
+        "{}",
+        rest[0]
+    );
+    assert!(
+        rest[1].starts_with("delivery 11..11 x11263 fault #GP vector 0d at 0008:0040 "),
+        "{}",
+        rest[1]
+    );
     assert_eq!(
-        &lines[10_000..10_003],
+        rest[2..4],
         [
-            "trace    10000 delivery lines written; from here a count line every 1000000 deliveries",
-            "summary  11264 deliveries, 10000 lines written, 0 dropped before they were read",
+            "summary  11264 deliveries, 11264 of them in the entries kept, 0 dropped before they were read",
             "summary  #GP: 11264",
         ]
     );
-    assert!(lines[10_003].starts_with("stopped: "), "{}", lines[10_003]);
+    assert!(rest[4].starts_with("stopped: "), "{}", rest[4]);
     let (plain_code, plain) = run(&rom, &[]);
     assert_eq!(plain_code, code);
-    assert_eq!(trace_lines(&plain), lines[10_003..]);
+    assert_eq!(trace_lines(&plain), rest[4..]);
 }

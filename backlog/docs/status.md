@@ -5,6 +5,30 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — Diagnostics move into Tools › Diagnostics, and the exception recording keeps
+  the last deliveries, folded:** (`upc-f7j.18`; design/observation.md §Diagnostic report of a
+  running machine and §Exception and interrupt deliveries; commands.md). The desktop no longer
+  reads `UNEMUPC_DIAG` or `UNEMUPC_TRACE_EXCEPTIONS`. Tools › Diagnostics › Save machine report
+  (Ctrl+Alt+Shift+D, ⌘⇧D on macOS, with the pointer captured or not) writes `diag-N.txt`
+  whenever a PC runs, paused too, and is disabled without one; Record exceptions, a check item
+  off at every launch, keeps the last 10,000 entries with exact totals per vector and writes
+  one `trace-N.txt` per recording at Save machine report (the report names it), Stop,
+  unchecking and closing the window (a killed app writes nothing); Open diagnostics folder
+  shows the folder in the file manager. The code trail runs for every machine; the report's
+  delivery log starts with the first report or Record exceptions, since on an interrupt-heavy
+  open guest (937,499 IRQs in 60 million instructions, release) it costs 6–10 % (5.53–5.98 s
+  against 5.22–5.44 s; the trail alone 5.26–5.64 s, within the noise). Both the
+  report's last 64 and the recording fold consecutive identical deliveries (same kind, vector,
+  saved CS:IP and error code) into one entry with a count and the retired range, so a guest
+  looping on one fault no longer pushes out how it got there. `upcli --trace-exceptions`
+  writes the same recording at the end of the run instead of the first 10,000 lines.
+  MEASURED: `machine::delivery_tap` (fifty distinct deliveries and then 100,000 identical
+  #UDs leave 51 entries, one of them `x100000`), `cli-pc` `exception_trace` (the open
+  `delivery_ring_rom`'s 12,000 unfoldable deliveries leave exactly the last 10,000, 6,000 per
+  vector), the shell tests (the menu items and their enablement over AccessKit, the chord with
+  the pointer captured on both platforms, the recording written at each trigger with the same
+  retired count on and off), and `diagnostic_trail_golden` (the FreeDOS boot golden with the
+  trail and the log, and with a recording, unchanged).
 - **2026-11-19 — Every exception and interrupt the guest takes can be traced, and the
   diagnostic report lists the last 64; x86jit moves to `e63c1321`:** (`upc-x83.17`, for
   `upc-f7j.17`; design/observation.md §Exception and interrupt deliveries). x86jit

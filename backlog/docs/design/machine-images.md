@@ -2817,7 +2817,7 @@ the active emulator.
 | Machine | Start, Pause/Resume, Send Ctrl+Alt+Del, Power cycle, Stop, Settings… and Disk layers…; Save state remains disabled until supported. Gaming mode is a Machine-menu action when disposable workspaces are available. |
 | Media | Per-slot inserted names, Insert…, Next image in catalogue and Eject; absent drives and unsupported CD-ROM are disabled with reasons. |
 | View | Toolbar/status-bar visibility, scale, full screen and host audio mute. |
-| Tools | Image store folder…, Import ROM folder…, Media catalogue…, Locate firmware…, Create blank disk… and Preferences…. |
+| Tools | Image store folder…, Import ROM folder…, Media catalogue…, Locate firmware…, Create blank disk… and Preferences…; the Diagnostics submenu holds Save machine report, Record exceptions and Open diagnostics folder (design/observation.md §Diagnostic report of a running machine). |
 | Help | Keyboard shortcuts and About unemupc. |
 
 The toolbar repeats common Start, Pause, Stop, Send Ctrl+Alt+Del, floppy,

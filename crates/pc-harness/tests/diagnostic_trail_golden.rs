@@ -3,19 +3,23 @@
 //! (`backlog/docs/design/observation.md` §Diagnostic report of a running
 //! machine).
 //!
-//! The open-BIOS FreeDOS boot of `freedos_boot_golden` runs twice on the
+//! The open-BIOS FreeDOS boot of `freedos_boot_golden` runs on the
 //! reference `at-freedos` machine, polling for FreeCOM's date prompt in the
-//! same one-million-step chunks as `pc_harness::run_freedos_config`: once as
-//! the golden runs it, and once with the code trail enabled and a full
-//! diagnostic report taken at every poll boundary. Both runs must stop at the
-//! same retired count and virtual time, show the golden's MDA screen, emit the
-//! same POST stream and leave every device with the same snapshot. Two more
-//! runs also keep the delivery log and the exception trace, read at every
-//! poll boundary (`backlog/docs/design/observation.md` §Exception and
-//! interrupt deliveries): they too match the golden, and their traces are
-//! the same text. The wall time of each run is printed for the record.
+//! same one-million-step chunks as `pc_harness::run_freedos_config`: plain,
+//! as the golden runs it; with the code trail and the report's delivery
+//! log on (the desktop keeps the trail for every machine, the log from its
+//! first report or Record exceptions); and with those plus an
+//! exception recording and a full diagnostic report taken at every poll
+//! boundary (`backlog/docs/design/observation.md` §Exception and interrupt
+//! deliveries). Every run must stop at the same retired count and virtual
+//! time, show the golden's MDA screen, emit the same POST stream and leave
+//! every device with the same snapshot; the two recordings are the same
+//! text. The plain and the trail-and-log boots run twice, interleaved, and
+//! the wall time of each run is printed. The cost on a load heavy in
+//! interrupts is measured by `assembly::diagnostic`'s
+//! `the_delivery_log_cost_on_a_high_irq_load`.
 //!
-//! Marked `#[ignore]` because it boots FreeDOS four times.
+//! Marked `#[ignore]` because it boots FreeDOS six times.
 
 use assembly::{
     AssembledMachine, DeviceId, ObservationPolicy, ObservationRequest, OutputKind, RunPolicy,
@@ -77,19 +81,18 @@ fn mda(assembled: &AssembledMachine) -> String {
 }
 
 /// Boot to the date prompt as `run_freedos_config` polls for it; with
-/// `diagnose`, enable the trail and take a report at every poll boundary;
-/// with `trace`, also keep the delivery log and the exception trace, taking
-/// the trace's text at every poll boundary.
-fn boot(diagnose: bool, trace: bool) -> Boot {
+/// `diagnose`, keep the code trail and the report's delivery log; with
+/// `record`, also record the deliveries and take a report at every poll
+/// boundary.
+fn boot(diagnose: bool, record: bool) -> Boot {
     let mut assembled = assembled();
-    if trace {
-        assembled.enable_delivery_trace().unwrap();
-        assembled.enable_delivery_log().unwrap();
-    }
     if diagnose {
         assembled.machine.enable_code_trail();
+        assembled.enable_delivery_log().unwrap();
     }
-    let mut text = String::new();
+    if record {
+        assembled.start_delivery_recording().unwrap();
+    }
     let started = std::time::Instant::now();
     let mut reports = 0;
     loop {
@@ -101,16 +104,13 @@ fn boot(diagnose: bool, trace: bool) -> Boot {
                 Some(pc_harness::BIOS_IDLE_LIMIT),
             ))
             .unwrap();
-        if diagnose {
+        if record {
             let report = assembled.diagnostic_report("running").to_string();
             assert!(
                 report.contains("\ntrail    cs:ip after the last "),
                 "{report}"
             );
             reports += 1;
-        }
-        if let Some(more) = assembled.machine.take_delivery_trace() {
-            text.push_str(&more);
         }
         if outcome == machine::RunOutcome::Halted
             || mda(&assembled).contains(pc_harness::DOS_DATE_PROMPT)
@@ -120,11 +120,14 @@ fn boot(diagnose: bool, trace: bool) -> Boot {
         }
     }
     let elapsed = started.elapsed();
-    if trace {
+    if diagnose {
         let report = assembled.diagnostic_report("running").to_string();
-        assert!(report.contains("\ndelivery the last 64 of "), "{report}");
-        text.push_str(&assembled.machine.delivery_trace_summary().unwrap());
+        assert!(report.contains("\ndelivery the last "), "{report}");
     }
+    let text = assembled
+        .machine
+        .stop_delivery_recording()
+        .unwrap_or_default();
     let capture = assembled.capture_text(DeviceId::Vga).unwrap();
     let post = assembled
         .observation
@@ -153,7 +156,7 @@ fn boot(diagnose: bool, trace: bool) -> Boot {
     }
 }
 
-#[ignore = "slow: boots FreeDOS twice on the open BIOS"]
+#[ignore = "slow: boots FreeDOS six times on the open BIOS"]
 #[test]
 fn the_code_trail_and_reports_leave_the_freedos_boot_golden_unchanged() {
     let (Some(_rom), Some(_img)) = (
@@ -164,41 +167,56 @@ fn the_code_trail_and_reports_leave_the_freedos_boot_golden_unchanged() {
     };
     let plain = boot(false, false);
     let diagnosed = boot(true, false);
-    let traced = boot(true, true);
+    let plain_again = boot(false, false);
+    let diagnosed_again = boot(true, false);
+    let recorded = boot(true, true);
     let again = boot(true, true);
     eprintln!(
-        "plain boot {:?}; with the trail and {} reports {:?} ({} trail samples); \
-         with the exception trace too {:?} and {:?}",
+        "plain boot {:?} and {:?}; with the trail and the delivery log {:?} and {:?} \
+         ({} trail samples); with a recording and {} reports too {:?} and {:?}",
         plain.elapsed,
-        diagnosed.reports,
+        plain_again.elapsed,
         diagnosed.elapsed,
+        diagnosed_again.elapsed,
         diagnosed.trail_samples,
-        traced.elapsed,
+        recorded.reports,
+        recorded.elapsed,
         again.elapsed
     );
     eprint!(
         "{}",
-        traced
+        recorded
             .trace
             .lines()
             .filter(|line| line.starts_with("summary  "))
             .map(|line| format!("{line}\n"))
             .collect::<String>()
     );
+    let runs = [
+        &plain,
+        &diagnosed,
+        &plain_again,
+        &diagnosed_again,
+        &recorded,
+        &again,
+    ];
     // The numbers of `freedos_boot_golden`.
-    for run in [&plain, &diagnosed, &traced, &again] {
+    for run in runs {
         assert_eq!((run.retired, run.virtual_time), (8_800_473, 10_000_000));
         assert_eq!(session::screen_hash(&run.mda), 0x83ffbc2844f28889);
         assert_eq!(session::logical_hash(&run.mda), 0xc46f0c147c881837);
-    }
-    for run in [&diagnosed, &traced, &again] {
         assert_eq!(plain.post, run.post);
         assert_eq!(plain.devices, run.devices);
     }
     assert!(plain.trace.is_empty() && diagnosed.trace.is_empty());
-    assert!(traced.trace.starts_with("delivery "), "{}", traced.trace);
-    assert!(traced.trace.contains("\nsummary  "), "{}", traced.trace);
-    assert_eq!(traced.trace, again.trace);
-    assert_eq!(diagnosed.reports, 10);
+    assert!(
+        recorded.trace.starts_with("trace    "),
+        "{}",
+        recorded.trace
+    );
+    assert!(recorded.trace.contains("\ndelivery "), "{}", recorded.trace);
+    assert!(recorded.trace.contains("\nsummary  "), "{}", recorded.trace);
+    assert_eq!(recorded.trace, again.trace);
+    assert_eq!(recorded.reports, 10);
     assert!(diagnosed.trail_samples > 0);
 }

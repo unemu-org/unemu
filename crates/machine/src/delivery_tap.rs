@@ -5,270 +5,369 @@
 //! The CPU delivers exceptions and interrupts in the guest and keeps no
 //! record of them unless asked ([`cpu::delivery`]). When a host diagnostic
 //! asks ([`crate::Machine::enable_delivery_log`] for the diagnostic report,
-//! [`crate::Machine::enable_delivery_trace`] for the trace), the machine
-//! enables the CPU's delivery log and, after every run slice, moves its
-//! records into a [`DeliveryTap`]: the last [`RECENT_DELIVERIES`] for the
-//! report, and the [`DeliveryTrace`], a bounded text the front end appends
-//! to its file or stream whenever it likes. A slice ends at every port
-//! access before the bus performs it, so an IRQ's controller input is
-//! named from the 8259's vector bases as they were at its delivery.
+//! [`crate::Machine::start_delivery_recording`] for a recording), the
+//! machine enables the CPU's delivery log at its largest and, after every
+//! run slice, moves its records into a [`DeliveryTap`]: a [`DeliveryRing`]
+//! of the last [`RECENT_DELIVERIES`] entries for the report, and a
+//! [`DeliveryRecording`], a ring of the last [`RECORDED_ENTRIES`] entries
+//! with exact totals per vector, which the front end writes out when it
+//! likes. A slice ends at every port access before the bus performs it, so
+//! an IRQ's controller input is named from the 8259's vector bases as they
+//! were at its delivery.
+//!
+//! Both rings fold consecutive identical deliveries (the same kind, vector,
+//! saved CS:IP and error code) into one entry with a count and the retired
+//! range, so a guest looping on one fault takes one entry and the entries
+//! before the loop stay. The totals count every delivery.
 //!
 //! The log lives outside the CPU state the guest executes on and the tap
 //! outside the CPU: retired counts, virtual time and every guest effect are
 //! the same with either on or off. Off, the cost is one branch per slice.
+//! On, each slice drains the CPU's log, an IRQ delivery reads the
+//! interrupt controllers' vector bases once for its slice, and the CPU
+//! takes a slower exit from its compiled code while a log exists; the
+//! desktop keeps the report's log on for every machine, as the measurement
+//! in `backlog/docs/design/observation.md` §Exception and interrupt
+//! deliveries allows.
 //! The formats are described in `backlog/docs/design/observation.md`
 //! §Exception and interrupt deliveries.
 
 use cpu::{Delivery, DeliveryCounts, DeliveryName};
 use std::collections::{BTreeMap, VecDeque};
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
 
-/// How many deliveries the diagnostic report shows.
+/// How many entries the diagnostic report shows.
 pub const RECENT_DELIVERIES: usize = 64;
 
-/// How many deliveries the trace writes a line for, from the first.
-pub const TRACE_LINES: u64 = 10_000;
+/// How many entries a recording keeps, the last ones.
+pub const RECORDED_ENTRIES: usize = 10_000;
 
-/// After [`TRACE_LINES`], the trace writes a count line every this many
-/// deliveries.
-pub const TRACE_COUNT_EVERY: u64 = 1_000_000;
+/// One entry of a [`DeliveryRing`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeliveryEntry {
+    /// `count` consecutive identical deliveries, the first at
+    /// `first_retired`; `last` is the latest, with its bytes at CS:IP.
+    Deliveries {
+        first_retired: u64,
+        count: u64,
+        last: Delivery,
+    },
+    /// Deliveries the CPU's log overwrote before the machine read them.
+    Dropped(u64),
+}
 
-/// The last deliveries and the log's counts, for the diagnostic report.
+impl DeliveryEntry {
+    /// Whether `record` repeats this entry's delivery: the same kind,
+    /// vector, saved CS:IP and error code.
+    fn repeats(&self, record: &Delivery) -> bool {
+        matches!(self, Self::Deliveries { last, .. }
+            if (last.kind, last.vector, last.cs, last.ip, last.error_code)
+                == (record.kind, record.vector, record.cs, record.ip, record.error_code))
+    }
+
+    /// The deliveries the entry stands for; 0 for dropped ones.
+    pub fn count(&self) -> u64 {
+        match self {
+            Self::Deliveries { count, .. } => *count,
+            Self::Dropped(_) => 0,
+        }
+    }
+}
+
+/// One line: `delivery <retired> <the delivery>` for one delivery,
+/// `delivery <first>..<last> x<count> <the latest delivery>` for a folded
+/// run, `dropped  <n> deliveries (…)` for a loss.
+impl fmt::Display for DeliveryEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Deliveries {
+                first_retired,
+                count,
+                last,
+            } => {
+                if *count == 1 {
+                    return write!(f, "delivery {last}");
+                }
+                let text = last.to_string();
+                let rest = text.split_once(' ').map_or("", |(_, rest)| rest);
+                write!(
+                    f,
+                    "delivery {first_retired}..{} x{count} {rest}",
+                    last.retired
+                )
+            }
+            Self::Dropped(count) => write!(
+                f,
+                "dropped  {count} deliveries (the CPU's log overflowed before the machine read it)"
+            ),
+        }
+    }
+}
+
+/// The last entries of the deliveries pushed into it, oldest first, and
+/// exact totals since it began.
+#[derive(Clone, Debug)]
+pub struct DeliveryRing {
+    capacity: usize,
+    entries: VecDeque<DeliveryEntry>,
+    total: u64,
+    dropped: u64,
+    per_name: BTreeMap<DeliveryName, u64>,
+}
+
+impl DeliveryRing {
+    /// A ring of at most `capacity` entries, at least one.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            entries: VecDeque::new(),
+            total: 0,
+            dropped: 0,
+            per_name: BTreeMap::new(),
+        }
+    }
+
+    fn make_room(&mut self) {
+        if self.entries.len() == self.capacity {
+            self.entries.pop_front();
+        }
+    }
+
+    /// Add one delivery: folded into the newest entry when it repeats it.
+    pub fn push(&mut self, record: &Delivery) {
+        self.total += 1;
+        *self.per_name.entry(record.name()).or_default() += 1;
+        if let Some(DeliveryEntry::Deliveries { count, last, .. }) = self
+            .entries
+            .back_mut()
+            .filter(|entry| entry.repeats(record))
+        {
+            *count += 1;
+            *last = *record;
+            return;
+        }
+        self.make_room();
+        self.entries.push_back(DeliveryEntry::Deliveries {
+            first_retired: record.retired,
+            count: 1,
+            last: *record,
+        });
+    }
+
+    /// Note `count` deliveries the CPU's log lost; they end any fold.
+    pub fn drop_deliveries(&mut self, count: u64) {
+        if count == 0 {
+            return;
+        }
+        self.total += count;
+        self.dropped += count;
+        if let Some(DeliveryEntry::Dropped(dropped)) = self.entries.back_mut() {
+            *dropped += count;
+            return;
+        }
+        self.make_room();
+        self.entries.push_back(DeliveryEntry::Dropped(count));
+    }
+
+    /// The entries kept, oldest first.
+    pub fn entries(&self) -> impl ExactSizeIterator<Item = &DeliveryEntry> {
+        self.entries.iter()
+    }
+
+    /// Every delivery since the ring began, dropped ones included.
+    pub fn total(&self) -> u64 {
+        self.total
+    }
+
+    /// The deliveries the CPU's log lost since the ring began.
+    pub fn dropped(&self) -> u64 {
+        self.dropped
+    }
+
+    /// The deliveries the kept entries stand for.
+    pub fn kept(&self) -> u64 {
+        self.entries.iter().map(DeliveryEntry::count).sum()
+    }
+
+    /// The deliveries read since the ring began, per name, exceptions
+    /// first, then NMI, IRQs and software interrupts, each by number.
+    pub fn per_name(&self) -> &BTreeMap<DeliveryName, u64> {
+        &self.per_name
+    }
+
+    fn absorb(&mut self, records: &[Delivery], dropped: u64) {
+        self.drop_deliveries(dropped);
+        for record in records {
+            self.push(record);
+        }
+    }
+}
+
+/// The last entries and the counts, for the diagnostic report.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecentDeliveries {
-    /// The last deliveries, oldest first, at most [`RECENT_DELIVERIES`].
-    pub records: Vec<Delivery>,
+    /// The last entries, oldest first, at most [`RECENT_DELIVERIES`].
+    pub entries: Vec<DeliveryEntry>,
+    /// The deliveries the entries stand for.
+    pub kept: u64,
     /// Every delivery since the log was enabled.
     pub total: u64,
     /// Deliveries the CPU's log overwrote before the machine read them.
     pub dropped: u64,
 }
 
-/// The bounded text trace of every delivery: a line for each of the first
-/// [`TRACE_LINES`], then a count line every [`TRACE_COUNT_EVERY`]
-/// deliveries, and on request a summary of the counts per vector.
+/// A recording of the exceptions and interrupts the guest takes from the
+/// moment it began: the last [`RECORDED_ENTRIES`] entries and the totals
+/// per vector.
 #[derive(Clone, Debug)]
-pub struct DeliveryTrace {
-    line_limit: u64,
-    count_every: u64,
-    /// Text not taken yet.
-    pending: String,
-    /// The log's total when the trace started: the trace numbers the
-    /// deliveries after it from 1.
-    base: u64,
-    /// The number of the last delivery seen, dropped ones included.
-    last: u64,
-    /// Whether the line saying that lines stop was written.
-    limit_noted: bool,
-    lines: u64,
-    dropped: u64,
-    per_name: BTreeMap<DeliveryName, u64>,
+pub struct DeliveryRecording {
+    ring: DeliveryRing,
+    /// The retired count when the recording began.
+    began: u64,
 }
 
-impl Default for DeliveryTrace {
-    fn default() -> Self {
-        Self::with_bounds(TRACE_LINES, TRACE_COUNT_EVERY)
-    }
-}
-
-impl DeliveryTrace {
-    /// A trace with other bounds than [`TRACE_LINES`] and
-    /// [`TRACE_COUNT_EVERY`], for tests; `count_every` is at least 1.
-    pub fn with_bounds(line_limit: u64, count_every: u64) -> Self {
+impl DeliveryRecording {
+    /// A recording that began at retired count `began`, keeping `entries`.
+    pub fn new(began: u64, entries: usize) -> Self {
         Self {
-            line_limit,
-            count_every: count_every.max(1),
-            pending: String::new(),
-            base: 0,
-            last: 0,
-            limit_noted: false,
-            lines: 0,
-            dropped: 0,
-            per_name: BTreeMap::new(),
+            ring: DeliveryRing::new(entries),
+            began,
         }
     }
 
-    /// The same trace for a log that already counted `base` deliveries,
-    /// which the trace leaves out.
-    fn starting_at(mut self, base: u64) -> Self {
-        self.base = base;
-        self
+    /// The deliveries recorded so far.
+    pub fn ring(&self) -> &DeliveryRing {
+        &self.ring
     }
 
-    /// Add one read of the log: `records`, the deliveries numbered
-    /// `counts.total - records.len() + 1` to `counts.total` of the log,
-    /// after `counts.dropped` the log lost.
-    fn record(&mut self, records: &[Delivery], counts: DeliveryCounts) {
-        let total = counts.total.saturating_sub(self.base);
-        let first = total.saturating_sub(records.len() as u64);
-        if counts.dropped != 0 {
-            self.dropped += counts.dropped;
-            let _ = writeln!(
-                self.pending,
-                "dropped  {} deliveries (the CPU's log overflowed before the machine read it)",
-                counts.dropped
-            );
-        }
-        // Count marks that fell among dropped deliveries.
-        while self.next_mark() <= first {
-            let mark = self.next_mark();
-            let _ = writeln!(
-                self.pending,
-                "count    {mark} deliveries (the delivery itself was dropped)"
-            );
-            self.last = mark;
-        }
-        self.last = first;
-        for record in records {
-            self.last += 1;
-            *self.per_name.entry(record.name()).or_default() += 1;
-            if self.last <= self.line_limit {
-                let _ = writeln!(self.pending, "delivery {record}");
-                self.lines += 1;
-            } else if !self.limit_noted {
-                self.limit_noted = true;
-                let _ = writeln!(
-                    self.pending,
-                    "trace    {} delivery lines written; from here a count line every {} deliveries",
-                    self.lines, self.count_every
-                );
-            }
-            if self.last.is_multiple_of(self.count_every) {
-                let _ = writeln!(
-                    self.pending,
-                    "count    {} deliveries, the last at retired {}",
-                    self.last, record.retired
-                );
-            }
-        }
-    }
-
-    fn next_mark(&self) -> u64 {
-        (self.last / self.count_every + 1) * self.count_every
-    }
-
-    /// The text written since the last take.
-    pub fn take(&mut self) -> String {
-        std::mem::take(&mut self.pending)
-    }
-
-    /// The summary: the total, the lines written, the deliveries the log
-    /// dropped before they were read, then one line per name with its count,
-    /// exceptions first, then NMI, IRQs and software interrupts, each by
-    /// number. Dropped deliveries are in the total only.
-    pub fn summary(&self) -> String {
+    /// The recording as text, with the retired count `now`: a header, the
+    /// kept entries oldest first, and the summary of the totals; see
+    /// `backlog/docs/design/observation.md` §Exception and interrupt
+    /// deliveries.
+    pub fn text(&self, now: u64) -> String {
+        let ring = &self.ring;
         let mut text = format!(
-            "summary  {} deliveries, {} lines written, {} dropped before they were read\n",
-            self.last, self.lines, self.dropped
+            "trace    exceptions and interrupts the guest took from retired {} to retired {now}\n\
+             trace    the last {} entries, oldest first; an entry with a range and xN stands for N identical deliveries in a row\n",
+            self.began,
+            ring.entries.len()
         );
-        for (name, count) in &self.per_name {
+        for entry in ring.entries() {
+            let _ = writeln!(text, "{entry}");
+        }
+        let _ = writeln!(
+            text,
+            "summary  {} deliveries, {} of them in the entries kept, {} dropped before they were read",
+            ring.total,
+            ring.kept(),
+            ring.dropped
+        );
+        for (name, count) in ring.per_name() {
             let _ = writeln!(text, "summary  {name}: {count}");
         }
         text
     }
 }
 
+/// The controller input of an IRQ `vector`, from the master's and the
+/// slave's vector bases (their low three bits ignored, as ICW2's are).
+fn irq_input(bases: [Option<u8>; 2], vector: u8) -> Option<u8> {
+    bases.into_iter().zip([0, 8]).find_map(|(base, first)| {
+        let offset = vector.checked_sub(base? & 0xF8)?;
+        (offset < 8).then_some(first + offset)
+    })
+}
+
 /// What the machine collects from the CPU's delivery log; see the module
 /// documentation.
+#[derive(Default)]
 pub struct DeliveryTap {
-    recent: Option<VecDeque<Delivery>>,
-    trace: Option<DeliveryTrace>,
-    /// The capacity the CPU's log was enabled with.
-    capacity: usize,
-    /// Deliveries counted by earlier logs, which a larger one replaced.
-    earlier: u64,
-    total: u64,
-    dropped: u64,
+    recent: Option<DeliveryRing>,
+    recording: Option<DeliveryRecording>,
     /// Records read from the CPU after the last slice.
     buffer: Vec<Delivery>,
 }
 
 impl DeliveryTap {
-    fn new(capacity: usize) -> Self {
-        Self {
-            recent: None,
-            trace: None,
-            capacity,
-            earlier: 0,
-            total: 0,
-            dropped: 0,
-            buffer: Vec::new(),
-        }
-    }
-
-    /// Add the records in the buffer, read with `counts` from the current
-    /// log.
+    /// Add the records in the buffer, read with `counts`.
     fn absorb(&mut self, counts: DeliveryCounts) {
-        let counts = DeliveryCounts {
-            dropped: counts.dropped,
-            total: self.earlier + counts.total,
-        };
-        self.total = counts.total;
-        self.dropped += counts.dropped;
         if let Some(recent) = &mut self.recent {
-            for record in &self.buffer {
-                if recent.len() == RECENT_DELIVERIES {
-                    recent.pop_front();
-                }
-                recent.push_back(*record);
-            }
+            recent.absorb(&self.buffer, counts.dropped);
         }
-        if let Some(trace) = &mut self.trace {
-            trace.record(&self.buffer, counts);
+        if let Some(recording) = &mut self.recording {
+            recording.ring.absorb(&self.buffer, counts.dropped);
         }
     }
 }
 
 impl<C: cpu::Cpu> crate::Machine<C> {
-    /// The tap with the CPU's log at `capacity` or more: a smaller log is
-    /// read out first and replaced.
-    fn delivery_tap(&mut self, capacity: usize) -> Result<&mut DeliveryTap, cpu::DeliveryLogError> {
-        let enabled = self.deliveries.as_ref().map(|tap| tap.capacity);
-        if enabled.is_none_or(|enabled| enabled < capacity) {
-            self.read_deliveries();
-            self.cpu.enable_delivery_log(capacity)?;
-            let tap = self
-                .deliveries
-                .get_or_insert_with(|| Box::new(DeliveryTap::new(capacity)));
-            tap.capacity = capacity;
-            tap.earlier = tap.total;
+    /// The tap, with the CPU's log enabled at its largest: a slice with at
+    /// most one delivery per step loses none, and any loss is counted as
+    /// dropped. The log grows only with the records it holds.
+    fn delivery_tap(&mut self) -> Result<&mut DeliveryTap, cpu::DeliveryLogError> {
+        if self.deliveries.is_none() {
+            self.cpu
+                .enable_delivery_log(cpu::delivery::DELIVERY_LOG_MAX)?;
         }
-        Ok(self
-            .deliveries
-            .as_deref_mut()
-            .expect("the tap exists once the log is enabled"))
+        Ok(self.deliveries.get_or_insert_with(Box::default))
     }
 
-    /// Start keeping the last [`RECENT_DELIVERIES`] exceptions and
-    /// interrupts the guest takes, for a diagnostic report; see
-    /// [`crate::delivery_tap`]. The CPU's log stays outside the state the
-    /// guest executes on, so retired counts and every guest effect are
+    /// Start keeping the last [`RECENT_DELIVERIES`] entries of the
+    /// exceptions and interrupts the guest takes, for a diagnostic report;
+    /// see [`crate::delivery_tap`]. The CPU's log stays outside the state
+    /// the guest executes on, so retired counts and every guest effect are
     /// unchanged. Calling it again keeps what was kept. A CPU without a
     /// delivery log refuses.
     pub fn enable_delivery_log(&mut self) -> Result<(), cpu::DeliveryLogError> {
-        let tap = self.delivery_tap(RECENT_DELIVERIES)?;
-        tap.recent.get_or_insert_with(VecDeque::new);
+        let tap = self.delivery_tap()?;
+        tap.recent
+            .get_or_insert_with(|| DeliveryRing::new(RECENT_DELIVERIES));
         Ok(())
     }
 
-    /// Start the bounded trace of every exception and interrupt the guest
-    /// takes from now on ([`DeliveryTrace`]), with the CPU's log at its
-    /// largest: a slice with at most one delivery per step loses none, and
-    /// any loss is counted as dropped. Take its text with
-    /// [`Self::take_delivery_trace`]. As [`Self::enable_delivery_log`], it
-    /// leaves the run unchanged. Calling it again keeps the trace.
-    pub fn enable_delivery_trace(&mut self) -> Result<(), cpu::DeliveryLogError> {
-        let tap = self.delivery_tap(cpu::delivery::DELIVERY_LOG_MAX)?;
-        let total = tap.total;
-        tap.trace
-            .get_or_insert_with(|| DeliveryTrace::default().starting_at(total));
+    /// Start recording every exception and interrupt the guest takes from
+    /// now on ([`DeliveryRecording`]), keeping the last
+    /// [`RECORDED_ENTRIES`] entries; read it with
+    /// [`Self::delivery_recording`] and end it with
+    /// [`Self::stop_delivery_recording`]. As [`Self::enable_delivery_log`],
+    /// it leaves the run unchanged. Calling it again keeps the recording.
+    pub fn start_delivery_recording(&mut self) -> Result<(), cpu::DeliveryLogError> {
+        let began = self.cpu.retired();
+        let tap = self.delivery_tap()?;
+        tap.recording
+            .get_or_insert_with(|| DeliveryRecording::new(began, RECORDED_ENTRIES));
         Ok(())
+    }
+
+    /// Whether a recording runs.
+    pub fn delivery_recording_active(&self) -> bool {
+        self.deliveries
+            .as_deref()
+            .is_some_and(|tap| tap.recording.is_some())
+    }
+
+    /// The recording's text so far; `None` while none runs.
+    pub fn delivery_recording(&self) -> Option<String> {
+        let recording = self.deliveries.as_deref()?.recording.as_ref()?;
+        Some(recording.text(self.cpu.retired()))
+    }
+
+    /// End the recording; its text, `None` when none ran.
+    pub fn stop_delivery_recording(&mut self) -> Option<String> {
+        let text = self.delivery_recording();
+        if let Some(tap) = self.deliveries.as_deref_mut() {
+            tap.recording = None;
+        }
+        text
     }
 
     /// Name the controller input of an IRQ delivery from its vector, with
-    /// the bus as it stands when a slice ends; for the delivery records.
-    pub fn set_irq_input_of(&mut self, input_of: crate::IrqInputOf) {
-        self.irq_input_of = Some(input_of);
+    /// the vector bases `bases_of` reads from the bus as it stands when a
+    /// slice ends: the master's eight vectors are IRQ 0 to 7, the slave's
+    /// IRQ 8 to 15. The bases are read once per slice that has an IRQ
+    /// delivery.
+    pub fn set_irq_bases_of(&mut self, bases_of: crate::IrqBasesOf) {
+        self.irq_bases_of = Some(bases_of);
     }
 
     /// Move the CPU's delivery records into the tap; nothing without one.
@@ -280,53 +379,49 @@ impl<C: cpu::Cpu> crate::Machine<C> {
         let Some(counts) = self.cpu.drain_deliveries(&mut tap.buffer) else {
             return;
         };
-        if let Some(input_of) = &self.irq_input_of {
-            for record in &mut tap.buffer {
-                if record.kind == cpu::DeliveryKind::Irq {
-                    record.irq = input_of(&self.bus, record.vector);
-                }
+        let irq = |record: &Delivery| record.kind == cpu::DeliveryKind::Irq;
+        if let Some(bases_of) = self
+            .irq_bases_of
+            .as_ref()
+            .filter(|_| tap.buffer.iter().any(irq))
+        {
+            let bases = bases_of(&self.bus);
+            for record in tap.buffer.iter_mut().filter(|record| irq(record)) {
+                record.irq = irq_input(bases, record.vector);
             }
         }
         tap.absorb(counts);
     }
 
-    /// The last deliveries and the counts, when
+    /// The last entries and the counts, when
     /// [`Self::enable_delivery_log`] enabled them.
     pub fn recent_deliveries(&self) -> Option<RecentDeliveries> {
         let tap = self.deliveries.as_deref()?;
+        let recent = tap.recent.as_ref()?;
         Some(RecentDeliveries {
-            records: tap.recent.as_ref()?.iter().copied().collect(),
-            total: tap.total,
-            dropped: tap.dropped,
+            entries: recent.entries().copied().collect(),
+            kept: recent.kept(),
+            total: recent.total(),
+            dropped: recent.dropped(),
         })
-    }
-
-    /// The trace text written since the last take; `None` while the trace
-    /// is off.
-    pub fn take_delivery_trace(&mut self) -> Option<String> {
-        Some(self.deliveries.as_deref_mut()?.trace.as_mut()?.take())
-    }
-
-    /// The trace's summary so far; `None` while the trace is off.
-    pub fn delivery_trace_summary(&self) -> Option<String> {
-        Some(self.deliveries.as_deref()?.trace.as_ref()?.summary())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cpu::{diagnostic::Peek, DeliveryKind};
+    use crate::{Bus, Machine, RunOutcome};
+    use cpu::{diagnostic::Peek, x86jit_backend::RealSegments, Cpu, DeliveryKind, X86JitCpu};
 
-    fn record(retired: u64, kind: DeliveryKind, vector: u8) -> Delivery {
+    fn record(retired: u64, kind: DeliveryKind, vector: u8, ip: u32) -> Delivery {
         Delivery {
             retired,
             kind,
             vector,
             irq: None,
             cs: 0xF000,
-            ip: 0x10,
-            linear: 0xF0010,
+            ip,
+            linear: 0xF0000 + ip,
             error_code: None,
             cpl_before: 0,
             cpl_after: 0,
@@ -334,30 +429,41 @@ mod tests {
         }
     }
 
-    /// A trace started after the report's log numbers its deliveries from
-    /// its own start: the first three INT 21h go to the report only, the
-    /// trace writes a line for each of the next three and counts three in
-    /// its summary, while the report keeps all six; the run is the same as
-    /// a twin's without either.
+    /// A machine on a bare 80286 with `program` at 1000h, INT 21h pointing
+    /// at an IRET and INT 6 at a #UD handler that steps over the two-byte
+    /// invalid opcode (`push bp; mov bp,sp; add word [bp+2],2; pop bp;
+    /// iret`).
+    fn bare_machine(program: &[u8]) -> Machine<X86JitCpu> {
+        let mut cpu =
+            X86JitCpu::new_i286_bare(0x100_0000, 0, 0x1000, RealSegments::flat(0)).unwrap();
+        cpu.map_ram(0, 0x10000).unwrap();
+        cpu.write_mem(0x1000, program).unwrap();
+        cpu.write_mem(0x21 * 4, &[0x00, 0x18, 0, 0]).unwrap();
+        cpu.write_mem(0x1800, &[0xCF]).unwrap(); // IRET
+        cpu.write_mem(6 * 4, &[0x10, 0x18, 0, 0]).unwrap();
+        cpu.write_mem(
+            0x1810,
+            &[0x55, 0x89, 0xE5, 0x83, 0x46, 0x02, 0x02, 0x5D, 0xCF],
+        )
+        .unwrap();
+        let bus = Bus::new(Vec::new(), bus::DecodeMap::default());
+        Machine::new(cpu, bus, Box::new(crate::tests::NoIc), Vec::new(), None)
+    }
+
+    /// A recording started after the report's log counts from its own
+    /// start: the first three INT 21h go to the report only, the recording
+    /// keeps the next three and counts three in its summary, while the
+    /// report keeps all six; the run is the same as a twin's without
+    /// either. Stopping the recording returns its text and ends it.
     #[test]
-    fn a_trace_enabled_after_the_report_log_counts_from_its_own_start() {
-        use crate::{Bus, Machine, RunOutcome};
-        use cpu::{x86jit_backend::RealSegments, Cpu, X86JitCpu};
+    fn a_recording_started_after_the_report_log_counts_from_its_own_start() {
         let program = [
             0xCD, 0x21, 0xCD, 0x21, 0xCD, 0x21, // 1000 INT 21h x3
             0xCD, 0x21, 0xCD, 0x21, 0xCD, 0x21, // 1006 INT 21h x3
             0xFA, 0xF4, // 100C CLI; HLT
         ];
         let run = |diagnose: bool| {
-            let mut cpu =
-                X86JitCpu::new_i286_bare(0x100_0000, 0, 0x1000, RealSegments::flat(0)).unwrap();
-            cpu.map_ram(0, 0x10000).unwrap();
-            cpu.write_mem(0x1000, &program).unwrap();
-            cpu.write_mem(0x21 * 4, &[0x00, 0x18, 0, 0]).unwrap();
-            cpu.write_mem(0x1800, &[0xCF]).unwrap(); // IRET
-            let bus = Bus::new(Vec::new(), bus::DecodeMap::default());
-            let mut machine =
-                Machine::new(cpu, bus, Box::new(crate::tests::NoIc), Vec::new(), None);
+            let mut machine = bare_machine(&program);
             if diagnose {
                 machine.enable_delivery_log().unwrap();
             }
@@ -367,7 +473,7 @@ mod tests {
                 RunOutcome::RetiredCapReached
             );
             if diagnose {
-                machine.enable_delivery_trace().unwrap();
+                machine.start_delivery_recording().unwrap();
             }
             assert_eq!(machine.run_bounded(Some(1000)).unwrap(), RunOutcome::Halted);
             (machine.cpu().retired(), machine.virtual_time(), machine)
@@ -375,73 +481,169 @@ mod tests {
         let (retired, time, mut machine) = run(true);
         let (plain_retired, plain_time, _) = run(false);
         assert_eq!((retired, time), (plain_retired, plain_time));
-        let trace = machine.take_delivery_trace().unwrap();
-        let lines: Vec<&str> = trace.lines().collect();
-        assert_eq!(lines.len(), 3, "{trace}");
-        assert!(lines[0].starts_with("delivery 7 software INT 21h vector 21 at 0000:1008 "));
-        assert!(lines[2].starts_with("delivery 11 software INT 21h vector 21 at 0000:100c "));
+        let text = machine.stop_delivery_recording().unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 7, "{text}");
         assert_eq!(
-            machine.delivery_trace_summary().unwrap(),
-            "summary  3 deliveries, 3 lines written, 0 dropped before they were read\n\
-             summary  INT 21h: 3\n"
+            lines[0],
+            format!(
+                "trace    exceptions and interrupts the guest took from retired 6 to retired {retired}"
+            )
         );
+        assert!(lines[2].starts_with("delivery 7 software INT 21h vector 21 at 0000:1008 "));
+        assert!(lines[4].starts_with("delivery 11 software INT 21h vector 21 at 0000:100c "));
+        assert_eq!(
+            lines[5..],
+            [
+                "summary  3 deliveries, 3 of them in the entries kept, 0 dropped before they were read",
+                "summary  INT 21h: 3",
+            ]
+        );
+        assert!(machine.delivery_recording().is_none());
         let recent = machine.recent_deliveries().unwrap();
         assert_eq!(
-            (recent.records.len(), recent.total, recent.dropped),
-            (6, 6, 0)
+            (
+                recent.entries.len(),
+                recent.kept,
+                recent.total,
+                recent.dropped
+            ),
+            (6, 6, 6, 0)
         );
     }
 
-    /// Lines for the first deliveries only, then a note, a count line at
-    /// every mark, marks among dropped deliveries too, and a summary that
-    /// counts what was read per name.
+    /// Fifty distinct software interrupts, then a loop of 100,000 identical
+    /// #UD faults: the report's last entries and the recording both show
+    /// the fifty, oldest first, and one folded entry with the loop's count
+    /// and retired range; the totals are exact.
     #[test]
-    fn the_trace_writes_the_first_lines_then_counts() {
-        let mut trace = DeliveryTrace::with_bounds(3, 4);
-        let batch: Vec<Delivery> = (1..=5)
-            .map(|n| record(n * 10, DeliveryKind::Fault, 6))
-            .collect();
-        trace.record(
-            &batch,
-            DeliveryCounts {
-                dropped: 0,
-                total: 5,
-            },
+    fn a_fault_loop_folds_into_one_entry_after_the_distinct_deliveries() {
+        let mut program = vec![0xBC, 0x00, 0xF0]; // 1000 MOV SP,0F000h
+        for _ in 0..50 {
+            program.extend([0xCD, 0x21]); // 1003.. INT 21h x50
+        }
+        program.extend([
+            0xBA, 0x02, 0x00, // 1067 MOV DX,2
+            0xB9, 0x50, 0xC3, // 106A MOV CX,50000
+            0x0F, 0xFF, // 106D #UD, stepped over
+            0xE2, 0xFC, // 106F LOOP 106Dh
+            0x4A, // 1071 DEC DX
+            0x75, 0xF6, // 1072 JNZ 106Ah
+            0xFA, 0xF4, // 1074 CLI; HLT
+        ]);
+        let mut machine = bare_machine(&program);
+        machine.enable_delivery_log().unwrap();
+        machine.start_delivery_recording().unwrap();
+        assert_eq!(
+            machine.run_bounded(Some(10_000_000)).unwrap(),
+            RunOutcome::Halted
         );
-        let text = trace.take();
+        let recent = machine.recent_deliveries().unwrap();
+        assert_eq!(
+            (
+                recent.entries.len(),
+                recent.kept,
+                recent.total,
+                recent.dropped
+            ),
+            (51, 100_050, 100_050, 0)
+        );
+        for (n, entry) in recent.entries[..50].iter().enumerate() {
+            let ip = 0x1005 + 2 * n;
+            assert!(
+                entry.to_string().starts_with(&format!(
+                    "delivery {} software INT 21h vector 21 at 0000:{ip:04x} ",
+                    2 + 2 * n
+                )),
+                "{entry}"
+            );
+        }
+        // MOV SP, 50 INT/IRET pairs, MOV DX and MOV CX retire 103; each
+        // #UD retires nothing, its handler five and the LOOP one, and
+        // between the two inner loops DEC DX, JNZ and MOV CX retire three.
+        let first = 103;
+        let last = first + 99_999 * 6 + 3;
+        let fold = format!("delivery {first}..{last} x100000 fault #UD vector 06 at 0000:106d ");
+        assert!(
+            recent.entries[50].to_string().starts_with(&fold),
+            "{}",
+            recent.entries[50]
+        );
+        let text = machine.stop_delivery_recording().unwrap();
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 5, "{text}");
-        assert!(lines[0].starts_with("delivery 10 fault #UD vector 06 at f000:0010 "));
-        assert!(lines[2].starts_with("delivery 30 fault #UD "));
+        assert_eq!(lines.len(), 2 + 51 + 3, "{text}");
         assert_eq!(
-            lines[3],
-            "trace    3 delivery lines written; from here a count line every 4 deliveries"
-        );
-        assert_eq!(lines[4], "count    4 deliveries, the last at retired 40");
-        assert!(trace.take().is_empty());
-        // Deliveries 6 to 9 were dropped, so mark 8 has no record; 10 to 12
-        // are read, 12 is a mark.
-        let batch: Vec<Delivery> = (10..=12)
-            .map(|n| record(n * 10, DeliveryKind::Software, 0x21))
-            .collect();
-        trace.record(
-            &batch,
-            DeliveryCounts {
-                dropped: 4,
-                total: 12,
-            },
+            lines[2..53],
+            recent
+                .entries
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
         );
         assert_eq!(
-            trace.take(),
-            "dropped  4 deliveries (the CPU's log overflowed before the machine read it)\n\
-             count    8 deliveries (the delivery itself was dropped)\n\
-             count    12 deliveries, the last at retired 120\n"
+            lines[53..],
+            [
+                "summary  100050 deliveries, 100050 of them in the entries kept, 0 dropped before they were read",
+                "summary  #UD: 100000",
+                "summary  INT 21h: 50",
+            ]
         );
+    }
+
+    /// A full ring drops its oldest entry; a loss ends a fold and stands
+    /// as its own entry; the totals count every delivery.
+    #[test]
+    fn the_ring_keeps_the_last_entries_and_exact_totals() {
+        let mut ring = DeliveryRing::new(3);
+        for n in 0..5u64 {
+            ring.push(&record(
+                n * 10,
+                DeliveryKind::Software,
+                0x60 + n as u8,
+                0x10,
+            ));
+        }
+        ring.push(&record(60, DeliveryKind::Software, 0x64, 0x10));
+        ring.drop_deliveries(7);
+        ring.drop_deliveries(1);
+        ring.push(&record(90, DeliveryKind::Software, 0x64, 0x10));
+        let lines: Vec<String> = ring.entries().map(ToString::to_string).collect();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines[0].starts_with("delivery 40..60 x2 software INT 64h vector 64 at f000:0010 "));
         assert_eq!(
-            trace.summary(),
-            "summary  12 deliveries, 3 lines written, 4 dropped before they were read\n\
-             summary  #UD: 5\n\
-             summary  INT 21h: 3\n"
+            lines[1],
+            "dropped  8 deliveries (the CPU's log overflowed before the machine read it)"
         );
+        assert!(lines[2].starts_with("delivery 90 software INT 64h "));
+        assert_eq!((ring.total(), ring.kept(), ring.dropped()), (15, 3, 8));
+        assert_eq!(ring.per_name().values().sum::<u64>(), 7);
+        assert_eq!(ring.per_name()[&DeliveryName::Int(0x64)], 3);
+    }
+
+    /// A different error code at the same CS:IP is another delivery: it
+    /// starts a new entry; the same one folds.
+    #[test]
+    fn an_error_code_difference_breaks_a_fold() {
+        let mut ring = DeliveryRing::new(8);
+        for code in [0x00F8, 0x00F8, 0x0008] {
+            let mut fault = record(10, DeliveryKind::Fault, 0x0D, 0x20);
+            fault.error_code = Some(code);
+            ring.push(&fault);
+        }
+        let counts: Vec<u64> = ring.entries().map(DeliveryEntry::count).collect();
+        assert_eq!(counts, [2, 1]);
+    }
+
+    /// IRQ inputs come from the vector bases, their low three bits ignored;
+    /// a vector neither base covers has none.
+    #[test]
+    fn irq_inputs_follow_the_vector_bases() {
+        let bases = [Some(0x08), Some(0x72)];
+        assert_eq!(irq_input(bases, 0x08), Some(0));
+        assert_eq!(irq_input(bases, 0x0F), Some(7));
+        assert_eq!(irq_input(bases, 0x70), Some(8));
+        assert_eq!(irq_input(bases, 0x77), Some(15));
+        assert_eq!(irq_input(bases, 0x10), None);
+        assert_eq!(irq_input([None, Some(0x70)], 0x08), None);
     }
 }

@@ -798,15 +798,17 @@ completed run boundary: `AssembledMachine::diagnostic_report`
 data rendered as plain text by its `Display`; `PcMachine::diagnostic_report`
 adds the machine's contract status (`ready`, `halted (waits for a reset)`,
 `off` or `failed`), which says whether the machine can run, not whether a
-front end holds it paused; the desktop appends a last line, `desktop  running`
-or `desktop  paused`. Its lines come in a fixed order:
+front end holds it paused; the desktop appends two last lines, `desktop
+running` or `desktop  paused`, and where the exception recording went
+(`desktop  exceptions recorded to PATH`, or that Record exceptions is off).
+Its lines come in a fixed order:
 
 | Lines | Content |
 |---|---|
 | `retired`, `time`, `status`, `halted` | retired instructions and completed steps, virtual time and the device clock, the machine's status, whether the CPU sits in HLT and with which IF |
 | `cs:ip` … `ss:sp`, `stack` | the CPU (`X86JitCpu::diagnostic_state`, `crates/cpu/src/diagnostic.rs`): CS:IP and its linear address; FLAGS with IF, TF, DF, IOPL and NT decoded (Intel 80286 Programmer's Reference Manual, §3.5.3 and §10.3); AX–SP; MSW with PE and CPL; CS, DS, ES and SS with selector, base, limit and access rights from their caches; GDTR, IDTR, LDTR and TR; whether an injected vector waits and whether an interrupt could be accepted; the HLT a halted CPU executed; the 16 bytes at CS:IP with the first instruction disassembled; the 16 words at SS:SP |
 | `trail` | the code trail: CS:IP after the last run slices (below) |
-| `delivery` | the last 64 exceptions and interrupts the guest took, oldest first, with the total and the dropped count (§Exception and interrupt deliveries); `not recorded` when the log was not enabled |
+| `delivery` | the last 64 entries of the exceptions and interrupts the guest took, oldest first, consecutive identical deliveries folded into one, with the total and the dropped count (§Exception and interrupt deliveries); `not recorded` when the log was not enabled |
 | `pic` | master and slave 8259: IRR, ISR, IMR, vector base, ICW1 and ICW4 with AEOI, an unfinished initialization, the OCW3 read select and the input levels; poll mode and special mask mode are not modelled, and the report says so |
 | `kbc` | the 8042: status register, command byte with its keyboard and aux enable and interrupt bits, output buffer and its source (keyboard, aux or controller), output and input ports with the inhibit switch, the parameter the next `60h` write is taken as, the last command written to `64h`, queued keyboard bytes, a waiting controller reply, the LED parameter wait, and the IRQ1 and IRQ12 levels |
 | `pit` | each 8254 counter: programmed mode, access mode, BCD, count register, counting element, OUT and GATE, and a count not yet loaded or a latch waiting to be read |
@@ -850,21 +852,46 @@ it and once with the trail on and a full report taken at each of its ten
 poll boundaries (`crates/pc-harness/tests/diagnostic_trail_golden.rs`),
 stops at the same retired count and virtual time (8,800,473 and 10,000,000)
 with the same screen, POST stream and device snapshots; the trail took
-931,221 samples, and the boot takes the same time with and without it.
+931,221 samples. On a load heavy in interrupts and port accesses
+(`assembly::diagnostic`'s `the_delivery_log_cost_on_a_high_irq_load`: PIT
+counter 0 at a count of 40h, 937,499 IRQ 0 deliveries in 60,000,000
+retired instructions, a slice ending every four instructions; release
+build, three interleaved runs each) the guest took 5.22–5.44 s plain and
+5.26–5.64 s with the trail, within the noise, but 5.53–5.98 s with the
+trail and the report's delivery log, 6 to 10 per cent more: the CPU takes a
+slower exit from its compiled code while a delivery log exists, and every
+slice drains it. So the desktop keeps the trail on from every Start and
+starts the delivery log only with the first Save machine report or with
+Record exceptions (§Exception and interrupt deliveries). On the FreeDOS
+boot, with few interrupts, neither shows: 1.04–1.24 s with both over six
+runs and 1.04–1.17 s without (test profile, the machine crates at
+opt-level 3).
 
 ### Taking a report
 
-The desktop takes one on demand while `UNEMUPC_DIAG=1` was in its
-environment at startup: Ctrl+Alt+Shift+D (⌘⇧D on macOS) writes the running
-PC's report to `<data>/unemupc/diagnostics/diag-N.txt` in the platform data
-directory, N one more than the highest number already there, and the status
-line says `Diagnostic state saved to PATH`. With the switch on the machine
-keeps its code trail and its last deliveries from Start. Without the switch the chord does nothing.
-Either way the chord belongs to the host: its D never reaches the guest
-(`crates/window/src/diagnostics.rs`). `upcli run --machine FILE --diag-at N`
-writes the report to stderr when the run reaches step N, the unit of
-`--max-steps`, with the trail and the deliveries enabled from the start,
-then runs on to its usual stop (commands.md, Build / run / test).
+The desktop takes one from Tools › Diagnostics › Save machine report, or
+its chord Ctrl+Alt+Shift+D (⌘⇧D on macOS), whenever a PC runs, paused or
+not; with no machine the item is disabled and says so. It writes the
+running PC's report to `<data>/unemupc/diagnostics/diag-N.txt` in the
+platform data directory, N one more than the highest number already there;
+with Record exceptions on it also writes the recording (§Exception and
+interrupt deliveries) and the report names that file; with Record exceptions
+checked but no recording running, it says why. The status line says
+`Machine report saved to PATH` (and `; exceptions to PATH`). The machine
+keeps its code trail from every Start; the report's deliveries start with
+the first report (or with Record exceptions), so the first report of a
+session lists none and says `desktop  the delivery log starts with this
+report`, and the later ones list the deliveries since. There is no
+environment switch. The chord belongs to the host, with the pointer
+captured or not: the shell checks it before a key goes to the guest, and
+its D never reaches the guest (`crates/window/src/diagnostics.rs`). Tools ›
+Diagnostics › Open diagnostics folder shows that folder in the platform's
+file manager (`open` on macOS, `explorer` on Windows, `xdg-open`
+elsewhere, the opener reaped by a thread), creating it first.
+`upcli run --machine FILE --diag-at N` writes the report to stderr when the
+run reaches step N, the unit of `--max-steps`, with the trail and the
+deliveries enabled from the start, then runs on to its usual stop
+(commands.md, Build / run / test).
 
 An example, from the open guest
 `assembly::test_support::keyboard_masked_halt_rom` (it initializes the master
@@ -933,16 +960,22 @@ exposes it as `Cpu::enable_delivery_log`, `drain_deliveries` and
 `peek_deliveries` (`crates/cpu/src/delivery.rs`, `X86JitCpu`); only the
 machine profiles keep one, an application profile refuses.
 
-When a diagnostic asks, the machine enables the log and moves its records
-after every run slice into its delivery tap (`crates/machine/src/delivery_tap.rs`):
-the last 64 for the report (`Machine::enable_delivery_log`, capacity 64) and
-the bounded trace (`Machine::enable_delivery_trace`, capacity 65,536: a slice
-with at most one delivery per step loses none, and any loss is counted as
-dropped; both together use the larger, and a trace enabled after the report's
-log numbers its deliveries from its own start). The slice that fails with a
-delivery stall is read too. The tap lives in the machine, outside the CPU, so
-retired counts, virtual time and every guest effect are the same with it on or
-off; off, it costs one branch per slice.
+When a diagnostic asks, the machine enables the log, at its largest capacity
+of 65,536 records (a slice with at most one delivery per step loses none, and
+any loss is counted as dropped; the log grows only with the records it
+holds), and moves its records after every run slice into its delivery tap
+(`crates/machine/src/delivery_tap.rs`): a ring of the last 64 entries for the
+report (`Machine::enable_delivery_log`) and, while one runs, a recording
+(`Machine::start_delivery_recording`), a ring of the last 10,000 entries with
+exact totals per vector since it began. Both rings fold consecutive identical
+deliveries (the same kind, vector, saved CS:IP and error code; the bytes are
+not compared) into one entry with a count and the retired range, so a guest
+that loops on one fault takes one entry and what came before the loop stays
+in the ring. A recording started after the report's log counts from its own
+start. The slice that fails with a delivery stall is read too. The tap lives
+in the machine, outside the CPU, so retired counts, virtual time and every
+guest effect are the same with it on or off; off, it costs one branch per
+slice.
 
 Each delivery is one line:
 
@@ -962,6 +995,20 @@ delivery 54 fault #GP vector 0d at 0008:007b linear 0f807b error 00f8 cpl 0->0 b
 | `cpl 0->0` | the privilege level before and after; 0 outside protected mode |
 | `bytes …` | the 8 bytes at the saved CS:IP, read at the end of the run slice from RAM and ROM through the CPU's own map, the offset wrapping at the end of the 16-bit segment; `dv` is a device window (not read), `--` unmapped |
 
+A folded entry gives the retired counts of the first and the last delivery
+of the run and their number, then the latest delivery's fields, bytes
+included. A range such as `12..12 x10921` is a run of deliveries at one
+retired count: each faulted again in its handler before any instruction
+retired.
+
+```text
+delivery 90952030..90955747 x64 fault #GP vector 0d at 17f9:ffff linear 027b8f error 0000 cpl 0->0 bytes …
+```
+
+Where the CPU's log overflowed before the machine read it, an entry
+`dropped  N deliveries (the CPU's log overflowed before the machine read
+it)` stands where the loss happened and ends any fold.
+
 An IRQ is named by its 8259 input from the vector bases the master and slave
 hold (Intel 8259A datasheet, ICW2); `IRQ at nnh` when neither base covers the
 vector. The machine reads the log when a slice ends, and a slice ends at every
@@ -971,36 +1018,42 @@ already in the bytes. A delivery whose own delivery faults is not recorded,
 the exception it raised is (a #DF, or the next fault); a #DF whose delivery
 faults ends in shutdown, which is not a delivery.
 
-**The trace.** `upcli run --machine FILE --trace-exceptions` keeps it in
-memory (bounded as below) and writes it to stderr when the run ends, before
-the `stopped: ...` line (and before a `--diag-at` report, the lines so far);
-the desktop with `UNEMUPC_TRACE_EXCEPTIONS=1` creates the next
-`<data>/unemupc/diagnostics/trace-N.txt` at Start, appends and flushes after
-every frame whose run slices delivered something (a killed app keeps the
-trace so far) and writes the summary at Stop or quit
-(`crates/window/src/diagnostics.rs`). It is bounded: a line for each of the
-first 10,000 deliveries, then the line `trace    10000 delivery lines
-written; from here a count line every 1000000 deliveries`, then `count    N
-deliveries, the last at retired R` at every millionth delivery. Where the
-CPU's log overflowed before the machine read it, a line `dropped  N
-deliveries (the CPU's log overflowed before the machine read it)` stands
-where the loss happened. The summary
-gives the total, the lines written, the deliveries the log dropped before the
-machine read them, and a line per name with its count (exceptions, NMI,
+**The recording.** Tools › Diagnostics › Record exceptions, a check item off
+at every launch, records the running PC from the moment it is checked and
+every PC started while it stays checked. Each recording goes to one
+`<data>/unemupc/diagnostics/trace-N.txt`, created new when it is first
+written (never over an existing file) and rewritten with the latest ring,
+while it still holds what the recording wrote last (otherwise the text takes
+the next free number), at each of: Save machine report, Stop,
+unchecking the item, and closing the window or quitting; unchecking and
+Stop end the recording. Nothing is written while the guest runs, so an app
+that is killed writes nothing. `upcli run --machine FILE --trace-exceptions`
+keeps the same recording from the start of the run and writes it to stderr
+when the run ends, before the `stopped: ...` line. The text: two header
+lines, the entries oldest first, and the summary, which gives the total, the
+deliveries the kept entries stand for, the deliveries the log dropped before
+the machine read them, and a line per name with its count (exceptions, NMI,
 IRQs, software interrupts, each by number):
 
 ```text
-summary  4 deliveries, 4 lines written, 0 dropped before they were read
+trace    exceptions and interrupts the guest took from retired 0 to retired 61
+trace    the last 4 entries, oldest first; an entry with a range and xN stands for N identical deliveries in a row
+delivery 12 fault #UD vector 06 at f800:002e linear 0f802e error - cpl 0->0 bytes 0f ff cd 60 b0 11 e6 20
+…
+summary  4 deliveries, 4 of them in the entries kept, 0 dropped before they were read
 summary  #UD: 1
 summary  #GP: 1
 summary  IRQ 0: 1
 summary  INT 60h: 1
 ```
 
-**The report.** With the diagnostic trail on (`UNEMUPC_DIAG=1`, `--diag-at`)
-the report's `delivery` lines follow the trail:
-`delivery the last K of T exceptions and interrupts, oldest first (D dropped
-before they were read)`, then the K records in the line format above.
+**The report.** The report's `delivery` lines follow the trail: `delivery
+the last K of T exceptions and interrupts in E entries, oldest first (D
+dropped before they were read)`, then the E entries in the line format
+above. The desktop keeps the log from its first report or from Record
+exceptions, whichever comes first (§Diagnostic report of a running machine,
+The code trail, for the measured cost); `upcli --diag-at` from the start of
+the run.
 
 MEASURED. The open guest `assembly::test_support::deliveries_rom` (its NASM
 listing and SHA-256 are pinned beside it) takes one delivery of each kind and
@@ -1018,19 +1071,31 @@ after it, IRQ0 the CLI after the HLT it ended, the #GP the faulting
 `MOV DS,AX` in protected mode with selector F8h as its error code; the
 report of the same run lists the same four
 (`assembly::diagnostic` tests). `delivery_overrun_rom` (a #UD handler that
-faults until its stack overruns and the CPU shuts down) writes 10,000 lines,
-the note and a summary of 10,922 #UDs, and `delivery_stall_rom` 10,000 lines
-and a summary of 11,264 #GPs before its stall stop; both stop as without the
-trace. The twin test of the report keeps the log and the trace on one of two
-machines and finds the same CPU, time and device snapshots. The open-BIOS FreeDOS boot of `freedos_boot_golden`,
-run twice more with the log, the trace and the trail on and the trace read at
-each of its ten poll boundaries (`diagnostic_trail_golden`), stops at the
-same retired count and virtual time (8,800,473 and 10,000,000) with the same
-screen, POST stream and device snapshots as without them, and both traces are
-the same text: 7,120 deliveries, none dropped (INT 10h 3,367, INT 16h 1,766,
-INT 29h 662, INT 15h 311, IRQ 0 174, IRQ 6 155, INT 13h 160, INT 21h 136, five
-#DB among them); the boot took 0.59 s with them and 0.58 s without, release
-build.
+faults until its stack overruns and the CPU shuts down) records two entries,
+the first #UD and the 10,921 at the handler folded, and a summary of 10,922
+#UDs; `delivery_stall_rom` two entries and a summary of 11,264 #GPs before its
+stall stop; both stop as without the recording. `delivery_ring_rom` takes
+12,000 software interrupts that never fold, alternating INT 60h and INT 61h:
+the recording holds exactly the last 10,000, deliveries 2,001 to 12,000 at
+their retired counts, and the summary counts 6,000 of each, from upcli and
+from the desktop alike (`crates/window/src/shell.rs`,
+`record_exceptions_writes_the_last_entries_at_every_trigger`, which also
+writes it at each trigger and finds the guest halting at the same retired
+count with the recording on or off). On a bare 80286, fifty distinct INT 21h
+and then a loop of 100,000 identical #UDs leave 51 entries, the fifty and one
+folded entry `x100000` with the loop's retired range, in the report and the
+recording alike (`machine::delivery_tap` tests). The twin test of the report
+keeps the log and a recording on one of two machines and finds the same CPU,
+time and device snapshots. The open-BIOS FreeDOS boot of
+`freedos_boot_golden`, run twice more with the log, a recording and the
+trail on and a report at each of its ten poll boundaries
+(`diagnostic_trail_golden`), stops at the same retired count and virtual
+time (8,800,473 and 10,000,000) with the same screen, POST stream and device
+snapshots as without them, and both recordings are the same text: 7,120
+deliveries, none dropped (INT 10h 3,367, INT 16h 1,766, INT 29h 662, INT 15h
+311, IRQ 0 174, IRQ 6 155, INT 13h 160, INT 21h 136, five #DB among them);
+the boot took 1.06–1.11 s with them and 1.04–1.17 s without (test profile,
+the machine crates at opt-level 3).
 
 ## Implemented access trace policy
 

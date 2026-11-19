@@ -41,7 +41,8 @@ pub mod delivery_tap;
 
 pub use code_trail::{CodeTrail, TrailEntry, CODE_TRAIL_LEN};
 pub use delivery_tap::{
-    DeliveryTrace, RecentDeliveries, RECENT_DELIVERIES, TRACE_COUNT_EVERY, TRACE_LINES,
+    DeliveryEntry, DeliveryRecording, DeliveryRing, RecentDeliveries, RECENT_DELIVERIES,
+    RECORDED_ENTRIES,
 };
 
 use device::clock::{PIT, TICKS_PER_PIT_CLOCK};
@@ -260,12 +261,14 @@ pub struct Machine<C: Cpu> {
     code_trail: Option<Box<CodeTrail>>,
     /// The CPU's delivery records, when a diagnostic asked for them.
     deliveries: Option<Box<delivery_tap::DeliveryTap>>,
-    /// Names an IRQ delivery's controller input from its vector.
-    irq_input_of: Option<IrqInputOf>,
+    /// Reads the interrupt controllers' vector bases, to name an IRQ
+    /// delivery's controller input from its vector.
+    irq_bases_of: Option<IrqBasesOf>,
 }
 
-/// Names the interrupt-controller input of an IRQ vector, reading the bus.
-pub type IrqInputOf = Box<dyn Fn(&Bus, u8) -> Option<u8>>;
+/// Reads the vector bases of the master and the slave interrupt
+/// controller from the bus, `None` for one that is absent.
+pub type IrqBasesOf = Box<dyn Fn(&Bus) -> [Option<u8>; 2]>;
 
 impl<C: Cpu> Machine<C> {
     /// Assemble a machine from a CPU backend, a bus, and an interrupt controller.
@@ -309,7 +312,7 @@ impl<C: Cpu> Machine<C> {
             memory_map: None,
             code_trail: None,
             deliveries: None,
-            irq_input_of: None,
+            irq_bases_of: None,
         }
     }
 

@@ -117,9 +117,8 @@ pub(super) fn run_machine(
     for warning in &assembled.unlisted_firmware {
         writeln!(errors, "{warning}")?;
     }
-    // The trace first: it asks for the larger delivery log.
     if trace_exceptions {
-        if let Err(error) = assembled.enable_delivery_trace() {
+        if let Err(error) = assembled.start_delivery_recording() {
             writeln!(errors, "warning: exceptions are not traced: {error}")?;
         }
     }
@@ -131,9 +130,6 @@ pub(super) fn run_machine(
             let _ = assembled.enable_delivery_log();
             match assembled.run_session(&RunPolicy::natural(Some(at), Some(idle_limit))) {
                 Ok(machine::RunOutcome::RetiredCapReached) => {
-                    if let Some(trace) = assembled.machine.take_delivery_trace() {
-                        errors.write_all(trace.as_bytes())?;
-                    }
                     write!(errors, "{}", assembled.diagnostic_report("running"))?;
                     assembled.run_session(&policy)
                 }
@@ -171,15 +167,8 @@ pub(super) fn run_machine(
             Vec::new()
         }
     };
-    if let Some(trace) = assembled.machine.take_delivery_trace() {
-        errors.write_all(trace.as_bytes())?;
-        errors.write_all(
-            assembled
-                .machine
-                .delivery_trace_summary()
-                .unwrap_or_default()
-                .as_bytes(),
-        )?;
+    if let Some(recording) = assembled.machine.stop_delivery_recording() {
+        errors.write_all(recording.as_bytes())?;
     }
     let (message, failed) = bios_stop(&stop);
     writeln!(errors, "{}", message.replace(['\r', '\n'], " "))?;

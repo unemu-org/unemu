@@ -38,6 +38,10 @@ use unemu_core_api::{
 /// drawn at twice the cell size of its text mode.
 pub const RASTER_SCALE: u16 = 2;
 
+/// How many entries an exception recording keeps
+/// ([`PcMachine::start_delivery_recording`]).
+pub const RECORDED_DELIVERIES: usize = ::machine::RECORDED_ENTRIES;
+
 /// The keyboard's input port.
 pub(crate) const KEYBOARD_PORT: PortId = PortId(0);
 /// The pointing device's input port.
@@ -359,23 +363,33 @@ impl PcMachine {
         self.assembled.enable_delivery_log()
     }
 
-    /// Start the bounded trace of every exception and interrupt the guest
-    /// takes, read with [`Self::take_delivery_trace`]; see
-    /// `machine::DeliveryTrace`. Like [`Self::enable_delivery_log`], it
+    /// Whether [`Self::enable_delivery_log`] enabled the report's
+    /// deliveries.
+    pub fn delivery_log_enabled(&self) -> bool {
+        self.assembled.machine.recent_deliveries().is_some()
+    }
+
+    /// Start recording every exception and interrupt the guest takes, the
+    /// last `machine::RECORDED_ENTRIES` entries with exact totals; see
+    /// `machine::DeliveryRecording`. Like [`Self::enable_delivery_log`], it
     /// leaves the run unchanged.
-    pub fn enable_delivery_trace(&mut self) -> Result<(), cpu::DeliveryLogError> {
-        self.assembled.enable_delivery_trace()
+    pub fn start_delivery_recording(&mut self) -> Result<(), cpu::DeliveryLogError> {
+        self.assembled.start_delivery_recording()
     }
 
-    /// The trace text written since the last take; `None` while the trace
-    /// is off.
-    pub fn take_delivery_trace(&mut self) -> Option<String> {
-        self.assembled.machine.take_delivery_trace()
+    /// Whether a recording runs.
+    pub fn delivery_recording_active(&self) -> bool {
+        self.assembled.machine.delivery_recording_active()
     }
 
-    /// The trace's summary so far; `None` while the trace is off.
-    pub fn delivery_trace_summary(&self) -> Option<String> {
-        self.assembled.machine.delivery_trace_summary()
+    /// The recording's text so far; `None` while none runs.
+    pub fn delivery_recording(&self) -> Option<String> {
+        self.assembled.machine.delivery_recording()
+    }
+
+    /// End the recording; its text, `None` when none ran.
+    pub fn stop_delivery_recording(&mut self) -> Option<String> {
+        self.assembled.machine.stop_delivery_recording()
     }
 
     /// The diagnostic report of the machine at its completed run boundary:

@@ -348,6 +348,8 @@ struct Shell {
     args: Args,
     library: Vec<LibraryEntry>,
     image_library: crate::library_view::LibraryView,
+    /// Tools › Diagnostics › Record exceptions; off at every launch.
+    record_exceptions: bool,
     retain_workspace_on_stop: bool,
     exit_requested: bool,
     store_path_input: String,
@@ -2750,6 +2752,7 @@ impl Shell {
                     .or_else(|| crate::library_view::default_store_path().ok()),
             ),
             retain_workspace_on_stop: false,
+            record_exceptions: false,
             exit_requested: false,
             store_path_input: String::new(),
             selected,
@@ -3508,20 +3511,16 @@ impl Shell {
         self.error_report = None;
         self.session = self.session.wrapping_add(1);
         self.events.borrow_mut().session = self.session;
-        // The trace first: it asks for the larger delivery log.
-        if let Some(folder) = &self.args.exception_trace {
-            match folder
-                .clone()
-                .and_then(|folder| presenter.start_exception_trace(&folder))
-            {
-                Ok(path) => eprintln!("exception trace: {}", path.display()),
-                Err(error) => eprintln!("exception trace not written: {error}"),
+        // Every machine keeps the code trail for Save machine report; it
+        // changes nothing the guest does and costs nothing measurable. The
+        // report's deliveries start with the first report or with Record
+        // exceptions, since the CPU runs measurably slower while it keeps
+        // its delivery log.
+        presenter.machine_mut().enable_code_trail();
+        if self.record_exceptions {
+            if let Err(error) = presenter.start_recording() {
+                eprintln!("exceptions are not recorded: {error}");
             }
-        }
-        if self.args.diagnostics.is_some() {
-            presenter.machine_mut().enable_code_trail();
-            // Without a log the report says the deliveries were not recorded.
-            let _ = presenter.machine_mut().enable_delivery_log();
         }
         presenter.window = self.window.clone();
         presenter.started = Some(Instant::now());
@@ -3679,26 +3678,101 @@ impl Shell {
         }
     }
 
-    /// The diagnostic chord: with the switch on, the running PC's report
-    /// goes to the next `diag-N.txt` and the status line says where; with
-    /// it off, nothing happens. See [`crate::diagnostics`].
+    /// Tools › Diagnostics › Save machine report and its chord: the
+    /// running PC's report goes to the next `diag-N.txt`, the exception
+    /// recording, when one runs, to its `trace-N.txt`, and the status line
+    /// says where. Without a PC nothing happens. See [`crate::diagnostics`].
     fn save_diagnostics(&mut self) {
-        let (Some(folder), Some(presenter)) = (&self.args.diagnostics, &mut self.presenter) else {
+        let Some(presenter) = &mut self.presenter else {
             return;
+        };
+        // The first report starts the report's deliveries: it lists none
+        // yet, and says so.
+        let log_started = !presenter.machine().delivery_log_enabled();
+        let log_note = if log_started {
+            match presenter.machine_mut().enable_delivery_log() {
+                Ok(()) => "desktop  the delivery log starts with this report: the next one lists the deliveries since\n".to_owned(),
+                Err(error) => format!("desktop  the delivery log cannot start: {error}\n"),
+            }
+        } else {
+            String::new()
+        };
+        let folder = self.args.diagnostics.clone();
+        let recording = match &folder {
+            Ok(folder) => presenter.write_recording(folder),
+            Err(error) => presenter.recording().then(|| Err(error.clone())),
         };
         // The machine's status says only whether it can run; the desktop
         // says whether it holds the machine paused.
-        let text = format!(
-            "{}desktop  {}\n",
+        let mut text = format!(
+            "{}desktop  {}\n{log_note}",
             presenter.machine_mut().diagnostic_report(),
             if self.paused { "paused" } else { "running" }
         );
+        text.push_str(&match (&recording, self.record_exceptions) {
+            (Some(Ok(path)), _) => format!("desktop  exceptions recorded to {}\n", path.display()),
+            (Some(Err(error)), _) => format!("desktop  exceptions not written: {error}\n"),
+            (None, true) => format!(
+                "desktop  exceptions not recorded: Record exceptions is on, but the recording did not start ({})\n",
+                presenter.recording_error().unwrap_or("no reason was given")
+            ),
+            (None, false) => "desktop  exceptions not recorded (Tools › Diagnostics › Record exceptions is off)\n".to_owned(),
+        });
         self.message = match folder
-            .clone()
             .and_then(|folder| crate::diagnostics::save(&folder, &text).map_err(|e| e.to_string()))
         {
-            Ok(path) => format!("Diagnostic state saved to {}", path.display()),
-            Err(error) => format!("Diagnostic state not saved: {error}"),
+            Ok(path) => format!("Machine report saved to {}", path.display()),
+            Err(error) => format!("Machine report not saved: {error}"),
+        };
+        match recording {
+            Some(Ok(path)) => self
+                .message
+                .push_str(&format!("; exceptions to {}", path.display())),
+            Some(Err(error)) => self
+                .message
+                .push_str(&format!("; exceptions not written: {error}")),
+            None => {}
+        }
+    }
+
+    /// Tools › Diagnostics › Record exceptions: on, the running PC and every
+    /// later one record their exceptions; off, the running PC's recording
+    /// is written to its file and ends.
+    fn set_record_exceptions(&mut self, on: bool) {
+        self.record_exceptions = on;
+        let Some(presenter) = &mut self.presenter else {
+            return;
+        };
+        if on {
+            if let Err(error) = presenter.start_recording() {
+                self.message = format!("Exceptions are not recorded: {error}");
+            } else {
+                self.message = format!(
+                    "Recording exceptions: the last {} entries",
+                    unemu_pc_core::RECORDED_DELIVERIES
+                );
+            }
+        } else if let Some(message) = self.finish_recording() {
+            self.message = message;
+        }
+    }
+
+    /// Write the running PC's exception recording to its file and end it;
+    /// the status line's words for it, `None` when nothing recorded.
+    fn finish_recording(&mut self) -> Option<String> {
+        recording_finished(&self.args.diagnostics, self.presenter.as_mut()?)
+    }
+
+    /// Tools › Diagnostics › Open diagnostics folder.
+    fn open_diagnostics_folder(&mut self) {
+        let opened = self.args.diagnostics.clone().and_then(|folder| {
+            crate::diagnostics::reveal(&folder)
+                .map(|()| folder)
+                .map_err(|error| error.to_string())
+        });
+        self.message = match opened {
+            Ok(folder) => format!("Diagnostics folder: {}", folder.display()),
+            Err(error) => format!("Cannot open the diagnostics folder: {error}"),
         };
     }
 
@@ -3765,6 +3839,7 @@ impl Shell {
         // The workspace is found while the session is still open.
         let report = report.map(|text| self.saved_report(text));
         let mut catalogue = Vec::new();
+        let mut recorded = None;
         if let Some(mut presenter) = self.presenter.take() {
             // The drives' catalogues as they are now, with the media changes
             // queued for the next run boundary in, which a library machine
@@ -3788,7 +3863,7 @@ impl Shell {
                 failure.get_or_insert_with(|| error.to_string());
             }
             presenter.write_reset_summary(&mut io::stderr());
-            presenter.finish_exception_trace();
+            recorded = recording_finished(&self.args.diagnostics, &mut presenter);
         }
         let retain_workspace = std::mem::take(&mut self.retain_workspace_on_stop);
         if had_session {
@@ -3799,7 +3874,10 @@ impl Shell {
         self.texture = None;
         self.paused = false;
         self.modal_paused = false;
-        self.message = "Ready".into();
+        self.message = match recorded {
+            Some(recorded) => format!("Ready — {recorded}"),
+            None => "Ready".into(),
+        };
         if had_session {
             self.refresh_library();
         }
@@ -4640,6 +4718,7 @@ impl Shell {
 
     fn menus(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
         use Command::*;
+        let mut diagnostics = None;
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
                 for (label, shortcut, command) in [
@@ -4747,12 +4826,62 @@ impl Shell {
                         commands,
                     );
                 }
+                ui.separator();
+                ui.menu_button("Diagnostics", |ui| {
+                    diagnostics = self.diagnostics_menu(ui);
+                });
             });
             ui.menu_button("Help", |ui| {
                 self.item(ui, "Keyboard shortcuts", "F1", Shortcuts, commands);
                 self.item(ui, "About unemupc", "", About, commands);
             });
         });
+        match diagnostics {
+            Some(DiagnosticsItem::SaveReport) => self.save_diagnostics(),
+            Some(DiagnosticsItem::RecordExceptions(on)) => self.set_record_exceptions(on),
+            Some(DiagnosticsItem::OpenFolder) => self.open_diagnostics_folder(),
+            None => {}
+        }
+    }
+
+    /// Why Save machine report is unavailable now, in one short phrase.
+    fn save_report_disabled(&self) -> Option<&'static str> {
+        match (&self.presenter, &self.player) {
+            (Some(_), _) => None,
+            (None, Some(_)) => Some("A machine opened from a file has no report"),
+            (None, None) => Some("Start a machine first"),
+        }
+    }
+
+    /// Tools › Diagnostics: Save machine report, Record exceptions (a
+    /// check item) and Open diagnostics folder; the item chosen.
+    fn diagnostics_menu(&self, ui: &mut egui::Ui) -> Option<DiagnosticsItem> {
+        let mut chosen = None;
+        let save = ui.add_enabled(
+            self.presenter.is_some(),
+            egui::Button::new("Save machine report").shortcut_text(shell_model::shortcut_text(
+                "Ctrl+Alt+Shift+D",
+                self.macos_shortcuts,
+            )),
+        );
+        let save = match self.save_report_disabled() {
+            Some(reason) => save.on_disabled_hover_text(reason),
+            None => save,
+        };
+        if save.clicked() {
+            chosen = Some(DiagnosticsItem::SaveReport);
+        }
+        let mut record = self.record_exceptions;
+        if ui.checkbox(&mut record, "Record exceptions").changed() {
+            chosen = Some(DiagnosticsItem::RecordExceptions(record));
+        }
+        if ui.button("Open diagnostics folder").clicked() {
+            chosen = Some(DiagnosticsItem::OpenFolder);
+        }
+        if chosen.is_some() {
+            ui.close();
+        }
+        chosen
     }
 
     /// The PC's Machine, Media and View menus.
@@ -5689,9 +5818,7 @@ impl Shell {
         );
         presenter.next_paint = deadline;
         if advance {
-            let advanced = presenter.advance(elapsed);
-            presenter.append_exception_trace();
-            if let Err(error) = advanced {
+            if let Err(error) = presenter.advance(elapsed) {
                 self.show_error(error.to_string());
                 return;
             }
@@ -5745,11 +5872,32 @@ impl Drop for Shell {
             job.control.cancel();
         }
         self.image_library.shutdown();
-        // Quitting with a machine running still ends its exception trace.
-        if let Some(presenter) = &mut self.presenter {
-            presenter.finish_exception_trace();
-        }
+        // Quitting with a machine running still writes its recording.
+        self.finish_recording();
     }
+}
+
+/// An item of Tools › Diagnostics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiagnosticsItem {
+    SaveReport,
+    RecordExceptions(bool),
+    OpenFolder,
+}
+
+/// Write `presenter`'s exception recording to its file in `folder` and end
+/// it; the status line's words for it, `None` when nothing recorded.
+fn recording_finished(
+    folder: &Result<std::path::PathBuf, String>,
+    presenter: &mut Presenter,
+) -> Option<String> {
+    Some(match presenter.finish_recording(folder)? {
+        Ok(path) => format!("Exceptions recorded to {}", path.display()),
+        Err(error) => {
+            eprintln!("exceptions not written: {error}");
+            format!("Exceptions not written: {error}")
+        }
+    })
 }
 
 fn firmware_progress(
@@ -6506,6 +6654,10 @@ fn shortcuts_help(macos: bool) -> String {
         ("Ctrl+Alt+I", "Insert… into A: (Shift for B:)"),
         ("Ctrl+Alt+M", "toggle user mute (also while speed-muted)"),
         ("Ctrl+Alt+G", "release pointer"),
+        (
+            "Ctrl+Alt+Shift+D",
+            "Save machine report (Tools › Diagnostics)",
+        ),
         ("Ctrl+Alt+Enter", "full screen"),
         ("Ctrl+N", "New machine… (makes the image and a machine)"),
         ("Ctrl+Shift+N", "New machine from image…"),
@@ -6581,6 +6733,7 @@ mod tests {
             library: Vec::new(),
             image_library: crate::library_view::LibraryView::new(None),
             retain_workspace_on_stop: false,
+            record_exceptions: false,
             exit_requested: false,
             store_path_input: String::new(),
             selected: None,
@@ -9261,46 +9414,53 @@ mod tests {
         assert!(shortcuts_help(false).contains("Ctrl+Alt+T: hold to fast-forward"));
     }
 
-    /// With the diagnostic switch on, Ctrl+Alt+Shift+D saves the running
-    /// PC's report as the next numbered file and the status line names it;
-    /// with it off the chord writes nothing. Neither way does its D reach
-    /// the guest: only the modifiers' make and break codes do.
+    /// Ctrl+Alt+Shift+D (Command+Shift+D on macOS) saves the running PC's
+    /// report as the next numbered file and the status line names it, with
+    /// no environment switch, and as well with the pointer captured as
+    /// without. Its D never reaches the guest: only the modifiers' make and
+    /// break codes do. Without a machine the chord writes nothing.
     #[test]
-    fn the_diagnostic_chord_saves_a_report_only_with_the_switch_and_never_types_d() {
+    fn the_diagnostic_chord_saves_a_report_and_never_types_d() {
         let temp = assembly::test_support::TempDir::new("shell-diagnostics");
         let folder = temp.path().join("unemupc").join("diagnostics");
         let chord = |shell: &mut Shell| {
             let ctx = egui::Context::default();
-            for key in [
-                KeyCode::ControlLeft,
-                KeyCode::AltLeft,
-                KeyCode::ShiftLeft,
-                KeyCode::KeyD,
-            ] {
+            let keys: &[KeyCode] = if shell.macos_shortcuts {
+                &[KeyCode::SuperLeft, KeyCode::ShiftLeft, KeyCode::KeyD]
+            } else {
+                &[
+                    KeyCode::ControlLeft,
+                    KeyCode::AltLeft,
+                    KeyCode::ShiftLeft,
+                    KeyCode::KeyD,
+                ]
+            };
+            for &key in keys {
                 shell.key(key, Pressed, false, &ctx);
             }
-            for key in [
-                KeyCode::KeyD,
-                KeyCode::ShiftLeft,
-                KeyCode::AltLeft,
-                KeyCode::ControlLeft,
-            ] {
+            for &key in keys.iter().rev() {
                 shell.key(key, Released, false, &ctx);
             }
             take_guest_scancodes(shell)
         };
-        let mut off = keyboard_shell();
-        off.message = "Running".into();
-        let typed = chord(&mut off);
-        assert!(
-            !typed.contains(&0x20) && !typed.contains(&0xA0),
-            "{typed:x?}"
-        );
-        assert_eq!(off.message, "Running");
-        assert!(!folder.exists(), "the switch is off");
+        let mut none = keyboard_shell();
+        none.presenter = None;
+        none.args.diagnostics = Ok(folder.clone());
+        none.message = "Ready".into();
+        let ctx = egui::Context::default();
+        for key in [
+            KeyCode::ControlLeft,
+            KeyCode::AltLeft,
+            KeyCode::ShiftLeft,
+            KeyCode::KeyD,
+        ] {
+            none.key(key, Pressed, false, &ctx);
+        }
+        assert_eq!(none.message, "Ready");
+        assert!(!folder.exists(), "no machine runs");
 
         let mut on = keyboard_shell();
-        on.args.diagnostics = Some(Ok(folder.clone()));
+        on.args.diagnostics = Ok(folder.clone());
         let typed = chord(&mut on);
         assert!(
             !typed.contains(&0x20) && !typed.contains(&0xA0),
@@ -9310,7 +9470,7 @@ mod tests {
         let first = folder.join("diag-1.txt");
         assert_eq!(
             on.message,
-            format!("Diagnostic state saved to {}", first.display())
+            format!("Machine report saved to {}", first.display())
         );
         let report = std::fs::read_to_string(&first).unwrap();
         assert!(
@@ -9318,27 +9478,74 @@ mod tests {
             "{report}"
         );
         assert!(report.contains("\nstatus   ready\n"), "{report}");
-        assert!(report.ends_with("\ndesktop  running\n"), "{report}");
+        // The first report starts the delivery log, so it lists none yet.
+        assert!(
+            report.ends_with(
+                "\ndesktop  running\n\
+                 desktop  the delivery log starts with this report: the next one lists the deliveries since\n\
+                 desktop  exceptions not recorded (Tools › Diagnostics › Record exceptions is off)\n"
+            ),
+            "{report}"
+        );
+        assert!(
+            report.contains("\ndelivery the last 0 of 0 exceptions and interrupts in 0 entries"),
+            "{report}"
+        );
         assert!(report.contains("\nkbc      status "), "{report}");
         on.paused = true;
         chord(&mut on);
         let second = std::fs::read_to_string(folder.join("diag-2.txt")).unwrap();
-        assert!(second.ends_with("\ndesktop  paused\n"), "{second}");
+        assert!(
+            second.contains("\ndesktop  paused\ndesktop  exceptions not recorded"),
+            "{second}"
+        );
         assert!(on.message.ends_with("diag-2.txt"), "{}", on.message);
 
         // On macOS the chord is Command+Shift+D, and nothing of it is typed.
         let mut mac = keyboard_shell();
         mac.macos_shortcuts = true;
-        mac.args.diagnostics = Some(Ok(folder.clone()));
-        let ctx = egui::Context::default();
-        for key in [KeyCode::SuperLeft, KeyCode::ShiftLeft, KeyCode::KeyD] {
-            mac.key(key, Pressed, false, &ctx);
-        }
-        for key in [KeyCode::KeyD, KeyCode::ShiftLeft, KeyCode::SuperLeft] {
-            mac.key(key, Released, false, &ctx);
-        }
-        assert!(take_guest_scancodes(&mut mac).is_empty());
+        mac.args.diagnostics = Ok(folder.clone());
+        assert!(chord(&mut mac).is_empty());
         assert!(mac.message.ends_with("diag-3.txt"), "{}", mac.message);
+
+        // With the pointer captured, through the window's event queue as
+        // the window delivers keys and modifier changes.
+        for (macos, number) in [(false, 4), (true, 5)] {
+            let mut shell = captured_shell();
+            shell.macos_shortcuts = macos;
+            shell.args.diagnostics = Ok(folder.clone());
+            let ctx = egui::Context::default();
+            let keys: &[(KeyCode, ModifiersState)] = if macos {
+                &[
+                    (KeyCode::SuperLeft, ModifiersState::SUPER),
+                    (KeyCode::ShiftLeft, ModifiersState::SHIFT),
+                    (KeyCode::KeyD, ModifiersState::empty()),
+                ]
+            } else {
+                &[
+                    (KeyCode::ControlLeft, ModifiersState::CONTROL),
+                    (KeyCode::AltLeft, ModifiersState::ALT),
+                    (KeyCode::ShiftLeft, ModifiersState::SHIFT),
+                    (KeyCode::KeyD, ModifiersState::empty()),
+                ]
+            };
+            let mut flags = ModifiersState::empty();
+            for &(key, flag) in keys {
+                flags |= flag;
+                let mut events = shell.events.borrow_mut();
+                events.forward(&WindowEvent::ModifiersChanged(flags.into()));
+                events.keyboard(key, Pressed, false, false, Some(key));
+                drop(events);
+                shell.input(&ctx, false);
+            }
+            assert!(shell.presenter.as_ref().unwrap().mouse.captured());
+            let path = folder.join(format!("diag-{number}.txt"));
+            assert_eq!(
+                shell.message,
+                format!("Machine report saved to {}", path.display()),
+                "macOS {macos}"
+            );
+        }
     }
 
     #[test]
@@ -9912,62 +10119,331 @@ mod tests {
         assert_eq!(std::fs::metadata(&journal).unwrap().len(), 128 + 640);
     }
 
-    /// With the exception-trace switch on, each Start opens the next
-    /// `trace-N.txt`, the frames append and flush the deliveries of their
-    /// run slices, so the file holds them before Stop, and Stop writes the
-    /// summary; with it off no file appears and the guest halts at the same
-    /// retired count.
-    #[test]
-    fn the_exception_trace_switch_writes_one_file_per_session() {
+    /// A session of the open ring ROM, whose guest takes 12,000 software
+    /// interrupts that never fold, run to its halt; the retired count at
+    /// the halt.
+    fn ring_session(shell: &mut Shell, ctx: &egui::Context) -> u64 {
         use std::time::Duration;
-        let temp = assembly::test_support::TempDir::new("shell-exception-trace");
+        let mut presenter = Presenter::new(
+            &assembly::bios(assembly::test_support::delivery_ring_rom(), None),
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+            &mut io::sink(),
+        )
+        .unwrap();
+        presenter.full_slices = true;
+        shell.started(presenter);
+        for frame in 1..=50 {
+            shell.tick(ctx, false, Duration::from_millis(20 * frame));
+            if shell.presenter.as_ref().unwrap().halted {
+                break;
+            }
+        }
+        let presenter = shell.presenter.as_ref().unwrap();
+        assert!(presenter.halted);
+        cpu::Cpu::retired(presenter.assembled_ref().machine.cpu())
+    }
+
+    /// The recording file's lines: the two header lines, checked, then the
+    /// entries and the summary.
+    fn recording_lines(path: &std::path::Path, retired: u64) -> Vec<String> {
+        let text = std::fs::read_to_string(path).unwrap();
+        let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+        assert_eq!(
+            lines[0],
+            format!(
+                "trace    exceptions and interrupts the guest took from retired 0 to retired {retired}"
+            )
+        );
+        assert!(
+            lines[1].starts_with("trace    the last 10000 entries, oldest first"),
+            "{}",
+            lines[1]
+        );
+        lines[2..].to_vec()
+    }
+
+    /// Record exceptions keeps the last 10,000 entries of a guest that
+    /// takes 12,000 deliveries, with exact totals, and writes them to one
+    /// `trace-N.txt` per recording at Save machine report (whose report
+    /// names the file), at Stop, at unchecking and when the shell closes.
+    /// It is off at launch; on or off, the guest halts at the same retired
+    /// count.
+    #[test]
+    fn record_exceptions_writes_the_last_entries_at_every_trigger() {
+        let temp = assembly::test_support::TempDir::new("shell-record-exceptions");
         let folder = temp.path().join("unemupc").join("diagnostics");
         let ctx = egui::Context::default();
-        let session = |shell: &mut Shell| {
-            let mut presenter = crate::tests::deliveries_presenter();
-            presenter.full_slices = true;
-            shell.started(presenter);
-            shell.tick(&ctx, false, Duration::from_millis(20));
-            let presenter = shell.presenter.as_ref().unwrap();
-            assert!(presenter.halted);
-            let retired = cpu::Cpu::retired(presenter.assembled_ref().machine.cpu());
-            // Before Stop the file already holds the deliveries, flushed.
-            let before_stop = std::fs::read_to_string(folder.join("trace-1.txt")).ok();
-            assert!(shell.stop());
-            (retired, before_stop)
+        let trace = |n: u32| folder.join(format!("trace-{n}.txt"));
+        let check = |lines: &[String]| {
+            assert_eq!(lines.len(), 10_000 + 3);
+            for (index, line) in lines[..10_000].iter().enumerate() {
+                let n = 2_000 + index as u64;
+                let (vector, ip) = if n.is_multiple_of(2) {
+                    (0x60, 0x27)
+                } else {
+                    (0x61, 0x29)
+                };
+                let retired = 12 + 5 * (n / 2) + 2 * (n % 2);
+                assert!(
+                    line.starts_with(&format!(
+                        "delivery {retired} software INT {vector:02X}h vector {vector:02x} at f800:{ip:04x} "
+                    )),
+                    "{index}: {line}"
+                );
+            }
+            assert_eq!(
+                lines[10_000..],
+                [
+                    "summary  12000 deliveries, 10000 of them in the entries kept, 0 dropped before they were read",
+                    "summary  INT 60h: 6000",
+                    "summary  INT 61h: 6000",
+                ]
+            );
         };
-        let mut off = shell();
-        off.presenter = None;
-        let (plain, _) = session(&mut off);
-        assert!(!folder.exists(), "the switch is off");
 
-        let mut on = shell();
-        on.presenter = None;
-        on.args.exception_trace = Some(Ok(folder.clone()));
-        let (retired, before_stop) = session(&mut on);
-        assert_eq!(retired, plain);
-        let before_stop = before_stop.unwrap();
-        assert_eq!(before_stop.lines().count(), 4, "{before_stop}");
-        assert!(before_stop
-            .lines()
-            .all(|line| line.starts_with("delivery ")));
-        let trace = std::fs::read_to_string(folder.join("trace-1.txt")).unwrap();
-        assert!(trace.starts_with(&before_stop));
-        let lines: Vec<&str> = trace.lines().collect();
-        assert_eq!(lines.len(), 9, "{trace}");
-        assert!(lines[0].starts_with("delivery 12 fault #UD vector 06 at f800:002e "));
-        assert!(lines[2].starts_with("delivery 37 irq IRQ 0 vector 08 at f800:0054 "));
-        assert!(lines[3].starts_with("delivery 54 fault #GP vector 0d at 0008:007b "));
+        let mut shell = shell();
+        shell.presenter = None;
+        shell.args.diagnostics = Ok(folder.clone());
+        assert!(!shell.record_exceptions, "off at launch");
+        let plain = ring_session(&mut shell, &ctx);
+        assert!(shell.stop());
+        assert!(!folder.exists(), "nothing recorded");
+
+        // Save machine report writes the recording so far; Stop rewrites
+        // the same file.
+        shell.set_record_exceptions(true);
+        assert_eq!(ring_session(&mut shell, &ctx), plain);
+        shell.save_diagnostics();
         assert_eq!(
-            lines[4],
-            "summary  4 deliveries, 4 lines written, 0 dropped before they were read"
+            shell.message,
+            format!(
+                "Machine report saved to {}; exceptions to {}",
+                folder.join("diag-1.txt").display(),
+                trace(1).display()
+            )
         );
-        session(&mut on);
-        assert!(folder.join("trace-2.txt").exists());
+        let report = std::fs::read_to_string(folder.join("diag-1.txt")).unwrap();
+        assert!(
+            report.ends_with(&format!(
+                "\ndesktop  exceptions recorded to {}\n",
+                trace(1).display()
+            )),
+            "{report}"
+        );
+        assert!(
+            report.contains(
+                "\ndelivery the last 64 of 12000 exceptions and interrupts in 64 entries"
+            ),
+            "{report}"
+        );
+        check(&recording_lines(&trace(1), plain));
+        assert!(shell.stop());
         assert_eq!(
-            std::fs::read_to_string(folder.join("trace-1.txt")).unwrap(),
-            trace
+            shell.message,
+            format!("Ready — Exceptions recorded to {}", trace(1).display())
         );
+        check(&recording_lines(&trace(1), plain));
+
+        // Stop alone writes the next session's own file.
+        ring_session(&mut shell, &ctx);
+        assert!(shell.stop());
+        check(&recording_lines(&trace(2), plain));
+
+        // Unchecking writes and ends the recording: Stop writes no more.
+        ring_session(&mut shell, &ctx);
+        shell.set_record_exceptions(false);
+        assert_eq!(
+            shell.message,
+            format!("Exceptions recorded to {}", trace(3).display())
+        );
+        check(&recording_lines(&trace(3), plain));
+        assert!(shell.stop());
+        assert!(!trace(4).exists());
+
+        // Checking it while a machine runs records from that moment; closing
+        // the window writes it.
+        ring_session(&mut shell, &ctx);
+        shell.set_record_exceptions(true);
+        drop(shell);
+        let lines = std::fs::read_to_string(trace(4)).unwrap();
+        assert!(lines.starts_with(&format!(
+            "trace    exceptions and interrupts the guest took from retired {plain} to retired {plain}\n"
+        )), "{lines}");
+        assert!(lines.ends_with(
+            "summary  0 deliveries, 0 of them in the entries kept, 0 dropped before they were read\n"
+        ), "{lines}");
+    }
+
+    /// With Record exceptions on but no recording running (its start was
+    /// refused), the report says why instead of calling the item off.
+    #[test]
+    fn the_report_says_why_a_checked_recording_is_missing() {
+        let temp = assembly::test_support::TempDir::new("shell-recording-refused");
+        let folder = temp.path().join("unemupc").join("diagnostics");
+        let mut shell = keyboard_shell();
+        shell.args.diagnostics = Ok(folder.clone());
+        shell.record_exceptions = true;
+        shell.presenter.as_mut().unwrap().recording_error = Some("refused here".into());
+        shell.save_diagnostics();
+        let report = std::fs::read_to_string(folder.join("diag-1.txt")).unwrap();
+        assert!(
+            report.ends_with(
+                "\ndesktop  exceptions not recorded: Record exceptions is on, but the recording did not start (refused here)\n"
+            ),
+            "{report}"
+        );
+    }
+
+    /// The accessibility nodes of one pass of the menu bar: each labelled
+    /// node with whether it is disabled and whether it is checked.
+    fn menu_nodes(ctx: &egui::Context, shell: &mut Shell) -> Vec<(String, bool, Option<bool>)> {
+        ctx.enable_accesskit();
+        let mut commands = Vec::new();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1040.0, 700.0),
+                )),
+                ..Default::default()
+            },
+            |ui| shell.menus(ui, &mut commands),
+        );
+        output.textures_delta.clear();
+        let nodes = output
+            .platform_output
+            .accesskit_update
+            .take()
+            .map(|update| {
+                update
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| {
+                        Some((
+                            node.label()?.to_owned(),
+                            node.is_disabled(),
+                            node.toggled()
+                                .map(|toggled| toggled == egui::accesskit::Toggled::True),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        output.drop_without_applying_deltas();
+        nodes
+    }
+
+    /// Open Tools › Diagnostics and leave it open; what it draws.
+    fn open_diagnostics_menu(ctx: &egui::Context, shell: &mut Shell) -> Drawn {
+        egui::Popup::close_all(ctx);
+        let mut drawn = draw(ctx, shell, Vec::new());
+        click(ctx, shell, label_rect(&drawn.text, "Tools").center());
+        drawn = draw(ctx, shell, Vec::new());
+        let diagnostics = label_rect(&drawn.text, "Diagnostics").center();
+        click(ctx, shell, diagnostics);
+        for _ in 0..2 {
+            drawn = draw(ctx, shell, vec![egui::Event::PointerMoved(diagnostics)]);
+        }
+        drawn
+    }
+
+    /// Tools › Diagnostics holds Save machine report with its chord,
+    /// Record exceptions as a check item and Open diagnostics folder. Save
+    /// is disabled without a machine, saying why; Open diagnostics folder
+    /// always works. Each item does what it says.
+    #[test]
+    fn the_tools_menu_has_the_diagnostics_items() {
+        let temp = assembly::test_support::TempDir::new("shell-diagnostics-menu");
+        let folder = temp.path().join("unemupc").join("diagnostics");
+        let ctx = egui::Context::default();
+        let item = |nodes: &[(String, bool, Option<bool>)], label: &str| {
+            nodes
+                .iter()
+                .find(|(shown, ..)| {
+                    shown
+                        .split_once(" Ctrl")
+                        .map_or(shown.as_str(), |(item, _)| item)
+                        .trim_end_matches(" ⌘⇧D")
+                        == label
+                })
+                .map(|(_, disabled, checked)| (*disabled, *checked))
+                .unwrap_or_else(|| panic!("{label} not in {nodes:?}"))
+        };
+        for macos in [false, true] {
+            let mut stopped = shell();
+            stopped.presenter = None;
+            stopped.macos_shortcuts = macos;
+            stopped.args.diagnostics = Ok(folder.clone());
+            let drawn = open_diagnostics_menu(&ctx, &mut stopped);
+            assert!(shows(
+                &drawn.text,
+                if macos { "⌘⇧D" } else { "Ctrl+Alt+Shift+D" }
+            ));
+            let nodes = menu_nodes(&ctx, &mut stopped);
+            assert_eq!(item(&nodes, "Save machine report"), (true, None));
+            assert_eq!(item(&nodes, "Record exceptions"), (false, Some(false)));
+            assert_eq!(item(&nodes, "Open diagnostics folder"), (false, None));
+        }
+
+        // The disabled item says why on hover.
+        let mut stopped = shell();
+        stopped.presenter = None;
+        assert_eq!(
+            stopped.save_report_disabled(),
+            Some("Start a machine first")
+        );
+
+        // Open diagnostics folder creates the folder and shows it.
+        let drawn = open_diagnostics_menu(&ctx, &mut stopped);
+        stopped.args.diagnostics = Ok(folder.clone());
+        crate::diagnostics::REVEALED.with(|revealed| revealed.borrow_mut().clear());
+        click(
+            &ctx,
+            &mut stopped,
+            label_rect(&drawn.text, "Open diagnostics folder").center(),
+        );
+        assert!(folder.is_dir());
+        assert_eq!(
+            crate::diagnostics::REVEALED.with(|revealed| revealed.borrow().clone()),
+            vec![folder.clone()]
+        );
+        assert_eq!(
+            stopped.message,
+            format!("Diagnostics folder: {}", folder.display())
+        );
+
+        // With a machine running Save is enabled and writes the report;
+        // Record exceptions checks and unchecks.
+        let mut running = keyboard_shell();
+        running.args.diagnostics = Ok(folder.clone());
+        let drawn = open_diagnostics_menu(&ctx, &mut running);
+        let nodes = menu_nodes(&ctx, &mut running);
+        assert_eq!(item(&nodes, "Save machine report"), (false, None));
+        click(
+            &ctx,
+            &mut running,
+            label_rect(&drawn.text, "Save machine report").center(),
+        );
+        assert_eq!(
+            running.message,
+            format!(
+                "Machine report saved to {}",
+                folder.join("diag-1.txt").display()
+            )
+        );
+        let drawn = open_diagnostics_menu(&ctx, &mut running);
+        click(
+            &ctx,
+            &mut running,
+            label_rect(&drawn.text, "Record exceptions").center(),
+        );
+        assert!(running.record_exceptions);
+        open_diagnostics_menu(&ctx, &mut running);
+        let nodes = menu_nodes(&ctx, &mut running);
+        assert_eq!(item(&nodes, "Record exceptions"), (false, Some(true)));
+        egui::Popup::close_all(&ctx);
     }
 
     #[test]

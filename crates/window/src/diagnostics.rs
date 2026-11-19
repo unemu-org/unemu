@@ -1,51 +1,41 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Saving the diagnostic report of the running PC on demand.
+//! Tools › Diagnostics: the machine report, the exception recording and
+//! their folder.
 //!
-//! With `UNEMUPC_DIAG=1` in the environment at startup, the chord
-//! Ctrl+Alt+Shift+D (Command+Shift+D on macOS, where the desktop's
-//! Ctrl+Alt chords become Command chords) writes the running PC's
-//! diagnostic report (`assembly::diagnostic`) to
+//! Save machine report (Ctrl+Alt+Shift+D; Command+Shift+D on macOS, where
+//! the desktop's Ctrl+Alt chords become Command chords) writes the running
+//! PC's diagnostic report (`assembly::diagnostic`) to
 //! `<data>/unemupc/diagnostics/diag-N.txt`, beside the `saves` and `states`
 //! of the platform data directory, and the status line says where. N is one
 //! more than the highest number already in the folder, so reports of earlier
-//! sessions stay. With the switch off the chord does nothing. Either way the
-//! chord is the host's: its D never reaches the guest. The machine also
-//! keeps its code trail and its last exception deliveries only with the
-//! switch on. See `backlog/docs/design/observation.md` §Diagnostic report of
-//! a running machine and `backlog/docs/commands.md`.
+//! sessions stay. The chord is the host's whether or not the pointer is
+//! captured: its D never reaches the guest. Whenever a machine runs, it keeps
+//! its code trail for the report; its last exception deliveries are kept
+//! from the first report, or from Record exceptions, since the CPU runs
+//! measurably slower while it logs them.
 //!
-//! With `UNEMUPC_TRACE_EXCEPTIONS=1` at startup, each Start opens the next
-//! `trace-N.txt` in the same folder and the machine traces every exception
-//! and interrupt the guest takes (`machine::DeliveryTrace`): the text is
-//! appended and flushed after every frame whose run slices delivered
-//! something, so a killed app keeps the trace so far, and the summary is
-//! written at Stop. See `backlog/docs/design/observation.md`
-//! §Exception and interrupt deliveries.
+//! Record exceptions, off at every launch, records each session's
+//! exceptions and interrupts (`machine::DeliveryRecording`): the last
+//! 10,000 entries, consecutive identical deliveries folded into one, and
+//! the totals per vector since the recording began. The recording goes to
+//! one `trace-N.txt` per recording, created new and never written over a
+//! file it did not write, written, and rewritten, at Save machine report, Stop, unchecking and closing the window; an app that is killed
+//! writes nothing. Open diagnostics folder shows the folder in the
+//! platform's file manager. See `backlog/docs/design/observation.md`
+//! §Diagnostic report of a running machine and §Exception and interrupt
+//! deliveries, and `backlog/docs/commands.md`.
 
 use std::{
-    ffi::OsStr,
     io::{self, Write},
     path::{Path, PathBuf},
 };
 use winit::keyboard::KeyCode;
 
-/// Setting this to `1` arms the diagnostic chord; read once at startup.
-pub(crate) const DIAG_VAR: &str = "UNEMUPC_DIAG";
-
-/// Setting this to `1` traces every exception and interrupt delivery of
-/// each session to a file; read once at startup.
-pub(crate) const TRACE_VAR: &str = "UNEMUPC_TRACE_EXCEPTIONS";
-
-/// The folder reports go to when the switch is exactly `1`: `None` with the
-/// switch off; an error when the host has no data directory.
-pub(crate) fn requested<E: std::fmt::Display>(
-    value: Option<&OsStr>,
-    data: Result<PathBuf, E>,
-) -> Option<Result<PathBuf, String>> {
-    (value == Some(OsStr::new("1"))).then(|| {
-        data.map(|data| data.join("unemupc").join("diagnostics"))
-            .map_err(|error| format!("the host has no data directory ({error})"))
-    })
+/// The diagnostics folder in the platform data directory, or why there is
+/// none.
+pub(crate) fn folder<E: std::fmt::Display>(data: Result<PathBuf, E>) -> Result<PathBuf, String> {
+    data.map(|data| data.join("unemupc").join("diagnostics"))
+        .map_err(|error| format!("the host has no data directory ({error})"))
 }
 
 /// Whether a press of `key` with `modifiers` (left and right Ctrl, Alt,
@@ -72,44 +62,81 @@ pub(crate) fn save(folder: &Path, text: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// The exception trace of one session, open for appending.
-pub(crate) struct TraceFile {
-    path: PathBuf,
-    file: io::BufWriter<std::fs::File>,
+/// The file a recording went to and a digest of what it wrote there last.
+#[derive(Debug, Default)]
+pub(crate) struct RecordingFile {
+    written: Option<(PathBuf, u64)>,
 }
 
-impl TraceFile {
-    /// Create the next `trace-N.txt` in `folder`, creating the folder.
-    pub(crate) fn create(folder: &Path) -> io::Result<Self> {
-        let (path, file) = create_next(folder, "trace-")?;
-        Ok(Self {
-            path,
-            file: io::BufWriter::new(file),
-        })
-    }
+fn digest(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
 
-    /// Where the trace goes.
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Append the trace text of the last run slices and flush it, so that
-    /// an app that is killed or aborts keeps the trace so far.
-    pub(crate) fn append(&mut self, text: &str) -> io::Result<()> {
-        if text.is_empty() {
-            return Ok(());
+/// Write a recording's `text` to its file: the next `trace-N.txt` in
+/// `folder` the first time, created new, never over another file; later the
+/// same file again, while it still holds what this recording wrote last.
+/// When it went missing or holds something else (another instance took the
+/// number), the text goes to the next free number instead. The path
+/// written.
+pub(crate) fn save_recording(
+    folder: &Path,
+    file: &mut RecordingFile,
+    text: &str,
+) -> io::Result<PathBuf> {
+    if let Some((path, last)) = &file.written {
+        if std::fs::read(path).is_ok_and(|held| digest(&held) == *last) {
+            let path = path.clone();
+            std::fs::write(&path, text)?;
+            file.written = Some((path.clone(), digest(text.as_bytes())));
+            return Ok(path);
         }
-        self.file.write_all(text.as_bytes())?;
-        self.file.flush()
     }
+    let (created, mut handle) = create_next(folder, "trace-")?;
+    handle.write_all(text.as_bytes())?;
+    file.written = Some((created.clone(), digest(text.as_bytes())));
+    Ok(created)
+}
 
-    /// Append the last text and the summary, and flush the file.
-    pub(crate) fn finish(mut self, text: &str, summary: &str) -> io::Result<PathBuf> {
-        self.file.write_all(text.as_bytes())?;
-        self.file.write_all(summary.as_bytes())?;
-        self.file.flush()?;
-        Ok(self.path)
+/// Show `folder` in the platform's file manager, creating it first.
+pub(crate) fn reveal(folder: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(folder)?;
+    #[cfg(test)]
+    {
+        REVEALED.with(|revealed| revealed.borrow_mut().push(folder.to_path_buf()));
+        Ok(())
     }
+    #[cfg(not(test))]
+    {
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else if cfg!(windows) {
+            "explorer"
+        } else {
+            "xdg-open"
+        };
+        let mut child = std::process::Command::new(opener)
+            .arg(folder)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        // The opener may outlive the call; a thread reaps it, so it never
+        // stays behind as a zombie.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The folders [`reveal`] would have shown, in a test.
+    pub(crate) static REVEALED: std::cell::RefCell<Vec<PathBuf>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Create `<prefix>N.txt` in `folder`, N one more than the highest number
@@ -153,23 +180,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_switch_is_exactly_one_and_names_the_data_folder() {
-        let data = || io::Result::Ok(PathBuf::from("/data"));
-        assert_eq!(requested(None, data()), None);
-        for value in ["", "0", "true", "yes", "01"] {
-            assert_eq!(requested(Some(OsStr::new(value)), data()), None, "{value}");
-        }
+    fn the_folder_is_in_the_data_directory() {
         assert_eq!(
-            requested(Some(OsStr::new("1")), data()),
-            Some(Ok(PathBuf::from("/data/unemupc/diagnostics")))
+            folder(io::Result::Ok(PathBuf::from("/data"))),
+            Ok(PathBuf::from("/data/unemupc/diagnostics"))
         );
-        assert!(matches!(
-            requested(
-                Some(OsStr::new("1")),
-                Err::<PathBuf, _>(io::Error::other("none"))
-            ),
-            Some(Err(_))
-        ));
+        assert!(folder(Err::<PathBuf, _>(io::Error::other("none"))).is_err());
+    }
+
+    /// A recording takes the next free number the first time, created new,
+    /// and keeps that file afterwards, rewritten with the latest text; a
+    /// file it did not write last is left alone and the text takes the next
+    /// number.
+    #[test]
+    fn a_recording_keeps_its_file_and_never_overwrites_another() {
+        let temp = assembly::test_support::TempDir::new("trace-numbering");
+        let folder = temp.path().join("diagnostics");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("trace-3.txt"), "earlier").unwrap();
+        let mut file = RecordingFile::default();
+        let first = save_recording(&folder, &mut file, "one").unwrap();
+        assert_eq!(first, folder.join("trace-4.txt"));
+        assert_eq!(save_recording(&folder, &mut file, "two").unwrap(), first);
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "two");
+        // Another program replaced it: it stays, the text moves on.
+        std::fs::write(&first, "theirs").unwrap();
+        assert_eq!(
+            save_recording(&folder, &mut file, "three").unwrap(),
+            folder.join("trace-5.txt")
+        );
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "theirs");
+        assert_eq!(
+            std::fs::read_to_string(folder.join("trace-3.txt")).unwrap(),
+            "earlier"
+        );
+        let mut other = RecordingFile::default();
+        assert_eq!(
+            save_recording(&folder, &mut other, "four").unwrap(),
+            folder.join("trace-6.txt")
+        );
     }
 
     #[test]

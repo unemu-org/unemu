@@ -371,6 +371,56 @@ pub mod test_support {
         rom
     }
 
+    /// A 32 KiB system ROM for F8000h whose real-mode guest takes 12,000
+    /// software interrupts, alternating INT 60h and INT 61h, and halts: more
+    /// deliveries than a recording keeps entries, none of them folding into
+    /// the one before, for the tests of the recording's ring. Both vectors
+    /// lead to one IRET at F800:0040h (Intel 80286 Programmer's Reference
+    /// Manual, Appendix B, INT, IRET and LOOP). The n-th delivery (from 0)
+    /// enters its handler at retired count 12 + 5 * (n / 2) + 2 * (n % 2),
+    /// the jump at the reset vector counted.
+    /// The bytes are this NASM listing (`nasm -f bin`, org 0):
+    ///
+    /// ```text
+    /// 0000 FA               cli
+    /// 0001 31C0             xor ax, ax
+    /// 0003 8ED8             mov ds, ax
+    /// 0005 8ED0             mov ss, ax
+    /// 0007 BC0070           mov sp, 7000h
+    /// 000A C70680014000     mov word [0180h], 0040h   ; INT 60h offset
+    /// 0010 C706820100F8     mov word [0182h], 0F800h
+    /// 0016 C70684014000     mov word [0184h], 0040h   ; INT 61h offset
+    /// 001C C706860100F8     mov word [0186h], 0F800h
+    /// 0022 B97017           mov cx, 6000
+    /// 0025 CD60             int 60h
+    /// 0027 CD61             int 61h
+    /// 0029 E2FA             loop 0025h
+    /// 002B FA               cli
+    /// 002C F4               hlt
+    /// 0040 CF               iret                      ; both handlers
+    /// 7FF0 EA000000F8       jmp F800:0000h            ; the reset vector
+    /// ```
+    pub fn delivery_ring_rom() -> Vec<u8> {
+        let mut rom = vec![0; 0x8000];
+        let code: &[u8] = &[
+            0xFA, // CLI
+            0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xD0, // XOR AX,AX; MOV DS,AX; MOV SS,AX
+            0xBC, 0x00, 0x70, // MOV SP,7000h
+            0xC7, 0x06, 0x80, 0x01, 0x40, 0x00, // MOV WORD [0180h],0040h
+            0xC7, 0x06, 0x82, 0x01, 0x00, 0xF8, // MOV WORD [0182h],0F800h
+            0xC7, 0x06, 0x84, 0x01, 0x40, 0x00, // MOV WORD [0184h],0040h
+            0xC7, 0x06, 0x86, 0x01, 0x00, 0xF8, // MOV WORD [0186h],0F800h
+            0xB9, 0x70, 0x17, // MOV CX,6000
+            0xCD, 0x60, 0xCD, 0x61, // INT 60h; INT 61h
+            0xE2, 0xFA, // LOOP 0025h
+            0xFA, 0xF4, // CLI; HLT
+        ];
+        rom[..code.len()].copy_from_slice(code);
+        rom[0x40] = 0xCF; // IRET
+        rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0x00, 0x00, 0x00, 0xF8]);
+        rom
+    }
+
     /// A 32 KiB system ROM for F8000h whose guest takes one delivery of
     /// each kind and halts, for the tests of the exception trace and the
     /// report's deliveries: in real mode it points INT 6, INT 60h and INT 8

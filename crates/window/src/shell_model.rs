@@ -153,6 +153,7 @@ pub(crate) fn shortcut_text(shortcut: &str, macos: bool) -> &str {
         "Ctrl+Alt+Shift+E" => "⌘⇧E",
         "Ctrl+Alt+I" => "⌘I",
         "Ctrl+Alt+Shift+I" => "⌘⇧I",
+        "Ctrl+Alt+Shift+D" => "⌘⇧D",
         "F1" => "⌘⇧/",
         "Ctrl+N" => "⌘N",
         "Ctrl+Shift+N" => "⌘⇧N",

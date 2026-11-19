@@ -80,7 +80,7 @@ pub use font::{FontAtlas, FontError, MDA_FONT, VGA_FONT};
 pub use keyboard::{set1_scancodes, HostKeyboard};
 #[cfg(feature = "test-support")]
 pub use machine::InputLogEntry;
-pub use machine::{PcMachine, RASTER_SCALE};
+pub use machine::{PcMachine, RASTER_SCALE, RECORDED_DELIVERIES};
 pub use mouse::{MouseInput, PcMouse};
 pub use raster::{PixelFrame, RasterError, Rasterizer};
 

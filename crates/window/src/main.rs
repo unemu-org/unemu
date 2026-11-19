@@ -140,8 +140,11 @@ struct Presenter {
     media_config: assembly::MachineConfig,
     /// Status-bar drive lights; host UI time only, never read by the machine.
     drive_lights: drive_chips::DriveLights,
-    /// This session's exception trace file, while the switch is on.
-    exception_trace: Option<diagnostics::TraceFile>,
+    /// The file this session's exception recording went to, once written;
+    /// later writes replace it. See [`diagnostics`].
+    recording_file: diagnostics::RecordingFile,
+    /// Why the exception recording did not start, when it did not.
+    recording_error: Option<String>,
 }
 
 impl std::ops::Deref for Presenter {
@@ -215,7 +218,8 @@ impl Presenter {
             media_slots,
             media_config: config.clone(),
             drive_lights: drive_chips::DriveLights::default(),
-            exception_trace: None,
+            recording_file: diagnostics::RecordingFile::default(),
+            recording_error: None,
         })
     }
 
@@ -282,48 +286,54 @@ impl Presenter {
         self.session.finish(warnings)
     }
 
-    /// Trace every exception and interrupt delivery of this session to the
-    /// next `trace-N.txt` in `folder`; the file's path. See
-    /// [`diagnostics::TRACE_VAR`].
-    fn start_exception_trace(&mut self, folder: &Path) -> Result<PathBuf, String> {
-        self.session
-            .machine_mut()
-            .enable_delivery_trace()
-            .map_err(|error| error.to_string())?;
-        let file = diagnostics::TraceFile::create(folder).map_err(|error| error.to_string())?;
-        let path = file.path().to_path_buf();
-        self.exception_trace = Some(file);
-        Ok(path)
-    }
-
-    /// Append the trace text of the run slices since the last call.
-    fn append_exception_trace(&mut self) {
-        let Some(file) = &mut self.exception_trace else {
-            return;
-        };
-        let text = self
-            .session
-            .machine_mut()
-            .take_delivery_trace()
-            .unwrap_or_default();
-        if let Err(error) = file.append(&text) {
-            eprintln!("exception trace {}: {error}", file.path().display());
-            self.exception_trace = None;
-        }
-    }
-
-    /// Write the last trace text and the summary, and close the file.
-    fn finish_exception_trace(&mut self) {
-        let Some(file) = self.exception_trace.take() else {
-            return;
-        };
+    /// Start recording the exceptions and interrupts this session's guest
+    /// takes; see [`diagnostics`]. A recording already running goes on.
+    /// The report's deliveries start with it, if they had not yet.
+    fn start_recording(&mut self) -> Result<(), String> {
         let machine = self.session.machine_mut();
-        let text = machine.take_delivery_trace().unwrap_or_default();
-        let summary = machine.delivery_trace_summary().unwrap_or_default();
-        let path = file.path().to_path_buf();
-        if let Err(error) = file.finish(&text, &summary) {
-            eprintln!("exception trace {}: {error}", path.display());
-        }
+        let started = machine
+            .enable_delivery_log()
+            .and_then(|()| machine.start_delivery_recording())
+            .map_err(|error| error.to_string());
+        self.recording_error = started.as_ref().err().cloned();
+        started
+    }
+
+    /// Why the last start of a recording failed; `None` after one that
+    /// worked.
+    fn recording_error(&self) -> Option<&str> {
+        self.recording_error.as_deref()
+    }
+
+    /// Whether a recording runs.
+    fn recording(&self) -> bool {
+        self.session.machine().delivery_recording_active()
+    }
+
+    /// Write the recording so far to its file in `folder`, the next
+    /// `trace-N.txt` the first time; `None` while nothing records.
+    fn write_recording(&mut self, folder: &Path) -> Option<Result<PathBuf, String>> {
+        let text = self.session.machine().delivery_recording()?;
+        Some(
+            diagnostics::save_recording(folder, &mut self.recording_file, &text)
+                .map_err(|error| error.to_string()),
+        )
+    }
+
+    /// Write the recording to its file in `folder` and end it; `None`
+    /// while nothing records. Without a folder the recording ends unwritten
+    /// and the error says why.
+    fn finish_recording(
+        &mut self,
+        folder: &Result<PathBuf, String>,
+    ) -> Option<Result<PathBuf, String>> {
+        let written = match folder {
+            Ok(folder) => self.write_recording(folder),
+            Err(error) => self.recording().then(|| Err(error.clone())),
+        };
+        self.session.machine_mut().stop_delivery_recording();
+        self.recording_file = diagnostics::RecordingFile::default();
+        written
     }
 
     fn write_reset_summary(&self, diagnostics: &mut impl io::Write) {
@@ -446,12 +456,9 @@ struct Args {
     options: assembly::AssemblyOptions,
     /// Print speaker and CPU-reset events to stderr; see [`SPEAKER_TRACE_VAR`].
     speaker_trace: bool,
-    /// Where the diagnostic chord saves reports, or why it cannot; `None`
-    /// while the switch is off. See [`diagnostics`].
-    diagnostics: Option<Result<PathBuf, String>>,
-    /// Where each session's exception trace goes, or why it cannot; `None`
-    /// while the switch is off. See [`diagnostics::TRACE_VAR`].
-    exception_trace: Option<Result<PathBuf, String>>,
+    /// Where machine reports and exception recordings go, or why they
+    /// cannot. See [`diagnostics`].
+    diagnostics: Result<PathBuf, String>,
 }
 
 /// Setting this to `1` makes the window print one stderr line per speaker
@@ -474,8 +481,8 @@ fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Args
         display: None,
         options: assembly::AssemblyOptions::default(),
         speaker_trace: false,
-        diagnostics: None,
-        exception_trace: None,
+        // `run` names the data directory's folder; tests name their own.
+        diagnostics: Err("no diagnostics folder was named".into()),
     };
     let mut machine_seen = false;
     let mut args = args.into_iter();
@@ -611,14 +618,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     let mut args = parse_args(args)?;
     args.speaker_trace = speaker_trace_requested(std::env::var_os(SPEAKER_TRACE_VAR).as_deref());
-    args.diagnostics = diagnostics::requested(
-        std::env::var_os(diagnostics::DIAG_VAR).as_deref(),
-        image_store::location::data_directory(),
-    );
-    args.exception_trace = diagnostics::requested(
-        std::env::var_os(diagnostics::TRACE_VAR).as_deref(),
-        image_store::location::data_directory(),
-    );
+    args.diagnostics = diagnostics::folder(image_store::location::data_directory());
     let autostart = std::env::args_os().skip(1).any(|arg| arg == "--machine");
     shell::run(args, autostart, cores)?;
     Ok(())
@@ -688,20 +688,6 @@ mod tests {
         });
         Presenter::new(
             &config,
-            assembly::AssemblyOptions {
-                allow_unlisted_firmware: true,
-            },
-            &mut io::sink(),
-        )
-        .unwrap()
-    }
-
-    /// A machine whose firmware is the open delivery ROM: a #UD, INT 60h,
-    /// an IRQ0 tick and a protected-mode #GP, then a halt with interrupts
-    /// off (`assembly::test_support::deliveries_rom`).
-    pub(super) fn deliveries_presenter() -> Presenter {
-        Presenter::new(
-            &assembly::bios(assembly::test_support::deliveries_rom(), None),
             assembly::AssemblyOptions {
                 allow_unlisted_firmware: true,
             },
@@ -857,8 +843,7 @@ mod tests {
             display: None,
             options: assembly::AssemblyOptions::default(),
             speaker_trace: false,
-            diagnostics: None,
-            exception_trace: None,
+            diagnostics: Err("none".into()),
         };
         let error = setup(&missing, &mut io::sink()).err().unwrap().to_string();
         assert!(error.contains("missing.toml"), "{error}");

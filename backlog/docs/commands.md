@@ -1187,39 +1187,53 @@ the CPU's registers, flags and descriptor caches, the bytes at CS:IP and the
 words at SS:SP, the CS:IP of the last run slices, the 8259s, the 8042, the
 PIT, A20 and the CMOS shutdown byte and NMI mask, for a guest that hangs
 without an error. A run that stops before step N prints no report. With
-`--diag-at` the report also lists the last 64 exceptions and interrupts the
-guest took, oldest first.
+`--diag-at` the report also lists the last 64 entries of the exceptions and
+interrupts the guest took, oldest first, consecutive identical deliveries
+folded into one.
 
-`--trace-exceptions` writes a line to stderr for every exception and
-interrupt the guest takes, delivered in the guest and therefore invisible
-otherwise: the retired count, the kind (fault, trap, software, irq, nmi), the
-mnemonic (`#UD`, `#GP`, `INT 21h`, `IRQ 0`, `NMI` …) and vector, the saved
-CS:IP and its linear address, the error code, the CPL before and after, and
-the 8 bytes at the saved CS:IP (memory only, never a device, read at the end
-of the run slice). The first 10,000 deliveries get a line, then a count line
-every 1,000,000, and the run ends with a summary (total, dropped, a count per
-mnemonic) before the `stopped: ...` line. upcli keeps the trace in memory and
-writes it when the run ends (with `--diag-at`, the lines so far go before the
-report). Off, nothing changes; on, the run's retired count and
-every guest effect are the same. The format is described in
-design/observation.md §Exception and interrupt deliveries.
+`--trace-exceptions` records every exception and interrupt the guest takes,
+delivered in the guest and therefore invisible otherwise, and writes the
+recording to stderr when the run ends, before the `stopped: ...` line: the
+last 10,000 entries, oldest first, each with the retired count, the kind
+(fault, trap, software, irq, nmi), the mnemonic (`#UD`, `#GP`, `INT 21h`,
+`IRQ 0`, `NMI` …) and vector, the saved CS:IP and its linear address, the
+error code, the CPL before and after, and the 8 bytes at the saved CS:IP
+(memory only, never a device, read at the end of the run slice);
+consecutive identical deliveries fold into one entry with their retired
+range and count (`delivery 103..600100 x100000 fault #UD …`), and a summary
+gives the exact total, the dropped count and a count per mnemonic. The
+desktop's Record exceptions writes the same text. Off, nothing changes; on,
+the run's retired count and every guest effect are the same. The format is
+described in design/observation.md §Exception and interrupt deliveries.
 
-The window takes the same report on demand when `UNEMUPC_DIAG=1` is in its
-environment at startup (any other value, or none, leaves it off):
-Ctrl+Alt+Shift+D, ⌘⇧D on macOS, writes the running PC's report to
-`diag-N.txt` in `unemupc/diagnostics` of the platform data directory (on
-macOS `~/Library/Application Support/unemupc/diagnostics`), N counting on
-from the highest number already there, and the status line shows
-`Diagnostic state saved to PATH`. With the switch on, the machine also keeps
-its code trail from Start. Without the switch the chord does nothing; either
-way its D never reaches the guest. The report is described in
-design/observation.md §Diagnostic report of a running machine.
+In the window, Tools › Diagnostics holds three items:
 
-`UNEMUPC_TRACE_EXCEPTIONS=1` in the window's environment at startup is the
-window's `--trace-exceptions`: each Start creates the next `trace-N.txt` in
-the same `unemupc/diagnostics` folder (stderr names it), every frame that
-delivered something appends and flushes its lines, so a killed window keeps
-the trace so far, and Stop (or quitting) writes the summary. Any other value, or none, leaves it off.
+- **Save machine report** (Ctrl+Alt+Shift+D, ⌘⇧D on macOS, with the pointer
+  captured or not) writes the running PC's report to `diag-N.txt` in
+  `unemupc/diagnostics` of the platform data directory (on macOS
+  `~/Library/Application Support/unemupc/diagnostics`), N counting on from
+  the highest number already there, and the status line shows `Machine
+  report saved to PATH`. It works whenever a PC runs, paused too, and is
+  disabled without one. The machine keeps its code trail from every Start;
+  the report's exception deliveries start with the first report (which
+  says so and lists none) or with Record exceptions, because the CPU runs
+  6 to 10 per cent slower on interrupt-heavy guests while it logs them.
+  The chord's D never reaches the guest. The
+  report is described in design/observation.md §Diagnostic report of a
+  running machine.
+- **Record exceptions**, a check item off at every launch, records the
+  running PC and every PC started while it is checked: the last 10,000
+  entries, folded as above, with exact totals. Each recording goes to one
+  `trace-N.txt` in the same folder, created new and never written over
+  another program's file, written at Save machine report (the report and
+  the status line name it), at Stop, at unchecking and when the
+  window closes or the app quits. Nothing is written while the guest runs:
+  an app that is killed leaves no trace file.
+- **Open diagnostics folder** shows that folder in the platform's file
+  manager (`open`, `explorer` or `xdg-open`), creating it first.
+
+The window reads no environment switch for these; `UNEMUPC_DIAG` and
+`UNEMUPC_TRACE_EXCEPTIONS` are gone.
 A configured card without printable output is an argument error (exit 2). Both file commands accept
 `--allow-unlisted-firmware` for development. Existing `--boot`, `--bios` and
 `media` commands retain their contracts. The FreeDOS prompt, DIR and file-write
@@ -1261,7 +1275,7 @@ Ctrl+Alt+Del sequence. On other platforms the existing bindings stay in effect.
 | Release pointer | ⌘G | Ctrl+Alt+G |
 | Full screen | ⌘Enter | Ctrl+Alt+Enter |
 | Hold fast-forward | ⌘T | Ctrl+Alt+T |
-| Save diagnostic state (with `UNEMUPC_DIAG=1`) | ⌘⇧D | Ctrl+Alt+Shift+D |
+| Save machine report (Tools › Diagnostics) | ⌘⇧D | Ctrl+Alt+Shift+D |
 | New / open machine file | ⌘N / ⌘O | Ctrl+N / Ctrl+O outside guest focus |
 | Settings | ⌘, | Ctrl+, outside guest focus |
 | Keyboard shortcuts | ⌘⇧/ | F1 outside guest focus |
