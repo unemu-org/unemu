@@ -90,6 +90,8 @@ recipe build my.media.toml --fetch --store /path/to/store
 recipe build my.media.toml --keep-as 1.0-mine-r1
 recipe scaffold LABFULL.ZIP AZURAMON
 recipe inputs my.media.toml --format sha256sums
+image export private/media/ibm-pc/azuramoon:2026-r1 --to azuramoon --files
+image export private/firmware/ibm-pc/opt-rom:r1 --to opt-rom --store /path/to/store
 media create floppy --type 1.44M --format --label TRANSFER /path/to/transfer.img
 media create floppy --type 1.44M --add /path/to/GAME --label GAME /path/to/game.img
 media create floppy --type 1.44M --add /path/to/PLAY.EXE --add /path/to/DATA.DAT --top MYGAME /path/to/mygame.img

@@ -1838,11 +1838,30 @@ cargo run --offline -p upcli -- recipe build my.media.toml --keep-as 1.0-mine-r1
   flags and the `[license]` source the `--source` archive. Attachments are
   not built in this version; the output names each one.
 
-After a build, one line per input says how it is kept (§3.10 of the
-design): `kept as stored`, `kept as files` (built into a volume), `kept as
-text with DOS line ends`, `not needed: …` (an archive whose members were
-found), with `not kept: N members unused` for an opened archive's members
-the recipe did not take. A pinned recipe's output found instead of made
+After a build, one line per input says how it is kept and in which of
+the artifact's files, named as `image export` writes them (§3.10 of the
+design), so that a person who means to delete the originals knows what
+stays:
+
+```text
+  archive: members kept as files in program.img; members kept as stored in B.DAT; not kept: the archive itself, 1 member unused
+  boot: kept as stored in boot.img
+  game: kept as files in data-1.img, data-2.img
+  notes: kept as text with DOS line ends in README.TXT
+```
+
+`kept as stored in FILE`: the input's bytes are that file unchanged.
+`kept as files in FILE, …`: a `fat` step built them into the volumes of
+these media, whose files `image export --files` writes back with the
+recipe's names and times (never the host times the copies had). `kept as
+text with DOS line ends in FILE`: a `text` step changed the line ends. For
+an archive an `unpack` step opened, a way through that step keeps its
+members (`members kept as …`), and unless the archive is also kept as
+stored, `not kept: the archive itself` follows, with `N members unused` for
+the file members the recipe did not take; a recipe that wants the archive
+kept lists it as an extra (`kept as stored in GAME.ZIP; members kept as
+…`). An input the build did not need
+says `not needed: …` (an archive whose members were found). A pinned recipe's output found instead of made
 prints `  KIND ID (FILE): found WHERE, not made`. The last line is `built
 NAME:TAG<TAB>DIGEST<TAB>draft` (`locked` for a pinned recipe), or
 `already built …` when the tag names this artifact already. A pinned
@@ -2190,6 +2209,114 @@ upcli recipe build recipes/freedos/freedos-1.4-720k.media.toml --library /path/t
 The tests are `recipe_registry` in `cli-pc` (the mock registry of the
 registry tests, no network) and the store test
 `a_tag_records_the_recipe_that_built_it_until_it_moves`.
+
+## Exporting an image
+
+`upcli image export NAME:TAG --to DIR` writes an installation set or a
+firmware package of the store as plain files ([design/recipes.md](design/recipes.md)
+§3.10, decision-37),
+so the originals can be deleted and the files had back without the store:
+
+```sh
+cargo run --offline -p upcli -- image export private/media/ibm-pc/azuramoon:2026-r1 --to azuramoon --files
+cargo run --offline -p upcli -- image export private/firmware/ibm-pc/opt-rom:r1 --to opt-rom --store /path/to/store
+```
+
+The layout, version 1 (`EXPORT-VERSION` holds `1` and a line feed):
+
+```text
+DIR/
+  x86BOOT.img        every layer's decoded bytes under its file name: the
+  x86DSK01.img       title on its descriptor, without .zst on a compressed
+  LICENSES.TXT       layer (media, ROM images, extras, a package's README.md)
+  metadata.json      a set's metadata layer, as stored
+  config.toml        the config, as stored
+  manifest.json      the manifest, as stored
+  EXPORT-VERSION     1
+  SHA256SUMS         sha256sum -c lines over all of the above, by the bytes
+                     of the names; written last
+  files/             with --files only: the disks' files
+    FDAUTO.BAT
+    freedos/bin/attrib.com
+```
+
+- An unmodified medium is the input byte for byte; so is an extra. No
+  layer takes one of the names the export writes itself (machine-images
+  §2, Export file names), so nothing in `DIR` is ambiguous.
+- `--files` also writes the content of every diskette of a set that reads
+  as a FAT12 volume into the folder `files`, the volumes merged into one
+  tree in the set's order, as the volumes of a split set make up one tree.
+  A name is the entry's long name when it has a valid one, else its 8.3
+  name as stored, with the stem or the extension in lower case when the
+  entry's case bits (byte 12, as Windows NT, Linux and mtools write them)
+  say so; a file's and a folder's modification time is its entry's
+  last-write time taken as UTC (a DOS time has no zone, so the export gives
+  the same times on every host); attributes are not set. A folder that
+  several volumes hold is one folder with the first one's time; a file that
+  several hold must have the same bytes. Other bytes, a file on one volume
+  and a folder on another, a damaged volume (a broken or looping chain, a
+  cross-linked cluster), a name a host cannot take or longer than 255
+  bytes, a folder deeper than the 64 characters DOS keeps for a path
+  (`\A\B` in 8.3 names, at most 32 levels) or a path of host names longer
+  than 260 characters (MAX_PATH) refuse the export; a
+  medium that is not a FAT12 volume (an optical image, a disk of another
+  format) is printed as `not read<TAB>NAME<TAB>REASON` and left out of the
+  tree. `SHA256SUMS` does not list the tree: the images it lists hold it.
+  A package has no disks, and `--files` adds an empty `files`.
+- Nothing is written before every name has been checked: a file already in
+  `DIR` with the same bytes is kept, and one with other bytes, a folder
+  where a file goes, a file where a folder goes or a symbolic link refuses
+  the export with nothing written. Each file is written under a temporary
+  name beside it and renamed. No file of the export names a host path.
+  One case the check cannot see: names are compared by their bytes, case
+  aside, not by Unicode normalization (the program carries no
+  normalization table). Two long names that differ only in composition,
+  `é` as one code point or as `e` and a combining accent, are two files on
+  Linux and one on macOS; there the second meets the first while the
+  export writes, and the export stops and removes every file and folder it
+  wrote, leaving `DIR` as it was (MEASURED on macOS, `cli-pc` test
+  `names_one_host_takes_as_one_file_leave_nothing_behind`). Folders with
+  such names merge on macOS.
+- Output: a `not read` line per medium `--files` left out, `exported
+  NAME:TAG<TAB>DIGEST<TAB>N files`, and with `--files` `files<TAB>N
+  files<TAB>M folders<TAB>K volumes`. Exit status: 0 exported, 1 refused
+  (the reason on standard error), 2 on a usage error. A machine image is
+  refused: export writes sets and packages. Saving whole artifacts as OCI
+  Image Layouts is other work (`upc-5pw.116`).
+
+The same files without `upcli`: `scripts/export-layout.sh [--files] LAYOUT
+REF DIR` reads any OCI Image Layout, such as the `images` folder of a store
+or what `oras copy --to-oci-layout` saves, with a POSIX shell, `jq`,
+`sha256sum` and `zstd`, and for `--files` mtools (`mdir`, `mcopy -s -m`
+under `TZ=UTC0`). REF is the image's `org.opencontainers.image.ref.name` in
+`index.json` (a store's `NAME:TAG`) or its manifest digest. It checks every
+blob against its digest and every decoded layer against
+`unemu.decoded.digest`, and checks the names as `upcli` does (no name the
+export writes itself, no two layers' names equal ignoring case, no `files`
+with `--files`) before it writes anything. It runs under a UTF-8 locale
+(`C.UTF-8` or `en_US.UTF-8`; it stops without one), with mtools reading no
+configuration (`MTOOLSRC=/dev/null`). Unlike `upcli` it writes only into an
+empty or absent `DIR`; like it, it prints `not read<TAB>NAME` for an optical
+image and a diskette it cannot read. All its tools are in the devShell;
+the test that compares the two exports fails without one of them when the
+fixtures are required (`UNEMUPC_REQUIRE_FIXTURES=1`) and skips otherwise.
+
+```sh
+scripts/export-layout.sh --files /path/to/store/images private/media/ibm-pc/azuramoon:2026-r1 azuramoon
+cd azuramoon && sha256sum -c SHA256SUMS
+```
+
+MEASURED (`cli-pc` test `image_export`): the command and the script write
+the same files, bytes and the unpacked files' and folders' times, for a
+synthetic two-volume split set with an extra and a blank image that is no
+FAT volume, a synthetic firmware package, and the FreeDOS 1.4 1.44M set (7
+real disks with long names), and a disk mtools wrote with lower-case 8.3
+names (case bits) and a mixed-case long name; `sha256sum -c` accepts
+`SHA256SUMS`; the refusals above leave `DIR` as it was. With the maintainer's own files
+(`UNEMUPC_REQUIRE_USER_ROMS=1`, ignored test
+`user_rom_azuramoon_exported_with_files_is_the_users_folder`), Azuramoon
+built from the user's folder and exported with `--files` is that folder,
+561 files byte for byte under their own paths.
 
 ## Creating disk images
 

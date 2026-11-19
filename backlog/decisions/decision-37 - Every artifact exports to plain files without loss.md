@@ -51,11 +51,23 @@ has no `upcli`.
    lines that uses only an OCI client, `zstd` and `sha256sum`, and it has a
    version file, `EXPORT-VERSION`. It is one of the things that bind forever
    (recipes.md §9).
+
+   *Note, 2026-11-19 (B11, `upc-5pw.113.11`):* the script,
+   `scripts/export-layout.sh`, is more than a few lines and needs `jq` to
+   read the manifest, and mtools for `--files`; it reads an OCI Image
+   Layout instead of an OCI client's pull.
 5. **Three limits are stated, not hidden.** A container a recipe unpacked is
    not rebuilt: the user gets the members taken, not the archive. Members
    the recipe did not take are not in the artifact. Host file times are
    never stored. `recipe build` prints, for every input, `kept as stored`,
    `kept as files` or `not kept: N members unused`.
+
+   *Note, 2026-11-19 (B11, `upc-5pw.113.11`):* the report names the
+   exported files and reads `kept as stored in F`, `kept as files in F, G`,
+   `kept as text with DOS line ends in F`; a way through an `unpack` step
+   reads `members kept as …`, followed, unless the archive is also kept as
+   stored, by `not kept: the archive itself, N members unused`
+   (commands.md, Building recipes).
 6. **A recipe that wants an archive itself kept** lists it as an extra.
 
 ## Consequences

@@ -63,6 +63,70 @@ impl DosTime {
         })
     }
 
+    /// The time a directory entry's date and time words hold, or `None`
+    /// when they hold no valid time (a zero date, a day the month lacks, an
+    /// hour past 23): the inverse of the words the builder writes.
+    pub fn from_words(date: u16, time: u16) -> Option<Self> {
+        Self::new(
+            1980 + (date >> 9),
+            ((date >> 5) & 0x0F) as u8,
+            (date & 0x1F) as u8,
+            (time >> 11) as u8,
+            ((time >> 5) & 0x3F) as u8,
+            ((time & 0x1F) * 2) as u8,
+        )
+        .ok()
+    }
+
+    /// The year, 1980 to 2107.
+    pub const fn year(self) -> u16 {
+        self.year
+    }
+
+    /// The month, 1 to 12.
+    pub const fn month(self) -> u8 {
+        self.month
+    }
+
+    /// The day of the month, from 1.
+    pub const fn day(self) -> u8 {
+        self.day
+    }
+
+    /// The hour, 0 to 23.
+    pub const fn hour(self) -> u8 {
+        self.hour
+    }
+
+    /// The minute, 0 to 59.
+    pub const fn minute(self) -> u8 {
+        self.minute
+    }
+
+    /// The second, even, 0 to 58.
+    pub const fn second(self) -> u8 {
+        self.second
+    }
+
+    /// Seconds from 1970-01-01 00:00:00 to this time read as UTC. A FAT
+    /// time has no zone; taking it as UTC gives one instant on every host.
+    pub fn unix_seconds(self) -> u64 {
+        // Days from the civil date (H. Hinnant, "chrono-Compatible Low-Level
+        // Date Algorithms", days_from_civil), for years from 1970.
+        let (year, month) = (i64::from(self.year), i64::from(self.month));
+        let y = if month <= 2 { year - 1 } else { year };
+        let era = y / 400;
+        let yoe = y - era * 400;
+        let mp = (month + 9) % 12;
+        let doy = (153 * mp + 2) / 5 + i64::from(self.day) - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        let days = era * 146_097 + doe - 719_468;
+        (days * 86_400
+            + i64::from(self.hour) * 3600
+            + i64::from(self.minute) * 60
+            + i64::from(self.second)) as u64
+    }
+
     /// The entry's date word.
     pub(super) fn date(self) -> u16 {
         ((self.year - 1980) << 9) | (u16::from(self.month) << 5) | u16::from(self.day)

@@ -389,9 +389,11 @@ Three limits are stated instead of hidden. A container that a recipe
 unpacked is not rebuilt: the user gets the members the recipe took, not the
 zip. Members the recipe did not take are not in the artifact. And host file
 times are never stored, so `--files` gives the recipe's times, not the ones
-the user's copies had. `recipe build` therefore prints, per input, `kept as
-stored`, `kept as files` or `not kept: N members unused`, so a user who
-means to delete the originals knows what stays. A recipe that wants the
+the user's copies had. `recipe build` therefore prints, per input, how and
+in which exported files it is kept (`kept as stored in F`, `kept as files
+in F, G`, `members kept as …` for an unpacked archive, then `not kept: the
+archive itself, N members unused`; B11's wording, 2026-11-19), so a user
+who means to delete the originals knows what stays. A recipe that wants the
 archive itself kept lists it as an extra.
 
 So that a script needs no `upcli`: every layer descriptor carries the
@@ -2825,6 +2827,82 @@ documented with a script that uses no `upcli`. Related and distinct:
 as OCI Image Layouts; export unpacks one artifact into plain files.
 Depends on: A3. Must prove: the script and the command write the same files; an
 exported AZURAMON tree equals the input files byte for byte.
+Done on 2026-11-19 (`upc-5pw.113.11`): `media::fat12::reader` (the
+reader, product code now, with `Volume::tree`), `cli_core::image::export`
+and `upcli image export NAME:TAG --to DIR [--files] [--store DIR]`, the
+kept report of `recipe::build`, and `scripts/export-layout.sh`
+(commands.md, Exporting an image). Readings taken:
+- The layout, version 1: every layer under its decoded name, the config
+  and manifest as stored, `EXPORT-VERSION` holding `1` and a line feed,
+  and `SHA256SUMS` in `sha256sum` text form (two spaces), one line per
+  other file by the bytes of the names, written last. The `--files` tree
+  is not listed: the images that hold it are. A machine image is refused.
+- `--files` reads every diskette of a set as a FAT12 volume, in the set's
+  order, and merges the trees into the folder `files`: the set has no
+  record of which disks a split made, and its disks are one set in
+  installer order. A folder several volumes hold is one folder with the
+  first one's time; a file several hold must have the same bytes; other
+  bytes or a file against a folder refuse `--files` (the plain export
+  still works). A medium that does not open as a FAT12 volume (an optical
+  image, another format) is reported `not read` and left out; a damaged
+  FAT12 volume refuses.
+- Names: the long name when the entries before the short one are complete
+  and carry its checksum, else the 8.3 name as stored, its stem or
+  extension in lower case when byte 12's case bits (08h, 10h) say so, as
+  Windows NT, Linux and mtools write them; a short name that is not ASCII,
+  or a name no host takes (`image_store::export_name::problem`), refuses.
+  Folders that differ in case only are one folder, as on the hosts that
+  ignore case. Names are compared by bytes, not Unicode normalization (no
+  table in the program): two names that differ only in composition meet
+  on macOS while the export writes, and it then removes what it wrote.
+- Bounds of the reader: a name of at most 255 bytes, a folder path of
+  8.3 names of at most 64 characters with its leading backslash (the
+  builder's and DOS's limit: at most 32 levels), a path of host names of
+  at most 260 characters (MAX_PATH); one path buffer for the walk. A
+  crafted image of thousands of nested folders is refused at once, where
+  the first reader took gigabytes (found in review). FF0h to FF5h are
+  cluster numbers in a volume of more than 4078 clusters.
+- Times: a file's and a folder's modification time is its entry's
+  last-write time read as UTC, the same instant on every host; mtools
+  gives the same with `TZ=UTC0`. An entry without a valid time leaves the
+  host's. Attributes are not set on the host; the volume label is not a
+  file.
+- Overwriting: every name is checked before anything is written; a file
+  with the same bytes is kept, other bytes, a folder for a file, a file
+  for a folder or a symbolic link refuse. Files go through a temporary
+  name and a rename.
+- The kept report names the exported files that keep each input, by the
+  export file names: `kept as stored in F`, `kept as files in F, G`,
+  `kept as text with DOS line ends in F`; an archive an `unpack` step
+  opened reads `members kept as …` for each way through the `unpack` step
+  and then, unless the archive is also kept as stored (an extra from it),
+  `not kept: the archive itself`, with `, N members unused` when the
+  recipe left members out.
+- The script reads any OCI Image Layout (a store's `images` folder, an
+  `oras copy --to-oci-layout` folder) by `ref.name` or digest, checks
+  every blob and decoded layer and the names as upcli does before writing,
+  and uses mtools for `--files` under a UTF-8 locale and
+  `MTOOLSRC=/dev/null`. It writes only into an empty or absent folder. zstd
+  joined the devShell for it; the comparison fails without a tool when the
+  fixtures are required.
+MEASURED (`cli-pc` test `image_export`): command and script write the same
+files, bytes and the unpacked files' and folders' times, for a synthetic
+two-volume split set with an extra and a blank image, a synthetic firmware
+package, the FreeDOS 1.4 1.44M set (seven disks with long names) and a
+disk mtools wrote with case bits and a long name; `sha256sum -c` accepts
+the list; each refusal leaves the folder as it was.
+The reader round-trips listed order, entry times, the label, the serial
+and a split, and refuses a looping chain, a chain outside the data area, a
+free or bad cluster, a short chain, cross-linked clusters, a folder that
+contains itself, a truncated image and FAT16 sizes, with no panic over
+every byte of the boot sector, a FAT sector and two directory sectors
+changed (`media` tests `fat12::reader`). The kept report's lines are
+pinned (`pc-image` test
+`the_build_reports_how_and_where_each_input_is_kept`). With the
+maintainer's files (`UNEMUPC_REQUIRE_USER_ROMS=1`),
+`user_rom_azuramoon_exported_with_files_is_the_users_folder` builds
+Azuramoon from the corpus recipe and the user's folder, exports it with
+`--files`, and the tree is the folder, 561 files byte for byte.
 
 **B12. Optional parts.**
 Accepted (Q5), and built after the first recipes work. Scope: `subject` in the manifest codec, the

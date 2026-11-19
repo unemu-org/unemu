@@ -264,7 +264,7 @@ fn the_freedos_recipes_build_the_configs_the_importer_makes() {
                     "licenses-lf",
                     "not needed: the outputs made from it were found"
                 ),
-                ("source", "kept as stored"),
+                ("source", "kept as stored in freedos-1.4-floppy-src.tar"),
             ]
         );
         // In the library for the first set, in the store for the others.
@@ -420,9 +420,9 @@ fn a_build_runs_the_three_steps_and_hands_the_outputs_to_the_importer() {
             .map(|k| format!("{}: {}", k.input, k.how))
             .collect::<Vec<_>>(),
         [
-            "archive: kept as files",
-            "game: kept as files",
-            "notes: kept as text with DOS line ends"
+            "archive: members kept as files in game-disk.img; not kept: the archive itself",
+            "game: kept as files in RUNNER.IMG",
+            "notes: kept as text with DOS line ends in README.TXT"
         ]
     );
     let validator = image_store::media_set::Validator(&pc_image::media_set::PcMediaFormats);
@@ -470,6 +470,90 @@ fn a_build_runs_the_three_steps_and_hands_the_outputs_to_the_importer() {
     assert_eq!(runner.read("RUN.COM").unwrap(), b"run the game");
     assert_eq!(content(&config.extras[0].blob), b"line one\r\nline two\r\n");
     assert_eq!(config.extras[0].filename, "README.TXT");
+}
+
+/// recipes.md §3.10: the build says, per input, how and in which exported
+/// files it is kept, byte for byte as `upcli recipe build` prints it. An
+/// archive gives its members, never itself, and counts the members the
+/// recipe did not take; a split names every volume; a disk image taken as
+/// it is and a member taken as an extra are kept as stored; an archive
+/// also listed as an extra is kept itself.
+#[test]
+fn the_build_reports_how_and_where_each_input_is_kept() {
+    let t = Temp::new("kept");
+    let lib = t.path("lib");
+    fs::create_dir_all(lib.join("game")).unwrap();
+    let (time, date) = ((13 << 11) | (58 << 5) | 11, (13 << 9) | (3 << 5) | 27);
+    let archive = zip(&[
+        ("A.EXE", b"first member", time, date),
+        ("B.DAT", b"second member", time, date),
+        ("UNUSED.TXT", b"left out", time, date),
+    ]);
+    let other = zip(&[("C.TXT", b"third member", time, date)]);
+    let boot = vec![0u8; 368_640];
+    let (one, two) = (vec![1u8; 250_000], vec![2u8; 250_000]);
+    fs::write(lib.join("GAME.ZIP"), &archive).unwrap();
+    fs::write(lib.join("BOOT.IMG"), &boot).unwrap();
+    fs::write(lib.join("OTHER.ZIP"), &other).unwrap();
+    fs::write(lib.join("game/ONE.BIN"), &one).unwrap();
+    fs::write(lib.join("game/TWO.BIN"), &two).unwrap();
+    fs::write(lib.join("notes.txt"), b"notes\n").unwrap();
+    let text = format!(
+        "{HEAD}[input.archive]\nname = \"GAME.ZIP\"\nsize = {}\nsha256 = \"{}\"\n\n\
+         [input.other]\nname = \"OTHER.ZIP\"\nsize = {}\nsha256 = \"{}\"\n\n\
+         [input.boot]\nname = \"BOOT.IMG\"\nsize = {}\nsha256 = \"{}\"\n\n\
+         [input.game]\nname = \"game\"\nfiles = [\n\
+           {{ path = \"ONE.BIN\", size = {}, sha256 = \"{}\" }},\n\
+           {{ path = \"TWO.BIN\", size = {}, sha256 = \"{}\" }},\n]\n\n\
+         [input.notes]\nname = \"notes.txt\"\nsize = 6\nsha256 = \"{}\"\n\n\
+         [[step]]\nid = \"files\"\nunpack = \"archive\"\nformat = \"zip\"\nmembers = [\n\
+           {{ path = \"A.EXE\" }},\n  {{ path = \"B.DAT\" }},\n]\n\n\
+         [[step]]\nid = \"more\"\nunpack = \"other\"\nformat = \"zip\"\nmembers = [{{ path = \"C.TXT\" }}]\n\n\
+         [[step]]\nid = \"program\"\nfat = \"files\"\nformat = \"1.44M\"\n\n\
+         [[step]]\nid = \"split\"\nfat = \"game\"\nformat = \"360K\"\nvolumes = 2\n\n\
+         [[step]]\nid = \"readme\"\ntext = \"notes\"\neol = \"crlf\"\n\n\
+         [[medium]]\nid = \"boot\"\nlabel = \"Boot disk\"\nformat = \"360K\"\nfrom = \"boot\"\n\n\
+         [[medium]]\nid = \"program\"\nlabel = \"Program\"\nformat = \"1.44M\"\nfrom = \"program\"\n\n\
+         [[medium]]\nid = \"data-1\"\nlabel = \"Data 1\"\nformat = \"360K\"\nfrom = \"split/1\"\n\n\
+         [[medium]]\nid = \"data-2\"\nlabel = \"Data 2\"\nformat = \"360K\"\nfrom = \"split/2\"\n\n\
+         [[extra]]\nid = \"data\"\nfile_name = \"B.DAT\"\nkind = \"other\"\nfrom = \"files/B.DAT\"\n\n\
+         [[extra]]\nid = \"third\"\nfile_name = \"C.TXT\"\nkind = \"document\"\nfrom = \"more/C.TXT\"\n\n\
+         [[extra]]\nid = \"zip\"\nfile_name = \"OTHER.ZIP\"\nkind = \"archive\"\nfrom = \"other\"\n\n\
+         [[extra]]\nid = \"readme\"\nfile_name = \"README.TXT\"\nkind = \"document\"\nfrom = \"readme\"\n",
+        archive.len(),
+        sha(&archive),
+        other.len(),
+        sha(&other),
+        boot.len(),
+        sha(&boot),
+        one.len(),
+        sha(&one),
+        two.len(),
+        sha(&two),
+        sha(b"notes\n"),
+    );
+    let recipe = t.path("kept.media.toml");
+    fs::write(&recipe, text).unwrap();
+    let store = Store::open(t.path("store")).unwrap();
+    let report = built(build(&recipe, &store, std::slice::from_ref(&lib), None).0);
+    let rendered = report.render();
+    let lines: Vec<&str> = rendered.lines().collect();
+    assert_eq!(
+        lines[..5],
+        [
+            "  archive: members kept as files in program.img; members kept as stored in B.DAT; \
+             not kept: the archive itself, 1 member unused",
+            "  boot: kept as stored in boot.img",
+            "  game: kept as files in data-1.img, data-2.img",
+            "  notes: kept as text with DOS line ends in README.TXT",
+            "  other: kept as stored in OTHER.ZIP; members kept as stored in C.TXT",
+        ]
+    );
+    assert!(
+        lines[5].starts_with("built private/media/ibm-pc/synthetic:1.0-r1\tsha256:"),
+        "{rendered}"
+    );
+    assert_eq!(lines.len(), 6, "{rendered}");
 }
 
 #[test]

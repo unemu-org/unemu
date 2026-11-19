@@ -1530,83 +1530,131 @@ fn download(
     file.sync_all().map_err(|e| e.to_string())
 }
 
-/// How each input the plan saw is kept in the artifact (recipes §3.10):
-/// `kept as stored` when its bytes, or those of members taken from it,
-/// are a layer unchanged; `kept as files` when a `fat` step built them into
-/// a volume; `kept as text with DOS line ends` after a `text` step; and
-/// `not kept: N members unused` for the members of an opened archive the
-/// recipe did not take.
+/// How each input the plan saw is kept in the artifact (recipes §3.10), and
+/// in which of its files, by the names `image export` writes them under:
+/// `kept as stored in NAME` when its bytes are a layer unchanged; `kept as
+/// files in NAME` when a `fat` step built them into the volumes of these
+/// media, whose files `image export --files` writes back with the recipe's
+/// names and times; `kept as text with DOS line ends in NAME` after a
+/// `text` step. A way through an `unpack` step keeps the archive's members
+/// (`members kept as …`); unless the archive is also kept as stored, `not
+/// kept: the archive itself` follows, with `N members unused` for the file
+/// members the recipe did not take. An input the plan did not need says
+/// why.
 fn kept(recipe: &Recipe, plan: &Plan, built: &Built) -> Vec<Kept> {
-    let mut how: BTreeMap<String, BTreeSet<&'static str>> = BTreeMap::new();
+    /// How an input reaches an output (the way, and whether through an
+    /// `unpack` step, so as its members) and the outputs' names, in output
+    /// order.
+    type Ways = BTreeMap<(&'static str, bool), Vec<String>>;
+    let mut how: BTreeMap<String, Ways> = BTreeMap::new();
     let steps: BTreeMap<&str, &Op> = recipe
         .steps
         .iter()
         .filter_map(|s| Some((s.id.as_ref()?.value.as_str(), &s.op)))
         .collect();
-    fn trace<'r>(
-        reference: &str,
-        mut through: &'static str,
-        steps: &BTreeMap<&'r str, &'r Op>,
-        how: &mut BTreeMap<String, BTreeSet<&'static str>>,
-        depth: usize,
-    ) {
-        let name = reference.split('/').next().unwrap_or(reference);
-        let Some(op) = steps.get(name) else {
-            how.entry(name.to_owned()).or_default().insert(through);
-            return;
-        };
-        if depth > 64 {
-            return;
-        }
-        let operand = match op {
-            Op::Unpack { archive, .. } => archive.as_ref(),
-            Op::Fat { tree, .. } => {
-                through = "kept as files";
-                tree.as_ref()
+    struct Trace<'s, 'r> {
+        steps: &'s BTreeMap<&'r str, &'r Op>,
+        how: &'s mut BTreeMap<String, Ways>,
+    }
+    impl Trace<'_, '_> {
+        fn trace(
+            &mut self,
+            reference: &str,
+            mut through: &'static str,
+            mut members: bool,
+            out: &str,
+            depth: usize,
+        ) {
+            let name = reference.split('/').next().unwrap_or(reference);
+            let Some(op) = self.steps.get(name) else {
+                let names = self
+                    .how
+                    .entry(name.to_owned())
+                    .or_default()
+                    .entry((through, members))
+                    .or_default();
+                if !names.iter().any(|n| n == out) {
+                    names.push(out.to_owned());
+                }
+                return;
+            };
+            if depth > 64 {
+                return;
             }
-            Op::Text { text } => {
-                through = "kept as text with DOS line ends";
-                text.as_ref()
+            let operand = match op {
+                Op::Unpack { archive, .. } => {
+                    members = true;
+                    archive.as_ref()
+                }
+                Op::Fat { tree, .. } => {
+                    through = "kept as files";
+                    tree.as_ref()
+                }
+                Op::Text { text } => {
+                    through = "kept as text with DOS line ends";
+                    text.as_ref()
+                }
+                Op::Unknown { .. } => None,
+            };
+            if let Some(operand) = operand {
+                self.trace(&operand.value.clone(), through, members, out, depth + 1);
             }
-            Op::Unknown { .. } => None,
-        };
-        if let Some(operand) = operand {
-            trace(&operand.value, through, steps, how, depth + 1);
         }
     }
+    let mut tracer = Trace {
+        steps: &steps,
+        how: &mut how,
+    };
     let text = |v: &Option<crate::model::At<String>>| v.as_ref().map(|v| v.value.clone());
-    let mut references: Vec<String> = Vec::new();
-    references.extend(recipe.media.iter().filter_map(|m| text(&m.from)));
-    for rom in &recipe.roms {
-        match &rom.source {
-            RomSource::File(from) => references.extend(text(from)),
-            RomSource::Parts { parts, .. } => {
-                references.extend(parts.iter().filter_map(|p| text(&p.from)));
-            }
+    // Each output's reference and the name its file is exported under.
+    let mut outputs: Vec<(String, String)> = Vec::new();
+    for (medium, made) in recipe.media.iter().zip(&built.media) {
+        outputs.extend(text(&medium.from).map(|from| (from, made.file_name.clone())));
+    }
+    for (rom, made) in recipe.roms.iter().zip(&built.roms) {
+        let references: Vec<String> = match &rom.source {
+            RomSource::File(from) => text(from).into_iter().collect(),
+            RomSource::Parts { parts, .. } => parts.iter().filter_map(|p| text(&p.from)).collect(),
+        };
+        for (reference, file) in references.into_iter().zip(&made.files) {
+            outputs.push((reference, file.name.clone()));
         }
     }
-    references.extend(recipe.extras.iter().filter_map(|e| text(&e.from)));
-    for reference in &references {
-        trace(reference, "kept as stored", &steps, &mut how, 0);
+    for (extra, made) in recipe.extras.iter().zip(&built.extras) {
+        outputs.extend(text(&extra.from).map(|from| (from, made.file_name.clone())));
+    }
+    for (reference, out) in &outputs {
+        tracer.trace(reference, "kept as stored", false, out, 0);
     }
     plan.inputs
         .iter()
         .filter(|input| !input.optional)
         .map(|input| {
+            let empty = Ways::new();
+            let ways = how.get(&input.id).unwrap_or(&empty);
             let mut parts: Vec<String> = match &input.status {
                 Status::NotNeeded(why) => vec![format!("not needed: {why}")],
-                _ => how
-                    .get(&input.id)
-                    .map(|set| set.iter().map(|s| (*s).to_owned()).collect())
-                    .unwrap_or_default(),
+                _ => ways
+                    .iter()
+                    .map(|((way, members), names)| {
+                        let members = if *members { "members " } else { "" };
+                        format!("{members}{way} in {}", names.join(", "))
+                    })
+                    .collect(),
             };
-            if let Some(&unused) = built.unused_members.get(&input.id) {
-                if unused > 0 {
-                    parts.push(format!(
-                        "not kept: {unused} member{} unused",
-                        if unused == 1 { "" } else { "s" }
-                    ));
+            let unpacked = ways.keys().any(|&(_, members)| members);
+            let itself = ways.contains_key(&("kept as stored", false));
+            if !matches!(input.status, Status::NotNeeded(_)) && unpacked && !itself {
+                let mut lost = vec!["the archive itself".to_owned()];
+                if let Some(&unused) = built.unused_members.get(&input.id) {
+                    if unused > 0 {
+                        lost.push(format!(
+                            "{unused} member{} unused",
+                            if unused == 1 { "" } else { "s" }
+                        ));
+                    }
                 }
+                parts.push(format!("not kept: {}", lost.join(", ")));
             }
             Kept {
                 input: input.id.clone(),

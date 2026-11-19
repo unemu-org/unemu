@@ -7,7 +7,7 @@
 //!
 //! The neutral commands are `image ls`, `sweep`, `compress`, `image
 //! workspace ls` and `discard`, `image media ls` and `show`, `image firmware
-//! ls` and `show`, the registry commands (`image push`, `pull`, `remote ls`,
+//! ls` and `show`, `image export`, the registry commands (`image push`, `pull`, `remote ls`,
 //! `login`, `registry set`), `recipe check`, `show`, `plan` and `build`, the
 //! library commands (`library ls`, `add`, `remove`, `scan`), and the journal
 //! commands `media generations`, `verify`, `rollback` and `commit`. What they
@@ -188,6 +188,7 @@ pub fn usage(platforms: &[&dyn CliPlatform]) -> String {
         "       upcli image firmware show NAME:TAG [--store DIR]\n",
         "       upcli image media ls --store DIR\n",
         "       upcli image media show NAME:TAG --store DIR\n",
+        "       upcli image export NAME:TAG --to DIR [--files] [--store DIR] (every layer as a plain file under its file name, with config.toml, manifest.json, EXPORT-VERSION and SHA256SUMS; --files also the files of the set's FAT12 disks; exit 1 refused, nothing overwritten)\n",
         "       upcli image push NAME:TAG [REFERENCE] --store DIR [--registry HOST] [--move] [--dry-run] [--config FILE]\n",
         "       upcli image pull REFERENCE --store DIR [--tag NAME:TAG] [--create] [--registry HOST] [--config FILE]\n",
         "       upcli image remote ls REPOSITORY|REGISTRY [--registry HOST] [--config FILE]\n",

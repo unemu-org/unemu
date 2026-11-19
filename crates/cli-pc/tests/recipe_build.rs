@@ -305,7 +305,10 @@ fn recipe_build_prints_what_it_built_and_exits_0_then_reports_it_already_built()
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(
         lines[..2],
-        ["  data: kept as stored", "  readme: kept as stored"]
+        [
+            "  data: kept as stored in disk-1.img",
+            "  readme: kept as stored in README.TXT"
+        ]
     );
     assert!(
         lines[2].starts_with("built private/media/ibm-pc/fetched:r1\tsha256:")

@@ -1255,8 +1255,11 @@ fn a_pinned_recipe_finds_its_locked_outputs_in_the_store_instead_of_making_them(
             .map(|k| (k.input.as_str(), k.how.as_str()))
             .collect::<Vec<_>>(),
         [
-            ("archive", "kept as files"),
-            ("notes", "kept as text with DOS line ends")
+            (
+                "archive",
+                "members kept as files in game-disk.img; not kept: the archive itself"
+            ),
+            ("notes", "kept as text with DOS line ends in README.TXT")
         ]
     );
 
@@ -1440,8 +1443,11 @@ fn a_locked_output_is_found_by_its_digest_never_by_its_name() {
             .map(|k| (k.input.as_str(), k.how.as_str()))
             .collect::<Vec<_>>(),
         [
-            ("archive", "kept as files"),
-            ("notes", "kept as text with DOS line ends")
+            (
+                "archive",
+                "members kept as files in game-disk.img; not kept: the archive itself"
+            ),
+            ("notes", "kept as text with DOS line ends in README.TXT")
         ]
     );
 
@@ -1690,7 +1696,7 @@ fn a_pinned_firmware_recipe_finds_its_rom_instead_of_unpacking_it() {
             .collect::<Vec<_>>(),
         [
             ("archive", "not needed: the outputs made from it were found"),
-            ("source", "kept as stored")
+            ("source", "kept as stored in vgabios-0.9d-unemu.1-src.tar")
         ]
     );
 }

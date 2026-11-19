@@ -5,6 +5,28 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — Every set and package exports to plain files:** step B11 of
+  design/recipes.md §19.2 (decision-37). `upcli image export NAME:TAG --to
+  DIR [--files] [--store DIR]` writes every layer's decoded bytes under its
+  file name (the title of A3, without `.zst`), `config.toml` and
+  `manifest.json` as stored, `EXPORT-VERSION` (`1`) and `SHA256SUMS`;
+  `--files` also writes the files of the set's FAT12 disks into `files`,
+  the volumes merged in the set's order, long names where a disk has them,
+  each file's and folder's time its entry's taken as UTC. Nothing in `DIR`
+  is overwritten: a file with the same bytes is kept, anything else
+  refuses before a byte is written. The FAT12 reader is product code now
+  (`media::fat12::reader`, with `Volume::tree`): it refuses truncated
+  images, loops, chains outside the data area, cross-linked clusters and
+  FAT16 sizes with a reason, and reads long names. `recipe build` names
+  the exported files that keep each input (`kept as files in data-1.img,
+  data-2.img`) and says that an unpacked archive itself is not kept.
+  `scripts/export-layout.sh` writes the same files from any OCI Image
+  Layout with jq, sha256sum, zstd and mtools. MEASURED (`cli-pc` test
+  `image_export`): command and script give the same files and times for a
+  synthetic split set, a firmware package and the FreeDOS 1.4 1.44M set;
+  Azuramoon built from the maintainer's folder exports with `--files` to
+  that folder byte for byte (561 files). zstd joins the devShell for the
+  script. commands.md, Exporting an image.
 - **2026-11-19 — A diagnostic report of a running machine, on demand:** (`upc-f7j.16`;
   design/observation.md §Diagnostic report of a running machine). A guest that hangs without
   an error (interrupts disabled around a HLT or a loop, IRQ1 masked, the 8042's keyboard

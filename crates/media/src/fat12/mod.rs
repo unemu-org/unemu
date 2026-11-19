@@ -31,6 +31,11 @@
 //! and the serial, the label's time and an exact number of volumes are
 //! chosen.
 //!
+//! [`reader`] reads a FAT12 volume back, independently of the builder: the
+//! builder's tests check every image with it, and `upcli image export
+//! --files` unpacks the disks of a set into folders with it (recipes.md
+//! §3.10). It refuses a damaged or hostile image with a reason.
+//!
 //! This module is the IBM PC volume profile (recipes.md §10): the PC/AT
 //! diskette geometries, the BPB values DOS FORMAT writes, DOS 8.3 names and
 //! the boot sector of a data disk, whose code (`boot.asm`) reports a disk
@@ -39,7 +44,6 @@
 mod boot;
 mod layout;
 mod names;
-#[cfg(any(test, feature = "test-support"))]
 pub mod reader;
 mod split;
 mod survey;

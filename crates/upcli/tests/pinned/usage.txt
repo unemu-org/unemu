@@ -38,6 +38,7 @@ usage: upcli --boot (Real16 timer demo)
        upcli image firmware show NAME:TAG [--store DIR]
        upcli image media ls --store DIR
        upcli image media show NAME:TAG --store DIR
+       upcli image export NAME:TAG --to DIR [--files] [--store DIR] (every layer as a plain file under its file name, with config.toml, manifest.json, EXPORT-VERSION and SHA256SUMS; --files also the files of the set's FAT12 disks; exit 1 refused, nothing overwritten)
        upcli image push NAME:TAG [REFERENCE] --store DIR [--registry HOST] [--move] [--dry-run] [--config FILE]
        upcli image pull REFERENCE --store DIR [--tag NAME:TAG] [--create] [--registry HOST] [--config FILE]
        upcli image remote ls REPOSITORY|REGISTRY [--registry HOST] [--config FILE]

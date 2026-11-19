@@ -166,6 +166,12 @@ Ok(Line(Image(Media(List { store: "DIR" }))))
 $ image media show NAME:TAG --store DIR
 Ok(Line(Image(Media(Show { store: "DIR", tag: "NAME:TAG" }))))
 
+$ image export NAME:TAG --to DIR
+Ok(Line(Image(Export(ExportCommand { store: None, tag: "NAME:TAG", to: "DIR", files: false }))))
+
+$ image export NAME:TAG --to DIR --files --store DIR
+Ok(Line(Image(Export(ExportCommand { store: Some("DIR"), tag: "NAME:TAG", to: "DIR", files: true }))))
+
 $ image push NAME:TAG --store DIR
 Ok(Line(Image(Registry(Push { store: "DIR", local_tag: "NAME:TAG", target: None, options: Common { registry: None, config: None }, allow_move: false, dry_run: false }))))
 
@@ -393,6 +399,15 @@ Err("unknown or duplicate firmware option")
 
 $ image firmware edit
 Err("firmware show and edit require NAME:TAG")
+
+$ image export
+Err("image export requires NAME:TAG")
+
+$ image export NAME:TAG
+Err("image export requires --to DIR")
+
+$ image export --to DIR
+Err("image export requires NAME:TAG")
 
 $ image compress
 Err("image import requires a machine file")
@@ -702,6 +717,12 @@ Ok(Line(Recipe(Scaffold(["LABFULL.ZIP", "AZURAMON"]))))
 
 $ recipe inputs my.media.toml --format sha256sums
 Ok(Line(Recipe(Inputs(InputsOptions { path: "my.media.toml", format: Sha256sums }))))
+
+$ image export private/media/ibm-pc/azuramoon:2026-r1 --to azuramoon --files
+Ok(Line(Image(Export(ExportCommand { store: None, tag: "private/media/ibm-pc/azuramoon:2026-r1", to: "azuramoon", files: true }))))
+
+$ image export private/firmware/ibm-pc/opt-rom:r1 --to opt-rom --store /path/to/store
+Ok(Line(Image(Export(ExportCommand { store: Some("/path/to/store"), tag: "private/firmware/ibm-pc/opt-rom:r1", to: "opt-rom", files: false }))))
 
 $ media create floppy --type 1.44M --format --label TRANSFER /path/to/transfer.img
 Ok(Line(Platform(Create(CreateCommand { output: "/path/to/transfer.img", force: false, kind: Floppy { format: Hd144, formatted: true, label: Some([84, 82, 65, 78, 83, 70, 69, 82, 32, 32, 32]), files: None } }))))

@@ -95,6 +95,9 @@
 
             # Fetching the SingleStepTests / ProcessorTests corpus (real-mode oracle)
             pkgs.jq
+
+            # scripts/export-layout.sh decodes +zstd layers without upcli.
+            pkgs.zstd
           ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
             # cpal's Linux backend discovers ALSA through pkg-config.
             pkgs.pkg-config

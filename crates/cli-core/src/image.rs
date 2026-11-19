@@ -2,12 +2,13 @@
 //! The image commands that need no emulator; machine-images §§2–3, §5.1 and
 //! §8: `image ls`, `sweep`, `compress`, `image workspace ls` and `discard`,
 //! and through the submodules `image media ls` and `show`, `image firmware
-//! ls` and `show`, and the registry commands. The other `image` words are a
+//! ls` and `show`, `image export`, and the registry commands. The other `image` words are a
 //! platform's; [`parse`] leaves them to the platforms. The helpers the
 //! platforms' image commands share with these (the `--min-app-version`
 //! value, the listing columns of a minimum release, the refusal of a
 //! machine's workspace) live here too.
 
+pub mod export;
 pub mod firmware;
 pub mod media;
 pub mod registry;
@@ -33,6 +34,7 @@ pub enum ImageCommand {
         yes: bool,
     },
     Media(media::MediaCommand),
+    Export(export::ExportCommand),
     Firmware(firmware::FirmwareCommand),
     Registry(registry::RegistryCommand),
     List {
@@ -70,6 +72,9 @@ pub fn parse(args: &[OsString]) -> Result<Option<ImageCommand>, &'static str> {
     }
     if args.first().is_some_and(|a| a == "media") {
         return media::parse(&args[1..]).map(|c| c.map(ImageCommand::Media));
+    }
+    if args.first().is_some_and(|a| a == "export") {
+        return export::parse(&args[1..]).map(|c| Some(ImageCommand::Export(c)));
     }
     if args
         .first()
@@ -167,6 +172,7 @@ pub fn execute(
             owner.discard()?;
         }
         ImageCommand::Media(command) => media::execute(command, output, platforms)?,
+        ImageCommand::Export(command) => export::execute(command, output, host, platforms)?,
         ImageCommand::Firmware(command) => firmware::execute(command, output, host, platforms)?,
         ImageCommand::Registry(command) => registry::execute(command, output, platforms)?,
         ImageCommand::List { store } => {
