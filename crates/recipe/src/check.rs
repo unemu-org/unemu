@@ -36,6 +36,10 @@ pub(crate) enum Work<'a, 's> {
     Unreadable,
     /// The file is a recipe, not a work file; reported already.
     Recipe,
+    /// The work file travels with the recipe in its registry artifact
+    /// (recipes §7.1), where the recipe is judged without fetching it; it
+    /// is checked when the artifact is laid out beside the recipe.
+    Held,
     /// The work file, its findings' sink and its file name.
     Read {
         work: &'a WorkFile,
@@ -261,7 +265,83 @@ pub(crate) fn check(
     }
     lock_rule(recipe, sink, lock);
     limits(recipe, sink);
+    bundled(recipe, sink);
     split
+}
+
+/// Rule 3, the bundle: two bundled inputs with the same bytes, or the same
+/// name, cannot both travel with the recipe, as its artifact names each
+/// blob once and lays each file out at its name beside the recipe
+/// (recipes §7.1).
+fn bundled(recipe: &Recipe, sink: &mut Sink<'_>) {
+    let mut by_hash: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut by_name: BTreeMap<&str, &str> = BTreeMap::new();
+    for input in &recipe.inputs {
+        let (
+            Some(bundle),
+            InputForm::File {
+                sha256: Some(sha256),
+                ..
+            },
+        ) = (&input.bundle, &input.form)
+        else {
+            continue;
+        };
+        if !bundle.value {
+            continue;
+        }
+        if let Some(first) = by_hash.insert(&sha256.value, &input.id.value) {
+            sink.report(
+                Rule::Reference,
+                &bundle.span,
+                &bundle.path,
+                format!(
+                    "input.{first} is bundled with the same bytes; a recipe bundles a file once, so name it from one input"
+                ),
+            );
+        }
+        if let Some(name) = &input.name {
+            if let Some(first) = by_name.insert(&name.value, &input.id.value) {
+                sink.report(
+                    Rule::Reference,
+                    &bundle.span,
+                    &bundle.path,
+                    format!(
+                        "input.{first} is bundled as {} too; two bundled files beside the recipe cannot share a name",
+                        name.value
+                    ),
+                );
+            }
+        }
+    }
+}
+
+/// Rule 3, the bundle and the work file: a bundled input with the bytes of
+/// the work file the recipe names, `work_sha256`, would be the same blob
+/// twice in the recipe's artifact.
+pub(crate) fn bundled_work(recipe: &Recipe, sink: &mut Sink<'_>, work_sha256: &str, file: &str) {
+    for input in &recipe.inputs {
+        let (
+            Some(bundle),
+            InputForm::File {
+                sha256: Some(sha256),
+                ..
+            },
+        ) = (&input.bundle, &input.form)
+        else {
+            continue;
+        };
+        if bundle.value && sha256.value == work_sha256 {
+            sink.report(
+                Rule::Reference,
+                &bundle.span,
+                &bundle.path,
+                format!(
+                    "the bundled input has the bytes of the work file {file}, which travels with the recipe already"
+                ),
+            );
+        }
+    }
 }
 
 /// Rule 2, the parts the parser cannot see: the tables a kind requires, the
@@ -284,7 +364,7 @@ fn kind(recipe: &Recipe, sink: &mut Sink<'_>, work: &Work<'_, '_>) {
             let shared = match work {
                 Work::Read { work, .. } => work.title.as_ref().is_some_and(|t| t.title.is_some()),
                 // The work file's refusal is reported; do not add to it.
-                Work::Missing(_) | Work::Unreadable => true,
+                Work::Missing(_) | Work::Unreadable | Work::Held => true,
                 Work::None | Work::Recipe => false,
             };
             if !own && !shared {
@@ -366,6 +446,13 @@ fn kind(recipe: &Recipe, sink: &mut Sink<'_>, work: &Work<'_, '_>) {
                 }
             }
             InputForm::Refused => {}
+        }
+    }
+    for step in &recipe.steps {
+        if let Op::Unpack { members, .. } = &step.op {
+            for member in members {
+                disclosable(sink, member.disclosable.as_ref(), member.size.as_ref());
+            }
         }
     }
 }

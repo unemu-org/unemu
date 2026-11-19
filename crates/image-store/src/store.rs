@@ -121,6 +121,16 @@ pub const PULL_REGISTRY: &str = "unemu.pull.registry";
 /// in `index.json` only, is never pushed, and never travels to another tag.
 pub const MADE_HERE: &str = "unemu.made-here";
 
+/// Index annotation on a local tag's manifest descriptor: the digest
+/// (`sha256:<hex>`) of the recipe file whose build wrote the tag, the
+/// SHA-256 of the recipe text, which is also the config digest of the
+/// recipe's artifact (recipes.md §7.1, §7.3). A recipe build records it
+/// after tagging ([`Store::record_build_recipe`]). Like the pull record it
+/// lives in `index.json` only, so no manifest or image digest changes, is
+/// never pushed, never travels to another tag, and any later write that
+/// moves the tag to another image, or a pull, drops it.
+pub const BUILD_RECIPE: &str = "unemu.build.recipe";
+
 impl Tag {
     /// The registry a pull fetched this tag's image from ([`PULL_REGISTRY`]).
     /// `None` for a tag made in this library, and also for one written
@@ -141,6 +151,16 @@ impl Tag {
             .annotations
             .get(MADE_HERE)
             .is_some_and(|value| value == "true")
+    }
+
+    /// The digest of the recipe text whose build wrote this tag
+    /// ([`BUILD_RECIPE`]); `None` for a tag no recipe build wrote, and for
+    /// a value that is not a digest.
+    pub fn built_from_recipe(&self) -> Option<Digest> {
+        self.manifest
+            .annotations
+            .get(BUILD_RECIPE)
+            .and_then(|value| value.parse().ok())
     }
 }
 
@@ -1517,6 +1537,7 @@ fn place(
         .insert("org.opencontainers.image.ref.name".into(), name.into());
     descriptor.annotations.remove(PULL_REGISTRY);
     descriptor.annotations.remove(MADE_HERE);
+    descriptor.annotations.remove(BUILD_RECIPE);
     let same_image = current == Some(&manifest.digest);
     match pulled {
         Some(registry) => {
@@ -1553,6 +1574,7 @@ fn place(
         if !same_image || pulled.is_some() {
             annotations.remove(PULL_REGISTRY);
             annotations.remove(MADE_HERE);
+            annotations.remove(BUILD_RECIPE);
         }
         if let Some(raw) = replacement.remove("annotations") {
             annotations.extend(decode_json::<BTreeMap<String, Box<RawValue>>>(
@@ -2047,6 +2069,53 @@ impl Store {
             .map(|t| t.manifest)
             .ok_or_else(|| Error::TagNotFound(name.into()))
     }
+    /// Record on the local tag `name`, which must name `manifest`, that the
+    /// build of the recipe text of digest `recipe` wrote it
+    /// ([`BUILD_RECIPE`]). Only the tag's index entry changes: no blob and
+    /// no other tag. A tag that names another image now is a conflict.
+    pub fn record_build_recipe(
+        &self,
+        name: &str,
+        manifest: &Digest,
+        recipe: &Digest,
+    ) -> Result<()> {
+        validate_tag(name)?;
+        let _lease = self.lease()?;
+        let _index_lock = host::exclusive_lock(&self.root.join("locks/index.lock"))?;
+        let mut index = self.read_index()?;
+        let position = index.manifests.iter().position(|raw| {
+            local_descriptor(raw)
+                .ok()
+                .flatten()
+                .is_some_and(|d| tag_name(&d) == Some(name))
+        });
+        let Some(position) = position else {
+            return Err(Error::TagNotFound(name.into()));
+        };
+        let current = local_descriptor(&index.manifests[position])?.map(|d| d.digest);
+        if current.as_ref() != Some(manifest) {
+            return Err(Error::Conflict { current });
+        }
+        // Keep opaque OCI fields as raw JSON, as every tag write does.
+        let mut entry: BTreeMap<String, Box<RawValue>> =
+            decode_json(index.manifests[position].get().as_bytes())?;
+        let mut annotations: BTreeMap<String, Box<RawValue>> = entry
+            .get("annotations")
+            .map(|raw| decode_json(raw.get().as_bytes()))
+            .transpose()?
+            .unwrap_or_default();
+        annotations.insert(
+            BUILD_RECIPE.into(),
+            to_raw_value(&recipe.to_string()).map_err(|e| invalid(e.to_string()))?,
+        );
+        entry.insert(
+            "annotations".into(),
+            to_raw_value(&annotations).map_err(|e| invalid(e.to_string()))?,
+        );
+        index.manifests[position] = to_raw_value(&entry).map_err(|e| invalid(e.to_string()))?;
+        self.write_index(&index)
+    }
+
     /// Atomically persist a bounded local provenance document outside image blobs.
     pub fn write_local_record(&self, digest: &Digest, bytes: &[u8]) -> Result<()> {
         let _lease = self.lease()?;

@@ -247,6 +247,9 @@ struct StepInfo<'r> {
 
 struct Planner<'r, 's> {
     bundle: Option<&'r Path>,
+    /// Bundled inputs a recipe artifact lists, `(name, size, sha256)`, which
+    /// its manifest names without their bytes being fetched.
+    listed: &'r [(String, u64, String)],
     sources: Sources<'s>,
     steps: BTreeMap<&'r str, StepInfo<'r>>,
     inputs: BTreeSet<&'r str>,
@@ -375,6 +378,18 @@ impl<'r, 's> Planner<'r, 's> {
                 });
             if matches {
                 value.found = Some(Found::Bundle { path });
+                return value;
+            }
+        }
+        if let Some(name) = bundle {
+            if self
+                .listed
+                .iter()
+                .any(|(n, s, h)| n == name && *s == size && h == sha256)
+            {
+                value.found = Some(Found::Bundle {
+                    path: PathBuf::from(name),
+                });
                 return value;
             }
         }
@@ -548,6 +563,30 @@ pub fn plan_pinned(
     sources: Sources<'_>,
     locked: &[LockedOutput],
 ) -> Plan {
+    plan_with(recipe, file, bundle, &[], sources, locked)
+}
+
+/// [`plan`] for a recipe held in a registry artifact whose manifest lists
+/// its bundled inputs as `(name, size, sha256)`: such an input counts as
+/// found in the artifact, which a pull lays out beside the recipe, without
+/// its bytes being fetched (recipes §7.1).
+pub fn plan_listed(
+    recipe: &Recipe,
+    file: &str,
+    listed: &[(String, u64, String)],
+    sources: Sources<'_>,
+) -> Plan {
+    plan_with(recipe, file, None, listed, sources, &[])
+}
+
+fn plan_with(
+    recipe: &Recipe,
+    file: &str,
+    bundle: Option<&Path>,
+    listed: &[(String, u64, String)],
+    sources: Sources<'_>,
+    locked: &[LockedOutput],
+) -> Plan {
     let store = sources.store.map(|s| s.root.clone());
     let store_warnings = sources
         .store
@@ -555,6 +594,7 @@ pub fn plan_pinned(
         .unwrap_or_default();
     let mut planner = Planner {
         bundle,
+        listed,
         sources,
         steps: recipe
             .steps

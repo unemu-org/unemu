@@ -1052,12 +1052,15 @@ pub enum Outcome {
 /// downloaded, before it is. An I/O error is a recipe or work file that
 /// cannot be read.
 pub fn build_path(request: Request<'_>, log: &mut dyn FnMut(&str)) -> io::Result<Outcome> {
-    let (recipe, work) = match crate::load(request.path, request.providers)? {
+    let (recipe, work, text) = match crate::load(request.path, request.providers)? {
         crate::Opened::Refused(report) => return Ok(Outcome::Refused(report)),
         crate::Opened::Work => return Ok(Outcome::NotRecipe),
-        crate::Opened::Recipe(recipe, work) => (*recipe, work),
+        crate::Opened::Recipe(recipe, work, bytes) => (*recipe, work, bytes),
     };
     let file = request.path.display().to_string();
+    // The digest of the recipe text this build reads, recorded on the tag
+    // it writes (`unemu.build.recipe`, recipes §7.3).
+    let recipe_digest = image_store::Digest::of(&text);
     let family = recipe
         .identity
         .platform
@@ -1262,7 +1265,10 @@ pub fn build_path(request: Request<'_>, log: &mut dyn FnMut(&str)) -> io::Result
                             &built,
                             &reference,
                         ) {
-                            Ok(published) => Some((reference, published)),
+                            Ok(published) => {
+                                record(request.store, &reference, &published, &recipe_digest, log);
+                                Some((reference, published))
+                            }
                             Err(error) => return failed(plan, error),
                         },
                         None => None,
@@ -1276,6 +1282,7 @@ pub fn build_path(request: Request<'_>, log: &mut dyn FnMut(&str)) -> io::Result
             }
         }
     };
+    record(request.store, &reference, &published, &recipe_digest, log);
     Ok(Outcome::Built(Box::new(Report {
         plan,
         reference,
@@ -1287,6 +1294,27 @@ pub fn build_path(request: Request<'_>, log: &mut dyn FnMut(&str)) -> io::Result
         outputs,
         lock_rebuilt: lost,
     })))
+}
+
+/// Record on the tag a build created that the recipe text of digest
+/// `recipe` built it ([`image_store::BUILD_RECIPE`]); a tag that was there
+/// already is left as it is. The record is metadata of the index: when it
+/// cannot be written the tag stands and the log says so.
+pub(crate) fn record(
+    store: &Store,
+    reference: &str,
+    published: &Published,
+    recipe: &image_store::Digest,
+    log: &mut dyn FnMut(&str),
+) {
+    if !published.created {
+        return;
+    }
+    if let Err(error) = store.record_build_recipe(reference, &published.descriptor.digest, recipe) {
+        log(&format!(
+            "warning: {reference}: the recipe that built it is not recorded: {error}"
+        ));
+    }
 }
 
 /// Where a build whose lock is lost makes its draft, in the store's cache,

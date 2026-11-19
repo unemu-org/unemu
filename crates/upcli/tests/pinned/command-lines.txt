@@ -238,6 +238,21 @@ Ok(Line(Recipe(Inputs(InputsOptions { path: "FILE", format: Dat }))))
 $ recipe inputs --format sha256sums FILE
 Ok(Line(Recipe(Inputs(InputsOptions { path: "FILE", format: Sha256sums }))))
 
+$ recipe plan REF:TAG
+Ok(Line(Recipe(Plan(PlanOptions { path: "REF:TAG", json: false, libraries: [], store: None, config: None }))))
+
+$ recipe push FILE REF
+Ok(Line(Recipe(Push(PushOptions { path: "FILE", target: "REF", dry_run: false, registry: None, store: None, config: None }))))
+
+$ recipe push FILE REF --dry-run --registry HOST --store DIR --config FILE
+Ok(Line(Recipe(Push(PushOptions { path: "FILE", target: "REF", dry_run: true, registry: Some("HOST"), store: Some("DIR"), config: Some("FILE") }))))
+
+$ recipe pull REF
+Ok(Line(Recipe(Pull(PullOptions { source: "REF", to: None, registry: None, config: None }))))
+
+$ recipe pull REF --to DIR --registry HOST --config FILE
+Ok(Line(Recipe(Pull(PullOptions { source: "REF", to: Some("DIR"), registry: Some("HOST"), config: Some("FILE") }))))
+
 $ recipe
 Ok(Line(Recipe(Usage)))
 

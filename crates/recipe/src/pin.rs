@@ -114,6 +114,15 @@ pub fn pin_path(mut request: Request<'_>, log: &mut dyn FnMut(&str)) -> io::Resu
     if replaced {
         let _ = std::fs::remove_dir_all(&backup);
     }
+    // The draft's text built the tag; the pinned text, which builds it
+    // from now on, is the one recorded.
+    crate::build::record(
+        store,
+        &report.reference,
+        &report.published,
+        &image_store::Digest::of(pinned.as_bytes()),
+        log,
+    );
     Ok(Pinned::Pinned {
         report,
         digest,

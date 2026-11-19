@@ -38,13 +38,22 @@
 //! digest it was pinned to (recipes §3.1, §3.8); [`pin::conformance`]
 //! builds a folder of pinned recipes and compares the digests.
 //!
+//! [`artifact`] makes a pinned recipe a registry artifact and back
+//! (recipes §7): the recipe file as its config, its work file, bundled
+//! inputs and lock files as layers, the guard that decides what may be
+//! published, and the plan of a registry row from the manifest and config
+//! alone; [`compat`] holds the compatibility rows of recipe versions and
+//! steps, from which the artifact's `unemu.min-app-version` is computed.
+//!
 //! [`scaffold::scaffold`] writes the input tables, member lists and file
 //! sets of files an author has, with sizes, hashes and an archive's times
 //! (recipes §6.15); [`inputs::inputs_path`] lists a recipe's inputs as a
 //! Logiqx DAT, a CSV or a checksum file.
 
+pub mod artifact;
 pub mod build;
 mod check;
+pub mod compat;
 mod finding;
 pub mod inputs;
 pub mod library;
@@ -296,6 +305,62 @@ pub(crate) fn check_text(name: &str, text: &str, providers: Providers<'_>) -> Re
     }
 }
 
+/// Check a recipe text held in memory as a registry artifact holds it
+/// (recipes §7.1): its work file and lock travel with it and are checked
+/// where the artifact is laid out, so they count as held here. The recipe
+/// that passes, or the report with its findings.
+pub(crate) fn check_held(
+    name: &str,
+    bytes: Vec<u8>,
+    providers: Providers<'_>,
+) -> Result<Box<Recipe>, Report> {
+    let mut findings = BTreeSet::new();
+    let mut report = FileReport {
+        file: name.to_owned(),
+        what: None,
+        split: None,
+        drift: Vec::new(),
+    };
+    let (source, found) = read(name, bytes);
+    findings.extend(found);
+    let mut recipe = None;
+    if let Some(source) = source {
+        let mut sink = Sink::new(&source);
+        match syntax::parse(&mut sink).and_then(|root| parse::document(&mut sink, &root)) {
+            Some(Document::Recipe(parsed)) => {
+                report.what = Some(match parsed.kind {
+                    model::Kind::Media => What::Media,
+                    model::Kind::Firmware => What::Firmware,
+                });
+                let work = match parsed.work {
+                    Some(_) => check::Work::Held,
+                    None => check::Work::None,
+                };
+                report.split = Some(check::check(&parsed, &mut sink, work, providers, true));
+                recipe = Some(parsed);
+            }
+            Some(Document::Work(_)) => {
+                report.what = Some(What::Work);
+                sink.report(
+                    Rule::Kind,
+                    &(0..0),
+                    "",
+                    "a recipe artifact holds a recipe, not a work file",
+                );
+            }
+            None => {}
+        }
+        findings.extend(sink.findings);
+    }
+    match recipe {
+        Some(recipe) if findings.is_empty() => Ok(recipe),
+        _ => Err(Report {
+            files: vec![report],
+            findings: findings.into_iter().collect(),
+        }),
+    }
+}
+
 /// What [`merge_path`] gives for one file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Shown {
@@ -465,8 +530,9 @@ pub(crate) fn parse_text(text: &str) -> Option<Document> {
 pub(crate) enum Opened {
     Refused(Report),
     Work,
-    /// A recipe that passes the checks, and the work file it names.
-    Recipe(Box<Recipe>, Option<Box<WorkFile>>),
+    /// A recipe that passes the checks, the work file it names, and the
+    /// exact bytes the recipe was read from.
+    Recipe(Box<Recipe>, Option<Box<WorkFile>>, Vec<u8>),
 }
 
 /// Check one recipe file, as [`check_paths`] does, and read a recipe that
@@ -484,7 +550,8 @@ pub(crate) fn load(path: &Path, providers: Providers<'_>) -> io::Result<Opened> 
         Some(What::Work) => return Ok(Opened::Work),
         None => return Err(changed(path)),
     }
-    let Some(Document::Recipe(recipe)) = document(path)? else {
+    let bytes = std::fs::read(path).map_err(|e| named(path, e))?;
+    let Some(Document::Recipe(recipe)) = parse_bytes(path, bytes.clone()) else {
         return Err(changed(path));
     };
     let work = match &recipe.work {
@@ -500,7 +567,7 @@ pub(crate) fn load(path: &Path, providers: Providers<'_>) -> io::Result<Opened> 
         }
         None => None,
     };
-    Ok(Opened::Recipe(recipe, work))
+    Ok(Opened::Recipe(recipe, work, bytes))
 }
 
 /// A file that passed the checks and then no longer read as it did.
@@ -517,11 +584,16 @@ fn changed(path: &Path) -> io::Error {
 /// The document a file holds, read again after the checks passed on it.
 fn document(path: &Path) -> io::Result<Option<Document>> {
     let bytes = std::fs::read(path).map_err(|e| named(path, e))?;
+    Ok(parse_bytes(path, bytes))
+}
+
+/// The document `bytes`, read from `path`, hold.
+fn parse_bytes(path: &Path, bytes: Vec<u8>) -> Option<Document> {
     let (Some(source), _) = read(&path.display().to_string(), bytes) else {
-        return Ok(None);
+        return None;
     };
     let mut sink = Sink::new(&source);
-    Ok(syntax::parse(&mut sink).and_then(|root| parse::document(&mut sink, &root)))
+    syntax::parse(&mut sink).and_then(|root| parse::document(&mut sink, &root))
 }
 
 /// A work file read for the recipes that name it.
@@ -693,6 +765,8 @@ fn check_file(
                     check::check(&recipe, &mut sink, check::Work::Unreadable, providers, lock)
                 }
                 Some(WorkLookup::Read { work, source, file }) => {
+                    let work_sha256 = image_store::Digest::of(source.text.as_bytes());
+                    check::bundled_work(&recipe, &mut sink, work_sha256.hex(), &file);
                     let mut work_sink = Sink::new(source);
                     let split = check::check(
                         &recipe,

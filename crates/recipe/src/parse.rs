@@ -894,6 +894,7 @@ fn step(node: &Node) -> Step {
                                 size: m.size("size"),
                                 sha256: m.str("sha256"),
                                 time: m.time("time"),
+                                disclosable: m.boolean("disclosable"),
                             })
                         })
                         .collect()

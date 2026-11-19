@@ -295,7 +295,7 @@ fn a_recipe_with_findings_prints_the_checks_and_usage_errors_exit_2() {
         let (code, output, errors) = upcli(&words.iter().collect::<Vec<_>>());
         assert_eq!((code, output.as_str()), (2, ""), "{words:?}");
         assert!(
-            errors.contains("upcli recipe plan FILE [--json]"),
+            errors.contains("upcli recipe plan FILE|REF [--json]"),
             "{errors}"
         );
     }

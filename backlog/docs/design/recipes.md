@@ -1025,7 +1025,7 @@ An input is a single file or a file set.
 | `ids` | no | An array of `{ db, set, name }`, all three required: the dump's entry in No-Intro, Redump, TOSEC or MAME [SRC 9, 10]. `db` is `no-intro`, `redump`, `tosec` or `mame`; for MAME, `set` is a machine's ROM set or a software list. |
 | `urls` | no | `https` URLs that serve exactly these bytes, tried in order. |
 | `bundle` | no | `true`: the bytes travel with the recipe (§7.1). Only for our own text, at most 1 MiB. |
-| `disclosable` | no | `true`: this file is under 256 bytes and its hash may be published all the same (§6.13). Also allowed on a file-set entry. |
+| `disclosable` | no | `true`: this file is under 256 bytes and its hash may be published all the same (§6.13). Also allowed on a file-set entry and on a member of an `unpack` step (§6.9). |
 
 An input has exactly one of `size` with `sha256`, or `files`. There is no
 `optional` key (§3.2) and no path.
@@ -1042,7 +1042,7 @@ reference to an input or to an earlier step.
 | --- | --- |
 | `unpack` | A file: the archive. |
 | `format` | `"zip"`. The only format in v1. |
-| `members` | An array of `{ path, size, sha256, time }`; only `path` is required. Only these members are taken; the tree has them in this order, each with its stated `time` or none. |
+| `members` | An array of `{ path, size, sha256, time, disclosable }`; only `path` is required, `disclosable` (§6.13) is `false` by default. Only these members are taken; the tree has them in this order, each with its stated `time` or none. |
 | `complete` | `true`: when the archive is opened, its file members must be exactly the listed ones, in this order. Default `false`. |
 
 Zip rules: methods stored and deflate only; no encryption, no split
@@ -1203,8 +1203,12 @@ work with:
 - **A hash of a tiny file gives the file away.** A four-byte serial number
   can be found from its SHA-256 by trying every value. The guard therefore
   refuses to publish a recipe without `[license]` that names a file under
-  256 bytes, unless the entry says `disclosable = true`. The rule and the
-  key are the earlier design's.
+  256 bytes, unless the entry says `disclosable = true`. A file is named by
+  a file input, a file-set entry or a member of an `unpack` step that
+  states its size: each publishes the file's hash (decided by the
+  maintainer, 2026-11-19, for members). `recipe scaffold` never writes the
+  key; the author marks what may be published. The rule and the key are
+  the earlier design's.
 
 ### 6.14. Mapping to today's artifacts and import paths
 
@@ -2332,7 +2336,7 @@ Decisions taken while building it:
   list`, `library scan` for `library index`, and `library remove`, which
   §6.15 lacks. `--catalogue FILE` is not taken: a catalogue is read where
   it lies in a library, by its name (below). `recipe plan` takes a file;
-  `REF` waits for recipe artifacts (B10).
+  `REF` came with recipe artifacts (B10).
 - Libraries are the preferences key `libraries`, absolute paths in search
   order, which `library add` and `remove` change under the preferences
   lock as every writer does; `--library DIR` (repeatable) adds folders
@@ -2753,6 +2757,65 @@ for recipe versions, steps and formats. Depends on: B8, A1. Must prove: a
 recipe pulled into an empty store plans and builds with no other file;
 each guard refusal has a test; a registry row can be judged from manifest
 and config alone.
+Done on 2026-11-19 (`upc-5pw.113.10`): `recipe::artifact` (the bundle,
+the codec, the guard and the row's plan), `recipe::compat` (the rows),
+`image_registry::recipe` (push, pull, row), the types in
+`image_store::media_type` and their rows in `image_store::compat`, the
+record `image_store::BUILD_RECIPE`; the commands `upcli recipe push FILE
+REF`, `recipe pull REF [--to DIR]` and `recipe plan REF` (commands.md,
+Recipes on a registry). MEASURED (`cli-pc` test `recipe_registry`, the
+mock registry, no network): a pinned recipe with a work file, a bundled
+text and a `text` step, pushed and pulled into an empty folder, plans and
+builds into an empty store from a library holding only its image, to the
+pinned digest, and the tag records the recipe's digest; every refusal of
+the guard below has a test, and an allowed same-digest replacement moves
+the tag; a row costs two requests, the manifest and the config; a recipe
+rated 0.0.4 by a newer release's version, step or output row is refused
+by pull and judged by a row from its manifest alone, with no blob
+requested. No pinned digest moved: the record lives in `index.json`.
+Readings taken:
+- Layer types, which §7.1 does not name: the work file
+  `application/vnd.unemu.recipe.work.v1+toml`, a bundled input
+  `application/vnd.unemu.recipe.input.v1`, a lock file
+  `application/vnd.unemu.recipe.lock.v1`, each at most 1 MiB, in that
+  order (work file, inputs in recipe order, lock files by name). The
+  config descriptor carries `org.opencontainers.image.title` too, the
+  recipe's file name, and a lock file's title is
+  `NAME.media.toml.lock/sha256/<hex>`, so the titles are the folder the
+  recipe was pinned in. A recipe's file name ends in `.media.toml` or
+  `.firmware.toml` by its kind.
+- Pull lays the artifact out in a folder (`--to DIR`, the current folder
+  by default), not in the store: a pulled recipe is no image, and a local
+  tag of one would be listed as one. The recipe then plans and builds as
+  any file does; `recipe build REF` is not added, pull and build the file.
+  The parts are checked in a scratch folder before anything is written.
+- `unemu.min-app-version` is the newest of the recipe version's row, the
+  rows of its step kinds (an exhaustive match over the model's steps, a
+  test that every verb of the specification and the parser's version has
+  one), the rows of the artifact's own media types, and the marker of the
+  locked output's manifest. Formats come through the last: the importer
+  stamped the output with the provider's rows of its media formats, roles
+  and catalogue entries when the recipe was pinned. All rows are 0.0.3,
+  so every recipe artifact carries `0.0.3`.
+- `disclosable` is judged on file inputs, file-set entries and `unpack`
+  members under 256 bytes in a recipe without `[license]`; members carry
+  the key too (decided by the maintainer, 2026-11-19; §6.9, §6.13).
+- Bundled parts never share bytes: a recipe whose bundled inputs are
+  identical, or one equal to its work file, is a finding of rule 3, as an
+  artifact cannot name one blob twice.
+- "Text" is UTF-8 without a NUL byte.
+- A tag naming a recipe of the same output digest is replaced without
+  `--move`; one naming anything else is refused, `--move` or not. The
+  registry rules of the push guard apply with every part counted open;
+  the store's own marks are not consulted, as a lock of a private output
+  is our own text (§6.6).
+- The guard also checks the place of §7.3: `NAMESPACE/recipes/` and the
+  output's path after its first component, the output's tag, any
+  namespace; and that the annotations say what the recipe says.
+- `unemu.build.recipe` is recorded on a tag the build creates, in a
+  second index write after the tag (a failure is a warning; the tag
+  stands); a tag that was there keeps what it had, a pin records the
+  pinned text, and an alias that moved with the revision is not recorded.
 
 **B11. Export.**
 Scope: `upcli image export`, `--files` with the FAT reader promoted from

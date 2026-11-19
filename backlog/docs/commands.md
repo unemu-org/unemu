@@ -2055,6 +2055,122 @@ work file, a folder or a file that cannot be read. The tests are
 user's own LABFULL.ZIP and AZURAMON folder (vendor/user-roms/README.md)
 and compare with the corpus's tables.
 
+## Recipes on a registry
+
+A pinned recipe is published as a registry artifact without any payload
+([design/recipes.md](design/recipes.md) §7, decision-35): `upcli recipe
+push FILE REF` sends it, `upcli recipe pull REF` writes it into a folder
+where it plans and builds with no other file, and `upcli recipe plan REF`
+judges it from its manifest and config alone. The registries, credentials
+and `--registry` are those of `image push` and `image pull` (Registry push
+and pull).
+
+```sh
+upcli recipe push my.media.toml unemu/recipes/media/ibm-pc/freedos:1.4-720k-r1 --dry-run
+upcli recipe push my.media.toml unemu/recipes/media/ibm-pc/freedos:1.4-720k-r1 --store /path/to/store
+upcli recipe pull unemu/recipes/media/ibm-pc/freedos:1.4-720k-r1 --to recipes/freedos
+upcli recipe plan unemu/recipes/media/ibm-pc/freedos:1.4-720k-r1 --library /path/to/games
+upcli recipe build recipes/freedos/freedos-1.4-720k.media.toml --library /path/to/games
+```
+
+- **The artifact.** Its `artifactType` is
+  `application/vnd.unemu.recipe.media.v1` or
+  `application/vnd.unemu.recipe.firmware.v1`; its config is the recipe file
+  (`application/vnd.unemu.recipe.v1+toml`), so the config digest is the
+  recipe's digest; its layers are the work file the recipe names
+  (`application/vnd.unemu.recipe.work.v1+toml`), each input with `bundle =
+  true` (`application/vnd.unemu.recipe.input.v1`) and each file of the
+  lock (`application/vnd.unemu.recipe.lock.v1`), in that order. Every
+  descriptor, the config's included, names its file in
+  `org.opencontainers.image.title`: `NAME.media.toml`, `WORK.work.toml`,
+  the input's `name`, `NAME.media.toml.lock/sha256/<hex>`. Each part is at
+  most 1 MiB. The manifest carries `unemu.platform`, `unemu.recipe.output`
+  (`name:tag`), `unemu.recipe.output.digest`, the title and description of
+  the output, `org.opencontainers.image.licenses = "CC0-1.0"` and
+  `unemu.min-app-version`, the oldest release that can build the recipe:
+  the newest row of its recipe version, its steps, the artifact's media
+  types (all 0.0.3 today) and the marker of its locked output.
+- **`recipe push FILE REF [--dry-run] [--registry HOST] [--store DIR]
+  [--config FILE]`.** The recipe must pass its checks, be pinned and have
+  its lock beside it; its work file and bundled inputs are read from its
+  folder and checked against the recipe (a bundled file with another size
+  or hash is refused, exit 1). Two bundled inputs with the same bytes or
+  name, or one with the bytes of the work file, are a finding of rule 3:
+  an artifact names each blob once. `REF` is the publisher's
+  namespace, `recipes/` and the output's path after its first component,
+  with the output's tag: `private/media/ibm-pc/windows` at `3.0-1.2m-r1`
+  is published as `unemu/recipes/media/ibm-pc/windows:3.0-1.2m-r1`. The
+  parts are staged as untagged blobs in `--store DIR` or the default store
+  (created when missing) and uploaded as `image push` uploads; the manifest
+  goes last. The guard refuses, before anything is sent: a part that is
+  none of the recipe's work file, bundled inputs and lock files, or one
+  they name that is missing; a lock file the lock does not need (rule 8);
+  a bundled input that is not text (UTF-8 without NUL); a recipe without
+  `[license]` that names an input or a file-set entry under 256 bytes not
+  marked `disclosable = true`, or an `unpack` member under 256 bytes not
+  marked so (the author marks what may be published; `recipe scaffold`
+  never writes the key); another place than the output's; an
+  annotation that does not say what the recipe says; a marker below what
+  this release computes. The registry rules of `image push` apply to the
+  target (a configured registry, a listed namespace); the parts count as
+  open, as a recipe, its bundled texts and its lock are our own text. A tag
+  that already names this artifact is `unchanged`. A tag that names a
+  recipe of the same output digest is replaced, `moved TARGET OLD -> NEW
+  (the same output DIGEST)`, without `--move`: a better recipe (a mirror
+  URL, another database id) replaces the old one. A tag that names any
+  other manifest is refused (`recipe tag … names …; a recipe tag is
+  replaced only by a recipe that pins the same output digest, …`), and
+  `--move` does not exist here. `--dry-run` prints `target:`, `image:`,
+  `recipe:`, `output:NAME:TAG<TAB>DIGEST`, a line per part (`config` or
+  `layer`, digest, size, media type, title) and `guard:allowed` or
+  `guard:refused`, and sends nothing. Exit status: 0 sent or unchanged, 1
+  the checks' findings (printed), a refusal or a registry failure, 2 a
+  usage error, a file that cannot be read or a registry configuration
+  error.
+- **`recipe pull REF [--to DIR] [--registry HOST] [--config FILE]`.** The
+  manifest is read first: one whose `unemu.min-app-version` this release
+  does not meet is refused (`REF needs unemupc X or newer (this is Y)`)
+  before the config or any part is fetched. Then the config and every part
+  are fetched and verified, the artifact is read strictly (types, sizes,
+  titles, the parts against the recipe) and checked laid out in a private
+  scratch folder (a new hidden `.recipe-scratch-…` folder inside `DIR`,
+  mode 0700, removed with its contents after), rule 8 included; only then
+  are the parts written into `DIR` (the current folder by default) at
+  their titles: the recipe, its work file, its bundled inputs and
+  `NAME.lock/sha256/`. A file already there with the same bytes is kept;
+  one with other bytes, a folder at a file's place or a symbolic link on
+  the way to a part is refused before anything is written; when a write
+  fails, what the pull wrote is removed again, and a `DIR` it created too.
+  A push inspects its artifact the same way under `cache/recipe-push/` of
+  its store. Lines: `fetched<TAB>DIGEST<TAB>TITLE` per part, then
+  `pulled<TAB>REF<TAB>DIGEST<TAB>RECIPE`. Exit status: 0 written, 1 a
+  refusal or a registry failure, 2 a usage error or a registry
+  configuration error.
+- **`recipe plan REF`.** An operand that is not a file, whose last
+  component names a tag or a digest and that parses as a registry
+  reference (`[HOST/]NAME:TAG` or `NAME@sha256:…`) is a registry
+  reference; any other missing path is a file that cannot be read, exit 2. The row of
+  the Recipes group (design/recipes.md §7.4) is judged from the manifest
+  and the config alone, no part of the bundle fetched: the recipe text is
+  checked with its work file and lock counted as held, and planned against
+  the store, the download cache and the libraries as a file is; a bundled
+  input the manifest lists with the recipe's size and hash is found
+  (`beside the recipe: NAME`). A recipe whose marker this release does not
+  meet is judged from its manifest alone: `REF: Needs unemupc X or newer;
+  nothing but its manifest was fetched`, exit 1. `--json` gives the plan's
+  JSON, or `{"file": REF, "needs": …}`.
+- **Local tags built from a recipe.** `recipe build` and `recipe pin`
+  record on the tag they create the digest of the recipe text that built
+  it, `unemu.build.recipe = "sha256:…"` (for a pulled recipe its
+  artifact's config digest), in the store's `index.json` only, beside
+  `unemu.made-here`: no manifest and no image digest changes. A pin
+  records the pinned text. A tag that was there already keeps what it
+  had; moving the tag to another image, or a pull, drops the record.
+
+The tests are `recipe_registry` in `cli-pc` (the mock registry of the
+registry tests, no network) and the store test
+`a_tag_records_the_recipe_that_built_it_until_it_moves`.
+
 ## Creating disk images
 
 ```sh

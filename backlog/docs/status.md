@@ -5,6 +5,27 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — Recipes on a registry:** step B10 of design/recipes.md
+  §19.2 (decision-35). `upcli recipe push FILE REF` publishes a pinned
+  recipe as an artifact of its own type (`application/vnd.unemu.recipe.media.v1`
+  or `…firmware.v1`): the recipe as config, its work file, bundled inputs
+  and lock files as titled layers, `unemu.recipe.output` and its digest,
+  CC0-1.0, and `unemu.min-app-version` from the new rows for recipe
+  versions and steps and the locked output's marker. The recipe guard
+  refuses any other part, a bundled input that is not text, a recipe
+  without `[license]` naming a file, file-set entry or `unpack` member
+  under 256 bytes not marked `disclosable` (members take the key now,
+  the maintainer's decision), another place than `NAMESPACE/recipes/…` at the output's
+  tag, and a tag naming a recipe of another output digest (the same
+  digest replaces it). `upcli recipe pull REF [--to DIR]` refuses a recipe
+  that needs a newer unemupc before fetching any part, checks it and
+  writes the folder it was pinned in; `upcli recipe plan REF` judges it
+  from manifest and config alone. Tags a recipe build creates record the
+  recipe's digest (`unemu.build.recipe`, index only; no digest moves).
+  MEASURED (`cli-pc` test `recipe_registry`, mock registry): pushed,
+  pulled into an empty folder, planned and built into an empty store to
+  the pinned digest; each refusal tested; a row is two requests. No
+  Remotes UI yet (B13). commands.md, Recipes on a registry.
 - **2026-11-19 — Remotes says Newer available across releases again, from the title
   records:** (`upc-5pw.64.7`; design/machine-images.md §3). A selected set or package tag whose
   metadata record was read reads "Newer available · you have 1.3" when the library holds, under

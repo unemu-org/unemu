@@ -220,6 +220,9 @@ pub struct Member {
     pub size: Option<At<u64>>,
     pub sha256: Option<At<String>>,
     pub time: Option<At<LocalTime>>,
+    /// `true`: the member is under 256 bytes and its hash may be published
+    /// all the same (recipes §6.13), as for an input.
+    pub disclosable: Option<At<bool>>,
 }
 
 /// A `[[step]]` (recipes §6.9).

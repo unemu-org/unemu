@@ -385,13 +385,24 @@ pub fn config_platform(config: &toml::Table) -> AppVersion {
         .map_or(BASELINE, platform)
 }
 
-/// The manifest artifact types the envelope reads.
+/// The manifest artifact types the envelope reads. Recipe artifacts
+/// (recipes.md §7.1) are first read by the release after 0.0.2.
 pub fn artifact(kind: &str) -> Option<AppVersion> {
     match kind {
         media_type::MACHINE | media_type::MEDIA_SET | media_type::FIRMWARE => Some(BASELINE),
+        media_type::RECIPE_MEDIA | media_type::RECIPE_FIRMWARE => Some(AppVersion::new(0, 0, 3)),
         _ => None,
     }
 }
+
+/// The config and layer media types of a recipe artifact (recipes.md
+/// §7.1), which only a recipe envelope reads.
+pub const RECIPE_TYPES: &[Row] = &[
+    (media_type::RECIPE_CONFIG, AppVersion::new(0, 0, 3)),
+    (media_type::RECIPE_WORK, AppVersion::new(0, 0, 3)),
+    (media_type::RECIPE_INPUT, AppVersion::new(0, 0, 3)),
+    (media_type::RECIPE_LOCK, AppVersion::new(0, 0, 3)),
+];
 
 /// Compressed payload types the installation-set and firmware-package
 /// envelopes declare ([`crate::codec::MEDIA_PAYLOAD_TYPES`],
@@ -410,7 +421,7 @@ pub fn payload(kind: &str) -> Option<AppVersion> {
         .iter()
         .find(|(t, _, _)| *t == kind)
         .map(|(_, _, since)| *since)
-        .or_else(|| lookup(&[COMPRESSED], kind))
+        .or_else(|| lookup(&[COMPRESSED, RECIPE_TYPES], kind))
 }
 
 /// The row named `key` in any of `rows`.

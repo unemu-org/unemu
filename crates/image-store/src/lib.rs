@@ -35,13 +35,13 @@ pub mod test_support;
 pub mod workspace;
 
 pub use artifact::{
-    media_type, Descriptor, Digest, Manifest, PayloadType, MAX_OBJECTS, MAX_SMALL_BLOB,
+    is_recipe, media_type, Descriptor, Digest, Manifest, PayloadType, MAX_OBJECTS, MAX_SMALL_BLOB,
 };
 #[cfg(feature = "test-support")]
 pub use store::verification_passes;
 pub use store::{
     Blob, BlobSource, ConfigValidator, ContentReader, ResolvedImage, Store, Tag, TagPage,
-    MADE_HERE, PULL_REGISTRY,
+    BUILD_RECIPE, MADE_HERE, PULL_REGISTRY,
 };
 
 /// Failures at the storage and untrusted artifact boundaries.

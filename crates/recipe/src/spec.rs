@@ -381,6 +381,7 @@ static MEMBER: Table = table(
         opt("size", SIZE),
         opt("sha256", Ty::Str(Text::Sha256)),
         opt("time", Ty::Time),
+        opt("disclosable", Ty::Bool),
     ],
 );
 

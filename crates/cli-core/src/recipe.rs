@@ -19,8 +19,11 @@
 //! §9). `upcli recipe scaffold`: the input tables, member lists and file
 //! sets of files and folders the author has, in the recipe syntax
 //! ([`recipe::scaffold`]). `upcli recipe inputs`: a recipe's inputs as a
-//! Logiqx DAT, a CSV or a checksum file ([`recipe::inputs`]). The recipe
-//! providers are the platforms' ([`super::CliPlatform::recipes`]).
+//! Logiqx DAT, a CSV or a checksum file ([`recipe::inputs`]). `upcli recipe
+//! push` and `pull`: a pinned recipe as a registry artifact, with its work
+//! file, bundled inputs and lock (recipes §7, [`image_registry::recipe`]);
+//! `recipe plan REF` judges such an artifact from its manifest and config.
+//! The recipe providers are the platforms' ([`super::CliPlatform::recipes`]).
 
 use super::{library, CliPlatform, HostSources, Io};
 use recipe::library::Library;
@@ -31,21 +34,25 @@ use std::path::{Path, PathBuf};
 
 const USAGE: &str = "usage: upcli recipe check FILE|FOLDER...
        upcli recipe show FILE
-       upcli recipe plan FILE [--json] [--library DIR]... [--store DIR] [--config FILE]
+       upcli recipe plan FILE|REF [--json] [--library DIR]... [--store DIR] [--config FILE]
        upcli recipe build FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] [--keep-as TAG]
        upcli recipe pin FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE]
        upcli recipe conformance FILE|FOLDER... [--library DIR]... [--store DIR] [--config FILE]
        upcli recipe scaffold FILE|FOLDER...
        upcli recipe inputs FILE --format dat|csv|sha256sums
+       upcli recipe push FILE REF [--dry-run] [--registry HOST] [--store DIR] [--config FILE]
+       upcli recipe pull REF [--to DIR] [--registry HOST] [--config FILE]
   check: checks recipes and work files; a folder is checked with every *.media.toml, *.firmware.toml, *.machine.toml and *.work.toml below it
   show: prints a media recipe's title record merged with its work file, with a comment on each value that came from the work file; for a pinned recipe the record of its lock, which a build writes
-  plan: where each input is found (the store, the download cache, beside the recipe, the libraries of the preferences, then each --library) or why not, the steps that would run and the outputs
+  plan: where each input is found (the store, the download cache, beside the recipe, the libraries of the preferences, then each --library) or why not, the steps that would run and the outputs; a REF (a registry reference with a tag or digest, not a file) is judged from the recipe artifact's manifest and config alone, its bundled inputs found in the artifact, and one that needs a newer unemupc from its manifest alone
   build: builds a recipe and tags it <name>:<tag> in the store, or <name>:TAG with --keep-as; a pinned recipe publishes its lock's bytes once every output matched them, and with --keep-as a result that differs is kept under TAG; --fetch downloads the missing inputs from their URLs into the store's download cache, after printing what it downloads
   pin: builds a draft as build does, then writes its manifest, config and metadata to FILE.lock/sha256/ and its manifest digest into FILE
   conformance: builds each pinned recipe into a scratch store from the libraries only and compares the digest with its pin; drafts are listed, not built
   scaffold: prints an [input] table with name, size and sha256 for each file and folder named; a *.zip file also gets an unpack step that lists every file member in the archive's order with its size, sha256 and the archive's time; a folder becomes a file set, in every folder its files then its folders, each by the 8.3 name as stored (the 11-byte padded field, as the FAT builder orders them; other names after, by bytes), without times, hidden files skipped; the author adds the rest
   inputs: prints the inputs of a recipe that passes the checks, bundled ones left out, each file-set entry under its set's name: a Logiqx DAT, a CSV (path,size,sha256,crc32,sha1,md5) or sha256sum -c lines; two inputs one folder cannot hold are refused
-  exit 0: no findings, for plan every input found, for build and pin the artifact tagged, for conformance every pinned recipe built to its digest, for scaffold and inputs the text printed; 1: findings, which show, plan, build, pin and inputs print instead, for plan, build and pin an input missing, for build and pin a failed download, read, step or import, or a lock mismatch, with nothing tagged, for conformance a recipe that differs or was not built, or no pinned recipe found, for scaffold a file or folder a recipe cannot hold (a name or member it refuses, an archive an unpack step refuses, more than 100000 files, 4096 inputs or 64 archives), for inputs two inputs at one path; 2: usage or a file that cannot be read
+  push: publishes a pinned recipe that passes its checks as a recipe artifact: the recipe as its config, its work file, bundled inputs and lock files as layers; REF is NAMESPACE/recipes/ and the output's path after its first component, with the output's tag; the guard refuses any other part, a bundled input that is not text, a recipe without [license] naming a file under 256 bytes not marked disclosable, and a tag that names a recipe of another output digest; --dry-run prints the parts and the verdict and sends nothing
+  pull: fetches a recipe artifact, refusing one that needs a newer unemupc before any part is fetched, checks it, and writes the recipe, its work file, bundled inputs and lock into DIR (the current folder by default), where recipe plan and build take it with no other file; a file there with other bytes is refused
+  exit 0: no findings, for plan every input found, for build and pin the artifact tagged, for conformance every pinned recipe built to its digest, for scaffold and inputs the text printed, for push and pull the artifact sent or written; 1: findings, which show, plan, build, pin and inputs print instead, for plan, build and pin an input missing, for build and pin a failed download, read, step or import, or a lock mismatch, with nothing tagged, for conformance a recipe that differs or was not built, or no pinned recipe found, for scaffold a file or folder a recipe cannot hold (a name or member it refuses, an archive an unpack step refuses, more than 100000 files, 4096 inputs or 64 archives), for inputs two inputs at one path, for push a refusal of the guard or the registry, for pull and plan REF a recipe that needs a newer unemupc, one the codec refuses, or a registry failure; 2: usage or a file that cannot be read
 ";
 
 /// A parsed `upcli recipe` command line.
@@ -61,6 +68,8 @@ pub enum RecipeCommand {
     /// `recipe scaffold`: the files and folders named.
     Scaffold(Vec<PathBuf>),
     Inputs(InputsOptions),
+    Push(PushOptions),
+    Pull(PullOptions),
     /// Words `recipe` does not take: its own usage text, exit 2.
     Usage,
 }
@@ -95,6 +104,92 @@ pub struct ConformanceOptions {
     pub libraries: Vec<PathBuf>,
     pub store: Option<PathBuf>,
     pub config: Option<PathBuf>,
+}
+
+/// The words of `upcli recipe push`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PushOptions {
+    pub path: PathBuf,
+    /// The registry reference, `NAMESPACE/recipes/...:TAG`.
+    pub target: String,
+    pub dry_run: bool,
+    pub registry: Option<String>,
+    /// Where the parts are staged for upload.
+    pub store: Option<PathBuf>,
+    pub config: Option<PathBuf>,
+}
+
+/// The words of `upcli recipe pull`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PullOptions {
+    pub source: String,
+    /// The folder the recipe is written into; the current folder without.
+    pub to: Option<PathBuf>,
+    pub registry: Option<String>,
+    pub config: Option<PathBuf>,
+}
+
+/// The words of `push` (`pull` false) or `pull`: two operands or one,
+/// `--registry`, `--config`, and `--store` and `--dry-run` for a push,
+/// `--to` for a pull.
+fn transfer_words(
+    args: &[OsString],
+    pull: bool,
+) -> Option<(Vec<String>, bool, [Option<String>; 3])> {
+    let mut operands = Vec::new();
+    let mut dry_run = false;
+    // `--registry`, `--config`, and `--store` or `--to`.
+    let mut values: [Option<String>; 3] = [None, None, None];
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        let slot = match word.to_str()? {
+            "--dry-run" if !pull && !dry_run => {
+                dry_run = true;
+                continue;
+            }
+            "--registry" => 0,
+            "--config" => 1,
+            "--store" if !pull => 2,
+            "--to" if pull => 2,
+            text if !text.is_empty() && !text.starts_with('-') => {
+                operands.push(text.to_owned());
+                continue;
+            }
+            _ => return None,
+        };
+        let value = words.next()?.to_str()?;
+        if value.is_empty()
+            || value.starts_with("--")
+            || values[slot].replace(value.into()).is_some()
+        {
+            return None;
+        }
+    }
+    (operands.len() == if pull { 1 } else { 2 }).then_some((operands, dry_run, values))
+}
+
+fn push_options(args: &[OsString]) -> Option<PushOptions> {
+    let (operands, dry_run, [registry, config, store]) = transfer_words(args, false)?;
+    let [path, target] = <[String; 2]>::try_from(operands).ok()?;
+    Some(PushOptions {
+        path: PathBuf::from(path),
+        target,
+        dry_run,
+        registry,
+        store: store.map(PathBuf::from),
+        config: config.map(PathBuf::from),
+    })
+}
+
+fn pull_options(args: &[OsString]) -> Option<PullOptions> {
+    let (operands, _, [registry, config, to]) = transfer_words(args, true)?;
+    let [source] = <[String; 1]>::try_from(operands).ok()?;
+    Some(PullOptions {
+        source,
+        to: to.map(PathBuf::from),
+        registry,
+        config: config.map(PathBuf::from),
+    })
 }
 
 /// The words of `upcli recipe inputs`.
@@ -262,6 +357,12 @@ pub fn parse(args: &[OsString]) -> RecipeCommand {
         [command, rest @ ..] if command == "inputs" => {
             inputs_options(rest).map_or(RecipeCommand::Usage, RecipeCommand::Inputs)
         }
+        [command, rest @ ..] if command == "push" => {
+            push_options(rest).map_or(RecipeCommand::Usage, RecipeCommand::Push)
+        }
+        [command, rest @ ..] if command == "pull" => {
+            pull_options(rest).map_or(RecipeCommand::Usage, RecipeCommand::Pull)
+        }
         _ => RecipeCommand::Usage,
     }
 }
@@ -292,6 +393,8 @@ pub fn execute(
         RecipeCommand::Conformance(options) => conformance(&options, providers, host, io),
         RecipeCommand::Scaffold(paths) => scaffold(&paths, io),
         RecipeCommand::Inputs(options) => inputs(&options, providers, io),
+        RecipeCommand::Push(options) => push(&options, providers, host, io),
+        RecipeCommand::Pull(options) => pull(&options, providers, io),
         RecipeCommand::Usage => {
             let _ = io.errors.write_all(USAGE.as_bytes());
             2
@@ -454,6 +557,31 @@ fn plan(
     let downloads = store
         .as_ref()
         .map(|s| s.root().join(recipe::build::DOWNLOADS));
+    if let Some(text) = reference_operand(&options.path) {
+        let judged = reference_plan(
+            text,
+            options,
+            providers,
+            recipe::plan::Sources {
+                store: index.as_ref(),
+                downloads: downloads.as_deref(),
+                libraries: &mut libraries,
+            },
+        );
+        save_libraries(&libraries, &caches, "plan", io);
+        let (text, code) = match judged {
+            Ok(judged) => judged,
+            Err(error) => {
+                let _ = writeln!(io.errors, "upcli recipe plan: {error:#}");
+                return 1;
+            }
+        };
+        return if io.output.write_all(text.as_bytes()).is_err() {
+            2
+        } else {
+            code
+        };
+    }
     let planned = recipe::plan_path(
         &options.path,
         providers,
@@ -497,6 +625,235 @@ fn plan(
         return 2;
     }
     code
+}
+
+/// The operand of `recipe plan` as a registry reference: a path that is
+/// not there, whose last component names a tag or a digest and that parses
+/// as a reference (`unemu/recipes/media/ibm-pc/freedos:1.4-r1`). Any other
+/// operand is a file, and a missing one cannot be read.
+fn reference_operand(path: &Path) -> Option<&str> {
+    if path.exists() {
+        return None;
+    }
+    let text = path.to_str()?;
+    let last = text.rsplit('/').next()?;
+    let shaped = last.contains([':', '@']) && !text.ends_with(".toml");
+    (shaped && image_registry::Reference::parse(text, "registry.invalid").is_ok()).then_some(text)
+}
+
+/// `recipe plan REF`: the registry row of a recipe artifact, judged from
+/// its manifest and config alone ([`image_registry::recipe::row`]), as the
+/// text (or JSON) and exit code of a plan.
+fn reference_plan(
+    text: &str,
+    options: &PlanOptions,
+    providers: recipe::Providers<'_>,
+    sources: recipe::plan::Sources<'_>,
+) -> anyhow::Result<(String, u8)> {
+    use image_registry::recipe::RowState;
+    use recipe::artifact::Judged;
+    let (reference, _, client) =
+        super::image::registry::resolve(None, options.config.as_deref(), text)?;
+    let row = image_registry::recipe::row(&client, &reference, providers, sources)?;
+    Ok(match row.state {
+        RowState::NeedsNewer(reason) => (
+            if options.json {
+                format!(
+                    "{{\"file\":\"{}\",\"needs\":\"{reason}\"}}\n",
+                    row.reference
+                )
+            } else {
+                format!(
+                    "{}: {reason}; nothing but its manifest was fetched\n",
+                    row.reference
+                )
+            },
+            1,
+        ),
+        RowState::Judged(Judged::Plan(plan)) => (
+            if options.json {
+                plan.render_json()
+            } else {
+                plan.render()
+            },
+            u8::from(!plan.complete()),
+        ),
+        RowState::Judged(Judged::Refused(report)) => (
+            if options.json {
+                recipe::plan::refused_json(&row.reference, &report)
+            } else {
+                report.render()
+            },
+            1,
+        ),
+    })
+}
+
+/// `recipe push`: bundle the pinned recipe, then, with `--dry-run`, print
+/// its parts and the guard's verdict, or push it under the guard and the
+/// recipe tag rule. The parts are staged in `--store` or the default store.
+fn push(
+    options: &PushOptions,
+    providers: recipe::Providers<'_>,
+    host: &HostSources,
+    io: &mut Io<'_>,
+) -> u8 {
+    let fail = |io: &mut Io<'_>, code: u8, error: &dyn std::fmt::Display| {
+        let _ = writeln!(io.errors, "upcli recipe push: {error:#}");
+        code
+    };
+    if options.path.is_dir() {
+        return fail(
+            io,
+            2,
+            &format!(
+                "{}: a folder; push takes one recipe file",
+                options.path.display()
+            ),
+        );
+    }
+    let artifact = match recipe::artifact::bundle(&options.path, providers) {
+        Ok(artifact) => artifact,
+        Err(recipe::artifact::Refusal::Findings(report)) => {
+            let _ = io.output.write_all(report.as_bytes());
+            return 1;
+        }
+        Err(error @ recipe::artifact::Refusal::Unreadable(_)) => return fail(io, 2, &error),
+        Err(error) => return fail(io, 1, &error),
+    };
+    let (target, entry, client) = match super::image::registry::resolve(
+        options.registry.as_deref(),
+        options.config.as_deref(),
+        &options.target,
+    ) {
+        Ok(resolved) => resolved,
+        Err(error) => return fail(io, 2, &error),
+    };
+    let Some(root) = library::store_root(&options.store, host) else {
+        return fail(
+            io,
+            2,
+            &"a push needs a store to stage its parts: name one with --store",
+        );
+    };
+    let store = match image_store::Store::open(&root) {
+        Ok(store) => store,
+        Err(error) => return fail(io, 2, &format!("{}: {error}", root.display())),
+    };
+    if options.dry_run {
+        let mut text = format!(
+            "target:{target}\nimage:{}\nrecipe:{}\noutput:{}\t{}\n",
+            artifact.digest,
+            artifact.recipe_file(),
+            artifact.output().unwrap_or_default(),
+            artifact.output_digest().unwrap_or_default(),
+        );
+        for (role, descriptor) in std::iter::once(("config", &artifact.manifest.config))
+            .chain(artifact.manifest.layers.iter().map(|d| ("layer", d)))
+        {
+            text.push_str(&format!(
+                "{role}\t{}\t{}\t{}\t{}\n",
+                descriptor.digest,
+                descriptor.size,
+                descriptor.media_type,
+                descriptor
+                    .annotations
+                    .get(recipe::artifact::TITLE)
+                    .map(String::as_str)
+                    .unwrap_or_default()
+            ));
+        }
+        let verdict =
+            image_registry::recipe::check(&store, &artifact, &target, entry.as_ref(), providers);
+        text.push_str(if verdict.is_ok() {
+            "guard:allowed\n"
+        } else {
+            "guard:refused\n"
+        });
+        if io.output.write_all(text.as_bytes()).is_err() {
+            return 2;
+        }
+        return match verdict {
+            Ok(()) => 0,
+            Err(error) => fail(io, 1, &error),
+        };
+    }
+    let mut lines = String::new();
+    let mut progress = |d: &image_store::Descriptor, o: image_registry::push::BlobOutcome| {
+        lines.push_str(&format!("{}\t{}\n", o.as_str(), d.digest));
+    };
+    let pushed = image_registry::recipe::push(
+        &store,
+        &artifact,
+        &target,
+        entry.as_ref(),
+        providers,
+        &client,
+        &image_registry::push::PushOptions::default(),
+        &mut progress,
+    );
+    let report = match pushed {
+        Ok(report) => report,
+        Err(error) => {
+            let _ = io.output.write_all(lines.as_bytes());
+            return fail(io, 1, &error);
+        }
+    };
+    use image_registry::push::TagOutcome;
+    lines.push_str(&match report.tag {
+        TagOutcome::Unchanged => format!("unchanged\t{target}\t{}\n", report.image.digest),
+        TagOutcome::Moved { from } => format!(
+            "moved\t{target}\t{from} -> {} (the same output {})\n",
+            report.image.digest,
+            artifact.output_digest().unwrap_or_default()
+        ),
+        TagOutcome::Created | TagOutcome::Untagged => {
+            format!("pushed\t{target}\t{}\n", report.image.digest)
+        }
+    });
+    u8::from(io.output.write_all(lines.as_bytes()).is_err()) * 2
+}
+
+/// `recipe pull`: fetch, check and write a recipe artifact into `--to` or
+/// the current folder.
+fn pull(options: &PullOptions, providers: recipe::Providers<'_>, io: &mut Io<'_>) -> u8 {
+    let fail = |io: &mut Io<'_>, code: u8, error: &dyn std::fmt::Display| {
+        let _ = writeln!(io.errors, "upcli recipe pull: {error:#}");
+        code
+    };
+    let (source, _, client) = match super::image::registry::resolve(
+        options.registry.as_deref(),
+        options.config.as_deref(),
+        &options.source,
+    ) {
+        Ok(resolved) => resolved,
+        Err(error) => return fail(io, 2, &error),
+    };
+    let dir = options.to.clone().unwrap_or_else(|| PathBuf::from("."));
+    let pulled = match image_registry::recipe::pull(&client, &source, &dir, providers) {
+        Ok(pulled) => pulled,
+        Err(error) => return fail(io, 1, &error),
+    };
+    let mut text = String::new();
+    for (descriptor, _) in
+        std::iter::once((&pulled.artifact.manifest.config, &[][..])).chain(pulled.artifact.parts())
+    {
+        text.push_str(&format!(
+            "fetched\t{}\t{}\n",
+            descriptor.digest,
+            descriptor
+                .annotations
+                .get(recipe::artifact::TITLE)
+                .map(String::as_str)
+                .unwrap_or_default()
+        ));
+    }
+    text.push_str(&format!(
+        "pulled\t{source}\t{}\t{}\n",
+        pulled.artifact.digest,
+        pulled.recipe.display()
+    ));
+    u8::from(io.output.write_all(text.as_bytes()).is_err()) * 2
 }
 
 /// The libraries a plan or build searches: the preferences' first, then

@@ -97,7 +97,7 @@ pub fn inputs_path(path: &Path, providers: Providers<'_>) -> io::Result<Listing>
     Ok(match crate::load(path, providers)? {
         Opened::Refused(report) => Listing::Refused(report),
         Opened::Work => Listing::NotRecipe,
-        Opened::Recipe(recipe, _) => match inputs(&recipe) {
+        Opened::Recipe(recipe, _, _) => match inputs(&recipe) {
             Ok(inputs) => Listing::Inputs(inputs),
             Err(clash) => Listing::Clash(clash),
         },

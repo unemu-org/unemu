@@ -365,6 +365,7 @@ fn identity(image: &Descriptor) -> Descriptor {
         .remove("org.opencontainers.image.ref.name");
     image.annotations.remove(image_store::PULL_REGISTRY);
     image.annotations.remove(image_store::MADE_HERE);
+    image.annotations.remove(image_store::BUILD_RECIPE);
     image
 }
 

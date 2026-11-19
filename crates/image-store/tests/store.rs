@@ -1124,6 +1124,96 @@ fn a_pull_record_never_travels_to_a_tag_another_write_makes() {
     );
 }
 
+/// A recipe build records the recipe's digest on the tag it wrote, in the
+/// index only: the tag's image and every digest stay, a tag naming another
+/// image is a conflict, the record never travels to a tag copied from the
+/// descriptor, and a move to another image or a pull drops it.
+#[test]
+fn a_tag_records_the_recipe_that_built_it_until_it_moves() {
+    let dir = Temp::new();
+    let store = dir.store();
+    let provider = Provider("zx-spectrum");
+    let (manifest, _) = fixture(&store, b"firmware");
+    let image = publish(&store, &manifest, "built:latest");
+    let recipe = Digest::of(b"recipe = \"0.1\"\n");
+    let blobs = || {
+        let mut names: Vec<_> = fs::read_dir(dir.0.join("images/blobs/sha256"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = blobs();
+    store
+        .record_build_recipe("built:latest", &image.digest, &recipe)
+        .unwrap();
+    assert_eq!(blobs(), before, "no blob is written");
+    let tag = |name: &str| {
+        store
+            .list_tags(None, 10)
+            .unwrap()
+            .tags
+            .into_iter()
+            .find(|t| t.name == name)
+            .unwrap()
+    };
+    assert_eq!(tag("built:latest").manifest.digest, image.digest);
+    assert_eq!(
+        tag("built:latest").built_from_recipe(),
+        Some(recipe.clone())
+    );
+    assert!(tag("built:latest").made_here());
+    let index = fs::read_to_string(dir.0.join("images/index.json")).unwrap();
+    assert!(
+        index.contains(&format!(r#""unemu.build.recipe":"{recipe}""#)),
+        "{index}"
+    );
+    // Copying the descriptor to another tag leaves the record behind.
+    let descriptor = store.tag_descriptor("built:latest").unwrap();
+    store
+        .update_tag("copy:1", &descriptor, None, &provider)
+        .unwrap();
+    assert_eq!(tag("copy:1").built_from_recipe(), None);
+    // A tag that names another image, or no tag, is not recorded.
+    let (other, _) = fixture(&store, b"other firmware");
+    let other = store.import_manifest(&other).unwrap();
+    assert!(matches!(
+        store.record_build_recipe("built:latest", &other.digest, &recipe),
+        Err(Error::Conflict { .. })
+    ));
+    assert!(matches!(
+        store.record_build_recipe("absent:1", &image.digest, &recipe),
+        Err(Error::TagNotFound(_))
+    ));
+    // Writing the same image keeps the record; moving it drops it.
+    store
+        .update_tag("built:latest", &image, Some(&image.digest), &provider)
+        .unwrap();
+    assert_eq!(
+        tag("built:latest").built_from_recipe(),
+        Some(recipe.clone())
+    );
+    store
+        .update_tag("built:latest", &other, Some(&image.digest), &provider)
+        .unwrap();
+    assert_eq!(tag("built:latest").built_from_recipe(), None);
+    // A pull of the same image replaces the record with its own.
+    store
+        .record_build_recipe("copy:1", &image.digest, &recipe)
+        .unwrap();
+    store
+        .update_pulled_tag(
+            "copy:1",
+            &image,
+            Some(&image.digest),
+            &provider,
+            "nas.example:5000",
+        )
+        .unwrap();
+    assert_eq!(tag("copy:1").built_from_recipe(), None);
+}
+
 /// Every tag write other than a pull marks a tag it creates or moves as made
 /// here, also when it copies a pulled tag's descriptor; a pull never does.
 /// Rewriting a tag with the image it names keeps its record, and a pull's

@@ -207,6 +207,30 @@ fn client(
     )?)
 }
 
+/// A reference resolved as `image push` and `image pull` resolve theirs:
+/// against the default registry of `--registry`, the environment or the
+/// preferences (`config`, or the shared file), with its registry entry and
+/// a client holding the registry's credentials. `recipe push` and `recipe
+/// pull` use it.
+pub(crate) fn resolve(
+    registry: Option<&str>,
+    config: Option<&Path>,
+    text: &str,
+) -> anyhow::Result<(Reference, Option<image_registry::RegistryEntry>, Client)> {
+    let options = Common {
+        registry: registry.map(str::to_owned),
+        config: config.map(Path::to_path_buf),
+    };
+    let (config, default_host) = load(&options)?;
+    let reference = Reference::parse(text, &default_host)?;
+    if reference.host != default_host {
+        conflicting_registry(&options, &reference)?;
+    }
+    let entry = config.entry(&reference.host);
+    let client = client(&config, &reference.host, &credential_store::detect())?;
+    Ok((reference, entry, client))
+}
+
 fn conflicting_registry(options: &Common, reference: &Reference) -> anyhow::Result<()> {
     if let Some(flag) = &options.registry {
         if !flag.eq_ignore_ascii_case(&reference.host) {

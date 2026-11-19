@@ -39,7 +39,47 @@ pub mod media_type {
     /// UTF-8 Markdown text (RFC 7763), such as a firmware package README. The
     /// charset parameter is left out because OCI media types carry no parameters.
     pub const MARKDOWN: &str = "text/markdown";
+    /// A media recipe (recipes.md §7.1): one artifact type per recipe kind,
+    /// because a registry filters a listing by artifact type and by
+    /// nothing else.
+    pub const RECIPE_MEDIA: &str = "application/vnd.unemu.recipe.media.v1";
+    /// A firmware recipe (recipes.md §7.1).
+    pub const RECIPE_FIRMWARE: &str = "application/vnd.unemu.recipe.firmware.v1";
+    /// A recipe artifact's config: the recipe file itself, whose digest is
+    /// the recipe's.
+    pub const RECIPE_CONFIG: &str = "application/vnd.unemu.recipe.v1+toml";
+    /// A recipe artifact's layer holding the work file the recipe names
+    /// (recipes.md §6.16).
+    pub const RECIPE_WORK: &str = "application/vnd.unemu.recipe.work.v1+toml";
+    /// A recipe artifact's layer holding one bundled input (`bundle = true`,
+    /// recipes.md §6.8): our own text, at most 1 MiB.
+    pub const RECIPE_INPUT: &str = "application/vnd.unemu.recipe.input.v1";
+    /// A recipe artifact's layer holding one file of its lock (recipes.md
+    /// §7.2): the output's manifest, config or another generated layer.
+    pub const RECIPE_LOCK: &str = "application/vnd.unemu.recipe.lock.v1";
 }
+
+/// Whether `kind` is the artifact type of a recipe (recipes.md §7.1).
+pub fn is_recipe(kind: &str) -> bool {
+    matches!(kind, media_type::RECIPE_MEDIA | media_type::RECIPE_FIRMWARE)
+}
+
+/// The layer types of a recipe artifact, each at most 1 MiB, as the bundle
+/// and a lock file are bounded (recipes.md §6.11 rule 9, §7.2).
+pub(crate) const RECIPE_PARTS: &[PayloadType] = &[
+    PayloadType {
+        media_type: media_type::RECIPE_WORK,
+        max_size: MAX_SMALL_BLOB,
+    },
+    PayloadType {
+        media_type: media_type::RECIPE_INPUT,
+        max_size: MAX_SMALL_BLOB,
+    },
+    PayloadType {
+        media_type: media_type::RECIPE_LOCK,
+        max_size: MAX_SMALL_BLOB,
+    },
+];
 
 /// A provider-declared payload codec and its maximum stored size.
 #[derive(Clone, Copy, Debug)]
@@ -323,6 +363,34 @@ impl Manifest {
         Ok(manifest)
     }
 
+    /// Construct a recipe artifact (recipes.md §7.1) of `artifact_type`,
+    /// [`media_type::RECIPE_MEDIA`] or [`media_type::RECIPE_FIRMWARE`]: the
+    /// recipe file as its config and its work file, bundled inputs and lock
+    /// files as layers. The recipe crate adds the annotations and checks
+    /// what the parts hold.
+    pub fn new_recipe(
+        artifact_type: &str,
+        platform: &str,
+        config: Descriptor,
+        layers: Vec<Descriptor>,
+    ) -> Result<Self> {
+        if !is_recipe(artifact_type) {
+            return Err(invalid(format!(
+                "{artifact_type} is not a recipe artifact type"
+            )));
+        }
+        let manifest = Self {
+            schema_version: 2,
+            media_type: media_type::MANIFEST.into(),
+            artifact_type: artifact_type.into(),
+            config,
+            layers,
+            annotations: BTreeMap::from([("unemu.platform".into(), platform.into())]),
+        };
+        manifest.validate(&[])?;
+        Ok(manifest)
+    }
+
     /// Artifact identity determines the required config codec.
     pub fn artifact_type(&self) -> &str {
         &self.artifact_type
@@ -396,16 +464,27 @@ impl Manifest {
             || self.media_type != media_type::MANIFEST
             || !matches!(
                 self.artifact_type.as_str(),
-                media_type::MACHINE | media_type::MEDIA_SET | media_type::FIRMWARE
+                media_type::MACHINE
+                    | media_type::MEDIA_SET
+                    | media_type::FIRMWARE
+                    | media_type::RECIPE_MEDIA
+                    | media_type::RECIPE_FIRMWARE
             )
         {
             return Err(invalid("unsupported manifest envelope"));
         }
         self.platform()?;
         validate_annotations(&self.annotations)?;
-        self.config.validate()?;
+        let recipe = is_recipe(&self.artifact_type);
+        if recipe {
+            self.config.validate_limit(MAX_SMALL_BLOB)?;
+        } else {
+            self.config.validate()?;
+        }
         if self.config.media_type
-            != if self.artifact_type == media_type::MEDIA_SET {
+            != if recipe {
+                media_type::RECIPE_CONFIG
+            } else if self.artifact_type == media_type::MEDIA_SET {
                 media_type::MEDIA_SET_CONFIG
             } else if self.artifact_type == media_type::FIRMWARE {
                 media_type::FIRMWARE_CONFIG
@@ -421,6 +500,16 @@ impl Manifest {
         let mut seen = std::collections::BTreeSet::from([&self.config.digest]);
         let mut metadata_count = 0;
         for layer in &self.layers {
+            if recipe
+                && !RECIPE_PARTS
+                    .iter()
+                    .any(|t| t.media_type == layer.media_type)
+            {
+                return Err(invalid(format!(
+                    "a recipe artifact holds its work file, bundled inputs and lock files only, not {}",
+                    layer.media_type
+                )));
+            }
             if !display
                 && self.artifact_type == media_type::MACHINE
                 && matches!(
@@ -438,6 +527,7 @@ impl Manifest {
             } else {
                 // Envelope-owned artifacts declare their own codecs.
                 let types = match self.artifact_type.as_str() {
+                    _ if recipe => RECIPE_PARTS,
                     media_type::MEDIA_SET if types.is_empty() => crate::codec::MEDIA_PAYLOAD_TYPES,
                     media_type::FIRMWARE if types.is_empty() => {
                         crate::codec::FIRMWARE_PAYLOAD_TYPES
@@ -476,7 +566,11 @@ impl Manifest {
                 "firmware layers must be ROMs, extras, source archives or a README",
             ));
         }
-        if metadata_count != usize::from(self.artifact_type != media_type::FIRMWARE) {
+        let metadata_wanted = matches!(
+            self.artifact_type.as_str(),
+            media_type::MACHINE | media_type::MEDIA_SET
+        );
+        if metadata_count != usize::from(metadata_wanted) {
             return Err(invalid("exactly one metadata descriptor is required"));
         }
         Ok(())
@@ -589,6 +683,55 @@ mod tests {
         assert!(Manifest::new("c64", config.clone(), vec![metadata.clone(), second]).is_err());
         let alias = Descriptor::new(media_type::FIRMWARE, config.digest.clone(), config.size);
         assert!(Manifest::new("c64", config, vec![alias, metadata]).is_err());
+    }
+
+    /// A recipe artifact holds its recipe as config and only its work
+    /// file, bundled inputs and lock files as layers, each at most 1 MiB,
+    /// and no metadata; every one of its types has a compatibility row.
+    #[test]
+    fn a_recipe_artifact_holds_its_parts_only_and_fails_closed() {
+        let config = Descriptor::new(media_type::RECIPE_CONFIG, Digest::of(b"recipe"), 6);
+        let part =
+            |kind: &str, bytes: &[u8]| Descriptor::new(kind, Digest::of(bytes), bytes.len() as u64);
+        let parts = vec![
+            part(media_type::RECIPE_WORK, b"work"),
+            part(media_type::RECIPE_INPUT, b"notes"),
+            part(media_type::RECIPE_LOCK, b"manifest"),
+        ];
+        for kind in [media_type::RECIPE_MEDIA, media_type::RECIPE_FIRMWARE] {
+            let manifest =
+                Manifest::new_recipe(kind, "ibm-pc", config.clone(), parts.clone()).unwrap();
+            let bytes = manifest.encode().unwrap();
+            assert_eq!(Manifest::decode(&bytes).unwrap(), manifest);
+            assert_eq!(Manifest::decode_for_summary(&bytes).unwrap(), manifest);
+            assert!(is_recipe(manifest.artifact_type()));
+            assert_eq!(
+                crate::compat::envelope(&manifest, &[]).unwrap(),
+                crate::compat::AppVersion::new(0, 0, 3)
+            );
+        }
+        let refused = |config: Descriptor, layers: Vec<Descriptor>| {
+            Manifest::new_recipe(media_type::RECIPE_MEDIA, "ibm-pc", config, layers).is_err()
+        };
+        // Another layer type, a metadata blob, a payload or a large part.
+        assert!(refused(
+            config.clone(),
+            vec![part(media_type::METADATA, b"m")]
+        ));
+        assert!(refused(
+            config.clone(),
+            vec![part(media_type::FLOPPY, b"disk")]
+        ));
+        let mut large = part(media_type::RECIPE_INPUT, b"large");
+        large.size = MAX_SMALL_BLOB + 1;
+        assert!(refused(config.clone(), vec![large]));
+        // Another config type, or a recipe config in another envelope.
+        assert!(refused(
+            Descriptor::new(media_type::MEDIA_SET_CONFIG, Digest::of(b"c"), 1),
+            Vec::new()
+        ));
+        assert!(Manifest::new_media_set("ibm-pc", config.clone(), Vec::new()).is_err());
+        assert!(Manifest::new_recipe(media_type::MEDIA_SET, "ibm-pc", config, Vec::new()).is_err());
     }
 
     #[test]

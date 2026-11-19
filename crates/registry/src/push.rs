@@ -89,13 +89,13 @@ impl Default for PushOptions {
 /// ```
 #[derive(Clone, Debug)]
 pub struct PushPlan {
-    target: Reference,
-    entry: Option<RegistryEntry>,
-    image: Descriptor,
-    manifest: Manifest,
-    manifest_bytes: Vec<u8>,
-    closure: Vec<ClosureEntry>,
-    verdict: std::result::Result<(), Refusal>,
+    pub(crate) target: Reference,
+    pub(crate) entry: Option<RegistryEntry>,
+    pub(crate) image: Descriptor,
+    pub(crate) manifest: Manifest,
+    pub(crate) manifest_bytes: Vec<u8>,
+    pub(crate) closure: Vec<ClosureEntry>,
+    pub(crate) verdict: std::result::Result<(), Refusal>,
 }
 
 impl PushPlan {
@@ -498,9 +498,9 @@ fn check_alias(
 }
 
 /// What a running push reports, and asks whether to stop.
-struct Watch<'a> {
-    progress: &'a mut dyn FnMut(PushProgress<'_>),
-    cancelled: &'a dyn Fn() -> bool,
+pub(crate) struct Watch<'a> {
+    pub(crate) progress: &'a mut dyn FnMut(PushProgress<'_>),
+    pub(crate) cancelled: &'a dyn Fn() -> bool,
 }
 
 impl Watch<'_> {
@@ -512,7 +512,10 @@ impl Watch<'_> {
     }
 }
 
-fn finish(
+/// Upload the plan's missing blobs, check that the registry holds every
+/// one, recheck the tag against `preflight` and publish the manifest last.
+/// Recipe pushes ([`crate::recipe`]) end here too, after their own rules.
+pub(crate) fn finish(
     store: &Store,
     plan: &PushPlan,
     client: &Client,

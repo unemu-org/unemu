@@ -1213,6 +1213,9 @@
     "member": {
       "additionalProperties": false,
       "properties": {
+        "disclosable": {
+          "type": "boolean"
+        },
         "path": {
           "$ref": "#/$defs/path"
         },

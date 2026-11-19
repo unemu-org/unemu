@@ -28,7 +28,11 @@
 //! - browsing reads what a tag offers from its manifest and small config
 //!   record, in memory and without any layer ([`browse`]);
 //! - a plain download of one file over HTTPS, for the inputs a recipe
-//!   build fetches with the user's consent ([`download`]).
+//!   build fetches with the user's consent ([`download`]);
+//! - recipe artifacts (recipes.md §7): push under the recipe guard and the
+//!   rule that a recipe tag moves only to a recipe of the same output
+//!   digest, pull into a folder the recipe builds from, and the plan of a
+//!   registry row from its manifest and config alone ([`mod@recipe`]).
 //!
 //! The crate knows no emulator: platform providers supply the
 //! [`image_store::ConfigValidator`] that checks a closure before it is tagged.
@@ -44,6 +48,7 @@ pub mod guard;
 mod http;
 pub mod pull;
 pub mod push;
+pub mod recipe;
 pub mod reference;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
@@ -152,6 +157,17 @@ pub enum Error {
     DigestMismatch { expected: Digest, actual: Digest },
     #[error("invalid registry response: {0}")]
     Protocol(String),
+    #[error("recipe refused: {0}")]
+    Recipe(#[from] ::recipe::artifact::Refusal),
+    #[error("recipe tag {tag} names {current}, {}; a recipe tag is replaced only by a recipe that pins the same output digest, {wanted}", .output.as_deref().map_or_else(|| "which is no recipe".to_owned(), |o| format!("a recipe of the output digest {o}")))]
+    RecipeTagTaken {
+        tag: String,
+        current: Digest,
+        /// The output digest the recipe there pins; `None` when the tag
+        /// names no recipe artifact.
+        output: Option<String>,
+        wanted: String,
+    },
     #[error("cancelled")]
     Cancelled,
 }
