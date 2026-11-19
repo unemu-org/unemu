@@ -219,6 +219,37 @@ pub enum CpuError {
         /// Which exit the core returned, with its details.
         what: String,
     },
+    /// The processor kept delivering exceptions and retired no instruction
+    /// between them, as when a handler's first instruction faults again, and
+    /// it neither retired one nor shut down within the backend's bound. A
+    /// completed delivery is no step, so a step-bounded run would never reach
+    /// its budget, and virtual time would stand still. The core returns such
+    /// a run every 1024 deliveries; the backend runs on through 11 of those
+    /// returns in one call (`x86jit_backend::STALL_RETURNS`). On the 80286
+    /// each delivery pushes a frame of at least 6 bytes: when SP is not a
+    /// multiple of the frame size, or the stack's limit is below FFFFh, the
+    /// frames overrun the bottom of the stack within the bound, the fault in
+    /// that delivery escalates to a double fault and then to shutdown, and
+    /// the run ends in [`CpuStop::Shutdown`], the stop the AT board answers
+    /// with a reset (Intel 80286 Programmer's Reference Manual, §9.6.2 and
+    /// Appendix B, INT). When SP is a multiple of the frame size, a 64 KiB
+    /// stack wraps without a fault and the loop has no end; only that stall
+    /// is reported, with the deliveries it took. `cs:ip` is where the last
+    /// delivery went: the handler's first instruction, which the CPU still
+    /// holds, so the stop report shows its bytes. See
+    /// `backlog/docs/design/observation.md` §CPU stop report.
+    #[error(
+        "the processor is stuck delivering exceptions: {deliveries} deliveries \
+         without an instruction, the last to {cs:04x}:{ip:04x}"
+    )]
+    DeliveryStalled {
+        /// Consecutive completed deliveries with no instruction retired.
+        deliveries: u32,
+        /// Code selector of the last delivery's handler.
+        cs: u16,
+        /// Instruction pointer of the last delivery's handler.
+        ip: u64,
+    },
 }
 
 /// The " (bytes 0f 0b)" tail of an unsupported-instruction message, or

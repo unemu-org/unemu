@@ -735,6 +735,57 @@ removes; a new session always writes its own), and
 `upcli run --machine` prints it after its `stopped:` line (commands.md, Build
 / run / test).
 
+### Stuck in exception delivery
+
+A guest whose exception handler faults at its first instruction is
+delivered the exception again and again, and no instruction retires in
+between. A completed delivery is no step, so a run bounded by steps, and
+virtual time, which counts them, would never end. The CPU core returns such
+a run after 1024 consecutive deliveries with nothing retired, with steps
+below the budget (x86jit's `Vcpu::run_steps` contract); in the machine
+profile that is the only budget exit short of the budget.
+`X86JitCpu::run_steps` runs on through 11 such returns in one call, 11,264
+deliveries, as long as no instruction retires. On an 80286 every delivery
+pushes a frame of at least 6 bytes, so within ⌈65,536 / 6⌉ = 10,923
+deliveries the frames reach the bottom of a 16-bit stack. When SP is not a
+multiple of the frame size, or the stack's limit is below FFFFh, the next
+frame overruns it: that fault escalates to a double fault and then to
+shutdown (Intel 80286 Programmer's Reference Manual, §9.6.2 and Appendix B,
+INT), and the run ends in Shutdown, which the AT board answers with a CPU
+reset as for any shutdown. Only when SP is a multiple of the frame size does
+a 64 KiB stack wrap without a fault forever; that stall, which neither
+retires nor shuts down within the bound, becomes `CpuError::DeliveryStalled`
+and fails the machine like a refusal. One call through the whole window
+took about 7 ms in a release build (measured on the CPU backend's test), so
+the desktop never waits longer than that inside one run. The report is
+taken where the core stopped, at the handler's first instruction, so `code`
+and `decoded` show the instruction that keeps faulting. The vector is not
+known to the report. From the open guest
+`assembly::test_support::delivery_stall_rom` (#GP from `MOV DS,AX` with
+selector F8h beyond the GDT limit; the handler's first instruction is the
+same `MOV DS,AX`; 8-byte frames from SP F000h wrap cleanly);
+`delivery_overrun_rom` is the overrunning case, which shuts down and resets:
+
+```text
+cpu stop report
+stop     the processor is stuck delivering exceptions: 11264 deliveries without an instruction, the last to 0008:0040
+cs:ip    0008:0040 (linear 0f8040)
+mode     protected, cpl 0, msw fff1, a20 on
+cs       0008 base 0f8000 limit 0000ffff attr 009b
+ss       0010 base 000000 limit 0000ffff attr 0093
+ss:sp    0010:9000
+gdtr     base 0f8110 limit 0017
+idtr     base 0f8180 limit 006f
+ldtr     0000 base 000000 limit 00000000 attr 0000
+tr       0000 base 000000 limit 00000000 attr 0000
+code     8e d8 f4 00 00 00 00 00 00 00 00 00 00 00 00 00
+decoded  mov %ax,%ds
+tss      tr not loaded
+```
+
+`upcli run --machine` prints `stopped: cpu fault: the processor is stuck
+delivering exceptions: ...` and this report, and exits 1.
+
 ## Implemented access trace policy
 
 `device::TracePolicy` has two modes: `Off` (the default) and

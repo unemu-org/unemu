@@ -5,6 +5,37 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — A guest stuck delivering exceptions stops the machine with a report instead
+  of freezing it; x86jit moves to `7a9ea390`:** (`upc-f7j.15`; design/observation.md §CPU
+  stop report). On the 286 AT a protected-mode guest whose exception handler faulted at its
+  first instruction was delivered the exception again and again; a delivery retires nothing,
+  virtual time counts retired instructions, so the run's deadline was never reached and the
+  desktop froze at 100% CPU. x86jit `7a9ea390` (xj-srh.26 (x86jit)) returns such a run after
+  1024 deliveries in a row with no instruction retired, with its step budget unspent. The CPU
+  backend runs on through 11 such returns (11,264 deliveries, about 7 ms in a release build):
+  enough for the frames of a 16-bit stack to reach its bottom. A stack whose SP is not a
+  multiple of the frame size (or whose limit is below FFFFh) then overruns, the processor
+  shuts down and the AT board resets it, as on hardware, so a guest that leaves protected mode
+  by a triple fault still gets its reset. A stack that wraps cleanly loops forever; that stall
+  becomes the new `CpuError::DeliveryStalled`: "the processor is stuck delivering exceptions:
+  11264 deliveries without an instruction, the last to CS:IP", CS:IP being the handler's first
+  instruction. It fails the machine like any CPU refusal: the desktop shows it in the Machine
+  error dialog with the CPU stop report (whose code bytes are the handler's faulting
+  instruction), and `upcli run --machine` prints `stopped: cpu fault: ...` and the report and
+  exits 1. The machine's run loop was the only loop that ran the CPU's `run_steps` in
+  production; the PC core, the desktop session and `upcli` above it already stop on its error.
+  MEASURED with two open ROMs in `assembly::test_support`: `delivery_stall_rom` (protected
+  mode, #GP whose handler's `MOV DS,AX` faults again, 8-byte frames from SP F000h) stops with
+  the report in the CPU backend, PC core, session and `upcli` tests, which hang past their 60 s
+  deadline at the old pin; `delivery_overrun_rom` (a real-mode #UD handler that is itself an
+  invalid opcode, 6-byte frames from SP FFFEh) shuts down after 10,922 deliveries, the board
+  resets and the ROM's second start halts, where stopping at the first bounded return reported
+  a stall instead. The reset after a shutdown was already complete (CS:IP F000:FFF0 with base
+  FF0000h, MSW FFF0h, IDTR 0/3FFh, caches of limit FFFFh, engine state cleared); a CPU test now
+  pins it, and the open at-pm-test golden's triple-fault stage resumes through the BIOS. The
+  pin also brings x86jit's locked operand that spans RAM and a device region, now performed
+  instead of refused (`e29dc1ae`). Every golden keeps its transcript and retired count at the
+  new pin.
 - **2026-11-19 — Recipes on a registry:** step B10 of design/recipes.md
   §19.2 (decision-35). `upcli recipe push FILE REF` publishes a pinned
   recipe as an artifact of its own type (`application/vnd.unemu.recipe.media.v1`

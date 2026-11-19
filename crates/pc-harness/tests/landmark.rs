@@ -23,7 +23,7 @@ use std::{
 };
 
 const ENTRY_ID: &str = "landmark-rom-post-at-1.2.0";
-const CPU_REV: &str = "a11353e6850c4fe7b5c3ddde504052647ce897c1";
+const CPU_REV: &str = "7a9ea390b8f588ce4af9845980bbf8534f793f61";
 const STEP_BUDGET: u64 = 30_000_000;
 // Historical Application Real16 prefix after the PIT refresh calibration.
 const REAL16_GOLDEN_RETIRED: u64 = 15_785_137;
@@ -110,6 +110,9 @@ fn run_result_summary(result: &Result<RunOutcome, RunError>) -> String {
             }
             CpuError::UnsupportedSystem { operation, cs, ip } => {
                 format!("Err(Machine(Cpu(UnsupportedSystem {{ operation: {operation}, cs: {cs:#x}, ip: {ip:#x} }})))")
+            }
+            CpuError::DeliveryStalled { deliveries, cs, ip } => {
+                format!("Err(Machine(Cpu(DeliveryStalled {{ deliveries: {deliveries}, cs: {cs:#x}, ip: {ip:#x} }})))")
             }
             CpuError::Memory(_) => "Err(Machine(Cpu(Memory(<details omitted>))))".into(),
             CpuError::UnexpectedExit { .. } => {

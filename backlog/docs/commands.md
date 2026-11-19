@@ -1168,7 +1168,9 @@ exhaustion finish journal persistence and print maintenance warnings on stderr.
 Execution errors leave unsealed commands for recovery on the next mount.
 When the CPU core refuses an operation (an unsupported system operation such
 as `LegacyInstruction`, an instruction it does not lift, or a fault it
-returns outward), `run --machine` follows the `stopped: ...` line with a
+returns outward), or the guest is stuck delivering exceptions (`stopped: cpu
+fault: the processor is stuck delivering exceptions: ...`, exit 1), `run
+--machine` follows the `stopped: ...` line with a
 multi-line CPU stop report on stderr: CS:IP, MSW, CPL, A20, the CS and SS
 caches, GDTR, IDTR, LDTR and TR, the 16 bytes at CS:IP, and for a far
 CALL/JMP, INT n or RETF/IRET the descriptors the instruction reaches with

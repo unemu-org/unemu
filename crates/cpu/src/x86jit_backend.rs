@@ -22,6 +22,22 @@ use x86jit_core::{
 
 use crate::{Cpu, CpuError, CpuReg, CpuStepRun, CpuStepStop, CpuStop, DmaAccess, StepRunOptions};
 
+/// Consecutive deliveries that retire nothing, after which the core ends a
+/// machine-profile run with its budget unspent; the value `x86jit-core`
+/// documents on `Vcpu::run_steps`.
+pub const DELIVERY_STALL_LIMIT: u32 = 1024;
+
+/// Bounded returns in a row, with no instruction retired, that one
+/// [`Cpu::run_steps`] call runs through before it reports
+/// [`CpuError::DeliveryStalled`]: 11 × 1024 = 11,264 deliveries. A frame on a
+/// 16-bit stack takes at least 6 bytes, so within ⌈65,536 / 6⌉ = 10,923
+/// deliveries the frames reach the bottom of the stack. Where SP is not a
+/// multiple of the frame size (or the limit is below FFFFh) the next frame
+/// overruns it and the processor shuts down, which the board answers with a
+/// reset (Intel 80286 Programmer's Reference Manual, §9.6.2 and Appendix B,
+/// INT); where it is, the frames wrap without a fault and the loop has no end.
+pub const STALL_RETURNS: u32 = 11;
+
 /// A CPU backed by the `x86jit` interpreter core (§2.1).
 ///
 /// Owns the guest [`Vm`] (its memory map) and the [`Vcpu`]. The machine loop
@@ -314,7 +330,9 @@ impl X86JitCpu {
 
     /// The diagnosis of a stop this CPU returned, for the errors that name
     /// an instruction: an unsupported system operation, an unsupported
-    /// instruction and an outward fault; `None` for every other error.
+    /// instruction, an outward fault and a stall in exception delivery,
+    /// whose instruction is the handler's first; `None` for every other
+    /// error.
     ///
     /// Call it right after the failed run, before anything else runs the
     /// CPU: the core refuses without a guest effect, so the registers and
@@ -330,6 +348,7 @@ impl X86JitCpu {
             CpuError::UnsupportedSystem { cs, ip, .. } => (*cs, *ip),
             CpuError::UnsupportedInstruction { cs, addr, .. } => (*cs, *addr),
             CpuError::Fault { cs, ip, .. } => (*cs, *ip),
+            CpuError::DeliveryStalled { cs, ip, .. } => (*cs, *ip),
             _ => return None,
         };
         let state = &self.cpu.cpu;
@@ -613,29 +632,62 @@ impl Cpu for X86JitCpu {
         max_steps: u64,
         options: StepRunOptions,
     ) -> Result<CpuStepRun, CpuError> {
-        let run = self
-            .cpu
-            .run_steps(
-                &self.vm,
-                max_steps,
-                StepOptions::default().with_stop_when_irq_ready(options.stop_when_irq_ready),
-            )
-            .map_err(|error| match error {
-                StepRunError::UnsupportedMode => CpuError::UnexpectedExit {
-                    what: "step-bounded execution is unsupported by this backend or mode"
-                        .to_string(),
-                },
-                StepRunError::PendingPortIn => CpuError::UnexpectedExit {
-                    what: "pending port input must be completed before step-bounded execution"
-                        .to_string(),
-                },
-                other => CpuError::UnexpectedExit {
-                    what: format!("{other:?}"),
-                },
-            })?;
-        let steps = run.steps();
-        self.completed_steps += steps;
-        let stop = match run.into_stop() {
+        let machine = self.vm.execution_profile() == ExecutionProfile::Machine;
+        let mut steps = 0;
+        // Bounded returns in a row with no instruction retired between them.
+        let mut stalls = 0u32;
+        let mut stalled_at = 0;
+        let stop = loop {
+            let run = self
+                .cpu
+                .run_steps(
+                    &self.vm,
+                    max_steps - steps,
+                    StepOptions::default().with_stop_when_irq_ready(options.stop_when_irq_ready),
+                )
+                .map_err(|error| match error {
+                    StepRunError::UnsupportedMode => CpuError::UnexpectedExit {
+                        what: "step-bounded execution is unsupported by this backend or mode"
+                            .to_string(),
+                    },
+                    StepRunError::PendingPortIn => CpuError::UnexpectedExit {
+                        what: "pending port input must be completed before step-bounded execution"
+                            .to_string(),
+                    },
+                    other => CpuError::UnexpectedExit {
+                        what: format!("{other:?}"),
+                    },
+                })?;
+            steps += run.steps();
+            self.completed_steps += run.steps();
+            let stop = run.into_stop();
+            // In the machine profile a budget stop short of the budget is
+            // only the core's bound on deliveries that retired nothing
+            // (`Vcpu::run_steps`), resumable at the handler. Running on lets
+            // a stack that overruns reach its shutdown, as on hardware;
+            // after STALL_RETURNS bounded returns a 16-bit stack has either
+            // done so or wraps cleanly forever, and the run stops.
+            if machine && steps < max_steps && matches!(stop, StepStop::Exit(Exit::BudgetExhausted))
+            {
+                let retired = self.cpu.retired_instructions();
+                stalls = if stalls != 0 && retired == stalled_at {
+                    stalls + 1
+                } else {
+                    1
+                };
+                stalled_at = retired;
+                if stalls < STALL_RETURNS {
+                    continue;
+                }
+                return Err(CpuError::DeliveryStalled {
+                    deliveries: stalls * DELIVERY_STALL_LIMIT,
+                    cs: self.cpu.cpu.cs,
+                    ip: self.cpu.cpu.rip,
+                });
+            }
+            break stop;
+        };
+        let stop = match stop {
             StepStop::Exit(exit) => CpuStepStop::Exit(self.map_exit(exit)?),
             StepStop::IrqReady => CpuStepStop::IrqReady,
             other => {
@@ -725,6 +777,241 @@ mod tests {
         cpu.map_ram(0, 0x10000).unwrap();
         cpu.write_mem(0x1000, code).unwrap();
         cpu
+    }
+
+    /// Protected-mode entry at 1000h with the GDTR image at 1100h, the IDTR
+    /// image at 1106h and the GDT at 1110h: ring-0 code 08h (base 0, limit
+    /// FFFFh) and data 10h at 10000h with `data_limit`, so the stack's
+    /// frames stay clear of the code and tables. The code then loads SS with
+    /// 10h and SP with F000h (at 101Ch), and loads ES with selector F8h,
+    /// beyond the GDT limit (at 1021h): #GP(00F8h).
+    fn protected_mode_fault(data_limit: u16, idtr: [u8; 6]) -> X86JitCpu {
+        let mut cpu = i286_guest(&[
+            0xFA, // CLI
+            0x0F, 0x01, 0x16, 0x00, 0x11, // LGDT [1100h]
+            0x0F, 0x01, 0x1E, 0x06, 0x11, // LIDT [1106h]
+            0xB8, 0x01, 0x00, 0x0F, 0x01, 0xF0, // MOV AX,1; LMSW AX
+            0xEA, 0x16, 0x10, 0x08, 0x00, // JMP 0008:1016
+            0xB8, 0x10, 0x00, 0x8E, 0xD0, // MOV AX,10h; MOV SS,AX
+            0xBC, 0x00, 0xF0, // MOV SP,0F000h
+            0xB8, 0xF8, 0x00, 0x8E, 0xC0, // MOV AX,0F8h; MOV ES,AX
+            0xF4, // HLT
+        ]);
+        cpu.write_mem(0x1100, &[0x17, 0x00, 0x10, 0x11, 0x00, 0x00])
+            .unwrap();
+        cpu.write_mem(0x1106, &idtr).unwrap();
+        let [low, high] = data_limit.to_le_bytes();
+        cpu.write_mem(0x1118, &[0xFF, 0xFF, 0, 0, 0, 0x9B, 0, 0])
+            .unwrap();
+        cpu.write_mem(0x1120, &[low, high, 0, 0, 0x01, 0x93, 0, 0])
+            .unwrap();
+        cpu.map_ram(0x10000, 0x10000).unwrap();
+        cpu
+    }
+
+    /// Point the 14 exception gates of the IDT at 1180h (limit 6Fh) at
+    /// 0008:1040h, which holds `handler`.
+    fn gates_to(cpu: &mut X86JitCpu, handler: &[u8]) {
+        for vector in 0..14 {
+            cpu.write_mem(
+                0x1180 + 8 * vector,
+                &[0x40, 0x10, 0x08, 0x00, 0x00, 0x86, 0, 0],
+            )
+            .unwrap();
+        }
+        cpu.write_mem(0x1040, handler).unwrap();
+    }
+
+    /// The IDTR image for [`gates_to`]: limit 6Fh, base 1180h.
+    const IDTR_1180: [u8; 6] = [0x6F, 0x00, 0x80, 0x11, 0x00, 0x00];
+
+    /// A #GP handler whose first instruction faults again retires nothing
+    /// (Intel 80286 Programmer's Reference Manual, §9.5: the handler is
+    /// entered, and its MOV ES faults as a new exception, not a double
+    /// fault). The core returns every 1024 deliveries with its budget
+    /// unspent; before it did, this run never returned. From SP F000h, a
+    /// multiple of the 8-byte frame, the frames wrap without a fault, so the
+    /// backend stops the run after [`STALL_RETURNS`] such returns with a
+    /// typed error naming the handler, and keeps the steps it completed
+    /// before the loop.
+    #[test]
+    fn a_handler_that_faults_at_once_stops_with_a_delivery_stall() {
+        let mut cpu = protected_mode_fault(0xFFFF, IDTR_1180);
+        gates_to(&mut cpu, &[0x8E, 0xC0, 0xF4]); // MOV ES,AX; HLT
+        let error = cpu
+            .run_steps(1_000_000, StepRunOptions::default())
+            .unwrap_err();
+        let CpuError::DeliveryStalled { deliveries, cs, ip } = error else {
+            panic!("expected a delivery stall, got {error:?}");
+        };
+        assert_eq!((deliveries, cs, ip), (11 * 1024, 0x08, 0x1040));
+        // CLI to MOV AX,0F8h: the ten instructions before the first fault.
+        assert_eq!(cpu.completed_steps(), 10);
+        assert_eq!(cpu.retired(), 10);
+        assert_eq!(
+            error.to_string(),
+            "the processor is stuck delivering exceptions: 11264 deliveries without an \
+             instruction, the last to 0008:1040"
+        );
+        let report = cpu.stop_report(&error).expect("a stall has a report");
+        assert_eq!(
+            (report.cs, report.ip, report.code_linear),
+            (0x08, 0x1040, 0x1040)
+        );
+        assert_eq!(
+            &report.code[..3],
+            &[Some(0x8E), Some(0xC0), Some(0xF4)],
+            "the report shows the handler's first instruction"
+        );
+        // Each delivery pushed FLAGS, CS, IP and the error code, and the
+        // frames wrapped past SP 0 once: F000h - 8 × 11264 = 9000h mod 64 KiB.
+        assert_eq!(cpu.reg(CpuReg::Rsp) & 0xFFFF, 0x9000);
+    }
+
+    /// A #UD handler that is itself an invalid opcode, on a stack from SP
+    /// FFFEh: each delivery pushes a 6-byte frame (FLAGS, CS, IP), and FFFEh
+    /// is not a multiple of 6. After 10,922 frames the next one crosses the
+    /// bottom of the stack; that fault's own frame faults (double fault),
+    /// and so does the double fault's: shutdown (Intel 80286 Programmer's
+    /// Reference Manual, §9.6.2 and Appendix B, INT). That is within the
+    /// window the backend runs through, so one call ends in Shutdown, the
+    /// stop the board answers with a reset, and no delivery stall is
+    /// reported. In real mode through the vector table and in protected
+    /// mode through an interrupt gate.
+    #[test]
+    fn a_stack_that_overruns_shuts_down_within_the_stall_window() {
+        // Real mode: INT 6 at 0000:0018h leads to 0000:3000h; SS:SP is
+        // 1000:FFFEh, clear of the code and the vector table.
+        let mut real = X86JitCpu::new_i286_bare(
+            0x100_0000,
+            0,
+            0x1000,
+            RealSegments {
+                ds: 0,
+                es: 0,
+                ss: 0x1000,
+                sp: 0xFFFE,
+            },
+        )
+        .unwrap();
+        real.map_ram(0, 0x20000).unwrap();
+        real.write_mem(0x1000, &[0x0F, 0xFF]).unwrap();
+        real.write_mem(0x18, &[0x00, 0x30, 0x00, 0x00]).unwrap();
+        real.write_mem(0x3000, &[0x0F, 0xFF]).unwrap();
+        // Protected mode: the faulting MOV ES becomes 0F FF, SP becomes FFFEh.
+        let mut protected = protected_mode_fault(0xFFFF, IDTR_1180);
+        gates_to(&mut protected, &[0x0F, 0xFF]);
+        protected.write_mem(0x101C, &[0xFE, 0xFF]).unwrap();
+        protected.write_mem(0x1021, &[0x0F, 0xFF]).unwrap();
+        for (label, cpu, retired, handler) in [
+            ("real", &mut real, 0, (0, 0x3000)),
+            ("protected", &mut protected, 10, (0x08, 0x1040)),
+        ] {
+            let run = cpu.run_steps(1_000_000, StepRunOptions::default()).unwrap();
+            assert_eq!(run.stop, CpuStepStop::Exit(CpuStop::Shutdown), "{label}");
+            assert_eq!(cpu.retired(), retired, "{label}");
+            assert_eq!(run.steps, retired, "{label}");
+            assert_eq!(
+                (cpu.code_segment() as u16, cpu.reg(CpuReg::Rip)),
+                handler,
+                "{label}: the last frame went to the handler"
+            );
+            // 10,922 frames of 6 bytes from FFFEh leave SP at 2.
+            assert_eq!(cpu.reg(CpuReg::Rsp) & 0xFFFF, 2, "{label}");
+        }
+    }
+
+    /// After a delivery stall and a reset, a guest whose #UD handler skips
+    /// the invalid opcode and returns takes 2,000 deliveries, each followed
+    /// by retired instructions, and halts: the reset left no stall count
+    /// behind that a healthy guest could trip.
+    #[test]
+    fn a_reset_after_a_stall_lets_a_healthy_guest_run() {
+        let mut cpu = protected_mode_fault(0xFFFF, IDTR_1180);
+        gates_to(&mut cpu, &[0x8E, 0xC0, 0xF4]); // MOV ES,AX; HLT
+        assert!(matches!(
+            cpu.run_steps(1_000_000, StepRunOptions::default()),
+            Err(CpuError::DeliveryStalled { .. })
+        ));
+        cpu.reset().unwrap();
+        // The reset vector jumps to 0000:2000h: INT 6 leads to 0000:3000h,
+        // SS:SP = 1000:FFFEh, then 2,000 rounds of 0F FF.
+        cpu.map_rom(0xFF_FFF0, &[0xEA, 0x00, 0x20, 0x00, 0x00])
+            .unwrap();
+        cpu.write_mem(0x18, &[0x00, 0x30, 0x00, 0x00]).unwrap();
+        cpu.write_mem(
+            0x2000,
+            &[
+                0xB8, 0x00, 0x10, 0x8E, 0xD0, // MOV AX,1000h; MOV SS,AX
+                0xBC, 0xFE, 0xFF, // MOV SP,0FFFEh
+                0xB9, 0xD0, 0x07, // MOV CX,2000
+                0x0F, 0xFF, // #UD
+                0xE2, 0xFC, // LOOP 200Bh
+                0xF4, // HLT
+            ],
+        )
+        .unwrap();
+        cpu.write_mem(
+            0x3000,
+            &[
+                0x5B, 0x83, 0xC3, 0x02, 0x53, // POP BX; ADD BX,2; PUSH BX
+                0xCF, // IRET
+            ],
+        )
+        .unwrap();
+        let run = cpu.run_steps(1_000_000, StepRunOptions::default()).unwrap();
+        assert_eq!(run.stop, CpuStepStop::Exit(CpuStop::Halt));
+        assert_eq!(cpu.reg(CpuReg::Rcx) & 0xFFFF, 0);
+    }
+
+    /// The board's reset after a shutdown writes the complete 80286 reset
+    /// image (Intel 80286 Programmer's Reference Manual, §5.3 Table 5-3 and
+    /// §10.4): CS:IP F000:FFF0 with the hidden CS base FF0000h, MSW FFF0h,
+    /// IDTR base 0 and limit 3FFh, and real-mode caches of limit FFFFh for
+    /// every segment register. The guest makes a triple fault with a 256-byte
+    /// stack segment and an empty IDT; the code after the reset pushes at
+    /// SP 0 and calls INT 20h through the real-mode vector table, which the
+    /// old SS cache or IDTR would fault back into shutdown.
+    #[test]
+    fn reset_after_a_triple_fault_writes_the_complete_reset_image() {
+        // An empty IDT: the #GP gate lies beyond the limit (#GP, then #DF),
+        // and so does the #DF gate (shutdown, §9.6.2).
+        let mut cpu = protected_mode_fault(0x00FF, [0; 6]);
+        let run = cpu.run_steps(1000, StepRunOptions::default()).unwrap();
+        assert_eq!(run.stop, CpuStepStop::Exit(CpuStop::Shutdown));
+        let legacy = &cpu.cpu.cpu.legacy;
+        assert_eq!(legacy.cr0 & 1, 1, "the shutdown happened in protected mode");
+        assert_eq!(legacy.segments[3].limit, 0xFF, "SS holds the small segment");
+        cpu.reset().unwrap();
+        let state = &cpu.cpu.cpu;
+        let legacy = &state.legacy;
+        assert_eq!((state.cs, state.rip), (0xF000, 0xFFF0));
+        assert_eq!((state.ds, state.es, state.ss), (0, 0, 0));
+        assert_eq!(legacy.cr0 & 0xFFFF, 0xFFF0);
+        assert_eq!((legacy.idtr.base, legacy.idtr.limit), (0, 0x3FF));
+        assert_eq!(legacy.cpl, 0);
+        for (index, cache) in legacy.segments.iter().take(4).enumerate() {
+            assert_eq!(cache.limit, 0xFFFF, "segment cache {index}");
+            let base = if index == 0 { 0xFF_0000 } else { 0 };
+            assert_eq!(cache.base, base, "segment cache {index}");
+        }
+        // The reset vector jumps to 0000:2000h, which pushes at SP 0 (the
+        // word at SS:FFFEh) and calls INT 20h, whose vector at 80h leads to
+        // a HLT at 0000:3000h.
+        cpu.map_rom(0xFF_FFF0, &[0xEA, 0x00, 0x20, 0x00, 0x00])
+            .unwrap();
+        cpu.write_mem(0x2000, &[0xBC, 0x00, 0x00, 0x50, 0xCD, 0x20, 0xF4])
+            .unwrap();
+        cpu.write_mem(0x80, &[0x00, 0x30, 0x00, 0x00]).unwrap();
+        cpu.write_mem(0x3000, &[0xF4]).unwrap();
+        let run = cpu.run_steps(100, StepRunOptions::default()).unwrap();
+        assert_eq!(run.stop, CpuStepStop::Exit(CpuStop::Halt));
+        assert_eq!(
+            (cpu.code_segment(), cpu.reg(CpuReg::Rip)),
+            (0, 0x3001),
+            "INT 20h went through the real-mode vector table"
+        );
+        assert_eq!(cpu.reg(CpuReg::Rsp) & 0xFFFF, 0xFFF8);
     }
 
     #[test]

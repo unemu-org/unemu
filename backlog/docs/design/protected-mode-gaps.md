@@ -24,7 +24,7 @@ Evidence vocabulary throughout:
 - **ASSUMED:** a proposed scope choice or inference requiring later acceptance
   tests. In particular, no complete DOS extender was run.
 
-The current CPU pin is `a11353e6850c4fe7b5c3ddde504052647ce897c1`.
+The current CPU pin is `7a9ea390b8f588ce4af9845980bbf8534f793f61`.
 `Vm::set_cpu_model(CpuModel::I80286)` selects the machine profile on
 `ibm-5170`, fixes the model for the VM lifetime and defaults to
 `ExceptionDelivery::InGuest`. The separate I80386 core model is not selected

@@ -1824,3 +1824,45 @@ fn timer_waiting_guest_advances_across_presenter_chunks_without_a_window() {
     }
     assert!(presenter.window.is_none());
 }
+
+/// A guest stuck delivering exceptions (its handler faults at its first
+/// instruction, so no instruction retires and virtual time stands still)
+/// stops the session with a guest error, as the desktop's Machine error
+/// dialog shows it, instead of spinning inside one advance. The session runs
+/// on its own thread with a deadline, so a hang fails the test.
+#[test]
+fn a_stall_in_exception_delivery_stops_the_session_instead_of_spinning() {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let config = assembly::test_support::delivery_stall();
+        let mut presenter = test_presenter(&config).unwrap();
+        let started = std::time::Instant::now();
+        presenter.advance(Duration::from_millis(20)).unwrap();
+        let first = started.elapsed();
+        let error = presenter.error.as_ref().map(ToString::to_string);
+        let running = presenter.running;
+        let report = presenter
+            .machine()
+            .cpu_stop_report()
+            .map(|report| report.cs);
+        // A stopped session does no more work on the next frame.
+        presenter.advance(Duration::from_millis(40)).unwrap();
+        sender.send((first, error, running, report)).unwrap();
+    });
+    let (first, error, running, report) = receiver
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the advance returns");
+    assert_eq!(
+        error.as_deref(),
+        Some(
+            "cpu: the processor is stuck delivering exceptions: 11264 deliveries without an \
+             instruction, the last to 0008:0040"
+        )
+    );
+    assert!(!running);
+    assert_eq!(report, Some(0x08), "the session's machine keeps the report");
+    assert!(
+        first < Duration::from_secs(10),
+        "one advance took {first:?}"
+    );
+}

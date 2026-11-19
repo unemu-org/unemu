@@ -192,6 +192,131 @@ pub mod test_support {
         config
     }
 
+    /// A 32 KiB system ROM for F8000h whose guest gets stuck delivering
+    /// exceptions: from the reset vector it enters protected mode with a GDT
+    /// (ring-0 code 08h over the ROM, data 10h over the first 64 KiB of RAM)
+    /// and an IDT whose 14 exception gates all lead to 0008:0040, loads SS
+    /// with SP F000h, then loads DS with selector F8h, beyond the GDT limit:
+    /// #GP(00F8h). The handler's first instruction loads DS from the same AX,
+    /// so every delivery faults again and no instruction retires. On an
+    /// 80286 each delivery pushes four words; from SP F000h, a multiple of
+    /// the 8-byte frame, the frames wrap within the 64 KiB segment without
+    /// a fault, so the loop never ends (Intel 80286 Programmer's Reference
+    /// Manual, §9.5 and the MOV and PUSH descriptions). For the tests of the
+    /// delivery-stall stop; [`delivery_overrun_rom`] is the case that shuts
+    /// down.
+    ///
+    /// The bytes are this NASM listing (`nasm -f bin`, org 0, ROM = F8000h):
+    ///
+    /// ```text
+    /// 0000 FA               cli
+    /// 0001 2E0F01160001     lgdt [cs:0100h]
+    /// 0007 2E0F011E0601     lidt [cs:0106h]
+    /// 000D B80100           mov ax, 1
+    /// 0010 0F01F0           lmsw ax
+    /// 0013 EA18000800       jmp 0008:0018h
+    /// 0018 B81000           mov ax, 10h
+    /// 001B 8ED0             mov ss, ax
+    /// 001D BC00F0           mov sp, 0F000h
+    /// 0020 B8F800           mov ax, 0F8h
+    /// 0023 8ED8             mov ds, ax          ; #GP(00F8h)
+    /// 0025 F4               hlt
+    /// 0040 8ED8             mov ds, ax          ; the handler: #GP again
+    /// 0042 F4               hlt
+    /// 0100 1700 1081 0F00   GDTR: limit 17h, base 0F8110h
+    /// 0106 6F00 8081 0F00   IDTR: limit 6Fh, base 0F8180h
+    /// 0110 00 x 8           null descriptor
+    /// 0118 FFFF00800F9B0000 08h: code, base 0F8000h, limit FFFFh, accessed
+    /// 0120 FFFF000000930000 10h: data, base 0, limit FFFFh, accessed
+    /// 0180 4000080000860000 x 14: 286 interrupt gates to 0008:0040h
+    /// 7FF0 EA0000 00F8      jmp F800:0000h      ; the reset vector
+    /// ```
+    pub fn delivery_stall_rom() -> Vec<u8> {
+        let mut rom = vec![0; 0x8000];
+        let code: &[u8] = &[
+            0xFA, // CLI
+            0x2E, 0x0F, 0x01, 0x16, 0x00, 0x01, // LGDT CS:[0100h]
+            0x2E, 0x0F, 0x01, 0x1E, 0x06, 0x01, // LIDT CS:[0106h]
+            0xB8, 0x01, 0x00, 0x0F, 0x01, 0xF0, // MOV AX,1; LMSW AX
+            0xEA, 0x18, 0x00, 0x08, 0x00, // JMP 0008:0018
+            0xB8, 0x10, 0x00, 0x8E, 0xD0, // MOV AX,10h; MOV SS,AX
+            0xBC, 0x00, 0xF0, // MOV SP,0F000h
+            0xB8, 0xF8, 0x00, 0x8E, 0xD8, // MOV AX,0F8h; MOV DS,AX
+            0xF4, // HLT
+        ];
+        rom[..code.len()].copy_from_slice(code);
+        rom[0x40..0x43].copy_from_slice(&[0x8E, 0xD8, 0xF4]); // MOV DS,AX; HLT
+        rom[0x100..0x10C].copy_from_slice(&[
+            0x17, 0x00, 0x10, 0x81, 0x0F, 0x00, 0x6F, 0x00, 0x80, 0x81, 0x0F, 0x00,
+        ]);
+        rom[0x118..0x120].copy_from_slice(&[0xFF, 0xFF, 0x00, 0x80, 0x0F, 0x9B, 0, 0]);
+        rom[0x120..0x128].copy_from_slice(&[0xFF, 0xFF, 0x00, 0x00, 0x00, 0x93, 0, 0]);
+        for vector in 0..14 {
+            let at = 0x180 + 8 * vector;
+            rom[at..at + 8].copy_from_slice(&[0x40, 0x00, 0x08, 0x00, 0x00, 0x86, 0, 0]);
+        }
+        rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0x00, 0x00, 0x00, 0xF8]);
+        rom
+    }
+
+    /// The AT BIOS preset with [`delivery_stall_rom`] as its system ROM and
+    /// no floppy controller.
+    pub fn delivery_stall() -> crate::MachineConfig {
+        crate::bios(delivery_stall_rom(), None)
+    }
+
+    /// A 32 KiB system ROM for F8000h whose real-mode guest faults at its
+    /// #UD handler's first instruction on a stack that overruns: from the
+    /// reset vector it counts its starts in the byte at 0000:0500h and halts
+    /// at the second. On the first it points INT 6 at F800:0040h, sets
+    /// SS:SP to 1000:FFFEh and executes 0F FF, an invalid opcode, as is the
+    /// handler. Each delivery pushes a 6-byte frame and retires nothing;
+    /// FFFEh is not a multiple of 6, so after 10,922 frames the next one
+    /// crosses the bottom of the stack, its fault escalates to a double
+    /// fault and then to shutdown, and the AT board resets the processor
+    /// (Intel 80286 Programmer's Reference Manual, §9.6.2 and Appendix B,
+    /// INT; IBM Personal Computer AT Technical Reference, System Board,
+    /// shutdown decoding). RAM survives the CPU reset, so the second start
+    /// halts. The bytes are this NASM listing (`nasm -f bin`, org 0):
+    ///
+    /// ```text
+    /// 0000 FA               cli
+    /// 0001 31C0             xor ax, ax
+    /// 0003 8ED8             mov ds, ax
+    /// 0005 FE060005         inc byte [0500h]
+    /// 0009 803E000502       cmp byte [0500h], 2
+    /// 000E 7416             je 0026h
+    /// 0010 C70618004000     mov word [0018h], 0040h   ; INT 6 offset
+    /// 0016 C7061A0000F8     mov word [001Ah], 0F800h  ; INT 6 segment
+    /// 001C B80010           mov ax, 1000h
+    /// 001F 8ED0             mov ss, ax
+    /// 0021 BCFEFF           mov sp, 0FFFEh
+    /// 0024 0FFF             (invalid opcode: #UD)
+    /// 0026 F4               hlt
+    /// 0040 0FFF             the handler: #UD again
+    /// 7FF0 EA000000F8       jmp F800:0000h            ; the reset vector
+    /// ```
+    pub fn delivery_overrun_rom() -> Vec<u8> {
+        let mut rom = vec![0; 0x8000];
+        let code: &[u8] = &[
+            0xFA, // CLI
+            0x31, 0xC0, 0x8E, 0xD8, // XOR AX,AX; MOV DS,AX
+            0xFE, 0x06, 0x00, 0x05, // INC BYTE [0500h]
+            0x80, 0x3E, 0x00, 0x05, 0x02, // CMP BYTE [0500h],2
+            0x74, 0x16, // JE 0026h
+            0xC7, 0x06, 0x18, 0x00, 0x40, 0x00, // MOV WORD [0018h],0040h
+            0xC7, 0x06, 0x1A, 0x00, 0x00, 0xF8, // MOV WORD [001Ah],0F800h
+            0xB8, 0x00, 0x10, 0x8E, 0xD0, // MOV AX,1000h; MOV SS,AX
+            0xBC, 0xFE, 0xFF, // MOV SP,0FFFEh
+            0x0F, 0xFF, // #UD
+            0xF4, // HLT
+        ];
+        rom[..code.len()].copy_from_slice(code);
+        rom[0x40..0x42].copy_from_slice(&[0x0F, 0xFF]);
+        rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0x00, 0x00, 0x00, 0xF8]);
+        rom
+    }
+
     /// SHA-256 of visible row-major glyph/attribute pairs, excluding cursor and style.
     /// IBM Monochrome Display and Printer Adapter, Programming Considerations:
     /// each text cell occupies a glyph byte followed by an attribute byte.

@@ -398,7 +398,8 @@ pub enum StopReason {
         /// x86 exception vector.
         vector: u8,
     },
-    /// A legacy-system fault with vector, error code and CS:IP.
+    /// A legacy-system fault with vector, error code and CS:IP, or a run of
+    /// exception deliveries that retired no instruction.
     Fault {
         /// Backend fault description without guest bytes.
         detail: String,
@@ -521,11 +522,11 @@ fn classify_test386_stop(rip: u64, result: Result<RunOutcome, RunError>) -> Stop
                 detail: format!("unmapped guest access at {addr:#x} (rip {rip:#x})"),
             }
         }
-        Err(RunError::Machine(MachineError::Cpu(error @ CpuError::Fault { .. }))) => {
-            StopReason::Fault {
-                detail: error.to_string(),
-            }
-        }
+        Err(RunError::Machine(MachineError::Cpu(
+            error @ (CpuError::Fault { .. } | CpuError::DeliveryStalled { .. }),
+        ))) => StopReason::Fault {
+            detail: error.to_string(),
+        },
         Err(RunError::Machine(MachineError::Cpu(error @ CpuError::UnsupportedSystem { .. }))) => {
             StopReason::Unsupported {
                 detail: error.to_string(),
@@ -1163,11 +1164,11 @@ pub fn classify_bios_stop(
                 detail: format!("unmapped guest access at {addr:#x}; {site}"),
             }
         }
-        Err(RunError::Machine(MachineError::Cpu(error @ CpuError::Fault { .. }))) => {
-            StopReason::Fault {
-                detail: error.to_string(),
-            }
-        }
+        Err(RunError::Machine(MachineError::Cpu(
+            error @ (CpuError::Fault { .. } | CpuError::DeliveryStalled { .. }),
+        ))) => StopReason::Fault {
+            detail: error.to_string(),
+        },
         Err(RunError::Machine(MachineError::Cpu(error @ CpuError::UnsupportedSystem { .. }))) => {
             StopReason::Unsupported {
                 detail: error.to_string(),
