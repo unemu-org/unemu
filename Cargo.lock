@@ -2885,6 +2885,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "player-ui"
+version = "0.0.2"
+dependencies = [
+ "core-launch",
+ "egui",
+ "machine-view",
+ "ui-kit",
+ "unemu-core-api",
+ "unemu-test-core",
+ "winit",
+]
+
+[[package]]
 name = "png"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

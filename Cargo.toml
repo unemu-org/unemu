@@ -35,6 +35,7 @@ members = [
     "crates/recipe",
     "crates/test-core",
     "crates/core-launch",
+    "crates/player-ui",
 ]
 
 [workspace.package]

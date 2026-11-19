@@ -540,6 +540,11 @@ impl HostAudio {
         }
     }
 
+    /// Whether the user muted the sound, whatever the speed does.
+    pub fn user_muted(&self) -> bool {
+        self.user_muted
+    }
+
     pub fn toggle_mute(&mut self) {
         if !self.available() {
             return;

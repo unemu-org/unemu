@@ -5,6 +5,24 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — The player, the view of a machine started from a file:**
+  step 13 of design/core-contract.md §13.6. The new crate `player-ui`
+  (neutral, a window crate) holds one `dyn Machine` started from a
+  `core_launch::Prepared` in a `machine_view::Session` and draws it as the
+  approved `mockups/player.html`: the Machine menu (Pause, Reset when the
+  machine lists a soft reset, Power cycle, Stop, Input… for a pad port),
+  one Media menu with a section per removable slot (Eject, Next in
+  catalogue, the catalogue's entries), the View menu (scale, Show overscan
+  when the picture is cropped, full screen, mute, speed), the status line
+  (message, Running or Paused, a chip per removable slot, platform,
+  content, sound, speed), the screen in the machine's shape with overscan
+  hidden by default and a cross-hair for an absolute pointer, the Input
+  dialog (click a row, press a key; Esc leaves it, Delete clears it,
+  Defaults) and its message boxes. A control the description does not
+  offer is absent. Power cycle is a hard reset when listed, otherwise the
+  machine finishes and starts again from its file. No behaviour changes:
+  nothing shows the player yet; the application wires it in at step 14,
+  and Save state and Load state come with step 15.
 - **2026-11-18 — The launch path from a file to a machine:** step 12 of
   design/core-contract.md §13.6. `core-launch` gains `prepare`, `start`,
   `HostDirs`, `Prepared`, `Outcome`, `LaunchError` and `Cores::filters`

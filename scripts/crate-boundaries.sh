@@ -24,11 +24,12 @@
 #   application  anything
 #
 # and no window crate (window, window-*, ui-kit, machine-view, library-model,
-# library-ui, pc-media, pc-library, media-ui, pc-ui, unemupc) depends on a CLI
-# crate (cli, cli-*, upcli), nor the other way round. The launch crate,
-# core-launch, is neutral and in neither family: both programs make their
-# list of cores with it, and the command line will start machines through it
-# too.
+# library-ui, pc-media, pc-library, media-ui, pc-ui, player-ui, unemupc)
+# depends on a CLI crate (cli, cli-*, upcli), nor the other way round. The
+# launch crate, core-launch, is neutral and in neither family: both programs
+# make their list of cores with it, and the command line will start machines
+# through it too. The player, player-ui, is neutral and a window crate: it
+# draws a machine started from a file with egui.
 #
 # The test core, unemu-test-core, is what the front end's crates test against
 # instead of a real platform, so it declares no dependency of any kind but the
@@ -97,7 +98,7 @@ def family:
   elif . == "window" or . == "unemupc" or . == "ui-kit" or . == "machine-view"
        or . == "library-model" or . == "library-ui" or . == "pc-media"
        or . == "pc-library" or . == "media-ui" or . == "pc-ui"
-       or startswith("window-") then "window"
+       or . == "player-ui" or startswith("window-") then "window"
   else null end;
 
 # The rule $from breaks by depending on $to, if any. A crate without a known
