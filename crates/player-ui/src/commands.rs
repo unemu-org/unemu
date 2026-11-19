@@ -18,6 +18,11 @@ pub enum Command {
     PowerCycle,
     /// Finish the machine and return to the library (Ctrl+Alt+Q).
     Stop,
+    /// Save the machine's state into the content's quick slot (Ctrl+Alt+S),
+    /// for a machine that lists saved state.
+    SaveState,
+    /// Load the quick slot's state (Ctrl+Alt+L), once one was saved.
+    LoadState,
     /// Machine › Input…: the Input dialog, for a machine with pads.
     Input,
     /// Eject the medium of a removable slot (Ctrl+Alt+E for the first slot,
@@ -57,6 +62,8 @@ pub(crate) fn shortcut_text(shortcut: &'static str, macos: bool) -> &'static str
         "Ctrl+Alt+P" => "⌘P",
         "Ctrl+Alt+T" => "⌘T",
         "Ctrl+Alt+Q" => "⌘K",
+        "Ctrl+Alt+S" => "⌘S",
+        "Ctrl+Alt+L" => "⌘L",
         "Ctrl+Alt+End" => "⌘End",
         "Ctrl+Alt+Enter" => "⌘Enter",
         "Ctrl+Alt+M" => "⌘⇧M",

@@ -15,6 +15,7 @@
 //! | Reset | the machine lists a soft reset | a soft reset; a refusal is a status-line message |
 //! | Power cycle | always | a hard reset when listed, otherwise the machine finishes and starts again from the same file |
 //! | Stop | always | the machine finishes; the application returns to its library |
+//! | Save state, Load state | the machine lists saved state | one quick slot per content and core; Load state greyed until a state was saved for this content |
 //! | Mute, Speed, Fast forward, Full screen | always | as for every machine |
 //! | The Media menu | a removable slot | one section per removable slot: Eject, Next in catalogue and the catalogue's entries |
 //! | Input… | a pad port | the Input dialog over [`machine_view::pads::PadBindings`] |
@@ -22,8 +23,7 @@
 //! | Pointer capture | a relative pointer | as for every machine |
 //! | Aiming | an absolute pointer on the shown display | the pointer is not captured; over the screen it is a cross-hair |
 //!
-//! A control the description does not offer is absent, not greyed. Saved
-//! state comes with the quick slot, later; nothing here saves or loads one.
+//! A control the description does not offer is absent, not greyed.
 //!
 //! The application keeps its own menus (File, Edit, Image, Tools, Help), its
 //! toolbar and its hotkeys, and hands the player what meets a running
@@ -47,6 +47,7 @@ mod commands;
 mod input_dialog;
 mod menus;
 mod message;
+mod quick_state;
 mod screen;
 mod status;
 
@@ -100,6 +101,9 @@ pub struct Offers {
     /// The Media menu's sections, one per removable slot, in the
     /// description's order.
     pub media: Vec<SlotId>,
+    /// Machine › Save state and Load state: the machine lists saved
+    /// state.
+    pub saved_state: bool,
     /// Machine › Input…: the machine has a pad port.
     pub input: bool,
     /// View › Show overscan: the latest picture shows less than all of it.
@@ -209,6 +213,8 @@ pub struct Player {
     show_overscan: bool,
     integer_scale: bool,
     message: String,
+    /// The quick slot's file exists, so Load state has a state to load.
+    state_saved: bool,
     dialog: Option<Dialog>,
     texture: Option<(egui::TextureHandle, u64)>,
     /// Where the latest [`Player::screen`] drew the picture.
@@ -243,6 +249,7 @@ impl Player {
             Some((label, _)) => format!("The pointer over the screen aims the {label}"),
             None => format!("Opened {}", prepared.file_name()),
         };
+        let state_saved = quick_state::exists(prepared.states_dir());
         let mut player = Self {
             prepared,
             session: Some(session),
@@ -257,6 +264,7 @@ impl Player {
             show_overscan: false,
             integer_scale: false,
             message,
+            state_saved,
             dialog: None,
             texture: None,
             layout: None,
@@ -516,6 +524,8 @@ impl Player {
             }
             Command::PowerCycle => self.power_cycle(elapsed, warnings),
             Command::Stop => return Some(self.stop(warnings)),
+            Command::SaveState => self.save_state(),
+            Command::LoadState => self.load_state(elapsed),
             Command::Input => {
                 if self.offers.input && self.session.is_some() {
                     if let Some(session) = &mut self.session {
@@ -885,6 +895,7 @@ fn describe(
         reset: resets.contains(&ResetKind::Soft),
         power_cycle_by_reset: resets.contains(&ResetKind::Hard),
         media: slots.iter().map(|slot| slot.id).collect(),
+        saved_state: description.features.saved_state,
         input: !pads.is_empty(),
         show_overscan: false,
         pointer_capture: description

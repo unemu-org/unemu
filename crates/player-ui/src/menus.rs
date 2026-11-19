@@ -131,6 +131,19 @@ impl Player {
             "Ctrl+Alt+Q",
             Command::Stop,
         )));
+        if self.offers.saved_state {
+            entries.push(Entry::Separator);
+            entries.push(Entry::Item(
+                Item::new("", "Save state", "Ctrl+Alt+S", Command::SaveState)
+                    .unless(live, NOT_RUNNING),
+            ));
+            let load = Item::new("", "Load state", "Ctrl+Alt+L", Command::LoadState);
+            entries.push(Entry::Item(if self.state_saved {
+                load.unless(live, NOT_RUNNING)
+            } else {
+                load.unless(false, "No state saved for this content yet")
+            }));
+        }
         if self.offers.input {
             entries.push(Entry::Separator);
             entries.push(Entry::Item(

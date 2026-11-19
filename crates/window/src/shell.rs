@@ -2927,13 +2927,14 @@ impl Shell {
         match command {
             Pause => player.running(),
             Reset => player.offers().reset,
+            SaveState | LoadState => player.offers().saved_state,
             Stop | PowerCycle | Mute | Speed(_) | FastForward | Release | Fullscreen => true,
             // The media keys work the first two removable slots.
             Next(unit) | Eject(unit) => player.offers().media.len() > usize::from(unit),
             Open => self.opens_files(),
             Start | GamingMode | ImageStart | ImageGaming | Layers | ImageLayers | SaveImage
-            | Settings | SaveState | Insert(_) | CreateFromFiles(_) | InsertFile(_)
-            | InsertSet(_) | WriteMode(_) | CatalogueDisk(..) | CatalogueAll(_) => false,
+            | Settings | Insert(_) | CreateFromFiles(_) | InsertFile(_) | InsertSet(_)
+            | WriteMode(_) | CatalogueDisk(..) | CatalogueAll(_) => false,
             Library | Exit | Minimize | Shortcuts | About | Preferences | Placeholder(_)
             | FirmwareFolders | CreateBlank | StoreFolder => true,
             // The library's commands, which wait for a stopped machine as
@@ -4369,7 +4370,7 @@ impl Shell {
             Settings => if self.image_library.selected.is_some() { self.release(); self.image_library.open_settings(); } else { self.open_settings() },
             SaveImage => { self.release(); self.image_library.begin_save_image(); },
             Preferences => self.open_preferences(),
-            SaveState => {},
+            SaveState | LoadState => {},
             Push => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_push(accounts); },
             Pull => { self.release(); self.image_library.begin_remote_pull(crate::remote_pull::Mode::Pull); },
             PullReference => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_pull(accounts); },
@@ -4406,6 +4407,8 @@ impl Shell {
             Command::Reset => Player::Reset,
             Command::PowerCycle => Player::PowerCycle,
             Command::Stop => Player::Stop,
+            Command::SaveState => Player::SaveState,
+            Command::LoadState => Player::LoadState,
             Command::Mute => Player::Mute,
             Command::Speed(speed) => Player::Speed(speed),
             Command::FastForward => Player::FastForward(true),
@@ -5427,6 +5430,16 @@ impl Shell {
                 })
                 // Quitting is never held back by an open dialog or menu.
                 .filter(|command| !blocked || *command == Command::Exit)
+                // Save state and Load state are chords of a machine that
+                // saves state; for the PC and any other machine they stay
+                // guest input.
+                .filter(|command| {
+                    !matches!(command, Command::SaveState | Command::LoadState)
+                        || self
+                            .player
+                            .as_ref()
+                            .is_some_and(|player| player.offers().saved_state)
+                })
                 // An edited text field keeps Enter, Delete and F2.
                 .filter(|command| !(command.library_key() && ctx.egui_wants_keyboard_input()))
             {
@@ -6299,6 +6312,11 @@ fn shortcuts_help(macos: bool) -> String {
         ("Ctrl+Alt+P", "pause / resume"),
         ("Ctrl+Alt+T", "hold to fast-forward (Unlimited)"),
         ("Ctrl+Alt+Q", "stop and return to library"),
+        (
+            "Ctrl+Alt+S",
+            "Save state (a machine opened with Open…, when its core saves state)",
+        ),
+        ("Ctrl+Alt+L", "Load state (the state Save state wrote)"),
         (
             "Ctrl+Alt+End",
             "send guest Ctrl+Alt+Del; reset a halted machine",
@@ -16119,6 +16137,51 @@ kind='mda'
         assert!(shell.presenter.is_none());
         assert!(shell.player.is_some());
         assert!(shell.stop());
+    }
+
+    #[test]
+    fn save_and_load_state_chords_reach_a_player_that_saves_state_and_the_pc_s_guest() {
+        let temp = assembly::test_support::TempDir::new("shell-player-state");
+        let path = script(&temp, "state.utc", "saved-state");
+        let ctx = egui::Context::default();
+        let mut shell = opening_shell(&temp);
+        open(&mut shell, &path, &ctx);
+        shell.focus_guest();
+        assert!(shell.command_allowed(Command::SaveState));
+        let chord = |shell: &mut Shell, key: KeyCode| {
+            for key in [KeyCode::ControlLeft, KeyCode::AltLeft, key] {
+                shell.key(key, Pressed, false, &ctx);
+            }
+            for key in [key, KeyCode::AltLeft, KeyCode::ControlLeft] {
+                shell.key(key, Released, false, &ctx);
+            }
+        };
+        chord(&mut shell, KeyCode::KeyS);
+        let player = shell.player.as_ref().unwrap();
+        assert_eq!(player.message(), "State saved");
+        let slot = player.prepared().states_dir().join("quick.state");
+        assert!(slot.is_file());
+        assert!(slot.starts_with(temp.path()));
+        shell.tick(&ctx, false, std::time::Duration::from_millis(100));
+        chord(&mut shell, KeyCode::KeyL);
+        assert_eq!(shell.player.as_ref().unwrap().message(), "State loaded");
+        assert!(shell.stop());
+
+        // The PC saves no state: both commands stay disabled, and the
+        // chords stay the guest's keys.
+        let mut shell = keyboard_shell();
+        assert!(!shell.command_allowed(Command::SaveState));
+        assert!(!shell.command_allowed(Command::LoadState));
+        chord(&mut shell, KeyCode::KeyS);
+        assert_eq!(
+            take_guest_scancodes(&mut shell),
+            [0x1D, 0x38, 0x1F, 0x9F, 0xB8, 0x9D]
+        );
+        chord(&mut shell, KeyCode::KeyL);
+        assert_eq!(
+            take_guest_scancodes(&mut shell),
+            [0x1D, 0x38, 0x26, 0xA6, 0xB8, 0x9D]
+        );
     }
 
     #[test]

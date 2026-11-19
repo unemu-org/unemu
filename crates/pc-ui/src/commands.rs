@@ -63,7 +63,11 @@ pub enum Command {
     Shortcuts,
     About,
     Placeholder(&'static str),
+    /// Save state (Ctrl+Alt+S) and Load state (Ctrl+Alt+L): a machine
+    /// started from a file whose core saves state has them; the PC has
+    /// none, so they stay disabled while it runs.
     SaveState,
+    LoadState,
     FirmwareFolders,
     Preferences,
     Settings,
@@ -160,7 +164,7 @@ impl Enablement {
                     && self.floppy.get(unit as usize).copied().unwrap_or(false)
             }
             Command::Mute => self.state != State::Stopped && self.audio,
-            Command::SaveState => false,
+            Command::SaveState | Command::LoadState => false,
             _ => true,
         }
     }
@@ -209,6 +213,7 @@ mod tests {
                 assert!(!model.allows(Command::WriteMode(1)));
                 assert!(!model.allows(Command::Insert(2)));
                 assert!(!model.allows(Command::SaveState));
+                assert!(!model.allows(Command::LoadState));
             }
         }
         assert!(!Enablement {

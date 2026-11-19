@@ -50,7 +50,12 @@ struct Rig {
 
 /// The default test machine: 60 000 ticks a second, a frame every 1 000.
 fn rig(lines: &str) -> Rig {
-    let scratch = Scratch::new();
+    rig_in(Scratch::new(), lines)
+}
+
+/// The machine of `lines` in `scratch`, which may hold what an earlier
+/// machine of the same script left there.
+fn rig_in(scratch: Scratch, lines: &str) -> Rig {
     let path = scratch.0.join("files").join("machine.utc");
     std::fs::write(&path, format!("unemu-test-core 1\n{lines}\n")).unwrap();
     let dirs = HostDirs {
@@ -154,6 +159,7 @@ fn a_machine_that_offers_nothing_has_the_controls_every_machine_has() {
             reset: false,
             power_cycle_by_reset: false,
             media: vec![],
+            saved_state: false,
             input: false,
             show_overscan: false,
             pointer_capture: false,
@@ -206,6 +212,7 @@ fn each_control_is_present_exactly_when_the_description_offers_it() {
             reset: true,
             power_cycle_by_reset: true,
             media: vec![SlotId(0), SlotId(1)],
+            saved_state: false,
             input: true,
             show_overscan: true,
             pointer_capture: true,
@@ -1094,4 +1101,266 @@ fn the_marks_the_player_writes_are_the_mockups_characters() {
             "{mark} is not listed as written in the player"
         );
     }
+}
+
+/// The quick slot's file of the rig's content.
+fn quick_state(rig: &Rig) -> PathBuf {
+    quick_state::path(rig.player.prepared().states_dir())
+}
+
+/// The title and the text of the message box the player shows.
+fn message_box(rig: &Rig) -> (String, String) {
+    match &rig.player.dialog {
+        Some(Dialog::Message(message)) => (message.title.clone(), message.text.clone()),
+        _ => panic!("no message box"),
+    }
+}
+
+/// The latest picture's pixels.
+fn pixels(rig: &mut Rig) -> Vec<u32> {
+    rig.player.session().picture().unwrap().pixels.clone()
+}
+
+#[test]
+fn save_state_run_on_and_load_state_bring_the_saved_picture_back() {
+    let mut rig = rig("saved-state");
+    rig.run(200);
+    assert!(rig.player.offers().saved_state);
+    // After Stop, separated: Save state, and Load state greyed with its
+    // reason until a state exists; Ctrl+Alt+L does nothing meanwhile.
+    let entries = rig.player.machine_entries();
+    assert_eq!(
+        labels(&entries),
+        ["Pause", "Power cycle", "Stop", "Save state", "Load state"]
+    );
+    assert_eq!(entries[entries.len() - 3], Entry::Separator);
+    let save = item(&entries, "Save state");
+    assert!(save.enabled);
+    assert_eq!(save.shortcut, "Ctrl+Alt+S");
+    let load = item(&entries, "Load state");
+    assert!(!load.enabled);
+    assert_eq!(load.shortcut, "Ctrl+Alt+L");
+    assert_eq!(
+        load.why.as_deref(),
+        Some("No state saved for this content yet")
+    );
+    let (texts, _) = open_menu(&rig.player, "Machine", None);
+    assert!(texts.contains(&"Ctrl+Alt+S".to_owned()), "{texts:?}");
+    rig.command(Command::LoadState);
+    assert!(!rig.player.has_dialog());
+    assert_eq!(rig.player.message(), "Opened machine.utc");
+
+    // Save: the two lines, then the core's own bytes, at the content's
+    // states directory.
+    let (texts, commands) = open_menu(&rig.player, "Machine", Some("Save state"));
+    assert!(texts.contains(&"Load state".to_owned()));
+    assert_eq!(commands, [Command::SaveState]);
+    rig.command(Command::SaveState);
+    assert_eq!(rig.player.message(), "State saved");
+    let saved_at = rig.now();
+    let saved_picture = pixels(&mut rig);
+    let saved_frames = rig.frames();
+    let path = quick_state(&rig);
+    let digest: String = (rig.player.prepared().sha256().iter())
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert!(path.ends_with(format!(
+        "states/unemu-test-core/{}/{digest}/quick.state",
+        &digest[..2]
+    )));
+    let identity = rig.player.session().state_identity().unwrap();
+    let mut core = Vec::new();
+    rig.player.session().save_state(&mut core).unwrap();
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        quick_state::encode(&identity, &core)
+    );
+    assert!(!quick_state::partial_path(rig.player.prepared().states_dir()).exists());
+    assert!(item(&rig.player.machine_entries(), "Load state").enabled);
+
+    // Run on, then load: the saved picture and the saved time are back.
+    rig.run(300);
+    assert!(rig.frames() > saved_frames + 10, "{}", rig.frames());
+    rig.command(Command::LoadState);
+    assert!(!rig.player.has_dialog());
+    assert_eq!(rig.player.message(), "State loaded");
+    assert_eq!(rig.now(), saved_at);
+    assert_eq!(pixels(&mut rig), saved_picture);
+    assert!(rig.player.running());
+    rig.run(100);
+    assert!(rig.now() > saved_at);
+
+    // The next machine of the same content finds the slot at its start.
+    rig.command(Command::Stop);
+    let Rig {
+        player, _scratch, ..
+    } = rig;
+    drop(player);
+    let mut again = rig_in(_scratch, "saved-state");
+    assert!(item(&again.player.machine_entries(), "Load state").enabled);
+    again.run(50);
+    again.command(Command::LoadState);
+    assert_eq!(again.player.message(), "State loaded");
+    assert_eq!(again.now(), saved_at);
+    assert_eq!(pixels(&mut again), saved_picture);
+}
+
+#[test]
+fn a_state_of_another_identity_or_a_damaged_file_is_refused_and_the_machine_runs_on() {
+    let mut rig = rig("saved-state");
+    rig.run(100);
+    rig.command(Command::SaveState);
+    let path = quick_state(&rig);
+    let good = std::fs::read(&path).unwrap();
+    let identity = rig.player.session().state_identity().unwrap();
+    let core = good[quick_state::encode(&identity, &[]).len()..].to_vec();
+    rig.run(200);
+    for (file, reason) in [
+        // Bytes the core itself would take: only the identity line says
+        // they are another machine's.
+        (
+            quick_state::encode("unemu-test-core 0.0.0 script other", &core),
+            Some("this state was saved by another release of the core, or for another setup"),
+        ),
+        (b"unemu-state 1\ncut short".to_vec(), Some(DAMAGED)),
+        (
+            quick_state::encode(&identity, &core).split_off(1),
+            Some(DAMAGED),
+        ),
+        (
+            [b"unemu-state 2".as_slice(), &good[13..]].concat(),
+            Some(DAMAGED),
+        ),
+        // An identity line longer than the header may be.
+        (quick_state::encode(&"x".repeat(5000), &core), Some(DAMAGED)),
+        // The core's own refusal of its bytes, cut short.
+        (
+            quick_state::encode(&identity, &core[..core.len() / 2]),
+            None,
+        ),
+    ] {
+        std::fs::write(&path, &file).unwrap();
+        let now = rig.now();
+        let picture = pixels(&mut rig);
+        rig.command(Command::LoadState);
+        let (title, text) = message_box(&rig);
+        assert_eq!(title, "Load state");
+        let given = text
+            .strip_prefix("The state was not loaded: ")
+            .and_then(|text| text.strip_suffix(".\n\nThe machine runs on as it was."))
+            .unwrap_or_else(|| panic!("{text}"));
+        match reason {
+            Some(reason) => assert_eq!(given, reason),
+            // The core's own words, whatever they are.
+            None => assert!(!given.is_empty(), "{text}"),
+        }
+        assert_eq!(rig.player.message(), "State not loaded");
+        assert_eq!(rig.now(), now);
+        assert_eq!(pixels(&mut rig), picture);
+        assert!(rig.player.running());
+        rig.player.dialog = None;
+        rig.run(50);
+        assert!(rig.now() > now);
+    }
+    // The file that was refused is left as it is.
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        quick_state::encode(&identity, &core[..core.len() / 2])
+    );
+}
+
+/// The reason for a file without the slot's layout.
+const DAMAGED: &str = "the file is damaged, or it is not a saved state this program reads";
+
+#[test]
+fn a_state_saved_while_running_runs_again_after_a_halt_and_one_saved_halted_halts_unpaused() {
+    // Saved while running, loaded once the guest halted: the machine runs
+    // and advances again.
+    let mut rig = rig("saved-state\nat 6000 halt");
+    rig.run(50);
+    rig.command(Command::SaveState);
+    let saved_at = rig.now();
+    rig.run(200);
+    assert_eq!(rig.player.condition(), Condition::Halted);
+    rig.command(Command::LoadState);
+    assert_eq!(rig.player.message(), "State loaded");
+    assert_eq!(rig.player.condition(), Condition::Running);
+    assert_eq!(rig.now(), saved_at);
+    rig.run(20);
+    assert!(rig.now() > saved_at, "{}", rig.now());
+
+    // Saved while halted, loaded into a running machine the user paused:
+    // halted again, and not paused.
+    let mut rig = self::rig("saved-state\nat 600 halt");
+    rig.run(100);
+    assert_eq!(rig.player.condition(), Condition::Halted);
+    rig.command(Command::SaveState);
+    assert_eq!(rig.player.message(), "State saved");
+    rig.command(Command::PowerCycle);
+    rig.run(5);
+    rig.command(Command::Pause);
+    assert!(rig.player.paused());
+    rig.command(Command::LoadState);
+    assert_eq!(rig.player.message(), "State loaded");
+    assert_eq!(rig.player.condition(), Condition::Halted);
+    assert!(!rig.player.paused());
+}
+
+#[test]
+fn a_save_that_fails_keeps_the_state_saved_before() {
+    let mut rig = rig("saved-state");
+    rig.run(100);
+    rig.command(Command::SaveState);
+    let path = quick_state(&rig);
+    let first = std::fs::read(&path).unwrap();
+    rig.run(200);
+    // Something in the way of the temporary file: the save fails before the
+    // slot is touched.
+    let partial = quick_state::partial_path(rig.player.prepared().states_dir());
+    std::fs::create_dir(&partial).unwrap();
+    rig.command(Command::SaveState);
+    let (title, text) = message_box(&rig);
+    assert_eq!(title, "Save state");
+    assert!(text.starts_with("The state was not saved: "), "{text}");
+    assert!(
+        text.ends_with("\n\nThe state saved before is kept."),
+        "{text}"
+    );
+    assert_eq!(rig.player.message(), "State not saved");
+    assert_eq!(std::fs::read(&path).unwrap(), first);
+    rig.player.dialog = None;
+    // Out of the way, the next save replaces it.
+    std::fs::remove_dir(&partial).unwrap();
+    rig.command(Command::SaveState);
+    assert_eq!(rig.player.message(), "State saved");
+    assert_ne!(std::fs::read(&path).unwrap(), first);
+}
+
+#[test]
+fn a_machine_without_saved_state_has_neither_item_and_saves_nothing() {
+    let mut rig = rig("");
+    rig.run(100);
+    assert!(!labels(&rig.player.machine_entries())
+        .iter()
+        .any(|label| label.ends_with(" state")));
+    rig.command(Command::SaveState);
+    rig.command(Command::LoadState);
+    assert!(!rig.player.has_dialog());
+    assert!(!rig.player.prepared().states_dir().exists());
+    // A stopped machine greys both, so neither key acts.
+    let mut rig = self::rig("saved-state\nat 600 power-off");
+    rig.run(100);
+    let entries = rig.player.machine_entries();
+    assert_eq!(
+        item(&entries, "Save state").why.as_deref(),
+        Some("The machine has stopped")
+    );
+    rig.command(Command::SaveState);
+    assert!(!rig.player.has_dialog());
+    assert!(!quick_state(&rig).exists());
+    // macOS writes the chords with Command.
+    rig.player.set_look(true, true);
+    let (texts, _) = open_menu(&rig.player, "Machine", None);
+    assert!(texts.contains(&"⌘S".to_owned()), "{texts:?}");
+    assert!(texts.contains(&"⌘L".to_owned()), "{texts:?}");
 }

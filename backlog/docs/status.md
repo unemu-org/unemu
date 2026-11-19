@@ -5,6 +5,19 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — Saved state in the player:** step 15 of
+  design/core-contract.md §13.6. A machine opened with Open… whose core
+  lists saved state has Save state (Ctrl+Alt+S) and Load state
+  (Ctrl+Alt+L) in its Machine menu after Stop: one quick slot per content
+  and core, `unemupc/states/CORE/aa/DIGEST/quick.state` (the line
+  `unemu-state 1`, the machine's state identity, then the core's bytes),
+  written through a temporary file and a rename so a failed save keeps the
+  state saved before. Load state is greyed until a state exists and refuses
+  a damaged file or a state of another identity with a Load state box,
+  leaving the machine running as it was. A machine without saved state has
+  neither item. The PC's stay disabled and its guest still receives
+  Ctrl+Alt+S and Ctrl+Alt+L. No released core opens files yet, so only the
+  test core shows it.
 - **2026-11-19 — Open… in the application:** step 14 of
   design/core-contract.md §13.6. The desktop takes `--open FILE [--core ID]`
   beside `--machine FILE` (the usage line changes by that, and `--core`
