@@ -5,6 +5,12 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — NES colours of the 2C02G:** unemunes re-pinned to `3aa95580`, which only
+  changes its palette: each palette row is rotated by -5° of hue per row, the differential phase
+  distortion of a 2C02G (NESdev "NTSC video"). Colour `$22`, a common sky colour, goes from a
+  purple `B17BFF` to `968AFF`; row 0 is unchanged. The cartridge golden in
+  `crates/platforms/tests/nes_cartridge.rs` moves to `0xFCDFD18611FED325` (its picture uses rows
+  1 and 2), the same digest unemunes pins for that picture.
 - **2026-11-19 — The NES core, compiled in:** step 16 of
   design/core-contract.md §13.6. Both programs carry `unemu-nes-core`
   from unemunes, pinned to revision `7c5abb52` (built against the same

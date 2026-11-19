@@ -23,14 +23,14 @@ use image_store::test_support::TempDir;
 use unemu_core_api::{DisplayId, RunLimit, Stop};
 
 /// The unemunes revision the frame count and the digest were taken from.
-const NES_REV: &str = "7c5abb5270edae8d6df1ceadb5dddd5091d08fef";
+const NES_REV: &str = "3aa955802a568a58b9bf8f5c29a0e23f44866a45";
 
 /// The retired instructions the machine runs, stopping at every frame.
 const STEPS: u64 = 80_000;
 /// The frames the NES finishes within [`STEPS`].
 const FRAMES: usize = 8;
 /// FNV-1a over the last frame's pixels, each as a little-endian `u32`.
-const GOLDEN: u64 = 0x64CB_5BF7_C2F1_1325;
+const GOLDEN: u64 = 0xFCDF_D186_11FE_D325;
 
 /// The program at $8000, assembled by hand (listing: address, label,
 /// instruction).

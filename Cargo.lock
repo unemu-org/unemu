@@ -2171,7 +2171,7 @@ dependencies = [
 [[package]]
 name = "nes"
 version = "0.0.1"
-source = "git+https://github.com/unemu-org/unemunes?rev=7c5abb5270edae8d6df1ceadb5dddd5091d08fef#7c5abb5270edae8d6df1ceadb5dddd5091d08fef"
+source = "git+https://github.com/unemu-org/unemunes?rev=3aa955802a568a58b9bf8f5c29a0e23f44866a45#3aa955802a568a58b9bf8f5c29a0e23f44866a45"
 dependencies = [
  "x65",
 ]
@@ -3854,7 +3854,7 @@ dependencies = [
 [[package]]
 name = "unemu-nes-core"
 version = "0.0.1"
-source = "git+https://github.com/unemu-org/unemunes?rev=7c5abb5270edae8d6df1ceadb5dddd5091d08fef#7c5abb5270edae8d6df1ceadb5dddd5091d08fef"
+source = "git+https://github.com/unemu-org/unemunes?rev=3aa955802a568a58b9bf8f5c29a0e23f44866a45#3aa955802a568a58b9bf8f5c29a0e23f44866a45"
 dependencies = [
  "nes",
  "unemu-core-api",
@@ -4751,7 +4751,7 @@ checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 [[package]]
 name = "x65"
 version = "0.0.1"
-source = "git+https://github.com/unemu-org/unemunes?rev=7c5abb5270edae8d6df1ceadb5dddd5091d08fef#7c5abb5270edae8d6df1ceadb5dddd5091d08fef"
+source = "git+https://github.com/unemu-org/unemunes?rev=3aa955802a568a58b9bf8f5c29a0e23f44866a45#3aa955802a568a58b9bf8f5c29a0e23f44866a45"
 
 [[package]]
 name = "x86jit-core"
