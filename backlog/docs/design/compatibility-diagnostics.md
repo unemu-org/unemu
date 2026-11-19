@@ -124,7 +124,7 @@ READ: manual p. 16 gives the order; pp. 17–36 describe the tests. Hardware
 and mode requirements below come from that reading unless marked ASSUMED.
 **Every entry in “Expected today” is ASSUMED, not a measured pass.** The table
 was formulated for Application Real16 at `44403dd`; the current `ibm-5170`
-selects the I286 machine profile at `7a9ea390b8f588ce4af9845980bbf8534f793f61`.
+selects the I286 machine profile at `e63c1321401893d8cd1377228965500c0a5d52fc`.
 Rows after test 13 are individual expectations if reached, not a claim that
 the current run reaches them. No new user-ROM result is assumed.
 
@@ -217,7 +217,7 @@ media reports `vendor/freedos/fetch.sh` as the fixture command. The system ROM
 keeps `provides = []`: its catalogue permissions cover direct controller tests
 without inventing boot services. RTC start is `2000-01-01T00:00:00`, NVRAM is
 volatile and derived, and CPU revision is pinned to
-`7a9ea390b8f588ce4af9845980bbf8534f793f61`.
+`e63c1321401893d8cd1377228965500c0a5d52fc`.
 
 This test runs with the named `FULL_PASS_RETIRED_CAP` set to 150,000,000,
 using the existing deterministic `RunPolicy::natural` session policy. The cap
@@ -254,7 +254,7 @@ NVRAM. It follows `run --machine`: `machine_file::load_for_assembly`,
 no unlisted escape is used for the user ROM. This selects the preset hardware
 (640 KiB base RAM, MDA and VGA text, UART, wired FDC without a drive),
 volatile derived NVRAM, RTC start `2000-01-01T00:00:00`, and CPU revision
-`7a9ea390b8f588ce4af9845980bbf8534f793f61`, now selecting the I286 machine profile.
+`e63c1321401893d8cd1377228965500c0a5d52fc`, now selecting the I286 machine profile.
 The former Real16 golden checked the unsupported-instruction exit, address,
 opcode, twelve Passed verdicts and the empty thirteenth status, re-confirmed
 by the supervisor at `44403dd` as recorded below.

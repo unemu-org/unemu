@@ -5,6 +5,31 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — Every exception and interrupt the guest takes can be traced, and the
+  diagnostic report lists the last 64; x86jit moves to `e63c1321`:** (`upc-x83.17`, for
+  `upc-f7j.17`; design/observation.md §Exception and interrupt deliveries). x86jit
+  `e63c1321` (xj-ir6.37 (x86jit)) keeps an opt-in log of the deliveries a machine vCPU
+  performs in the guest, outside its state. `upcli run --machine FILE --trace-exceptions`
+  writes a line per delivery to stderr (retired count, kind, mnemonic and vector, saved
+  CS:IP and linear address, error code, CPL before and after, the 8 bytes at the saved
+  CS:IP from memory only), bounded to the first 10,000 lines, then a count line every
+  1,000,000 deliveries, and a summary (total, dropped, a count per mnemonic) before the stop
+  line; the window does the same with `UNEMUPC_TRACE_EXCEPTIONS=1`, one
+  `<data>/unemupc/diagnostics/trace-N.txt` per session, appended every frame and finished
+  at Stop. IRQs are named by their 8259 input. With the diagnostic trail on
+  (`UNEMUPC_DIAG=1`, `--diag-at`) the report gains a `delivery` section with the last 64
+  records and the counts. Off by default; on or off the run is the same. MEASURED:
+  `cli-pc` `exception_trace` (the exact trace of the open `deliveries_rom`, NASM listing
+  and SHA-256 pinned: a #UD stepped over by its IVT handler, INT 60h, an IRQ0 tick and a
+  protected-mode #GP(00F8h) handled by a gate; `--diag-at` on it; the bound on
+  `delivery_overrun_rom`, 10,922 #UDs, and `delivery_stall_rom`, 11,264 #GPs read from the
+  slice that failed), the report section and the extended twin-device test in
+  `assembly::diagnostic`, the backend's log test in `cpu`, the trace's bounds in
+  `machine::delivery_tap`, the desktop's trace file in the shell tests, and
+  `diagnostic_trail_golden` (the open-BIOS FreeDOS boot with the log and the trace on
+  stops at 8,800,473 retired and 10,000,000 virtual time with the golden's screen, POST
+  stream and device snapshots; two traced boots give the same 7,120-delivery trace). Every
+  golden is unchanged at the new pin.
 - **2026-11-19 — Push from the library: Push to… of one item or several, Push here… of a
   registry or namespace, as the approved remotes-push mock-up (Remotes revision 3):**
   (`upc-5pw.64.5`; design/machine-images.md §5.1, mockups/remotes-push.html). Image › Push…

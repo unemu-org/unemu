@@ -113,8 +113,9 @@ impl CliPlatform for PcPlatform<'_> {
         UsageSlot::AfterAbout => concat!(
             "       upcli --bios PATH [--allow-unlisted-firmware]\n",
             "       upcli machine check FILE [--allow-unlisted-firmware] [--rom-dir DIR]...\n",
-            "       upcli run --machine FILE [--store DIR | --no-store] [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--diag-at N] [--print CARD] [--allow-unlisted-firmware]\n",
+            "       upcli run --machine FILE [--store DIR | --no-store] [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--diag-at N] [--trace-exceptions] [--print CARD] [--allow-unlisted-firmware]\n",
             "         --diag-at N writes the machine's diagnostic report to stderr when the run reaches step N (the unit of --max-steps), then runs on\n",
+            "         --trace-exceptions writes a line per exception and interrupt the guest takes to stderr when the run ends (the first 10000, then a count every 1000000; the bytes at CS:IP as at the end of each run slice) and a summary\n",
             "       upcli image import FILE --store DIR --tag NAME:TAG [--create] [--no-compress] [--rom-dir DIR]... [--recover MEDIUM=tip|MEDIUM=generation:N]... [--min-app-version X.Y.Z]\n",
             "         --min-app-version (here, on image media import and on image firmware import and edit) raises the oldest unemupc the image declares it needs: never below what this release computes, never above this release\n",
         ),
@@ -183,6 +184,9 @@ pub enum PcCommand {
         /// `--diag-at N`: the step at which the diagnostic report goes to
         /// stderr before the run goes on.
         diag_at: Option<u64>,
+        /// `--trace-exceptions`: the bounded trace of every exception and
+        /// interrupt delivery goes to stderr.
+        trace_exceptions: bool,
         print: Option<String>,
         options: assembly::AssemblyOptions,
     },
@@ -254,9 +258,16 @@ fn machine_words(args: &[OsString]) -> Result<Option<PcCommand>, &'static str> {
     if frontend.first().is_some_and(|arg| *arg == "run") {
         let (mut path, mut max_steps, mut idle_limit, mut print) = (None, None, None, None);
         let mut diag_at = None;
+        let mut trace_exceptions = false;
         let mut store = None;
         let mut args = frontend[1..].iter();
         while let Some(arg) = args.next() {
+            if *arg == "--trace-exceptions" {
+                if std::mem::replace(&mut trace_exceptions, true) {
+                    return Err("unknown or duplicate run option");
+                }
+                continue;
+            }
             if *arg == "--no-store" {
                 if store.replace(FirmwareStore::Disabled).is_some() {
                     return Err("duplicate or conflicting store option");
@@ -288,6 +299,7 @@ fn machine_words(args: &[OsString]) -> Result<Option<PcCommand>, &'static str> {
             max_steps: max_steps.unwrap_or(pc_harness::BIOS_MAX_RETIRED),
             idle_limit: idle_limit.unwrap_or(pc_harness::BIOS_IDLE_LIMIT),
             diag_at,
+            trace_exceptions,
             print,
             options,
         }));
@@ -338,12 +350,13 @@ impl PlatformCommand for PcCommand {
                 max_steps,
                 idle_limit,
                 diag_at,
+                trace_exceptions,
                 print,
                 options,
             } => run::run_machine(
                 &path,
                 options,
-                (max_steps, idle_limit, diag_at),
+                (max_steps, idle_limit, diag_at, trace_exceptions),
                 print.as_deref(),
                 (
                     &rom_dirs,
@@ -459,6 +472,7 @@ mod tests {
                 max_steps: 20_000_000,
                 idle_limit: 1_000_000,
                 diag_at: None,
+                trace_exceptions: false,
                 print: None,
                 options: assembly::AssemblyOptions::default(),
             }
@@ -474,6 +488,7 @@ mod tests {
                 "0",
                 "--diag-at",
                 "7",
+                "--trace-exceptions",
                 "--print",
                 "screen",
                 "--allow-unlisted-firmware"
@@ -485,6 +500,7 @@ mod tests {
                 max_steps: 42,
                 idle_limit: 0,
                 diag_at: Some(7),
+                trace_exceptions: true,
                 print: Some("screen".into()),
                 options: assembly::AssemblyOptions {
                     allow_unlisted_firmware: true

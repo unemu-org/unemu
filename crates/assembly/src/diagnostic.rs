@@ -9,7 +9,8 @@
 //! that still runs, taken by the host at a completed run boundary
 //! ([`crate::AssembledMachine::diagnostic_report`]): the retired count,
 //! virtual time and status; the processor ([`cpu::CpuDiagnostic`]); the
-//! machine's code trail (`machine::CodeTrail`); the master and slave 8259;
+//! machine's code trail (`machine::CodeTrail`); the last exceptions and
+//! interrupts the guest took (`machine::delivery_tap`); the master and slave 8259;
 //! the 8042; the three 8254 counters; the A20 line and its sources; and the
 //! CMOS shutdown byte and NMI mask. [`std::fmt::Display`] renders it as
 //! plain text in a fixed order. The format is described in
@@ -24,7 +25,7 @@
 
 use crate::{AssembledMachine, DeviceId};
 use devices::{CmosDiagnostic, I8042Diagnostic, PicDiagnostic, PitDiagnostic};
-use machine::TrailEntry;
+use machine::{RecentDeliveries, TrailEntry};
 use std::fmt;
 
 /// The A20 line and its sources.
@@ -55,6 +56,9 @@ pub struct MachineDiagnostic {
     pub trail: Option<Vec<TrailEntry>>,
     /// Samples the trail took, folded ones included.
     pub trail_samples: u64,
+    /// The last exceptions and interrupts the guest took; `None` when the
+    /// delivery log was not enabled.
+    pub deliveries: Option<RecentDeliveries>,
     /// The master 8259.
     pub master_pic: Option<PicDiagnostic>,
     /// The slave 8259.
@@ -70,6 +74,46 @@ pub struct MachineDiagnostic {
 }
 
 impl AssembledMachine {
+    /// Keep the last exceptions and interrupts the guest takes for
+    /// [`Self::diagnostic_report`] (`machine::Machine::enable_delivery_log`),
+    /// with each IRQ named by its 8259 input. Retired counts and every
+    /// guest effect are unchanged.
+    pub fn enable_delivery_log(&mut self) -> Result<(), cpu::DeliveryLogError> {
+        self.name_irq_inputs();
+        self.machine.enable_delivery_log()
+    }
+
+    /// Start the bounded trace of every exception and interrupt the guest
+    /// takes (`machine::DeliveryTrace`), with each IRQ named by its 8259
+    /// input; its text comes from `machine.take_delivery_trace()`. Retired
+    /// counts and every guest effect are unchanged.
+    pub fn enable_delivery_trace(&mut self) -> Result<(), cpu::DeliveryLogError> {
+        self.name_irq_inputs();
+        self.machine.enable_delivery_trace()
+    }
+
+    /// Name an IRQ vector's input from the vector bases the 8259s hold,
+    /// read from their snapshot images: the master's eight vectors are IRQ
+    /// 0 to 7, the slave's IRQ 8 to 15 (Intel 8259A datasheet, ICW2; IBM
+    /// Personal Computer AT Technical Reference, System Board, Interrupts).
+    fn name_irq_inputs(&mut self) {
+        let master = self.device_index.get(&DeviceId::MasterPic).copied();
+        let slave = self.device_index.get(&DeviceId::SlavePic).copied();
+        self.machine
+            .set_irq_input_of(Box::new(move |bus: &bus::Bus, vector: u8| {
+                let base = |index: Option<usize>| {
+                    let snapshot = bus.device(index?)?.save();
+                    Some(devices::Pic8259::diagnostic_from_snapshot(&snapshot)?.vector_base & 0xF8)
+                };
+                [(master, 0), (slave, 8)]
+                    .into_iter()
+                    .find_map(|(index, first)| {
+                        let offset = vector.checked_sub(base(index)?)?;
+                        (offset < 8).then_some(first + offset)
+                    })
+            }));
+    }
+
     /// The diagnostic report of this machine at its completed run boundary;
     /// `status` is how the front end names the machine's state. See the
     /// [module documentation](crate::diagnostic) for what it reads and why
@@ -103,6 +147,7 @@ impl AssembledMachine {
             halted: machine.halted(),
             trail: trail.map(machine::CodeTrail::entries),
             trail_samples: trail.map_or(0, machine::CodeTrail::samples),
+            deliveries: machine.recent_deliveries(),
             cpu,
             master_pic,
             slave_pic,
@@ -214,6 +259,24 @@ impl fmt::Display for MachineDiagnostic {
                         write!(f, " x{}", entry.samples)?;
                     }
                     writeln!(f)?;
+                }
+            }
+        }
+        match &self.deliveries {
+            None => writeln!(
+                f,
+                "delivery not recorded (the delivery log was not enabled)"
+            )?,
+            Some(deliveries) => {
+                writeln!(
+                    f,
+                    "delivery the last {} of {} exceptions and interrupts, oldest first ({} dropped before they were read)",
+                    deliveries.records.len(),
+                    deliveries.total,
+                    deliveries.dropped
+                )?;
+                for record in &deliveries.records {
+                    writeln!(f, "delivery {record}")?;
                 }
             }
         }
@@ -385,15 +448,77 @@ mod tests {
         assembled
     }
 
+    /// The report's deliveries on the open delivery ROM, run to its final
+    /// halt: the #UD, INT 60h, IRQ 0 and the protected-mode #GP, oldest
+    /// first; a twin without the log halts at the same retired count and
+    /// virtual time with the same CPU, and its report says the deliveries
+    /// were not recorded.
+    #[test]
+    fn the_report_lists_the_deliveries_of_the_open_delivery_rom() {
+        let run = |log: bool| {
+            let config = crate::bios(crate::test_support::deliveries_rom(), None);
+            let mut assembled = crate::assemble_with_observation_and_options(
+                &config,
+                &crate::ObservationPolicy::default(),
+                crate::AssemblyOptions {
+                    allow_unlisted_firmware: true,
+                },
+            )
+            .unwrap();
+            assembled.machine.set_idle_limit(Some(u64::MAX));
+            if log {
+                assembled.enable_delivery_log().unwrap();
+            }
+            let outcome = assembled.machine.run_bounded(Some(1_000_000)).unwrap();
+            assert_eq!(outcome, machine::RunOutcome::Halted);
+            assembled.diagnostic_report("halted")
+        };
+        let plain = run(false);
+        let logged = run(true);
+        assert_eq!(
+            (plain.cpu.retired, plain.virtual_time, &plain.cpu),
+            (logged.cpu.retired, logged.virtual_time, &logged.cpu)
+        );
+        let text = plain.to_string();
+        assert!(
+            text.contains("\ndelivery not recorded (the delivery log was not enabled)\n"),
+            "{text}"
+        );
+        let text = logged.to_string();
+        let section: Vec<&str> = text
+            .lines()
+            .filter(|line| line.starts_with("delivery "))
+            .collect();
+        assert_eq!(
+            section,
+            [
+                "delivery the last 4 of 4 exceptions and interrupts, oldest first (0 dropped before they were read)",
+                "delivery 12 fault #UD vector 06 at f800:002e linear 0f802e error - cpl 0->0 bytes 0f ff cd 60 b0 11 e6 20",
+                "delivery 18 software INT 60h vector 60 at f800:0032 linear 0f8032 error - cpl 0->0 bytes b0 11 e6 20 b0 08 e6 21",
+                "delivery 37 irq IRQ 0 vector 08 at f800:0054 linear 0f8054 error - cpl 0->0 bytes fa b0 ff e6 21 2e 0f 01",
+                "delivery 54 fault #GP vector 0d at 0008:007b linear 0f807b error 00f8 cpl 0->0 bytes 8e d8 f4 55 89 e5 83 46",
+            ],
+            "{text}"
+        );
+        // The section stands after the trail and before the 8259s.
+        let at = text.find("\ndelivery the last").unwrap();
+        assert!(text.find("\ntrail    ").unwrap() < at, "{text}");
+        assert!(at < text.find("\npic      master").unwrap(), "{text}");
+    }
+
     /// Taking reports changes nothing: a twin that took none ends with the
     /// same CPU, time and device snapshots. The reports fall at halted
     /// moments, with keyboard bytes queued in the 8042 and counter 2's GATE
     /// low, the states whose lazy device timing a report's borrow could
-    /// disturb.
+    /// disturb. The diagnosed machine also keeps the delivery log and the
+    /// delivery trace, which see every timer interrupt, named IRQ 0.
     #[test]
     fn taking_reports_leaves_every_device_as_a_twin_without_them() {
         let mut plain = machine();
         let mut diagnosed = machine();
+        diagnosed.enable_delivery_trace().unwrap();
+        diagnosed.enable_delivery_log().unwrap();
+        assert!(plain.diagnostic_report("running").deliveries.is_none());
         let mut halted = 0;
         for (step, cap) in (20_000..60_000).step_by(997).enumerate() {
             for machine in [&mut plain, &mut diagnosed] {
@@ -415,6 +540,17 @@ mod tests {
             }
         }
         assert!(halted > 10, "only {halted} reports at a halt");
+        let deliveries = diagnosed.diagnostic_report("running").deliveries.unwrap();
+        assert!(deliveries.total >= 10, "{}", deliveries.total);
+        assert_eq!(deliveries.records.len() as u64, deliveries.total);
+        assert_eq!(deliveries.dropped, 0);
+        for record in &deliveries.records {
+            assert_eq!(record.name(), cpu::DeliveryName::Irq(0), "{record}");
+            assert_eq!((record.vector, record.cs), (0x08, 0xF800), "{record}");
+        }
+        let trace = diagnosed.machine.take_delivery_trace().unwrap();
+        assert_eq!(trace.lines().count() as u64, deliveries.total);
+        assert!(trace.starts_with("delivery "), "{trace}");
         let snapshots = |machine: &mut crate::AssembledMachine| {
             let bus = machine.machine.bus_mut();
             bus.settle();
@@ -426,10 +562,9 @@ mod tests {
             machine.machine.run_bounded(Some(80_000)).unwrap();
         }
         assert_eq!(snapshots(&mut plain), snapshots(&mut diagnosed));
-        assert_eq!(
-            plain.diagnostic_report("running"),
-            diagnosed.diagnostic_report("running")
-        );
+        let mut report = diagnosed.diagnostic_report("running");
+        assert!(report.deliveries.take().is_some());
+        assert_eq!(plain.diagnostic_report("running"), report);
         assert!(plain.device_index.contains_key(&DeviceId::Keyboard));
     }
 }

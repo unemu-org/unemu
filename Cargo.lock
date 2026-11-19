@@ -4776,7 +4776,7 @@ source = "git+https://github.com/unemu-org/unemunes?rev=3aa955802a568a58b9bf8f5c
 [[package]]
 name = "x86jit-core"
 version = "0.3.0"
-source = "git+https://github.com/unemu-org/x86jit?rev=7a9ea390b8f588ce4af9845980bbf8534f793f61#7a9ea390b8f588ce4af9845980bbf8534f793f61"
+source = "git+https://github.com/unemu-org/x86jit?rev=e63c1321401893d8cd1377228965500c0a5d52fc#e63c1321401893d8cd1377228965500c0a5d52fc"
 dependencies = [
  "iced-x86",
 ]

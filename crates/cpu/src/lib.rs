@@ -43,10 +43,12 @@
 //! with a low reset entry. Host memory APIs and ISA DMA bypass the CPU gate.
 //! CPU reset retains both an effective line and a pending boundary change.
 
+pub mod delivery;
 pub mod diagnostic;
 pub mod stop_report;
 pub mod x86jit_backend;
 
+pub use delivery::{Delivery, DeliveryCounts, DeliveryKind, DeliveryLogError, DeliveryName};
 pub use diagnostic::CpuDiagnostic;
 pub use stop_report::CpuStopReport;
 pub use x86jit_backend::X86JitCpu;
@@ -471,5 +473,36 @@ pub trait Cpu {
     /// selector 0 with [`CpuReg::Rip`], for a backend without segments.
     fn code_address(&self) -> (u16, u64) {
         (0, self.reg(CpuReg::Rip))
+    }
+
+    /// Start a log of the last `capacity` exceptions and interrupts the CPU
+    /// delivers in the guest (1 to [`delivery::DELIVERY_LOG_MAX`]); see
+    /// [`delivery`]. A log already kept is replaced, unread. The log stays
+    /// outside the state the guest executes on: execution, retired counts
+    /// and every guest effect are the same with it on or off. The default
+    /// refuses, for a backend that delivers nothing in the guest.
+    fn enable_delivery_log(&mut self, capacity: usize) -> Result<(), DeliveryLogError> {
+        let _ = capacity;
+        Err(DeliveryLogError(
+            "this CPU backend keeps no delivery log".to_string(),
+        ))
+    }
+
+    /// Stop the delivery log and discard what it holds.
+    fn disable_delivery_log(&mut self) {}
+
+    /// Move the log's records, oldest first, to the end of `records`, and
+    /// return its counts, the dropped count then starting again from 0;
+    /// `None`, with nothing appended, while no log is kept.
+    fn drain_deliveries(&mut self, records: &mut Vec<Delivery>) -> Option<DeliveryCounts> {
+        let _ = records;
+        None
+    }
+
+    /// Append the log's records, oldest first, to `records` without
+    /// removing them, and return its counts; `None` while no log is kept.
+    fn peek_deliveries(&self, records: &mut Vec<Delivery>) -> Option<DeliveryCounts> {
+        let _ = records;
+        None
     }
 }

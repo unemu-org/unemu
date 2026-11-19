@@ -37,8 +37,12 @@
 //! enters execution. See `backlog/docs/design/scheduler.md` §Adoption.
 
 mod code_trail;
+pub mod delivery_tap;
 
 pub use code_trail::{CodeTrail, TrailEntry, CODE_TRAIL_LEN};
+pub use delivery_tap::{
+    DeliveryTrace, RecentDeliveries, RECENT_DELIVERIES, TRACE_COUNT_EVERY, TRACE_LINES,
+};
 
 use device::clock::{PIT, TICKS_PER_PIT_CLOCK};
 use std::num::NonZeroU64;
@@ -254,7 +258,14 @@ pub struct Machine<C: Cpu> {
     memory_map: Option<MemoryMapHook<C>>,
     /// CS:IP at the last run-slice boundaries, when a diagnostic asked for it.
     code_trail: Option<Box<CodeTrail>>,
+    /// The CPU's delivery records, when a diagnostic asked for them.
+    deliveries: Option<Box<delivery_tap::DeliveryTap>>,
+    /// Names an IRQ delivery's controller input from its vector.
+    irq_input_of: Option<IrqInputOf>,
 }
+
+/// Names the interrupt-controller input of an IRQ vector, reading the bus.
+pub type IrqInputOf = Box<dyn Fn(&Bus, u8) -> Option<u8>>;
 
 impl<C: Cpu> Machine<C> {
     /// Assemble a machine from a CPU backend, a bus, and an interrupt controller.
@@ -297,6 +308,8 @@ impl<C: Cpu> Machine<C> {
             a20_changes: 0,
             memory_map: None,
             code_trail: None,
+            deliveries: None,
+            irq_input_of: None,
         }
     }
 
@@ -722,7 +735,9 @@ impl<C: Cpu> Machine<C> {
                 budget = budget.min(u64::try_from(steps).unwrap_or(u64::MAX));
             }
             let before = self.cpu.completed_steps();
-            let run = match self.cpu.run_steps(budget, options) {
+            let run = self.cpu.run_steps(budget, options);
+            self.read_deliveries();
+            let run = match run {
                 Ok(run) => run,
                 Err(error) => {
                     self.charge_steps(self.cpu.completed_steps() - before)?;
@@ -1257,7 +1272,7 @@ mod tests {
     }
 
     /// A no-op controller for the interrupt-free loop tests.
-    struct NoIc;
+    pub(crate) struct NoIc;
     impl InterruptController for NoIc {
         fn set_irq_line(&mut self, _irq: u8, _level: bool) {}
         fn poll(&self) -> Option<u8> {

@@ -350,6 +350,34 @@ impl PcMachine {
         self.assembled.machine.enable_code_trail();
     }
 
+    /// Keep the last exceptions and interrupts the guest takes, for the
+    /// deliveries of [`Self::diagnostic_report`]; see
+    /// `machine::delivery_tap`. The CPU's delivery log stays outside the
+    /// state the guest executes on: retired counts, virtual time and every
+    /// guest effect are the same with it on or off.
+    pub fn enable_delivery_log(&mut self) -> Result<(), cpu::DeliveryLogError> {
+        self.assembled.enable_delivery_log()
+    }
+
+    /// Start the bounded trace of every exception and interrupt the guest
+    /// takes, read with [`Self::take_delivery_trace`]; see
+    /// `machine::DeliveryTrace`. Like [`Self::enable_delivery_log`], it
+    /// leaves the run unchanged.
+    pub fn enable_delivery_trace(&mut self) -> Result<(), cpu::DeliveryLogError> {
+        self.assembled.enable_delivery_trace()
+    }
+
+    /// The trace text written since the last take; `None` while the trace
+    /// is off.
+    pub fn take_delivery_trace(&mut self) -> Option<String> {
+        self.assembled.machine.take_delivery_trace()
+    }
+
+    /// The trace's summary so far; `None` while the trace is off.
+    pub fn delivery_trace_summary(&self) -> Option<String> {
+        self.assembled.machine.delivery_trace_summary()
+    }
+
     /// The diagnostic report of the machine at its completed run boundary:
     /// the retired count, virtual time and status, the CPU, the code trail,
     /// the 8259s, the 8042, the PIT, A20 and the CMOS shutdown byte and NMI

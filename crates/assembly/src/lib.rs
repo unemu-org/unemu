@@ -371,6 +371,138 @@ pub mod test_support {
         rom
     }
 
+    /// A 32 KiB system ROM for F8000h whose guest takes one delivery of
+    /// each kind and halts, for the tests of the exception trace and the
+    /// report's deliveries: in real mode it points INT 6, INT 60h and INT 8
+    /// at its handlers, executes 0F FF, an invalid opcode, whose #UD handler
+    /// steps over it, then INT 60h, whose handler returns; it initializes
+    /// the master 8259 (base 08h, only IRQ0 unmasked) and PIT counter 0
+    /// (mode 2, count 1000h) and waits in STI and HLT for IRQ0, whose
+    /// handler sends an EOI. With every IRQ masked again it enters protected
+    /// mode (ring-0 code 08h over the ROM, data 10h over the first 64 KiB of
+    /// RAM, an IDT whose gate 13 leads to 0008:008Fh), loads DS with
+    /// selector F8h, beyond the GDT limit: #GP(00F8h), whose handler drops
+    /// the error code and steps over the load; then it halts with
+    /// interrupts disabled (Intel 80286 Programmer's Reference Manual,
+    /// Chapter 9 and Appendix B, INT, IRET and MOV; Intel 8259A datasheet,
+    /// ICW1–ICW4 and OCW1; Intel 8254 datasheet, Mode 2). The bytes are this
+    /// NASM listing (`nasm -f bin`, org 0); their SHA-256 is pinned by
+    /// [`DELIVERIES_ROM_SHA256`]:
+    ///
+    /// ```text
+    /// 0000 FA               cli
+    /// 0001 31C0             xor ax, ax
+    /// 0003 8ED8             mov ds, ax
+    /// 0005 8ED0             mov ss, ax
+    /// 0007 BC0070           mov sp, 7000h
+    /// 000A C70618007E00     mov word [0018h], 007Eh   ; INT 6 offset
+    /// 0010 C7061A0000F8     mov word [001Ah], 0F800h
+    /// 0016 C70680018700     mov word [0180h], 0087h   ; INT 60h offset
+    /// 001C C706820100F8     mov word [0182h], 0F800h
+    /// 0022 C70620008800     mov word [0020h], 0088h   ; INT 8 offset
+    /// 0028 C706220000F8     mov word [0022h], 0F800h
+    /// 002E 0FFF             (invalid opcode: #UD)
+    /// 0030 CD60             int 60h
+    /// 0032 B011E620         mov al, 11h; out 20h, al  ; ICW1
+    /// 0036 B008E621         mov al, 08h; out 21h, al  ; ICW2: base 08h
+    /// 003A B004E621         mov al, 04h; out 21h, al  ; ICW3
+    /// 003E B001E621         mov al, 01h; out 21h, al  ; ICW4
+    /// 0042 B0FEE621         mov al, 0FEh; out 21h, al ; OCW1: only IRQ0
+    /// 0046 B034E643         mov al, 34h; out 43h, al  ; counter 0, mode 2
+    /// 004A B000E640         mov al, 00h; out 40h, al
+    /// 004E B010E640         mov al, 10h; out 40h, al  ; count 1000h
+    /// 0052 FB               sti
+    /// 0053 F4               hlt                       ; IRQ0 ends it
+    /// 0054 FA               cli
+    /// 0055 B0FFE621         mov al, 0FFh; out 21h, al ; mask every IRQ
+    /// 0059 2E0F01160001     lgdt [cs:0100h]
+    /// 005F 2E0F011E0601     lidt [cs:0106h]
+    /// 0065 B80100           mov ax, 1
+    /// 0068 0F01F0           lmsw ax
+    /// 006B EA70000800       jmp 0008:0070h
+    /// 0070 B81000           mov ax, 10h
+    /// 0073 8ED0             mov ss, ax
+    /// 0075 BC0070           mov sp, 7000h
+    /// 0078 B8F800           mov ax, 0F8h
+    /// 007B 8ED8             mov ds, ax                ; #GP(00F8h)
+    /// 007D F4               hlt
+    /// 007E 55               push bp                   ; the #UD handler
+    /// 007F 89E5             mov bp, sp
+    /// 0081 83460202         add word [bp+2], 2
+    /// 0085 5D               pop bp
+    /// 0086 CF               iret
+    /// 0087 CF               iret                      ; the INT 60h handler
+    /// 0088 50               push ax                   ; the IRQ0 handler
+    /// 0089 B020E620         mov al, 20h; out 20h, al  ; EOI
+    /// 008D 58               pop ax
+    /// 008E CF               iret
+    /// 008F 83C402           add sp, 2                 ; the #GP handler
+    /// 0092 55               push bp
+    /// 0093 89E5             mov bp, sp
+    /// 0095 83460202         add word [bp+2], 2
+    /// 0099 5D               pop bp
+    /// 009A CF               iret
+    /// 0100 1700 1081 0F00   GDTR: limit 17h, base 0F8110h
+    /// 0106 6F00 8081 0F00   IDTR: limit 6Fh, base 0F8180h
+    /// 0110 00 x 8           null descriptor
+    /// 0118 FFFF00800F9B0000 08h: code, base 0F8000h, limit FFFFh, accessed
+    /// 0120 FFFF000000930000 10h: data, base 0, limit FFFFh, accessed
+    /// 01E8 8F00080000860000 gate 13: 286 interrupt gate to 0008:008Fh
+    /// 7FF0 EA000000F8       jmp F800:0000h            ; the reset vector
+    /// ```
+    pub fn deliveries_rom() -> Vec<u8> {
+        let mut rom = vec![0; 0x8000];
+        let code: &[u8] = &[
+            0xFA, // CLI
+            0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xD0, // XOR AX,AX; MOV DS,AX; MOV SS,AX
+            0xBC, 0x00, 0x70, // MOV SP,7000h
+            0xC7, 0x06, 0x18, 0x00, 0x7E, 0x00, // MOV WORD [0018h],007Eh
+            0xC7, 0x06, 0x1A, 0x00, 0x00, 0xF8, // MOV WORD [001Ah],0F800h
+            0xC7, 0x06, 0x80, 0x01, 0x87, 0x00, // MOV WORD [0180h],0087h
+            0xC7, 0x06, 0x82, 0x01, 0x00, 0xF8, // MOV WORD [0182h],0F800h
+            0xC7, 0x06, 0x20, 0x00, 0x88, 0x00, // MOV WORD [0020h],0088h
+            0xC7, 0x06, 0x22, 0x00, 0x00, 0xF8, // MOV WORD [0022h],0F800h
+            0x0F, 0xFF, // #UD
+            0xCD, 0x60, // INT 60h
+            0xB0, 0x11, 0xE6, 0x20, // ICW1
+            0xB0, 0x08, 0xE6, 0x21, // ICW2
+            0xB0, 0x04, 0xE6, 0x21, // ICW3
+            0xB0, 0x01, 0xE6, 0x21, // ICW4
+            0xB0, 0xFE, 0xE6, 0x21, // OCW1: only IRQ0
+            0xB0, 0x34, 0xE6, 0x43, // PIT counter 0, mode 2
+            0xB0, 0x00, 0xE6, 0x40, 0xB0, 0x10, 0xE6, 0x40, // count 1000h
+            0xFB, 0xF4, // STI; HLT
+            0xFA, // CLI
+            0xB0, 0xFF, 0xE6, 0x21, // OCW1: mask every IRQ
+            0x2E, 0x0F, 0x01, 0x16, 0x00, 0x01, // LGDT CS:[0100h]
+            0x2E, 0x0F, 0x01, 0x1E, 0x06, 0x01, // LIDT CS:[0106h]
+            0xB8, 0x01, 0x00, 0x0F, 0x01, 0xF0, // MOV AX,1; LMSW AX
+            0xEA, 0x70, 0x00, 0x08, 0x00, // JMP 0008:0070
+            0xB8, 0x10, 0x00, 0x8E, 0xD0, // MOV AX,10h; MOV SS,AX
+            0xBC, 0x00, 0x70, // MOV SP,7000h
+            0xB8, 0xF8, 0x00, 0x8E, 0xD8, // MOV AX,0F8h; MOV DS,AX: #GP
+            0xF4, // HLT
+            0x55, 0x89, 0xE5, 0x83, 0x46, 0x02, 0x02, 0x5D, 0xCF, // the #UD handler
+            0xCF, // the INT 60h handler
+            0x50, 0xB0, 0x20, 0xE6, 0x20, 0x58, 0xCF, // the IRQ0 handler
+            0x83, 0xC4, 0x02, // the #GP handler: ADD SP,2
+            0x55, 0x89, 0xE5, 0x83, 0x46, 0x02, 0x02, 0x5D, 0xCF,
+        ];
+        rom[..code.len()].copy_from_slice(code);
+        rom[0x100..0x10C].copy_from_slice(&[
+            0x17, 0x00, 0x10, 0x81, 0x0F, 0x00, 0x6F, 0x00, 0x80, 0x81, 0x0F, 0x00,
+        ]);
+        rom[0x118..0x120].copy_from_slice(&[0xFF, 0xFF, 0x00, 0x80, 0x0F, 0x9B, 0, 0]);
+        rom[0x120..0x128].copy_from_slice(&[0xFF, 0xFF, 0x00, 0x00, 0x00, 0x93, 0, 0]);
+        rom[0x1E8..0x1F0].copy_from_slice(&[0x8F, 0x00, 0x08, 0x00, 0x00, 0x86, 0, 0]);
+        rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0x00, 0x00, 0x00, 0xF8]);
+        rom
+    }
+
+    /// SHA-256 of [`deliveries_rom`], the output of its NASM listing.
+    pub const DELIVERIES_ROM_SHA256: &str =
+        "b727a0fbf45e62d72c2c7fcbccb501c177e3c1bb91d1490d7198c7904f4f7eb8";
+
     /// SHA-256 of visible row-major glyph/attribute pairs, excluding cursor and style.
     /// IBM Monochrome Display and Printer Adapter, Programming Considerations:
     /// each text cell occupies a glyph byte followed by an attribute byte.
@@ -468,6 +600,15 @@ pub mod test_support {
     #[cfg(test)]
     mod tests {
         use super::text_plane_sha256;
+
+        /// The delivery ROM is the output of its listing.
+        #[test]
+        fn the_deliveries_rom_matches_its_pinned_listing() {
+            assert_eq!(
+                super::fixture_sha256(&super::deliveries_rom()),
+                super::DELIVERIES_ROM_SHA256
+            );
+        }
 
         #[test]
         fn text_plane_hash_uses_row_major_glyph_and_attribute_bytes() {

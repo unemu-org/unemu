@@ -3508,8 +3508,20 @@ impl Shell {
         self.error_report = None;
         self.session = self.session.wrapping_add(1);
         self.events.borrow_mut().session = self.session;
+        // The trace first: it asks for the larger delivery log.
+        if let Some(folder) = &self.args.exception_trace {
+            match folder
+                .clone()
+                .and_then(|folder| presenter.start_exception_trace(&folder))
+            {
+                Ok(path) => eprintln!("exception trace: {}", path.display()),
+                Err(error) => eprintln!("exception trace not written: {error}"),
+            }
+        }
         if self.args.diagnostics.is_some() {
             presenter.machine_mut().enable_code_trail();
+            // Without a log the report says the deliveries were not recorded.
+            let _ = presenter.machine_mut().enable_delivery_log();
         }
         presenter.window = self.window.clone();
         presenter.started = Some(Instant::now());
@@ -3776,6 +3788,7 @@ impl Shell {
                 failure.get_or_insert_with(|| error.to_string());
             }
             presenter.write_reset_summary(&mut io::stderr());
+            presenter.finish_exception_trace();
         }
         let retain_workspace = std::mem::take(&mut self.retain_workspace_on_stop);
         if had_session {
@@ -5676,7 +5689,9 @@ impl Shell {
         );
         presenter.next_paint = deadline;
         if advance {
-            if let Err(error) = presenter.advance(elapsed) {
+            let advanced = presenter.advance(elapsed);
+            presenter.append_exception_trace();
+            if let Err(error) = advanced {
                 self.show_error(error.to_string());
                 return;
             }
@@ -5730,6 +5745,10 @@ impl Drop for Shell {
             job.control.cancel();
         }
         self.image_library.shutdown();
+        // Quitting with a machine running still ends its exception trace.
+        if let Some(presenter) = &mut self.presenter {
+            presenter.finish_exception_trace();
+        }
     }
 }
 
@@ -9891,6 +9910,64 @@ mod tests {
         assert!(shell.stop());
         assert!(shell.errors.borrow().is_none());
         assert_eq!(std::fs::metadata(&journal).unwrap().len(), 128 + 640);
+    }
+
+    /// With the exception-trace switch on, each Start opens the next
+    /// `trace-N.txt`, the frames append and flush the deliveries of their
+    /// run slices, so the file holds them before Stop, and Stop writes the
+    /// summary; with it off no file appears and the guest halts at the same
+    /// retired count.
+    #[test]
+    fn the_exception_trace_switch_writes_one_file_per_session() {
+        use std::time::Duration;
+        let temp = assembly::test_support::TempDir::new("shell-exception-trace");
+        let folder = temp.path().join("unemupc").join("diagnostics");
+        let ctx = egui::Context::default();
+        let session = |shell: &mut Shell| {
+            let mut presenter = crate::tests::deliveries_presenter();
+            presenter.full_slices = true;
+            shell.started(presenter);
+            shell.tick(&ctx, false, Duration::from_millis(20));
+            let presenter = shell.presenter.as_ref().unwrap();
+            assert!(presenter.halted);
+            let retired = cpu::Cpu::retired(presenter.assembled_ref().machine.cpu());
+            // Before Stop the file already holds the deliveries, flushed.
+            let before_stop = std::fs::read_to_string(folder.join("trace-1.txt")).ok();
+            assert!(shell.stop());
+            (retired, before_stop)
+        };
+        let mut off = shell();
+        off.presenter = None;
+        let (plain, _) = session(&mut off);
+        assert!(!folder.exists(), "the switch is off");
+
+        let mut on = shell();
+        on.presenter = None;
+        on.args.exception_trace = Some(Ok(folder.clone()));
+        let (retired, before_stop) = session(&mut on);
+        assert_eq!(retired, plain);
+        let before_stop = before_stop.unwrap();
+        assert_eq!(before_stop.lines().count(), 4, "{before_stop}");
+        assert!(before_stop
+            .lines()
+            .all(|line| line.starts_with("delivery ")));
+        let trace = std::fs::read_to_string(folder.join("trace-1.txt")).unwrap();
+        assert!(trace.starts_with(&before_stop));
+        let lines: Vec<&str> = trace.lines().collect();
+        assert_eq!(lines.len(), 9, "{trace}");
+        assert!(lines[0].starts_with("delivery 12 fault #UD vector 06 at f800:002e "));
+        assert!(lines[2].starts_with("delivery 37 irq IRQ 0 vector 08 at f800:0054 "));
+        assert!(lines[3].starts_with("delivery 54 fault #GP vector 0d at 0008:007b "));
+        assert_eq!(
+            lines[4],
+            "summary  4 deliveries, 4 lines written, 0 dropped before they were read"
+        );
+        session(&mut on);
+        assert!(folder.join("trace-2.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(folder.join("trace-1.txt")).unwrap(),
+            trace
+        );
     }
 
     #[test]

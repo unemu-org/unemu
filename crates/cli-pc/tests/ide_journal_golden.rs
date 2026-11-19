@@ -99,7 +99,7 @@ fn session(machine: &mut AssembledMachine, command: &str) {
 #[ignore = "slow: two BIOS/FreeDOS boots and a persistent ATA write/read session"]
 fn freedos_ide_journal_survives_a_fresh_assembly_without_changing_base() {
     assert!(
-        include_str!("../../../Cargo.lock").contains("#7a9ea390b8f588ce4af9845980bbf8534f793f61")
+        include_str!("../../../Cargo.lock").contains("#e63c1321401893d8cd1377228965500c0a5d52fc")
     );
     for path in [
         "unemu-at-bios/bios-unemu-at.bin",

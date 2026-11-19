@@ -806,6 +806,7 @@ or `desktop  paused`. Its lines come in a fixed order:
 | `retired`, `time`, `status`, `halted` | retired instructions and completed steps, virtual time and the device clock, the machine's status, whether the CPU sits in HLT and with which IF |
 | `cs:ip` … `ss:sp`, `stack` | the CPU (`X86JitCpu::diagnostic_state`, `crates/cpu/src/diagnostic.rs`): CS:IP and its linear address; FLAGS with IF, TF, DF, IOPL and NT decoded (Intel 80286 Programmer's Reference Manual, §3.5.3 and §10.3); AX–SP; MSW with PE and CPL; CS, DS, ES and SS with selector, base, limit and access rights from their caches; GDTR, IDTR, LDTR and TR; whether an injected vector waits and whether an interrupt could be accepted; the HLT a halted CPU executed; the 16 bytes at CS:IP with the first instruction disassembled; the 16 words at SS:SP |
 | `trail` | the code trail: CS:IP after the last run slices (below) |
+| `delivery` | the last 64 exceptions and interrupts the guest took, oldest first, with the total and the dropped count (§Exception and interrupt deliveries); `not recorded` when the log was not enabled |
 | `pic` | master and slave 8259: IRR, ISR, IMR, vector base, ICW1 and ICW4 with AEOI, an unfinished initialization, the OCW3 read select and the input levels; poll mode and special mask mode are not modelled, and the report says so |
 | `kbc` | the 8042: status register, command byte with its keyboard and aux enable and interrupt bits, output buffer and its source (keyboard, aux or controller), output and input ports with the inhibit switch, the parameter the next `60h` write is taken as, the last command written to `64h`, queued keyboard bytes, a waiting controller reply, the LED parameter wait, and the IRQ1 and IRQ12 levels |
 | `pit` | each 8254 counter: programmed mode, access mode, BCD, count register, counting element, OUT and GATE, and a count not yet loaded or a latch waiting to be read |
@@ -858,12 +859,12 @@ environment at startup: Ctrl+Alt+Shift+D (⌘⇧D on macOS) writes the running
 PC's report to `<data>/unemupc/diagnostics/diag-N.txt` in the platform data
 directory, N one more than the highest number already there, and the status
 line says `Diagnostic state saved to PATH`. With the switch on the machine
-keeps its code trail from Start. Without the switch the chord does nothing.
+keeps its code trail and its last deliveries from Start. Without the switch the chord does nothing.
 Either way the chord belongs to the host: its D never reaches the guest
 (`crates/window/src/diagnostics.rs`). `upcli run --machine FILE --diag-at N`
 writes the report to stderr when the run reaches step N, the unit of
-`--max-steps`, with the trail enabled from the start, then runs on to its
-usual stop (commands.md, Build / run / test).
+`--max-steps`, with the trail and the deliveries enabled from the start,
+then runs on to its usual stop (commands.md, Build / run / test).
 
 An example, from the open guest
 `assembly::test_support::keyboard_masked_halt_rom` (it initializes the master
@@ -918,6 +919,118 @@ pit      2: mode 0 lsb/msb, reload 0000, count 0000, out 1, gate 0, no count loa
 a20      on: 8042 output port on, port 92h not fitted
 cmos     shutdown status (0fh) 00, nmi unmasked, index 00
 ```
+
+## Exception and interrupt deliveries
+
+A machine CPU delivers exceptions and interrupts in the guest, through the
+IVT or the IDT (`ExceptionDelivery::InGuest`), so the host never sees them: a
+guest that faults in a loop, or whose #GP handler fixes things up and returns,
+looks from outside like any running guest. x86jit keeps, on request, a
+per-vCPU log of the last N deliveries (`x86jit-core` spec.md §17.10, Delivery
+log; pinned since `e63c1321`), outside `CpuState` and checkpoints, and with it
+off nothing in execution, retirement or generated code changes. The backend
+exposes it as `Cpu::enable_delivery_log`, `drain_deliveries` and
+`peek_deliveries` (`crates/cpu/src/delivery.rs`, `X86JitCpu`); only the
+machine profiles keep one, an application profile refuses.
+
+When a diagnostic asks, the machine enables the log and moves its records
+after every run slice into its delivery tap (`crates/machine/src/delivery_tap.rs`):
+the last 64 for the report (`Machine::enable_delivery_log`, capacity 64) and
+the bounded trace (`Machine::enable_delivery_trace`, capacity 65,536: a slice
+with at most one delivery per step loses none, and any loss is counted as
+dropped; both together use the larger, and a trace enabled after the report's
+log numbers its deliveries from its own start). The slice that fails with a
+delivery stall is read too. The tap lives in the machine, outside the CPU, so
+retired counts, virtual time and every guest effect are the same with it on or
+off; off, it costs one branch per slice.
+
+Each delivery is one line:
+
+```text
+delivery 54 fault #GP vector 0d at 0008:007b linear 0f807b error 00f8 cpl 0->0 bytes 8e d8 f4 55 89 e5 83 46
+```
+
+| Field | Content |
+|---|---|
+| `54` | `Vcpu::retired_instructions` when the handler was entered: a software interrupt's own instruction is counted, a faulting one is not |
+| `fault` | the kind: `fault` (a fault or abort, #DF and BOUND's #BR included; the saved IP is the faulting instruction), `trap` (single step; the next instruction), `software` (INT n, INT 3, a taken INTO; the next instruction), `irq` (the interrupted instruction, not yet run), `nmi` |
+| `#GP` | the name: an exception's mnemonic (`#DE #DB NMI #BP #OF #BR #UD #NM #DF #TS #NP #SS #GP #MF`, others `exception NNh`), `INT NNh` (`INT 1Ch`), `IRQ n` or `NMI`; the hexadecimal digits after a name are upper case |
+| `vector 0d` | the vector used |
+| `at 0008:007b` | the return address the delivery saved |
+| `linear 0f807b` | the CS base before the delivery plus the saved IP, before the A20 gate |
+| `error 00f8` | the error code pushed; `-` when none (every real-mode delivery) |
+| `cpl 0->0` | the privilege level before and after; 0 outside protected mode |
+| `bytes …` | the 8 bytes at the saved CS:IP, read at the end of the run slice from RAM and ROM through the CPU's own map, the offset wrapping at the end of the 16-bit segment; `dv` is a device window (not read), `--` unmapped |
+
+An IRQ is named by its 8259 input from the vector bases the master and slave
+hold (Intel 8259A datasheet, ICW2); `IRQ at nnh` when neither base covers the
+vector. The machine reads the log when a slice ends, and a slice ends at every
+port access before the bus performs it, so the 8259s and the A20 gate are as
+they were at the delivery; a store the guest made later in the same slice is
+already in the bytes. A delivery whose own delivery faults is not recorded,
+the exception it raised is (a #DF, or the next fault); a #DF whose delivery
+faults ends in shutdown, which is not a delivery.
+
+**The trace.** `upcli run --machine FILE --trace-exceptions` keeps it in
+memory (bounded as below) and writes it to stderr when the run ends, before
+the `stopped: ...` line (and before a `--diag-at` report, the lines so far);
+the desktop with `UNEMUPC_TRACE_EXCEPTIONS=1` creates the next
+`<data>/unemupc/diagnostics/trace-N.txt` at Start, appends and flushes after
+every frame whose run slices delivered something (a killed app keeps the
+trace so far) and writes the summary at Stop or quit
+(`crates/window/src/diagnostics.rs`). It is bounded: a line for each of the
+first 10,000 deliveries, then the line `trace    10000 delivery lines
+written; from here a count line every 1000000 deliveries`, then `count    N
+deliveries, the last at retired R` at every millionth delivery. Where the
+CPU's log overflowed before the machine read it, a line `dropped  N
+deliveries (the CPU's log overflowed before the machine read it)` stands
+where the loss happened. The summary
+gives the total, the lines written, the deliveries the log dropped before the
+machine read them, and a line per name with its count (exceptions, NMI,
+IRQs, software interrupts, each by number):
+
+```text
+summary  4 deliveries, 4 lines written, 0 dropped before they were read
+summary  #UD: 1
+summary  #GP: 1
+summary  IRQ 0: 1
+summary  INT 60h: 1
+```
+
+**The report.** With the diagnostic trail on (`UNEMUPC_DIAG=1`, `--diag-at`)
+the report's `delivery` lines follow the trail:
+`delivery the last K of T exceptions and interrupts, oldest first (D dropped
+before they were read)`, then the K records in the line format above.
+
+MEASURED. The open guest `assembly::test_support::deliveries_rom` (its NASM
+listing and SHA-256 are pinned beside it) takes one delivery of each kind and
+halts; its exact trace, in `crates/cli-pc/tests/exception_trace.rs`:
+
+```text
+delivery 12 fault #UD vector 06 at f800:002e linear 0f802e error - cpl 0->0 bytes 0f ff cd 60 b0 11 e6 20
+delivery 18 software INT 60h vector 60 at f800:0032 linear 0f8032 error - cpl 0->0 bytes b0 11 e6 20 b0 08 e6 21
+delivery 37 irq IRQ 0 vector 08 at f800:0054 linear 0f8054 error - cpl 0->0 bytes fa b0 ff e6 21 2e 0f 01
+delivery 54 fault #GP vector 0d at 0008:007b linear 0f807b error 00f8 cpl 0->0 bytes 8e d8 f4 55 89 e5 83 46
+```
+
+The #UD saves the invalid opcode `0f ff` itself, INT 60h the instruction
+after it, IRQ0 the CLI after the HLT it ended, the #GP the faulting
+`MOV DS,AX` in protected mode with selector F8h as its error code; the
+report of the same run lists the same four
+(`assembly::diagnostic` tests). `delivery_overrun_rom` (a #UD handler that
+faults until its stack overruns and the CPU shuts down) writes 10,000 lines,
+the note and a summary of 10,922 #UDs, and `delivery_stall_rom` 10,000 lines
+and a summary of 11,264 #GPs before its stall stop; both stop as without the
+trace. The twin test of the report keeps the log and the trace on one of two
+machines and finds the same CPU, time and device snapshots. The open-BIOS FreeDOS boot of `freedos_boot_golden`,
+run twice more with the log, the trace and the trail on and the trace read at
+each of its ten poll boundaries (`diagnostic_trail_golden`), stops at the
+same retired count and virtual time (8,800,473 and 10,000,000) with the same
+screen, POST stream and device snapshots as without them, and both traces are
+the same text: 7,120 deliveries, none dropped (INT 10h 3,367, INT 16h 1,766,
+INT 29h 662, INT 15h 311, IRQ 0 174, IRQ 6 155, INT 13h 160, INT 21h 136, five
+#DB among them); the boot took 0.59 s with them and 0.58 s without, release
+build.
 
 ## Implemented access trace policy
 

@@ -1186,7 +1186,23 @@ reaches step N (the unit of `--max-steps`), then runs on to its usual stop:
 the CPU's registers, flags and descriptor caches, the bytes at CS:IP and the
 words at SS:SP, the CS:IP of the last run slices, the 8259s, the 8042, the
 PIT, A20 and the CMOS shutdown byte and NMI mask, for a guest that hangs
-without an error. A run that stops before step N prints no report.
+without an error. A run that stops before step N prints no report. With
+`--diag-at` the report also lists the last 64 exceptions and interrupts the
+guest took, oldest first.
+
+`--trace-exceptions` writes a line to stderr for every exception and
+interrupt the guest takes, delivered in the guest and therefore invisible
+otherwise: the retired count, the kind (fault, trap, software, irq, nmi), the
+mnemonic (`#UD`, `#GP`, `INT 21h`, `IRQ 0`, `NMI` …) and vector, the saved
+CS:IP and its linear address, the error code, the CPL before and after, and
+the 8 bytes at the saved CS:IP (memory only, never a device, read at the end
+of the run slice). The first 10,000 deliveries get a line, then a count line
+every 1,000,000, and the run ends with a summary (total, dropped, a count per
+mnemonic) before the `stopped: ...` line. upcli keeps the trace in memory and
+writes it when the run ends (with `--diag-at`, the lines so far go before the
+report). Off, nothing changes; on, the run's retired count and
+every guest effect are the same. The format is described in
+design/observation.md §Exception and interrupt deliveries.
 
 The window takes the same report on demand when `UNEMUPC_DIAG=1` is in its
 environment at startup (any other value, or none, leaves it off):
@@ -1198,6 +1214,12 @@ from the highest number already there, and the status line shows
 its code trail from Start. Without the switch the chord does nothing; either
 way its D never reaches the guest. The report is described in
 design/observation.md §Diagnostic report of a running machine.
+
+`UNEMUPC_TRACE_EXCEPTIONS=1` in the window's environment at startup is the
+window's `--trace-exceptions`: each Start creates the next `trace-N.txt` in
+the same `unemupc/diagnostics` folder (stderr names it), every frame that
+delivered something appends and flushes its lines, so a killed window keeps
+the trace so far, and Stop (or quitting) writes the summary. Any other value, or none, leaves it off.
 A configured card without printable output is an argument error (exit 2). Both file commands accept
 `--allow-unlisted-firmware` for development. Existing `--boot`, `--bios` and
 `media` commands retain their contracts. The FreeDOS prompt, DIR and file-write

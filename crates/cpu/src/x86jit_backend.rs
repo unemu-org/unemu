@@ -38,6 +38,16 @@ pub const DELIVERY_STALL_LIMIT: u32 = 1024;
 /// INT); where it is, the frames wrap without a fault and the loop has no end.
 pub const STALL_RETURNS: u32 = 11;
 
+/// The linear address of byte `index` after a saved CS:IP whose linear
+/// address is `linear`. IP is the 16-bit offset of the next instruction in
+/// the code segment on the 80286, the only model this backend selects
+/// (Intel 80286 Programmer's Reference Manual, Chapter 2), so the bytes wrap
+/// at the end of the segment, back to its base.
+fn code_byte_address(linear: u32, ip: u32, index: usize) -> u32 {
+    let base = linear.wrapping_sub(ip);
+    base.wrapping_add(ip.wrapping_add(index as u32) & 0xFFFF)
+}
+
 /// A CPU backed by the `x86jit` interpreter core (§2.1).
 ///
 /// Owns the guest [`Vm`] (its memory map) and the [`Vcpu`]. The machine loop
@@ -49,6 +59,8 @@ pub struct X86JitCpu {
     completed_steps: u64,
     // Synthetic rigs retain their low reset fetch without the AT high ROM alias.
     low_reset_fetch: bool,
+    /// The buffer each read of the core's delivery log reuses.
+    delivery_records: Vec<x86jit_core::DeliveryRecord>,
 }
 
 impl X86JitCpu {
@@ -74,6 +86,7 @@ impl X86JitCpu {
             dma_regions: vec![(0..ram_bytes, RegionKind::Ram)],
             completed_steps: 0,
             low_reset_fetch: true,
+            delivery_records: Vec::new(),
         })
     }
 
@@ -114,6 +127,7 @@ impl X86JitCpu {
             dma_regions: Vec::new(),
             completed_steps: 0,
             low_reset_fetch: true,
+            delivery_records: Vec::new(),
         })
     }
 
@@ -188,6 +202,7 @@ impl X86JitCpu {
             dma_regions: Vec::new(),
             completed_steps: 0,
             low_reset_fetch,
+            delivery_records: Vec::new(),
         })
     }
 
@@ -436,6 +451,41 @@ impl X86JitCpu {
             }
             Some(RegionKind::Trap) => Peek::Device,
             _ => Peek::Unmapped,
+        }
+    }
+
+    /// One record of the core's delivery log in the backend-neutral shape,
+    /// with the bytes at its saved CS:IP read as [`Self::peek_linear`] reads
+    /// them; see [`crate::delivery`].
+    fn delivery(&self, record: &x86jit_core::DeliveryRecord) -> crate::Delivery {
+        use crate::DeliveryKind;
+        use x86jit_core::DeliveryKind as Core;
+        let kind = match record.kind {
+            Core::Fault => DeliveryKind::Fault,
+            Core::Trap => DeliveryKind::Trap,
+            Core::Software => DeliveryKind::Software,
+            Core::Irq => DeliveryKind::Irq,
+            Core::Nmi => DeliveryKind::Nmi,
+            _ => DeliveryKind::Other,
+        };
+        crate::Delivery {
+            retired: record.retired,
+            kind,
+            vector: record.vector,
+            irq: None,
+            cs: record.saved_cs,
+            ip: record.saved_ip,
+            linear: record.saved_linear,
+            error_code: record.error_code,
+            cpl_before: record.cpl_before,
+            cpl_after: record.cpl_after,
+            bytes: std::array::from_fn(|index| {
+                self.peek_linear(code_byte_address(
+                    record.saved_linear,
+                    record.saved_ip,
+                    index,
+                ))
+            }),
         }
     }
 
@@ -815,6 +865,46 @@ impl Cpu for X86JitCpu {
         self.cpu.complete_mmio_write();
     }
 
+    /// The core's delivery log (`x86jit-core` spec.md §17.10, Delivery
+    /// log), which only its machine profiles keep.
+    fn enable_delivery_log(&mut self, capacity: usize) -> Result<(), crate::DeliveryLogError> {
+        self.cpu
+            .enable_delivery_log(capacity)
+            .map_err(|error| crate::DeliveryLogError(error.to_string()))
+    }
+
+    fn disable_delivery_log(&mut self) {
+        self.cpu.disable_delivery_log();
+    }
+
+    fn drain_deliveries(
+        &mut self,
+        records: &mut Vec<crate::Delivery>,
+    ) -> Option<crate::DeliveryCounts> {
+        let mut drained = std::mem::take(&mut self.delivery_records);
+        drained.clear();
+        let counts = self
+            .cpu
+            .delivery_log_mut()
+            .map(|log| log.drain_into(&mut drained));
+        records.extend(drained.iter().map(|record| self.delivery(record)));
+        self.delivery_records = drained;
+        let counts = counts?;
+        Some(crate::DeliveryCounts {
+            dropped: counts.dropped,
+            total: counts.total,
+        })
+    }
+
+    fn peek_deliveries(&self, records: &mut Vec<crate::Delivery>) -> Option<crate::DeliveryCounts> {
+        let log = self.cpu.delivery_log()?;
+        records.extend(log.iter().map(|record| self.delivery(record)));
+        Some(crate::DeliveryCounts {
+            dropped: log.dropped(),
+            total: log.total(),
+        })
+    }
+
     fn inject_irq(&mut self, vector: u8) {
         // The core queues vectors in every mode, but only Real16 delivers them
         // through the IVT once IF, completion and STI/SS-shadow gates allow it.
@@ -870,6 +960,90 @@ mod tests {
         cpu.map_ram(0, 0x10000).unwrap();
         cpu.write_mem(0x1000, code).unwrap();
         cpu
+    }
+
+    /// The delivery log: off by default; enabled, a software interrupt and a
+    /// #UD come back oldest first with their saved CS:IP and the bytes
+    /// there; a peek leaves them, a drain takes them; a twin without the log
+    /// retires the same instructions to the same state. An application
+    /// profile refuses the log.
+    #[test]
+    fn the_delivery_log_reports_software_interrupts_and_faults_without_changing_the_run() {
+        let program = [
+            0xCD, 0x21, // 1000 INT 21h
+            0x0F, 0xFF, // 1002 invalid opcode: #UD
+        ];
+        let run = |log: bool| {
+            let mut cpu = i286_guest(&program);
+            // INT 21h returns at once; INT 6 halts.
+            cpu.write_mem(0x21 * 4, &[0x00, 0x18, 0, 0]).unwrap();
+            cpu.write_mem(6 * 4, &[0x00, 0x19, 0, 0]).unwrap();
+            cpu.write_mem(0x1800, &[0xCF]).unwrap(); // IRET
+            cpu.write_mem(0x1900, &[0xF4]).unwrap(); // HLT
+            assert_eq!(cpu.drain_deliveries(&mut Vec::new()), None);
+            if log {
+                cpu.enable_delivery_log(4).unwrap();
+            }
+            let stop = cpu.run_steps(100, StepRunOptions::default()).unwrap().stop;
+            assert_eq!(stop, CpuStepStop::Exit(CpuStop::Halt));
+            cpu
+        };
+        let mut plain = run(false);
+        let mut logged = run(true);
+        assert_eq!(plain.retired(), logged.retired());
+        assert_eq!(plain.diagnostic_state(), logged.diagnostic_state());
+        assert_eq!(plain.peek_deliveries(&mut Vec::new()), None);
+        let mut peeked = Vec::new();
+        let counts = logged.peek_deliveries(&mut peeked).unwrap();
+        assert_eq!((counts.dropped, counts.total), (0, 2));
+        let lines: Vec<String> = peeked.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            lines,
+            [
+                "1 software INT 21h vector 21 at 0000:1002 linear 001002 error - cpl 0->0 \
+                 bytes 0f ff 00 00 00 00 00 00",
+                "2 fault #UD vector 06 at 0000:1002 linear 001002 error - cpl 0->0 \
+                 bytes 0f ff 00 00 00 00 00 00",
+            ]
+        );
+        let mut drained = Vec::new();
+        assert_eq!(logged.drain_deliveries(&mut drained), Some(counts));
+        assert_eq!(drained, peeked);
+        assert!(logged.drain_deliveries(&mut drained).is_some());
+        assert_eq!(drained.len(), 2, "a drain takes the records");
+        logged.disable_delivery_log();
+        assert_eq!(logged.peek_deliveries(&mut Vec::new()), None);
+        plain.disable_delivery_log();
+
+        let mut application =
+            X86JitCpu::new_real16_bare(0x10000, 0, 0x1000, RealSegments::flat(0)).unwrap();
+        assert!(application.enable_delivery_log(4).is_err());
+    }
+
+    /// The bytes of a delivery whose saved IP stands near the end of the
+    /// segment wrap to the segment's first bytes, as the 80286's IP does,
+    /// instead of reading past the segment: a #UD at 0000:FFFEh shows its
+    /// opcode, then the IVT at 0000:0000h, not the unmapped 10000h.
+    #[test]
+    fn delivery_bytes_wrap_at_the_end_of_the_code_segment() {
+        let mut cpu = i286_guest(&[0xE9, 0xFB, 0xEF]); // 1000 JMP 0FFFEh
+        cpu.write_mem(0xFFFE, &[0x0F, 0xFF]).unwrap(); // #UD
+        cpu.write_mem(0, &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66])
+            .unwrap();
+        cpu.write_mem(6 * 4, &[0x00, 0x19, 0, 0]).unwrap();
+        cpu.write_mem(0x1900, &[0xF4]).unwrap(); // HLT
+        cpu.enable_delivery_log(4).unwrap();
+        let stop = cpu.run_steps(100, StepRunOptions::default()).unwrap().stop;
+        assert_eq!(stop, CpuStepStop::Exit(CpuStop::Halt));
+        let mut records = Vec::new();
+        cpu.drain_deliveries(&mut records).unwrap();
+        assert_eq!(
+            records[0].to_string(),
+            "1 fault #UD vector 06 at 0000:fffe linear 00fffe error - cpl 0->0 \
+             bytes 0f ff 11 22 33 44 55 66"
+        );
+        assert_eq!(code_byte_address(0xF8010, 0x10, 3), 0xF8013);
+        assert_eq!(code_byte_address(0xFFFFF, 0xFFFF, 1), 0xF0000);
     }
 
     /// The diagnostic picture of a halted CPU: registers, FLAGS with DF set
@@ -1489,6 +1663,7 @@ mod tests {
             dma_regions: Vec::new(),
             completed_steps: 0,
             low_reset_fetch: true,
+            delivery_records: Vec::new(),
         };
         cpu.map_ram(0, 0x10000).unwrap();
         cpu.set_reg(CpuReg::Rip, 0x1000);
@@ -2374,6 +2549,7 @@ mod tests {
                 dma_regions: Vec::new(),
                 completed_steps: 0,
                 low_reset_fetch: true,
+                delivery_records: Vec::new(),
             };
             cpu.map_ram(0, MMIO).unwrap();
             cpu.map_mmio(MMIO, 0x1000).unwrap();
@@ -2508,6 +2684,7 @@ mod tests {
         let mut cpu = X86JitCpu {
             completed_steps: 0,
             low_reset_fetch: true,
+            delivery_records: Vec::new(),
             vm,
             cpu: vcpu,
             dma_regions: vec![(0..0x2000, RegionKind::Ram)],

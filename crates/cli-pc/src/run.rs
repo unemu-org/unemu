@@ -49,14 +49,14 @@ pub(super) fn check_machine(
 pub(super) fn run_machine(
     path: &std::path::Path,
     options: assembly::AssemblyOptions,
-    limits: (u64, u64, Option<u64>),
+    limits: (u64, u64, Option<u64>, bool),
     print: Option<&str>,
     firmware: (&[PathBuf], Option<&std::path::Path>),
     output: &mut impl Write,
     errors: &mut impl Write,
 ) -> anyhow::Result<u8> {
     use assembly::{DeviceId, ObservationPolicy, ObservationRequest, OutputKind, RunPolicy};
-    let (max_steps, idle_limit, diag_at) = limits;
+    let (max_steps, idle_limit, diag_at, trace_exceptions) = limits;
     let (rom_dirs, store_root) = firmware;
     let roots = rom_dirs
         .iter()
@@ -117,12 +117,23 @@ pub(super) fn run_machine(
     for warning in &assembled.unlisted_firmware {
         writeln!(errors, "{warning}")?;
     }
+    // The trace first: it asks for the larger delivery log.
+    if trace_exceptions {
+        if let Err(error) = assembled.enable_delivery_trace() {
+            writeln!(errors, "warning: exceptions are not traced: {error}")?;
+        }
+    }
     let policy = RunPolicy::natural(Some(max_steps), Some(idle_limit));
     let result = match diag_at.filter(|at| *at <= max_steps) {
         Some(at) => {
             assembled.machine.enable_code_trail();
+            // Without a log the report says the deliveries were not recorded.
+            let _ = assembled.enable_delivery_log();
             match assembled.run_session(&RunPolicy::natural(Some(at), Some(idle_limit))) {
                 Ok(machine::RunOutcome::RetiredCapReached) => {
+                    if let Some(trace) = assembled.machine.take_delivery_trace() {
+                        errors.write_all(trace.as_bytes())?;
+                    }
                     write!(errors, "{}", assembled.diagnostic_report("running"))?;
                     assembled.run_session(&policy)
                 }
@@ -160,6 +171,16 @@ pub(super) fn run_machine(
             Vec::new()
         }
     };
+    if let Some(trace) = assembled.machine.take_delivery_trace() {
+        errors.write_all(trace.as_bytes())?;
+        errors.write_all(
+            assembled
+                .machine
+                .delivery_trace_summary()
+                .unwrap_or_default()
+                .as_bytes(),
+        )?;
+    }
     let (message, failed) = bios_stop(&stop);
     writeln!(errors, "{}", message.replace(['\r', '\n'], " "))?;
     if let Some(report) = report {
