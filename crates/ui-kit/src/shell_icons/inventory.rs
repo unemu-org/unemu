@@ -55,6 +55,7 @@ const TEMPLATES: &str = "get-templates.html";
 const PICKER: &str = "media-picker.html";
 const FIRMWARE_SETTINGS: &str = "firmware-settings.html";
 const REMOTES: &str = "remotes.html";
+const REMOTES_PUSH: &str = "remotes-push.html";
 const PLAYER: &str = "player.html";
 
 const TOOLBAR_ONLY_MACHINE: &str =
@@ -273,6 +274,34 @@ pub const INVENTORY: &[Entry] = &[
     glyph(REMOTES, '⌘', "the macOS Command key", Place::Text("macOS menu shortcuts")),
     glyph(REMOTES, '×', "close", Place::Text(CLOSE)),
     glyph(REMOTES, '□', "maximise", Place::Missing(SYSTEM_TITLE_BAR)),
+    // remotes-push.html: the Remotes mock-up with pushing from the GUI.
+    svg(REMOTES_PUSH, "fill=\"#c9d6e8\" stroke=\"#0b1a33\"", "application", Place::Painted(Icon::App, "classic title strip")),
+    svg(REMOTES_PUSH, "M4 2l10 6-10 6z", "Start", Place::Painted(Icon::Play, "toolbar Start")),
+    svg(REMOTES_PUSH, "M8 3v10M4 9l4 4 4-4", "Pull", Place::Painted(Icon::Pull, "toolbar Pull…, while the library shows Remotes: the tags selected there")),
+    svg(REMOTES_PUSH, "M13 8a5 5 0 1 1-1.5-3.6", "Refresh a registry listing", Place::Painted(Icon::Refresh, "toolbar Refresh, which lists the shown registry again")),
+    svg(REMOTES_PUSH, "M5 4.5h1M5 11.5h1", "a registry", Place::Painted(Icon::Registry, "Remotes tree: each registry; toolbar Registries…")),
+    svg(REMOTES_PUSH, "M5 14h6M8 11v3", "a machine", Place::Painted(Icon::Machine, "tree Machines, machine rows, the machine details heading")),
+    svg(REMOTES_PUSH, "M8 1.5l6 3-6 3-6-3z\" fill=\"none\"", "an image", Place::Painted(Icon::Image, "tree Images, image rows, the image details heading")),
+    svg(REMOTES_PUSH, "x=\"2.5\" y=\"1.5\" width=\"11\" height=\"13\"", "an installation media set", Place::Painted(Icon::Media, "tree Installation media, media set rows")),
+    svg(REMOTES_PUSH, "M6 1v2.5M10 1v2.5", "a firmware package", Place::Painted(Icon::Firmware, "tree Firmware, firmware package rows")),
+    svg(REMOTES_PUSH, "M3 1.5h7l3 3v10H3z", "a machine file", Place::Painted(Icon::MachineFile, "tree Machine files, machine file rows")),
+    svg(REMOTES_PUSH, "M1.5 3.5h5l1.5 1.5h6.5v8.5h-13z", "a registry namespace", Place::Painted(Icon::Namespace, "Remotes tree: each namespace")),
+    svg(REMOTES_PUSH, "class=\"ico lock\"", "a private namespace before login", Place::Painted(Icon::Lock, "Remotes tree: after a private namespace until a login lists it")),
+    svg(REMOTES_PUSH, "M13 13l14 14M27 13L13 27", "a registry that cannot be reached", Place::Painted(Icon::Unreachable, "Remotes list: the message of an unreachable registry or a server error")),
+    svg(REMOTES_PUSH, "M14 18v-5a6 6 0 0 1 12 0v5", "a registry that asks for a login", Place::Painted(Icon::LoginRequired, "Remotes list: the login required message")),
+    svg(REMOTES_PUSH, "M4 12h12l3 3h17v19H4z", "an empty registry namespace", Place::Painted(Icon::EmptyRegistry, "Remotes list: the message of a registry with nothing published")),
+    svg(REMOTES_PUSH, "M20 10v10l7 4", "a registry listing in progress", Place::Painted(Icon::Listing, "Remotes list: the message of a listing before its first row")),
+    svg(REMOTES_PUSH, "M8 13V3M4 7l4-4 4 4", "Push", Place::Missing("pushing from Remotes lands with upc-5pw.64.5; the toolbar has no Push yet")),
+    glyph(REMOTES_PUSH, '⚠', "a registry or tag that needs attention", Place::Text("Remotes strips of a stopped or stale listing, and the Local state of a tag whose local name holds another image")),
+    glyph(REMOTES_PUSH, '✓', "a pulled tag", Place::Text("Remotes Pull… results")),
+    glyph(REMOTES_PUSH, '✗', "a failed check, a failed push", Place::Text("Image › Push… check lines")),
+    glyph(REMOTES_PUSH, '•', "a check line that is a note", Place::Text("Image › Push… check lines")),
+    glyph(REMOTES_PUSH, '−', "an expanded repository group", Place::Text("repository group rows")),
+    glyph(REMOTES_PUSH, '▲', "sorted ascending", Place::Text("sortable column headers")),
+    glyph(REMOTES_PUSH, '▼', "sorted descending", Place::Text("sortable column headers")),
+    glyph(REMOTES_PUSH, '⌘', "the macOS Command key", Place::Text("macOS menu shortcuts")),
+    glyph(REMOTES_PUSH, '×', "close", Place::Text(CLOSE)),
+    glyph(REMOTES_PUSH, '□', "maximise", Place::Missing(SYSTEM_TITLE_BAR)),
     // player.html: the window of a machine opened from a file.
     svg(
         PLAYER,
@@ -343,7 +372,7 @@ mod tests {
             .filter(|path| path.extension().is_some_and(|e| e == "html"))
             .collect();
         files.sort();
-        assert_eq!(files.len(), 14, "the approved mock-ups in {dir:?}");
+        assert_eq!(files.len(), 15, "the approved mock-ups in {dir:?}");
         files
             .into_iter()
             .map(|path| {
