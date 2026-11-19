@@ -5,6 +5,7 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+<<<<<<< HEAD
 - **2026-11-19 — Stage B of the core contract planned:** (design/core-contract.md §14; no code).
   The maintainer accepted the plan with every recommendation: the PC config codec (the machine
   schema and its lowering from `machine-file`, the stored image config from `pc-image`) moves to
@@ -17,6 +18,21 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   Corrected in the spec: `disk.rs` and `zero.rs` stay in `pc-image`, the PC's storage is the
   provider's own and not `FileStorage` over the workspace, stage B does not need step 12, and
   decision-30 gets a note that it is amended before the repositories separate.
+=======
+- **2026-11-19 — The about text of a work is specified, not implemented:** (`upc-miu`;
+  design/about-text.md, mock-up design/mockups/about.html, both accepted by the maintainer on
+  2026-11-19 with every recommendation). A work gets a long Markdown text per language, with a
+  source per language (`own`, or `licensed` with a title, authors, an `https` URL and one of
+  five Creative Commons licences), and its synopsis may be stated per language. Specified:
+  metadata schema 3 (`synopsis` as localized text, `about`, `about_source`, language tags, the
+  canonical form and limits, the writer's oldest-schema rule, the migration from schema 2 and
+  what 0.0.3 shows) in machine-images §2.1, its 0.0.4 compatibility rows in §5.6; the
+  work-file keys (`[title.about]` inline or `{ file = "NAME" }`, `about_source`, the synopsis
+  table), the text files, rule 11 of `recipe check`, the guard rules R1 to R5 and warnings W1
+  to W6, and the text layer `application/vnd.unemu.recipe.text.v1` in recipes §6.1, §6.11,
+  §6.13, §6.16 and §7.1. The mock-up joined the icon inventory. No code reads or writes any
+  of it yet; about-text.md §15 lists the implementation steps in order.
+>>>>>>> af83ef63 (docs(design): the about text of a work, specified (schema 3, recipes, mock-up))
 - **2026-11-19 — A guest that resets again and again no longer holds the desktop's frame;
   a storm of resets stops the machine with a report:** (`upc-f7j.19`;
   design/observation.md §The machine resets again and again, §Window pacing).

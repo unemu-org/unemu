@@ -826,6 +826,11 @@ change until the freeze of §14.
 ### 6.1. The file
 
 - UTF-8 without a byte-order mark, at most 1 MiB.
+- A work file may name **text files** in its own folder, each holding the
+  about text of one language (§6.16; specified, not implemented yet:
+  `upc-miu`). Such a file is not a recipe file and is not TOML: a regular
+  file, not a symbolic link, at most 65 536 bytes as it is on disk, UTF-8
+  without a byte-order mark and without NUL.
 - **TOML 1.0.0** [SRC 3]. Syntax that only TOML 1.1 accepts (a line break or
   a trailing comma inside an inline table, the `\e` and `\xHH` escapes, a
   time without seconds) is refused, so that every TOML 1.0 parser reads
@@ -1159,6 +1164,15 @@ of `[[extra]]`.
     a `fat` step that its volume profile refuses or would change; a ROM
     whose size or SHA-256 differs from its catalogue entry, found by
     `catalogue_id` or by its bytes.
+11. *(specified, not implemented yet: `upc-miu`)* the about text and the
+    localized synopsis of the merged record
+    ([about-text](about-text.md) §5.2): the shapes and limits of metadata
+    schema 3 (machine-images §2.1); the guard rules R1 and R2 of §6.13; for
+    each `{ file = "NAME" }` of `[title.about]`, the rules of a text file
+    (§6.16), each refusal naming the work file's key and the file. It then
+    prints the warnings W1 to W6 of §6.13 and the note of linked hosts, each
+    with its file (the work file or the text file) and its line, and still
+    passes.
 
 ### 6.12. Determinism
 
@@ -1211,6 +1225,39 @@ work with:
   maintainer, 2026-11-19, for members). `recipe scaffold` never writes the
   key; the author marks what may be published. The rule and the key are
   the earlier design's.
+- **About texts** (specified, not implemented yet: `upc-miu`;
+  [about-text](about-text.md) §4). Every about text of metadata schema 3
+  (machine-images §2.1) has, per language, a source: `own`, or `licensed`
+  with a title, authors, an `https` URL and one of five Creative Commons
+  licences. These rules refuse:
+
+  | # | Where | What |
+  | --- | --- | --- |
+  | R1 | The metadata codec, always | A source for a language without a text; a source of the wrong shape; an about text that is not in canonical form. Writers also: a kind that is not `own` or `licensed`; a `licensed` source without `title`, `authors`, `url` or `license`; a `url` that is not a link address; a licence outside `CC0-1.0`, `CC-BY-3.0`, `CC-BY-4.0`, `CC-BY-SA-3.0`, `CC-BY-SA-4.0`; a key the kind does not take; a `url` on a Wikimedia host (`wikipedia.org`, `wikimedia.org`, `wikibooks.org` and their subdomains) whose `license` is not `CC-BY-SA-4.0` or `CC-BY-SA-3.0`. |
+  | R2 | `recipe check`, `recipe build`, and any other writer that marks an artifact open | An about text without a source in an artifact stated open. The metadata layer of an open artifact is marked open, and a text nobody vouches for cannot be. |
+  | R3 | The image push guard, as its rule 6 | Into `unemu/` on any host, or into a namespace or registry not marked private: every about text of every title in the pushed metadata needs a source of a kind this release knows, and the licence of each `licensed` source must be named by the metadata layer's own `unemu.license`. The refusal names the title, the language and what is missing, and says "There is no override for this rule." A namespace marked private outside `unemu/` is not checked. |
+  | R4 | The recipe guard, on every `recipe push` | A bundled work file, a text file it names, or locked metadata, with an about text that has no source. A recipe artifact is public text whatever its output is (§7.3), so it has no private case. With a `licensed` text aboard, the layer that holds it says so (§7.1). |
+  | R5 | The image push guard, into `unemu/` only | A `synopsis` or an `about` without an `en` entry. |
+
+  Links add no refusal: only a link address becomes a link, in every
+  reader, so a destination with another scheme is text. `recipe check`
+  **warns**, prints the warning and passes, and the push dialog shows it as
+  a note line:
+
+  | # | What |
+  | --- | --- |
+  | W1 | An about text without a source in a recipe without `[license]`: "builds, and stays in this library and on private registries; the recipe cannot be pushed". |
+  | W2 | An `own` text that reads as pasted: a bracketed reference mark (`[12]`, `[citation needed]`), "All rights reserved", a copyright sign or `(c)` before a year. The warning names the line and the pattern. |
+  | W3 | A `licensed` source on a Wikimedia host whose URL names no revision (`oldid=`): "the article will change; link the revision the text was taken from". |
+  | W4 | Markdown outside the subset, each with its line: "shown as typed". Also a line indented by four spaces or more, which other readers show as a code block. |
+  | W5 | `[text](destination)` or `<…>` whose destination is not a link address: "not a link; shown as typed". |
+  | W6 | A block quote in an `own` text: "a quoted passage; name its source in the text". |
+  | Note | The hosts the text links to, one line: "links to en.wikipedia.org, www.freedos.org". Not a warning. |
+
+  W4 and W5 stay warnings under `unemu/` too, so the public catalogue is
+  not tied to one release's subset. The guard never fetches an address;
+  what it cannot check (that an `own` text is the author's, that a
+  `licensed` text is what the URL holds) is the publisher's review.
 
 ### 6.14. Mapping to today's artifacts and import paths
 
@@ -1317,6 +1364,7 @@ file is that repository's description.
 | `developers`, `publishers`, `genres` | yes | yes | The recipe's list replaces the work's. A recipe states no empty list: it leaves the key out to keep the work's |
 | `labels` | yes | yes | The union: the work's, then the recipe's new ones |
 | `synopsis` | yes | no | — |
+| `about`, `about_source` (specified, not implemented yet: `upc-miu`) | yes | no | — |
 | `version`, `edition`, `year`, `regions`, `languages`, `source_media`, `requirements`, `description` | no | yes | — |
 | `[ids]` | yes | yes | Per key, the recipe's value |
 | `[needs]` | yes | yes | Per kind, the recipe's value |
@@ -1392,6 +1440,78 @@ the build of one artifact; sharing them would let an edit in one place
 change what several pinned recipes build, which the description cannot do
 because the lock holds it. So no general include is planned (§13).
 
+**About text and localized synopsis** (specified, not implemented yet:
+`upc-miu`; [about-text](about-text.md) §5, metadata schema 3 in
+machine-images §2.1). `[title]` of a work file gains two keys, and
+`synopsis` a second type. All three are refused in a recipe, so each text
+has one home:
+
+| Key | Type | Content |
+| --- | --- | --- |
+| `synopsis` | table: language tag to string; a plain string is still read, as `{ en = "…" }` | One plain paragraph per language, at most 500 characters, no line break, no markup read. Written in the work file; it has no `file` form. |
+| `about` | table: language tag to **either** a string **or** a table with the one key `file` | The Markdown source of the long text. The string is the source itself (a short text as a multi-line string, `en = """…"""`); `{ file = "NAME" }` names a text file beside the work file that holds it. Either way the text is normalised to canonical form and has the limits of machine-images §2.1, so the two forms give the same metadata bytes for the same text. |
+| `about_source` | table: language tag to a table with the keys `kind`, `authors`, `title`, `url`, `license`, `changes` | The source of each language's text (machine-images §2.1). |
+
+```toml
+[title.about]
+en = { file = "freedos.about.en.md" }
+
+[title.about_source.en]
+kind = "own"
+authors = ["unemu contributors"]
+```
+
+A `licensed` source, an abridged article:
+
+```toml
+[title.about_source.nl]
+kind = "licensed"
+title = "FreeDOS"
+authors = ["Wikipedia contributors"]
+url = "https://nl.wikipedia.org/w/index.php?title=FreeDOS&oldid=00000000"
+license = "CC-BY-SA-4.0"
+changes = "abridged; converted to Markdown"
+```
+
+(The revision number is made up.) In the table "Which field lives where",
+`about` and `about_source` are rows like `synopsis`: work file yes, recipe
+no. A work whose only release needs an about text gets a work file.
+
+**A text file.** `file` is a file name, not a path: one line of at most 128
+characters, without `/` or `\`, not `.` or `..` (the checker's `FileName`
+form), in the work file's own folder. It differs from the recipe's and the
+work file's own names, from every bundled input's, and between languages.
+The ending is never read; `<work id>.about.<tag>.md` is the suggested name.
+The file is a regular file, not a symbolic link, at most 65 536 bytes on
+disk, UTF-8 without a byte-order mark and without NUL (§6.1), then
+normalised and limited as an inline text. It is pinned by the lock, not by
+a hash in the work file: the lock holds the metadata blob with the
+canonical text inside it. It is not an `[input]`.
+
+| Command | With a `file` |
+| --- | --- |
+| `recipe check` | Rule 11 (§6.11): the name; the file is there, a regular file, within the size, UTF-8; the normalised text within its limits; the warnings with the file's own line numbers. A missing file is refused for a pinned recipe and a draft alike. For a pinned recipe it lists `title.about.en` among the differences when the file's text is no longer the lock's. |
+| `recipe show` | The `about` line says where the text is ("from the work file, file freedos.about.en.md"); `--about [TAG]` prints the normalised source, the bytes a build would store. |
+| `recipe build` | A draft reads the file and writes its text into the metadata; a pinned recipe builds the lock's metadata and reads the file only for the report of differences. |
+| `recipe pin` | Reads the file and writes the metadata with the text; the lock keeps that blob. It writes nothing into the work file. |
+| `recipe scaffold` | Unchanged: it writes no about key and no text. |
+| `recipe push`, `recipe pull` | The artifact carries each text file its work file names, as a layer (§7.1); a pull writes each at its name beside the work file, after the checks. |
+
+**Merge and description.** The merge copies `synopsis`, `about` and
+`about_source` whole, every language, into each release's title record, a
+`file` replaced by its text; the release's `languages` field filters
+nothing. The title record's `description` is the recipe's; when the recipe
+states none, the synopsis in `en`, else its first entry in byte order. It
+stays one plain string. A corrected about text reaches a release when its
+author pins a new revision; `check` lists the differences per language key
+(`title.about.nl`, `title.about_source.nl.url`).
+
+**Version and compatibility.** The keys are added to recipe version `0.1`.
+A recipe artifact that uses them, or carries a text file, declares 0.0.4
+(machine-images §5.6, the rows of schema 3). `recipe-schema-0.1.json`
+gains the keys when this is implemented (`about`'s value: a string, or an
+object with exactly `file`).
+
 ## 7. Recipes as registry artifacts
 
 ### 7.1. The artifact
@@ -1410,6 +1530,27 @@ has it (§3.4, source 3). Nothing in the model is special about it.
 A client decides "can I build this" by fetching the manifest and the config,
 a few kilobytes, and running the plan against its libraries. It fetches no
 payload, because there is none (R13).
+
+**The text-file layer** (specified, not implemented yet: `upc-miu`;
+[about-text](about-text.md) §5.5). A work file's `{ file = "NAME" }`
+(§6.16) travels as a layer of its own, media type
+`application/vnd.unemu.recipe.text.v1`, "a text file a work file names",
+titled with its file name like every other part: at most 65 536 bytes,
+text by the rule bundled inputs have, its bytes pinned by the layer's
+digest. It is not a bundled input, which has a size and a hash in the
+recipe. The artifact holds exactly the text files its work file names; one
+it does not name, or a missing one, is refused. The layers are in the
+order: the work file, its text files in the order of their language tags,
+the bundled inputs, the lock. The type has a row in
+`image_store::compat::RECIPE_TYPES`, first read by 0.0.4, which raises the
+artifact's `unemu.min-app-version` (machine-images §5.6).
+
+With a `licensed` about text aboard (R4 of §6.13), the layer that holds it
+says so: a text file's layer is marked with its source's licence alone, the
+work-file layer (for a text written inline) and the lock's metadata layer
+`CC0-1.0 AND <licences>`, and the artifact's
+`org.opencontainers.image.licenses` names them all, where otherwise it is
+`CC0-1.0`.
 
 ### 7.2. The lock
 

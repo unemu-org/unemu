@@ -558,6 +558,88 @@ runs the artifact (measured with its decoder), so metadata never raises
 the fields of schema 1 only; publishing an overlay of a schema-2 image keeps
 its schema-2 fields and schema.
 
+**Schema 3: specified, not implemented yet (`upc-miu`).** Accepted by the
+maintainer on 2026-11-19 with the design note
+[about-text](about-text.md), which holds the reasons, the Markdown subset,
+the rules of the source and the guard, and the desktop's behaviour. Schema 3
+gives a work a long text, an **about** text, with its source, in several
+languages, and lets the synopsis be stated per language. It adds two
+optional per-title fields and a second shape of `synopsis`:
+
+| Per-title fields | Schema v3 form |
+|---|---|
+| `synopsis` | **Localized text**: an object from a language tag to a string, 1 to 16 entries, keys in byte order, an empty object not written. Each entry is one paragraph of plain text: no control character (C0 and DEL, so no line break), not blank, at most 500 characters (Unicode scalar values); no markup is read in it. Stored as given. What the work is, per language; `description` stays one plain string about this release. |
+| `about` | Localized text whose entries are the **Markdown source** of a long text about the work, in the subset of about-text §2.8 (CommonMark 0.31.2: paragraphs, headings, thematic breaks, block quotes, lists of two levels, emphasis, code spans, `https` links; the rest is shown as typed). Each entry is in **canonical form**: lines separated by one `LF`, no `CR`, no line break after the last line; no tab and no other control character (C0 except `LF`, DEL, U+0085, U+2028, U+2029); no space at the end of a line; no empty line at the start or the end and never two in a row; at least one character and at most **16 384 bytes** of UTF-8. Leading spaces and the author's line breaks are kept. No format marker and no Unicode normalisation. The codec accepts canonical text only; a writer's entry point brings text to it first (`CR LF` and `CR` to `LF`, a tab to spaces up to the next multiple of four columns, trailing spaces removed, outer empty lines removed and runs of empty lines made one), then refuses another control character, a text over the limit, or nothing left. |
+| `about_source` | Object from a language tag to a **source**; its keys are a subset of `about`'s, so a source for a language without a text is refused. A source is an object: `kind` (required; the shape of a need kind; writers state `own` or `licensed`), `authors` (array of 1 to 16 strings, each at most 128 characters, not blank, no control characters; optional for `own`, required for `licensed`), and for `licensed` only: `title` (required; the source work's name, a string like one author), `url` (required; a **link address**: `https://`, an ASCII host of letters, digits, `-` and `.`, an optional port, an optional path, query and fragment of printable ASCII without space, `<`, `>` or backslash with parentheses balanced, no user name or password, at most 512 bytes), `license` (required; one SPDX identifier; writers state `CC0-1.0`, `CC-BY-3.0`, `CC-BY-4.0`, `CC-BY-SA-3.0` or `CC-BY-SA-4.0`) and `changes` (optional; what was changed against the source, a string like one author; absent means the source's own words). A key the kind does not take is refused. Every string is plain text. A text without a source is valid data; the guard decides where it may go (recipes §6.13, R2 to R4). |
+
+**Language tags** are a subset of BCP 47 (RFC 5646) in its canonical case:
+`language` (2 or 3 lowercase letters), then optionally `-` and a `script`
+(4 letters, the first capital), then optionally `-` and a `region` (2
+capitals or 3 digits): `en`, `nl`, `pt-BR`, `zh-Hans`, `sr-Latn`. No
+variants, extensions or private-use parts. The decoder checks the shape
+only; a writer also refuses `und`, `mul`, `mis` and `zxx`. Another case
+(`EN`, `pt-br`) is refused with the canonical spelling in the message.
+
+As for needs and outside catalogues, the **decoder checks shapes** and the
+**writer checks the vocabulary**: a reader keeps a `kind` or a `license` of
+a valid shape that a later release adds, shows it as written and refuses
+only to rewrite it. An unknown key is refused, as everywhere. The codec
+(rule R1 of recipes §6.13) also refuses a non-canonical about text; writers
+refuse a `licensed` source that lacks `title`, `authors`, `url` or
+`license`, a licence outside the five, a `url` that is not a link address,
+and a `url` on a Wikimedia host (`wikipedia.org`, `wikimedia.org`,
+`wikibooks.org` and their subdomains) whose licence is not `CC-BY-SA-4.0`
+or `CC-BY-SA-3.0`. The record holds no list of the text's links: they are
+read from the text, and only a link address ever becomes a link.
+
+**The migration from schema 2.** A schema-2 synopsis is read as `en`. In
+memory the synopsis is a localized text in every schema, and **a writer
+still uses the oldest schema that holds every field a title sets**:
+
+| A title sets | Envelope | `synopsis` is written as |
+| --- | --- | --- |
+| none of the schema-2 or schema-3 fields | schema 1 | — |
+| a synopsis in `en` only, and no `about` | schema 2 | the string, the bytes of today |
+| a synopsis in another language or in several, or `about` | schema 3 | the map |
+
+The envelope takes the newest schema any of its titles needs; in a schema-3
+envelope every title's synopsis is a map. A schema-3 blob with a string
+synopsis, and a schema-2 blob with a map, are refused as a field of the
+wrong schema is. So the migration rewrites nothing: every published
+artifact keeps its digest, a work file that changes `synopsis = "…"` into
+`synopsis = { en = "…" }` builds the same metadata bytes, and a release
+moves to schema 3, with a new revision, on the day its work gains an about
+text or a second language. The 500-character limit is a rule of writers and
+of the schema-3 codec: a schema-2 record with a longer synopsis still reads
+and is rewritten as it was read, and cannot move to schema 3 until it is
+shortened. `about` and `about_source` follow `work_ids` in the canonical
+writer's order. With 16 languages a title's about text is at most 256 KiB;
+the 1 MiB cap on the metadata blob still bounds the whole.
+
+**What older releases show** for a schema-3 record: 0.0.1 and 0.0.2 show it
+read-only without the fields of schemas 2 and 3; **0.0.3** shows it
+read-only, leaves `about` and `about_source` out as unknown, and leaves the
+synopsis out as "a schema-2 field of an invalid shape" (an object where it
+expects a string); `description`, the needs and the work id read as before,
+and every one of them runs the artifact. 0.0.4 reads everything. Metadata
+still never raises `unemu.min-app-version` (§5.6).
+
+**Licence of the metadata layer.** An `own` text in an open artifact is
+published under `CC0-1.0` with the rest of the record. A `licensed` text
+adds its licence: the metadata layer of an open artifact is marked
+`CC0-1.0 AND <each other licence once, in byte order>` (for example
+`CC0-1.0 AND CC-BY-SA-4.0`), and the manifest's
+`org.opencontainers.image.licenses` gains them by the existing rule. A text
+without a source makes an open statement impossible (recipes §6.13, R2).
+This amends §5.2's "the generated metadata layer is this program's own CC0
+output" for records with a licensed text, and the lock comparison accepts
+`CC0-1.0` and the licences the about sources state, no more.
+
+The summary cache (schema 9 with this change) keeps the localized synopsis
+per title, not the about text; search tokens gain the synopsis and the
+about text of every language without markup, link addresses, `url`,
+`license`, `kind` or `changes`.
+
 **Needs** are features, never machine models (recipes §6.7). The decoder
 checks only their shape, so a kind or value a later release adds still reads.
 Writers check the platform provider's vocabulary, which shared code knows only
@@ -2722,6 +2804,26 @@ paths:
 Optionally, the unemu-media pipeline can also run the release a new
 template's marker names (its pinned `upcli`) against the built template.
 That tests the table against the real release.
+
+**Rows for metadata schema 3: specified, not implemented yet (`upc-miu`).**
+The about text and the localized synopsis of §2.1 ([about-text](about-text.md)
+§6) add these rows, each first read by 0.0.4 (`NEXT_RELEASE`):
+
+| Table | Row | First read by | What it decides |
+| --- | --- | --- | --- |
+| `image_store::compat::METADATA_SCHEMAS` | `3` | 0.0.4 | Which releases read the record in full. Never raises `unemu.min-app-version` (decision-30 point 5). |
+| `image_store::compat::TITLE_FIELDS` | `about` | 0.0.4 | The title needs schema 3. |
+| `image_store::compat::TITLE_FIELDS` | `about_source` | 0.0.4 | The title needs schema 3. |
+| `image_store::compat::TITLE_FIELDS` | `synopsis:localized` | 0.0.4 | A row for a shape, not a key: a synopsis that is not the one `en` text. The writer rates it when a title's synopsis is such; `synopsis` keeps its 0.0.3 row. |
+| `recipe::compat` (work-file keys) | `title.about`, `title.about_source`, `title.synopsis:localized` | 0.0.4 | Raise a **recipe artifact's** marker, because the parser of 0.0.3 refuses the keys. The output's marker is untouched. |
+| `image_store::compat::RECIPE_TYPES` | `application/vnd.unemu.recipe.text.v1` | 0.0.4 | The text-file part of a recipe artifact ([recipes](recipes.md) §7.1). Raises that artifact's marker. |
+| `image_store::compat::NEWEST_ROW` | — | 0.0.4 | So a development build reads what it writes. |
+
+`metadata::SCHEMA` becomes 3. No artifact's `unemu.min-app-version`
+changes: an image, a set or a package with an about text runs on every
+release that ran it without one. The Markdown subset has no row: a text is
+stored as source, and a release that knows fewer constructs shows the
+others as typed.
 
 ## 6. Capabilities API sketch: validator-owned choices
 

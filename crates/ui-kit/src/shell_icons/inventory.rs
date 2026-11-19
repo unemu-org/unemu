@@ -57,6 +57,7 @@ const FIRMWARE_SETTINGS: &str = "firmware-settings.html";
 const REMOTES: &str = "remotes.html";
 const REMOTES_PUSH: &str = "remotes-push.html";
 const PLAYER: &str = "player.html";
+const ABOUT: &str = "about.html";
 
 const TOOLBAR_ONLY_MACHINE: &str =
     "the app has one toolbar, the main-window mock-up's machine toolbar; \
@@ -68,6 +69,7 @@ const PLAYER_TOOLBAR: &str =
      the desktop already paints the same art for its own toolbar";
 const PLAYER_APPLICATION: &str =
     "the application's part of the player's window, wired to the player in a later step";
+const ABOUT_SECTION: &str = "the About section lands with upc-miu";
 const CLOSE: &str =
     "dialog close buttons where the app's dialogs have one (Settings, Preferences, New machine, Edit metadata)";
 
@@ -345,6 +347,23 @@ pub const INVENTORY: &[Entry] = &[
     glyph(PLAYER, '🔇', "audio muted", Place::Text("the player's status line, its sound cell")),
     glyph(PLAYER, '×', "close, and the times sign of picture sizes", Place::Missing("the player's dialogs close with OK, Cancel and Escape, without a close button; picture sizes are in the mock-up's notes only")),
     glyph(PLAYER, '□', "maximise", Place::Missing(SYSTEM_TITLE_BAR)),
+    // about.html: the About text of a work in the details pane, library and Remotes.
+    svg(ABOUT, "fill=\"#c9d6e8\" stroke=\"#0b1a33\"", "application", Place::Painted(Icon::App, "classic title strip")),
+    svg(ABOUT, "M4 2l10 6-10 6z", "Start", Place::Painted(Icon::Play, "toolbar Start")),
+    svg(ABOUT, "M8 3v10M4 9l4 4 4-4", "Pull", Place::Painted(Icon::Pull, "toolbar Pull…, while the library shows Remotes: the tags selected there")),
+    svg(ABOUT, "M13 8a5 5 0 1 1-1.5-3.6", "Refresh a registry listing", Place::Painted(Icon::Refresh, "toolbar Refresh, which lists the shown registry again")),
+    svg(ABOUT, "M5 4.5h1M5 11.5h1", "a registry", Place::Painted(Icon::Registry, "Remotes tree: each registry; toolbar Registries…")),
+    svg(ABOUT, "M5 14h6M8 11v3", "a machine", Place::Painted(Icon::Machine, "tree Machines, machine rows, the machine details heading")),
+    svg(ABOUT, "M8 1.5l6 3-6 3-6-3z\" fill=\"none\"", "an image", Place::Painted(Icon::Image, "tree Images, image rows, the image details heading")),
+    svg(ABOUT, "x=\"2.5\" y=\"1.5\" width=\"11\" height=\"13\"", "an installation media set", Place::Painted(Icon::Media, "tree Installation media, media set rows")),
+    svg(ABOUT, "M6 1v2.5M10 1v2.5", "a firmware package", Place::Painted(Icon::Firmware, "tree Firmware, firmware package rows")),
+    svg(ABOUT, "M3 1.5h7l3 3v10H3z", "a machine file", Place::Painted(Icon::MachineFile, "tree Machine files, machine file rows")),
+    svg(ABOUT, "M1.5 3.5h5l1.5 1.5h6.5v8.5h-13z", "a registry namespace", Place::Painted(Icon::Namespace, "Remotes tree: each namespace")),
+    glyph(ABOUT, '⚠', "an about text without a source", Place::Missing(ABOUT_SECTION)),
+    glyph(ABOUT, '•', "the bullet of a first-level list item in an about text", Place::Missing(ABOUT_SECTION)),
+    glyph(ABOUT, '−', "an expanded tree node", Place::Text("repository group rows; the Remotes tree's expand box draws the same mark with lines")),
+    glyph(ABOUT, '×', "close, and the times sign of disk counts", Place::Text(CLOSE)),
+    glyph(ABOUT, '□', "maximise", Place::Missing(SYSTEM_TITLE_BAR)),
 ];
 
 /// Characters the app paints instead of writing, because no font has them.
@@ -372,7 +391,7 @@ mod tests {
             .filter(|path| path.extension().is_some_and(|e| e == "html"))
             .collect();
         files.sort();
-        assert_eq!(files.len(), 15, "the approved mock-ups in {dir:?}");
+        assert_eq!(files.len(), 16, "the approved mock-ups in {dir:?}");
         files
             .into_iter()
             .map(|path| {

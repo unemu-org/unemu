@@ -87,6 +87,7 @@ icons are the project's own mock-up artwork, under the project licence.
 | remotes, get-templates | ✓ ✗ | the stage of each tag in Remotes' Pull… (Pulled ✓, Failed ✗) |
 | remotes | the four message pictures (unreachable, login, empty, listing) | the Remotes list's message instead of the rows, 40 px |
 | remotes | ⚠ | the strips of a stopped or stale listing, and the Local state of a tag whose local name holds another image |
+| about | application monitor, Start, Pull, Refresh, registry, namespace, machine, image, media set, firmware, machine file | the same places as in the remotes mock-up; − × as in the remotes mock-up |
 
 The name column of the library lists is now left-aligned: a centred egui label
 drops the space the icon and a group's indent need, and the mock-ups'
@@ -114,3 +115,7 @@ name cells are left-aligned. Child rows of a repository group are set in by
 - **□ maximise in title bars**: the system title bar draws window buttons.
 - **library.html ▸**: only in the mock-up's explanatory note.
 - **media-picker.html ←**: only in the Catalogue notes, naming the Left arrow key.
+- **about.html ⚠ and •**: the ⚠ before “No source recorded” and the • bullet
+  of a first-level list in an about text belong to the About section of the
+  details pane, specified in [`about-text.md`](about-text.md) and not built
+  yet. The second-level bullet – is typography.
