@@ -28,7 +28,7 @@ use crate::build::{build_path, Outcome, Report, Request};
 use crate::library::Library;
 use crate::model::Document;
 use crate::Providers;
-use image_store::{BlobSource as _, Manifest, Store, MAX_SMALL_BLOB};
+use image_store::Store;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -70,33 +70,7 @@ pub fn pin_path(mut request: Request<'_>, log: &mut dyn FnMut(&str)) -> io::Resu
     };
     let other = |e: String| io::Error::other(e);
     let descriptor = &report.published.descriptor;
-    let manifest_bytes = store
-        .read_verified(descriptor, MAX_SMALL_BLOB)
-        .map_err(|e| other(format!("the built manifest {}: {e}", descriptor.digest)))?;
-    let manifest = Manifest::decode_for_summary(&manifest_bytes)
-        .map_err(|e| other(format!("the built manifest {}: {e}", descriptor.digest)))?;
-    let mut files = vec![manifest_bytes];
-    let mut written = vec![&manifest.config];
-    for layer in &manifest.layers {
-        let made = layer
-            .decoded_digest()
-            .is_ok_and(|d| report.outputs.contains(d.hex()));
-        if !made {
-            written.push(layer);
-        }
-    }
-    for descriptor in written {
-        let bytes = store
-            .read_verified(descriptor, MAX_SMALL_BLOB)
-            .map_err(|e| {
-                other(format!(
-                    "{} ({}), which no step made: {e}; a lock holds files of at most 1 MiB",
-                    descriptor.digest, descriptor.media_type
-                ))
-            })?;
-        files.push(bytes);
-    }
-    files.dedup();
+    let files = crate::lock::files_of(store, descriptor, &report.outputs).map_err(other)?;
     let lock = crate::lock::dir(path);
     let before = std::fs::read(path)?;
     let text = String::from_utf8(before.clone())
@@ -224,6 +198,9 @@ pub fn conformance(
                 libraries: &mut *libraries,
                 fetcher: None,
                 keep_as: None,
+                // Conformance proves the steps still make the pinned
+                // bytes, so nothing is found instead of made.
+                find_outputs: false,
             },
             &mut |_| {},
         )?;

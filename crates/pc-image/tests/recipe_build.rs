@@ -113,6 +113,7 @@ fn build(
             libraries: &mut libraries,
             fetcher: Some(&NoNetwork),
             keep_as,
+            find_outputs: true,
         },
         &mut |line| lines.push(line.to_owned()),
     )
@@ -223,7 +224,11 @@ fn the_freedos_recipes_build_the_configs_the_importer_makes() {
     for (file, set) in FREEDOS.iter().zip(&sets) {
         // The licence index, our own text with LF line ends, lies in the
         // vendor folder; the disks and the source archive below it. The
-        // edition archive is nowhere: its disks are found loose.
+        // edition archive is nowhere: its disks are found loose. The
+        // recipes are pinned, and the extra the `text` step makes, the
+        // index with DOS line ends, lies there too as the template set's
+        // `floppy-1.4/LICENSES.TXT`: it is found by its locked payload
+        // instead of made, so the LF text is not needed (recipes §3.4).
         let (outcome, lines) = build(
             &corpus(file),
             &from_recipes,
@@ -243,10 +248,20 @@ fn the_freedos_recipes_build_the_configs_the_importer_makes() {
                     "edition",
                     format!("not needed: its {} members were found", set_disks(file)).as_str()
                 ),
-                ("licenses-lf", "kept as text with DOS line ends"),
+                (
+                    "licenses-lf",
+                    "not needed: the outputs made from it were found"
+                ),
                 ("source", "kept as stored"),
             ]
         );
+        // In the library for the first set, in the store for the others.
+        let rendered = report.render();
+        let line = rendered
+            .lines()
+            .find(|l| l.starts_with("  extra licenses (LICENSES.TXT): found "))
+            .unwrap_or_else(|| panic!("{rendered}"));
+        assert!(line.ends_with(", not made"), "{line}");
         let tag = &set.tags[0].0;
         assert_eq!(&report.reference, tag);
         let (recipe_config, recipe_metadata) = stored(&from_recipes, tag, &validator);
@@ -517,6 +532,7 @@ fn nothing_is_tagged_when_an_input_is_missing_or_a_step_refuses() {
             libraries: &mut libraries,
             fetcher: None,
             keep_as: None,
+            find_outputs: true,
         },
         &mut |line| panic!("nothing to log: {line}"),
     )
@@ -581,6 +597,8 @@ fn a_build_sweeps_stale_staging_folders_and_partial_downloads() {
     fs::create_dir_all(&downloads).unwrap();
     // No process has this id: above every system's largest.
     fs::create_dir_all(staging.join("2000000000-0/medium-1")).unwrap();
+    let lost_lock = store.root().join(recipe::build::LOST_LOCK);
+    fs::create_dir_all(lost_lock.join("2000000000-0/images")).unwrap();
     let old = downloads.join(".partial-old-1-0");
     let fresh = downloads.join(".partial-fresh-1-0");
     fs::write(&old, b"old").unwrap();
@@ -594,6 +612,8 @@ fn a_build_sweeps_stale_staging_folders_and_partial_downloads() {
     built(build(&recipe, &store, std::slice::from_ref(&lib), None).0);
     #[cfg(unix)]
     assert_eq!(fs::read_dir(&staging).unwrap().count(), 0, "nothing left");
+    #[cfg(unix)]
+    assert_eq!(fs::read_dir(&lost_lock).unwrap().count(), 0, "nothing left");
     assert!(!old.exists());
     assert!(fresh.exists());
 }

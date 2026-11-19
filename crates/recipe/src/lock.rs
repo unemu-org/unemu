@@ -193,14 +193,23 @@ pub struct Locked {
 /// Points 1 and 2: read the lock at `dir` and check it against the
 /// recipe's `digest`.
 pub fn open(digest: &str, dir: &Path) -> Result<Locked, String> {
+    let files = read(dir)?;
+    check(digest, files, &dir.display().to_string())
+}
+
+/// Points 1 and 2 for lock files held in memory, by the lower-case SHA-256
+/// of their bytes; `shown` names them in a message.
+fn check(
+    digest: &str,
+    mut files: BTreeMap<String, Vec<u8>>,
+    shown: &str,
+) -> Result<Locked, String> {
     let wanted: Digest = digest
         .parse()
         .map_err(|e| format!("the digest {digest}: {e}"))?;
-    let mut files = read(dir)?;
     let manifest_bytes = files.remove(wanted.hex()).ok_or_else(|| {
         format!(
-            "{}: no {FILES}/{}; the lock does not hold the manifest the digest names",
-            dir.display(),
+            "{shown}: no {FILES}/{}; the lock does not hold the manifest the digest names",
             wanted.hex()
         )
     })?;
@@ -241,8 +250,7 @@ pub fn open(digest: &str, dir: &Path) -> Result<Locked, String> {
     if let Some(stray) = blobs.keys().find(|d| !generated.contains(d)) {
         let named = manifest.layers.iter().any(|l| &l.digest == stray);
         return Err(format!(
-            "{}: holds {FILES}/{}, which {}; a lock holds the config, the metadata and a package's README, and no payload byte",
-            dir.display(),
+            "{shown}: holds {FILES}/{}, which {}; a lock holds the config, the metadata and a package's README, and no payload byte",
             stray.hex(),
             if named {
                 "is a payload layer of the locked manifest"
@@ -259,6 +267,148 @@ pub fn open(digest: &str, dir: &Path) -> Result<Locked, String> {
         metadata,
         blobs,
     })
+}
+
+/// The files a lock of the artifact `manifest` in `store` holds: the
+/// manifest, its config and every layer whose decoded SHA-256 is not among
+/// `made`, the outputs the steps made (lower-case hex), as the store holds
+/// them. A recipe is pinned with them ([`crate::pin::pin_path`]), and a
+/// build whose lock is lost rebuilds them (recipes §7.2).
+pub fn files_of(
+    store: &Store,
+    manifest: &Descriptor,
+    made: &BTreeSet<String>,
+) -> Result<Vec<Vec<u8>>, String> {
+    use image_store::BlobSource as _;
+    let manifest_bytes = store
+        .read_verified(manifest, MAX_SMALL_BLOB)
+        .map_err(|e| format!("the built manifest {}: {e}", manifest.digest))?;
+    let decoded = Manifest::decode_for_summary(&manifest_bytes)
+        .map_err(|e| format!("the built manifest {}: {e}", manifest.digest))?;
+    let mut files = vec![manifest_bytes];
+    let mut written = vec![&decoded.config];
+    for layer in &decoded.layers {
+        let is_made = layer.decoded_digest().is_ok_and(|d| made.contains(d.hex()));
+        if !is_made {
+            written.push(layer);
+        }
+    }
+    for descriptor in written {
+        let bytes = store
+            .read_verified(descriptor, MAX_SMALL_BLOB)
+            .map_err(|e| {
+                format!(
+                    "{} ({}), which no step made: {e}; a lock holds files of at most 1 MiB",
+                    descriptor.digest, descriptor.media_type
+                )
+            })?;
+        files.push(bytes);
+    }
+    files.dedup();
+    Ok(files)
+}
+
+/// Points 1 and 2 for lock files a build rebuilt with its own writers, as
+/// [`files_of`] gives them, against the recipe's `digest`.
+pub fn rebuilt(digest: &str, files: &[Vec<u8>]) -> Result<Locked, String> {
+    let files = files
+        .iter()
+        .map(|bytes| (hex(bytes), bytes.clone()))
+        .collect();
+    check(digest, files, "the rebuilt lock")
+}
+
+/// The payload the lock names for each output a step makes, found through
+/// the locked config as [`verify`] matches them: media in order, extras by
+/// file name, ROMs and their chips in order. An output the lock names no
+/// layer of is left out; the build then makes it and [`verify`] reports it.
+pub fn payloads(
+    recipe: &Recipe,
+    locked: &Locked,
+    provider: &dyn Provider,
+) -> Vec<crate::plan::LockedOutput> {
+    let text = |v: &Option<At<String>>| v.as_ref().map(|v| v.value.clone());
+    let mut out = Vec::new();
+    let push = |out: &mut Vec<crate::plan::LockedOutput>,
+                (kind, index, part): (&'static str, usize, usize),
+                name: String,
+                blob: &Digest| {
+        if let Some(size) = layer(&locked.manifest, blob).and_then(|d| d.decoded_size().ok()) {
+            out.push(crate::plan::LockedOutput {
+                kind,
+                index,
+                part,
+                name,
+                size,
+                sha256: blob.hex().to_owned(),
+            });
+        }
+    };
+    let extra_name = |extra: &crate::model::Extra| {
+        text(&extra.file_name)
+            .or_else(|| text(&extra.id))
+            .unwrap_or_default()
+    };
+    match recipe.kind {
+        Kind::Media => {
+            let Ok(config) = media_set::Config::decode(&locked.config) else {
+                return out;
+            };
+            for (index, (medium, entry)) in recipe.media.iter().zip(&config.media).enumerate() {
+                let id = text(&medium.id).unwrap_or_default();
+                let format = text(&medium.format).unwrap_or_default();
+                let name = text(&medium.file_name)
+                    .unwrap_or_else(|| provider.media().file_name(&id, &format));
+                push(&mut out, ("medium", index, 0), name, &entry.blob);
+            }
+            for (index, extra) in recipe.extras.iter().enumerate() {
+                let name = extra_name(extra);
+                if let Some(entry) = config.extras.iter().find(|e| e.filename == name) {
+                    push(&mut out, ("extra", index, 0), name, &entry.blob);
+                }
+            }
+        }
+        Kind::Firmware => {
+            let Ok(config) = firmware::Config::decode(&locked.config) else {
+                return out;
+            };
+            for (index, (rom, entry)) in recipe.roms.iter().zip(&config.roms).enumerate() {
+                let references: Vec<String> = match &rom.source {
+                    RomSource::File(from) => text(from).into_iter().collect(),
+                    RomSource::Parts { parts, .. } => {
+                        parts.iter().filter_map(|p| text(&p.from)).collect()
+                    }
+                };
+                let blobs: Vec<&Digest> = match &entry.blob {
+                    Some(blob) => vec![blob],
+                    None => entry.parts.iter().map(|p| &p.blob).collect(),
+                };
+                for (part, (reference, blob)) in references.iter().zip(blobs).enumerate() {
+                    let name = reference.rsplit('/').next().unwrap_or(reference).to_owned();
+                    push(&mut out, ("rom", index, part), name, blob);
+                }
+            }
+            for (index, extra) in recipe.extras.iter().enumerate() {
+                let name = extra_name(extra);
+                let blob = config
+                    .extras
+                    .iter()
+                    .find(|e| e.filename == name)
+                    .map(|e| &e.blob)
+                    .or_else(|| {
+                        config
+                            .sources
+                            .iter()
+                            .find(|s| s.filename == name)
+                            .map(|s| &s.blob)
+                    });
+                if let Some(blob) = blob {
+                    push(&mut out, ("extra", index, 0), name, blob);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The stored digests of the descriptors the writers generate, by the

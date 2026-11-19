@@ -147,6 +147,7 @@ fn build(
             libraries: &mut libraries,
             fetcher: fetcher.as_ref().map(|f| f as &dyn recipe::build::Fetcher),
             keep_as: None,
+            find_outputs: true,
         },
         &mut |line| lines.push(line.to_owned()),
     )

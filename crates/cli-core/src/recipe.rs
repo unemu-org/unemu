@@ -587,6 +587,7 @@ fn build(
         libraries: &mut libraries,
         fetcher,
         keep_as: options.keep_as.as_deref(),
+        find_outputs: true,
     };
     let mut log = |line: &str| {
         let _ = writeln!(output, "{line}");

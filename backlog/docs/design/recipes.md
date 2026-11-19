@@ -1418,6 +1418,10 @@ then writes the config, metadata and manifest with its own writers. If the
 result has the pinned digest, the build is as good as any; if not, it says
 that the recipe needs its lock and tags nothing.
 
+As built (`upc-5pw.113.18`), "lost" means nothing at all at the lock's
+path; a lock that is there and broken is refused, `recipe check` still
+reports rule 8, and the build writes no lock back.
+
 ### 7.3. Names
 
 A recipe's repository is its publisher's namespace, `recipes/`, and the
@@ -2405,8 +2409,8 @@ Decisions taken while building it:
   archive is looked for only when one of them is missing (the step then
   says it `opens ARCHIVE for N of M members`), and is otherwise `not
   needed: its N members were found`. The payload blobs of a locked recipe
-  join with the lock (B8). `fat` and `text` steps always run when an
-  output needs them.
+  are looked for the same way (B8, `upc-5pw.113.18`); otherwise `fat` and
+  `text` steps run when an output needs them.
 - Near misses, reported and never used, at most eight per value: a file or
   member with one of the value's names and another size, one with its name
   and size and another hash, and one of its size that was hashed and holds
@@ -2542,9 +2546,7 @@ conformance). Decisions taken while building it:
   file again; on failure the file is restored and the lock removed. A
   recipe that already has a `digest` is not pinned again: a changed
   artifact is a new revision. A pinned recipe whose lock is lost fails
-  rule 8 (since B4); §7.2's fallback of building with this release's
-  writers and accepting an equal digest is not taken: the lock is restored
-  from where the recipe was published.
+  rule 8 (since B4); `recipe build` takes §7.2's fallback, below.
 - Points 1 to 3 run in the checks (rule 8), only for a recipe with no
   other finding, so a broken lock refuses a build before any input is
   read; each disagreement is a finding at `digest`, worded `FIELD: the lock
@@ -2645,9 +2647,48 @@ conformance). Decisions taken while building it:
   copies from the firmware catalogue, are compared with the catalogue
   entry, so a lock cannot put text of its own into the generated config or
   README; a package without a README is refused.
-- Not done here: §3.4's "found instead of made" for the payload blobs of a
-  locked recipe (B6 left it to B8): a pinned build always runs the steps;
-  looking the locked blobs up in the store first is left for a later bead.
+- Follow-ups done on 2026-11-19 (`upc-5pw.113.18`):
+  - §3.4's "found instead of made" for the payload blobs of a locked
+    recipe (B6 left it to B8). Before the plan, a pinned build reads the
+    lock's payloads for the outputs a step makes (`lock::payloads`: media
+    in order, extras by file name, ROMs and chips in order) and looks each
+    up in the store index, the download cache and the libraries, in that
+    order (no bundle: an output has no name beside the recipe), before
+    planning the steps
+    (`plan::plan_pinned`); the first match wins. A found output is read
+    and checked by size and SHA-256 like an input, and is matched with the
+    lock again after the steps; the steps and inputs only it needed do not
+    run and are not read (`not needed: the outputs made from it were
+    found`, a step `not needed: the outputs it makes were found`). An
+    output that refers to an input, or to a member whose size and hash the
+    recipe states, is not looked for again: its own search is the same
+    one. `recipe plan` lists `outputs found instead of made:`, and `recipe
+    build` prints `  KIND ID (FILE): found WHERE, not made`. The
+    conformance harness does not look outputs up: it proves the steps
+    still make the pinned bytes. A store index the build cannot read
+    through is no longer searched. MEASURED (`pc-image` test
+    `recipe_lock`): with the outputs in the store or in a library and the
+    inputs gone, the pinned recipe builds its digest; files with the
+    outputs' names and sizes and other bytes are not taken.
+  - §7.2's lost lock. A pinned recipe with nothing at its lock's path is
+    built as a draft into a scratch store with this build's writers
+    (`cache/recipe-lost-lock/`, removed after). The same digest: the files
+    it wrote stand in for the lock (`lock::rebuilt`, points 1 and 2 as for
+    an opened lock), and the build goes on as a pinned one and prints a
+    line `lock: lost; this build's writers made the pinned digest DIGEST`.
+    Another digest, from the writers or from a step that now writes other
+    bytes: nothing is tagged, `--keep-as` included, and the error (`this
+    build makes X, the recipe pins Y`) says the recipe needs its lock.
+    `recipe plan` plans such a recipe as the build does and says the lock
+    is lost; `recipe check` still reports rule 8; conformance rebuilds it
+    as the build does. MEASURED
+    (`recipe_lock`, `a_lost_lock_is_rebuilt_with_this_builds_writers`):
+    this build rebuilds the pinned digest, byte for byte the lock's
+    manifest; a build with another manifest writer is refused and tags
+    nothing; `conformance_rebuilds_a_lost_lock` likewise. The firmware arm
+    (`a_pinned_firmware_recipe_finds_its_rom_instead_of_unpacking_it`): a
+    package whose ROM an `unpack` step takes from a zip builds from the ROM
+    file alone.
 
 **B9. `scaffold` and `inputs`.**
 Scope: `upcli recipe scaffold` (input tables, member lists with sizes,

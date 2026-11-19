@@ -177,6 +177,7 @@ fn request<'a>(
         libraries,
         fetcher: None,
         keep_as,
+        find_outputs: true,
     }
 }
 
@@ -1171,5 +1172,525 @@ fn a_lock_that_changes_the_catalogues_provenance_is_refused() {
             "package.provenance: the lock has \"from \\\"Also free to use under MIT."
         )),
         "{findings:#?}"
+    );
+}
+
+/// Build `recipe` with this build into `store` from the libraries named,
+/// reading content the store holds through the `ibm-pc` validators, as
+/// `upcli recipe build` does.
+fn build_reading_store(
+    recipe: &Path,
+    providers: &[&dyn Provider],
+    store: &Store,
+    libs: &[&Path],
+    keep_as: Option<&str>,
+) -> Outcome {
+    let index = StoreIndex::load(store).unwrap();
+    let mut libraries: Vec<Library> = libs
+        .iter()
+        .map(|lib| Library::scan(lib, None).unwrap())
+        .collect();
+    let media = media_set::Validator(&pc_image::media_set::PcMediaFormats);
+    let content = recipe::build::StoreContent::new(store, vec![&media]);
+    let mut request = request(recipe, providers, store, &index, &mut libraries, keep_as);
+    request.store_read = Some(&content);
+    build_path(request, &mut |line| panic!("nothing to log: {line}")).unwrap()
+}
+
+/// The outputs the lock of `recipe` names, as its plan lists them, with
+/// their bytes read from `store`, where a build of the recipe put them:
+/// `(file name, bytes)`.
+fn locked_outputs(recipe: &Path, store: &Store) -> Vec<(String, Vec<u8>)> {
+    use recipe::build::StoreRead as _;
+    let recipe::Planned::Plan(plan) = recipe::plan_path(
+        recipe,
+        recipe::Providers(&THIS),
+        recipe::plan::Sources {
+            store: None,
+            downloads: None,
+            libraries: &mut [],
+        },
+    )
+    .unwrap() else {
+        panic!("not planned");
+    };
+    let media = media_set::Validator(&pc_image::media_set::PcMediaFormats);
+    let content = recipe::build::StoreContent::new(store, vec![&media]);
+    let tags: Vec<String> = tags(store);
+    plan.payloads
+        .iter()
+        .map(|payload| {
+            let bytes = content
+                .read(&tags, payload.value.size, &payload.value.sha256)
+                .unwrap();
+            (payload.name.clone(), bytes)
+        })
+        .collect()
+}
+
+/// recipes.md §3.4, "found instead of made": a pinned recipe whose locked
+/// outputs the store holds builds without running a step. Its inputs are
+/// gone from the library, so any step that ran would have nothing to read,
+/// and the result is the digest a full build gives.
+#[test]
+fn a_pinned_recipe_finds_its_locked_outputs_in_the_store_instead_of_making_them() {
+    let t = Temp::new("found-store");
+    let (recipe, lib) = synthetic(&t);
+    let pinned = pin(&recipe, &Store::open(t.path("author")).unwrap(), &lib);
+
+    // A full build, kept under another tag: the steps make every output.
+    let store = Store::open(t.path("store")).unwrap();
+    let full = built(build_reading_store(
+        &recipe,
+        &THIS,
+        &store,
+        &[&lib],
+        Some("full-r1"),
+    ));
+    assert_eq!(full.published.descriptor.digest, pinned);
+    assert!(full.plan.payloads.iter().all(|p| p.value.found.is_none()));
+    assert_eq!(
+        full.kept
+            .iter()
+            .map(|k| (k.input.as_str(), k.how.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("archive", "kept as files"),
+            ("notes", "kept as text with DOS line ends")
+        ]
+    );
+
+    // Without its inputs, the recipe's own tag is built from the outputs
+    // the store holds.
+    fs::remove_file(lib.join("GAME.ZIP")).unwrap();
+    fs::remove_file(lib.join("notes.txt")).unwrap();
+    let report = built(build_reading_store(&recipe, &THIS, &store, &[&lib], None));
+    assert!(report.published.created);
+    assert!(report.locked);
+    assert_eq!(report.reference, "private/media/ibm-pc/synthetic:1.0-r1");
+    assert_eq!(report.published.descriptor.digest, pinned);
+    assert_eq!(
+        report.published.descriptor.digest,
+        full.published.descriptor.digest
+    );
+    let found: Vec<(String, String)> = report
+        .plan
+        .payloads
+        .iter()
+        .map(|p| (p.what(), p.value.found.as_ref().unwrap().to_string()))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (
+                "medium game-disk (game-disk.img)".to_owned(),
+                "in the store (private/media/ibm-pc/synthetic:full, private/media/ibm-pc/synthetic:full-r1)".to_owned()
+            ),
+            (
+                "extra readme (README.TXT)".to_owned(),
+                "in the store (private/media/ibm-pc/synthetic:full, private/media/ibm-pc/synthetic:full-r1)".to_owned()
+            ),
+        ]
+    );
+    // No step ran and no input was read.
+    assert!(report
+        .plan
+        .steps
+        .iter()
+        .all(|s| s.status
+            == recipe::plan::Status::NotNeeded("the outputs it makes were found".into())));
+    assert_eq!(
+        report
+            .kept
+            .iter()
+            .map(|k| (k.input.as_str(), k.how.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("archive", "not needed: the outputs made from it were found"),
+            ("notes", "not needed: the outputs made from it were found")
+        ]
+    );
+    assert!(report.render().contains(
+        "  medium game-disk (game-disk.img): found in the store (private/media/ibm-pc/synthetic:full, private/media/ibm-pc/synthetic:full-r1), not made\n"
+    ));
+    let validator = media_set::Validator(&pc_image::media_set::PcMediaFormats);
+    store.resolve(&report.reference, &validator).unwrap();
+
+    // The conformance harness finds nothing instead of making it: it
+    // proves the steps still make the pinned bytes, so without the inputs
+    // the recipe is not built.
+    let mut libraries = vec![Library::scan(&lib, None).unwrap()];
+    let results = recipe::pin::conformance(
+        std::slice::from_ref(&recipe),
+        recipe::Providers(&THIS),
+        &store,
+        &mut libraries,
+    )
+    .unwrap();
+    assert!(
+        matches!(results[0].result, Conformed::Missing(_)),
+        "{results:#?}"
+    );
+}
+
+/// The same with the finished outputs in a library and not in the store:
+/// the store is new and the library holds nothing but the two outputs. The
+/// plan says so before the build.
+#[test]
+fn a_pinned_recipe_finds_its_locked_outputs_in_a_library_instead_of_making_them() {
+    let t = Temp::new("found-library");
+    let (recipe, lib) = synthetic(&t);
+    let author = Store::open(t.path("author")).unwrap();
+    let pinned = pin(&recipe, &author, &lib);
+    let finished = t.path("finished");
+    fs::create_dir_all(&finished).unwrap();
+    let outputs = locked_outputs(&recipe, &author);
+    assert_eq!(outputs.len(), 2);
+    for (name, bytes) in &outputs {
+        fs::write(finished.join(name), bytes).unwrap();
+    }
+
+    let store = Store::open(t.path("store")).unwrap();
+    let index = StoreIndex::load(&store).unwrap();
+    let mut libraries = vec![Library::scan(&finished, None).unwrap()];
+    let recipe::Planned::Plan(plan) = recipe::plan_path(
+        &recipe,
+        recipe::Providers(&THIS),
+        recipe::plan::Sources {
+            store: Some(&index),
+            downloads: None,
+            libraries: &mut libraries,
+        },
+    )
+    .unwrap() else {
+        panic!("not planned");
+    };
+    assert!(plan.complete(), "{}", plan.render());
+    let text = plan.render();
+    assert!(
+        text.contains(&format!(
+            "outputs found instead of made:\n  medium game-disk (game-disk.img): found in library {0}: game-disk.img\n  extra readme (README.TXT): found in library {0}: README.TXT\n",
+            finished.display()
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains("  archive (GAME.ZIP): not needed: the outputs made from it were found\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("  disk: fat files: not needed: the outputs it makes were found\n"),
+        "{text}"
+    );
+    assert_eq!(plan.json()["payloads"][0]["found"]["source"], "library");
+
+    let report = built(build_reading_store(
+        &recipe,
+        &THIS,
+        &store,
+        &[&finished],
+        None,
+    ));
+    assert_eq!(report.published.descriptor.digest, pinned);
+    assert!(report.published.created);
+    assert!(report.render().contains(&format!(
+        "  extra readme (README.TXT): found in library {}: README.TXT, not made\n",
+        finished.display()
+    )));
+    let validator = media_set::Validator(&pc_image::media_set::PcMediaFormats);
+    store.resolve(&report.reference, &validator).unwrap();
+}
+
+/// A file with an output's name and size and other bytes is not that
+/// output: the search checks the SHA-256, never the name. With the inputs
+/// the steps make the output; without them nothing is built.
+#[test]
+fn a_locked_output_is_found_by_its_digest_never_by_its_name() {
+    let t = Temp::new("found-wrong");
+    let (recipe, lib) = synthetic(&t);
+    let author = Store::open(t.path("author")).unwrap();
+    let pinned = pin(&recipe, &author, &lib);
+    let forged = t.path("forged");
+    fs::create_dir_all(&forged).unwrap();
+    for (name, bytes) in locked_outputs(&recipe, &author) {
+        let mut bytes = bytes;
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xff;
+        fs::write(forged.join(&name), &bytes).unwrap();
+        // Also a copy under the name of the recipe's own extra.
+        fs::write(lib.join(&name), &bytes).unwrap();
+    }
+
+    let store = Store::open(t.path("store")).unwrap();
+    let report = built(build_reading_store(
+        &recipe,
+        &THIS,
+        &store,
+        &[&forged, &lib],
+        None,
+    ));
+    assert_eq!(report.published.descriptor.digest, pinned);
+    assert_eq!(report.plan.payloads.len(), 2);
+    assert!(report.plan.payloads.iter().all(|p| p.value.found.is_none()));
+    assert!(!report.render().contains("not made"));
+    assert_eq!(
+        report
+            .kept
+            .iter()
+            .map(|k| (k.input.as_str(), k.how.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("archive", "kept as files"),
+            ("notes", "kept as text with DOS line ends")
+        ]
+    );
+
+    // Without the inputs the forged files are still not taken.
+    fs::remove_file(lib.join("GAME.ZIP")).unwrap();
+    let store = Store::open(t.path("without")).unwrap();
+    match build_reading_store(&recipe, &THIS, &store, &[&forged, &lib], None) {
+        Outcome::Missing(plan) => assert_eq!(plan.summary(), "missing 1 of 2 inputs"),
+        other => panic!("{other:#?}"),
+    }
+    assert!(tags(&store).is_empty());
+}
+
+/// recipes.md §7.2: a pinned recipe that has lost its lock is built with
+/// this build's writers; the same digest is as good as any build, another
+/// digest tags nothing and says that the recipe needs its lock. The checks
+/// still refuse the recipe, and a lock that is there and broken is not
+/// lost.
+#[test]
+fn a_lost_lock_is_rebuilt_with_this_builds_writers() {
+    let t = Temp::new("lost");
+    let (recipe, lib) = synthetic(&t);
+    let pinned = pin(&recipe, &Store::open(t.path("author")).unwrap(), &lib);
+    let lock = recipe::lock::dir(&recipe);
+    let kept = t.path("kept.lock");
+    fs::rename(&lock, &kept).unwrap();
+
+    // `recipe check` still says the digest pins a lock that is not there.
+    let findings = lock_findings(&recipe);
+    assert_eq!(
+        findings,
+        ["a digest pins a lock, and there is no synthetic.media.toml.lock beside the recipe"]
+    );
+    // `recipe plan` plans it as a build builds it, and says the lock is
+    // lost.
+    let mut libraries = vec![Library::scan(&lib, None).unwrap()];
+    let recipe::Planned::Plan(plan) = recipe::plan_path(
+        &recipe,
+        recipe::Providers(&THIS),
+        recipe::plan::Sources {
+            store: None,
+            downloads: None,
+            libraries: &mut libraries,
+        },
+    )
+    .unwrap() else {
+        panic!("not planned");
+    };
+    assert!(plan.complete());
+    assert!(
+        plan.render().contains(&format!(
+            "\nlock: {} is lost; a build makes its files with this build's writers and accepts only the pinned digest\ninputs:\n",
+            lock.display()
+        )),
+        "{}",
+        plan.render()
+    );
+    assert_eq!(
+        plan.json()["lock_lost"],
+        lock.display().to_string().as_str()
+    );
+
+    // This build's writers make the pinned digest: built and tagged, and
+    // the store holds the artifact a build with the lock makes.
+    let store = Store::open(t.path("store")).unwrap();
+    let report = built(build(&recipe, &THIS, &store, &lib, None));
+    assert!(report.locked);
+    assert!(report.lock_rebuilt);
+    assert!(report.published.created);
+    assert_eq!(report.published.descriptor.digest, pinned);
+    assert_eq!(
+        store
+            .read_verified(&report.published.descriptor, image_store::MAX_SMALL_BLOB)
+            .unwrap(),
+        fs::read(kept.join("sha256").join(pinned.hex())).unwrap()
+    );
+    assert!(report.render().contains(&format!(
+        "  lock: lost; this build's writers made the pinned digest {pinned}\n"
+    )));
+    let validator = media_set::Validator(&pc_image::media_set::PcMediaFormats);
+    store.resolve(&report.reference, &validator).unwrap();
+    // Nothing is written beside the recipe, and the scratch store is gone.
+    assert!(!lock.exists());
+    assert_eq!(
+        fs::read_dir(store.root().join(recipe::build::LOST_LOCK))
+            .unwrap()
+            .count(),
+        0
+    );
+
+    // Another build's writers make another digest: refused with both
+    // digests, nothing tagged, no blob kept.
+    let store = Store::open(t.path("other")).unwrap();
+    match build(&recipe, &OTHER, &store, &lib, None) {
+        Outcome::Failed { error, .. } => {
+            assert!(
+                error.starts_with(&format!(
+                    "{}: the lock {} is lost; this build makes sha256:",
+                    recipe.display(),
+                    lock.display()
+                )),
+                "{error}"
+            );
+            assert!(
+                error.ends_with(&format!(
+                    ", the recipe pins {pinned}: the recipe needs its lock; restore it from where the recipe was published"
+                )),
+                "{error}"
+            );
+        }
+        other => panic!("{other:#?}"),
+    }
+    assert!(tags(&store).is_empty());
+    assert_eq!(blobs(&store), 0);
+    assert_eq!(
+        fs::read_dir(store.root().join(recipe::build::LOST_LOCK))
+            .unwrap()
+            .count(),
+        0
+    );
+
+    // A lock folder that is there and empty is broken, not lost: refused.
+    fs::create_dir_all(&lock).unwrap();
+    let store = Store::open(t.path("broken")).unwrap();
+    assert!(matches!(
+        build(&recipe, &THIS, &store, &lib, None),
+        Outcome::Refused(_)
+    ));
+    assert!(tags(&store).is_empty());
+}
+
+/// The conformance harness builds a pinned recipe whose lock is lost as
+/// `recipe build` does (recipes.md §7.2): it conforms when this build's
+/// writers make the pinned digest, and is not built, with the lost-lock
+/// message, when another build's writers make another one.
+#[test]
+fn conformance_rebuilds_a_lost_lock() {
+    let t = Temp::new("lost-conformance");
+    let (recipe, lib) = synthetic(&t);
+    let pinned = pin(&recipe, &Store::open(t.path("author")).unwrap(), &lib);
+    fs::remove_dir_all(recipe::lock::dir(&recipe)).unwrap();
+    let conform = |providers: &[&dyn Provider], scratch: &str| {
+        let mut libraries = vec![Library::scan(&lib, None).unwrap()];
+        recipe::pin::conformance(
+            std::slice::from_ref(&recipe),
+            recipe::Providers(providers),
+            &Store::open(t.path(scratch)).unwrap(),
+            &mut libraries,
+        )
+        .unwrap()
+    };
+    let results = conform(&THIS, "this");
+    assert_eq!(
+        results[0].result,
+        Conformed::Conforms {
+            reference: "private/media/ibm-pc/synthetic:1.0-r1".into(),
+            digest: pinned.to_string(),
+        }
+    );
+    let results = conform(&OTHER, "other");
+    match &results[0].result {
+        Conformed::Failed(error) => assert!(
+            error.contains(" is lost; this build makes sha256:")
+                && error.contains(&format!(
+                    ", the recipe pins {pinned}: the recipe needs its lock"
+                )),
+            "{error}"
+        ),
+        other => panic!("{other:#?}"),
+    }
+    let (text, all) = recipe::pin::render(&results);
+    assert!(!all, "{text}");
+}
+
+/// The firmware arm of "found instead of made": a package whose ROM an
+/// `unpack` step takes from a zip archive, by a member with no stated hash,
+/// builds from the ROM file alone once it is pinned; the archive is not
+/// needed.
+#[test]
+fn a_pinned_firmware_recipe_finds_its_rom_instead_of_unpacking_it() {
+    if !vgabios_present() {
+        return;
+    }
+    let t = Temp::new("found-firmware");
+    let vgabios = vendor().join("vgabios");
+    let rom = fs::read(vgabios.join("vgabios-std.bin")).unwrap();
+    let lib = t.path("lib");
+    fs::create_dir_all(&lib).unwrap();
+    let archive = zip(&[("VGABIOS.BIN", &rom)]);
+    fs::write(lib.join("VGABIOS.ZIP"), &archive).unwrap();
+    fs::copy(
+        vgabios.join("vgabios-0.9d-unemu.1-src.tar"),
+        lib.join("vgabios-0.9d-unemu.1-src.tar"),
+    )
+    .unwrap();
+    let draft = fs::read_to_string(vgabios_draft(&t)).unwrap();
+    let at = draft.find("[input.rom]").unwrap();
+    let end = draft[at..].find("\n\n").unwrap() + at + 2;
+    let text = format!(
+        "{}[input.archive]\nname = \"VGABIOS.ZIP\"\nsize = {}\nsha256 = \"{}\"\n\n{}",
+        &draft[..at],
+        archive.len(),
+        sha(&archive),
+        &draft[end..],
+    )
+    .replace(
+        "from = \"rom\"\n",
+        "from = \"chips/VGABIOS.BIN\"\n",
+    )
+    .replace(
+        "[[rom]]",
+        "[[step]]\nid = \"chips\"\nunpack = \"archive\"\nformat = \"zip\"\nmembers = [{ path = \"VGABIOS.BIN\", time = 1993-03-27T13:58:22 }]\n\n[[rom]]",
+    );
+    let recipe = t.path("recipes/vgabios.firmware.toml");
+    fs::write(&recipe, text).unwrap();
+    let pinned = pin(&recipe, &Store::open(t.path("author")).unwrap(), &lib);
+
+    // The ROM and the source archive in the fixture folder, no archive.
+    let store = Store::open(t.path("store")).unwrap();
+    let report = built(build_reading_store(
+        &recipe,
+        &THIS,
+        &store,
+        &[&vgabios],
+        None,
+    ));
+    assert_eq!(report.published.descriptor.digest, pinned);
+    let found: Vec<String> = report
+        .plan
+        .payloads
+        .iter()
+        .map(|p| format!("{}: {}", p.what(), p.value.found.as_ref().unwrap()))
+        .collect();
+    assert_eq!(
+        found,
+        [format!(
+            "rom video-bios (VGABIOS.BIN): in library {}: vgabios-std.bin",
+            vgabios.display()
+        )]
+    );
+    assert_eq!(
+        report
+            .kept
+            .iter()
+            .map(|k| (k.input.as_str(), k.how.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("archive", "not needed: the outputs made from it were found"),
+            ("source", "kept as stored")
+        ]
     );
 }

@@ -5,6 +5,28 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — Pinned recipes find their outputs; a lost lock is rebuilt:**
+  the two follow-ups of step B8 of design/recipes.md §19.2. A pinned
+  recipe's build looks every output a step makes up by the payload its
+  lock names, in the store, the download cache and the libraries (§3.4,
+  "found instead of made"), before it plans the steps; a found output is
+  read and checked by its SHA-256, and the steps and inputs only it needed
+  are not run or read. `recipe plan` lists `outputs found instead of
+  made:` (JSON `payloads`), `recipe build` prints `KIND ID (FILE): found
+  WHERE, not made`; `recipe conformance` never finds instead of making.
+  A pinned recipe with nothing at its lock's path (§7.2) is built with
+  this build's writers in a scratch store: the pinned digest goes on as a
+  locked build, another digest names both and tags nothing; `recipe
+  plan` plans it so and says the lock is lost, conformance rebuilds it the
+  same way, and `recipe check` still refuses it (rule 8). MEASURED (`pc-image` test
+  `recipe_lock`): with its inputs gone and the outputs in the store or in
+  a library, the synthetic pinned recipe builds its pinned digest; files
+  with the outputs' names and sizes and other bytes are not taken; a lost
+  lock rebuilds the pinned digest, and a build with another manifest
+  writer is refused. No pinned digest changes; the FreeDOS sets now find
+  their licence index with DOS line ends (`floppy-1.4/LICENSES.TXT` of
+  the fixtures) instead of making it. commands.md, Planning recipes,
+  Building recipes, Pinning recipes.
 - **2026-11-19 — The session's PC tests have their own crate:**
   `crates/pc-session-tests` (layer `pc`, tests only, no library code)
   holds the 57 tests that drive a real PC through `machine_view::Session`
@@ -301,9 +323,9 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   builds its digest, the lock's manifest byte for byte, with a publisher
   whose manifest writer differs (another annotation, another order, other
   whitespace), whose own draft of the recipe gets another digest; the
-  corpus pins conform from the fixtures. Not yet: locked payload blobs are
-  not looked for in the store before the steps run ("found instead of
-  made"). commands.md, Pinning recipes and Recipe conformance.
+  corpus pins conform from the fixtures. (Locked payloads found instead of
+  made: 2026-11-19, above.) commands.md, Pinning recipes and Recipe
+  conformance.
 - **2026-11-18 — The contract has its own repository:** step 3 of
   design/core-contract.md §13.6. `unemu-core-api` is no longer a workspace
   crate: the workspace pins release v0.1.0 of

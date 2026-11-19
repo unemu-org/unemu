@@ -40,6 +40,19 @@
 //! of the program, whose writers spell those files differently, still
 //! publishes the pinned digest. A mismatch tags nothing ([`Outcome::Mismatch`]).
 //!
+//! Before the steps, a pinned build looks every output a step makes up by
+//! the payload its lock names, in the store, the download cache and the
+//! libraries ([`crate::plan::plan_pinned`]); a found output is read and
+//! checked by its SHA-256 like any input, and the steps and inputs only it
+//! needed are not run or read (recipes §3.4, "found instead of made").
+//!
+//! **A lost lock** (recipes §7.2): a pinned recipe with nothing at its
+//! lock's path is built as a draft with this build's writers, into a
+//! scratch store. When that gives the pinned digest, the files it wrote
+//! stand in for the lock and the build goes on as a pinned one; otherwise
+//! it says the recipe needs its lock and tags nothing. A lock that is
+//! there and broken is not lost: the checks refuse it.
+//!
 //! **Limits of this version.** Values are held in memory while the steps
 //! run. Attachments (recipes §3.9) are not built: their manifests need a
 //! `subject` the manifest codec does not have yet; a build says so and
@@ -199,6 +212,9 @@ pub struct Gathered {
     pub inputs: BTreeMap<String, Value>,
     /// Members of `unpack` steps found instead of made, by step and path.
     pub members: BTreeMap<(String, String), Bytes>,
+    /// Outputs of a pinned recipe found instead of made, by kind (`medium`,
+    /// `rom`, `extra`), place among the outputs of that kind, and file.
+    pub outputs: BTreeMap<(&'static str, usize, usize), Bytes>,
 }
 
 /// One medium the steps made, before it is staged.
@@ -382,6 +398,21 @@ pub fn gather(
             .members
             .insert((member.step.clone(), member.path.clone()), bytes);
     }
+    for payload in &plan.payloads {
+        if payload.value.found.is_none() {
+            continue;
+        }
+        let bytes = read
+            .value(
+                payload.value.found.as_ref(),
+                payload.value.size,
+                &payload.value.sha256,
+            )
+            .map_err(|e| format!("{}: {e}", payload.what()))?;
+        gathered
+            .outputs
+            .insert((payload.kind, payload.index, payload.part), bytes);
+    }
     Ok(gathered)
 }
 
@@ -446,13 +477,21 @@ pub fn run(recipe: &Recipe, gathered: &Gathered, provider: &dyn Provider) -> Res
     };
     let text = |v: &Option<crate::model::At<String>>| v.as_ref().map(|v| v.value.clone());
     let mut built = Built::default();
-    for medium in &recipe.media {
+    // An output found instead of made is taken as found; the steps run only
+    // for the others.
+    let found = |kind: &'static str, index: usize, part: usize| {
+        gathered.outputs.get(&(kind, index, part)).cloned()
+    };
+    for (index, medium) in recipe.media.iter().enumerate() {
         let id = text(&medium.id).unwrap_or_default();
         let format = text(&medium.format).unwrap_or_default();
         let from = text(&medium.from).unwrap_or_default();
-        let bytes = runner
-            .file(&from)
-            .map_err(|e| format!("medium {id}: {e}"))?;
+        let bytes = match found("medium", index, 0) {
+            Some(bytes) => bytes,
+            None => runner
+                .file(&from)
+                .map_err(|e| format!("medium {id}: {e}"))?,
+        };
         let file_name =
             text(&medium.file_name).unwrap_or_else(|| provider.media().file_name(&id, &format));
         built.media.push(BuiltMedium {
@@ -463,17 +502,20 @@ pub fn run(recipe: &Recipe, gathered: &Gathered, provider: &dyn Provider) -> Res
             bytes,
         });
     }
-    for rom in &recipe.roms {
+    for (index, rom) in recipe.roms.iter().enumerate() {
         let id = text(&rom.id).unwrap_or_default();
         let references: Vec<String> = match &rom.source {
             RomSource::File(from) => text(from).into_iter().collect(),
             RomSource::Parts { parts, .. } => parts.iter().filter_map(|p| text(&p.from)).collect(),
         };
         let mut files = Vec::new();
-        for reference in references {
-            let bytes = runner
-                .file(&reference)
-                .map_err(|e| format!("rom {id}: {e}"))?;
+        for (part, reference) in references.into_iter().enumerate() {
+            let bytes = match found("rom", index, part) {
+                Some(bytes) => bytes,
+                None => runner
+                    .file(&reference)
+                    .map_err(|e| format!("rom {id}: {e}"))?,
+            };
             files.push(BuiltFile {
                 name: runner.name_of(&reference),
                 bytes,
@@ -486,10 +528,13 @@ pub fn run(recipe: &Recipe, gathered: &Gathered, provider: &dyn Provider) -> Res
             files,
         });
     }
-    for extra in &recipe.extras {
+    for (index, extra) in recipe.extras.iter().enumerate() {
         let id = text(&extra.id).unwrap_or_default();
         let from = text(&extra.from).unwrap_or_default();
-        let bytes = runner.file(&from).map_err(|e| format!("extra {id}: {e}"))?;
+        let bytes = match found("extra", index, 0) {
+            Some(bytes) => bytes,
+            None => runner.file(&from).map_err(|e| format!("extra {id}: {e}"))?,
+        };
         built.extras.push(BuiltExtra {
             file_name: text(&extra.file_name).unwrap_or_else(|| id.clone()),
             kind: text(&extra.kind),
@@ -856,11 +901,15 @@ impl Drop for StagingFolder {
 const STALE_PARTIAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 /// Remove what builds that did not finish left behind (commands.md,
-/// Building recipes): staging folders of processes that no longer run, and
+/// Building recipes): staging folders and lost-lock scratch stores of
+/// processes that no longer run, and
 /// partial downloads older than a day. Errors are ignored: this is
 /// housekeeping, and a folder another build still uses is never named.
 fn sweep(store: &Store) {
-    if let Ok(entries) = std::fs::read_dir(store.root().join(STAGING)) {
+    for folder in [STAGING, LOST_LOCK] {
+        let Ok(entries) = std::fs::read_dir(store.root().join(folder)) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let name = entry.file_name();
             let pid = name
@@ -932,6 +981,11 @@ pub struct Request<'a> {
     /// Tag the result under this tag of the recipe's repository instead of
     /// the recipe's own tag (`--keep-as`).
     pub keep_as: Option<&'a str>,
+    /// Look a pinned recipe's outputs up by their locked payloads before
+    /// running the steps (recipes §3.4). `recipe build` does; the
+    /// conformance harness does not, as it proves that the steps still make
+    /// the bytes they were pinned with.
+    pub find_outputs: bool,
 }
 
 /// How each input of a built artifact is kept (recipes §3.10).
@@ -956,9 +1010,13 @@ pub struct Report {
     /// The work file's fields that differ from the lock (recipes §6.16);
     /// the lock's values were published.
     pub drift: Vec<crate::lock::Difference>,
-    /// The lower-case SHA-256 of every output the steps made: the payloads,
-    /// which a lock never holds.
+    /// The lower-case SHA-256 of every output the steps made or found: the
+    /// payloads, which a lock never holds.
     pub outputs: BTreeSet<String>,
+    /// The recipe is pinned and its lock was lost: this build's writers
+    /// made the pinned digest, and their files stood in for the lock
+    /// (recipes §7.2).
+    pub lock_rebuilt: bool,
 }
 
 /// What [`build_path`] gives.
@@ -1007,28 +1065,51 @@ pub fn build_path(request: Request<'_>, log: &mut dyn FnMut(&str)) -> io::Result
         .map(|p| p.value.clone())
         .unwrap_or_default();
     let downloads = request.store.root().join(DOWNLOADS);
+    // Content the build cannot read from the store is not found there.
+    let index = request.index.filter(|_| request.store_read.is_some());
     sweep(request.store);
-    let mut plan = crate::plan::plan(
-        &recipe,
-        &file,
-        request.path.parent(),
-        Sources {
-            store: request.index,
-            downloads: Some(&downloads),
-            libraries: &mut *request.libraries,
-        },
-    );
     let failed = |plan: Plan, error: String| {
         Ok(Outcome::Failed {
             plan: Box::new(plan),
             error,
         })
     };
-    let Some(provider) = request.providers.get(&family) else {
+    let provider = request.providers.get(&family);
+    // A pinned recipe's lock, opened before the plan so that the outputs it
+    // names are looked for first; `None` for a draft and a lost lock.
+    let lock_dir = crate::lock::dir(request.path);
+    let lost = recipe.identity.digest.is_some() && crate::lock_lost(request.path);
+    let locked = match &recipe.identity.digest {
+        Some(digest) if !lost => Some(crate::lock::open(&digest.value, &lock_dir)),
+        _ => None,
+    };
+    let wanted = match (&locked, provider) {
+        (Some(Ok(locked)), Some(provider)) if request.find_outputs => {
+            crate::lock::payloads(&recipe, locked, provider)
+        }
+        _ => Vec::new(),
+    };
+    let mut plan = crate::plan::plan_pinned(
+        &recipe,
+        &file,
+        request.path.parent(),
+        Sources {
+            store: index,
+            downloads: Some(&downloads),
+            libraries: &mut *request.libraries,
+        },
+        &wanted,
+    );
+    plan.lock_lost = lost.then(|| lock_dir.clone());
+    let Some(provider) = provider else {
         return failed(
             plan,
             format!("no provider of platform {family} in this build"),
         );
+    };
+    let locked = match locked.transpose() {
+        Ok(locked) => locked,
+        Err(error) => return failed(plan, error),
     };
     let Some(publisher) = provider.publisher() else {
         return failed(
@@ -1046,16 +1127,18 @@ pub fn build_path(request: Request<'_>, log: &mut dyn FnMut(&str)) -> io::Result
                 FetchError::Failed(error) => failed(plan, error),
             };
         }
-        plan = crate::plan::plan(
+        plan = crate::plan::plan_pinned(
             &recipe,
             &file,
             request.path.parent(),
             Sources {
-                store: request.index,
+                store: index,
                 downloads: Some(&downloads),
                 libraries: &mut *request.libraries,
             },
+            &wanted,
         );
+        plan.lock_lost = lost.then(|| lock_dir.clone());
         if !plan.complete() {
             return Ok(Outcome::Missing(Box::new(plan)));
         }
@@ -1109,7 +1192,7 @@ pub fn build_path(request: Request<'_>, log: &mut dyn FnMut(&str)) -> io::Result
     let published = match &recipe.identity.digest {
         // A draft: the outputs go through the platform's importers.
         None => match draft(
-            &request,
+            request.store,
             publisher,
             &recipe,
             merged.as_ref(),
@@ -1122,9 +1205,29 @@ pub fn build_path(request: Request<'_>, log: &mut dyn FnMut(&str)) -> io::Result
         // Pinned: the payloads are checked against the lock and the lock's
         // bytes are published; no writer of this build is used.
         Some(digest) => {
-            let locked = match crate::lock::open(&digest.value, &crate::lock::dir(request.path)) {
-                Ok(locked) => locked,
-                Err(error) => return failed(plan, error),
+            let locked = match locked {
+                Some(locked) => locked,
+                // A lost lock: this build's writers make the files, and
+                // they stand in for the lock only when they give the
+                // pinned digest (recipes §7.2).
+                None => match rebuild_lock(
+                    request.store,
+                    publisher,
+                    &recipe,
+                    merged.as_ref(),
+                    &built,
+                    &reference,
+                    &digest.value,
+                    &outputs,
+                ) {
+                    Ok(locked) => locked,
+                    Err(error) => {
+                        return failed(
+                            plan,
+                            format!("{file}: the lock {} is lost; {error}", lock_dir.display()),
+                        )
+                    }
+                },
             };
             // The checks compared the lock already; the files may have
             // changed since, so a disagreement found now refuses too.
@@ -1152,7 +1255,7 @@ pub fn build_path(request: Request<'_>, log: &mut dyn FnMut(&str)) -> io::Result
                 Err(mismatches) => {
                     let kept = match request.keep_as {
                         Some(_) => match draft(
-                            &request,
+                            request.store,
                             publisher,
                             &recipe,
                             merged.as_ref(),
@@ -1182,7 +1285,42 @@ pub fn build_path(request: Request<'_>, log: &mut dyn FnMut(&str)) -> io::Result
         locked: recipe.identity.digest.is_some(),
         drift,
         outputs,
+        lock_rebuilt: lost,
     })))
+}
+
+/// Where a build whose lock is lost makes its draft, in the store's cache,
+/// one folder per build, removed when it is done.
+pub const LOST_LOCK: &str = "cache/recipe-lost-lock";
+
+/// Make the files of a lost lock with this build's writers (recipes §7.2):
+/// the draft of `built` goes into a scratch store; when its manifest has
+/// the pinned `digest`, its manifest, config and generated layers are the
+/// lock, checked as an opened one is. Otherwise the error names both
+/// digests: the recipe needs its lock.
+#[allow(clippy::too_many_arguments)]
+fn rebuild_lock(
+    store: &Store,
+    publisher: &dyn Publisher,
+    recipe: &Recipe,
+    merged: Option<&Merged>,
+    built: &Built,
+    reference: &str,
+    digest: &str,
+    outputs: &BTreeSet<String>,
+) -> Result<crate::lock::Locked, String> {
+    let folder = StagingFolder(store.root().join(LOST_LOCK).join(unique("")));
+    let scratch = Store::open(&folder.0)
+        .map_err(|e| format!("a scratch store in {}: {e}", folder.0.display()))?;
+    let made = draft(&scratch, publisher, recipe, merged, built, reference)?;
+    if made.descriptor.digest.to_string() != digest {
+        return Err(format!(
+            "this build makes {}, the recipe pins {digest}: the recipe needs its lock; restore it from where the recipe was published",
+            made.descriptor.digest
+        ));
+    }
+    let files = crate::lock::files_of(&scratch, &made.descriptor, outputs)?;
+    crate::lock::rebuilt(digest, &files)
 }
 
 /// The lower-case SHA-256 of every output the steps made.
@@ -1203,20 +1341,20 @@ fn outputs(built: &Built) -> BTreeSet<String> {
 }
 
 /// Stage the outputs and hand them to the platform's importers, which
-/// write the config, metadata and manifest with this build's writers and
-/// tag `reference` last.
+/// write the config, metadata and manifest with this build's writers into
+/// `store` and tag `reference` last.
 fn draft(
-    request: &Request<'_>,
+    store: &Store,
     publisher: &dyn Publisher,
     recipe: &Recipe,
     merged: Option<&Merged>,
     built: &Built,
     reference: &str,
 ) -> Result<Published, String> {
-    let staging = StagingFolder(request.store.root().join(STAGING).join(unique("")));
+    let staging = StagingFolder(store.root().join(STAGING).join(unique("")));
     stage(recipe, merged, built, reference, &staging.0)
         .map_err(|e| format!("staging the outputs in {}: {e}", staging.0.display()))
-        .and_then(|staged| publisher.publish(request.store, &staged))
+        .and_then(|staged| publisher.publish(store, &staged))
 }
 
 enum FetchError {
@@ -1457,6 +1595,17 @@ impl Report {
         for kept in &self.kept {
             out.push_str(&format!("  {}: {}\n", kept.input, kept.how));
         }
+        for payload in &self.plan.payloads {
+            if let Some(found) = &payload.value.found {
+                out.push_str(&format!("  {}: found {found}, not made\n", payload.what()));
+            }
+        }
+        if self.lock_rebuilt {
+            out.push_str(&format!(
+                "  lock: lost; this build's writers made the pinned digest {}\n",
+                self.published.descriptor.digest
+            ));
+        }
         for attachment in &self.attachments {
             out.push_str(&format!(
                 "  attachment {attachment}: not built; this version builds no attachments\n"
@@ -1620,6 +1769,7 @@ mod tests {
                 ("notes".to_owned(), Value::File(bytes(b"a\nb\n"))),
             ]),
             members: BTreeMap::from([(("files".to_owned(), "A.EXE".to_owned()), bytes(b"a"))]),
+            outputs: BTreeMap::new(),
         };
         let first = run(&recipe, &gathered, &Listing).unwrap();
         assert_eq!(first, run(&recipe, &gathered, &Listing).unwrap());

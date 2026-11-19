@@ -1630,12 +1630,24 @@ cargo run --offline -p upcli -- library remove /path/to/games
   of the preferences followed by each `--library DIR`, in that order. The
   members of an `unpack` step that state size and SHA-256 are looked for
   before their archive, which is then needed only for the members still
-  missing. A file is hashed only when a value of its size is wanted, and
-  the hash is kept in the index under the file's size and change times, so
-  the next plan does not hash it again; a file whose size or times changed
-  is hashed again, never trusted. A value not found lists its near misses:
-  a file with its name and another size or hash, and one of its size with
-  another hash. URLs are listed, never fetched.
+  missing. For a pinned recipe, every output a step makes is looked for
+  first by the payload its lock names, in the store, the download cache
+  and the libraries, in that order (not beside the recipe); a
+  found output needs none of the steps and inputs it is made from, which
+  are then `not needed: the outputs made from it were found` (a step: `the
+  outputs it makes were found`). The plan lists them under `outputs found
+  instead of made:`, one line each, `KIND ID (FILE): found WHERE` or `not
+  found, made from REFERENCE`. A pinned recipe whose lock is lost (nothing
+  at all at `FILE.lock`) is planned as `recipe build` builds it, and the
+  plan says so before its inputs: `lock: FILE.lock is lost; a build makes
+  its files with this build's writers and accepts only the pinned digest`
+  (`lock_lost` in the JSON); `recipe check`, the checker, still reports
+  rule 8 for it. A file is hashed only when a value of its
+  size is wanted, and the hash is kept in the index under the file's size
+  and change times, so the next plan does not hash it again; a file whose
+  size or times changed is hashed again, never trusted. A value not found
+  lists its near misses: a file with its name and another size or hash,
+  and one of its size with another hash. URLs are listed, never fetched.
 
 Catalogues in a library are hints, never proof: a CSV whose header names
 `path`, `size` and `sha256` (optionally `crc32`, `sha1`, `md5`), and
@@ -1713,6 +1725,12 @@ indented; these keys are stable:
   `size-other-hash`), `library`, `path`, `member`, `size`, `sha256` (null
   when not hashed);
 - `members[]`: `step`, `path`, `size`, `sha256`, `found`, `near_misses`;
+- `payloads[]`, only when a pinned recipe has an output it looked up by
+  its locked payload: `kind` (`medium`, `rom`, `extra`), `id`, `part` (a
+  ROM's chip, from 0), `name` (the file name), `from`, `size`, `sha256`,
+  `found`;
+- `lock_lost`, only for a pinned recipe whose lock is lost: the lock's
+  path;
 - `steps[]`: `id`, `verb` (`unpack`, `fat`, `text`), `operand`, `status`
   (`runs`, `blocked`, `not-needed`), `reason`, `missing` (input ids),
   `detail` (`opens ARCHIVE for N of M members`, or null);
@@ -1804,10 +1822,12 @@ After a build, one line per input says how it is kept (§3.10 of the
 design): `kept as stored`, `kept as files` (built into a volume), `kept as
 text with DOS line ends`, `not needed: …` (an archive whose members were
 found), with `not kept: N members unused` for an opened archive's members
-the recipe did not take. The last line is `built NAME:TAG<TAB>DIGEST<TAB>draft`
-(`locked` for a pinned recipe), or `already built …` when the tag names this
-artifact already. A pinned build whose work file has changed since the pin
-prints one `  drift: …` line per field before it.
+the recipe did not take. A pinned recipe's output found instead of made
+prints `  KIND ID (FILE): found WHERE, not made`. The last line is `built
+NAME:TAG<TAB>DIGEST<TAB>draft` (`locked` for a pinned recipe), or
+`already built …` when the tag names this artifact already. A pinned
+build whose work file has changed since the pin prints one `  drift: …`
+line per field before it.
 
 Exit status: 0 when the artifact is tagged or was already; 1 when the
 recipe has findings (the check's report is printed), an input is missing
@@ -1849,13 +1869,27 @@ cargo run --offline -p upcli -- recipe pin backlog/docs/design/recipe-corpus/vga
   draft, and a revision tag never moves or goes.
 - A recipe that already has `digest` is not pinned again (exit 1, `already
   pinned to …`): an artifact that changes is a new revision, so raise
-  `revision`, remove `digest` and pin. A recipe whose lock is lost fails its
-  checks (rule 8); restore the lock from where the recipe was published.
+  `revision`, remove `digest` and pin. A recipe whose lock is lost (nothing
+  at all at `FILE.lock`) fails its checks (rule 8), but `recipe build`
+  still builds it (design/recipes.md §7.2): it makes the manifest, config
+  and metadata with its own writers in a scratch store
+  (`cache/recipe-lost-lock/<process>-<n>`, removed after). When they give
+  the pinned digest, the build goes on as with the lock and prints `  lock:
+  lost; this build's writers made the pinned digest DIGEST`; otherwise it
+  fails with both digests (`FILE: the lock FILE.lock is lost; this build
+  makes sha256:…, the recipe pins sha256:…: the recipe needs its lock; …`,
+  whether its writers or a step write other bytes) and tags nothing, `--keep-as` included. No lock is written
+  back; restore it from where the recipe was published. A lock folder that
+  is there and broken is refused.
 - The last line is `pinned NAME:TAG: digest DIGEST written into FILE, lock
   FILE.lock (N files)`. Exit status as `recipe build`'s.
 
 **Building a pinned recipe.** `recipe build` checks the lock before it reads
-any input (as `recipe check` does), runs the steps, then compares every
+any input (as `recipe check` does), looks up every output a step makes by
+its locked payload before it plans the steps (design/recipes.md §3.4,
+"found instead of made"; a found output is read and checked by its SHA-256,
+never taken by its name, and the steps and inputs only it needed are not
+run or read), runs the steps the other outputs need, then compares every
 output with its descriptor in the locked manifest, found through the locked
 config (media in order, extras by file name, ROMs and their chips): the
 decoded SHA-256 and size, then the stored SHA-256 and size after encoding
@@ -1884,7 +1918,12 @@ publishes with the recipe's `digest` ([design/recipes.md](design/recipes.md)
 §6.12, §9). The scratch store is `cache/recipe-conformance/<process>` in
 the store of `--store DIR` or the default store, and is removed when the
 run ends; the store keeps only the libraries' index caches. Drafts are
-listed and not built; work files are skipped.
+listed and not built; work files are skipped. No output is found instead
+of made: conformance proves that the steps still make the pinned bytes. A
+pinned recipe whose lock is lost is built as `recipe build` builds it
+(Pinning recipes): it conforms when this build makes the pinned digest,
+and is `not built: …` with the lost-lock message, both digests in it,
+otherwise.
 
 ```sh
 # this repository: the pinned open recipes of the corpus, from the fixtures

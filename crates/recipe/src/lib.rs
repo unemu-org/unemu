@@ -207,6 +207,29 @@ fn named(path: &Path, error: io::Error) -> io::Error {
 /// ([`files`]). An I/O error is a file that cannot be read at all, not a
 /// finding.
 pub fn check_paths(paths: &[PathBuf], providers: Providers<'_>) -> io::Result<Report> {
+    check_paths_with(paths, providers, false)
+}
+
+/// Whether a recipe has its lock folder beside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LockFolder {
+    Held,
+    /// No lock folder, or something else at its path: rule 8 refuses a
+    /// `digest`.
+    Missing,
+    /// Nothing at all at the lock's path, and the caller builds a pinned
+    /// recipe without it, with its own writers (recipes §7.2): rule 8 does
+    /// not refuse the recipe's own `digest` for want of a lock.
+    Lost,
+}
+
+/// [`check_paths`]; with `lost_lock`, a pinned recipe with nothing at its
+/// lock's path is not refused for that ([`LockFolder::Lost`]).
+fn check_paths_with(
+    paths: &[PathBuf],
+    providers: Providers<'_>,
+    lost_lock: bool,
+) -> io::Result<Report> {
     let files = files(paths)?;
     let mut findings = BTreeSet::new();
     let mut reports = Vec::new();
@@ -214,7 +237,14 @@ pub fn check_paths(paths: &[PathBuf], providers: Providers<'_>) -> io::Result<Re
     for path in &files {
         let bytes = std::fs::read(path).map_err(|e| named(path, e))?;
         let name = path.display().to_string();
-        let lock = PathBuf::from(format!("{name}.lock")).is_dir();
+        let folder = lock::dir(path);
+        let lock = if folder.is_dir() {
+            LockFolder::Held
+        } else if lost_lock && lock_lost(path) {
+            LockFolder::Lost
+        } else {
+            LockFolder::Missing
+        };
         reports.push(check_file(
             Some(path),
             &name,
@@ -231,6 +261,15 @@ pub fn check_paths(paths: &[PathBuf], providers: Providers<'_>) -> io::Result<Re
     })
 }
 
+/// Whether nothing at all lies at the path of the lock of the recipe at
+/// `recipe`: a lock that was lost, not one that is there and broken.
+pub(crate) fn lock_lost(recipe: &Path) -> bool {
+    matches!(
+        std::fs::symlink_metadata(lock::dir(recipe)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound
+    )
+}
+
 /// Check one file held in memory, which names no work file and has no lock.
 #[cfg(test)]
 pub(crate) fn check_text(name: &str, text: &str, providers: Providers<'_>) -> Report {
@@ -240,7 +279,7 @@ pub(crate) fn check_text(name: &str, text: &str, providers: Providers<'_>) -> Re
         name,
         text.as_bytes().to_vec(),
         providers,
-        false,
+        LockFolder::Missing,
         &mut BTreeMap::new(),
         &mut findings,
     );
@@ -362,14 +401,15 @@ pub enum Planned {
 
 /// Check one recipe file, as [`check_paths`] does, and plan a recipe that
 /// passes with `sources` ([`plan::plan`]); its bundled inputs are looked for
-/// beside it. An I/O error is a file that cannot be read at all, or one that
+/// beside it. A pinned recipe whose lock is lost is planned as a build
+/// builds it (recipes §7.2), and the plan says so. An I/O error is a file that cannot be read at all, or one that
 /// no longer reads as it did when it was checked (`InvalidData`).
 pub fn plan_path(
     path: &Path,
     providers: Providers<'_>,
     sources: plan::Sources<'_>,
 ) -> io::Result<Planned> {
-    let report = check_paths(&[path.to_path_buf()], providers)?;
+    let report = check_paths_with(&[path.to_path_buf()], providers, true)?;
     if !report.is_clean() {
         return Ok(Planned::Refused(report));
     }
@@ -381,12 +421,28 @@ pub fn plan_path(
     let Some(Document::Recipe(recipe)) = document(path)? else {
         return Err(changed(path));
     };
-    Ok(Planned::Plan(Box::new(plan::plan(
+    // A pinned recipe looks its outputs up by the payloads its lock names;
+    // the checks opened the lock already.
+    let lost = recipe.identity.digest.is_some() && lock_lost(path);
+    let locked = match (&recipe.identity.digest, recipe.identity.platform.as_ref()) {
+        _ if lost => Vec::new(),
+        (Some(digest), Some(platform)) => match providers.get(&platform.value) {
+            Some(provider) => lock::open(&digest.value, &lock::dir(path))
+                .map(|locked| lock::payloads(&recipe, &locked, provider))
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
+            None => Vec::new(),
+        },
+        _ => Vec::new(),
+    };
+    let mut plan = plan::plan_pinned(
         &recipe,
         &path.display().to_string(),
         path.parent(),
         sources,
-    ))))
+        &locked,
+    );
+    plan.lock_lost = lost.then(|| lock::dir(path));
+    Ok(Planned::Plan(Box::new(plan)))
 }
 
 /// The document a recipe text holds, for tests that plan without a
@@ -407,10 +463,12 @@ pub(crate) enum Opened {
 }
 
 /// Check one recipe file, as [`check_paths`] does, and read a recipe that
-/// passes, with its work file. An I/O error is a file that cannot be read,
-/// or one that no longer reads as it did when it was checked.
+/// passes, with its work file. A pinned recipe whose lock is lost is not
+/// refused for that: a build makes it with its own writers (recipes §7.2).
+/// An I/O error is a file that cannot be read, or one that no longer reads
+/// as it did when it was checked.
 pub(crate) fn load(path: &Path, providers: Providers<'_>) -> io::Result<Opened> {
-    let report = check_paths(&[path.to_path_buf()], providers)?;
+    let report = check_paths_with(&[path.to_path_buf()], providers, true)?;
     if !report.is_clean() {
         return Ok(Opened::Refused(report));
     }
@@ -561,7 +619,7 @@ fn check_file(
     name: &str,
     bytes: Vec<u8>,
     providers: Providers<'_>,
-    lock: bool,
+    folder: LockFolder,
     works: &mut BTreeMap<PathBuf, Option<Loaded>>,
     findings: &mut BTreeSet<Finding>,
 ) -> FileReport {
@@ -586,6 +644,13 @@ fn check_file(
             }
         }
         Some(Document::Recipe(recipe)) => {
+            // A lost lock is tolerated only for a recipe that is pinned
+            // itself; then it counts as held, as it does for a build.
+            let lock = match folder {
+                LockFolder::Held => true,
+                LockFolder::Lost => recipe.identity.digest.is_some(),
+                LockFolder::Missing => false,
+            };
             report.what = Some(match recipe.kind {
                 model::Kind::Media => What::Media,
                 model::Kind::Firmware => What::Firmware,
@@ -641,7 +706,8 @@ fn check_file(
             // Rule 8, points 1 to 3 of recipes §3.8: only for a recipe that
             // passes everything else, so that a finding is not repeated as a
             // disagreement with its lock.
-            if let (Some(path), Some(digest), true) = (path, recipe.identity.digest.as_ref(), lock)
+            if let (Some(path), Some(digest), LockFolder::Held) =
+                (path, recipe.identity.digest.as_ref(), folder)
             {
                 if sink.findings.is_empty() {
                     let work = recipe.work.as_ref().and_then(|id| {
@@ -740,7 +806,7 @@ mod tests {
             "x.media.toml",
             b"a = 1\nb = \"\xff\"\n".to_vec(),
             Providers(&[]),
-            false,
+            LockFolder::Missing,
             &mut BTreeMap::new(),
             &mut BTreeSet::new(),
         );
@@ -751,7 +817,7 @@ mod tests {
             "x.media.toml",
             vec![b'#'; MAX_FILE + 1],
             Providers(&[]),
-            false,
+            LockFolder::Missing,
             &mut BTreeMap::new(),
             &mut findings,
         );

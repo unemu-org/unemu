@@ -14,8 +14,11 @@
 //! **Found instead of made.** A member of an `unpack` step that states its
 //! size and SHA-256 is looked for first. An archive is needed only for the
 //! members still missing; if every member an output reads is found, the
-//! archive is not needed and is not looked for. Other steps make new bytes
-//! and always run when an output needs them.
+//! archive is not needed and is not looked for. The same holds one level
+//! further for a pinned recipe ([`plan_pinned`]): an output a step makes
+//! is looked for by the payload its lock names, and when it is found, the
+//! steps and inputs only it needed are not needed. Otherwise a step makes
+//! new bytes and runs when an output needs them.
 //!
 //! **Near misses** are reported for a value not found and never used: a
 //! file or member with one of its names and another size or hash, and one
@@ -190,13 +193,51 @@ pub struct Plan {
     pub kind: Kind,
     pub name: Option<String>,
     pub store: Option<PathBuf>,
+    /// A pinned recipe whose lock is lost (recipes §7.2): the lock's path.
+    /// A build makes the lock's files with its own writers and accepts only
+    /// the pinned digest.
+    pub lock_lost: Option<PathBuf>,
     /// What the store's index could not read or keep.
     pub store_warnings: Vec<String>,
     pub libraries: Vec<LibraryPlan>,
     pub inputs: Vec<InputPlan>,
     pub members: Vec<MemberPlan>,
+    /// A pinned recipe's outputs looked for by their locked payloads; empty
+    /// for a draft.
+    pub payloads: Vec<PayloadPlan>,
     pub steps: Vec<StepPlan>,
     pub outputs: Vec<OutputPlan>,
+}
+
+/// The payload a pinned recipe's lock names for one output file, which the
+/// plan looks for before it plans the steps that make it (recipes §3.4,
+/// "found instead of made").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LockedOutput {
+    /// `medium`, `rom` or `extra`.
+    pub kind: &'static str,
+    /// The output's place among the recipe's outputs of its kind.
+    pub index: usize,
+    /// The file of the output: 0, or a ROM's chip in order.
+    pub part: usize,
+    /// The output's file name, a hint for the library search.
+    pub name: String,
+    /// The decoded size and SHA-256 of the locked payload.
+    pub size: u64,
+    pub sha256: String,
+}
+
+/// A locked output looked for before it is made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PayloadPlan {
+    pub kind: &'static str,
+    pub id: String,
+    pub index: usize,
+    pub part: usize,
+    pub name: String,
+    /// The reference the output is made from when it is not found.
+    pub from: String,
+    pub value: Value,
 }
 
 /// What [`plan`] needs to know of a step.
@@ -218,6 +259,8 @@ struct Planner<'r, 's> {
 /// attachment has it.
 struct OutputRef {
     kind: &'static str,
+    /// The place among the recipe's outputs of its kind.
+    index: usize,
     id: String,
     label: String,
     from: Vec<String>,
@@ -227,9 +270,10 @@ struct OutputRef {
 fn outputs(recipe: &Recipe) -> Vec<OutputRef> {
     let mut out = Vec::new();
     let value = |v: &Option<crate::model::At<String>>| v.as_ref().map(|v| v.value.clone());
-    for medium in &recipe.media {
+    for (index, medium) in recipe.media.iter().enumerate() {
         out.push(OutputRef {
             kind: "medium",
+            index,
             id: value(&medium.id).unwrap_or_default(),
             label: value(&medium.label)
                 .or_else(|| value(&medium.id))
@@ -245,15 +289,17 @@ fn outputs(recipe: &Recipe) -> Vec<OutputRef> {
         };
         out.push(OutputRef {
             kind: "rom",
+            index: out.iter().filter(|o| o.kind == "rom").count(),
             id: value(&rom.id).unwrap_or_default(),
             label: value(&rom.id).unwrap_or_default(),
             from,
             optional: false,
         });
     }
-    for extra in &recipe.extras {
+    for (index, extra) in recipe.extras.iter().enumerate() {
         out.push(OutputRef {
             kind: "extra",
+            index,
             id: value(&extra.id).unwrap_or_default(),
             label: value(&extra.file_name)
                 .or_else(|| value(&extra.id))
@@ -267,6 +313,7 @@ fn outputs(recipe: &Recipe) -> Vec<OutputRef> {
         for extra in &attachment.extras {
             out.push(OutputRef {
                 kind: "attachment",
+                index: 0,
                 id: format!("{id}/{}", value(&extra.id).unwrap_or_default()),
                 label: format!(
                     "{}: {}",
@@ -391,6 +438,40 @@ impl<'r, 's> Planner<'r, 's> {
         found
     }
 
+    /// Whether the value `reference` names is made by a step and is not a
+    /// member the recipe states the size and hash of, which the member
+    /// search looks for already: the outputs worth looking for by their
+    /// locked payload.
+    fn made_by_step(&self, reference: &str) -> bool {
+        let (name, member) = split(reference);
+        match (self.steps.get(name).map(|info| info.op), member) {
+            (None, _) => false,
+            (Some(Op::Unpack { members, .. }), Some(path)) => !members
+                .iter()
+                .any(|m| m.path.value == path && m.size.is_some() && m.sha256.is_some()),
+            (Some(_), _) => true,
+        }
+    }
+
+    /// Every step and input `reference` is made from, members and found
+    /// values aside: what a found output makes unnecessary.
+    fn reach(&self, reference: &str, into: &mut BTreeSet<String>, depth: usize) {
+        let (name, _) = split(reference);
+        into.insert(name.to_owned());
+        if depth > 64 {
+            return;
+        }
+        let operand = match self.steps.get(name).map(|info| info.op) {
+            Some(Op::Unpack { archive, .. }) => archive.as_ref(),
+            Some(Op::Fat { tree, .. }) => tree.as_ref(),
+            Some(Op::Text { text }) => text.as_ref(),
+            _ => None,
+        };
+        if let Some(operand) = operand {
+            self.reach(&operand.value, into, depth + 1);
+        }
+    }
+
     /// The inputs a reference needs, after found members are taken out. The
     /// steps it reaches are added to `steps`, and each one's own needs kept
     /// in `step_needs`.
@@ -451,6 +532,22 @@ impl<'r, 's> Planner<'r, 's> {
 /// Plan `recipe`, read from `file` (as named, for the report), whose bundled
 /// inputs lie in `bundle`.
 pub fn plan(recipe: &Recipe, file: &str, bundle: Option<&Path>, sources: Sources<'_>) -> Plan {
+    plan_pinned(recipe, file, bundle, sources, &[])
+}
+
+/// [`plan`] for a pinned recipe whose lock names the payloads `locked`:
+/// each output a step makes is looked for by its locked payload first, in
+/// the same sources and order as an input; a found output needs no step and
+/// no input (recipes §3.4, "found instead of made"). An output that refers
+/// to an input, or to a member whose size and hash the recipe states, is
+/// not looked for again: its own search is the same search.
+pub fn plan_pinned(
+    recipe: &Recipe,
+    file: &str,
+    bundle: Option<&Path>,
+    sources: Sources<'_>,
+    locked: &[LockedOutput],
+) -> Plan {
     let store = sources.store.map(|s| s.root.clone());
     let store_warnings = sources
         .store
@@ -470,13 +567,41 @@ pub fn plan(recipe: &Recipe, file: &str, bundle: Option<&Path>, sources: Sources
         step_needs: BTreeMap::new(),
     };
 
-    // What each output needs: its inputs after found members are taken out.
+    // What each output needs: its inputs after found outputs and found
+    // members are taken out.
     let outputs = outputs(recipe);
     let mut needed: Vec<BTreeSet<String>> = Vec::new();
     let mut reached = BTreeSet::new();
+    let mut payloads = Vec::new();
+    // The steps and inputs found outputs are made from.
+    let mut spared = BTreeSet::new();
     for output in &outputs {
         let mut inputs = BTreeSet::new();
-        for from in &output.from {
+        for (part, from) in output.from.iter().enumerate() {
+            let wanted = locked
+                .iter()
+                .find(|l| l.kind == output.kind && l.index == output.index && l.part == part);
+            if let Some(wanted) = wanted.filter(|_| planner.made_by_step(from)) {
+                let hints = Hints {
+                    names: vec![wanted.name.clone()],
+                    ..Hints::default()
+                };
+                let value = planner.search(wanted.size, &wanted.sha256, &hints, None);
+                let found = value.found.is_some();
+                payloads.push(PayloadPlan {
+                    kind: output.kind,
+                    id: output.id.clone(),
+                    index: output.index,
+                    part,
+                    name: wanted.name.clone(),
+                    from: from.clone(),
+                    value,
+                });
+                if found {
+                    planner.reach(from, &mut spared, 0);
+                    continue;
+                }
+            }
             inputs.extend(planner.needs(from, &mut reached, 0));
         }
         needed.push(inputs);
@@ -562,7 +687,7 @@ pub fn plan(recipe: &Recipe, file: &str, bundle: Option<&Path>, sources: Sources
             Form::Files(files) => files.iter().all(|(_, v)| v.found.is_some()),
         };
         let status = if !wanted {
-            not_needed(recipe, &id, &planner.members)
+            not_needed(recipe, &id, &planner.members, &spared)
         } else if complete {
             Status::Ready
         } else {
@@ -613,7 +738,11 @@ pub fn plan(recipe: &Recipe, file: &str, bundle: Option<&Path>, sources: Sources
             .unwrap_or_default();
         let mut detail = None;
         let status = if !reached.contains(&id) {
-            Status::NotNeeded("no output uses it".into())
+            Status::NotNeeded(if spared.contains(&id) {
+                "the outputs it makes were found".into()
+            } else {
+                "no output uses it".into()
+            })
         } else {
             let blocked: Vec<String> = planner
                 .step_needs
@@ -697,6 +826,7 @@ pub fn plan(recipe: &Recipe, file: &str, bundle: Option<&Path>, sources: Sources
         kind: recipe.kind,
         name: recipe.identity.name.as_ref().map(|n| n.value.clone()),
         store,
+        lock_lost: None,
         store_warnings,
         libraries: planner
             .sources
@@ -709,6 +839,7 @@ pub fn plan(recipe: &Recipe, file: &str, bundle: Option<&Path>, sources: Sources
             .collect(),
         inputs,
         members,
+        payloads,
         steps,
         outputs,
     }
@@ -731,11 +862,13 @@ pub(crate) fn file_sha256(path: &Path) -> std::io::Result<String> {
 }
 
 /// Why an input no output needs is not needed: it is the archive of unpack
-/// steps whose members were all found, or nothing uses it.
+/// steps whose members were all found, the outputs made from it were
+/// found, or nothing uses it.
 fn not_needed(
     recipe: &Recipe,
     id: &str,
     members: &BTreeMap<(String, String), Option<Value>>,
+    spared: &BTreeSet<String>,
 ) -> Status {
     let mut found = 0;
     for step in &recipe.steps {
@@ -755,6 +888,8 @@ fn not_needed(
             "its {found} member{} were found",
             if found == 1 { "" } else { "s" }
         )
+    } else if spared.contains(id) {
+        "the outputs made from it were found".into()
     } else {
         "no output uses it".into()
     })
@@ -844,6 +979,12 @@ impl Plan {
         if self.libraries.is_empty() {
             out.push_str("libraries: none\n");
         }
+        if let Some(lock) = &self.lock_lost {
+            out.push_str(&format!(
+                "lock: {} is lost; a build makes its files with this build's writers and accepts only the pinned digest\n",
+                lock.display()
+            ));
+        }
         out.push_str("inputs:\n");
         for input in &self.inputs {
             let optional = if input.optional { " (optional)" } else { "" };
@@ -911,6 +1052,16 @@ impl Plan {
                 }
             }
         }
+        if !self.payloads.is_empty() {
+            out.push_str("outputs found instead of made:\n");
+            for payload in &self.payloads {
+                out.push_str(&format!("  {}: ", payload.what()));
+                match &payload.value.found {
+                    Some(found) => out.push_str(&format!("found {found}\n")),
+                    None => out.push_str(&format!("not found, made from {}\n", payload.from)),
+                }
+            }
+        }
         out.push_str("steps:\n");
         for step in &self.steps {
             out.push_str(&format!(
@@ -948,8 +1099,40 @@ impl Plan {
         )
     }
 
-    /// The JSON of the plan: one object, keys sorted.
+    /// The JSON of the plan: one object, keys sorted. A pinned recipe's
+    /// plan adds `payloads`, its outputs looked for by their locked
+    /// payloads.
     pub fn json(&self) -> Json {
+        let mut object = self.json_common();
+        if let (Json::Object(map), Some(lock)) = (&mut object, &self.lock_lost) {
+            map.insert("lock_lost".into(), json!(lock.display().to_string()));
+        }
+        if let (Json::Object(map), false) = (&mut object, self.payloads.is_empty()) {
+            map.insert(
+                "payloads".into(),
+                Json::Array(
+                    self.payloads
+                        .iter()
+                        .map(|p| {
+                            json!({
+                                "kind": p.kind,
+                                "id": p.id,
+                                "part": p.part,
+                                "name": p.name,
+                                "from": p.from,
+                                "size": p.value.size,
+                                "sha256": p.value.sha256,
+                                "found": p.value.found.as_ref().map(found_json),
+                            })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        object
+    }
+
+    fn json_common(&self) -> Json {
         json!({
             "recipe": self.file,
             "kind": self.kind.key(),
@@ -1008,6 +1191,14 @@ impl Plan {
                 })
             }).collect::<Vec<_>>(),
         })
+    }
+}
+
+impl PayloadPlan {
+    /// The output, as the plan and the build name it: `medium disk-1
+    /// (DISK1.IMG)`; a ROM's chips by their file names.
+    pub fn what(&self) -> String {
+        format!("{} {} ({})", self.kind, self.id, self.name)
     }
 }
 
