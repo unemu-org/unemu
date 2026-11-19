@@ -5,6 +5,15 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — The machine-file lowering asks its reader for everything of the host:**
+  (`upc-dfs.43.1`, stage B step S1; design/core-contract.md §14.3). No behaviour change.
+  `ImageReader` answers an image's length without reading it, whether a path is a reserved
+  retention name, and the check of journal paths against the inputs; `verify_journal_base`
+  answers a length and a digest instead of the media crate's verified base. `lower.rs` now names
+  no `std::fs`, `std::env` or `media`; `FileImageReader` and the metadata reader of
+  `describe` live in `lib.rs`. A test lowers a machine with journalled media from a reader in
+  memory whose files exist nowhere. Assembly's `MachineConfig::validate` still resolves journal
+  folders on the host (§12.10 steps 10 and 11).
 - **2026-11-19 — The player's status line no longer clips its light's word:** (`upc-6cj`;
   design/mockups/player.html "Status line"). The light cell had a fixed 68 px, narrower than its
   light, gap and "Running" together, so the platform name drew over the last letter ("Runninc"),

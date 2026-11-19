@@ -5471,12 +5471,14 @@ the firmware-package lookup, `load*`, `LoadedMachine`, `FileImageReader`).
 payload-type table, the session, machines, import, publication,
 templates, recipes and the compatibility rows.
 
-Three places of the lowering touch the host today and go behind
+Four places of the lowering touch the host today and go behind
 `ImageReader` before it can move [REPO: `crates/machine-file/src/lower.rs`]:
 two `std::fs::metadata` calls that size a ROM file; `paths::is_retention_input`,
-which canonicalises a path; and `ImageReader::verify_journal_base`, which
-returns `media::VerifiedBase` although the lowering reads only its length
-and digest.
+which canonicalises a path; `paths::validate_journals`, which resolves the
+journal and input paths on the host; and `ImageReader::verify_journal_base`,
+which returns `media::VerifiedBase` although the lowering reads only its
+length and digest (corrected 2026-11-19, S1: the plan said three and missed
+`validate_journals`).
 
 #### 14.2.2. The launch document
 
@@ -5766,7 +5768,7 @@ Beads that edit the same files go one after the other, in either order:
 | S11, S12 | `upc-dfs.32`, `upc-dfs.33`, `upc-dfs.39` (steps 5, 6, 13), the recipe track's command beads | `cli-pc`, the usage text and `command_line_pin` |
 | S13 | `upc-dfs.31` (step 4) | strings in `shell.rs`, `main.rs` |
 
-**S1. The lowering asks its reader for everything of the host.**
+**S1. The lowering asks its reader for everything of the host.** **Done.**
 
 - **Scope.** Inside `machine-file`; no crate changes. `ImageReader` gains
   two methods with defaults that keep today's answers for a synthetic
@@ -5783,6 +5785,33 @@ Beads that edit the same files go one after the other, in either order:
   files pass. `grep` finds no `std::fs`, `std::env` or `media::` in
   `lower.rs` outside its tests. A ROM's size in the metadata mode is the
   same answer as before, so a Settings dialog shows the same diagnostic.
+- **As landed.** `ImageReader` gained three methods, not two:
+  `image_length` (default: cannot tell, so the size stays pending),
+  `is_reserved_retention_name` (default: the `.retain-` name rule alone)
+  and `validate_journal_paths` (default: nothing to check, which is safe
+  only for a reader that cannot produce a journal; the trait says so). The third is a
+  fourth host touch the plan did not list: the lowering called
+  `paths::validate_journals`, which resolves journal and input paths on the
+  host; a host reader now answers it. `verify_journal_base` returns a
+  `JournalBase` (length and SHA-256, `From<&media::VerifiedBase>`). A test
+  per host reader (`FileImageReader`, the reader of `load_for_assembly`,
+  `pc-image`'s import reader) refuses a journal that aliases an input.
+  `FileImageReader` and the reader of
+  `describe` moved to `lib.rs`; `describe` is `describe_with` over the
+  host's metadata reader, and the context that words diagnostics after
+  lowering uses a reader that reads nothing. The `.retain-` rule is copied
+  into `lower.rs`, and a test in `paths.rs` holds it equal to the
+  journal's. `pc-image`'s import reader (`import.rs`, not in the file list)
+  answers like `FileImageReader`; the provider's `Reader` needed no change,
+  since it names logical assets, lowers no journal and never runs the
+  metadata mode. For a synthetic reader the retention check no longer
+  resolves its paths on the host, which only mattered for a host file
+  reached through a synthetic path. MEASURED: `lower.rs` names no
+  `std::fs`, `std::env` or `media::` outside its tests. A test lowers a
+  machine with a journalled floppy and CMOS from a reader in memory, its
+  images in a folder no host has; `MachineConfig::validate` (assembly)
+  still resolves a journal's folder on the host, which is §12.10 steps 10
+  and 11's.
 
 **S2. `pc-config`: the machine schema and its lowering move.**
 

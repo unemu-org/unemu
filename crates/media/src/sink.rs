@@ -154,6 +154,11 @@ impl JournalMedia {
     }
 
     /// Reserved retention names cannot be mounted as an input or journal.
+    ///
+    /// `machine-file` keeps a copy of this rule (`has_retention_marker` in
+    /// its lowering) so that the lowering needs no journal; its test
+    /// `the_lowering_reserves_the_journal_retention_names` holds the two
+    /// equal. Change both together.
     pub fn is_retention_temp_name(path: &Path) -> bool {
         path.file_name().is_some_and(|name| {
             name.as_encoded_bytes()

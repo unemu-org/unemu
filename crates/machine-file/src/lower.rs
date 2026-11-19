@@ -23,19 +23,24 @@ use crate::{schema::v1, MachineFile, Origin, Origins};
 
 const MIB: u64 = 0x100000;
 
-/// Image I/O seam. Inline images return bytes; journal disks return a verified source.
+/// Image I/O seam: everything the lowering asks of the host goes through it.
 ///
 /// Lowering verifies each referenced image through this seam, including
 /// synthetic bytes supplied by tests. Volatile/readonly bytes are retained inline;
 /// catalogues and journal bases retain paths and the verified digest for assembly's mount check.
-/// Journal reads require a file-backed reader so the journal remains bound to a
+/// Journal reads require a reader that can verify a base, so the journal remains bound to a
 /// reproducible immutable base. Paths resolve against the defining layer's directory.
+///
+/// The lowering itself opens no file and asks the host nothing: a reader
+/// over the host file system is `FileImageReader`; a reader that serves
+/// every answer from memory lowers the same document without one.
 pub trait ImageReader {
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>>;
 
-    /// Verify a disk without returning a whole-image buffer. Synthetic readers
-    /// refuse persistent media; frontends can retain the verified descriptor.
-    fn verify_journal_base(&mut self, _path: &Path) -> io::Result<media::VerifiedBase> {
+    /// Verify a disk without returning a whole-image buffer, and answer its
+    /// length and SHA-256. Synthetic readers refuse persistent media; a
+    /// frontend's reader keeps whatever verified handle it opened itself.
+    fn verify_journal_base(&mut self, _path: &Path) -> io::Result<JournalBase> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "journal mode requires a file-backed image reader",
@@ -50,32 +55,61 @@ pub trait ImageReader {
             "journal mode requires a file-backed image reader",
         ))
     }
+
+    /// The length of an image without reading it. Only `MachineFile::describe`
+    /// asks, to place a ROM whose size no catalogue entry states; a reader
+    /// that cannot tell leaves that size pending.
+    fn image_length(&self, _path: &Path) -> io::Result<u64> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this image reader cannot size an image without reading it",
+        ))
+    }
+
+    /// Whether an image path is a name the journal reserves for its
+    /// retention temporaries, which no machine may mount. The default looks
+    /// at the name alone; a host reader also resolves links.
+    fn is_reserved_retention_name(&self, path: &Path) -> bool {
+        has_retention_marker(path)
+    }
+
+    /// Check the lowered machine's journal paths against its inputs: the
+    /// image paths read and every inheritance layer. The paths are host
+    /// paths only for a host reader, which checks that no journal is a
+    /// directory, aliases an input or claims an input as its temporary
+    /// file. Any other reader has nothing on the host to check.
+    ///
+    /// The default accepts every journal, which is safe only for a reader
+    /// that cannot produce one. A reader that overrides `verify_journal_base`
+    /// or `read_journal_base` over host files must override this too, or a
+    /// journal could overwrite one of the machine's own inputs.
+    fn validate_journal_paths(
+        &self,
+        _config: &MachineConfig,
+        _origins: &Origins,
+        _images: &[PathBuf],
+    ) -> Result<(), ConfigError> {
+        Ok(())
+    }
 }
 
-/// Read inline images and verify disk sources with bounded buffers.
-pub struct FileImageReader;
+/// The length and SHA-256 of a verified journal base: all the lowering
+/// needs of it. The reader that verified the base keeps the base itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JournalBase {
+    pub length: u64,
+    pub sha256: [u8; 32],
+}
 
-impl ImageReader for FileImageReader {
-    fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
-        std::fs::read(path)
-    }
-
-    fn verify_journal_base(&mut self, path: &Path) -> io::Result<media::VerifiedBase> {
-        media::VerifiedBase::open(path)
-    }
-
-    fn read_journal_base(&mut self, path: &Path) -> io::Result<Vec<u8>> {
-        use std::io::Read;
-        // Only the small CMOS store uses the byte-backed journal path.
-        let mut bytes = Vec::new();
-        std::fs::File::open(path)?
-            .take(513)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() > 512 {
-            return Err(io::Error::other("NVRAM image exceeds 512 bytes"));
-        }
-        Ok(bytes)
-    }
+/// Whether a file name carries the journal's reserved retention marker,
+/// `.retain-`. The journal owns this rule; the copy keeps the lowering free
+/// of the journal, and a test holds the two equal.
+pub(crate) fn has_retention_marker(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| {
+        name.as_encoded_bytes()
+            .windows(8)
+            .any(|part| part == b".retain-")
+    })
 }
 
 /// A completeness, image-integrity, unsupported-feature or assembly diagnostic.
@@ -183,7 +217,7 @@ impl<R: ImageReader> Context<'_, R> {
                 path.display()
             )
         };
-        if crate::paths::is_retention_input(&path) {
+        if self.reader.is_reserved_retention_name(&path) {
             return Err(self.error(
                 field,
                 format!("image {description} uses a reserved retention-temporary name"),
@@ -192,7 +226,7 @@ impl<R: ImageReader> Context<'_, R> {
         let base = self.reader.verify_journal_base(&path).map_err(|error| {
             self.error(field, format!("cannot read image {description}: {error}"))
         })?;
-        let digest = base.identity().base_digest;
+        let digest = base.sha256;
         let actual = format!("{:x}", sha2::digest::Output::<Sha256>::from(digest));
         if let Some(pin) = pin {
             if actual != pin.as_str() {
@@ -207,7 +241,7 @@ impl<R: ImageReader> Context<'_, R> {
             }
         }
         self.image_paths.push(path);
-        Ok((base.identity().base_length, digest))
+        Ok((base.length, digest))
     }
 
     fn image(
@@ -231,7 +265,7 @@ impl<R: ImageReader> Context<'_, R> {
                 path.display()
             )
         };
-        if crate::paths::is_retention_input(&path) {
+        if self.reader.is_reserved_retention_name(&path) {
             return Err(self.error(
                 field,
                 format!("image {description} uses a reserved retention-temporary name"),
@@ -370,20 +404,22 @@ impl<R: ImageReader> Context<'_, R> {
                 .iter()
                 .enumerate()
                 .map(|(index, part)| {
-                    std::fs::metadata(
-                        self.origins
-                            .image_path(&format!("{field}.parts[{index}].image"), &part.image),
-                    )
-                    .ok()
-                    .map(|meta| part.offset.saturating_add(meta.len().saturating_mul(2)))
+                    self.reader
+                        .image_length(
+                            &self
+                                .origins
+                                .image_path(&format!("{field}.parts[{index}].image"), &part.image),
+                        )
+                        .ok()
+                        .map(|length| part.offset.saturating_add(length.saturating_mul(2)))
                 })
                 .collect::<Option<Vec<_>>>()
                 .and_then(|sizes| sizes.into_iter().max())
         } else {
             rom.image.as_ref().and_then(|image| {
-                std::fs::metadata(self.origins.image_path(&format!("{field}.image"), image))
+                self.reader
+                    .image_length(&self.origins.image_path(&format!("{field}.image"), image))
                     .ok()
-                    .map(|meta| meta.len())
             })
         };
 
@@ -1560,7 +1596,9 @@ fn lower_tracked_mode<R: ImageReader>(
         config
             .validate()
             .map_err(|error| context.validation_error(error))?;
-        crate::paths::validate_journals(&config, origins, &context.image_paths)
+        context
+            .reader
+            .validate_journal_paths(&config, origins, &context.image_paths)
             .map_err(|error| context.validation_error(error))?;
         assembly::check_option_rom_catalogue(&config, options)
             .map_err(|error| context.validation_error(error))?;
@@ -1596,23 +1634,18 @@ fn hex_digit(byte: u8) -> u8 {
     }
 }
 
-struct MetadataReader;
-impl ImageReader for MetadataReader {
-    fn read(&mut self, _: &Path) -> io::Result<Vec<u8>> {
-        Err(io::Error::other("metadata lowering does not read images"))
-    }
-}
-
 impl MachineFile {
-    /// Describe resolved settings through the normal lowering rules without reading or
-    /// hashing image bytes or opening journals. Unknown extents stay pending; known
-    /// catalogue sizes or file metadata determine ROM placement. This draft cannot
-    /// authorize execution. See `backlog/docs/design/machine-images.md` §6.
-    pub fn describe(&self, origins: &Origins) -> Result<assembly::capabilities::Draft, LowerError> {
+    /// `describe` with the reader that sizes a ROM no catalogue entry states.
+    /// The reader is asked for lengths only; nothing is read, hashed or opened.
+    pub(crate) fn describe_with<R: ImageReader>(
+        &self,
+        origins: &Origins,
+        reader: &mut R,
+    ) -> Result<assembly::capabilities::Draft, LowerError> {
         let (config, diagnostics) = lower_tracked_mode(
             self,
             origins,
-            &mut MetadataReader,
+            reader,
             assembly::AssemblyOptions::default(),
             true,
         )?;
@@ -1674,6 +1707,7 @@ impl MachineFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::FileImageReader;
 
     fn context<'a>(
         origins: &'a Origins,
@@ -2627,6 +2661,15 @@ mod tests {
     }
 }
 
+/// The reader of a context that only words a diagnostic after lowering.
+struct NoImages;
+
+impl ImageReader for NoImages {
+    fn read(&mut self, _: &Path) -> io::Result<Vec<u8>> {
+        Err(io::Error::other("a diagnostic reads no image"))
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct AssemblyDiagnostics {
     bios_parts: bool,
@@ -2653,7 +2696,7 @@ impl AssemblyDiagnostics {
     }
 
     pub(crate) fn drive_error(&self, index: usize, message: impl Into<String>) -> LowerError {
-        let mut reader = crate::FileImageReader;
+        let mut reader = NoImages;
         let context = self.context(&mut reader);
         match self.drives.get(index) {
             Some(drive) => context.error(&drive.field, message),
@@ -2665,7 +2708,7 @@ impl AssemblyDiagnostics {
         }
     }
 
-    fn context<'a>(&'a self, reader: &'a mut FileImageReader) -> Context<'a, FileImageReader> {
+    fn context<'a>(&'a self, reader: &'a mut NoImages) -> Context<'a, NoImages> {
         Context {
             origins: &self.origins,
             reader,
@@ -2682,12 +2725,12 @@ impl AssemblyDiagnostics {
     }
 
     pub(crate) fn nvram_error(&self, field: &str, message: impl Into<String>) -> LowerError {
-        let mut reader = crate::FileImageReader;
+        let mut reader = NoImages;
         self.context(&mut reader).error(field, message)
     }
 
     pub(crate) fn map(&self, error: assembly::AssemblyError) -> LowerError {
-        let mut reader = crate::FileImageReader;
+        let mut reader = NoImages;
         let context = self.context(&mut reader);
         match error {
             assembly::AssemblyError::Config(error) => context.validation_error(error),
@@ -2712,6 +2755,7 @@ impl AssemblyDiagnostics {
 #[cfg(test)]
 mod metadata_tests {
     use super::*;
+    use crate::FileImageReader;
     use assembly::capabilities::{self as caps, Value};
 
     #[test]
@@ -2777,5 +2821,194 @@ mod metadata_tests {
         assert_eq!(validation.config.system_bios_image, Some(1));
         assert_eq!(validation.config.images.len(), 2);
         assert_eq!(validation.config.images[0].base, 0xC8000);
+    }
+}
+
+#[cfg(test)]
+mod reader_tests {
+    //! The lowering asks its reader for everything of the host: a reader that
+    //! answers from memory lowers a machine whose files exist nowhere.
+    use std::cell::RefCell;
+
+    use super::*;
+
+    /// A folder no host has, so any host access would fail or find nothing.
+    const ROOT: &str = "/nonexistent-machine-file-memory-reader";
+
+    #[derive(Default)]
+    struct Memory {
+        images: BTreeMap<PathBuf, Vec<u8>>,
+        reserved: Vec<PathBuf>,
+        asked: RefCell<Vec<String>>,
+    }
+
+    impl Memory {
+        fn with(mut self, name: &str, bytes: Vec<u8>) -> Self {
+            self.images.insert(Path::new(ROOT).join(name), bytes);
+            self
+        }
+        fn get(&self, question: &str, path: &Path) -> io::Result<&Vec<u8>> {
+            self.asked
+                .borrow_mut()
+                .push(format!("{question} {}", path.display()));
+            self.images
+                .get(path)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not in memory"))
+        }
+    }
+
+    impl ImageReader for Memory {
+        fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
+            self.get("read", path).cloned()
+        }
+        fn verify_journal_base(&mut self, path: &Path) -> io::Result<JournalBase> {
+            let bytes = self.get("verify", path)?;
+            Ok(JournalBase {
+                length: bytes.len() as u64,
+                sha256: Sha256::digest(bytes).into(),
+            })
+        }
+        fn read_journal_base(&mut self, path: &Path) -> io::Result<Vec<u8>> {
+            self.get("journal base", path).cloned()
+        }
+        fn image_length(&self, path: &Path) -> io::Result<u64> {
+            self.get("length", path).map(|bytes| bytes.len() as u64)
+        }
+        fn is_reserved_retention_name(&self, path: &Path) -> bool {
+            self.asked
+                .borrow_mut()
+                .push(format!("reserved {}", path.display()));
+            self.reserved.iter().any(|reserved| reserved == path)
+        }
+        fn validate_journal_paths(
+            &self,
+            config: &MachineConfig,
+            _: &Origins,
+            images: &[PathBuf],
+        ) -> Result<(), ConfigError> {
+            self.asked.borrow_mut().push(format!(
+                "journals of {} drives over {} images",
+                config.drives.len(),
+                images.len()
+            ));
+            Ok(())
+        }
+    }
+
+    /// Journals live where the host can put them: `MachineConfig::validate`
+    /// (assembly) still resolves a journal's folder on the host. Nothing is
+    /// created there; every image and base comes from memory.
+    fn journals() -> PathBuf {
+        std::env::temp_dir()
+    }
+
+    fn machine() -> (MachineFile, Origins) {
+        let path = Path::new(ROOT).join("machine.toml");
+        let journals = journals();
+        let text = format!(
+            "schema=1\n[board]\nmodel='ibm-5170'\n[board.rtc]\nnvram={{image='cmos.bin',write='journal',journal='{0}/memory-reader-cmos.upfj'}}\n[firmware.bios]\nimage='bios.bin'\nprovides=['floppy']\n[[card]]\nkind='fdc-765'\n[[card.drives]]\nunit=0\ntype='360K'\nimage='base.img'\nwrite='journal'\njournal='{0}/memory-reader-disk.upfj'\n",
+            journals.display()
+        );
+        (
+            crate::parse_toml(&path, &text).unwrap(),
+            Origins::from_toml(&path, &text).unwrap(),
+        )
+    }
+
+    fn memory() -> Memory {
+        Memory::default()
+            .with("bios.bin", vec![0xF4; 0x8000])
+            .with("cmos.bin", vec![0x5A; 64])
+            .with("base.img", vec![0xE5; 368_640])
+    }
+
+    #[test]
+    fn a_reader_that_answers_everything_lowers_without_the_host() {
+        assert!(!Path::new(ROOT).exists());
+        let (file, origins) = machine();
+        let mut reader = memory();
+        let config = lower(
+            &file,
+            &origins,
+            &mut reader,
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+        )
+        .unwrap();
+        let root = Path::new(ROOT);
+        let drive = &config.drives[0];
+        assert_eq!(drive.image, ImageSource::File(root.join("base.img")));
+        assert_eq!(
+            drive.expected_sha256,
+            Some(Sha256::digest(vec![0xE5; 368_640]).into())
+        );
+        let journal = journals().join("memory-reader-disk.upfj");
+        assert!(matches!(&drive.write,
+            assembly::WriteMode::Journal { path, .. } if *path == journal));
+        assert!(!journal.exists());
+        assert!(config.devices.iter().any(|device| matches!(&device.kind,
+            DeviceKind::Rtc(assembly::CmosCfg { nvram: NvramSource::Journal { image, expected_sha256, .. }, .. })
+                if *image == root.join("cmos.bin")
+                    && *expected_sha256 == <[u8; 32]>::from(Sha256::digest([0x5A; 64])))));
+        assert_eq!(config.images[0].base, 0xF8000);
+        let asked = reader.asked.take();
+        for question in [
+            format!("read {ROOT}/bios.bin"),
+            format!("journal base {ROOT}/cmos.bin"),
+            format!("verify {ROOT}/base.img"),
+            format!("reserved {ROOT}/base.img"),
+            "journals of 1 drives over 3 images".into(),
+        ] {
+            assert!(asked.contains(&question), "{question} not in {asked:?}");
+        }
+    }
+
+    #[test]
+    fn the_reader_decides_which_names_are_reserved() {
+        let (file, origins) = machine();
+        let mut reader = memory();
+        reader.reserved.push(Path::new(ROOT).join("base.img"));
+        let error = lower(&file, &origins, &mut reader, Default::default()).unwrap_err();
+        assert_eq!(error.field, "card[fdc-765].drives[unit=0].image");
+        assert!(
+            error
+                .message
+                .ends_with("uses a reserved retention-temporary name"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn metadata_mode_sizes_a_rom_through_the_reader() {
+        let (file, origins) = machine();
+        let mut reader = memory().with("bios.bin", vec![0xF4; 0x10000]);
+        let draft = file.describe_with(&origins, &mut reader).unwrap();
+        assert_eq!(draft.config.images[0].base, 0xF0000);
+        assert_eq!(
+            reader.asked.take(),
+            [format!("length {ROOT}/bios.bin")],
+            "metadata mode asks for lengths only"
+        );
+        let draft = file
+            .describe_with(&origins, &mut Memory::default())
+            .unwrap();
+        assert_eq!(
+            draft.config.images[0].base, MIB,
+            "an unknown size stays pending"
+        );
+    }
+
+    #[test]
+    fn a_synthetic_reader_reserves_retention_names_by_name_alone() {
+        struct Synthetic;
+        impl ImageReader for Synthetic {
+            fn read(&mut self, _: &Path) -> io::Result<Vec<u8>> {
+                Err(io::Error::other("unused"))
+            }
+        }
+        assert!(Synthetic.is_reserved_retention_name(Path::new("a/disk.retain-1.tmp")));
+        assert!(!Synthetic.is_reserved_retention_name(Path::new("a.retain-1/disk.img")));
+        assert!(Synthetic.image_length(Path::new("Cargo.toml")).is_err());
     }
 }

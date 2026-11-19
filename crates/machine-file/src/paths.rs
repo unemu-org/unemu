@@ -116,3 +116,35 @@ fn aliases(left: &Path, right: &Path) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use media::JournalMedia;
+
+    /// The lowering keeps its own copy of the journal's retention-name rule so
+    /// that it needs no journal; the two must not drift apart.
+    #[test]
+    fn the_lowering_reserves_the_journal_retention_names() {
+        for name in [
+            "disk.img",
+            "disk.retain-1.tmp",
+            "disk.upfj.retain-12.tmp",
+            ".retain-",
+            "x.retain",
+            "retain-1",
+            "a.retain-1/disk.img",
+            "dir/cmos.upfj.retain-1",
+            "",
+            "/",
+        ] {
+            let path = Path::new(name);
+            assert_eq!(
+                crate::lower::has_retention_marker(path),
+                JournalMedia::is_retention_temp_name(path),
+                "{name}"
+            );
+        }
+    }
+}

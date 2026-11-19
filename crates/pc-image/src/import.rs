@@ -170,14 +170,29 @@ impl ImageReader for BaseReader<'_> {
     fn read_journal_base(&mut self, path: &Path) -> io::Result<Vec<u8>> {
         machine_file::FileImageReader.read_journal_base(path)
     }
-    fn verify_journal_base(&mut self, path: &Path) -> io::Result<media::VerifiedBase> {
+    fn verify_journal_base(&mut self, path: &Path) -> io::Result<machine_file::JournalBase> {
         if let Some(base) = self.bases.get(path) {
             base.check_unchanged()?;
-            return Ok(base.clone());
+            return Ok(base.into());
         }
         let base = media::VerifiedBase::open(path)?;
-        self.bases.insert(path.into(), base.clone());
-        Ok(base)
+        let identity = machine_file::JournalBase::from(&base);
+        self.bases.insert(path.into(), base);
+        Ok(identity)
+    }
+    fn image_length(&self, path: &Path) -> io::Result<u64> {
+        machine_file::FileImageReader.image_length(path)
+    }
+    fn is_reserved_retention_name(&self, path: &Path) -> bool {
+        machine_file::FileImageReader.is_reserved_retention_name(path)
+    }
+    fn validate_journal_paths(
+        &self,
+        config: &assembly::MachineConfig,
+        origins: &Origins,
+        images: &[PathBuf],
+    ) -> std::result::Result<(), assembly::ConfigError> {
+        machine_file::FileImageReader.validate_journal_paths(config, origins, images)
     }
 }
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -979,5 +994,36 @@ fn open_sources(store: &Store, packages: &[Digest]) -> Result<BTreeMap<Digest, E
             Some(next) => after = Some(next),
             None => return Ok(result),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The import's reader reads host files, so it must check journal paths
+    /// against the inputs like `FileImageReader` does.
+    #[test]
+    fn the_import_reader_refuses_a_journal_that_aliases_an_input() {
+        let dir = std::env::temp_dir().join(format!(
+            "pc-image-import-reader-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("bios.bin"), vec![0xF4; 0x8000]).unwrap();
+        fs::write(dir.join("base.img"), vec![0; 368_640]).unwrap();
+        let path = dir.join("machine.toml");
+        let text = "schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='bios.bin'\nprovides=['floppy']\n[[card]]\nkind='fdc-765'\n[[card.drives]]\nunit=0\ntype='360K'\nimage='base.img'\nwrite='journal'\njournal='bios.bin'\n";
+        let document = machine_file::parse_toml(&path, text).unwrap();
+        let origins = Origins::from_toml(&path, text).unwrap();
+        let error = machine_file::lower(&document, &origins, &mut BaseReader::default());
+        fs::remove_dir_all(&dir).unwrap();
+        let error = error.unwrap_err();
+        assert!(
+            error.message.contains("aliases source input"),
+            "{}",
+            error.message
+        );
     }
 }

@@ -30,7 +30,7 @@ mod source;
 mod yaml;
 
 pub use integrity::{lower, lower_with_options};
-pub use lower::{FileImageReader, ImageReader, LowerError};
+pub use lower::{ImageReader, JournalBase, LowerError};
 pub use origin::{Origin, Origins};
 pub use resolve::resolve;
 
@@ -356,6 +356,86 @@ impl LoadedMachine {
     }
 }
 
+/// Read inline images and verify disk sources with bounded buffers: the
+/// lowering's reader over the host file system.
+pub struct FileImageReader;
+
+impl ImageReader for FileImageReader {
+    fn read(&mut self, path: &Path) -> std::io::Result<Vec<u8>> {
+        std::fs::read(path)
+    }
+
+    fn verify_journal_base(&mut self, path: &Path) -> std::io::Result<JournalBase> {
+        media::VerifiedBase::open(path).map(|base| JournalBase::from(&base))
+    }
+
+    fn read_journal_base(&mut self, path: &Path) -> std::io::Result<Vec<u8>> {
+        use std::io::Read;
+        // Only the small CMOS store uses the byte-backed journal path.
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take(513)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > 512 {
+            return Err(std::io::Error::other("NVRAM image exceeds 512 bytes"));
+        }
+        Ok(bytes)
+    }
+
+    fn image_length(&self, path: &Path) -> std::io::Result<u64> {
+        std::fs::metadata(path).map(|metadata| metadata.len())
+    }
+
+    fn is_reserved_retention_name(&self, path: &Path) -> bool {
+        paths::is_retention_input(path)
+    }
+
+    fn validate_journal_paths(
+        &self,
+        config: &assembly::MachineConfig,
+        origins: &Origins,
+        images: &[PathBuf],
+    ) -> Result<(), assembly::ConfigError> {
+        paths::validate_journals(config, origins, images)
+    }
+}
+
+/// What the lowering needs of a verified base; the caller keeps the base.
+impl From<&media::VerifiedBase> for JournalBase {
+    fn from(base: &media::VerifiedBase) -> Self {
+        JournalBase {
+            length: base.identity().base_length,
+            sha256: base.identity().base_digest,
+        }
+    }
+}
+
+/// The reader of `MachineFile::describe`: it sizes an image from the host's
+/// file metadata and reads nothing.
+struct MetadataReader;
+
+impl ImageReader for MetadataReader {
+    fn read(&mut self, _: &Path) -> std::io::Result<Vec<u8>> {
+        Err(std::io::Error::other(
+            "metadata lowering does not read images",
+        ))
+    }
+
+    fn image_length(&self, path: &Path) -> std::io::Result<u64> {
+        FileImageReader.image_length(path)
+    }
+}
+
+impl MachineFile {
+    /// Describe resolved settings through the normal lowering rules without reading or
+    /// hashing image bytes or opening journals. Unknown extents stay pending; known
+    /// catalogue sizes or file metadata determine ROM placement. This draft cannot
+    /// authorize execution. See `backlog/docs/design/machine-images.md` §6.
+    pub fn describe(&self, origins: &Origins) -> Result<assembly::capabilities::Draft, LowerError> {
+        self.describe_with(origins, &mut MetadataReader)
+    }
+}
+
 #[derive(Default)]
 struct LaunchImageReader<'a> {
     bases: std::collections::BTreeMap<PathBuf, media::VerifiedBase>,
@@ -373,15 +453,30 @@ impl ImageReader for LaunchImageReader<'_> {
     fn read_journal_base(&mut self, path: &Path) -> std::io::Result<Vec<u8>> {
         FileImageReader.read_journal_base(path)
     }
-    fn verify_journal_base(&mut self, path: &Path) -> std::io::Result<media::VerifiedBase> {
+    fn verify_journal_base(&mut self, path: &Path) -> std::io::Result<JournalBase> {
         use media::SectorSource;
         if let Some(base) = self.bases.get(path) {
             base.check_unchanged()?;
-            return Ok(base.clone());
+            return Ok(JournalBase::from(base));
         }
-        let base = FileImageReader.verify_journal_base(path)?;
-        self.bases.insert(path.into(), base.clone());
-        Ok(base)
+        let base = media::VerifiedBase::open(path)?;
+        let answer = JournalBase::from(&base);
+        self.bases.insert(path.into(), base);
+        Ok(answer)
+    }
+    fn image_length(&self, path: &Path) -> std::io::Result<u64> {
+        FileImageReader.image_length(path)
+    }
+    fn is_reserved_retention_name(&self, path: &Path) -> bool {
+        FileImageReader.is_reserved_retention_name(path)
+    }
+    fn validate_journal_paths(
+        &self,
+        config: &assembly::MachineConfig,
+        origins: &Origins,
+        images: &[PathBuf],
+    ) -> Result<(), assembly::ConfigError> {
+        FileImageReader.validate_journal_paths(config, origins, images)
     }
 }
 

@@ -641,6 +641,29 @@ fn journal_aliases_source(source: &str, kind: &str) {
     assert_eq!(entries(&temp.0), listing);
 }
 
+/// Both of this crate's host readers check journal paths against the inputs:
+/// `load` reads through `FileImageReader`, `load_for_assembly` through the
+/// reader that keeps the verified bases.
+#[test]
+fn every_host_reader_refuses_a_journal_that_aliases_an_input() {
+    let temp = Temp::new();
+    let path = temp.write(
+        "machine.toml",
+        format!("{BASE}write='journal'\njournal='bios.bin'\n"),
+    );
+    assert_source_alias(&path, 9);
+    let Err(LoadError::Lower(error)) =
+        machine_file::load_for_assembly(&path, AssemblyOptions::default())
+    else {
+        panic!("expected lowering error")
+    };
+    assert!(
+        error.message.contains("aliases source input"),
+        "{}",
+        error.message
+    );
+}
+
 #[test]
 fn journal_cannot_alias_bios_image() {
     journal_aliases_source("bios.bin", "direct");
