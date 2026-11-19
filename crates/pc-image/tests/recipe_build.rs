@@ -91,6 +91,18 @@ fn build(
     libraries: &[PathBuf],
     keep_as: Option<&str>,
 ) -> (Outcome, Vec<String>) {
+    build_with(recipe, store, libraries, keep_as, Some(&NoNetwork))
+}
+
+/// [`build`] with the fetcher given; without one (no `--fetch` consent) an
+/// input that is not found makes the outcome `Missing`.
+fn build_with(
+    recipe: &Path,
+    store: &Store,
+    libraries: &[PathBuf],
+    keep_as: Option<&str>,
+    fetcher: Option<&dyn Fetcher>,
+) -> (Outcome, Vec<String>) {
     let index = StoreIndex::load(store).unwrap();
     let mut libraries: Vec<Library> = libraries
         .iter()
@@ -111,7 +123,7 @@ fn build(
             index: Some(&index),
             store_read: Some(&content),
             libraries: &mut libraries,
-            fetcher: Some(&NoNetwork),
+            fetcher,
             keep_as,
             find_outputs: true,
         },
@@ -657,7 +669,10 @@ fn user_roots() -> Vec<PathBuf> {
 
 /// The build of a recipe from the user's files, or `None` with one SKIPPED
 /// line when they are not all there (a failure under
-/// `UNEMUPC_REQUIRE_USER_ROMS=1`).
+/// `UNEMUPC_REQUIRE_USER_ROMS=1`). The build has no `--fetch` consent: a
+/// recipe that names download URLs for an input (Ken's LABFULL.ZIP) must
+/// report it missing, never reach for the network, where the user's files
+/// are absent (CI).
 fn build_from_user_files(
     title: &str,
     recipe: &Path,
@@ -666,7 +681,7 @@ fn build_from_user_files(
 ) -> Option<recipe::build::Report> {
     let mut libraries = user_roots();
     libraries.extend(extra.iter().cloned());
-    match build(recipe, store, &libraries, None).0 {
+    match build_with(recipe, store, &libraries, None, None).0 {
         Outcome::Built(report) => Some(*report),
         Outcome::Missing(plan) => {
             let message = format!(

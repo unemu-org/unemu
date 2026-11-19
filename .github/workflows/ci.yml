@@ -33,6 +33,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CARGO_TERM_COLOR: never
+      # Incremental session data only helps rebuilds on one machine; on a
+      # runner it is gigabytes of target directory and cache archive.
+      CARGO_INCREMENTAL: 0
     steps:
       # The pinned CPU dependency and its submodules are anonymously fetchable.
       # Do not leave the job token in .git/config next to unsandboxed builds.
@@ -82,10 +85,16 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/ci-gate.sh devshell
 
-      # Reuse compiled dependencies and Cargo's registry/git downloads across
-      # source-only commits. The Nix and Cargo locks pin the cache's toolchain
-      # and dependency graph; the explicit save also runs when a gate is red.
-      - name: Restore cargo cache
+      # Reuse Cargo's registry/git downloads, and the compiled target directory
+      # across source-only commits. The Nix and Cargo locks pin the caches'
+      # toolchain and dependency graph; the explicit saves also run when a gate
+      # is red. Downloads may come from an older lock file (Cargo fetches what
+      # is missing). The target directory is only reused for the same locks:
+      # a moved pin gives every crate above it a new artifact hash, and a
+      # target restored from an older lock kept every earlier build next to
+      # the new one, so the cache grew with each pin until the runner ran
+      # short of disk.
+      - name: Restore cargo downloads
         id: cargo_cache
         if: ${{ !cancelled() }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -94,9 +103,16 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-            target
-          key: cargo-x86_64-${{ hashFiles('flake.lock') }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-x86_64-${{ hashFiles('flake.lock') }}-
+          key: cargo-home-x86_64-${{ hashFiles('flake.lock') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-home-x86_64-
+
+      - name: Restore cargo target
+        id: target_cache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: cargo-target-x86_64-${{ hashFiles('flake.lock') }}-${{ hashFiles('Cargo.lock') }}
 
       # An explicit status function bypasses Actions' implicit success() check,
       # so one failed gate does not hide failures in the remaining gates.
@@ -163,7 +179,7 @@ jobs:
           path: vendor/freedos/floppy-1.4
           key: freedos-floppy-1.4-${{ hashFiles('vendor/freedos/fetch-floppy-1.4.sh', 'vendor/freedos/floppy-1.4-licenses.txt') }}
 
-      - name: Save cargo cache
+      - name: Save cargo downloads
         id: cache_save
         if: ${{ !cancelled() && steps.devshell.outcome == 'success' && steps.cargo_cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -172,8 +188,15 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-            target
-          key: cargo-x86_64-${{ hashFiles('flake.lock') }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-home-x86_64-${{ hashFiles('flake.lock') }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Save cargo target
+        id: target_cache_save
+        if: ${{ !cancelled() && steps.devshell.outcome == 'success' && steps.target_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: cargo-target-x86_64-${{ hashFiles('flake.lock') }}-${{ hashFiles('Cargo.lock') }}
 
       # A re-run keeps the earlier attempt's logs, so each attempt gets its own name.
       - name: Upload gate logs
@@ -195,6 +218,7 @@ jobs:
             nix_token=${{ steps.nix_token.outcome }}
             devshell=${{ steps.devshell.outcome }}
             cargo_cache=${{ steps.cargo_cache.outcome }}
+            target_cache=${{ steps.target_cache.outcome }}
             fmt=${{ steps.fmt.outcome }}
             guard=${{ steps.guard.outcome }}
             clippy=${{ steps.clippy.outcome }}
@@ -205,8 +229,13 @@ jobs:
             goldens=${{ steps.goldens.outcome }}
             freedos_cache_save=${{ steps.freedos_cache_save.outcome }}
             cache_save=${{ steps.cache_save.outcome }}
+            target_cache_save=${{ steps.target_cache_save.outcome }}
         run: |
           set -euo pipefail
+          # The disk left at the end, next to what the target directory and
+          # the Nix store took; a short runner shows up here first.
+          df -h /
+          du -sh target /nix/store 2>/dev/null || true
           failed=()
           {
             echo '| step | outcome |'

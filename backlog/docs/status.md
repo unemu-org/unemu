@@ -5,6 +5,20 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — GitHub CI is green again after the NES core landed:** (`upc-dfs.42`). Three
+  gates had failed on `main` since `fca6b542`. The guard lane's crate-boundary check reads the
+  resolved graph with `cargo metadata --offline`, which fails on a cold Cargo cache or one
+  restored from an older lock file; the lane now runs `cargo fetch --locked` first (it builds
+  nothing). The goldens lane runs the ignored `user_rom_` tests too: the Ken's Labyrinth
+  recipe build gave its builder `--fetch` consent, so without the user's files it tried to
+  download LABFULL.ZIP and panicked; the user-file builds now have no fetcher, see the input
+  missing and print the SKIPPED line (a failure under `UNEMUPC_REQUIRE_USER_ROMS=1`). The other
+  `user_rom_` tests already skipped before reading anything. The large sparse-disk test was
+  refused by the store's free-space check because the runner ran short of disk: the cached
+  `target` directory, restored from older lock files, kept every earlier build and grew with
+  each pin. The workflow now caches Cargo's downloads (reused across locks) apart from
+  `target` (reused only for the same locks), builds without incremental data, and prints the
+  disk left in the gate summary.
 - **2026-11-19 — Release 0.0.3:** the workspace version is 0.0.3 and
   `image_store::compat::NEXT_RELEASE` is 0.0.4, so a row for a feature this
   release does not read now names 0.0.4. The release carries the `ibm-pc`

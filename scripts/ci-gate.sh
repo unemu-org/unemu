@@ -18,11 +18,15 @@ case "$step" in
     # The publication guard needs no devShell; the crate-boundary check reads
     # `cargo metadata` with the devShell's cargo and jq. Both run even when the
     # other fails, so one log names every finding; either failure fails the gate.
+    # The check resolves the graph offline, and a restored cache can lack a
+    # git dependency the lock file has moved to (or hold nothing at all), so
+    # the lane downloads the locked sources first. Fetching builds nothing.
     guard)
         gate_command=(bash -uc '
             status=0
             bash scripts/publication-guard.sh || status=1
             nix develop --no-update-lock-file --command bash -euc "
+                cargo fetch --locked
                 bash scripts/crate-boundaries.sh --self-test
                 bash scripts/crate-boundaries.sh
             " || status=1

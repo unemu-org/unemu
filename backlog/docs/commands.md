@@ -2501,7 +2501,9 @@ list only shrinks. `--self-test` runs the rules over the fixtures in
 expected outcome; `--metadata FILE [--allow FILE]` checks any `cargo
 metadata` output. The `guard` gate runs the publication guard and then the
 self-test and the check, each even when the other failed; the check takes
-well under a second.
+well under a second. The check resolves the full graph offline, so the gate
+runs `cargo fetch --locked` before it: a runner's empty Cargo cache, or one
+restored from an older lock file, lacks the pinned git dependencies.
 
 ### Third-party licences
 
@@ -2522,7 +2524,11 @@ the dependency sources from cargo's cache only. The release build sets
 
 ### User-supplied ROM tests
 
-This local opt-in lane is never called by CI; CI never has proprietary firmware:
+This local opt-in lane is never called by CI; CI never has proprietary firmware
+or the user's own files. The CI `goldens` gate runs every ignored test
+(`--include-ignored`), these among them, so each must find its files before it
+reads, builds or downloads anything, and skip with its SKIPPED line when they
+are absent:
 
 ```sh
 bash scripts/ci-gate.sh user-roms
