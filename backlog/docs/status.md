@@ -5,6 +5,32 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — A guest that resets again and again no longer holds the desktop's frame;
+  a storm of resets stops the machine with a report:** (`upc-f7j.19`;
+  design/observation.md §The machine resets again and again, §Window pacing).
+  Before, a guest that shut down right after every reset kept one run resetting until its
+  virtual-time cap (a run of one second of guest time did not return within 60 s, debug).
+  The machine now stops 64 reset requests in a row, each fewer than 16 steps of virtual time
+  (the run cap's unit) after the one before, with `CpuError::ResetStorm` and a CPU stop report
+  at the last shutdown: "the machine resets again and again: 64 resets within 192 steps, the
+  last shutdown at f800:0007"; the desktop shows it in its machine error box and `upcli run`
+  prints it and exits 1. A guest reset still continues the run to its deadline; the stop
+  bounds a run to 63 close resets in a row, and every other reset follows at least 16 steps
+  toward the cap. 16 only diagnoses loops that make essentially no progress: the open AT
+  protected-mode test's resets are at least 855 steps apart (an INT 15h block move), its
+  rounds 3,650 to 10,047. A reset costs about 0.5 µs (release), nine tenths of it in x86jit's
+  fast-lookup clear; building the legacy reset image once took 10 % off. MEASURED: the open
+  `reset_storm_rom` and `fault_loop_rom` (NASM listings and SHA-256 pinned) in `pc-core`
+  (a run of one second of guest time returns after 63 resets with the stop and its
+  report), `pc-session-tests` (on the host
+  clock at 100 % and Unlimited every advance returns within its slice plus one chunk and the
+  storm stops;
+  under Unlimited the fault loop runs 30 frames, the longest advance about 61 ms in debug),
+  `cli-pc` `reset_storm`, and `machine`'s streak test. Changed on purpose: the session test
+  of a guest that pulses the 8042 reset line right after every reset, which ran on at
+  thousands of resets a frame, now stops with "64 resets within 191 steps, the last
+  reset request at f800:0004". The open AT protected-mode golden and every other golden are
+  unchanged.
 - **2026-11-19 — Diagnostics move into Tools › Diagnostics, and the exception recording keeps
   the last deliveries, folded:** (`upc-f7j.18`; design/observation.md §Diagnostic report of a
   running machine and §Exception and interrupt deliveries; commands.md). The desktop no longer

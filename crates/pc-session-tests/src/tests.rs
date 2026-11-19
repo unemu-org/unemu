@@ -1213,8 +1213,14 @@ fn reset_diagnostics_log_only_the_first_performed_reset_and_the_session_total() 
     assert!(presenter.window.is_none());
 }
 
+/// A guest that pulses the 8042's reset line again right after every reset
+/// is a storm of resets (two steps from its entry, then three from the
+/// reset vector's far jump after each reset): the session counts
+/// them, and the 64th request stops the machine with its report instead of
+/// resetting it again. Before, such a loop ran on and on, thousands of
+/// resets a frame.
 #[test]
-fn a_guest_reset_loop_counts_requests_and_keeps_running() {
+fn a_guest_reset_loop_counts_requests_and_stops_in_a_storm() {
     let mut rom = vec![0; 0x8000];
     rom[..6].copy_from_slice(&[0xB0, 0xFE, 0xE6, 0x64, 0xEB, 0xFC]);
     rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0, 0, 0, 0xF8]);
@@ -1222,25 +1228,19 @@ fn a_guest_reset_loop_counts_requests_and_keeps_running() {
     config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
     let mut presenter = test_presenter(&config).unwrap();
     advance_frame(&mut presenter);
-    assert!(presenter.machine().reset_requests() > 1_000);
-    assert!(presenter.running);
+    assert!(!presenter.running);
     assert_eq!(
-        presenter.assembled().machine.virtual_time(),
-        TEST_FRAME_CLOCKS
+        presenter.error.as_ref().map(|error| error.to_string()),
+        Some(
+            "cpu: the machine resets again and again: 64 resets within 191 steps, \
+             the last reset request at f800:0004"
+                .to_string()
+        )
     );
-    let count = presenter.machine().reset_requests();
-    advance_frame(&mut presenter);
-    assert!(presenter.machine().reset_requests() > count);
+    assert_eq!(presenter.machine().reset_requests(), 63);
     let mut summary = Vec::new();
     presenter.write_reset_summary(&mut summary);
-    assert_eq!(
-        summary,
-        format!(
-            "cpu resets in session: {}\n",
-            presenter.machine().cpu_resets()
-        )
-        .as_bytes()
-    );
+    assert_eq!(summary, b"cpu resets in session: 63\n");
     assert!(presenter.window.is_none());
 }
 
@@ -1865,4 +1865,79 @@ fn a_stall_in_exception_delivery_stops_the_session_instead_of_spinning() {
         first < Duration::from_secs(10),
         "one advance took {first:?}"
     );
+}
+
+/// Drive `config`'s session as the desktop does, on the host clock at
+/// `speed`, one 60 Hz frame per advance, on a thread of its own so a frame
+/// that never returns fails the test at the deadline instead of hanging it.
+/// Returns the longest advance, the number of advances, the session's
+/// error, if one stopped it, and the instructions the CPU retired.
+fn frames_on_the_host_clock(
+    config: assembly::MachineConfig,
+    speed: Speed,
+    frames: u32,
+) -> (Duration, u32, Option<String>, u64) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut presenter = test_presenter(&config).unwrap();
+        presenter.select_speed(speed, Duration::ZERO);
+        let started = std::time::Instant::now();
+        let mut longest = Duration::ZERO;
+        let mut advances = 0;
+        while presenter.running && advances < frames {
+            let at = std::time::Instant::now();
+            presenter
+                .advance_with_warnings(started.elapsed(), &mut io::sink())
+                .unwrap();
+            longest = longest.max(at.elapsed());
+            advances += 1;
+            // The window waits for its next frame between advances.
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        let error = presenter.error.as_ref().map(|error| error.to_string());
+        let retired = cpu::Cpu::retired(presenter.assembled_ref().machine.cpu());
+        sender.send((longest, advances, error, retired)).unwrap();
+    });
+    receiver
+        .recv_timeout(Duration::from_secs(60))
+        .expect("every frame returns")
+}
+
+/// A guest that shuts down again right after every reset does almost
+/// nothing but reset. At every speed each frame still returns to the
+/// window within its slice, and the storm of resets stops the machine with
+/// its report, which the window shows in its machine error box.
+#[test]
+fn a_guest_that_resets_again_and_again_never_holds_the_frame() {
+    for speed in [Speed::Normal, Speed::Unlimited] {
+        let (longest, advances, error, _) =
+            frames_on_the_host_clock(assembly::test_support::reset_storm(), speed, 600);
+        eprintln!("reset storm at {speed:?}: longest frame {longest:?}, {advances} frames");
+        assert!(longest < Duration::from_secs(1), "{speed:?}: {longest:?}");
+        assert_eq!(
+            error.as_deref(),
+            Some(
+                "cpu: the machine resets again and again: 64 resets within 192 steps, \
+                 the last shutdown at f800:0007"
+            ),
+            "{speed:?} after {advances} frames"
+        );
+    }
+}
+
+/// A guest that makes progress only through exceptions, an invalid opcode
+/// whose handler returns straight to it, runs on under Unlimited, and every
+/// frame still returns to the window within its slice: Unlimited ends a
+/// frame's runs when the host slice (the frame period less 3 ms) is spent,
+/// checked between runs of at most 1 ms of guest time each.
+#[test]
+fn a_guest_in_a_fault_loop_under_unlimited_returns_every_frame() {
+    let config = assembly::bios(assembly::test_support::fault_loop_rom(), None);
+    let (longest, advances, error, retired) =
+        frames_on_the_host_clock(config, Speed::Unlimited, 30);
+    assert_eq!(error, None);
+    assert_eq!(advances, 30);
+    eprintln!("fault loop under Unlimited: longest frame {longest:?}, {retired} retired");
+    assert!(retired > 30, "{retired}");
+    assert!(longest < Duration::from_secs(1), "{longest:?}");
 }

@@ -523,7 +523,9 @@ fn classify_test386_stop(rip: u64, result: Result<RunOutcome, RunError>) -> Stop
             }
         }
         Err(RunError::Machine(MachineError::Cpu(
-            error @ (CpuError::Fault { .. } | CpuError::DeliveryStalled { .. }),
+            error @ (CpuError::Fault { .. }
+            | CpuError::DeliveryStalled { .. }
+            | CpuError::ResetStorm { .. }),
         ))) => StopReason::Fault {
             detail: error.to_string(),
         },
@@ -1165,7 +1167,9 @@ pub fn classify_bios_stop(
             }
         }
         Err(RunError::Machine(MachineError::Cpu(
-            error @ (CpuError::Fault { .. } | CpuError::DeliveryStalled { .. }),
+            error @ (CpuError::Fault { .. }
+            | CpuError::DeliveryStalled { .. }
+            | CpuError::ResetStorm { .. }),
         ))) => StopReason::Fault {
             detail: error.to_string(),
         },

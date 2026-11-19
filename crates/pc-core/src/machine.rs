@@ -527,6 +527,14 @@ impl Machine for PcMachine {
     /// halted time leaves the clock a fraction of a tick short of `until` (the
     /// front end runs again). Exhausted virtual time stops the machine as if
     /// it were switched off.
+    ///
+    /// A guest-requested reset happens inside the run, which continues to
+    /// the same deadline. A reset retires nothing, so a guest that resets
+    /// again right after every reset would barely move virtual time; the
+    /// machine stops such a storm (`CpuError::ResetStorm`, a `Guest` error),
+    /// so a run does at most 63 resets in a row that are close together, and
+    /// every other reset follows at least 128 retired instructions, which
+    /// count toward the deadline's cap.
     fn run(&mut self, limit: RunLimit) -> Result<Stop, Error> {
         if limit.stop_on_frame {
             return Err(Error::new(

@@ -254,7 +254,54 @@ pub enum CpuError {
         /// Instruction pointer of the last delivery's handler.
         ip: u64,
     },
+    /// The processor was reset again and again with no progress in between:
+    /// [`RESET_STORM_RESETS`] reset requests in a row, each fewer than
+    /// [`RESET_STORM_STEPS`] steps of virtual time after the one before, as
+    /// when a guest shuts down again at once after every reset. The CPU
+    /// backend does not raise it; the machine does, when it counts the
+    /// requests (shutdowns and the board's reset line alike), because a
+    /// reset takes no virtual time, and a loop that makes none either would
+    /// never reach a run's cap. `cs:ip` is where the CPU stood at the last
+    /// request, before that reset, so the stop report shows the instruction
+    /// that shut down. See `backlog/docs/design/observation.md` §The machine
+    /// resets again and again.
+    #[error(
+        "the machine resets again and again: {resets} resets within {steps} \
+         steps, the last {} at {cs:04x}:{ip:04x}",
+        if *.shutdown { "shutdown" } else { "reset request" }
+    )]
+    ResetStorm {
+        /// Consecutive reset requests, each soon after the one before.
+        resets: u32,
+        /// Virtual time over those resets, in steps, from the reset before
+        /// the first of them to the last.
+        steps: u64,
+        /// Whether the last request was a processor shutdown rather than
+        /// the board's reset line.
+        shutdown: bool,
+        /// Code selector at the last request.
+        cs: u16,
+        /// Instruction pointer at the last request.
+        ip: u64,
+    },
 }
+
+/// Reset requests in a row, each soon after the one before, after which the
+/// machine stops with [`CpuError::ResetStorm`].
+pub const RESET_STORM_RESETS: u32 = 64;
+
+/// Fewer steps of virtual time than this between two reset requests count
+/// toward [`CpuError::ResetStorm`]: virtual time is the run cap's own unit
+/// (completed steps, each REP iteration one, plus halted time), so a loop
+/// below it makes essentially no progress. Any bound of at least one keeps a
+/// run's host work bounded; a small one only diagnoses such loops and never
+/// stops a guest that switches modes through resets. MEASURED on the open
+/// AT protected-mode test with the open AT BIOS: its shortest distance
+/// between two resets is 855 steps (an INT 15h block move, whose return to
+/// real mode is a reset), its rounds take 3,650 to 10,047, and POST about
+/// 3.6 million; a guest that shuts down right after the reset vector's far
+/// jump takes 3.
+pub const RESET_STORM_STEPS: u64 = 16;
 
 /// The " (bytes 0f 0b)" tail of an unsupported-instruction message, or
 /// nothing when the core reported no bytes.

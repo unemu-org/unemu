@@ -114,6 +114,9 @@ fn run_result_summary(result: &Result<RunOutcome, RunError>) -> String {
             CpuError::DeliveryStalled { deliveries, cs, ip } => {
                 format!("Err(Machine(Cpu(DeliveryStalled {{ deliveries: {deliveries}, cs: {cs:#x}, ip: {ip:#x} }})))")
             }
+            CpuError::ResetStorm { resets, cs, ip, .. } => {
+                format!("Err(Machine(Cpu(ResetStorm {{ resets: {resets}, cs: {cs:#x}, ip: {ip:#x} }})))")
+            }
             CpuError::Memory(_) => "Err(Machine(Cpu(Memory(<details omitted>))))".into(),
             CpuError::UnexpectedExit { .. } => {
                 "Err(Machine(Cpu(UnexpectedExit { <details omitted> })))".into()

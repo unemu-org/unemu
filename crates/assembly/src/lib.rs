@@ -421,6 +421,95 @@ pub mod test_support {
         rom
     }
 
+    /// A 32 KiB system ROM for F8000h whose guest shuts the processor down
+    /// right after every reset: from the reset vector it loads an IDTR with
+    /// limit 0 and executes INT 3. In real mode the 80286 takes the vector's
+    /// four bytes from the IDT; beyond its limit the interrupt raises a
+    /// double fault, whose vector is beyond the limit too, and the processor
+    /// shuts down (Intel 80286 Programmer's Reference Manual, §5.3, §9.1 and
+    /// Appendix B, LIDT and INT), which the AT board answers with a CPU
+    /// reset, so the guest starts again and shuts down again, three
+    /// instructions (and steps) after each reset. For the tests of the reset-storm stop.
+    /// The bytes are this NASM listing (`nasm -f bin`, org 0); their SHA-256
+    /// is pinned by [`RESET_STORM_ROM_SHA256`]:
+    ///
+    /// ```text
+    /// 0000 FA               cli
+    /// 0001 2E0F011E1000     lidt [cs:0010h]
+    /// 0007 CC               int3                ; beyond the IDT limit: shutdown
+    /// 0008 F4               hlt
+    /// 0010 0000 0000 0000   IDTR: limit 0, base 0
+    /// 7FF0 EA000000F8       jmp F800:0000h      ; the reset vector
+    /// ```
+    pub fn reset_storm_rom() -> Vec<u8> {
+        let mut rom = vec![0; 0x8000];
+        let code: &[u8] = &[
+            0xFA, // CLI
+            0x2E, 0x0F, 0x01, 0x1E, 0x10, 0x00, // LIDT CS:[0010h]
+            0xCC, // INT 3
+            0xF4, // HLT
+        ];
+        rom[..code.len()].copy_from_slice(code);
+        rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0x00, 0x00, 0x00, 0xF8]);
+        rom
+    }
+
+    /// SHA-256 of [`reset_storm_rom`], the output of its NASM listing.
+    pub const RESET_STORM_ROM_SHA256: &str =
+        "1e2762d15f1a8c382f1d7231ea74e90cae773017c95acc42feb3aa2696f48def";
+
+    /// The AT BIOS preset with [`reset_storm_rom`] as its system ROM and no
+    /// floppy controller.
+    pub fn reset_storm() -> crate::MachineConfig {
+        crate::bios(reset_storm_rom(), None)
+    }
+
+    /// A 32 KiB system ROM for F8000h whose real-mode guest loops through
+    /// an exception for ever and never stops by itself: it points INT 6 at
+    /// F800:0040h, sets SS:SP to 0000:7000h and executes 0F FF, an invalid
+    /// opcode; the #UD handler is a bare IRET, which returns to the invalid
+    /// opcode (the saved IP is the faulting instruction's), so every round
+    /// is one delivery and one retired instruction, and the stack stays
+    /// where it is (Intel 80286 Programmer's Reference Manual, §9.1 and
+    /// Appendix B, INT and IRET). For the tests that a front end stays in
+    /// charge of a guest that makes progress only through exceptions. The
+    /// bytes are this NASM listing (`nasm -f bin`, org 0); their SHA-256 is
+    /// pinned by [`FAULT_LOOP_ROM_SHA256`]:
+    ///
+    /// ```text
+    /// 0000 FA               cli
+    /// 0001 31C0             xor ax, ax
+    /// 0003 8ED8             mov ds, ax
+    /// 0005 8ED0             mov ss, ax
+    /// 0007 BC0070           mov sp, 7000h
+    /// 000A C70618004000     mov word [0018h], 0040h   ; INT 6 offset
+    /// 0010 C7061A0000F8     mov word [001Ah], 0F800h  ; INT 6 segment
+    /// 0016 0FFF             (invalid opcode: #UD)
+    /// 0018 EBFC             jmp 0016h
+    /// 0040 CF               iret                      ; the #UD handler
+    /// 7FF0 EA000000F8       jmp F800:0000h            ; the reset vector
+    /// ```
+    pub fn fault_loop_rom() -> Vec<u8> {
+        let mut rom = vec![0; 0x8000];
+        let code: &[u8] = &[
+            0xFA, // CLI
+            0x31, 0xC0, 0x8E, 0xD8, // XOR AX,AX; MOV DS,AX
+            0x8E, 0xD0, 0xBC, 0x00, 0x70, // MOV SS,AX; MOV SP,7000h
+            0xC7, 0x06, 0x18, 0x00, 0x40, 0x00, // MOV WORD [0018h],0040h
+            0xC7, 0x06, 0x1A, 0x00, 0x00, 0xF8, // MOV WORD [001Ah],0F800h
+            0x0F, 0xFF, // #UD
+            0xEB, 0xFC, // JMP 0016h
+        ];
+        rom[..code.len()].copy_from_slice(code);
+        rom[0x40] = 0xCF; // IRET
+        rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0x00, 0x00, 0x00, 0xF8]);
+        rom
+    }
+
+    /// SHA-256 of [`fault_loop_rom`], the output of its NASM listing.
+    pub const FAULT_LOOP_ROM_SHA256: &str =
+        "c869d7ebd76c74c960f1f1a3265f951eb66041ad3ebfaa5823bb372d09e16fcf";
+
     /// A 32 KiB system ROM for F8000h whose guest takes one delivery of
     /// each kind and halts, for the tests of the exception trace and the
     /// report's deliveries: in real mode it points INT 6, INT 60h and INT 8
@@ -657,6 +746,20 @@ pub mod test_support {
             assert_eq!(
                 super::fixture_sha256(&super::deliveries_rom()),
                 super::DELIVERIES_ROM_SHA256
+            );
+        }
+
+        /// The reset-storm and fault-loop ROMs are the output of their
+        /// listings.
+        #[test]
+        fn the_reset_storm_and_fault_loop_roms_match_their_pinned_listings() {
+            assert_eq!(
+                super::fixture_sha256(&super::reset_storm_rom()),
+                super::RESET_STORM_ROM_SHA256
+            );
+            assert_eq!(
+                super::fixture_sha256(&super::fault_loop_rom()),
+                super::FAULT_LOOP_ROM_SHA256
             );
         }
 

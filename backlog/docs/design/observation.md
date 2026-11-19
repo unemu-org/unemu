@@ -97,6 +97,23 @@ Host rendering costs still limit achievable speed. Budget checks occur between
 chunks of at most 1 ms of virtual time; an in-flight chunk can overrun the host
 budget. No host duration is supplied to a machine or device.
 
+So what bounds one frame's host work, at every speed, is the slice budget plus
+one chunk, and a chunk is bounded only if `Machine::run` returns within bounded
+host work whatever the guest does. Three guests do not let virtual time advance
+as a chunk expects, and each has its own bound: a guest stuck in exception
+delivery retires nothing (the CPU backend's bound, about 7 ms per run in
+release, then `CpuError::DeliveryStalled`; §Stuck in exception delivery); a
+guest that resets again and again retires a few instructions per reset (the
+machine stops the storm inside the run; §The machine resets again and
+again); a guest that makes progress only
+through exceptions retires one instruction or more per delivery, so its chunk
+ends by virtual time as any other. MEASURED (`pc-session-tests`, on the host
+clock, debug build): under Unlimited the open `fault_loop_rom` (an invalid
+opcode whose #UD handler IRETs straight back) runs 30 frames with the longest
+advance about 61 ms, the first frame's 50 ms period included; the open
+`reset_storm_rom` stops within the first two frames at 100% and Unlimited, the
+longest advance about 13 ms.
+
 The window captures mixed audio at each successful run boundary into a bounded
 cpal playback ring. Underruns play silence and overruns discard old frames;
 audio never changes pacing targets or virtual time. Outside 100%, playback is
@@ -785,6 +802,93 @@ tss      tr not loaded
 
 `upcli run --machine` prints `stopped: cpu fault: the processor is stuck
 delivering exceptions: ...` and this report, and exits 1.
+
+### The machine resets again and again
+
+A reset takes no virtual time, and the AT board answers every processor
+shutdown with one (IBM Personal Computer AT Technical Reference, System
+Board, Logic Diagrams: shutdown decoding resets the processor alone). A
+guest that shuts down again right after every reset makes a few steps of
+virtual time per reset: a 1 ms desktop chunk at 3 steps per reset is about
+245 resets, and `upcli run`'s default cap of 20,000,000 steps over 6 million. What never
+returns is a loop that makes no virtual-time progress at all, as when the
+processor shuts down before the first instruction after each reset
+completes: a run capped by virtual time then resets for ever. The machine
+ends both.
+
+`machine::Machine` counts the reset requests, shutdowns and the board's
+reset line alike. When `cpu::RESET_STORM_RESETS` (64) come in a row, each
+fewer than `cpu::RESET_STORM_STEPS` (16) steps of virtual time after the one
+before (the machine's start counts as the first reset), the 64th becomes
+`CpuError::ResetStorm` instead of a reset, and the machine fails as for a
+refusal. Virtual time is the run cap's own unit: completed steps, each REP
+iteration one, plus halted time, so a REP MOVSW of 32 KiB counts 16,384,
+not the one instruction it retires. The CPU still holds the state of that
+request, so the report shows where it shut down. A guest reset still
+happens inside `PcMachine::run`, which continues to the same deadline
+(core-contract.md §3.5); the stop is what bounds a run's host work: at most
+63 resets in a row close together, and every other reset follows at least
+16 steps, which count toward the run's cap. Any bound of at least one step
+would bound host work; 16 only diagnoses loops that make essentially no
+progress. The same stop ends the headless loops (`assembly`'s
+`run_session`, `upcli run`, the `pc-harness` runners), which run through
+resets to their caps.
+
+A guest that switches modes through resets moves virtual time far more.
+MEASURED on the open AT protected-mode test with the open AT BIOS
+(`at_pm_test_golden`, 36 resets), in steps between consecutive resets:
+
+| Between | Steps |
+|---|---|
+| an INT 15h block move and its return to real mode, a reset (shortest) | 855 |
+| the 32 rounds through the CMOS shutdown byte | 3,650 to 10,047 |
+| power-on and POST's own 8042 reset; the boot and the first round | about 3.6 and 4.3 million |
+| the storm ROM below: far jump, CLI, LIDT, then the shutdown | 3 |
+
+A storm stop whose report shows about zero steps per reset (`64 resets
+within` a number near 0) with `cs:ip` at the reset vector, F000:FFF0 or the
+first instruction it jumps to, points to a problem in the emulator's reset
+or first fetch, not in the guest: report it.
+
+From the open guest `assembly::test_support::reset_storm_rom` (NASM listing
+and SHA-256 pinned: from the reset vector CLI, LIDT with limit 0, INT 3,
+which in real mode is beyond the IDT limit, a double fault and a shutdown;
+three steps per reset, so 64 resets span 192):
+
+```text
+cpu stop report
+stop     the machine resets again and again: 64 resets within 192 steps, the last shutdown at f800:0007
+cs:ip    f800:0007 (linear 0f8007)
+mode     real, cpl 0, msw fff0, a20 on
+cs       f800 base 0f8000 limit 0000ffff attr 009b
+ss       0000 base 000000 limit 0000ffff attr 0093
+ss:sp    0000:7000
+gdtr     base 000000 limit 0000
+idtr     base 000000 limit 0000
+ldtr     0000 base 000000 limit 00000000 attr 0000
+tr       0000 base 000000 limit 00000000 attr 0000
+code     cc f4 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+decoded  int3
+form     int3, vector 03
+tss      real mode
+```
+
+The desktop shows the stop in its machine error box; `upcli run --machine`
+prints `stopped: cpu fault: the machine resets again and again: ...` and the
+report, and exits 1. When the reset line rather than a shutdown made the last
+request, the stop says `the last reset request at`: a guest that writes FEh to
+port 64h right after every reset, which the session once let run on at
+thousands of resets a frame, now stops with `64 resets within 191
+steps, the last reset request at f800:0004` (`pc-session-tests`).
+
+The reset itself costs about 0.5 µs (MEASURED, release, the storm ROM in a
+loop: `reset_cpu` alone 1.98 million per second, 0.55 µs before its legacy
+reset image was built once; the whole loop through `PcMachine::run` 878,000 to
+898,000 resets per second, 761,000 to 862,000 before). Nine tenths of it is
+x86jit's `Vcpu::reset_execution_state` clearing the vCPU's fast block lookup
+(`Vcpu::fast_clear`: 2,048 entries of 24 bytes, 48 KiB written per reset).
+A reset dominates a storm's profile because the storm does almost nothing
+else, not because it is slow.
 
 ## Diagnostic report of a running machine
 

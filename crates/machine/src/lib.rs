@@ -264,6 +264,39 @@ pub struct Machine<C: Cpu> {
     /// Reads the interrupt controllers' vector bases, to name an IRQ
     /// delivery's controller input from its vector.
     irq_bases_of: Option<IrqBasesOf>,
+    /// The reset requests that came soon after the one before.
+    reset_streak: ResetStreak,
+}
+
+/// Reset requests in a row, each fewer than [`cpu::RESET_STORM_STEPS`]
+/// steps of virtual time after the one before; the start of the machine
+/// counts as the first reset.
+#[derive(Debug, Default)]
+struct ResetStreak {
+    /// Virtual time at the last request.
+    last: u64,
+    /// Virtual time at the request before the streak's first.
+    start: u64,
+    /// Requests in the streak.
+    resets: u32,
+}
+
+impl ResetStreak {
+    /// Count a request at virtual time `now`; the streak's length and the
+    /// virtual time it spans once it reaches [`cpu::RESET_STORM_RESETS`].
+    fn record(&mut self, now: u64) -> Option<(u32, u64)> {
+        match now.checked_sub(self.last) {
+            Some(since) if since < cpu::RESET_STORM_STEPS => {
+                if self.resets == 0 {
+                    self.start = self.last;
+                }
+                self.resets += 1;
+            }
+            _ => self.resets = 0,
+        }
+        self.last = now;
+        (self.resets >= cpu::RESET_STORM_RESETS).then(|| (self.resets, now - self.start))
+    }
 }
 
 /// Reads the vector bases of the master and the slave interrupt
@@ -313,6 +346,7 @@ impl<C: Cpu> Machine<C> {
             code_trail: None,
             deliveries: None,
             irq_bases_of: None,
+            reset_streak: ResetStreak::default(),
         }
     }
 
@@ -645,6 +679,31 @@ impl<C: Cpu> Machine<C> {
         Ok(outcome)
     }
 
+    /// Report a reset request, or stop the machine when the requests come
+    /// in a storm: [`cpu::RESET_STORM_RESETS`] in a row, each fewer than
+    /// [`cpu::RESET_STORM_STEPS`] steps of virtual time after the one
+    /// before. A reset takes no virtual time, so a guest that shuts down
+    /// again at once after every reset makes almost none, and one that
+    /// shuts down before its first step makes none: a run capped by virtual
+    /// time would never end; [`CpuError::ResetStorm`] ends that loop. The CPU still holds
+    /// the state of the request, so a stop report shows where it shut down.
+    /// See `backlog/docs/design/observation.md` §The machine resets again
+    /// and again.
+    fn reset_requested(&mut self, shutdown: bool) -> Result<RunOutcome, MachineError> {
+        let Some((resets, steps)) = self.reset_streak.record(self.virtual_time()) else {
+            return Ok(RunOutcome::ResetRequested);
+        };
+        let (cs, ip) = self.cpu.code_address();
+        Err(CpuError::ResetStorm {
+            resets,
+            steps,
+            shutdown,
+            cs,
+            ip,
+        }
+        .into())
+    }
+
     fn run_until(&mut self, cap: Option<u64>) -> Result<RunOutcome, MachineError> {
         self.sync_a20();
         self.sync_memory_map(MemoryMapSync::Apply)?;
@@ -662,7 +721,7 @@ impl<C: Cpu> Machine<C> {
                     .is_some_and(|signal| signal.replace(false))
             {
                 self.reset_pending = true;
-                return Ok(RunOutcome::ResetRequested);
+                return self.reset_requested(false);
             }
             if !completing {
                 // Policy observations and hard caps win over a new INTA.
@@ -811,7 +870,7 @@ impl<C: Cpu> Machine<C> {
                 CpuStop::Shutdown => {
                     self.reset_pending = true;
                     self.settle(false)?;
-                    return Ok(RunOutcome::ResetRequested);
+                    return self.reset_requested(true);
                 }
                 CpuStop::Halt => {
                     self.halted = true;
@@ -960,6 +1019,40 @@ mod tests {
     use bus::{DecodeMap, PortRange};
     use device::{Device, DeviceError, DmaRequest, TraceEvent};
     use testkit::MockCpu;
+
+    /// Only requests in a row, each fewer than the bound after the one
+    /// before, make a storm; one longer distance, or a retired count that
+    /// went back (a restored state), starts the count again.
+    #[test]
+    fn a_reset_storm_needs_its_requests_in_a_row_and_close_together() {
+        let near = cpu::RESET_STORM_STEPS - 1;
+        let resets = cpu::RESET_STORM_RESETS;
+        let mut streak = ResetStreak::default();
+        let mut retired = 0;
+        for _ in 1..resets {
+            retired += near;
+            assert_eq!(streak.record(retired), None);
+        }
+        // A request as far from the last as the bound is not part of it.
+        retired += cpu::RESET_STORM_STEPS;
+        assert_eq!(streak.record(retired), None);
+        for _ in 1..resets {
+            retired += near;
+            assert_eq!(streak.record(retired), None);
+        }
+        assert_eq!(streak.record(retired - 1), None, "went back");
+        let start_again = retired - 1;
+        let mut retired = start_again;
+        for _ in 1..resets {
+            retired += 1;
+            assert_eq!(streak.record(retired), None);
+        }
+        retired += 1;
+        assert_eq!(
+            streak.record(retired),
+            Some((resets, retired - start_again))
+        );
+    }
 
     #[test]
     fn i286_shutdown_resets_to_high_rom_preserving_ram_cmos_a20_and_time() {

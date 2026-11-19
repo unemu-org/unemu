@@ -483,6 +483,60 @@ fn a_stall_that_overruns_its_stack_shuts_down_and_the_board_resets() {
     assert_eq!((requests, resets, starts), (1, 1, 2));
 }
 
+/// A guest that shuts down again right after every reset takes three steps
+/// of virtual time per reset, so a run capped by virtual time would do
+/// nothing but reset, for as long as its deadline allowed. The machine stops that
+/// storm of resets inside the run, which returns with the guest error and a
+/// stop report at the last shutdown. The run happens on its own thread, so
+/// one that never returns fails the test at the deadline instead of hanging
+/// it.
+#[test]
+fn a_guest_that_resets_again_and_again_stops_inside_its_run() {
+    let rom = assembly::test_support::reset_storm_rom();
+    assert_eq!(
+        assembly::test_support::fixture_sha256(&rom),
+        assembly::test_support::RESET_STORM_ROM_SHA256
+    );
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let config = assembly::test_support::reset_storm();
+        let mut machine = PcMachine::from_assembled(&config, observed(&config, DeviceId::Mda))
+            .expect("the machine starts");
+        // One second of guest time: about 245,000 resets without the stop.
+        let failure = machine.run(RunLimit::until(Ticks(1_193_182))).unwrap_err();
+        let report = machine.cpu_stop_report().map(|report| report.to_string());
+        sender
+            .send((
+                failure,
+                machine.status(),
+                report,
+                machine.reset_requests(),
+                machine.cpu_resets(),
+            ))
+            .unwrap();
+    });
+    let (failure, status, report, requests, resets) = receiver
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("the run returns");
+    // 63 resets; the 64th request stops the machine instead of resetting it.
+    assert_eq!((requests, resets), (63, 63));
+    assert_eq!(failure.kind, ErrorKind::Guest);
+    assert_eq!(
+        failure.message,
+        "cpu: the machine resets again and again: 64 resets within 192 steps, \
+         the last shutdown at f800:0007"
+    );
+    assert_eq!(status, Status::Failed);
+    let report = report.expect("a storm keeps its report");
+    for line in [
+        "stop     the machine resets again and again: 64 resets within 192 steps, the last shutdown at f800:0007\n",
+        "cs:ip    f800:0007 (linear 0f8007)\n",
+        "code     cc f4 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n",
+    ] {
+        assert!(report.contains(line), "{line:?} missing from\n{report}");
+    }
+}
+
 /// A guest that silences the keyboard and halts with interrupts disabled
 /// runs no further, and nothing reports why. The diagnostic report shows
 /// it: IF clear, the CPU halted after its HLT, IRQ1 masked in the master

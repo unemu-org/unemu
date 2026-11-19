@@ -345,9 +345,10 @@ impl X86JitCpu {
 
     /// The diagnosis of a stop this CPU returned, for the errors that name
     /// an instruction: an unsupported system operation, an unsupported
-    /// instruction, an outward fault and a stall in exception delivery,
-    /// whose instruction is the handler's first; `None` for every other
-    /// error.
+    /// instruction, an outward fault, a stall in exception delivery,
+    /// whose instruction is the handler's first, and a reset storm, whose
+    /// instruction is the one at the last shutdown, before its reset;
+    /// `None` for every other error.
     ///
     /// Call it right after the failed run, before anything else runs the
     /// CPU: the core refuses without a guest effect, so the registers and
@@ -364,6 +365,7 @@ impl X86JitCpu {
             CpuError::UnsupportedInstruction { cs, addr, .. } => (*cs, *addr),
             CpuError::Fault { cs, ip, .. } => (*cs, *ip),
             CpuError::DeliveryStalled { cs, ip, .. } => (*cs, *ip),
+            CpuError::ResetStorm { cs, ip, .. } => (*cs, *ip),
             _ => return None,
         };
         let state = &self.cpu.cpu;
@@ -722,6 +724,16 @@ impl X86JitCpu {
     }
 }
 
+/// The legacy part of the real-mode entry state at CS F000h, which every
+/// reset of the machine profile starts from. Built once: building it makes a
+/// whole `CpuState` (vector and x87 state, the CPUID overrides) only to keep
+/// its legacy part, which measured about a tenth of a reset.
+fn reset_legacy_image() -> x86jit_core::legacy::LegacyCpuState {
+    static IMAGE: std::sync::OnceLock<x86jit_core::legacy::LegacyCpuState> =
+        std::sync::OnceLock::new();
+    *IMAGE.get_or_init(|| CpuState::legacy_real_entry([0xF000, 0, 0, 0, 0, 0]).legacy)
+}
+
 impl Cpu for X86JitCpu {
     fn set_a20_enabled(&mut self, enabled: bool) {
         self.cpu.set_a20_enabled(enabled);
@@ -739,8 +751,7 @@ impl Cpu for X86JitCpu {
         if self.vm.execution_profile() == ExecutionProfile::Machine {
             // Reset must discard protected caches as well as pending handoffs.
             // Preserve GPRs, whose hardware reset contents are unspecified.
-            let reset = CpuState::legacy_real_entry([0xF000, 0, 0, 0, 0, 0]);
-            state.legacy = reset.legacy;
+            state.legacy = reset_legacy_image();
             state.legacy.a20_enabled = u8::from(a20_enabled);
             state.legacy.cr0 = 0xFFF0;
             if !self.low_reset_fetch {
