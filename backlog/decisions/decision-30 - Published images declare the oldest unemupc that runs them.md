@@ -18,6 +18,19 @@ Accepted — 2026-11-17 by the maintainer. Design step of
 measured behaviour of release 0.0.2 are in
 `backlog/docs/design/machine-images.md` §5.6.
 
+**Note, 2026-11-19 (amendment to come).** The maintainer decided, with the
+stage B plan of `backlog/docs/design/core-contract.md` (§14.6 Q6, §9),
+that before the repositories separate this decision is amended to
+re-state the marker as naming the **core's** release
+(`CoreDescription::version`). Two things need that amendment: the level a
+build compares with is the store crate's own package version, which after
+the split is the front end's; and the per-feature table mixes rows the
+core reads (the PC config's keys and vocabulary) with rows the front end
+reads (envelope media types, compressed layers, media-set and
+firmware-package keys). Until the amendment the decision stands as
+written; every version is the one workspace's today, so nothing is wrong
+yet.
+
 ## Context
 
 Templates, installation media sets and firmware packages published on

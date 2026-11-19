@@ -16,7 +16,12 @@ with the recommended answers of §12.13. §13 (the second platform: the
 contract's own repository, what a NES core adds to the contract, the front
 end's generic launch path and the registration of cores) was **accepted**
 on 2026-11-18 (design step of `upc-dfs.27`), with the recommended answers
-of §13.9.
+of §13.9. §14 (§4's stage B in fourteen steps: the PC config codec in the
+new crate `pc-config`, the launch document, `PcCore::create`, and both
+front ends starting stored PC images through `core_launch`) was
+**accepted** on 2026-11-19, with the recommended answers of §14.6; the
+corrections it made to earlier sections are marked "(corrected
+2026-11-19, stage B plan)".
 
 Markers: **[REPO]** = read in this repository at `896c5d9`, with the path;
 **COUNTED** = counted for this document by a throwaway script over the
@@ -593,6 +598,13 @@ The list of digests to verify comes from the provider's
 other way to describe a machine is a provider matter (§3.12): a PC machine
 file with host paths, ROM folders and `extends` is turned into a machine
 by the PC provider, which hands the front end the same `Box<dyn Machine>`.
+For the PC the document `create` reads is not the stored config as it is:
+the stored config names firmware without a size and a layered or blank
+disk by its head descriptor, not by the flat bytes `ContentSource::open`
+takes, and the store's closure is not the list of content the core opens.
+The PC provider writes a **launch document** from the stored config, with
+the flat digests, sizes and records added, and `create` reads that (§14.2.2)
+(corrected 2026-11-19, stage B plan).
 
 **Media design constraint.** The contract keeps layered disk images
 possible ([deferred.md](../deferred.md), Layered disk images): a base is
@@ -1240,11 +1252,16 @@ How each call maps onto today's code, and what moves:
 | `drain_messages` | unlisted firmware, speaker trace, reset lines | `window/main.rs` |
 | `notices` | `devices::OPL3_NOTICE` | `cli/about.rs` |
 
-`PcCore::create` (config document, content, session directory) needs the
-PC config codec: the half of `pc-image` that decodes a stored config
-through `machine-file` lowering and mounts bases and journals
-(`provider.rs`, `encode.rs`, `defaults.rs`, `disk.rs`, `zero.rs`). That
-code uses store types today, so it comes in two stages:
+`PcCore::create` (config document, content, storage) needs the PC config
+codec: the half of `pc-image` that decodes a stored config through
+`machine-file` lowering (the model in `lib.rs`, the codec half of
+`provider.rs`, `encode.rs`, `defaults.rs`, and under them the machine
+schema and lowering of `machine-file`). `disk.rs` and `zero.rs` are not
+part of it and stay in `pc-image`: they walk the manifest's layer chain,
+build files in the store's cache and describe the zero base, which is the
+store's side of a `ContentSource` (§12.5) (corrected 2026-11-19, stage B
+plan; it listed them). That code uses store types today, so it comes in
+two stages:
 
 1. **Stage A.** `PcMachine` and its tests land. The desktop session drives
    `dyn Machine`. Every start goes through the PC provider as today
@@ -1256,7 +1273,12 @@ code uses store types today, so it comes in two stages:
    below the contract, over `ContentSource` instead of `Store`, and
    `PcCore::create` becomes the one start path for stored images.
    `pc-image` keeps the store operations and calls the same codec for
-   validation.
+   validation. §14 designs it in fourteen steps: the codec in the new
+   `emulation` crate `pc-config`; a launch document the PC provider writes
+   from the stored config, which is what `create` reads; and
+   `PcCore::create_machine`, the typed form of `create`, through which the
+   desktop keeps a `PcMachine`, since the contract's `Machine` has no
+   downcast (§14.2.3, §14.2.6) (corrected 2026-11-19, stage B plan).
 
 Consequences to plan for:
 
@@ -1310,14 +1332,22 @@ verify the closure on the worker thread (digests from
 `ConfigValidator::validate`), then `core.create(&request)` with a
 `ContentSource` over the store's receipts and the machine's workspace as
 the session directory. For the PC in stage A the provider returns the
-`PcMachine` it built itself.
+`PcMachine` it built itself. From stage B the PC's provider adds one
+store-side step between the image and `create`: it writes the launch
+document and hands over a `core_launch::Prepared` made from parts, a
+content plan and a storage plan of its own (§14.2.4, §14.2.5); the
+store's closure and the core's content list differ for the PC (corrected
+2026-11-19, stage B plan).
 
 **The command line** drives no machine through the contract at first: the
 commands that run a machine (`run`, `image run`, `image machine run`,
 `--boot`, `--bios`) are PC provider commands with PC run policies
 (`RunPolicy`, idle limits, `--print`). When a second platform has a
 runnable image, `image run` and `image machine run` move to `cli-core` as
-`core.create`, `run(RunLimit::steps(max))`, `finish`.
+`core.create`, `run(RunLimit::steps(max))`, `finish`. They move with
+stage B instead, as §12.9 has it: through the contract in `cli-pc` first,
+then to `cli-core` with one start hook on `CliPlatform`, last and
+droppable (§14.2.7, §14.6 Q4) (corrected 2026-11-19, stage B plan).
 
 **The lists of cores and providers** are data the two binaries pass down.
 No neutral crate names a platform.
@@ -1432,9 +1462,12 @@ layer = "neutral"   # contract | neutral | emulation | pc | application
 |---|---|---|
 | `contract` | `unemu-core-api` | nothing at all, also outside the workspace |
 | `neutral` | `image-store`, `image-registry`, `media`, `cli-core`, later the recipe crate and the neutral window crates | `contract`, `neutral` |
-| `emulation` | `device`, `bus`, `cpu`, `video`, `audio`, `devices`, `chipset`, `machine`, `testkit`, `assembly`, `unemu-pc-core` | `contract`, `emulation` |
+| `emulation` | `device`, `bus`, `cpu`, `video`, `audio`, `devices`, `chipset`, `machine`, `testkit`, `assembly`, `unemu-pc-core`, `pc-config` | `contract`, `emulation` |
 | `pc` | `machine-file`, `pc-image`, `pc-harness`, `cli-pc`, later the PC window module | `contract`, `neutral`, `emulation`, `pc` |
 | `application` | `upcli`, `platforms`, `unemupc` | anything |
+
+`pc-config`, the PC config codec of §4 stage B (§14.2.1), joins the
+`emulation` row (corrected 2026-11-19, stage B plan).
 
 Two more rules:
 
@@ -2993,14 +3026,17 @@ Not part of the first beads; recorded so that no step works against it.
 | Destination | Crates |
 |---|---|
 | The contract's own source (§11 Q1) | `unemu-core-api` |
-| The PC core repository (unemupc) | `device`, `bus`, `cpu`, `video`, `audio`, `devices`, `chipset`, `machine`, `testkit`, `assembly`, `unemu-pc-core`, `pc-harness`, and by the recommendation of §11 Q4 `machine-file` and the journal half of `media` |
+| The PC core repository (unemupc) | `device`, `bus`, `cpu`, `video`, `audio`, `devices`, `chipset`, `machine`, `testkit`, `assembly`, `unemu-pc-core`, `pc-config` (added 2026-11-19, stage B plan), `pc-harness`, and by the recommendation of §11 Q4 `machine-file` and the journal half of `media` |
 | The front-end repository | `image-store`, `image-registry`, the media builders, the recipe crate, `cli-core`, `cli-pc`, `upcli`, `platforms`, `pc-image`, the window crates |
 
 What must be true first:
 
 1. The boundary check passes with an empty allow list.
 2. `PcCore::create` reads stored configs (§4 stage B), so the front end's
-   generic start path works for the PC.
+   generic start path works for the PC. Precisely: it reads the launch
+   document the PC provider writes from a stored config, and both front
+   ends start stored PC images through `core_launch` (§14; corrected
+   2026-11-19, stage B plan).
 3. `machine-file` no longer depends on `image-store`: its firmware-package
    lookup takes a small trait the provider implements over the store.
 4. `media` is settled (§11 Q4).
@@ -3015,6 +3051,16 @@ the oldest release of the program that provides the manifest's platform.
 After the split that program is the **core**: the marker keeps meaning the
 unemupc release, `CoreDescription::version`, and the front end has its own
 version that images never name.
+
+Two things in the code say otherwise today, and stage B does not fix them:
+the level a build compares with is `image-store`'s own package version,
+which after the split is the front end's; and the table mixes rows the
+core reads (the PC config's keys and vocabulary) with rows the front end
+reads (envelope media types, compressed layers, media-set and
+firmware-package keys). The maintainer decided on 2026-11-19 to settle
+this as an amendment of decision-30 before the repositories separate,
+re-stating the marker as naming the core's release (§14.6 Q6; corrected
+2026-11-19, stage B plan).
 
 ## 10. Risks
 
@@ -3498,7 +3544,7 @@ and `ToolIo` traits]:
 
 | The journal does today | With a record |
 |---|---|
-| Takes a stable `<journal>.lock` beside the file and holds it for the session | Exclusive use is what `Storage::open` gives; a file-backed storage takes the same lock |
+| Takes a stable `<journal>.lock` beside the file and holds it for the session | Exclusive use is what `Storage::open` gives; a file-backed storage takes the same lock, `<journal>.lock` (§14.6 Q8; corrected 2026-11-19, stage B plan) |
 | Creates a journal by writing a header to a temporary file, synchronizing it and linking it into place, so that a journal with half a header never exists | A record of size 0 is new: `replace`, append the header, `commit` |
 | Appends the frames of one guest command, then `File::sync_all` | `append`, then `sync`, at the same points |
 | Truncates an invalid tail at mount | `truncate`, then `sync` |
@@ -3788,7 +3834,7 @@ each command of `upcli`:
 | `--boot`, `--bios PATH`, `machine check FILE` | `unemupc` only (§12.13 Q2). They need nothing of the store |
 | `run --machine FILE [--store DIR \| --no-store] …` | Stays a PC command of the front end, because it adds the store: it takes firmware packages for the machine file from the store, then calls the run of `unemupc`'s library. One implementation, so the two cannot drift |
 | `media generations`, `verify`, `rollback`, `commit` | PC commands in `cli-pc` that call `journal-files`; the same words and output; also in `unemupc` |
-| `image run NAME:TAG`, `image machine run ID` | PC provider commands until `PcCore::create` reads stored configs (§4 stage B). Then they move to `cli-core` and drive the machine through the contract, for any platform: `core.create(&request)` with a `ContentSource` over the store's receipts and a file-backed `Storage` over the workspace, `run(RunLimit::steps(max))`, `finish` (§5) |
+| `image run NAME:TAG`, `image machine run ID` | PC provider commands until `PcCore::create` reads stored configs (§4 stage B). Then they move to `cli-core` and drive the machine through the contract, for any platform: `core.create(&request)` with a `ContentSource` over the store's receipts and a file-backed `Storage` over the workspace, `run(RunLimit::steps(max))`, `finish` (§5). Corrected 2026-11-19 (stage B plan, §14): for the PC the `Storage` is not a plain `FileStorage` over the workspace but the provider's own storage plan, a table from record name to journal file, because the workspace's journal names (`media/<64 hex>-<n>.upfj`, files under `media/created/`, journals beside a host image) cannot be record names of at most 64 bytes with no directory; the journal keeps its lock `FILE.lock`, which `unemu-core-files` learns (§14.6 Q8). Nor is it a pure move: through `Machine::run` the result line ends in the contract's stop, a guest reset no longer ends the run and there is no idle limit, stated in `commands.md` (§14.6 Q5) |
 | Every other `image`, `media create` and `recipe` command | Unchanged |
 | `--version`, `--about` | The front end's: its own release, and each compiled-in core's id, release, contract version and notices from `CoreDescription` |
 
@@ -3845,8 +3891,10 @@ Not steps of this plan, and where each is:
   media dialogs' move behind `add_medium` (§8 step 2, with `upc-dfs.25.7`
   and step 5 of §8). It uses the `NewMedium` of 0.2 and needs step 9.
 - **`PcCore::create`** (§4 stage B) and, after it, `image run` through the
-  contract (§12.9). It needs steps 8 to 12 and the config codec below the
-  contract. One more thing to plan with it: the part of `machine-file` the
+  contract (§12.9). It needs steps 9 and 10 and the config codec below the
+  contract, and not step 12: `create` gets firmware as content, and eight
+  of stage B's fourteen steps need no step here at all (§14.5; corrected
+  2026-11-19, stage B plan: it said "steps 8 to 12"). One more thing to plan with it: the part of `machine-file` the
   codec needs (the schema and its lowering, TOML only) becomes part of
   what an embedder links, so it must pass the list of §12.3; `serde` and
   `toml` are pure Rust and pass, the YAML reader and the path handling
@@ -3873,7 +3921,10 @@ Not steps of this plan, and where each is:
   recipe bead that adds a command go one after the other.
 - **Steps 8 to 12** change `assembly` and `media`, which every PC crate
   and the desktop build on, and each of them runs the slow goldens. They
-  are the first half of §4 stage B. They go after the worker and the
+  are the first half of §4 stage B; of them stage B's steps need only 9
+  and 10 (and 11's `journal` crate in one case), and its first eight
+  steps run beside steps 1 to 7 (§14.5; corrected 2026-11-19, stage B
+  plan). They go after the worker and the
   session have settled where they call `assembly` (§8.1 move 3.11 and
   `upc-dfs.25.7`), so that a moved call site is not edited twice. Step 8
   alone touches only the contract and can land at any time; it is steps
@@ -4762,7 +4813,12 @@ pub fn start(prepared: &Prepared) -> Result<Box<dyn Machine>, Error>;
 from the store instead of a file: the config from the image, the digests
 from `validate`, a `ContentSource` over the store's receipts, a `Storage`
 over the machine's workspace. That is the neutral start of §5, and it is
-§13.4's last part, not this one.
+§13.4's last part, not this one. It fits a platform whose content is its
+payload. The PC's stored config is not what its `create` reads: its
+provider writes a launch document with flat digests, sizes and records,
+and hands over a `Prepared` made from parts with its own content and
+storage plans (§14.2.2, §14.2.4, §14.2.5) (corrected 2026-11-19, stage B
+plan).
 
 **Beside the PC's path.** The PC stays on its provider path until §4
 stage B: its library, machine files, media dialogs and `Presenter`
@@ -4783,7 +4839,13 @@ stage B: its library, machine files, media dialogs and `Presenter`
 - The library window does not list what was opened from a file. A list
   of recent files is not part of this design.
 - When the PC reaches stage B it becomes one more core on this path, and
-  `Presenter` keeps only what the contract does not carry.
+  `Presenter` keeps only what the contract does not carry. The contract's
+  `Machine` has no downcast, so the desktop starts a stored PC image with
+  `core_launch::start_with` and `PcCore::create_machine` and keeps a typed
+  `PcMachine` in its `Presenter`; a stored PC image does not run in
+  `player_ui::Player`, which would drop Insert…, Layers, Save as new
+  image…, Settings and the drive chips (§14.2.6, §14.6 Q3; corrected
+  2026-11-19, stage B plan).
 
 **What a running machine offers**, each control enabled from the
 machine's description and never by trying a call (§3.3):
@@ -5010,7 +5072,11 @@ this is what is needed, and none of it is in the steps of §13.6:
    `validate` returns) and a `DesktopPlatform` and `CliPlatform` over the
    core's description. This is what §3.12 left `Core::validate` out of
    0.1 for and what §6 predicted: a simple platform ships no provider
-   crate.
+   crate. It fits a platform whose content is its payload, not the PC:
+   the PC's store closure (layer descriptors, sector packs, source
+   archives) and its core's content list (flat bases) are different
+   lists, and neutral code must not take one for the other (§14.2.3;
+   corrected 2026-11-19, stage B plan).
 3. **An import** from a file to an image, with the mark that the content
    is the user's own, so that the push guard holds it back: cartridge
    images are almost never free to redistribute. Whether a core may
@@ -5018,7 +5084,10 @@ this is what is needed, and none of it is in the steps of §13.6:
    there.
 4. **The neutral start** of §5 and the `LibraryPlatform` sketch of
    §8.1.4, with `Storage` over the machine's workspace; the library's
-   listing and details for a platform that has no settings.
+   listing and details for a platform that has no settings. A platform's
+   store side may need a step between the image and `create`, as the PC's
+   does (§14.2.4); the generic one is designed here, later (corrected
+   2026-11-19, stage B plan).
 5. **Firmware for content that needs it** (a disk system): the
    `FirmwareRules` seam, or a generic one over `validate`'s labels.
 
@@ -5157,7 +5226,9 @@ Dependencies between the two:
   here), because the launch path needs a file-backed storage long before
   the journal moves. Steps 9 and 11 of §12.10 then move the journal's
   file half **onto** it, and extend it where the journal needs more (the
-  lock beside a journal, opens that do not follow links). Until then the
+  lock beside a journal, opens that do not follow links). The lock keeps
+  the journal's name `FILE.lock`, which `unemu-core-files` learns for the
+  journal's records (§14.6 Q8; corrected 2026-11-19, stage B plan). Until then the
   two do not meet: the PC's journals keep their own file code.
 - Step 1 of §12.10 and step 3 here both edit
   `scripts/crate-boundaries.sh` and its fixtures; they go one after the
@@ -5303,3 +5374,785 @@ are answered:
 
 Decision-41's names (`unemu`, and a core's binary named as the core) are
 taken as decided.
+
+## 14. Stage B in steps
+
+Status: **planned and accepted** by the maintainer on 2026-11-19, with the
+recommended answer to each question of §14.6. This section is the design
+of §4's stage B: the PC config codec below the contract, `PcCore::create`
+as the one start path for stored images, and both front ends starting
+stored PC images through `core_launch`. It was read on `main` at
+`f586f5f2` (markers as at the top; **[CONTRACT]** = read in
+`unemu-core-api` 0.2.0 at its pinned commit `56c4640`). Nothing was built
+or run for it. The beads `upc-dfs.28` to `upc-dfs.40` are §12.10's steps
+1 to 7 and 9 to 14; the steps here are named S1 to S14 so that they are
+never taken for those.
+
+Three findings shape the whole plan; the corrections they need in the
+sections above are made in place, each marked "(corrected 2026-11-19,
+stage B plan)":
+
+- **The stored PC config is not a document `create` can read as it is.**
+  The contract opens content by SHA-256 **and size**, by the digest of the
+  flat bytes [CONTRACT: `ContentSource::open(sha256, size)`]. The stored
+  config names a firmware blob without its size, and a layered or blank
+  disk by the digest of its head descriptor, not of the disk's bytes
+  [REPO: `crates/pc-image/src/lib.rs:161-200`, `disk.rs:119-139`]. What a
+  start adds locally (journal retention, pending inserts, created disks,
+  kept catalogues) is not in it either. The PC provider therefore writes
+  a **launch document** (§14.2.2).
+- **`disk.rs` and `zero.rs` stay in `pc-image`.** They walk the manifest's
+  layer chain, build files in the store's cache and describe the zero
+  base: store work, which §12.5 already places behind the `ContentReader`
+  the front end hands over.
+- **A plain `FileStorage` over the workspace cannot hold the PC's
+  journals.** Several journal file names are longer than a record name may
+  be, some sit in a sub-folder or beside a host file outside the
+  workspace, and the journal's lock file has another name than
+  `FileStorage`'s (§14.2.4, §14.6 Q8).
+
+### 14.1. Today's start path for a stored PC image
+
+Every start of a stored image is the PC provider's. It ends in
+`assembly::assemble_with_verified_bases` and, on the desktop,
+`PcMachine::from_assembled`.
+
+| # | Step | Where [REPO] | After stage B |
+|---|---|---|---|
+| 1 | **Session.** Refuse a pending discard or publication; read or write `session.toml` (the pinned image, the config digest, journal retention) | `crates/pc-image/src/workspace.rs` `prepare_selected` | Unchanged, in `pc-image` |
+| 2 | **Resolve and verify.** `Store::resolve_descriptor` hashes the closure and calls the provider's `validate` and `validate_resolved` | `crates/pc-image/src/provider.rs` `load_pinned` | Unchanged; the two callbacks call the moved codec |
+| 3 | **Decode and lower: the codec.** `prepare` checks the envelope and every binding, reads firmware and CMOS bytes, lowers the hardware tables with `machine_file::lower`, builds the catalogues | `provider.rs` `prepare`; the model in `lib.rs` | Below the contract, in the new crate `pc-config` |
+| 4 | **Bases.** One `media::VerifiedBase` per medium: a raw blob, a compressed floppy in memory, a layered head flattened into the cache, a zero-rooted chain | `disk.rs` `bases`, `zero.rs` | Unchanged, in `pc-image`: the store's side of a `ContentSource` |
+| 5 | **Paths into the machine config**: base paths, journal paths `media/<id>.upfj`, `media/cmos.upfj`, the retention | `provider.rs` `resolve_pinned` | Gone. The provider writes the launch document; `PcCore::create` lowers it and mounts through `assembly`'s mount seam (§12.10 step 10) |
+| 6 | **A machine's extras**: a CMOS reset, pending inserts | `crates/pc-image/src/machine.rs` `prepare`, `insert_medium` | Edit the launch document's catalogues |
+| 7 | **The desktop's extras**: created disks, a kept catalogue | `crates/pc-media/src/created_media.rs` `apply`, `kept_catalogue.rs` `restore` | Edit the launch document's catalogues |
+| 8 | **Across the thread**: bases as file handles or bytes | `workspace.rs` `SessionTransfer` | A `core_launch::Prepared` made from parts |
+| 9, 10 | **Assemble and wrap** | `crates/assembly/src/assemble.rs` `assemble_with_verified_bases`; `crates/pc-core/src/machine.rs` `PcMachine::from_assembled` | `core_launch::start` calls `PcCore::create`; the desktop keeps a typed `PcMachine` (§14.2.6) |
+
+The callers are `upcli image run` and `image machine run`
+(`crates/cli-pc/src/image.rs`, `image/machine.rs`; their run loop is
+`run_session(RunPolicy::natural(max_steps, 1_000_000))` and
+`pc_harness::finish_persistence`), and the desktop's Start of an image, of
+a machine and of a Gaming-mode copy (`crates/pc-library/src/library_worker.rs`
+on the worker, `crates/window/src/shell.rs` on the UI thread). After the
+start the desktop keeps a `Presenter` (`Session<PcMachine>`) and reaches
+past the contract through `PcMachine::assembled` in about 90 places
+(COUNTED by `grep` in `main.rs` and `shell.rs`). A start from a machine
+file is not this path and stays as it is (§3.4: a provider matter). Open…
+of a content file is the generic path of §13.3 and is not touched.
+
+### 14.2. The target
+
+#### 14.2.1. The codec's home: the crate `pc-config`
+
+A new crate `crates/pc-config` (package `pc-config`), layer **`emulation`**,
+on the core's side (§14.6 Q2). An `emulation` crate may depend only on
+`contract` and `emulation` crates, so `pc-config` depends on `assembly`,
+`unemu-core-api`, `serde`, `toml`, `sha2` and `thiserror`, and on nothing
+of the store, of `media` or of `machine-file`. `unemu-pc-core` cannot call
+`machine-file` (layer `pc`), so the machine schema and its lowering move
+too: this is the crate move behind §12.10's "the part of `machine-file` the
+codec needs … becomes part of what an embedder links".
+
+| Module of `pc-config` | From | Holds |
+|---|---|---|
+| `schema::v1`, `lower`, `parse_toml`, `ParseError`, `LowerError`, `Origins` (TOML half), `ImageReader`, `pc_names` | `machine-file` | The machine schema and its lowering to `assembly::MachineConfig`. `machine-file` re-exports every name where it was |
+| `image` | `pc-image` `lib.rs`, `provider.rs` | The stored config's model (`Config`, `Firmware`, `Medium`, `Slot`, `Nvram`, `Policy`, `Geometry`), its decode and encode, the binding checks |
+| `image::encode`, `image::defaults` | `pc-image` `encode.rs`, `defaults.rs` | A machine file's hardware tables with the lowering's defaults frozen in |
+| `launch` | new | The launch document, its check without content and its lowering over a `ContentSource` |
+
+What stays: **`machine-file`** keeps what touches the host (the YAML
+reader, `extends` and presets, journal path checks, firmware discovery and
+the firmware-package lookup, `load*`, `LoadedMachine`, `FileImageReader`).
+**`pc-image`** keeps `disk.rs` and `zero.rs` whole, `load_pinned`, the
+payload-type table, the session, machines, import, publication,
+templates, recipes and the compatibility rows.
+
+Three places of the lowering touch the host today and go behind
+`ImageReader` before it can move [REPO: `crates/machine-file/src/lower.rs`]:
+two `std::fs::metadata` calls that size a ROM file; `paths::is_retention_input`,
+which canonicalises a path; and `ImageReader::verify_journal_base`, which
+returns `media::VerifiedBase` although the lowering reads only its length
+and digest.
+
+#### 14.2.2. The launch document
+
+The one config type the PC platform lists:
+`application/vnd.unemu.pc.launch.v1+toml` (working name). It is never
+stored, never pushed and needs no compatibility row. It is the stored
+config's schema, unchanged, plus two tables the PC provider adds
+(§14.6 Q1):
+
+```toml
+schema = 1
+platform = "ibm-pc"          # the current spelling; aliases are the front end's
+
+[machine]                    # the hardware tables, after the machine's settings overlay
+# [[firmware]], [[media]], [[slots]], [nvram]: as in the stored config; the
+# catalogues as this start has them, pending inserts and created disks included
+
+[[content]]                  # one row per `blob` and `head` named above
+digest = "sha256:…"          # that blob or head
+sha256 = "…"                 # SHA-256 of the flat bytes the core opens
+size = 2088960               # their length
+
+[[record]]                   # one row per journalled medium, and one for a journalled CMOS
+medium = "c"                 # a medium id, or "cmos"
+name = "c.upfj"              # the record of the machine's storage
+keep_generations = 10
+```
+
+- **`content`**: for a raw blob `sha256` is the blob's own digest; for a
+  layered head the chain's `result_sha256`; for a zero base the digest of
+  that many zero bytes. The provider knows all three today
+  (`disk::identity`, `ZeroBase::identity`).
+- **`record`**: the name and the retention, which today come from
+  `session.toml` and the import record.
+- A config's own media use the record `<id>.upfj` and the CMOS
+  `cmos.upfj`, today's file names, so a session written before stage B is
+  found after it. A medium id that starts with `-` or with the front end's
+  prefix `kept-` is not a record name [CONTRACT: `is_record_name`,
+  `KEPT_RECORD_PREFIX`]; the provider refuses to start such an image with a
+  sentence saying so (ASSUMED: no image has one; S6 measures it).
+- Media the provider adds for one start get records under `kept-…`, which
+  its storage maps to their files (§14.2.4).
+
+`pc-config`'s API over it:
+
+```rust
+pub mod launch {
+    pub const MEDIA_TYPE: &str = "application/vnd.unemu.pc.launch.v1+toml";
+
+    pub struct Launch { pub config: image::Config, pub content: Vec<ContentRow>, pub records: Vec<RecordRow> }
+
+    pub fn decode(bytes: &[u8]) -> Result<Launch, ConfigError>;
+    pub fn encode(launch: &Launch) -> Result<Vec<u8>, ConfigError>;
+
+    /// Everything that needs no content: the envelope, every binding, the
+    /// slots, each size against its geometry, the lowering in its metadata
+    /// mode, `MachineConfig::validate`, the option-ROM catalogue. Answers
+    /// what `lower` will open. This is `Core::validate`.
+    pub fn check(launch: &Launch, options: AssemblyOptions) -> Result<Vec<ContentRef>, ConfigError>;
+
+    /// The machine. Reads firmware and CMOS through `content`; names each
+    /// disk base and each journal by a key and says what each key is.
+    pub fn lower(launch: &Launch, content: &dyn ContentSource, options: AssemblyOptions)
+        -> Result<Lowered, unemu_core_api::Error>;
+
+    pub struct Lowered {
+        pub machine: assembly::MachineConfig,
+        /// Key of an `ImageSource::File` or an NVRAM base: its digest and size.
+        pub bases: BTreeMap<PathBuf, ([u8; 32], u64)>,
+        /// Key of a `WriteMode::Journal` or the NVRAM journal: its record.
+        pub records: BTreeMap<PathBuf, String>,
+    }
+}
+```
+
+`MachineConfig` keeps its paths, as §12.5 move 2 decides; the keys are
+names the codec makes up and nothing opens them.
+
+**The store validates with the same function.** `PcProvider::validate`
+keeps its store half (for each digest the config names: the manifest's
+descriptor, its kind, its size limit, the firmware's source link, the
+layer chain; so it fills the `content` rows and the closure it returns),
+then calls `launch::lower` with a `ContentSource` over `BlobSource` that
+serves the small content (firmware, CMOS). Disk content is never opened in
+validation, as today. Two things the codec takes as arguments instead of
+reading them: the retired platform spelling `ibm-pc-at` is checked by
+`pc-image` before the call (the launch document always says `ibm-pc`), and
+the permission for unlisted firmware is an `AssemblyOptions` argument
+(the tests' thread-local stays in `pc-image`; no thread-local enters the
+core).
+
+#### 14.2.3. `PcCore::create` and `create_machine`
+
+```rust
+impl PcCore {
+    /// Build a PC from a launch document. The typed form of `Core::create`,
+    /// for PC code that needs more than the contract.
+    pub fn create_machine(&self, request: &CreateRequest<'_>) -> Result<PcMachine, Error>;
+}
+impl Core for PcCore {
+    fn create(&self, request: &CreateRequest<'_>) -> Result<Box<dyn Machine>, Error> {
+        self.create_machine(request).map(|machine| Box::new(machine) as Box<dyn Machine>)
+    }
+    fn validate(&self, platform: &str, config: ConfigDocument<'_>) -> Result<Validated, Error>;
+}
+```
+
+1. Refuse another platform or config type (`Unsupported`) and an unknown
+   option (`Usage`).
+2. `launch::decode`, then `launch::lower` with `request.content`.
+3. Assemble through the mount seam of §12.10 step 10, with a mount that
+   answers a base key with `request.content.open(sha256, size)` and a
+   record key with `request.storage.open(name)`. The machine keeps the
+   storage for its life, because a catalogue's journal opens when its
+   medium is inserted.
+4. One text scanout route per display card of the config, in a fixed
+   order (MDA, then VGA); the front end picks the display.
+5. `PcMachine` owns the lowered config and offers it as
+   `PcMachine::config()`, for the `Presenter`'s catalogue model.
+
+The description gains `config_types = [pc_config::launch::MEDIA_TYPE]`
+and two options, `allow-unlisted-firmware` and `speaker-trace`; it lists
+no content kind, so `identify` stays `None`. `create` asks its
+`ContentSource`, each by digest and size, for the firmware ROMs (read
+whole, at most 16 MiB), the CMOS image (64 bytes) and each floppy's and
+fixed disk's flat base (a reader), which is exactly what `validate` lists.
+It never asks for a layer descriptor, a sector pack or a source archive:
+those are in the store's closure (`ConfigValidator::validate`) and not in
+`Core::validate`'s list. For the PC the two lists differ, and neutral code
+must not take one for the other. Storage records are `<id>.upfj` per
+journalled medium, `cmos.upfj` and the `kept-…` names of the launch
+document; a record's bytes are the version-1 journal, unchanged.
+`PcMachine::from_assembled` stays for machine files and tests;
+`add_medium` stays `Unsupported` (the media dialogs keep
+`PcMachine::assembled`, §12.10 "not steps of this plan"). `create` hashes
+each ROM again in the lowering (the pin check, the catalogue's
+identification); the contract's "does not hash again" is meant for disks,
+and that is said in the code.
+
+#### 14.2.4. What `pc-image` keeps, and its module `launch`
+
+- **The session and the verified bases**, as today.
+- **A `Launch` instead of paths.** `resolve_pinned` builds a
+  `pc_config::launch::Launch` from the effective config and the bases;
+  `insert_medium`, `created_media::apply` and `kept_catalogue::restore`
+  edit its tables. A catalogue is then data: a list of medium ids per
+  slot, as the stored config already has it.
+- **A content plan**, `Send`: the firmware and CMOS receipts and the
+  verified bases as file handles or bytes (`SessionTransfer`'s content
+  today). On the machine's thread it opens as a `ContentSource` that
+  answers each `(sha256, size)` of the `content` table and refuses any
+  other.
+- **A storage plan**, `Send`: a table from record name to journal file,
+  over the journal's file-backed record of §12.10 step 9, with the
+  journal's own lock `FILE.lock` (§14.6 Q8). On the machine's thread it
+  opens as the machine's `Storage`. It is the provider's own and not
+  `unemu_core_files::FileStorage` over the workspace: the workspace holds
+  `media/<64 hex>.upfj`, `media/<64 hex>-<n>.upfj`, `media/<64 hex>-<id>.upfj`,
+  files under `media/created/` and journals beside a host image outside
+  the workspace, none of which a record name (at most 64 bytes, no
+  directory) can be.
+- **`pc_image::launch::prepare…`** returns a `core_launch::Prepared` made
+  from those parts, and the pinned image's digest.
+
+#### 14.2.5. `core-launch`: a `Prepared` from parts
+
+`core-launch` stays free of the store (it is under `player-ui`), so the
+store's side hands it parts:
+
+```rust
+/// Content for one start, made on a worker and opened on the machine's thread.
+pub trait ContentPlan: Send { fn open(&self) -> Result<Box<dyn ContentSource>, Error>; }
+/// The machine's storage, likewise.
+pub trait StoragePlan: Send { fn open(&self) -> Result<Rc<dyn Storage>, Error>; }
+
+pub struct Parts { /* core, platform, title, notes, config, content plan,
+                      storage plan, options */ }
+
+impl Prepared {
+    pub fn from_parts(parts: Parts) -> Prepared;
+    /// Run-only options the application adds before the start.
+    pub fn with_options(self, options: Vec<(String, String)>) -> Prepared;
+}
+
+/// `start`, with the caller making the machine from the request, so that a
+/// platform's own code can keep its machine's type.
+pub fn start_with<M>(
+    prepared: &Prepared,
+    create: impl FnOnce(&CreateRequest<'_>) -> Result<M, Error>,
+) -> Result<M, Error>;
+
+impl Cores {
+    /// The usable core that provides `platform`, in its current spelling.
+    pub fn for_platform(&self, platform: &str) -> Option<&'static dyn Core>;
+}
+```
+
+`start(prepared)` becomes `start_with(prepared, |request| core.create(request))`.
+
+#### 14.2.6. The desktop
+
+The library's Start goes the way Open… goes: a `core_launch::Prepared`
+from the worker, `core_launch` on the UI thread. The worker sends it where
+it sends a `SessionTransfer` today (three places in `library_worker.rs`);
+the PC's own events beside it (`StartCatalogue`, the inserted list, the
+notes) stay. The shell adds the run-only options from its arguments, then
+calls `core_launch::start_with(&prepared, |request| PcCore.create_machine(request))`
+and `Presenter::from_machine(machine, display, warnings)`, choosing the
+display from `machine.config().devices` as today.
+
+The contract's `Machine` has no downcast [CONTRACT], and `Presenter`
+uses `PcMachine` in about 90 places; `create_machine` with `start_with` is
+how the desktop gets a typed `PcMachine` from the same request
+(§14.6 Q3). `Presenter` stays a `Session<PcMachine>` with the PC's
+catalogue model and keeps what the contract does not carry. A stored PC
+image does **not** run in `player_ui::Player`: that would drop Insert…,
+Layers, Save as new image…, Settings and the drive chips.
+`Request::Assembled`, Stop, the kept catalogue and the workspace's
+ownership on the worker do not change.
+
+#### 14.2.7. The command line
+
+`image run NAME:TAG` and `image machine run ID` first run through the
+contract in `cli-pc` (S11), then become neutral commands of `cli-core`
+(S12, last and droppable, §14.6 Q4):
+
+```text
+open the store; own the workspace (or the machine's)
+platform  = the image's platform, from its manifest
+provider  = the CliPlatform of that platform
+core      = cores.for_platform(platform)
+stored    = provider.prepare_run(owner, request, core)   // the new hook
+print "pinned-image:DIGEST"
+machine   = core_launch::start(&stored.prepared)
+for line in (stored.created)()  { print line }           // the PC: confirm, "inserted:A:\tdisk-1"
+stop      = machine.run(RunLimit::steps(max_steps))
+finished  = machine.finish()        // warnings and drained messages to standard error
+print "workspace:NAME\tSTOP"  or  "machine:ID\tSTOP"
+```
+
+`cli-core` gains `core-launch` and `unemu-core-api` (both allowed);
+`cli_core::run` takes the `Cores` the binary already makes. `CliPlatform`
+gains one hook, `prepare_run`, and a way to own a machine's workspace; a
+platform without stored images does not implement it, and the command
+answers "this platform's images do not run from the command line yet".
+The usage lines keep their words and their place.
+
+**This is not a pure move** (§14.6 Q5). `Machine::run` is not
+`run_session`: the last field of the result line is the contract's stop
+(`Steps`, `Halted`, `PoweredOff`) instead of `RunOutcome`'s `Debug` text;
+a guest reset no longer ends the run; a halted guest waits to the step
+limit instead of 1 000 000 idle clocks. `commands.md` states the change
+in the bead that makes it. `run --machine FILE` is not touched.
+
+### 14.3. The steps
+
+Fourteen beads, in order. Each lands alone on `main` with the bead gate
+and moves tests with the code they test; "name proof", "layer proof" and
+"runner" are rules 3, 4 and 5 of §8.1.5. No bead adds a line to
+`scripts/crate-boundaries.allow`. Sizes are ASSUMED.
+
+| Step | Depends on |
+|---|---|
+| S1 | nothing |
+| S2 | S1 |
+| S3 | nothing (it edits a file S1 edits: one after the other) |
+| S4 | S2, S3 |
+| S5 | S4 |
+| S6 | S5 |
+| S7 | S6 |
+| S8 | nothing |
+| S9 | S5; `upc-dfs.35`, `upc-dfs.36`; the `journal` crate of `upc-dfs.37` unless §14.4 item 2 holds |
+| S10 | S7, S8; `upc-dfs.35` |
+| S11 | S9, S10 |
+| S12 | S11 |
+| S13 | S9, S10 (after S7) |
+| S14 | S11, S13, and S12 if it is done |
+
+Beads that edit the same files go one after the other, in either order:
+
+| Stage B | Existing | Shared |
+|---|---|---|
+| S1, S2 | `upc-dfs.34` (step 7), `upc-dfs.37` (step 11), `upc-dfs.38` (step 12) | `crates/machine-file` |
+| S2 | `upc-dfs.28` (step 1) | the external-crate list: `serde` and `toml` reach the emulation layer through `media` today, leave it with step 11 and are needed again by `pc-config`, with the reason "the PC config codec" |
+| S1, S2 | `upc-dfs.29` (step 2) | the host guard: `pc-config` adds no line to its list |
+| S2 | `upc-dfs.28`, `upc-dfs.32` (steps 1, 5), any crate-creating bead | `scripts/crate-boundaries.sh` and its fixtures |
+| S11, S12 | `upc-dfs.32`, `upc-dfs.33`, `upc-dfs.39` (steps 5, 6, 13), the recipe track's command beads | `cli-pc`, the usage text and `command_line_pin` |
+| S13 | `upc-dfs.31` (step 4) | strings in `shell.rs`, `main.rs` |
+
+**S1. The lowering asks its reader for everything of the host.**
+
+- **Scope.** Inside `machine-file`; no crate changes. `ImageReader` gains
+  two methods with defaults that keep today's answers for a synthetic
+  reader: the length of an image without reading it, and whether a path is
+  a reserved retention name. `verify_journal_base` returns the base's
+  length and digest; `LoadedMachine`'s reader and `FileImageReader` keep the
+  `media::VerifiedBase` themselves. `lower.rs` then names neither `std::fs`
+  nor `media`.
+- **Files.** `crates/machine-file/src/lower.rs`, `lib.rs`, `paths.rs`,
+  `integrity.rs`; `crates/pc-image/src/provider.rs` (its `Reader`).
+- **Depends on.** Nothing.
+- **MUST PROVE.** `machine-file`'s tests pass unchanged, the ones that pin
+  diagnostics word for word among them. The goldens that load machine
+  files pass. `grep` finds no `std::fs`, `std::env` or `media::` in
+  `lower.rs` outside its tests. A ROM's size in the metadata mode is the
+  same answer as before, so a Settings dialog shows the same diagnostic.
+
+**S2. `pc-config`: the machine schema and its lowering move.**
+
+- **Scope.** Create `crates/pc-config`, layer `emulation`, with
+  `#![forbid(unsafe_code)]`. Move `schema/`, `lower.rs` (without
+  `FileImageReader`), `integrity.rs`, `pc_names.rs`, `parse_toml`,
+  `ParseError`, `LowerError`, and the TOML half of `origin.rs` and
+  `source.rs`. `machine-file` depends on it and re-exports every moved
+  name at its old path, so no caller changes. `Origins::from_yaml` becomes
+  a function of `machine-file`, and its one caller changes (stated). If the
+  TOML and YAML halves of `origin.rs` do not split cleanly, `Origins` moves
+  whole and only the YAML decoder stays behind a function argument.
+- **Files.** `crates/pc-config/**` (new), `crates/machine-file/src/**`,
+  root `Cargo.toml`, `scripts/crate-boundaries.sh` fixtures,
+  `scripts/affected-tests.sh`, `backlog/docs/architecture.md`.
+- **Depends on.** S1.
+- **MUST PROVE.** Name proof: the test list is equal, with
+  `machine-file`'s moved tests under `pc-config`; the tests that write
+  temporary files and use `FileImageReader` stay in `machine-file`. Layer
+  proof, and a planted `pc-config → machine-file` and `pc-config → media`
+  dependency each fail the check. `cargo tree -p pc-config` holds no
+  `serde-saphyr`, no `image-store`, no `media`, no C library. The slow
+  goldens pass unchanged. The clean build time before and after (§10).
+
+**S3. `provider::prepare` splits into a store half and a codec half.**
+
+- **Scope.** Inside `pc-image`; no crate changes. The store half reads
+  descriptors and blobs (kind, size limit, source link, the chain walk, the
+  zero-base rule, the closure) and produces the `content` rows. The codec
+  half takes the config, those rows and a reader of small content, and does
+  everything else, the lowering included. The platform-alias check and
+  `firmware_options()` stay in the store half and reach the codec half as
+  arguments.
+- **Files.** `crates/pc-image/src/provider.rs`, `lib.rs`.
+- **Depends on.** Nothing (S1 touches the same `Reader`: one after the
+  other).
+- **MUST PROVE.** `pc-image`'s tests pass unchanged, with every refusal's
+  text; the first failure is the same for each fixture of
+  `crates/pc-image/tests`. The codec half names no `image_store` item but
+  `Digest`. The order of the closure `validate` returns is unchanged: a
+  test compares it for the fixtures before and after.
+
+**S4. `pc-config`: the image config and its codec move.**
+
+- **Scope.** Move to `pc_config::image` the model of `lib.rs` with public
+  fields, `medium_id`, `firmware_images`, `drive_tables`, `unit`,
+  `validate_bios`, the codec half of S3, and `encode.rs` and `defaults.rs`.
+  The codec half reads small content through `unemu_core_api::ContentSource`;
+  `pc-image` implements that over `BlobSource`. `pc-config` gets its own
+  digest type with the same text form (`sha256:` and 64 hex digits), and
+  `pc-image` converts at its edge.
+- **Files.** `crates/pc-config/src/image/**` (new);
+  `crates/pc-image/src/lib.rs`, `provider.rs`, `encode.rs`, `defaults.rs`,
+  and the modules that name the model (`revision.rs`, `create.rs`,
+  `import.rs`, `template.rs`, `machine.rs`, `workspace.rs`,
+  `inspection.rs`, `desktop.rs`, `compat.rs`, `disk.rs`, `zero.rs`).
+- **Depends on.** S2, S3.
+- **MUST PROVE.** **Byte identity of the config**: for every fixture and
+  template the tests build, the encoded config's bytes and so the image's
+  digest are the same before and after; a new test pins one image digest
+  if none is pinned. Name proof. Layer proof; `pc-config` still has no
+  store dependency. `pc-image`'s tests pass unchanged.
+
+**S5. `pc-config`: the launch document.**
+
+- **Scope.** `pc_config::launch` as §14.2.2 has it: `Launch`, `decode`,
+  `encode`, `check`, `lower`, `Lowered`. `pc-image`'s validation calls
+  `launch::lower`, so one function lowers for the store and for the core.
+  Nothing starts a machine from it yet.
+- **Files.** `crates/pc-config/src/launch.rs` (new),
+  `crates/pc-image/src/provider.rs`; this section (the document's final
+  format).
+- **Depends on.** S4.
+- **MUST PROVE.** A document round-trips byte for byte. `check` and
+  `lower` refuse the same documents with the same words. `check` lists
+  exactly what `lower` opens, in a test with a counting `ContentSource`. A
+  document with a missing, a doubled or an unused `content` or `record`
+  row is refused. For each fixture image, `lower` gives the
+  `MachineConfig` that `prepare` gave before the bead (`==`).
+
+**S6. A start is a launch: `pc-image`.**
+
+- **Scope.** `resolve_pinned` builds a `Launch`: the effective config
+  after the settings overlay, the `content` rows from the bases, the
+  `record` rows with the retention. `PreparedSession` carries it. Its
+  `machine` is derived from it by `launch::lower` and one function that
+  puts today's paths where the keys are, never edited beside it.
+  `insert_medium` edits the launch. Assembly and the callers do not change.
+- **Files.** `crates/pc-image/src/provider.rs`, `workspace.rs`,
+  `machine.rs`.
+- **Depends on.** S5.
+- **MUST PROVE.** For every start the tests of `pc-image`, `pc-library`
+  and `cli-pc` make (an image, a machine with settings, a pending insert of
+  one medium and of a whole set, a compressed floppy, a layered and a
+  zero-based disk, a journalled CMOS), the `MachineConfig` and the keys of
+  the bases equal those before the bead. The slow goldens and the
+  front-end goldens pass unchanged. A medium id that cannot be a record
+  name is refused with its sentence; MEASURED: no fixture and no template
+  has one. A test fails when an editor changes the launch without the
+  derived config.
+
+**S7. Created disks and kept catalogues edit the launch.**
+
+- **Scope.** `created_media::apply` and `kept_catalogue::restore` edit
+  the launch's tables; the `MachineConfig` is derived afterwards. Their
+  journals get `kept-…` record names in the launch, with the file each
+  stands for, a journal beside a host file outside the workspace included.
+- **Files.** `crates/pc-media/src/created_media.rs`, `kept_catalogue.rs`;
+  `crates/pc-library/src/library_worker.rs` (`copied_disks`, the machine
+  start); `crates/pc-image/src/workspace.rs` (the table of record files).
+- **Depends on.** S6.
+- **MUST PROVE.** `pc-media`'s and `pc-library`'s tests pass unchanged.
+  The machine config of each start flow that has created disks or a kept
+  catalogue equals the one before the bead. Every `kept-…` name is a valid
+  kept record name of at most 64 bytes, for a 64-digit digest too.
+
+**S8. `core-launch`: a `Prepared` from parts.**
+
+- **Scope.** §14.2.5: `ContentPlan`, `StoragePlan`, `Parts`,
+  `Prepared::from_parts`, `with_options`, `start_with`,
+  `Cores::for_platform`. `Prepared`'s file-only accessors (`file_name`,
+  `sha256`, `saves_dir`) answer for a file and say so for parts. A plan
+  opens more than once (the player's power cycle starts again from the
+  same `Prepared`).
+- **Files.** `crates/core-launch/src/launch.rs`, `lib.rs`, `tests.rs`;
+  `crates/player-ui/src/lib.rs` only if an accessor's type changes.
+- **Depends on.** Nothing. It can land at any time.
+- **MUST PROVE.** With the test core: a `Prepared` from parts starts a
+  machine whose record is read by the next start; `start_with` hands the
+  caller's own type back; an option reaches `create` and an unknown one is
+  the core's refusal; `Prepared` is still `Send` (the compile-time
+  assertion). The existing tests pass unchanged. `core-launch` still
+  depends on the contract, `unemu-core-files` and `sha2` only.
+
+**S9. `PcCore::create`, `create_machine` and `validate`.**
+
+- **Scope.** §14.2.3. The mount over `ContentSource` and `Storage`; the
+  two run-only options; one display per display card;
+  `PcMachine::config()`. The platform lists the launch type. No front end
+  calls it yet, except the test over every compiled-in core. If it is more
+  than a day, the mount and its tests are one bead and `create` with the
+  description another.
+- **Files.** `crates/pc-core/src/core.rs`, `machine.rs`, a new
+  `mount.rs`, `machine/tests.rs`, `Cargo.toml`; `crates/pc-session-tests`
+  (the comparison); `crates/platforms` (its test).
+- **Depends on.** S5; `upc-dfs.35` and `upc-dfs.36`; the `journal` crate
+  of `upc-dfs.37` unless the seam of `upc-dfs.36` is in the contract's
+  types (§14.4).
+- **MUST PROVE.** One session through `create` over the contract's
+  storage and content in memory, and the same session through
+  `assemble_with_verified_bases`, give the same frames, sound, drive lights
+  and messages, and the record's bytes equal the journal file's. A second
+  `create` over the first one's records continues the session. A `create`
+  that fails (a missing content, a held record, a bad document) leaves no
+  record a later `create` takes for a session. `validate` lists what
+  `create` opens. The replay rule of §3.11. A machine made by `create`
+  still takes a medium the media dialog appends by path
+  (`append_floppy_verified`). The host guard's list gains no line for
+  `unemu-pc-core` or `pc-config`. The journal goldens pass.
+
+**S10. `pc-image::launch`: the store's side as objects.**
+
+- **Scope.** §14.2.4: the content plan (today's `SessionTransfer` content
+  plus the firmware and CMOS receipts), the storage plan (record name to
+  journal file, over the file-backed record of `upc-dfs.35`, with the
+  journal's lock `FILE.lock`), and `prepare` functions for an image's
+  workspace, a machine and a copy that return a `core_launch::Prepared`.
+  The zero-rooted and in-memory floppy bases have no file; their readers
+  are made on the machine's thread from parts that are `Send`. The old
+  `PreparedSession` stays beside it until S14.
+- **Files.** `crates/pc-image/src/launch.rs` (new), `workspace.rs`,
+  `machine.rs`, `Cargo.toml` (`core-launch`, `unemu-core-api`).
+- **Depends on.** S7, S8, `upc-dfs.35`.
+- **MUST PROVE.** In `pc-session-tests`: a stored image started through
+  `core_launch::start` and through the old path gives the same session, and
+  the journal files in the workspace are byte-equal. A session written by
+  the old path opens through the new one and the other way round. A
+  running machine and `upcli media rollback` on its journal exclude each
+  other. A second start of a running workspace is refused with today's
+  sentence. A base that changes after verification fails the run with
+  `Content`, not a wrong read. The content source refuses a digest or a
+  size the launch does not list.
+
+**S11. `image run` and `image machine run` through the contract.**
+
+- **Scope.** In `cli-pc` still. Both commands start with
+  `pc_image::launch` and `core_launch::start`, run with
+  `RunLimit::steps(max_steps)`, call `finish`, and print the machine's
+  messages and the finish warnings to standard error.
+  `pc_harness::finish_persistence` leaves these two commands.
+- **Files.** `crates/cli-pc/src/image.rs`, `image/machine.rs`; their
+  tests; `backlog/docs/commands.md`.
+- **Depends on.** S9, S10.
+- **MUST PROVE.** **Stated behaviour change**, listed in the bead and in
+  `commands.md` (§14.6 Q5): the last field of the result line is the
+  contract's stop; a guest reset no longer ends the run; no idle limit.
+  Everything else is byte-identical over the invocations of §7.5 step 4
+  that use the two commands: `pinned-image:`, `inserted:`, the workspace's
+  files, the exit codes. `image_commands`, `image_machine_commands` and
+  `platform_alias` pass with only the stop word changed where a test names
+  it. A run of the FreeDOS fixture to the same step count leaves journals
+  byte-equal to the old path's.
+
+**S12. The two commands move to `cli-core`.**
+
+- **Scope.** §14.2.7. `CliPlatform::prepare_run` and the
+  machine-ownership hook; the neutral command and its usage lines;
+  `cli_core::run` takes the `Cores`; the PC implements the hook with S10's
+  functions. Last and droppable (§14.6 Q4): the repository split does not
+  need it, since `cli-pc` goes to the front-end repository too.
+- **Files.** `crates/cli-core/src/lib.rs`, `image.rs`, `Cargo.toml`;
+  `crates/cli-pc/src/lib.rs`, `image.rs`, `image/machine.rs`;
+  `crates/upcli/src/**`; the toy platform of `cli-core`'s tests.
+- **Depends on.** S11.
+- **MUST PROVE.** `command_line_pin` passes unchanged: the usage text and
+  the parse of every pinned line, the two refusals of `image run` among
+  them. The output of S11's invocations is byte-identical. In `cli-core`'s
+  tests the toy platform with the test core runs `image run` end to end
+  with no PC crate in the build. Layer proof; a planted
+  `cli-core → pc-image` dependency still fails.
+
+**S13. The desktop's Start through `core_launch`.**
+
+- **Scope.** §14.2.6: the worker's three start flows send a
+  `core_launch::Prepared`; the shell starts with `start_with` and
+  `PcCore::create_machine`; `Presenter::from_machine`; the catalogue model
+  from `PcMachine::config()`; the two options from the application's
+  arguments. The provider checks firmware before it hands the launch over,
+  as today, so the Missing firmware hint still comes from the worker.
+- **Files.** `crates/pc-library/src/library_worker.rs`;
+  `crates/pc-ui/src/library_view.rs`, `library_worker.rs`;
+  `crates/window/src/shell.rs`, `main.rs`; `crates/pc-session-tests`.
+- **Depends on.** S9, S10; after S7.
+- **MUST PROVE.** The shell's and the worker's tests pass with changes
+  only where a test names `SessionTransfer` (listed in the bead). The
+  session comparison of `pc-session-tests` for a library Start. By hand,
+  once: Start of an image, of a machine with a pending insert, of a
+  Gaming-mode copy and its power cycle; Insert… while it runs; Stop; Save
+  as new image…. The frame digest of a session with two display cards is
+  unchanged (MEASURED).
+
+**S14. The old path goes.**
+
+- **Scope.** Remove `SessionTransfer`, `PreparedSession::machine` and the
+  path rewriting of S6, `pc_image::resolve`, `workspace::start` and
+  `start_new` if nothing calls them. Update the comments that say "until
+  `PcCore::create` can read a stored config" (`pc-core`), §4 ("Stage B
+  landed", with the deviations), the launch row of §8.1.4, §9,
+  `architecture.md`, `status.md`.
+- **Files.** `crates/pc-image/src/workspace.rs`, `provider.rs`;
+  `crates/pc-core/src/core.rs`, `machine.rs`; the docs above.
+- **Depends on.** S11, S13, and S12 if it is done.
+- **MUST PROVE.** `grep`: outside `machine-file`, `pc-harness` and tests,
+  no front-end crate calls `assemble_with_verified_bases`. The full gate.
+  The test list loses only the tests of the removed functions, each named
+  in the bead with the test that covers its case on the new path.
+
+### 14.4. What stage B needs from steps 9 and 10 of §12.10
+
+Neither `upc-dfs.35` nor `upc-dfs.36` is designed beyond its row. For S9
+and S10 to be possible:
+
+1. **Step 9** offers a file-backed `Record` over a given path with the
+   journal's lock (`FILE.lock`, §14.6 Q8), usable from `pc-image`, not
+   only path constructors.
+2. **Step 10's seam speaks the contract's types** (`ContentReader`,
+   `Record`) or types `assembly` owns, so that `unemu-pc-core` implements
+   it without naming `media`. Otherwise S9 waits for the `journal` crate of
+   step 11, because an `emulation` crate may not depend on `media` and the
+   allow list only shrinks.
+3. **The mount lives as long as the machine**, since a catalogue's journal
+   opens at insert, and a machine made by `create` can still take a medium
+   the provider appends by path until `add_medium` replaces that.
+
+### 14.5. Where the steps fit
+
+- **S1 to S8 need no step of §12.10** and start now, beside steps 1 to 7
+  (§14.6 Q7). Two workers can hold S1 to S7 and S8 at once.
+- **S9 and S10 need steps 9 and 10** (`upc-dfs.35`, `upc-dfs.36`), and
+  S9 the `journal` crate of step 11 unless §14.4 item 2 holds. None needs
+  step 12 (firmware discovery): `create` gets firmware as content.
+- **S11 to S14 follow S9 and S10.** After S10, S11 to S12 and S13 are two
+  tracks.
+- In §12.10's order, the second half of stage B is a row after step 10;
+  it does not wait for step 12.
+- §9's item 2 is met by S14. Stage B needs no contract change; it is the
+  first real use of `Storage`, `Record` and `validate` by the PC, so a gap
+  it finds becomes contract 0.3 by §13.1's protocol, with unemunes
+  re-pinning.
+- Decision-30's marker is not touched by stage B; the launch document is
+  never stored and needs no compatibility row (§14.6 Q6).
+
+### 14.6. Decided by the maintainer on 2026-11-19
+
+Each question was answered with its recommendation. The options are kept
+for the record.
+
+**Q1. What document does `PcCore::create` read?** (a) **A launch document
+the PC provider writes**: the stored schema plus the `content` and
+`record` tables; the stored format does not change. Rejected: (b) a new
+stored schema with sizes and flat digests (a format change during the
+freeze, with compatibility rows); (c) a wider contract (content without a
+size, or descriptors) as 0.3. (b) stays possible later without changing
+`create`'s shape.
+
+**Q2. Where does the codec live?** (a) **One new `emulation` crate,
+`pc-config`**, with the machine schema, its lowering, the image config and
+the launch document. Rejected: (b) inside `unemu-pc-core`, which would
+make `pc-image` and `machine-file` link the rasteriser, the fonts and the
+keyboard to validate a config; (c) two crates.
+
+**Q3. How does the desktop keep its PC machine after `create`?** (a)
+**`PcCore::create_machine` returns a `PcMachine`, and
+`core_launch::start_with` lets the application make it from the same
+request**; the desktop keeps a typed `PcMachine` in its `Presenter`.
+Rejected: (b) a downcast in the contract (`Machine::as_any`), as 0.3; (c)
+stored PC images in the generic player, dropping the PC's menus and
+dialogs until `add_medium` and settings-as-data exist.
+
+**Q4. Does `image run` move to `cli-core` now?** (a) **Yes, as §12.9
+says, with one start hook on `CliPlatform` — last (S12) and droppable.**
+Rejected: (b) run through the contract (S11) and move when a second
+platform has stored images. If S12 is dropped, S14 depends on S11 and S13
+only.
+
+**Q5. `image run`'s result line.** (a) **The contract's stop**, with the
+change stated in `commands.md`. Rejected: (b) today's words and stops by
+two more run-only PC options (an idle limit, stop at a guest reset), which
+would put PC run policy into the core's description for one command.
+
+**Q6. Decision-30 after the split.** (a) **Amend decision-30 before the
+repositories separate**; stage B changes nothing here. Rejected: (b) move
+the PC rows to `pc-config` and take the PC's level from
+`CoreDescription::version` within stage B, which settles half a question.
+What needs the amendment: the level a build compares with is
+`image-store`'s own package version (`crates/image-store/src/compat.rs`),
+which after the split is the front end's; and the table mixes rows the
+core reads (the PC config's keys and vocabulary, `crates/pc-image/src/compat.rs`)
+with rows the front end reads (envelope media types, compressed layers,
+media-set and firmware-package keys). The decision record carries a note.
+
+**Q7. When does stage B start?** (a) **S1 to S8 now, beside steps 1 to 7
+of §12.10; S9 on after `upc-dfs.35` and `upc-dfs.36`**, with the orderings
+of §14.3. Rejected: (b) all of it after step 12.
+
+**Q8. The journal lock's name** (for `upc-dfs.35` and `upc-dfs.37`). (a)
+**The journal keeps `FILE.lock` everywhere, and `unemu-core-files` learns
+it for the journal's records** (a patch release there): no migration, and
+old and new programs exclude each other. Rejected: (b) journals move to
+`FileStorage`'s `FILE_lock` with a one-time rename.
+
+### 14.7. Edits to earlier sections
+
+This section corrected the text above in these places, each marked
+"(corrected 2026-11-19, stage B plan)":
+
+1. **The status paragraph at the top** names §14.
+2. **§3.4**: for the PC, `create` reads the launch document, not the
+   stored config as it is.
+3. **§4**: the codec's file list (`disk.rs` and `zero.rs` stay in
+   `pc-image`), and the stage B item points to §14 and names
+   `create_machine`, since the contract's `Machine` has no downcast.
+4. **§5**: the PC's store-side step before `create`; `image run` moves
+   with stage B.
+5. **§7.3** and **§9**: `pc-config` in the `emulation` row and in the PC
+   core repository; §9 item 2 made precise; decision-30's amendment before
+   the repositories separate.
+6. **§12.5**: the lock a file-backed storage takes for a journal.
+7. **§12.9**: the PC's storage is the provider's own, not `FileStorage`
+   over the workspace; `image run` is not a pure move.
+8. **§12.10** ("needs steps 8 to 12") and **§12.11**: stage B needs steps
+   9 and 10, not 12.
+9. **§13.3**: the library entry and the typed `PcMachine`.
+10. **§13.4**: a `ConfigValidator` over `Core::validate` does not fit the
+    PC; a platform may need a store-side step.
+11. **§13.7**: the journal's lock name.
