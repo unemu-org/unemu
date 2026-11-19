@@ -383,6 +383,17 @@ impl Default for CmosConfig {
     }
 }
 
+/// The CMOS state a host diagnostic shows; see [`CmosRtc::diagnostic_state`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CmosDiagnostic {
+    /// Port 70h bit 7: NMI masked.
+    pub nmi_disabled: bool,
+    /// The selected CMOS index.
+    pub index: u8,
+    /// The shutdown status byte at offset 0Fh.
+    pub shutdown_status: u8,
+}
+
 /// The MC146818 / DS12887-compatible CMOS/RTC device (§7.6).
 ///
 /// Decodes ports `0x70`/`0x71`. Drives **IRQ8** through [`Device::irq_pending`]
@@ -606,6 +617,22 @@ impl CmosRtc {
             month,
             year,
         };
+    }
+
+    /// The NMI mask, the selected index and the AT's shutdown status byte,
+    /// for a host diagnostic. Reading it is no port access, starts no update
+    /// cycle and changes nothing. Offset 0Fh is general RAM to the
+    /// MC146818; the AT BIOS keeps its shutdown reason there, which POST
+    /// reads after a CPU reset to choose where to resume (IBM Personal
+    /// Computer AT Technical Reference, System BIOS, CMOS RAM Address Map;
+    /// MC146818 datasheet, Address Map). Port 70h bit 7 masks NMI on the AT.
+    #[must_use]
+    pub fn diagnostic_state(&self) -> CmosDiagnostic {
+        CmosDiagnostic {
+            nmi_disabled: self.nmi_disabled,
+            index: self.index as u8,
+            shutdown_status: self.nvram[REG_SHUTDOWN],
+        }
     }
 
     /// Whether NMI is currently masked (from `0x70` bit 7).
@@ -1164,12 +1191,43 @@ impl Device for CmosRtc {
     fn take_trace(&mut self) -> Vec<TraceEvent> {
         self.trace.take()
     }
+
+    /// Host diagnostics reach the RTC through this downcast; see
+    /// [`CmosRtc::diagnostic_state`].
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    /// The diagnostic state shows the shutdown byte and the NMI mask the
+    /// guest wrote, and reading it changes nothing.
+    #[test]
+    fn diagnostic_state_shows_the_shutdown_byte_and_the_nmi_mask() {
+        let mut bus = MockBus::new(Box::new(CmosRtc::new()));
+        bus.port_write(0x70, 1, 0x8F).unwrap();
+        bus.port_write(0x71, 1, 0x0A).unwrap();
+        let before = bus.device().save();
+        let state = bus
+            .device_mut()
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<CmosRtc>())
+            .unwrap()
+            .diagnostic_state();
+        assert_eq!(
+            state,
+            CmosDiagnostic {
+                nmi_disabled: true,
+                index: 0x0F,
+                shutdown_status: 0x0A,
+            }
+        );
+        assert_eq!(bus.device().save(), before, "reading changed the rtc");
+    }
 
     #[test]
     fn ram64_retains_extended_address_aliases_on_mock_bus() {

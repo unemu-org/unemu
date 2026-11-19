@@ -50,6 +50,14 @@ impl A20Line {
         self.0.changes.get()
     }
 
+    /// The two enable sources as a host diagnostic sees them: the 8042
+    /// output port's A20 bit, then port 92h bit 1 (System Control Port A).
+    /// Reading them changes nothing.
+    #[must_use]
+    pub fn sources(&self) -> (bool, bool) {
+        (self.0.keyboard.get(), self.0.fast.get())
+    }
+
     pub(crate) fn set_keyboard(&self, enabled: bool) {
         self.set(&self.0.keyboard, enabled);
     }
@@ -64,5 +72,21 @@ impl A20Line {
         if self.enabled() != before {
             self.0.changes.set(self.change_count().wrapping_add(1));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sources_show_each_enable_and_the_line_is_their_or() {
+        let line = A20Line::default();
+        assert_eq!(line.sources(), (false, false));
+        line.set_fast(true);
+        assert_eq!((line.sources(), line.enabled()), ((false, true), true));
+        line.set_keyboard(true);
+        line.set_fast(false);
+        assert_eq!((line.sources(), line.enabled()), ((true, false), true));
     }
 }

@@ -483,6 +483,81 @@ fn a_stall_that_overruns_its_stack_shuts_down_and_the_board_resets() {
     assert_eq!((requests, resets, starts), (1, 1, 2));
 }
 
+/// A guest that silences the keyboard and halts with interrupts disabled
+/// runs no further, and nothing reports why. The diagnostic report shows
+/// it: IF clear, the CPU halted after its HLT, IRQ1 masked in the master
+/// 8259, the 8042's keyboard interface disabled, and the code trail ending
+/// at the HLT.
+#[test]
+fn a_diagnostic_report_shows_a_guest_that_masked_the_keyboard_and_halted() {
+    // The ROM is the NASM output of the listing on `keyboard_masked_halt_rom`.
+    assert_eq!(
+        assembly::test_support::fixture_sha256(&assembly::test_support::keyboard_masked_halt_rom()),
+        "367a0b615d9bc9f752b49a2890a561ffe95711ed4b36c62dde0bec7b08342b21"
+    );
+    let config = assembly::test_support::keyboard_masked_halt();
+    let mut machine = PcMachine::from_assembled(&config, observed(&config, DeviceId::Mda))
+        .expect("the machine starts");
+    machine.enable_code_trail();
+    assert_eq!(
+        machine.run(RunLimit::until(Ticks(100_000))),
+        Ok(Stop::Halted)
+    );
+    let retired = cpu::Cpu::retired(machine.assembled_ref().machine.cpu());
+    let report = machine.diagnostic_report();
+    assert!(report.halted);
+    assert!(!report.cpu.interrupts_enabled());
+    assert_eq!((report.cpu.cs().selector, report.cpu.ip), (0xF800, 0x001A));
+    assert_eq!(report.cpu.hlt_before(), Some((0xF800, 0x0019)));
+    assert_eq!(report.cpu.code_linear, 0x0F801A);
+    let master = report.master_pic.expect("a master 8259");
+    assert_eq!(master.imr & 0x02, 0x02, "IRQ1 masked");
+    assert_eq!((master.vector_base, master.awaiting), (0x08, None));
+    let keyboard = report.keyboard.expect("an 8042");
+    assert!(keyboard.keyboard_disabled());
+    assert_eq!(keyboard.last_command, Some(0xAD));
+    let trail = report.trail.clone().expect("the trail was enabled");
+    let last = trail.last().expect("the trail has entries");
+    assert_eq!((last.cs, last.ip), (0xF800, 0x001A));
+    // Each OUT ended a run slice: the trail passes through the instruction
+    // after every one of them, in order, before the HLT.
+    let addresses: Vec<u16> = trail
+        .iter()
+        .filter(|entry| entry.cs == 0xF800)
+        .map(|entry| entry.ip)
+        .collect();
+    assert_eq!(addresses, [0x04, 0x08, 0x0C, 0x10, 0x14, 0x18, 0x1A]);
+    assert_eq!(report.cpu.retired, retired);
+    assert_eq!(
+        cpu::Cpu::retired(machine.assembled_ref().machine.cpu()),
+        retired,
+        "the report changes nothing"
+    );
+    let text = report.to_string();
+    for line in [
+        "machine diagnostic report\n",
+        "status   halted (waits for a reset)\n",
+        "halted   yes, with interrupts disabled\n",
+        "cs:ip    f800:001a (linear 0f801a)\n",
+        "hlt      at f800:0019, the byte before cs:ip\n",
+        "mode     real, cpl 0, msw fff0 (pe 0), a20 on\n",
+        "code     00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n",
+        "trail    f800:001a\n",
+        "pic      master irr 00 isr 00 imr 02 base 08 icw1 11 icw4 01 (auto-eoi off), initialized, reads irr",
+        "kbc      pending none, last command ad,",
+        "a20      on: 8042 output port on, port 92h",
+        "cmos     shutdown status (0fh) 00, nmi unmasked, index 00\n",
+    ] {
+        assert!(text.contains(line), "{line:?} missing from\n{text}");
+    }
+    assert!(text.contains(": if 0, tf 0, df 0, iopl 0, nt 0;"), "{text}");
+    assert!(
+        text.contains("command byte 10: keyboard disabled,"),
+        "{text}"
+    );
+    eprintln!("{text}");
+}
+
 /// A guest that halts leaves no report.
 #[test]
 fn a_halt_leaves_no_stop_report() {

@@ -171,6 +171,40 @@ enum InitState {
     ExpectIcw4,
 }
 
+/// One 8259A's programming state for a host diagnostic; see
+/// [`Pic8259::diagnostic_state`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct PicDiagnostic {
+    /// Interrupt request register.
+    pub irr: u8,
+    /// In-service register.
+    pub isr: u8,
+    /// Interrupt mask register (`1` = masked).
+    pub imr: u8,
+    /// Vector base from ICW2.
+    pub vector_base: u8,
+    /// The stored ICW1.
+    pub icw1: u8,
+    /// The stored ICW4; zero when ICW1 did not request one.
+    pub icw4: u8,
+    /// The initialization word the next data-port write is taken as, or
+    /// `None` once initialization is complete.
+    pub awaiting: Option<&'static str>,
+    /// Whether a command-port read returns the ISR (OCW3) rather than the IRR.
+    pub reads_isr: bool,
+    /// Input line levels (`1` = high).
+    pub lines: u8,
+}
+
+impl PicDiagnostic {
+    /// ICW4 AEOI (D1): automatic end of interrupt, stored but not performed
+    /// by this model.
+    #[must_use]
+    pub fn auto_eoi(&self) -> bool {
+        self.icw4 & 0x02 != 0
+    }
+}
+
 /// The Intel 8259A master PIC (§7.3).
 ///
 /// Constructed with [`Pic8259::new`]; decodes ports `0x20` and `0x21`. Devices
@@ -275,6 +309,43 @@ impl Pic8259 {
     #[must_use]
     pub fn vector_base(&self) -> u8 {
         self.vector_base
+    }
+
+    /// The chip's programming state for a host diagnostic: the three
+    /// registers, the vector base, the stored ICW1 and ICW4, the step of an
+    /// unfinished initialization, the OCW3 read select and the input levels.
+    /// Reading it is no port access and changes nothing. Poll mode and
+    /// special mask mode are not modelled (see the coverage matrix), so they
+    /// have no state to show; ICW4's AEOI bit is stored but not performed.
+    #[must_use]
+    pub fn diagnostic_state(&self) -> PicDiagnostic {
+        PicDiagnostic {
+            irr: self.irr,
+            isr: self.isr,
+            imr: self.imr,
+            vector_base: self.vector_base,
+            icw1: self.icw1,
+            icw4: self.icw4,
+            awaiting: match self.init_state {
+                InitState::Ready => None,
+                InitState::ExpectIcw2 => Some("icw2"),
+                InitState::ExpectIcw3 => Some("icw3"),
+                InitState::ExpectIcw4 => Some("icw4"),
+            },
+            reads_isr: self.read_select == ReadSelect::Isr,
+            lines: self.line_level,
+        }
+    }
+
+    /// [`Self::diagnostic_state`] of the chip a [`Device::save`] image
+    /// describes, for a host that holds only a shared device face: the image
+    /// is restored into a scratch chip, so the live one is not touched.
+    /// `None` when the image is not a valid snapshot of this chip.
+    #[must_use]
+    pub fn diagnostic_from_snapshot(snapshot: &[u8]) -> Option<PicDiagnostic> {
+        let mut scratch = Self::new();
+        scratch.restore(snapshot).ok()?;
+        Some(scratch.diagnostic_state())
     }
 
     /// The highest-priority line that may be serviced right now, or `None`.
@@ -624,6 +695,47 @@ impl Device for Pic8259 {
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    /// The diagnostic state shows what the guest programmed, taken from the
+    /// chip or from its snapshot, and reading it changes nothing.
+    #[test]
+    fn diagnostic_state_shows_the_programmed_registers_without_an_access() {
+        let mut bus = MockBus::new(Box::new(Pic8259::new()));
+        // ICW1 (edge, cascade, ICW4), ICW2 = 08h, then stop before ICW3.
+        bus.port_write(0x20, 1, 0x11).unwrap();
+        bus.port_write(0x21, 1, 0x08).unwrap();
+        let snapshot = bus.device().save();
+        let halfway = Pic8259::diagnostic_from_snapshot(&snapshot).unwrap();
+        assert_eq!(halfway.awaiting, Some("icw3"));
+        // ICW3, ICW4 with AEOI, OCW1 masking IRQ1, OCW3 selecting the ISR.
+        for (port, value) in [(0x21, 0x04), (0x21, 0x03), (0x21, 0x02), (0x20, 0x0B)] {
+            bus.port_write(port, 1, value).unwrap();
+        }
+        let before = bus.device().save();
+        let state = Pic8259::diagnostic_from_snapshot(&before).unwrap();
+        assert_eq!(
+            state,
+            PicDiagnostic {
+                irr: 0,
+                isr: 0,
+                imr: 0x02,
+                vector_base: 0x08,
+                icw1: 0x11,
+                icw4: 0x03,
+                awaiting: None,
+                reads_isr: true,
+                lines: 0,
+            }
+        );
+        assert!(state.auto_eoi());
+        assert_eq!(bus.device().save(), before, "reading changed the chip");
+        assert_eq!(Pic8259::diagnostic_from_snapshot(&[0; 3]), None);
+        let mut pic = Pic8259::new();
+        init_master(&mut pic);
+        pic.set_irq_line(1, true);
+        let live = pic.diagnostic_state();
+        assert_eq!((live.irr, live.lines, live.imr), (0x02, 0x02, 0));
+    }
 
     #[test]
     fn restore_rejects_icw4_without_ic4_atomically() {

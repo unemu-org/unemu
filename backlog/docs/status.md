@@ -5,6 +5,34 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — A diagnostic report of a running machine, on demand:** (`upc-f7j.16`;
+  design/observation.md §Diagnostic report of a running machine). A guest that hangs without
+  an error (interrupts disabled around a HLT or a loop, IRQ1 masked, the 8042's keyboard
+  interface disabled) kept the machine running with nothing to show why; the CPU stop report
+  exists only when the CPU core refuses something. With `UNEMUPC_DIAG=1` in the desktop's
+  environment, Ctrl+Alt+Shift+D (⌘⇧D on macOS) writes the running PC's report to
+  `<data>/unemupc/diagnostics/diag-N.txt` and the status line names the file; without the
+  switch the chord does nothing, and its D never reaches the guest. `upcli run --machine FILE
+  --diag-at N` writes the same report to stderr at step N and runs on. The report shows the
+  retired count, virtual time, status and halt; every CPU register, FLAGS with IF, TF, DF,
+  IOPL and NT decoded, MSW, CPL, the CS/DS/ES/SS caches, GDTR, IDTR, LDTR and TR, the 16 bytes
+  at CS:IP and 16 words at SS:SP (RAM and ROM only; a device window is named, never read);
+  the code trail, CS:IP after the last 64 run slices with repeats folded, kept by the machine
+  outside the CPU; both 8259s; the 8042 (status, command byte, output buffer and source,
+  pending parameter, last command, inhibit); each PIT counter; A20 and its sources; the CMOS
+  shutdown byte and NMI mask. New read-only accessors: `X86JitCpu::diagnostic_state`,
+  `Pic8259::diagnostic_state`, `I8042::diagnostic_state` (with the last command, host-only),
+  `Pit8253::diagnostic_state`, `CmosRtc::diagnostic_state`, `A20Line::sources`. MEASURED with
+  the open ROM `assembly::test_support::keyboard_masked_halt_rom` (masks IRQ1, sends 8042
+  ADh, CLI, HLT): the report shows IF 0, halted after the HLT at F800:0019, IMR 02, the
+  keyboard interface disabled and the trail ending at F800:001A. The open-BIOS FreeDOS boot
+  with the trail on and a report at each of its ten poll boundaries stops at the golden's
+  retired count and virtual time (8,800,473; 10,000,000) with the same screen, POST stream
+  and device snapshots as without, and takes the same time with and without the trail. A
+  report taken every 997 steps of a timer-driven STI/HLT guest, with 8042 bytes queued and
+  PIT GATE2 low, leaves every device snapshot equal to a twin that took none. Code and stack
+  bytes the segment's cache limit does not allow show as `--`; the desktop adds whether it
+  holds the machine paused. Every golden keeps its transcript and retired count.
 - **2026-11-19 — GitHub CI is green again after the NES core landed:** (`upc-dfs.42`). Three
   gates had failed on `main` since `fca6b542`. The guard lane's crate-boundary check reads the
   resolved graph with `cargo metadata --offline`, which fails on a cold Cargo cache or one

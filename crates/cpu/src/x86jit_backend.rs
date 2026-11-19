@@ -392,26 +392,7 @@ impl X86JitCpu {
         } else {
             [state.es, state.cs, state.ss, state.ds].map(|selector| u32::from(selector) << 4)
         };
-        // The model's formed physical address: 24 bits on the 80286.
-        let address_mask = self.vm.cpu_model().map_or(u64::MAX, |model| {
-            (1u64 << model.profile().physical_bits) - 1
-        });
-        let a20 = !machine || self.cpu.a20_enabled();
-        let read = |linear: u32| -> Option<u8> {
-            let mut physical = u64::from(linear) & address_mask;
-            if !a20 {
-                physical &= !0x10_0000;
-            }
-            let address = u32::try_from(physical).ok()?;
-            match self.dma_region_kind(address)? {
-                RegionKind::Ram | RegionKind::Rom => {
-                    let mut byte = [0];
-                    self.vm.read_bytes(physical, &mut byte).ok()?;
-                    Some(byte[0])
-                }
-                _ => None,
-            }
-        };
+        let read = |linear: u32| self.peek_linear(linear).value();
         Some(crate::CpuStopReport::build(
             crate::stop_report::Snapshot {
                 stop: error.to_string(),
@@ -425,6 +406,113 @@ impl X86JitCpu {
             },
             read,
         ))
+    }
+
+    /// What the CPU's own map holds at linear address `linear`: the
+    /// model's address lines (24 bits on the 80286) and, in the machine
+    /// profile, the A20 gate are applied. RAM and ROM are read; a trapped
+    /// window is reported, never read, so the read has no device effect.
+    fn peek_linear(&self, linear: u32) -> crate::diagnostic::Peek<u8> {
+        use crate::diagnostic::Peek;
+        let machine = self.vm.execution_profile() == ExecutionProfile::Machine;
+        // The model's formed physical address: 24 bits on the 80286.
+        let address_mask = self.vm.cpu_model().map_or(u64::MAX, |model| {
+            (1u64 << model.profile().physical_bits) - 1
+        });
+        let mut physical = u64::from(linear) & address_mask;
+        if machine && !self.cpu.a20_enabled() {
+            physical &= !0x10_0000;
+        }
+        let Ok(address) = u32::try_from(physical) else {
+            return Peek::Unmapped;
+        };
+        match self.dma_region_kind(address) {
+            Some(RegionKind::Ram | RegionKind::Rom) => {
+                let mut byte = [0];
+                match self.vm.read_bytes(physical, &mut byte) {
+                    Ok(()) => Peek::Value(byte[0]),
+                    Err(_) => Peek::Unmapped,
+                }
+            }
+            Some(RegionKind::Trap) => Peek::Device,
+            _ => Peek::Unmapped,
+        }
+    }
+
+    /// The processor at this completed run boundary, for a diagnostic
+    /// report of a running machine: registers, FLAGS, the system registers
+    /// and descriptor caches of the machine profile, the bytes at CS:IP and
+    /// the words at SS:SP. See [`crate::diagnostic`]. It only reads: memory
+    /// through the CPU's own map, never a trapped window, and no
+    /// register or counter changes, so taking it between runs leaves the
+    /// guest and its timing as they were.
+    pub fn diagnostic_state(&self) -> crate::diagnostic::CpuDiagnostic {
+        use crate::stop_report::{SegmentView, TableView};
+        use x86jit_core::legacy::SegmentCache;
+        let state = &self.cpu.cpu;
+        let machine = self.vm.execution_profile() == ExecutionProfile::Machine;
+        let legacy = &state.legacy;
+        let view = |selector: u16, cache: SegmentCache| SegmentView {
+            selector,
+            base: cache.base,
+            limit: cache.limit,
+            attributes: cache.attributes,
+            unusable: cache.unusable != 0,
+        };
+        // ES, CS, SS, DS; the core's cache order is CS, DS, ES, SS.
+        let selectors = [state.es, state.cs, state.ss, state.ds];
+        let segments = if machine {
+            let order = [2, 0, 3, 1];
+            std::array::from_fn(|at| view(selectors[at], legacy.segments[order[at]]))
+        } else {
+            selectors.map(|selector| SegmentView {
+                selector,
+                base: u32::from(selector) << 4,
+                limit: 0xFFFF,
+                attributes: 0,
+                unusable: false,
+            })
+        };
+        let system = machine.then(|| crate::diagnostic::SystemRegisters {
+            msw: legacy.cr0 as u16,
+            cpl: legacy.cpl,
+            gdtr: TableView {
+                base: legacy.gdtr.base,
+                limit: legacy.gdtr.limit,
+            },
+            idtr: TableView {
+                base: legacy.idtr.base,
+                limit: legacy.idtr.limit,
+            },
+            ldtr: view(legacy.ldtr.selector, legacy.ldtr.cache),
+            tr: view(legacy.tr.selector, legacy.tr.cache),
+        });
+        let word = |reg| self.cpu.reg(reg) as u16;
+        crate::diagnostic::CpuDiagnostic::build(
+            crate::diagnostic::Registers {
+                registers: [
+                    Reg::Rax,
+                    Reg::Rcx,
+                    Reg::Rdx,
+                    Reg::Rbx,
+                    Reg::Rsp,
+                    Reg::Rbp,
+                    Reg::Rsi,
+                    Reg::Rdi,
+                ]
+                .map(word),
+                ip: state.rip as u16,
+                flags: state.rflags() as u16,
+                segments,
+                system,
+                a20: !machine || self.cpu.a20_enabled(),
+                irq_queued: self.cpu.has_pending_irq(),
+                irq_ready: self.cpu.irq_ready(),
+                retired: self.cpu.retired_instructions(),
+                completed_steps: self.completed_steps,
+            },
+            |linear| self.peek_linear(linear),
+        )
     }
 
     fn dma_region_kind(&self, addr: u32) -> Option<RegionKind> {
@@ -765,11 +853,16 @@ impl Cpu for X86JitCpu {
     fn retired(&self) -> u64 {
         self.cpu.retired_instructions()
     }
+
+    fn code_address(&self) -> (u16, u64) {
+        (self.cpu.cpu.cs, self.cpu.cpu.rip)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diagnostic::Peek;
 
     fn i286_guest(code: &[u8]) -> X86JitCpu {
         let mut cpu =
@@ -777,6 +870,60 @@ mod tests {
         cpu.map_ram(0, 0x10000).unwrap();
         cpu.write_mem(0x1000, code).unwrap();
         cpu
+    }
+
+    /// The diagnostic picture of a halted CPU: registers, FLAGS with DF set
+    /// and IF clear, the real-mode caches, the HLT before CS:IP, the code
+    /// bytes, and a stack in a trapped window that is reported, not read.
+    #[test]
+    fn a_diagnostic_state_shows_registers_flags_and_memory_without_reading_devices() {
+        let mut cpu = i286_guest(&[
+            0xB8, 0x34, 0x12, // MOV AX,1234h
+            0xBB, 0x00, 0x20, // MOV BX,2000h
+            0x8E, 0xD3, // MOV SS,BX
+            0xBC, 0xF8, 0x0F, // MOV SP,0FF8h
+            0xFD, // STD
+            0xFA, // CLI
+            0xF4, // HLT
+        ]);
+        cpu.map_mmio(0x20000, 0x1000).unwrap();
+        let run = cpu.run_steps(100, StepRunOptions::default()).unwrap();
+        assert_eq!(run.stop, CpuStepStop::Exit(CpuStop::Halt));
+        let retired = cpu.retired();
+        let state = cpu.diagnostic_state();
+        assert_eq!(state.register("ax"), Some(0x1234));
+        assert_eq!(state.register("bx"), Some(0x2000));
+        assert_eq!(state.sp(), 0x0FF8);
+        assert!(!state.interrupts_enabled());
+        assert_ne!(state.flags & 0x0400, 0, "DF");
+        assert_eq!((state.cs().selector, state.cs().base), (0, 0));
+        assert_eq!((state.ss().selector, state.ss().base), (0x2000, 0x20000));
+        let system = state.system.unwrap();
+        assert!(!system.protected());
+        assert_eq!(system.cpl, 0);
+        // HLT retires: execution continues after it.
+        assert_eq!(state.ip, 0x100E);
+        assert_eq!(state.hlt_before(), Some((0, 0x100D)));
+        assert_eq!(state.code[0], Peek::Value(0));
+        // Four words lie in the trapped window, the rest beyond any memory.
+        assert!(state.stack[..4].iter().all(|word| *word == Peek::Device));
+        assert!(state.stack[4..].iter().all(|word| *word == Peek::Unmapped));
+        assert_eq!(state.retired, retired);
+        assert_eq!(cpu.retired(), retired, "the picture changes nothing");
+        let text = state.to_string();
+        for line in [
+            "cs:ip    0000:100e (linear 00100e)\n",
+            "regs     ax 1234 bx 2000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 sp 0ff8\n",
+            "mode     real, cpl 0, msw fff0 (pe 0), a20 on\n",
+            "ss       2000 base 020000 limit 0000ffff",
+            "hlt      at 0000:100d, the byte before cs:ip\n",
+            "ss:sp    2000:0ff8 (linear 020ff8)\n",
+            "stack    +00 dvdv dvdv dvdv dvdv ???? ???? ???? ????\n",
+            "note     dv: a memory-mapped device, not read; ??: no memory\n",
+        ] {
+            assert!(text.contains(line), "{line:?} missing from\n{text}");
+        }
+        assert!(text.contains(": if 0, tf 0, df 1, iopl 0, nt 0;"), "{text}");
     }
 
     /// Protected-mode entry at 1000h with the GDTR image at 1100h, the IDTR

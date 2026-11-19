@@ -2,7 +2,8 @@ usage: upcli --boot (Real16 timer demo)
        upcli --version | --about (licence, source and third-party notices)
        upcli --bios PATH [--allow-unlisted-firmware]
        upcli machine check FILE [--allow-unlisted-firmware] [--rom-dir DIR]...
-       upcli run --machine FILE [--store DIR | --no-store] [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--print CARD] [--allow-unlisted-firmware]
+       upcli run --machine FILE [--store DIR | --no-store] [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--diag-at N] [--print CARD] [--allow-unlisted-firmware]
+         --diag-at N writes the machine's diagnostic report to stderr when the run reaches step N (the unit of --max-steps), then runs on
        upcli image import FILE --store DIR --tag NAME:TAG [--create] [--no-compress] [--rom-dir DIR]... [--recover MEDIUM=tip|MEDIUM=generation:N]... [--min-app-version X.Y.Z]
          --min-app-version (here, on image media import and on image firmware import and edit) raises the oldest unemupc the image declares it needs: never below what this release computes, never above this release
        upcli image compress NAME:TAG --store DIR --tag NAME:TAG

@@ -3493,6 +3493,9 @@ impl Shell {
         self.error_report = None;
         self.session = self.session.wrapping_add(1);
         self.events.borrow_mut().session = self.session;
+        if self.args.diagnostics.is_some() {
+            presenter.machine_mut().enable_code_trail();
+        }
         presenter.window = self.window.clone();
         presenter.started = Some(Instant::now());
         presenter.next_paint = Some(std::time::Duration::ZERO);
@@ -3647,6 +3650,29 @@ impl Shell {
             Ok(path) => format!("cpu stop report saved to {}", path.display()),
             Err(error) => format!("cpu stop report not saved: {error}"),
         }
+    }
+
+    /// The diagnostic chord: with the switch on, the running PC's report
+    /// goes to the next `diag-N.txt` and the status line says where; with
+    /// it off, nothing happens. See [`crate::diagnostics`].
+    fn save_diagnostics(&mut self) {
+        let (Some(folder), Some(presenter)) = (&self.args.diagnostics, &mut self.presenter) else {
+            return;
+        };
+        // The machine's status says only whether it can run; the desktop
+        // says whether it holds the machine paused.
+        let text = format!(
+            "{}desktop  {}\n",
+            presenter.machine_mut().diagnostic_report(),
+            if self.paused { "paused" } else { "running" }
+        );
+        self.message = match folder
+            .clone()
+            .and_then(|folder| crate::diagnostics::save(&folder, &text).map_err(|e| e.to_string()))
+        {
+            Ok(path) => format!("Diagnostic state saved to {}", path.display()),
+            Err(error) => format!("Diagnostic state not saved: {error}"),
+        };
     }
 
     fn show_error(&mut self, error: String) {
@@ -5464,6 +5490,16 @@ impl Shell {
                 self.host_modifiers.super_key(),
                 false,
             ];
+        }
+        if fresh
+            && self.presenter.is_some()
+            && shortcut_key.is_some_and(|shortcut_key| {
+                crate::diagnostics::is_chord(shortcut_key, modifiers, self.macos_shortcuts)
+            })
+        {
+            self.consume_hotkey(key);
+            self.save_diagnostics();
+            return;
         }
         if fresh {
             if let Some(command) = shortcut_key
@@ -8990,6 +9026,86 @@ mod tests {
             }
         }
         assert!(shortcuts_help(false).contains("Ctrl+Alt+T: hold to fast-forward"));
+    }
+
+    /// With the diagnostic switch on, Ctrl+Alt+Shift+D saves the running
+    /// PC's report as the next numbered file and the status line names it;
+    /// with it off the chord writes nothing. Neither way does its D reach
+    /// the guest: only the modifiers' make and break codes do.
+    #[test]
+    fn the_diagnostic_chord_saves_a_report_only_with_the_switch_and_never_types_d() {
+        let temp = assembly::test_support::TempDir::new("shell-diagnostics");
+        let folder = temp.path().join("unemupc").join("diagnostics");
+        let chord = |shell: &mut Shell| {
+            let ctx = egui::Context::default();
+            for key in [
+                KeyCode::ControlLeft,
+                KeyCode::AltLeft,
+                KeyCode::ShiftLeft,
+                KeyCode::KeyD,
+            ] {
+                shell.key(key, Pressed, false, &ctx);
+            }
+            for key in [
+                KeyCode::KeyD,
+                KeyCode::ShiftLeft,
+                KeyCode::AltLeft,
+                KeyCode::ControlLeft,
+            ] {
+                shell.key(key, Released, false, &ctx);
+            }
+            take_guest_scancodes(shell)
+        };
+        let mut off = keyboard_shell();
+        off.message = "Running".into();
+        let typed = chord(&mut off);
+        assert!(
+            !typed.contains(&0x20) && !typed.contains(&0xA0),
+            "{typed:x?}"
+        );
+        assert_eq!(off.message, "Running");
+        assert!(!folder.exists(), "the switch is off");
+
+        let mut on = keyboard_shell();
+        on.args.diagnostics = Some(Ok(folder.clone()));
+        let typed = chord(&mut on);
+        assert!(
+            !typed.contains(&0x20) && !typed.contains(&0xA0),
+            "{typed:x?}"
+        );
+        assert!(on.guest_held.is_empty());
+        let first = folder.join("diag-1.txt");
+        assert_eq!(
+            on.message,
+            format!("Diagnostic state saved to {}", first.display())
+        );
+        let report = std::fs::read_to_string(&first).unwrap();
+        assert!(
+            report.starts_with("machine diagnostic report\n"),
+            "{report}"
+        );
+        assert!(report.contains("\nstatus   ready\n"), "{report}");
+        assert!(report.ends_with("\ndesktop  running\n"), "{report}");
+        assert!(report.contains("\nkbc      status "), "{report}");
+        on.paused = true;
+        chord(&mut on);
+        let second = std::fs::read_to_string(folder.join("diag-2.txt")).unwrap();
+        assert!(second.ends_with("\ndesktop  paused\n"), "{second}");
+        assert!(on.message.ends_with("diag-2.txt"), "{}", on.message);
+
+        // On macOS the chord is Command+Shift+D, and nothing of it is typed.
+        let mut mac = keyboard_shell();
+        mac.macos_shortcuts = true;
+        mac.args.diagnostics = Some(Ok(folder.clone()));
+        let ctx = egui::Context::default();
+        for key in [KeyCode::SuperLeft, KeyCode::ShiftLeft, KeyCode::KeyD] {
+            mac.key(key, Pressed, false, &ctx);
+        }
+        for key in [KeyCode::KeyD, KeyCode::ShiftLeft, KeyCode::SuperLeft] {
+            mac.key(key, Released, false, &ctx);
+        }
+        assert!(take_guest_scancodes(&mut mac).is_empty());
+        assert!(mac.message.ends_with("diag-3.txt"), "{}", mac.message);
     }
 
     #[test]

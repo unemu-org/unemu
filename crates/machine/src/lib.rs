@@ -36,6 +36,10 @@
 //! caps are exact and halted caps round up to a whole virtual tick. No wall time
 //! enters execution. See `backlog/docs/design/scheduler.md` §Adoption.
 
+mod code_trail;
+
+pub use code_trail::{CodeTrail, TrailEntry, CODE_TRAIL_LEN};
+
 use device::clock::{PIT, TICKS_PER_PIT_CLOCK};
 use std::num::NonZeroU64;
 
@@ -248,6 +252,8 @@ pub struct Machine<C: Cpu> {
     a20_line: Option<Box<dyn Fn() -> (u64, bool)>>,
     a20_changes: u64,
     memory_map: Option<MemoryMapHook<C>>,
+    /// CS:IP at the last run-slice boundaries, when a diagnostic asked for it.
+    code_trail: Option<Box<CodeTrail>>,
 }
 
 impl<C: Cpu> Machine<C> {
@@ -290,6 +296,7 @@ impl<C: Cpu> Machine<C> {
             a20_line: None,
             a20_changes: 0,
             memory_map: None,
+            code_trail: None,
         }
     }
 
@@ -443,6 +450,24 @@ impl<C: Cpu> Machine<C> {
         self.halted = false;
         self.idle_clocks = 0;
         Ok(())
+    }
+
+    /// Whether the CPU sits in HLT, waiting for an interrupt, across runs.
+    pub fn halted(&self) -> bool {
+        self.halted
+    }
+
+    /// Start recording the CPU's CS:IP after every run slice, for a
+    /// diagnostic report; see [`CodeTrail`]. The trail
+    /// stays outside the CPU's execution path, so retired counts and every
+    /// guest effect are unchanged. Calling it again keeps the trail.
+    pub fn enable_code_trail(&mut self) {
+        self.code_trail.get_or_insert_with(Box::default);
+    }
+
+    /// The code trail, when [`Self::enable_code_trail`] enabled it.
+    pub fn code_trail(&self) -> Option<&CodeTrail> {
+        self.code_trail.as_deref()
     }
 
     /// The bus (to drain device output / traces after a run).
@@ -705,6 +730,10 @@ impl<C: Cpu> Machine<C> {
                     return Err(error.into());
                 }
             };
+            if let Some(trail) = &mut self.code_trail {
+                let (cs, ip) = self.cpu.code_address();
+                trail.record(cs, ip as u16);
+            }
             if run.steps == 0 {
                 no_progress += 1;
                 if no_progress > 1024 {
@@ -1170,6 +1199,61 @@ mod tests {
             mmio: Vec::new(),
         };
         Bus::new(devices, map)
+    }
+
+    /// The code trail records CS:IP after each slice: each OUT ends one, a
+    /// polling loop folds into one entry, and the trail ends at the HLT. A
+    /// twin machine without the trail retires the same instructions in the
+    /// same virtual time.
+    #[test]
+    fn the_code_trail_records_slice_boundaries_without_changing_the_run() {
+        use cpu::{x86jit_backend::RealSegments, X86JitCpu};
+        let program = [
+            0xE6, 0x80, // 1000 OUT 80h,AL
+            0xE6, 0x80, // 1002 OUT 80h,AL
+            0xB9, 0x05, 0x00, // 1004 MOV CX,5
+            0xE6, 0x80, // 1007 OUT 80h,AL (the loop)
+            0xE2, 0xFC, // 1009 LOOP 1007h
+            0xFA, // 100B CLI
+            0xF4, // 100C HLT
+        ];
+        let run = |trail: bool| {
+            let mut cpu =
+                X86JitCpu::new_i286_bare(0x100_0000, 0, 0x1000, RealSegments::flat(0)).unwrap();
+            cpu.map_ram(0, 0x10000).unwrap();
+            cpu.write_mem(0x1000, &program).unwrap();
+            let bus = Bus::new(Vec::new(), DecodeMap::default());
+            let mut machine = Machine::new(cpu, bus, Box::new(NoIc), Vec::new(), None);
+            if trail {
+                machine.enable_code_trail();
+            }
+            let outcome = machine.run_bounded(Some(1000)).unwrap();
+            assert_eq!(outcome, RunOutcome::Halted);
+            assert!(machine.halted());
+            (
+                machine.cpu().retired(),
+                machine.virtual_time(),
+                machine.code_trail().map(|trail| trail.entries()),
+            )
+        };
+        let (retired, time, entries) = run(true);
+        assert_eq!(run(false), (retired, time, None));
+        let entries = entries.unwrap();
+        let addresses: Vec<(u16, u16, u32)> = entries
+            .iter()
+            .map(|entry| (entry.cs, entry.ip, entry.samples))
+            .collect();
+        // After each OUT the CPU stands on the next instruction; the loop's
+        // OUT returns to the same place five times; HLT retires.
+        assert_eq!(
+            addresses,
+            [
+                (0, 0x1002, 1),
+                (0, 0x1004, 1),
+                (0, 0x1009, 5),
+                (0, 0x100D, 1)
+            ]
+        );
     }
 
     /// A no-op controller for the interrupt-free loop tests.

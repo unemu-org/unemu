@@ -43,9 +43,11 @@
 //! with a low reset entry. Host memory APIs and ISA DMA bypass the CPU gate.
 //! CPU reset retains both an effective line and a pending boundary change.
 
+pub mod diagnostic;
 pub mod stop_report;
 pub mod x86jit_backend;
 
+pub use diagnostic::CpuDiagnostic;
 pub use stop_report::CpuStopReport;
 pub use x86jit_backend::X86JitCpu;
 
@@ -461,5 +463,13 @@ pub trait Cpu {
     /// The default is `0` for a backend that does not count.
     fn retired(&self) -> u64 {
         0
+    }
+
+    /// The visible code selector and the instruction pointer: where
+    /// execution continues at this completed boundary. A host diagnostic
+    /// samples it between runs; reading it changes nothing. The default is
+    /// selector 0 with [`CpuReg::Rip`], for a backend without segments.
+    fn code_address(&self) -> (u16, u64) {
+        (0, self.reg(CpuReg::Rip))
     }
 }

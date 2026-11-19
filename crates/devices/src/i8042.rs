@@ -426,6 +426,71 @@ struct KeyboardByte {
     ready_at: VClock,
 }
 
+/// The 8042 as a host diagnostic sees it; see [`I8042::diagnostic_state`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct I8042Diagnostic {
+    /// The status register (`0x64` read).
+    pub status: u8,
+    /// The controller command byte.
+    pub command_byte: u8,
+    /// The output port; bit 1 is the A20 gate, bit 0 the CPU reset line.
+    pub output_port: u8,
+    /// The input port; bit 7 clear means the keyboard inhibit switch is on.
+    pub input_port: u8,
+    /// The unread output byte and its source: `keyboard`, `aux` or
+    /// `controller`; `None` when the buffer is empty.
+    pub output_buffer: Option<(u8, &'static str)>,
+    /// What the next `0x60` write is taken as, when a command asked for a
+    /// parameter; `None` when it goes to the keyboard.
+    pub pending: Option<&'static str>,
+    /// The last byte written to `0x64` since reset or restore.
+    pub last_command: Option<u8>,
+    /// The keyboard waits for the parameter of Set/Reset Status Indicators.
+    pub awaiting_leds: bool,
+    /// Bytes waiting on the keyboard side for the output buffer.
+    pub queued_keyboard: usize,
+    /// A controller reply waiting for the output buffer.
+    pub controller_reply: Option<u8>,
+    /// Whether an auxiliary device is attached.
+    pub aux_attached: bool,
+    /// The IRQ1 output level.
+    pub irq1: bool,
+    /// The IRQ12 output level.
+    pub irq12: bool,
+}
+
+impl I8042Diagnostic {
+    /// Command byte bit 4: the keyboard interface is disabled (`ADh`).
+    #[must_use]
+    pub fn keyboard_disabled(&self) -> bool {
+        self.command_byte & CB_KBD_DISABLE != 0
+    }
+
+    /// Command byte bit 5: the auxiliary interface is disabled (`A7h`).
+    #[must_use]
+    pub fn aux_disabled(&self) -> bool {
+        self.command_byte & CB_AUX_DISABLE != 0
+    }
+
+    /// Command byte bit 0: keyboard interrupts (IRQ1) are enabled.
+    #[must_use]
+    pub fn keyboard_interrupt(&self) -> bool {
+        self.command_byte & CB_KBD_INT != 0
+    }
+
+    /// Command byte bit 1: auxiliary interrupts (IRQ12) are enabled.
+    #[must_use]
+    pub fn aux_interrupt(&self) -> bool {
+        self.command_byte & CB_AUX_INT != 0
+    }
+
+    /// Input port bit 7 low: the keyboard inhibit switch is on.
+    #[must_use]
+    pub fn inhibited(&self) -> bool {
+        self.input_port & 0x80 == 0
+    }
+}
+
 /// The 8042 keyboard controller (§7.5).
 ///
 /// Decodes ports `0x60` and `0x64`. Drives the **IRQ1** line through
@@ -477,6 +542,9 @@ pub struct I8042 {
     refill_hold: bool,
     /// Earliest next keyboard byte after the host releases the serial link.
     keyboard_ready_at: Option<VClock>,
+    /// The last byte the guest wrote to the command port, for host
+    /// diagnostics only: not snapshot state, cleared by reset and restore.
+    last_command: Option<u8>,
     /// Trace events observed since the last [`Device::take_trace`].
     trace: device::TraceBuffer,
     /// Virtual time of the most recent [`Device::tick`], stamped onto traces.
@@ -514,6 +582,7 @@ impl I8042 {
             prefer_aux: false,
             refill_hold: false,
             keyboard_ready_at: None,
+            last_command: None,
             trace: device::TraceBuffer::default(),
             now: VClock::ZERO,
         }
@@ -716,6 +785,47 @@ impl I8042 {
         self.command_byte
     }
 
+    /// The controller as a host diagnostic sees it: the status register a
+    /// read of `0x64` would return, the command byte with its enable and
+    /// interrupt bits, the output and input ports, the output buffer and
+    /// who filled it, the meaning the next `0x60` write will have, the last
+    /// command written to `0x64`, the inhibit switch and the bytes waiting
+    /// on the keyboard and auxiliary sides. Reading it is no port access
+    /// and changes nothing (Intel 8042 datasheet, Data Bus Buffer; IBM PC AT
+    /// Technical Reference, Keyboard Controller, Status Register, Commands
+    /// and Input-Port Bit Definitions).
+    #[must_use]
+    pub fn diagnostic_state(&self) -> I8042Diagnostic {
+        I8042Diagnostic {
+            status: self.status(),
+            command_byte: self.command_byte,
+            output_port: self.output_port,
+            input_port: self.input_port,
+            output_buffer: self.output_full.then_some((
+                self.output_buffer,
+                match self.source {
+                    Source::Keyboard => "keyboard",
+                    Source::Auxiliary => "aux",
+                    Source::Controller | Source::Empty => "controller",
+                },
+            )),
+            pending: match self.expect {
+                Expect::KeyboardData => None,
+                Expect::CommandByte => Some("command byte (after 60h)"),
+                Expect::OutputPort => Some("output port (after d1h)"),
+                Expect::AuxData => Some("aux device byte (after d4h)"),
+                Expect::AuxOutput => Some("aux output byte (after d3h)"),
+            },
+            last_command: self.last_command,
+            awaiting_leds: self.awaiting_leds,
+            queued_keyboard: self.input_queue.len(),
+            controller_reply: self.controller_reply,
+            aux_attached: self.aux_device.is_some(),
+            irq1: self.irq_pending(),
+            irq12: self.aux_irq_pending(),
+        }
+    }
+
     /// Assemble the status register read back at `0x64`.
     fn status(&self) -> u8 {
         let mut st = ST_UNLOCKED;
@@ -835,6 +945,7 @@ impl I8042 {
     /// above: warm POST needs A20 enabled before protected-mode memory sizing.
     fn write_command(&mut self, cmd: u8) {
         self.last_was_command = true;
+        self.last_command = Some(cmd);
         match cmd {
             0x20 => {
                 let cb = self.command_byte;
@@ -1365,6 +1476,8 @@ impl Device for I8042 {
                 snapshot[24 + i]
             })))
         });
+        // Diagnostic history only: a restored controller has seen no command.
+        self.last_command = None;
         Ok(())
     }
 
@@ -2123,6 +2236,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The diagnostic state follows what the guest did: a disabled
+    /// keyboard interface, the last command, a pending parameter and an
+    /// unread controller reply. Reading it changes nothing.
+    #[test]
+    fn diagnostic_state_shows_disable_flags_pending_command_and_output() {
+        let mut bus = MockBus::new(Box::new(I8042::new()));
+        let state = bus_keyboard(&mut bus).diagnostic_state();
+        assert_eq!(state.last_command, None);
+        assert!(!state.keyboard_disabled());
+        bus.port_write(PORT_CMD, 1, 0xAD).unwrap();
+        bus.port_write(PORT_CMD, 1, 0x20).unwrap();
+        let before = bus.device().save();
+        let state = bus_keyboard(&mut bus).diagnostic_state();
+        assert!(state.keyboard_disabled());
+        assert_eq!(state.last_command, Some(0x20));
+        // The command byte read reply sits in the output buffer.
+        assert_eq!(state.output_buffer, Some((0x10, "controller")));
+        assert_eq!(state.status & 0x01, 0x01);
+        assert_eq!(state.pending, None);
+        assert!(!state.inhibited());
+        assert!(!state.irq1);
+        assert_eq!(
+            bus.device().save(),
+            before,
+            "reading changed the controller"
+        );
+        bus.port_write(PORT_CMD, 1, 0xD1).unwrap();
+        let state = bus_keyboard(&mut bus).diagnostic_state();
+        assert_eq!(state.pending, Some("output port (after d1h)"));
+        assert_eq!(state.status & 0x08, 0x08, "the last write was a command");
+        let saved = bus.device().save();
+        bus.device_mut().restore(&saved).unwrap();
+        assert_eq!(bus_keyboard(&mut bus).diagnostic_state().last_command, None);
+        bus.port_write(PORT_CMD, 1, 0xAE).unwrap();
+        bus.device_mut().reset();
+        assert_eq!(bus_keyboard(&mut bus).diagnostic_state().last_command, None);
     }
 
     fn bus_keyboard(bus: &mut MockBus) -> &mut I8042 {

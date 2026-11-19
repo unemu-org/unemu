@@ -342,6 +342,33 @@ impl PcMachine {
         self.cpu_stop_report.as_ref()
     }
 
+    /// Record the CPU's CS:IP after every run slice from now on, for the
+    /// trail of [`Self::diagnostic_report`]; see `machine::CodeTrail`. The
+    /// trail stays outside the CPU's execution path: retired counts, virtual
+    /// time and every guest effect are the same with it on or off.
+    pub fn enable_code_trail(&mut self) {
+        self.assembled.machine.enable_code_trail();
+    }
+
+    /// The diagnostic report of the machine at its completed run boundary:
+    /// the retired count, virtual time and status, the CPU, the code trail,
+    /// the 8259s, the 8042, the PIT, A20 and the CMOS shutdown byte and NMI
+    /// mask; see `assembly::diagnostic`. It performs no guest access and
+    /// changes nothing the guest can see, so a front end may take it while
+    /// the machine runs, between two runs. The status is the machine's
+    /// contract status; whether a front end holds the machine paused is the
+    /// front end's to add.
+    pub fn diagnostic_report(&mut self) -> assembly::MachineDiagnostic {
+        let status = match self.status {
+            Status::Ready => "ready",
+            Status::Halted => "halted (waits for a reset)",
+            Status::Off => "off",
+            Status::Failed => "failed",
+            _ => "unknown",
+        };
+        self.assembled.diagnostic_report(status)
+    }
+
     /// The session's reset total, for its end; nothing when none happened.
     pub fn reset_summary(&self) -> Option<String> {
         (self.cpu_resets != 0).then(|| format!("cpu resets in session: {}", self.cpu_resets))

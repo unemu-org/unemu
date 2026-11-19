@@ -1181,6 +1181,23 @@ machine's workspace: the image's workspace for a library session (discarding
 the workspace removes it), `FILE.local/` beside a machine file; the status
 line names the path. The format is described in
 design/observation.md §CPU stop report.
+`--diag-at N` writes the machine's diagnostic report to stderr when the run
+reaches step N (the unit of `--max-steps`), then runs on to its usual stop:
+the CPU's registers, flags and descriptor caches, the bytes at CS:IP and the
+words at SS:SP, the CS:IP of the last run slices, the 8259s, the 8042, the
+PIT, A20 and the CMOS shutdown byte and NMI mask, for a guest that hangs
+without an error. A run that stops before step N prints no report.
+
+The window takes the same report on demand when `UNEMUPC_DIAG=1` is in its
+environment at startup (any other value, or none, leaves it off):
+Ctrl+Alt+Shift+D, ⌘⇧D on macOS, writes the running PC's report to
+`diag-N.txt` in `unemupc/diagnostics` of the platform data directory (on
+macOS `~/Library/Application Support/unemupc/diagnostics`), N counting on
+from the highest number already there, and the status line shows
+`Diagnostic state saved to PATH`. With the switch on, the machine also keeps
+its code trail from Start. Without the switch the chord does nothing; either
+way its D never reaches the guest. The report is described in
+design/observation.md §Diagnostic report of a running machine.
 A configured card without printable output is an argument error (exit 2). Both file commands accept
 `--allow-unlisted-firmware` for development. Existing `--boot`, `--bios` and
 `media` commands retain their contracts. The FreeDOS prompt, DIR and file-write
@@ -1222,6 +1239,7 @@ Ctrl+Alt+Del sequence. On other platforms the existing bindings stay in effect.
 | Release pointer | ⌘G | Ctrl+Alt+G |
 | Full screen | ⌘Enter | Ctrl+Alt+Enter |
 | Hold fast-forward | ⌘T | Ctrl+Alt+T |
+| Save diagnostic state (with `UNEMUPC_DIAG=1`) | ⌘⇧D | Ctrl+Alt+Shift+D |
 | New / open machine file | ⌘N / ⌘O | Ctrl+N / Ctrl+O outside guest focus |
 | Settings | ⌘, | Ctrl+, outside guest focus |
 | Keyboard shortcuts | ⌘⇧/ | F1 outside guest focus |

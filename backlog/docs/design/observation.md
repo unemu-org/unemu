@@ -786,6 +786,139 @@ tss      tr not loaded
 `upcli run --machine` prints `stopped: cpu fault: the processor is stuck
 delivering exceptions: ...` and this report, and exits 1.
 
+## Diagnostic report of a running machine
+
+A guest can stop responding without any error: interrupts disabled around a
+HLT or a loop, the keyboard interrupt masked in the 8259, the keyboard
+interface disabled in the 8042. The machine then keeps its status, nothing
+fails, and the CPU stop report above never exists. The diagnostic report is
+the same kind of picture of a machine that still runs, taken by the host at a
+completed run boundary: `AssembledMachine::diagnostic_report`
+(`crates/assembly/src/diagnostic.rs`) returns a `MachineDiagnostic`, plain
+data rendered as plain text by its `Display`; `PcMachine::diagnostic_report`
+adds the machine's contract status (`ready`, `halted (waits for a reset)`,
+`off` or `failed`), which says whether the machine can run, not whether a
+front end holds it paused; the desktop appends a last line, `desktop  running`
+or `desktop  paused`. Its lines come in a fixed order:
+
+| Lines | Content |
+|---|---|
+| `retired`, `time`, `status`, `halted` | retired instructions and completed steps, virtual time and the device clock, the machine's status, whether the CPU sits in HLT and with which IF |
+| `cs:ip` … `ss:sp`, `stack` | the CPU (`X86JitCpu::diagnostic_state`, `crates/cpu/src/diagnostic.rs`): CS:IP and its linear address; FLAGS with IF, TF, DF, IOPL and NT decoded (Intel 80286 Programmer's Reference Manual, §3.5.3 and §10.3); AX–SP; MSW with PE and CPL; CS, DS, ES and SS with selector, base, limit and access rights from their caches; GDTR, IDTR, LDTR and TR; whether an injected vector waits and whether an interrupt could be accepted; the HLT a halted CPU executed; the 16 bytes at CS:IP with the first instruction disassembled; the 16 words at SS:SP |
+| `trail` | the code trail: CS:IP after the last run slices (below) |
+| `pic` | master and slave 8259: IRR, ISR, IMR, vector base, ICW1 and ICW4 with AEOI, an unfinished initialization, the OCW3 read select and the input levels; poll mode and special mask mode are not modelled, and the report says so |
+| `kbc` | the 8042: status register, command byte with its keyboard and aux enable and interrupt bits, output buffer and its source (keyboard, aux or controller), output and input ports with the inhibit switch, the parameter the next `60h` write is taken as, the last command written to `64h`, queued keyboard bytes, a waiting controller reply, the LED parameter wait, and the IRQ1 and IRQ12 levels |
+| `pit` | each 8254 counter: programmed mode, access mode, BCD, count register, counting element, OUT and GATE, and a count not yet loaded or a latch waiting to be read |
+| `a20` | the gate the CPU applies, the 8042 output port's A20 bit and port 92h bit 1 when the board has System Control Port A |
+| `cmos` | the shutdown status byte at offset 0Fh, the NMI mask of port 70h bit 7 and the selected index |
+
+Taking a report performs no guest port or memory-mapped access. Guest memory
+is read from RAM and ROM through the CPU's own map, with the 80286's 24-bit
+bus and the A20 gate, as for the stop report; a byte in a trapped window is
+shown as `dv` (a memory-mapped device, not read) and an unmapped one as
+`??`. In the machine profile an offset the segment's hidden cache does not
+allow (past the limit of an expand-up segment, at or below the limit of an
+expand-down data segment, any offset of an unusable cache) shows as `--` and
+is not read, so the report never presents memory the guest cannot reach
+through CS or SS (Intel 80286 Programmer's Reference Manual, §6.3 and §7.3).
+The PICs are read from their snapshot images, restored into a scratch
+chip. The 8042, the PIT and the RTC are borrowed through the bus, which first
+brings each to the bus clock, as the settle at the start of the next run
+does anyway; their `diagnostic_state` accessors only read fields. A report
+therefore changes nothing the guest can see. MEASURED
+(`assembly::diagnostic` tests): a guest waiting in a STI/HLT loop on the
+timer, with two keyboard bytes in the 8042 (one in the output buffer, one
+queued) and PIT counter 2's GATE low, takes a report every 997 steps, most at
+a halt; after the same run its twin that took none has the same CPU state,
+time and snapshot of every device.
+
+### The code trail
+
+When enabled (`Machine::enable_code_trail`, `PcMachine::enable_code_trail`),
+the machine's run loop records the CPU's CS:IP after every run slice the CPU
+returns: a port or memory-mapped access, a HLT, a device deadline, an
+interrupt becoming acceptable or a step budget. Consecutive samples at the
+same CS:IP fold into one entry with a count (`x5`), so a loop that polls one
+port fills one entry. The ring keeps the last 64 entries
+(`crates/machine/src/code_trail.rs`). The trail lives in the machine, not in
+the CPU: a sample reads two registers the CPU holds after it returned, so
+retired counts, virtual time and every guest effect are the same with the
+trail on or off. A disabled trail costs one branch per slice. MEASURED: the
+open-BIOS FreeDOS boot of `freedos_boot_golden`, run once as the golden runs
+it and once with the trail on and a full report taken at each of its ten
+poll boundaries (`crates/pc-harness/tests/diagnostic_trail_golden.rs`),
+stops at the same retired count and virtual time (8,800,473 and 10,000,000)
+with the same screen, POST stream and device snapshots; the trail took
+931,221 samples, and the boot takes the same time with and without it.
+
+### Taking a report
+
+The desktop takes one on demand while `UNEMUPC_DIAG=1` was in its
+environment at startup: Ctrl+Alt+Shift+D (⌘⇧D on macOS) writes the running
+PC's report to `<data>/unemupc/diagnostics/diag-N.txt` in the platform data
+directory, N one more than the highest number already there, and the status
+line says `Diagnostic state saved to PATH`. With the switch on the machine
+keeps its code trail from Start. Without the switch the chord does nothing.
+Either way the chord belongs to the host: its D never reaches the guest
+(`crates/window/src/diagnostics.rs`). `upcli run --machine FILE --diag-at N`
+writes the report to stderr when the run reaches step N, the unit of
+`--max-steps`, with the trail enabled from the start, then runs on to its
+usual stop (commands.md, Build / run / test).
+
+An example, from the open guest
+`assembly::test_support::keyboard_masked_halt_rom` (it initializes the master
+8259, masks IRQ1, disables the 8042's keyboard interface, then executes CLI
+and HLT): HLT retires, so CS:IP is the byte after it, and the `hlt` line names
+the HLT; each OUT ended a run slice, so the trail passes through the
+instruction after every one of them.
+
+```text
+machine diagnostic report
+retired  15 instructions, 15 steps
+time     virtual time 15, clock 15 ticks
+status   halted (waits for a reset)
+halted   yes, with interrupts disabled
+cs:ip    f800:001a (linear 0f801a)
+flags    0002: if 0, tf 0, df 0, iopl 0, nt 0; of 0 sf 0 zf 0 af 0 pf 0 cf 0
+regs     ax 00ad bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 sp 7000
+mode     real, cpl 0, msw fff0 (pe 0), a20 on
+cs       f800 base 0f8000 limit 0000ffff attr 009b
+ds       f000 base 0f0000 limit 0000ffff attr 0093
+es       f000 base 0f0000 limit 0000ffff attr 0093
+ss       f000 base 0f0000 limit 0000ffff attr 0093
+gdtr     base 000000 limit 0000
+idtr     base 000000 limit 03ff
+ldtr     0000 base 000000 limit 00000000 attr 0000
+tr       0000 base 000000 limit 00000000 attr 0000
+irq      no injected vector waits, cannot accept a maskable interrupt now
+hlt      at f800:0019, the byte before cs:ip
+code     00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+decoded  add %al,(%bx,%si)
+ss:sp    f000:7000 (linear 0f7000)
+stack    +00 0000 0000 0000 0000 0000 0000 0000 0000
+stack    +10 0000 0000 0000 0000 0000 0000 0000 0000
+trail    cs:ip after the last 7 run slices, oldest first (7 samples, repeats folded)
+trail    f800:0004
+trail    f800:0008
+trail    f800:000c
+trail    f800:0010
+trail    f800:0014
+trail    f800:0018
+trail    f800:001a
+pic      master irr 00 isr 00 imr 02 base 08 icw1 11 icw4 01 (auto-eoi off), initialized, reads irr, lines 00
+pic      slave  irr 00 isr 00 imr 00 base 00 icw1 00 icw4 00 (auto-eoi off), initialized, reads irr, lines 00
+pic      poll mode and special mask mode are not modelled
+kbc      status 18, command byte 10: keyboard disabled, aux enabled, irq1 disabled, irq12 disabled
+kbc      output buffer empty, output port 03, input port e0, inhibit switch off
+kbc      pending none, last command ad, 0 keyboard bytes queued, controller reply none, awaiting led byte no, aux device none
+kbc      irq1 line low, irq12 line low
+pit      0: mode 0 lsb/msb, reload 0000, count 0000, out 1, gate 1, no count loaded
+pit      1: mode 0 lsb/msb, reload 0000, count 0000, out 1, gate 1, no count loaded
+pit      2: mode 0 lsb/msb, reload 0000, count 0000, out 1, gate 0, no count loaded
+a20      on: 8042 output port on, port 92h not fitted
+cmos     shutdown status (0fh) 00, nmi unmasked, index 00
+```
+
 ## Implemented access trace policy
 
 `device::TracePolicy` has two modes: `Off` (the default) and

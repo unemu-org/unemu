@@ -606,6 +606,41 @@ impl Pit8253 {
         self.counters[n].count
     }
 
+    /// Every counter as a host diagnostic sees it, at the clock the timer
+    /// was last brought to (the bus brings it to its own clock before a
+    /// host borrows the device): programmed mode, access mode, BCD flag,
+    /// count register, counting element, OUT and GATE, and whether a count
+    /// or status latch waits to be read (Intel 8254 datasheet, Control Word
+    /// Format, Read-Back Command, Modes 0–5, GATE). Counters 0 and 1 have
+    /// their GATE tied high on the AT. Reading it is no port access and
+    /// changes nothing.
+    #[must_use]
+    pub fn diagnostic_state(&self) -> PitDiagnostic {
+        PitDiagnostic {
+            at: self.now,
+            channels: std::array::from_fn(|index| {
+                let c = &self.counters[index];
+                PitChannelDiagnostic {
+                    mode: c.programmed_mode,
+                    access: match c.access {
+                        Access::LoOnly => "lsb",
+                        Access::HiOnly => "msb",
+                        Access::LoHi => "lsb/msb",
+                    },
+                    bcd: c.bcd,
+                    reload: c.reload,
+                    count: c.count,
+                    out: c.out,
+                    gate: index != 2 || self.gate2,
+                    armed: c.armed,
+                    null_count: c.null_count,
+                    count_latched: c.latch.is_some(),
+                    status_latched: c.status_latch.is_some(),
+                }
+            }),
+        }
+    }
+
     fn record_speaker(&mut self, at: VClock) {
         let high = self.speaker_data && self.out(2);
         if high != self.speaker_level {
@@ -1007,6 +1042,42 @@ impl Device for Pit8253 {
     }
 }
 
+/// One counter as a host diagnostic sees it; see [`Pit8253::diagnostic_state`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct PitChannelDiagnostic {
+    /// The M2–M0 bits as programmed (6 and 7 act as 2 and 3).
+    pub mode: u8,
+    /// Access mode: `lsb`, `msb` or `lsb/msb`.
+    pub access: &'static str,
+    /// The BCD flag (stored; counting is binary).
+    pub bcd: bool,
+    /// The count register as last written; 0 means 65536.
+    pub reload: u16,
+    /// The counting element.
+    pub count: u16,
+    /// The OUT pin level.
+    pub out: bool,
+    /// The GATE input level.
+    pub gate: bool,
+    /// Whether a count was ever loaded since the last control word.
+    pub armed: bool,
+    /// The latest count has not reached the counting element yet.
+    pub null_count: bool,
+    /// A latched count waits to be read.
+    pub count_latched: bool,
+    /// A latched status byte waits to be read.
+    pub status_latched: bool,
+}
+
+/// The three counters as a host diagnostic sees them.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct PitDiagnostic {
+    /// The PIT clock the timer state was last brought to.
+    pub at: VClock,
+    /// Counters 0, 1 and 2.
+    pub channels: [PitChannelDiagnostic; COUNTERS],
+}
+
 /// Channel-2 speaker inputs at the timer's last synchronised clock.
 ///
 /// IBM Personal Computer AT Technical Reference, System Board, Speaker: port B
@@ -1051,6 +1122,12 @@ impl SharedPit8253 {
         pit.speaker_level = pit.speaker_data && pit.out(2);
         record(pit.now, pit.speaker_level);
         pit.speaker = Some(Box::new(record));
+    }
+
+    /// [`Pit8253::diagnostic_state`] of the shared timer; never synchronises it.
+    #[must_use]
+    pub fn diagnostic_state(&self) -> PitDiagnostic {
+        self.0.borrow().diagnostic_state()
     }
 
     /// Read the speaker inputs for host diagnostics; never synchronises the timer.
@@ -1168,12 +1245,47 @@ impl Device for SharedPit8253 {
     fn take_trace(&mut self) -> Vec<TraceEvent> {
         self.0.borrow_mut().take_trace()
     }
+    /// Host diagnostics reach the shared timer through this downcast; see
+    /// [`SharedPit8253::diagnostic_state`].
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use testkit::MockBus;
+
+    /// The diagnostic state shows what each counter was programmed with and
+    /// where it counts; reading it changes nothing.
+    #[test]
+    fn diagnostic_state_shows_each_counter_mode_count_out_and_gate() {
+        let pit = SharedPit8253::default();
+        let mut bus = MockBus::new(Box::new(pit.clone()));
+        // Counter 0: mode 2, lsb/msb, divisor 1000.
+        bus.port_write(CMD, 1, cmd(0, 3, 2, 0)).unwrap();
+        bus.port_write(BASE, 1, 0xE8).unwrap();
+        bus.port_write(BASE, 1, 0x03).unwrap();
+        bus.tick(11);
+        // Counter 2: mode 3, lsb only, latched for a read.
+        bus.port_write(CMD, 1, cmd(2, 1, 3, 0)).unwrap();
+        bus.port_write(CMD, 1, 0x80).unwrap();
+        let before = bus.device().save();
+        let state = pit.diagnostic_state();
+        assert_eq!(bus.device().save(), before, "reading changed the timer");
+        let zero = state.channels[0];
+        assert_eq!((zero.mode, zero.access, zero.reload), (2, "lsb/msb", 1000));
+        // The load takes one clock, then ten clocks count down.
+        assert_eq!(zero.count, 990);
+        assert!(zero.out && zero.gate && zero.armed && !zero.null_count);
+        let two = state.channels[2];
+        assert_eq!((two.mode, two.access, two.armed), (3, "lsb", false));
+        assert!(two.count_latched && two.null_count);
+        assert_eq!(state.at, bus.clock());
+        let channel1 = state.channels[1];
+        assert!(!channel1.armed && channel1.gate);
+    }
 
     fn fidelity_pit_bus(mode: u8, divisor: u8) -> MockBus {
         let mut bus = MockBus::new(Box::new(Pit8253::new()));

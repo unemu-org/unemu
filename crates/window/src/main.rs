@@ -55,6 +55,7 @@ use media_ui::catalogue_menu;
 use pc_ui::{remote_pull, settings_sheet};
 
 mod app_menu;
+mod diagnostics;
 #[cfg(test)]
 mod library_test_support;
 mod library_view;
@@ -398,6 +399,9 @@ struct Args {
     options: assembly::AssemblyOptions,
     /// Print speaker and CPU-reset events to stderr; see [`SPEAKER_TRACE_VAR`].
     speaker_trace: bool,
+    /// Where the diagnostic chord saves reports, or why it cannot; `None`
+    /// while the switch is off. See [`diagnostics`].
+    diagnostics: Option<Result<PathBuf, String>>,
 }
 
 /// Setting this to `1` makes the window print one stderr line per speaker
@@ -420,6 +424,7 @@ fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Args
         display: None,
         options: assembly::AssemblyOptions::default(),
         speaker_trace: false,
+        diagnostics: None,
     };
     let mut machine_seen = false;
     let mut args = args.into_iter();
@@ -555,6 +560,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     let mut args = parse_args(args)?;
     args.speaker_trace = speaker_trace_requested(std::env::var_os(SPEAKER_TRACE_VAR).as_deref());
+    args.diagnostics = diagnostics::requested(
+        std::env::var_os(diagnostics::DIAG_VAR).as_deref(),
+        image_store::location::data_directory(),
+    );
     let autostart = std::env::args_os().skip(1).any(|arg| arg == "--machine");
     shell::run(args, autostart, cores)?;
     Ok(())
@@ -779,6 +788,7 @@ mod tests {
             display: None,
             options: assembly::AssemblyOptions::default(),
             speaker_trace: false,
+            diagnostics: None,
         };
         let error = setup(&missing, &mut io::sink()).err().unwrap().to_string();
         assert!(error.contains("missing.toml"), "{error}");

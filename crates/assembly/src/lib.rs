@@ -44,6 +44,7 @@ mod clock;
 mod cpu;
 pub mod descriptors;
 mod device;
+pub mod diagnostic;
 mod drive;
 mod ems_frame;
 mod error;
@@ -79,6 +80,7 @@ pub use device::{
 };
 pub use devices::ata::AtaControllerModel;
 pub use devices::FwCfgFile;
+pub use diagnostic::{A20Diagnostic, MachineDiagnostic};
 pub use drive::{
     DriveConfig, DriveKind, FloppyGeometry, FloppyMediaList, FloppyMedium, HardDiskGeometry,
     WriteMode,
@@ -257,6 +259,58 @@ pub mod test_support {
         }
         rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0x00, 0x00, 0x00, 0xF8]);
         rom
+    }
+
+    /// A 32 KiB system ROM for F8000h whose guest silences the keyboard
+    /// and halts with interrupts disabled, the picture of a hung machine
+    /// for the tests of the diagnostic report: from the reset vector it
+    /// initializes the master 8259 (ICW1 11h, base 08h, ICW3 04h, ICW4 01h),
+    /// masks IRQ1 (OCW1 02h), disables the 8042's keyboard interface
+    /// (command ADh), then executes CLI and HLT. Nothing but a reset ends
+    /// that halt (Intel 80286 Programmer's Reference Manual, HLT; Intel
+    /// 8259A datasheet, OCW1; IBM Personal Computer AT Technical Reference,
+    /// Keyboard Controller, Commands).
+    ///
+    /// The bytes are this NASM listing (`nasm -f bin`, org 0, ROM = F8000h):
+    ///
+    /// ```text
+    /// 0000 B011             mov al, 11h         ; ICW1
+    /// 0002 E620             out 20h, al
+    /// 0004 B008             mov al, 08h         ; ICW2: vector base 08h
+    /// 0006 E621             out 21h, al
+    /// 0008 B004             mov al, 04h         ; ICW3
+    /// 000A E621             out 21h, al
+    /// 000C B001             mov al, 01h         ; ICW4: 8086 mode
+    /// 000E E621             out 21h, al
+    /// 0010 B002             mov al, 02h         ; OCW1: mask IRQ1
+    /// 0012 E621             out 21h, al
+    /// 0014 B0AD             mov al, 0ADh        ; disable the keyboard interface
+    /// 0016 E664             out 64h, al
+    /// 0018 FA               cli
+    /// 0019 F4               hlt
+    /// 7FF0 EA000000F8       jmp F800:0000h      ; the reset vector
+    /// ```
+    pub fn keyboard_masked_halt_rom() -> Vec<u8> {
+        let mut rom = vec![0; 0x8000];
+        let code: &[u8] = &[
+            0xB0, 0x11, 0xE6, 0x20, // ICW1
+            0xB0, 0x08, 0xE6, 0x21, // ICW2
+            0xB0, 0x04, 0xE6, 0x21, // ICW3
+            0xB0, 0x01, 0xE6, 0x21, // ICW4
+            0xB0, 0x02, 0xE6, 0x21, // OCW1: mask IRQ1
+            0xB0, 0xAD, 0xE6, 0x64, // 8042 command ADh
+            0xFA, // CLI
+            0xF4, // HLT
+        ];
+        rom[..code.len()].copy_from_slice(code);
+        rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0x00, 0x00, 0x00, 0xF8]);
+        rom
+    }
+
+    /// The AT BIOS preset with [`keyboard_masked_halt_rom`] as its system
+    /// ROM and no floppy controller.
+    pub fn keyboard_masked_halt() -> crate::MachineConfig {
+        crate::bios(keyboard_masked_halt_rom(), None)
     }
 
     /// The AT BIOS preset with [`delivery_stall_rom`] as its system ROM and

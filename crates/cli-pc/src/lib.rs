@@ -113,7 +113,8 @@ impl CliPlatform for PcPlatform<'_> {
         UsageSlot::AfterAbout => concat!(
             "       upcli --bios PATH [--allow-unlisted-firmware]\n",
             "       upcli machine check FILE [--allow-unlisted-firmware] [--rom-dir DIR]...\n",
-            "       upcli run --machine FILE [--store DIR | --no-store] [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--print CARD] [--allow-unlisted-firmware]\n",
+            "       upcli run --machine FILE [--store DIR | --no-store] [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--diag-at N] [--print CARD] [--allow-unlisted-firmware]\n",
+            "         --diag-at N writes the machine's diagnostic report to stderr when the run reaches step N (the unit of --max-steps), then runs on\n",
             "       upcli image import FILE --store DIR --tag NAME:TAG [--create] [--no-compress] [--rom-dir DIR]... [--recover MEDIUM=tip|MEDIUM=generation:N]... [--min-app-version X.Y.Z]\n",
             "         --min-app-version (here, on image media import and on image firmware import and edit) raises the oldest unemupc the image declares it needs: never below what this release computes, never above this release\n",
         ),
@@ -179,6 +180,9 @@ pub enum PcCommand {
         path: PathBuf,
         max_steps: u64,
         idle_limit: u64,
+        /// `--diag-at N`: the step at which the diagnostic report goes to
+        /// stderr before the run goes on.
+        diag_at: Option<u64>,
         print: Option<String>,
         options: assembly::AssemblyOptions,
     },
@@ -249,6 +253,7 @@ fn machine_words(args: &[OsString]) -> Result<Option<PcCommand>, &'static str> {
     }
     if frontend.first().is_some_and(|arg| *arg == "run") {
         let (mut path, mut max_steps, mut idle_limit, mut print) = (None, None, None, None);
+        let mut diag_at = None;
         let mut store = None;
         let mut args = frontend[1..].iter();
         while let Some(arg) = args.next() {
@@ -269,6 +274,7 @@ fn machine_words(args: &[OsString]) -> Result<Option<PcCommand>, &'static str> {
                 Some("--machine") if path.is_none() => path = Some(PathBuf::from(value)),
                 Some("--max-steps") if max_steps.is_none() => max_steps = Some(decimal(value)?),
                 Some("--idle-limit") if idle_limit.is_none() => idle_limit = Some(decimal(value)?),
+                Some("--diag-at") if diag_at.is_none() => diag_at = Some(decimal(value)?),
                 Some("--print") if print.is_none() => {
                     print = Some(value.to_str().ok_or("invalid card id")?.to_owned())
                 }
@@ -281,6 +287,7 @@ fn machine_words(args: &[OsString]) -> Result<Option<PcCommand>, &'static str> {
             path: path.ok_or("run requires --machine FILE")?,
             max_steps: max_steps.unwrap_or(pc_harness::BIOS_MAX_RETIRED),
             idle_limit: idle_limit.unwrap_or(pc_harness::BIOS_IDLE_LIMIT),
+            diag_at,
             print,
             options,
         }));
@@ -330,12 +337,13 @@ impl PlatformCommand for PcCommand {
                 rom_dirs,
                 max_steps,
                 idle_limit,
+                diag_at,
                 print,
                 options,
             } => run::run_machine(
                 &path,
                 options,
-                (max_steps, idle_limit),
+                (max_steps, idle_limit, diag_at),
                 print.as_deref(),
                 (
                     &rom_dirs,
@@ -450,6 +458,7 @@ mod tests {
                 path: "at.toml".into(),
                 max_steps: 20_000_000,
                 idle_limit: 1_000_000,
+                diag_at: None,
                 print: None,
                 options: assembly::AssemblyOptions::default(),
             }
@@ -463,6 +472,8 @@ mod tests {
                 "42",
                 "--idle-limit",
                 "0",
+                "--diag-at",
+                "7",
                 "--print",
                 "screen",
                 "--allow-unlisted-firmware"
@@ -473,6 +484,7 @@ mod tests {
                 path: "at.toml".into(),
                 max_steps: 42,
                 idle_limit: 0,
+                diag_at: Some(7),
                 print: Some("screen".into()),
                 options: assembly::AssemblyOptions {
                     allow_unlisted_firmware: true

@@ -51,17 +51,17 @@ pub const OPL3_NOTICE: &str = concat!(
 
 pub use a20::A20Line;
 pub use ata::{Ata, AtaConfigError, AtaDrive, AtaGeometry};
-pub use cmos_rtc::{CmosConfig, CmosRtc};
+pub use cmos_rtc::{CmosConfig, CmosDiagnostic, CmosRtc};
 pub use coprocessor::Absent80287;
 pub use debug_console::DebugConsole;
 pub use device::{DmaMemory, DmaOp, DmaOutcome, DmaRequest};
 pub use dma8237::{Dma8237, TransferType};
 pub use fw_cfg::{FwCfg, FwCfgError, FwCfgFile};
-pub use i8042::{AuxDevice, I8042};
+pub use i8042::{AuxDevice, I8042Diagnostic, I8042};
 pub use lotech_ems::LotechEms;
 pub use mda::MdaText;
-pub use pic8259::Pic8259;
-pub use pit8253::Pit8253;
+pub use pic8259::{Pic8259, PicDiagnostic};
+pub use pit8253::{Pit8253, PitChannelDiagnostic, PitDiagnostic};
 pub use post_port::PostPort;
 pub use ppi8255::Ppi8255;
 pub use ps2_mouse::Ps2Mouse;
