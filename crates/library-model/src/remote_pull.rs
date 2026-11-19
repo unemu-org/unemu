@@ -448,6 +448,9 @@ impl RemotePull {
                     default_tag,
                     same_as: match local {
                         Some(LocalState::NotPulled { same_as }) => same_as.clone(),
+                        // Pushed from here: the image is in the library under
+                        // the tag it was pushed from, so nothing is fetched.
+                        Some(LocalState::PushedFromHere { tag }) => Some(tag.clone()),
                         _ => None,
                     },
                     media: record.map(|r| r.media.clone()).unwrap_or_default(),

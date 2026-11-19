@@ -98,6 +98,14 @@ impl EnvCredentials {
         }
     }
 
+    /// The user name the environment pair gives `host`, when it holds both
+    /// the name and a secret for that host: a login, as pushes and pulls use
+    /// it. The secret itself is never handed out here.
+    pub fn login_for(&self, host: &str) -> Option<&str> {
+        self.password.as_ref()?;
+        self.user_for(host)
+    }
+
     fn user_for(&self, host: &str) -> Option<&str> {
         (self.host == host)
             .then_some(self.user.as_deref())

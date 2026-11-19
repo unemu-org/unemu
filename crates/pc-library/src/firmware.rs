@@ -17,7 +17,7 @@ use image_store::{
     summary::{FirmwareSummary, ImageSummary, SummaryCache},
     Descriptor, Digest, Store,
 };
-use library_model::listing::{source, ImageRow, Listed};
+use library_model::listing::{source_cell, ImageRow, Listed};
 use pc_image::firmware_import::{self, Candidate, Statement};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -312,7 +312,7 @@ fn fits(f: &FirmwareSummary) -> String {
 /// column.
 pub fn cells(row: &FirmwareRow) -> [String; 7] {
     let name = row.image.name().to_owned();
-    let source = source(&row.image.descriptor).text();
+    let source = source_cell(&row.image.descriptor);
     // A package this release does not read says so in its Status (§5.6).
     let needs = row.image.summary.as_ref().and_then(|s| s.needs_newer());
     let Some(f) = row.firmware() else {

@@ -32,6 +32,7 @@ use library_model::{
     remote_pull::{drives_for, refusal, Mode, Pick, RemotePull},
     PlatformFacts,
 };
+use library_model::{push_destination::Place, remote_browse::State};
 use ui_kit::{pane, shell_icons::Icon};
 
 const DESCRIPTION: &str = "org.opencontainers.image.description";
@@ -148,6 +149,7 @@ fn state_text(row: Option<&TagRow>, facts: &PlatformFacts) -> String {
             format!("Not pulled · same image as {tag}")
         }
         Some(LocalState::NotPulled { same_as: None }) | None => "Not pulled".into(),
+        Some(LocalState::PushedFromHere { tag }) => format!("Pushed from here · as {tag}"),
     }
 }
 
@@ -184,6 +186,10 @@ fn local_sentence(row: &TagRow) -> String {
         Some(LocalState::NotPulled { same_as: None }) | None => {
             "Not in the library under this name.".into()
         }
+        Some(LocalState::PushedFromHere { tag }) => format!(
+            "Pushed from this library, where it is {tag}. Pushing did not rename it. Pull adds the name {} beside it without fetching anything.",
+            row.local_tag
+        ),
     }
 }
 
@@ -283,13 +289,8 @@ impl RemotesView {
     ) -> Vec<RemotesAction> {
         let selected = self.remote_selected(true, context.facts);
         let action = match selected.as_slice() {
-            [] => {
-                pane::meta(
-                    ui,
-                    "Select a tag for its details and Pull…. Ctrl (⌘ on macOS) adds a tag to the selection; Shift selects a range.",
-                );
-                None
-            }
+            // A node's own pane shows until a tag is selected.
+            [] => return self.node_pane(ui, context),
             [one] => self.one_tag(ui, one, context),
             several => several_tags(ui, several),
         };
@@ -337,10 +338,15 @@ impl RemotesView {
                 let Some(Ok(record)) = one.row.as_ref().map(|r| &r.record) else {
                     return Vec::new();
                 };
+                // A tag pushed from here is in the library under the tag it
+                // was pushed from: pushing never renames.
                 let local_tag = one
                     .row
                     .as_ref()
-                    .map(|r| r.local_tag.clone())
+                    .map(|r| match &r.local {
+                        Some(LocalState::PushedFromHere { tag }) => tag.clone(),
+                        _ => r.local_tag.clone(),
+                    })
                     .unwrap_or_default();
                 let image =
                     Descriptor::new(mt::MANIFEST, record.digest.clone(), record.manifest_size);
@@ -373,6 +379,300 @@ impl RemotesView {
                     }
                 }
             }
+        }
+    }
+
+    /// The place Push here… of a node pushes to: a namespace node's
+    /// namespace; for a registry's node its only namespace, or none, the
+    /// whole registry, or a registry of several namespaces, where the
+    /// dialog asks which one, as the chooser does.
+    pub fn node_place(&self, node: &super::Node) -> Option<Place> {
+        let view = self.model.as_ref()?.registry(&node.host)?;
+        let namespace = match &node.namespace {
+            Some(namespace) => namespace.clone(),
+            None => match view.entry.namespaces.as_slice() {
+                [only] => Some(only.name.clone()),
+                _ => None,
+            },
+        };
+        Some(Place {
+            host: node.host.clone(),
+            namespace,
+        })
+    }
+
+    /// Why Push here… waits: the registry does not answer.
+    pub fn push_blocked(&self, host: &str) -> Option<String> {
+        let view = self.model.as_ref()?.registry(host)?;
+        matches!(view.state, State::Unreachable { .. }).then(|| {
+            format!("{host} does not answer; Push here… waits until Try again reaches it.")
+        })
+    }
+
+    /// The pane of the shown node while no tag is selected: the registry's
+    /// or the namespace's, with Push here…, Refresh, Registries… and, for a
+    /// private one before a login, Log in….
+    fn node_pane(&mut self, ui: &mut egui::Ui, context: &RemotesContext<'_>) -> Vec<RemotesAction> {
+        let Some(node) = self.node.clone() else {
+            return Vec::new();
+        };
+        let Some(view) = self.model.as_ref().and_then(|m| m.registry(&node.host)) else {
+            return Vec::new();
+        };
+        let host = view.host.clone();
+        let official = host == DEFAULT_REGISTRY;
+        // The environment's login pair for this host counts, as pushes and
+        // pulls use it before the stored login.
+        let env = self
+            .model
+            .as_ref()
+            .map(|m| m.accounts().env.clone())
+            .unwrap_or_default();
+        let signed_in = env
+            .login_for(&host)
+            .map(str::to_owned)
+            .or_else(|| view.entry.user.clone());
+        let blocked = self.push_blocked(&host);
+        let listed =
+            matches!(view.state, State::Listed | State::Listing | State::Stopped) || view.stale();
+        let tail = !view.repositories.is_empty();
+        let clicked = match &node.namespace {
+            None => {
+                let kind = super::kind(view);
+                let whole = view.entry.namespaces.is_empty();
+                let namespaces: Vec<String> = view
+                    .namespaces()
+                    .iter()
+                    .map(|n| {
+                        let name = n
+                            .name
+                            .as_deref()
+                            .map_or("(top level)".into(), |n| format!("{n}/"));
+                        if n.private {
+                            format!("{name} — private; login required to list and pull")
+                        } else {
+                            format!("{name} — public; open content only")
+                        }
+                    })
+                    .collect();
+                let state = match &view.state {
+                    State::Idle => "Not listed in this session".to_owned(),
+                    State::Listing => "Listing…".into(),
+                    State::Listed if view.repositories.is_empty() => {
+                        "Listed: nothing published yet".into()
+                    }
+                    State::Listed => "Listed in this session".into(),
+                    State::Stopped => "Listing stopped".into(),
+                    State::Unreachable { stale: true, .. } => {
+                        "Unreachable now; rows from an earlier listing".into()
+                    }
+                    State::Unreachable { reason, .. } => format!("Unreachable: {reason}"),
+                    State::LoginRequired { .. } => "Login required (401)".into(),
+                    State::ServerError { status, reason } => match status {
+                        Some(status) => format!("The catalog request failed: {status} {reason}"),
+                        None => format!("The catalog request failed: {reason}"),
+                    },
+                    State::Failed(message) => message.clone(),
+                };
+                pane::head(
+                    ui,
+                    &pane::Tile {
+                        title: &host,
+                        kind: "REGISTRY",
+                        user_supplied: false,
+                    },
+                    |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            pane::title(ui, Icon::Registry, &host, false);
+                            pane::badge(ui, kind, true);
+                            if official {
+                                pane::badge(ui, "default", true);
+                            }
+                        });
+                        pane::facts(ui, "registry-pane", |ui| {
+                            pane::fact_text(
+                                ui,
+                                "Namespaces",
+                                if whole {
+                                    format!(
+                                        "Whole registry; namespaces from the first path components the catalog returns: {}",
+                                        namespaces.join(", ")
+                                    )
+                                } else {
+                                    namespaces.join("\n")
+                                },
+                            );
+                            pane::fact_text(
+                                ui,
+                                "Login",
+                                match (official, &signed_in) {
+                                    (true, Some(user)) => format!(
+                                        "Not needed to list or pull unemu/; signed in as {user} for a push"
+                                    ),
+                                    (true, None) => {
+                                        "Not needed to list or pull unemu/; a push needs one".into()
+                                    }
+                                    (false, Some(user)) => format!("Signed in as {user}"),
+                                    (false, None) => "Not signed in".into(),
+                                },
+                            );
+                            pane::fact_text(
+                                ui,
+                                "Local tags",
+                                if official {
+                                    "Short names: open-at:1.2.0, unemu/media/freedos:1.4".to_owned()
+                                } else {
+                                    format!("With the host: {host}/…:tag")
+                                },
+                            );
+                            pane::fact_text(
+                                ui,
+                                "Push here",
+                                if official {
+                                    "unemu/ takes only images whose every blob is open"
+                                } else if kind == "private" {
+                                    "Takes images with user-supplied content: marked private. Before the first upload to a repository, anonymous reads are tried and must be refused"
+                                } else {
+                                    "Takes only images whose every blob is open"
+                                },
+                            );
+                            pane::fact_text(ui, "Listing", state);
+                            pane::fact_text(
+                                ui,
+                                "Read",
+                                "The registry catalog, tag lists and manifests only, on the library worker. Nothing is written to disk.",
+                            );
+                        });
+                    },
+                );
+                let login = kind == "private" && signed_in.is_none();
+                node_buttons(ui, login, true, blocked.as_deref())
+            }
+            Some(namespace) => {
+                let name = namespace.as_deref().unwrap_or("");
+                let namespaces = view.namespaces();
+                let found = namespaces.iter().find(|n| n.name == *namespace);
+                let private = found.map_or(view.entry.private, |n| n.private);
+                let repositories = found.map_or(0, |n| n.repositories.len());
+                let groups: Vec<String> = super::Group::ALL
+                    .into_iter()
+                    .filter_map(|group| {
+                        let count = found.map_or(0, |n| {
+                            n.repositories
+                                .iter()
+                                .filter(|r| super::group_of(r) == Some(group))
+                                .count()
+                        });
+                        (count > 0).then(|| format!("{count} {}", group.label().to_lowercase()))
+                    })
+                    .collect();
+                let locked = private && signed_in.is_none();
+                let label = format!("{host}/{name}/");
+                pane::head(
+                    ui,
+                    &pane::Tile {
+                        title: &format!("{name}/"),
+                        kind: "NAMESPACE",
+                        user_supplied: private,
+                    },
+                    |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            pane::title(ui, Icon::Namespace, &label, false);
+                            pane::badge(ui, if private { "private" } else { "public" }, true);
+                        });
+                        pane::meta(
+                            ui,
+                            format!(
+                                "A namespace of {host} · {}",
+                                if private {
+                                    "a login is required to list, pull and push"
+                                } else {
+                                    "anyone may list and pull; a push needs a login"
+                                }
+                            ),
+                        );
+                        pane::facts(ui, "namespace-pane", |ui| {
+                            pane::fact_text(
+                                ui,
+                                "Repositories",
+                                if listed && !locked {
+                                    let mut text = format!("{repositories} listed in this session");
+                                    if !groups.is_empty() {
+                                        text += &format!(": {}", groups.join(", "));
+                                    }
+                                    text
+                                } else if locked {
+                                    "Not listed: log in first".into()
+                                } else {
+                                    "Not listed in this session".into()
+                                },
+                            );
+                            pane::fact_text(
+                                ui,
+                                "Login",
+                                match &signed_in {
+                                    Some(user) => format!("Signed in as {user}"),
+                                    None => "Not signed in".into(),
+                                },
+                            );
+                            pane::fact_text(
+                                ui,
+                                "Push here",
+                                if name == image_registry::reference::OFFICIAL_NAMESPACE {
+                                    "Takes only images whose every blob is open, with their source archives and terms. Images with user-supplied content are refused, with no override."
+                                } else if private {
+                                    "Takes images with user-supplied content: the namespace is marked private and is not unemu/. Before the first upload to a repository, anonymous reads are tried and must be refused."
+                                } else {
+                                    "Takes only images whose every blob is open: the namespace is not marked private."
+                                },
+                            );
+                            if let Some(counts) = &context.here {
+                                let mut text =
+                                    format!("{} of {} items can go here", counts.can, counts.total);
+                                if signed_in.is_none() {
+                                    text += " after you log in";
+                                }
+                                if counts.same > 0 {
+                                    text += &format!(
+                                        "; {} {} here already",
+                                        counts.same,
+                                        if counts.same == 1 { "is" } else { "are" }
+                                    );
+                                }
+                                text += ". Each keeps its local tag.";
+                                pane::fact_text(ui, "From your library", text);
+                            }
+                        });
+                    },
+                );
+                node_buttons(ui, locked, !locked, blocked.as_deref())
+            }
+        };
+        if tail {
+            pane::meta(
+                ui,
+                "Select a tag for its details and Pull…. Ctrl (⌘ on macOS) adds a tag to the selection; Shift selects a range.",
+            );
+        }
+        let Some(clicked) = clicked else {
+            return Vec::new();
+        };
+        match clicked {
+            NodeButton::LogIn => {
+                self.login = Some(host.clone());
+                vec![RemotesAction::LogIn(host)]
+            }
+            NodeButton::PushHere => self
+                .node_place(&node)
+                .map(RemotesAction::PushHere)
+                .into_iter()
+                .collect(),
+            NodeButton::Refresh => {
+                let request = self.model.as_mut().and_then(|m| m.refresh(&host));
+                self.collapse_unread(Some(&host));
+                super::browse(request)
+            }
+            NodeButton::Registries => vec![RemotesAction::Registries],
         }
     }
 
@@ -524,12 +824,24 @@ impl RemotesView {
                 );
             }
         };
+        let pushed = match &row.local {
+            Some(LocalState::PushedFromHere { tag }) => Some(tag.clone()),
+            _ => None,
+        };
         let second = |ui: &mut egui::Ui| {
             pane::section(ui, "In your library");
             pane::facts(ui, "remote-local", |ui| {
                 pane::fact(ui, "Local tag", |ui| {
                     ui.horizontal_wrapped(|ui| {
-                        ui.add(egui::Label::new(pane::mono(&row.local_tag)).wrap());
+                        ui.add(
+                            egui::Label::new(pane::mono(
+                                pushed.as_deref().unwrap_or(&row.local_tag),
+                            ))
+                            .wrap(),
+                        );
+                        if pushed.is_some() {
+                            ui.label(RichText::new("· pushed from here, not renamed").weak());
+                        }
                         if selected.host == DEFAULT_REGISTRY {
                             ui.label(
                                 RichText::new("· the default registry keeps short names").weak(),
@@ -537,11 +849,16 @@ impl RemotesView {
                         }
                     });
                 });
-                pane::fact_text(ui, "Source", selected.host.as_str());
+                match &pushed {
+                    Some(_) => pane::fact_text(ui, "Source", format!("local → {}", selected.host)),
+                    None => pane::fact_text(ui, "Source", selected.host.as_str()),
+                }
             });
             let sentence = local_sentence(row);
             let colour = match row.local {
-                Some(LocalState::InLibrary) => pane::good_colour(ui.visuals()),
+                Some(LocalState::InLibrary | LocalState::PushedFromHere { .. }) => {
+                    pane::good_colour(ui.visuals())
+                }
                 Some(
                     LocalState::OtherImage { .. }
                     | LocalState::NewerAvailable { .. }
@@ -598,6 +915,7 @@ impl RemotesView {
         };
         pane::split(ui, 0.55, head, first, second);
         let in_library = row.local == Some(LocalState::InLibrary);
+        let pushed_here = matches!(row.local, Some(LocalState::PushedFromHere { .. }));
         let refused = refusal(&selected.pick());
         // A tag in the library still makes machines and goes into drives,
         // unless this release cannot run it.
@@ -607,13 +925,13 @@ impl RemotesView {
         let fits = !drives_for(formats, context.drives).is_empty();
         let mut why = refused.clone();
         pane::actions(ui, |ui| {
-            if in_library {
+            if in_library || pushed_here {
                 let show = pane::primary(ui, "Show in library");
                 if ui.add(show).clicked() {
                     action = Some(PaneAction::ShowInLibrary);
                 }
             }
-            let pull = if in_library {
+            let pull = if in_library || pushed_here {
                 egui::Button::new("Pull…")
             } else {
                 pane::primary(ui, "Pull…")
@@ -845,4 +1163,49 @@ fn several_tags(ui: &mut egui::Ui, selected: &[Selected]) -> Option<PaneAction> 
         }
     });
     action
+}
+
+/// A button of a node's pane.
+enum NodeButton {
+    LogIn,
+    PushHere,
+    Refresh,
+    Registries,
+}
+
+/// The node pane's buttons: Log in… first and as the default while a
+/// private place has no login, else Push here…; Refresh; Registries….
+fn node_buttons(
+    ui: &mut egui::Ui,
+    login: bool,
+    push_first: bool,
+    blocked: Option<&str>,
+) -> Option<NodeButton> {
+    let mut clicked = None;
+    pane::actions(ui, |ui| {
+        if login && ui.add(pane::primary(ui, "Log in…")).clicked() {
+            clicked = Some(NodeButton::LogIn);
+        }
+        let push = if push_first && !login {
+            pane::primary(ui, "Push here…")
+        } else {
+            egui::Button::new("Push here…")
+        };
+        if ui.add_enabled(blocked.is_none(), push).clicked() {
+            clicked = Some(NodeButton::PushHere);
+        }
+        if ui.button("Refresh").clicked() {
+            clicked = Some(NodeButton::Refresh);
+        }
+        if ui.button("Registries…").clicked() {
+            clicked = Some(NodeButton::Registries);
+        }
+    });
+    if let Some(why) = blocked {
+        pane::text(
+            ui,
+            RichText::new(why).small().color(ui.visuals().warn_fg_color),
+        );
+    }
+    clicked
 }

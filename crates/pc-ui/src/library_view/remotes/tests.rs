@@ -163,6 +163,20 @@ impl Shown {
         self.widgets.iter().any(|w| w.label == label)
     }
 
+    /// A widget labelled `label` in the list area, above the buttons of a
+    /// node's own pane, which has Refresh and Log in… too.
+    fn has_list_widget(&self, label: &str) -> bool {
+        let pane = self
+            .widgets
+            .iter()
+            .filter(|w| w.label == "Push here…")
+            .map(|w| w.rect.top() - 1.0)
+            .fold(f32::INFINITY, f32::min);
+        self.widgets
+            .iter()
+            .any(|w| w.label == label && w.rect.top() < pane)
+    }
+
     /// The text is painted, or a widget says it: a label the details pane
     /// scrolled out of view says it without painting it.
     fn shows(&self, text: &str) -> bool {
@@ -173,11 +187,19 @@ impl Shown {
     /// right: the labels of the list's cells under the header.
     fn rows(&self) -> Vec<Vec<String>> {
         let header = self.widget("Name").rect;
+        // The list ends at its paging line; the details pane lies below.
+        let end = self
+            .widgets
+            .iter()
+            .filter(|w| w.label.starts_with("Repositories 1–"))
+            .map(|w| w.rect.top())
+            .fold(f32::INFINITY, f32::min);
         let mut cells: Vec<&Widget> = self
             .widgets
             .iter()
             .filter(|w| {
                 w.role == Role::Label
+                    && w.rect.bottom() <= end + 0.5
                     && w.rect.top() >= header.bottom() - 0.5
                     && w.rect.left() >= header.left() - 0.5
                     && (w.rect.height() - ROW).abs() < 0.5
@@ -659,7 +681,7 @@ fn every_registry_state_draws_its_strip_or_message_and_action() {
         }
         let Some(action) = drawn.action else {
             for label in ["Stop", "Refresh", "Try again", "Log in…"] {
-                assert!(!shown.has_widget(label), "{what}: {label}");
+                assert!(!shown.has_list_widget(label), "{what}: {label}");
             }
             continue;
         };

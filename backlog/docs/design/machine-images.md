@@ -1397,14 +1397,64 @@ publishing proprietary bytes by accident:
   its verified blobs stay in the store. A confirmed tag move is bound to the
   digest the user was shown: if the tag names another digest when the push
   starts, the confirmation is asked again.
-- The desktop shell's Image › Push… and Image › Pull by reference… follow
-  the approved registry-accounts mock-up; Pull… of the tags selected in the
-  library's Remotes follows the remotes mock-up (§3.2, Desktop library). Push… shows the dry run of the local image (every
-  blob with its effective class and where it was recorded: this image, another
-  local tag or the firmware catalogue) and the guard's verdict for the
-  destination as it is typed, with no override. It pushes only the image the
-  user reviewed. Both dialogs run on the library worker, never on the frame
-  loop, and share the command line's push plan, client and providers list.
+- The desktop shell's Image › Pull by reference… follows the approved
+  registry-accounts mock-up; Pull… of the tags selected in the library's
+  Remotes follows the remotes mock-up (§3.2, Desktop library), and pushing
+  from the library follows the remotes-push mock-up (Remotes revision 3,
+  approved 2026-11-19). **Push to…** (Image › Push to…, which replaced
+  Image › Push…, the toolbar's Push… beside Pull…, and the Push to… button of
+  an item's pane, in Images, Installation media and Firmware; machines are
+  never pushed) takes the selected library items. The destination of one
+  item is preselected by the Remotes rule: a local tag that names a registry
+  goes to that registry under its own path and tag, a short tag pulled from
+  the default registry goes back there, any other short tag goes where it
+  was pushed last, and before its first push nothing is preselected and Push
+  waits for a choice. The dialog shows the item and its local tag ("Stays …
+  Pushing never renames it."), the destination as text and, under it, a
+  chooser of the registries and namespaces of Preferences › Registries drawn
+  as the Remotes tree draws them, with the repository and the tag; the text
+  and the chooser show the same destination. A namespace keeps the item's
+  whole local path without repeating the namespace (`private/test/x` stays
+  that under `private/`, `open-at-test` becomes `private/open-at-test`).
+  Below come the dry run of the local image (every blob with its effective
+  class and where it was recorded: this image, another local tag or the
+  firmware catalogue), the checks and the verdict, all worked out with no
+  request: the guard's refusal with no override; Log in first for a
+  registry without a login, a private namespace needing one before a push
+  as before a listing or a pull, with Log in… beside the failed check, after
+  which the verdict is worked out again; and what the registry has under the
+  name as this session's Remotes listing shows it ("As listed"): nothing yet,
+  this image already (nothing to upload), or another image, which a version
+  tag, or a revision tag of a set or package, never takes (refused, the next
+  free tag suggested) and any other tag takes only after the move is
+  confirmed with both digests. A registry not listed in this session costs no
+  request either: the push reads the tag when it starts, before any blob,
+  and that read stays the authority, as before. Several items go one after
+  another under one progress bar: a tag that names a registry goes there,
+  the short ones to the registry and namespace picked once in the dialog;
+  each has its own verdict, and the push takes only the ready ones and skips
+  the rest with the reason (refused, a tag that cannot move, a tag that would
+  move: push it alone, already there, not logged in). A failure on the way
+  marks its row Failed ✗ and the next item starts; the end line counts the
+  pushed, skipped and failed. **Push here…** (Image › Push here…, the
+  toolbar's Push… while a Remotes node is shown, and the Push here… button of
+  a registry's or namespace's pane, which shows while no tag is selected)
+  fixes the place and lists the library with the verdict for that place per
+  item; Ctrl (⌘ on macOS) or Shift selects several, and the items that
+  cannot go there hide behind a check box that says why. The registry and
+  namespace context menu of the mock-up follows the library's context-menu
+  work. Each push records on the local tag where it went
+  (`unemu.pushed.to`, `Store::record_push`), in `index.json` only: the tag
+  keeps its name and its image, Source reads `local → registry.lan.example`
+  (`local → 2 registries`), the item's pane lists every reference it was
+  pushed to with when and what that tag names as listed, and a tag moved to
+  another image drops the record. Remotes gains the pushed repository or tag
+  from the local manifest that went up, without a request; a tag pushed from
+  a local tag of another name reads *Pushed from here · as …*, with Show in
+  library. Only the desktop records a push: `upcli image push` sends the
+  same image and leaves the store as it was. Every dialog runs its
+  transfers on the library worker, never on the frame loop, and shares the
+  command line's push plan, guard, client and providers list.
 
 **No daemon is needed now**, for either a purely local library or registry
 push/pull. GUI and CLI call the same in-process store library directly. Its API

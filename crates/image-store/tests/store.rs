@@ -1214,6 +1214,128 @@ fn a_tag_records_the_recipe_that_built_it_until_it_moves() {
     assert_eq!(tag("copy:1").built_from_recipe(), None);
 }
 
+/// A push from this library is recorded on the local tag, which keeps its
+/// name and its image: each reference once, the latest last, with its time.
+/// The record changes no blob, never travels to another tag, stays while
+/// the tag names the same image, a pull of it included, and goes once the
+/// tag moves to another image.
+#[test]
+fn a_push_is_recorded_on_the_local_tag_without_renaming_it() {
+    use image_store::{PushRecord, PUSHED_TO};
+    let dir = Temp::new();
+    let store = dir.store();
+    let provider = Provider("zx-spectrum");
+    let (manifest, _) = fixture(&store, b"firmware");
+    let image = publish(&store, &manifest, "private/test/bench:nightly");
+    let tag = |name: &str| {
+        store
+            .list_tags(None, 10)
+            .unwrap()
+            .tags
+            .into_iter()
+            .find(|t| t.name == name)
+            .unwrap()
+    };
+    assert!(tag("private/test/bench:nightly").pushed_to().is_empty());
+    let blobs = || {
+        fs::read_dir(dir.0.join("images/blobs/sha256"))
+            .unwrap()
+            .count()
+    };
+    let before = blobs();
+    let lan = "registry.lan.example/private/test/bench:0.2.0";
+    let nas = "nas.example:5000/private/test/bench:0.2.0";
+    store
+        .record_push("private/test/bench:nightly", &image.digest, lan, 100)
+        .unwrap();
+    store
+        .record_push("private/test/bench:nightly", &image.digest, nas, 200)
+        .unwrap();
+    // Pushing to the first again moves it last with its new time.
+    store
+        .record_push("private/test/bench:nightly", &image.digest, lan, 300)
+        .unwrap();
+    assert_eq!(blobs(), before, "no blob is written");
+    let pushed = tag("private/test/bench:nightly");
+    assert_eq!(pushed.manifest.digest, image.digest);
+    assert!(pushed.made_here(), "the origin record stays");
+    assert_eq!(
+        pushed.pushed_to(),
+        [
+            PushRecord {
+                reference: nas.into(),
+                at: 200
+            },
+            PushRecord {
+                reference: lan.into(),
+                at: 300
+            },
+        ]
+    );
+    assert_eq!(pushed.pushed_to()[0].host(), "nas.example:5000");
+    let index = fs::read_to_string(dir.0.join("images/index.json")).unwrap();
+    assert!(index.contains(PUSHED_TO), "{index}");
+    // Not a reference, another image, or no tag: nothing is recorded.
+    for bad in [
+        "no-host",
+        "Bad Host/x:1",
+        "registry.lan.example/x",
+        "a.example/x:1\nb",
+    ] {
+        assert!(
+            store
+                .record_push("private/test/bench:nightly", &image.digest, bad, 1)
+                .is_err(),
+            "{bad:?}"
+        );
+    }
+    let (other, _) = fixture(&store, b"other firmware");
+    let other = store.import_manifest(&other).unwrap();
+    assert!(matches!(
+        store.record_push("private/test/bench:nightly", &other.digest, lan, 1),
+        Err(Error::Conflict { .. })
+    ));
+    assert!(matches!(
+        store.record_push("absent:1", &image.digest, lan, 1),
+        Err(Error::TagNotFound(_))
+    ));
+    // Copying the descriptor to another tag leaves the record behind.
+    let descriptor = store.tag_descriptor("private/test/bench:nightly").unwrap();
+    store
+        .update_tag("copy:1", &descriptor, None, &provider)
+        .unwrap();
+    assert!(tag("copy:1").pushed_to().is_empty());
+    // Writing the same image keeps it, a pull of the same image too.
+    store
+        .update_tag(
+            "private/test/bench:nightly",
+            &image,
+            Some(&image.digest),
+            &provider,
+        )
+        .unwrap();
+    store
+        .update_pulled_tag(
+            "private/test/bench:nightly",
+            &image,
+            Some(&image.digest),
+            &provider,
+            "registry.lan.example",
+        )
+        .unwrap();
+    assert_eq!(tag("private/test/bench:nightly").pushed_to().len(), 2);
+    // Moving the tag to another image drops it.
+    store
+        .update_tag(
+            "private/test/bench:nightly",
+            &other,
+            Some(&image.digest),
+            &provider,
+        )
+        .unwrap();
+    assert!(tag("private/test/bench:nightly").pushed_to().is_empty());
+}
+
 /// Every tag write other than a pull marks a tag it creates or moves as made
 /// here, also when it copies a pulled tag's descriptor; a pull never does.
 /// Rewriting a tag with the image it names keeps its record, and a pull's

@@ -910,6 +910,13 @@ fn state_parts(row: &TagRow, facts: &PlatformFacts) -> (Vec<Part>, bool) {
         Some(LocalState::NotPulled { same_as: None }) | None => {
             vec![("Not pulled".into(), Tone::Muted)]
         }
+        // A tag pushed from a local tag of another name: pushing never
+        // renames, so the image is here under that tag.
+        Some(LocalState::PushedFromHere { tag }) => vec![
+            ("Pushed from here".into(), Tone::Good),
+            (" · as ".into(), Tone::Muted),
+            (tag.clone(), Tone::Code),
+        ],
     };
     (parts, false)
 }
@@ -1096,8 +1103,9 @@ fn sort_key(repository: &RepositoryRow, column: usize) -> (String, String) {
                 Some(LocalState::OtherImage { .. }) => 1,
                 Some(LocalState::LocalNewer { .. }) => 2,
                 Some(LocalState::NotPulled { .. }) => 3,
-                Some(LocalState::InLibrary) => 4,
-                None => 5,
+                Some(LocalState::PushedFromHere { .. }) => 4,
+                Some(LocalState::InLibrary) => 5,
+                None => 6,
             };
             rank.to_string()
         }
@@ -1381,6 +1389,18 @@ pub struct RemotesContext<'a> {
     /// The media drives of the library's stopped machines, which Pull and
     /// insert… and Insert… offer.
     pub drives: &'a [Drive],
+    /// How many library items could go to the shown node, once the dry
+    /// runs of the library are read.
+    pub here: Option<HereCounts>,
+}
+
+/// What a namespace's pane says of the library: how many items could go
+/// there, how many are there already, of how many.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HereCounts {
+    pub can: usize,
+    pub same: usize,
+    pub total: usize,
 }
 
 /// What Remotes asks of the library around it. The library applies them in
@@ -1409,6 +1429,10 @@ pub enum RemotesAction {
     BeginPull(Mode),
     /// Preferences › Registries opens on this registry's Log in….
     LogIn(String),
+    /// Push here… of a registry or namespace.
+    PushHere(library_model::push_destination::Place),
+    /// Tools › Preferences › Registries.
+    Registries,
     /// The media picker opens on a stopped machine's drive, the set chosen.
     Insert {
         machine: String,
@@ -1587,6 +1611,10 @@ impl RemotesView {
             }
         }
         if let Some(node) = picked {
+            // A node's own pane shows until a tag is selected again.
+            self.selected = None;
+            self.anchor = None;
+            self.multi.clear();
             actions.push(RemotesAction::Select(node));
         }
         actions

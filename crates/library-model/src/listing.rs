@@ -117,6 +117,58 @@ pub fn source(descriptor: &Descriptor) -> Source<'_> {
         None => Source::Unknown,
     }
 }
+/// The pushes from this library a local tag records
+/// ([`image_store::PUSHED_TO`]), the oldest first.
+pub fn pushes(descriptor: &Descriptor) -> Vec<image_store::PushRecord> {
+    Tag {
+        name: String::new(),
+        manifest: descriptor.clone(),
+    }
+    .pushed_to()
+}
+
+/// The registries a tag was pushed to, each once, in the order of their
+/// first push, without the one it came from: pushing never changes where
+/// it came from.
+fn pushed_hosts(descriptor: &Descriptor) -> Vec<String> {
+    let origin = match source(descriptor) {
+        Source::Pulled(host) => Some(host.to_owned()),
+        _ => None,
+    };
+    let mut hosts: Vec<String> = Vec::new();
+    for record in pushes(descriptor) {
+        let host = record.host().to_owned();
+        if Some(&host) != origin.as_ref() && !hosts.contains(&host) {
+            hosts.push(host);
+        }
+    }
+    hosts
+}
+
+/// The Source cell, as the remotes-push mock-up draws it: where the tag
+/// came from, then where it was pushed to, `local → registry.lan.example`,
+/// or `local → 2 registries` for more than one.
+pub fn source_cell(descriptor: &Descriptor) -> String {
+    let origin = source(descriptor).text();
+    match pushed_hosts(descriptor).as_slice() {
+        [] => origin,
+        [one] => format!("{origin} → {one}"),
+        several => format!("{origin} → {} registries", several.len()),
+    }
+}
+
+/// The Source cell's tooltip: where the tag came from, then every
+/// reference it was pushed to.
+pub fn source_hint(descriptor: &Descriptor) -> String {
+    let origin = source(descriptor).hint();
+    let pushed = pushes(descriptor);
+    if pushed.is_empty() {
+        return origin;
+    }
+    let references: Vec<&str> = pushed.iter().map(|p| p.reference.as_str()).collect();
+    format!("{origin} · pushed to {}", references.join(", "))
+}
+
 /// One manifest of one repository as the library lists it, with every tag
 /// there that names it.
 pub struct Listed<'a> {
@@ -218,6 +270,12 @@ pub fn human_size(bytes: u64) -> String {
     }
     format!("{bytes} B")
 }
+/// A Unix time in seconds as the library shows a recorded time, such as
+/// when a tag was pushed: `YYYY-MM-DD HH:MM UTC`.
+pub fn utc(seconds: u64) -> String {
+    last_run_utc(seconds)
+}
+
 /// A Unix time in seconds as `YYYY-MM-DD HH:MM UTC`, by the proleptic
 /// Gregorian calendar.
 pub(crate) fn last_run_utc(seconds: u64) -> String {
@@ -254,5 +312,42 @@ pub mod test_support {
     /// A Unix time in seconds as a machine's last run is shown.
     pub fn last_run_utc(seconds: u64) -> String {
         super::last_run_utc(seconds)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image_store::{media_type as mt, MADE_HERE, PULL_REGISTRY, PUSHED_TO};
+
+    fn descriptor(records: &[(&str, &str)]) -> Descriptor {
+        let mut d = Descriptor::new(mt::MANIFEST, Digest::of(b"x"), 1);
+        for (key, value) in records {
+            d.annotations.insert((*key).into(), (*value).into());
+        }
+        d
+    }
+
+    /// Source keeps where the tag came from and adds where it was pushed:
+    /// one registry by name, several by their count; a push back to the
+    /// registry it was pulled from adds nothing.
+    #[test]
+    fn source_names_the_origin_then_the_registries_it_was_pushed_to() {
+        let made = (MADE_HERE, "true");
+        assert_eq!(source_cell(&descriptor(&[made])), "local");
+        let lan = "100 registry.lan.example/private/test/bench:0.2.0";
+        let one = descriptor(&[made, (PUSHED_TO, lan)]);
+        assert_eq!(source_cell(&one), "local → registry.lan.example");
+        assert_eq!(
+            source_hint(&one),
+            "Made in this library · pushed to registry.lan.example/private/test/bench:0.2.0"
+        );
+        let two = format!("{lan}\n200 nas.example:5000/private/test/bench:0.2.0\n300 registry.lan.example/private/bench:1");
+        assert_eq!(
+            source_cell(&descriptor(&[made, (PUSHED_TO, &two)])),
+            "local → 2 registries"
+        );
+        let back = descriptor(&[(PULL_REGISTRY, "registry.lan.example"), (PUSHED_TO, lan)]);
+        assert_eq!(source_cell(&back), "registry.lan.example");
     }
 }

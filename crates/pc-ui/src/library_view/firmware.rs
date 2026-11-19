@@ -579,6 +579,10 @@ impl LibraryView {
     /// Edit metadata… on the selected package; with `pick_source`, the
     /// source archive picker follows once the package is read.
     pub fn begin_firmware_edit(&mut self, pick_source: bool) {
+        // Several rows selected: a command of one item takes none.
+        if self.several_selected() {
+            return;
+        }
         if !self.can_edit_firmware() {
             return;
         }
@@ -766,11 +770,15 @@ impl LibraryView {
                         for index in range {
                             self.rows_built += 1;
                             let row = &snapshot.firmware_rows[index];
-                            let selected = self
-                                .firmware_selected
-                                .as_ref()
-                                .is_some_and(|current| current.same(row));
-                            let hints = [None, Some(super::source(&row.image.descriptor).hint())];
+                            let several = self.library_multi.len() > 1;
+                            let selected = if several {
+                                self.picked(&row.image.reference)
+                            } else {
+                                self.firmware_selected
+                                    .as_ref()
+                                    .is_some_and(|current| current.same(row))
+                            };
+                            let hints = [None, Some(super::source_hint(&row.image.descriptor))];
                             // A double click only selects: packages have no launch action.
                             let (clicked, double) = super::draw_cells_with_hints(
                                 ui,
@@ -782,8 +790,39 @@ impl LibraryView {
                                 lead(row),
                                 &hints,
                             );
-                            if (clicked || double) && !selected {
-                                self.select_firmware(row, selected_file);
+                            if clicked || double {
+                                // Ctrl (⌘ on macOS) or Shift selects several,
+                                // for Push to….
+                                let modifiers = ui.input(|i| i.modifiers);
+                                let rows: Vec<String> = snapshot
+                                    .firmware_rows
+                                    .iter()
+                                    .map(|r| r.image.reference.clone())
+                                    .collect();
+                                let current = self
+                                    .firmware_selected
+                                    .as_ref()
+                                    .map(|r| r.image.reference.clone());
+                                let alone = self.pick_library(
+                                    &row.image.reference,
+                                    current,
+                                    modifiers,
+                                    &rows,
+                                );
+                                if let Some(tag) = alone {
+                                    let row = snapshot
+                                        .firmware_rows
+                                        .iter()
+                                        .find(|r| r.image.reference == tag)
+                                        .unwrap_or(row);
+                                    let mine = self
+                                        .firmware_selected
+                                        .as_ref()
+                                        .is_some_and(|current| current.same(row));
+                                    if !mine || several {
+                                        self.select_firmware(row, selected_file);
+                                    }
+                                }
                             }
                         }
                     });

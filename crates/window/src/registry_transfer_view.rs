@@ -118,12 +118,16 @@ pub(crate) mod tests {
         dialog.destination = format!("{host}/unemu/test:1.0.0");
         let (_, shown) = push(&mut dialog, vec![]);
         for wanted in [
-            "Push test:source",
+            "Push to… — test:source",
+            "Stays",
+            "Pushing never renames it.",
             "Dry run — every blob in the image, with its redistribution mark",
             "user-supplied",
-            &format!("Resolves to {host}/unemu/test:1.0.0"),
-            "Push refused. This image contains user-supplied firmware",
-            "There is no override for this rule. Choose a private destination such as private/test:source.",
+            "Resolves to",
+            &format!("{host}/unemu/test:1.0.0"),
+            "Push refused.",
+            "This image contains user-supplied firmware",
+            &format!("There is no override for this rule. Choose a private namespace, such as {host}/. Nothing was sent."),
             "Push is disabled: the guard refused this destination.",
         ] {
             assert!(shows(&shown, wanted), "{wanted}: {shown:?}");
@@ -196,7 +200,8 @@ pub(crate) mod tests {
         });
         let (_, shown) = push(&mut dialog, vec![]);
         for wanted in [
-            "Cancelled. The manifest was not published",
+            "Cancelled.",
+            "The manifest was not published",
             "Not written",
             "Not sent",
             "Close",

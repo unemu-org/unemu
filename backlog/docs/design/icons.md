@@ -83,6 +83,7 @@ icons are the project's own mock-up artwork, under the project licence.
 | remotes | registry, namespace, lock | the Remotes tree: each registry, each namespace, and the lock after a private namespace until a login lists it; the registry icon also on the toolbar's Registries… |
 | remotes | Refresh | the toolbar's Refresh, which lists the shown registry again |
 | remotes | Pull | the toolbar's Pull…, while the library shows Remotes: the tags selected there |
+| library, remotes-push | Push | the toolbar's Push…, beside Pull…: Push to… of the selected library items, Push here… while a Remotes node is shown |
 | remotes, get-templates | ✓ ✗ | the stage of each tag in Remotes' Pull… (Pulled ✓, Failed ✗) |
 | remotes | the four message pictures (unreachable, login, empty, listing) | the Remotes list's message instead of the rows, 40 px |
 | remotes | ⚠ | the strips of a stopped or stale listing, and the Local state of a tag whose local name holds another image |
@@ -94,7 +95,8 @@ name cells are left-aligned. Child rows of a repository group are set in by
 
 ## Not drawn, with the reason
 
-- **library.html toolbar** (New, Properties, Browse registry…, Push, Delete) and
+- **library.html toolbar** (New, Properties, Browse registry…, Delete; Push is
+  painted since the remotes-push mock-up put it on the toolbar) and
   **machines.html toolbar** (Gaming mode, New machine from image…, Save as new
   image…): the app has one toolbar, the main-window mock-up's machine toolbar,
   and these commands are not on it (they are in the menus and the details

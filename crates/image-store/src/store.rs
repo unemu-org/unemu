@@ -131,7 +131,84 @@ pub const MADE_HERE: &str = "unemu.made-here";
 /// moves the tag to another image, or a pull, drops it.
 pub const BUILD_RECIPE: &str = "unemu.build.recipe";
 
+/// Index annotation on a local tag's manifest descriptor: every registry
+/// reference a push from this library sent the tag's image to, one line
+/// each, the oldest first, as `SECONDS REFERENCE`: the Unix time of the
+/// push and `host[:port]/repository:tag` ([`Store::record_push`]). Pushing
+/// never renames the local tag, so this record is how the library knows
+/// where the image went. Like the pull record it lives in `index.json`
+/// only, is never pushed and never travels to another tag; a write that
+/// moves the tag to another image drops it, as it says nothing of the new
+/// image, while a pull of the same image keeps it.
+pub const PUSHED_TO: &str = "unemu.pushed.to";
+
+/// The most push references one local tag records; the oldest go first.
+const MAX_PUSH_RECORDS: usize = 32;
+
+/// One push of a local tag's image ([`PUSHED_TO`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PushRecord {
+    /// `host[:port]/repository:tag`.
+    pub reference: String,
+    /// The Unix time of the push, in seconds.
+    pub at: u64,
+}
+
+impl PushRecord {
+    /// The registry host, port included.
+    pub fn host(&self) -> &str {
+        self.reference
+            .split_once('/')
+            .map_or(self.reference.as_str(), |(host, _)| host)
+    }
+}
+
+/// The push records of an annotation value: each valid line, in order.
+fn push_records(value: &str) -> Vec<PushRecord> {
+    value
+        .lines()
+        .filter_map(|line| {
+            let (at, reference) = line.split_once(' ')?;
+            check_push_reference(reference).ok()?;
+            Some(PushRecord {
+                reference: reference.into(),
+                at: at.parse().ok()?,
+            })
+        })
+        .collect()
+}
+
+/// A push reference names a valid registry host, a repository and a tag,
+/// on one line.
+fn check_push_reference(reference: &str) -> Result<()> {
+    let bad = || invalid(format!("{reference:?} is not a registry reference"));
+    if reference.len() > 512
+        || reference
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(bad());
+    }
+    let (host, rest) = reference.split_once('/').ok_or_else(bad)?;
+    check_host(host).map_err(|_| bad())?;
+    let (repository, tag) = rest.rsplit_once(':').ok_or_else(bad)?;
+    if repository.is_empty() || tag.is_empty() || tag.contains('/') {
+        return Err(bad());
+    }
+    Ok(())
+}
+
 impl Tag {
+    /// Every push of this tag's image from this library ([`PUSHED_TO`]),
+    /// the oldest first; empty for a tag never pushed from here.
+    pub fn pushed_to(&self) -> Vec<PushRecord> {
+        self.manifest
+            .annotations
+            .get(PUSHED_TO)
+            .map(|value| push_records(value))
+            .unwrap_or_default()
+    }
+
     /// The registry a pull fetched this tag's image from ([`PULL_REGISTRY`]).
     /// `None` for a tag made in this library, and also for one written
     /// before pulls recorded their registry.
@@ -1083,6 +1160,13 @@ impl Store {
     }
 
     fn read_inner(&self, descriptor: &Descriptor, limit: u64) -> Result<Vec<u8>> {
+        #[cfg(feature = "test-support")]
+        SMALL_READS.with(|counts| {
+            *counts
+                .borrow_mut()
+                .entry(descriptor.digest.clone())
+                .or_default() += 1
+        });
         descriptor.validate_limit(
             crate::artifact::neutral_size_limit(&descriptor.media_type).unwrap_or(i64::MAX as u64),
         )?;
@@ -1538,6 +1622,7 @@ fn place(
     descriptor.annotations.remove(PULL_REGISTRY);
     descriptor.annotations.remove(MADE_HERE);
     descriptor.annotations.remove(BUILD_RECIPE);
+    descriptor.annotations.remove(PUSHED_TO);
     let same_image = current == Some(&manifest.digest);
     match pulled {
         Some(registry) => {
@@ -1575,6 +1660,11 @@ fn place(
             annotations.remove(PULL_REGISTRY);
             annotations.remove(MADE_HERE);
             annotations.remove(BUILD_RECIPE);
+        }
+        // Where the image went says nothing about another image; a pull of
+        // the same image keeps it.
+        if !same_image {
+            annotations.remove(PUSHED_TO);
         }
         if let Some(raw) = replacement.remove("annotations") {
             annotations.extend(decode_json::<BTreeMap<String, Box<RawValue>>>(
@@ -2048,6 +2138,13 @@ thread_local! { static VERIFICATIONS: std::cell::RefCell<BTreeMap<Digest, usize>
 pub fn verification_passes(digest: &Digest) -> usize {
     VERIFICATIONS.with(|counts| counts.borrow().get(digest).copied().unwrap_or(0))
 }
+#[cfg(feature = "test-support")]
+thread_local! { static SMALL_READS: std::cell::RefCell<BTreeMap<Digest, usize>> = const { std::cell::RefCell::new(BTreeMap::new()) }; }
+/// Verified reads of one small object, such as a manifest, on this thread.
+#[cfg(feature = "test-support")]
+pub fn small_reads(digest: &Digest) -> usize {
+    SMALL_READS.with(|counts| counts.borrow().get(digest).copied().unwrap_or(0))
+}
 
 impl Store {
     /// Verify the complete publication closure, including metadata and artwork.
@@ -2107,6 +2204,75 @@ impl Store {
         annotations.insert(
             BUILD_RECIPE.into(),
             to_raw_value(&recipe.to_string()).map_err(|e| invalid(e.to_string()))?,
+        );
+        entry.insert(
+            "annotations".into(),
+            to_raw_value(&annotations).map_err(|e| invalid(e.to_string()))?,
+        );
+        index.manifests[position] = to_raw_value(&entry).map_err(|e| invalid(e.to_string()))?;
+        self.write_index(&index)
+    }
+
+    /// Record on the local tag `name`, which must name `manifest`, that a
+    /// push sent its image to `reference` (`host[:port]/repository:tag`) at
+    /// Unix time `at` ([`PUSHED_TO`]). A push to a reference already
+    /// recorded moves it last with the new time; at most 32 references are
+    /// kept, the oldest dropped first. Only the tag's index entry changes:
+    /// no blob, no other tag, and the tag keeps its name. A tag that names
+    /// another image now is a conflict.
+    pub fn record_push(
+        &self,
+        name: &str,
+        manifest: &Digest,
+        reference: &str,
+        at: u64,
+    ) -> Result<()> {
+        validate_tag(name)?;
+        check_push_reference(reference)?;
+        let _lease = self.lease()?;
+        let _index_lock = host::exclusive_lock(&self.root.join("locks/index.lock"))?;
+        let mut index = self.read_index()?;
+        let position = index.manifests.iter().position(|raw| {
+            local_descriptor(raw)
+                .ok()
+                .flatten()
+                .is_some_and(|d| tag_name(&d) == Some(name))
+        });
+        let Some(position) = position else {
+            return Err(Error::TagNotFound(name.into()));
+        };
+        let current = local_descriptor(&index.manifests[position])?;
+        if current.as_ref().map(|d| &d.digest) != Some(manifest) {
+            return Err(Error::Conflict {
+                current: current.map(|d| d.digest),
+            });
+        }
+        let mut records: Vec<PushRecord> = current
+            .and_then(|d| d.annotations.get(PUSHED_TO).map(|v| push_records(v)))
+            .unwrap_or_default();
+        records.retain(|record| record.reference != reference);
+        records.push(PushRecord {
+            reference: reference.into(),
+            at,
+        });
+        let excess = records.len().saturating_sub(MAX_PUSH_RECORDS);
+        records.drain(..excess);
+        let value = records
+            .iter()
+            .map(|record| format!("{} {}", record.at, record.reference))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Keep opaque OCI fields as raw JSON, as every tag write does.
+        let mut entry: BTreeMap<String, Box<RawValue>> =
+            decode_json(index.manifests[position].get().as_bytes())?;
+        let mut annotations: BTreeMap<String, Box<RawValue>> = entry
+            .get("annotations")
+            .map(|raw| decode_json(raw.get().as_bytes()))
+            .transpose()?
+            .unwrap_or_default();
+        annotations.insert(
+            PUSHED_TO.into(),
+            to_raw_value(&value).map_err(|e| invalid(e.to_string()))?,
         );
         entry.insert(
             "annotations".into(),

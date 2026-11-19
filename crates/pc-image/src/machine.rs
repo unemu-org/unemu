@@ -356,8 +356,8 @@ pub fn image_title(store: &Store, image: &Descriptor) -> Result<Option<String>> 
 }
 
 /// The identity a machine pins: the manifest descriptor without the
-/// annotations of the local tag it was resolved through, its name and where
-/// the tag came from.
+/// annotations of the local tag it was resolved through, its name, where
+/// the tag came from and where it was pushed.
 fn identity(image: &Descriptor) -> Descriptor {
     let mut image = image.clone();
     image
@@ -366,6 +366,7 @@ fn identity(image: &Descriptor) -> Descriptor {
     image.annotations.remove(image_store::PULL_REGISTRY);
     image.annotations.remove(image_store::MADE_HERE);
     image.annotations.remove(image_store::BUILD_RECIPE);
+    image.annotations.remove(image_store::PUSHED_TO);
     image
 }
 

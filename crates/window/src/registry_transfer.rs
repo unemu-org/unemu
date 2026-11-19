@@ -104,7 +104,7 @@ pub(crate) mod tests {
                 format!("{host}/private/test@{}", image.digest),
                 "needs a tag",
             ),
-            (String::new(), "Enter a destination"),
+            (String::new(), "Choose a registry and a namespace"),
         ] {
             dialog.destination = destination.clone();
             let evaluation = dialog.evaluate();

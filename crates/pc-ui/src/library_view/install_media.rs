@@ -440,6 +440,9 @@ impl LibraryView {
     }
     /// The installation set whose Insert the shell routes into a drive.
     pub fn selected_set(&self) -> Option<image_store::Digest> {
+        if self.several_selected() {
+            return None;
+        }
         self.media_selected
             .as_ref()
             .map(|row| row.image.descriptor.digest.clone())
@@ -484,11 +487,15 @@ impl LibraryView {
                         for index in range {
                             self.rows_built += 1;
                             let row = &snapshot.media_rows[index];
-                            let selected = self
-                                .media_selected
-                                .as_ref()
-                                .is_some_and(|current| current.same(row));
-                            let hints = [None, Some(super::source(&row.image.descriptor).hint())];
+                            let several = self.library_multi.len() > 1;
+                            let selected = if several {
+                                self.picked(&row.image.reference)
+                            } else {
+                                self.media_selected
+                                    .as_ref()
+                                    .is_some_and(|current| current.same(row))
+                            };
+                            let hints = [None, Some(super::source_hint(&row.image.descriptor))];
                             // A double click only selects: sets have no launch action.
                             let (clicked, double) = super::draw_cells_with_hints(
                                 ui,
@@ -500,8 +507,39 @@ impl LibraryView {
                                 lead(row),
                                 &hints,
                             );
-                            if (clicked || double) && !selected {
-                                self.select_media(row, selected_file);
+                            if clicked || double {
+                                // Ctrl (⌘ on macOS) or Shift selects several,
+                                // for Push to….
+                                let modifiers = ui.input(|i| i.modifiers);
+                                let rows: Vec<String> = snapshot
+                                    .media_rows
+                                    .iter()
+                                    .map(|r| r.image.reference.clone())
+                                    .collect();
+                                let current = self
+                                    .media_selected
+                                    .as_ref()
+                                    .map(|r| r.image.reference.clone());
+                                let alone = self.pick_library(
+                                    &row.image.reference,
+                                    current,
+                                    modifiers,
+                                    &rows,
+                                );
+                                if let Some(tag) = alone {
+                                    let row = snapshot
+                                        .media_rows
+                                        .iter()
+                                        .find(|r| r.image.reference == tag)
+                                        .unwrap_or(row);
+                                    let mine = self
+                                        .media_selected
+                                        .as_ref()
+                                        .is_some_and(|current| current.same(row));
+                                    if !mine || several {
+                                        self.select_media(row, selected_file);
+                                    }
+                                }
                             }
                         }
                     });

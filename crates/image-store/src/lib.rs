@@ -38,10 +38,10 @@ pub use artifact::{
     is_recipe, media_type, Descriptor, Digest, Manifest, PayloadType, MAX_OBJECTS, MAX_SMALL_BLOB,
 };
 #[cfg(feature = "test-support")]
-pub use store::verification_passes;
+pub use store::{small_reads, verification_passes};
 pub use store::{
-    Blob, BlobSource, ConfigValidator, ContentReader, ResolvedImage, Store, Tag, TagPage,
-    BUILD_RECIPE, MADE_HERE, PULL_REGISTRY,
+    Blob, BlobSource, ConfigValidator, ContentReader, PushRecord, ResolvedImage, Store, Tag,
+    TagPage, BUILD_RECIPE, MADE_HERE, PULL_REGISTRY, PUSHED_TO,
 };
 
 /// Failures at the storage and untrusted artifact boundaries.

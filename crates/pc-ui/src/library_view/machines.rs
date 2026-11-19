@@ -795,6 +795,10 @@ impl LibraryView {
 
     /// Image › Start…: the selected image, or the selected machine's source.
     pub fn start_selected_image(&mut self) {
+        // Several rows selected: a command of one item takes none.
+        if self.several_selected() {
+            return;
+        }
         if self.busy {
             return;
         }
@@ -806,6 +810,10 @@ impl LibraryView {
     /// Image › Gaming mode: a disposable copy of the image as stored, also
     /// while one of its machines is selected.
     pub fn image_gaming(&mut self) {
+        // Several rows selected: a command of one item takes none.
+        if self.several_selected() {
+            return;
+        }
         if self.busy {
             return;
         }
@@ -919,6 +927,10 @@ impl LibraryView {
 
     /// Image › Layers…: the image's own chains, without a machine's changes.
     pub fn open_image_layers(&mut self) {
+        // Several rows selected: a command of one item takes none.
+        if self.several_selected() {
+            return;
+        }
         let machine = self.machine.take();
         let active = self.active.take();
         self.open_layers();
@@ -927,6 +939,10 @@ impl LibraryView {
     }
 
     pub fn begin_new_from_image(&mut self) {
+        // Several rows selected: a command of one item takes none.
+        if self.several_selected() {
+            return;
+        }
         let Some(row) = self.selected.clone() else {
             return;
         };

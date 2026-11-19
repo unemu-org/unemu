@@ -3,7 +3,8 @@
 //!
 //! The headless halves of the library's registry and listing code: the
 //! Preferences › Registries page ([`registries_model`]), Image › Push… and
-//! Pull… ([`registry_transfer`]), browsing Remotes ([`remote_browse`]) and
+//! Pull… ([`registry_transfer`]), the destination and verdict of a push
+//! ([`push_destination`]) and a push of several items ([`push_batch`]), browsing Remotes ([`remote_browse`]) and
 //! pulling from them ([`remote_pull`]), the rows the image lists show
 //! ([`listing`]) and the Save as new image… form ([`save_image`]). What
 //! they ask of a platform goes through the provider seam ([`platform`]):
@@ -17,6 +18,8 @@
 
 pub mod listing;
 pub mod platform;
+pub mod push_batch;
+pub mod push_destination;
 pub mod registries_model;
 pub mod registry_transfer;
 pub mod remote_browse;

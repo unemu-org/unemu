@@ -73,8 +73,13 @@ pub enum Command {
     Settings,
     /// Machine › Save as new image…: the Disk layers save form.
     SaveImage,
-    /// Image › Push… of a local image to a registry.
+    /// Image › Push to…, the toolbar's Push… in the library and the Push
+    /// to… buttons: the selected library items, to a registry.
     Push,
+    /// Image › Push here…, the toolbar's Push… on a Remotes node and the
+    /// Push here… button of a node's pane: library items, to the selected
+    /// registry or namespace.
+    PushHere,
     /// Image › Pull… and the toolbar's Pull…: the tags selected in the
     /// library's Remotes, into the local store.
     Pull,

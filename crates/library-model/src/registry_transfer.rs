@@ -28,24 +28,28 @@
 //! cancelled push never publishes its manifest and a cancelled pull never
 //! writes its local tag.
 
+pub use crate::push_destination::{Evaluation, Listing, LocalImage, Verdict};
 use crate::{
     listing::human_size,
     platform::{self, DesktopPlatform, PlatformFacts},
-    registries_model::{Check, Mark},
+    push_destination::{
+        configured_line, distinct, parse_problem, rule_destination, under_namespace, Place, Rule,
+        Rules,
+    },
+    remote_browse::TagRecord,
 };
 use image_registry::{
-    config::{self, RegistryConfig, Scope},
+    config::{self, RegistryConfig},
     credential_store::CredentialStore,
     credentials::EnvCredentials,
-    guard::{self, ClosureEntry, MarkSource, Redistribution, Refusal},
+    guard::{self, ClosureEntry, Redistribution, Refusal},
     pull::{self, PullOutcome, PullReport},
     push::{self, BlobOutcome, PushOptions, PushProgress, PushReport, TagOutcome},
-    reference::{is_version_tag, OFFICIAL_NAMESPACE},
+    reference::OFFICIAL_NAMESPACE,
     Error, Reference, RegistryEntry, DEFAULT_REGISTRY,
 };
 use image_store::{media_type as mt, tag as set_tag, ConfigValidator, Descriptor, Digest, Store};
 use std::{
-    collections::BTreeSet,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -54,10 +58,11 @@ use std::{
 };
 
 const NO_OVERRIDE: &str = "There is no override for this rule.";
-const PUSH_CANCELLED: &str = "Cancelled. The manifest was not published, so the registry keeps its old tag. Accepted chunks are kept, and the next push resumes them.";
+pub(crate) const PUSH_CANCELLED: &str = "Cancelled. The manifest was not published, so the registry keeps its old tag. Accepted chunks are kept, and the next push resumes them.";
 const PULL_CANCELLED: &str = "Cancelled. The local tag was not set. Blobs already fetched stay in the store, and the next pull fetches only the rest.";
 const PULL_NOT_STARTED: &str = "Cancelled before it started; nothing was fetched.";
-const STALE: &str = "The local tag now names another image; review the dry run, then push again.";
+pub(crate) const STALE: &str =
+    "The local tag now names another image; review the dry run, then push again.";
 
 /// Where push and pull find logins: the shared preferences file and the
 /// credential store the shell detected, as the command line uses them.
@@ -91,6 +96,27 @@ impl Accounts {
             .map_err(|e| format!("Default registry: {e}"))?;
         Ok((config, host))
     }
+
+    /// What a push's verdicts read now, with this session's `listing`;
+    /// preferences that cannot be read refuse every destination.
+    pub fn rules(&self, listing: Listing) -> Rules {
+        match self.settings() {
+            Ok((config, default_host)) => Rules {
+                config,
+                default_host,
+                preferences: None,
+                listing,
+                env: self.env.clone(),
+            },
+            Err(error) => Rules {
+                config: RegistryConfig::default(),
+                default_host: DEFAULT_REGISTRY.into(),
+                preferences: Some(error),
+                listing,
+                env: self.env.clone(),
+            },
+        }
+    }
 }
 
 /// Job ids are unique across dialogs, so a late event of a closed dialog
@@ -113,7 +139,7 @@ impl<T> Clone for Live<T> {
 }
 
 impl<T> Live<T> {
-    fn new(value: T) -> Self {
+    pub(crate) fn new(value: T) -> Self {
         Self(Arc::new(Mutex::new(value)))
     }
 
@@ -132,6 +158,11 @@ pub enum TransferRequest {
     Plan {
         id: u64,
         local_tag: Option<String>,
+    },
+    /// The dry run of every local image, for a push of several or Push
+    /// here….
+    PlanAll {
+        id: u64,
     },
     Push(Box<PushJob>),
     Pull(Box<PullJob>),
@@ -167,6 +198,16 @@ pub enum TransferEvent {
         id: u64,
         result: Result<Box<Planned>, String>,
     },
+    /// Every local image with its dry run, or why that one could not be
+    /// read; the whole answer fails when the library cannot be listed.
+    PlannedAll {
+        id: u64,
+        result: Result<Vec<PlannedImage>, String>,
+    },
+    /// A push published its manifest: the tag the registry has now, read
+    /// from the local manifest that went up, so Remotes shows it without a
+    /// request. Sent just before the push's [`TransferEvent::Pushed`].
+    Landed { id: u64, landed: Box<Landed> },
     Pushed {
         id: u64,
         result: Result<PushReport, PushFailure>,
@@ -177,12 +218,20 @@ pub enum TransferEvent {
     },
 }
 
-/// A local tag the Push… dialog can choose.
+/// A local image with its dry run, or why that could not be read.
+pub type PlannedImage = (LocalImage, Result<PlanData, String>);
+
+/// What a push put on a registry, as Remotes lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LocalImage {
-    pub tag: String,
-    pub digest: Digest,
-    pub kind: &'static str,
+pub struct Landed {
+    pub target: Reference,
+    /// The local tag pushed, which keeps its name.
+    pub local_tag: String,
+    pub record: TagRecord,
+    /// How the registry's tag stands against the library: in it under the
+    /// name a pull writes, that name holding another image, or pushed from
+    /// here under the local tag's own name.
+    pub local: crate::remote_browse::LocalState,
 }
 
 #[derive(Clone, Debug)]
@@ -203,6 +252,23 @@ pub struct PlanData {
     pub revisions: bool,
 }
 
+impl PlanData {
+    /// Every distinct blob's bytes, what a push would send at most.
+    pub fn bytes(&self) -> u64 {
+        distinct(&self.closure)
+            .iter()
+            .map(|c| c.descriptor.size)
+            .sum()
+    }
+
+    /// Every blob is open.
+    pub fn open(&self) -> bool {
+        self.closure
+            .iter()
+            .all(|c| c.effective != Redistribution::UserSupplied)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PushFailure {
     /// The guard refused the destination.
@@ -216,6 +282,8 @@ pub enum PushFailure {
     /// The local tag names another image than the one reviewed.
     Stale,
     Cancelled,
+    /// Cancelled while it waited behind another push, before any request.
+    NotStarted,
     Failed(String),
 }
 
@@ -254,12 +322,24 @@ pub fn run(
             id,
             result: plan(store, local_tag.as_deref(), platforms).map(Box::new),
         }),
+        TransferRequest::PlanAll { id } => send(TransferEvent::PlannedAll {
+            id,
+            result: plan_all(store, platforms),
+        }),
         TransferRequest::Push(job) => {
             let live = job.live.clone();
             let result = run_push(store, &job, providers, platforms, &mut |event| {
                 live.update(|rows| record_push(rows, event));
                 repaint();
             });
+            if let Ok(report) = &result {
+                if let Some(landed) = landed(store, &job, report, platforms) {
+                    send(TransferEvent::Landed {
+                        id: job.id,
+                        landed: Box::new(landed),
+                    });
+                }
+            }
             send(TransferEvent::Pushed { id: job.id, result });
         }
         TransferRequest::Pull(job) => {
@@ -273,7 +353,7 @@ pub fn run(
     }
 }
 
-fn record_push(rows: &mut [BlobRow], event: PushProgress<'_>) {
+pub(crate) fn record_push(rows: &mut [BlobRow], event: PushProgress<'_>) {
     let (digest, sent, outcome) = match event {
         PushProgress::Blob(blob, outcome) => (&blob.digest, blob.size, Some(outcome)),
         PushProgress::Chunk { blob, sent } => (&blob.digest, sent, None),
@@ -333,6 +413,57 @@ fn plan(
     Ok(Planned { images, plan })
 }
 
+/// The dry run of every local image, each by itself: one that cannot be
+/// read says why and leaves the others be. Every local manifest's marks are
+/// read once for all of them, not once per image. When that reading fails,
+/// as for an image a newer release tagged, each image says why.
+fn plan_all(
+    store: &Store,
+    platforms: &[&dyn DesktopPlatform],
+) -> Result<Vec<PlannedImage>, String> {
+    let images = local_images(store)?;
+    let marks = guard::LocalMarks::scan(store).map_err(|e| e.to_string());
+    Ok(images
+        .into_iter()
+        .map(|image| {
+            let plan = match &marks {
+                Ok(marks) => plan_with(store, &image.tag, marks.clone(), platforms),
+                Err(error) => Err(format!("The library's marks could not be read: {error}")),
+            };
+            (image, plan)
+        })
+        .collect())
+}
+
+/// The dry run of `tag` with the marks read already, plus a restriction for
+/// each blob a platform restricts.
+fn plan_with(
+    store: &Store,
+    tag: &str,
+    mut marks: guard::LocalMarks,
+    platforms: &[&dyn DesktopPlatform],
+) -> Result<PlanData, String> {
+    let image = store.tag_descriptor(tag).map_err(|e| e.to_string())?;
+    let bytes = image_store::BlobSource::read_verified(store, &image, image_store::MAX_SMALL_BLOB)
+        .map_err(|e| e.to_string())?;
+    let manifest = image_store::Manifest::decode_for_summary(&bytes).map_err(|e| e.to_string())?;
+    for digest in platform::restricted(platforms, store, &manifest).map_err(|e| e.to_string())? {
+        marks.restrict_catalogue(digest);
+    }
+    let plan = push::plan_with_marks(store, tag, dry_run_target(), None, marks)
+        .map_err(|e| e.to_string())?;
+    // The tag moved meanwhile: its marks would be another image's.
+    if plan.image().digest != image.digest {
+        return Err(STALE.into());
+    }
+    Ok(PlanData {
+        local_tag: tag.into(),
+        image: plan.image().clone(),
+        closure: plan.closure().to_vec(),
+        revisions: set_tag::governs(plan.manifest().artifact_type()),
+    })
+}
+
 fn local_images(store: &Store) -> Result<Vec<LocalImage>, String> {
     let mut images = Vec::new();
     let mut after: Option<String> = None;
@@ -346,6 +477,9 @@ fn local_images(store: &Store) -> Result<Vec<LocalImage>, String> {
                 Some(mt::FIRMWARE) => "firmware package",
                 _ => "machine image",
             },
+            pulled_from: tag.pulled_from().map(str::to_owned),
+            pushed: tag.pushed_to().into_iter().map(|p| p.reference).collect(),
+            made_here: tag.made_here(),
             tag: tag.name,
             digest: tag.manifest.digest,
         }));
@@ -356,6 +490,48 @@ fn local_images(store: &Store) -> Result<Vec<LocalImage>, String> {
     }
 }
 
+/// After a push that published: record it on the local tag, which keeps
+/// its name ([`Store::record_push`]), and read the tag the registry has now
+/// from the local manifest that went up. A record that cannot be written
+/// takes nothing from the push.
+fn landed(
+    store: &Store,
+    job: &PushJob,
+    report: &PushReport,
+    platforms: &[&dyn DesktopPlatform],
+) -> Option<Landed> {
+    if matches!(report.tag, TagOutcome::Untagged) || job.target.tag.is_none() {
+        return None;
+    }
+    let reference = job.target.to_string();
+    // This timestamp is local catalogue metadata and never enters virtual time.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let _ = store.record_push(&job.local_tag, &report.image.digest, &reference, now);
+    let record = crate::remote_browse::local_record(store, &report.image, platforms)?;
+    let tag = job.target.tag.as_deref().unwrap_or("latest");
+    let pulled_name =
+        crate::remote_browse::local_tag_of(&job.target.host, &job.target.repository, tag);
+    let local = match store.tag_descriptor(&pulled_name) {
+        Ok(held) if held.digest == report.image.digest => {
+            crate::remote_browse::LocalState::InLibrary
+        }
+        Ok(held) => crate::remote_browse::LocalState::OtherImage {
+            current: held.digest,
+        },
+        Err(_) => crate::remote_browse::LocalState::PushedFromHere {
+            tag: job.local_tag.clone(),
+        },
+    };
+    Some(Landed {
+        target: job.target.clone(),
+        local_tag: job.local_tag.clone(),
+        record,
+        local,
+    })
+}
+
 fn run_push(
     store: &Store,
     job: &PushJob,
@@ -363,6 +539,11 @@ fn run_push(
     platforms: &[&dyn DesktopPlatform],
     progress: &mut dyn FnMut(PushProgress<'_>),
 ) -> Result<PushReport, PushFailure> {
+    // A push queued behind others may be cancelled before its turn; it then
+    // contacts no registry at all.
+    if job.cancel.load(Ordering::SeqCst) {
+        return Err(PushFailure::NotStarted);
+    }
     // Preferences are read again: a registry un-marked private since the
     // dialog opened must not receive what it may no longer hold.
     let config = job.accounts.config().map_err(PushFailure::Failed)?;
@@ -520,21 +701,8 @@ fn pull_failure(error: Error) -> PullFailure {
     })
 }
 
-/// "HOST is configured; NAMESPACE/ is marked private", as Push… and Pull…
-/// name the registry entry and the namespace a reference falls in.
-fn configured_line(host: &str, default_host: &str, scope: &Scope) -> String {
-    format!(
-        "{host} is configured{}; {scope}",
-        if host == default_host {
-            " (default registry)"
-        } else {
-            ""
-        }
-    )
-}
-
 /// The guard's refusal as the dialog says it.
-fn refusal_text(refusal: &Refusal, closure: &[ClosureEntry]) -> String {
+pub(crate) fn refusal_text(refusal: &Refusal, closure: &[ClosureEntry]) -> String {
     match refusal {
         Refusal::UnknownRegistry { host } => format!(
             "{host} is not in your registry list. Add it in Tools › Preferences › Registries first."
@@ -575,19 +743,6 @@ pub(crate) fn local_tag_problem(local: &str) -> String {
     )
 }
 
-/// A reference the parser refused, explained; a bad tag gets the grammar.
-fn parse_problem(text: &str, default_host: &str, error: &Error) -> String {
-    let named = text.split('@').next().unwrap_or(text);
-    if let Some((path, tag)) = named.rsplit_once(':') {
-        if !tag.contains('/') && Reference::parse(path, default_host).is_ok() {
-            return format!(
-                "Tag “{tag}” does not follow the registry tag grammar: a letter, digit or _ first, then up to 127 letters, digits, . _ or -. A + build suffix is not allowed; versions are x.y.z or x.y.z-pre."
-            );
-        }
-    }
-    format!("{error}. Repository names use lowercase letters and digits, separated by . _ or -.")
-}
-
 /// The blob type as a person names it: the neutral media types first, then
 /// a platform's own payload types by the name the platform states.
 pub fn kind_label(facts: &PlatformFacts, descriptor: &Descriptor) -> String {
@@ -617,15 +772,6 @@ pub fn short(digest: &Digest) -> String {
     format!("sha256:{}…", &digest.hex()[..12])
 }
 
-/// Each blob once, in manifest order: a push sends every digest once.
-fn distinct(closure: &[ClosureEntry]) -> Vec<&ClosureEntry> {
-    let mut seen = BTreeSet::new();
-    closure
-        .iter()
-        .filter(|entry| seen.insert(entry.descriptor.digest.clone()))
-        .collect()
-}
-
 /// One line of the dry-run table.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DryRunRow {
@@ -637,30 +783,6 @@ pub struct DryRunRow {
     /// "this image", "local tag NAME" or "firmware catalogue": where the
     /// effective class was recorded.
     pub source: String,
-}
-
-/// The guard's view of one destination.
-#[derive(Clone, Debug, Default)]
-pub struct Evaluation {
-    pub resolved: Option<Reference>,
-    pub checks: Vec<Check>,
-    /// Why the push cannot go there; `None` when it may.
-    pub refusal: Option<String>,
-    /// The refusal is the guard's, which has no override; otherwise the
-    /// destination is incomplete or malformed, or the dry run is missing.
-    pub refused_by_guard: bool,
-    pub blobs: usize,
-    pub bytes: u64,
-}
-
-impl Evaluation {
-    pub fn allowed(&self) -> bool {
-        self.refusal.is_none() && self.resolved.is_some()
-    }
-}
-
-fn check(mark: Mark, text: String) -> Check {
-    Check { mark, text }
 }
 
 /// One blob of a running or finished push.
@@ -701,9 +823,9 @@ impl BlobRow {
 
 #[derive(Debug)]
 pub struct Progress {
-    id: u64,
-    cancel: Arc<AtomicBool>,
-    live: Live<Vec<BlobRow>>,
+    pub(crate) id: u64,
+    pub(crate) cancel: Arc<AtomicBool>,
+    pub(crate) live: Live<Vec<BlobRow>>,
     pub target: Reference,
     pub cancelling: bool,
     /// The manifest and the tag are on the registry.
@@ -738,16 +860,29 @@ pub enum PushState {
     },
 }
 
+/// Push to… of one library item: the item, its destination as text and in
+/// the chooser, the dry run, the checks and the verdict, then the push.
 pub struct PushDialog {
     accounts: Accounts,
     /// What the dry run and the progress name blob types by.
     pub facts: PlatformFacts,
-    config: RegistryConfig,
+    /// The registries list, the default registry and this session's
+    /// listing, which the verdict reads.
+    pub rules: Rules,
+    /// The host short names resolve to.
     pub default_host: String,
     pub images: Vec<LocalImage>,
     /// The local tag being pushed.
     pub image: Option<String>,
+    /// The destination as a reference; the chooser edits it too.
     pub destination: String,
+    /// Why the destination was preselected.
+    pub rule: Rule,
+    /// The Repository field was typed in, so choosing another namespace
+    /// keeps it.
+    repository_edited: bool,
+    /// The Remotes rule chose the destination once the dry run came.
+    preselected: bool,
     plan: Option<PlanData>,
     pub state: PushState,
     /// Preferences or the default registry could not be read.
@@ -757,6 +892,8 @@ pub struct PushDialog {
     /// Why the dry run was built again.
     pub notice: Option<String>,
     planning: Option<u64>,
+    /// The registries this push published to, for Remotes and Source.
+    pub landed: Vec<Reference>,
 }
 
 impl Drop for PushDialog {
@@ -768,41 +905,60 @@ impl Drop for PushDialog {
 
 impl PushDialog {
     /// Open for `local_tag`, or for the first local image when none is
-    /// selected; the returned request asks the worker for the dry run.
+    /// selected; the returned request asks the worker for the dry run. The
+    /// destination follows the Remotes rule once the dry run names where
+    /// the tag came from and where it was pushed.
     pub fn open(
         accounts: Accounts,
         facts: PlatformFacts,
         local_tag: Option<String>,
     ) -> (Self, TransferRequest) {
-        let (config, default_host, preferences) = match accounts.settings() {
-            Ok((config, host)) => (config, host, None),
-            Err(error) => (
-                RegistryConfig::default(),
-                DEFAULT_REGISTRY.into(),
-                Some(error),
-            ),
-        };
+        let rules = accounts.rules(Listing::default());
         let id = next_id();
         let dialog = Self {
             accounts,
             facts,
-            default_host,
-            config,
+            default_host: rules.default_host.clone(),
+            preferences: rules.preferences.clone(),
+            rules,
             images: Vec::new(),
-            destination: local_tag.clone().unwrap_or_default(),
+            destination: String::new(),
+            rule: Rule::Pick,
+            repository_edited: false,
+            preselected: false,
             image: local_tag.clone(),
             plan: None,
             state: PushState::Planning,
-            preferences,
             error: None,
             notice: None,
             planning: Some(id),
+            landed: Vec::new(),
         };
         (dialog, TransferRequest::Plan { id, local_tag })
     }
 
+    /// Check against this session's Remotes listing ("As listed").
+    pub fn with_listing(mut self, listing: Listing) -> Self {
+        self.rules.listing = listing;
+        self
+    }
+
+    /// Read the registries list again, as after a login in Preferences;
+    /// the listing stays.
+    pub fn reload(&mut self, listing: Listing) {
+        self.rules = self.accounts.rules(listing);
+        self.default_host = self.rules.default_host.clone();
+        self.preferences = self.rules.preferences.clone();
+    }
+
     pub fn plan(&self) -> Option<&PlanData> {
         self.plan.as_ref()
+    }
+
+    /// The local image pushed, as the library lists it.
+    pub fn local(&self) -> Option<&LocalImage> {
+        let tag = self.image.as_deref()?;
+        self.images.iter().find(|image| image.tag == tag)
     }
 
     pub fn running(&self) -> bool {
@@ -815,7 +971,8 @@ impl PushDialog {
             return None;
         }
         self.image = Some(tag.into());
-        self.destination = tag.into();
+        self.destination.clear();
+        self.preselected = false;
         self.notice = None;
         self.replan()
     }
@@ -833,247 +990,153 @@ impl PushDialog {
         })
     }
 
-    /// The name and tag the destination suggestions use.
-    fn name_and_tag(&self) -> (String, String) {
-        let local = self.image.as_deref().unwrap_or("name:1.0.0");
-        let (repository, tag) = local.rsplit_once(':').unwrap_or((local, "latest"));
-        let name = repository.rsplit('/').next().unwrap_or(repository);
-        (name.into(), tag.into())
-    }
-
-    /// A private destination to suggest after a refusal.
-    pub fn private_suggestion(&self) -> String {
-        let (name, tag) = self.name_and_tag();
-        format!("private/{name}:{tag}")
-    }
-
-    /// Destinations offered as one-click choices: the local name, its private
-    /// counterpart on the default registry, and each other configured registry.
-    pub fn suggestions(&self) -> Vec<String> {
-        let Some(local) = self.image.clone() else {
-            return Vec::new();
+    /// The destination by the Remotes rule, once, when the dry run names
+    /// where the image came from and went.
+    fn preselect(&mut self) {
+        if self.preselected {
+            return;
+        }
+        self.preselected = true;
+        let Some(image) = self.local().cloned() else {
+            return;
         };
-        let (name, tag) = self.name_and_tag();
-        let mut out = vec![local, self.private_suggestion()];
-        for entry in &self.config.registries {
-            if entry.host != self.default_host {
-                out.push(format!("{}/private/{name}:{tag}", entry.host));
+        let (target, rule) = rule_destination(&image, None);
+        self.rule = rule;
+        if self.destination.trim().is_empty() {
+            if let Some(target) = target {
+                self.destination = target.to_string();
             }
         }
-        let mut seen = BTreeSet::new();
-        out.retain(|s| seen.insert(s.clone()));
-        out
     }
 
-    /// The dry-run table of the chosen image.
-    pub fn dry_run(&self) -> Vec<DryRunRow> {
-        let Some(plan) = &self.plan else {
+    /// The destination's registry, namespace, repository under it and tag,
+    /// as the chooser shows them; `None` until it resolves.
+    pub fn parts(&self) -> Option<(Place, String, String)> {
+        let target = Reference::parse(self.destination.trim(), &self.default_host).ok()?;
+        let (place, sub) = self.rules.place_of(&target);
+        Some((place, sub, target.tag.unwrap_or_else(|| "latest".into())))
+    }
+
+    /// The tag a destination takes when none is typed: the local one's.
+    fn local_version(&self) -> String {
+        self.local()
+            .map(|image| image.version().to_owned())
+            .or_else(|| {
+                self.image
+                    .as_deref()
+                    .and_then(|t| t.rsplit_once(':'))
+                    .map(|(_, t)| t.to_owned())
+            })
+            .unwrap_or_else(|| "latest".into())
+    }
+
+    /// Choose a registry and namespace in the chooser: the item's own path
+    /// and tag go under it, or a repository typed in stays.
+    pub fn pick(&mut self, place: &Place) {
+        let parts = self.parts();
+        let tag = parts
+            .as_ref()
+            .map_or_else(|| self.local_version(), |(_, _, tag)| tag.clone());
+        let path = match (&parts, self.repository_edited) {
+            (Some((_, sub, _)), true) if !sub.is_empty() => match &place.namespace {
+                Some(namespace) => format!("{namespace}/{sub}"),
+                None => sub.clone(),
+            },
+            _ => {
+                let local = self
+                    .local()
+                    .map(|i| i.path().to_owned())
+                    .unwrap_or_default();
+                under_namespace(&local, place.namespace.as_deref())
+            }
+        };
+        self.destination = format!("{}/{path}:{tag}", place.host);
+    }
+
+    /// The Repository field: the path under the chosen namespace.
+    pub fn set_repository(&mut self, sub: &str) {
+        let Some((place, _, tag)) = self.parts() else {
+            return;
+        };
+        self.repository_edited = true;
+        let sub = sub.trim();
+        self.destination = match &place.namespace {
+            Some(namespace) => format!("{}/{namespace}/{sub}:{tag}", place.host),
+            None => format!("{}/{sub}:{tag}", place.host),
+        };
+    }
+
+    /// The Tag field.
+    pub fn set_tag(&mut self, tag: &str) {
+        let Some((place, sub, _)) = self.parts() else {
+            return;
+        };
+        self.destination = format!("{}{sub}:{}", place.prefix(), tag.trim());
+    }
+
+    /// Repositories of the item's type the chosen namespace lists in this
+    /// session, for the Repository field to offer.
+    pub fn offered(&self) -> Vec<String> {
+        let Some((place, _, _)) = self.parts() else {
             return Vec::new();
         };
-        let mut layer = 0;
-        plan.closure
-            .iter()
-            .map(|entry| DryRunRow {
-                part: if entry.role == "config" {
-                    "configuration".into()
-                } else {
-                    layer += 1;
-                    format!("layer {layer}")
-                },
-                kind: kind_label(&self.facts, &entry.descriptor),
-                digest: short(&entry.descriptor.digest),
-                size: entry.descriptor.size,
-                class: entry.effective.as_str(),
-                source: entry.source.to_string(),
+        let Some(listed) = self.rules.listing.registries.get(&place.host) else {
+            return Vec::new();
+        };
+        let wanted = self.local().map(LocalImage::artifact_type);
+        listed
+            .repositories
+            .keys()
+            .filter(|name| {
+                listed.types.get(*name).map(String::as_str) == wanted || wanted.is_none()
+            })
+            .filter_map(|name| match &place.namespace {
+                Some(namespace) => name
+                    .strip_prefix(namespace.as_str())
+                    .and_then(|rest| rest.strip_prefix('/'))
+                    .map(str::to_owned),
+                None => Some(name.clone()),
             })
             .collect()
     }
 
-    /// Resolve the destination and apply the guard's rules to the dry run,
-    /// without any I/O: the verdict follows the typing.
+    /// The dry-run table of the chosen image.
+    pub fn dry_run(&self) -> Vec<DryRunRow> {
+        self.plan
+            .as_ref()
+            .map(|plan| dry_run_rows(&self.facts, plan))
+            .unwrap_or_default()
+    }
+
+    /// Resolve the destination and apply the guard's rules and this
+    /// session's listing to the dry run, without any I/O: the verdict
+    /// follows the typing.
     pub fn evaluate(&self) -> Evaluation {
-        let mut evaluation = Evaluation::default();
-        if let Some(problem) = &self.preferences {
-            evaluation.refusal = Some(problem.clone());
-            return evaluation;
-        }
-        let Some(plan) = &self.plan else {
-            evaluation.refusal =
-                Some(self.error.clone().unwrap_or_else(|| {
-                    "Reading the image and the marks of every local image…".into()
-                }));
-            return evaluation;
-        };
-        let blobs = distinct(&plan.closure);
-        evaluation.blobs = blobs.len();
-        evaluation.bytes = blobs.iter().map(|c| c.descriptor.size).sum();
-        let text = self.destination.trim();
-        if text.is_empty() {
-            evaluation.refusal = Some(format!(
-                "Enter a destination such as {}.",
-                self.private_suggestion()
-            ));
-            return evaluation;
-        }
-        let target = match Reference::parse(text, &self.default_host) {
-            Ok(target) => target,
-            Err(error) => {
-                evaluation.refusal = Some(parse_problem(text, &self.default_host, &error));
-                return evaluation;
-            }
-        };
-        if target.digest.is_some() {
-            evaluation.refusal = Some("A push needs a tag, not a digest.".into());
-            return evaluation;
-        }
-        let entry = self.config.entry(&target.host);
-        let scope = entry.as_ref().map(|e| e.scope(&target.repository));
-        let unlisted = matches!(scope, Some(Scope::Unlisted { .. }));
-        match (&entry, &scope) {
-            (Some(entry), Some(scope)) => {
-                evaluation.checks.push(check(
-                    if unlisted { Mark::Bad } else { Mark::Good },
-                    configured_line(&entry.host, &self.default_host, scope),
-                ));
-                evaluation.checks.push(match &entry.user {
-                    Some(user) => check(
-                        Mark::Note,
-                        format!("Login {user}; its secret comes from the credential store"),
-                    ),
-                    None => check(
-                        Mark::Note,
-                        format!(
-                            "No login recorded for {}; if it asks for one, log in under Tools › Preferences › Registries",
-                            entry.host
-                        ),
-                    ),
-                });
-            }
-            _ => evaluation.checks.push(check(
-                Mark::Bad,
-                format!("{} is not in your registry list", target.host),
-            )),
-        }
-        let restricted = blobs
-            .iter()
-            .filter(|c| c.effective == Redistribution::UserSupplied)
-            .count();
-        let official = target.namespace() == OFFICIAL_NAMESPACE;
-        let count = blobs.len();
-        // An entry that lists namespaces takes no push outside them, whatever
-        // the image holds, so the class lines would only distract.
-        if !unlisted {
-            if restricted == 0 {
-                evaluation.checks.push(check(
-                    Mark::Good,
-                    format!(
-                        "Every blob is open{}",
-                        if official { ": allowed in unemu/" } else { "" }
-                    ),
-                ));
-            } else if official {
-                evaluation.checks.push(check(
-                    Mark::Bad,
-                    format!(
-                        "{restricted} of {count} blobs are user-supplied; unemu/ accepts only open blobs"
-                    ),
-                ));
-            } else if scope.as_ref().is_some_and(Scope::private) {
-                evaluation.checks.push(check(
-                    Mark::Good,
-                    format!(
-                        "{restricted} of {count} blobs are user-supplied and may go here: the target is private and not under unemu/"
-                    ),
-                ));
-                evaluation.checks.push(check(
-                    Mark::Note,
-                    format!(
-                        "Before the upload, anonymous reads of {}/{} are tried; the push stops unless the registry refuses them",
-                        target.host, target.repository
-                    ),
-                ));
-            } else if entry.is_some() {
-                evaluation.checks.push(check(
-                    Mark::Bad,
-                    format!(
-                        "{restricted} of {count} blobs are user-supplied; the target is not marked private"
-                    ),
-                ));
-            }
-        }
-        let elsewhere =
-            |wanted: fn(&MarkSource) -> bool| blobs.iter().filter(|c| wanted(&c.source)).count();
-        let local = elsewhere(|source| matches!(source, MarkSource::LocalTag(_)));
-        if local > 0 {
-            evaluation.checks.push(check(
-                Mark::Note,
-                format!(
-                    "{local} blobs this image marks open are user-supplied in another local image, so they count as user-supplied"
-                ),
-            ));
-        }
-        let catalogued = elsewhere(|source| matches!(source, MarkSource::Catalogue));
-        if catalogued > 0 {
-            evaluation.checks.push(check(
-                Mark::Note,
-                format!(
-                    "{catalogued} blobs this image marks open are firmware the catalogue lists as proprietary, so they count as user-supplied"
-                ),
-            ));
-        }
-        match guard::check(entry.as_ref(), &target, &plan.closure) {
-            Err(refusal) => {
-                evaluation.refusal = Some(refusal_text(&refusal, &plan.closure));
-                evaluation.refused_by_guard = true;
-            }
-            Ok(()) => {
-                let tag = target.tag.clone().unwrap_or_else(|| "latest".into());
-                evaluation.checks.push(check(
-                    Mark::Note,
-                    if plan.revisions && set_tag::is_revision(&tag) {
-                        format!(
-                            "{tag} is a revision tag: once it names an image on the registry it never moves, not even with confirmation; push a changed one under the next revision{}. The manifest and the tag are written after every blob",
-                            set_tag::next_revision(&tag)
-                                .map(|next| format!(", {next}"))
-                                .unwrap_or_default()
-                        )
-                    } else if plan.revisions && tag == set_tag::LATEST {
-                        "Installation media sets and firmware packages have no latest tag: push a revision tag such as r1 or 1.0-r1, then its release alias".to_owned()
-                    } else if plan.revisions && set_tag::parse(&tag).is_some() {
-                        format!(
-                            "{tag} is the alias of a release: it names the newest revision of {tag} the registry already has, and moves only forward to a newer one, after you confirm the move with both digests. The manifest and the tag are written after every blob"
-                        )
-                    } else if plan.revisions {
-                        format!(
-                            "{tag} is neither a revision tag ([RELEASE-]rN) nor a release alias: installation media sets and firmware packages take only those, so the push is refused"
-                        )
-                    } else if is_version_tag(&tag) {
-                        format!(
-                            "{tag} is a version tag: once it names an image on the registry it never moves. The manifest and the tag are written after every blob"
-                        )
-                    } else {
-                        format!(
-                            "{tag} is not a version: if the registry has it for another image, you confirm the move with both digests first. The manifest and the tag are written after every blob"
-                        )
-                    },
-                ));
-            }
-        }
-        evaluation.resolved = Some(target);
-        evaluation
+        self.rules
+            .evaluate(self.plan.as_ref(), self.error.as_deref(), &self.destination)
     }
 
     pub fn can_push(&self) -> bool {
         matches!(self.state, PushState::Ready) && self.evaluate().allowed()
     }
 
-    /// Start the push the dry run allows; `None` when the guard refuses.
+    /// Start the push the dry run allows; `None` when the guard refuses. A
+    /// tag the listing shows naming another image asks for the move first.
     pub fn push(&mut self) -> Option<TransferRequest> {
         if !self.can_push() {
             return None;
         }
-        let target = self.evaluate().resolved?;
+        let evaluation = self.evaluate();
+        let target = evaluation.resolved?;
         let image = self.plan.as_ref()?.image.digest.clone();
+        if let Verdict::Move { current } = evaluation.verdict {
+            self.state = PushState::ConfirmMove {
+                target,
+                current,
+                new: image,
+            };
+            return None;
+        }
         self.start(target, image, None)
     }
 
@@ -1113,42 +1176,9 @@ impl PushDialog {
     ) -> Option<TransferRequest> {
         let plan = self.plan.as_ref()?;
         self.notice = None;
-        let id = next_id();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let live = Live::new(
-            distinct(&plan.closure)
-                .into_iter()
-                .map(|entry| BlobRow {
-                    digest: entry.descriptor.digest.clone(),
-                    label: format!(
-                        "{} · {}",
-                        kind_label(&self.facts, &entry.descriptor),
-                        short(&entry.descriptor.digest)
-                    ),
-                    size: entry.descriptor.size,
-                    sent: 0,
-                    outcome: None,
-                })
-                .collect(),
-        );
-        let job = PushJob {
-            id,
-            local_tag: plan.local_tag.clone(),
-            image,
-            target: target.clone(),
-            move_from,
-            accounts: self.accounts.clone(),
-            cancel: cancel.clone(),
-            live: live.clone(),
-        };
-        self.state = PushState::Pushing(Progress {
-            id,
-            cancel,
-            live,
-            target,
-            cancelling: false,
-            published: false,
-        });
+        let (progress, job) =
+            start_job(&self.facts, &self.accounts, plan, target, image, move_from);
+        self.state = PushState::Pushing(progress);
         Some(TransferRequest::Push(Box::new(job)))
     }
 
@@ -1189,6 +1219,7 @@ impl PushDialog {
                             Some(plan) => {
                                 self.error = None;
                                 self.plan = Some(plan.clone());
+                                self.preselect();
                             }
                             None => match self.images.first().map(|i| i.tag.clone()) {
                                 Some(first) => return self.select_image(&first),
@@ -1200,6 +1231,11 @@ impl PushDialog {
                         }
                     }
                     Err(error) => self.error = Some(error.clone()),
+                }
+            }
+            TransferEvent::Landed { id, landed } => {
+                if matches!(&self.state, PushState::Pushing(p) if p.id == *id) {
+                    self.landed.push(landed.target.clone());
                 }
             }
             TransferEvent::Pushed { id, result } => {
@@ -1215,9 +1251,15 @@ impl PushDialog {
                 // are only the cancel the user asked for.
                 let cancelled = matches!(
                     result,
-                    Err(PushFailure::Cancelled | PushFailure::Move { .. } | PushFailure::Stale)
+                    Err(PushFailure::Cancelled
+                        | PushFailure::NotStarted
+                        | PushFailure::Move { .. }
+                        | PushFailure::Stale)
                 ) && (progress.cancelling
-                    || matches!(result, Err(PushFailure::Cancelled)));
+                    || matches!(
+                        result,
+                        Err(PushFailure::Cancelled | PushFailure::NotStarted)
+                    ));
                 if cancelled {
                     self.state = PushState::Finished {
                         ok: false,
@@ -1249,7 +1291,7 @@ impl PushDialog {
                         self.notice = Some(STALE.into());
                         return self.replan();
                     }
-                    Err(PushFailure::Cancelled) => PushState::Finished {
+                    Err(PushFailure::Cancelled | PushFailure::NotStarted) => PushState::Finished {
                         ok: false,
                         message: PUSH_CANCELLED.into(),
                         progress,
@@ -1272,7 +1314,77 @@ impl PushDialog {
     }
 }
 
-fn pushed_text(target: &Reference, report: &PushReport) -> String {
+/// The dry-run table of `plan`.
+pub fn dry_run_rows(facts: &PlatformFacts, plan: &PlanData) -> Vec<DryRunRow> {
+    let mut layer = 0;
+    plan.closure
+        .iter()
+        .map(|entry| DryRunRow {
+            part: if entry.role == "config" {
+                "configuration".into()
+            } else {
+                layer += 1;
+                format!("layer {layer}")
+            },
+            kind: kind_label(facts, &entry.descriptor),
+            digest: short(&entry.descriptor.digest),
+            size: entry.descriptor.size,
+            class: entry.effective.as_str(),
+            source: entry.source.to_string(),
+        })
+        .collect()
+}
+
+/// A push of `plan`'s image to `target`: the progress a dialog shows and
+/// the job for the library worker.
+pub(crate) fn start_job(
+    facts: &PlatformFacts,
+    accounts: &Accounts,
+    plan: &PlanData,
+    target: Reference,
+    image: Digest,
+    move_from: Option<Digest>,
+) -> (Progress, PushJob) {
+    let id = next_id();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let live = Live::new(
+        distinct(&plan.closure)
+            .into_iter()
+            .map(|entry| BlobRow {
+                digest: entry.descriptor.digest.clone(),
+                label: format!(
+                    "{} · {}",
+                    kind_label(facts, &entry.descriptor),
+                    short(&entry.descriptor.digest)
+                ),
+                size: entry.descriptor.size,
+                sent: 0,
+                outcome: None,
+            })
+            .collect(),
+    );
+    let job = PushJob {
+        id,
+        local_tag: plan.local_tag.clone(),
+        image,
+        target: target.clone(),
+        move_from,
+        accounts: accounts.clone(),
+        cancel: cancel.clone(),
+        live: live.clone(),
+    };
+    let progress = Progress {
+        id,
+        cancel,
+        live,
+        target,
+        cancelling: false,
+        published: false,
+    };
+    (progress, job)
+}
+
+pub(crate) fn pushed_text(target: &Reference, report: &PushReport) -> String {
     let digest = &report.image.digest;
     match &report.tag {
         TagOutcome::Created => format!(
@@ -1561,7 +1673,7 @@ pub(crate) fn pulled_text(source: &Reference, report: &PullReport) -> String {
 pub fn closed_outcome(event: &TransferEvent) -> Option<&'static str> {
     match event {
         TransferEvent::Pushed {
-            result: Err(PushFailure::Cancelled),
+            result: Err(PushFailure::Cancelled | PushFailure::NotStarted),
             ..
         } => Some(
             "Push cancelled: the manifest was not published, so the registry keeps its old tag.",

@@ -21,7 +21,7 @@ use image_store::{
     summary::{ImageSummary, MediaSetSummary, SummaryCache},
     Descriptor, Store,
 };
-use library_model::listing::{source, ImageRow, Listed};
+use library_model::listing::{source_cell, ImageRow, Listed};
 use pc_image::media_import;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -335,7 +335,7 @@ pub fn set_name(row: &MediaRow) -> String {
 /// A set's cells; a set without its summary says why in the availability
 /// column.
 pub fn cells(row: &MediaRow, drives: &[(u8, FloppyGeometry)]) -> [String; 6] {
-    let source = source(&row.image.descriptor).text();
+    let source = source_cell(&row.image.descriptor);
     // A set this release does not read, without the disks its config lists:
     // what its manifest and catalogue give, and the reason.
     if let (Some(summary), None) = (row.image.summary.as_ref(), row.set()) {

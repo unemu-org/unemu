@@ -5,6 +5,30 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — Push from the library: Push to… of one item or several, Push here… of a
+  registry or namespace, as the approved remotes-push mock-up (Remotes revision 3):**
+  (`upc-5pw.64.5`; design/machine-images.md §5.1, mockups/remotes-push.html). Image › Push…
+  became Image › Push to…, with Image › Push here…, the toolbar's Push… beside Pull… (the Push
+  icon, now painted) and the Push to… / Push here… buttons of the panes. One item's destination
+  is preselected by the Remotes rule (a host-qualified tag goes to its registry, a short tag
+  pulled from the default registry back there, a short tag made here where it was pushed last,
+  else nothing), shown as text and in a chooser of registries and namespaces, repository and
+  tag; the verdict comes before anything is sent, reading this session's listing ("As listed":
+  a version or revision tag taken is refused with the next tag suggested, a moving tag asks
+  with both digests first) and the login (a registry without a login waits for Log in…).
+  Several items, selected with Ctrl/Shift in Images, Installation media or Firmware, go one
+  after another under one bar, each with its verdict; refused ones are skipped with the
+  reason, a failure marks its row and the next one goes. A registry's or namespace's node
+  shows its own pane until a tag is selected. Each push is recorded on the local tag
+  (`unemu.pushed.to`, `Store::record_push`; the tag keeps its name), Source reads `local →
+  host` and the pane lists the references; Remotes gains the pushed tag without a request, a
+  tag pushed from a local tag of another name reading *Pushed from here · as …*. `upcli` is
+  unchanged and records no push. The registry/namespace context menu waits for the library
+  context-menu work (upc-5pw.82). MEASURED: `library_view::push_tests` (AccessKit tests of
+  the whole frame against the mock registry: preselection, refusal, login, as-listed taken and
+  move, Push here…, several with skipped and failed rows, Remotes and Source after the push),
+  the shell's toolbar and menu gating test, `image-store` store test of the push record, and
+  model tests of the rule and of Source.
 - **2026-11-19 — Every set and package exports to plain files:** step B11 of
   design/recipes.md §19.2 (decision-37). `upcli image export NAME:TAG --to
   DIR [--files] [--store DIR]` writes every layer's decoded bytes under its

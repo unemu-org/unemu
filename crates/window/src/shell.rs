@@ -2866,6 +2866,11 @@ impl Shell {
         if command == Command::Open {
             return self.opens_files();
         }
+        // Several library rows selected: Push to… takes them, and no command
+        // of one item acts on a row left selected behind them.
+        if self.image_library.several_selected() && single_item(command) {
+            return false;
+        }
         self.enablement().allows(command)
             && match command {
                 Command::GamingMode | Command::ImageStart | Command::ImageGaming => {
@@ -2919,10 +2924,18 @@ impl Shell {
                 }
                 // A transfer runs on the library worker, which serves the
                 // running machine's session until it stops.
+                // Push to… takes the library items selected, Push here…
+                // the Remotes node shown; machines are never pushed.
                 Command::Push => {
                     self.presenter.is_none()
                         && self.image_library.active.is_none()
                         && self.image_library.target_needs_newer().is_none()
+                        && self.image_library.can_push_to()
+                }
+                Command::PushHere => {
+                    self.presenter.is_none()
+                        && self.image_library.active.is_none()
+                        && self.image_library.can_push_here()
                 }
                 Command::PullReference | Command::GetTemplates => {
                     self.presenter.is_none() && self.image_library.active.is_none()
@@ -3039,7 +3052,9 @@ impl Shell {
         if let Some((machine, unit, set)) = self.image_library.picker_wanted.take() {
             self.open_picker(unit, Some(&machine), Some(set));
         }
-        if self.image_library.login_wanted.is_some() {
+        if self.image_library.login_wanted.is_some()
+            || std::mem::take(&mut self.image_library.registries_wanted)
+        {
             commands.push(Command::Preferences);
         }
     }
@@ -4446,6 +4461,7 @@ impl Shell {
             Preferences => self.open_preferences(),
             SaveState | LoadState => {},
             Push => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_push(accounts); },
+            PushHere => { self.release(); if let Some(place) = self.image_library.push_place() { self.image_library.begin_push_here(place); } },
             Pull => { self.release(); self.image_library.begin_remote_pull(crate::remote_pull::Mode::Pull); },
             PullReference => { self.release(); let accounts = self.registry_accounts(); self.image_library.begin_pull(accounts); },
             GetTemplates => { self.release(); let accounts = self.registry_accounts(); self.image_library.show_templates(accounts, &mut self.selected); },
@@ -4568,6 +4584,9 @@ impl Shell {
     /// Why a library command is unavailable now, in one short phrase.
     fn disabled_reason(&self, command: Command) -> Option<&'static str> {
         use Command::*;
+        if self.image_library.several_selected() && single_item(command) {
+            return Some("Several items are selected: select one");
+        }
         let machine = self.image_library.machine.is_some();
         // Delete tag… also takes the selected firmware package.
         let image = self.image_library.selected.is_some()
@@ -4593,6 +4612,15 @@ impl Shell {
             Start | GamingMode if running => "A machine runs already",
             Start | GamingMode if !image && self.selected.is_none() => "Select a machine",
             Pull if !self.image_library.can_pull_remote() => "Select a tag in Remotes to pull",
+            Push if !self.image_library.can_push_to() => {
+                "Select images, installation media or firmware packages in the library"
+            }
+            PushHere if self.image_library.push_place().is_none() => {
+                "Select a registry or namespace in Remotes"
+            }
+            PushHere if !self.image_library.can_push_here() => {
+                "The registry does not answer; Push here… waits until Try again reaches it"
+            }
             _ => return None,
         })
     }
@@ -4661,9 +4689,12 @@ impl Shell {
                     commands,
                 );
                 self.item(ui, "Layers…", "", ImageLayers, commands);
-                self.item(ui, "Push…", "", Push, commands);
+                ui.separator();
                 self.item(ui, "Pull…", "Enter", Pull, commands);
                 self.item(ui, "Pull by reference…", "", PullReference, commands);
+                ui.separator();
+                self.item(ui, "Push to…", "", Push, commands);
+                self.item(ui, "Push here…", "", PushHere, commands);
             });
             // A machine started from a file has the player's Machine, Media
             // and View menus where the PC's stand.
@@ -4982,7 +5013,19 @@ impl Shell {
                 && self.image_library.remote_shown();
             ui.separator();
             let pull = remotes.then_some(("Pull…", Icon::Pull, Command::Pull));
-            for (label, icon, command) in pull.into_iter().chain([
+            // Push… beside Pull…: Push here… while a Remotes node is shown,
+            // Push to… of the selected library items otherwise.
+            let library = self.presenter.is_none() && self.player.is_none();
+            let push = library.then_some((
+                "Push…",
+                Icon::Push,
+                if remotes {
+                    Command::PushHere
+                } else {
+                    Command::Push
+                },
+            ));
+            for (label, icon, command) in pull.into_iter().chain(push).chain([
                 ("Refresh", Icon::Refresh, Command::RefreshRemote),
                 ("Registries…", Icon::Registry, Command::Preferences),
             ]) {
@@ -4994,6 +5037,17 @@ impl Shell {
                 if self.classic {
                     bevel(ui, response.rect, response.is_pointer_button_down_on());
                 }
+                let hint = match command {
+                    Command::PushHere => {
+                        Some("Push here…: library items to the selected registry or namespace")
+                    }
+                    Command::Push => Some("Push to…: the selected library items to a registry"),
+                    _ => None,
+                };
+                let response = match hint {
+                    Some(hint) => response.on_hover_text(hint),
+                    None => response,
+                };
                 if response.clicked() {
                     commands.push(command);
                 }
@@ -6353,6 +6407,29 @@ fn drive_tooltip(ui: &mut egui::Ui, view: &crate::drive_chips::DriveView, lit: b
 /// frame at rest, and on hover only the skin's 1 px outline, without a fill.
 /// It changes the hover look of the `Ui` it is given, so it gets one of its
 /// own, as the toolbar's `add_enabled_ui` does.
+/// A command of one library item, which a selection of several rows
+/// leaves unavailable.
+fn single_item(command: Command) -> bool {
+    use Command::*;
+    matches!(
+        command,
+        Start
+            | GamingMode
+            | ImageStart
+            | ImageGaming
+            | Settings
+            | Layers
+            | SaveImage
+            | NewFromImage
+            | ImageSettings
+            | ImageLayers
+            | DeleteTag
+            | DeleteSelection
+            | EditFirmware
+            | InsertSet(_)
+    )
+}
+
 fn toolbar_button(
     ui: &mut egui::Ui,
     classic: bool,
@@ -6677,6 +6754,21 @@ mod tests {
         assert_eq!(pull.default_host, "nas.example:5000");
         assert!(shell.has_dialog());
         shell.image_library.pull = None;
+        // Push to… takes a selected library item; without one it opens
+        // nothing.
+        shell.command(Command::Push, &ctx);
+        assert!(shell.image_library.push.is_none());
+        shell.image_library.selected = Some(library_model::listing::ImageRow {
+            reference: "test:source".into(),
+            aliases: Vec::new(),
+            descriptor: image_store::Descriptor::new(
+                image_store::media_type::MANIFEST,
+                image_store::Digest::of(b"image"),
+                1,
+            ),
+            summary: None,
+            failure: None,
+        });
         // Without a store worker the dialog ends at once instead of waiting.
         shell.command(Command::Push, &ctx);
         let push = shell.image_library.push.as_ref().unwrap();
@@ -6689,6 +6781,128 @@ mod tests {
             push.state,
             crate::registry_transfer::PushState::Ready
         ));
+    }
+
+    /// The toolbar's Push… sits beside Pull… with the Push icon: Push to… of
+    /// the selected library items, or Push here… while a Remotes registry
+    /// or namespace is shown. Image › Push to… and Image › Push here… follow
+    /// the same selection. Without one both are disabled, say why, and are
+    /// refused in code too; Push here… waits while its registry does not
+    /// answer.
+    #[test]
+    fn push_to_and_push_here_follow_the_selection_and_are_refused_without_one() {
+        use crate::library_view::remotes::Node;
+        let mut shell = shell();
+        let ctx = egui::Context::default();
+        shell.stop();
+        assert!(!shell.command_allowed(Command::Push));
+        assert_eq!(
+            shell.disabled_reason(Command::Push),
+            Some("Select images, installation media or firmware packages in the library")
+        );
+        assert!(!shell.command_allowed(Command::PushHere));
+        assert_eq!(
+            shell.disabled_reason(Command::PushHere),
+            Some("Select a registry or namespace in Remotes")
+        );
+        let (texts, _) = toolbar_pass(&ctx, &mut shell, Vec::new());
+        let push = label_rect(&texts, "Push…").center();
+        assert!(click_toolbar(&ctx, &mut shell, push).is_empty());
+        // Refused in code, not only greyed.
+        shell.command(Command::Push, &ctx);
+        shell.command(Command::PushHere, &ctx);
+        let accounts = shell.registry_accounts();
+        shell.image_library.begin_push(accounts);
+        assert!(shell.image_library.push.is_none() && shell.image_library.push_batch.is_none());
+
+        // A selected image: the toolbar's Push… is Push to….
+        shell.image_library.selected = Some(library_model::listing::ImageRow {
+            reference: "test:source".into(),
+            aliases: Vec::new(),
+            descriptor: image_store::Descriptor::new(
+                image_store::media_type::MANIFEST,
+                image_store::Digest::of(b"image"),
+                1,
+            ),
+            summary: None,
+            failure: None,
+        });
+        assert!(shell.command_allowed(Command::Push));
+        let (texts, _) = toolbar_pass(&ctx, &mut shell, Vec::new());
+        let push = label_rect(&texts, "Push…").center();
+        assert_eq!(click_toolbar(&ctx, &mut shell, push), [Command::Push]);
+        let drawn = draw(&ctx, &mut shell, Vec::new());
+        click(&ctx, &mut shell, label_rect(&drawn.text, "Image").center());
+        let drawn = draw(&ctx, &mut shell, Vec::new());
+        assert!(drawn.text.iter().any(|(t, _)| t == "Push to…"));
+        assert!(drawn.text.iter().any(|(t, _)| t == "Push here…"));
+        assert_eq!(
+            click(
+                &ctx,
+                &mut shell,
+                label_rect(&drawn.text, "Push to…").center()
+            ),
+            [Command::Push]
+        );
+        // Several rows selected: the row selected alone behind them takes no
+        // command of one item.
+        shell.image_library.library_multi = vec!["a:1".into(), "b:1".into()];
+        for command in [
+            Command::Start,
+            Command::DeleteTag,
+            Command::DeleteSelection,
+            Command::Settings,
+            Command::Layers,
+            Command::NewFromImage,
+            Command::ImageSettings,
+            Command::ImageGaming,
+        ] {
+            assert!(!shell.command_allowed(command), "{command:?}");
+            assert_eq!(
+                shell.disabled_reason(command),
+                Some("Several items are selected: select one"),
+                "{command:?}"
+            );
+        }
+        shell.command(Command::DeleteTag, &ctx);
+        assert!(!shell.image_library.has_dialog());
+        shell.image_library.library_multi.clear();
+
+        // A Remotes namespace: the toolbar's Push… is Push here….
+        let accounts = shell.registry_accounts();
+        shell.image_library.attach_remotes(accounts);
+        shell.image_library.remote.node = Some(Node {
+            host: "registry.unemu.dev".into(),
+            namespace: Some(Some("unemu".into())),
+            group: None,
+        });
+        assert!(shell.command_allowed(Command::PushHere));
+        assert!(!shell.command_allowed(Command::Push));
+        let (texts, _) = toolbar_pass(&ctx, &mut shell, Vec::new());
+        let push = label_rect(&texts, "Push…").center();
+        assert_eq!(click_toolbar(&ctx, &mut shell, push), [Command::PushHere]);
+        shell.command(Command::PushHere, &ctx);
+        let batch = shell.image_library.push_batch.as_ref().unwrap();
+        assert_eq!(
+            batch.here().map(|p| p.prefix()).as_deref(),
+            Some("registry.unemu.dev/unemu/")
+        );
+        shell.image_library.push_batch = None;
+
+        // A registry that does not answer: Push here… waits.
+        let model = shell.image_library.remote.model.as_mut().unwrap();
+        model.touch();
+        model.registries[0].state = crate::remote_browse::State::Unreachable {
+            reason: "timed out".into(),
+            stale: false,
+        };
+        assert!(!shell.command_allowed(Command::PushHere));
+        assert_eq!(
+            shell.disabled_reason(Command::PushHere),
+            Some("The registry does not answer; Push here… waits until Try again reaches it")
+        );
+        shell.command(Command::PushHere, &ctx);
+        assert!(shell.image_library.push_batch.is_none());
     }
 
     /// The toolbar has the remotes mock-up's Refresh and Registries…, and

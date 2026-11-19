@@ -80,7 +80,8 @@
 
 use crate::{
     platform::{DesktopPlatform, PlatformFacts},
-    registry_transfer::{common_failure, next_id, Accounts},
+    push_destination::ListedRegistry,
+    registry_transfer::{common_failure, next_id, Accounts, Landed, Listing},
 };
 use image_registry::{
     browse::{self, MIN_APP_VERSION},
@@ -403,6 +404,10 @@ pub enum LocalState {
     LocalNewer { have: String },
     /// The local tag a pull writes names `current`, another image.
     OtherImage { current: Digest },
+    /// The local tag a pull writes does not exist, and `tag`, a local tag
+    /// of the same image, records a push of this registry tag from here.
+    /// Pushing never renames, so the image stays under `tag`.
+    PushedFromHere { tag: String },
 }
 
 /// One tag of a repository, read.
@@ -440,7 +445,11 @@ impl TagRow {
         let record = self.record.as_ref().ok()?;
         if matches!(
             self.local,
-            Some(LocalState::InLibrary | LocalState::NotPulled { same_as: Some(_) })
+            Some(
+                LocalState::InLibrary
+                    | LocalState::NotPulled { same_as: Some(_) }
+                    | LocalState::PushedFromHere { .. }
+            )
         ) {
             return None;
         }
@@ -850,6 +859,8 @@ pub struct LocalQuery {
     pub newest_revision: Option<u64>,
     /// As [`TagRecord::release`].
     pub release: Option<ReleaseFacts>,
+    /// The registry tag, `host/repository:tag`, as a push records it.
+    pub reference: String,
 }
 
 /// How one read tag stands against the library now.
@@ -931,6 +942,7 @@ pub fn run(
     let platforms = Platforms {
         list: platforms,
         facts: PlatformFacts::of(platforms),
+        pushes: std::cell::OnceCell::new(),
     };
     match request {
         BrowseRequest::List { job, next } => {
@@ -959,23 +971,29 @@ pub fn run(
         BrowseRequest::Local { id, tags } => send(BrowseEvent::Local {
             id,
             states: library(store).and_then(|library| {
+                let pushes = library_pushes(store)?;
                 tags.into_iter()
                     .map(|query| {
                         Ok(LocalAnswer {
-                            state: across_releases(
-                                store,
-                                &query.local_tag,
-                                &query.artifact_type,
-                                query.release.as_ref(),
-                                &library,
-                                platforms.list,
-                                local_state(
+                            state: pushed_from_here(
+                                across_releases(
+                                    store,
                                     &query.local_tag,
-                                    &query.digest,
                                     &query.artifact_type,
+                                    query.release.as_ref(),
                                     &library,
-                                    query.newest_revision,
+                                    platforms.list,
+                                    local_state(
+                                        &query.local_tag,
+                                        &query.digest,
+                                        &query.artifact_type,
+                                        &library,
+                                        query.newest_revision,
+                                    ),
                                 ),
+                                &query.reference,
+                                &query.digest,
+                                &pushes,
                             ),
                             stored: stored(store, &query.blobs).map_err(|error| {
                                 format!("The library could not be read: {error}")
@@ -994,11 +1012,120 @@ pub fn run(
 struct Platforms<'p> {
     list: &'p [&'p dyn DesktopPlatform],
     facts: PlatformFacts,
+    /// The library's push records, read once per job when a tag needs them.
+    pushes: std::cell::OnceCell<Result<Pushes, String>>,
 }
 
 fn library(store: &Store) -> Result<Vec<(String, Digest)>, String> {
     crate::save_image::local_tags(store)
         .map_err(|error| format!("The library could not be read: {error}"))
+}
+
+/// Every local tag that records a push from here, with its image and the
+/// references it was pushed to ([`image_store::PUSHED_TO`]).
+pub(crate) type Pushes = Vec<(String, Digest, Vec<String>)>;
+
+fn library_pushes(store: &Store) -> Result<Pushes, String> {
+    let mut pushes = Vec::new();
+    let mut after: Option<String> = None;
+    loop {
+        let page = store
+            .list_tags(after.as_deref(), 1000)
+            .map_err(|error| format!("The library could not be read: {error}"))?;
+        for tag in page.tags {
+            let references: Vec<String> =
+                tag.pushed_to().into_iter().map(|p| p.reference).collect();
+            if !references.is_empty() {
+                pushes.push((tag.name, tag.manifest.digest, references));
+            }
+        }
+        match page.next_after {
+            Some(next) => after = Some(next),
+            None => return Ok(pushes),
+        }
+    }
+}
+
+/// `state`, or [`LocalState::PushedFromHere`] when the local tag a pull
+/// writes is not in the library and a local tag of the same image records
+/// a push of `reference`: the image is here, under the tag it was pushed
+/// from.
+pub(crate) fn pushed_from_here(
+    state: LocalState,
+    reference: &str,
+    digest: &Digest,
+    pushes: &[(String, Digest, Vec<String>)],
+) -> LocalState {
+    if !matches!(state, LocalState::NotPulled { .. }) {
+        return state;
+    }
+    pushes
+        .iter()
+        .find(|(_, image, references)| image == digest && references.iter().any(|r| r == reference))
+        .map_or(state, |(tag, _, _)| LocalState::PushedFromHere {
+            tag: tag.clone(),
+        })
+}
+
+/// The record a listing would read of the local image `descriptor`, from
+/// the store: what a push put on the registry, so Remotes shows the tag
+/// without a request. `None` when the image cannot be read.
+pub fn local_record(
+    store: &Store,
+    descriptor: &Descriptor,
+    platforms: &[&dyn DesktopPlatform],
+) -> Option<TagRecord> {
+    let bytes = store.read_verified(descriptor, MAX_SMALL_BLOB).ok()?;
+    let manifest = Manifest::decode_for_summary(&bytes).ok()?;
+    let config = match manifest.config.media_type.as_str() {
+        mt::MEDIA_SET_CONFIG | mt::FIRMWARE_CONFIG => {
+            Some(store.read_verified(&manifest.config, MAX_SMALL_BLOB).ok()?)
+        }
+        _ => None,
+    };
+    let user_supplied = std::iter::once(&manifest.config)
+        .chain(&manifest.layers)
+        .any(|d| {
+            d.annotations
+                .get(image_store::license::REDISTRIBUTION)
+                .map(String::as_str)
+                == Some(image_store::license::USER_SUPPLIED)
+        });
+    let size = descriptor.size
+        + std::iter::once(&manifest.config)
+            .chain(&manifest.layers)
+            .map(|d| (&d.digest, d.size))
+            .collect::<BTreeMap<_, _>>()
+            .values()
+            .sum::<u64>();
+    // The metadata record a selected tag reads comes from the store too.
+    let mut metadata = manifest
+        .layers
+        .iter()
+        .filter(|layer| layer.media_type == mt::METADATA);
+    let title = match (metadata.next(), metadata.next()) {
+        (Some(layer), None) => store
+            .read_verified(layer, MAX_SMALL_BLOB)
+            .ok()
+            .and_then(|bytes| Metadata::decode_for_display(&bytes, &manifest.layers).ok())
+            .and_then(|record| record.titles.into_iter().next()),
+        _ => None,
+    };
+    let mut record = TagRecord::from_read(
+        browse::TagRecord {
+            digest: descriptor.digest.clone(),
+            artifact_type: manifest.artifact_type().to_owned(),
+            annotations: manifest.annotations.clone(),
+            config_descriptor: manifest.config.clone(),
+            layers: manifest.layers.clone(),
+            size,
+            user_supplied,
+            config,
+        },
+        platforms,
+    );
+    record.details = Some(Ok(details_of(title)));
+    Some(record)
 }
 
 /// Which of `blobs` the store holds, by the check a pull makes before it
@@ -1165,7 +1292,7 @@ fn tag_row(
     let newest_revision = image_store::tag::governs(&record.artifact_type)
         .then(|| newest_listed_revision(listed, tag))
         .flatten();
-    let local = across_releases(
+    let mut local = across_releases(
         store,
         &local_tag,
         &record.artifact_type,
@@ -1180,6 +1307,21 @@ fn tag_row(
             newest_revision,
         ),
     );
+    // Only a tag not pulled may have been pushed from here; the library's
+    // push records are read once for the job, when a tag first needs them.
+    if matches!(local, LocalState::NotPulled { .. }) {
+        let pushes = platforms
+            .pushes
+            .get_or_init(|| library_pushes(store))
+            .as_ref()
+            .map_err(|e| Error::Store(image_store::Error::Invalid(e.clone())))?;
+        local = pushed_from_here(
+            local,
+            &format!("{}/{repository}:{tag}", client.host()),
+            &record.digest,
+            pushes,
+        );
+    }
     let stored = stored(store, &record.descriptors).map_err(Error::Store)?;
     Ok(TagRow {
         tag: tag.into(),
@@ -2118,9 +2260,15 @@ impl Remotes {
         let tags: Vec<LocalQuery> = self
             .registries
             .iter()
-            .flat_map(|view| &view.repositories)
-            .flat_map(|repository| &repository.read)
-            .filter_map(|row| {
+            .flat_map(|view| {
+                view.repositories.iter().flat_map(move |repository| {
+                    repository
+                        .read
+                        .iter()
+                        .map(move |row| (view, repository, row))
+                })
+            })
+            .filter_map(|(view, repository, row)| {
                 let record = row.record.as_ref().ok()?;
                 Some(LocalQuery {
                     local_tag: row.local_tag.clone(),
@@ -2129,6 +2277,7 @@ impl Remotes {
                     blobs: record.blobs().into_iter().cloned().collect(),
                     newest_revision: row.newest_revision,
                     release: record.release(),
+                    reference: format!("{}/{}:{}", view.host, repository.name, row.tag),
                 })
             })
             .collect();
@@ -2138,6 +2287,116 @@ impl Remotes {
         let id = next_id();
         self.local = Some(id);
         Some(BrowseRequest::Local { id, tags })
+    }
+
+    /// What this session has listed, for the checks before a push: every
+    /// registry whose listing ended, or whose rows stay from an earlier
+    /// one, with its repositories, their tags and the images read.
+    pub fn listing(&self) -> Listing {
+        let mut listing = Listing::default();
+        for view in &self.registries {
+            if !(view.state == State::Listed || view.stale()) {
+                continue;
+            }
+            let repositories = view
+                .repositories
+                .iter()
+                .map(|repository| {
+                    let tags = repository
+                        .tags
+                        .iter()
+                        .map(|tag| {
+                            let digest = repository
+                                .row(tag)
+                                .and_then(|row| row.record.as_ref().ok())
+                                .map(|record| record.digest.clone());
+                            (tag.clone(), digest)
+                        })
+                        .collect();
+                    (repository.name.clone(), tags)
+                })
+                .collect();
+            let types = view
+                .repositories
+                .iter()
+                .filter_map(|repository| {
+                    let record = repository.representative_row()?.record.as_ref().ok()?;
+                    Some((repository.name.clone(), record.artifact_type.clone()))
+                })
+                .collect();
+            listing.registries.insert(
+                view.host.clone(),
+                ListedRegistry {
+                    complete: view.next.is_none(),
+                    repositories,
+                    types,
+                },
+            );
+        }
+        listing
+    }
+
+    /// A push published `landed`: the registry's list gains the repository
+    /// or the tag from the manifest just pushed, without a request, and the
+    /// tag reads as in the library or pushed from here. A registry not
+    /// listed in this session shows the tag when it is first listed.
+    pub fn landed(&mut self, landed: &Landed) {
+        let target = &landed.target;
+        let Some(tag) = target.tag.clone() else {
+            return;
+        };
+        let Some(view) = self.registries.iter_mut().find(|v| v.host == target.host) else {
+            return;
+        };
+        if !(view.state == State::Listed || view.stale()) {
+            return;
+        }
+        self.revision += 1;
+        let local_tag = local_tag_of(&target.host, &target.repository, &tag);
+        let local = landed.local.clone();
+        let row = TagRow {
+            stored: landed
+                .record
+                .blobs()
+                .into_iter()
+                .map(|d| d.digest.clone())
+                .collect(),
+            tag: tag.clone(),
+            local_tag,
+            record: Ok(landed.record.clone()),
+            local: Some(local),
+            newest_revision: None,
+        };
+        match view.repository_mut(&target.repository) {
+            Some(repository) => {
+                if !repository.tags.contains(&tag) {
+                    repository.tags.push(tag.clone());
+                }
+                if repository.representative.is_none() {
+                    repository.representative = Some(tag.clone());
+                }
+                repository.upsert(row);
+            }
+            None => {
+                // The catalog lists repositories by name.
+                let at = view
+                    .repositories
+                    .iter()
+                    .position(|r| r.name > target.repository)
+                    .unwrap_or(view.repositories.len());
+                view.repositories.insert(
+                    at,
+                    RepositoryRow {
+                        name: target.repository.clone(),
+                        tags: vec![tag.clone()],
+                        representative: Some(tag),
+                        read: vec![row],
+                        error: None,
+                        newer_needs: Vec::new(),
+                    },
+                );
+            }
+        }
     }
 
     /// Take one of the worker's answers; answers of stopped or replaced jobs

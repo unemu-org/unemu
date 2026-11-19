@@ -201,6 +201,22 @@ fn a_machine_from_a_host_qualified_tag_gets_a_plain_folder_name() {
         "{:?}",
         listing.machine.image.annotations
     );
+    // Nor where a push from here sent it.
+    store
+        .record_push(
+            "made-here:1",
+            &image.digest,
+            "registry.lan.example/private/made-here:1",
+            1,
+        )
+        .unwrap();
+    let id = machine::create_from_tag(store, "made-here:1", Some("Pushed"), None).unwrap();
+    let listing = machine::get(store, &id).unwrap();
+    assert!(
+        listing.machine.image.annotations.is_empty(),
+        "{:?}",
+        listing.machine.image.annotations
+    );
 }
 
 /// A listing that probes a machine while another listing's probe holds the

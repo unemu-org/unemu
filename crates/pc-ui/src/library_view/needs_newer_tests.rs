@@ -171,7 +171,7 @@ fn a_machine_image_that_needs_a_newer_release_is_disabled_with_the_reason() {
                     "Gaming mode",
                     "Settings…",
                     "Layers…",
-                    "Push…",
+                    "Push to…",
                 ] {
                     assert!(!drawn.enabled(label), "{tag}: {label}");
                 }
@@ -185,7 +185,12 @@ fn a_machine_image_that_needs_a_newer_release_is_disabled_with_the_reason() {
             None => {
                 assert!(view.readiness.is_none(), "{tag}: checked as usual");
                 assert!(!drawn.painted(NEEDS), "{tag}");
-                for label in ["New machine from image…", "Settings…", "Layers…", "Push…"] {
+                for label in [
+                    "New machine from image…",
+                    "Settings…",
+                    "Layers…",
+                    "Push to…",
+                ] {
                     assert!(drawn.enabled(label), "{tag}: {label}");
                 }
             }

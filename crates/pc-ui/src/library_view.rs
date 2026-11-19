@@ -18,6 +18,8 @@ pub mod machines;
 #[cfg(test)]
 mod needs_newer_tests;
 pub(crate) mod pane;
+#[cfg(test)]
+mod push_tests;
 pub mod remotes;
 
 use crate::{
@@ -50,7 +52,9 @@ use crate::library_worker::{regular_name, Event, Finish, Recovery, Worker, Works
 pub use pc_library::library_worker::Request;
 // The image rows, their sources and the shared texts are the library
 // model's; the frame and its collections keep naming them here.
-pub(crate) use library_model::listing::{human_size, source, ImageRow};
+#[cfg(test)]
+pub(crate) use library_model::listing::source;
+pub(crate) use library_model::listing::{human_size, source_cell, source_hint, ImageRow};
 // The worker, which deletes tags and lists snapshots, is the PC library's
 // too; the frame's tests still call both here.
 #[cfg(test)]
@@ -157,7 +161,7 @@ fn row_cells(row: &ViewRow, machines: usize) -> [String; 7] {
     }
     [
         name,
-        source(&image.descriptor).text(),
+        source_cell(&image.descriptor),
         image.references(),
         pane::short_digest(image.descriptor.digest.hex()),
         machines.to_string(),
@@ -279,6 +283,13 @@ enum ImageAction {
     ShowImage(Box<ImageRow>),
 }
 
+/// The dry runs of every local image, or why they could not be read, with
+/// the library's tags they were read for.
+type LibraryPlans = (
+    Vec<(String, Digest)>,
+    std::result::Result<Vec<crate::registry_transfer::PlannedImage>, String>,
+);
+
 pub struct LibraryView {
     pub root: Option<PathBuf>,
     worker: Option<Worker>,
@@ -352,8 +363,39 @@ pub struct LibraryView {
     media_reselect: Option<String>,
     /// "Switch to …": the firmware choice the next Settings sheet opens with.
     settings_switch: Option<(crate::firmware_choices::Slot, String)>,
-    /// Image › Push… while it is open.
+    /// Push to… of one library item while it is open.
     pub push: Option<crate::registry_transfer::PushDialog>,
+    /// Push to… of several items, or Push here… of a registry or
+    /// namespace, while it is open.
+    pub push_batch: Option<library_model::push_batch::PushBatch>,
+    /// Several items of Images, Installation media or Firmware selected
+    /// with Ctrl (⌘ on macOS) or Shift, by tag, in the order they were
+    /// added; empty, or one tag alone, while the single selection stands.
+    pub library_multi: Vec<String>,
+    /// Where Shift selects from: the row clicked last, by tag.
+    library_anchor: Option<String>,
+    /// The dry run of every local image, for a namespace pane's count of
+    /// what could go there, with the library's tags it was read for: an
+    /// answer, a failure included, stands until those tags change, so a
+    /// failure is not asked again every frame. `plans_wanted` is the
+    /// request awaited, with the tags it reads.
+    push_plans: Option<LibraryPlans>,
+    plans_wanted: Option<(u64, Vec<(String, Digest)>)>,
+    /// What the namespace pane's verdicts read of Preferences › Registries,
+    /// read once until Preferences close, never every frame.
+    here_rules: Option<library_model::push_destination::Rules>,
+    /// The counts of the shown node's pane, until the node, the registries
+    /// or the dry runs change.
+    here_cache: Option<(
+        library_model::push_destination::Place,
+        u64,
+        usize,
+        remotes::HereCounts,
+    )>,
+    /// Registries… of a node's pane: the shell opens Preferences.
+    pub registries_wanted: bool,
+    /// Show in Remotes of a finished push: the tag the shell shows there.
+    pub remote_wanted: Option<image_registry::Reference>,
     /// Image › Pull… while it is open.
     pub pull: Option<crate::registry_transfer::PullDialog>,
     /// Pull… of tags selected in Remotes while it is open.
@@ -454,6 +496,15 @@ impl LibraryView {
             clear_file_selection: false,
             image_settings: None,
             push: None,
+            push_batch: None,
+            library_multi: Vec::new(),
+            library_anchor: None,
+            push_plans: None,
+            plans_wanted: None,
+            here_rules: None,
+            here_cache: None,
+            registries_wanted: false,
+            remote_wanted: None,
             pull: None,
             remote_pull: None,
             media_reselect: None,
@@ -625,6 +676,10 @@ impl LibraryView {
         if let Some(dialog) = &mut self.push {
             dialog.fail(&message);
         }
+        if let Some(dialog) = &mut self.push_batch {
+            dialog.fail(&message);
+        }
+        self.plans_wanted = None;
         if let Some(dialog) = &mut self.pull {
             dialog.fail(&message);
         }
@@ -643,6 +698,8 @@ impl LibraryView {
                         // Tags may have come or gone; the row still acts on its lead tag.
                         selected.reference.clone_from(&current.image.reference);
                         selected.aliases.clone_from(&current.image.aliases);
+                        // Its records too: a push adds where it went.
+                        selected.descriptor.clone_from(&current.image.descriptor);
                     }
                 }
                 if let Some(selected) = &mut self.firmware_selected {
@@ -1026,6 +1083,7 @@ impl LibraryView {
                         self.status = Some(outcome.into());
                     }
                 }
+                self.on_push_event(&event);
                 let follow_up = self
                     .push
                     .as_mut()
@@ -1242,6 +1300,7 @@ impl LibraryView {
     pub fn shutdown(&mut self) {
         // Dropping a transfer dialog cancels its transfer at the next check.
         self.push = None;
+        self.push_batch = None;
         self.pull = None;
         self.remote_pull = None;
         if let Some(mut worker) = self.worker.take() {
@@ -1252,6 +1311,8 @@ impl LibraryView {
     /// Give Remotes the logins of Preferences › Registries; registries
     /// already open read their list from these preferences again.
     pub fn attach_remotes(&mut self, accounts: Accounts) {
+        self.here_rules = None;
+        self.here_cache = None;
         self.remote.attach_remotes(accounts);
     }
     /// A registry's node is shown instead of a library collection.
@@ -1299,6 +1360,7 @@ impl LibraryView {
     /// never targets something no longer shown, and lists its registry the
     /// first time in this session.
     fn select_remote(&mut self, node: remotes::Node, selected_file: &mut Option<usize>) {
+        self.library_multi.clear();
         self.selected = None;
         self.machine = None;
         self.machine_settings = None;
@@ -1323,6 +1385,7 @@ impl LibraryView {
             classic: self.classic,
             tags: &self.snapshot.tags,
             drives: &drives,
+            here: None,
         };
         let actions = self.remote.remote_list(ui, &context);
         self.apply_remotes(actions, &mut None);
@@ -1336,6 +1399,7 @@ impl LibraryView {
             classic: self.classic,
             tags: &self.snapshot.tags,
             drives: &drives,
+            here: None,
         };
         let actions = self.remote.apply_list(host, answer, &context);
         self.apply_remotes(actions, &mut None);
@@ -1350,6 +1414,7 @@ impl LibraryView {
             classic: self.classic,
             tags: &self.snapshot.tags,
             drives: &[],
+            here: None,
         };
         self.remote.can_pull_remote(&context)
     }
@@ -1362,6 +1427,7 @@ impl LibraryView {
             classic: self.classic,
             tags: &self.snapshot.tags,
             drives: &drives,
+            here: None,
         };
         self.remote
             .begin_remote_pull(mode, &context, &mut self.remote_pull);
@@ -1369,11 +1435,13 @@ impl LibraryView {
     /// The details pane while a remote node is shown.
     fn remote_details(&mut self, ui: &mut egui::Ui) {
         let drives = self.stopped_drives();
+        let here = self.here_counts();
         let context = RemotesContext {
             facts: &self.platform_facts,
             classic: self.classic,
             tags: &self.snapshot.tags,
             drives: &drives,
+            here,
         };
         let actions = self.remote.remote_details(ui, &context);
         self.apply_remotes(actions, &mut None);
@@ -1389,6 +1457,7 @@ impl LibraryView {
             classic,
             tags: &self.snapshot.tags,
             drives: &drives,
+            here: None,
         };
         self.remote.remote_contents(ctx, &context);
     }
@@ -1422,6 +1491,8 @@ impl LibraryView {
                 }
                 RemotesAction::BeginPull(mode) => self.begin_remote_pull(mode),
                 RemotesAction::LogIn(host) => self.login_wanted = Some(host),
+                RemotesAction::PushHere(place) => self.begin_push_here(place),
+                RemotesAction::Registries => self.registries_wanted = true,
                 RemotesAction::Insert { machine, unit, set } => {
                     self.picker_wanted = Some((machine, unit, set))
                 }
@@ -1599,6 +1670,10 @@ impl LibraryView {
     /// selected machine, or the selected image, which Start runs in a
     /// machine of its own.
     pub fn launch(&mut self, kind: WorkspaceKind) {
+        // Several rows selected: a command of one item takes none.
+        if self.several_selected() {
+            return;
+        }
         if self.busy {
             return;
         }
@@ -1700,6 +1775,10 @@ impl LibraryView {
         }
     }
     pub fn open_layers(&mut self) {
+        // Several rows selected: a command of one item takes none.
+        if self.several_selected() {
+            return;
+        }
         if self.refused_as_newer(self.selection_needs_newer()) {
             return;
         }
@@ -1737,6 +1816,10 @@ impl LibraryView {
     /// own form with what happens to the machine afterwards; otherwise the
     /// Save as new image… form Disk layers opens.
     pub fn begin_save_image(&mut self) {
+        // Several rows selected: a command of one item takes none.
+        if self.several_selected() {
+            return;
+        }
         if self.refused_as_newer(self.selection_needs_newer()) {
             return;
         }
@@ -1758,6 +1841,10 @@ impl LibraryView {
     /// opens the sheet of a new image revision. The worker reads either, and
     /// the sheet opens read-only while it runs.
     pub fn open_settings(&mut self) {
+        // Several rows selected: a command of one item takes none.
+        if self.several_selected() {
+            return;
+        }
         if self.refused_as_newer(self.selection_needs_newer()) {
             return;
         }
@@ -1797,6 +1884,10 @@ impl LibraryView {
     /// Image › Settings…: a new revision of the selected image, or of the
     /// selected machine's source image.
     pub fn open_image_settings(&mut self) {
+        // Several rows selected: a command of one item takes none.
+        if self.several_selected() {
+            return;
+        }
         // The selected machine's source image is the image it runs.
         if self.refused_as_newer(self.selection_needs_newer()) {
             return;
@@ -1862,30 +1953,349 @@ impl LibraryView {
             }
         }
     }
-    /// Image › Push…: the selected image (machine or firmware package), or
-    /// the first local image; the worker builds the dry run.
+    /// The library items Push to… takes: the several selected with Ctrl or
+    /// Shift, else the one selected, in Images, Installation media or
+    /// Firmware. Machines are never pushed, and nothing is taken while a
+    /// registry's node is shown.
+    pub fn push_selection(&self) -> Vec<ImageRow> {
+        if self.remote.node.is_some() {
+            return Vec::new();
+        }
+        let filter = &self.query.filter;
+        let rows: Vec<&ImageRow> = if filter.is_firmware() {
+            self.snapshot
+                .firmware_rows
+                .iter()
+                .map(|r| &r.image)
+                .collect()
+        } else if filter.is_media() {
+            self.snapshot.media_rows.iter().map(|r| &r.image).collect()
+        } else if *filter == Filter::MachineFiles {
+            return Vec::new();
+        } else {
+            self.snapshot
+                .rows
+                .iter()
+                .filter(|r| r.group.is_none())
+                .map(|r| &r.image)
+                .collect()
+        };
+        if self.library_multi.len() > 1 {
+            return self
+                .library_multi
+                .iter()
+                .filter_map(|tag| {
+                    rows.iter()
+                        .find(|r| r.reference == *tag)
+                        .map(|r| (*r).clone())
+                })
+                .collect();
+        }
+        let single = if filter.is_firmware() {
+            self.firmware_selected.as_ref().map(|r| r.image.clone())
+        } else if filter.is_media() {
+            self.media_selected.as_ref().map(|r| r.image.clone())
+        } else if self.machine.is_none() {
+            self.selected.clone()
+        } else {
+            None
+        };
+        single.into_iter().collect()
+    }
+
+    /// Push to… has something to push: library items selected, none of
+    /// them an image this release does not read.
+    pub fn can_push_to(&self) -> bool {
+        let selection = self.push_selection();
+        !selection.is_empty()
+            && selection
+                .iter()
+                .all(|row| row.summary.as_ref().and_then(|s| s.needs_newer()).is_none())
+    }
+
+    /// Image › Push to…, the toolbar's Push… and the Push to… buttons: one
+    /// selected item opens its dialog, several open one list; the worker
+    /// builds the dry runs. Refused, with nothing opened, while nothing
+    /// pushable is selected.
     pub fn begin_push(&mut self, accounts: crate::registry_transfer::Accounts) {
         if self.refused_as_newer(self.target_needs_newer()) {
             return;
         }
-        let selected = if self.query.filter.is_firmware() {
-            self.firmware_selected
-                .as_ref()
-                .map(|row| row.image.reference.clone())
+        let selection = self.push_selection();
+        if !self.can_push_to() {
+            return;
+        }
+        let listing = self.remote_listing();
+        self.push = None;
+        self.push_batch = None;
+        match selection.as_slice() {
+            [one] => {
+                let (dialog, request) = crate::registry_transfer::PushDialog::open(
+                    accounts,
+                    self.platform_facts.clone(),
+                    Some(one.reference.clone()),
+                );
+                self.push = Some(dialog.with_listing(listing));
+                self.send(Request::Transfer(request));
+            }
+            several => {
+                let tags = several.iter().map(|row| row.reference.clone()).collect();
+                let (batch, request) = library_model::push_batch::PushBatch::open_to(
+                    accounts,
+                    self.platform_facts.clone(),
+                    listing,
+                    tags,
+                );
+                self.push_batch = Some(batch);
+                self.send(Request::Transfer(request));
+            }
+        }
+    }
+
+    /// A click on a row of Images, Installation media or Firmware, by its
+    /// tag, with the modifiers held: alone it selects the row; with Ctrl
+    /// (⌘ on macOS) it adds the row to the selection or takes it out; with
+    /// Shift it selects the rows between the last click and this one.
+    /// `current` is the row selected alone so far, `rows` the list's tags
+    /// from the top. Returns the tag to select alone, or `None` while
+    /// several stay selected.
+    pub(super) fn pick_library(
+        &mut self,
+        tag: &str,
+        current: Option<String>,
+        modifiers: egui::Modifiers,
+        rows: &[String],
+    ) -> Option<String> {
+        if modifiers.command {
+            if self.library_multi.len() < 2 {
+                self.library_multi = current.into_iter().collect();
+            }
+            match self.library_multi.iter().position(|t| t == tag) {
+                Some(at) => {
+                    self.library_multi.remove(at);
+                }
+                None => self.library_multi.push(tag.into()),
+            }
+            self.library_anchor = Some(tag.into());
+        } else if let (true, Some(anchor)) = (modifiers.shift, self.library_anchor.clone()) {
+            let at = |t: &str| rows.iter().position(|r| r == t);
+            self.library_multi = match (at(&anchor), at(tag)) {
+                (Some(a), Some(b)) => rows[a.min(b)..=a.max(b)].to_vec(),
+                _ => vec![tag.into()],
+            };
         } else {
-            self.selected.as_ref().map(|row| row.reference.clone())
+            self.library_multi.clear();
+            self.library_anchor = Some(tag.into());
+        }
+        if self.library_multi.len() < 2 {
+            let alone = self.library_multi.pop();
+            self.library_multi.clear();
+            return Some(alone.unwrap_or_else(|| tag.into()));
+        }
+        None
+    }
+
+    /// Several rows of Images, Installation media or Firmware are selected
+    /// with Ctrl or Shift: only Push to… takes them, and every command of a
+    /// single item is disabled and refused.
+    pub fn several_selected(&self) -> bool {
+        self.library_multi.len() > 1 && self.remote.node.is_none()
+    }
+
+    /// The row is one of several selected.
+    pub(super) fn picked(&self, tag: &str) -> bool {
+        self.library_multi.len() > 1 && self.library_multi.iter().any(|t| t == tag)
+    }
+
+    /// The place Push here… of the shown Remotes node pushes to.
+    pub fn push_place(&self) -> Option<library_model::push_destination::Place> {
+        let node = self.remote.node.as_ref()?;
+        self.remote.node_place(node)
+    }
+
+    /// Push here… applies: a registry or namespace node is shown, and its
+    /// registry answers.
+    pub fn can_push_here(&self) -> bool {
+        self.push_place()
+            .is_some_and(|place| self.remote.push_blocked(&place.host).is_none())
+    }
+
+    /// Image › Push here…, the toolbar's Push… on a Remotes node and the
+    /// Push here… button of a node's pane: the library listed for `place`.
+    /// Refused while its registry does not answer.
+    pub fn begin_push_here(&mut self, place: library_model::push_destination::Place) {
+        if self.remote.push_blocked(&place.host).is_some() {
+            return;
+        }
+        let Some(accounts) = self.remote.model.as_ref().map(|m| m.accounts().clone()) else {
+            return;
         };
-        let (dialog, request) = crate::registry_transfer::PushDialog::open(
+        let listing = self.remote_listing();
+        self.push = None;
+        let (batch, request) = library_model::push_batch::PushBatch::open_here(
             accounts,
             self.platform_facts.clone(),
-            selected,
+            listing,
+            place,
         );
-        self.push = Some(dialog);
+        self.push_batch = Some(batch);
         self.send(Request::Transfer(request));
     }
+
+    /// What this session's Remotes listed, for the checks before a push.
+    fn remote_listing(&self) -> crate::registry_transfer::Listing {
+        self.remote
+            .model
+            .as_ref()
+            .map(|m| m.listing())
+            .unwrap_or_default()
+    }
+
+    /// A push's answers that reach past its dialog: a published tag shows
+    /// in Remotes at once, and the library's dry runs feed a namespace's
+    /// pane.
+    fn on_push_event(&mut self, event: &crate::registry_transfer::TransferEvent) {
+        use crate::registry_transfer::TransferEvent;
+        match event {
+            TransferEvent::Landed { landed, .. } => {
+                if let Some(model) = &mut self.remote.model {
+                    model.landed(landed);
+                }
+            }
+            TransferEvent::PlannedAll { id, result } => {
+                let mine = self
+                    .plans_wanted
+                    .take_if(|wanted| wanted.0 == *id)
+                    .map(|(_, tags)| tags);
+                let batch = self.push_batch.as_ref().is_some_and(|b| b.owns(*id));
+                if let Some(tags) = mine.or_else(|| batch.then(|| self.snapshot.tags.clone())) {
+                    self.push_plans = Some((tags, result.clone()));
+                    self.here_cache = None;
+                }
+            }
+            _ => {}
+        }
+        if let Some(batch) = &mut self.push_batch {
+            let running = batch.running();
+            batch.on_event(event);
+            if running && !batch.running() {
+                let pushed: Vec<String> = batch.landed.iter().map(ToString::to_string).collect();
+                self.status = Some(if pushed.is_empty() {
+                    "Nothing was pushed.".into()
+                } else {
+                    format!("Pushed {}", pushed.join(", "))
+                });
+            }
+        }
+    }
+
+    /// How many library items could go to the shown node, for its pane:
+    /// worked out from the library's dry runs, read once on the worker,
+    /// and the registries list, read again only when the node, the
+    /// registries or the dry runs change.
+    fn here_counts(&mut self) -> Option<remotes::HereCounts> {
+        let node = self.remote.node.clone()?;
+        node.namespace.as_ref()?;
+        let place = self.remote.node_place(&node)?;
+        // Asked again only when the library's tags change: an answer, a
+        // failure included, stands until then.
+        let stale = self
+            .push_plans
+            .as_ref()
+            .is_none_or(|(tags, _)| *tags != self.snapshot.tags);
+        if stale && self.plans_wanted.is_none() && self.snapshot.read && !self.worker_dead {
+            let id = crate::registry_transfer::next_id();
+            self.plans_wanted = Some((id, self.snapshot.tags.clone()));
+            self.send(Request::Transfer(
+                crate::registry_transfer::TransferRequest::PlanAll { id },
+            ));
+        }
+        let plans = self.push_plans.as_ref()?.1.as_ref().ok()?;
+        let model = self.remote.model.as_ref()?;
+        let revision = model.revision();
+        if let Some((cached, at, count, counts)) = &self.here_cache {
+            if *cached == place && *at == revision && *count == plans.len() {
+                return Some(*counts);
+            }
+        }
+        // Preferences are read once; the listing is this session's memory.
+        let mut rules = self
+            .here_rules
+            .get_or_insert_with(|| model.accounts().rules(Default::default()))
+            .clone();
+        rules.listing = model.listing();
+        let mut counts = remotes::HereCounts {
+            can: 0,
+            same: 0,
+            total: plans.len(),
+        };
+        for (image, plan) in plans {
+            let target = library_model::push_destination::here_destination(image, &place);
+            let evaluation = rules.evaluate(plan.as_ref().ok(), None, &target.to_string());
+            match evaluation.verdict {
+                crate::registry_transfer::Verdict::Same => counts.same += 1,
+                crate::registry_transfer::Verdict::Ready
+                | crate::registry_transfer::Verdict::Login
+                | crate::registry_transfer::Verdict::Move { .. } => counts.can += 1,
+                _ => {}
+            }
+        }
+        self.here_cache = Some((place, revision, plans.len(), counts));
+        Some(counts)
+    }
+
+    /// Show in Remotes of a finished push: the registry's node of the tag's
+    /// namespace, with the tag selected.
+    pub fn show_remote(
+        &mut self,
+        target: &image_registry::Reference,
+        selected_file: &mut Option<usize>,
+    ) {
+        let Some(tag) = target.tag.clone() else {
+            return;
+        };
+        let namespace = target
+            .repository
+            .split_once('/')
+            .map(|(first, _)| first.to_owned());
+        let node = remotes::Node {
+            host: target.host.clone(),
+            namespace: Some(namespace.clone()),
+            group: None,
+        };
+        self.remote.open.insert(target.host.clone());
+        self.select_remote(node, selected_file);
+        self.remote.selected = Some((target.host.clone(), target.repository.clone(), tag.clone()));
+        if let Some(model) = &mut self.remote.model {
+            if let Some(request) = model.select(&target.host, &target.repository, &tag) {
+                self.send_browse(request);
+            }
+        }
+        // A registry this session listed shows the row the push added; one
+        // it did not lists now, and shows the tag once its listing has it.
+        let listed = self
+            .remote
+            .model
+            .as_ref()
+            .and_then(|m| m.registry(&target.host))
+            .is_some_and(|v| v.state == crate::remote_browse::State::Listed || v.stale());
+        self.status = Some(if listed {
+            format!(
+                "Showing {target} in Remotes. The row came from the pushed manifest; no request was made."
+            )
+        } else {
+            format!(
+                "Showing {target} in Remotes: {} is listed now, as it was not in this session.",
+                target.host
+            )
+        });
+    }
+
     /// The kind of transfer a dialog runs now, for the question before quitting.
     pub fn running_transfer(&self) -> Option<&'static str> {
-        if self.push.as_ref().is_some_and(|d| d.running()) {
+        if self.push.as_ref().is_some_and(|d| d.running())
+            || self.push_batch.as_ref().is_some_and(|d| d.running())
+        {
             Some("push")
         } else if self.pull.as_ref().is_some_and(|d| d.running())
             || self.remote_pull.as_ref().is_some_and(|d| d.running())
@@ -1902,15 +2312,30 @@ impl LibraryView {
             self.platform_facts.clone(),
         ));
     }
-    /// Preferences closed: a registry whose Log in… opened them lists again.
+    /// Preferences closed: a registry whose Log in… opened them lists
+    /// again, and an open push judges its destinations anew, as after a
+    /// login there.
     pub fn preferences_closed(&mut self) {
         self.remote_preferences_closed();
+        let listing = self.remote_listing();
+        if let Some(dialog) = &mut self.push {
+            dialog.reload(listing.clone());
+        }
+        if let Some(dialog) = &mut self.push_batch {
+            dialog.reload(listing);
+        }
+        self.here_cache = None;
+        self.here_rules = None;
     }
     pub fn begin_import(&mut self, path: &Path) {
         self.import = Some((path.to_string_lossy().into_owned(), String::new()));
     }
     /// Delete tag… of the selected image.
     pub fn begin_delete(&mut self) {
+        // Several rows selected: a command of one item takes none.
+        if self.several_selected() {
+            return;
+        }
         if self.machine.is_some() {
             return;
         }
@@ -1969,6 +2394,7 @@ impl LibraryView {
             || self.media_import.is_some()
             || self.new_machine.is_some()
             || self.push.is_some()
+            || self.push_batch.is_some()
             || self.pull.is_some()
             || self.remote_pull.is_some()
             || self.remote.contents.is_some()
@@ -1992,6 +2418,7 @@ impl LibraryView {
         }
         self.new_machine = None;
         self.push = None;
+        self.push_batch = None;
         self.pull = None;
         self.remote_pull = None;
         self.remote.contents = None;
@@ -2001,6 +2428,10 @@ impl LibraryView {
     /// selection, so Start never targets a machine that is no longer shown;
     /// Machines and Images each keep only their own kind of selection.
     fn set_filter(&mut self, filter: Filter, selected_file: &mut Option<usize>) {
+        // A selection of several stays within its collection.
+        if filter != self.query.filter {
+            self.library_multi.clear();
+        }
         let leaves_machines = self.query.filter.is_machines() != filter.is_machines();
         if filter.is_firmware() || filter.is_media() || leaves_machines {
             self.selected = None;
@@ -2142,6 +2573,9 @@ impl LibraryView {
     ) -> Vec<Command> {
         if std::mem::take(&mut self.clear_file_selection) {
             *selected_file = None;
+        }
+        if let Some(target) = self.remote_wanted.take() {
+            self.show_remote(&target, selected_file);
         }
         ui.add_enabled_ui(!self.busy, |ui| {
             self.show_contents(ui, files, selected_file)
@@ -2393,6 +2827,7 @@ impl LibraryView {
                     .filter(|m| m.listing.machine.image.digest == *digest)
                     .count()
             };
+            let snapshot = self.snapshot.clone();
             egui::ScrollArea::horizontal()
                 .id_salt("library-columns")
                 .show(ui, |ui| {
@@ -2449,7 +2884,7 @@ impl LibraryView {
                                             commands.push(Command::Start);
                                         }
                                     } else if let Some(row) =
-                                        self.snapshot.rows.get(index - visible_files.len())
+                                        snapshot.rows.get(index - visible_files.len())
                                     {
                                         if let Some(count) = row.group {
                                             let repo = row.image.repository().to_owned();
@@ -2470,10 +2905,14 @@ impl LibraryView {
                                             let summary = image.summary.as_ref();
                                             let cells =
                                                 row_cells(row, made(&image.descriptor.digest));
-                                            let selected = self
-                                                .selected
-                                                .as_ref()
-                                                .is_some_and(|r| r.same(image));
+                                            let several = self.library_multi.len() > 1;
+                                            let selected = if several {
+                                                self.picked(&image.reference)
+                                            } else {
+                                                self.selected
+                                                    .as_ref()
+                                                    .is_some_and(|r| r.same(image))
+                                            };
                                             // An image this release does not
                                             // read says why on its name (§5.6).
                                             let hints = [
@@ -2484,7 +2923,7 @@ impl LibraryView {
                                                         )
                                                     },
                                                 ),
-                                                Some(source(&image.descriptor).hint()),
+                                                Some(source_hint(&image.descriptor)),
                                             ];
                                             let (clicked, double) = draw_cells_with_hints(
                                                 ui,
@@ -2496,7 +2935,42 @@ impl LibraryView {
                                                 image_lead(row),
                                                 &hints,
                                             );
-                                            if (clicked || double) && !selected {
+                                            let alone = if clicked || double {
+                                                let modifiers = ui.input(|i| i.modifiers);
+                                                let rows: Vec<String> = snapshot
+                                                    .rows
+                                                    .iter()
+                                                    .filter(|r| r.group.is_none())
+                                                    .map(|r| r.image.reference.clone())
+                                                    .collect();
+                                                let current = self
+                                                    .selected
+                                                    .as_ref()
+                                                    .filter(|_| self.machine.is_none())
+                                                    .map(|r| r.reference.clone());
+                                                self.pick_library(
+                                                    &image.reference,
+                                                    current,
+                                                    modifiers,
+                                                    &rows,
+                                                )
+                                            } else {
+                                                None
+                                            };
+                                            let image = match &alone {
+                                                Some(tag) if *tag != image.reference => snapshot
+                                                    .rows
+                                                    .iter()
+                                                    .find(|r| r.image.reference == *tag)
+                                                    .map_or(image, |r| &r.image),
+                                                _ => image,
+                                            };
+                                            let summary = image.summary.as_ref();
+                                            let mine = self
+                                                .selected
+                                                .as_ref()
+                                                .is_some_and(|r| r.same(image));
+                                            if alone.is_some() && (!mine || several) {
                                                 self.pending_launch = None;
                                                 self.machine = None;
                                                 self.selected = Some(image.clone());
@@ -2558,6 +3032,8 @@ impl LibraryView {
         pane::style(ui);
         if self.remote.node.is_some() {
             self.remote_details(ui);
+        } else if self.library_multi.len() > 1 && !self.query.filter.is_machines() {
+            self.several_details(ui, commands);
         } else if self.query.filter.is_firmware() {
             match self.firmware_selected.clone() {
                 Some(row) => {
@@ -2570,6 +3046,7 @@ impl LibraryView {
                         &machines,
                     );
                     self.pane_action(&row, action);
+                    self.push_section(ui, &row.image, commands);
                 }
                 None => {
                     ui.label("Select a firmware package for details.");
@@ -2588,6 +3065,8 @@ impl LibraryView {
                         }
                         None => (),
                     }
+                    let image = row.image.clone();
+                    self.push_section(ui, &image, commands);
                 }
                 None => {
                     ui.label("Select an installation set for details.");
@@ -2637,6 +3116,50 @@ impl LibraryView {
         } else {
             ui.label("Select an image tag or machine file for details.");
         }
+    }
+
+    /// The pane of several items selected with Ctrl or Shift.
+    fn several_details(&mut self, ui: &mut egui::Ui, commands: &mut Vec<Command>) {
+        let rows = self.push_selection();
+        let items: Vec<library_ui::push_view::Selected> = rows
+            .iter()
+            .map(|row| library_ui::push_view::Selected {
+                image: crate::registry_transfer::LocalImage::of(&row.reference, &row.descriptor),
+                source: source_cell(&row.descriptor),
+                size: row.summary.as_ref().map(|s| s.stored_size),
+                open: row.summary.as_ref().map(|s| image_rights(s).open),
+            })
+            .collect();
+        match library_ui::push_view::several_items(ui, &items) {
+            Some(library_ui::push_view::SeveralAction::PushTo) => commands.push(Command::Push),
+            Some(library_ui::push_view::SeveralAction::Clear) => self.library_multi.clear(),
+            None => {}
+        }
+    }
+
+    /// The Push to… part of a set's or package's pane: where it came from
+    /// and went, where Push to… sends it, the registries it is on, and the
+    /// Push to… button.
+    fn push_section(&mut self, ui: &mut egui::Ui, row: &ImageRow, commands: &mut Vec<Command>) {
+        let image = crate::registry_transfer::LocalImage::of(&row.reference, &row.descriptor);
+        pane::facts(ui, "push-facts", |ui| {
+            library_ui::push_view::item_facts(ui, &image, &row.descriptor);
+        });
+        let listing = self.remote_listing();
+        if let Some(target) =
+            library_ui::push_view::on_registries(ui, &image, &row.descriptor, &listing)
+        {
+            self.remote_wanted = Some(target);
+        }
+        let reads = row.summary.as_ref().and_then(|s| s.needs_newer()).is_none();
+        pane::actions(ui, |ui| {
+            if ui
+                .add_enabled(reads, egui::Button::new("Push to…"))
+                .clicked()
+            {
+                commands.push(Command::Push);
+            }
+        });
     }
 
     /// Carry out what a selected image's pane asked for.
@@ -2785,6 +3308,9 @@ impl LibraryView {
             })
             .collect();
         let mut hinted = Vec::new();
+        let local_image = crate::registry_transfer::LocalImage::of(&row.reference, &row.descriptor);
+        let listing = self.remote_listing();
+        let mut shown_remote = None;
         let labels = &mut self.labels;
         pane::split(
             ui,
@@ -2912,6 +3438,7 @@ impl LibraryView {
                             ui.horizontal_wrapped(|ui| pane::rights(ui, rights.open));
                         });
                     }
+                    library_ui::push_view::item_facts(ui, &local_image, &row.descriptor);
                     if let Some(summary) = summary {
                         pane::fact(ui, "Labels", |ui| {
                             ui.horizontal_wrapped(|ui| {
@@ -2938,6 +3465,14 @@ impl LibraryView {
             },
             |ui| {
                 pane::firmware_section(ui, image_facts, None);
+                if let Some(target) = library_ui::push_view::on_registries(
+                    ui,
+                    &local_image,
+                    &row.descriptor,
+                    &listing,
+                ) {
+                    shown_remote = Some(target);
+                }
                 pane::section(ui, format!("Machines from this image ({})", made.len()));
                 if made.is_empty() {
                     pane::meta(
@@ -2985,7 +3520,7 @@ impl LibraryView {
                     "Changes create a new image revision; disks are shared.",
                 ),
                 ("Layers…", reads, Command::Layers, ""),
-                ("Push…", reads, Command::Push, ""),
+                ("Push to…", reads, Command::Push, ""),
                 ("Delete tag…", true, Command::DeleteTag, ""),
             ] {
                 let button = if command == Command::Start {
@@ -3013,6 +3548,9 @@ impl LibraryView {
         self.facts = facts;
         self.checked = checked;
         self.selected = Some(row);
+        if let Some(target) = shown_remote {
+            self.remote_wanted = Some(target);
+        }
         if actions.is_empty() {
             return;
         }
@@ -3293,21 +3831,49 @@ impl LibraryView {
         requests
     }
     fn transfer_modals(&mut self, ctx: &egui::Context, classic: bool, requests: &mut Vec<Request>) {
-        use crate::registry_transfer_view::{show_pull, show_push, show_remote_pull, Action};
+        use crate::registry_transfer_view::{
+            show_pull, show_push, show_push_batch, show_remote_pull, Action,
+        };
+        let mut shown = None;
         if let Some(dialog) = &mut self.push {
             match show_push(ctx, dialog, classic) {
                 Action::Send(request) => requests.push(Request::Transfer(request)),
                 Action::SendAll(list) => requests.extend(list.into_iter().map(Request::Transfer)),
                 Action::Close => self.push = None,
+                Action::LogIn(host) => self.login_wanted = Some(host),
+                Action::ShowInRemotes(target) => {
+                    self.push = None;
+                    shown = Some(target);
+                }
                 Action::None | Action::ShowPulled | Action::NewMachine => (),
             }
+        }
+        if let Some(dialog) = &mut self.push_batch {
+            match show_push_batch(ctx, dialog, classic) {
+                Action::Send(request) => requests.push(Request::Transfer(request)),
+                Action::SendAll(list) => requests.extend(list.into_iter().map(Request::Transfer)),
+                Action::Close => self.push_batch = None,
+                Action::LogIn(host) => self.login_wanted = Some(host),
+                Action::ShowInRemotes(target) => {
+                    self.push_batch = None;
+                    shown = Some(target);
+                }
+                Action::None | Action::ShowPulled | Action::NewMachine => (),
+            }
+        }
+        if let Some(target) = shown {
+            self.remote_wanted = Some(target);
         }
         if let Some(dialog) = &mut self.pull {
             match show_pull(ctx, dialog, classic) {
                 Action::Send(request) => requests.push(Request::Transfer(request)),
                 Action::SendAll(list) => requests.extend(list.into_iter().map(Request::Transfer)),
                 Action::Close => self.pull = None,
-                Action::None | Action::ShowPulled | Action::NewMachine => (),
+                Action::None
+                | Action::ShowPulled
+                | Action::NewMachine
+                | Action::LogIn(_)
+                | Action::ShowInRemotes(_) => (),
             }
         }
         if let Some(dialog) = &mut self.remote_pull {
@@ -3337,7 +3903,7 @@ impl LibraryView {
                         self.new_machine_from(&tag, image, &name);
                     }
                 }
-                Action::None => (),
+                Action::None | Action::LogIn(_) | Action::ShowInRemotes(_) => (),
             }
         }
         self.remote_contents(ctx, classic);

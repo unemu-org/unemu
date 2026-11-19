@@ -10,7 +10,7 @@ use image_store::{
     summary::{ArtifactKind, Facets, ImageSummary, SummaryCache},
     Digest,
 };
-use library_model::listing::{listed, source, ImageRow};
+use library_model::listing::{listed, source_cell, ImageRow};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The collection, list or facet the tree selects.
@@ -147,7 +147,7 @@ fn facets_for(filter: &Filter) -> Facets {
 fn sort_value(row: &ImageRow, column: usize) -> String {
     let s = row.summary.as_ref();
     match column {
-        1 => source(&row.descriptor).text(),
+        1 => source_cell(&row.descriptor),
         2 => row.reference.clone(),
         3 => row.descriptor.digest.hex().to_owned(),
         5 => s.map(redistribution).unwrap_or_default().into(),
