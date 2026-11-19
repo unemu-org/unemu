@@ -2078,6 +2078,7 @@ mod tests {
                 text,
                 "unemupc VERSION\n\
                  core unemupc VERSION (unemupc), contract 0.2\n\
+                 core unemunes 0.0.1 (unemunes), contract 0.2\n\
                  LICENCE NOTICE\n\nFONT NOTICE\n\nEGUI FONT NOTICE\n\n\
                  SYMBOL FONT NOTICE\n\nOPL3 NOTICE",
                 "{option}"

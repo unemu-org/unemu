@@ -121,11 +121,30 @@ mkdir "$work/texts" "$work/crates-of"
 : > "$work/standard"
 while IFS=$'\t' read -r name version licence source directory authors; do
   found=0
-  # A git dependency's licence may sit at its repository root, two levels
-  # above its manifest.
+  # A git dependency's licence may sit at its repository root: the checkout's
+  # top directory, which cargo marks with .cargo-ok, up to three levels above
+  # the crate (crates/NAME in a workspace of several crates). Every directory
+  # up to that root is searched only when the marker is found; without it (a
+  # vendored or other source) only the crate's parent is, so a directory
+  # outside the dependency, such as this repository, is never taken for it.
   roots=("$directory")
   if [[ $source == git+* ]]; then
-    roots+=("$(dirname "$directory")")
+    climbed=()
+    up=$directory
+    checkout=0
+    for _ in 1 2 3; do
+      up=$(dirname "$up")
+      climbed+=("$up")
+      if [[ -e $up/.cargo-ok ]]; then
+        checkout=1
+        break
+      fi
+    done
+    if (( checkout )); then
+      roots+=("${climbed[@]}")
+    else
+      roots+=("$(dirname "$directory")")
+    fi
   fi
   for root in "${roots[@]}"; do
     while IFS= read -r -d '' file; do

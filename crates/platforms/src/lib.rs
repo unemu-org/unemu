@@ -2,9 +2,11 @@
 //! The emulator platforms compiled into the programs, named in one place so
 //! the command line and the desktop list the same cores, accept the same
 //! artifacts and print the same licence notice (core-contract.md §7.1,
-//! §13.4), and push with the same guard. Today that is one platform, the
-//! IBM PC/AT family: its core is `unemu-pc-core`, its image providers and
-//! firmware catalogue live in `pc-image`.
+//! §13.4), and push with the same guard. Two platforms: the IBM PC/AT
+//! family, whose core is `unemu-pc-core` and whose image providers and
+//! firmware catalogue live in `pc-image`, and the NES, whose core is
+//! `unemu-nes-core` from the unemunes repository; it opens cartridge images
+//! and has no image providers.
 
 use image_registry::{push, Reference, RegistryEntry};
 use image_store::{ConfigValidator, Digest, Manifest, Store};
@@ -19,9 +21,13 @@ use unemu_core_api::Core;
 /// which no release build sets.
 pub fn cores() -> &'static [&'static dyn Core] {
     #[cfg(not(feature = "test-core"))]
-    static CORES: [&dyn Core; 1] = [&unemu_pc_core::PcCore];
+    static CORES: [&dyn Core; 2] = [&unemu_pc_core::PcCore, &unemu_nes_core::NesCore];
     #[cfg(feature = "test-core")]
-    static CORES: [&dyn Core; 2] = [&unemu_pc_core::PcCore, &unemu_test_core::TestCore];
+    static CORES: [&dyn Core; 3] = [
+        &unemu_pc_core::PcCore,
+        &unemu_nes_core::NesCore,
+        &unemu_test_core::TestCore,
+    ];
     &CORES
 }
 
@@ -122,14 +128,15 @@ mod tests {
         assert_eq!(repeated_ids(cores()), Vec::<String>::new());
     }
 
-    /// Only the PC core ships; the test core joins with its feature alone.
+    /// The PC core and the NES core ship, in that order; the test core
+    /// joins with its feature alone.
     #[test]
-    fn the_list_is_the_pc_core_and_the_test_core_only_with_its_feature() {
+    fn the_list_is_the_pc_and_nes_cores_and_the_test_core_only_with_its_feature() {
         let ids: Vec<_> = cores().iter().map(|core| core.description().id).collect();
         if cfg!(feature = "test-core") {
-            assert_eq!(ids, ["unemupc", "unemu-test-core"]);
+            assert_eq!(ids, ["unemupc", "unemunes", "unemu-test-core"]);
         } else {
-            assert_eq!(ids, ["unemupc"]);
+            assert_eq!(ids, ["unemupc", "unemunes"]);
         }
     }
 

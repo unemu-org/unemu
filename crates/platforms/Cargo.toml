@@ -20,8 +20,9 @@ pc-image = { path = "../pc-image", version = "0.0.2" }
 # The cores compiled in.
 unemu-core-api.workspace = true
 unemu-pc-core.workspace = true
-# The scripted core, only for trying the front end's generic path by hand
-# before a second real core exists; see the `test-core` feature.
+unemu-nes-core.workspace = true
+# The scripted core, only for trying the front end's generic path by hand;
+# see the `test-core` feature.
 unemu-test-core = { path = "../test-core", version = "0.0.2", optional = true }
 
 [features]
@@ -34,3 +35,5 @@ test-core = ["dep:unemu-test-core"]
 [dev-dependencies]
 # The check the programs make of every core, run over the list.
 core-launch = { path = "../core-launch", version = "0.0.2" }
+# A scratch directory for the cartridge file the NES test opens.
+image-store = { path = "../image-store", version = "0.0.2", features = ["test-support"] }

@@ -54,9 +54,10 @@ wildcards = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# The CPU core and the contract between front ends and cores, each pinned to an
-# exact revision in the workspace manifest.
+# The CPU core, the contract between front ends and cores, and the NES core,
+# each pinned to an exact revision in the workspace manifest.
 allow-git = [
     "https://github.com/unemu-org/x86jit",
     "https://github.com/unemu-org/unemu-core-api",
+    "https://github.com/unemu-org/unemunes",
 ]

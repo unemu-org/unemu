@@ -1,6 +1,7 @@
 upcli VERSION
 emulator of period IBM-compatible PCs, command line
 core unemupc VERSION (unemupc), contract 0.2
+core unemunes 0.0.1 (unemunes), contract 0.2
 LICENCE NOTICE
 
 third-party components:

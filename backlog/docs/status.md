@@ -5,6 +5,24 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — The NES core, compiled in:** step 16 of
+  design/core-contract.md §13.6. Both programs carry `unemu-nes-core`
+  from unemunes, pinned to revision `7c5abb52` (built against the same
+  `unemu-core-api` v0.2.0 commit, so one copy of the contract stays in the
+  build; `deny.toml` allows that git source and no other new one). The NES
+  core follows the PC in `platforms::cores()`, so `--version` and `--about`
+  of both programs gain the line `core unemunes 0.0.1 (unemunes), contract
+  0.2`, and the desktop's File › Open… is enabled in the release: its dialog
+  offers "NES cartridge images (*.nes)", and `--open FILE.nes` starts one.
+  Only NROM (mapper 0) images run; another mapper or a damaged image is
+  refused with the core's reason. The third-party licence list names `nes`,
+  `unemu-nes-core` and `x65` (MIT OR Apache-2.0) with the licence files at
+  the root of their repository, which `scripts/third-party-licenses.sh`
+  now finds in a workspace checkout of several crates. A golden in
+  `platforms` builds a checkerboard cartridge from our own bytes, opens it
+  through `core_launch::prepare` and `start`, and pins 8 frames within
+  80 000 instructions and the picture's FNV-1a digest
+  `0x64CB5BF7C2F11325` for the pinned revision.
 - **2026-11-19 — Saved state in the player:** step 15 of
   design/core-contract.md §13.6. A machine opened with Open… whose core
   lists saved state has Save state (Ctrl+Alt+S) and Load state
@@ -38,8 +56,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   button reads Reset. Pad keys are read from and written to `pads` in the
   preferences; a file's machine keeps its records under `unemupc/saves`
   (states later under `unemupc/states`) in the data directory. With the
-  release's cores (the PC alone, which opens no files) File › Open… is
-  greyed with "No core in this release opens files"; the `test-core`
+  release's cores of this step (the PC alone, which opens no files) File ›
+  Open… was greyed with "No core in this release opens files"; the `test-core`
   feature of `platforms` adds the scripted test core for trying it by hand.
 - **2026-11-19 — The player, the view of a machine started from a file:**
   step 13 of design/core-contract.md §13.6. The new crate `player-ui`

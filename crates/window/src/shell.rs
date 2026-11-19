@@ -8412,8 +8412,9 @@ mod tests {
                         shell.image_library.close_dialogs();
                     }
                     Command::Placeholder(_) | Command::Shortcuts => assert!(shell.dialog.is_some()),
-                    // No core of the release opens files.
-                    Command::Open => assert!(!shell.file_dialogs.is_open()),
+                    // The release's NES core opens files: the host's dialog
+                    // asks for one.
+                    Command::Open => assert!(shell.file_dialogs.is_open()),
                     Command::Minimize => assert!(!shell.guest_focus),
                     Command::Settings => assert!(!shell.guest_focus),
                     Command::Release => {
@@ -15735,6 +15736,9 @@ kind='mda'
     static OPENING_CORES: [&dyn unemu_core_api::Core; 2] =
         [&unemu_pc_core::PcCore, &unemu_test_core::TestCore];
 
+    /// The PC alone, whose platform opens no files.
+    static PC_ONLY: [&dyn unemu_core_api::Core; 1] = [&unemu_pc_core::PcCore];
+
     /// The test core twice: two cores answer for one file.
     static TWO_ANSWERS: [&dyn unemu_core_api::Core; 2] =
         [&unemu_test_core::TestCore, &unemu_test_core::TestCore];
@@ -15857,6 +15861,7 @@ kind='mda'
     fn open_is_greyed_and_says_why_while_no_compiled_in_core_opens_files() {
         let mut shell = shell();
         shell.presenter = None;
+        shell.cores = Arc::new(core_launch::Cores::new(&PC_ONLY));
         assert!(!shell.command_allowed(Command::Open));
         // The item explains itself by its hover text, as a pointer finds it.
         let pointer = ui_kit::test_support::Pointer::new(Vec2::new(1040.0, 700.0));
@@ -15881,6 +15886,34 @@ kind='mda'
         shell.cores = Arc::new(core_launch::Cores::new(&OPENING_CORES));
         assert!(shell.command_allowed(Command::Open));
         assert_eq!(shell.disabled_reason(Command::Open), None);
+    }
+
+    /// The release's cores: the NES core opens its cartridge images, so
+    /// Open… is enabled and the host's dialog offers them.
+    #[test]
+    fn open_is_enabled_in_the_release_and_offers_nes_cartridge_images() {
+        let mut shell = shell();
+        shell.presenter = None;
+        let host = file_dialog::fake::Host::default();
+        shell.file_dialogs = file_dialog::FileDialogs::with_host(host.boxed());
+        assert!(shell.command_allowed(Command::Open));
+        assert_eq!(shell.disabled_reason(Command::Open), None);
+        shell.command(Command::Open, &egui::Context::default());
+        assert!(shell.file_dialogs.is_open());
+        let request = host.requests.borrow().last().cloned().unwrap();
+        let filters: Vec<&str> = request
+            .filters
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(
+            filters,
+            [
+                "All supported files (*.nes)",
+                "NES cartridge images (*.nes)",
+                "All files (*.*)"
+            ]
+        );
     }
 
     #[test]
