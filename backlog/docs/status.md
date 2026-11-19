@@ -5,6 +5,22 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — Recipes are scaffolded from the author's files; their
+  inputs list for ROM managers:** step B9 of design/recipes.md §19.2.
+  `upcli recipe scaffold FILE|FOLDER...` prints the `[input]` tables of
+  the files named, with sizes and SHA-256; a zip archive also gets an
+  `unpack` step listing every member in the archive's order with its size,
+  hash and the archive's time, and a folder becomes a file set in the
+  `fat` step's name order, without times, at most 100,000 files. `upcli
+  recipe inputs FILE --format dat|csv|sha256sums` lists a recipe's inputs
+  as a Logiqx DAT, a CSV or `sha256sum -c` lines, one folder's layout.
+  MEASURED (`cli-pc` test `recipe_scaffold`): synthetic files scaffold
+  byte for byte to text that passes `recipe check`, the three forms are
+  byte for byte, `sha256sum -c` accepts the files. The B9 proof, on the
+  maintainer's own files: LABFULL.ZIP scaffolds to the corpus's input
+  table and 19 members with their times, the AZURAMON folder to its 561
+  entries, both byte for byte. commands.md,
+  Scaffolding recipes and listing their inputs.
 - **2026-11-19 — Local images that need a newer unemupc:** the desktop's part of decision-30
   (`upc-dfs.15` part 2; design/machine-images.md §5.6). The summary cache, now schema 8, keeps
   each artifact's `unemu.min-app-version` and reads it before any config. An image, set or

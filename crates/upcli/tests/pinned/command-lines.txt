@@ -229,6 +229,15 @@ Ok(Line(Recipe(Conformance(ConformanceOptions { paths: ["FILE", "FOLDER"], libra
 $ recipe conformance FOLDER --library DIR --library DIR2 --store DIR --config FILE
 Ok(Line(Recipe(Conformance(ConformanceOptions { paths: ["FOLDER"], libraries: ["DIR", "DIR2"], store: Some("DIR"), config: Some("FILE") }))))
 
+$ recipe scaffold FILE FOLDER
+Ok(Line(Recipe(Scaffold(["FILE", "FOLDER"]))))
+
+$ recipe inputs FILE --format dat
+Ok(Line(Recipe(Inputs(InputsOptions { path: "FILE", format: Dat }))))
+
+$ recipe inputs --format sha256sums FILE
+Ok(Line(Recipe(Inputs(InputsOptions { path: "FILE", format: Sha256sums }))))
+
 $ recipe
 Ok(Line(Recipe(Usage)))
 
@@ -672,6 +681,12 @@ Ok(Line(Recipe(Build(BuildOptions { path: "my.media.toml", fetch: true, librarie
 
 $ recipe build my.media.toml --keep-as 1.0-mine-r1
 Ok(Line(Recipe(Build(BuildOptions { path: "my.media.toml", fetch: false, libraries: [], store: None, config: None, keep_as: Some("1.0-mine-r1") }))))
+
+$ recipe scaffold LABFULL.ZIP AZURAMON
+Ok(Line(Recipe(Scaffold(["LABFULL.ZIP", "AZURAMON"]))))
+
+$ recipe inputs my.media.toml --format sha256sums
+Ok(Line(Recipe(Inputs(InputsOptions { path: "my.media.toml", format: Sha256sums }))))
 
 $ media create floppy --type 1.44M --format --label TRANSFER /path/to/transfer.img
 Ok(Line(Platform(Create(CreateCommand { output: "/path/to/transfer.img", force: false, kind: Floppy { format: Hd144, formatted: true, label: Some([84, 82, 65, 78, 83, 70, 69, 82, 32, 32, 32]), files: None } }))))

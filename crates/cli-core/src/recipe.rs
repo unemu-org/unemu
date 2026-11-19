@@ -16,8 +16,11 @@
 //! build, which writes the lock beside the recipe and its digest into it.
 //! `upcli recipe conformance`: builds every pinned recipe of the files and
 //! folders named into a scratch store and compares the digests (recipes
-//! §9). The recipe providers are the platforms'
-//! ([`super::CliPlatform::recipes`]).
+//! §9). `upcli recipe scaffold`: the input tables, member lists and file
+//! sets of files and folders the author has, in the recipe syntax
+//! ([`recipe::scaffold`]). `upcli recipe inputs`: a recipe's inputs as a
+//! Logiqx DAT, a CSV or a checksum file ([`recipe::inputs`]). The recipe
+//! providers are the platforms' ([`super::CliPlatform::recipes`]).
 
 use super::{library, CliPlatform, HostSources, Io};
 use recipe::library::Library;
@@ -32,13 +35,17 @@ const USAGE: &str = "usage: upcli recipe check FILE|FOLDER...
        upcli recipe build FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] [--keep-as TAG]
        upcli recipe pin FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE]
        upcli recipe conformance FILE|FOLDER... [--library DIR]... [--store DIR] [--config FILE]
+       upcli recipe scaffold FILE|FOLDER...
+       upcli recipe inputs FILE --format dat|csv|sha256sums
   check: checks recipes and work files; a folder is checked with every *.media.toml, *.firmware.toml, *.machine.toml and *.work.toml below it
   show: prints a media recipe's title record merged with its work file, with a comment on each value that came from the work file; for a pinned recipe the record of its lock, which a build writes
   plan: where each input is found (the store, the download cache, beside the recipe, the libraries of the preferences, then each --library) or why not, the steps that would run and the outputs
   build: builds a recipe and tags it <name>:<tag> in the store, or <name>:TAG with --keep-as; a pinned recipe publishes its lock's bytes once every output matched them, and with --keep-as a result that differs is kept under TAG; --fetch downloads the missing inputs from their URLs into the store's download cache, after printing what it downloads
   pin: builds a draft as build does, then writes its manifest, config and metadata to FILE.lock/sha256/ and its manifest digest into FILE
   conformance: builds each pinned recipe into a scratch store from the libraries only and compares the digest with its pin; drafts are listed, not built
-  exit 0: no findings, for plan every input found, for build and pin the artifact tagged, for conformance every pinned recipe built to its digest; 1: findings, which show, plan, build and pin print instead, for plan, build and pin an input missing, for build and pin a failed download, read, step or import, or a lock mismatch, with nothing tagged, for conformance a recipe that differs or was not built, or no pinned recipe found; 2: usage or a file that cannot be read
+  scaffold: prints an [input] table with name, size and sha256 for each file and folder named; a *.zip file also gets an unpack step that lists every file member in the archive's order with its size, sha256 and the archive's time; a folder becomes a file set, in every folder its files then its folders, each by the 8.3 name as stored (the 11-byte padded field, as the FAT builder orders them; other names after, by bytes), without times, hidden files skipped; the author adds the rest
+  inputs: prints the inputs of a recipe that passes the checks, bundled ones left out, each file-set entry under its set's name: a Logiqx DAT, a CSV (path,size,sha256,crc32,sha1,md5) or sha256sum -c lines; two inputs one folder cannot hold are refused
+  exit 0: no findings, for plan every input found, for build and pin the artifact tagged, for conformance every pinned recipe built to its digest, for scaffold and inputs the text printed; 1: findings, which show, plan, build, pin and inputs print instead, for plan, build and pin an input missing, for build and pin a failed download, read, step or import, or a lock mismatch, with nothing tagged, for conformance a recipe that differs or was not built, or no pinned recipe found, for scaffold a file or folder a recipe cannot hold (a name or member it refuses, an archive an unpack step refuses, more than 100000 files, 4096 inputs or 64 archives), for inputs two inputs at one path; 2: usage or a file that cannot be read
 ";
 
 /// A parsed `upcli recipe` command line.
@@ -51,6 +58,9 @@ pub enum RecipeCommand {
     /// `recipe pin`: the build's words without `--keep-as`.
     Pin(BuildOptions),
     Conformance(ConformanceOptions),
+    /// `recipe scaffold`: the files and folders named.
+    Scaffold(Vec<PathBuf>),
+    Inputs(InputsOptions),
     /// Words `recipe` does not take: its own usage text, exit 2.
     Usage,
 }
@@ -85,6 +95,35 @@ pub struct ConformanceOptions {
     pub libraries: Vec<PathBuf>,
     pub store: Option<PathBuf>,
     pub config: Option<PathBuf>,
+}
+
+/// The words of `upcli recipe inputs`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct InputsOptions {
+    pub path: PathBuf,
+    pub format: recipe::inputs::Format,
+}
+
+fn inputs_options(args: &[OsString]) -> Option<InputsOptions> {
+    let mut path = None;
+    let mut format = None;
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        if word == "--format" {
+            let named = recipe::inputs::Format::parse(words.next()?.to_str()?)?;
+            if format.replace(named).is_some() {
+                return None;
+            }
+        } else if word.is_empty() || word.as_encoded_bytes().starts_with(b"-") || path.is_some() {
+            return None;
+        } else {
+            path = Some(PathBuf::from(word));
+        }
+    }
+    Some(InputsOptions {
+        path: path?,
+        format: format?,
+    })
 }
 
 fn conformance_options(args: &[OsString]) -> Option<ConformanceOptions> {
@@ -215,6 +254,14 @@ pub fn parse(args: &[OsString]) -> RecipeCommand {
         [command, rest @ ..] if command == "conformance" => {
             conformance_options(rest).map_or(RecipeCommand::Usage, RecipeCommand::Conformance)
         }
+        [command, paths @ ..]
+            if command == "scaffold" && !paths.is_empty() && paths.iter().all(operand) =>
+        {
+            RecipeCommand::Scaffold(paths.iter().map(PathBuf::from).collect())
+        }
+        [command, rest @ ..] if command == "inputs" => {
+            inputs_options(rest).map_or(RecipeCommand::Usage, RecipeCommand::Inputs)
+        }
         _ => RecipeCommand::Usage,
     }
 }
@@ -243,6 +290,8 @@ pub fn execute(
             build_command(&options, true, providers, host, platforms, io)
         }
         RecipeCommand::Conformance(options) => conformance(&options, providers, host, io),
+        RecipeCommand::Scaffold(paths) => scaffold(&paths, io),
+        RecipeCommand::Inputs(options) => inputs(&options, providers, io),
         RecipeCommand::Usage => {
             let _ = io.errors.write_all(USAGE.as_bytes());
             2
@@ -759,6 +808,76 @@ fn conformance(
         return 1;
     }
     u8::from(!all)
+}
+
+/// Print the tables of the files and folders named. A text past the size a
+/// recipe may have is printed all the same, with a warning: the author
+/// keeps what the recipe needs.
+fn scaffold(paths: &[PathBuf], io: &mut Io<'_>) -> u8 {
+    match recipe::scaffold::scaffold(paths) {
+        Ok(text) => {
+            if text.len() > recipe::MAX_FILE {
+                let _ = writeln!(
+                    io.errors,
+                    "upcli recipe scaffold: warning: the tables are {} bytes; a recipe is at most {} bytes",
+                    text.len(),
+                    recipe::MAX_FILE
+                );
+            }
+            u8::from(io.output.write_all(text.as_bytes()).is_err()) * 2
+        }
+        Err(error) => {
+            let _ = writeln!(io.errors, "upcli recipe scaffold: {error}");
+            match error {
+                recipe::scaffold::Error::Refused(_) => 1,
+                recipe::scaffold::Error::Io(_) => 2,
+            }
+        }
+    }
+}
+
+/// Print a recipe's inputs in the form named; a recipe with findings
+/// prints the check's report instead.
+fn inputs(options: &InputsOptions, providers: recipe::Providers<'_>, io: &mut Io<'_>) -> u8 {
+    let fail = |io: &mut Io<'_>, error: &dyn std::fmt::Display| {
+        let _ = writeln!(io.errors, "upcli recipe inputs: {error}");
+        2
+    };
+    if options.path.is_dir() {
+        return fail(
+            io,
+            &format!(
+                "{}: a folder; inputs takes one recipe file",
+                options.path.display()
+            ),
+        );
+    }
+    let (text, code) = match recipe::inputs::inputs_path(&options.path, providers) {
+        Ok(recipe::inputs::Listing::Inputs(inputs)) => (inputs.render(options.format), 0),
+        Ok(recipe::inputs::Listing::Refused(report)) => (report.render(), 1),
+        Ok(recipe::inputs::Listing::Clash(clash)) => {
+            let _ = writeln!(
+                io.errors,
+                "upcli recipe inputs: {}: {clash}",
+                options.path.display()
+            );
+            return 1;
+        }
+        Ok(recipe::inputs::Listing::NotRecipe) => {
+            return fail(
+                io,
+                &format!(
+                    "{}: a work file; inputs takes a recipe",
+                    options.path.display()
+                ),
+            )
+        }
+        Err(error) => return fail(io, &error),
+    };
+    if io.output.write_all(text.as_bytes()).is_err() {
+        return 2;
+    }
+    code
 }
 
 /// Where `recipe conformance` keeps its scratch stores, in the store's

@@ -96,9 +96,36 @@ fn raw_bytes(hex: &str) -> Vec<u8> {
         .collect()
 }
 
+/// Why an archive's file member makes the archive one an `unpack` step
+/// refuses when it opens it, or `None`: a problem the directory reader
+/// found (ZIP64 fields, an ambiguous name), a backslash in the stored name,
+/// or a name [`unsafe_name`] refuses.
+pub(crate) fn member_problem(member: &crate::zip::Member) -> Option<String> {
+    if let Some(problem) = &member.problem {
+        return Some(format!("the archive's member {:?}: {problem}", member.name));
+    }
+    // The directory reader shows a stored backslash as `/`; the stored
+    // bytes decide.
+    if raw_bytes(&member.raw_name).contains(&b'\\') {
+        return Some(format!(
+            "the archive's member {:?} has a backslash in its stored name; it is refused, never renamed",
+            member.name
+        ));
+    }
+    unsafe_name(&member.name).map(|problem| {
+        format!(
+            "the archive's member {:?} has {problem}; it is refused, never renamed",
+            member.name
+        )
+    })
+}
+
 /// The DOS date and time of a zip entry as a local time, or `None` when the
-/// fields hold no valid date (PKWARE APPNOTE §4.4.6, the MS-DOS format).
-fn dos_time(time: u16, date: u16) -> Option<LocalTime> {
+/// fields hold no valid date (PKWARE APPNOTE §4.4.6, the MS-DOS format): a
+/// day the month does not have (the field holds 1 to 31 whatever the
+/// month, so 1993-02-30 can be stored) is no date, as it is no TOML date
+/// either.
+pub(crate) fn dos_time(time: u16, date: u16) -> Option<LocalTime> {
     let local = LocalTime {
         year: 1980 + (date >> 9),
         month: ((date >> 5) & 0x0f) as u8,
@@ -107,9 +134,10 @@ fn dos_time(time: u16, date: u16) -> Option<LocalTime> {
         minute: ((time >> 5) & 0x3f) as u8,
         second: ((time & 0x1f) * 2) as u8,
     };
-    ((1..=12).contains(&local.month)
-        && local.day >= 1
-        && local.hour < 24
+    (image_store::firmware::valid_date(&format!(
+        "{:04}-{:02}-{:02}",
+        local.year, local.month, local.day
+    )) && local.hour < 24
         && local.minute < 60
         && local.second < 60)
         .then_some(local)
@@ -138,24 +166,8 @@ pub fn unpack(
     if let Some(bytes) = archive {
         let archive = Archive::open(bytes).map_err(|e| e.to_string())?;
         for entry in &archive.entries {
-            let member = &entry.member;
-            if let Some(problem) = &member.problem {
-                return Err(format!("the archive's member {:?}: {problem}", member.name));
-            }
-            // The directory reader shows a stored backslash as `/`; the
-            // stored bytes decide.
-            let stored = raw_bytes(&member.raw_name);
-            if stored.contains(&b'\\') {
-                return Err(format!(
-                    "the archive's member {:?} has a backslash in its stored name; it is refused, never renamed",
-                    member.name
-                ));
-            }
-            if let Some(problem) = unsafe_name(&member.name) {
-                return Err(format!(
-                    "the archive's member {:?} has {problem}; it is refused, never renamed",
-                    member.name
-                ));
+            if let Some(problem) = member_problem(&entry.member) {
+                return Err(problem);
             }
         }
         if complete {
@@ -474,5 +486,30 @@ mod tests {
             })
         );
         assert_eq!(dos_time(0, 0), None);
+        // The day field holds 1 to 31 whatever the month: a day the month
+        // lacks is no date, a leap day is one in a leap year only.
+        let day = |year: u16, month: u16, day: u16| ((year - 1980) << 9) | (month << 5) | day;
+        assert_eq!(dos_time(0, day(1993, 2, 30)), None);
+        assert_eq!(dos_time(0, day(1993, 4, 31)), None);
+        assert_eq!(dos_time(0, day(1993, 2, 29)), None);
+        assert_eq!(dos_time(0, day(1992, 2, 29)).map(|t| t.day), Some(29));
+        assert_eq!(dos_time(0, day(2000, 2, 29)).map(|t| t.day), Some(29));
+    }
+
+    #[test]
+    fn unpack_reads_a_member_with_an_impossible_date_as_having_no_time() {
+        let zip = archive(&[Entry {
+            time: 10 << 11,
+            date: (13 << 9) | (2 << 5) | 30,
+            ..stored("A.TXT", b"a")
+        }]);
+        // No stated time is the archive's: taken.
+        let tree = unpack(Some(&zip), &[spec("A.TXT")], &BTreeMap::new(), true).unwrap();
+        assert_eq!(tree[0].time, None);
+        // Any stated time differs from the archive's none: refused.
+        let mut timed = spec("A.TXT");
+        timed.time = dos_time(10 << 11, (13 << 9) | (2 << 5) | 28);
+        let error = unpack(Some(&zip), &[timed], &BTreeMap::new(), true).unwrap_err();
+        assert!(error.contains("the archive none"), "{error}");
     }
 }

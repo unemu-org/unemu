@@ -1944,6 +1944,117 @@ or a store or file that cannot be opened. The test
 runs the same harness on the corpus's six pinned open recipes, the three
 FreeDOS 1.4 floppy sets and the three open firmware packages.
 
+## Scaffolding recipes and listing their inputs
+
+`upcli recipe scaffold FILE|FOLDER...` prints the tables a recipe needs for
+files the author has, measured instead of typed
+([design/recipes.md](design/recipes.md) §6.8, §6.9, §6.15). It reads the
+files and writes nothing; the author adds the identity, the description,
+the outputs and whatever else the recipe states, and keeps or renames
+what scaffold wrote. `upcli recipe inputs FILE --format
+dat|csv|sha256sums` prints the inputs of a recipe that passes the checks,
+for a ROM manager or `sha256sum -c`.
+
+```sh
+cargo run --offline -p upcli -- recipe scaffold LABFULL.ZIP AZURAMON
+cargo run --offline -p upcli -- recipe inputs my.media.toml --format sha256sums
+```
+
+- **A plain file** gives `[input.ID]` with `name` (the file's own name),
+  `size` and `sha256`.
+- **A zip archive** (a name ending in `.zip`, any case) gives the same
+  table and an `unpack` step, `ID-files`, with `complete = true` and every
+  file member in the archive's own order: `path`, `size`, `sha256` and the
+  `time` its central directory states (a member without a valid DOS time,
+  such as a day its month lacks, has none). Folder entries are skipped. A build reads nothing but bytes
+  from an archive, so its order and times are written here, once. An
+  archive an `unpack` step would refuse is refused (ZIP64, a member name
+  that is ambiguous, unsafe or holds a backslash, an encrypted member, a
+  method other than stored and deflate).
+- **A folder** gives a file-set input of every file below it, in every
+  folder its files, then its folders, each group by the 8.3 name as a
+  directory entry stores it: the 11-byte field, stem and extension padded
+  with spaces, the order of a `fat` step's `order = "name"` (`A.TXT`
+  before `A-B.TXT`, `AB.TXT` before `AB-C.TXT`). Names that are not valid
+  8.3 names as stored (lower case, too long, other characters) come after
+  them, by the bytes of the name; a `fat` step refuses them. Paths are
+  relative to the folder, and there are no times: a host file's time is the
+  time of the copy. Hidden files and
+  folders (`.` first) are skipped, symbolic links followed, and a link back
+  into a folder above is refused. At most 100,000 files over all folders
+  named (the recipe's limit); the walk stops at the first one past it. As
+  a recipe holds at most 4096 inputs and 64 steps, at most 4096 files and
+  folders and 64 archives are named.
+- Ids are the names in lower case, a file's last extension dropped, other
+  characters than letters, digits, `_` and `-` written as `-`, a repeated
+  id with `-2`, `-3`. Input tables come first, in the order named, then
+  the steps. No host path is written.
+
+```toml
+[input.game]
+name = "GAME.ZIP"
+size = 423
+sha256 = "89cd77b95c37c44993bb4192279315e55ef5cea95856be17480e1b5aa99cf58c"
+
+[input.set]
+name = "SET"
+files = [
+    { path = "A.TXT", size = 2, sha256 = "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7" },
+    { path = "SUB/C.DAT", size = 3, sha256 = "aa9e9b5c907d50feb410f2a84e81ab72c5ae6724d57ccc53650f9361d33dc734" },
+]
+
+[[step]]
+id = "game-files"
+unpack = "game"
+format = "zip"
+complete = true
+members = [
+    { path = "README.TXT", size = 9, sha256 = "0378767b3aa93349bb79cdd0ba46bd5979bb7adfb8cbcfe2404097479935be50", time = 1993-03-27T13:58:22 },
+]
+```
+
+Exit status of `scaffold`: 0 when the tables are printed (a warning on
+standard error when they pass the 1 MiB a recipe may have), 1 when a file
+or folder cannot be held by a recipe (a name or member it refuses, an
+archive `unpack` refuses, more than 100,000 files, 4096 inputs or 64
+archives, a folder without files), 2 on a usage error or a file that cannot
+be read or changed while it was read.
+
+`recipe inputs` describes one folder: each file input at its `name`, each
+file-set entry at the set's `name`, `/` and its path. Inputs with
+`bundle = true` travel with the recipe and are left out; members of an
+`unpack` step are not inputs and are not listed. Inputs come in the order
+of their ids, a file set's entries in the set's order. Two inputs at one
+path with the same size and hash are one line; with other bytes, or a file
+at a path another input needs as a folder, the folder cannot hold both,
+and the command exits 1 naming the path and both inputs. Nothing but the
+recipe is read.
+
+- `--format sha256sums`: `<hex>  <path>` per line, as `sha256sum` writes;
+  `sha256sum -c FILE` run in that folder checks it.
+- `--format csv`: the header `path,size,sha256,crc32,sha1,md5`, a line per
+  file, empty fields for the weaker hashes the recipe does not state, a
+  field with a comma or a quote quoted (RFC 4180), LF line ends.
+- `--format dat`: a Logiqx datafile (the XML the No-Intro, Redump and TOSEC
+  DATs use) with a header naming the artifact (`NAME`, `NAME:TAG`, `TAG`,
+  author `upcli recipe inputs`) and one game, `<last component>-<tag>`,
+  whose `rom` entries carry `name`, `size`, `crc`, `md5` and `sha1` when
+  stated, and `sha256`. A ROM manager that rebuilds that game makes the
+  folder, which is then a library `recipe build` finds every input in.
+
+```text
+GAME.ZIP,423,89cd77b95c37c44993bb4192279315e55ef5cea95856be17480e1b5aa99cf58c,,,
+<rom name="SET/A.TXT" size="2" sha256="87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7"/>
+87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7  SET/A.TXT
+```
+
+Exit status of `inputs`: 0 when the list is printed, 1 when the recipe has
+findings (the check's report is printed instead) or two inputs clash, 2 on a usage error, a
+work file, a folder or a file that cannot be read. The tests are
+`recipe_scaffold` in `cli-pc`; its two `user_rom_` tests scaffold the
+user's own LABFULL.ZIP and AZURAMON folder (vendor/user-roms/README.md)
+and compare with the corpus's tables.
+
 ## Creating disk images
 
 ```sh

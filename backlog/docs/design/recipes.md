@@ -2695,6 +2695,54 @@ Scope: `upcli recipe scaffold` (input tables, member lists with sizes,
 hashes and times, file sets) and `upcli recipe inputs` (DAT, CSV,
 checksums). Depends on: B4. Must prove: scaffolding LABFULL.ZIP and the
 AZURAMON folder gives the corpus's tables byte for byte.
+Done on 2026-11-19 (`upc-5pw.113.9`): `recipe::scaffold` and
+`recipe::inputs`, the commands `upcli recipe scaffold FILE|FOLDER...` and
+`upcli recipe inputs FILE --format dat|csv|sha256sums` (commands.md,
+Scaffolding recipes and listing their inputs). Readings taken:
+- An archive is a file whose name ends in `.zip`; any other file is a
+  plain input. The archive gets an `unpack` step with `complete = true`
+  and every file member in central-directory order, with the DOS time
+  the directory states (§6.9: the time an `unpack` compares; extended
+  timestamp fields are not read), none for a member without a valid one,
+  a day its month lacks included (`steps::dos_time`, which `unpack`
+  shares).
+  What an `unpack` step refuses when it opens an archive is refused here,
+  with the same messages (`steps::member_problem`).
+- A folder is a file set in the order of `order = "name"`: in every folder
+  its files, then its folders, each group by the 8.3 name's 11-byte stored
+  field, as `media::fat12` sorts (a test builds the same paths with it and
+  reads the order back); names that are not valid 8.3 names follow, by
+  bytes. The corpus's AZURAMON order is this order. No times (§6.12),
+  hidden entries skipped, links followed. Rule 9 is applied before any
+  file is hashed: 100,000 entries over all folders named, 4096 operands,
+  64 archives.
+- Ids: the name in lower case, a file's last extension dropped, other
+  characters than letters, digits, `_` and `-` as `-`; the step is
+  `ID-files`. The corpus's own ids (`game`, `files`) are the author's
+  names; the proof compares with them renamed. The corpus's `urls` of
+  LABFULL.ZIP are the author's addition and are not compared. No
+  placeholder is written.
+- `inputs` lists one folder: a file input at its `name`, a file-set entry
+  at the set's `name` and its path; bundled inputs and `unpack` members
+  are left out. Two inputs at one path with the same bytes are one row;
+  with other bytes, or a file where another input needs a folder, the
+  command refuses (exit 1) and names the path and both inputs. The DAT has one game named after the artifact and a
+  `sha256` attribute beside the DTD's `crc`, `md5` and `sha1`.
+MEASURED (`cli-pc` test `recipe_scaffold`): a synthetic zip, folder and
+file scaffold to the expected text byte for byte, which parses back and
+passes `recipe check` with the outputs added; `recipe inputs` gives the
+three forms byte for byte, and `sha256sum -c` (coreutils 9.11) accepts
+the checksum file against the files. The limit is proved on a generated
+listing of 100,001 entries, refused before a file is read
+(`scaffold::tests`). The B9 proof, MEASURED on the maintainer's own
+files (`cli-pc` tests run with `UNEMUPC_REQUIRE_USER_ROMS=1`):
+`user_rom_scaffold_of_labfull_zip_gives_the_corpus_tables` scaffolds
+LABFULL.ZIP to the corpus's input table (without the author's `urls`) and
+its 19 members with their times, byte for byte, and
+`user_rom_scaffold_of_the_azuramon_folder_gives_the_corpus_table` the
+AZURAMON folder to the corpus's 561 entries, byte for byte; ids are the
+corpus's own names, `game` and `files`, for scaffold's `azuramon` and
+`labfull-files`.
 
 **B10. Recipe artifacts in the registry.**
 Scope: the two artifact types and the config type; push and pull; the

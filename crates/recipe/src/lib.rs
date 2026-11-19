@@ -37,10 +37,16 @@
 //! payloads matched them, so every later build of the program publishes the
 //! digest it was pinned to (recipes §3.1, §3.8); [`pin::conformance`]
 //! builds a folder of pinned recipes and compares the digests.
+//!
+//! [`scaffold::scaffold`] writes the input tables, member lists and file
+//! sets of files an author has, with sizes, hashes and an archive's times
+//! (recipes §6.15); [`inputs::inputs_path`] lists a recipe's inputs as a
+//! Logiqx DAT, a CSV or a checksum file.
 
 pub mod build;
 mod check;
 mod finding;
+pub mod inputs;
 pub mod library;
 pub mod lock;
 pub mod merge;
@@ -49,6 +55,7 @@ mod parse;
 pub mod pin;
 pub mod plan;
 pub mod provider;
+pub mod scaffold;
 pub mod schema;
 pub mod spec;
 pub mod steps;

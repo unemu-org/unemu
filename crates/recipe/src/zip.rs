@@ -71,12 +71,19 @@ fn u32_at(bytes: &[u8], at: usize) -> u32 {
 /// The file members of the archive at `path`, in central-directory order.
 /// Folder entries are skipped.
 pub(crate) fn list(path: &Path) -> io::Result<Vec<Member>> {
-    let mut file = File::open(path)?;
-    let length = file.metadata()?.len();
-    Ok(directory(&mut file, length)?
+    Ok(listing(path)?
         .into_iter()
         .map(|entry| entry.member)
         .collect())
+}
+
+/// The file members of the archive at `path` with their DOS times, in
+/// central-directory order, as an `unpack` step compares them. Folder
+/// entries are skipped.
+pub(crate) fn listing(path: &Path) -> io::Result<Vec<Listed>> {
+    let mut file = File::open(path)?;
+    let length = file.metadata()?.len();
+    directory(&mut file, length)
 }
 
 /// One file member and the DOS date and time its central directory states
@@ -387,14 +394,18 @@ pub(crate) mod build {
     use super::Crc32;
 
     /// One member: its name, its bytes, the deflated form of the bytes when
-    /// it is stored deflated, the general-purpose flags and, when it is to
-    /// differ from the bytes', the size the directory states.
+    /// it is stored deflated, the general-purpose flags, when it is to
+    /// differ from the bytes', the size the directory states, and its time
+    /// (1980-01-01 00:00:00 unless a test states another).
     pub(crate) struct Entry<'a> {
         pub name: &'a [u8],
         pub bytes: &'a [u8],
         pub deflated: Option<&'a [u8]>,
         pub flags: u16,
         pub stated: Option<u32>,
+        /// The DOS time and date the headers state (APPNOTE §4.4.6).
+        pub time: u16,
+        pub date: u16,
     }
 
     pub(crate) fn stored<'a>(name: &'a str, bytes: &'a [u8]) -> Entry<'a> {
@@ -404,6 +415,8 @@ pub(crate) mod build {
             deflated: None,
             flags: 0,
             stated: None,
+            time: 0,
+            date: 0x21,
         }
     }
 
@@ -436,8 +449,8 @@ pub(crate) mod build {
                 v.extend_from_slice(&20u16.to_le_bytes());
                 v.extend_from_slice(&entry.flags.to_le_bytes());
                 v.extend_from_slice(&method.to_le_bytes());
-                v.extend_from_slice(&0u16.to_le_bytes());
-                v.extend_from_slice(&0x21u16.to_le_bytes());
+                v.extend_from_slice(&entry.time.to_le_bytes());
+                v.extend_from_slice(&entry.date.to_le_bytes());
                 v.extend_from_slice(&crc.to_le_bytes());
                 v.extend_from_slice(&(data.len() as u32).to_le_bytes());
                 v.extend_from_slice(&size.to_le_bytes());
