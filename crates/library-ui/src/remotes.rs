@@ -890,6 +890,11 @@ fn state_parts(row: &TagRow, facts: &PlatformFacts) -> (Vec<Part>, bool) {
                 (format!(" · you have {version}"), Tone::Muted),
             ]
         }
+        // Across releases, the local release's version as its record says it.
+        Some(LocalState::NewerRelease { version, .. }) => vec![
+            ("Newer available".into(), Tone::Warn),
+            (format!(" · you have {version}"), Tone::Muted),
+        ],
         Some(LocalState::LocalNewer { have }) => {
             let version = have.rsplit_once(':').map_or(have.as_str(), |(_, tag)| tag);
             vec![(format!("Local is newer: {version}"), Tone::Muted)]
@@ -1087,7 +1092,7 @@ fn sort_key(repository: &RepositoryRow, column: usize) -> (String, String) {
         6 => format!("{:020}", record.map_or(0, |r| r.size)),
         7 => {
             let rank = match tag.and_then(|t| t.local.as_ref()) {
-                Some(LocalState::NewerAvailable { .. }) => 0,
+                Some(LocalState::NewerAvailable { .. } | LocalState::NewerRelease { .. }) => 0,
                 Some(LocalState::OtherImage { .. }) => 1,
                 Some(LocalState::LocalNewer { .. }) => 2,
                 Some(LocalState::NotPulled { .. }) => 3,

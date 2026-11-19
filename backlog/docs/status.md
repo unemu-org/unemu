@@ -5,6 +5,20 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — Remotes says Newer available across releases again, from the title
+  records:** (`upc-5pw.64.7`; design/machine-images.md §3). A selected set or package tag whose
+  metadata record was read reads "Newer available · you have 1.3" when the library holds, under
+  the local name a pull writes, records of the same title, edition, regions, languages and
+  formats, all with an older `version` field. The rule is conservative
+  (`image_store::tag::compare_versions`): only number segments decide, by value (1.3 < 1.4 <
+  3.11 < 95, 6.2 < 6.20), trailing `.0` segments do not count, and a word or mixed segment that
+  decides (1.4_beta and 1.4_rc, 4.00.950b and 4.00.950, 98_se and 98) makes no claim. Tags
+  still never order two releases: a tag named like a higher version whose record says lower
+  gets no hint. Another edition, format, region or language, a version that does not split
+  into segments, a library record of the same software whose version cannot be compared, or a
+  record that cannot be read makes no claim, with no error row. Revisions of one release keep
+  the tag rule. The hint only appears once the tag is selected, since the list reads no
+  metadata record. It is a hint only; nothing is replaced or pulled.
 - **2026-11-19 — Recipes are scaffolded from the author's files; their
   inputs list for ROM managers:** step B9 of design/recipes.md §19.2.
   `upcli recipe scaffold FILE|FOLDER...` prints the `[input]` tables of

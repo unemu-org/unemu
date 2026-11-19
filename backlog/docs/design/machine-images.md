@@ -977,14 +977,33 @@ newest first: a machine image's by version, then `latest`; a set's or
 package's by release, the alias of each release first as the name of its
 newest revision, then its revisions highest first (§5.2, Tags), so a set
 repository stands for the alias of its first release. Newer available
-compares versions of a machine image, and only the revisions of one release
-of a set or package. A local release alias at another image than the
-registry's alias is compared by the revision it names with the highest
-revision of that release the registry lists: Newer available when the
-registry's is higher, "Local is newer: …-r2" when the library's is, and
-otherwise, or for an alias an earlier release wrote that names no revision,
-the neutral Local tag names another image. A tag this release cannot run is
-muted with "Needs unemupc X or newer" (§5.6). Strips over the rows say a listing runs, stopped or no
+compares versions of a machine image, and the tags of a set or package only
+as revisions of one release: tags still never order two releases. Across
+releases, a selected set or package tag whose metadata record was read says
+Newer available · you have X when the library holds, under the local name a
+pull writes, records of the same software, the same title, edition, regions,
+languages and formats (a field one record states and the other does not
+counts as different), and every one of them has an older `version` field; X
+is the version the newest of them records. The rule is conservative
+(`image_store::tag::compare_versions`): versions split into segments at `.`
+and `_`, and only number segments decide, by value (1.3 < 1.4 < 3.11 < 95,
+1.9 < 1.10, 1.4 < 1.4.1, 6.2 < 6.20); trailing `0` segments do not count
+(1.4.0 equals 1.4). A version that does not split into segments of lowercase
+letters and digits, a word or mixed segment where two versions first differ
+(1.4_alpha and 1.4_beta, 3.3a and 3.3, 4.00.950b and 4.00.950), or a word
+among the extra segments of the longer one (98_se and 98, 4.0_sp6 and 4.0)
+makes no claim. So does a record of the same software whose version cannot
+be compared, and a record under that name that cannot be read or names no
+title or version: no hint and no error. It is a hint only: nothing is replaced or pulled automatically
+(maintainer, 2026-11-19: one neutral rule for every platform, from the title
+records' fields, never from tag text, decision-38 point 6).
+A local release alias at another image than the registry's alias is compared
+by the revision it names with the highest revision of that release the
+registry lists: Newer available when the registry's is higher, "Local is
+newer: …-r2" when the library's is, and otherwise, or for an alias an
+earlier release wrote that names no revision, the neutral Local tag names
+another image. A tag this release cannot run is muted with "Needs unemupc X
+or newer" (§5.6). Strips over the rows say a listing runs, stopped or no
 longer answers, and a message replaces the rows when nothing is listed, with
 Stop, Refresh, Try again or Log in… as the state offers. Next 50 › reads the
 catalog's next page; F5, View › Refresh remote and the toolbar's Refresh

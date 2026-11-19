@@ -52,6 +52,37 @@ mod tests {
         }
     }
 
+    /// A stand-in for the PC provider's media-set validator for local tags,
+    /// which takes a set's disks at any length: the config lists its media.
+    struct SyntheticSet;
+    impl ConfigValidator for SyntheticSet {
+        fn artifact_type(&self) -> &str {
+            mt::MEDIA_SET
+        }
+        fn platform(&self) -> &str {
+            pc_image::PLATFORM
+        }
+        fn validate(
+            &self,
+            table: &toml::Table,
+            _: &[Descriptor],
+            _: &dyn BlobSource,
+        ) -> image_store::Result<Vec<Digest>> {
+            table
+                .get("media")
+                .and_then(toml::Value::as_array)
+                .ok_or_else(|| image_store::Error::Invalid("missing media".into()))?
+                .iter()
+                .map(|m| {
+                    m.get("blob")
+                        .and_then(toml::Value::as_str)
+                        .unwrap_or_default()
+                        .parse()
+                })
+                .collect()
+        }
+    }
+
     /// A synthetic artifact: its manifest and every blob it names.
     struct Image {
         manifest: Manifest,
@@ -93,9 +124,11 @@ mod tests {
             }
             let descriptor = store.import_manifest(&self.manifest).unwrap();
             assert_eq!(descriptor.digest, self.digest);
-            store
-                .update_tag(tag, &descriptor, None, &Synthetic)
-                .unwrap();
+            let validator: &dyn ConfigValidator = match self.manifest.artifact_type() {
+                mt::MEDIA_SET => &SyntheticSet,
+                _ => &Synthetic,
+            };
+            store.update_tag(tag, &descriptor, None, validator).unwrap();
         }
     }
 
@@ -147,6 +180,11 @@ mod tests {
 
     /// An installation media set of one disk per format.
     fn media_set(label: &str, formats: &[&str]) -> Image {
+        media_set_with(label, formats, metadata(label))
+    }
+
+    /// [`media_set`] with the metadata record `record`.
+    fn media_set_with(label: &str, formats: &[&str], record: Vec<u8>) -> Image {
         let disks: Vec<Vec<u8>> = (0..formats.len())
             .map(|i| format!("{label} disk {i}").into_bytes())
             .collect();
@@ -169,7 +207,7 @@ mod tests {
         .encode()
         .unwrap();
         let mut layers: Vec<Descriptor> = disks.iter().map(|d| blob(mt::FLOPPY, d)).collect();
-        layers.push(blob(mt::METADATA, &metadata(label)));
+        layers.push(blob(mt::METADATA, &record));
         let mut manifest = Manifest::new_media_set(
             pc_image::PLATFORM,
             blob(mt::MEDIA_SET_CONFIG, &config),
@@ -180,8 +218,18 @@ mod tests {
             .annotations
             .insert(TITLE.into(), format!("{label} set"));
         let mut all = disks;
-        all.push(metadata(label));
+        all.push(record);
         Image::new(manifest, config, all)
+    }
+
+    /// A FreeDOS-like set whose one title record names `edition` and
+    /// `version`, with one disk per format; `label` keeps the images apart.
+    fn release(label: &str, edition: &str, version: &str, formats: &[&str]) -> Image {
+        let record = format!(
+            r#"{{"schema":1,"platform":"{}","titles":[{{"id":"freedos","title":"FreeDOS","edition":"{edition}","version":"{version}"}}]}}"#,
+            pc_image::PLATFORM
+        );
+        media_set_with(label, formats, record.into_bytes())
     }
 
     /// A store, preferences and the accounts that read them, each in its own
@@ -531,8 +579,11 @@ mod tests {
         assert_eq!(
             record(&remotes, "private/games/dune2", "0.9.0").details,
             Some(Ok(Details {
+                title: Some("dune old".into()),
                 edition: Some("dune old edition".into()),
                 version: Some("dune old version".into()),
+                regions: Vec::new(),
+                languages: Vec::new(),
             }))
         );
         assert_eq!(
@@ -567,6 +618,122 @@ mod tests {
                 assert!(!blob_requests(&registry).contains(&layer.to_string()));
             }
         }
+    }
+
+    #[test]
+    fn a_newer_release_is_told_by_the_title_records_versions_never_by_the_tag() {
+        let registry = MockRegistry::start(open_registry());
+        let host = registry.host();
+        let repository = "private/media/freedos";
+        let local = |tag: &str| format!("{host}/{repository}:{tag}");
+        let setup = Setup::with(&registry);
+        // The library holds release 1.3 of the floppy edition.
+        let have = release("have 1.3", "Floppy Edition", "1.3", &["1.44M"]);
+        have.tag(&setup.store, &local("1.3-r1"));
+        let unreadable = release("unreadable", "Floppy Edition", "1.6", &["1.44M"]);
+        for (tag, image) in [
+            // The same title, edition and format, a newer version.
+            (
+                "1.4-r1",
+                release("1.4", "Floppy Edition", "1.4", &["1.44M"]),
+            ),
+            // Another edition or format is other software.
+            ("1.4-live-r1", release("live", "Live", "1.4", &["1.44M"])),
+            (
+                "1.4-720k-r1",
+                release("720k", "Floppy Edition", "1.4", &["720K"]),
+            ),
+            // A tag named like a higher version whose record says lower.
+            (
+                "9.9-r1",
+                release("9.9", "Floppy Edition", "1.2", &["1.44M"]),
+            ),
+            // An older version.
+            (
+                "1.2-r1",
+                release("1.2", "Floppy Edition", "1.2", &["1.44M"]),
+            ),
+            // A version that does not split into segments.
+            (
+                "1.5-r1",
+                release("1.5", "Floppy Edition", "1.5 beta", &["1.44M"]),
+            ),
+            // A second packaging of the library's release.
+            (
+                "1.3-r2",
+                release("1.3 r2", "Floppy Edition", "1.3", &["1.44M"]),
+            ),
+        ] {
+            image.seed(&registry, repository, tag);
+        }
+        // A record that cannot be read.
+        unreadable.seed(&registry, repository, "1.6-r1");
+        registry.corrupt_blob(&Digest::of(unreadable.layers.last().unwrap()));
+
+        let mut remotes = setup.remotes();
+        let request = remotes.open_node(&host);
+        setup.answer(&mut remotes, request);
+        let row = |remotes: &Remotes, tag: &str| {
+            remotes
+                .registry(&host)
+                .unwrap()
+                .repository(repository)
+                .unwrap()
+                .row(tag)
+                .unwrap()
+                .clone()
+        };
+        let select = |remotes: &mut Remotes, tag: &str| {
+            let request = remotes.select(&host, repository, tag);
+            setup.answer(remotes, request);
+            row(remotes, tag)
+        };
+        let newer = LocalState::NewerRelease {
+            have: local("1.3-r1"),
+            version: "1.3".into(),
+        };
+        assert_eq!(select(&mut remotes, "1.4-r1").local, Some(newer.clone()));
+        for tag in ["1.4-live-r1", "1.4-720k-r1", "9.9-r1", "1.2-r1", "1.5-r1"] {
+            assert_eq!(
+                select(&mut remotes, tag).local,
+                Some(LocalState::NotPulled { same_as: None }),
+                "{tag}"
+            );
+        }
+        // Revisions of one release keep the tag rule.
+        assert_eq!(
+            select(&mut remotes, "1.3-r2").local,
+            Some(LocalState::NewerAvailable {
+                have: local("1.3-r1")
+            })
+        );
+        // An unreadable record says so in the details, not in the row.
+        let unread = select(&mut remotes, "1.6-r1");
+        let record = unread.record.as_ref().expect("the row reads");
+        assert!(
+            matches!(record.details, Some(Err(_))),
+            "{:?}",
+            record.details
+        );
+        assert_eq!(unread.local, Some(LocalState::NotPulled { same_as: None }));
+
+        // The library changes: compared again from the records, no registry asked.
+        let other_title = media_set("Other", &["1.44M"]);
+        other_title.tag(&setup.store, &local("0.1-r1"));
+        registry.clear_log();
+        let request = remotes.library_changed();
+        setup.answer(&mut remotes, request);
+        assert!(registry.log().is_empty());
+        assert_eq!(row(&remotes, "1.4-r1").local, Some(newer));
+        // The library gains a release as new: no claim.
+        release("have 1.4", "Floppy Edition", "1.4", &["1.44M"])
+            .tag(&setup.store, &local("1.4-rebuilt-r1"));
+        let request = remotes.library_changed();
+        setup.answer(&mut remotes, request);
+        assert_eq!(
+            row(&remotes, "1.4-r1").local,
+            Some(LocalState::NotPulled { same_as: None })
+        );
     }
 
     #[test]

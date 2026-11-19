@@ -18,6 +18,9 @@
 //! The parts of a release are a convention of the author, not fields: no
 //! program reads a version, an edition or a format out of a tag, and the
 //! orders here only arrange tags for display and compare revisions.
+//! [`compare_versions`] orders the version fields of two title records by
+//! their number segments, never a tag's text, and makes no claim when a
+//! word decides.
 //!
 //! Machine images keep their own rule: semantic versions never move and
 //! every other tag, `latest` included, is an alias that moves when confirmed
@@ -60,13 +63,19 @@ fn revision_number(text: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
-fn valid_part(part: &str) -> bool {
-    let segments_ok = part.split(['.', '_']).all(|segment| {
+/// Whether `text` splits fully into segments at `.` and `_`, each of
+/// lowercase ASCII letters and digits.
+fn whole_segments(text: &str) -> bool {
+    text.split(['.', '_']).all(|segment| {
         !segment.is_empty()
             && segment
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-    });
+    })
+}
+
+fn valid_part(part: &str) -> bool {
+    let segments_ok = whole_segments(part);
     let looks_like_revision = part
         .strip_prefix('r')
         .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()));
@@ -162,8 +171,9 @@ pub fn next_revision(tag: &str) -> Option<String> {
 
 /// How two tags compare as revisions: two revisions of the same release by
 /// their number. Any other pair makes no claim, `None`: an alias, a tag
-/// outside the scheme, or revisions of two releases, since a newer release
-/// is a different piece of software, not a newer packaging.
+/// outside the scheme, or revisions of two releases. Tags never order two
+/// releases; what orders releases is the version field of their title
+/// records, by [`compare_versions`], and only for a hint.
 pub fn compare(a: &str, b: &str) -> Option<Ordering> {
     match (parse(a)?, parse(b)?) {
         (
@@ -232,6 +242,55 @@ fn first_part_newest_first(a: &str, b: &str) -> Ordering {
             (None, None) => return Ordering::Equal,
         }
     }
+}
+
+/// How two version fields of title records compare, `Greater` when `a` is
+/// the newer, by their segments at `.` and `_` as a release's first part
+/// numbers them: `1.3` < `1.4` < `3.11` < `95`, `1.9` < `1.10`, `1.4` <
+/// `1.4.1`, and `6.2` < `6.20`, since numbers compare by value. Trailing
+/// `0` segments do not count, so `1.4.0` equals `1.4`. `None`, no claim,
+/// unless both split fully into segments of lowercase ASCII letters and
+/// digits, and whenever a word or a mixed segment decides: the first
+/// segments that differ are not both numbers (`1.4_alpha` and `1.4_beta`,
+/// `3.3a` and `3.3`, `4.00.950b` and `4.00.950`), or the longer one's extra
+/// segments hold a word (`98_se` and `98`, `4.0_sp6` and `4.0`). The values
+/// are fields of a record, never read out of a tag, since no program reads
+/// meaning out of a tag; the library's Remotes uses the answer for its
+/// Newer available hint only (machine-images §3).
+pub fn compare_versions(a: &str, b: &str) -> Option<Ordering> {
+    // The segments without trailing zeros; `None` unless whole segments.
+    fn split(version: &str) -> Option<Vec<&str>> {
+        if version.is_empty() || !whole_segments(version) {
+            return None;
+        }
+        let mut parts: Vec<&str> = segments(version).collect();
+        while parts
+            .last()
+            .is_some_and(|s| is_number(s) && s.bytes().all(|b| b == b'0'))
+        {
+            parts.pop();
+        }
+        Some(parts)
+    }
+    let (x, y) = (split(a)?, split(b)?);
+    for (s, t) in x.iter().zip(&y) {
+        if s == t {
+            continue;
+        }
+        if !(is_number(s) && is_number(t)) {
+            return None;
+        }
+        match ascending(s, t) {
+            Ordering::Equal => continue,
+            order => return Some(order),
+        }
+    }
+    let (shorter, longer) = (x.len().min(y.len()), x.len().max(y.len()));
+    let extra = if x.len() > y.len() { &x } else { &y };
+    if extra[shorter..longer].iter().any(|s| !is_number(s)) {
+        return None;
+    }
+    Some(x.len().cmp(&y.len()))
 }
 
 /// The remaining parts, which by convention are the edition, region,
@@ -459,6 +518,49 @@ mod tests {
         ] {
             assert_eq!(compare(a, b), order, "{a} vs {b}");
             assert_eq!(compare(b, a), order.map(Ordering::reverse), "{b} vs {a}");
+        }
+    }
+
+    #[test]
+    fn version_fields_order_by_the_first_part_rule_or_make_no_claim() {
+        use Ordering::*;
+        for (a, b, order) in [
+            ("1.4", "1.3", Some(Greater)),
+            ("3.11", "1.4", Some(Greater)),
+            ("95", "3.11", Some(Greater)),
+            ("1.10", "1.9", Some(Greater)),
+            ("1.4.1", "1.4", Some(Greater)),
+            ("6.20", "6.2", Some(Greater)),
+            ("1.4", "1.4", Some(Equal)),
+            ("1.04", "1.4", Some(Equal)),
+            // Trailing zero segments do not count.
+            ("1.4.0", "1.4", Some(Equal)),
+            ("2.0.0", "2", Some(Equal)),
+            ("1.4.0.1", "1.4", Some(Greater)),
+            ("98_se", "98_se", Some(Equal)),
+            ("98_se.2", "98_se.1", Some(Greater)),
+            // A word or a mixed segment decides: no claim.
+            ("1.4_alpha", "1.4_beta", None),
+            ("1.4_beta", "1.4_rc", None),
+            ("1.4_beta", "1.4", None),
+            ("3.3a", "3.3", None),
+            ("4.00.950b", "4.00.950", None),
+            ("98_se", "98", None),
+            ("4.0_sp6", "4.0", None),
+            ("1.4.1_beta", "1.4", None),
+            // Not whole segments: no claim.
+            ("1.4", "1.3 beta", None),
+            ("1.4", "1.3-r1", None),
+            ("1.4", "V1.3", None),
+            ("1.4", "", None),
+            ("1.4", "1..3", None),
+        ] {
+            assert_eq!(compare_versions(a, b), order, "{a} vs {b}");
+            assert_eq!(
+                compare_versions(b, a),
+                order.map(Ordering::reverse),
+                "{b} vs {a}"
+            );
         }
     }
 

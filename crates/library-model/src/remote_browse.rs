@@ -56,7 +56,15 @@
 //! firmware packages the revision numbers of one release
 //! ([`image_store::tag::compare`]); a tag outside its type's order, an
 //! alias such as `latest` or `1.4`, a revision of another release or
-//! another tool's artifact makes no claim. *Not pulled*
+//! another tool's artifact makes no claim. Tags never order two releases.
+//! Across releases of a set or package, a selected tag whose metadata record
+//! was read is also *Newer available* when the library holds, under that
+//! name, records of the same title, edition, regions, languages and
+//! formats, and every one of them has an older `version` field by
+//! [`image_store::tag::compare_versions`] ([`ReleaseFacts`]). The hint is
+//! conservative: a version a word decides, a version that does not split
+//! into segments, or a record under the name that cannot be read makes no
+//! claim. It is a hint only: nothing is replaced or pulled. *Not pulled*
 //! otherwise, naming another local tag of the same image when there is one.
 //! The comparison runs on the worker against the store, and again whenever
 //! the library changes. The same comparison notes which blobs of each read
@@ -81,7 +89,10 @@ use image_registry::{
     reference::OFFICIAL_NAMESPACE,
     Client, Error, Reference, RegistryEntry, DEFAULT_REGISTRY,
 };
-use image_store::{compat, media_type as mt, Descriptor, Digest, Store};
+use image_store::{
+    compat, media_type as mt, metadata::Metadata, BlobSource, Descriptor, Digest, Manifest, Store,
+    MAX_SMALL_BLOB,
+};
 use std::{
     cmp::Ordering as Order,
     collections::{BTreeMap, BTreeSet},
@@ -141,12 +152,16 @@ pub struct TagRecord {
     pub media: Vec<(String, String)>,
 }
 
-/// The selected tag's edition and version from its metadata record; a
-/// firmware package has none and keeps its config record's.
+/// The selected tag's title, edition and version from its metadata record;
+/// a firmware package has none and keeps its config record's.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Details {
+    pub title: Option<String>,
     pub edition: Option<String>,
     pub version: Option<String>,
+    /// The record's regions and languages, as it lists them.
+    pub regions: Vec<String>,
+    pub languages: Vec<String>,
 }
 
 /// What a person calls an artifact of `artifact_type`.
@@ -218,6 +233,34 @@ impl TagRecord {
             compat::Requirement::Release(required) => Some(required),
             _ => None,
         }))
+    }
+
+    /// What the Newer available hint across releases compares, for a set or
+    /// package whose metadata record was read: the record's title, edition
+    /// and version, each falling back as the details pane's does to the
+    /// manifest's or config record's, its regions and languages, and the
+    /// set's formats. `None` for
+    /// another type, a record not read yet or that could not be read, or
+    /// one without a title or a version.
+    pub fn release(&self) -> Option<ReleaseFacts> {
+        if !image_store::tag::governs(&self.artifact_type) {
+            return None;
+        }
+        let details = self.details.as_ref()?.as_ref().ok()?;
+        let sorted = |list: &[String]| {
+            let mut list = list.to_vec();
+            list.sort();
+            list.dedup();
+            list
+        };
+        Some(ReleaseFacts {
+            title: details.title.clone().or_else(|| self.title.clone())?,
+            edition: details.edition.clone(),
+            version: details.version.clone().or_else(|| self.version.clone())?,
+            regions: sorted(&details.regions),
+            languages: sorted(&details.languages),
+            formats: sorted(&self.formats),
+        })
     }
 
     /// Each blob the manifest names once, the config first.
@@ -303,6 +346,42 @@ impl TagRecord {
     }
 }
 
+/// The title record of a set or package release, as the Newer available
+/// hint across releases compares it ([`TagRecord::release`]). Two are the
+/// same software only when title, edition, regions, languages and formats
+/// are equal, a field one states and the other does not included; then
+/// their versions compare by [`image_store::tag::compare_versions`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleaseFacts {
+    pub title: String,
+    pub edition: Option<String>,
+    pub version: String,
+    /// The record's regions and languages, sorted.
+    pub regions: Vec<String>,
+    pub languages: Vec<String>,
+    /// The set's format names, sorted; none for a package.
+    pub formats: Vec<String>,
+}
+
+impl ReleaseFacts {
+    /// The same title, edition, regions, languages and formats.
+    fn same_software(&self, other: &Self) -> bool {
+        (
+            &self.title,
+            &self.edition,
+            &self.regions,
+            &self.languages,
+            &self.formats,
+        ) == (
+            &other.title,
+            &other.edition,
+            &other.regions,
+            &other.languages,
+            &other.formats,
+        )
+    }
+}
+
 /// How a listed tag stands against the library, within the local name a pull
 /// of it writes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -315,6 +394,10 @@ pub enum LocalState {
     /// The library holds `have`, an older version under the same name, and
     /// no version as new as this one.
     NewerAvailable { have: String },
+    /// The library holds `have` under the same name, a release whose title
+    /// record says `version`, older than this tag's record says, and no
+    /// record of the same title, edition and formats as new.
+    NewerRelease { have: String, version: String },
     /// The local alias of a set's or package's release names `have`, a
     /// higher revision than the newest the registry lists for it.
     LocalNewer { have: String },
@@ -582,6 +665,146 @@ pub(crate) fn local_state(
     }
 }
 
+/// Newer available across releases: when every record under the local name
+/// that is the same software as `remote` ([`ReleaseFacts`]) holds an older
+/// version, the one with the newest version, named by its tag. `held` lists
+/// the library's records under the name, `None` for one that cannot be read
+/// or names no title or version. The hint is conservative: `None`, no claim,
+/// when none is the same software, when one is as new or newer, when the
+/// versions of one cannot be compared, or when one cannot be read at all.
+pub(crate) fn newer_release(
+    remote: &ReleaseFacts,
+    held: &[(String, Option<ReleaseFacts>)],
+) -> Option<LocalState> {
+    let mut older = Vec::new();
+    for (tag, local) in held {
+        let local = local.as_ref()?;
+        if !local.same_software(remote) {
+            continue;
+        }
+        match image_store::tag::compare_versions(&remote.version, &local.version)? {
+            Order::Greater => older.push((tag, local)),
+            _ => return None,
+        }
+    }
+    older
+        .into_iter()
+        .max_by(|a, b| {
+            image_store::tag::compare_versions(&a.1.version, &b.1.version)
+                .unwrap_or(Order::Equal)
+                .then_with(|| a.0.cmp(b.0))
+        })
+        .map(|(tag, local)| LocalState::NewerRelease {
+            have: tag.clone(),
+            version: local.version.clone(),
+        })
+}
+
+/// `state`, or [`LocalState::NewerRelease`] when the tag a pull writes is
+/// not in the library and the records of the library's tags under its name
+/// are older releases of `remote` ([`newer_release`]).
+fn across_releases(
+    store: &Store,
+    local_tag: &str,
+    artifact_type: &str,
+    remote: Option<&ReleaseFacts>,
+    library: &[(String, Digest)],
+    platforms: &[&dyn DesktopPlatform],
+    state: LocalState,
+) -> LocalState {
+    let (LocalState::NotPulled { .. }, Some(remote)) = (&state, remote) else {
+        return state;
+    };
+    let name = local_tag
+        .rsplit_once(':')
+        .map_or(local_tag, |(name, _)| name);
+    let held: Vec<(String, Option<ReleaseFacts>)> = library
+        .iter()
+        .filter(|(tag, _)| tag.rsplit_once(':').is_some_and(|(other, _)| other == name))
+        .filter_map(
+            |(tag, _)| match local_release(store, tag, artifact_type, platforms) {
+                Ok(Some(facts)) => Some((tag.clone(), Some(facts))),
+                Ok(None) => None,
+                Err(()) => Some((tag.clone(), None)),
+            },
+        )
+        .collect();
+    newer_release(remote, &held).unwrap_or(state)
+}
+
+/// The [`ReleaseFacts`] of the local tag `tag`, read from the store as a
+/// selected remote tag is read: its manifest, its config record and its
+/// metadata record's first title. `Ok(None)` for an image of another type;
+/// `Err` for one whose records cannot be read, or that names no title or
+/// version, which keeps the hint from making a claim.
+fn local_release(
+    store: &Store,
+    tag: &str,
+    artifact_type: &str,
+    platforms: &[&dyn DesktopPlatform],
+) -> Result<Option<ReleaseFacts>, ()> {
+    let descriptor = store.tag_descriptor(tag).map_err(drop)?;
+    let bytes = store
+        .read_verified(&descriptor, MAX_SMALL_BLOB)
+        .map_err(drop)?;
+    let manifest = Manifest::decode_for_summary(&bytes).map_err(drop)?;
+    if manifest.artifact_type() != artifact_type {
+        return Ok(None);
+    }
+    let config = match manifest.config.media_type.as_str() {
+        mt::MEDIA_SET_CONFIG | mt::FIRMWARE_CONFIG => Some(
+            store
+                .read_verified(&manifest.config, MAX_SMALL_BLOB)
+                .map_err(drop)?,
+        ),
+        _ => None,
+    };
+    let mut metadata = manifest
+        .layers
+        .iter()
+        .filter(|layer| layer.media_type == mt::METADATA);
+    let title = match (metadata.next(), metadata.next()) {
+        (Some(layer), None) => {
+            let bytes = store.read_verified(layer, MAX_SMALL_BLOB).map_err(drop)?;
+            Metadata::decode_for_display(&bytes, &manifest.layers)
+                .map_err(drop)?
+                .titles
+                .into_iter()
+                .next()
+        }
+        _ => None,
+    };
+    let mut record = TagRecord::from_read(
+        browse::TagRecord {
+            digest: descriptor.digest,
+            artifact_type: artifact_type.into(),
+            annotations: manifest.annotations,
+            config_descriptor: manifest.config,
+            layers: manifest.layers,
+            size: descriptor.size,
+            user_supplied: false,
+            config,
+        },
+        platforms,
+    );
+    record.details = Some(Ok(details_of(title)));
+    record.release().map(Some).ok_or(())
+}
+
+/// What the details pane shows of a metadata record's first title.
+fn details_of(title: Option<image_store::metadata::Title>) -> Details {
+    let Some(title) = title else {
+        return Details::default();
+    };
+    Details {
+        title: Some(title.title),
+        edition: title.edition,
+        version: title.version,
+        regions: title.regions,
+        languages: title.languages,
+    }
+}
+
 /// One registry job: its id, the registry, where logins come from, and the
 /// flag Stop sets.
 #[derive(Clone)]
@@ -625,6 +848,8 @@ pub struct LocalQuery {
     pub blobs: Vec<Descriptor>,
     /// As [`TagRow::newest_revision`].
     pub newest_revision: Option<u64>,
+    /// As [`TagRecord::release`].
+    pub release: Option<ReleaseFacts>,
 }
 
 /// How one read tag stands against the library now.
@@ -737,12 +962,20 @@ pub fn run(
                 tags.into_iter()
                     .map(|query| {
                         Ok(LocalAnswer {
-                            state: local_state(
+                            state: across_releases(
+                                store,
                                 &query.local_tag,
-                                &query.digest,
                                 &query.artifact_type,
+                                query.release.as_ref(),
                                 &library,
-                                query.newest_revision,
+                                platforms.list,
+                                local_state(
+                                    &query.local_tag,
+                                    &query.digest,
+                                    &query.artifact_type,
+                                    &library,
+                                    query.newest_revision,
+                                ),
                             ),
                             stored: stored(store, &query.blobs).map_err(|error| {
                                 format!("The library could not be read: {error}")
@@ -920,10 +1153,7 @@ fn tag_row(
     };
     let title = if details {
         match browse::read_title(client, repository, &read, cancelled) {
-            Ok(title) => Some(Ok(Details {
-                edition: title.as_ref().and_then(|t| t.edition.clone()),
-                version: title.and_then(|t| t.version),
-            })),
+            Ok(title) => Some(Ok(details_of(title))),
             Err(error) if ends_job(&error) => return Err(error),
             Err(error) => Some(Err(text(&error))),
         }
@@ -935,12 +1165,20 @@ fn tag_row(
     let newest_revision = image_store::tag::governs(&record.artifact_type)
         .then(|| newest_listed_revision(listed, tag))
         .flatten();
-    let local = local_state(
+    let local = across_releases(
+        store,
         &local_tag,
-        &record.digest,
         &record.artifact_type,
+        record.release().as_ref(),
         library,
-        newest_revision,
+        platforms.list,
+        local_state(
+            &local_tag,
+            &record.digest,
+            &record.artifact_type,
+            library,
+            newest_revision,
+        ),
     );
     let stored = stored(store, &record.descriptors).map_err(Error::Store)?;
     Ok(TagRow {
@@ -1890,6 +2128,7 @@ impl Remotes {
                     artifact_type: record.artifact_type.clone(),
                     blobs: record.blobs().into_iter().cloned().collect(),
                     newest_revision: row.newest_revision,
+                    release: record.release(),
                 })
             })
             .collect();
@@ -2554,6 +2793,133 @@ mod tests {
             package(&format!("{lan}:1.2.0"), "lan 1.2.0"),
             LocalState::NotPulled { same_as: None }
         );
+    }
+
+    #[test]
+    fn a_newer_release_needs_the_same_software_and_an_older_version_everywhere() {
+        let facts =
+            |title: &str, edition: Option<&str>, version: &str, formats: &[&str]| ReleaseFacts {
+                title: title.into(),
+                edition: edition.map(str::to_owned),
+                version: version.into(),
+                regions: Vec::new(),
+                languages: Vec::new(),
+                formats: formats.iter().map(|f| (*f).to_owned()).collect(),
+            };
+        let floppy = |version: &str| facts("FreeDOS", Some("Floppy"), version, &["1.44M"]);
+        let held = |list: &[(&str, ReleaseFacts)]| -> Vec<(String, Option<ReleaseFacts>)> {
+            list.iter()
+                .map(|(tag, facts)| (format!("freedos:{tag}"), Some(facts.clone())))
+                .collect()
+        };
+        let remote = floppy("1.4");
+        assert_eq!(
+            newer_release(&remote, &held(&[("1.3-r1", floppy("1.3"))])),
+            Some(LocalState::NewerRelease {
+                have: "freedos:1.3-r1".into(),
+                version: "1.3".into()
+            })
+        );
+        // The newest older release is named; another software is left out.
+        assert_eq!(
+            newer_release(
+                &floppy("95"),
+                &held(&[
+                    ("1.4-r1", floppy("1.4")),
+                    ("3.11-r1", floppy("3.11")),
+                    ("live-r1", facts("FreeDOS", Some("Live"), "99", &["1.44M"])),
+                ])
+            ),
+            Some(LocalState::NewerRelease {
+                have: "freedos:3.11-r1".into(),
+                version: "3.11".into()
+            })
+        );
+        let mut usa = floppy("1.1");
+        usa.regions = vec!["usa".into()];
+        let mut japan = floppy("1.0");
+        japan.regions = vec!["japan".into()];
+        let mut english = floppy("1.3");
+        english.languages = vec!["en".into()];
+        for (why, remote, local) in [
+            (
+                "another edition",
+                remote.clone(),
+                facts("FreeDOS", Some("Live"), "1.3", &["1.44M"]),
+            ),
+            (
+                "no edition",
+                remote.clone(),
+                facts("FreeDOS", None, "1.3", &["1.44M"]),
+            ),
+            (
+                "another format",
+                remote.clone(),
+                facts("FreeDOS", Some("Floppy"), "1.3", &["720K"]),
+            ),
+            (
+                "another title",
+                remote.clone(),
+                facts("OpenDOS", Some("Floppy"), "1.3", &["1.44M"]),
+            ),
+            ("another region", usa.clone(), japan.clone()),
+            ("a region on one side only", usa.clone(), floppy("1.0")),
+            (
+                "a language on one side only",
+                remote.clone(),
+                english.clone(),
+            ),
+            ("the same version", remote.clone(), floppy("1.4")),
+            (
+                "the same version with a trailing zero",
+                remote.clone(),
+                floppy("1.4.0"),
+            ),
+            ("a newer version", remote.clone(), floppy("1.5")),
+            ("a version of words", remote.clone(), floppy("1.3 beta")),
+            ("a word decides", floppy("1.4_beta"), floppy("1.4_alpha")),
+            (
+                "a mixed segment decides",
+                floppy("4.00.950b"),
+                floppy("4.00.950"),
+            ),
+            (
+                "a remote version that does not split",
+                floppy("1.4 final"),
+                floppy("1.3"),
+            ),
+        ] {
+            assert_eq!(
+                newer_release(&remote, &held(&[("x-r1", local)])),
+                None,
+                "{why}"
+            );
+        }
+        // The same region and language compare.
+        let mut japan_new = japan.clone();
+        japan_new.version = "1.1".into();
+        assert!(newer_release(&japan_new, &held(&[("japan-r1", japan)])).is_some());
+        // One record as new as the registry's makes no claim.
+        assert_eq!(
+            newer_release(
+                &remote,
+                &held(&[("1.3-r1", floppy("1.3")), ("1.4-r9", floppy("1.4"))])
+            ),
+            None
+        );
+        // A record of the same software whose version cannot be compared
+        // vetoes the hint, and so does a record that cannot be read.
+        assert_eq!(
+            newer_release(
+                &remote,
+                &held(&[("1.3-r1", floppy("1.3")), ("1.5-r1", floppy("1.5 beta"))])
+            ),
+            None
+        );
+        let mut unread = held(&[("1.3-r1", floppy("1.3"))]);
+        unread.push(("freedos:broken-r1".into(), None));
+        assert_eq!(newer_release(&remote, &unread), None);
+        assert_eq!(newer_release(&remote, &[]), None);
     }
 
     #[test]

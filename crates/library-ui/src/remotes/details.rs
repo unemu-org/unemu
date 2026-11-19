@@ -139,6 +139,9 @@ fn state_text(row: Option<&TagRow>, facts: &PlatformFacts) -> String {
     match &row.local {
         Some(LocalState::InLibrary) => "In library".into(),
         Some(LocalState::NewerAvailable { have }) => format!("Newer available · you have {have}"),
+        Some(LocalState::NewerRelease { version, .. }) => {
+            format!("Newer available · you have {version}")
+        }
         Some(LocalState::LocalNewer { have }) => format!("Local is newer: {have}"),
         Some(LocalState::OtherImage { .. }) => "⚠ Local tag names another image".into(),
         Some(LocalState::NotPulled { same_as: Some(tag) }) => {
@@ -156,7 +159,9 @@ fn local_sentence(row: &TagRow) -> String {
             "Newer than your copy. The library has {have}, an older revision of this release. Pull writes the registry's newest revision and moves your local alias {} forward to it; {have} and the machines made from it stay as they are.",
             row.local_tag
         ),
-        Some(LocalState::NewerAvailable { have }) => format!(
+        Some(
+            LocalState::NewerAvailable { have } | LocalState::NewerRelease { have, .. },
+        ) => format!(
             "Newer than your copy. The library has {have} from this registry. Pull adds this tag beside it; your copy and the machines made from it stay as they are."
         ),
         Some(LocalState::LocalNewer { have }) => format!(
@@ -537,9 +542,11 @@ impl RemotesView {
             let sentence = local_sentence(row);
             let colour = match row.local {
                 Some(LocalState::InLibrary) => pane::good_colour(ui.visuals()),
-                Some(LocalState::OtherImage { .. } | LocalState::NewerAvailable { .. }) => {
-                    ui.visuals().warn_fg_color
-                }
+                Some(
+                    LocalState::OtherImage { .. }
+                    | LocalState::NewerAvailable { .. }
+                    | LocalState::NewerRelease { .. },
+                ) => ui.visuals().warn_fg_color,
                 _ => ui.visuals().text_color(),
             };
             pane::text(ui, RichText::new(sentence).color(colour));

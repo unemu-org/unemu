@@ -500,6 +500,50 @@ fn the_list_draws_columns_local_states_and_expands_a_repository() {
         .has_widget("Collapse unemu/open-at (3 tags)"));
 }
 
+/// A newer release, told from the title records, reads as Newer available
+/// does, naming the version the library's record says, in the list and in
+/// the details pane, whose sentence names the local tag.
+#[test]
+fn a_newer_release_reads_newer_available_with_the_local_version() {
+    let mut rig = Rig::new();
+    rig.listed();
+    let freedos = rig
+        .registry(DEFAULT_REGISTRY)
+        .repositories
+        .iter_mut()
+        .find(|r| r.name == "unemu/media/freedos")
+        .unwrap();
+    freedos.read[0].local = Some(LocalState::NewerRelease {
+        have: "freedos:1.3-r1".into(),
+        version: "1.3".into(),
+    });
+    rig.show(unemu(None));
+    let mut screen = Screen::new(false, false, WIDE);
+    let shown = screen.settled(&mut rig.view);
+    let rows = shown.rows();
+    let row = rows
+        .iter()
+        .find(|r| r[0] == "unemu/media/freedos (2 tags)")
+        .unwrap();
+    assert_eq!(row[7], "Newer available · you have 1.3");
+    // In the warning colour Newer available has, as the first part of the cell.
+    assert_eq!(
+        shown.text("Newer available · you have 1.3").colour,
+        ui_kit::skin::skin_visuals(false, false).warn_fg_color
+    );
+
+    rig.view.remote.selected = Some((
+        DEFAULT_REGISTRY.into(),
+        "unemu/media/freedos".into(),
+        "1.4".into(),
+    ));
+    let shown = screen.settled(&mut rig.view);
+    assert!(shown.shows("Newer available · you have 1.3"));
+    assert!(shown.shows(
+        "Newer than your copy. The library has freedos:1.3-r1 from this registry. Pull adds this tag beside it; your copy and the machines made from it stay as they are."
+    ));
+}
+
 /// Every state of the model draws the mock-up's strip above the rows or
 /// its message instead of them, with the model's wording and the action it
 /// offers, and that action does what it says.
@@ -1502,6 +1546,7 @@ fn rich(artifact_type: &str, title: &str, layer: &str) -> TagRecord {
     record.details = Some(Ok(crate::remote_browse::Details {
         edition: Some("Floppy Edition".into()),
         version: Some("1.4".into()),
+        ..Default::default()
     }));
     let config = image_store::Descriptor::new(mt::CONFIG, Digest::of(title.as_bytes()), 2048);
     let mut payload =
