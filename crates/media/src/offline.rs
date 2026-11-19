@@ -3,7 +3,7 @@
 //! `backlog/docs/design/persistent-media.md` § Offline commands and § Locking
 //! and retention. Inspections may report an absent lock on read-only storage.
 
-use crate::sink::{
+use crate::journal_file::{
     canonical_journal_path, inspection_lock, journal_lock_path, lock_journal, platform_sync,
     refuse_creation_temp_name,
 };

@@ -2026,6 +2026,7 @@ dependencies = [
  "sha2",
  "thiserror 1.0.69",
  "toml",
+ "unemu-core-api",
 ]
 
 [[package]]

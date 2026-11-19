@@ -7,17 +7,27 @@
 //! channel to the controller. Reads consult sparse replacements, then the verified base.
 //! No wall clock, worker thread or host failure becomes a guest input.
 //!
-//! Each successful command/end flushes userspace output and calls `File::sync_all`.
-//! On Apple targets std supplies F_FULLFSYNC and retries Interrupted internally.
-//! Creation publishes a synchronized temporary header without replacing an
-//! existing destination. Mount verifies the opened canonical path, removes
-//! creation-temporary leftovers under the lock and synchronizes the directory.
-//! Dangling journal symlinks are refused before locking. Unsupported
-//! barriers fail rather than weaken this contract. Tests measure operation
-//! ordering, fault handling and real file reopen/lock behavior;
-//! they do not measure power-loss durability. Preservation of synchronized bytes
-//! and honest storage/cache barriers remain assumptions of the design.
+//! The journal is kept in one record of the contract (`unemu_core_api::Record`,
+//! core-contract.md §12.5): it reads the record, appends the frames of a
+//! command and synchronizes once per command/end, cuts an invalid tail at mount,
+//! creates a new journal by committing a replacement that holds only the header,
+//! and rewrites retained history through a verified replacement. It opens no
+//! file. The journal file on the host, with its stable `FILE.lock`, its
+//! no-clobber header publication and its temporary-name namespaces, is
+//! `crate::journal_file`. Tests measure operation ordering, fault handling and
+//! real file reopen/lock behavior; they do not measure power-loss durability.
+//! Preservation of synchronized bytes and honest storage/cache barriers remain
+//! assumptions of the design.
 
+#[cfg(test)]
+use crate::journal_file::{
+    barrier, canonical_journal_path, platform_sync, Filesystem, HostFilesystem, JournalIo,
+};
+use crate::journal_file::{resolve_journal_path, FileRecord};
+use crate::offline::ToolIo;
+use crate::scan::scan_record;
+use crate::store::{io_error, ContractRecord, Cursor, JournalRecord};
+#[cfg(test)]
 use crate::temporary::{cleanup_creation_temp, cleanup_retention_temp, HostCreationTempIo};
 use crate::{
     scan_overlay_reader, ClosingReason, Error, Frame, Header, Record, Refusal, SectorSource,
@@ -26,10 +36,16 @@ use crate::{
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
-use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+#[cfg(any(test, feature = "test-support"))]
+use std::fs::File;
+#[cfg(test)]
+use std::fs::OpenOptions;
+use std::io;
+#[cfg(test)]
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::Path;
 use std::rc::Rc;
+use unemu_core_api as contract;
 
 /// First host output failure, retained independently of the mounted media.
 /// A confirmed sequence is a successful barrier, not inferred crash survival.
@@ -102,15 +118,13 @@ pub enum OpenError {
 /// only after a synchronized close, under the same stable lock.
 pub struct JournalMedia {
     image: SparseOverlay,
-    output: Box<dyn JournalIo>,
-    _lock: Box<dyn Any>,
+    record: Box<dyn JournalRecord>,
     status: SinkStatus,
     sequence: u64,
     generation: u64,
     confirmed: u64,
     mount_report: VerificationReport,
     base: VerifiedBase,
-    path: PathBuf,
     keep_generations: u32,
     closed_count: usize,
     #[cfg(feature = "test-support")]
@@ -265,21 +279,15 @@ impl JournalMedia {
                 last_confirmed_sequence: 0,
             }))
         })?;
-        let path = (|| {
-            refuse_creation_temp_name(path)?;
-            let canonical = canonical_journal_path(path)?;
-            refuse_creation_temp_name(&canonical)?;
-            Ok::<_, io::Error>(canonical)
-        })()
-        .map_err(|error| {
+        let path = resolve_journal_path(path).map_err(|error| {
             OpenError::Host(status.latch(SinkFailure {
                 operation: "resolve journal path",
                 message: error.to_string(),
                 last_confirmed_sequence: 0,
             }))
         })?;
-        Self::open_with_lock(
-            &mut HostFilesystem,
+        Self::open_file(
+            &mut crate::journal_file::HostFilesystem,
             &path,
             base,
             geometry_length,
@@ -289,12 +297,58 @@ impl JournalMedia {
         )
     }
 
+    /// Mount the journal kept in `record`, a record of the contract: a
+    /// journal file ([`crate::JournalFile`]), a buffer in memory or any record
+    /// a front end's storage hands over. An empty record becomes a new journal
+    /// whose header is committed through a replacement, so a journal with half
+    /// a header never exists; a record with bytes is recovered exactly as a
+    /// journal file is. The record is held until the session ends.
+    ///
+    /// Host failures are latched in `status`, named by the journal's step
+    /// ("scan", "mount sync", "write", ...) with the record's message.
+    pub fn open_record(
+        record: Box<dyn contract::Record>,
+        base: &VerifiedBase,
+        geometry_length: u64,
+        status: SinkStatus,
+    ) -> Result<Self, OpenError> {
+        base.check_unchanged().map_err(|e| {
+            OpenError::Host(status.latch(SinkFailure {
+                operation: "verify base",
+                message: e.to_string(),
+                last_confirmed_sequence: 0,
+            }))
+        })?;
+        Self::check_open(base, geometry_length, &status)?;
+        let host = |operation, error: contract::Error| {
+            OpenError::Host(status.latch(SinkFailure {
+                operation,
+                message: error.to_string(),
+                last_confirmed_sequence: 0,
+            }))
+        };
+        let mut record = ContractRecord(record);
+        let created = contract::Record::size(&record).map_err(|e| host("open", e))? == 0;
+        if created {
+            let header = base.identity().encode()?;
+            let mut replacement = contract::Record::replace(&mut record)
+                .map_err(|e| host("create temporary header", e))?;
+            replacement
+                .append(&header)
+                .map_err(|e| host("header write", e))?;
+            replacement
+                .commit()
+                .map_err(|e| host("publish header", e))?;
+        }
+        Self::mount(Box::new(record), base, geometry_length, status, created)
+    }
+
     /// Inject a failing write sink after a successful real mount. This optional
     /// test seam lets consumers verify their boundary policy without process-wide
     /// resource limits or filesystem-specific quotas. Memory updates stay real.
     #[cfg(feature = "test-support")]
     pub fn with_failing_output(mut self) -> Self {
-        self.output = Box::new(FailingOutput(self.output));
+        self.record = Box::new(FailingAppends(self.record));
         self
     }
 
@@ -314,7 +368,7 @@ impl JournalMedia {
         geometry_length: u64,
         status: SinkStatus,
     ) -> Result<Self, OpenError> {
-        Self::open_with_lock(
+        Self::open_file(
             fs,
             path,
             &VerifiedBase::from_bytes(base)?,
@@ -328,11 +382,11 @@ impl JournalMedia {
     pub(crate) fn recover_locked(
         path: &Path,
         base: &VerifiedBase,
-        lock: File,
+        lock: std::fs::File,
         base_metadata: &std::fs::Metadata,
     ) -> Result<Self, OpenError> {
-        Self::open_with_lock(
-            &mut HostFilesystem,
+        Self::open_file(
+            &mut crate::journal_file::HostFilesystem,
             path,
             base,
             base.byte_len(),
@@ -342,8 +396,26 @@ impl JournalMedia {
         )
     }
 
-    fn open_with_lock(
-        fs: &mut impl Filesystem,
+    /// Refuse a mount on a latched status or a base of another length, before
+    /// any storage is touched.
+    fn check_open(
+        base: &VerifiedBase,
+        geometry_length: u64,
+        status: &SinkStatus,
+    ) -> Result<(), OpenError> {
+        if let Some(failure) = status.failure() {
+            return Err(failure.into());
+        }
+        if base.identity().base_length != geometry_length {
+            return Err(Error::GeometryLength.into());
+        }
+        Ok(())
+    }
+
+    /// Lock and open the journal file, create it when it is missing, then
+    /// mount it.
+    fn open_file(
+        fs: &mut dyn crate::journal_file::Filesystem,
         path: &Path,
         base: &VerifiedBase,
         geometry_length: u64,
@@ -351,60 +423,44 @@ impl JournalMedia {
         lock: Option<Box<dyn Any>>,
         base_metadata: Option<&std::fs::Metadata>,
     ) -> Result<Self, OpenError> {
-        if let Some(failure) = status.failure() {
-            return Err(failure.into());
-        }
-        let header = base.identity().clone();
-        if header.base_length != geometry_length {
-            return Err(Error::GeometryLength.into());
-        }
-        let confirmed = Cell::new(0);
-        let host = |operation, error: io::Error| {
+        Self::check_open(base, geometry_length, &status)?;
+        let header = base.identity().encode()?;
+        let host = |(operation, error): crate::journal_file::Step| {
             OpenError::Host(status.latch(SinkFailure {
                 operation,
                 message: error.to_string(),
+                last_confirmed_sequence: 0,
+            }))
+        };
+        let mut record =
+            FileRecord::open(fs, path, lock, header.to_vec(), base_metadata).map_err(host)?;
+        let created = !record.exists();
+        if created {
+            record.create(fs).map_err(host)?;
+        }
+        Self::mount(Box::new(record), base, geometry_length, status, created)
+    }
+
+    /// Recover the journal in `record` and make it ready for appends: replay
+    /// it, cut an invalid tail, confirm the surviving history with a barrier
+    /// of our own, and seal an interrupted session.
+    fn mount(
+        mut record: Box<dyn JournalRecord>,
+        base: &VerifiedBase,
+        geometry_length: u64,
+        status: SinkStatus,
+        created: bool,
+    ) -> Result<Self, OpenError> {
+        let confirmed = Cell::new(0);
+        let host = |operation, message: String| {
+            OpenError::Host(status.latch(SinkFailure {
+                operation,
+                message,
                 last_confirmed_sequence: confirmed.get(),
             }))
         };
-        let lock = match lock {
-            Some(lock) => lock,
-            None => fs.lock(path).map_err(|e| host("lock", e))?,
-        };
-        let (mut output, created) = match fs.open(path).map_err(|e| host("open", e))? {
-            Some(output) => (output, false),
-            None => {
-                let (mut output, temporary) = fs
-                    .create_temp(path)
-                    .map_err(|e| host("create temporary header", e))?;
-                let initialization = (|| {
-                    output
-                        .write_all(&header.encode()?)
-                        .map_err(|e| host("header write", e))?;
-                    barrier(output.as_mut()).map_err(|e| host("header sync", e))?;
-                    fs.publish(&temporary, path)
-                        .map_err(|e| host("publish header", e))?;
-                    fs.remove_temp(&temporary)
-                        .map_err(|e| host("unlink temporary header", e))?;
-                    Ok::<_, OpenError>(())
-                })();
-                if initialization.is_err() {
-                    // Unpublished leftovers are never mounted. Best-effort cleanup
-                    // must not replace the original failure in the status handle.
-                    let _ = fs.remove_temp(&temporary);
-                }
-                initialization?;
-                (output, true)
-            }
-        };
-        fs.verify_path(path)
-            .map_err(|e| host("verify journal path", e))?;
-        fs.cleanup_creation_temps(path, &header.encode()?, base_metadata)
-            .map_err(|e| host("remove creation temporaries", e))?;
-        // Cover both a prior publication and removal of its leftover hard link.
-        fs.sync_directory(path)
-            .map_err(|e| host("directory sync", e))?;
-        let scan =
-            scan_overlay_reader(&mut output, base, geometry_length).map_err(|e| host("scan", e))?;
+        let scan = scan_record(record.as_mut(), base, geometry_length)
+            .map_err(|e| host("scan", e.to_string()))?;
         let image = match scan.overlay {
             Some(image) => image,
             None => match scan.report.status {
@@ -425,20 +481,36 @@ impl JournalMedia {
         let mut sequence = scan.report.last_durable_sequence;
         let mut closed = scan.report.last_closed_generation.unwrap_or(0);
         if scan.report.discarded_bytes != 0 {
-            output
+            record
                 .truncate(scan.report.safe_offset as u64)
-                .map_err(|e| host("recovery truncate", e))?;
-            barrier(output.as_mut()).map_err(|e| host("recovery sync", e))?;
+                .map_err(|e| host("recovery truncate", e.to_string()))?;
+            record
+                .sync()
+                .map_err(|e| host("recovery sync", e.to_string()))?;
         }
         if !created && scan.report.discarded_bytes == 0 {
             // Confirm surviving history with our own barrier; file contents alone
             // cannot reveal whether a previous process acknowledged its sync.
-            barrier(output.as_mut()).map_err(|e| host("mount sync", e))?;
+            record
+                .sync()
+                .map_err(|e| host("mount sync", e.to_string()))?;
         }
         confirmed.set(recovered_command);
-        output
-            .seek(SeekFrom::Start(scan.report.safe_offset as u64))
-            .map_err(|e| host("append seek", e))?;
+        // Appends go to the end of the record, which is the safe offset now.
+        // For a journal file this asks the host for the length, which also
+        // places the file's cursor there.
+        let end = record
+            .size()
+            .map_err(|e| host("append seek", e.to_string()))?;
+        if end != scan.report.safe_offset as u64 {
+            return Err(host(
+                "append seek",
+                format!(
+                    "record holds {end} bytes after recovery, expected {}",
+                    scan.report.safe_offset
+                ),
+            ));
+        }
         if let Some(seal) = scan.report.recovery_seal()? {
             // Do not publish a marker that prevents any subsequent session id.
             seal.generation
@@ -447,10 +519,12 @@ impl JournalMedia {
             seal.sequence
                 .checked_add(1)
                 .ok_or(Error::IntegerExhausted)?;
-            output
-                .write_all(&seal.encode()?)
-                .map_err(|e| host("recovery seal", e))?;
-            barrier(output.as_mut()).map_err(|e| host("recovery seal sync", e))?;
+            record
+                .append(&seal.encode()?)
+                .map_err(|e| host("recovery seal", e.to_string()))?;
+            record
+                .sync()
+                .map_err(|e| host("recovery seal sync", e.to_string()))?;
             sequence = seal.sequence;
             closed = seal.generation;
         }
@@ -458,8 +532,7 @@ impl JournalMedia {
         sequence.checked_add(1).ok_or(Error::IntegerExhausted)?;
         Ok(Self {
             image,
-            output,
-            _lock: lock,
+            record,
             status,
             sequence,
             generation,
@@ -468,7 +541,6 @@ impl JournalMedia {
                 + usize::from(scan.report.unsealed_tip.is_some()),
             mount_report: scan.report,
             base: base.clone(),
-            path: path.to_owned(),
             keep_generations: 10,
             #[cfg(feature = "test-support")]
             retention_failure: None,
@@ -621,7 +693,7 @@ impl JournalMedia {
     fn close_with(
         &mut self,
         reason: ClosingReason,
-        io: &mut impl crate::offline::ToolIo,
+        io: &mut impl ToolIo,
     ) -> Result<(), SinkFailure> {
         if let Err(error) = self.base.check_unchanged() {
             return Err(self.status.latch(self.failure("base changed", error)));
@@ -657,14 +729,13 @@ impl JournalMedia {
         Ok(())
     }
 
-    fn prune_with(&mut self, io: &mut impl crate::offline::ToolIo) -> Result<(), SinkFailure> {
+    fn prune_with(&mut self, io: &mut impl ToolIo) -> Result<(), SinkFailure> {
         if self.status.failure().is_some() {
             return Ok(());
         }
         let mut uncertain = false;
-        let mut temporary = None;
         let result = (|| -> io::Result<()> {
-            let old = scan_overlay_reader(&mut self.output, &self.base, self.base.byte_len())?;
+            let old = scan_record(self.record.as_mut(), &self.base, self.base.byte_len())?;
             if old.report.status != Status::Valid || old.report.unsealed_tip.is_some() {
                 return Err(io::Error::other(
                     "retention requires a valid closed boundary",
@@ -674,39 +745,40 @@ impl JournalMedia {
             let retained = &old.report.generations
                 [old.report.generations.len() - self.keep_generations as usize..];
             let anchor = &retained[0];
-            let state = crate::history::prefix(&mut self.output, anchor.end_offset, &self.base)?
-                .overlay
-                .ok_or_else(|| io::Error::other("anchor reconstruction refused"))?;
-            let permissions = std::fs::metadata(&self.path)?.permissions();
-            let (mut replacement, name) =
-                io.create_temporary(&self.path, "retain", Some(&permissions))?;
-            temporary = Some(name.clone());
-            // The requested creation mode is still filtered by the process umask.
-            io.set_permissions(&replacement, permissions)?;
+            let state = crate::history::prefix(
+                &mut Cursor::new(self.record.as_mut())?,
+                anchor.end_offset,
+                &self.base,
+            )?
+            .overlay
+            .ok_or_else(|| io::Error::other("anchor reconstruction refused"))?;
+            let mut replacement = self.record.replace_with(io).map_err(io_error)?;
             let encode = |error| io::Error::other(error);
-            io.write_temporary(
-                &mut replacement,
-                &Header {
-                    anchor_generation: anchor.id,
-                    ..self.base.identity().clone()
-                }
-                .encode()
-                .map_err(encode)?,
-            )?;
+            let new_header = Header {
+                anchor_generation: anchor.id,
+                ..self.base.identity().clone()
+            }
+            .encode()
+            .map_err(encode)?;
+            replacement.append(&new_header).map_err(io_error)?;
             let mut sequence = 0;
             let mut sectors = 0;
-            let mut emit = |record, generation, file: &mut File| -> io::Result<()> {
+            let mut emit = |record,
+                            generation,
+                            replacement: &mut dyn contract::Replacement|
+             -> io::Result<()> {
                 sequence += 1;
-                io.write_temporary(
-                    file,
-                    &Frame {
-                        sequence,
-                        generation,
-                        record,
-                    }
-                    .encode()
-                    .map_err(encode)?,
-                )
+                replacement
+                    .append(
+                        &Frame {
+                            sequence,
+                            generation,
+                            record,
+                        }
+                        .encode()
+                        .map_err(encode)?,
+                    )
+                    .map_err(io_error)
             };
             for (&lba, bytes) in state.replacements() {
                 if **bytes != self.base.read_sector(lba)? {
@@ -716,40 +788,51 @@ impl JournalMedia {
                             bytes: bytes.clone(),
                         },
                         anchor.id,
-                        &mut replacement,
+                        replacement.as_mut(),
                     )?;
                     sectors += 1;
                 }
             }
             drop(state);
-            emit(Record::CommandEnd { sectors }, anchor.id, &mut replacement)?;
+            emit(
+                Record::CommandEnd { sectors },
+                anchor.id,
+                replacement.as_mut(),
+            )?;
             emit(
                 Record::GenerationEnd {
                     reason: ClosingReason::RetentionAnchor,
                 },
                 anchor.id,
-                &mut replacement,
+                replacement.as_mut(),
             )?;
-            let mut new_ends = vec![replacement.stream_position()? as usize];
-            self.output
-                .seek(SeekFrom::Start(anchor.end_offset as u64))?;
+            let mut new_ends = vec![replacement.size().map_err(io_error)? as usize];
             let end = old.report.safe_offset;
-            for _ in (anchor.end_offset..end).step_by(FRAME_LEN) {
+            for offset in (anchor.end_offset..end).step_by(FRAME_LEN) {
                 let mut bytes = [0; FRAME_LEN];
-                self.output.read_exact(&mut bytes)?;
+                self.record
+                    .read_at(offset as u64, &mut bytes)
+                    .map_err(io_error)?;
                 let frame = Frame::decode(&bytes).map_err(encode)?;
                 let closed = matches!(frame.record, Record::GenerationEnd { .. });
-                emit(frame.record, frame.generation, &mut replacement)?;
+                emit(frame.record, frame.generation, replacement.as_mut())?;
                 if closed {
-                    new_ends.push(replacement.stream_position()? as usize);
+                    new_ends.push(replacement.size().map_err(io_error)? as usize);
                 }
             }
             // Verify every retained recovery point, not only the final image:
             // otherwise an omitted overwritten sector could escape detection.
             for (generation, new_end) in retained.iter().zip(new_ends) {
-                let before =
-                    crate::history::prefix(&mut self.output, generation.end_offset, &self.base)?;
-                let after = crate::history::prefix(&mut replacement, new_end, &self.base)?;
+                let before = crate::history::prefix(
+                    &mut Cursor::new(self.record.as_mut())?,
+                    generation.end_offset,
+                    &self.base,
+                )?;
+                let after = crate::history::prefix(
+                    &mut Cursor::new(replacement.as_mut())?,
+                    new_end,
+                    &self.base,
+                )?;
                 if after.report.status != Status::Valid
                     || after.report.unsealed_tip.is_some()
                     || !equivalent(after.overlay.as_ref(), before.overlay.as_ref(), &self.base)?
@@ -757,7 +840,11 @@ impl JournalMedia {
                     return Err(io::Error::other("retention state verification failed"));
                 }
             }
-            let check = scan_overlay_reader(&mut replacement, &self.base, self.base.byte_len())?;
+            let check = scan_overlay_reader(
+                &mut Cursor::new(replacement.as_mut())?,
+                &self.base,
+                self.base.byte_len(),
+            )?;
             if check.report.status != Status::Valid
                 || check.report.unsealed_tip.is_some()
                 || check.report.generations.len() != retained.len()
@@ -771,11 +858,20 @@ impl JournalMedia {
                 return Err(io::Error::other("retention history verification failed"));
             }
             drop(check.overlay);
-            replacement.seek(SeekFrom::End(0))?;
-            io.sync(&replacement, "temporary sync")?;
-            uncertain = true;
-            io.publish_temporary(&name, &self.path, true)?;
-            self.output = Box::new(replacement);
+            let new_length = replacement.size().map_err(io_error)?;
+            // A commit that fails after its new contents are in place leaves the
+            // record holding them: their numbers count from then on. Reads
+            // still work after an uncertain failure, so the record itself
+            // says which contents it holds: the new ones have the new length
+            // and the new anchor in their header, which the old ones cannot
+            // have, as the anchor is a generation the old history retained.
+            let committed = replacement.commit();
+            if let Err(error) = &committed {
+                uncertain = error.kind == contract::ErrorKind::StorageUncertain;
+                if !(uncertain && self.holds(new_length, &new_header)) {
+                    return committed.map_err(io_error);
+                }
+            }
             self.sequence = check.report.last_durable_sequence;
             self.confirmed = check
                 .report
@@ -785,21 +881,15 @@ impl JournalMedia {
                 .find(|g| g.commands != 0)
                 .map_or(0, |g| g.last_sequence - 1);
             self.closed_count = check.report.generations.len();
-            io.sync(
-                &File::open(crate::offline::parent(&self.path))?,
-                "publication directory sync",
-            )?;
-            Ok(())
+            committed.map_err(io_error)
         })();
-        if let Some(name) = temporary {
-            let _ = std::fs::remove_file(name);
-        }
-        // Scans seek arbitrarily; even a failed rewrite must leave append at EOF.
-        let seek = self.output.seek(SeekFrom::End(0));
+        // Scans read anywhere; even a failed rewrite must leave append at the
+        // end. For a journal file this asks the host for the length.
+        let seek = self.record.size();
         if seek.is_err() {
             uncertain = true;
         }
-        match result.and(seek.map(|_| ())) {
+        match result.and(seek.map(|_| ()).map_err(io_error)) {
             Ok(()) => {
                 *self.status.1.borrow_mut() = None;
                 Ok(())
@@ -815,6 +905,15 @@ impl JournalMedia {
                 Err(host)
             }
         }
+    }
+
+    /// Whether the record now holds `length` bytes that start with `header`.
+    /// A record that cannot be read is taken to hold its old contents.
+    fn holds(&mut self, length: u64, header: &[u8]) -> bool {
+        let mut start = vec![0; header.len()];
+        self.record.size().is_ok_and(|size| size == length)
+            && self.record.read_at(0, &mut start).is_ok()
+            && start == header
     }
 
     fn reserve(&self, frames: u64) -> Result<(), SinkFailure> {
@@ -835,15 +934,17 @@ impl JournalMedia {
         }
         .encode()
         .map_err(|e| self.failure("encode", e))?;
-        self.output
-            .write_all(&bytes)
+        self.record
+            .append(&bytes)
             .map_err(|e| self.failure("write", e))?;
         self.sequence = sequence;
         Ok(())
     }
 
     fn sync(&mut self, command: bool) -> Result<(), SinkFailure> {
-        barrier(self.output.as_mut()).map_err(|e| self.failure("command/end sync", e))?;
+        self.record
+            .sync()
+            .map_err(|e| self.failure("command/end sync", e))?;
         if command {
             self.confirmed = self.sequence;
         }
@@ -879,52 +980,43 @@ fn equivalent(
     Ok(true)
 }
 
-/// Injectable host boundary; write_all remains the standard library's partial /
-/// interrupted-write loop, so tests exercise exactly the production append path.
-trait JournalIo: Read + Write + Seek {
-    fn sync(&mut self) -> io::Result<()>;
-    fn truncate(&mut self, length: u64) -> io::Result<()>;
-}
-
-fn barrier(output: &mut dyn JournalIo) -> io::Result<()> {
-    output.flush()?;
-    output.sync()
-}
+/// The test seam of `with_failing_output`: every append fails, as a host
+/// write that runs out of space does; everything else reaches the record.
+#[cfg(feature = "test-support")]
+struct FailingAppends(Box<dyn JournalRecord>);
 
 #[cfg(feature = "test-support")]
-struct FailingOutput(Box<dyn JournalIo>);
-
-#[cfg(feature = "test-support")]
-impl Read for FailingOutput {
-    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        self.0.read(bytes)
+impl contract::Record for FailingAppends {
+    fn size(&self) -> Result<u64, contract::Error> {
+        self.0.size()
     }
-}
-
-#[cfg(feature = "test-support")]
-impl Seek for FailingOutput {
-    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
-        self.0.seek(position)
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), contract::Error> {
+        self.0.read_at(offset, buf)
     }
-}
-
-#[cfg(feature = "test-support")]
-impl Write for FailingOutput {
-    fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
-        Err(io::Error::other("injected journal output failure"))
+    fn append(&mut self, _bytes: &[u8]) -> Result<(), contract::Error> {
+        Err(contract::Error::new(
+            contract::ErrorKind::StorageUncertain,
+            "injected journal output failure",
+        ))
     }
-    fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
+    fn truncate(&mut self, size: u64) -> Result<(), contract::Error> {
+        self.0.truncate(size)
     }
-}
-
-#[cfg(feature = "test-support")]
-impl JournalIo for FailingOutput {
-    fn sync(&mut self) -> io::Result<()> {
+    fn sync(&mut self) -> Result<(), contract::Error> {
         self.0.sync()
     }
-    fn truncate(&mut self, length: u64) -> io::Result<()> {
-        self.0.truncate(length)
+    fn replace(&mut self) -> Result<Box<dyn contract::Replacement>, contract::Error> {
+        self.0.replace()
+    }
+}
+
+#[cfg(feature = "test-support")]
+impl JournalRecord for FailingAppends {
+    fn replace_with<'t>(
+        &mut self,
+        tool: &'t mut dyn ToolIo,
+    ) -> Result<Box<dyn contract::Replacement + 't>, contract::Error> {
+        self.0.replace_with(tool)
     }
 }
 
@@ -932,18 +1024,18 @@ impl JournalIo for FailingOutput {
 struct FailingRetentionIo(&'static str);
 
 #[cfg(feature = "test-support")]
-impl crate::offline::ToolIo for FailingRetentionIo {
+impl ToolIo for FailingRetentionIo {
     fn write_temporary(&mut self, file: &mut File, bytes: &[u8]) -> io::Result<()> {
         if self.0 == "temporary write" {
             return Err(io::Error::other("injected retention write failure"));
         }
-        file.write_all(bytes)
+        std::io::Write::write_all(file, bytes)
     }
     fn sync(&mut self, file: &File, role: &'static str) -> io::Result<()> {
         if self.0 == role {
             return Err(io::Error::other("injected retention barrier failure"));
         }
-        platform_sync(file)
+        crate::journal_file::platform_sync(file)
     }
     fn publish_temporary(
         &mut self,
@@ -956,266 +1048,6 @@ impl crate::offline::ToolIo for FailingRetentionIo {
         }
         crate::offline::HostIo.publish_temporary(temporary, path, replace)
     }
-}
-
-/// Namespace and lock operations are separate from the journal inode so the
-/// lock remains stable across later atomic retention replacements.
-trait Filesystem {
-    fn lock(&mut self, path: &Path) -> io::Result<Box<dyn Any>>;
-    fn open(&mut self, path: &Path) -> io::Result<Option<Box<dyn JournalIo>>>;
-    fn verify_path(&mut self, path: &Path) -> io::Result<()>;
-    fn cleanup_creation_temps(
-        &mut self,
-        path: &Path,
-        header: &[u8],
-        base_metadata: Option<&std::fs::Metadata>,
-    ) -> io::Result<()>;
-    fn create_temp(&mut self, path: &Path) -> io::Result<(Box<dyn JournalIo>, PathBuf)>;
-    fn publish(&mut self, temporary: &Path, path: &Path) -> io::Result<()>;
-    fn remove_temp(&mut self, temporary: &Path) -> io::Result<()>;
-    fn sync_directory(&mut self, path: &Path) -> io::Result<()>;
-}
-
-struct ProtectedBaseIo<'a>(&'a std::fs::Metadata);
-impl crate::temporary::CreationTempIo for ProtectedBaseIo<'_> {
-    fn metadata(&mut self, path: &Path) -> io::Result<std::fs::Metadata> {
-        HostCreationTempIo.metadata(path)
-    }
-    fn open(&mut self, path: &Path) -> io::Result<File> {
-        HostCreationTempIo.open(path)
-    }
-    fn remove(&mut self, path: &Path) -> io::Result<()> {
-        HostCreationTempIo.remove(path)
-    }
-    fn protected_base(&self) -> Option<&std::fs::Metadata> {
-        Some(self.0)
-    }
-}
-
-struct HostFilesystem;
-
-impl Filesystem for HostFilesystem {
-    fn lock(&mut self, path: &Path) -> io::Result<Box<dyn Any>> {
-        Ok(Box::new(lock_journal(path, false)?))
-    }
-
-    fn open(&mut self, path: &Path) -> io::Result<Option<Box<dyn JournalIo>>> {
-        match OpenOptions::new().read(true).write(true).open(path) {
-            Ok(file) => Ok(Some(Box::new(file))),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
-
-    fn verify_path(&mut self, path: &Path) -> io::Result<()> {
-        if path.canonicalize()? != path {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "journal canonical path changed after locking",
-            ));
-        }
-        Ok(())
-    }
-
-    fn cleanup_creation_temps(
-        &mut self,
-        path: &Path,
-        header: &[u8],
-        base_metadata: Option<&std::fs::Metadata>,
-    ) -> io::Result<()> {
-        let parent = path.parent().unwrap_or(Path::new("."));
-        for entry in std::fs::read_dir(parent)? {
-            let entry = entry?;
-            let candidate = entry.path();
-            let mut protected;
-            let io: &mut dyn crate::temporary::CreationTempIo = if let Some(base) = base_metadata {
-                protected = ProtectedBaseIo(base);
-                &mut protected
-            } else {
-                &mut HostCreationTempIo
-            };
-            if JournalMedia::is_creation_temp(path, &candidate) {
-                cleanup_creation_temp(io, &candidate, header)?;
-            } else if JournalMedia::is_retention_temp(path, &candidate) {
-                cleanup_retention_temp(io, &candidate)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn create_temp(&mut self, path: &Path) -> io::Result<(Box<dyn JournalIo>, PathBuf)> {
-        for counter in 0..u64::MAX {
-            let mut name = path.as_os_str().to_os_string();
-            name.push(format!(".create-{counter}.tmp"));
-            let temporary = PathBuf::from(name);
-            match OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(&temporary)
-            {
-                Ok(file) => return Ok((Box::new(file), temporary)),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
-            }
-        }
-        Err(io::Error::other("temporary header names exhausted"))
-    }
-
-    fn publish(&mut self, temporary: &Path, path: &Path) -> io::Result<()> {
-        std::fs::hard_link(temporary, path)
-    }
-
-    fn remove_temp(&mut self, temporary: &Path) -> io::Result<()> {
-        std::fs::remove_file(temporary)
-    }
-
-    fn sync_directory(&mut self, path: &Path) -> io::Result<()> {
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        platform_sync(&File::open(parent)?)
-    }
-}
-
-impl JournalIo for File {
-    fn sync(&mut self) -> io::Result<()> {
-        platform_sync(self)
-    }
-    fn truncate(&mut self, length: u64) -> io::Result<()> {
-        self.set_len(length)
-    }
-}
-
-pub(crate) fn refuse_creation_temp_name(path: &Path) -> io::Result<()> {
-    if JournalMedia::is_creation_temp_name(path) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "journal path {} uses a reserved creation-temporary name or replacement-temporary name",
-                path.display()
-            ),
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn canonical_journal_path(path: &Path) -> io::Result<PathBuf> {
-    match path.canonicalize() {
-        Ok(path) => Ok(path),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            match std::fs::symlink_metadata(path) {
-                Ok(metadata) if metadata.file_type().is_symlink() => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "journal path is a dangling symlink",
-                    ));
-                }
-                Ok(_) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
-            // This is the expected canonical name for post-open verification,
-            // not an additional locking mechanism for parent-directory aliases.
-            let parent = path
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or(Path::new("."));
-            let name = path.file_name().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "journal path must have a filename",
-                )
-            })?;
-            Ok(parent.canonicalize()?.join(name))
-        }
-        Err(error) => Err(error),
-    }
-}
-
-#[cfg(unix)]
-pub(crate) fn platform_sync(file: &File) -> io::Result<()> {
-    // std uses F_FULLFSYNC on Apple targets with an Interrupted retry. Calling
-    // fcntl again would duplicate the device-cache flush for every command.
-    file.sync_all()
-}
-
-#[cfg(not(unix))]
-pub(crate) fn platform_sync(_file: &File) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "journal durability is supported only on Unix",
-    ))
-}
-
-pub(crate) fn journal_lock_path(path: &Path) -> PathBuf {
-    let mut name = path.as_os_str().to_os_string();
-    name.push(".lock");
-    PathBuf::from(name)
-}
-
-pub(crate) fn inspection_lock(path: &Path) -> io::Result<Option<File>> {
-    match lock_journal(path, true) {
-        Ok(file) => Ok(Some(file)),
-        Err(error) => {
-            #[cfg(unix)]
-            if matches!(
-                error.raw_os_error(),
-                Some(libc::EACCES) | Some(libc::EPERM) | Some(libc::EROFS)
-            ) && matches!(std::fs::symlink_metadata(journal_lock_path(path)), Err(e) if e.kind() == io::ErrorKind::NotFound)
-            {
-                // A writing session must have created this entry. Never bypass
-                // an existing lock, even if it is unreadable or a dangling link.
-                return Ok(None);
-            }
-            Err(error)
-        }
-    }
-}
-
-pub(crate) fn lock_journal(path: &Path, shared: bool) -> io::Result<File> {
-    let name = journal_lock_path(path);
-    let file = if shared {
-        match File::open(&name) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                match OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create_new(true)
-                    .open(&name)
-                {
-                    Ok(file) => file,
-                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                        File::open(&name)?
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-            Err(error) => return Err(error),
-        }
-    } else {
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(name)?
-    };
-    let result = if shared {
-        file.try_lock_shared()
-    } else {
-        file.try_lock()
-    };
-    result.map_err(|e| match e {
-        std::fs::TryLockError::WouldBlock => io::Error::new(
-            io::ErrorKind::WouldBlock,
-            "journal is locked by another session or tool",
-        ),
-        std::fs::TryLockError::Error(error) => error,
-    })?;
-    Ok(file)
 }
 
 #[cfg(test)]

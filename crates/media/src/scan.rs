@@ -158,12 +158,38 @@ pub fn scan_overlay_reader<R: Read + Seek>(
     geometry_length: u64,
 ) -> io::Result<SparseScan> {
     base.check_unchanged()?;
-    let length = usize::try_from(journal.seek(SeekFrom::End(0))?)
-        .map_err(|_| io::Error::other("journal offsets exceed address space"))?;
-    let scan = scan_source(length, base, geometry_length, |offset, bytes| {
+    let length = journal.seek(SeekFrom::End(0))?;
+    scan_sized(length, base, geometry_length, |offset, bytes| {
         journal.seek(SeekFrom::Start(offset as u64))?;
         journal.read_exact(bytes)
-    })?;
+    })
+}
+
+/// The same replay over a record of the contract: its length, then reads at
+/// offsets, in the order `scan_overlay_reader` seeks and reads a file.
+pub(crate) fn scan_record(
+    journal: &mut (impl unemu_core_api::Record + ?Sized),
+    base: &VerifiedBase,
+    geometry_length: u64,
+) -> io::Result<SparseScan> {
+    base.check_unchanged()?;
+    let length = journal.size().map_err(crate::store::io_error)?;
+    scan_sized(length, base, geometry_length, |offset, bytes| {
+        journal
+            .read_at(offset as u64, bytes)
+            .map_err(crate::store::io_error)
+    })
+}
+
+fn scan_sized(
+    length: u64,
+    base: &VerifiedBase,
+    geometry_length: u64,
+    read: impl FnMut(usize, &mut [u8]) -> io::Result<()>,
+) -> io::Result<SparseScan> {
+    let length = usize::try_from(length)
+        .map_err(|_| io::Error::other("journal offsets exceed address space"))?;
+    let scan = scan_source(length, base, geometry_length, read)?;
     base.check_unchanged()?;
     let reason = match &scan.report.status {
         Status::TornTail(tail) => Some(&tail.reason),

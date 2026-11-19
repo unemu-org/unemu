@@ -27,11 +27,13 @@ mod codec;
 pub mod create;
 pub mod fat12;
 mod history;
+mod journal_file;
 pub mod layer;
 pub mod offline;
 mod overlay;
 mod scan;
 mod sink;
+mod store;
 mod temporary;
 
 pub use codec::{ClosingReason, Error, Frame, Header, Record, FRAME_LEN, HEADER_LEN, SECTOR_LEN};
@@ -41,6 +43,7 @@ pub use scan::{
     Tip, VerificationReport,
 };
 
+pub use journal_file::JournalFile;
 pub use sink::{JournalMedia, MaintenanceFailure, OpenError, SinkFailure, SinkStatus};
 
 #[cfg(test)]

@@ -17,6 +17,11 @@ sha2.workspace = true
 serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true
+# The contract's record: where a journal is kept (core-contract.md §12.5).
+unemu-core-api.workspace = true
+
+[dev-dependencies]
+unemu-core-api = { workspace = true, features = ["test-support"] }
 
 [features]
 # Fault injection for consumers' frontend-boundary acceptance tests.

@@ -5,6 +5,24 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — The journal sits on a record of the contract:** (`upc-dfs.35`;
+  design/core-contract.md §12.5 move 1, step 9 of §12.10, §14.4). `media::JournalMedia` keeps a
+  floppy, IDE or CMOS journal in one `unemu_core_api::Record` and opens no file: it reads,
+  appends, cuts, synchronizes, creates a journal by committing a replacement that holds only the
+  header, and rewrites retained history through a replacement it verifies before the commit. The
+  journal's file code (the stable `FILE.lock`, header publication through `FILE.create-N.tmp`,
+  retention through `FILE.retain-N.tmp`, the leftover cleanup, `sync_all`) moved unchanged into
+  `media::journal_file`, which is the journal file as a record: `media::JournalFile`, for the
+  storage the PC's provider will build (a table from record name to journal file, stage B).
+  `JournalMedia::open_record` mounts any record, also the contract's storage in memory. The path
+  constructors are thin wrappers, so no caller changed and nothing a user sees changed: the same
+  bytes (a scripted session's four stages are pinned to the SHA-256 the previous build wrote),
+  the same host calls in the same order (the journal's model tests are unchanged), the same
+  failure names, and the same lock, so a running machine and `media verify`, `rollback` and
+  `commit` still exclude each other (new test). Through a record, which no caller uses yet, a
+  failed header commit is named "publish header" with the file's step in the message.
+  The workspace tests and the 63 ignored goldens pass, the journal goldens among them.
+
 - **2026-11-19 — The machine-file lowering asks its reader for everything of the host:**
   (`upc-dfs.43.1`, stage B step S1; design/core-contract.md §14.3). No behaviour change.
   `ImageReader` answers an image's length without reading it, whether a path is a reserved
