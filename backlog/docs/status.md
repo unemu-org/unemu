@@ -5,6 +5,20 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — The player's status line no longer clips its light's word:** (`upc-6cj`;
+  design/mockups/player.html "Status line"). The light cell had a fixed 68 px, narrower than its
+  light, gap and "Running" together, so the platform name drew over the last letter ("Runninc"),
+  and a line too narrow for its cells scaled every cell down, the light and the message too. Now
+  the light cell is as wide as its light, the mock-up's 5 px gap and the widest of Running,
+  Paused, Halted and Stopped, and never shrinks; cells inset their text by the mock-up's 6 px;
+  sound and speed grow past their usual widths when their text needs it. When the line is too
+  narrow the platform and the content's name give way first (they ellipsize, down to 60 px),
+  then the slot chips, and only then the message, which otherwise keeps 240 px as the machine
+  status line's does. The machine status line still insets its text by 3 px: at 6 px its
+  92 px EMS cell would cut "EMS unknown", so aligning it means resizing its cells. New tests: every
+  cell holds its text and the light's cell is as wide in every state; at 760 px with the NES
+  platform name and a long title the names ellipsize, the light's word is whole and the message
+  keeps 240 px; a long speed text widens its cell.
 - **2026-11-19 — A CPU-only reset with A20 off reaches the BIOS:** (`upc-f7j.20`;
   decision-42; design/machine-config.md §A20 line and System Control Port A, "Reset fetch with
   the gate off"). Before, a guest that turned the gate off through the 8042 and then reset the

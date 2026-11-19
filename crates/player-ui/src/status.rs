@@ -10,16 +10,24 @@ use crate::{Condition, Player};
 use egui::{Color32, Sense, Vec2};
 use ui_kit::skin::{audio_mark, bevel};
 
-/// The light cell's width, the Power cell's of every machine.
-const LIGHT: f32 = 68.0;
-/// The sound and speed cells' widths, as every machine's status bar has them.
+/// The sound and speed cells' widths, as every machine's status bar has
+/// them, wider when their text needs it.
 const AUDIO: f32 = 118.0;
 const SPEED: f32 = 124.0;
 /// The widest the platform, the content's name or a slot's chip grows.
 const NAME_MAX: f32 = 300.0;
 const CHIP_MAX: f32 = 220.0;
-/// A cell's text inset and the light beside a chip's text.
+/// The width the message keeps before the platform, the content's name or
+/// a slot's chip get theirs, so the pointer-release hint stays readable; the
+/// machine status line keeps the same.
+pub(crate) const MESSAGE_MIN: f32 = 240.0;
+/// The narrowest the platform, the content's name or a slot's chip becomes
+/// before the message gives up its width.
+const SHRUNK_MIN: f32 = 60.0;
+/// A cell's text inset, across and down, and the gap between a light and
+/// its text, as the mock-up's cells have them.
 const PAD: f32 = 6.0;
+const PAD_Y: f32 = 3.0;
 const LED: Vec2 = Vec2::new(10.0, 6.0);
 const LED_GAP: f32 = 5.0;
 
@@ -107,75 +115,140 @@ impl Player {
 
     /// Draw the status line into one row of `ui`.
     pub fn status(&self, ui: &mut egui::Ui) {
-        let cells = self.status_cells();
-        let font = egui::TextStyle::Body.resolve(ui.style());
-        let measure = |text: &str| {
-            ui.painter()
-                .layout_no_wrap(text.to_owned(), font.clone(), Color32::PLACEHOLDER)
-                .size()
-                .x
-        };
-        let last = cells.len() - 1;
-        let mut widths: Vec<f32> = cells
-            .iter()
-            .enumerate()
-            .map(|(index, cell)| match cell {
-                Cell::Message(_) => 0.0,
-                Cell::Light(..) => LIGHT,
-                Cell::Slot(_, text, _) => {
-                    (measure(text) + 2.0 * PAD + LED.x + LED_GAP).min(CHIP_MAX)
-                }
-                Cell::Text(_) if index == last => SPEED,
-                Cell::Text(_) if index == last - 1 => AUDIO,
-                Cell::Text(text) => (measure(text) + 2.0 * PAD).min(NAME_MAX),
-            })
-            .collect();
-        let available = ui.available_width();
-        let fixed: f32 = widths.iter().sum();
-        if fixed > available {
-            let scale = available.max(0.0) / fixed;
-            widths.iter_mut().for_each(|width| *width *= scale);
-        } else {
-            widths[0] = available - fixed;
-        }
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(available, 20.0), Sense::hover());
-        let mut x = rect.left();
-        for (cell, width) in cells.into_iter().zip(widths) {
-            let area = egui::Rect::from_min_size(
-                egui::pos2(x, rect.top()),
-                Vec2::new(width, rect.height()),
-            );
-            x += width;
-            ui.scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(area.shrink(3.0))
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                |ui| {
-                    ui.set_clip_rect(area.intersect(ui.clip_rect()));
-                    match &cell {
-                        Cell::Light(on, word) => {
-                            let (led, _) = ui.allocate_exact_size(LED, Sense::hover());
-                            ui.painter().rect_filled(led, 0.0, power_colour(*on));
-                            ui.label(*word);
-                        }
-                        Cell::Slot(lit, text, empty) => {
-                            let (led, _) = ui.allocate_exact_size(LED, Sense::hover());
-                            ui.painter().rect_filled(led, 0.0, slot_colour(ui, *lit));
-                            let mut label = egui::RichText::new(text.as_str());
-                            if *empty {
-                                label = label.color(ui.visuals().weak_text_color());
-                            }
-                            ui.add(egui::Label::new(label).truncate())
-                                .on_hover_text(text);
-                        }
-                        Cell::Message(text) | Cell::Text(text) => {
-                            ui.add(egui::Label::new(text.as_str()).truncate())
-                                .on_hover_text(text);
-                        }
-                    }
-                },
-            );
-            bevel(ui, area, true);
-        }
+        draw_cells(ui, self.status_cells());
     }
+}
+
+/// Draw `cells` into one row of `ui`, each as wide as its text and its
+/// light, the message taking what is left; return each cell's rectangle.
+pub(crate) fn draw_cells(ui: &mut egui::Ui, cells: Vec<Cell>) -> Vec<egui::Rect> {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let measure = |text: &str| {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), font.clone(), Color32::PLACEHOLDER)
+            .size()
+            .x
+    };
+    let last = cells.len() - 1;
+    // Each cell's natural width and the narrowest it may become.
+    let (natural, narrowest): (Vec<f32>, Vec<f32>) = cells
+        .iter()
+        .enumerate()
+        .map(|(index, cell)| match cell {
+            Cell::Message(_) => (MESSAGE_MIN, 0.0),
+            // As wide as the widest word, so the line does not shift when
+            // the machine pauses or stops, and never narrower: it is short.
+            Cell::Light(..) => {
+                let width = [
+                    Condition::Running,
+                    Condition::Paused,
+                    Condition::Halted,
+                    Condition::Stopped,
+                ]
+                .into_iter()
+                .map(|condition| measure(condition.word()))
+                .fold(0.0, f32::max)
+                    + 2.0 * PAD
+                    + LED.x
+                    + LED_GAP;
+                (width, width)
+            }
+            Cell::Slot(_, text, _) => {
+                let width = (measure(text) + 2.0 * PAD + LED.x + LED_GAP).min(CHIP_MAX);
+                (width, width.min(SHRUNK_MIN))
+            }
+            Cell::Text(text) if index == last => (SPEED.max(measure(text) + 2.0 * PAD), 0.0),
+            Cell::Text(text) if index == last - 1 => (AUDIO.max(measure(text) + 2.0 * PAD), 0.0),
+            Cell::Text(text) => {
+                let width = (measure(text) + 2.0 * PAD).min(NAME_MAX);
+                (width, width.min(SHRUNK_MIN))
+            }
+        })
+        .collect();
+    // What gives when the line is too narrow, in turn: the platform and the
+    // content's name, which ellipsize, then the slots' chips, then the
+    // message, and only then sound and speed.
+    let group = |pick: fn(&Cell) -> bool| -> Vec<usize> {
+        (0..cells.len())
+            .filter(|&index| pick(&cells[index]))
+            .collect()
+    };
+    let names: Vec<usize> = (0..cells.len())
+        .filter(|&index| matches!(cells[index], Cell::Text(_)) && index + 2 < cells.len())
+        .collect();
+    let order = [
+        names,
+        group(|cell| matches!(cell, Cell::Slot(..))),
+        group(|cell| matches!(cell, Cell::Message(_))),
+        vec![last - 1, last],
+    ];
+    let available = ui.available_width();
+    let mut widths = fit(available, &natural, &narrowest, &order);
+    let used: f32 = widths.iter().sum();
+    widths[0] += (available - used).max(0.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(available, 20.0), Sense::hover());
+    let mut x = rect.left();
+    let mut areas = Vec::with_capacity(cells.len());
+    for (cell, width) in cells.into_iter().zip(widths) {
+        let area =
+            egui::Rect::from_min_size(egui::pos2(x, rect.top()), Vec2::new(width, rect.height()));
+        x += width;
+        areas.push(area);
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(area.shrink2(Vec2::new(PAD, PAD_Y)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.set_clip_rect(area.intersect(ui.clip_rect()));
+                ui.spacing_mut().item_spacing.x = LED_GAP;
+                match &cell {
+                    Cell::Light(on, word) => {
+                        let (led, _) = ui.allocate_exact_size(LED, Sense::hover());
+                        ui.painter().rect_filled(led, 0.0, power_colour(*on));
+                        ui.label(*word);
+                    }
+                    Cell::Slot(lit, text, empty) => {
+                        let (led, _) = ui.allocate_exact_size(LED, Sense::hover());
+                        ui.painter().rect_filled(led, 0.0, slot_colour(ui, *lit));
+                        let mut label = egui::RichText::new(text.as_str());
+                        if *empty {
+                            label = label.color(ui.visuals().weak_text_color());
+                        }
+                        ui.add(egui::Label::new(label).truncate())
+                            .on_hover_text(text);
+                    }
+                    Cell::Message(text) | Cell::Text(text) => {
+                        ui.add(egui::Label::new(text.as_str()).truncate())
+                            .on_hover_text(text);
+                    }
+                }
+            },
+        );
+        bevel(ui, area, true);
+    }
+    areas
+}
+
+/// Widths from `natural` that fit `available`: each group of `order` in
+/// turn gives up width, its cells in proportion to what they have above
+/// their `narrowest`, until the line fits or every group is at its
+/// narrowest. Cells in no group keep their natural width.
+fn fit(available: f32, natural: &[f32], narrowest: &[f32], order: &[Vec<usize>]) -> Vec<f32> {
+    let mut widths = natural.to_vec();
+    let mut excess = widths.iter().sum::<f32>() - available;
+    for group in order {
+        if excess <= 0.0 {
+            break;
+        }
+        let slack: f32 = group.iter().map(|&i| widths[i] - narrowest[i]).sum();
+        if slack <= 0.0 {
+            continue;
+        }
+        let share = (excess / slack).min(1.0);
+        for &i in group {
+            widths[i] -= (widths[i] - narrowest[i]) * share;
+        }
+        excess -= slack * share;
+    }
+    widths
 }

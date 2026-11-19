@@ -1068,6 +1068,124 @@ fn the_title_and_the_status_line_name_the_content_and_its_platform() {
     painted_at(&texts, "Tape deck: empty");
 }
 
+/// The NES platform's name, the longest a core gives.
+const NES: &str = "Nintendo Entertainment System (NTSC)";
+
+/// A player's status line of `condition` with `title` and `speed`.
+fn nes_cells(condition: Condition, title: &str, speed: &str) -> Vec<status::Cell> {
+    vec![
+        status::Cell::Message("Pointer captured — Ctrl+Alt+G releases".into()),
+        status::Cell::Light(condition == Condition::Running, condition.word()),
+        status::Cell::Slot(false, "Cartridge: Super Game".into(), false),
+        status::Cell::Text(NES.into()),
+        status::Cell::Text(title.into()),
+        status::Cell::Text("🔊 48 kHz".into()),
+        status::Cell::Text(speed.into()),
+    ]
+}
+
+/// Draw `cells` `width` wide; return each cell's rectangle and every painted
+/// text.
+fn draw_status(
+    width: f32,
+    cells: Vec<status::Cell>,
+) -> (Vec<egui::Rect>, Vec<(String, egui::Rect)>) {
+    let pointer = Pointer::new(egui::vec2(width, 40.0));
+    let mut areas = Vec::new();
+    let painted = pointer.frame(Vec::new(), &mut |ui| {
+        areas = status::draw_cells(ui, cells.clone());
+    });
+    (areas, painted)
+}
+
+/// Every painted text lies inside the cell it starts in: shown whole or
+/// ellipsized, never cut by the cell's edge.
+fn assert_texts_inside(areas: &[egui::Rect], painted: &[(String, egui::Rect)], case: &str) {
+    for (text, glyphs) in painted {
+        let area = areas
+            .iter()
+            .find(|area| area.left() <= glyphs.left() && glyphs.left() < area.right())
+            .unwrap_or_else(|| panic!("{case}: {text:?} at {glyphs:?} starts in no cell"));
+        assert!(
+            glyphs.right() <= area.right(),
+            "{case}: {text:?} covers {glyphs:?}, its cell {area:?}"
+        );
+    }
+}
+
+/// Where `text` is painted whole, not ellipsized: a label cut short keeps
+/// its text but paints fewer glyphs.
+fn painted_whole(painted: &[(String, egui::Rect)], text: &str) -> egui::Rect {
+    let glyphs = painted_at(painted, text);
+    let mut whole = 0.0;
+    Pointer::new(egui::vec2(100.0, 40.0)).frame(Vec::new(), &mut |ui| {
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        whole = ui
+            .painter()
+            .layout_no_wrap(text.to_owned(), font, egui::Color32::PLACEHOLDER)
+            .size()
+            .x;
+    });
+    assert!(
+        glyphs.width() >= whole - 0.5,
+        "{text:?} paints {} of its {whole} px",
+        glyphs.width()
+    );
+    glyphs
+}
+
+const ALL_CONDITIONS: [Condition; 4] = [
+    Condition::Running,
+    Condition::Paused,
+    Condition::Halted,
+    Condition::Stopped,
+];
+
+#[test]
+fn every_status_cell_holds_its_text_and_the_light_does_not_move() {
+    let mut light = None;
+    for condition in ALL_CONDITIONS {
+        let (areas, painted) =
+            draw_status(1040.0, nes_cells(condition, "Super Game", "Speed 100%"));
+        assert_texts_inside(&areas, &painted, &format!("{condition:?}"));
+        painted_whole(&painted, condition.word());
+        painted_whole(&painted, NES);
+        // The light's cell is as wide in every state, so nothing shifts.
+        assert_eq!(*light.get_or_insert(areas[1]), areas[1], "{condition:?}");
+    }
+}
+
+#[test]
+fn a_narrow_status_line_ellipsizes_the_names_and_keeps_the_light_and_the_message() {
+    let title = "The Legend of the Mystical Ninja: The Extended Anniversary Edition";
+    for condition in ALL_CONDITIONS {
+        let (areas, painted) = draw_status(760.0, nes_cells(condition, title, "Speed 100%"));
+        let case = format!("{condition:?} at 760 px");
+        assert_texts_inside(&areas, &painted, &case);
+        // The light's word is painted whole, inside its cell.
+        let word = painted_whole(&painted, condition.word());
+        assert!(
+            areas[1].contains_rect(word),
+            "{case}: {word:?} {:?}",
+            areas[1]
+        );
+        assert!(
+            areas[0].width() >= status::MESSAGE_MIN,
+            "{case}: the message is {} wide",
+            areas[0].width()
+        );
+    }
+}
+
+#[test]
+fn sound_and_speed_widen_for_their_text() {
+    let speed = "Speed 100% 1.0x · fast-forward 8x";
+    let (areas, painted) = draw_status(1040.0, nes_cells(Condition::Running, "Super Game", speed));
+    let glyphs = painted_whole(&painted, speed);
+    let cell = areas[areas.len() - 1];
+    assert!(cell.contains_rect(glyphs), "{glyphs:?} {cell:?}");
+}
+
 #[test]
 fn keys_read_by_the_names_the_preferences_file_derives_them_from() {
     assert_eq!(key_label(Key::ARROW_UP), "Arrow Up");
