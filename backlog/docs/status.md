@@ -5,6 +5,17 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — The boundary check lists the external crates the core may reach:**
+  (`upc-dfs.28`; design/core-contract.md §12.3, step 1 of §12.10; commands.md § Crate
+  boundaries). `scripts/crate-boundaries.external` names, with a reason each, the crates from
+  outside the workspace that the `contract` and `emulation` layers reach: today 27 at run time
+  (the contract, `thiserror`, `x86jit-core` with `iced-x86` and `lazy_static`, `sha2` and its
+  seven, `libc`, and the thirteen that come only through `media` and leave with the journal
+  split) and 7 at build time, none for the contract. `scripts/crate-boundaries.sh` walks the
+  resolved graph from each package of those layers and fails on a crate the list does not name
+  or names with another kind (run, build, test), with the package, the crate, the kind and the
+  path, and on a line whose crate is no longer reached, so the list only shrinks. Eleven new
+  self-test fixtures; it runs in the `guard` gate as before. No code or behaviour changed.
 - **2026-11-19 — The about text of a work is specified, not implemented:** (`upc-miu`;
   design/about-text.md, mock-up design/mockups/about.html, both accepted by the maintainer on
   2026-11-19 with every recommendation). A work gets a long Markdown text per language, with a

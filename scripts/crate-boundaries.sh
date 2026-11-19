@@ -60,6 +60,39 @@
 # through FROM needs no entry of its own. A listed dependency that is gone or
 # no longer forbidden fails, so the list only shrinks.
 #
+# External crates of the core (core-contract.md §12.1 and §12.3). The contract
+# and emulation layers are the library an embedder links, so the crates from
+# outside the workspace they may reach are listed one by one in
+# scripts/crate-boundaries.external, one per line:
+# `LAYER: CRATE (run|build|test): REASON`. The other layers are not limited by
+# it. From every workspace package of a limited layer the check walks the
+# resolved graph (the lock file's, for every target): the package's own
+# dependencies of every kind, then the normal and build dependencies of each
+# crate it reaches, workspace crates of any layer included. A crate is of kind
+#
+#   run    reached through normal dependencies alone, and through no
+#          procedural macro;
+#   build  otherwise reached through a build dependency or a procedural macro
+#          (the macro itself included): it runs on the build host and is not
+#          linked;
+#   test   reached only through a test (dev) dependency of a package of the
+#          layer;
+#
+# the lowest kind of any path counting. Each external crate the layer reaches
+# must be listed with exactly that kind; an unlisted one is reported once,
+# with the first path of its kind a breadth-first walk finds. The list names
+# crates, not versions: the lock file and cargo deny own those. A listed crate
+# that the layer no longer reaches fails, so the list is exact and shrinks as
+# crates leave.
+#
+# The graph is cargo metadata's resolve, read with --all-features, not the
+# build of one package: it holds dependencies of weak optional features
+# (`dep?/feature`), edges under a cfg no target matches (`cfg(any())`) and the
+# features the whole workspace unifies. So a line may name a crate the core's
+# own build does not compile (`cargo tree -e normal,build` of the emulation
+# packages leaves it out), and a feature change in a front-end crate can move
+# the core's list. The list errs on the side of naming too much.
+#
 # Usage:
 #   scripts/crate-boundaries.sh                  check the workspace
 #   scripts/crate-boundaries.sh --self-test      run the rules over the fixtures
@@ -67,15 +100,19 @@
 #                                                check `cargo metadata --no-deps` output
 #   scripts/crate-boundaries.sh --resolved FILE  check one copy of the contract in
 #                                                full `cargo metadata` output
+#   scripts/crate-boundaries.sh --external FILE [--list FILE]
+#                                                check the external crates of the core
+#                                                in full `cargo metadata` output
 #
 # Needs cargo and jq (both in the devShell). The workspace check reads one
 # `cargo metadata --no-deps`, which resolves nothing, and one resolved
-# `cargo metadata --offline --locked`, which reads the lock file and the local
+# `cargo metadata --offline --locked --all-features`, which reads the lock file and the local
 # dependency cache; both take well under a second.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 default_allow="$root/scripts/crate-boundaries.allow"
+default_external="$root/scripts/crate-boundaries.external"
 fixtures="$root/scripts/crate-boundaries-fixtures"
 # The crate every core and front end must link exactly once.
 contract_crate=unemu-core-api
@@ -216,6 +253,112 @@ read -r -d '' one_copy_program <<'JQ' || true
   }
 JQ
 
+# Prints {"errors": [...], "reached": {LAYER: {"run": N, "build": N,
+# "test": N}}} for one resolved metadata document and one external-crate list.
+read -r -d '' external_program <<'JQ' || true
+# The layers whose external crates are listed; the others are not limited.
+def limited: ["contract", "emulation"];
+def rank: {run: 0, build: 1, test: 2}[.];
+def worse($a; $b): if ($a | rank) >= ($b | rank) then $a else $b end;
+def article: if test("^[aeiou]") then "an \(.)" else "a \(.)" end;
+
+($list_text | split("\n") | to_entries
+  | map(select(.value | test("^\\s*(#|$)") | not))
+  | map(. as $line
+      | (($line.value
+          | capture("^(?<layer>[a-z]+): (?<crate>[^ ]+) \\((?<kind>run|build|test)\\): (?<reason>[^ ].*)$"))
+         // {malformed: true})
+      | . + {line: ($line.key + 1), text: $line.value})) as $entries
+| ($entries | map(select((.malformed | not) and (.layer as $l | any(limited[]; . == $l) | not))))
+  as $unlimited
+| ($entries | map(select((.malformed | not) and (.layer as $l | any(limited[]; . == $l))))) as $valid
+| (.packages // []) as $packages
+| (.workspace_members // []) as $members
+| ($packages | map({key: .id, value: {
+      name,
+      workspace: (.id as $id | any($members[]; . == $id)),
+      layer: (.metadata.unemu.layer? // null),
+      proc_macro: any(.targets[]?.kind[]?; . == "proc-macro")}})
+   | from_entries) as $pkg
+| ((.resolve.nodes // []) | map({key: .id, value: [.deps[]? | .pkg as $to
+      | ([.dep_kinds[]? | .kind // "normal"] | unique)[] | {to: $to, kind: .}]})
+   | from_entries) as $edges
+# The crates one step from $item, with the kind of the path through them. A
+# package of the layer contributes its test dependencies; nothing else does.
+| def step($item):
+    ($edges[$item.id] // [])[]
+    | select($item.root or .kind != "dev")
+    | .to as $to
+    | (if .kind == "dev" then "test"
+       elif .kind == "build" or $pkg[$to].proc_macro then "build"
+       else "run" end) as $k
+    | {id: $to, kind: worse($item.kind; $k), path: ($item.path + [$pkg[$to].name]), root: false};
+  # Every external crate the workspace packages of $layer reach, once by name,
+  # with its lowest kind and the first path of that kind found: the walk
+  # drains the run queue before the build queue before the test queue, each
+  # breadth first, so a crate is first seen with its lowest kind.
+  def reach($layer):
+    ([$packages[] | select($pkg[.id].workspace and $pkg[.id].layer == $layer)]
+     | sort_by(.name) | map({id, kind: "run", path: [.name], root: true})) as $roots
+    | {queues: [$roots, [], []], seen: {}, out: []}
+    | until(all(.queues[]; . == []);
+        (if .queues[0] != [] then 0 elif .queues[1] != [] then 1 else 2 end) as $q
+        | .queues[$q][0] as $item
+        | .queues[$q] |= .[1:]
+        | if .seen[$item.id] then .
+          else .seen[$item.id] = true
+          | (if $pkg[$item.id].workspace then . else .out += [$item] end)
+          | reduce step($item) as $next (.; .queues[$next.kind | rank] += [$next])
+          end)
+    | .out
+    | group_by($pkg[.id].name)
+    | map(min_by(.kind | rank) | {crate: $pkg[.id].name, kind, path});
+  ([limited[] as $layer | {key: $layer, value: reach($layer)}] | from_entries) as $reached
+| def rule($layer):
+    "\($layer | article) crate reaches only the external crates scripts/crate-boundaries.external lists for its layer, each with the kind it is reached by";
+  def hit($layer):
+    "\(.path[0]) (\($layer)) → \(.crate) (external), \(.kind) dependency, through \(.path | join(" → "))";
+{
+  reached: ($reached | map_values(group_by(.kind) | map({key: .[0].kind, value: length}) | from_entries)),
+  errors: (
+    [ limited[] as $layer | $reached[$layer][] as $hit
+      | [$valid[] | select(.layer == $layer and .crate == $hit.crate)] as $lines
+      | if $lines == [] then
+          "forbidden: \($hit | hit($layer)); rule: \(rule($layer))"
+        elif any($lines[]; .kind == $hit.kind) | not then
+          "wrong kind: \($hit | hit($layer)), listed as \($lines[0].kind) on line \($lines[0].line); rule: \(rule($layer))"
+        else empty end ]
+    + [ $valid[] as $e
+        | select(any($reached[$e.layer][]; .crate == $e.crate) | not)
+        | "stale external entry, line \($e.line): \($e.text); the \($e.layer) layer no longer reaches \($e.crate), so delete the line" ]
+    + [ $valid | group_by([.layer, .crate])[] | select(length > 1)
+        | "duplicate external entry, lines \(map(.line) | join(", ")): \(.[0].layer): \(.[0].crate); name each crate once" ]
+    + [ $unlimited[]
+        | "external entry for an unlimited layer, line \(.line): \(.text); the list limits only \(limited | join(", "))" ]
+    + [ $entries[] | select(.malformed)
+        | "malformed external entry, line \(.line): \(.text); expected LAYER: CRATE (run|build|test): REASON" ]
+  )
+}
+JQ
+
+# check_external METADATA LIST: print each error and a summary; fail on any
+# error.
+check_external() {
+    local result count
+    result=$(jq -c --rawfile list_text "$2" "$external_program" "$1") || {
+        echo "crate boundaries: cannot read the resolved metadata $1 with the external list $2" >&2
+        return 2
+    }
+    jq -r '.errors[]' <<<"$result"
+    count=$(jq '.errors | length' <<<"$result")
+    if [[ $count -ne 0 ]]; then
+        echo "crate boundaries: $count external-crate error(s)" >&2
+        return 1
+    fi
+    jq -r '.reached | to_entries[]
+        | "crate boundaries: the \(.key) layer reaches \(.value.run // 0) run-time, \(.value.build // 0) build-time and \(.value.test // 0) test-only external crate(s), all listed"' <<<"$result"
+}
+
 # check_one_copy METADATA: print each error, or the contract's source; fail
 # unless the graph holds exactly one copy.
 check_one_copy() {
@@ -253,7 +396,7 @@ check() {
 # "errors": N (optional, how many errors it reports)}, and an optional allow
 # list NAME.allow beside it.
 self_test() {
-    local fixture name allow expect message errors output status failed=0
+    local fixture name allow list expect message errors output status failed=0
     for fixture in "$fixtures"/*.json; do
         name=$(basename "$fixture" .json)
         allow="$fixtures/$name.allow"
@@ -290,6 +433,28 @@ self_test() {
             failed=1
         fi
     done
+    # Fixtures of resolved metadata for the external-crate lists, each with an
+    # optional list NAME.external beside it and the same "self_test"
+    # expectation as the first kind.
+    for fixture in "$fixtures"/external/*.json; do
+        name=external/$(basename "$fixture" .json)
+        list="${fixture%.json}.external"
+        [[ -f $list ]] || list=/dev/null
+        expect=$(jq -r '.self_test.expect' "$fixture")
+        message=$(jq -r '.self_test.message // ""' "$fixture")
+        errors=$(jq -r '.self_test.errors // ""' "$fixture")
+        status=0
+        output=$(check_external "$fixture" "$list" 2>&1) || status=$?
+        if [[ $expect == pass && $status -eq 0 ]] ||
+            [[ $expect == fail && $status -ne 0 && $output == *"$message"* &&
+                ( -z $errors || $output == *"crate boundaries: $errors external-crate error(s)"* ) ]]; then
+            echo "self-test $name: ${expect}ed as expected"
+        else
+            echo "self-test $name: expected $expect${message:+ with \"$message\"}${errors:+ and $errors external-crate error(s)}, got status $status:" >&2
+            printf '%s\n' "$output" | sed 's/^/    /' >&2
+            failed=1
+        fi
+    done
     return "$failed"
 }
 
@@ -299,10 +464,11 @@ case "${1:-}" in
         resolved=$(mktemp)
         trap 'rm -f "$metadata" "$resolved"' EXIT
         (cd "$root" && cargo metadata --format-version 1 --no-deps) >"$metadata"
-        (cd "$root" && cargo metadata --format-version 1 --offline --locked) >"$resolved"
+        (cd "$root" && cargo metadata --format-version 1 --offline --locked --all-features) >"$resolved"
         status=0
         check "$metadata" "$default_allow" || status=$?
         check_one_copy "$resolved" || { s=$?; [[ $status -ne 0 ]] || status=$s; }
+        check_external "$resolved" "$default_external" || { s=$?; [[ $status -ne 0 ]] || status=$s; }
         exit "$status"
         ;;
     --self-test)
@@ -318,8 +484,13 @@ case "${1:-}" in
         [[ $# -eq 2 ]] || { echo "usage: $0 --resolved FILE" >&2; exit 2; }
         check_one_copy "$2"
         ;;
+    --external)
+        [[ $# -eq 2 || ($# -eq 4 && $3 == --list) ]] ||
+            { echo "usage: $0 --external FILE [--list FILE]" >&2; exit 2; }
+        check_external "$2" "${4:-$default_external}"
+        ;;
     *)
-        echo "usage: $0 [--self-test | --metadata FILE [--allow FILE] | --resolved FILE]" >&2
+        echo "usage: $0 [--self-test | --metadata FILE [--allow FILE] | --resolved FILE | --external FILE [--list FILE]]" >&2
         exit 2
         ;;
 esac

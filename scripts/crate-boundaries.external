@@ -1,0 +1,60 @@
+# External crates the core may reach, checked by scripts/crate-boundaries.sh.
+# One `LAYER: CRATE (run|build|test): REASON` per line. LAYER is contract or
+# emulation, the layers an embedder links; the others are not limited here.
+# KIND is how the layer reaches the crate: run (linked), build (a procedural
+# macro or build script and what it uses, run on the build host) or test
+# (only through a test dependency of a crate of the layer). The list is exact:
+# a crate the layer reaches and the list does not name fails, and so does a
+# line whose crate the layer no longer reaches. A new crate is reviewed
+# against the rule of the core, and a crate that touches the host (windows,
+# graphics, audio, input, network, async run times) has no acceptable reason.
+# The graph is cargo metadata's resolve, so a line may name a crate the core's
+# own build does not compile (see scripts/crate-boundaries.sh).
+# See backlog/docs/design/core-contract.md §12.1 and §12.3.
+#
+# contract: none. The contract crate depends on nothing at all.
+
+# The contract, the CPU core and error types.
+emulation: unemu-core-api (run): the contract every core implements, pinned to one revision; it depends on nothing
+emulation: thiserror (run): error enums (conventions.md); generated code only, no host access
+emulation: x86jit-core (run): the CPU core, pinned to a revision; its host needs are listed in core-contract.md §12.7
+emulation: iced-x86 (run): x86jit-core's instruction decoder; pure Rust
+emulation: lazy_static (run): iced-x86's immutable tables; pure Rust
+
+# SHA-256 of journal frames and headers and of firmware bytes.
+emulation: sha2 (run): SHA-256 of journal frames and headers and of firmware bytes; pure Rust with CPU intrinsics
+emulation: digest (run): sha2's hashing traits; pure Rust, no host access
+emulation: block-buffer (run): sha2's block buffering; pure Rust, no host access
+emulation: crypto-common (run): sha2's common traits; pure Rust, no host access
+emulation: generic-array (run): sha2's fixed-size arrays; pure Rust, no host access
+emulation: typenum (run): type-level numbers for generic-array; pure Rust, no host access
+emulation: cfg-if (run): sha2's conditional compilation macro; pure Rust, no host access
+emulation: cpufeatures (run): sha2 asks the processor once which SHA instructions it has; no file, no clock, no thread
+emulation: libc (run): declarations of the host C library, reached through cpufeatures on AArch64 Linux, Android, Apple and LoongArch64 Linux targets (one capability query) and through media on Unix (file flags and error numbers, which leave with the journal split, core-contract.md §12.4)
+
+# The disk-layer descriptor and the FAT12 builder's formats, reached only
+# through media (the allowed crossing assembly → media). All leave with the
+# journal split (core-contract.md §12.5, step 11 of §12.10).
+emulation: serde (run): media's disk-layer descriptor and FAT12 builder formats; host-side code in a crate the core links until the journal split
+emulation: serde_core (run): serde's core traits, through media until the journal split
+emulation: toml (run): media's disk-layer descriptor format, until the journal split
+emulation: toml_datetime (run): toml's date and time values, through media until the journal split
+emulation: toml_parser (run): toml's parser, through media until the journal split
+emulation: toml_writer (run): toml's writer, through media until the journal split
+emulation: serde_spanned (run): toml's spanned values, through media until the journal split
+emulation: winnow (run): toml's parser combinators, through media until the journal split
+emulation: indexmap (run): in cargo metadata's resolve through toml's weak `indexmap?/std` feature; not compiled for the core; leaves with media
+emulation: hashbrown (run): in cargo metadata's resolve through indexmap, itself there only through toml's weak `indexmap?/std`; not compiled for the core; leaves with media
+emulation: equivalent (run): in cargo metadata's resolve through indexmap, itself there only through toml's weak `indexmap?/std`; not compiled for the core; leaves with media
+emulation: foldhash (run): in cargo metadata's resolve through hashbrown and indexmap, there only through toml's weak `indexmap?/std`; not compiled for the core; leaves with media
+emulation: memchr (run): in cargo metadata's resolve through winnow's weak `memchr?/std` feature; not compiled for the core; leaves with media
+
+# Build time: derive macros and one build script. They run on the build host
+# and are not linked into the core.
+emulation: thiserror-impl (build): thiserror's derive macro
+emulation: serde_derive (build): serde's derive macro, through media until the journal split
+emulation: proc-macro2 (build): token streams for the derive macros
+emulation: quote (build): code generation for the derive macros
+emulation: syn (build): Rust syntax for the derive macros; two versions today, the second leaves with media
+emulation: unicode-ident (build): identifier tables for proc-macro2
+emulation: version_check (build): generic-array's build script reads the compiler version

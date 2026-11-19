@@ -2677,14 +2677,47 @@ the two crates, their layers, the dependency kind, the path and the rule.
 Known violations are listed in `scripts/crate-boundaries.allow`, one declared
 dependency `FROM → TO (KIND): REASON` per line; the walk never crosses a
 listed dependency, and one that is gone or no longer forbidden fails, so the
-list only shrinks. `--self-test` runs the rules over the fixtures in
+list only shrinks.
+
+The same check limits the crates from outside the workspace that the core
+reaches ([core contract](design/core-contract.md) §12.1, §12.3).
+`scripts/crate-boundaries.external` lists them for the `contract` and
+`emulation` layers, one `LAYER: CRATE (run|build|test): REASON` per line; the
+other layers are not limited. From each workspace package of those layers the
+check walks the resolved graph (`cargo metadata --offline --locked
+--all-features`, every target): the package's own dependencies of every kind,
+then the normal and build dependencies of what it reaches, workspace crates of
+any layer included. That graph is cargo metadata's resolve, not the build of
+one package: it holds dependencies of weak optional features (`dep?/feature`),
+edges under a cfg no target matches (`cfg(any())`) and the features the whole
+workspace unifies. So a line may name a crate the core's own build does not
+compile (today `indexmap`, `hashbrown`, `equivalent`, `foldhash` and `memchr`,
+which `cargo tree -e normal,build` of the emulation packages leaves out), and
+a feature change in a front-end crate can move the core's list. A crate is
+`run` when normal dependencies alone reach it without a procedural macro,
+`build` when it is reached through a build dependency or a procedural macro,
+and `test` when only a test dependency of a package of the layer reaches it;
+the lowest kind of any path counts. An external crate the list does not name,
+or names with another kind, fails with the package, the crate, the kind, the
+path and the rule, once per crate; a line whose crate the layer no longer
+reaches fails too, so the list is exact and shrinks as crates leave. A new
+line is a reviewed decision: a crate that touches the host (windows, graphics,
+audio, input, network) has no acceptable reason.
+
+`--self-test` runs the rules over the fixtures in
 `scripts/crate-boundaries-fixtures/`, each with one planted case and its
-expected outcome; `--metadata FILE [--allow FILE]` checks any `cargo
-metadata` output. The `guard` gate runs the publication guard and then the
-self-test and the check, each even when the other failed; the check takes
-well under a second. The check resolves the full graph offline, so the gate
-runs `cargo fetch --locked` before it: a runner's empty Cargo cache, or one
-restored from an older lock file, lacks the pinned git dependencies.
+expected outcome (`resolved/` for the rule that the build holds one copy of
+`unemu-core-api`, `external/` for the external-crate list, each fixture there
+with its list `NAME.external`); `--metadata FILE [--allow FILE]` checks any
+`cargo metadata --no-deps` output, `--resolved FILE` the one-copy rule and
+`--external FILE [--list FILE]` the external crates in any full `cargo
+metadata` output. The `guard` gate runs the publication guard and then, in the
+devShell, the self-test and the check; the publication guard and those two run
+even when the other part failed, and the check does not run when the self-test
+fails. The check takes well under a second. The check resolves the full graph
+offline, so the gate runs `cargo fetch --locked` before it: a runner's empty
+Cargo cache, or one restored from an older lock file, lacks the pinned git
+dependencies.
 
 ### Third-party licences
 
