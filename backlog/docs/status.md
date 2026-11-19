@@ -5,20 +5,6 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
-<<<<<<< HEAD
-- **2026-11-19 — Stage B of the core contract planned:** (design/core-contract.md §14; no code).
-  The maintainer accepted the plan with every recommendation: the PC config codec (the machine
-  schema and its lowering from `machine-file`, the stored image config from `pc-image`) moves to
-  a new `emulation` crate `pc-config`; the PC provider writes a launch document (the stored
-  config plus flat content digests and sizes and storage records) that `PcCore::create` reads;
-  `PcCore::create_machine` and `core_launch::start_with` let the desktop keep a typed
-  `PcMachine`; `image run` runs through the contract, with the contract's stop in its result
-  line, and moves to `cli-core` last and droppable; the journal keeps its lock `FILE.lock`.
-  Fourteen steps, S1 to S14: S1 to S8 can start now, S9 on after `upc-dfs.35` and `upc-dfs.36`.
-  Corrected in the spec: `disk.rs` and `zero.rs` stay in `pc-image`, the PC's storage is the
-  provider's own and not `FileStorage` over the workspace, stage B does not need step 12, and
-  decision-30 gets a note that it is amended before the repositories separate.
-=======
 - **2026-11-19 — The about text of a work is specified, not implemented:** (`upc-miu`;
   design/about-text.md, mock-up design/mockups/about.html, both accepted by the maintainer on
   2026-11-19 with every recommendation). A work gets a long Markdown text per language, with a
@@ -32,7 +18,18 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   to W6, and the text layer `application/vnd.unemu.recipe.text.v1` in recipes §6.1, §6.11,
   §6.13, §6.16 and §7.1. The mock-up joined the icon inventory. No code reads or writes any
   of it yet; about-text.md §15 lists the implementation steps in order.
->>>>>>> af83ef63 (docs(design): the about text of a work, specified (schema 3, recipes, mock-up))
+- **2026-11-19 — Stage B of the core contract planned:** (design/core-contract.md §14; no code).
+  The maintainer accepted the plan with every recommendation: the PC config codec (the machine
+  schema and its lowering from `machine-file`, the stored image config from `pc-image`) moves to
+  a new `emulation` crate `pc-config`; the PC provider writes a launch document (the stored
+  config plus flat content digests and sizes and storage records) that `PcCore::create` reads;
+  `PcCore::create_machine` and `core_launch::start_with` let the desktop keep a typed
+  `PcMachine`; `image run` runs through the contract, with the contract's stop in its result
+  line, and moves to `cli-core` last and droppable; the journal keeps its lock `FILE.lock`.
+  Fourteen steps, S1 to S14: S1 to S8 can start now, S9 on after `upc-dfs.35` and `upc-dfs.36`.
+  Corrected in the spec: `disk.rs` and `zero.rs` stay in `pc-image`, the PC's storage is the
+  provider's own and not `FileStorage` over the workspace, stage B does not need step 12, and
+  decision-30 gets a note that it is amended before the repositories separate.
 - **2026-11-19 — A guest that resets again and again no longer holds the desktop's frame;
   a storm of resets stops the machine with a report:** (`upc-f7j.19`;
   design/observation.md §The machine resets again and again, §Window pacing).
