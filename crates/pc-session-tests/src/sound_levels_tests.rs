@@ -127,7 +127,7 @@ fn synthetic_peak(speaker: bool, fm: bool, voice: bool) -> i32 {
             channel: 1,
         }),
     );
-    let mut presenter = Presenter::new(
+    let mut presenter = new_presenter(
         &config,
         assembly::AssemblyOptions {
             allow_unlisted_firmware: true,
@@ -332,7 +332,7 @@ fn level_presenter(config: &assembly::MachineConfig) -> Presenter {
         },
     )
     .unwrap();
-    Presenter::from_assembled(config, assembled, DeviceId::Vga, &mut io::sink()).unwrap()
+    presenter_from_assembled(config, assembled, &mut io::sink()).unwrap()
 }
 
 /// The shipped open AT games machine file with its firmware and pinned media in
@@ -421,7 +421,6 @@ fn open_games_template_image_plays_cards_and_speaker_at_host_mix_levels() {
     )
     .unwrap();
     let presenter =
-        Presenter::from_assembled(&prepared.machine, assembled, DeviceId::Vga, &mut io::sink())
-            .unwrap();
+        presenter_from_assembled(&prepared.machine, assembled, &mut io::sink()).unwrap();
     assert_open_profile_levels("template image", phase_peaks(presenter));
 }

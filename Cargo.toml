@@ -17,6 +17,7 @@ members = [
     "crates/upcli",
     "crates/pc-harness",
     "crates/window",
+    "crates/pc-session-tests",
     "crates/ui-kit",
     "crates/library-model",
     "crates/library-ui",

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Host audio of a running PC session; they never open a host device.
 
+use crate::PcSession as _;
 use cpu::Cpu;
 use std::io;
 
@@ -9,7 +10,7 @@ fn presenter() -> crate::Presenter {
     rom[..2].copy_from_slice(&[0xEB, 0xFE]);
     let mut config = assembly::bios(rom, None);
     config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
-    crate::Presenter::new(
+    crate::new_presenter(
         &config,
         assembly::AssemblyOptions {
             allow_unlisted_firmware: true,
@@ -144,7 +145,7 @@ fn speaker_presenter() -> crate::Presenter {
     rom[..program.len()].copy_from_slice(&program);
     let mut config = assembly::bios(rom, None);
     config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
-    crate::Presenter::new(
+    crate::new_presenter(
         &config,
         assembly::AssemblyOptions {
             allow_unlisted_firmware: true,

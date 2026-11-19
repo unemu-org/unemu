@@ -5,6 +5,16 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — The session's PC tests have their own crate:**
+  `crates/pc-session-tests` (layer `pc`, tests only, no library code)
+  holds the 57 tests that drive a real PC through `machine_view::Session`
+  and test no code of the desktop (design/core-contract.md §8.1.10): the
+  session tests of the window's `main.rs`, the host mix levels, host
+  audio, the mouse shim and the key table, under the same module paths.
+  A change to the desktop's shell no longer runs them; a change to the
+  session or the PC core does. MEASURED: the window's tests take 9.2 s of
+  wall time (261 tests) where they took 30.1 s (318); no behaviour
+  changes and no test is lost.
 - **2026-11-19 — NES colours of the 2C02G:** unemunes re-pinned to `3aa95580`, which only
   changes its palette: each palette row is rotated by -5° of hue per row, the differential phase
   distortion of a 2C02G (NESdev "NTSC video"). Colour `$22`, a common sky colour, goes from a

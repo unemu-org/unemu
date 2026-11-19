@@ -2734,6 +2734,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "pc-session-tests"
+version = "0.0.2"
+dependencies = [
+ "assembly",
+ "audio",
+ "cpu",
+ "device",
+ "image-store",
+ "machine",
+ "machine-file",
+ "machine-view",
+ "pc-image",
+ "pc-library",
+ "unemu-core-api",
+ "unemu-pc-core",
+ "video",
+ "winit",
+]
+
+[[package]]
 name = "pc-ui"
 version = "0.0.2"
 dependencies = [
@@ -4394,7 +4414,6 @@ name = "window"
 version = "0.0.2"
 dependencies = [
  "assembly",
- "audio",
  "core-launch",
  "cpu",
  "device",

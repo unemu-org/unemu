@@ -782,6 +782,23 @@
           "source": "git+https://github.com/unemu-org/unemu-core-api?rev=4e2dd8325b54ce652bf4884fd85da602b14ae726#4e2dd8325b54ce652bf4884fd85da602b14ae726"
         }
       ]
+    },
+    {
+      "name": "pc-session-tests",
+      "id": "path+file:///workspace/crates/pc-session-tests#0.0.2",
+      "manifest_path": "/workspace/crates/pc-session-tests/Cargo.toml",
+      "dependencies": [
+        {
+          "name": "machine-view",
+          "kind": "dev",
+          "path": "/workspace/crates/machine-view"
+        },
+        {
+          "name": "unemu-pc-core",
+          "kind": "dev",
+          "path": "/workspace/crates/pc-core"
+        }
+      ]
     }
   ],
   "workspace_members": [
@@ -808,7 +825,8 @@
     "path+file:///workspace/crates/window#0.0.2",
     "path+file:///workspace/crates/ui-kit#0.0.2",
     "path+file:///workspace/crates/pc-core#0.0.2",
-    "path+file:///workspace/crates/machine-view#0.0.2"
+    "path+file:///workspace/crates/machine-view#0.0.2",
+    "path+file:///workspace/crates/pc-session-tests#0.0.2"
   ],
   "workspace_root": "/workspace"
 }

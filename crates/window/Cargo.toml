@@ -65,7 +65,6 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder", "NSWindow"] }
 
 [dev-dependencies]
-audio.workspace = true
 device.workspace = true
 machine.workspace = true
 video.workspace = true

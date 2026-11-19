@@ -1912,7 +1912,7 @@ These rows replace the rows `library-ui`, `media-ui`, `pc-ui` and
 | `pc-library` (new) | pc | none | `library_worker`, `firmware_choices`, `hardware`, `image_settings`, the model halves of `firmware`, `firmware_metadata`, `install_media` and `machines`, `Query`, `Filter`, `Snapshot` and `snapshot`, `new_machine`, `settings_model`, the machine-file list of `shell_model` (`LibraryEntry` and what builds it), the PC's `DesktopPlatform`, and the library's test support behind a `test-support` feature |
 | `media-ui` | pc | egui | `media_picker`, `media_create`, the view of `catalogue_menu` |
 | `pc-ui` | pc | egui | The frame (`library_view` with the views of `machines`, `firmware`, `firmware_metadata`, `install_media`, the PC half of `pane`, `layout_tests`), `settings_sheet`, `new_machine_view`, `layers_dialog`, and the shell's command vocabulary (`Command`, `State`, `Enablement`) |
-| `unemupc` (today the package `window`) | application | egui | `shell`, the rest of `shell_model`, `app_menu`, `macos_menu`, `preferences`, `preferences_sheet`, `main`; the session (`Presenter`) until `upc-dfs.25.7` gives it a crate (§8.1.10) |
+| `unemupc` (today the package `window`) | application | egui | `shell`, the rest of `shell_model`, `app_menu`, `macos_menu`, `preferences`, `preferences_sheet`, `main`; the session (`Presenter`), which stays here; its tests that drive a real PC moved to the test-only `pc-session-tests` (`upc-dfs.25.7`, §8.1.10) |
 
 What each depends on inside the workspace:
 
@@ -2921,6 +2921,34 @@ so that crate is where `Presenter` lives.
   moved by steps 3 to 6.
 - With it, the application's own tests after 6.4 are the shell's: about
   45 s added up, about 12 s of wall time.
+
+As landed (`upc-dfs.25.7`): a test-only crate,
+`crates/pc-session-tests` (layer `pc`, no library code), holds the 57
+tests that drive a real PC through the session and test no code of the
+window: 35 session tests of `main.rs`, the three sound-level tests, the
+six host-audio tests, the eleven mouse shim tests and the two key-table
+tests, under the same module paths. They drive `Session<PcMachine>`
+directly; `Presenter` stays in the window with its media dialogs and drive
+lights, so the crate depends on `machine-view`, the PC core, `assembly`
+and the library's `pc-image` and `pc-library`, not on the window. The
+window keeps the tests of its own code: the command line, the setup from a
+machine file (and the FreeDOS golden through it), the drive lights and
+views, the program's notices and the fixture policy, with the fixtures the
+shell's tests share. MEASURED (`cargo nextest run`, four tests at once):
+the window ran 318 tests in 30.1 s of wall time (92.5 s added up) and now
+runs 261 in 9.2 s (36.4 s); the new crate runs 57 in 21.2 s (56.0 s), two
+thirds of it the two open games level tests. The runner's plan for
+`crates/window/src/shell.rs` is the window alone; for a file of
+`machine-view` it includes `pc-session-tests`.
+
+One deviation from the plan above: the crate does not sit below
+`pc-media`. One sound-level test names the template image's workspace
+with `pc_library::library_worker::regular_name`, so the crate has
+`pc-library` as a test dependency, and with it `pc-media`,
+`library-model`, `image-registry` and `media`. A change to a media model
+alone therefore still runs these tests, as it ran them in the window
+before; nothing regresses. Moving the function that names an image's
+workspace down to `pc-image` lets the crate drop that dependency.
 
 #### 8.1.11. Questions answered by the maintainer
 
