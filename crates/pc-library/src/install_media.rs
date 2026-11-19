@@ -149,6 +149,10 @@ fn drive_letter(unit: u8) -> &'static str {
 /// the drive check the Insert dialog applies, unit by unit: the set is Ready
 /// on the first drive whose type takes every disk.
 pub fn availability(summary: &ImageSummary, drives: &[(u8, FloppyGeometry)]) -> Availability {
+    // A set this release does not read goes into no drive (§5.6).
+    if let Some(reason) = summary.needs_newer() {
+        return Availability::Unavailable(reason);
+    }
     let Some(set) = &summary.media_set else {
         return Availability::Unavailable("Reading set summary…".into());
     };
@@ -261,13 +265,24 @@ pub fn all_rows(cache: &SummaryCache, sets: &[&Listed]) -> Vec<MediaRow> {
         .collect()
 }
 
-/// A set as the media picker lists it, once its summary is read.
+/// A set as the media picker lists it, once its summary is read. A set this
+/// release does not read is listed with the reason and goes into no drive,
+/// with its disks when its summary could read them (§5.6).
 pub fn picker_set(row: &MediaRow) -> Option<pc_media::media_picker::SetEntry> {
     use pc_media::media_picker::{Disk, SetEntry};
     let summary = row.image.summary.as_ref()?;
-    let set = summary.media_set.as_ref()?;
+    let needs = summary.needs_newer();
+    let empty = MediaSetSummary {
+        media: Vec::new(),
+        extras: Vec::new(),
+    };
+    let set = match (&summary.media_set, &needs) {
+        (Some(set), _) => set,
+        (None, Some(_)) => &empty,
+        (None, None) => return None,
+    };
     let title = summary.titles.first();
-    let mut problem = row.image.failure.clone();
+    let mut problem = needs.or_else(|| row.image.failure.clone());
     let disks: Vec<Disk> = set
         .media
         .iter()
@@ -321,6 +336,24 @@ pub fn set_name(row: &MediaRow) -> String {
 /// column.
 pub fn cells(row: &MediaRow, drives: &[(u8, FloppyGeometry)]) -> [String; 6] {
     let source = source(&row.image.descriptor).text();
+    // A set this release does not read, without the disks its config lists:
+    // what its manifest and catalogue give, and the reason.
+    if let (Some(summary), None) = (row.image.summary.as_ref(), row.set()) {
+        if let Some(reason) = summary.needs_newer() {
+            return [
+                row.image.name().to_owned(),
+                source,
+                row.image.tags(),
+                summary
+                    .titles
+                    .first()
+                    .and_then(|t| t.platform.clone())
+                    .unwrap_or_default(),
+                String::new(),
+                reason,
+            ];
+        }
+    }
     let (Some(summary), Some(_)) = (row.image.summary.as_ref(), row.set()) else {
         let mut cells: [String; 6] = Default::default();
         cells[0] = row.image.name().to_owned();

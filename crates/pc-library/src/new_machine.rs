@@ -702,6 +702,12 @@ impl Wizard {
     }
     fn fit_uncached(&self, package: &Package, rom: &Rom, slot: Slot) -> Vec<String> {
         let mut reasons = Vec::new();
+        // A package this release does not read is offered with the reason
+        // and never chosen (machine-images §5.6).
+        if let Some(reason) = crate::firmware_choices::package_needs_newer(package) {
+            reasons.push(reason);
+            return reasons;
+        }
         let fit = package.fit();
         let board = self.selection.hardware.board.id();
         let class = create::class_of(self.selection.hardware.board).map(|c| c.id);
@@ -1468,6 +1474,64 @@ mod tests {
             .problems()
             .iter()
             .any(|(step, _)| *step == MOTHERBOARD));
+    }
+
+    /// Re-tag the store's private Kiselev package as a newer release wrote
+    /// it, with only the newer copy left (machine-images §5.6), and the
+    /// store's choices then. The redistribution marks are those scanned
+    /// before: the registry's scan refuses a store holding a newer image.
+    fn newer_kiselev(store: &FirmwareStore) -> crate::library_worker::StoreChoices {
+        let (packages, _, marks) = store.choices();
+        let package = packages
+            .into_iter()
+            .find(|p| p.config.name == "Kiselev AT BIOS (private copy)")
+            .unwrap();
+        crate::library_test_support::tag_newer(
+            &store.store,
+            &package.reference,
+            "newer-kiselev:r1",
+            Some("99.0.0"),
+            false,
+        );
+        store
+            .store
+            .remove_tag(&package.reference, &package.descriptor.digest)
+            .unwrap();
+        let tags = store
+            .store
+            .list_tags(None, 1000)
+            .unwrap()
+            .tags
+            .into_iter()
+            .map(|t| (t.name, t.manifest.digest))
+            .collect();
+        (
+            pc_image::create::packages(&store.store).unwrap(),
+            tags,
+            marks,
+        )
+    }
+
+    /// A package this release does not read is offered among the misfits
+    /// with "Needs unemupc X or newer" and is never chosen.
+    #[test]
+    fn a_package_that_needs_a_newer_release_is_offered_with_the_reason() {
+        let Some(store) = FirmwareStore::new(true) else {
+            return;
+        };
+        let choices = newer_kiselev(&store);
+        let mut wizard = Wizard::new();
+        wizard.store = Some(store.store.clone());
+        wizard.set_store(choices);
+        let (fits, misfits) = wizard.offers(Slot::Bios);
+        assert_eq!(offer_names(&fits), ["unemu-at-bios-1.0.2-unemu.3"]);
+        let newer = misfits
+            .iter()
+            .find(|o| o.name == "Kiselev AT BIOS (private copy)")
+            .unwrap();
+        assert_eq!(newer.reasons, ["Needs unemupc 99.0.0 or newer"]);
+        wizard.filter = "private copy".into();
+        assert!(wizard.offers(Slot::Bios).0.is_empty());
     }
 
     #[test]

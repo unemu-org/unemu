@@ -154,9 +154,25 @@ pub(super) fn details(
 ) -> PaneAction {
     let action = std::cell::Cell::new(PaneAction::None);
     let image = &row.image;
+    // A package this release does not read keeps its details and Delete
+    // tag…, never anything that binds or rewrites it (§5.6).
+    let needs = image.summary.as_ref().and_then(|s| s.needs_newer());
     let (Some(f), Some(summary)) = (row.firmware(), image.summary.as_ref()) else {
         ui.strong(image.name());
         ui.label(image.references());
+        if let Some(reason) = &needs {
+            super::pane::text(
+                ui,
+                egui::RichText::new(reason).color(ui.visuals().warn_fg_color),
+            );
+            super::pane::actions(ui, |ui| {
+                for label in ["Use in machine…", "Edit metadata…"] {
+                    ui.add_enabled(false, egui::Button::new(label))
+                        .on_disabled_hover_text(reason);
+                }
+            });
+            return action.get();
+        }
         ui.label(
             image
                 .failure
@@ -455,18 +471,26 @@ pub(super) fn details(
             }
         },
     );
-    if let Some(reason) = &image.failure {
+    if let Some(reason) = needs.as_ref().or(image.failure.as_ref()) {
         super::pane::text(ui, egui::RichText::new(reason).color(warn));
     }
     super::pane::actions(ui, |ui| {
         ui.add_enabled(false, egui::Button::new("Use in machine…"))
-            .on_disabled_hover_text("Binding a package into a machine draft is not available yet.");
+            .on_disabled_hover_text(
+                needs
+                    .as_deref()
+                    .unwrap_or("Binding a package into a machine draft is not available yet."),
+            );
         ui.add_enabled(false, egui::Button::new("Export"))
             .on_disabled_hover_text("Package export is not available yet.");
-        if ui
-            .add_enabled(can_edit, egui::Button::new("Edit metadata…"))
-            .clicked()
-        {
+        let edit = ui.add_enabled(
+            can_edit && needs.is_none(),
+            egui::Button::new("Edit metadata…"),
+        );
+        if let Some(reason) = &needs {
+            edit.clone().on_disabled_hover_text(reason);
+        }
+        if edit.clicked() {
             action.set(PaneAction::EditMetadata);
         }
     });
@@ -506,10 +530,14 @@ impl LibraryView {
             && !self.busy
             && self.active.is_none()
             && self.firmware_edit.is_none()
-            && self
-                .firmware_selected
-                .as_ref()
-                .is_some_and(|row| row.firmware().is_some())
+            && self.firmware_selected.as_ref().is_some_and(|row| {
+                row.firmware().is_some()
+                    && row
+                        .image
+                        .summary
+                        .as_ref()
+                        .is_none_or(|s| s.needs_newer().is_none())
+            })
     }
     /// A stopped worker never answers, so a waiting import or metadata
     /// dialog stops waiting and offers Close.

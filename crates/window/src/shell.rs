@@ -1553,7 +1553,9 @@ impl Shell {
             let mut at = None;
             // A machine another program runs takes no disk for its Start.
             for row in rows.iter().filter(|row| {
-                !row.drives.is_empty() && row.listing.state != pc_image::machine::State::Running
+                !row.drives.is_empty()
+                    && row.needs_newer.is_none()
+                    && row.listing.state != pc_image::machine::State::Running
             }) {
                 if row.id() == wanted {
                     at = Some(targets.len());
@@ -2106,6 +2108,29 @@ impl Shell {
     /// Insert… of drive `unit`: the media picker, on `machine` when given
     /// and with `set` chosen.
     fn open_picker(&mut self, unit: u8, machine: Option<&str>, set: Option<image_store::Digest>) {
+        // A machine of an image this release does not read takes no disk for
+        // its Start (machine-images §5.6).
+        if self.presenter.is_none() {
+            let wanted = machine
+                .map(str::to_owned)
+                .or_else(|| self.image_library.machine.clone());
+            let reason = match wanted {
+                Some(id) => self
+                    .image_library
+                    .machine_rows()
+                    .iter()
+                    .find(|row| row.id() == id)
+                    .and_then(|row| row.needs_newer.clone()),
+                None if self.image_library.active.is_none() => {
+                    self.image_library.selection_needs_newer()
+                }
+                None => None,
+            };
+            if let Some(reason) = reason {
+                self.dialog = Some(("Insert disk", reason));
+                return;
+            }
+        }
         let sets = self.image_library.picker_sets();
         let (targets, at) = self.picker_targets(&sets, machine);
         if targets.is_empty() {
@@ -2826,6 +2851,14 @@ impl Shell {
         }
     }
 
+    /// The stopped library selection is an image, or a machine of one, that
+    /// this release does not read: nothing that reads its config is offered.
+    fn selection_is_newer(&self) -> bool {
+        self.presenter.is_none()
+            && self.image_library.active.is_none()
+            && self.image_library.selection_needs_newer().is_some()
+    }
+
     fn command_allowed(&self, command: Command) -> bool {
         if let Some(player) = &self.player {
             return self.player_allows(player, command);
@@ -2852,12 +2885,18 @@ impl Shell {
                         && self.image_library.selected.is_some()
                         && !self.image_library.busy
                 }
+                // Nothing reads the config of an image this release does not
+                // read (machine-images §5.6).
                 Command::NewFromImage | Command::ImageSettings => {
                     self.presenter.is_none()
                         && self.image_library.selected.is_some()
                         && !self.image_library.busy
+                        && !self.selection_is_newer()
                 }
-                Command::ImageLayers => self.image_library.selected.is_some(),
+                Command::ImageLayers => {
+                    self.image_library.selected.is_some() && !self.selection_is_newer()
+                }
+                Command::Settings | Command::Layers => !self.selection_is_newer(),
                 Command::ImportImage => {
                     self.presenter.is_none() && self.selected.is_some() && !self.image_library.busy
                 }
@@ -2875,11 +2914,17 @@ impl Shell {
                     self.presenter.is_none() && self.image_library.can_edit_firmware()
                 }
                 Command::SaveImage => {
-                    self.image_library.selected.is_some() || self.image_library.active.is_some()
+                    self.image_library.active.is_some()
+                        || (self.image_library.selected.is_some() && !self.selection_is_newer())
                 }
                 // A transfer runs on the library worker, which serves the
                 // running machine's session until it stops.
-                Command::Push | Command::PullReference | Command::GetTemplates => {
+                Command::Push => {
+                    self.presenter.is_none()
+                        && self.image_library.active.is_none()
+                        && self.image_library.target_needs_newer().is_none()
+                }
+                Command::PullReference | Command::GetTemplates => {
                     self.presenter.is_none() && self.image_library.active.is_none()
                 }
                 // Pull… takes the tags selected in Remotes.
@@ -3033,6 +3078,9 @@ impl Shell {
                     presenter.media_slots.each_ref().map(Option::is_some)
                 }
                 Some(_) => [false; 2],
+                // A machine of an image this release does not read takes no
+                // disk: it cannot start here (machine-images §5.6).
+                None if self.selection_is_newer() => [false; 2],
                 None => match self.image_library.selected_machine_row() {
                     // A stopped machine takes disks for its next Start.
                     Some(row) => [0u8, 1].map(|unit| row.drives.iter().any(|(u, _)| *u == unit)),
@@ -15014,6 +15062,72 @@ kind='mda'
             .pending_media
             .as_ref()
             .is_some_and(|p| p.has_insert(0)));
+        shell.image_library.shutdown();
+    }
+
+    /// The menus, the toolbar and the keys offer nothing that reads the
+    /// config of an image this release does not read, nor of a machine made
+    /// from one (machine-images §5.6); the same selection of an image this
+    /// release reads offers them.
+    #[test]
+    fn nothing_that_reads_a_newer_images_config_is_offered() {
+        use crate::library_test_support::{tag_newer, warm, Fixture};
+        use Command::*;
+        let f = Fixture::new();
+        tag_newer(
+            &f.store,
+            "test:source",
+            "newer:1.0.0",
+            Some("99.0.0"),
+            false,
+        );
+        let cache = warm(&f.store);
+        let row = |tag: &str| {
+            let descriptor = f.store.tag_descriptor(tag).unwrap();
+            library_model::listing::ImageRow {
+                reference: tag.into(),
+                aliases: Vec::new(),
+                summary: cache.summary(&descriptor.digest).cloned(),
+                descriptor,
+                failure: None,
+            }
+        };
+        let mut shell = shell();
+        shell.stop();
+        let gated = [
+            NewFromImage,
+            ImageSettings,
+            ImageLayers,
+            Settings,
+            Layers,
+            Push,
+            SaveImage,
+        ];
+        for (tag, newer) in [("test:source", false), ("newer:1.0.0", true)] {
+            shell.image_library.selected = Some(row(tag));
+            for command in gated {
+                assert_eq!(shell.command_allowed(command), !newer, "{tag}: {command:?}");
+            }
+        }
+        let mut machine =
+            crate::library_view::machines::tests::row("dos", "DOS", "a", &["games:1"]);
+        for newer in [false, true] {
+            machine.needs_newer = newer.then(|| "Needs unemupc 99.0.0 or newer".into());
+            shell.image_library.set_machines(vec![machine.clone()]);
+            shell.image_library.machine = Some("dos".into());
+            shell.image_library.selected = Some(machine.image_row());
+            for command in [Settings, Layers, SaveImage, Insert(0), CatalogueAll(0)] {
+                assert_eq!(shell.command_allowed(command), !newer, "{command:?}");
+            }
+        }
+        // Reached anyway (Insert into… of a set names the machine), the
+        // picker does not open and says why.
+        shell.open_picker(0, Some("dos"), None);
+        assert!(shell.picker.is_none());
+        assert_eq!(
+            shell.dialog.as_ref().map(|(_, text)| text.as_str()),
+            Some("Needs unemupc 99.0.0 or newer")
+        );
         shell.image_library.shutdown();
     }
 

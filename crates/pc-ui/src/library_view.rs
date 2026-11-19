@@ -15,6 +15,8 @@ pub mod install_media;
 #[cfg(test)]
 mod layout_tests;
 pub mod machines;
+#[cfg(test)]
+mod needs_newer_tests;
 pub(crate) mod pane;
 pub mod remotes;
 
@@ -1553,11 +1555,55 @@ impl LibraryView {
     pub fn ready(&self) -> bool {
         !self.busy && matches!(self.readiness, Some(Ok(_)))
     }
+    /// "Needs unemupc X or newer" when this release does not read the
+    /// selection's image: the selected machine's, else the selected image's
+    /// (machine-images §5.6). Nothing that reads its config is offered.
+    pub fn selection_needs_newer(&self) -> Option<String> {
+        if self.machine.is_some() {
+            if let Some(reason) = self
+                .selected_machine_row()
+                .and_then(|row| row.needs_newer.clone())
+            {
+                return Some(reason);
+            }
+        }
+        self.selected.as_ref()?.summary.as_ref()?.needs_newer()
+    }
+    /// The reason for what Push… would preselect: the selected firmware
+    /// package in its collection, else the selection.
+    pub fn target_needs_newer(&self) -> Option<String> {
+        if self.query.filter.is_firmware() {
+            return self
+                .firmware_selected
+                .as_ref()?
+                .image
+                .summary
+                .as_ref()?
+                .needs_newer();
+        }
+        self.selection_needs_newer()
+    }
+    /// Refuse an action that reads the config of a stopped selection this
+    /// release does not read, saying why. A running session is always one
+    /// this release reads.
+    fn refused_as_newer(&mut self, reason: Option<String>) -> bool {
+        match reason.filter(|_| self.active.is_none()) {
+            Some(reason) => {
+                self.error = Some(reason);
+                true
+            }
+            None => false,
+        }
+    }
     /// Start (or Gaming mode, with a disposable `kind`) the selection: the
     /// selected machine, or the selected image, which Start runs in a
     /// machine of its own.
     pub fn launch(&mut self, kind: WorkspaceKind) {
         if self.busy {
+            return;
+        }
+        if let Some(reason) = self.selection_needs_newer() {
+            self.error = Some(reason);
             return;
         }
         // Before the readiness check too: it waits behind a registry listing.
@@ -1642,11 +1688,21 @@ impl LibraryView {
     /// as stored.
     pub fn recheck(&mut self) {
         if let Some(row) = self.selected.clone() {
+            // An image this release does not read is not checked: the
+            // reason is known from its manifest, and the check would only
+            // refuse it.
+            if let Some(reason) = self.selection_needs_newer() {
+                self.readiness = Some(Err(reason));
+                return;
+            }
             self.readiness = None;
             self.send(Request::Check(row.clone(), self.machine.clone()));
         }
     }
     pub fn open_layers(&mut self) {
+        if self.refused_as_newer(self.selection_needs_newer()) {
+            return;
+        }
         let machine = self
             .selected_machine_row()
             .map(|m| (m.image_row(), m.id().to_owned(), m.name().to_owned()));
@@ -1681,6 +1737,9 @@ impl LibraryView {
     /// own form with what happens to the machine afterwards; otherwise the
     /// Save as new image… form Disk layers opens.
     pub fn begin_save_image(&mut self) {
+        if self.refused_as_newer(self.selection_needs_newer()) {
+            return;
+        }
         let machine = match (&self.active_machine, &self.active) {
             (Some((id, _)), _) => Some(id.clone()),
             (None, None) => self.machine.clone(),
@@ -1699,6 +1758,9 @@ impl LibraryView {
     /// opens the sheet of a new image revision. The worker reads either, and
     /// the sheet opens read-only while it runs.
     pub fn open_settings(&mut self) {
+        if self.refused_as_newer(self.selection_needs_newer()) {
+            return;
+        }
         if let Some(id) = self.machine.clone() {
             self.send(Request::Machine(
                 crate::library_worker::MachineJob::OpenSettings(id),
@@ -1735,6 +1797,10 @@ impl LibraryView {
     /// Image › Settings…: a new revision of the selected image, or of the
     /// selected machine's source image.
     pub fn open_image_settings(&mut self) {
+        // The selected machine's source image is the image it runs.
+        if self.refused_as_newer(self.selection_needs_newer()) {
+            return;
+        }
         if let Some(row) = self.selected.clone() {
             self.send(Request::OpenSettings(row));
         }
@@ -1799,6 +1865,9 @@ impl LibraryView {
     /// Image › Push…: the selected image (machine or firmware package), or
     /// the first local image; the worker builds the dry run.
     pub fn begin_push(&mut self, accounts: crate::registry_transfer::Accounts) {
+        if self.refused_as_newer(self.target_needs_newer()) {
+            return;
+        }
         let selected = if self.query.filter.is_firmware() {
             self.firmware_selected
                 .as_ref()
@@ -2405,9 +2474,15 @@ impl LibraryView {
                                                 .selected
                                                 .as_ref()
                                                 .is_some_and(|r| r.same(image));
+                                            // An image this release does not
+                                            // read says why on its name (§5.6).
                                             let hints = [
-                                                crate::firmware_choices::badge_tooltip(
-                                                    &image_newer(image),
+                                                summary.and_then(|s| s.needs_newer()).or_else(
+                                                    || {
+                                                        crate::firmware_choices::badge_tooltip(
+                                                            &image_newer(image),
+                                                        )
+                                                    },
                                                 ),
                                                 Some(source(&image.descriptor).hint()),
                                             ];
@@ -2889,6 +2964,10 @@ impl LibraryView {
         actions.splice(0..0, hinted);
         actions.extend(open);
         let count = made.len();
+        // An image this release does not read keeps only what needs no
+        // config: its details and Delete tag… (§5.6).
+        let needs = summary.and_then(|s| s.needs_newer());
+        let reads = needs.is_none();
         pane::actions(ui, |ui| {
             for (label, enabled, command, hover) in [
                 (
@@ -2897,16 +2976,16 @@ impl LibraryView {
                     Command::Start,
                     "",
                 ),
-                ("New machine from image…", true, Command::NewFromImage, ""),
+                ("New machine from image…", reads, Command::NewFromImage, ""),
                 ("Gaming mode", ready, Command::GamingMode, ""),
                 (
                     "Settings…",
-                    true,
+                    reads,
                     Command::Settings,
                     "Changes create a new image revision; disks are shared.",
                 ),
-                ("Layers…", true, Command::Layers, ""),
-                ("Push…", true, Command::Push, ""),
+                ("Layers…", reads, Command::Layers, ""),
+                ("Push…", reads, Command::Push, ""),
                 ("Delete tag…", true, Command::DeleteTag, ""),
             ] {
                 let button = if command == Command::Start {
@@ -2915,6 +2994,9 @@ impl LibraryView {
                     egui::Button::new(label)
                 };
                 let mut response = ui.add_enabled(enabled, button);
+                if let (false, Some(reason)) = (enabled, &needs) {
+                    response = response.on_disabled_hover_text(reason);
+                }
                 if !hover.is_empty() {
                     response = response.on_hover_text(hover);
                 }

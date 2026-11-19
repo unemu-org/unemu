@@ -158,6 +158,21 @@ pub(super) fn details(
     let (Some(summary), Some(set)) = (image.summary.as_ref(), row.set()) else {
         ui.strong(image.name());
         ui.label(image.references());
+        // A set this release does not read, whose disks its summary could
+        // not read either: the reason, and no drive takes it (§5.6).
+        if let Some(reason) = image.summary.as_ref().and_then(|s| s.needs_newer()) {
+            super::pane::text(
+                ui,
+                egui::RichText::new(&reason).color(ui.visuals().warn_fg_color),
+            );
+            super::pane::actions(ui, |ui| {
+                for label in ["Insert", "Insert into… ▾"] {
+                    ui.add_enabled(false, egui::Button::new(label))
+                        .on_disabled_hover_text(&reason);
+                }
+            });
+            return None;
+        }
         ui.label(
             image
                 .failure

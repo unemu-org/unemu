@@ -28,6 +28,10 @@ pub struct MachineRow {
     /// The floppy catalogues it had at its last Stop, which its drives take
     /// back at its next Start, kept in its workspace.
     pub kept: Vec<pc_media::kept_catalogue::KeptDrive>,
+    /// "Needs unemupc X or newer" when this release does not read the
+    /// machine's image (machine-images §5.6): it cannot start here, and
+    /// nothing that reads the image's config is offered.
+    pub needs_newer: Option<String>,
 }
 
 fn repository(reference: &str) -> &str {

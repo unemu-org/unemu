@@ -2,8 +2,13 @@
 //! Rebuildable per-title facets and token search; machine-images §§2.1 and 7.
 //! Startup reads only the OCI index, local library and cache. Immutable summaries
 //! bind image/metadata digests; local content hashes invalidate affected images.
+//! Each summary keeps the release its manifest says it needs (§5.6), read
+//! before any config: an artifact this build does not read is summarised from
+//! its manifest and metadata, so the library lists it disabled with the
+//! reason instead of as unreadable.
 
 use crate::{
+    compat::Requirement,
     filesystem as host, invalid,
     library::{Library, LibraryEntry},
     media_type,
@@ -145,12 +150,38 @@ pub struct ImageSummary {
     pub local_revision: u64,
     pub titles: Vec<TitleSummary>,
     pub tokens: Vec<String>,
+    /// The manifest's `unemu.min-app-version` as it was read: the oldest
+    /// release that reads and runs the artifact (§5.6). `None` when the
+    /// manifest names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_app_version: Option<String>,
 }
 
 impl ImageSummary {
     /// Catalogue fields from newer schemas may be displayed but never edited.
     pub fn metadata_is_read_only(&self) -> bool {
         self.metadata_schema > crate::metadata::SCHEMA
+    }
+    /// What the manifest declares about the release it needs.
+    pub fn requirement(&self) -> Requirement {
+        Requirement::of_text(self.min_app_version.as_deref())
+    }
+    /// "Needs unemupc X or newer" when this build does not read the
+    /// artifact: the library lists it disabled with this reason, and every
+    /// action that needs its config is unavailable.
+    pub fn needs_newer(&self) -> Option<String> {
+        self.requirement().unmet_reason()
+    }
+    /// A firmware package or installation set whose summary lacks the
+    /// details its config gives, so it is summarised again; one this build
+    /// does not read keeps what its manifest gave.
+    fn details_missing(&self) -> bool {
+        self.needs_newer().is_none()
+            && match self.kind {
+                ArtifactKind::Machine => false,
+                ArtifactKind::Firmware => self.firmware.as_ref().is_none_or(|f| f.roms.is_empty()),
+                ArtifactKind::MediaSet => self.media_set.is_none(),
+            }
     }
 }
 
@@ -170,6 +201,10 @@ pub struct SummaryFailure {
     pub image: Digest,
     pub local_content: Digest,
     pub reason: String,
+    /// The manifest's minimum release when the failure is that this build
+    /// does not read it; a build that does tries again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_app_version: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -180,10 +215,14 @@ struct CacheFile {
     failures: BTreeMap<Digest, SummaryFailure>,
     warnings: Vec<String>,
 }
+/// The cache schema this build writes. Schema 8 records each artifact's
+/// minimum release and summarises one this build does not read from its
+/// manifest; a cache of any other schema is rebuilt, never misread.
+const CACHE_SCHEMA: u32 = 8;
 impl Default for CacheFile {
     fn default() -> Self {
         Self {
-            schema: 7,
+            schema: CACHE_SCHEMA,
             images: BTreeMap::new(),
             failures: BTreeMap::new(),
             warnings: Vec::new(),
@@ -205,9 +244,9 @@ fn read_cache(store: &Store) -> Result<CacheFile> {
                 for (id, failure) in &mut cache.failures {
                     failure.image = id.clone();
                 }
-                // Schema 7 reads metadata schema 2 in full, which older builds
-                // summarized as a read-only projection; older rows are rebuilt.
-                if cache.schema == 7
+                // Schema 7 read metadata schema 2 in full but did not keep
+                // the minimum release; older rows are rebuilt.
+                if cache.schema == CACHE_SCHEMA
                     && cache.images.iter().all(|(id, row)| id == &row.image)
                     && cache.failures.iter().all(|(id, row)| id == &row.image)
                 {
@@ -352,9 +391,13 @@ impl SummaryCache {
             .filter(|row| &row.local_content == self.local_hash(image))
     }
     pub fn failure(&self, image: &Digest) -> Option<&SummaryFailure> {
-        self.failures
-            .get(image)
-            .filter(|row| &row.local_content == self.local_hash(image))
+        self.failures.get(image).filter(|row| {
+            &row.local_content == self.local_hash(image)
+                && (row.min_app_version.is_none()
+                    || Requirement::of_text(row.min_app_version.as_deref())
+                        .unmet_reason()
+                        .is_some())
+        })
     }
     pub fn retry(&mut self, image: &Digest) {
         self.failures.remove(image);
@@ -365,11 +408,9 @@ impl SummaryCache {
         self.tags
             .iter()
             .filter(|tag| {
-                self.summary(&tag.manifest.digest).is_none_or(|s| {
-                    s.storage_blobs.is_empty()
-                        || s.firmware.as_ref().is_some_and(|f| f.roms.is_empty())
-                        || (s.kind == ArtifactKind::MediaSet && s.media_set.is_none())
-                }) && self.failure(&tag.manifest.digest).is_none()
+                self.summary(&tag.manifest.digest)
+                    .is_none_or(|s| s.storage_blobs.is_empty() || s.details_missing())
+                    && self.failure(&tag.manifest.digest).is_none()
             })
             .collect()
     }
@@ -406,14 +447,22 @@ impl SummaryCache {
                     self.failures.remove(&id);
                     self.images.insert(id.clone(), row);
                 }
-                Err(error) => {
+                Err((error, requirement)) => {
                     self.images.remove(&id);
+                    // A manifest this build cannot decode names the release
+                    // it needs instead of the decoder's message.
+                    let reason = requirement
+                        .unmet_reason()
+                        .unwrap_or_else(|| error.to_string());
                     self.failures.insert(
                         id.clone(),
                         SummaryFailure {
                             image: id.clone(),
                             local_content: self.local_hash(&id).clone(),
-                            reason: error.to_string().chars().take(512).collect(),
+                            reason: reason.chars().take(512).collect(),
+                            min_app_version: requirement
+                                .unmet_reason()
+                                .and_then(|_| requirement.text()),
                         },
                     );
                 }
@@ -426,12 +475,105 @@ impl SummaryCache {
         Ok(pending.len())
     }
 
-    fn build(&self, store: &Store, tag: &Tag) -> Result<ImageSummary> {
-        let manifest =
-            Manifest::decode_for_summary(&store.read_verified(&tag.manifest, MAX_SMALL_BLOB)?)?;
-        if manifest.artifact_type() == media_type::FIRMWARE {
-            return self.build_firmware(store, tag, manifest);
+    /// Summarise one tag's image. The manifest's minimum release is read
+    /// leniently first; an artifact this build does not read is summarised
+    /// without its config when the config does not decode.
+    fn build(
+        &self,
+        store: &Store,
+        tag: &Tag,
+    ) -> std::result::Result<ImageSummary, (crate::Error, Requirement)> {
+        let bytes = store
+            .read_verified(&tag.manifest, MAX_SMALL_BLOB)
+            .map_err(|e| (e, Requirement::None))?;
+        let requirement = Requirement::read(&bytes);
+        let unread = requirement.unmet_reason().is_some();
+        let built = Manifest::decode_for_summary(&bytes).and_then(|manifest| {
+            if manifest.artifact_type() != media_type::FIRMWARE {
+                return self.build_image(store, tag, manifest, unread);
+            }
+            match self.build_firmware(store, tag, manifest.clone()) {
+                Err(_) if unread => self.build_unread(tag, &manifest),
+                built => built,
+            }
+        });
+        match built {
+            Ok(mut row) => {
+                row.min_app_version = requirement.text();
+                Ok(row)
+            }
+            Err(error) => Err((error, requirement)),
         }
+    }
+
+    /// A firmware package this build does not read: what its manifest
+    /// says, without the config's details.
+    fn build_unread(&self, tag: &Tag, manifest: &Manifest) -> Result<ImageSummary> {
+        let entry = self
+            .library
+            .images
+            .get(&tag.manifest.digest)
+            .cloned()
+            .unwrap_or_default();
+        let name = manifest
+            .annotations
+            .get("org.opencontainers.image.title")
+            .cloned()
+            .unwrap_or_default();
+        let platform = manifest.platform()?.to_owned();
+        let stored_size = manifest
+            .layers
+            .iter()
+            .chain(std::iter::once(&manifest.config))
+            .try_fold(tag.manifest.size, |sum, d| {
+                sum.checked_add(d.size)
+                    .ok_or_else(|| invalid("summary size overflow"))
+            })?;
+        let mut labels = entry.labels.clone();
+        labels.sort();
+        labels.dedup();
+        Ok(ImageSummary {
+            kind: ArtifactKind::Firmware,
+            firmware: None,
+            media_set: None,
+            image: tag.manifest.digest.clone(),
+            metadata: manifest.config.digest.clone(),
+            metadata_schema: 1,
+            local_content: self.local_hash(&tag.manifest.digest).clone(),
+            warnings: Vec::new(),
+            search_limited: false,
+            machine: None,
+            config: manifest.config.digest.clone(),
+            tokens: tokenize(&format!("{name} {platform} {}", labels.join(" "))),
+            platform,
+            name,
+            stored_size,
+            storage_blobs: manifest
+                .layers
+                .iter()
+                .chain(std::iter::once(&manifest.config))
+                .chain(std::iter::once(&tag.manifest))
+                .cloned()
+                .collect(),
+            decoded_size: decoded_total(tag, manifest)?,
+            labels,
+            favorite: entry.favorite,
+            last_run: entry.last_run,
+            overlay_revision: entry.overlay_revision,
+            personal_revision: entry.personal_revision,
+            local_revision: entry.local_revision,
+            titles: Vec::new(),
+            min_app_version: None,
+        })
+    }
+
+    fn build_image(
+        &self,
+        store: &Store,
+        tag: &Tag,
+        manifest: Manifest,
+        unread: bool,
+    ) -> Result<ImageSummary> {
         let descriptor = manifest
             .layers
             .iter()
@@ -481,16 +623,24 @@ impl SummaryCache {
             })?;
         let decoded_size = decoded_total(tag, &manifest)?;
         let media_set = if manifest.artifact_type() == media_type::MEDIA_SET {
-            let config = crate::media_set::Config::decode(
+            let set = crate::media_set::Config::decode(
                 &store.read_verified(&manifest.config, MAX_SMALL_BLOB)?,
-            )?;
-            if !crate::platform::same(&config.platform, &metadata.platform) {
-                return Err(invalid("media-set summary platform mismatch"));
+            )
+            .and_then(|config| {
+                if !crate::platform::same(&config.platform, &metadata.platform) {
+                    return Err(invalid("media-set summary platform mismatch"));
+                }
+                Ok(MediaSetSummary {
+                    media: config.media,
+                    extras: config.extras,
+                })
+            });
+            match set {
+                Ok(set) => Some(set),
+                // A set this build does not read lists without its disks.
+                Err(_) if unread => None,
+                Err(error) => return Err(error),
             }
-            Some(MediaSetSummary {
-                media: config.media,
-                extras: config.extras,
-            })
         } else {
             None
         };
@@ -510,7 +660,7 @@ impl SummaryCache {
             set_text.collect::<Vec<_>>().join(" ")
         ));
         Ok(ImageSummary {
-            kind: if media_set.is_some() {
+            kind: if manifest.artifact_type() == media_type::MEDIA_SET {
                 ArtifactKind::MediaSet
             } else {
                 ArtifactKind::Machine
@@ -545,6 +695,7 @@ impl SummaryCache {
             local_revision: entry.local_revision,
             titles,
             tokens,
+            min_app_version: None,
         })
     }
 
@@ -665,6 +816,7 @@ impl SummaryCache {
             local_revision: entry.local_revision,
             titles: Vec::new(),
             tokens,
+            min_app_version: None,
         })
     }
 
@@ -907,6 +1059,7 @@ fn bounded_cache(cache: &mut CacheFile, limit: usize) -> Result<Vec<u8>> {
                     image: id.clone(),
                     local_content: row.local_content,
                     reason: "summary omitted: cache capacity".into(),
+                    min_app_version: None,
                 };
                 size = size
                     .saturating_sub(before)
@@ -1023,6 +1176,7 @@ mod tests {
                 local_revision: 0,
                 titles: vec![],
                 tokens: vec!["x".repeat(100_000)],
+                min_app_version: None,
             },
         );
         let bytes = bounded_cache(&mut cache, 4096).unwrap();
@@ -1041,10 +1195,137 @@ mod tests {
                     image,
                     local_content: id.clone(),
                     reason: "z".repeat(10_000),
+                    min_app_version: None,
                 },
             );
         }
         assert!(bounded_cache(&mut cache, 8192).unwrap().len() <= 8192);
         assert!(cache.failures.values().all(|row| row.reason == "capacity"));
+    }
+
+    /// Every summary keeps the release its manifest says it needs, read
+    /// before anything else (machine-images §5.6): an image this build does
+    /// not read is a summarised row with the reason, never an unreadable one.
+    /// A cache that kept no requirement (schema 7) or that a newer build
+    /// wrote is rebuilt, never misread.
+    #[test]
+    fn summaries_record_the_minimum_release_and_older_or_newer_caches_are_rebuilt() {
+        use crate::compat::{level, MIN_APP_VERSION};
+        let root = std::env::temp_dir().join(format!(
+            "image-summary-requirement-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let store = Store::open(&root).unwrap();
+        let put = |kind: &str, bytes: &[u8]| {
+            let blob = store.import(bytes, None).unwrap();
+            Descriptor::new(kind, blob.digest, blob.size)
+        };
+        let config = put(media_type::CONFIG, b"schema = 1\nplatform = \"c64\"\n");
+        let mut metadata = Metadata::new("c64");
+        metadata.titles.push(Title {
+            id: "alpha".into(),
+            title: "Alpha".into(),
+            description: Some("Moonlit labyrinth".into()),
+            ..Title::default()
+        });
+        let metadata = put(media_type::METADATA, &metadata.encode(&[]).unwrap());
+        let image = |tag: &str, marker: Option<String>| {
+            let mut manifest =
+                Manifest::new("c64", config.clone(), vec![metadata.clone()]).unwrap();
+            if let Some(marker) = marker {
+                manifest.annotations.insert(MIN_APP_VERSION.into(), marker);
+            }
+            let image = store.import_manifest(&manifest).unwrap();
+            store.tag_as_newer_release(tag, &image).unwrap();
+            image
+        };
+        let plain = image("demo:plain", None);
+        let here = image("demo:here", Some(level().to_string()));
+        let newer = image("demo:newer", Some("99.0.0".into()));
+        let unparsed = image("demo:unparsed", Some("soon".into()));
+        let warm = || {
+            let mut cache = SummaryCache::open(&store).unwrap();
+            while !cache.pending().is_empty() {
+                cache.rebuild(&store, 8, &[], &[]).unwrap();
+            }
+            cache
+        };
+        let row = |cache: &SummaryCache, image: &Descriptor| {
+            assert!(cache.failure(&image.digest).is_none());
+            let row = cache.summary(&image.digest).unwrap();
+            (row.min_app_version.clone(), row.needs_newer())
+        };
+        let cache = warm();
+        assert_eq!(row(&cache, &plain), (None, None));
+        assert_eq!(row(&cache, &here), (Some(level().to_string()), None));
+        assert_eq!(
+            row(&cache, &newer),
+            (
+                Some("99.0.0".into()),
+                Some("Needs unemupc 99.0.0 or newer".into())
+            )
+        );
+        assert_eq!(
+            row(&cache, &unparsed),
+            (Some("soon".into()), Some("Needs a newer unemupc".into()))
+        );
+        // The disabled row is still found by its catalogue text.
+        assert_eq!(cache.query("labyrinth", &Facets::default()).len(), 4);
+
+        let path = store.root().join("cache/summaries/index.json");
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["schema"], 8);
+        assert_eq!(
+            saved["images"][newer.digest.to_string()]["min_app_version"],
+            "99.0.0"
+        );
+        assert!(saved["images"][plain.digest.to_string()]
+            .get("min_app_version")
+            .is_none());
+        for schema in [7, 9] {
+            let mut file = saved.clone();
+            file["schema"] = schema.into();
+            if schema == 7 {
+                // As schema 7 kept it: no requirement on the row.
+                file["images"][newer.digest.to_string()]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("min_app_version");
+            }
+            fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+            let cache = SummaryCache::open(&store).unwrap();
+            assert!(cache.summary(&newer.digest).is_none(), "schema {schema}");
+            assert_eq!(cache.pending().len(), 4, "schema {schema}");
+            let cache = warm();
+            assert_eq!(
+                row(&cache, &newer).1.as_deref(),
+                Some("Needs unemupc 99.0.0 or newer")
+            );
+            let rewritten: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(rewritten["schema"], 8, "schema {schema}");
+        }
+
+        // A manifest this build cannot decode at all is a failure that names
+        // the release it needs, and a build that reads it tries again.
+        let mut failures = CacheFile::default();
+        failures.failures.insert(
+            newer.digest.clone(),
+            SummaryFailure {
+                image: newer.digest.clone(),
+                local_content: SummaryCache::open(&store)
+                    .unwrap()
+                    .local_hash(&newer.digest)
+                    .clone(),
+                reason: "Needs unemupc 0.0.1 or newer".into(),
+                min_app_version: Some("0.0.1".into()),
+            },
+        );
+        fs::write(&path, serde_json::to_vec(&failures).unwrap()).unwrap();
+        let cache = SummaryCache::open(&store).unwrap();
+        assert!(cache.failure(&newer.digest).is_none());
+        assert!(cache.pending().iter().any(|t| t.name == "demo:newer"));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

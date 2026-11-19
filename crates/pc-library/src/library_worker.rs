@@ -943,6 +943,7 @@ fn tags_of(store: &Store) -> Vec<(String, Digest)> {
 }
 
 fn open_settings(store: &Store, row: ImageRow) -> Result<Box<OpenedSettings>> {
+    refuse_newer(store, &row.descriptor)?;
     let source =
         pc_image::revision::Source::open(store, &row.descriptor).map_err(|e| e.to_string())?;
     Ok(Box::new((row, source, tags_of(store))))
@@ -953,6 +954,7 @@ fn plan_revision(
     row: &ImageRow,
     machine: toml::Table,
 ) -> Result<Box<pc_image::revision::Plan>> {
+    refuse_newer(store, &row.descriptor)?;
     let source =
         pc_image::revision::Source::open(store, &row.descriptor).map_err(|e| e.to_string())?;
     pc_image::revision::plan(store, &source, machine)
@@ -1101,10 +1103,17 @@ fn floppies(config: &assembly::MachineConfig) -> Vec<(u8, assembly::FloppyGeomet
 fn machine_row(
     store: &Store,
     cache: &SummaryCache,
-    listing: pc_image::machine::Listing,
+    mut listing: pc_image::machine::Listing,
     drives_of: &mut BTreeMap<Digest, Vec<(u8, assembly::FloppyGeometry)>>,
 ) -> crate::machines::MachineRow {
     let image = listing.machine.image.clone();
+    // A machine made from an image this release does not read cannot start
+    // here; it says why as its image does (§5.6), before any message from
+    // reading the image's config.
+    let needs_newer = needs_newer(store, &image);
+    if let Some(reason) = &needs_newer {
+        listing.problem = Some(reason.clone());
+    }
     let described = |table: &toml::Table| {
         crate::image_settings::describe(table)
             .map(|draft| floppies(&draft.config))
@@ -1141,7 +1150,22 @@ fn machine_row(
         created_problem,
         kept,
         listing,
+        needs_newer,
     }
+}
+
+/// "Needs unemupc X or newer" when this release does not read the image,
+/// from its manifest's marker alone.
+fn needs_newer(store: &Store, image: &image_store::Descriptor) -> Option<String> {
+    let bytes =
+        image_store::BlobSource::read_verified(store, image, image_store::MAX_SMALL_BLOB).ok()?;
+    image_store::compat::Requirement::read(&bytes).unmet_reason()
+}
+
+/// Refuse a job that reads or rewrites the config of an image this release
+/// does not read, with the reason the library shows for it.
+fn refuse_newer(store: &Store, image: &image_store::Descriptor) -> Result<()> {
+    needs_newer(store, image).map_or(Ok(()), Err)
 }
 
 fn machine_listing(store: &Store, cache: &SummaryCache) -> Event {
@@ -1268,7 +1292,13 @@ fn machine_job<B: Backend>(
                 ))
             }
             MachineJob::SetPending { id, drive, insert } => {
-                let name = machine_named(store, cache, &id)?.name().to_owned();
+                let row = machine_named(store, cache, &id)?;
+                // A machine that cannot start here takes no disk for its
+                // Start; taking a disk out stays possible.
+                if let (Some(reason), Some(_)) = (&row.needs_newer, &insert) {
+                    return Err(reason.clone());
+                }
+                let name = row.name().to_owned();
                 let message = match &insert {
                     Some(_) => format!(
                         "{drive} of \u{201c}{name}\u{201d} takes the disk at its next Start"
@@ -1330,6 +1360,9 @@ fn machine_job<B: Backend>(
             ),
             MachineJob::OpenSettings(id) => {
                 let row = machine_named(store, cache, &id)?;
+                if let Some(reason) = row.needs_newer {
+                    return Err(reason);
+                }
                 let image = row.image_row();
                 let source =
                     pc_image::revision::Source::open(store, &image.descriptor).map_err(error)?;
@@ -1343,13 +1376,21 @@ fn machine_job<B: Backend>(
                     tags_of(store),
                 ))))
             }
-            MachineJob::ApplySettings(id, table) => Event::MachineSettingsApplied(
-                machine::change_settings(store, &id, *table, true)
-                    .map(Box::new)
-                    .map_err(error),
-            ),
+            MachineJob::ApplySettings(id, table) => {
+                Event::MachineSettingsApplied(match machine_named(store, cache, &id)?.needs_newer {
+                    Some(reason) => Err(reason),
+                    None => machine::change_settings(store, &id, *table, true)
+                        .map(Box::new)
+                        .map_err(error),
+                })
+            }
             MachineJob::Commit { id, target, keep } => {
                 let row = machine_named(store, cache, &id)?;
+                // Save as new image… would carry a requirement this release
+                // cannot write; it is refused before anything is read.
+                if let Some(reason) = &row.needs_newer {
+                    return Err(reason.clone());
+                }
                 match backend.commit(store, &id, &target, keep) {
                     Ok(_) => Event::MachineDone {
                         message: if keep {
@@ -1771,6 +1812,19 @@ fn run<B: Backend>(
                         pending_check = None;
                         let machine = machine_named(&store, &cache, &id)?;
                         let row = machine.image_row();
+                        // Refused before the image is read, naming the tag
+                        // the machine came from while it names the image.
+                        if machine.needs_newer.is_some() {
+                            let bytes = image_store::BlobSource::read_verified(
+                                &store,
+                                &row.descriptor,
+                                image_store::MAX_SMALL_BLOB,
+                            )
+                            .map_err(|e| e.to_string())?;
+                            image_store::compat::Requirement::read(&bytes)
+                                .check(&row.reference)
+                                .map_err(|e| e.to_string())?;
+                        }
                         if gaming {
                             let source =
                                 pc_image::machine::own(&store, &id).map_err(|e| e.to_string())?;
@@ -3443,6 +3497,114 @@ mod tests {
             .is_empty());
         assert!(!copied.join("media/created").exists());
         w.shutdown();
+    }
+
+    /// A machine made from an image this release does not read lists with
+    /// the reason its image gives, "Needs unemupc X or newer", before any
+    /// message from reading the image's config, and its Start is refused
+    /// naming the tag, not the digest the machine keeps (machine-images §5.6).
+    #[test]
+    fn a_machine_of_an_image_that_needs_a_newer_release_says_why_and_names_its_tag() {
+        use crate::library_test_support::{tag_newer, warm};
+        let f = Fixture::new();
+        let mut ids = Vec::new();
+        for (tag, marker, future_key) in [
+            ("newer:1.0.0", Some("99.0.0"), false),
+            ("future:1.0.0", Some("99.0.0"), true),
+            ("plain:1.0.0", None, false),
+        ] {
+            let image = tag_newer(&f.store, "test:source", tag, marker, future_key);
+            if tag == "newer:1.0.0" {
+                // Another tag of the same image, first by name: the refusal
+                // still names the tag the machine came from.
+                f.store
+                    .tag_as_newer_release("another:1.0.0", &image)
+                    .unwrap();
+            }
+            // As a newer release in a shared store makes it: by digest alone.
+            let id = tag.split(':').next().unwrap().to_owned();
+            f.store
+                .edit_machines(|machines| {
+                    machines.insert(
+                        &id,
+                        image_store::machine::Machine::new(
+                            &id,
+                            image_store::Descriptor::new(
+                                image_store::media_type::MANIFEST,
+                                image.digest.clone(),
+                                image.size,
+                            ),
+                            tag,
+                            image_store::machine::Origin::New,
+                        ),
+                    )
+                })
+                .unwrap();
+            ids.push(id);
+        }
+        let cache = warm(&f.store);
+        let Event::Machines(Ok(rows)) = machine_listing(&f.store, &cache) else {
+            panic!("machines listed")
+        };
+        let needs = "Needs unemupc 99.0.0 or newer";
+        for (id, expected) in ids.iter().zip([Some(needs), Some(needs), None]) {
+            let row = rows.iter().find(|row| row.id() == id).unwrap();
+            assert_eq!(row.needs_newer.as_deref(), expected, "{id}");
+            if expected.is_some() {
+                assert_eq!(row.listing.problem.as_deref(), expected, "{id}");
+            }
+        }
+        let w = worker(&f);
+        w.send
+            .send(Request::LaunchMachine("newer".into(), false))
+            .unwrap();
+        let Event::Error(refused) = next_answer(&w) else {
+            panic!("Start is refused")
+        };
+        assert!(
+            refused.contains("newer:1.0.0 needs unemupc 99.0.0 or newer"),
+            "{refused}"
+        );
+        assert!(!refused.contains("sha256:"), "{refused}");
+        // Nothing that reads or rewrites its image's config runs: Settings…,
+        // its apply, an insert for its Start and Save as new image….
+        let set = f.import_set();
+        for job in [
+            MachineJob::OpenSettings("newer".into()),
+            MachineJob::ApplySettings("newer".into(), Box::default()),
+            MachineJob::SetPending {
+                id: "newer".into(),
+                drive: "A:".into(),
+                insert: Some(Box::new(pending_a(&set))),
+            },
+            MachineJob::Commit {
+                id: "newer".into(),
+                target: target("saved:1.0.0", false),
+                keep: true,
+            },
+        ] {
+            w.send.send(Request::Machine(job)).unwrap();
+            match next_answer(&w) {
+                Event::Error(refused) => assert_eq!(refused, needs),
+                Event::MachineSettingsApplied(Err(refused)) => assert_eq!(refused, needs),
+                _ => panic!("refused with the reason"),
+            }
+        }
+        assert!(pc_image::machine::get(&f.store, "newer")
+            .unwrap()
+            .machine
+            .pending
+            .is_empty());
+        assert!(f.store.tag_descriptor("saved:1.0.0").is_err());
+        // Settings on the image itself is refused too.
+        let newer = rows.iter().find(|row| row.id() == "newer").unwrap();
+        w.send
+            .send(Request::OpenSettings(newer.image_row()))
+            .unwrap();
+        let Event::SettingsOpened(Err(refused)) = next_answer(&w) else {
+            panic!("Settings on the image is refused")
+        };
+        assert_eq!(refused, needs);
     }
 
     /// A record of created disks that cannot be read never stops a Start:

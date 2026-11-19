@@ -787,11 +787,25 @@ impl Store {
         }
         let bytes = self.read_inner(image, MAX_SMALL_BLOB)?;
         // The marker comes first: an image a newer release wrote is refused
-        // with the release it needs, never with a decoder message.
-        crate::compat::Requirement::read(&bytes).check(&match tag_name(image) {
-            Some(name) => name.to_owned(),
-            None => image.digest.to_string(),
-        })?;
+        // with the release it needs, never with a decoder message. A machine
+        // keeps its image by digest alone, so the refusal names a tag that
+        // names the image, and the digest only when none does.
+        let requirement = crate::compat::Requirement::read(&bytes);
+        if requirement.unmet_reason().is_some() {
+            let tagged = || {
+                self.tags_inner().ok().and_then(|tags| {
+                    tags.into_iter()
+                        .find(|tag| tag.manifest.digest == image.digest)
+                        .map(|tag| tag.name)
+                })
+            };
+            requirement.check(
+                &tag_name(image)
+                    .map(str::to_owned)
+                    .or_else(tagged)
+                    .unwrap_or_else(|| image.digest.to_string()),
+            )?;
+        }
         let manifest = Manifest::decode_with_types(&bytes, validator.payload_types())?;
         if manifest.artifact_type() != validator.artifact_type() {
             return Err(invalid("artifact type does not match validator"));

@@ -43,7 +43,12 @@ impl SetEntry {
     pub fn format(&self) -> Option<FloppyGeometry> {
         self.disks.iter().find_map(|disk| disk.format)
     }
+    /// Empty for a set whose disks are not known: one this release does
+    /// not read (machine-images §5.6).
     pub fn disks_label(&self) -> String {
+        if self.disks.is_empty() {
+            return String::new();
+        }
         format!(
             "{} × {}",
             self.disks.len(),

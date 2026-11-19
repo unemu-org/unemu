@@ -1761,6 +1761,8 @@ fn set_row(
             Some(set.open),
         ),
     ];
+    // A set whose disks are not known lists none.
+    meta.retain(|m| !matches!(m, Meta::Disks(text) if text.is_empty()));
     if !in_drives.is_empty() {
         meta.push(Meta::Badge(format!("in {}", in_drives.join(", ")), None));
     }
@@ -1916,10 +1918,15 @@ fn details_head(ui: &mut egui::Ui, set: &SetEntry) {
                         .size(SMALL_SIZE)
                         .weak(),
                 );
+                let disks = set.disks_label();
                 ui.label(
-                    RichText::new(format!(" · {} · ", set.disks_label()))
-                        .small()
-                        .weak(),
+                    RichText::new(if disks.is_empty() {
+                        " · ".to_owned()
+                    } else {
+                        format!(" · {disks} · ")
+                    })
+                    .small()
+                    .weak(),
                 );
                 let colour = if set.open {
                     good_colour(ui.visuals())

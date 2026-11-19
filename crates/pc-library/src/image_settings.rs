@@ -594,6 +594,9 @@ impl ImageSettings {
             self.pending_switch = None;
             self.error = None;
             self.set_firmware(slot, &id);
+        } else if let Some(reason) = self.package_needs_newer(slot, &id) {
+            self.pending_switch = None;
+            self.error = Some(reason);
         } else {
             self.error = Some(format!(
                 "{} is not in your store: Import ROM folder… adds it, and the switch is made then.",
@@ -602,14 +605,23 @@ impl ImageSettings {
         }
     }
     /// Whether an entry can be bound now: the image's or the applied tables
-    /// hold it, or a firmware package of the store does.
+    /// hold it, or a firmware package of the store that this release reads
+    /// does.
     fn firmware_available(&self, slot: Slot, id: &str) -> bool {
         [self.source.machine(), &self.applied]
             .into_iter()
             .any(|tables| fw::current(tables, slot).is_some_and(|e| e.id == id))
             || fw::entry(id).is_some_and(|entry| {
-                fw::package_rom(self.packages.as_deref().unwrap_or_default(), entry, slot).is_some()
+                fw::package_rom(self.packages.as_deref().unwrap_or_default(), entry, slot)
+                    .is_some_and(|rom| fw::package_needs_newer(&rom.package).is_none())
             })
+    }
+    /// "Needs unemupc X or newer" when only a package this release does not
+    /// read holds the entry.
+    fn package_needs_newer(&self, slot: Slot, id: &str) -> Option<String> {
+        let entry = fw::entry(id)?;
+        let rom = fw::package_rom(self.packages.as_deref().unwrap_or_default(), entry, slot)?;
+        fw::package_needs_newer(&rom.package)
     }
 
     /// The draft's hardware tables.
@@ -686,7 +698,10 @@ impl ImageSettings {
                 } else if !self.firmware_available(slot, entry.id) {
                     // Not when the image's or the applied tables hold the entry:
                     // set_firmware binds it from them, so no package is needed.
-                    Some(if fw::catalogue_open(entry) {
+                    // A package this release does not read says so (§5.6).
+                    Some(if let Some(reason) = self.package_needs_newer(slot, entry.id) {
+                        reason
+                    } else if fw::catalogue_open(entry) {
                         "not in your store: Import ROM folder… adds it from a folder you choose.".to_owned()
                     } else {
                         "not in your store; user-supplied ROMs are never downloaded, so Import ROM folder… adds your own dump.".to_owned()
@@ -930,6 +945,72 @@ pub(crate) mod tests {
                 _ => None,
             })
             .unwrap()
+    }
+
+    /// Re-tag the store's private Kiselev package as a newer release wrote
+    /// it, with only the newer copy left (machine-images §5.6), and the
+    /// store's choices then. The redistribution marks are those scanned
+    /// before: the registry's scan refuses a store holding a newer image.
+    fn newer_kiselev(store: &FirmwareStore) -> crate::library_worker::StoreChoices {
+        let (packages, _, marks) = store.choices();
+        let package = packages
+            .into_iter()
+            .find(|p| p.config.name == "Kiselev AT BIOS (private copy)")
+            .unwrap();
+        crate::library_test_support::tag_newer(
+            &store.store,
+            &package.reference,
+            "newer-kiselev:r1",
+            Some("99.0.0"),
+            false,
+        );
+        store
+            .store
+            .remove_tag(&package.reference, &package.descriptor.digest)
+            .unwrap();
+        let tags = store
+            .store
+            .list_tags(None, 1000)
+            .unwrap()
+            .tags
+            .into_iter()
+            .map(|t| (t.name, t.manifest.digest))
+            .collect();
+        (
+            pc_image::create::packages(&store.store).unwrap(),
+            tags,
+            marks,
+        )
+    }
+
+    /// An entry only a package this release does not read holds is listed
+    /// with "Needs unemupc X or newer", and "Switch to …" says so instead of
+    /// binding it.
+    #[test]
+    fn an_entry_only_a_newer_package_holds_says_it_needs_a_newer_release() {
+        let Some(store) = FirmwareStore::new(true) else {
+            return;
+        };
+        let row = open_image(&store);
+        let (packages, _, _) = newer_kiselev(&store);
+        let mut model = opened(&store, row, false);
+        model.set_packages(packages);
+        let reason = model
+            .firmware_choices(Slot::System)
+            .into_iter()
+            .find(|c| c.entry.id == "kiselev-xi8088-1.0.2")
+            .unwrap()
+            .reason;
+        assert_eq!(reason.as_deref(), Some("Needs unemupc 99.0.0 or newer"));
+        model.switch_to(Slot::System, "kiselev-xi8088-1.0.2");
+        assert_eq!(
+            model.error.as_deref(),
+            Some("Needs unemupc 99.0.0 or newer")
+        );
+        assert_ne!(
+            model.firmware(Slot::System).map(|e| e.id),
+            Some("kiselev-xi8088-1.0.2")
+        );
     }
 
     #[test]

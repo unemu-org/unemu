@@ -416,6 +416,48 @@ pub fn synthetic_catalogue() -> &'static [assembly::FirmwareEntry] {
         ]
     })
 }
+/// Tag `tag` as a newer release would write it into a store both share:
+/// `source`'s artifact with `marker` as its `unemu.min-app-version`, and,
+/// when `future_key`, a config led by a key this release's strict decoder
+/// refuses (machine-images §5.6). Returns its manifest.
+pub fn tag_newer(
+    store: &Store,
+    source: &str,
+    tag: &str,
+    marker: Option<&str>,
+    future_key: bool,
+) -> image_store::Descriptor {
+    use image_store::{compat, BlobSource, Manifest, MAX_SMALL_BLOB};
+    let source = store.tag_descriptor(source).unwrap();
+    let mut manifest = Manifest::decode_with_types(
+        &store.read_verified(&source, MAX_SMALL_BLOB).unwrap(),
+        pc_image::PAYLOAD_TYPES,
+    )
+    .unwrap();
+    if future_key {
+        let mut config = b"future_option = 1\n".to_vec();
+        config.extend(
+            store
+                .read_verified(&manifest.config, MAX_SMALL_BLOB)
+                .unwrap(),
+        );
+        let blob = store.import(config.as_slice(), None).unwrap();
+        manifest.config.digest = blob.digest;
+        manifest.config.size = blob.size;
+    }
+    match marker {
+        Some(marker) => manifest
+            .annotations
+            .insert(compat::MIN_APP_VERSION.into(), marker.into()),
+        None => manifest.annotations.remove(compat::MIN_APP_VERSION),
+    };
+    let image = store
+        .import_manifest_with_types(&manifest, pc_image::PAYLOAD_TYPES)
+        .unwrap();
+    store.tag_as_newer_release(tag, &image).unwrap();
+    store.tag_descriptor(tag).unwrap()
+}
+
 /// A summary cache of `store` with every image summarised.
 pub fn warm(store: &Store) -> image_store::summary::SummaryCache {
     let mut cache = image_store::summary::SummaryCache::open(store).unwrap();

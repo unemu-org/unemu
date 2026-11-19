@@ -417,14 +417,14 @@ fn review_schema_two_summary_is_discarded_and_rebuilt() {
     assert_eq!(code, 0, "{error}");
     let path = p.join("store/cache/summaries/index.json");
     let bytes = fs::read_to_string(&path).unwrap();
-    assert!(bytes.contains("\"schema\":7"));
-    fs::write(&path, bytes.replacen("\"schema\":7", "\"schema\":2", 1)).unwrap();
+    assert!(bytes.contains("\"schema\":8"));
+    fs::write(&path, bytes.replacen("\"schema\":8", "\"schema\":2", 1)).unwrap();
     let store = Store::open_existing(p.join("store")).unwrap();
     let mut cache = SummaryCache::open(&store).unwrap();
     assert_eq!(cache.pending().len(), 1);
     cache.rebuild(&store, 64, &[], &[]).unwrap();
     assert!(cache.pending().is_empty());
-    assert!(fs::read_to_string(path).unwrap().contains("\"schema\":7"));
+    assert!(fs::read_to_string(path).unwrap().contains("\"schema\":8"));
     let command = vec![
         "image".into(),
         "ls".into(),

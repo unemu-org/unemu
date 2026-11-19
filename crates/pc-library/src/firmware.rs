@@ -313,7 +313,16 @@ fn fits(f: &FirmwareSummary) -> String {
 pub fn cells(row: &FirmwareRow) -> [String; 7] {
     let name = row.image.name().to_owned();
     let source = source(&row.image.descriptor).text();
+    // A package this release does not read says so in its Status (§5.6).
+    let needs = row.image.summary.as_ref().and_then(|s| s.needs_newer());
     let Some(f) = row.firmware() else {
+        if let Some(reason) = needs {
+            let mut cells: [String; 7] = Default::default();
+            cells[0] = name;
+            cells[1] = source;
+            cells[3] = reason;
+            return cells;
+        }
         let mut cells: [String; 7] = Default::default();
         cells[0] = name;
         cells[1] = source;
@@ -329,7 +338,7 @@ pub fn cells(row: &FirmwareRow) -> [String; 7] {
         name,
         source,
         roles(f),
-        status(f),
+        needs.unwrap_or_else(|| status(f)),
         fits(f),
         version_date(f),
         if row.source_missing {

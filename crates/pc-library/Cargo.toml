@@ -18,7 +18,11 @@ layer = "pc"
 # these collections compare with, and the library's fixtures: synthetic
 # stores, firmware and catalogue, test workers, machine rows read at once and
 # the hang guard.
-test-support = ["assembly/test-support", "pc-image/test-support"]
+test-support = [
+    "assembly/test-support",
+    "image-store/test-support",
+    "pc-image/test-support",
+]
 
 [dependencies]
 assembly.workspace = true

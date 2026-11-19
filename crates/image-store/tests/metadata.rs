@@ -586,16 +586,16 @@ fn older_summary_caches_without_decoded_sizes_are_rebuilt() {
     let image = publish(&store, &catalogue(), "demo:one");
     let path = store.root().join("cache/summaries/index.json");
     // Schemas 3 and 4 (the firmware-package format) predate decoded sizes,
-    // schema 5 predates firmware licences and labels, and schema 6 read
-    // metadata schema 2 as a projection.
-    for schema in [3, 4, 5, 6] {
+    // schema 5 predates firmware licences and labels, schema 6 read
+    // metadata schema 2 as a projection and schema 7 kept no minimum release.
+    for schema in [3, 4, 5, 6, 7] {
         let mut cache = SummaryCache::open(&store).unwrap();
         while !cache.pending().is_empty() {
             cache.rebuild(&store, 1, &[], &[]).unwrap();
         }
         let mut value: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema"], 7);
+        assert_eq!(value["schema"], 8);
         value["schema"] = schema.into();
         value["images"][image.digest.to_string()]
             .as_object_mut()
@@ -610,7 +610,7 @@ fn older_summary_caches_without_decoded_sizes_are_rebuilt() {
         let row = cache.summary(&image.digest).unwrap();
         assert_eq!(row.decoded_size, row.stored_size);
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["schema"], 7);
+        assert_eq!(saved["schema"], 8);
     }
 }
 

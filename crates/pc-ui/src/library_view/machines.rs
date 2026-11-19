@@ -629,19 +629,34 @@ impl LibraryView {
         self.machine_labels = labels;
         let ready = self.ready();
         let stopped = !running;
+        // A machine of an image this release does not read offers nothing
+        // that reads the image's config (§5.6).
+        let needs = row.needs_newer.clone();
+        let reads = needs.is_none();
+        let needs = needs.unwrap_or_default();
         pane::actions(ui, |ui| {
             for (label, enabled, command, reason) in [
-                ("Start", stopped && ready, Command::Start, ""),
-                ("Gaming mode", stopped && ready, Command::GamingMode, ""),
-                ("Settings…", true, Command::Settings, ""),
+                ("Start", stopped && ready, Command::Start, needs.as_str()),
+                (
+                    "Gaming mode",
+                    stopped && ready,
+                    Command::GamingMode,
+                    needs.as_str(),
+                ),
+                ("Settings…", reads, Command::Settings, needs.as_str()),
                 (
                     "Insert media…",
-                    stopped && !row.drives.is_empty(),
+                    reads && stopped && !row.drives.is_empty(),
                     Command::Insert(0),
-                    "",
+                    needs.as_str(),
                 ),
-                ("Save as new image…", true, Command::SaveImage, ""),
-                ("Disk layers…", true, Command::Layers, ""),
+                (
+                    "Save as new image…",
+                    reads,
+                    Command::SaveImage,
+                    needs.as_str(),
+                ),
+                ("Disk layers…", reads, Command::Layers, needs.as_str()),
                 (
                     "Duplicate…",
                     stopped,
@@ -820,6 +835,13 @@ impl LibraryView {
         drive: &str,
         insert: Option<image_store::machine::PendingInsert>,
     ) {
+        // A machine that cannot start here takes no disk for its Start.
+        if insert.is_some() {
+            let reason = self.machine_row(id).and_then(|row| row.needs_newer.clone());
+            if self.refused_as_newer(reason) {
+                return;
+            }
+        }
         let mut rows = (*self.machines).clone();
         if let Some(row) = rows.iter_mut().find(|row| row.id() == id) {
             let pending = &mut row.listing.machine.pending;
@@ -908,6 +930,11 @@ impl LibraryView {
         let Some(row) = self.selected.clone() else {
             return;
         };
+        // A machine of an image this release does not read could not start.
+        if let Some(reason) = row.summary.as_ref().and_then(|s| s.needs_newer()) {
+            self.error = Some(reason);
+            return;
+        }
         let name = row.name().to_owned();
         self.new_machine_named(row, &name);
     }
@@ -1635,6 +1662,7 @@ pub mod test_support {
             created: Vec::new(),
             created_problem: None,
             kept: Vec::new(),
+            needs_newer: None,
         }
     }
 }

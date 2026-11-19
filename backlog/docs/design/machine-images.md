@@ -2487,8 +2487,31 @@ value and the command-line listings are in place
 of the newest runnable version, its note of which newer version needs which
 release, its dimming of a repository with nothing runnable and its refusal
 to pull a tag this release cannot run are in place too (2026-11-17; Get
-templates now shows Remotes, §5.5). The library's disabled rows of local
-images and the summary cache's record of the requirement remain.
+templates now shows Remotes, §5.5). The desktop's part followed
+(2026-11-19, `upc-dfs.15` part 2). The summary cache (schema 8) keeps each
+artifact's `unemu.min-app-version` and reads it before any config. It
+summarises an artifact this release does not read from its manifest and
+metadata, with its config's details when the config still decodes, so the
+artifact is listed in its collection rather than as an unreadable row. A
+manifest, layer or metadata that does not decode still writes a failure
+row (⚠), whose reason is then the needs text, not the decoder's. A cache of
+another schema is rebuilt. A build that reads the artifact summarises it
+again. The library and the media picker show "Needs unemupc X or newer" in
+the states they already have. An installation set gives the reason in its
+Availability, as a CD-ROM set does. A firmware package gives it in its
+Status, and New machine… and Settings › Firmware list it among the choices
+that do not fit, with the reason. A machine made from such an image gets
+the ⚠ and pane line of a machine that cannot start. A machine image gives
+it in its pane's readiness line and on its name's hover. The media picker
+gives it on the set's line. Everything that reads or rewrites the config is
+disabled with that reason, in the panes and in the menus, the toolbar and
+the keys, and refused in code too: Start, Gaming mode, New machine from
+image…, Settings…, Layers… and Disk layers…, Push…, Save as new image…,
+Insert, Insert into…, Insert media… and the drives' Insert…, Use in
+machine… and Edit metadata…. Details and Delete tag… stay. The Images list
+has no disabled row look yet; a dimmed row there waits for a mock-up
+(`upc-dfs.15.1`). Start's refusal names the tag the machine came from, or
+another tag that names the image, not the digest the machine keeps.
 Published templates, installation sets and firmware packages stay on the
 registry for good, and older releases read them too. This section records
 what today's readers do with a newer image and defines a marker, so an

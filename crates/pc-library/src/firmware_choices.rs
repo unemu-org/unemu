@@ -172,9 +172,16 @@ pub fn package_table(rom: &PackageRom) -> Result<Table, String> {
     Ok(table)
 }
 
+/// "Needs unemupc X or newer" for a package this release does not read
+/// (machine-images §5.6): it is offered with that reason and never bound.
+pub fn package_needs_newer(package: &Package) -> Option<String> {
+    image_store::compat::Requirement::of(&package.manifest).unmet_reason()
+}
+
 /// The package ROM of the local store that holds an entry's bytes: its
 /// SHA-256 and size must be the catalogue's, whatever catalogue id the
-/// package claims; a ROM naming the entry's id, then an open package, wins.
+/// package claims; a package this release reads, then a ROM naming the
+/// entry's id, then an open package, wins.
 pub fn package_rom(packages: &[Package], entry: &FirmwareEntry, slot: Slot) -> Option<PackageRom> {
     let mut found: Vec<(bool, PackageRom)> = packages
         .iter()
@@ -193,7 +200,13 @@ pub fn package_rom(packages: &[Package], entry: &FirmwareEntry, slot: Slot) -> O
                 })
         })
         .collect();
-    found.sort_by_key(|(named, rom)| (!named, !rom_open(rom)));
+    found.sort_by_key(|(named, rom)| {
+        (
+            package_needs_newer(&rom.package).is_some(),
+            !named,
+            !rom_open(rom),
+        )
+    });
     found.into_iter().next().map(|(_, rom)| rom)
 }
 

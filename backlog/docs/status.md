@@ -5,6 +5,21 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — Local images that need a newer unemupc:** the desktop's part of decision-30
+  (`upc-dfs.15` part 2; design/machine-images.md §5.6). The summary cache, now schema 8, keeps
+  each artifact's `unemu.min-app-version` and reads it before any config. An image, set or
+  package this release does not read is summarised from its manifest and metadata and listed in
+  its collection; one whose manifest, layers or metadata do not decode is still a ⚠ failure row,
+  with the needs text as its reason. Every other cache schema is rebuilt. The library and the
+  media picker show "Needs unemupc X or newer" in states they already have: a set's
+  Availability, a package's Status and its misfit entry in New machine… and Settings › Firmware,
+  the ⚠ of a machine made from such an image, an image's readiness line and name hover, and the
+  picker's set line. Everything that reads or rewrites the config is disabled with that reason
+  in the panes, menus, toolbar and keys, and refused in code: Start, New machine from image…,
+  Settings…, Layers…, Push…, Save as new image…, Insert, Insert into…, Insert media… and the
+  drives' Insert…, Use in machine… and Edit metadata…. Details and Delete tag… stay. Start's
+  refusal names the machine's own tag, not the digest it keeps. The Images list's rows have no
+  dimmed look yet; that waits for a mock-up (`upc-dfs.15.1`).
 - **2026-11-19 — Pinned recipes find their outputs; a lost lock is rebuilt:**
   the two follow-ups of step B8 of design/recipes.md §19.2. A pinned
   recipe's build looks every output a step makes up by the payload its

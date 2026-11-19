@@ -182,9 +182,35 @@ impl Requirement {
             .map_or(Self::None, |text| Self::parse(text))
     }
 
+    /// The requirement an annotation value states, as a summary keeps it:
+    /// none without a value, unmet when the value is not a release version.
+    pub fn of_text(text: Option<&str>) -> Self {
+        text.map_or(Self::None, Self::parse)
+    }
+
     fn parse(text: &str) -> Self {
         text.parse()
             .map_or_else(|_| Self::Invalid(text.into()), Self::Release)
+    }
+
+    /// The annotation value as it was read, for a summary to keep.
+    pub fn text(&self) -> Option<String> {
+        match self {
+            Self::None => None,
+            Self::Release(release) => Some(release.to_string()),
+            Self::Invalid(text) => Some(text.clone()),
+        }
+    }
+
+    /// "Needs unemupc X or newer" when this build does not read the
+    /// artifact, as every list that disables it says.
+    pub fn unmet_reason(&self) -> Option<String> {
+        (!self.met_by(level())).then(|| {
+            needs(match self {
+                Self::Release(required) => Some(*required),
+                _ => None,
+            })
+        })
     }
 
     /// Whether a release at `level` reads the artifact: the requirement is
@@ -805,6 +831,27 @@ mod tests {
             format!("Needs unemupc {higher} or newer")
         );
         assert_eq!(needs(None), "Needs a newer unemupc");
+        // What a summary keeps and the reason its lists give.
+        for (text, requirement) in [
+            (None, Requirement::None),
+            (Some("0.0.1"), Requirement::Release(BASELINE)),
+            (Some("soon"), Requirement::Invalid("soon".into())),
+        ] {
+            assert_eq!(Requirement::of_text(text), requirement);
+            assert_eq!(requirement.text().as_deref(), text);
+        }
+        assert_eq!(Requirement::Release(this).unmet_reason(), None);
+        assert_eq!(Requirement::None.unmet_reason(), None);
+        assert_eq!(
+            Requirement::Release(higher).unmet_reason(),
+            Some(format!("Needs unemupc {higher} or newer"))
+        );
+        assert_eq!(
+            Requirement::Invalid("soon".into())
+                .unmet_reason()
+                .as_deref(),
+            Some("Needs a newer unemupc")
+        );
     }
 
     #[test]
@@ -1287,6 +1334,16 @@ mod tests {
                 "newer:1 needs unemupc 99.0.0 or newer (this is {})",
                 level()
             )
+        );
+        // A machine keeps its image by digest alone; the refusal of its
+        // Start still names the tag that names the image.
+        let bare = Descriptor::new(media_type::MANIFEST, marked.digest.clone(), marked.size);
+        assert_eq!(
+            store
+                .resolve_descriptor(&bare, &Strict)
+                .unwrap_err()
+                .to_string(),
+            refused
         );
         let unmarked = image(None);
         store.tag_as_newer_release("unmarked:1", &unmarked).unwrap();
