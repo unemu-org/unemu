@@ -37,6 +37,9 @@ pub struct A20Diagnostic {
     pub keyboard: bool,
     /// Port 92h bit 1; `None` when the board has no System Control Port A.
     pub port_92: Option<bool>,
+    /// The CPU's A20 is held open by the reset-fetch window after a CPU
+    /// reset (`machine::Machine::with_reset_fetch_probe`).
+    pub reset_window: bool,
 }
 
 /// The diagnostic report of a running machine; see the module documentation.
@@ -135,6 +138,7 @@ impl AssembledMachine {
                 .device_index
                 .contains_key(&DeviceId::SysCtrlPortA)
                 .then_some(fast_source),
+            reset_window: machine.reset_fetch_window_open(),
         });
         let mut report = MachineDiagnostic {
             status: status.to_string(),
@@ -379,6 +383,9 @@ impl fmt::Display for MachineDiagnostic {
                 match a20.port_92 {
                     Some(fast) => writeln!(f, "port 92h {}", if fast { "on" } else { "off" })?,
                     None => writeln!(f, "port 92h not fitted")?,
+                }
+                if a20.reset_window {
+                    writeln!(f, "         CPU A20 held open by the reset window")?;
                 }
             }
         }

@@ -1051,6 +1051,13 @@ a20      on: 8042 output port on, port 92h not fitted
 cmos     shutdown status (0fh) 00, nmi unmasked, index 00
 ```
 
+Between a CPU-only reset and the processor's first code-segment load, the
+`a20` line is followed by `         CPU A20 held open by the reset window`: the
+CPU's A20 then reads on whatever the 8042 output port and port 92h say
+([decision-42](<../../decisions/decision-42 - CPU A20 is held open from a CPU-only reset until the first CS load.md>);
+machine-config.md §A20 line and System
+Control Port A, "Reset fetch with the gate off").
+
 ## Exception and interrupt deliveries
 
 A machine CPU delivers exceptions and interrupts in the guest, through the

@@ -256,6 +256,12 @@ pub struct Machine<C: Cpu> {
     reset_pending: bool,
     a20_line: Option<Box<dyn Fn() -> (u64, bool)>>,
     a20_changes: u64,
+    /// Whether the CPU still fetches through the code base it loaded at
+    /// reset; see [`Self::with_reset_fetch_probe`].
+    reset_fetch_probe: Option<ResetFetchProbe<C>>,
+    /// The board's gate is held open for the reset fetch until the first
+    /// code-segment load.
+    reset_fetch_window: bool,
     memory_map: Option<MemoryMapHook<C>>,
     /// CS:IP at the last run-slice boundaries, when a diagnostic asked for it.
     code_trail: Option<Box<CodeTrail>>,
@@ -298,6 +304,10 @@ impl ResetStreak {
         (self.resets >= cpu::RESET_STORM_RESETS).then(|| (self.resets, now - self.start))
     }
 }
+
+/// Tells whether the CPU still fetches through its reset code base; see
+/// [`Machine::with_reset_fetch_probe`].
+pub type ResetFetchProbe<C> = Box<dyn Fn(&C) -> bool>;
 
 /// Reads the vector bases of the master and the slave interrupt
 /// controller from the bus, `None` for one that is absent.
@@ -342,6 +352,8 @@ impl<C: Cpu> Machine<C> {
             reset_pending: false,
             a20_line: None,
             a20_changes: 0,
+            reset_fetch_probe: None,
+            reset_fetch_window: false,
             memory_map: None,
             code_trail: None,
             deliveries: None,
@@ -384,9 +396,73 @@ impl<C: Cpu> Machine<C> {
         if let Some(line) = &self.a20_line {
             let (changes, enabled) = line();
             if changes != self.a20_changes {
-                self.cpu.set_a20_enabled(enabled);
+                self.cpu.set_a20_enabled(enabled || self.reset_fetch_window);
                 self.a20_changes = changes;
             }
+        }
+    }
+
+    /// Attach a probe that tells whether the CPU still fetches through the
+    /// code-segment base it loaded at reset (FF0000h on the 80286).
+    ///
+    /// Intel 80286 Programmer's Reference Manual, Appendix C, Hardware
+    /// Compatibility Considerations, "Address after Reset": A23–A20 are high
+    /// for CS-relative bus cycles after reset until the first far JMP or far
+    /// CALL. ASSUMED board behaviour (decision-42; machine-config.md §A20
+    /// line and System Control Port A, "Reset fetch with the gate off"): a
+    /// CPU reset with the board's A20 gate off still reaches the system ROM
+    /// at FFFFF0h, so while the probe holds after a CPU reset the machine
+    /// drives the CPU's A20 enabled; the first code-segment load ends that
+    /// window and the board line applies again. The gate's sources (8042 output port, port 92h) never change,
+    /// so the value the guest reads back is the one it wrote. Without a
+    /// probe, or without an A20 line, resets keep the board line as it is.
+    #[must_use]
+    pub fn with_reset_fetch_probe(mut self, probe: impl Fn(&C) -> bool + 'static) -> Self {
+        self.reset_fetch_probe = Some(Box::new(probe));
+        self
+    }
+
+    /// Open the reset-fetch window after a CPU reset when the CPU fetches
+    /// through its reset base, whatever the board line says: the line
+    /// applies again when the window closes, so a gate the reset code
+    /// changes before its first CS load takes effect from that load.
+    fn open_reset_fetch_window(&mut self) {
+        let (Some(_), Some(probe)) = (&self.a20_line, &self.reset_fetch_probe) else {
+            return;
+        };
+        if probe(&self.cpu) {
+            self.reset_fetch_window = true;
+            self.cpu.set_a20_enabled(true);
+        }
+    }
+
+    /// Whether the CPU's A20 is held open by the reset-fetch window
+    /// ([`Self::with_reset_fetch_probe`]), for a host diagnostic.
+    pub fn reset_fetch_window_open(&self) -> bool {
+        self.reset_fetch_window
+    }
+
+    /// Close the reset-fetch window once the CPU has loaded a new code
+    /// segment, giving the CPU the board line's current state.
+    fn close_reset_fetch_window(&mut self) {
+        if !self.reset_fetch_window
+            || self
+                .reset_fetch_probe
+                .as_ref()
+                .is_some_and(|probe| probe(&self.cpu))
+        {
+            return;
+        }
+        self.reset_fetch_window = false;
+        self.apply_board_a20();
+    }
+
+    /// Give the CPU the board line's current state, changed or not.
+    fn apply_board_a20(&mut self) {
+        if let Some(line) = &self.a20_line {
+            let (changes, enabled) = line();
+            self.cpu.set_a20_enabled(enabled);
+            self.a20_changes = changes;
         }
     }
 
@@ -488,14 +564,23 @@ impl<C: Cpu> Machine<C> {
     /// Controller Output Port: bit 0 drives the CPU reset line. Shutdown uses
     /// the same CPU-only reset (System Board, Logic Diagrams). Media sessions
     /// survive (backlog/docs/design/machine-config.md §Board model).
-    /// The 8042 output port and A20 gate keep their state. A frontend may also
+    /// The 8042 output port and A20 gate keep their state; with a reset-fetch
+    /// probe attached, a gate that is off is held open for the CPU until its
+    /// first code-segment load ([`Self::with_reset_fetch_probe`]). A frontend may also
     /// assert it to restart a guest that halted with interrupts disabled. That
     /// is a CPU-only reset, unlike a hardware reset button, which also resets
     /// the board: POST reinitialises the board instead. A running guest
     /// reboots through Ctrl+Alt+Del.
     pub fn reset_cpu(&mut self) -> Result<(), MachineError> {
+        if self.reset_fetch_window {
+            // A reset inside the window: the board line applies until the
+            // new window decision below.
+            self.reset_fetch_window = false;
+            self.apply_board_a20();
+        }
         self.sync_a20();
         self.cpu.reset()?;
+        self.open_reset_fetch_window();
         self.reset_pending = false;
         self.halted = false;
         self.idle_clocks = 0;
@@ -789,6 +874,10 @@ impl<C: Cpu> Machine<C> {
             };
             if completing {
                 budget = 1;
+            } else if self.reset_fetch_window {
+                // In the reset-fetch window, stop after every step so the
+                // board gate applies again right after the first CS load.
+                budget = budget.min(1);
             } else if let Some(deadline) = self.next_deadline()? {
                 let clocks = u128::from(deadline.0 - self.clock.0);
                 let phase = clocks * u128::from(self.cpu_rate_numerator.get())
@@ -798,6 +887,7 @@ impl<C: Cpu> Machine<C> {
             }
             let before = self.cpu.completed_steps();
             let run = self.cpu.run_steps(budget, options);
+            self.close_reset_fetch_window();
             self.read_deliveries();
             let run = match run {
                 Ok(run) => run,
@@ -1165,6 +1255,77 @@ mod tests {
         assert!(!a20.enabled());
         assert_eq!(a20.change_count(), changes);
         assert_eq!(machine.bus_mut().port_read(0x71, 1).unwrap(), 0x0A);
+    }
+
+    /// With a reset-fetch probe, a CPU-only reset with the board gate off
+    /// fetches the reset vector at FFFFF0h (nothing answers at EFFFF0h),
+    /// and the first CS load gives the CPU the board's gate again; the 8042
+    /// output port keeps the value the guest wrote.
+    #[test]
+    fn reset_fetch_window_opens_the_gate_until_the_first_cs_load() {
+        use cpu::{x86jit_backend::RealSegments, X86JitCpu};
+        use devices::{A20Line, I8042};
+        use std::{cell::Cell, rc::Rc};
+
+        let mut cpu =
+            X86JitCpu::new_i286_bare(0x100_0000, 0, 0x1000, RealSegments::flat(0)).unwrap();
+        cpu.map_ram(0, 0x10000).unwrap();
+        cpu.write_mem(
+            0x1000,
+            &[
+                0xFA, 0xFE, 0x06, 0, 5, // CLI; INC BYTE [0500h]
+                0xB0, 0xD1, 0xE6, 0x64, 0xB0, 1, 0xE6, 0x60, // output port 01h: A20 off
+                0xB0, 0xFE, 0xE6, 0x64, 0xF4, // pulse the reset line; HLT
+            ],
+        )
+        .unwrap();
+        // The reset vector jumps to 0000:1500h, which marks and halts.
+        cpu.map_rom(0xFFFFF0, &[0xEA, 0, 0x15, 0, 0]).unwrap();
+        cpu.write_mem(0x1500, &[0xFE, 0x06, 1, 5, 0xF4]).unwrap();
+        let reset = Rc::new(Cell::new(false));
+        let a20 = A20Line::default();
+        let keyboard = I8042::new().with_board_lines(reset.clone(), a20.clone());
+        let bus = Bus::new(
+            vec![Box::new(keyboard)],
+            DecodeMap {
+                ports: vec![PortRange {
+                    ports: 0x60..=0x64,
+                    device: 0,
+                    width: bus::PortWidth::Byte,
+                }],
+                mmio: Vec::new(),
+            },
+        );
+        let mut machine = Machine::new(cpu, bus, Box::new(NoIc), Vec::new(), None)
+            .with_reset_signal(reset)
+            .with_a20_line({
+                let line = a20.clone();
+                move || (line.change_count(), line.enabled())
+            })
+            .with_reset_fetch_probe(|cpu: &X86JitCpu| {
+                let cs = cpu.diagnostic_state().cs();
+                cs.selector == 0xF000 && cs.base == 0xFF_0000
+            });
+        assert_eq!(
+            machine.run_bounded(Some(100)).unwrap(),
+            RunOutcome::ResetRequested
+        );
+        let time = machine.virtual_time();
+        machine.reset_cpu().unwrap();
+        assert!(!a20.enabled());
+        assert!(machine.cpu().a20_enabled(), "the window holds A20 open");
+        assert_eq!(
+            machine.run_bounded(Some(time + 1)).unwrap(),
+            RunOutcome::RetiredCapReached
+        );
+        assert_eq!(machine.cpu().code_segment(), 0);
+        assert!(!machine.cpu().a20_enabled(), "the far jump closes it");
+        assert_eq!(machine.run_bounded(Some(100)).unwrap(), RunOutcome::Halted);
+        let mut markers = [0; 2];
+        machine.cpu().read_mem(0x500, &mut markers).unwrap();
+        assert_eq!(markers, [1, 1]);
+        machine.bus_mut().port_write(0x64, 1, 0xD0).unwrap();
+        assert_eq!(machine.bus_mut().port_read(0x60, 1).unwrap(), 1);
     }
 
     #[test]

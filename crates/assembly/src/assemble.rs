@@ -544,7 +544,18 @@ fn assemble_preverified(
         let line = a20_line.clone();
         machine = machine
             .with_reset_signal(reset_signal)
-            .with_a20_line(move || (line.change_count(), line.enabled()));
+            .with_a20_line(move || (line.change_count(), line.enabled()))
+            // The reset fetch reaches the ROM with the gate off until the first
+            // CS load (decision-42; machine-config.md §A20 line and System
+            // Control Port A, "Reset fetch with the gate off"). The window lasts while CS still
+            // holds the 80286 reset image, selector F000h with hidden base
+            // FF0000h; any CS load replaces it. Bare rigs' low reset entry
+            // (base F0000h) never opens it.
+            // The selector check is a field read; the hidden base needs the
+            // diagnostic picture, so it is read only while CS is F000h.
+            .with_reset_fetch_probe(|cpu: &cpu::X86JitCpu| {
+                cpu.code_segment() == 0xF000 && cpu.diagnostic_state().cs().base == 0xFF_0000
+            });
     }
     let mut ems_map = None;
     if let Some((device, board, frame)) = ems_frame {
@@ -2457,10 +2468,58 @@ mod tests {
         }
     }
 
-    /// Pin the assumed external-gate/ROM-decode interaction (IBM PC AT Technical
-    /// Reference, System Board, System Memory Map; Keyboard Controller, Output Port).
+    /// A CPU-only reset with the gate off, through a shutdown and through the
+    /// 8042's reset pulse, reaches the ROM's reset vector; the guest reads
+    /// back the output port it wrote, the gate still off, and from the first
+    /// far jump the gate wraps 100600h onto 000600h again. See
+    /// `crate::test_support::a20_off_reset_rom` and machine-config.md §A20
+    /// line and System Control Port A.
     #[test]
-    fn a20_ibm_reset_with_gate_disabled_fetches_empty_bus_and_vectors_ud() {
+    fn a20_ibm_reset_with_gate_off_reaches_the_reset_vector_and_keeps_the_gate_off() {
+        use cpu::Cpu;
+        let mut assembled = assemble_synthetic(&crate::test_support::a20_off_reset()).unwrap();
+        let mut resets = 0;
+        loop {
+            match assembled.machine.run_bounded(Some(10_000)).unwrap() {
+                machine::RunOutcome::ResetRequested => resets += 1,
+                machine::RunOutcome::Halted => break,
+                outcome => panic!("unexpected {outcome:?}"),
+            }
+            assert!(resets <= 2, "more resets than the ROM asks for");
+        }
+        let cpu = assembled.machine.cpu();
+        let byte = |addr: u64| {
+            let mut value = [0];
+            cpu.read_mem(addr, &mut value).unwrap();
+            value[0]
+        };
+        assert_eq!(byte(0x540), 0, "a reset fetch missed the ROM (#UD)");
+        assert_eq!(resets, 2);
+        assert_eq!(byte(0x500), 3, "the ROM's reset path ran three times");
+        let read = |base: u64| [byte(base + 1), byte(base + 2), byte(base + 3)];
+        assert_eq!(
+            read(0x510),
+            [0x03, 0xDD, 0xDD],
+            "8042 output port read back (D0h) at each start"
+        );
+        assert_eq!(read(0x520), [0x00, 0x05, 0x0A], "CMOS shutdown byte");
+        assert_eq!(
+            read(0x530),
+            [0x00, 0x02, 0x03],
+            "FFFF:0610h: extended RAM at the first start, wrapped after each reset"
+        );
+        assert!(!assembled.a20_line.enabled());
+        assert!(!assembled.machine.cpu().a20_enabled());
+    }
+
+    /// Pin the reset-fetch window (machine-config.md §A20 line and System
+    /// Control Port A, "Reset fetch with the gate off"): the board decodes
+    /// nothing at EFFFF0h and its gate stays off, yet right after the CPU-only
+    /// reset the CPU's A20 is held open, so the first fetch reaches the high
+    /// ROM alias at FFFFF0h; the far jump there closes the window and the
+    /// gate applies again. The 8042 output port keeps the value written.
+    #[test]
+    fn a20_ibm_reset_with_gate_disabled_fetches_rom_until_the_first_cs_load() {
         use cpu::{Cpu, CpuReg};
         let mut program = vec![0xFA, 0xC7, 0x06, 0x18, 0, 0, 6, 0xC7, 0x06, 0x1A, 0, 0, 0];
         for (offset, byte) in [0xC6, 0x06, 0, 5, 0x77, 0xFA, 0xF4].into_iter().enumerate() {
@@ -2478,28 +2537,47 @@ mod tests {
             .cpu()
             .read_mem(0xEFFFF0, &mut bytes)
             .unwrap();
-        assert_eq!(bytes, [0xFF; 5]);
-        assembled
-            .machine
-            .cpu()
-            .read_mem(0xFFFFF0, &mut bytes)
-            .unwrap();
-        assert_eq!(bytes, [0xEA, 0, 0, 0, 0xF8]);
+        assert_eq!(bytes, [0xFF; 5], "the board decodes nothing at EFFFF0h");
         assert_eq!(
             assembled.machine.run_bounded(Some(1000)).unwrap(),
             machine::RunOutcome::ResetRequested
         );
+        let output_port = |assembled: &mut AssembledMachine| {
+            let bus = assembled.machine.bus_mut();
+            bus.port_write(0x64, 1, 0xD0).unwrap();
+            bus.port_read(0x60, 1).unwrap()
+        };
         let time = assembled.machine.virtual_time();
         assert_eq!(
             assembled.machine.run_bounded(Some(time)).unwrap(),
             machine::RunOutcome::RetiredCapReached
         );
-        assert!(!assembled.machine.cpu().a20_enabled());
+        assert!(!assembled.a20_line.enabled(), "the board gate stays off");
+        assert!(
+            assembled.machine.cpu().a20_enabled(),
+            "the CPU fetches with A20 open"
+        );
         assert_eq!(assembled.machine.cpu().code_segment(), 0xF000);
         assert_eq!(assembled.machine.cpu().reg(CpuReg::Rip), 0xFFF0);
+        assert_eq!(output_port(&mut assembled), 1, "8042 read-back unchanged");
+        const NOTE: &str = "         CPU A20 held open by the reset window\n";
+        let report = assembled.diagnostic_report("running").to_string();
+        assert!(report.contains(NOTE), "{report}");
+        assert_eq!(
+            assembled.machine.run_bounded(Some(time + 1)).unwrap(),
+            machine::RunOutcome::RetiredCapReached
+        );
+        assert_eq!(assembled.machine.cpu().code_segment(), 0xF800);
+        assert!(
+            !assembled.machine.cpu().a20_enabled(),
+            "the far jump closes the window"
+        );
+        let report = assembled.diagnostic_report("running").to_string();
+        assert!(!report.contains(NOTE), "{report}");
         assert_eq!(
             assembled.machine.run_bounded(Some(time + 1000)).unwrap(),
-            machine::RunOutcome::Halted
+            machine::RunOutcome::ResetRequested,
+            "the ROM runs again and resets again"
         );
         let mut marker = [0];
         assembled
@@ -2507,23 +2585,7 @@ mod tests {
             .cpu()
             .read_mem(0x500, &mut marker)
             .unwrap();
-        assert_eq!(
-            marker,
-            [0x77],
-            "empty-bus FF FF must enter the guest #UD handler"
-        );
-        let mut frame = [0; 4];
-        assembled
-            .machine
-            .cpu()
-            .read_mem(assembled.machine.cpu().reg(CpuReg::Rsp), &mut frame)
-            .unwrap();
-        assert_eq!(
-            frame,
-            [0xF0, 0xFF, 0, 0xF0],
-            "#UD must restart at F000:FFF0"
-        );
-        assert!(!assembled.machine.cpu().a20_enabled());
+        assert_eq!(marker, [0], "no #UD at the reset vector");
     }
 
     #[test]

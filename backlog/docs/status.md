@@ -5,6 +5,27 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-19 — A CPU-only reset with A20 off reaches the BIOS:** (`upc-f7j.20`;
+  decision-42; design/machine-config.md §A20 line and System Control Port A, "Reset fetch with
+  the gate off"). Before, a guest that turned the gate off through the 8042 and then reset the
+  processor (shutdown or command FEh) fetched its reset vector from EFFFF0h, where the IBM 5170
+  board decodes nothing; with SS:SP 0000:0002 the #UD could not be delivered and the machine
+  stopped with "64 resets within 0 steps, the last shutdown at f000:fff0" (MEASURED by the
+  maintainer with Windows 3.1 Standard mode under both the open AT BIOS and the IBM 5170 BIOS;
+  that hardware reaches the BIOS here is INFERRED from the guest running on hardware, and an
+  earlier divergence leaving the gate off only here is not ruled out). Now the processor's A20
+  is held open from a CPU-only reset until its first code-segment load (the 80286 drives A23–A20
+  high for CS cycles until the first far jump); the 8042 output port, port 92h, the board line
+  and the memory map are untouched, so the guest reads back the gate it wrote and 1 MiB wraps
+  again right after the reset vector's far jump. The documents do not settle what the 5170's ROM
+  decode does here; decision-42 records the choice, its uncertainty and the trigger to revisit.
+  Supersedes the older entry below that pinned the #UD at EFFFF0h. New tests: an open test ROM
+  (`assembly::test_support::a20_off_reset_rom`, hash-pinned listing) resetting through a triple
+  fault and through FEh, a machine-level window test, and an open boot sector resumed through
+  shutdown code 0Ah by the open AT BIOS (fixture) and by the IBM 5170 BIOS (user ROM, not run
+  here). The ROM test, the window test and the open-BIOS boot-sector test failed before the
+  change, the last with the reported reset storm.
+
 - **2026-11-19 — The boundary check lists the external crates the core may reach:**
   (`upc-dfs.28`; design/core-contract.md §12.3, step 1 of §12.10; commands.md § Crate
   boundaries). `scripts/crate-boundaries.external` names, with a reason each, the crates from

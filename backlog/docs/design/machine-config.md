@@ -297,13 +297,43 @@ points, deferring an in-flight memory element/continuation until it retires or
 is abandoned. A completed OUT applies immediately before the next instruction.
 CPU reset preserves the effective line and applies any pending request before
 installing reset registers. 8042/92h reset and triple-fault shutdown reset only
-the CPU, preserving both source latches and the synchronization baseline. Reset
-fetches are also gated. **ASSUMED board interaction:** the AT's A20 gate sits
-after the CPU, so its FFFFF0h reset fetch becomes EFFFF0h with A20 disabled.
-IBM PC AT Technical Reference, System Board, System Memory Map decodes ROM only
-at E0000h–FFFFFh and FE0000h–FFFFFFh. EFFFF0h is empty bus in this model: FFh bytes
-cause #UD, delivered through the retained guest IVT. The synthetic IBM 5170
-8042-reset test pins this behavior; it is not independent electrical qualification.
+the CPU, preserving both source latches and the synchronization baseline, so
+the guest reads back through 8042 command D0h the output port it last wrote.
+The reset fetch is the one exception, described next.
+
+**Reset fetch with the gate off.** The 80286 starts after reset at CS F000h
+with hidden base FF0000h, so its first fetch is at FFFFF0h, which the IBM 5170
+decodes through its high ROM alias: FF0000h–FFFFFFh duplicates the system ROM
+(FE0000h–FEFFFFh duplicates the E segment). A guest that turns A20 off and then
+resets only the CPU, by a shutdown or the 8042's reset pulse, would have that
+fetch masked to EFFFF0h, where the board decodes nothing: FFh bytes, #UD through
+the guest IVT and, with no room on the stack (SS:SP 0000:0002 in the reported
+case), another shutdown before any instruction retires. MEASURED by the
+maintainer: that stop with Windows 3.1 Standard mode under the open AT BIOS and
+under the IBM 5170 BIOS. INFERRED: real hardware reaches the BIOS here, because
+the guest runs on hardware; not ruled out is that the gate is on at this reset
+on hardware and an earlier divergence leaves it off here.
+
+[Decision-42](<../../decisions/decision-42 - CPU A20 is held open from a CPU-only reset until the first CS load.md>)
+records the model, its sources and its uncertainty (the documents do not settle
+what the 5170's ROM decode does here). From a CPU-only reset, while CS still
+holds the reset image (selector F000h, hidden base FF0000h), the machine holds
+the CPU's own A20 open whatever the board line says, until the first CS load,
+which is the first instruction for a far-JMP reset vector (or any interrupt or
+exception delivery); then the board line applies again. The 8042 output port,
+port 92h, the board line (`A20Line`) and the memory map are untouched, so the
+guest reads back through D0h the gate it wrote. Assembly attaches the window
+(`Machine::with_reset_fetch_probe`) to every machine with an A20 source; bare
+rigs' low reset entry (base F0000h) never opens it. The machine stops after each
+step while the window is open, which moves no device or IRQ boundary; a
+diagnostic report taken inside it notes "CPU A20 held open by the reset window".
+Tests: `assembly::test_support::a20_off_reset_rom` (an open ROM that turns the
+gate off through D1h, resets through a triple fault and through FEh, and checks
+the D0h read-back, the CMOS shutdown byte and the 1 MiB wrap after each reset),
+the machine-level window test, and `crates/pc-harness/tests/a20_off_reset_bios.rs`
+(an open boot sector that leaves SP at 2, resumed through shutdown code 0Ah by
+the open AT BIOS and by the user-supplied IBM 5170 BIOS).
+
 Host image loading/readback and ISA DMA use physical memory directly and bypass CPU A20.
 No clock, event, wall time or guest read is needed to propagate a change.
 

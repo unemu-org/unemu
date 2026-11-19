@@ -464,6 +464,142 @@ pub mod test_support {
         crate::bios(reset_storm_rom(), None)
     }
 
+    /// A 32 KiB system ROM for F8000h that resets the processor twice with
+    /// the A20 gate off, once through a shutdown and once through the
+    /// 8042's reset pulse, and records what each start sees. Every start
+    /// points INT 6 (#UD) at a handler that marks 0000:0540h with EEh,
+    /// counts itself in 0000:0500h (n = 1, 2, 3) and stores at 0510h + n
+    /// the 8042 output port read back with command D0h, at 0520h + n the
+    /// CMOS shutdown byte (register 0Fh), and at 0530h + n the byte at
+    /// FFFF:0610h after writing n to 0000:0600h: n when the gate wraps
+    /// 100600h onto 000600h. The first start writes output port DDh with
+    /// command D1h (gate A20 off, reset line high), sets shutdown code 05h,
+    /// loads an IDTR of limit 0 and executes INT 3, which shuts the
+    /// processor down; the second sets shutdown code 0Ah and sends command
+    /// FEh, the reset pulse; the third halts. A reset whose first fetch
+    /// misses the ROM lands in the #UD handler instead (IBM Personal
+    /// Computer AT Technical Reference, System Board, Keyboard Controller,
+    /// Commands and Output Port, and Real-Time Clock/CMOS RAM Information,
+    /// Shutdown Status Byte; Intel 80286 Programmer's Reference Manual,
+    /// §5.3 and Appendix B, LIDT and INT). For the tests of the CPU-only
+    /// reset with the gate off, `backlog/docs/design/machine-config.md`
+    /// §A20 line and System Control Port A. The bytes are this NASM listing
+    /// (`nasm -f bin`, org 0); their SHA-256 is pinned by
+    /// [`A20_OFF_RESET_ROM_SHA256`]:
+    ///
+    /// ```text
+    /// 0000 FA               cli
+    /// 0001 31C0             xor ax, ax
+    /// 0003 8ED8             mov ds, ax
+    /// 0005 8ED0             mov ss, ax
+    /// 0007 BC0070           mov sp, 7000h
+    /// 000A C70618007D00     mov word [0018h], 007Dh   ; INT 6 offset
+    /// 0010 C7061A0000F8     mov word [001Ah], 0F800h  ; INT 6 segment
+    /// 0016 FE060005         inc byte [0500h]          ; count the starts
+    /// 001A 8A1E0005         mov bl, [0500h]
+    /// 001E 30FF             xor bh, bh
+    /// 0020 B0D0             mov al, 0D0h              ; read output port
+    /// 0022 E664             out 64h, al
+    /// 0024 E464             in al, 64h
+    /// 0026 A801             test al, 1
+    /// 0028 74FA             jz 0024h
+    /// 002A E460             in al, 60h
+    /// 002C 88871005         mov [bx+0510h], al
+    /// 0030 B00F             mov al, 0Fh               ; CMOS shutdown byte
+    /// 0032 E670             out 70h, al
+    /// 0034 E471             in al, 71h
+    /// 0036 88872005         mov [bx+0520h], al
+    /// 003A 881E0006         mov [0600h], bl
+    /// 003E B8FFFF           mov ax, 0FFFFh
+    /// 0041 8EC0             mov es, ax
+    /// 0043 26A01006         mov al, [es:0610h]        ; 100600h, or 000600h gated
+    /// 0047 88873005         mov [bx+0530h], al
+    /// 004B 80FB01           cmp bl, 1
+    /// 004E 7406             je 0056h
+    /// 0050 80FB02           cmp bl, 2
+    /// 0053 7419             je 006Eh
+    /// 0055 F4               hlt                       ; the third start
+    /// 0056 B0D1             mov al, 0D1h              ; write output port
+    /// 0058 E664             out 64h, al
+    /// 005A B0DD             mov al, 0DDh              ; gate A20 off
+    /// 005C E660             out 60h, al
+    /// 005E B00F             mov al, 0Fh
+    /// 0060 E670             out 70h, al
+    /// 0062 B005             mov al, 05h
+    /// 0064 E671             out 71h, al               ; shutdown code 05h
+    /// 0066 2E0F011E8300     lidt [cs:0083h]
+    /// 006C CC               int3                      ; beyond the limit: shutdown
+    /// 006D F4               hlt
+    /// 006E B00F             mov al, 0Fh
+    /// 0070 E670             out 70h, al
+    /// 0072 B00A             mov al, 0Ah
+    /// 0074 E671             out 71h, al               ; shutdown code 0Ah
+    /// 0076 B0FE             mov al, 0FEh              ; pulse the reset line
+    /// 0078 E664             out 64h, al
+    /// 007A F4               hlt
+    /// 007B EBFD             jmp 007Ah
+    /// 007D C6064005EE       mov byte [0540h], 0EEh    ; the #UD handler
+    /// 0082 F4               hlt
+    /// 0083 0000 0000 0000   IDTR: limit 0, base 0
+    /// 7FF0 EA000000F8       jmp F800:0000h            ; the reset vector
+    /// ```
+    pub fn a20_off_reset_rom() -> Vec<u8> {
+        let mut rom = vec![0; 0x8000];
+        let code: &[u8] = &[
+            0xFA, // CLI
+            0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xD0, // XOR AX,AX; MOV DS,AX; MOV SS,AX
+            0xBC, 0x00, 0x70, // MOV SP,7000h
+            0xC7, 0x06, 0x18, 0x00, 0x7D, 0x00, // MOV WORD [0018h],007Dh
+            0xC7, 0x06, 0x1A, 0x00, 0x00, 0xF8, // MOV WORD [001Ah],0F800h
+            0xFE, 0x06, 0x00, 0x05, // INC BYTE [0500h]
+            0x8A, 0x1E, 0x00, 0x05, 0x30, 0xFF, // MOV BL,[0500h]; XOR BH,BH
+            0xB0, 0xD0, 0xE6, 0x64, // MOV AL,0D0h; OUT 64h,AL
+            0xE4, 0x64, 0xA8, 0x01, 0x74, 0xFA, // IN AL,64h; TEST AL,1; JZ 0024h
+            0xE4, 0x60, 0x88, 0x87, 0x10, 0x05, // IN AL,60h; MOV [BX+0510h],AL
+            0xB0, 0x0F, 0xE6, 0x70, 0xE4, 0x71, // MOV AL,0Fh; OUT 70h,AL; IN AL,71h
+            0x88, 0x87, 0x20, 0x05, // MOV [BX+0520h],AL
+            0x88, 0x1E, 0x00, 0x06, // MOV [0600h],BL
+            0xB8, 0xFF, 0xFF, 0x8E, 0xC0, // MOV AX,0FFFFh; MOV ES,AX
+            0x26, 0xA0, 0x10, 0x06, // MOV AL,ES:[0610h]
+            0x88, 0x87, 0x30, 0x05, // MOV [BX+0530h],AL
+            0x80, 0xFB, 0x01, 0x74, 0x06, // CMP BL,1; JE 0056h
+            0x80, 0xFB, 0x02, 0x74, 0x19, // CMP BL,2; JE 006Eh
+            0xF4, // HLT
+            0xB0, 0xD1, 0xE6, 0x64, 0xB0, 0xDD, 0xE6, 0x60, // 8042 D1h, DDh
+            0xB0, 0x0F, 0xE6, 0x70, 0xB0, 0x05, 0xE6, 0x71, // CMOS 0Fh = 05h
+            0x2E, 0x0F, 0x01, 0x1E, 0x83, 0x00, // LIDT CS:[0083h]
+            0xCC, 0xF4, // INT 3; HLT
+            0xB0, 0x0F, 0xE6, 0x70, 0xB0, 0x0A, 0xE6, 0x71, // CMOS 0Fh = 0Ah
+            0xB0, 0xFE, 0xE6, 0x64, // 8042 FEh
+            0xF4, 0xEB, 0xFD, // HLT; JMP 007Ah
+            0xC6, 0x06, 0x40, 0x05, 0xEE, // MOV BYTE [0540h],0EEh
+            0xF4, // HLT
+        ];
+        rom[..code.len()].copy_from_slice(code);
+        rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0x00, 0x00, 0x00, 0xF8]);
+        rom
+    }
+
+    /// SHA-256 of [`a20_off_reset_rom`], the output of its NASM listing.
+    pub const A20_OFF_RESET_ROM_SHA256: &str =
+        "fb5d1a103d6a5f4f5d65018de3636674d6237b20f8bd479a66ab3a48f2d861fd";
+
+    /// The IBM 5170 board with [`a20_off_reset_rom`] as its system ROM, a
+    /// blank 1.44 MB floppy and 1 MiB of extended RAM at 100000h, so the
+    /// reset fetch goes through the board's high ROM alias at FFFFF0h and
+    /// FFFF:0610h reads RAM while the gate is on.
+    pub fn a20_off_reset() -> crate::MachineConfig {
+        let mut config = crate::bios(a20_off_reset_rom(), Some(vec![0; 1_474_560]));
+        config.board = crate::BoardModel::Ibm5170;
+        config.cpu.segments = crate::SegmentSeed::flat(0);
+        config.memory.address_space_bytes = 0x20_0000;
+        config
+            .memory
+            .ram
+            .push(crate::RamRegion::new(0x10_0000, 0x10_0000));
+        config
+    }
+
     /// A 32 KiB system ROM for F8000h whose real-mode guest loops through
     /// an exception for ever and never stops by itself: it points INT 6 at
     /// F800:0040h, sets SS:SP to 0000:7000h and executes 0F FF, an invalid
@@ -760,6 +896,15 @@ pub mod test_support {
             assert_eq!(
                 super::fixture_sha256(&super::fault_loop_rom()),
                 super::FAULT_LOOP_ROM_SHA256
+            );
+        }
+
+        /// The A20-off reset ROM is the output of its listing.
+        #[test]
+        fn the_a20_off_reset_rom_matches_its_pinned_listing() {
+            assert_eq!(
+                super::fixture_sha256(&super::a20_off_reset_rom()),
+                super::A20_OFF_RESET_ROM_SHA256
             );
         }
 
