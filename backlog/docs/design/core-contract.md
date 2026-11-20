@@ -6443,7 +6443,7 @@ Beads that edit the same files go one after the other, in either order:
   are `Send` by the compile-time assertion. `core-launch`'s dependencies
   are unchanged (`unemu-core-api`, `unemu-core-files`, `sha2`).
 
-**S9. `PcCore::create`, `create_machine` and `validate`.**
+**S9. `PcCore::create`, `create_machine` and `validate`.** **Done.**
 
 - **Scope.** §14.2.3. The mount over `ContentSource` and `Storage`; the
   two run-only options; one display per display card;
@@ -6468,6 +6468,78 @@ Beads that edit the same files go one after the other, in either order:
   still takes a medium the media dialog appends by path
   (`append_floppy_verified`). The host guard's list gains no line for
   `unemu-pc-core` or `pc-config`. The journal goldens pass.
+
+- **As landed.** `unemu-pc-core` depends on `pc-config`. `PcCore::validate`
+  checks the platform and document type, decodes the launch and calls
+  `launch::check` without opening content or storage. `create` delegates to
+  the typed `create_machine`: check the type and options, decode and check,
+  acquire exactly the validated flat content identities, lower through a
+  cache of those readers, acquire the initially inserted media's and CMOS's
+  records, and call `assembly::assemble_mounted`. The new `mount.rs` maps
+  logical base keys to owned content readers and journal keys to the launch's
+  record names. It keeps storage for later catalogue inserts; uninserted
+  media's records stay free. All content is acquired before any record, and
+  all initial records before journal creation, so missing content and held
+  records cannot leave a partly initialized session. Empty records left by
+  an unsuccessful acquisition remain empty and a later create can use them.
+  The assembler keeps its path-based append seam: a verified floppy appended
+  by the media dialog uses the separate file mount.
+  `PcMachine` owns a clone of the lowered config and exposes `config()`.
+  Displays are routed in the fixed order MDA, VGA, independent of card order.
+  The platform lists the launch media type and two run-only options,
+  `allow-unlisted-firmware` and `speaker-trace`; both accept exactly `true`
+  or `false`, default to false, and neither changes the hardware config.
+  Decided here: repeated keys, including equal values, are refused with
+  `Usage`, as are unknown keys and invalid values. Other platform spellings
+  (including the retired alias) and document types are `Unsupported`;
+  malformed documents and hardware are `Config`; content size lies and ROM
+  pin mismatches are `Content`. Original content and record errors keep their
+  contract kind across the codec and journal's internal textual I/O errors,
+  including `StorageUncertain`. Factory-created machines retain errors per
+  persistence owner and select the owner named by the failed operation. A
+  swallowed retention warning cannot mask a later fatal error on another
+  record, and a later I/O failure on the same record supersedes the warning.
+  If several records fail during finish, the first failed handle's error is
+  preserved. The existing wrappers keep their behavior.
+  Disks use the source's full-hash receipt: journalled bases compare the
+  receipt, and non-journalled media omit redundant byte pins on the private
+  assembly clone. The public config retains its pins. ROM pins and CMOS
+  identity are still checked when their bounded bytes are read. No host guard
+  allowance, CPU pin, machine file, fixture or existing start call changes.
+  Tests: thirteen new tests in `pc-core` cover contract-only creation and the
+  promised controls, validate's exact content list, replay, session restart,
+  lazy records and storage lifetime, safe retry after failed creation, type
+  and option refusals, document and row bounds, content size and pin failures,
+  and preservation of content, storage and uncertain-write errors, including
+  a floppy retention warning followed by a fatal CMOS write, a checkpoint
+  warning followed by a fatal write on the same record, and two records
+  failing during the same finish. The old description test now expects the
+  launch type and retains its unsupported type and identify checks. Two tests
+  in `pc-session-tests` cover the typed factory. The comparison with
+  `assemble_with_verified_bases` spans five consecutive sessions
+  (both pictures, sound, lit drive activity, messages, virtual counters and
+  byte-identical disk and CMOS journals, with a CMOS value incremented by
+  each boot). Its synthetic guest reads two sectors before writing distinct
+  full-sector patterns, then reads them back; both paths' guest buffers and
+  command results are checked. Subsequent boots read the previous writes,
+  including after retention prunes to three generations; scans check the
+  retained generation count, anchor and sector contents. The other test
+  appends and inserts a verified host floppy. A new test in
+  `platforms` selects the compiled-in PC and starts a launch from
+  `core_launch::Parts`, boxed through `start` and typed through `start_with`;
+  it also exercises the reset promised by the description. These are tests
+  only: image run, desktop Start and `pc-image::launch` remain later steps.
+  MEASURED: restoring the previous factory refusal (`Unsupported`) makes all
+  thirteen new tests fail (ten core, two session comparisons, one parts start).
+  Separate mutations that admit repeated keys, omit VGA routing, or discard
+  the original contract error latch fail their targeted tests; the last
+  catches content errors, uncertain writes and held catalogue records. Each
+  source was restored with a plain copy and touched before final verification.
+  The platform-id scan (`image-store/tests/platform_ids.rs`, outside the file
+  list) gains two narrow entries: the core's exact check of its current id,
+  beside the other cores' checks, and the new test that refuses the retired
+  alias. MEASURED: the scan failed on precisely these two lines before the
+  entries. This changes no alias handling and no host-guard allowance.
 
 **S10. `pc-image::launch`: the store's side as objects.**
 

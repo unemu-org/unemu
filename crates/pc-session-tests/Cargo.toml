@@ -24,10 +24,12 @@ cpu.workspace = true
 device.workspace = true
 machine.workspace = true
 machine-file.workspace = true
+pc-config.workspace = true
+media.workspace = true
 video.workspace = true
 # The session, with its full-slice advances and host-audio probes.
 machine-view = { workspace = true, features = ["test-support"] }
-unemu-core-api.workspace = true
+unemu-core-api = { workspace = true, features = ["test-support"] }
 unemu-pc-core = { workspace = true, features = ["test-support"] }
 winit.workspace = true
 # The open games template image, built and started as the library starts it.

@@ -21,6 +21,7 @@ test-support = []
 [dependencies]
 unemu-core-api.workspace = true
 assembly.workspace = true
+pc-config.workspace = true
 audio.workspace = true
 # The stop report of a CPU refusal, kept for the front end.
 cpu.workspace = true

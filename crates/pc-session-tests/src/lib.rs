@@ -188,3 +188,6 @@ mod mouse;
 mod sound_levels_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod launch_tests;

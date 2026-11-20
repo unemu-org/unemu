@@ -5,6 +5,20 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — PC creation through the core contract:** `PcCore::create`
+  and its typed `create_machine` accept the bounded PC launch document;
+  `validate` checks it without host access and lists its exact flat content.
+  Assembly mounts the supplied content readers and storage records, keeps
+  journals for later catalogue inserts, and exposes the effective config via
+  `PcMachine::config()`. Displays follow MDA/VGA order. Run-only options are
+  `allow-unlisted-firmware` and `speaker-trace` (`true` / `false`); duplicate,
+  unknown and invalid options are refused. Contract errors preserve content,
+  storage and uncertain-write kinds. Tests compare frames, sound, drive lights,
+  messages and journal bytes with the verified-file path across two sessions,
+  and cover replay, retries, media appended by path and starts from parts.
+  Existing CLI and desktop starts are unchanged; routing those through this
+  factory is later work. See `design/core-contract.md` §14.3 S9.
+
 - **2026-11-20 — Stored PC starts derive their machine from a launch:**
   (`upc-dfs.43.6`, stage B step S6; design/core-contract.md §14.3).
   `pc-image` builds the effective launch after Settings, with verified flat-content

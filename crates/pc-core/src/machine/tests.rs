@@ -247,7 +247,7 @@ fn a_drive_without_a_controller_refuses_changes_as_a_usage_error() {
 }
 
 #[test]
-fn the_pc_core_describes_its_platform_and_creates_no_machine_yet() {
+fn the_pc_core_describes_its_launch_type_and_refuses_other_types() {
     let core: &dyn Core = &crate::PcCore;
     let description = core.description();
     assert_eq!(description.implements, ContractVersion::new(0, 2));
@@ -255,7 +255,10 @@ fn the_pc_core_describes_its_platform_and_creates_no_machine_yet() {
     assert_eq!(description.id, "unemupc");
     assert_eq!(description.platforms.len(), 1);
     assert_eq!(description.platforms[0].id, "ibm-pc");
-    assert!(description.platforms[0].config_types.is_empty());
+    assert_eq!(
+        description.platforms[0].config_types,
+        [pc_config::launch::MEDIA_TYPE]
+    );
     // A PC starts from a config, never from a file a person opens.
     assert!(description.platforms[0].content.is_empty());
     assert!(description
@@ -680,4 +683,607 @@ fn the_sound_handed_over_is_the_floor_of_virtual_time_times_the_rate() {
         );
     }
     assert!(handed >= 9_600, "{handed} frames");
+}
+
+mod launch_contract {
+    use super::*;
+    use pc_config::{image::Digest, launch};
+    use std::{
+        cell::RefCell,
+        collections::{BTreeMap, BTreeSet},
+        rc::Rc,
+    };
+    use unemu_core_api::{ConfigDocument, Content, ContentSource, CreateRequest, Storage};
+
+    struct Shared(Rc<MemoryContent>);
+    impl unemu_core_api::ContentReader for Shared {
+        fn size(&self) -> u64 {
+            self.0.size()
+        }
+        fn read_at(&self, offset: u64, bytes: &mut [u8]) -> Result<(), Error> {
+            self.0.read_at(offset, bytes)
+        }
+    }
+    struct Source {
+        blobs: BTreeMap<[u8; 32], Vec<u8>>,
+        reader: Option<([u8; 32], Rc<MemoryContent>)>,
+        opened: RefCell<BTreeSet<([u8; 32], u64)>>,
+    }
+    impl ContentSource for Source {
+        fn open(&self, sha256: &[u8; 32], size: u64) -> Result<Content, Error> {
+            self.opened.borrow_mut().insert((*sha256, size));
+            if let Some((digest, reader)) = &self.reader {
+                if digest == sha256 {
+                    return Ok(Content::Reader(Box::new(Shared(reader.clone()))));
+                }
+            }
+            self.blobs
+                .get(sha256)
+                .filter(|bytes| bytes.len() as u64 == size)
+                .map(|bytes| Content::Reader(Box::new(MemoryContent::new(bytes.clone()))))
+                .ok_or_else(|| Error::new(ErrorKind::Content, "missing test content"))
+        }
+    }
+
+    fn fixture() -> (Vec<u8>, Source) {
+        let mut bios = vec![0xf4; 32768];
+        let program = [
+            0xfa, 0xb0, 0x10, 0xe6, 0x70, 0xe4, 0x71, 0xfe, 0xc0, 0xe6, 0x71, 0xb0, 0xb6, 0xe6,
+            0x43, 0xb0, 0xa9, 0xe6, 0x42, 0xb0, 0x04, 0xe6, 0x42, 0xb0, 0x03, 0xe6, 0x61, 0xba,
+            0xf2, 0x03, 0xb0, 0x1c, 0xee, 0xb8, 0x00, 0xb0, 0x8e, 0xd8, 0xc7, 0x06, 0x00, 0x00,
+            0x41, 0x07, 0xeb, 0xfe,
+        ];
+        bios[..program.len()].copy_from_slice(&program);
+        bios[0x7ff0..0x7ff5].copy_from_slice(&[0xea, 0, 0, 0, 0xf8]);
+        let cmos = vec![0; 64];
+        let disk = vec![0xf6; 368640];
+        let [db, dc, dd] = [&bios, &cmos, &disk].map(|bytes| Digest::of(bytes));
+        let text = format!(
+            r#"schema = 1
+platform = "ibm-pc"
+[machine]
+schema = 1
+[machine.board]
+model = "ibm-5170"
+[machine.board.rtc.nvram]
+image = "assets/cmos.bin"
+[machine.firmware.bios]
+image = "assets/bios.bin"
+provides = ["floppy"]
+sha256 = "{bios_hash}"
+[[machine.card]]
+kind = "mda"
+[[machine.card]]
+kind = "vga-text"
+[[machine.card]]
+kind = "fdc-765"
+[[machine.card.drives]]
+unit = 0
+type = "360K"
+[[firmware]]
+key = "firmware.bios"
+source = "assets/bios.bin"
+blob = "{db}"
+[[media]]
+id = "a"
+source = "assets/a.img"
+name = "Disk A"
+head = "{dd}"
+policy = "journal"
+geometry = {{ cylinders = 40, heads = 2, sectors = 9, sector_bytes = 512 }}
+[[slots]]
+controller = "fdc-765"
+unit = 0
+catalogue = ["a"]
+catalogue_mode = true
+inserted = "a"
+[nvram]
+mode = "journal"
+source = "assets/cmos.bin"
+head = "{dc}"
+[[content]]
+digest = "{db}"
+sha256 = "{bios_hash}"
+size = 32768
+[[content]]
+digest = "{dd}"
+sha256 = "{disk_hash}"
+size = 368640
+[[content]]
+digest = "{dc}"
+sha256 = "{cmos_hash}"
+size = 64
+[[record]]
+medium = "a"
+name = "a.upfj"
+keep_generations = 3
+[[record]]
+medium = "cmos"
+name = "cmos.upfj"
+keep_generations = 3
+"#,
+            bios_hash = db.hex(),
+            disk_hash = dd.hex(),
+            cmos_hash = dc.hex()
+        );
+        (
+            text.into_bytes(),
+            Source {
+                blobs: [bios, cmos, disk]
+                    .into_iter()
+                    .map(|bytes| (Digest::of(&bytes).sha256(), bytes))
+                    .collect(),
+                reader: None,
+                opened: RefCell::default(),
+            },
+        )
+    }
+    fn request<'a>(
+        bytes: &'a [u8],
+        source: &'a Source,
+        storage: Rc<dyn Storage>,
+    ) -> CreateRequest<'a> {
+        CreateRequest::new(
+            "ibm-pc",
+            ConfigDocument::new(launch::MEDIA_TYPE, bytes),
+            source,
+            storage,
+        )
+        .with_options(&[
+            ("allow-unlisted-firmware", "true"),
+            ("speaker-trace", "true"),
+        ])
+    }
+
+    #[test]
+    fn launch_validate_lists_exactly_the_content_create_opens() {
+        let (bytes, source) = fixture();
+        let core: &dyn Core = &crate::PcCore;
+        let validated = core
+            .validate("ibm-pc", ConfigDocument::new(launch::MEDIA_TYPE, &bytes))
+            .unwrap();
+        assert!(source.opened.borrow().is_empty());
+        let mut machine = core
+            .create(&request(&bytes, &source, Rc::new(MemoryStorage::new())))
+            .unwrap();
+        assert_eq!(
+            *source.opened.borrow(),
+            validated
+                .content
+                .iter()
+                .map(|row| (row.sha256, row.size))
+                .collect()
+        );
+        let d = machine.description();
+        assert_eq!(
+            d.displays
+                .iter()
+                .map(|d| d.label.as_str())
+                .collect::<Vec<_>>(),
+            ["MDA", "VGA"]
+        );
+        assert!(d.audio.as_ref().unwrap().rate_in_bounds());
+        assert_eq!(machine.steps(), 0);
+        assert_eq!(machine.now(), Ticks(0));
+        let resets = d.features.resets.to_vec();
+        machine.set_outputs(Outputs::NONE.with_audio(true));
+        machine.input(InputEvent::ReleaseAll);
+        for reset in resets {
+            assert_eq!(machine.reset(reset).unwrap_err().kind, ErrorKind::Usage);
+        }
+        assert_eq!(machine.run(RunLimit::steps(2000)).unwrap(), Stop::Steps);
+        for id in [DisplayId(0), DisplayId(1)] {
+            let frame = machine.frame(id).unwrap();
+            assert!(frame.visible.is_within(frame.width, frame.height));
+            assert_eq!(
+                frame.pixels.len(),
+                frame.width as usize * frame.height as usize
+            );
+        }
+        let mut audio = Vec::new();
+        machine.drain_audio(&mut audio).unwrap();
+        assert!(!audio.is_empty());
+        machine
+            .change_medium(SlotId(0), MediaAction::Eject)
+            .unwrap();
+        machine
+            .change_medium(SlotId(0), MediaAction::Insert(0))
+            .unwrap();
+        let mut messages = Vec::new();
+        machine.drain_messages(&mut messages);
+        assert!(messages
+            .iter()
+            .any(|message| message.text.contains("speaker trace on")));
+        machine.finish().unwrap();
+    }
+
+    #[test]
+    fn launch_options_refuse_unknown_invalid_and_repeated_keys_before_content() {
+        let (bytes, source) = fixture();
+        for options in [
+            vec![("unknown", "true")],
+            vec![("speaker-trace", "yes")],
+            vec![("speaker-trace", "true"), ("speaker-trace", "false")],
+        ] {
+            let storage = Rc::new(MemoryStorage::new());
+            let error = crate::PcCore
+                .create(&request(&bytes, &source, storage.clone()).with_options(&options))
+                .err()
+                .unwrap();
+            assert_eq!(error.kind, ErrorKind::Usage, "{error}");
+            assert!(storage.names().is_empty());
+            assert!(source.opened.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn launch_failed_creates_leave_no_session_and_can_be_retried() {
+        let (bytes, mut source) = fixture();
+        let storage = Rc::new(MemoryStorage::new());
+        let disk = source
+            .blobs
+            .remove(&Digest::of(&vec![0xf6; 368640]).sha256())
+            .unwrap();
+        assert_eq!(
+            crate::PcCore
+                .create(&request(&bytes, &source, storage.clone()))
+                .err()
+                .unwrap()
+                .kind,
+            ErrorKind::Content
+        );
+        assert!(storage.names().is_empty());
+        source.blobs.insert(Digest::of(&disk).sha256(), disk);
+        let held = storage.open("a.upfj").unwrap();
+        assert_eq!(
+            crate::PcCore
+                .create(&request(&bytes, &source, storage.clone()))
+                .err()
+                .unwrap()
+                .kind,
+            ErrorKind::Usage
+        );
+        assert!(storage
+            .names()
+            .iter()
+            .all(|name| storage.contents(name).unwrap().is_empty()));
+        drop(held);
+        let bad = request(b"not toml", &source, storage.clone());
+        let error = crate::PcCore.create(&bad).err().unwrap();
+        assert_eq!(error.kind, ErrorKind::Config);
+        assert_eq!(
+            crate::PcCore
+                .validate(bad.platform, bad.config)
+                .unwrap_err(),
+            error
+        );
+        let mut machine = crate::PcCore
+            .create(&request(&bytes, &source, storage.clone()))
+            .unwrap();
+        machine.run(RunLimit::steps(200)).unwrap();
+        machine.finish().unwrap();
+        drop(machine);
+        assert!(!storage.is_open("a.upfj"));
+        assert!(!storage.is_open("cmos.upfj"));
+        let mut machine = crate::PcCore
+            .create(&request(&bytes, &source, storage))
+            .unwrap();
+        machine.finish().unwrap();
+    }
+
+    #[test]
+    fn launch_replay_and_second_create_keep_the_journalled_cmos() {
+        let (bytes, source) = fixture();
+        let run = |storage: Rc<MemoryStorage>| {
+            let mut machine = crate::PcCore
+                .create(&request(&bytes, &source, storage))
+                .unwrap();
+            machine.set_outputs(Outputs::NONE.with_audio(true));
+            let mut log = Vec::new();
+            for steps in [100, 200, 4000] {
+                machine.input(InputEvent::ReleaseAll);
+                let stop = machine.run(RunLimit::steps(steps)).unwrap();
+                let frame = machine.frame(DisplayId(0)).unwrap();
+                let picture = (frame.pixels.to_vec(), frame.serial);
+                let mut sound = Vec::new();
+                machine.drain_audio(&mut sound).unwrap();
+                let mut messages = Vec::new();
+                machine.drain_messages(&mut messages);
+                log.push((
+                    stop,
+                    machine.now(),
+                    machine.steps(),
+                    picture,
+                    sound,
+                    messages,
+                ));
+            }
+            machine.finish().unwrap();
+            log
+        };
+        let first = Rc::new(MemoryStorage::new());
+        let second = Rc::new(MemoryStorage::new());
+        assert_eq!(run(first.clone()), run(second.clone()));
+        for name in first.names() {
+            assert_eq!(first.contents(&name), second.contents(&name));
+        }
+        let previous = first.contents("cmos.upfj").unwrap();
+        run(first.clone());
+        let next = first.contents("cmos.upfj").unwrap();
+        assert!(next.len() > previous.len());
+        assert!(next.starts_with(&previous));
+    }
+
+    #[test]
+    fn launch_bounds_and_bad_documents_fail_before_any_content_or_record() {
+        let (bytes, source) = fixture();
+        let text = String::from_utf8(bytes).unwrap();
+        for bytes in [
+            b"not toml".to_vec(),
+            text.replace("size = 32768", "size = 16777217").into_bytes(),
+            text.replace("size = 64", "size = 65").into_bytes(),
+            vec![b' '; launch::MAX_DOCUMENT_BYTES + 1],
+        ] {
+            let storage = Rc::new(MemoryStorage::new());
+            let req = request(&bytes, &source, storage.clone());
+            let expected = crate::PcCore
+                .validate(req.platform, req.config)
+                .unwrap_err();
+            assert_eq!(expected.kind, ErrorKind::Config);
+            assert_eq!(crate::PcCore.create(&req).err().unwrap(), expected);
+            assert!(source.opened.borrow().is_empty());
+            assert!(storage.names().is_empty());
+        }
+        for platform in ["nes", "ibm-pc-at"] {
+            let mut req = request(text.as_bytes(), &source, Rc::new(MemoryStorage::new()));
+            req.platform = platform;
+            assert_eq!(
+                crate::PcCore.create(&req).err().unwrap().kind,
+                ErrorKind::Unsupported
+            );
+            assert_eq!(
+                crate::PcCore
+                    .validate(platform, req.config)
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::Unsupported
+            );
+        }
+    }
+
+    #[test]
+    fn launch_retention_warning_does_not_mask_later_cmos_uncertain_write() {
+        use unemu_core_api::test_support::Operation;
+        let (bytes, source) = fixture();
+        let storage = Rc::new(MemoryStorage::new());
+        for _ in 0..3 {
+            let mut machine = crate::PcCore
+                .create(&request(&bytes, &source, storage.clone()))
+                .unwrap();
+            machine.finish().unwrap();
+        }
+        let mut machine = crate::PcCore
+            .create(&request(&bytes, &source, storage.clone()))
+            .unwrap();
+        storage.fail_next(
+            "a.upfj",
+            Operation::Replace,
+            Error::new(ErrorKind::Storage, "floppy retention refused"),
+        );
+        machine
+            .change_medium(SlotId(0), MediaAction::Eject)
+            .unwrap();
+        assert_eq!(machine.slot_states()[0].inserted, None);
+        machine.run(RunLimit::steps(100)).unwrap();
+        let fatal = Error::new(ErrorKind::StorageUncertain, "CMOS write uncertain");
+        storage.fail_next("cmos.upfj", Operation::Append, fatal.clone());
+        assert_eq!(machine.finish().unwrap_err(), fatal);
+        assert_eq!(machine.status(), Status::Failed);
+        let mut messages = Vec::new();
+        machine.drain_messages(&mut messages);
+        assert!(messages.iter().any(|message| {
+            message.level == MessageLevel::Warning
+                && message.text.contains("floppy retention refused")
+        }));
+    }
+
+    #[test]
+    fn launch_checkpoint_warning_does_not_mask_a_later_error_on_the_same_record() {
+        use unemu_core_api::test_support::Operation;
+        let (bytes, source) = fixture();
+        let storage = Rc::new(MemoryStorage::new());
+        for _ in 0..3 {
+            let mut machine = crate::PcCore
+                .create(&request(&bytes, &source, storage.clone()))
+                .unwrap();
+            machine.finish().unwrap();
+        }
+        let mut machine = crate::PcCore
+            .create_machine(&request(&bytes, &source, storage.clone()))
+            .unwrap();
+        storage.fail_next(
+            "a.upfj",
+            Operation::Replace,
+            Error::new(ErrorKind::Storage, "floppy retention refused"),
+        );
+        let assembled = machine.assembled();
+        assembled
+            .persistence
+            .iter_mut()
+            .find(|handle| handle.owner() == "drive 0")
+            .unwrap()
+            .checkpoint(&mut assembled.machine)
+            .unwrap();
+        let fatal = Error::new(ErrorKind::StorageUncertain, "floppy write uncertain");
+        storage.fail_next("a.upfj", Operation::Append, fatal.clone());
+        assert_eq!(machine.finish().unwrap_err(), fatal);
+    }
+
+    #[test]
+    fn launch_finish_preserves_the_error_of_the_first_failed_record() {
+        use unemu_core_api::test_support::Operation;
+        let (bytes, source) = fixture();
+        let storage = Rc::new(MemoryStorage::new());
+        let mut machine = crate::PcCore
+            .create(&request(&bytes, &source, storage.clone()))
+            .unwrap();
+        machine.run(RunLimit::steps(100)).unwrap();
+        let first = Error::new(ErrorKind::StorageUncertain, "CMOS write uncertain");
+        storage.fail_next("cmos.upfj", Operation::Append, first.clone());
+        storage.fail_next(
+            "a.upfj",
+            Operation::Append,
+            Error::new(ErrorKind::Storage, "floppy close refused"),
+        );
+        assert_eq!(machine.finish().unwrap_err(), first);
+    }
+
+    #[test]
+    fn launch_preserves_storage_and_uncertain_write_failures() {
+        use unemu_core_api::test_support::Operation;
+        let (bytes, source) = fixture();
+        for kind in [ErrorKind::Storage, ErrorKind::StorageUncertain] {
+            let storage = Rc::new(MemoryStorage::new());
+            let mut machine = crate::PcCore
+                .create(&request(&bytes, &source, storage.clone()))
+                .unwrap();
+            let error = Error::new(kind, "injected journal failure");
+            storage.fail_next("cmos.upfj", Operation::Append, error.clone());
+            machine.run(RunLimit::steps(100)).unwrap();
+            assert_eq!(machine.finish().unwrap_err(), error);
+            assert_eq!(machine.status(), Status::Failed);
+            assert_eq!(
+                machine.run(RunLimit::steps(200)).unwrap_err().kind,
+                ErrorKind::Usage
+            );
+            assert_eq!(machine.finish().unwrap_err().kind, ErrorKind::Usage);
+            drop(machine);
+            assert!(!storage.is_open("cmos.upfj"));
+            let mut retry = crate::PcCore
+                .create(&request(&bytes, &source, storage))
+                .unwrap();
+            retry.finish().unwrap();
+        }
+    }
+
+    #[test]
+    fn launch_options_change_only_their_permission_or_diagnostics() {
+        let (bytes, source) = fixture();
+        let req = request(&bytes, &source, Rc::new(MemoryStorage::new()));
+        assert_eq!(
+            crate::PcCore
+                .create(&req.with_options(&[]))
+                .err()
+                .unwrap()
+                .kind,
+            ErrorKind::Config
+        );
+        for trace in ["false", "true"] {
+            let opts = [
+                ("allow-unlisted-firmware", "true"),
+                ("speaker-trace", trace),
+            ];
+            let mut machine = crate::PcCore
+                .create(
+                    &request(&bytes, &source, Rc::new(MemoryStorage::new())).with_options(&opts),
+                )
+                .unwrap();
+            machine.run(RunLimit::steps(100)).unwrap();
+            let mut messages = Vec::new();
+            machine.drain_messages(&mut messages);
+            assert_eq!(
+                messages
+                    .iter()
+                    .any(|message| message.text.contains("speaker trace on")),
+                trace == "true"
+            );
+            machine.finish().unwrap();
+        }
+    }
+
+    #[test]
+    fn launch_content_reader_failures_keep_their_kind_at_the_next_boundary() {
+        use device::Device;
+        let (bytes, mut source) = fixture();
+        let digest = Digest::of(&vec![0xf6; 368640]).sha256();
+        let reader = Rc::new(MemoryContent::new(source.blobs[&digest].clone()));
+        source.reader = Some((digest, reader.clone()));
+        let storage = Rc::new(MemoryStorage::new());
+        let mut machine = crate::PcCore
+            .create_machine(&request(&bytes, &source, storage))
+            .unwrap();
+        let error = Error::new(ErrorKind::Content, "disk content changed");
+        reader.fail_next(error.clone());
+        let fdc = machine.fdc().unwrap();
+        fdc.port_write(0x3f7, 1, 2).unwrap();
+        fdc.port_write(0x3f2, 1, 0x1c).unwrap();
+        for byte in [0x06, 0, 0, 0, 1, 2, 1, 0x1b, 0xff] {
+            fdc.port_write(0x3f5, 1, byte).unwrap();
+        }
+        assert_eq!(machine.run(RunLimit::steps(100)).unwrap_err(), error);
+        assert_eq!(machine.status(), Status::Failed);
+    }
+
+    #[test]
+    fn launch_catalogue_records_open_only_on_insert_and_remain_available_after_create() {
+        let (bytes, source) = fixture();
+        let mut launch = launch::decode(&bytes).unwrap();
+        launch.config.slots[0].inserted = None;
+        let bytes = launch::encode(&launch).unwrap();
+        let storage = Rc::new(MemoryStorage::new());
+        let held = storage.open("a.upfj").unwrap();
+        let mut machine = crate::PcCore
+            .create(&request(&bytes, &source, storage.clone()))
+            .unwrap();
+        assert_eq!(machine.slot_states()[0].inserted, None);
+        assert_eq!(
+            machine
+                .change_medium(SlotId(0), MediaAction::Insert(0))
+                .unwrap_err()
+                .kind,
+            ErrorKind::Usage
+        );
+        drop(held);
+        drop(source);
+        machine
+            .change_medium(SlotId(0), MediaAction::Insert(0))
+            .unwrap();
+        assert!(storage.is_open("a.upfj"));
+        machine.run(RunLimit::steps(100)).unwrap();
+        machine.finish().unwrap();
+    }
+
+    #[test]
+    fn launch_refuses_a_content_size_lie_or_a_broken_rom_pin_without_records() {
+        let (bytes, mut source) = fixture();
+        let bios_key = source
+            .blobs
+            .iter()
+            .find(|(_, bytes)| bytes.len() == 32768)
+            .map(|(key, _)| *key)
+            .unwrap();
+        let wrong_size = Rc::new(MemoryContent::new(vec![0; 1]));
+        source.reader = Some((bios_key, wrong_size));
+        let storage = Rc::new(MemoryStorage::new());
+        assert_eq!(
+            crate::PcCore
+                .create(&request(&bytes, &source, storage.clone()))
+                .err()
+                .unwrap()
+                .kind,
+            ErrorKind::Content
+        );
+        assert!(storage.names().is_empty());
+        source.reader = None;
+        source.blobs.get_mut(&bios_key).unwrap()[0] ^= 1;
+        assert_eq!(
+            crate::PcCore
+                .create(&request(&bytes, &source, storage.clone()))
+                .err()
+                .unwrap()
+                .kind,
+            ErrorKind::Content
+        );
+        assert!(storage.names().is_empty());
+    }
 }

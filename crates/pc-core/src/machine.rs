@@ -88,6 +88,8 @@ struct Display {
 /// encoders.
 pub struct PcMachine {
     assembled: AssembledMachine,
+    config: MachineConfig,
+    pub(crate) contract_failure: Option<crate::core::mount::Failures>,
     description: MachineDescription,
     displays: Vec<Display>,
     serial: u64,
@@ -256,6 +258,8 @@ impl PcMachine {
         .with_slots(slots)
         .with_features(PC_FEATURES);
         Ok(Self {
+            config: config.clone(),
+            contract_failure: None,
             assembled,
             description,
             displays,
@@ -276,6 +280,11 @@ impl PcMachine {
             #[cfg(feature = "test-support")]
             mouse_log: Vec::new(),
         })
+    }
+
+    /// The effective hardware and catalogues this machine started with.
+    pub fn config(&self) -> &MachineConfig {
+        &self.config
     }
 
     /// The assembled machine, for PC code that needs more than the
@@ -473,9 +482,16 @@ impl PcMachine {
         }
     }
 
-    fn storage(&mut self, failure: impl std::fmt::Display) -> Error {
+    fn storage(&mut self, failure: assembly::PersistenceError) -> Error {
         self.status = Status::Failed;
-        error(ErrorKind::Storage, failure)
+        self.contract_error(ErrorKind::Storage, failure)
+    }
+
+    fn contract_error(&self, kind: ErrorKind, failure: impl std::error::Error + 'static) -> Error {
+        self.contract_failure
+            .as_ref()
+            .and_then(|errors| errors.error_for(&failure))
+            .unwrap_or_else(|| error(kind, failure))
     }
 
     /// Deliver the queued keyboard bytes and mouse segments the devices take
@@ -629,7 +645,7 @@ impl Machine for PcMachine {
                     // still finish its media.
                     self.assembled
                         .before_cpu_reset()
-                        .map_err(|failure| error(ErrorKind::Storage, failure))?;
+                        .map_err(|failure| self.contract_error(ErrorKind::Storage, failure))?;
                     self.take_speaker_trace();
                     return Ok(Stop::Halted);
                 }
@@ -800,11 +816,14 @@ impl Machine for PcMachine {
         };
         self.assembled
             .change_floppy(DeviceId::Fdc, unit, action)
-            .map_err(|failure| match failure {
-                assembly::FloppyError::Unavailable => error(ErrorKind::Usage, failure),
-                assembly::FloppyError::Persistence(_) => error(ErrorKind::Storage, failure),
-                assembly::FloppyError::Config(_) => error(ErrorKind::Config, failure),
-                _ => error(ErrorKind::Guest, failure),
+            .map_err(|failure| {
+                let kind = match failure {
+                    assembly::FloppyError::Unavailable => ErrorKind::Usage,
+                    assembly::FloppyError::Persistence(_) => ErrorKind::Storage,
+                    assembly::FloppyError::Config(_) => ErrorKind::Config,
+                    _ => ErrorKind::Guest,
+                };
+                self.contract_error(kind, failure)
             })
     }
 
@@ -831,7 +850,7 @@ impl Machine for PcMachine {
         // be finished.
         self.assembled
             .before_cpu_reset()
-            .map_err(|failure| error(ErrorKind::Storage, failure))?;
+            .map_err(|failure| self.contract_error(ErrorKind::Storage, failure))?;
         self.assembled
             .reset_cpu(assembly::ResetCause::Host)
             .map_err(|failure| error(ErrorKind::Guest, failure))?;
@@ -890,7 +909,11 @@ impl Machine for PcMachine {
                         format!("warning: {warning}"),
                     ));
                 }
-                Err(error(ErrorKind::Storage, failure))
+                Err(if self.contract_failure.is_some() {
+                    self.storage(failure)
+                } else {
+                    error(ErrorKind::Storage, failure)
+                })
             }
         }
     }

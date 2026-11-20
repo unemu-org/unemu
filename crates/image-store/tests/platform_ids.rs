@@ -30,6 +30,7 @@ const RETIRED_ID: &[&str] = &[
     // The PC launch document refuses the retired id: the store writes the
     // current one.
     "pc-config/src/launch/tests.rs",
+    "pc-core/src/machine/tests.rs",
 ];
 /// The production files that may spell out the current PC id: its
 /// definition, the alias table, the compatibility rows, the metadata of a
@@ -67,6 +68,7 @@ const SOFTWARE_PLATFORM: &[(&str, &str)] = &[
 /// current spelling into it, and the PC core reads it.
 const CORE_OWN_PLATFORM: &[(&str, &str)] = &[
     ("test-core/src/lib.rs", "if platform == PLATFORM {"),
+    ("pc-core/src/core.rs", "if platform != PLATFORM ||"),
     (
         "pc-config/src/launch.rs",
         "codec::bind(config, &rows, config.platform == PLATFORM)",

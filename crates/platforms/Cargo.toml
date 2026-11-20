@@ -33,6 +33,8 @@ unemu-test-core = { path = "../test-core", version = "0.0.3", optional = true }
 test-core = ["dep:unemu-test-core"]
 
 [dev-dependencies]
+pc-config.workspace = true
+unemu-core-api = { workspace = true, features = ["test-support"] }
 # The check the programs make of every core, run over the list.
 core-launch = { path = "../core-launch", version = "0.0.3" }
 # A scratch directory for the cartridge file the NES test opens.
