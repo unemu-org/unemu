@@ -242,7 +242,7 @@ enum Entry {
 
 enum Opened {
     Bytes(Vec<u8>),
-    Base(VerifiedBase),
+    Base(Box<VerifiedBase>),
 }
 
 fn content_error(error: impl std::fmt::Display) -> Error {
@@ -287,9 +287,12 @@ impl Entry {
                 header.clone(),
                 *metadata.clone(),
             )
-            .map(Opened::Base)
+            .map(|base| Opened::Base(Box::new(base)))
             .map_err(base_error),
-            Self::Zero(chain, _) => chain.mount().map(Opened::Base).map_err(content_error),
+            Self::Zero(chain, _) => chain
+                .mount()
+                .map(|base| Opened::Base(Box::new(base)))
+                .map_err(content_error),
         }
     }
 }
@@ -314,7 +317,7 @@ impl ContentSource for Source {
             Some(Opened::Bytes(bytes)) => Ok(Content::Bytes(bytes.clone())),
             Some(Opened::Base(base)) => {
                 base.check_unchanged().map_err(base_error)?;
-                Ok(Content::Reader(Box::new(Reader(base.clone()))))
+                Ok(Content::Reader(Box::new(Reader(base.as_ref().clone()))))
             }
             None => Err(content_error(
                 "content digest and size are not listed by this launch",
