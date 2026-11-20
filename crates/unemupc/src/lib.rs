@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod journal;
 pub mod run;
 
 pub use run::FirmwareStore;
@@ -15,6 +16,7 @@ use std::path::PathBuf;
 /// A parsed machine command.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
+    Journal(journal::JournalCommand),
     Boot,
     Bios {
         path: PathBuf,
@@ -44,13 +46,25 @@ pub enum Command {
 
 /// Parse machine words without accepting frontend store options.
 pub fn parse(args: &[OsString]) -> Option<Result<Command, &'static str>> {
-    machine_words(args, false).transpose()
+    parse_words(args, false)
 }
 
 /// Parse the frontend's file run, including its firmware-store selection.
 /// The library only carries that selection; the frontend prepares the file.
 pub fn parse_with_store(args: &[OsString]) -> Option<Result<Command, &'static str>> {
-    machine_words(args, true).transpose()
+    parse_words(args, true)
+}
+
+fn parse_words(args: &[OsString], with_store: bool) -> Option<Result<Command, &'static str>> {
+    match machine_words(args, with_store) {
+        Ok(None)
+            if args.first().is_some_and(|arg| arg == "media")
+                && !args.get(1).is_some_and(|arg| arg == "create") =>
+        {
+            Some(journal::parse(args).map(Command::Journal))
+        }
+        result => result.transpose(),
+    }
 }
 
 fn machine_words(args: &[OsString], with_store: bool) -> Result<Option<Command>, &'static str> {
@@ -178,6 +192,7 @@ pub fn execute_with_loader(
 ) -> anyhow::Result<u8> {
     let line = |error: &dyn std::fmt::Display| anyhow::Error::msg(error.to_string());
     match command {
+        Command::Journal(command) => Ok(journal::run(command, output, errors)),
         Command::Boot => {
             let serial = pc_harness::run_boot(pc_harness::BOOT_PROGRAM).map_err(|e| line(&e))?;
             output.write_all(&serial).map_err(|e| line(&e))?;
@@ -287,6 +302,14 @@ macro_rules! machine_usage {
 
 pub const FRONTEND_MACHINE_USAGE: &str = machine_usage!();
 
+/// Journal usage shared with the frontend; keep command words and ordering equal.
+pub const JOURNAL_USAGE: &str = concat!(
+    "       upcli media generations --base IMG --journal J\n",
+    "       upcli media verify --base IMG --journal J [--repair-tail --backup PATH]\n",
+    "       upcli media rollback --base IMG --journal J --to N --backup PATH\n",
+    "       upcli media commit (alias compact) --base IMG --journal J --to N --output OUT\n",
+);
+
 /// Standalone usage names the core and offers no frontend store options.
 pub fn usage() -> String {
     let text = format!(
@@ -295,10 +318,10 @@ pub fn usage() -> String {
             "       upcli --version | --about\n",
             "       upcli --bios PATH [--allow-unlisted-firmware]\n",
             "       upcli machine check FILE [--allow-unlisted-firmware] [--rom-dir DIR]...\n",
-            "{}",
+            "{}{}",
             "DOS boot and interactive sessions: see crates/pc-harness/tests/*dos*golden.rs\n",
         ),
-        FRONTEND_MACHINE_USAGE
+        FRONTEND_MACHINE_USAGE, JOURNAL_USAGE
     );
     text.replacen("       ", "usage: ", 1)
         .replace("upcli", "unemupc")

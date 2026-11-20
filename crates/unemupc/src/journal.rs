@@ -2,11 +2,10 @@
 //! The offline journal commands `media generations`, `verify`, `rollback`
 //! and `commit` (`backlog/docs/design/persistent-media.md` § Offline
 //! commands): they read and change a base image's journal through
-//! `media::offline`, with no emulator.
+//! `journal_files::offline`, with no emulator.
 
-use super::Io;
-use media::offline::{Access, JournalTool, ToolError};
-use media::{ClosingReason, Status, VerificationReport};
+use journal_files::offline::{Access, JournalTool, ToolError};
+use journal_files::{ClosingReason, Status, VerificationReport};
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::PathBuf;
@@ -261,12 +260,12 @@ fn execute(command: JournalCommand, output: &mut impl Write) -> Result<u8, ToolE
 
 /// Run a parsed journal command: a refused configuration exits 2, any
 /// other failure 1, each printed on the error stream.
-pub fn run(command: JournalCommand, io: &mut Io<'_>) -> u8 {
-    match execute(command, &mut io.output) {
+pub fn run(command: JournalCommand, output: &mut impl Write, errors: &mut impl Write) -> u8 {
+    match execute(command, output) {
         Ok(code) => code,
         Err(error) => {
             let code = error_exit_code(&error);
-            let _ = writeln!(io.errors, "{error}");
+            let _ = writeln!(errors, "{error}");
             code
         }
     }

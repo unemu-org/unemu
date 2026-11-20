@@ -287,22 +287,22 @@ $ media create hd --size 1GiB OUT
 Err("BIOS CHS size limit: 1..=504 MiB (1024 cylinders x 16 heads x 63 sectors); larger/LBA disks are not supported by create")
 
 $ media generations --base IMG --journal J
-Ok(Line(Journal(JournalCommand { base: "IMG", journal: "J", action: Generations })))
+Ok(Line(Platform(Journal(JournalCommand { base: "IMG", journal: "J", action: Generations }))))
 
 $ media verify --base IMG --journal J
-Ok(Line(Journal(JournalCommand { base: "IMG", journal: "J", action: Verify })))
+Ok(Line(Platform(Journal(JournalCommand { base: "IMG", journal: "J", action: Verify }))))
 
 $ media verify --base IMG --journal J --repair-tail --backup PATH
-Ok(Line(Journal(JournalCommand { base: "IMG", journal: "J", action: Repair { backup: "PATH" } })))
+Ok(Line(Platform(Journal(JournalCommand { base: "IMG", journal: "J", action: Repair { backup: "PATH" } }))))
 
 $ media rollback --base IMG --journal J --to 1 --backup PATH
-Ok(Line(Journal(JournalCommand { base: "IMG", journal: "J", action: Rollback { generation: 1, backup: "PATH" } })))
+Ok(Line(Platform(Journal(JournalCommand { base: "IMG", journal: "J", action: Rollback { generation: 1, backup: "PATH" } }))))
 
 $ media commit --base IMG --journal J --to 1 --output OUT
-Ok(Line(Journal(JournalCommand { base: "IMG", journal: "J", action: Commit { generation: 1, output: "OUT" } })))
+Ok(Line(Platform(Journal(JournalCommand { base: "IMG", journal: "J", action: Commit { generation: 1, output: "OUT" } }))))
 
 $ media compact --base IMG --journal J --to 1 --output OUT
-Ok(Line(Journal(JournalCommand { base: "IMG", journal: "J", action: Commit { generation: 1, output: "OUT" } })))
+Ok(Line(Platform(Journal(JournalCommand { base: "IMG", journal: "J", action: Commit { generation: 1, output: "OUT" } }))))
 
 $ --bogus
 Err("unknown or extra arguments")
@@ -722,17 +722,17 @@ $ media create hd --size 32MiB /path/to/disk.img
 Ok(Line(Platform(Create(CreateCommand { output: "/path/to/disk.img", force: false, kind: HardDisk(HardDiskGeometry { cylinders: 66, heads: 16, sectors_per_track: 63, bytes_per_sector: 512 }) }))))
 
 $ media generations --base disk.img --journal disk.img.upfj
-Ok(Line(Journal(JournalCommand { base: "disk.img", journal: "disk.img.upfj", action: Generations })))
+Ok(Line(Platform(Journal(JournalCommand { base: "disk.img", journal: "disk.img.upfj", action: Generations }))))
 
 $ media verify --base disk.img --journal disk.img.upfj
-Ok(Line(Journal(JournalCommand { base: "disk.img", journal: "disk.img.upfj", action: Verify })))
+Ok(Line(Platform(Journal(JournalCommand { base: "disk.img", journal: "disk.img.upfj", action: Verify }))))
 
 $ media verify --base disk.img --journal disk.img.upfj --repair-tail --backup before-repair.upfj
-Ok(Line(Journal(JournalCommand { base: "disk.img", journal: "disk.img.upfj", action: Repair { backup: "before-repair.upfj" } })))
+Ok(Line(Platform(Journal(JournalCommand { base: "disk.img", journal: "disk.img.upfj", action: Repair { backup: "before-repair.upfj" } }))))
 
 $ media rollback --base disk.img --journal disk.img.upfj --to 1 --backup before-rollback.upfj
-Ok(Line(Journal(JournalCommand { base: "disk.img", journal: "disk.img.upfj", action: Rollback { generation: 1, backup: "before-rollback.upfj" } })))
+Ok(Line(Platform(Journal(JournalCommand { base: "disk.img", journal: "disk.img.upfj", action: Rollback { generation: 1, backup: "before-rollback.upfj" } }))))
 
 $ media commit --base disk.img --journal disk.img.upfj --to 1 --output restored.img
-Ok(Line(Journal(JournalCommand { base: "disk.img", journal: "disk.img.upfj", action: Commit { generation: 1, output: "restored.img" } })))
+Ok(Line(Platform(Journal(JournalCommand { base: "disk.img", journal: "disk.img.upfj", action: Commit { generation: 1, output: "restored.img" } }))))
 

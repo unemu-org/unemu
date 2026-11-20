@@ -9,8 +9,9 @@
 //! workspace ls` and `discard`, `image media ls` and `show`, `image firmware
 //! ls` and `show`, `image export`, the registry commands (`image push`, `pull`, `remote ls`,
 //! `login`, `registry set`), `recipe check`, `show`, `plan` and `build`, the
-//! library commands (`library ls`, `add`, `remove`, `scan`), and the journal
-//! commands `media generations`, `verify`, `rollback` and `commit`. What they
+//! library commands (`library ls`, `add`, `remove`, `scan`). The journal
+//! commands `media generations`, `verify`, `rollback` and `commit` belong to
+//! the platform. What the neutral commands
 //! need of a platform (the validators of its artifact types, the blobs it
 //! knows must not be redistributed, how it compresses an image, what its
 //! sessions pin, its recipe provider, the names of its media formats) comes
@@ -23,7 +24,6 @@
 //! command keeps its exact words, output and exit code.
 
 pub mod image;
-pub mod journal;
 pub mod library;
 pub mod recipe;
 
@@ -54,6 +54,8 @@ pub struct Io<'a> {
 /// had them; each slot is named after the neutral line it follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UsageSlot {
+    /// The platform's offline journal commands, after media creation.
+    Journal,
     /// The first lines, before `--version | --about`.
     First,
     /// After `--version | --about`.
@@ -153,7 +155,6 @@ pub enum Command {
     Recipe(recipe::RecipeCommand),
     Library(library::LibraryCommand),
     Image(image::ImageCommand),
-    Journal(journal::JournalCommand),
     /// A command a platform took.
     Platform(Box<dyn PlatformCommand>),
 }
@@ -180,12 +181,15 @@ pub fn parse(args: &[OsString], platforms: &[&dyn CliPlatform]) -> Result<Comman
             None => offer(args, platforms).unwrap_or(Err(NO_PLATFORM)),
         };
     }
-    // A platform's own options may appear anywhere on its command lines, so
-    // its words are looked at before the journal commands.
+    // Platform options may appear anywhere, so each platform sees all words.
     if let Some(parsed) = offer(args, platforms) {
         return parsed;
     }
-    journal::parse(args).map(Command::Journal)
+    Err(if args[0] == "media" {
+        NO_PLATFORM
+    } else {
+        "unknown or extra arguments"
+    })
 }
 
 fn offer(
@@ -256,12 +260,7 @@ pub fn usage(platforms: &[&dyn CliPlatform]) -> String {
         "       upcli library scan [DIR...] [--store DIR] [--config FILE] (lists files, zip directories and catalogues into the index; hashes nothing)\n",
     ));
     slot(&mut text, UsageSlot::AfterRecipe);
-    text.push_str(concat!(
-        "       upcli media generations --base IMG --journal J\n",
-        "       upcli media verify --base IMG --journal J [--repair-tail --backup PATH]\n",
-        "       upcli media rollback --base IMG --journal J --to N --backup PATH\n",
-        "       upcli media commit (alias compact) --base IMG --journal J --to N --output OUT\n",
-    ));
+    slot(&mut text, UsageSlot::Journal);
     slot(&mut text, UsageSlot::Last);
     // Every command line is indented as far as `usage: ` is long.
     match text.strip_prefix("       ") {
@@ -272,7 +271,7 @@ pub fn usage(platforms: &[&dyn CliPlatform]) -> String {
 
 /// Run a command line and return the exit code: 0 success, 1 a failed
 /// command, 2 a usage or configuration error, 3 a journal that needs
-/// recovery ([`journal::report_exit_code`]). A refused command line prints
+/// recovery (reported by the platform). A refused command line prints
 /// the usage text and the reason on the error stream.
 pub fn run(
     args: &[OsString],
@@ -305,7 +304,6 @@ pub fn run(
             let result = image::execute(command, io, host, platforms, cores);
             finish(result, io)
         }
-        Command::Journal(command) => journal::run(command, io),
         Command::Platform(command) => {
             let result = command.execute(io, host);
             finish(result, io)
@@ -626,7 +624,7 @@ pub(crate) mod tests {
             text.starts_with("usage: upcli toy\n       upcli --version"),
             "{text}"
         );
-        assert!(text.ends_with("--output OUT\ntoy footer\n"), "{text}");
+        assert!(text.ends_with("toy footer\n"), "{text}");
         assert_eq!(
             run_with("toy", &[toy]),
             (1, "toy ran\n".into(), "toy failed\n".into())
@@ -645,10 +643,10 @@ pub(crate) mod tests {
             parse(&words("image ls --store s"), &[]),
             Ok(Command::Image(image::ImageCommand::List { .. }))
         ));
-        assert!(matches!(
-            parse(&words("media verify --base b --journal j"), &[]),
-            Ok(Command::Journal(_))
-        ));
+        assert_eq!(
+            parse(&words("media verify --base b --journal j"), &[]).unwrap_err(),
+            NO_PLATFORM
+        );
         assert!(matches!(
             parse(&words("recipe check a.media.toml"), &[]),
             Ok(Command::Recipe(_))

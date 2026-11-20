@@ -3,43 +3,27 @@
 //! § Memory and hashing. This disk-format seam can also back hash-linked layers.
 
 use crate::{Header, SECTOR_LEN};
+pub use journal::{SectorSource, SparseOverlay};
 use sha2::{Digest, Sha256};
+#[cfg(feature = "test-support")]
 use std::collections::BTreeMap;
 use std::fs::{File, Metadata};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::rc::Rc;
 
-/// One immutable parent in a sector-overlay chain. Host errors remain outside
-/// controller state; the assembly adapter latches them at its host boundary.
-/// See persistent-media.md § Memory and hashing.
-pub trait SectorSource {
-    fn byte_len(&self) -> u64;
-    fn read_sector(&self, lba: u64) -> io::Result<[u8; SECTOR_LEN]>;
-    fn check_unchanged(&self) -> io::Result<()>;
-    /// Read an aligned range for bounded streaming exports. The final short CMOS
-    /// block is permitted; layer implementations need only supply sector reads.
-    fn read_range(&self, first_lba: u64, bytes: &mut [u8]) -> io::Result<()> {
-        for (index, chunk) in bytes.chunks_mut(SECTOR_LEN).enumerate() {
-            chunk.copy_from_slice(&self.read_sector(first_lba + index as u64)?[..chunk.len()]);
-        }
-        self.check_unchanged()
-    }
-}
-
 /// A base's verified identity, shared without rehashing or copying its bytes.
 #[derive(Clone)]
 pub struct VerifiedBase {
-    source: Rc<dyn SectorSource>,
+    source: journal::VerifiedBase,
     file: Option<Rc<File>>,
-    identity: Header,
     metadata: Option<Metadata>,
 }
 
 impl std::fmt::Debug for VerifiedBase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VerifiedBase")
-            .field("identity", &self.identity)
+            .field("identity", self.identity())
             .field("file_backed", &self.metadata.is_some())
             .finish()
     }
@@ -72,9 +56,8 @@ impl VerifiedBase {
         };
         source.check_unchanged()?;
         Ok(Self {
-            source: Rc::new(source),
+            source: journal::VerifiedBase::from_verified_source(Rc::new(source), identity)?,
             file: Some(file),
-            identity,
             metadata: Some(metadata),
         })
     }
@@ -97,50 +80,30 @@ impl VerifiedBase {
         };
         source.check_unchanged()?;
         Ok(Self {
-            source: Rc::new(source),
+            source: journal::VerifiedBase::from_verified_source(Rc::new(source), identity)?,
             file: Some(file),
-            identity,
             metadata: Some(metadata),
         })
     }
 
-    /// Wrap an immutable source whose complete identity the caller has already
-    /// established, such as an all-zero blank disk or a verified layer chain.
-    /// Reads go straight to the source; nothing is copied, hashed or materialized.
+    /// Wrap a verified immutable sector source without rehashing it.
     pub fn from_verified_source(
         source: Rc<dyn SectorSource>,
         identity: Header,
     ) -> io::Result<Self> {
-        if identity.base_length != source.byte_len() {
-            return Err(io::Error::other("verified base length mismatch"));
-        }
-        identity.encode().map_err(io::Error::other)?;
-        source.check_unchanged()?;
         Ok(Self {
-            source,
+            source: journal::VerifiedBase::from_verified_source(source, identity)?,
             file: None,
-            identity,
             metadata: None,
         })
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, crate::Error> {
-        let base = Self::memory(bytes);
-        base.identity.encode()?;
-        Ok(base)
-    }
-
-    pub(crate) fn memory(bytes: &[u8]) -> Self {
-        Self {
-            identity: Header {
-                base_length: bytes.len() as u64,
-                base_digest: crate::codec::digest(bytes),
-                anchor_generation: 0,
-            },
-            source: Rc::new(MemorySource(bytes.to_vec())),
+        Ok(Self {
+            source: journal::VerifiedBase::from_bytes(bytes)?,
             file: None,
             metadata: None,
-        }
+        })
     }
 
     /// Duplicate the verified descriptor, never a replacement at its old path.
@@ -153,7 +116,7 @@ impl VerifiedBase {
     }
 
     pub fn identity(&self) -> &Header {
-        &self.identity
+        self.source.identity()
     }
     pub fn metadata(&self) -> Option<&Metadata> {
         self.metadata.as_ref()
@@ -162,7 +125,7 @@ impl VerifiedBase {
 
 impl SectorSource for VerifiedBase {
     fn byte_len(&self) -> u64 {
-        self.identity.base_length
+        self.identity().base_length
     }
     fn read_sector(&self, lba: u64) -> io::Result<[u8; SECTOR_LEN]> {
         self.source.read_sector(lba)
@@ -172,6 +135,13 @@ impl SectorSource for VerifiedBase {
     }
     fn read_range(&self, first_lba: u64, bytes: &mut [u8]) -> io::Result<()> {
         self.source.read_range(first_lba, bytes)
+    }
+}
+
+impl std::ops::Deref for VerifiedBase {
+    type Target = journal::VerifiedBase;
+    fn deref(&self) -> &Self::Target {
+        &self.source
     }
 }
 
@@ -245,109 +215,7 @@ impl SectorSource for FileSource {
         Ok(bytes)
     }
 }
-struct MemorySource(Vec<u8>);
-impl SectorSource for MemorySource {
-    fn byte_len(&self) -> u64 {
-        self.0.len() as u64
-    }
-    fn check_unchanged(&self) -> io::Result<()> {
-        Ok(())
-    }
-    fn read_sector(&self, lba: u64) -> io::Result<[u8; SECTOR_LEN]> {
-        let mut bytes = [0; SECTOR_LEN];
-        if let Some(start) = usize::try_from(lba)
-            .ok()
-            .and_then(|n| n.checked_mul(SECTOR_LEN))
-            .filter(|&n| n < self.0.len())
-        {
-            let end = (start + SECTOR_LEN).min(self.0.len());
-            bytes[..end - start].copy_from_slice(&self.0[start..end]);
-        }
-        Ok(bytes)
-    }
-}
-
-/// Deterministically ordered replacements over an immutable parent. A future
-/// layer can implement `SectorSource` and become this top's parent unchanged.
-/// See persistent-media.md § Memory and hashing.
-pub struct SparseOverlay {
-    parent: Rc<dyn SectorSource>,
-    sectors: BTreeMap<u64, Box<[u8; SECTOR_LEN]>>,
-}
-impl std::fmt::Debug for SparseOverlay {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SparseOverlay")
-            .field("byte_len", &self.byte_len())
-            .field("sectors", &self.sectors)
-            .finish()
-    }
-}
-impl SparseOverlay {
-    pub fn new(parent: Rc<dyn SectorSource>) -> Self {
-        Self {
-            parent,
-            sectors: BTreeMap::new(),
-        }
-    }
-    /// Test only written sectors; an unchanged disk needs no full comparison pass.
-    pub fn has_changes(&self) -> io::Result<bool> {
-        for (&lba, bytes) in &self.sectors {
-            if self.parent.read_sector(lba)? != **bytes {
-                return Ok(true);
-            }
-        }
-        self.check_unchanged()?;
-        Ok(false)
-    }
-    pub fn written_sectors(&self) -> usize {
-        self.sectors.len()
-    }
-    pub(crate) fn replacements(&self) -> impl Iterator<Item = (&u64, &Box<[u8; SECTOR_LEN]>)> {
-        self.sectors.iter()
-    }
-    pub(crate) fn replace(&mut self, lba: u64, bytes: Box<[u8; SECTOR_LEN]>) {
-        self.sectors.insert(lba, bytes);
-    }
-    pub(crate) fn same_replacements(&self, other: &Self) -> bool {
-        self.sectors == other.sectors
-    }
-    /// Explicit capture helper for small callers; mount and maintenance never
-    /// materialize an image. Export streams sectors instead.
-    pub fn materialize(&self) -> io::Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        for lba in 0..self.byte_len().div_ceil(SECTOR_LEN as u64) {
-            bytes.extend_from_slice(&self.read_sector(lba)?);
-        }
-        bytes.truncate(self.byte_len() as usize);
-        Ok(bytes)
-    }
-}
-impl SectorSource for SparseOverlay {
-    fn byte_len(&self) -> u64 {
-        self.parent.byte_len()
-    }
-    fn check_unchanged(&self) -> io::Result<()> {
-        self.parent.check_unchanged()
-    }
-    fn read_range(&self, first_lba: u64, bytes: &mut [u8]) -> io::Result<()> {
-        self.parent.read_range(first_lba, bytes)?;
-        let end = first_lba + bytes.len().div_ceil(SECTOR_LEN) as u64;
-        for (&lba, sector) in self.sectors.range(first_lba..end) {
-            let start = (lba - first_lba) as usize * SECTOR_LEN;
-            let count = (bytes.len() - start).min(SECTOR_LEN);
-            bytes[start..start + count].copy_from_slice(&sector[..count]);
-        }
-        self.check_unchanged()
-    }
-    fn read_sector(&self, lba: u64) -> io::Result<[u8; SECTOR_LEN]> {
-        self.check_unchanged()?;
-        self.sectors
-            .get(&lba)
-            .map_or_else(|| self.parent.read_sector(lba), |bytes| Ok(**bytes))
-    }
-}
-
-pub(crate) fn hash_reader(file: &mut (impl Read + Seek)) -> io::Result<[u8; 32]> {
+pub fn hash_reader(file: &mut (impl Read + Seek)) -> io::Result<[u8; 32]> {
     #[cfg(any(test, feature = "test-support"))]
     HASH_PASSES.with(|count| count.set(count.get() + 1));
     loop {
@@ -384,7 +252,7 @@ pub fn hash_passes() -> usize {
 #[cfg(feature = "test-support")]
 thread_local! { static DATA_PASSES: std::cell::RefCell<BTreeMap<u64, usize>> = const { std::cell::RefCell::new(BTreeMap::new()) }; }
 #[cfg(feature = "test-support")]
-pub(crate) fn note_data_pass(length: u64) {
+pub fn note_data_pass(length: u64) {
     DATA_PASSES.with(|counts| *counts.borrow_mut().entry(length).or_default() += 1);
 }
 /// Complete raw/cache/logical passes of a given length on this thread.
@@ -397,6 +265,41 @@ pub fn data_passes(length: u64) -> usize {
 mod read_failure_tests {
     use super::*;
     use crate::{scan_overlay_reader, ClosingReason, Frame, Record};
+
+    #[cfg(unix)]
+    #[test]
+    fn base_reads_preserve_underlying_io_error_kind_and_message() {
+        use std::os::unix::fs::FileExt;
+
+        let path =
+            std::env::temp_dir().join(format!("journal-base-read-failure-{}", std::process::id()));
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        std::fs::remove_file(&path).unwrap();
+        file.set_len(SECTOR_LEN as u64).unwrap();
+        let metadata = file.metadata().unwrap();
+        let expected = file.read_exact_at(&mut [0; SECTOR_LEN], 0).unwrap_err();
+        let base = VerifiedBase::from_verified_file(
+            file,
+            Header::new(&[0; SECTOR_LEN], 0).unwrap(),
+            metadata,
+        )
+        .unwrap();
+
+        let errors = [
+            base.read_sector(0).unwrap_err(),
+            base.read_range(0, &mut [0; SECTOR_LEN]).unwrap_err(),
+        ];
+        for error in errors {
+            assert_eq!(
+                (error.kind(), error.to_string()),
+                (expected.kind(), expected.to_string())
+            );
+        }
+    }
 
     #[test]
     fn streaming_hash_retries_interrupted_reads() {
@@ -449,9 +352,12 @@ mod read_failure_tests {
     #[test]
     fn base_read_failure_during_anchor_validation_is_never_a_repairable_tail() {
         let base = VerifiedBase {
-            source: Rc::new(FailedRead),
+            source: journal::VerifiedBase::from_verified_source(
+                Rc::new(FailedRead),
+                Header::new(&[0; 512], 0).unwrap(),
+            )
+            .unwrap(),
             file: None,
-            identity: Header::new(&[0; 512], 0).unwrap(),
             metadata: None,
         };
         let mut header = base.identity().clone();

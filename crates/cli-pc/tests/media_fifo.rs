@@ -9,15 +9,9 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 
-/// The neutral command line without a platform: the journal tools need none.
+/// The PC journal commands through the frontend's platform seam.
 fn run(args: &[OsString], output: &mut Vec<u8>, errors: &mut Vec<u8>) -> u8 {
-    cli_core::run(
-        args,
-        &mut cli_core::Io { output, errors },
-        &cli_core::HostSources::default(),
-        &[],
-        &core_launch::Cores::new(&[]),
-    )
+    cli_pc::command::run(args, output, errors)
 }
 
 struct Fixture {

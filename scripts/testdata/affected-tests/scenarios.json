@@ -148,12 +148,12 @@
     }
   },
   {
-    "name": "a neutral command module selects the goldens too: a golden runs the journal tools",
-    "changed": ["crates/cli-core/src/journal.rs"],
+    "name": "the standalone journal commands select the goldens",
+    "changed": ["crates/unemupc/src/journal.rs"],
     "expect": {
-      "mode": "crates", "seeds": ["cli-core"], "affected": ["cli-core", "cli-pc", "upcli"],
+      "mode": "crates", "seeds": ["unemupc"], "affected": ["cli-pc", "unemupc", "upcli"],
       "tier": "goldens", "cli": true,
-      "golden_reasons": ["crates/cli-core/src/journal.rs: machine runner the goldens drive"]
+      "golden_reasons": ["crates/unemupc/src/journal.rs: machine runner the goldens drive"]
     }
   },
   {
@@ -246,9 +246,9 @@
     "expect": {
       "mode": "full",
       "affected": ["assembly", "audio", "bus", "chipset", "cli-core", "cli-pc", "cpu", "device",
-        "devices", "image-registry", "image-store", "machine", "machine-file", "machine-view",
+        "devices", "image-registry", "image-store", "journal", "journal-files", "machine", "machine-file", "machine-view",
         "media", "pc-harness", "pc-image", "pc-session-tests", "platforms", "testkit", "ui-kit",
-        "unemu-pc-core",
+        "unemu-pc-core", "unemupc",
         "upcli", "video", "window"],
       "tier": "goldens", "deny": true, "release_devices": true, "cli": true, "scan_tests": [],
       "targeted": []
@@ -283,16 +283,33 @@
   },
   {
     "name": "shipped machine file selects its readers and the goldens",
-    "changed": ["machines/at-freedos.toml"],
+    "changed": [
+      "machines/at-freedos.toml"
+    ],
     "expect": {
       "mode": "crates",
       "seeds": [
-        "cli-pc", "machine-file", "pc-harness", "pc-image", "pc-library", "pc-session-tests", "upcli",
+        "cli-pc",
+        "machine-file",
+        "pc-harness",
+        "pc-image",
+        "pc-library",
+        "pc-session-tests",
+        "unemupc",
+        "upcli",
         "window"
       ],
       "affected": [
-        "cli-pc", "machine-file", "pc-harness", "pc-image", "pc-library", "pc-session-tests",
-        "platforms", "upcli", "window"
+        "cli-pc",
+        "machine-file",
+        "pc-harness",
+        "pc-image",
+        "pc-library",
+        "pc-session-tests",
+        "platforms",
+        "unemupc",
+        "upcli",
+        "window"
       ],
       "tier": "goldens"
     }
@@ -307,23 +324,47 @@
   },
   {
     "name": "fixture script selects its readers and the goldens, and gets bash -n",
-    "changed": ["vendor/kiselev-bios/fetch.sh"],
+    "changed": [
+      "vendor/kiselev-bios/fetch.sh"
+    ],
     "expect": {
       "mode": "crates",
       "seeds": [
-        "assembly", "cli-pc", "machine-file", "pc-harness", "pc-image", "pc-library",
-        "pc-session-tests", "upcli", "window"
+        "assembly",
+        "cli-pc",
+        "machine-file",
+        "pc-harness",
+        "pc-image",
+        "pc-library",
+        "pc-session-tests",
+        "unemupc",
+        "upcli",
+        "window"
       ],
-      "tier": "goldens", "shell": ["vendor/kiselev-bios/fetch.sh"]
+      "tier": "goldens",
+      "shell": [
+        "vendor/kiselev-bios/fetch.sh"
+      ]
     }
   },
   {
     "name": "golden test support shared through #[path] selects every including crate",
-    "changed": ["crates/pc-harness/tests/support/fixtures.rs"],
+    "changed": [
+      "crates/pc-harness/tests/support/fixtures.rs"
+    ],
     "expect": {
       "mode": "crates",
       "seeds": [
-        "assembly", "cli-pc", "machine-file", "pc-config", "pc-harness", "pc-image", "pc-library", "upcli", "window"
+        "assembly",
+        "cli-pc",
+        "machine-file",
+        "pc-config",
+        "pc-harness",
+        "pc-image",
+        "pc-library",
+        "unemupc",
+        "upcli",
+        "window"
       ],
       "tier": "goldens"
     }
@@ -394,15 +435,45 @@
   },
   {
     "name": "the contract comes from its own repository: a new contract is a moved pin in the workspace manifest, so everything",
-    "changed": ["Cargo.toml", "Cargo.lock"],
+    "changed": [
+      "Cargo.toml",
+      "Cargo.lock"
+    ],
     "expect": {
-      "mode": "full", "seeds": [],
-      "affected": ["assembly", "audio", "bus", "chipset", "cli-core", "cli-pc", "cpu", "device",
-        "devices", "image-registry", "image-store", "machine", "machine-file", "machine-view",
-        "media", "pc-harness", "pc-image", "pc-session-tests", "platforms", "testkit", "ui-kit",
+      "mode": "full",
+      "seeds": [],
+      "affected": [
+        "assembly",
+        "audio",
+        "bus",
+        "chipset",
+        "cli-core",
+        "cli-pc",
+        "cpu",
+        "device",
+        "devices",
+        "image-registry",
+        "image-store",
+        "journal",
+        "journal-files",
+        "machine",
+        "machine-file",
+        "machine-view",
+        "media",
+        "pc-harness",
+        "pc-image",
+        "pc-session-tests",
+        "platforms",
+        "testkit",
+        "ui-kit",
         "unemu-pc-core",
-        "upcli", "video", "window"],
-      "tier": "goldens", "deny": true
+        "unemupc",
+        "upcli",
+        "video",
+        "window"
+      ],
+      "tier": "goldens",
+      "deny": true
     }
   },
   {
@@ -449,6 +520,8 @@
     "tier": "user-roms",
     "expect": { "mode": "crates", "tier": "fast", "user_roms": true }
   },
+  {"name": "journal changes select journal goldens", "changed": ["crates/journal/src/lib.rs"], "expect": {"mode": "crates", "seeds": ["journal"], "tier": "goldens"}},
+  {"name": "journal-files changes select journal goldens", "changed": ["crates/journal-files/src/lib.rs"], "expect": {"mode": "crates", "seeds": ["journal-files"], "tier": "goldens"}},
   {
     "name": "nothing changed",
     "changed": [],

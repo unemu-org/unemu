@@ -5,7 +5,7 @@
 
 #[path = "../src/temporary.rs"]
 mod temporary;
-use media::{Header, SECTOR_LEN};
+use journal_files::{Header, SECTOR_LEN};
 use std::{
     fs::File,
     io,

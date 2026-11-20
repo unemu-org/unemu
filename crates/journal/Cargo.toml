@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "journal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Host-independent disk journal codec, replay and sparse overlays."
+
+[package.metadata.unemu]
+layer = "neutral"
+side = "core"
+
+[dependencies]
+sha2.workspace = true
+thiserror.workspace = true
+unemu-core-api.workspace = true

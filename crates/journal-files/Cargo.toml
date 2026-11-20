@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "journal-files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "File-backed journals and their offline tools."
+
+[package.metadata.unemu]
+layer = "neutral"
+side = "core"
+
+[dependencies]
+journal.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+unemu-core-api.workspace = true
+unemu-core-files.workspace = true
+
+[features]
+test-support = []
+
+[dev-dependencies]
+unemu-core-api = { workspace = true, features = ["test-support"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

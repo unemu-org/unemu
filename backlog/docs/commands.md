@@ -9,11 +9,22 @@ cargo run --offline -p unemupc -- --boot
 cargo run --offline -p unemupc -- --bios vendor/kiselev-bios/bios-xi8088.bin
 cargo run --offline -p unemupc -- machine check machines/at-freedos.toml
 cargo run --offline -p unemupc -- run --machine machines/at-freedos.toml --max-steps 12000000 --idle-limit 1000000 --print mda
+cargo run --offline -p unemupc -- media generations --base disk.img --journal disk.upfj
+cargo run --offline -p unemupc -- media verify --base disk.img --journal disk.upfj
+cargo run --offline -p unemupc -- media rollback --base disk.img --journal disk.upfj --to 0 --backup before.upfj
+cargo run --offline -p unemupc -- media commit --base disk.img --journal disk.upfj --to 0 --output restored.img
 cargo run --offline -p unemupc -- --version
 cargo run --offline -p unemupc -- --about
 ```
 
 `unemupc` runs without the frontend's store, registry or recipes.
+The four journal commands also remain available through `upcli`, with the
+same arguments, reports and exit codes: 0 success, 1 host/storage failure,
+2 usage/configuration refusal, 3 recovery needed. `compact` aliases `commit`;
+`verify --repair-tail --backup PATH` preserves the original journal before
+repair. Commit writes a new base file and never rewrites the old base.
+The shared implementation is `unemupc::journal`, using `journal-files`;
+`cli-pc` owns the frontend journal tests (`media_tools`, `media_fifo`).
 `--boot`, `--bios PATH` and `machine check FILE` are available only here. The frontend keeps
 `upcli run --machine`, calling the same library with firmware-store lookup;
 add `--no-store` for the standalone run's output and exit codes.

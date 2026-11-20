@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Allocation-bounded large-image lifecycle; persistent-media.md § Memory and hashing.
 
-use media::{
+use journal_files::{
     offline::{Access, JournalTool},
     JournalMedia, SectorSource, SinkStatus, VerifiedBase,
 };

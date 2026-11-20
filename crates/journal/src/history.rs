@@ -5,7 +5,7 @@
 use crate::{scan_overlay_reader, SectorSource, SparseScan, VerifiedBase};
 use std::io::{self, Read, Seek, SeekFrom};
 
-pub(crate) fn prefix<R: Read + Seek + ?Sized>(
+pub fn prefix<R: Read + Seek + ?Sized>(
     source: &mut R,
     end: usize,
     base: &VerifiedBase,

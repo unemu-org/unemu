@@ -23,31 +23,7 @@
 //! [`fat12`] builds new FAT12 diskette bases from host files and folders;
 //! [`create`] publishes them. See machines/README.md § Preparing disks.
 
-mod codec;
 pub mod create;
 pub mod fat12;
-mod history;
-mod journal_file;
 pub mod layer;
-pub mod offline;
-mod overlay;
-mod scan;
-mod sink;
-mod store;
-mod temporary;
-
-pub use codec::{ClosingReason, Error, Frame, Header, Record, FRAME_LEN, HEADER_LEN, SECTOR_LEN};
-pub use overlay::{SectorSource, SparseOverlay, VerifiedBase};
-pub use scan::{
-    scan, scan_overlay_reader, scan_reader, Generation, Refusal, Scan, SparseScan, Status, Tail,
-    Tip, VerificationReport,
-};
-
-pub use journal_file::JournalFile;
-pub use sink::{JournalMedia, MaintenanceFailure, OpenError, SinkFailure, SinkStatus};
-
-#[cfg(test)]
-mod overlay_tests;
-
-#[cfg(feature = "test-support")]
-pub use overlay::{data_passes, hash_passes};
+pub use journal_files::*;

@@ -29,6 +29,8 @@ members = [
     "crates/pc-library",
     "crates/pc-ui",
     "crates/media",
+    "crates/journal",
+    "crates/journal-files",
     "crates/machine-file",
     "crates/pc-config",
     "crates/image-store",
@@ -100,6 +102,8 @@ machine = { path = "crates/machine", version = "0.0.3" }
 machine-file = { path = "crates/machine-file", version = "0.0.3" }
 pc-config = { path = "crates/pc-config", version = "0.0.3" }
 media = { path = "crates/media", version = "0.0.3" }
+journal = { path = "crates/journal", version = "0.0.3" }
+journal-files = { path = "crates/journal-files", version = "0.0.3" }
 devices = { path = "crates/devices", version = "0.0.3" }
 video = { path = "crates/video", version = "0.0.3" }
 audio = { path = "crates/audio", version = "0.0.3" }

@@ -1849,6 +1849,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "journal"
+version = "0.0.3"
+dependencies = [
+ "sha2",
+ "thiserror 1.0.69",
+ "unemu-core-api",
+]
+
+[[package]]
+name = "journal-files"
+version = "0.0.3"
+dependencies = [
+ "journal",
+ "libc",
+ "sha2",
+ "thiserror 1.0.69",
+ "unemu-core-api",
+ "unemu-core-files",
+]
+
+[[package]]
 name = "js-sys"
 version = "0.3.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2030,12 +2051,12 @@ dependencies = [
 name = "media"
 version = "0.0.3"
 dependencies = [
+ "journal-files",
  "libc",
  "serde",
  "sha2",
  "thiserror 1.0.69",
  "toml",
- "unemu-core-api",
 ]
 
 [[package]]
@@ -3946,6 +3967,7 @@ dependencies = [
  "assembly",
  "cpu",
  "device",
+ "journal-files",
  "machine",
  "machine-file",
  "pc-harness",

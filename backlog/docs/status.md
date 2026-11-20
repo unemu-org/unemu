@@ -5,6 +5,16 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — Journal crate extraction, partly done:** `journal` owns
+  the byte format, replay and sparse overlays; `journal-files` owns file
+  sessions and offline tools; `media` temporarily re-exports the old paths.
+  Both new crates remain neutral/core until the contract file adapter and
+  mount extraction complete. The four journal commands now share one
+  implementation in `unemupc`, and remain available in `upcli` unchanged.
+  Existing `FileContent` supplies base reads; arbitrary-path records,
+  publication/retention and fault injection need contract-repository work.
+  Assembly's boundary and host exceptions remain; step 11 is not complete.
+  See `design/core-contract.md` §12.10 step 11.
 - **2026-11-20 — Firmware discovery is host-side:** directory scanning,
   environment roots, the persistent hash index and discovery sessions now live
   in `machine_file::firmware_discovery`, with all 60 existing tests. The

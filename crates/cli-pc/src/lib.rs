@@ -21,6 +21,8 @@
 
 pub mod command;
 pub mod image;
+/// Offline journal commands shared with the standalone PC command line.
+pub use unemupc::journal;
 /// Machine-run types shared with the standalone core command line.
 pub use unemupc::run;
 
@@ -219,6 +221,7 @@ impl CliPlatform for PcPlatform<'_> {
             "         --top NAME puts them all under one folder; --split writes <stem>-1ofN.<ext>, <stem>-2ofN.<ext>... when they need more than one disk\n",
             "       upcli media create hd (--chs C/H/S | --size SIZE[MiB|GiB]) OUT [--force]\n",
         ),
+        UsageSlot::Journal => unemupc::JOURNAL_USAGE,
         UsageSlot::Last => "DOS boot and interactive sessions: see crates/pc-harness/tests/*dos*golden.rs\n",
         }
     }
@@ -386,6 +389,7 @@ mod tests {
 
     #[test]
     fn run_store_flags_are_explicit_and_exclusive() {
+        assert!(parse(&["another-platform-command".into()]).is_none());
         let parse_run = |options: &[&str]| {
             let args = ["run", "--machine", "machine.toml"]
                 .into_iter()

@@ -13,19 +13,14 @@ description = "Host-independent disk media formats: the recoverable floppy journ
 layer = "neutral"
 
 [dependencies]
+journal-files.workspace = true
 sha2.workspace = true
 serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true
-# The contract's record: where a journal is kept (core-contract.md §12.5).
-unemu-core-api.workspace = true
-
-[dev-dependencies]
-unemu-core-api = { workspace = true, features = ["test-support"] }
 
 [features]
-# Fault injection for consumers' frontend-boundary acceptance tests.
-test-support = []
+test-support = ["journal-files/test-support"]
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

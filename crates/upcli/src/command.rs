@@ -10,10 +10,10 @@ use core_launch::Cores;
 use std::ffi::OsString;
 use std::io::Write;
 
-/// The journal report and its exit code, which tests of the journal tools read.
-pub use cli_core::journal::{render_report, report_exit_code};
 /// Host paths are supplied by the executable, never discovered by library tests.
 pub use cli_core::HostSources as FirmwareSources;
+/// The journal report and its exit code, which tests of the journal tools read.
+pub use cli_pc::journal::{render_report, report_exit_code};
 
 /// A parsed `upcli` command line.
 pub enum Command {

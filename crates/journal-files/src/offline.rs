@@ -390,7 +390,7 @@ impl JournalTool {
 /// Actual offline filesystem operations, including barriers. Recording tests
 /// delegate to HostIo so production HostBackup calls cannot bypass their trace.
 /// See persistent-media.md § Offline commands and § Locking and retention.
-pub(crate) trait ToolIo {
+pub trait ToolIo {
     fn create_temporary(
         &mut self,
         path: &Path,
@@ -486,7 +486,7 @@ pub(crate) trait ToolIo {
         JournalMedia::recover_locked(path, base, lock, base_metadata)
     }
 }
-pub(crate) struct HostIo;
+pub struct HostIo;
 impl ToolIo for HostIo {}
 
 fn hard_link_unsupported(error: &io::Error) -> bool {

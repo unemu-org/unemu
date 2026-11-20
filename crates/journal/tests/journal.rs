@@ -2,7 +2,7 @@
 //! Wire vectors and crash-model checks for persistent-media.md § Chosen format
 //! and § Open and tail recovery. All fixtures are generated in memory.
 
-use media::{
+use journal::{
     scan, ClosingReason, Error, Frame, Header, Record, Status, FRAME_LEN, HEADER_LEN, SECTOR_LEN,
 };
 use sha2::{Digest, Sha256};
@@ -224,7 +224,7 @@ fn header_rejects_a_matching_non_sector_aligned_base() {
     let result = scan(&header, &base, 600);
     assert!(matches!(
         result.report.status,
-        Status::Refused(media::Refusal {
+        Status::Refused(journal::Refusal {
             reason: Error::BaseLength,
             ..
         })
@@ -245,7 +245,7 @@ fn header_version_and_length_are_checked_before_self_hash() {
         );
         let result = scan(&future, &base, 512);
         assert!(matches!(result.report.status,
-            Status::Refused(media::Refusal { reason: Error::Version(found), .. }) if found == version));
+            Status::Refused(journal::Refusal { reason: Error::Version(found), .. }) if found == version));
         assert!(result.image.is_none());
     }
     for length in [64u16, 129] {
@@ -544,7 +544,7 @@ fn final_grammar_failure_is_reported_as_uncertain_tail() {
     assert_eq!(result.report.last_durable_sequence, 0);
     assert!(matches!(
         result.report.status,
-        Status::TornTail(media::Tail {
+        Status::TornTail(journal::Tail {
             failure_offset: 768,
             reason: Error::Sequence {
                 expected: 2,
@@ -568,7 +568,7 @@ fn later_marker_detection_is_conservative_and_uses_only_fixed_stride() {
     let result = scan(&bytes, &base, 512);
     assert!(matches!(
         result.report.status,
-        Status::Refused(media::Refusal {
+        Status::Refused(journal::Refusal {
             later_generation_end: Some(1408),
             ..
         })
@@ -716,7 +716,7 @@ fn anchor_round_trip_and_every_incomplete_prefix() {
         assert!(
             matches!(
                 result.report.status,
-                Status::Refused(media::Refusal {
+                Status::Refused(journal::Refusal {
                     incomplete_anchor: true,
                     ..
                 })
@@ -840,7 +840,7 @@ fn anchor_grammar_rejects_noncanonical_snapshots() {
     );
     assert!(matches!(
         scan(&bytes, &base, base.len() as u64).report.status,
-        Status::Refused(media::Refusal {
+        Status::Refused(journal::Refusal {
             reason: Error::IntegerExhausted,
             ..
         })
@@ -884,7 +884,7 @@ fn streaming_matches_slice_at_every_cut_and_bounds_read_requests() {
             max_read: 0,
         };
         assert_eq!(
-            media::scan_reader(&mut input, &base, base.len() as u64).unwrap(),
+            journal::scan_reader(&mut input, &base, base.len() as u64).unwrap(),
             scan(&journal[..cut], &base, base.len() as u64),
             "cut {cut}"
         );
@@ -894,7 +894,7 @@ fn streaming_matches_slice_at_every_cut_and_bounds_read_requests() {
         damaged[index] ^= 1;
         let mut cursor = std::io::Cursor::new(damaged.clone());
         assert_eq!(
-            media::scan_reader(&mut cursor, &base, base.len() as u64).unwrap(),
+            journal::scan_reader(&mut cursor, &base, base.len() as u64).unwrap(),
             scan(&damaged, &base, base.len() as u64)
         );
     }
@@ -914,7 +914,7 @@ fn streaming_io_errors_abort_instead_of_classifying_tail() {
             fail_at: Some(offset as u64),
             max_read: 0,
         };
-        assert!(media::scan_reader(&mut input, &base, base.len() as u64).is_err());
+        assert!(journal::scan_reader(&mut input, &base, base.len() as u64).is_err());
     }
     // Failure while checking for later markers also aborts; otherwise an I/O
     // error could hide closed history and incorrectly authorize truncation.
@@ -925,7 +925,7 @@ fn streaming_io_errors_abort_instead_of_classifying_tail() {
         fail_at: Some((HEADER_LEN + FRAME_LEN) as u64),
         max_read: 0,
     };
-    assert!(media::scan_reader(&mut input, &base, base.len() as u64).is_err());
+    assert!(journal::scan_reader(&mut input, &base, base.len() as u64).is_err());
 }
 
 #[test]
@@ -961,7 +961,7 @@ fn nvram_block_rejects_clock_changes_padding_and_other_short_bases() {
         let bytes = journal(&base, 0, &frames(bad));
         assert!(
             matches!(
-                media::scan(&bytes, &base, 64).report.status,
+                journal::scan(&bytes, &base, 64).report.status,
                 Status::Refused(_)
             ),
             "index {index}"

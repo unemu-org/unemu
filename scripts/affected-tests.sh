@@ -74,7 +74,7 @@ planner='
 # Crates whose change can alter emulated behaviour; a change to one of them
 # selects the golden tier.
 def emulation_crates: ["assembly", "audio", "bus", "chipset", "cpu", "device",
-  "devices", "machine", "machine-file", "media", "pc-config", "testkit", "unemu-pc-core",
+  "devices", "journal", "journal-files", "machine", "machine-file", "media", "pc-config", "testkit", "unemu-pc-core",
   "video"];
 # Files that hold the machine runners and the disk builder the goldens drive,
 # and the command line the front-end goldens drive: of the neutral command
@@ -82,7 +82,7 @@ def emulation_crates: ["assembly", "audio", "bus", "chipset", "cpu", "device",
 # recipe, image or library commands), and every PC command; a path ending in
 # "/" covers every file under it.
 def runner_files: ["crates/pc-harness/src/", "crates/cli-core/src/lib.rs",
-  "crates/cli-core/src/journal.rs", "crates/cli-pc/src/", "crates/unemupc/src/",
+  "crates/cli-pc/src/", "crates/unemupc/src/",
   "crates/pc-image/src/media_create.rs"];
 # Paths that crates read outside their own directory: test support shared
 # with #[path], shipped machine files, fixture scripts and pins, assets.
@@ -91,7 +91,7 @@ def runner_files: ["crates/pc-harness/src/", "crates/cli-core/src/lib.rs",
 # repository root reads both machines/ and vendor/.
 def data_rules: [
   {prefix: "crates/pc-harness/tests/support/", goldens: true,
-   crates: ["assembly", "cli-pc", "machine-file", "pc-config", "pc-harness", "pc-image", "pc-library", "upcli",
+   crates: ["assembly", "cli-pc", "machine-file", "pc-config", "pc-harness", "pc-image", "pc-library", "unemupc", "upcli",
      "window"],
    why: "golden test support shared by several crates"},
   {prefix: "crates/pc-image/tests/support/", goldens: false,
@@ -101,11 +101,11 @@ def data_rules: [
    why: "machine-file guide that tests quote"},
   {prefix: "machines/", goldens: true,
    crates: ["cli-pc", "machine-file", "pc-harness", "pc-image", "pc-library", "pc-session-tests",
-     "upcli", "window"],
+     "unemupc", "upcli", "window"],
    why: "shipped machine file"},
   {prefix: "vendor/", except: "[.]md$", goldens: true,
    crates: ["assembly", "cli-pc", "machine-file", "pc-harness", "pc-image", "pc-library",
-     "pc-session-tests", "upcli", "window"],
+     "pc-session-tests", "unemupc", "upcli", "window"],
    why: "fixture script, pin or notice"},
   {prefix: "assets/", goldens: false, crates: ["ui-kit"], why: "brand asset the ui kit embeds"},
   {prefix: "backlog/docs/design/mockups/", goldens: false, crates: ["ui-kit"],

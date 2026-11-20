@@ -246,6 +246,7 @@
       "id": "path+file:///workspace/crates/cli-pc#0.0.2",
       "manifest_path": "/workspace/crates/cli-pc/Cargo.toml",
       "dependencies": [
+        {"name": "unemupc", "kind": null, "path": "/workspace/crates/unemupc"},
         {
           "name": "assembly",
           "kind": null,
@@ -799,7 +800,10 @@
           "path": "/workspace/crates/pc-core"
         }
       ]
-    }
+    },
+    {"name": "journal", "id": "path+file:///workspace/crates/journal#0.0.2", "manifest_path": "/workspace/crates/journal/Cargo.toml", "dependencies": []},
+    {"name": "journal-files", "id": "path+file:///workspace/crates/journal-files#0.0.2", "manifest_path": "/workspace/crates/journal-files/Cargo.toml", "dependencies": []},
+    {"name": "unemupc", "id": "path+file:///workspace/crates/unemupc#0.0.2", "manifest_path": "/workspace/crates/unemupc/Cargo.toml", "dependencies": []}
   ],
   "workspace_members": [
     "path+file:///workspace/crates/device#0.0.2",
@@ -826,7 +830,10 @@
     "path+file:///workspace/crates/ui-kit#0.0.2",
     "path+file:///workspace/crates/pc-core#0.0.2",
     "path+file:///workspace/crates/machine-view#0.0.2",
-    "path+file:///workspace/crates/pc-session-tests#0.0.2"
+    "path+file:///workspace/crates/pc-session-tests#0.0.2",
+    "path+file:///workspace/crates/journal#0.0.2",
+    "path+file:///workspace/crates/journal-files#0.0.2",
+    "path+file:///workspace/crates/unemupc#0.0.2"
   ],
   "workspace_root": "/workspace"
 }

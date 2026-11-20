@@ -6,8 +6,8 @@
 //! ones the journal wrote before it sat on records; and a running session and
 //! the offline tools still exclude each other through `FILE.lock`.
 
-use media::offline::{Access, JournalTool};
-use media::{
+use journal_files::offline::{Access, JournalTool};
+use journal_files::{
     JournalFile, JournalMedia, OpenError, SectorSource, SinkStatus, VerifiedBase, FRAME_LEN,
     HEADER_LEN, SECTOR_LEN,
 };
@@ -378,7 +378,7 @@ fn a_new_journal_record_is_published_whole_or_not_at_all() {
 /// The numbering the journal reports after a retention whose commit failed
 /// uncertain: that of whichever contents the record holds, read back from it.
 fn confirmed_in(bytes: &[u8]) -> u64 {
-    media::scan(bytes, &base_bytes(), base().byte_len())
+    journal_files::scan(bytes, &base_bytes(), base().byte_len())
         .report
         .generations
         .iter()

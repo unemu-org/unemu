@@ -167,17 +167,19 @@ pub fn scan_overlay_reader<R: Read + Seek>(
 
 /// The same replay over a record of the contract: its length, then reads at
 /// offsets, in the order `scan_overlay_reader` seeks and reads a file.
-pub(crate) fn scan_record(
+pub fn scan_record(
     journal: &mut (impl unemu_core_api::Record + ?Sized),
     base: &VerifiedBase,
     geometry_length: u64,
 ) -> io::Result<SparseScan> {
     base.check_unchanged()?;
-    let length = journal.size().map_err(crate::store::io_error)?;
+    let length = journal
+        .size()
+        .map_err(|error| io::Error::other(error.message))?;
     scan_sized(length, base, geometry_length, |offset, bytes| {
         journal
             .read_at(offset as u64, bytes)
-            .map_err(crate::store::io_error)
+            .map_err(|error| io::Error::other(error.message))
     })
 }
 

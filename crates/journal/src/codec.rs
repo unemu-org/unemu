@@ -176,7 +176,7 @@ impl Header {
 
 /// The CMOS clock/control prefix and AT shutdown byte are not journal state.
 /// See persistent-media.md § CMOS NVRAM journals.
-pub(crate) fn valid_nvram_block(base: &[u8], bytes: &[u8; SECTOR_LEN]) -> bool {
+pub fn valid_nvram_block(base: &[u8], bytes: &[u8; SECTOR_LEN]) -> bool {
     bytes[..14] == base[..14] && bytes[15] == base[15] && bytes[64..].iter().all(|&b| b == 0)
 }
 
@@ -314,7 +314,7 @@ impl Frame {
     }
 }
 
-pub(crate) fn digest(bytes: &[u8]) -> [u8; 32] {
+pub fn digest(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
