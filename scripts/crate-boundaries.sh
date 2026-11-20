@@ -54,6 +54,12 @@
 # dependencies of the crates it reaches, and reports the first forbidden crate
 # on each path once, with the path.
 #
+# Every emulation crate and each package with metadata.unemu.side = "core"
+# stays on the core's side: workspace dependencies may reach only that side,
+# the contract and unemu-core-files. The layer and frontend-family rules still
+# apply. Host crates mark their side explicitly so a neutral store cannot
+# silently enter the standalone core command line.
+#
 # Known violations are listed in scripts/crate-boundaries.allow, one declared
 # dependency per line: `FROM → TO (KIND): REASON`, KIND being normal, build or
 # dev. The walk never crosses a listed dependency, so a crate that reaches it
@@ -140,7 +146,7 @@ def family:
 
 # The rule $from breaks by depending on $to, if any. A crate without a known
 # layer is reported on its own, not as a dependency.
-def broken_rule($layer; $from; $to):
+def broken_rule($layer; $core; $from; $to):
   $layer[$from] as $fl | $layer[$to] as $tl
   | if $tl == null or ($tl | known_layer | not) then empty
     elif any(may_use | .[$fl][]; . == $tl) | not then
@@ -148,6 +154,9 @@ def broken_rule($layer; $from; $to):
     elif ($from | family) != null and ($to | family) != null
          and ($from | family) != ($to | family) then
       "no \($from | family) crate depends on \($to | family | article) crate"
+    elif $core[$from] and ($core[$to] | not) and $tl != "contract"
+         and $to != "unemu-core-files" then
+      "a core-side crate may depend only on the contract, core-side crates and unemu-core-files"
     else empty end;
 
 def listed($valid; $from; $to; $kind):
@@ -159,7 +168,7 @@ def listed($valid; $from; $to; $kind):
 # then the normal and build dependencies of the crates it reaches: a
 # dependency's own test dependencies are never built for $from. It stops at
 # a forbidden crate and never crosses an allow-listed edge.
-def walk($graph; $layer; $valid; $from):
+def walk($graph; $layer; $core; $valid; $from):
   ([("normal", "build", "dev") as $k | ($graph[$from] // [])[] | select(.kind == $k)]
    | map(select(listed($valid; $from; .to; .kind) | not) | {path: [$from, .to], kind: .kind})) as $first
   | {queue: $first, seen: [$from], out: []}
@@ -169,7 +178,7 @@ def walk($graph; $layer; $valid; $from):
       | $item.path[-1] as $node
       | if any(.seen[]; . == $node) then .
         else .seen += [$node]
-        | ([broken_rule($layer; $from; $node)] | first // null) as $rule
+        | ([broken_rule($layer; $core; $from; $node)] | first // null) as $rule
         | if $rule != null then .out += [$item + {rule: $rule}]
           else .queue += [($graph[$node] // [])[] | select(.kind != "dev")
                           | select(listed($valid; $node; .to; .kind) | not)
@@ -189,6 +198,8 @@ def walk($graph; $layer; $valid; $from):
 | (.packages // []) as $packages
 | ($packages | map(.name)) as $names
 | ($packages | map({key: .name, value: (.metadata.unemu.layer? // null)}) | from_entries) as $layer
+| ($packages | map({key: .name, value: (.metadata.unemu.layer == "emulation"
+    or .metadata.unemu.side? == "core")}) | from_entries) as $core
 | ($packages
    | map({key: .name, value: ([.dependencies[]?
        | select(.source == null)
@@ -199,10 +210,10 @@ def walk($graph; $layer; $valid; $from):
 # crate; anything else is stale.
 | ($valid | map(. as $e
     | . + {live: (any(($graph[$e.from] // [])[]; .to == $e.to and .kind == $e.kind)
-                  and ([broken_rule($layer; $e.from; $e.to)] | length > 0))})) as $checked
+                  and ([broken_rule($layer; $core; $e.from; $e.to)] | length > 0))})) as $checked
 | [ $packages[] | .name as $from | $layer[$from] as $fl
     | select($fl != null and $fl != "contract" and ($fl | known_layer))
-    | walk($graph; $layer; $valid; $from) as $hit
+    | walk($graph; $layer; $core; $valid; $from) as $hit
     | $hit.path[-1] as $to
     | "forbidden: \($from) (\($fl)) → \($to) (\($layer[$to])), \($hit.kind) dependency, through \($hit.path | join(" → ")); rule: \($hit.rule)"
   ] as $forbidden

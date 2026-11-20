@@ -13,6 +13,7 @@ description = "The IBM PC/AT family's part of the command line: its machine runs
 layer = "pc"
 
 [dependencies]
+unemupc = { path = "../unemupc", version = "0.0.3" }
 cli-core = { path = "../cli-core", version = "0.0.3" }
 core-launch = { path = "../core-launch", version = "0.0.3" }
 unemu-core-api.workspace = true

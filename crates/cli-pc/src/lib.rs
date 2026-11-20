@@ -21,7 +21,8 @@
 
 pub mod command;
 pub mod image;
-pub mod run;
+/// Machine-run types shared with the standalone core command line.
+pub use unemupc::run;
 
 /// Image creation lives with the PC provider, which the desktop calls too.
 pub use pc_image::media_create as create;
@@ -30,7 +31,6 @@ use cli_core::{CliPlatform, HostSources, Io, PlatformCommand, UsageSlot};
 use image_store::{ConfigValidator, Descriptor, Digest, Manifest, Store};
 use run::FirmwareStore;
 use std::ffi::OsString;
-use std::path::PathBuf;
 
 /// The PC platform of the command line, holding the PC's image providers.
 pub struct PcPlatform<'a> {
@@ -181,16 +181,8 @@ impl CliPlatform for PcPlatform<'_> {
 
     fn usage(&self, slot: UsageSlot) -> &str {
         match slot {
-        UsageSlot::First => "       upcli --boot (Real16 timer demo)\n",
-        UsageSlot::AfterAbout => concat!(
-            "       upcli --bios PATH [--allow-unlisted-firmware]\n",
-            "       upcli machine check FILE [--allow-unlisted-firmware] [--rom-dir DIR]...\n",
-            "       upcli run --machine FILE [--store DIR | --no-store] [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--diag-at N] [--trace-exceptions] [--print CARD] [--allow-unlisted-firmware]\n",
-            "         --diag-at N writes the machine's diagnostic report to stderr when the run reaches step N (the unit of --max-steps), then runs on\n",
-            "         --trace-exceptions writes the exceptions and interrupts the guest takes to stderr when the run ends: the last 10000 entries, each with the registers of the interrupted code (the bytes at CS:IP as at the end of each run slice), consecutive identical deliveries folded into one with a count and the last one's registers, and a summary per vector\n",
-            "       upcli image import FILE --store DIR --tag NAME:TAG [--create] [--no-compress] [--rom-dir DIR]... [--recover MEDIUM=tip|MEDIUM=generation:N]... [--min-app-version X.Y.Z]\n",
-            "         --min-app-version (here, on image media import and on image firmware import and edit) raises the oldest unemupc the image declares it needs: never below what this release computes, never above this release\n",
-        ),
+        UsageSlot::First => unemupc::FRONTEND_BOOT_USAGE,
+        UsageSlot::AfterAbout => MACHINE_AND_IMPORT_USAGE,
         UsageSlot::AfterImageSweep => "",
         UsageSlot::AfterWorkspaceDiscard => concat!(
             "       upcli image workspace abandon-publication NAME --store DIR\n",
@@ -237,217 +229,79 @@ impl CliPlatform for PcPlatform<'_> {
     }
 }
 
+const MACHINE_AND_IMPORT_USAGE: &str = unemupc::machine_usage!(
+            "       upcli image import FILE --store DIR --tag NAME:TAG [--create] [--no-compress] [--rom-dir DIR]... [--recover MEDIUM=tip|MEDIUM=generation:N]... [--min-app-version X.Y.Z]\n",
+            "         --min-app-version (here, on image media import and on image firmware import and edit) raises the oldest unemupc the image declares it needs: never below what this release computes, never above this release\n",
+);
+
 /// A parsed PC command.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub enum PcCommand {
-    Boot,
-    Bios {
-        path: PathBuf,
-        options: assembly::AssemblyOptions,
-    },
-    Check {
-        rom_dirs: Vec<PathBuf>,
-        path: PathBuf,
-        options: assembly::AssemblyOptions,
-    },
-    Run {
-        store: FirmwareStore,
-        rom_dirs: Vec<PathBuf>,
-        path: PathBuf,
-        max_steps: u64,
-        idle_limit: u64,
-        /// `--diag-at N`: the step at which the diagnostic report goes to
-        /// stderr before the run goes on.
-        diag_at: Option<u64>,
-        /// `--trace-exceptions`: the recording of the exception and
-        /// interrupt deliveries, the last entries, goes to stderr.
-        trace_exceptions: bool,
-        print: Option<String>,
-        options: assembly::AssemblyOptions,
-    },
+    Machine(unemupc::Command),
     Create(crate::create::CreateCommand),
     Image(image::PcImageCommand),
 }
 
-/// Parse a PC command line, or `None` when the words are not the PC's.
-/// `--allow-unlisted-firmware` and `--rom-dir DIR` may appear anywhere
-/// outside `image`; a `--rom-dir` on any other command line is refused here.
+impl std::fmt::Debug for PcCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Machine(command) => command.fmt(f),
+            Self::Create(command) => f.debug_tuple("Create").field(command).finish(),
+            Self::Image(command) => f.debug_tuple("Image").field(command).finish(),
+        }
+    }
+}
+
+/// Parse PC commands, preserving the machine parser's refusal of misplaced
+/// ROM options before trying media creation.
 pub fn parse(args: &[OsString]) -> Option<Result<PcCommand, &'static str>> {
     if args.first().is_some_and(|arg| arg == "image") {
         return image::parse(&args[1..]).map(|parsed| parsed.map(PcCommand::Image));
     }
-    machine_words(args).transpose()
-}
-
-/// The machine runs and `media create`; `Ok(None)` for words that are not
-/// the PC's.
-fn machine_words(args: &[OsString]) -> Result<Option<PcCommand>, &'static str> {
-    let mut options = assembly::AssemblyOptions::default();
-    let mut frontend = Vec::new();
-    let mut rom_dirs = Vec::new();
-    let mut arguments = args.iter();
-    while let Some(arg) = arguments.next() {
-        if arg == "--allow-unlisted-firmware" {
-            options.allow_unlisted_firmware = true;
-        } else if arg == "--rom-dir" {
-            let path = arguments
-                .next()
-                .filter(|value| !value.is_empty() && !value.as_encoded_bytes().starts_with(b"--"))
-                .ok_or("missing ROM directory")?;
-            rom_dirs.push(PathBuf::from(path));
-        } else {
-            frontend.push(arg);
-        }
-    }
-    if !rom_dirs.is_empty()
-        && !frontend
-            .first()
-            .is_some_and(|arg| matches!(arg.to_str(), Some("run" | "machine")))
-    {
-        return Err("--rom-dir requires run or machine check");
-    }
-    if frontend.len() == 1 && frontend[0] == "--boot" {
-        return Ok(Some(PcCommand::Boot));
-    }
-    if frontend.len() == 2 && frontend[0] == "--bios" {
-        return Ok(Some(PcCommand::Bios {
-            path: frontend[1].into(),
-            options,
-        }));
-    }
-    if frontend.first().is_some_and(|arg| *arg == "machine") {
-        return if frontend.len() == 3
-            && frontend[1] == "check"
-            && !frontend[2].is_empty()
-            && !frontend[2].as_encoded_bytes().starts_with(b"--")
-        {
-            Ok(Some(PcCommand::Check {
-                rom_dirs,
-                path: frontend[2].into(),
-                options,
-            }))
-        } else {
-            Err("expected machine check FILE")
-        };
-    }
-    if frontend.first().is_some_and(|arg| *arg == "run") {
-        let (mut path, mut max_steps, mut idle_limit, mut print) = (None, None, None, None);
-        let mut diag_at = None;
-        let mut trace_exceptions = false;
-        let mut store = None;
-        let mut args = frontend[1..].iter();
-        while let Some(arg) = args.next() {
-            if *arg == "--trace-exceptions" {
-                if std::mem::replace(&mut trace_exceptions, true) {
-                    return Err("unknown or duplicate run option");
-                }
-                continue;
-            }
-            if *arg == "--no-store" {
-                if store.replace(FirmwareStore::Disabled).is_some() {
-                    return Err("duplicate or conflicting store option");
-                }
-                continue;
-            }
-            let value = args
-                .next()
-                .filter(|value| !value.is_empty() && !value.as_encoded_bytes().starts_with(b"--"))
-                .ok_or("missing option value")?;
-            match arg.to_str() {
-                Some("--store") if store.is_none() => {
-                    store = Some(FirmwareStore::Root(PathBuf::from(value)))
-                }
-                Some("--machine") if path.is_none() => path = Some(PathBuf::from(value)),
-                Some("--max-steps") if max_steps.is_none() => max_steps = Some(decimal(value)?),
-                Some("--idle-limit") if idle_limit.is_none() => idle_limit = Some(decimal(value)?),
-                Some("--diag-at") if diag_at.is_none() => diag_at = Some(decimal(value)?),
-                Some("--print") if print.is_none() => {
-                    print = Some(value.to_str().ok_or("invalid card id")?.to_owned())
-                }
-                _ => return Err("unknown or duplicate run option"),
-            }
-        }
-        return Ok(Some(PcCommand::Run {
-            store: store.unwrap_or(FirmwareStore::Default),
-            rom_dirs,
-            path: path.ok_or("run requires --machine FILE")?,
-            max_steps: max_steps.unwrap_or(pc_harness::BIOS_MAX_RETIRED),
-            idle_limit: idle_limit.unwrap_or(pc_harness::BIOS_IDLE_LIMIT),
-            diag_at,
-            trace_exceptions,
-            print,
-            options,
-        }));
+    if let Some(parsed) = unemupc::parse_with_store(args) {
+        return Some(parsed.map(PcCommand::Machine));
     }
     if args.len() >= 2 && args[0] == "media" && args[1] == "create" {
-        return crate::create::parse(&args[2..]).map(|c| Some(PcCommand::Create(c)));
+        return Some(crate::create::parse(&args[2..]).map(PcCommand::Create));
     }
-    Ok(None)
-}
-
-fn decimal(value: &std::ffi::OsStr) -> Result<u64, &'static str> {
-    value
-        .to_str()
-        .filter(|text| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
-        .ok_or("expected an unsigned decimal integer")?
-        .parse()
-        .map_err(|_| "integer is out of range")
+    None
 }
 
 impl PlatformCommand for PcCommand {
-    /// Each command's error reads as it always did: a BIOS run's with its
-    /// causes after `Error: `, a machine check's and a run's as one line,
-    /// an image command's with its causes.
     fn execute(self: Box<Self>, io: &mut Io<'_>, host: &HostSources) -> anyhow::Result<u8> {
-        let line = |error: &dyn std::fmt::Display| anyhow::Error::msg(error.to_string());
         match *self {
-            PcCommand::Boot => {
-                let serial =
-                    pc_harness::run_boot(pc_harness::BOOT_PROGRAM).map_err(|e| line(&e))?;
-                io.output.write_all(&serial).map_err(|e| line(&e))?;
-                Ok(0)
-            }
-            PcCommand::Bios { path, options } => {
-                run::run_bios(&path, options, &mut io.output, &mut io.errors)
-                    .map_err(|error| anyhow::Error::msg(format!("Error: {error:?}")))
-            }
-            PcCommand::Check {
-                path,
-                options,
-                rom_dirs,
-            } => {
-                run::check_machine(&path, options, &rom_dirs, &mut io.errors).map_err(|e| line(&e))
-            }
-            PcCommand::Run {
-                store,
-                path,
-                rom_dirs,
-                max_steps,
-                idle_limit,
-                diag_at,
-                trace_exceptions,
-                print,
-                options,
-            } => run::run_machine(
-                &path,
-                options,
-                (max_steps, idle_limit, diag_at, trace_exceptions),
-                print.as_deref(),
-                (
-                    &rom_dirs,
-                    match &store {
-                        FirmwareStore::Default => host.store_root.as_deref(),
+            PcCommand::Machine(command) => {
+                let store_root = match &command {
+                    unemupc::Command::Run { store, .. } => match store {
+                        FirmwareStore::Default => host.store_root.clone(),
                         FirmwareStore::Disabled => None,
-                        FirmwareStore::Root(path) => Some(path.as_path()),
+                        FirmwareStore::Root(path) => Some(path.clone()),
                     },
-                ),
-                &mut io.output,
-                &mut io.errors,
-            )
-            .map_err(|e| line(&e)),
-            PcCommand::Create(command) => {
-                crate::create::execute(command, &mut io.output).map_err(|e| line(&e))
+                    _ => None,
+                };
+                unemupc::execute_with_loader(
+                    command,
+                    &mut io.output,
+                    &mut io.errors,
+                    |path, options, dirs, errors| {
+                        let roots = unemupc::run::firmware_roots(dirs);
+                        let mut warnings = Vec::new();
+                        let result = pc_image::firmware::prepare_for_assembly_with_store_root(
+                            path,
+                            &roots,
+                            &mut warnings,
+                            store_root.as_deref(),
+                        )
+                        .and_then(|document| document.load(options));
+                        for warning in warnings {
+                            writeln!(errors, "warning: {warning}")?;
+                        }
+                        Ok(result?)
+                    },
+                )
             }
+            PcCommand::Create(command) => crate::create::execute(command, &mut io.output)
+                .map_err(|error| anyhow::Error::msg(error.to_string())),
             PcCommand::Image(command) => image::execute(command, io, host),
         }
     }
@@ -530,60 +384,6 @@ mod tests {
         });
     }
 
-    /// The PC command a command line parses to.
-    fn pc(args: &[OsString]) -> PcCommand {
-        parse(args).expect("a PC command").unwrap()
-    }
-
-    #[test]
-    fn file_run_parser_preserves_policy_defaults_and_explicit_limits() {
-        let args = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
-        assert_eq!(
-            pc(&args(&["run", "--machine", "at.toml"])),
-            PcCommand::Run {
-                store: FirmwareStore::Default,
-                rom_dirs: Vec::new(),
-                path: "at.toml".into(),
-                max_steps: 20_000_000,
-                idle_limit: 1_000_000,
-                diag_at: None,
-                trace_exceptions: false,
-                print: None,
-                options: assembly::AssemblyOptions::default(),
-            }
-        );
-        assert_eq!(
-            pc(&args(&[
-                "run",
-                "--machine",
-                "at.toml",
-                "--max-steps",
-                "42",
-                "--idle-limit",
-                "0",
-                "--diag-at",
-                "7",
-                "--trace-exceptions",
-                "--print",
-                "screen",
-                "--allow-unlisted-firmware"
-            ])),
-            PcCommand::Run {
-                store: FirmwareStore::Default,
-                rom_dirs: Vec::new(),
-                path: "at.toml".into(),
-                max_steps: 42,
-                idle_limit: 0,
-                diag_at: Some(7),
-                trace_exceptions: true,
-                print: Some("screen".into()),
-                options: assembly::AssemblyOptions {
-                    allow_unlisted_firmware: true
-                },
-            }
-        );
-    }
-
     #[test]
     fn run_store_flags_are_explicit_and_exclusive() {
         let parse_run = |options: &[&str]| {
@@ -592,24 +392,27 @@ mod tests {
                 .chain(options.iter().copied())
                 .map(OsString::from)
                 .collect::<Vec<_>>();
-            parse(&args).unwrap()
+            parse(&args).unwrap().map(|command| match command {
+                PcCommand::Machine(command) => command,
+                _ => panic!("machine command expected"),
+            })
         };
         assert!(matches!(
             parse_run(&[]).unwrap(),
-            PcCommand::Run {
+            unemupc::Command::Run {
                 store: FirmwareStore::Default,
                 ..
             }
         ));
         assert!(matches!(
             parse_run(&["--no-store"]).unwrap(),
-            PcCommand::Run {
+            unemupc::Command::Run {
                 store: FirmwareStore::Disabled,
                 ..
             }
         ));
         assert!(
-            matches!(parse_run(&["--store","local"]).unwrap(),PcCommand::Run { store: FirmwareStore::Root(root), .. } if root.as_path() == std::path::Path::new("local"))
+            matches!(parse_run(&["--store","local"]).unwrap(),unemupc::Command::Run { store: FirmwareStore::Root(root), .. } if root.as_path() == std::path::Path::new("local"))
         );
         for options in [
             &["--store"][..],
@@ -621,65 +424,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn bios_parser_preserves_firmware_flags_and_boot_mode() {
-        for args in [
-            vec!["--bios", "firmware.bin"],
-            vec!["--bios", "firmware.bin", "--allow-unlisted-firmware"],
-            vec!["--allow-unlisted-firmware", "--bios", "firmware.bin"],
-            vec![
-                "--bios",
-                "--allow-unlisted-firmware",
-                "firmware.bin",
-                "--allow-unlisted-firmware",
-            ],
-        ] {
-            let allow = args.contains(&"--allow-unlisted-firmware");
-            let args = args.into_iter().map(OsString::from).collect::<Vec<_>>();
-            assert_eq!(
-                pc(&args),
-                PcCommand::Bios {
-                    path: PathBuf::from("firmware.bin"),
-                    options: assembly::AssemblyOptions {
-                        allow_unlisted_firmware: allow
-                    },
-                }
-            );
-        }
-        assert_eq!(
-            pc(&["--allow-unlisted-firmware".into(), "--boot".into()]),
-            PcCommand::Boot
-        );
-        for args in [
-            vec!["--bios"],
-            vec!["--bios", "firmware.bin", "extra"],
-            vec!["--allow-unlisted-firmware"],
-        ] {
-            let args = args.into_iter().map(OsString::from).collect::<Vec<_>>();
-            // `--allow-unlisted-firmware` alone is no PC command; the others are refused ones.
-            assert!(parse(&args).is_none_or(|parsed| parsed.is_err()));
-            assert!(crate::command::parse(&args).is_err());
-        }
-    }
-    #[test]
-    fn rom_directory_option_is_repeatable_for_launch_and_check() {
-        for prefix in [
-            vec!["run", "--machine", "machine.toml"],
-            vec!["machine", "check", "machine.toml"],
-        ] {
-            let mut args: Vec<OsString> = prefix.into_iter().map(Into::into).collect();
-            args.extend(
-                ["--rom-dir", "first", "--rom-dir", "second"]
-                    .into_iter()
-                    .map(OsString::from),
-            );
-            let roots = match pc(&args) {
-                PcCommand::Run { rom_dirs, .. } | PcCommand::Check { rom_dirs, .. } => rom_dirs,
-                _ => panic!("machine command expected"),
-            };
-            assert_eq!(roots, [PathBuf::from("first"), PathBuf::from("second")]);
-        }
-    }
     /// A firmware package made where the catalogue does not know its ROM,
     /// marking it open under MIT, pushed to a registry and pulled back into
     /// another store. There the catalogue lists the same bytes as proprietary,

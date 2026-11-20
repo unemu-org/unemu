@@ -142,7 +142,7 @@ fn usage_errors_are_two_and_boot_still_runs() {
     }
     assert_eq!(
         cli_pc::parse(&["--boot".into()]),
-        Some(Ok(cli_pc::PcCommand::Boot))
+        Some(Ok(cli_pc::PcCommand::Machine(unemupc::Command::Boot)))
     );
     let (mut out, mut err) = (Vec::new(), Vec::new());
     assert_eq!(run(&["--boot".into()], &mut out, &mut err), 0);

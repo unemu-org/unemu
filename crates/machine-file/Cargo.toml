@@ -11,6 +11,7 @@ description = "Machine description files (TOML and YAML) over one versioned sche
 
 [package.metadata.unemu]
 layer = "pc"
+side = "core"
 
 [dependencies]
 assembly.workspace = true

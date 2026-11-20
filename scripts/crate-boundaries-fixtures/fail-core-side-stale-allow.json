@@ -1,0 +1,27 @@
+{
+  "self_test": {
+    "expect": "fail",
+    "message": "stale allow entry"
+  },
+  "packages": [
+    {
+      "name": "machine-file",
+      "metadata": {
+        "unemu": {
+          "layer": "pc",
+          "side": "core"
+        }
+      },
+      "dependencies": []
+    },
+    {
+      "name": "media",
+      "metadata": {
+        "unemu": {
+          "layer": "neutral"
+        }
+      },
+      "dependencies": []
+    }
+  ]
+}

@@ -14,6 +14,7 @@ members = [
     "crates/testkit",
     "crates/cli-core",
     "crates/cli-pc",
+    "crates/unemupc",
     "crates/upcli",
     "crates/pc-harness",
     "crates/window",

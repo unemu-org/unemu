@@ -2,6 +2,27 @@
 
 Everyday commands for this project. Keep this file **flat and copy-pasteable** — agents and humans both grep it.
 
+## Standalone PC core command line
+
+```sh
+cargo run --offline -p unemupc -- --boot
+cargo run --offline -p unemupc -- --bios vendor/kiselev-bios/bios-xi8088.bin
+cargo run --offline -p unemupc -- machine check machines/at-freedos.toml
+cargo run --offline -p unemupc -- run --machine machines/at-freedos.toml --max-steps 12000000 --idle-limit 1000000 --print mda
+cargo run --offline -p unemupc -- --version
+cargo run --offline -p unemupc -- --about
+```
+
+`unemupc` runs without the frontend's store, registry or recipes. For the
+four machine commands its output and exit codes match `upcli` (add
+`--no-store` to `upcli run --machine`). Firmware comes from the machine
+file and repeated `--rom-dir DIR` roots; `--allow-unlisted-firmware`,
+`--diag-at` and `--trace-exceptions` retain the machine runner's semantics.
+`--store` and `--no-store` are refused here. Usage names `unemupc`, and
+version/about list only the PC core and its notices. The raw commands
+remain available in `upcli` until the next CLI move. The workspace builds
+the new binary; release packaging still ships `unemu` and `upcli`.
+
 ## Local machine images
 
 ```sh

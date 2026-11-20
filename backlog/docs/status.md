@@ -5,6 +5,16 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — Standalone PC core command line:** the new `unemupc`
+  package supplies a library and binary for `--boot`, `--bios`,
+  `machine check`, `run --machine`, `--version` and `--about`, without
+  frontend store/registry dependencies. `cli-pc` delegates the four machine
+  commands and retains store-backed preparation, keeping `upcli`'s usage
+  and parse pin unchanged. The raw commands stay in `upcli` for the next
+  move. The boundary check now enforces the core side; its original store
+  exception is already unnecessary after the firmware-package seam.
+  Release packaging is unchanged. See `design/core-contract.md` §12.10 step 5.
+
 - **2026-11-20 — The desktop binary is `unemu`:** the package remains
   `window`. Desktop titles, application menus, native application identity,
   help/version/about, own-name messages, release contents, licence output and

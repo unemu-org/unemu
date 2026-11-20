@@ -11,6 +11,7 @@ description = "Machine runners, guest programs and the emulation golden tests fo
 
 [package.metadata.unemu]
 layer = "pc"
+side = "core"
 
 [dependencies]
 anyhow.workspace = true

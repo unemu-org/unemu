@@ -1,0 +1,49 @@
+{
+  "self_test": {
+    "expect": "pass",
+    "message": ""
+  },
+  "packages": [
+    {
+      "name": "unemupc",
+      "metadata": {
+        "unemu": {
+          "layer": "pc",
+          "side": "core"
+        }
+      },
+      "dependencies": [
+        {
+          "name": "pc-harness",
+          "source": null,
+          "kind": "normal"
+        }
+      ]
+    },
+    {
+      "name": "pc-harness",
+      "metadata": {
+        "unemu": {
+          "layer": "pc",
+          "side": "core"
+        }
+      },
+      "dependencies": [
+        {
+          "name": "media",
+          "source": null,
+          "kind": "dev"
+        }
+      ]
+    },
+    {
+      "name": "media",
+      "metadata": {
+        "unemu": {
+          "layer": "neutral"
+        }
+      },
+      "dependencies": []
+    }
+  ]
+}

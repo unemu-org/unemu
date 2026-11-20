@@ -46,19 +46,9 @@ pub(super) fn check_machine(
     Ok(0)
 }
 
-pub(super) fn run_machine(
-    path: &std::path::Path,
-    options: assembly::AssemblyOptions,
-    limits: (u64, u64, Option<u64>, bool),
-    print: Option<&str>,
-    firmware: (&[PathBuf], Option<&std::path::Path>),
-    output: &mut impl Write,
-    errors: &mut impl Write,
-) -> anyhow::Result<u8> {
-    use assembly::{DeviceId, ObservationPolicy, ObservationRequest, OutputKind, RunPolicy};
-    let (max_steps, idle_limit, diag_at, trace_exceptions) = limits;
-    let (rom_dirs, store_root) = firmware;
-    let roots = rom_dirs
+/// Firmware discovery roots in command-line order.
+pub fn firmware_roots(rom_dirs: &[PathBuf]) -> Vec<assembly::firmware_discovery::FirmwareRoot> {
+    rom_dirs
         .iter()
         .map(|path| {
             assembly::firmware_discovery::FirmwareRoot::new(
@@ -66,19 +56,19 @@ pub(super) fn run_machine(
                 assembly::firmware_discovery::RootOrigin::CommandLine,
             )
         })
-        .collect::<Vec<_>>();
-    let mut warnings = Vec::new();
-    let result = pc_image::firmware::prepare_for_assembly_with_store_root(
-        path,
-        &roots,
-        &mut warnings,
-        store_root,
-    )
-    .and_then(|document| document.load(options));
-    for warning in warnings {
-        writeln!(errors, "warning: {warning}")?;
-    }
-    let loaded = result?;
+        .collect()
+}
+
+/// Run an already prepared machine. The caller owns host firmware lookup.
+pub fn run_machine(
+    loaded: machine_file::LoadedMachine,
+    limits: (u64, u64, Option<u64>, bool),
+    print: Option<&str>,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> anyhow::Result<u8> {
+    use assembly::{DeviceId, ObservationPolicy, ObservationRequest, OutputKind, RunPolicy};
+    let (max_steps, idle_limit, diag_at, trace_exceptions) = limits;
     let printable =
         |device: DeviceId| matches!(device, DeviceId::Mda | DeviceId::Vga | DeviceId::Uart);
     let selected = if let Some(name) = print {

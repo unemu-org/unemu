@@ -717,6 +717,7 @@ dependencies = [
  "toml",
  "unemu-core-api",
  "unemu-pc-core",
+ "unemupc",
  "video",
 ]
 
@@ -3933,6 +3934,22 @@ name = "unemu-test-core"
 version = "0.0.3"
 dependencies = [
  "unemu-core-api",
+]
+
+[[package]]
+name = "unemupc"
+version = "0.0.3"
+dependencies = [
+ "anyhow",
+ "assembly",
+ "cpu",
+ "device",
+ "machine",
+ "machine-file",
+ "pc-harness",
+ "unemu-core-api",
+ "unemu-pc-core",
+ "video",
 ]
 
 [[package]]
