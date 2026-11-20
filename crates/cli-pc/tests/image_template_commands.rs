@@ -283,43 +283,30 @@ fn both_templates_post_with_the_open_bios_and_xtide_finds_their_blank_disk() {
 fn post(store: &Store, tag: &str) {
     let owner = store.workspace(&tag.replace([':', '.'], "-")).unwrap();
     let prepared = pc_image::workspace::prepare_start(&owner, tag, false).unwrap();
-    let policy = assembly::ObservationPolicy {
-        trace: device::TracePolicy::Off,
-        routes: vec![
-            assembly::ObservationRequest {
-                device: assembly::DeviceId::Post,
-                output: assembly::OutputKind::Bytes(device::ByteStreamKind::PostCheckpoints),
-                byte_limit: 4096,
-            },
-            assembly::ObservationRequest {
-                device: assembly::DeviceId::Vga,
-                output: assembly::OutputKind::TextScanout,
-                byte_limit: 0,
-            },
-        ],
-        ..Default::default()
-    };
-    let mut machine = assembly::assemble_with_verified_bases(
-        &prepared.machine,
-        &policy,
-        assembly::AssemblyOptions::default(),
-        &prepared.bases,
-    )
+    let launch =
+        pc_image::launch::from_session(prepared, &unemu_pc_core::PcCore, "Template POST".into())
+            .unwrap();
+    let mut pc = core_launch::start_with(&launch.prepared, |request| {
+        unemu_pc_core::PcCore.create_machine(request)
+    })
     .unwrap();
+    let machine = pc.assembled();
+    let checkpoints = device::ByteCapture::new(4096);
+    let post_index = machine.device_index[&assembly::DeviceId::Post];
+    machine
+        .machine
+        .bus_mut()
+        .device_mut(post_index)
+        .unwrap()
+        .byte_output()
+        .unwrap()
+        .bind_sink(Box::new(checkpoints.clone()));
     let mut post = Vec::new();
     for step in 1..=60u64 {
         machine
             .run_session(&assembly::RunPolicy::natural(Some(step * 1_000_000), None))
             .unwrap();
-        post.extend(
-            machine
-                .observation
-                .drain_bytes(
-                    assembly::DeviceId::Post,
-                    device::ByteStreamKind::PostCheckpoints,
-                )
-                .unwrap(),
-        );
+        post.extend(checkpoints.drain().unwrap());
         if post.contains(&0x00) {
             // INT 19h tries the empty A:, then C: through XTIDE.
             let at = {

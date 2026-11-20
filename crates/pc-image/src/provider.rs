@@ -445,11 +445,6 @@ pub(crate) type LaunchBases = (
     BTreeMap<std::path::PathBuf, media::VerifiedBase>,
     BTreeMap<std::path::PathBuf, std::rc::Rc<crate::zero::ZeroChain>>,
 );
-/// Assembly input only: a compressed journal floppy has no file, so launch
-/// through `workspace::prepare_start`, which also returns the verified bases.
-pub fn resolve(store: &Store, tag: &str, session: &Path) -> Result<assembly::MachineConfig> {
-    Ok(resolve_pinned(store, &store.tag_descriptor(tag)?, session, None, None)?.1)
-}
 pub(crate) struct PreparedImage {
     pub image: image_store::ResolvedImage,
     pub config: Config,
@@ -671,8 +666,9 @@ pub(crate) fn resolve_pinned(
     Ok((image, machine, (verified, zero), launch))
 }
 
-/// Translate only the keys the codec reports. All hardware, catalogue and
-/// retention choices have already been made by lowering the document.
+/// Keep a host-path view for catalogue editors, pending CMOS resets and desktop
+/// media tools. The core mounts logical keys through the launch plans instead.
+/// All hardware, catalogue and retention choices come from the same document.
 pub(crate) fn lower_session(
     input: &crate::workspace::PreparedLaunch,
 ) -> Result<assembly::MachineConfig> {
@@ -1365,14 +1361,19 @@ inserted = "HEAD_C"
             return;
         };
         let owner = store.workspace("count").unwrap();
-        let session = crate::workspace::prepare_start(&owner, "test:launch", false).unwrap();
-        let mut assembled = assembly::assemble_with_verified_bases(
-            &session.machine,
-            &Default::default(),
-            Default::default(),
-            &session.bases,
+        let launch = crate::launch::prepare_workspace(
+            &owner,
+            "test:launch",
+            false,
+            &unemu_pc_core::PcCore,
+            "Retired count".into(),
         )
         .unwrap();
+        let mut pc = core_launch::start_with(&launch.prepared, |request| {
+            unemu_pc_core::PcCore.create_machine(request)
+        })
+        .unwrap();
+        let assembled = pc.assembled();
         let outcome = assembled
             .run_session(&assembly::RunPolicy::natural(
                 Some(100_000),

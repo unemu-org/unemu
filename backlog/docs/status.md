@@ -5,6 +5,22 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — Stage B's launch migration is complete:** both front ends
+  start stored PC images through `core_launch` and the PC factory. The final
+  cleanup removes `pc_image::resolve`, `workspace::start` and `start_new`, whose
+  callers were tests only. Those tests retain their names and assertions through
+  preparation/inspection or factory boots. As an explicit S14 deviation,
+  `SessionTransfer` still supplies verified content to the launch plans; the derived
+  `PreparedSession::machine` and path mapping serve pending inserts, CMOS
+  resets, catalogue editors and desktop host bindings. The transfer can go when
+  launch plans take verified content directly; the view and rewriting can go
+  when those PC tools use launch identities directly. No test is deleted;
+  independent A/B comparisons retain their assembly reference path.
+  Factory comments and the architecture/spec describe these live roles.
+  Failed-run persistence still uses the typed PC assembly adapter, desktop
+  host bindings remain beside the launch, and `upcli` retains its historical
+  Debug parser output. See `design/core-contract.md` §4, §9 item 2 and §14.3 S14.
+
 - **2026-11-20 — PC CPU dependency disables host-environment APIs:** the
   workspace uses `x86jit-core` with `default-features = false` and no optional
   features. The PC needs neither `environment` nor `test-hooks`; the exact CPU

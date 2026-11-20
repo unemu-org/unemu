@@ -99,13 +99,13 @@ fn create_and_start_a_504_mib_blank_disk_without_large_files_or_allocations() {
     assert_eq!(disk.kind.image_bytes(), 1024 * 16 * 63 * 512);
     // Mounting opens the journal over the zero base; guest RAM is the only
     // large allocation of an assembled machine, so files are checked instead.
-    let mut machine = assembly::assemble_with_verified_bases(
-        &prepared.machine,
-        &assembly::ObservationPolicy::default(),
-        assembly::AssemblyOptions::default(),
-        &prepared.bases,
-    )
+    let launch =
+        pc_image::launch::from_session(prepared, &unemu_pc_core::PcCore, "Test".into()).unwrap();
+    let mut pc = core_launch::start_with(&launch.prepared, |request| {
+        unemu_pc_core::PcCore.create_machine(request)
+    })
     .unwrap();
+    let machine = pc.assembled();
     machine
         .run_session(&assembly::RunPolicy::natural(Some(10_000), None))
         .unwrap();

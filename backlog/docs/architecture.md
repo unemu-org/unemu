@@ -606,8 +606,24 @@ media tools need. The shell adds its run-only firmware/speaker options and calls
 derives its catalogue from `PcMachine::config()` and retains the previous display
 selection even with both MDA and VGA. Host bindings replace logical asset keys
 only in the presenter's media model and labels; the core mounts through its
-content/storage objects. `SessionTransfer` remains for the old start API and
-test-only inspection until its removal. Start reuses regular workspaces. Gaming mode creates isolated
+content/storage objects. Stage B is landed: neither front end assembles stored
+images directly. `PreparedSession::machine` remains a derived host-path view
+for pending inserts, pending CMOS resets, catalogue editors and the desktop's
+media bindings. `provider::lower_session` keeps that view consistent with launch
+edits. `SessionTransfer` supplies verified file descriptors, memory snapshots and
+sparse zero-chain parts to `launch::from_session`; its restore path also supports
+desktop test inspection and independent old/new persistence comparisons.
+The unused production APIs `resolve`, `workspace::start` and `start_new` are
+removed. Tests inspect the retained prepared host view or boot through
+`pc_image::launch`, `core_launch` and `PcCore`. Retaining `SessionTransfer` and
+the host-path view is an explicit S14 deviation: the transfer can go once launch
+plans take verified content directly, and the view and its rewriting can go once
+PC editors, resets, inserts and desktop bindings use launch identities directly.
+The factory mounts logical keys through content/storage objects. Failed CLI runs still persist
+through the typed PC assembly adapter, because the contract forbids `finish`
+after failure; `upcli` retains its pinned Debug parse output. See
+[core contract](design/core-contract.md) §4 and §14.3 S14.
+Start reuses regular workspaces. Gaming mode creates isolated
 disposable workspaces, including catalogue media and CMOS. Durable desktop records
 precede preparation; stop/exit offers Keep as new image or Discard. Successful
 publication removes a disposable workspace. Failures and deferred/forced exits

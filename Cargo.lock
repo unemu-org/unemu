@@ -2720,6 +2720,7 @@ dependencies = [
  "thiserror 1.0.69",
  "toml",
  "unemu-core-api",
+ "unemu-pc-core",
 ]
 
 [[package]]
@@ -2786,6 +2787,7 @@ name = "pc-ui"
 version = "0.0.3"
 dependencies = [
  "assembly",
+ "core-launch",
  "cpu",
  "device",
  "egui",
@@ -2801,6 +2803,7 @@ dependencies = [
  "pc-media",
  "toml",
  "ui-kit",
+ "unemu-pc-core",
  "video",
 ]
 

@@ -71,7 +71,7 @@ fn whole_image_publication_layers_fixed_disks_freezes_catalogue_and_cmos() {
         .store
         .resolve_descriptor(&fixture.image, &PcProvider)
         .unwrap();
-    assert!(workspace::start(&owner, "test:saved").is_ok());
+    assert!(workspace::prepare_start(&owner, "test:saved", false).is_ok());
 }
 #[test]
 fn every_publication_step_can_fail_and_retry_without_mixed_heads() {
@@ -136,7 +136,7 @@ fn every_publication_step_can_fail_and_retry_without_mixed_heads() {
         drop(owner);
         let owner = fixture.store.workspace("play").unwrap();
         if owner.read("transaction.toml").unwrap().is_some() {
-            assert!(workspace::start(&owner, "test:source").is_err());
+            assert!(workspace::prepare_start(&owner, "test:source", false).is_err());
             workspace::publish(&owner, "test:target", Some(&fixture.image.digest)).unwrap();
         } else if target.image.digest == fixture.image.digest {
             workspace::publish(&owner, "test:target", Some(&fixture.image.digest)).unwrap();
@@ -165,7 +165,7 @@ fn workspace_lock_discard_and_tag_deletion_preserve_other_roots() {
         .store
         .remove_tag("test:source", &fixture.image.digest)
         .unwrap();
-    workspace::start(&two, "test:source").unwrap();
+    workspace::prepare_start(&two, "test:source", false).unwrap();
     workspace::publish(&two, "test:kept", None).unwrap();
     fixture.assert_complete("test:kept", 22);
     fixture
@@ -180,7 +180,9 @@ fn live_journal_writer_and_tag_race_block_publication() {
     };
     fixture.changed("play", 35);
     let owner = fixture.store.workspace("play").unwrap();
-    let config = workspace::start(&owner, "test:source").unwrap();
+    let config = workspace::prepare_start(&owner, "test:source", false)
+        .unwrap()
+        .machine;
     let assembly::ImageSource::File(path) =
         &config.drives[0].media.as_ref().unwrap().entries[0].image
     else {
@@ -251,7 +253,7 @@ fn live_journal_writer_and_tag_race_block_publication() {
         Err(pc_image::Error::Store(image_store::Error::Conflict { .. }))
     ));
     assert!(same.read("transaction.toml").unwrap().is_none());
-    workspace::start(&same, "test:source").unwrap();
+    workspace::prepare_start(&same, "test:source", false).unwrap();
     workspace::publish(&same, "test:alternate", None).unwrap();
     fixture.assert_complete("test:alternate", 37);
 }
@@ -264,9 +266,13 @@ fn serial_layers_share_a_verified_materialization_and_keep_retention() {
     fixture.changed("play", 41);
     let owner = fixture.store.workspace("play").unwrap();
     workspace::publish(&owner, "test:first", None).unwrap();
-    let first = workspace::start(&owner, "test:first").unwrap();
+    let first = workspace::prepare_start(&owner, "test:first", false)
+        .unwrap()
+        .machine;
     let other = fixture.store.workspace("other").unwrap();
-    let second = workspace::start(&other, "test:first").unwrap();
+    let second = workspace::prepare_start(&other, "test:first", false)
+        .unwrap()
+        .machine;
     let first_fixed = first
         .drives
         .iter()
@@ -312,7 +318,9 @@ fn serial_layers_share_a_verified_materialization_and_keep_retention() {
             .count(),
         2
     );
-    let config = workspace::start(&owner, "test:second").unwrap();
+    let config = workspace::prepare_start(&owner, "test:second", false)
+        .unwrap()
+        .machine;
     let disk = config
         .drives
         .iter()
@@ -339,7 +347,7 @@ fn serial_layers_share_a_verified_materialization_and_keep_retention() {
     );
     // Cache names never substitute for verifying the complete bytes at Start.
     fs::write(path, vec![3; 32 * 512]).unwrap();
-    assert!(workspace::start(&owner, "test:second").is_err());
+    assert!(workspace::prepare_start(&owner, "test:second", false).is_err());
 }
 
 #[test]
@@ -349,7 +357,9 @@ fn newer_sessions_and_active_writers_cannot_be_discarded() {
     };
     fixture.changed("play", 12);
     let owner = fixture.store.workspace("play").unwrap();
-    let config = workspace::start(&owner, "test:source").unwrap();
+    let config = workspace::prepare_start(&owner, "test:source", false)
+        .unwrap()
+        .machine;
     let first = &config.drives[0].media.as_ref().unwrap().entries[0];
     let assembly::ImageSource::File(path) = &first.image else {
         panic!()
@@ -370,7 +380,7 @@ fn newer_sessions_and_active_writers_cannot_be_discarded() {
         .unwrap()
         .replacen("schema = 1", "schema = 2", 1);
     owner.write("session.toml", text.as_bytes()).unwrap();
-    assert!(workspace::start(&owner, "test:source").is_err());
+    assert!(workspace::prepare_start(&owner, "test:source", false).is_err());
     assert!(workspace::publish(&owner, "test:new", None).is_err());
     assert!(owner.discard().is_err());
     let owner = fixture.store.workspace("play").unwrap();
@@ -415,7 +425,7 @@ fn conflicting_publication_rolls_back_intent_and_can_publish_elsewhere() {
         fs::read(owner.path().join("media/medium-0.upfj")).unwrap(),
         before
     );
-    workspace::start(&owner, "test:source").unwrap();
+    workspace::prepare_start(&owner, "test:source", false).unwrap();
     workspace::publish(&owner, "test:other", None).unwrap();
     fixture.assert_complete("test:other", 43);
 }
@@ -483,7 +493,7 @@ fn missing_artwork_and_read_only_metadata_fail_before_intent() {
         let owner = fixture.store.open_workspace("play").unwrap();
         assert!(workspace::publish(&owner, "test:bad", None).is_err());
         assert!(owner.read("transaction.toml").unwrap().is_none());
-        workspace::start(&owner, "test:source").unwrap();
+        workspace::prepare_start(&owner, "test:source", false).unwrap();
         if !read_only {
             fs::write(missing, b"synthetic artwork").unwrap();
         } else {
@@ -531,17 +541,18 @@ fn abandon_preserves_journals_and_start_refuses_orphans_and_wrong_tags() {
         fs::read(owner.path().join("media/medium-0.upfj")).unwrap(),
         before
     );
-    workspace::start(&owner, "test:source").unwrap();
-    assert!(workspace::start_new(&owner, "test:source").is_err());
+    workspace::prepare_start(&owner, "test:source", false).unwrap();
+    assert!(workspace::prepare_start(&owner, "test:source", true).is_err());
     workspace::publish(&owner, "test:kept", None).unwrap();
-    assert!(workspace::start(&owner, "test:source")
+    assert!(workspace::prepare_start(&owner, "test:source", false)
+        .map(|p| p.machine)
         .unwrap_err()
         .to_string()
         .contains("workspace pins"));
     let orphan = fixture.store.workspace("orphan").unwrap();
     fs::create_dir(orphan.path().join("media")).unwrap();
     fs::write(orphan.path().join("media/written"), b"preserve").unwrap();
-    assert!(workspace::start(&orphan, "test:source").is_err());
+    assert!(workspace::prepare_start(&orphan, "test:source", false).is_err());
     assert!(orphan.read("session.toml").unwrap().is_none());
 }
 #[test]
@@ -573,7 +584,9 @@ fn failed_pack_is_removed_and_flatten_produces_a_new_raw_head() {
     fixture.assert_complete("test:flat", 46);
     fixture.assert_complete("test:layer", 46);
     let next = fixture.store.workspace("new-session").unwrap();
-    let config = workspace::start(&next, "test:flat").unwrap();
+    let config = workspace::prepare_start(&next, "test:flat", false)
+        .unwrap()
+        .machine;
     let fixed = config
         .drives
         .iter()
@@ -605,15 +618,15 @@ fn raw_and_depth_three_starts_verify_each_full_disk_once() {
     let media_before = media::data_passes(32 * 512);
     let owner = fixture.store.workspace("raw-count").unwrap();
     let prepared = workspace::prepare_start(&owner, "test:source", false).unwrap();
-    let mut machine = assembly::assemble_with_verified_bases(
-        &prepared.machine,
-        &Default::default(),
-        Default::default(),
-        &prepared.bases,
-    )
+    let launch =
+        pc_image::launch::from_session(prepared, &unemu_pc_core::PcCore, "Test".into()).unwrap();
+    let mut pc = core_launch::start_with(&launch.prepared, |request| {
+        unemu_pc_core::PcCore.create_machine(request)
+    })
     .unwrap();
+    let machine = pc.assembled();
     machine.finish_persistence().unwrap();
-    drop(machine);
+    drop(pc);
     assert_eq!(
         image_store::verification_passes(&root) - before + media::data_passes(32 * 512)
             - media_before,
@@ -648,13 +661,14 @@ fn raw_and_depth_three_starts_verify_each_full_disk_once() {
             .workspace(if cold { "cold-count" } else { "warm-count" })
             .unwrap();
         let prepared = workspace::prepare_start(&owner, "test:depth3", false).unwrap();
-        let mut machine = assembly::assemble_with_verified_bases(
-            &prepared.machine,
-            &Default::default(),
-            Default::default(),
-            &prepared.bases,
-        )
+        let launch =
+            pc_image::launch::from_session(prepared, &unemu_pc_core::PcCore, "Test".into())
+                .unwrap();
+        let mut pc = core_launch::start_with(&launch.prepared, |request| {
+            unemu_pc_core::PcCore.create_machine(request)
+        })
         .unwrap();
+        let machine = pc.assembled();
         machine.finish_persistence().unwrap();
         assert_eq!(image_store::verification_passes(&root) - before, 1);
         assert_eq!(media::data_passes(32 * 512) - media_before, 1);
@@ -771,7 +785,7 @@ fn depth_limit_accepts_sixty_four_and_flatten_allows_further_publication() {
             .update_tag("test:limit", &image, None, &PcProvider)
             .unwrap();
         let owner = fixture.store.workspace("limit").unwrap();
-        workspace::start(&owner, "test:limit").unwrap();
+        workspace::prepare_start(&owner, "test:limit", false).unwrap();
         workspace::publish_with_options(&owner, "test:compacted", None, true, |_| Ok(())).unwrap();
         let flat = fixture
             .store
@@ -888,7 +902,9 @@ fn compressed_bases_and_sector_packs_publish_and_resume_through_disk_chains() {
         .unwrap();
     fixture.changed_from("compressed", "test:compressed", 0x91);
     let owner = fixture.store.workspace("compressed").unwrap();
-    let machine = workspace::start(&owner, "test:compressed").unwrap();
+    let machine = workspace::prepare_start(&owner, "test:compressed", false)
+        .unwrap()
+        .machine;
     let fixed = machine
         .drives
         .iter()
@@ -922,7 +938,9 @@ fn compressed_bases_and_sector_packs_publish_and_resume_through_disk_chains() {
         fixture.store.read_verified(pack, 8192).unwrap().len(),
         9 * 520
     );
-    let resumed = workspace::start(&owner, "test:layered-compressed").unwrap();
+    let resumed = workspace::prepare_start(&owner, "test:layered-compressed", false)
+        .unwrap()
+        .machine;
     let fixed = resumed
         .drives
         .iter()

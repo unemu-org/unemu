@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Bounded host allocation for large raw media; machine-images §§2 and 5.
 
-use pc_image::{import_machine, resolve, ImportOptions};
+use pc_image::{import_machine, ImportOptions};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     fs,
@@ -60,7 +60,10 @@ fn sparse_disk_import_and_resolve_bound_every_allocation() {
     LARGEST.store(0, Ordering::Relaxed);
     import_machine(&store, &path, "test:large", &ImportOptions::default()).unwrap();
     let import_peak = LARGEST.swap(0, Ordering::Relaxed);
-    let config = resolve(&store, "test:large", &temp.0.join("session")).unwrap();
+    let owner = store.workspace("large-disk").unwrap();
+    let config = pc_image::workspace::prepare_start(&owner, "test:large", false)
+        .unwrap()
+        .machine;
     let resolve_peak = LARGEST.load(Ordering::Relaxed);
     eprintln!("largest allocation: import={import_peak}, resolve={resolve_peak}");
     assert!(

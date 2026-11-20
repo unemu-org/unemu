@@ -67,22 +67,14 @@ fn keys(text: &str) -> Vec<u8> {
 /// Start the machine, boot FreeDOS, type `command` and finish its journals.
 fn session(store: &image_store::Store, id: &str, command: &str) -> String {
     let owner = machine::own(store, id).unwrap();
-    let started = machine::prepare(&owner).unwrap();
-    let observation = assembly::ObservationPolicy {
-        routes: vec![assembly::ObservationRequest {
-            device: DeviceId::Mda,
-            output: assembly::OutputKind::TextScanout,
-            byte_limit: 0,
-        }],
-        ..Default::default()
-    };
-    let mut assembled = assembly::assemble_with_verified_bases(
-        &started.session.machine,
-        &observation,
-        assembly::AssemblyOptions::default(),
-        &started.session.bases,
-    )
+    let started =
+        pc_image::launch::prepare_machine(&owner, &unemu_pc_core::PcCore, "FreeDOS".into())
+            .unwrap();
+    let mut pc = core_launch::start_with(&started.prepared, |request| {
+        unemu_pc_core::PcCore.create_machine(request)
+    })
     .unwrap();
+    let assembled = pc.assembled();
     machine::confirm(&owner, &started.inserted, Some("golden".into())).unwrap();
     let keyboard_index = assembled.device_index[&DeviceId::Keyboard];
     let policy = assembly::RunPolicy {
@@ -103,7 +95,7 @@ fn session(store: &image_store::Store, id: &str, command: &str) -> String {
         }],
     };
     assembled.run_session(&policy).unwrap();
-    let text = console(&assembled);
+    let text = console(assembled);
     eprintln!("{text}");
     assert!(
         text.lines().any(|row| row.trim() == "A:\\>"),

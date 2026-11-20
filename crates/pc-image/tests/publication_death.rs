@@ -183,7 +183,7 @@ fn death_then_tag_conflict_rolls_back_intent_and_preserves_journals() {
         fs::read(owner.path().join("media/medium-0.upfj")).unwrap(),
         before
     );
-    workspace::start(&owner, "test:parent").unwrap();
+    workspace::prepare_start(&owner, "test:parent", false).unwrap();
     workspace::publish(&owner, "test:other", None).unwrap();
     fixture.assert_complete("test:other", 81);
     fixture.assert_complete("test:target", 80);

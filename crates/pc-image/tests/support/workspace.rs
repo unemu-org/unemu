@@ -107,7 +107,9 @@ impl Fixture {
     }
     pub fn changed_from(&self, name: &str, tag: &str, value: u8) {
         let owner = self.store.workspace(name).unwrap();
-        let machine = workspace::start(&owner, tag).unwrap();
+        let machine = workspace::prepare_start(&owner, tag, false)
+            .unwrap()
+            .machine;
         let image = self
             .store
             .resolve_descriptor(&self.store.tag_descriptor(tag).unwrap(), &PcProvider)
@@ -165,7 +167,11 @@ impl Fixture {
         journal.finish().unwrap();
     }
     pub fn assert_complete(&self, tag: &str, value: u8) {
-        let config = pc_image::resolve(&self.store, tag, &self.path.join("inspect")).unwrap();
+        let owner = self.store.workspace("inspect").unwrap();
+        let config = pc_image::workspace::prepare_start(&owner, tag, true)
+            .unwrap()
+            .machine;
+        owner.discard_and_remove().unwrap();
         let image = self.store.resolve(tag, &PcProvider).unwrap();
         for drive in &config.drives {
             let sources: Vec<_> = drive

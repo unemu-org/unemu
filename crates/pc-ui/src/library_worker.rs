@@ -108,7 +108,12 @@ mod tests {
                 .iter()
                 .all(|m| m.chain.len() == 1 || kind.disposable()));
             let resolved = pc_image::test_support::with_synthetic_firmware(|| {
-                pc_image::resolve(&f.store, "test:kept", &f.temp.path().join("inspect"))
+                pc_image::workspace::prepare_start(
+                    &f.store.workspace("inspect-0").unwrap(),
+                    "test:kept",
+                    false,
+                )
+                .map(|p| p.machine)
             })
             .unwrap();
             let image = pc_image::test_support::with_synthetic_firmware(|| {

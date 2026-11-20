@@ -21,7 +21,8 @@ new crate `pc-config`, the launch document, `PcCore::create`, and both
 front ends starting stored PC images through `core_launch`) was
 **accepted** on 2026-11-19, with the recommended answers of §14.6; the
 corrections it made to earlier sections are marked "(corrected
-2026-11-19, stage B plan)".
+2026-11-19, stage B plan)". Stage B has now landed, with the live helpers
+retained in §4 and §14.3 S14.
 
 Markers: **[REPO]** = read in this repository at `896c5d9`, with the path;
 **COUNTED** = counted for this document by a throwaway script over the
@@ -1204,8 +1205,8 @@ that would bring it in:
 
 ## 4. The PC core on the contract
 
-A new crate, working name **`unemu-pc-core`** (`crates/pc-core`), on the
-emulation side. It depends on `unemu-core-api`, `assembly`, `machine`,
+The **`unemu-pc-core`** crate (`crates/pc-core`) is on the
+emulation side. It depends on `unemu-core-api`, `pc-config`, `assembly`, `machine`,
 `cpu`, `device`, `devices`, `video` and `audio`, and on nothing from the
 store.
 
@@ -1217,9 +1218,8 @@ pub struct PcCore;
 pub struct PcMachine { /* an AssembledMachine and the host-side encoders */ }
 
 impl PcMachine {
-    /// Wrap a machine the caller assembled. The PC provider uses this for
-    /// machine files and for every start until `PcCore::create` can read a
-    /// stored config itself; tests use it with presets.
+    /// Wrap a machine the caller assembled, for machine-file starts and
+    /// preset-based tests. Stored images use `PcCore::create_machine`.
     pub fn from_assembled(
         config: &assembly::MachineConfig,
         assembled: assembly::AssembledMachine,
@@ -1252,16 +1252,12 @@ How each call maps onto today's code, and what moves:
 | `drain_messages` | unlisted firmware, speaker trace, reset lines | `window/main.rs` |
 | `notices` | `devices::OPL3_NOTICE` | `cli/about.rs` |
 
-`PcCore::create` (config document, content, storage) needs the PC config
-codec: the half of `pc-image` that decodes a stored config through
-`machine-file` lowering (the model in `lib.rs`, the codec half of
-`provider.rs`, `encode.rs`, `defaults.rs`, and under them the machine
-schema and lowering of `machine-file`). `disk.rs` and `zero.rs` are not
-part of it and stay in `pc-image`: they walk the manifest's layer chain,
-build files in the store's cache and describe the zero base, which is the
-store's side of a `ContentSource` (§12.5) (corrected 2026-11-19, stage B
-plan; it listed them). That code uses store types today, so it comes in
-two stages:
+`PcCore::create` reads the PC launch document through `pc-config`, which
+now owns the machine schema and lowering, the stored-image model and
+codec, encoding and defaults. The provider supplies verified content and
+storage objects. `disk.rs` and `zero.rs` stay in `pc-image`: they walk the
+manifest's layer chain, build files in the store's cache and describe the
+zero base, the store's side of a `ContentSource` (§12.5). The two stages:
 
 1. **Stage A.** `PcMachine` and its tests land. The desktop session drives
    `dyn Machine`. Every start goes through the PC provider as today
@@ -1269,16 +1265,34 @@ two stages:
    wrapped by `PcMachine::from_assembled`. `PcCore::create` answers
    `Unsupported` and the PC's `PlatformDescription` lists no
    `config_types`, so no front end offers it.
-2. **Stage B**, before the repositories separate. The config codec moves
-   below the contract, over `ContentSource` instead of `Store`, and
-   `PcCore::create` becomes the one start path for stored images.
-   `pc-image` keeps the store operations and calls the same codec for
-   validation. §14 designs it in fourteen steps: the codec in the new
-   `emulation` crate `pc-config`; a launch document the PC provider writes
-   from the stored config, which is what `create` reads; and
-   `PcCore::create_machine`, the typed form of `create`, through which the
-   desktop keeps a `PcMachine`, since the contract's `Machine` has no
-   downcast (§14.2.3, §14.2.6) (corrected 2026-11-19, stage B plan).
+2. **Stage B landed.** Both front ends start stored PC images through
+   `core_launch` and `PcCore::create_machine`, the typed implementation of
+   `Core::create`. The codec lives below the contract in `pc-config`, over
+   `ContentSource`; `pc-image` keeps store work and validates through the
+   same codec. Its launch document adds flat content identities and record
+   names without changing the stored format. §14 records the fourteen steps.
+
+   Deviations retained after S14's caller audit:
+   - `PreparedSession::machine` and `provider::lower_session` still supply
+     host paths to pending inserts, pending CMOS resets, catalogue editors
+     and the desktop's media bindings. They are not the front ends' assembly
+     path. The core mounts the document's logical keys through objects.
+   - `SessionTransfer` still carries verified file, memory and zero-chain
+     inputs into `launch::from_session`; its `restore` also supports desktop
+     test inspection and the old/new session comparisons. The unused production
+     APIs `pc_image::resolve`, `workspace::start` and `start_new` are removed;
+     their test callers use retained preparation APIs for inspection and lifecycle
+     checks, or `pc_image::launch` plus `core_launch` and `PcCore` to boot.
+     The transfer can go when launch plans capture verified content directly;
+     the host-path view and rewriting can go when editors, resets, inserts and
+     desktop bindings consume launch identities without a `MachineConfig`.
+   - The desktop keeps a typed `PcMachine` and host bindings beside the
+     launch, preserving PC media tools and kept catalogues (§14.3 S13).
+   - The neutral CLI uses the PC's typed starter for failed-run persistence
+     through assembly: contract `finish` is forbidden after failure. The
+     contract stop word, absence of an idle cutoff and core reset messages
+     are the stated CLI policy changes. The historical Debug parser output
+     remains in `upcli` (§14.3 S11, S12).
 
 Consequences to plan for:
 
@@ -2170,7 +2184,7 @@ PC library does, as today.
 | Listing local images | `snapshot` folds the firmware and installation-media collections and the firmware replacement hints into one answer (`firmware_choices`, the catalogue). The row type and the table are neutral already (`library-model`, `library-ui`) | a second platform lists images: `snapshot` splits into the neutral rows and one hook for the hints |
 | Details | a readiness check answers `pc_image::inspection::ImageDetails` and a `capabilities::Draft` | a second platform has a details pane: the check returns the platform's own value, and the platform draws it |
 | Actions | 24 requests and 16 machine jobs with PC arguments | a second platform has a worker job: the platform's requests and events become associated types the loop passes through |
-| Launch | the three start flows interleave PC calls with the session they serve; the shell assembles the machine from a `SessionTransfer` and keeps a `Session<PcMachine>` with the PC catalogue model beside it (§8 step 2) | §4 stage B, when `PcCore::create` reads stored configs: the neutral start of §5 |
+| Launch | the worker's three flows prepare PC sessions and keep host media bindings; the presenter keeps a typed `Session<PcMachine>` and PC catalogue model | Stage B landed: `DesktopLaunch` carries `pc_image::launch::Prepared`; the shell calls `core_launch::start_with` and `PcCore::create_machine`. Host bindings remain beside the launch for PC media tools (§14.3 S13, S14); a neutral library worker is still separate work |
 
 For that later step the shape is recorded here so that nothing in steps 3
 to 6 works against it; it is **not** part of them:
@@ -3032,11 +3046,11 @@ Not part of the first beads; recorded so that no step works against it.
 What must be true first:
 
 1. The boundary check passes with an empty allow list.
-2. `PcCore::create` reads stored configs (§4 stage B), so the front end's
-   generic start path works for the PC. Precisely: it reads the launch
-   document the PC provider writes from a stored config, and both front
-   ends start stored PC images through `core_launch` (§14; corrected
-   2026-11-19, stage B plan).
+2. **Done: stage B landed.** `PcCore::create` reads the launch document
+   the PC provider writes from a stored config, and both front ends start
+   stored PC images through `core_launch`. The typed PC adapters and live
+   host-binding/compatibility helpers are the deviations listed in §4
+   and §14.3 S14.
 3. `machine-file` no longer depends on `image-store`: its firmware-package
    lookup takes a small trait the provider implements over the store.
    Done: step 7 of §12.10 (`machine_file::FirmwarePackages`, implemented by
@@ -5389,14 +5403,15 @@ taken as decided.
 
 ## 14. Stage B in steps
 
-Status: **planned and accepted** by the maintainer on 2026-11-19, with the
-recommended answer to each question of §14.6. This section is the design
+Status: **landed**, with the retained live helpers listed in S14 and §4.
+Accepted by the maintainer on 2026-11-19, with the
+recommended answer to each question of §14.6. This section records the design
 of §4's stage B: the PC config codec below the contract, `PcCore::create`
 as the one start path for stored images, and both front ends starting
-stored PC images through `core_launch`. It was read on `main` at
+stored PC images through `core_launch`. The plan was read on `main` at
 `f586f5f2` (markers as at the top; **[CONTRACT]** = read in
-`unemu-core-api` 0.2.0 at its pinned commit `56c4640`). Nothing was built
-or run for it. The beads `upc-dfs.28` to `upc-dfs.40` are §12.10's steps
+`unemu-core-api` 0.2.0 at its pinned commit `56c4640`). No code was built
+or run for that design review. The beads `upc-dfs.28` to `upc-dfs.40` are §12.10's steps
 1 to 7 and 9 to 14; the steps here are named S1 to S14 so that they are
 never taken for those.
 
@@ -6914,7 +6929,7 @@ Beads that edit the same files go one after the other, in either order:
   and touched before final verification. The unfinished-drop test adds
   coverage of the existing storage lifetime contract.
 
-**S14. The old path goes.**
+**S14. The old path goes.** **Done, with live helpers retained.**
 
 - **Scope.** Remove `SessionTransfer`, `PreparedSession::machine` and the
   path rewriting of S6, `pc_image::resolve`, `workspace::start` and
@@ -6929,6 +6944,33 @@ Beads that edit the same files go one after the other, in either order:
   no front-end crate calls `assemble_with_verified_bases`. The full gate.
   The test list loses only the tests of the removed functions, each named
   in the bead with the test that covers its case on the new path.
+
+- **As landed.** `pc_image::resolve`, `workspace::start` and `start_new` are
+  removed: test-only callers do not justify a production API. Their tests keep
+  their names and assertions. Hardware, content and publication inspection now
+  reads the retained prepared host-path view; workspace lifecycle checks use
+  `workspace::prepare_start`; boots use `pc_image::launch`, `core_launch` and
+  `PcCore`. No test is deleted, so the per-crate test-list diff is empty.
+  Independent A/B reference paths remain in the CLI failed-run diagnostic test,
+  the CLI FreeDOS comparison, the window's two-display presenter comparison,
+  the imported BIOS versus machine-file checkpoint, and the session equivalence
+  tests. The CLI template POST, machine FreeDOS persistence, provider retired-count,
+  desktop Create/POST, compressed mount, allocation and verification-count tests
+  all boot through the factory.
+- **Explicit deviation.** `SessionTransfer`, `PreparedSession::machine` and
+  `provider::lower_session` remain because they still serve production.
+  `launch::from_session` consumes the transfer's verified descriptors, memory
+  snapshots and sparse zero-chain parts. The host-path view and its re-lowering
+  serve pending inserts, pending CMOS resets, created disks, catalogue editors
+  and `DesktopLaunch::freeze`'s host media bindings. Removing the view would lose
+  bindings; removing re-lowering would leave transactional edits stale. The core
+  mounts logical keys through content/storage objects, not through this view.
+  The transfer can go once launch plans capture verified content directly.
+  The view and rewriting can go once the PC tools and host bindings consume
+  launch identities directly instead of a path-based `MachineConfig`.
+  S11/S12's typed failed-run persistence, S13's host bindings and `upcli`'s pinned
+  Debug output remain. This completes §9 item 2 without claiming that the PC
+  library worker or every compatibility API is neutral.
 
 ### 14.4. What stage B needs from steps 9 and 10 of §12.10
 

@@ -3909,7 +3909,12 @@ mod tests {
         until(&w, |e| matches!(e, Event::Published(_)));
         assert!(!f.store.workspace_path(&name).unwrap().exists());
         let resolved = pc_image::test_support::with_synthetic_firmware(|| {
-            pc_image::resolve(&f.store, "copy:1.0.0", &f.temp.path().join("copy"))
+            pc_image::workspace::prepare_start(
+                &f.store.workspace("inspect-copy").unwrap(),
+                "copy:1.0.0",
+                false,
+            )
+            .map(|p| p.machine)
         })
         .unwrap();
         assert_eq!(resolved.memory.address_space_bytes, memory);

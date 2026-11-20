@@ -9,9 +9,10 @@
 //! vocabulary lives here: scan codes and the 8042's back-pressure
 //! ([`keyboard`]), the pointing device's packets ([`mouse`]), the conversion
 //! of a tick deadline to a retired-instruction cap ([`pacing`]) and the text
-//! rasteriser with its fonts ([`raster`], [`font`]). The machine is assembled
-//! by the PC provider, which hands this crate the assembled machine; creating
-//! one from a stored config through [`PcCore`] is a later stage.
+//! rasteriser with its fonts ([`raster`], [`font`]). Stored-image starts use
+//! [`PcCore::create_machine`] over a launch document and content/storage
+//! objects. Machine-file starts and preset-based tests may instead hand
+//! [`PcMachine::from_assembled`] an assembled machine.
 //!
 //! Rasterisation is pure: pixels are `0x00RRGGBB` u32 values.
 //! CP437 glyphs come from VileR's Ultimate Oldschool PC Font Pack v2.2,

@@ -2,7 +2,7 @@
 //! Open-fixture and synthetic journal coverage; machine-images §§2 and 8.
 
 use image_store::{BlobSource, ConfigValidator, Digest, Store};
-use pc_image::{import_machine, resolve, ImportOptions, PcProvider, RecoveryChoice};
+use pc_image::{import_machine, ImportOptions, PcProvider, RecoveryChoice};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -215,8 +215,14 @@ fn cmos_freezes_and_resolves_with_session_local_journal() {
     let bytes = first_bytes(&store, "test:cmos", pc_image::CMOS);
     assert_eq!(bytes.len(), 64);
     assert_eq!(bytes[32], 0xA7);
-    let config = resolve(&store, "test:cmos", &temp.0.join("session")).unwrap();
-    assert!(config.devices.iter().any(|d| matches!(&d.kind, assembly::DeviceKind::Rtc(assembly::CmosCfg { nvram: assembly::NvramSource::Journal { journal, .. }, .. }) if journal == &temp.0.join("session/cmos.upfj"))));
+    let config = pc_image::workspace::prepare_start(
+        &store.workspace("inspect-0").unwrap(),
+        "test:cmos",
+        false,
+    )
+    .unwrap()
+    .machine;
+    assert!(config.devices.iter().any(|d| matches!(&d.kind, assembly::DeviceKind::Rtc(assembly::CmosCfg { nvram: assembly::NvramSource::Journal { journal, .. }, .. }) if journal == &store.workspace_path("inspect-0").unwrap().join("media/cmos.upfj"))));
     assert_eq!(fs::read(temp.0.join("cmos.bin")).unwrap(), base);
     assert_eq!(fs::read(temp.0.join("cmos.upfj")).unwrap(), original);
 }
@@ -243,8 +249,15 @@ fn deterministic_import_deduplicates_and_is_self_contained() {
     fs::remove_file(temp.0.join("bios.bin")).unwrap();
     fs::remove_file(temp.0.join("disk.img")).unwrap();
     fs::remove_file(path).unwrap();
-    let config = resolve(&store, "test:a", &temp.0.join("session")).unwrap();
-    let mut assembled = assembly::assemble(&config).unwrap();
+    let owner = store.workspace("self-contained").unwrap();
+    let session = pc_image::workspace::prepare_start(&owner, "test:a", false).unwrap();
+    let launch =
+        pc_image::launch::from_session(session, &unemu_pc_core::PcCore, "Test".into()).unwrap();
+    let mut pc = core_launch::start_with(&launch.prepared, |request| {
+        unemu_pc_core::PcCore.create_machine(request)
+    })
+    .unwrap();
+    let assembled = pc.assembled();
     assembled.finish_persistence().unwrap();
     assert!(import_machine(
         &store,
@@ -398,7 +411,15 @@ fn shipped_open_machine_files_round_trip_effective_assembly_input() {
         import_machine(&store, &path, &tag, &ImportOptions::default()).unwrap();
         assert_eq!(
             normalize(original),
-            normalize(resolve(&store, &tag, &temp.0.join("session")).unwrap()),
+            normalize(
+                pc_image::workspace::prepare_start(
+                    &store.workspace(&tag.replace(':', "-")).unwrap(),
+                    &tag,
+                    false
+                )
+                .unwrap()
+                .machine
+            ),
             "{}",
             path.display()
         );
@@ -426,9 +447,15 @@ fn short_open_bios_checkpoint_matches_machine_file() {
     let path = root().join("machines/at-freedos.toml");
     import_machine(&store, &path, "test:checkpoint", &ImportOptions::default()).unwrap();
     let original = machine_file::load(&path).unwrap();
-    let imported = resolve(&store, "test:checkpoint", &temp.0.join("session")).unwrap();
-    let checkpoint = |c: &assembly::MachineConfig| {
-        let mut m = assembly::assemble(c).unwrap();
+    let owner = store.workspace("checkpoint").unwrap();
+    let session = pc_image::workspace::prepare_start(&owner, "test:checkpoint", false).unwrap();
+    let launch =
+        pc_image::launch::from_session(session, &unemu_pc_core::PcCore, "Test".into()).unwrap();
+    let mut imported = core_launch::start_with(&launch.prepared, |request| {
+        unemu_pc_core::PcCore.create_machine(request)
+    })
+    .unwrap();
+    let checkpoint = |m: &mut assembly::AssembledMachine| {
         let outcome = m
             .run_session(&assembly::RunPolicy::natural(Some(10_000), None))
             .unwrap();
@@ -444,14 +471,14 @@ fn short_open_bios_checkpoint_matches_machine_file() {
     assert!(
         include_str!("../../../Cargo.lock").contains("6cb817b86c1fbf463f7aab8c0da1ce0eec3db0b7")
     );
-    let reference = checkpoint(&original);
+    let reference = checkpoint(&mut assembly::assemble(&original).unwrap());
     assert_eq!(reference.0, machine::RunOutcome::RetiredCapReached);
     assert_eq!((reference.1, reference.2), (97, 10_000));
     assert_eq!(
         reference.3.to_string(),
         "sha256:c7862c33ecb65b0e7a067d159a52c6c48c439509cb584ebcc4952cffdc78948a"
     );
-    assert_eq!(reference, checkpoint(&imported));
+    assert_eq!(reference, checkpoint(imported.assembled()));
 }
 #[test]
 fn provider_rejects_paths_unknown_fields_geometry_and_unbound_content() {
@@ -525,7 +552,13 @@ fn catalogue_order_empty_slots_policies_and_unused_media_survive() {
         import_machine(&store, &path, "test:catalogue", &ImportOptions::default()).unwrap();
     assert_eq!(record.generations.len(), 2);
     let original = machine_file::load(&path).unwrap();
-    let imported = resolve(&store, "test:catalogue", &temp.0.join("session")).unwrap();
+    let imported = pc_image::workspace::prepare_start(
+        &store.workspace("inspect-4").unwrap(),
+        "test:catalogue",
+        false,
+    )
+    .unwrap()
+    .machine;
     assert_eq!(normalize(original), normalize(imported));
     let image = store.resolve("test:catalogue", &PcProvider).unwrap();
     assert_eq!(
@@ -560,7 +593,13 @@ fn inheritance_and_symlink_origins_are_used_before_flattening() {
     import_machine(&store, &child, "test:origins", &ImportOptions::default()).unwrap();
     assert_eq!(
         machine_file::load(&child).unwrap(),
-        resolve(&store, "test:origins", &temp.0.join("session")).unwrap()
+        pc_image::workspace::prepare_start(
+            &store.workspace("inspect-5").unwrap(),
+            "test:origins",
+            false
+        )
+        .unwrap()
+        .machine
     );
     let image = store.resolve("test:origins", &PcProvider).unwrap();
     let text = std::str::from_utf8(&image.config).unwrap();
@@ -713,7 +752,13 @@ fn split_open_firmware_preserves_chips_lanes_offsets_and_assembled_pin() {
     import_machine(&store, &path, "test:split", &ImportOptions::default()).unwrap();
     assert_eq!(
         machine_file::load(&path).unwrap(),
-        resolve(&store, "test:split", &temp.0.join("session")).unwrap()
+        pc_image::workspace::prepare_start(
+            &store.workspace("inspect-6").unwrap(),
+            "test:split",
+            false
+        )
+        .unwrap()
+        .machine
     );
     let image = store.resolve("test:split", &PcProvider).unwrap();
     assert_eq!(
@@ -792,7 +837,13 @@ fn recovery_choices_are_independent_and_absent_journals_use_zero() {
         let record = import_machine(&store, &path, "test:independent", &options).unwrap();
         assert_eq!(record.generations[0].generation, Some(0));
         assert_eq!(record.generations[1].generation, Some(1));
-        let config = resolve(&store, "test:independent", &temp.0.join("session")).unwrap();
+        let config = pc_image::workspace::prepare_start(
+            &store.workspace("inspect-7").unwrap(),
+            "test:independent",
+            false,
+        )
+        .unwrap()
+        .machine;
         let entries = &config.drives[0].media.as_ref().unwrap().entries;
         let image = store.resolve("test:independent", &PcProvider).unwrap();
         let bytes = |entry: &assembly::FloppyMedium| {
@@ -936,7 +987,12 @@ fn import_uses_firmware_roots_and_public_origin_paths() {
     };
     let store = temp.store();
     import_machine(&store, &path, "test:discovered", &options).unwrap();
-    resolve(&store, "test:discovered", &temp.0.join("session")).unwrap();
+    pc_image::workspace::prepare_start(
+        &store.workspace("inspect-8").unwrap(),
+        "test:discovered",
+        false,
+    )
+    .unwrap();
     assert_eq!(
         machine_file::Origins::new("preset:ibm-5170")
             .image_path("firmware.bios.image", "assets/system.bin"),
@@ -948,7 +1004,7 @@ fn sb16_ems_and_materialized_defaults_round_trip() {
     for extra in ["\n[[card]]\nkind='sb16'\nbase=0x240\nirq=7\ndma8=3\ndma16=6\n[[card]]\nkind='lotech-ems'\nport=0x268\nframe=0xD000\nsize_kib=1536\n", "\n[[card]]\nkind='sb16'\n[[card]]\nkind='lotech-ems'\nframe=0xD000\n"] {
         let temp=Temp::new();let Some(path)=fixture(&temp,extra) else { return; };let store=temp.store();
         let original=machine_file::load(&path).unwrap();import_machine(&store,&path,"test:cards",&ImportOptions::default()).unwrap();
-        assert_eq!(original,resolve(&store,"test:cards",&temp.0.join("session")).unwrap());
+        assert_eq!(original,pc_image::workspace::prepare_start(&store.workspace("inspect-9").unwrap(), "test:cards", false).unwrap().machine);
         let image=store.resolve("test:cards",&PcProvider).unwrap();let table:toml::Table=std::str::from_utf8(&image.config).unwrap().parse().unwrap();
         assert!(table["machine"]["cpu"].get("rate").is_some());assert!(table["machine"]["cpu"].get("fpu").is_some());
         assert!(table["machine"]["board"]["rtc"].get("start").is_some());assert!(table["machine"]["memory"].get("extended_kib").is_some());
@@ -982,9 +1038,9 @@ fn journaled_ide_resolves_file_backed_and_runs_short_checkpoint() {
     let store = temp.store();
     let record = import_machine(&store, &path, "test:ide", &ImportOptions::default()).unwrap();
     assert_eq!(record.generations[0].generation, Some(1));
-    let session = temp.0.join("session");
-    fs::create_dir(&session).unwrap();
-    let config = resolve(&store, "test:ide", &session).unwrap();
+    let owner = store.workspace("ide-checkpoint").unwrap();
+    let prepared = pc_image::workspace::prepare_start(&owner, "test:ide", false).unwrap();
+    let config = &prepared.machine;
     assert!(config.drives[0].media.is_none());
     assert!(matches!(
         config.drives[0].image,
@@ -999,7 +1055,13 @@ fn journaled_ide_resolves_file_backed_and_runs_short_checkpoint() {
         panic!("file-backed disk expected")
     };
     assert_eq!(&fs::read(frozen).unwrap()[512..1024], &[0xA7; 512]);
-    let mut machine = assembly::assemble(&config).unwrap();
+    let launch =
+        pc_image::launch::from_session(prepared, &unemu_pc_core::PcCore, "Test".into()).unwrap();
+    let mut pc = core_launch::start_with(&launch.prepared, |request| {
+        unemu_pc_core::PcCore.create_machine(request)
+    })
+    .unwrap();
+    let machine = pc.assembled();
     assert_eq!(
         machine
             .run_session(&assembly::RunPolicy::natural(Some(10_000), None))
@@ -1066,7 +1128,13 @@ fn compression_preserves_machine_identity_and_resolves_mixed_payloads_without_so
     fs::remove_file(temp.0.join("disk.img")).unwrap();
     fs::remove_file(path).unwrap();
     for tag in ["test:raw", "test:default", "test:compressed", "test:mixed"] {
-        let machine = resolve(&store, tag, &temp.0.join(tag.replace(':', "-"))).unwrap();
+        let machine = pc_image::workspace::prepare_start(
+            &store.workspace(&tag.replace(':', "-")).unwrap(),
+            tag,
+            false,
+        )
+        .unwrap()
+        .machine;
         assert_eq!(machine.drives[0].kind.image_bytes(), 360 * 1024);
     }
     let owner = store.workspace("compressed").unwrap();
@@ -1179,14 +1247,13 @@ fn compressed_import_and_resolution_write_nothing_and_a_mount_decodes_only_the_h
         [0x29; 512]
     );
     // In-memory bases cross to the execution thread and run with the disk.
-    let prepared = prepared.into_transfer().unwrap().restore().unwrap();
-    let mut machine = assembly::assemble_with_verified_bases(
-        &prepared.machine,
-        &assembly::ObservationPolicy::default(),
-        assembly::AssemblyOptions::default(),
-        &prepared.bases,
-    )
+    let launch =
+        pc_image::launch::from_session(prepared, &unemu_pc_core::PcCore, "Test".into()).unwrap();
+    let mut pc = core_launch::start_with(&launch.prepared, |request| {
+        unemu_pc_core::PcCore.create_machine(request)
+    })
     .unwrap();
+    let machine = pc.assembled();
     machine
         .run_session(&assembly::RunPolicy::natural(Some(10_000), None))
         .unwrap();
@@ -1310,7 +1377,8 @@ fn mixed_density_floppy_media_round_trip_through_publish_and_resolve() {
     }
     let store = temp.store();
     import_machine(&store, &path, "test:mixed", &ImportOptions::default()).unwrap();
-    let check = |machine: &assembly::MachineConfig| {
+    let check = |prepared: pc_image::workspace::PreparedSession| {
+        let machine = &prepared.machine;
         let floppy = |unit| {
             machine
                 .drives
@@ -1342,21 +1410,38 @@ fn mixed_density_floppy_media_round_trip_through_publish_and_resolve() {
         assert_eq!(list.entries.len(), 2);
         assert_eq!(bytes(&list.entries[0].image), vec![0x72; 737_280]);
         assert_eq!(bytes(&list.entries[1].image), vec![0x14; 1_474_560]);
-        let _assembled = assembly::assemble_with_options(
-            machine,
-            assembly::AssemblyOptions {
-                allow_unlisted_firmware: true,
-            },
+        let launch = pc_image::launch::from_session(
+            prepared,
+            &unemu_pc_core::PcCore,
+            "Mixed density".into(),
         )
         .unwrap();
+        let _machine = core_launch::start_with(&launch.prepared, |request| {
+            unemu_pc_core::PcCore.create_machine(request)
+        })
+        .unwrap();
     };
-    check(&resolve(&store, "test:mixed", &temp.0.join("session-a")).unwrap());
+    check(
+        pc_image::workspace::prepare_start(
+            &store.workspace("inspect-12").unwrap(),
+            "test:mixed",
+            false,
+        )
+        .unwrap(),
+    );
     let owner = store.workspace("mixed").unwrap();
     let prepared = pc_image::workspace::prepare_start(&owner, "test:mixed", true).unwrap();
-    check(&prepared.machine);
+    check(prepared);
     pc_image::workspace::publish(&owner, "test:republished", None).unwrap();
     drop(owner);
-    check(&resolve(&store, "test:republished", &temp.0.join("session-b")).unwrap());
+    check(
+        pc_image::workspace::prepare_start(
+            &store.workspace("inspect-13").unwrap(),
+            "test:republished",
+            false,
+        )
+        .unwrap(),
+    );
 
     let refused = fs::read_to_string(&path)
         .unwrap()

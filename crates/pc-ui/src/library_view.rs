@@ -5154,43 +5154,30 @@ pub(super) mod tests {
         // Start assembles the machine and the open BIOS runs its POST.
         let owner = firmware.store.workspace("first-start").unwrap();
         let prepared = pc_image::workspace::prepare_start(&owner, &reference, false).unwrap();
-        let policy = assembly::ObservationPolicy {
-            trace: device::TracePolicy::Off,
-            routes: vec![
-                assembly::ObservationRequest {
-                    device: assembly::DeviceId::Post,
-                    output: assembly::OutputKind::Bytes(device::ByteStreamKind::PostCheckpoints),
-                    byte_limit: 4096,
-                },
-                assembly::ObservationRequest {
-                    device: assembly::DeviceId::Vga,
-                    output: assembly::OutputKind::TextScanout,
-                    byte_limit: 0,
-                },
-            ],
-            ..Default::default()
-        };
-        let mut machine = assembly::assemble_with_verified_bases(
-            &prepared.machine,
-            &policy,
-            assembly::AssemblyOptions::default(),
-            &prepared.bases,
-        )
+        let launch =
+            pc_image::launch::from_session(prepared, &unemu_pc_core::PcCore, "Test".into())
+                .unwrap();
+        let mut pc = core_launch::start_with(&launch.prepared, |request| {
+            unemu_pc_core::PcCore.create_machine(request)
+        })
         .unwrap();
+        let machine = pc.assembled();
+        let checkpoints = device::ByteCapture::new(4096);
+        let post_index = machine.device_index[&assembly::DeviceId::Post];
+        machine
+            .machine
+            .bus_mut()
+            .device_mut(post_index)
+            .unwrap()
+            .byte_output()
+            .unwrap()
+            .bind_sink(Box::new(checkpoints.clone()));
         let mut post = Vec::new();
         for step in 1..=60u64 {
             machine
                 .run_session(&assembly::RunPolicy::natural(Some(step * 1_000_000), None))
                 .unwrap();
-            post.extend(
-                machine
-                    .observation
-                    .drain_bytes(
-                        assembly::DeviceId::Post,
-                        device::ByteStreamKind::PostCheckpoints,
-                    )
-                    .unwrap(),
-            );
+            post.extend(checkpoints.drain().unwrap());
             if post.contains(&0x00) {
                 // Let INT 19h try A: (empty) and then C: through XTIDE.
                 let at = {
@@ -5437,11 +5424,12 @@ pub(super) mod tests {
         assert_eq!(bios["parts"].as_array().unwrap().len(), 2);
         // The machine assembles the two chips into the BIOS it pins.
         let machine = pc_image::test_support::with_synthetic_firmware(|| {
-            pc_image::resolve(
-                &firmware.store,
+            pc_image::workspace::prepare_start(
+                &firmware.store.workspace("inspect-0").unwrap(),
                 "chips:1.0.0",
-                &firmware.temp.path().join("session"),
+                false,
             )
+            .map(|p| p.machine)
         })
         .unwrap();
         assert!(machine

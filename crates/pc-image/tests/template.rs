@@ -269,8 +269,13 @@ fn template_machines_validate_lower_and_describe_themselves() {
         assert_eq!(count(mt::TAR), 3);
         assert_eq!(count(mt::FLOPPY), 0);
 
-        let machine =
-            pc_image::resolve(&store, tag, &t.0.join(format!("session-{games}"))).unwrap();
+        let machine = pc_image::workspace::prepare_start(
+            &store.workspace(&format!("template-{games}")).unwrap(),
+            tag,
+            false,
+        )
+        .unwrap()
+        .machine;
         let has = |wanted: fn(&assembly::DeviceKind) -> bool| {
             machine.devices.iter().any(|d| wanted(&d.kind))
         };

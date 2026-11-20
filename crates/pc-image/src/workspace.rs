@@ -72,14 +72,6 @@ fn session(workspace: &Workspace<'_>) -> Result<Session> {
     }
     Ok(session)
 }
-/// Create or resume a pinned session, refusing a different image at the supplied tag.
-pub fn start(workspace: &Workspace<'_>, tag: &str) -> Result<assembly::MachineConfig> {
-    prepare_start(workspace, tag, false).map(|prepared| prepared.machine)
-}
-/// Require a fresh disposable session; an existing session is never overwritten.
-pub fn start_new(workspace: &Workspace<'_>, tag: &str) -> Result<assembly::MachineConfig> {
-    prepare_start(workspace, tag, true).map(|prepared| prepared.machine)
-}
 pub fn pinned_image(workspace: &Workspace<'_>) -> Result<Digest> {
     Ok(session(workspace)?.image.digest)
 }
@@ -182,11 +174,13 @@ impl unemu_core_api::ContentSource for PreparedLaunch {
     }
 }
 
-/// Captured launch input retains verified bases through assembly.
+/// Editable launch input with verified bases and host bindings for PC tools.
 pub struct PreparedSession {
     /// The document and its path bindings for a stored-image start. Synthetic
     /// callers that supply an assembled config directly have no document.
     pub launch: Option<PreparedLaunch>,
+    /// Host-path view used by catalogue editors, pending CMOS resets and
+    /// desktop media tools. The core mounts the launch document's logical keys.
     pub machine: assembly::MachineConfig,
     pub bases: std::collections::BTreeMap<std::path::PathBuf, VerifiedBase>,
     pub image: Digest,
@@ -1040,8 +1034,9 @@ fn save_retention(
     Ok(())
 }
 
-/// Thread-transferable launch inputs keep verified file descriptors instead of
-/// the execution thread's reference-counted sector readers.
+/// Verified content for the launch plans travels as descriptors instead of
+/// the execution thread's reference-counted sector readers. The host-path
+/// machine view also supports compatibility tests and desktop test inspection.
 pub struct SessionTransfer {
     pub(crate) launch: Option<PreparedLaunch>,
     machine: assembly::MachineConfig,

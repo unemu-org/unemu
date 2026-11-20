@@ -36,7 +36,7 @@ pub mod zero;
 
 pub use firmware_package::PLATFORM;
 pub use import::{import_machine, ChosenGeneration, ImportOptions, ImportRecord, RecoveryChoice};
-pub use provider::{compress_image, resolve, PcProvider, CMOS, DISK_ZERO, PAYLOAD_TYPES};
+pub use provider::{compress_image, PcProvider, CMOS, DISK_ZERO, PAYLOAD_TYPES};
 
 const MEDIA_SETS: image_store::media_set::Validator<'static> =
     image_store::media_set::Validator(&media_set::PcMediaFormats);

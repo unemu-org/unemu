@@ -87,7 +87,7 @@ fn with_extended(machine: &Table, kib: i64) -> Table {
 /// Publish a titled image from a scratch workspace, as Save as new image does.
 fn titled(fixture: &Fixture, tag: &str, title: &str) -> image_store::Descriptor {
     let owner = fixture.store.workspace("titled-scratch").unwrap();
-    workspace::start(&owner, "test:source").unwrap();
+    workspace::prepare_start(&owner, "test:source", false).unwrap();
     let image = workspace::publish_as(&owner, tag, None, false, Some(title), |_| Ok(())).unwrap();
     owner.discard_and_remove().unwrap();
     image
@@ -436,7 +436,13 @@ fn settings_apply_from_the_next_start_and_recompute_the_machines_cmos() {
             0x100000 + 4096 * 1024
         );
     }
-    let resolved = pc_image::resolve(store, "test:source", &fixture.path.join("s")).unwrap();
+    let resolved = pc_image::workspace::prepare_start(
+        &store.workspace("inspect-0").unwrap(),
+        "test:source",
+        false,
+    )
+    .unwrap()
+    .machine;
     assert_ne!(resolved.memory.address_space_bytes, 0x100000 + 4096 * 1024);
     // The image's own settings drop the overlay and restore the CMOS fields.
     machine::change_settings(store, &id, image_tables, true).unwrap();
@@ -466,7 +472,13 @@ fn commit_moves_the_machine_onto_the_new_image_or_keeps_it_on_the_old() {
     let saved = store.resolve("saved:1.0.0", &PcProvider).unwrap();
     assert_eq!(saved.image.digest, kept.digest);
     assert_eq!(saved.manifest.annotations[workspace::TITLE], "Saver");
-    let lowered = pc_image::resolve(store, "saved:1.0.0", &fixture.path.join("k")).unwrap();
+    let lowered = pc_image::workspace::prepare_start(
+        &store.workspace("inspect-1").unwrap(),
+        "saved:1.0.0",
+        false,
+    )
+    .unwrap()
+    .machine;
     assert_eq!(lowered.memory.address_space_bytes, 0x100000 + 4096 * 1024);
     // The default moves the machine onto the new image with fresh journals.
     let moved = machine::commit(store, &id, "saved:2.0.0", None, Some("Saved"), false).unwrap();
@@ -882,7 +894,13 @@ fn a_gaming_copy_plays_the_machine_as_it_is_and_is_kept_as_a_machine_or_an_image
     machine::publish_copy(&owner, "copy:1.0.0", None, false, Some("Copy")).unwrap();
     drop(owner);
     fixture.assert_complete("copy:1.0.0", 5);
-    let lowered = pc_image::resolve(store, "copy:1.0.0", &fixture.path.join("c")).unwrap();
+    let lowered = pc_image::workspace::prepare_start(
+        &store.workspace("inspect-2").unwrap(),
+        "copy:1.0.0",
+        false,
+    )
+    .unwrap()
+    .machine;
     assert_eq!(lowered.memory.address_space_bytes, 0x100000 + 4096 * 1024);
 }
 
@@ -1048,7 +1066,13 @@ fn a_firmware_change_applies_at_the_next_start_and_keeps_or_resets_the_cmos() {
         assert_eq!(&bios_bytes(&started.session.machine), atreset);
     }
     // The image never changes.
-    let resolved = pc_image::resolve(store, "test:source", &fixture.path.join("s")).unwrap();
+    let resolved = pc_image::workspace::prepare_start(
+        &store.workspace("inspect-3").unwrap(),
+        "test:source",
+        false,
+    )
+    .unwrap()
+    .machine;
     assert_ne!(&bios_bytes(&resolved), atreset);
 
     // Another layout (the open AT BIOS): the CMOS is reset to the bytes the
@@ -1075,7 +1099,13 @@ fn a_firmware_change_applies_at_the_next_start_and_keeps_or_resets_the_cmos() {
 
     // Save as new image… binds the chosen ROM in the new image.
     machine::commit(store, &id, "test:open-at", None, None, true).unwrap();
-    let saved = pc_image::resolve(store, "test:open-at", &fixture.path.join("t")).unwrap();
+    let saved = pc_image::workspace::prepare_start(
+        &store.workspace("inspect-4").unwrap(),
+        "test:open-at",
+        false,
+    )
+    .unwrap()
+    .machine;
     assert_eq!(&bios_bytes(&saved), open_at);
 
     // Back to the image's own firmware: the overlay goes, and the CMOS is
@@ -1202,7 +1232,13 @@ fn a_machine_keeps_its_chosen_firmware_after_the_package_loses_its_tag() {
     }
     // Save as new image… carries it, and names the package it came from.
     machine::commit(store, &id, "test:chosen", None, None, true).unwrap();
-    let saved = pc_image::resolve(store, "test:chosen", &fixture.path.join("t")).unwrap();
+    let saved = pc_image::workspace::prepare_start(
+        &store.workspace("inspect-5").unwrap(),
+        "test:chosen",
+        false,
+    )
+    .unwrap()
+    .machine;
     assert_eq!(&bios_bytes(&saved), open_at);
     let annotations = store
         .resolve("test:chosen", &pc_image::PcProvider)

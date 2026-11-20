@@ -202,8 +202,13 @@ fn memory_revision_shares_every_blob_and_rewrites_only_memory_bytes_and_checksum
         image.manifest.annotations[workspace::BASE_DIGEST],
         fixture.image.digest.to_string()
     );
-    let machine =
-        pc_image::resolve(&fixture.store, "stored:1.1.0", &fixture.path.join("s")).unwrap();
+    let machine = pc_image::workspace::prepare_start(
+        &fixture.store.workspace("inspect-0").unwrap(),
+        "stored:1.1.0",
+        false,
+    )
+    .unwrap()
+    .machine;
     assert_eq!(
         machine.memory.address_space_bytes,
         0x100000 + 4096 * 1024,
@@ -240,8 +245,13 @@ fn drive_revision_rewrites_only_diskette_and_equipment_bytes_and_checksum() {
     let bytes = cmos_blob(&fixture.store, "stored:two-drives");
     assert_eq!(bytes, expected);
     assert_eq!(&bytes[..0x0E], &fixture.cmos[..0x0E], "the clock is kept");
-    let machine =
-        pc_image::resolve(&fixture.store, "stored:two-drives", &fixture.path.join("t")).unwrap();
+    let machine = pc_image::workspace::prepare_start(
+        &fixture.store.workspace("inspect-1").unwrap(),
+        "stored:two-drives",
+        false,
+    )
+    .unwrap()
+    .machine;
     let floppies = machine
         .drives
         .iter()
@@ -725,8 +735,13 @@ fn a_firmware_revision_binds_the_package_rom_and_resets_cmos_only_across_layouts
     assert!(plan.cmos_reset);
     assert_eq!(firmware(&plan).len(), 2, "the ROM and its source archive");
     revision::publish(&fixture.store, &plan, "stored:2.0.0", None).unwrap();
-    let machine =
-        pc_image::resolve(&fixture.store, "stored:2.0.0", &fixture.path.join("s")).unwrap();
+    let machine = pc_image::workspace::prepare_start(
+        &fixture.store.workspace("inspect-2").unwrap(),
+        "stored:2.0.0",
+        false,
+    )
+    .unwrap()
+    .machine;
     let bios = machine
         .images
         .iter()

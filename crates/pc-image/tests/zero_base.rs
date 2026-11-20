@@ -521,8 +521,20 @@ fn the_created_configuration_lowers_like_the_equivalent_machine_file() {
         }
         c
     };
-    let created = pc_image::resolve(&open.store, "created:1.0.0", &open.path.join("a")).unwrap();
-    let imported = pc_image::resolve(&open.store, "imported:1.0.0", &open.path.join("b")).unwrap();
+    let created = pc_image::workspace::prepare_start(
+        &open.store.workspace("inspect-0").unwrap(),
+        "created:1.0.0",
+        false,
+    )
+    .unwrap()
+    .machine;
+    let imported = pc_image::workspace::prepare_start(
+        &open.store.workspace("inspect-1").unwrap(),
+        "imported:1.0.0",
+        false,
+    )
+    .unwrap()
+    .machine;
     // Identities agree too: the zero base pins the SHA-256 of the raw zeros.
     assert_eq!(
         created

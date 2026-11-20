@@ -137,9 +137,9 @@ fn slot_of(controller: DeviceId, unit: u8) -> Option<SlotId> {
 }
 
 impl PcMachine {
-    /// Wrap a machine the caller assembled. The PC provider uses this for
-    /// machine files and for every start until [`crate::PcCore`] can read a
-    /// stored config itself; tests use it with presets.
+    /// Wrap a machine the caller assembled, for machine-file starts and
+    /// preset-based tests. Stored-image starts use [`crate::PcCore::create_machine`]
+    /// over the provider's launch document and content/storage objects.
     ///
     /// Every display the machine's observation routes to a text scanout is a
     /// display of this machine, in route order. HLT waits for an interrupt
