@@ -5,6 +5,16 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — Created disks and kept catalogues derive their start from the launch:**
+  (`upc-dfs.43.7`, stage B step S7; design/core-contract.md §14.3).
+  Both catalogue editors now update launch bindings transactionally before the
+  machine is derived. Short kept record names map to the existing journal files,
+  including journals outside the workspace; hashes, retention, catalogue order,
+  pending-insert precedence and selected disks are preserved. Launch lowering
+  now restores a non-first selected disk without reordering the catalogue;
+  stored configs retain their existing restriction. Restart tests keep journal
+  bytes and base files unchanged, and re-lowering the edited document reproduces
+  the prepared machine. No crate-map change or object-based launch plans.
 - **2026-11-20 — PC creation through the core contract:** `PcCore::create`
   and its typed `create_machine` accept the bounded PC launch document;
   `validate` checks it without host access and lists its exact flat content.

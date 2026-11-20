@@ -392,7 +392,7 @@ fn apply_one(
     let drive = session
         .machine
         .drives
-        .iter_mut()
+        .iter()
         .find(|d| d.unit == unit && matches!(d.kind, assembly::DriveKind::Floppy { .. }))
         .ok_or_else(|| format!("{} is not a floppy drive here", insert.drive))?;
     let assembly::DriveKind::Floppy { geometry } = drive.kind else {
@@ -441,20 +441,20 @@ fn apply_one(
             name: disk.name.clone(),
         });
     }
-    session.bases.extend(bases);
     // The chosen disk leads, so the drive starts with it.
     if !media.is_empty() {
         let first = media.remove(insert.first());
         media.insert(0, first);
     }
-    match &mut drive.media {
+    match &drive.media {
         Some(list) => {
-            list.entries
-                .retain(|e| !media.iter().any(|m| m.expected_sha256 == e.expected_sha256));
-            media.append(&mut list.entries);
-            list.entries = media;
-            list.empty = false;
-            list.inserted = 0;
+            media.extend(
+                list.entries
+                    .iter()
+                    .filter(|e| !media.iter().any(|m| m.expected_sha256 == e.expected_sha256))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            );
         }
         None => {
             // A drive with one fixed image becomes a catalogue for this run.
@@ -464,18 +464,11 @@ fn apply_one(
                 write: drive.write.clone(),
                 name: format!("{} image", insert.drive),
             });
-            drive.media = Some(assembly::FloppyMediaList {
-                entries: media,
-                empty: false,
-                inserted: 0,
-            });
-            drive.image = assembly::ImageSource::Blank {
-                size: drive.kind.image_bytes(),
-            };
-            drive.expected_sha256 = None;
-            drive.write = assembly::WriteMode::Volatile;
         }
     }
+    session
+        .replace_floppy_catalogue(unit, media, Some(0), bases.into_iter().collect())
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

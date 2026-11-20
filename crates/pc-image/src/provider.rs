@@ -218,9 +218,9 @@ struct Stored<'a> {
 /// digest the config binds it finds the descriptor of the right kind and
 /// checks the PC size limit; it checks a ROM's source link and source
 /// archive, walks a fixed disk's layer chain, applies the zero-base rule and
-/// collects the closure. It refuses only on those facts: a config whose
-/// shape is wrong is the codec half's to refuse, so the walk stops where the
-/// codec half would refuse it and leaves the rest alone.
+/// collects the closure. Stored slots keep their strict shape checks here:
+/// launch lowering also accepts selections made by desktop edits. For other
+/// malformed bindings the walk stops where the codec half would refuse them.
 fn store_half<'a>(
     config: &Config,
     descriptors: &[Descriptor],
@@ -305,12 +305,12 @@ fn store_half<'a>(
     });
     let mut used = BTreeSet::new();
     for ((controller, kind, drive), slot) in drives.iter().zip(&config.slots) {
-        if codec::check_media_fields(drive)
-            .and_then(|()| codec::check_slot(controller, kind, drive, slot))
-            .is_err()
-        {
+        if codec::check_media_fields(drive).is_err() {
             return Ok(stored);
         }
+        // Shared read-only media can leave every content row present even
+        // after this walk stops; launch lowering permits a later selection.
+        codec::check_slot(controller, kind, drive, slot)?;
         let ide = kind == "ide";
         for id in &slot.catalogue {
             let Some(medium) = config.media.iter().find(|m| &m.id == id) else {
@@ -1384,6 +1384,54 @@ inserted = "HEAD_C"
         assert_eq!(assembled.machine.clock().0, 162_500);
         assembled.finish_persistence().unwrap();
     }
+    #[test]
+    fn stored_shared_catalogues_refuse_a_non_first_selection() {
+        let Some((mut config, mut descriptors, blobs)) = image() else {
+            return;
+        };
+        config.nvram = None;
+        config.machine["board"]["rtc"]
+            .as_table_mut()
+            .unwrap()
+            .remove("nvram");
+        config.media[0].policy = Policy::Readonly;
+        config.media[0].name = Some("Disk a".into());
+        let floppy = vec![0x31; 368_640];
+        let mut second = config.media[0].clone();
+        second.id = "b".into();
+        second.source = "assets/b.img".into();
+        second.name = Some("Disk b".into());
+        second.head = codec::Digest::of(&floppy);
+        config.media.push(second);
+        descriptors.push(Descriptor::new(
+            mt::FLOPPY,
+            Digest::of(&floppy),
+            floppy.len() as u64,
+        ));
+        let drives = config.machine["card"][0]["drives"].as_array_mut().unwrap();
+        let mut drive = drives[0].clone();
+        drive["unit"] = 1.into();
+        drives.push(drive);
+        config.slots[0].catalogue = vec!["a".into(), "b".into()];
+        config.slots[0].catalogue_mode = true;
+        let mut slot = config.slots[0].clone();
+        slot.unit = 1;
+        config.slots.push(slot);
+        let content = Memory::new(blobs.iter().map(Vec::as_slice).chain([floppy.as_slice()]));
+        let table = config.encode().unwrap().parse().unwrap();
+        PcProvider.validate(&table, &descriptors, &content).unwrap();
+
+        config.slots[1].inserted = Some("b".into());
+        let table = config.encode().unwrap().parse().unwrap();
+        let error = PcProvider
+            .validate(&table, &descriptors, &content)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "invalid image: invalid PC image: unsupported initial selection"
+        );
+    }
+
     #[test]
     fn stored_catalogue_labels_keep_their_original_restrictions() {
         let Some((config, descriptors, blobs)) = image() else {

@@ -817,38 +817,24 @@ fn restore_drive(
     let drive = session
         .machine
         .drives
-        .iter_mut()
+        .iter()
         .find(|d| d.unit == unit && matches!(d.kind, assembly::DriveKind::Floppy { .. }))
         .ok_or("the machine has no such floppy drive now")?;
     let assembly::DriveKind::Floppy { geometry } = drive.kind else {
         return Err("floppy drive expected".into());
     };
-    if drive.media.is_none() {
-        // A drive with one fixed image becomes a catalogue for this run, its
-        // disk named as This machine names it.
-        let name = match &drive.image {
-            ImageSource::File(path) => crate::media_dialog::filename(path),
-            _ => "image".into(),
-        };
-        let entries = vec![FloppyMedium {
+    let started = match &drive.media {
+        Some(list) => list.entries.clone(),
+        None => vec![FloppyMedium {
             image: drive.image.clone(),
             expected_sha256: drive.expected_sha256,
             write: drive.write.clone(),
-            name,
-        }];
-        drive.image = ImageSource::Blank {
-            size: drive.kind.image_bytes(),
-        };
-        drive.expected_sha256 = None;
-        drive.write = WriteMode::Volatile;
-        drive.media = Some(assembly::FloppyMediaList {
-            entries,
-            empty: false,
-            inserted: 0,
-        });
-    }
-    let list = drive.media.as_mut().ok_or("floppy catalogue expected")?;
-    let started = std::mem::take(&mut list.entries);
+            name: match &drive.image {
+                ImageSource::File(path) => crate::media_dialog::filename(path),
+                _ => "image".into(),
+            },
+        }],
+    };
     let (pending, own) = started.split_at(lead.min(started.len()));
     let mut used = vec![false; own.len()];
     let mut entries = pending.to_vec();
@@ -858,6 +844,7 @@ fn restore_drive(
     };
     let mut notes = Vec::new();
     let mut in_drive = None;
+    let mut bases = std::collections::BTreeMap::new();
     for (at, disk) in kept.disk.iter().enumerate() {
         let ready = match disk {
             KeptDisk::Own { name, sha256, .. } => {
@@ -920,7 +907,7 @@ fn restore_drive(
             in_drive = Some(entries.len());
         }
         if let Some((path, base)) = ready.base {
-            session.bases.insert(path, base);
+            bases.insert(path, base);
         }
         if let Some((source, reference, origin)) = ready.set {
             restored.sets.push(RestoredSet {
@@ -945,9 +932,9 @@ fn restore_drive(
     } else {
         Some(0)
     };
-    list.entries = entries;
-    list.empty = start.is_none();
-    list.inserted = start.unwrap_or(0);
+    session
+        .replace_floppy_catalogue(unit, entries, start, bases)
+        .map_err(|e| e.to_string())?;
     Ok((restored, notes))
 }
 

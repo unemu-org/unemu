@@ -100,6 +100,12 @@ impl PreparedLaunch {
         &self.document
     }
 
+    /// The existing journal file each logical record stands for, including
+    /// journals beside images outside the workspace.
+    pub fn record_files(&self) -> &std::collections::BTreeMap<String, std::path::PathBuf> {
+        &self.records
+    }
+
     pub(crate) fn prune(&mut self) {
         let document = &mut self.document;
         document.config.media.retain(|m| {
@@ -1052,6 +1058,202 @@ impl PreparedSession {
         let machine = crate::provider::lower_session(&launch)?;
         self.launch = Some(launch);
         self.machine = machine;
+        Ok(())
+    }
+
+    /// Replace one floppy catalogue in the launch and derive its machine.
+    /// Existing bindings keep their content and records; added disks use the
+    /// supplied verified bases and short record names independent of host paths.
+    /// Neither the document nor the bases change if lowering refuses the edit.
+    pub fn replace_floppy_catalogue(
+        &mut self,
+        unit: u8,
+        entries: Vec<assembly::FloppyMedium>,
+        inserted: Option<usize>,
+        bases: std::collections::BTreeMap<std::path::PathBuf, VerifiedBase>,
+    ) -> Result<()> {
+        let at = self
+            .machine
+            .drives
+            .iter()
+            .position(|d| d.unit == unit && matches!(d.kind, assembly::DriveKind::Floppy { .. }))
+            .ok_or_else(|| invalid("no such floppy drive"))?;
+        let drive = &self.machine.drives[at];
+        let old_entries = drive
+            .media
+            .as_ref()
+            .map(|list| list.entries.clone())
+            .unwrap_or_else(|| {
+                vec![assembly::FloppyMedium {
+                    image: drive.image.clone(),
+                    expected_sha256: drive.expected_sha256,
+                    write: drive.write.clone(),
+                    name: String::new(),
+                }]
+            });
+        let all_bases = &self.bases;
+        let mut input = self
+            .launch
+            .clone()
+            .ok_or_else(|| invalid("this session has no launch document"))?;
+        let old_slot = input.document.config.slots[at].clone();
+        let mut catalogue: Vec<String> = Vec::new();
+        for entry in entries {
+            let existing = old_entries
+                .iter()
+                .position(|old| {
+                    old.image == entry.image
+                        && old.expected_sha256 == entry.expected_sha256
+                        && old.write == entry.write
+                })
+                .and_then(|i| old_slot.catalogue.get(i));
+            let id = if let Some(id) = existing.filter(|id| {
+                !catalogue.contains(*id)
+                    && !input
+                        .document
+                        .config
+                        .slots
+                        .iter()
+                        .enumerate()
+                        .any(|(i, slot)| i != at && slot.catalogue.contains(*id))
+            }) {
+                let medium = input
+                    .document
+                    .config
+                    .media
+                    .iter_mut()
+                    .find(|m| &m.id == id)
+                    .ok_or_else(|| invalid("missing launch medium"))?;
+                medium.name = Some(entry.name);
+                id.clone()
+            } else {
+                let mut index = 0u64;
+                let id = loop {
+                    let id = format!("catalogue-{index}");
+                    let source = format!("assets/{id}.img");
+                    if !input
+                        .document
+                        .config
+                        .media
+                        .iter()
+                        .any(|m| m.id == id || m.source == source)
+                        && !input
+                            .document
+                            .config
+                            .firmware
+                            .iter()
+                            .any(|f| f.source == source)
+                        && !input
+                            .document
+                            .config
+                            .nvram
+                            .as_ref()
+                            .is_some_and(|n| n.source == source)
+                    {
+                        break id;
+                    }
+                    index += 1;
+                };
+                let source = format!("assets/{id}.img");
+                let mut medium = if let Some(existing) = existing {
+                    let old = input
+                        .document
+                        .config
+                        .media
+                        .iter()
+                        .find(|m| &m.id == existing)
+                        .ok_or_else(|| invalid("missing launch medium"))?
+                        .clone();
+                    let path = input
+                        .sources
+                        .get(std::path::Path::new(&old.source))
+                        .ok_or_else(|| invalid("missing launch base path"))?
+                        .clone();
+                    input.sources.insert(source.clone().into(), path);
+                    if let Some(bytes) =
+                        input.memory.get(std::path::Path::new(&old.source)).cloned()
+                    {
+                        input.memory.insert(source.clone().into(), bytes);
+                    }
+                    old
+                } else {
+                    let assembly::ImageSource::File(path) = &entry.image else {
+                        return Err(invalid(
+                            "an added catalogue disk needs a verified file base",
+                        ));
+                    };
+                    let base = bases
+                        .get(path)
+                        .or_else(|| all_bases.get(path))
+                        .ok_or_else(|| invalid("missing verified catalogue base"))?;
+                    let hash = base.identity().base_digest;
+                    if entry.expected_sha256 != Some(hash) {
+                        return Err(invalid("catalogue base differs from its SHA-256"));
+                    }
+                    let digest = pc_config::image::Digest::from_sha256(hash);
+                    if !input.document.content.iter().any(|r| r.digest == digest) {
+                        input.document.content.push(pc_config::launch::ContentRow {
+                            digest,
+                            sha256: hash,
+                            size: base.byte_len(),
+                        });
+                    }
+                    let assembly::DriveKind::Floppy { geometry } = drive.kind else {
+                        return Err(invalid("floppy drive expected"));
+                    };
+                    let geometry = geometry
+                        .medium_for_len(base.byte_len())
+                        .ok_or_else(|| invalid("invalid floppy base length"))?;
+                    input.sources.insert(source.clone().into(), path.clone());
+                    pc_config::image::Medium {
+                        id: id.clone(),
+                        source: source.clone(),
+                        head: digest,
+                        name: None,
+                        policy: Policy::from_write(&entry.write),
+                        geometry: pc_config::image::Geometry::of(assembly::DriveKind::Floppy {
+                            geometry,
+                        }),
+                    }
+                };
+                medium.id = id.clone();
+                medium.source = source;
+                medium.name = Some(entry.name);
+                if let assembly::WriteMode::Journal {
+                    path,
+                    keep_generations,
+                } = entry.write
+                {
+                    let name = format!("kept-{id}.upfj");
+                    input.records.insert(name.clone(), path);
+                    input.document.records.push(pc_config::launch::RecordRow {
+                        medium: id.clone(),
+                        name,
+                        keep_generations,
+                    });
+                }
+                input.document.config.media.push(medium);
+                id
+            };
+            catalogue.push(id);
+        }
+        let selected = inserted
+            .map(|i| {
+                catalogue
+                    .get(i)
+                    .cloned()
+                    .ok_or_else(|| invalid("catalogue selection is out of range"))
+            })
+            .transpose()?;
+        let slot = &mut input.document.config.slots[at];
+        slot.catalogue = catalogue;
+        slot.inserted = selected;
+        slot.catalogue_mode = true;
+        input.prune();
+        let machine = crate::provider::lower_session(&input)?;
+        self.launch = Some(input);
+        self.machine = machine;
+        self.bases.extend(bases);
         Ok(())
     }
 

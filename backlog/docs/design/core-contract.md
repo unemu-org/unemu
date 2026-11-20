@@ -6341,7 +6341,7 @@ Beads that edit the same files go one after the other, in either order:
   sandbox loopback-bind refusals, each OS error 1. The slow BIOS, FreeDOS,
   journal, front-end and session goldens pass with their assertions unchanged.
 
-**S7. Created disks and kept catalogues edit the launch.**
+**S7. Created disks and kept catalogues edit the launch.** **Done.**
 
 - **Scope.** `created_media::apply` and `kept_catalogue::restore` edit
   the launch's tables; the `MachineConfig` is derived afterwards. Their
@@ -6355,6 +6355,63 @@ Beads that edit the same files go one after the other, in either order:
   The machine config of each start flow that has created disks or a kept
   catalogue equals the one before the bead. Every `kept-…` name is a valid
   kept record name of at most 64 bytes, for a 64-digit digest too.
+
+- **As landed.** `created_media::apply_one` and
+  `kept_catalogue::restore_drive` collect the catalogue's entries and verified
+  bases without editing the session's machine. They call
+  `PreparedSession::replace_floppy_catalogue` (`workspace.rs`), which edits a
+  copy of the launch's media, slot, content and record tables, prunes unused
+  bindings, and calls the existing `provider::lower_session` before installing
+  the document, machine and added bases together. Existing bindings keep their
+  heads, decoded floppy bytes, paths and retention; a shared read-only binding
+  gets its own name without changing another slot. New bindings use
+  `catalogue-N` ids and `kept-catalogue-N.upfj` records, independent of the
+  digest or host filename. Even the largest `u64` suffix fits within 64 bytes.
+  `PreparedLaunch::record_files` exposes the record-to-file table; it preserves
+  created disks' `<64 hex>.upfj` files, media sets' `<set hex>-<id>.upfj`
+  files, and journals beside host files outside the workspace. No file is
+  opened or written by this edit; bases remain immutable and verified in full,
+  with sector writes through the existing journal overlay.
+  The worker's copy and machine-start flows keep their order and confirmation
+  rules. Its existing synthetic-firmware backend now scopes these launch edits
+  too; production retains the same firmware checks.
+  One small correction outside the file list was necessary: `pc-config`'s
+  launch lowering accepted only the first catalogue disk as the initial
+  selection. Kept catalogues restore any selected disk without reordering the
+  list. `image::codec::bind` now permits any member for a launch, and `finish`
+  derives its index; `image::lower` retains the first-entry restriction.
+  Review found that stored-image validation also lowers through a launch:
+  a partial store walk could supply all content rows for two slots sharing
+  read-only media and thereby accept a non-first selection. `store_half` now
+  propagates the strict slot check's error before launch lowering. A provider
+  regression covers that shared-catalogue case without bound NVRAM and keeps
+  the original "unsupported initial selection" refusal. The codec regression
+  covers a desktop launch's second entry and an unknown selection.
+  Three worker regressions cover created split disks in machine and Gaming-mode
+  starts, re-lowering and thread transfer; a kept catalogue's order, selection,
+  exact journal bytes and immutable base on two restarts; and a journal outside
+  the workspace, retention and atomic refusal of an invalid edit. Each checks
+  that the document alone reproduces the complete prepared machine, and that
+  record names are valid and bounded even for 64-digit disk identities.
+  Review coverage also checks a valid catalogue edit refused by lowering for
+  zero journal retention: the document, record paths, machine and base
+  identities stay unchanged. Created disks lose to a later pending insert at
+  the same start, and two independent creation operations keep distinct bases,
+  catalogue order, selection and journal paths when restored together.
+  MEASURED: restoring the original `pc-media` editors makes the created-disk
+  and kept-catalogue regressions fail because their launches lack the added
+  entries, while the existing worker lifecycle tests still pass. With the new
+  editors all 33 worker lifecycle tests pass. A temporary probe compared the
+  complete machine and verified-base keys and identities at 24 paired starts
+  across eight existing kept-catalogue lifecycle tests, including copies and
+  Gaming mode: every signature is equal, normalizing only temporary fixture
+  roots and the generated copy workspace name. The probe was removed.
+  Two further mutations fail their targeted regressions: disallowing non-first
+  launch selections, and omitting an added disk's record-to-file mapping.
+  Mutated sources were restored with plain copies and touched before the gate.
+  No crate, dependency, front-end assembly call, run policy or stored format
+  changed; the object-based plans
+  of S10 remain unimplemented.
 
 **S8. `core-launch`: a `Prepared` from parts.** **Done.**
 

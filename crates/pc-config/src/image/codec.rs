@@ -237,7 +237,7 @@ pub fn lower(
     }) {
         return Err(invalid("invalid medium name"));
     }
-    let bound = bind(&config, rows, platform_known)?;
+    let bound = bind_with_selection(&config, rows, platform_known, false)?;
     let machine = finish(&config, rows, bound, Some(content), options, None)?;
     Ok(Lowered { config, machine })
 }
@@ -249,6 +249,15 @@ pub(crate) fn bind(
     config: &Config,
     rows: &BTreeMap<Digest, ContentRow>,
     platform_known: bool,
+) -> Result<Bound> {
+    bind_with_selection(config, rows, platform_known, true)
+}
+
+fn bind_with_selection(
+    config: &Config,
+    rows: &BTreeMap<Digest, ContentRow>,
+    platform_known: bool,
+    launch_selection: bool,
 ) -> Result<Bound> {
     if config.schema != 1 || !platform_known {
         return Err(invalid("unsupported PC config envelope"));
@@ -304,7 +313,19 @@ pub(crate) fn bind(
             .slots
             .get(slot_index)
             .ok_or_else(|| invalid("missing slot binding"))?;
-        check_slot(controller, kind, drive, slot)?;
+        let mut checked_slot = slot.clone();
+        // A kept catalogue restores its selected disk without moving it.
+        if launch_selection {
+            if slot
+                .inserted
+                .as_ref()
+                .is_some_and(|id| !slot.catalogue.contains(id))
+            {
+                return Err(invalid("unsupported initial selection"));
+            }
+            checked_slot.inserted = slot.inserted.as_ref().and(slot.catalogue.first()).cloned();
+        }
+        check_slot(controller, kind, drive, &checked_slot)?;
         for id in &slot.catalogue {
             let medium = config
                 .media
@@ -490,7 +511,11 @@ pub(crate) fn finish(
             drive.media = Some(assembly::FloppyMediaList {
                 entries,
                 empty: slot.inserted.is_none(),
-                inserted: 0,
+                inserted: slot
+                    .inserted
+                    .as_ref()
+                    .and_then(|id| slot.catalogue.iter().position(|m| m == id))
+                    .unwrap_or(0),
             });
             drive.expected_sha256 = None;
             drive.write = assembly::WriteMode::Volatile;

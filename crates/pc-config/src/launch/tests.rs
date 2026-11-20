@@ -867,3 +867,60 @@ fn check_and_lower_refuse_overlapping_option_roms_with_the_same_sentence() {
     launch.config.machine["firmware"]["option_roms"][0]["base"] = 0xC0000.into();
     assert!(check(&launch, options).is_ok());
 }
+
+#[test]
+fn a_launch_selects_a_kept_disk_without_reordering_its_catalogue() {
+    let Some((mut launch, bytes)) = fixture("image") else {
+        return;
+    };
+    let mut second = launch.config.media[1].clone();
+    second.id = "second".into();
+    second.source = "assets/second.img".into();
+    second.name = Some("Second".into());
+    launch.config.media.push(second);
+    launch.config.slots[1].catalogue.push("second".into());
+    launch.config.slots[1].inserted = Some("second".into());
+    let content = Counting::new(bytes.iter().map(Vec::as_slice));
+    check(&launch, Default::default()).unwrap();
+    let machine = lower(&launch, &content, Default::default())
+        .unwrap()
+        .machine;
+    let list = machine.drives[1].media.as_ref().unwrap();
+    assert_eq!(list.inserted, 1);
+    assert_eq!(
+        list.entries
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Disk B", "Second"]
+    );
+    let rows = launch
+        .content
+        .iter()
+        .map(|r| {
+            (
+                r.digest,
+                image::ContentRow {
+                    sha256: r.sha256,
+                    size: r.size,
+                },
+            )
+        })
+        .collect();
+    let error = image::lower(
+        launch.config.clone(),
+        &rows,
+        &content,
+        true,
+        Default::default(),
+    )
+    .err()
+    .unwrap();
+    assert!(error.to_string().contains("unsupported initial selection"));
+    launch.config.slots[1].inserted = Some("missing".into());
+    assert!(check(&launch, Default::default())
+        .unwrap_err()
+        .to_string()
+        .contains("unsupported initial selection"));
+    assert!(lower(&launch, &content, Default::default()).is_err());
+}

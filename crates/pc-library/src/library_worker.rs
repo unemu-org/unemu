@@ -606,6 +606,9 @@ fn recoveries(store: &Store) -> Result<Vec<Recovery>> {
 /// Replace host operations in lifecycle tests so invented firmware can exercise
 /// sessions without relaxing production validation; machine-images §7.
 trait Backend: Send + 'static {
+    fn media_launch<T>(&self, prepare: impl FnOnce() -> T) -> T {
+        prepare()
+    }
     fn prepare(
         &self,
         owner: &Workspace<'_>,
@@ -717,6 +720,9 @@ impl Backend for PcBackend {
 struct SyntheticBackend;
 #[cfg(any(test, feature = "test-support"))]
 impl Backend for SyntheticBackend {
+    fn media_launch<T>(&self, prepare: impl FnOnce() -> T) -> T {
+        pc_image::test_support::with_synthetic_firmware(prepare)
+    }
     fn prepare(
         &self,
         w: &Workspace<'_>,
@@ -1730,7 +1736,8 @@ fn run<B: Backend>(
                             record.write(&owner)?;
                             let prepared = if record.machine.is_some() {
                                 let mut session = backend.resume_copy(&owner)?.session;
-                                restored = copied_disks(&owner, &mut session, &send)?;
+                                restored = backend
+                                    .media_launch(|| copied_disks(&owner, &mut session, &send))?;
                                 session
                             } else {
                                 let prepared = backend.prepare(
@@ -1843,7 +1850,9 @@ fn run<B: Backend>(
                             let prepared = (|| -> Result<_> {
                                 record.write(&owner)?;
                                 let mut prepared = backend.prepare_copy(&source, &owner)?;
-                                let restored = copied_disks(&owner, &mut prepared.session, &send)?;
+                                let restored = backend.media_launch(|| {
+                                    copied_disks(&owner, &mut prepared.session, &send)
+                                })?;
                                 let transfer = prepared
                                     .session
                                     .into_transfer()
@@ -1909,19 +1918,23 @@ fn run<B: Backend>(
                             let inserted = prepared.inserted;
                             let listed: Vec<String> =
                                 inserted.iter().map(|insert| insert.drive.clone()).collect();
-                            let applied = pc_media::created_media::apply(
-                                &mut prepared.session,
-                                owner.path(),
-                                &listed,
-                            );
+                            let (applied, restored) = backend.media_launch(|| {
+                                let applied = pc_media::created_media::apply(
+                                    &mut prepared.session,
+                                    owner.path(),
+                                    &listed,
+                                );
+
+                                let restored = pc_media::kept_catalogue::restore(
+                                    &mut prepared.session,
+                                    &store,
+                                    owner.path(),
+                                    &inserted,
+                                    &applied.done,
+                                );
+                                (applied, restored)
+                            });
                             let created = applied.done;
-                            let restored = pc_media::kept_catalogue::restore(
-                                &mut prepared.session,
-                                &store,
-                                owner.path(),
-                                &inserted,
-                                &created,
-                            );
                             note_start(&send, [applied.notes, restored.notes].concat());
                             let transfer = prepared
                                 .session
@@ -3982,6 +3995,410 @@ mod tests {
             medium_id: config.media[0].id.clone(),
             blob: config.media[0].blob.clone(),
         }
+    }
+
+    fn assert_catalogue_launch(session: &mut pc_image::workspace::PreparedSession) {
+        let machine = session.machine.clone();
+        let launch = session.launch.as_ref().unwrap();
+        for (drive, slot) in machine.drives.iter().zip(&launch.document().config.slots) {
+            if let Some(list) = &drive.media {
+                assert_eq!(slot.catalogue.len(), list.entries.len());
+                assert_eq!(
+                    slot.inserted.as_ref(),
+                    if list.empty {
+                        None
+                    } else {
+                        slot.catalogue.get(list.inserted)
+                    }
+                );
+                for (id, entry) in slot.catalogue.iter().zip(&list.entries) {
+                    let medium = launch
+                        .document()
+                        .config
+                        .media
+                        .iter()
+                        .find(|m| &m.id == id)
+                        .unwrap();
+                    assert_eq!(medium.name.as_ref(), Some(&entry.name));
+                }
+            }
+        }
+        for record in &launch.document().records {
+            assert!(unemu_core_api::is_record_name(&record.name));
+            assert!(record.name.len() <= 64);
+            if record.name.starts_with(unemu_core_api::KEPT_RECORD_PREFIX) {
+                assert!(unemu_core_api::is_kept_record_name(&record.name));
+            }
+            assert!(launch.record_files().contains_key(&record.name));
+        }
+        pc_image::test_support::with_synthetic_firmware(|| session.edit_launch(|_| {})).unwrap();
+        assert_eq!(
+            session.machine, machine,
+            "the launch alone reproduces this start"
+        );
+    }
+
+    #[test]
+    fn created_disks_edit_the_launch_for_machine_and_gaming_starts() {
+        use pc_media::created_media::{CreatedDisk, CreatedInsert};
+        use sha2::Digest as _;
+        let f = Fixture::new();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        let workspace = f.store.workspace_path(&id).unwrap();
+        fs::create_dir_all(workspace.join("media/created")).unwrap();
+        let mut disks = Vec::new();
+        for byte in [0x31, 0x32] {
+            let bytes = vec![byte; 360 * 1024];
+            let hash = sha2::Sha256::digest(&bytes).into();
+            let sha256 = pc_media::created_media::hex(&hash);
+            fs::write(workspace.join(format!("media/created/{sha256}.img")), bytes).unwrap();
+            disks.push(CreatedDisk {
+                sha256,
+                name: format!("Disk {byte}"),
+            });
+        }
+        pc_media::created_media::set_pending(
+            &workspace,
+            "A:",
+            Some(CreatedInsert {
+                drive: "A:".into(),
+                title: "Created".into(),
+                disks: disks.clone(),
+                journal: true,
+                first: Some(1),
+            }),
+        )
+        .unwrap();
+        for gaming in [false, true] {
+            let (mut prepared, name, _, notes) = start_kept(&w, &id, gaming);
+            assert!(notes.is_empty(), "{notes:?}");
+            let list = drive_a(&prepared);
+            assert_eq!(list.entries[0].name, disks[1].name);
+            assert_eq!(list.entries[1].name, disks[0].name);
+            let root = f.store.workspace_path(&name).unwrap();
+            for (entry, disk) in list.entries.iter().zip([&disks[1], &disks[0]]) {
+                assert_eq!(
+                    entry.write,
+                    assembly::WriteMode::journal(root.join(format!("media/{}.upfj", disk.sha256)))
+                );
+            }
+            assert_catalogue_launch(&mut prepared);
+            let expected = prepared.machine.clone();
+            let mut restored = prepared.into_transfer().unwrap().restore().unwrap();
+            assert_catalogue_launch(&mut restored);
+            assert_eq!(restored.machine, expected);
+            stop_kept(
+                &w,
+                Vec::new(),
+                if gaming {
+                    Finish::Discard
+                } else {
+                    Finish::Retain
+                },
+            );
+        }
+        assert_eq!(
+            pc_media::created_media::read_pending(&workspace).unwrap()[0].disks,
+            disks
+        );
+        let set = f.import_set();
+        pc_image::machine::set_pending_insert(&f.store, &id, "A:", Some(pending_a(&set))).unwrap();
+        let (mut prepared, _, _, notes) = start_kept(&w, &id, false);
+        assert!(notes.is_empty(), "{notes:?}");
+        let list = drive_a(&prepared);
+        assert_eq!((list.empty, list.inserted), (false, 0));
+        assert_eq!(
+            list.entries[0].expected_sha256,
+            Some(
+                sha2::Sha256::digest(fs::read(f.temp.path().join("set-disk.img")).unwrap()).into()
+            )
+        );
+        assert!(list
+            .entries
+            .iter()
+            .all(|entry| !disks.iter().any(|disk| disk.name == entry.name)));
+        assert!(prepared
+            .bases
+            .keys()
+            .all(|path| !path.starts_with(workspace.join("media/created"))));
+        assert_catalogue_launch(&mut prepared);
+        drop(prepared);
+        stop_kept(&w, Vec::new(), Finish::Retain);
+        w.shutdown();
+    }
+
+    #[test]
+    fn two_independent_creations_keep_their_launch_bindings_on_restart() {
+        use media::fat12::{FloppyFormat, HostItem, ShortName};
+        use pc_media::created_media::{CreateOrder, Place};
+        let f = Fixture::new();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        let (prepared, _, _, _) = start_kept(&w, &id, false);
+        let mut disks = started_with(drive_a(&prepared));
+        let mut expected = drive_a(&prepared).entries.clone();
+        drop(prepared);
+        let workspace = f.store.workspace_path(&id).unwrap();
+        let media = workspace.join("media");
+        let game = f.temp.path().join("host/game");
+        fs::create_dir_all(&game).unwrap();
+        for (byte, title) in [(0x31, "First"), (0x32, "Second")] {
+            fs::write(game.join("PLAY.EXE"), vec![byte; 3000]).unwrap();
+            w.send
+                .send(Request::CreateDisks(
+                    Box::new(CreateOrder {
+                        unit: 0,
+                        items: vec![HostItem::read(&game).unwrap()],
+                        top: ShortName::parse("GAME"),
+                        format: FloppyFormat::Dd360,
+                        label: None,
+                        split: false,
+                        journal: true,
+                        keep: None,
+                        title: title.into(),
+                    }),
+                    Place::Folder(media.clone()),
+                ))
+                .unwrap();
+            let Event::DisksCreated(created) = until(&w, |e| matches!(e, Event::DisksCreated(_)))
+            else {
+                unreachable!()
+            };
+            let created = created.unwrap();
+            assert_eq!(created.disks.len(), 1);
+            for entry in pc_media::created_media::entries(
+                &created,
+                assembly::WriteMode::DEFAULT_KEEP_GENERATIONS,
+            ) {
+                expected.push(entry.medium.clone());
+                disks.push(StoppedDisk {
+                    name: entry.medium.name,
+                    source: None,
+                    reference: None,
+                    image: entry.medium.image,
+                    sha256: entry.medium.expected_sha256,
+                    write: entry.medium.write,
+                    format: entry.geometry,
+                    started_with: false,
+                });
+            }
+        }
+        let selected = disks.len() - 1;
+        assert_ne!(disks[selected - 1].sha256, disks[selected].sha256);
+        stop_kept(
+            &w,
+            vec![StoppedDrive {
+                unit: 0,
+                disks,
+                in_drive: Some(selected),
+            }],
+            Finish::Retain,
+        );
+        let (mut prepared, _, _, notes) = start_kept(&w, &id, false);
+        assert!(notes.is_empty(), "{notes:?}");
+        let list = drive_a(&prepared);
+        assert_eq!(list.entries, expected);
+        assert_eq!((list.empty, list.inserted), (false, selected));
+        for entry in &list.entries[selected - 1..] {
+            let assembly::ImageSource::File(path) = &entry.image else {
+                panic!("file base")
+            };
+            assert_eq!(
+                Some(prepared.bases[path].identity().base_digest),
+                entry.expected_sha256
+            );
+        }
+        assert_catalogue_launch(&mut prepared);
+        drop(prepared);
+        stop_kept(&w, Vec::new(), Finish::Retain);
+        w.shutdown();
+    }
+
+    #[test]
+    fn a_catalogue_launch_maps_an_external_journal_and_rejects_edits_atomically() {
+        let f = Fixture::new();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        let (mut prepared, _, _, _) = start_kept(&w, &id, false);
+        let (path, mut game) = browsed(&f, 0x61);
+        let journal = path.with_extension("upfj");
+        game.write = assembly::WriteMode::Journal {
+            path: journal.clone(),
+            keep_generations: 7,
+        };
+        let mut entries = drive_a(&prepared).entries.clone();
+        entries.push(assembly::FloppyMedium {
+            image: game.image,
+            expected_sha256: game.sha256,
+            write: game.write,
+            name: game.name,
+        });
+        let selected = entries.len() - 1;
+        let bases = [(
+            path.clone(),
+            media::VerifiedBase::from_file(fs::File::open(&path).unwrap()).unwrap(),
+        )]
+        .into_iter()
+        .collect();
+        pc_image::test_support::with_synthetic_firmware(|| {
+            prepared.replace_floppy_catalogue(0, entries, Some(selected), bases)
+        })
+        .unwrap();
+        assert_catalogue_launch(&mut prepared);
+        assert!(prepared.bases.contains_key(&path));
+        let launch = prepared.launch.as_ref().unwrap();
+        let record = launch
+            .document()
+            .records
+            .iter()
+            .find(|r| launch.record_files()[&r.name] == journal)
+            .unwrap();
+        assert!(record.name.starts_with(unemu_core_api::KEPT_RECORD_PREFIX));
+        assert_eq!(record.keep_generations, 7);
+        assert!(record.name.len() < 64);
+        let document = launch.document().clone();
+        let records = launch.record_files().clone();
+        let machine = prepared.machine.clone();
+        let entries = drive_a(&prepared).entries.clone();
+        let keys = prepared.bases.keys().cloned().collect::<Vec<_>>();
+        assert!(prepared
+            .replace_floppy_catalogue(0, entries, Some(usize::MAX), Default::default())
+            .is_err());
+        assert_eq!(
+            format!("{:?}", prepared.launch.as_ref().unwrap().document()),
+            format!("{document:?}")
+        );
+        assert_eq!(prepared.launch.as_ref().unwrap().record_files(), &records);
+        assert_eq!(prepared.machine, machine);
+        assert_eq!(prepared.bases.keys().cloned().collect::<Vec<_>>(), keys);
+
+        let identities = prepared
+            .bases
+            .iter()
+            .map(|(path, base)| (path.clone(), base.identity().clone()))
+            .collect::<Vec<_>>();
+        let rejected = f.temp.path().join("host/rejected.img");
+        fs::write(&rejected, vec![0x62; 360 * 1024]).unwrap();
+        let base = media::VerifiedBase::from_file(fs::File::open(&rejected).unwrap()).unwrap();
+        let mut entries = drive_a(&prepared).entries.clone();
+        entries[0].name = "Edited before refusal".into();
+        entries.push(assembly::FloppyMedium {
+            image: assembly::ImageSource::File(rejected.clone()),
+            expected_sha256: Some(base.identity().base_digest),
+            write: assembly::WriteMode::Journal {
+                path: rejected.with_extension("upfj"),
+                keep_generations: 0,
+            },
+            name: "Rejected".into(),
+        });
+        let selected = entries.len() - 1;
+        let error = pc_image::test_support::with_synthetic_firmware(|| {
+            prepared.replace_floppy_catalogue(0, entries, Some(selected), [(rejected, base)].into())
+        })
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("must keep at least one generation"),
+            "{error}"
+        );
+        assert_eq!(
+            format!("{:?}", prepared.launch.as_ref().unwrap().document()),
+            format!("{document:?}")
+        );
+        assert_eq!(prepared.launch.as_ref().unwrap().record_files(), &records);
+        assert_eq!(prepared.machine, machine);
+        assert_eq!(
+            prepared
+                .bases
+                .iter()
+                .map(|(path, base)| (path.clone(), base.identity().clone()))
+                .collect::<Vec<_>>(),
+            identities
+        );
+        drop(prepared);
+        stop_kept(&w, Vec::new(), Finish::Retain);
+        w.shutdown();
+    }
+
+    #[test]
+    fn kept_catalogues_edit_the_launch_and_keep_journal_bytes_on_restart() {
+        let f = Fixture::new();
+        let mut w = worker(&f);
+        let id = pc_image::machine::create(
+            &f.store,
+            &f.row.descriptor,
+            &f.row.reference,
+            Some("DOS"),
+            None,
+        )
+        .unwrap();
+        let (prepared, _, _, _) = start_kept(&w, &id, false);
+        let mut disks = started_with(drive_a(&prepared));
+        drop(prepared);
+        let (path, mut game) = browsed(&f, 0x5a);
+        let journal = path.with_extension("upfj");
+        let base = fs::read(&path).unwrap();
+        journal_write(&journal, &base, 0x42);
+        let bytes = fs::read(&journal).unwrap();
+        game.write = assembly::WriteMode::journal(&journal);
+        disks.push(game);
+        let selected = disks.len() - 1;
+        stop_kept(
+            &w,
+            vec![StoppedDrive {
+                unit: 0,
+                disks,
+                in_drive: Some(selected),
+            }],
+            Finish::Retain,
+        );
+        let workspace = f.store.workspace_path(&id).unwrap();
+        let mut expected = None;
+        for _ in 0..2 {
+            let (mut prepared, _, _, notes) = start_kept(&w, &id, false);
+            assert!(notes.is_empty(), "{notes:?}");
+            assert_eq!(drive_a(&prepared).inserted, selected);
+            let entry = &drive_a(&prepared).entries[selected];
+            let assembly::WriteMode::Journal { path, .. } = &entry.write else {
+                panic!("journal")
+            };
+            assert!(path.starts_with(&workspace));
+            assert_eq!(fs::read(path).unwrap(), bytes);
+            assert_catalogue_launch(&mut prepared);
+            if let Some(expected) = &expected {
+                assert_eq!(&prepared.machine, expected);
+            }
+            expected = Some(prepared.machine.clone());
+            drop(prepared);
+            w.send.send(Request::Finish(Finish::Retain)).unwrap();
+            until(&w, |e| matches!(e, Event::Finished));
+        }
+        assert_eq!(fs::read(&journal).unwrap(), bytes);
+        assert_eq!(fs::read(path).unwrap(), base);
+        w.shutdown();
     }
 
     /// A library machine's catalogue comes back at its next Start as it
