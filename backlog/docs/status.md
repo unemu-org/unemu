@@ -5,6 +5,17 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — The PC provider's validation splits into a store half and a codec half:**
+  (`upc-dfs.43.3`, stage B step S3; design/core-contract.md §14.3). No behaviour change.
+  `pc-image`'s `prepare` first reads the store (descriptors, size limits, a ROM's source link,
+  a fixed disk's chain, the zero-base rule, the closure) and hands the codec half one row per
+  bound blob or disk head (SHA-256 of the flat bytes and their length) and a reader of the
+  firmware and CMOS bytes; the codec half checks the config against its hardware tables and
+  lowers it without naming any store type but the digest, ready to move below the contract in
+  S4. Every outcome of `prepare` in the `pc-image`, `pc-library` and `cli-pc` tests is the same
+  before and after, refusal words and closure order included; new tests run the codec half over
+  inputs in memory and pin the closure order.
+
 - **2026-11-20 — The assembler mounts through one seam:** (`upc-dfs.36`; design/core-contract.md
   §12.5 move 2, step 10 of §12.10, §14.4). Assembly asks the machine's `assembly::Mount` for
   what a config names by path (the bytes of an image, the verified base of a journalled disk, the

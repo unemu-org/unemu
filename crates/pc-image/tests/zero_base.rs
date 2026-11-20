@@ -683,3 +683,76 @@ fn a_copyleft_rom_without_its_source_archive_keeps_a_new_image_private() {
     .unwrap();
     assert_eq!(official(&open.store, "open-at:1.0.0"), Ok(()));
 }
+
+/// The closure the provider returns is in the config's order: each firmware
+/// blob followed by its source archive, then each slot's media, a fixed
+/// disk's head followed by its chain (a layer, its sector pack, its parent,
+/// down to the zero base), then the CMOS image. The store keeps the first use
+/// of each digest, so this order is the order of the image's layers.
+#[test]
+fn the_closure_lists_firmware_then_media_then_cmos_in_config_order() {
+    let Some(open) = Open::new() else {
+        return;
+    };
+    pc_image::create::create(
+        &open.store,
+        &open.image([Some(SMALL), None]),
+        "lab:1.0.0",
+        None,
+    )
+    .unwrap();
+    let owner = open.store.workspace("install").unwrap();
+    write(
+        &workspace::prepare_start(&owner, "lab:1.0.0", false).unwrap(),
+        &[(0, [0x55; 512])],
+    );
+    workspace::publish(&owner, "lab-dos:1.0.0", None).unwrap();
+    for tag in ["lab:1.0.0", "lab-dos:1.0.0"] {
+        let image = open.store.resolve(tag, &PcProvider).unwrap();
+        let descriptors = &image.manifest.layers;
+        let table: toml::Table = std::str::from_utf8(&image.config).unwrap().parse().unwrap();
+        let closure: Vec<String> = PcProvider
+            .validate(&table, descriptors, &open.store)
+            .unwrap()
+            .iter()
+            .map(Digest::to_string)
+            .collect();
+        let text = |value: &toml::Value| value.as_str().unwrap().to_owned();
+        let mut expected = Vec::new();
+        for binding in table["firmware"].as_array().unwrap() {
+            expected.push(text(&binding["blob"]));
+            if let Some(archive) = binding.get("source_archive") {
+                expected.push(text(archive));
+            }
+        }
+        let mediums = table["media"].as_array().unwrap();
+        for slot in table["slots"].as_array().unwrap() {
+            for id in slot["catalogue"].as_array().unwrap() {
+                let medium = mediums.iter().find(|m| m["id"] == *id).unwrap();
+                let mut next = text(&medium["head"]);
+                loop {
+                    expected.push(next.clone());
+                    let digest: Digest = next.parse().unwrap();
+                    let d = descriptors.iter().find(|d| d.names(&digest)).unwrap();
+                    if d.media_type != mt::DISK_LAYER {
+                        break;
+                    }
+                    let layer = media::layer::Descriptor::decode(
+                        &open.store.read_verified(d, 4096).unwrap(),
+                    )
+                    .unwrap();
+                    let sectors: Digest = layer.sectors.parse().unwrap();
+                    let pack = descriptors.iter().find(|d| d.names(&sectors)).unwrap();
+                    expected.push(pack.decoded_digest().unwrap().to_string());
+                    next = layer.parent;
+                }
+            }
+        }
+        if let Some(nvram) = table.get("nvram") {
+            expected.push(text(&nvram["head"]));
+        }
+        assert_eq!(closure, expected, "{tag}");
+        let layered = descriptors.iter().any(|d| d.media_type == mt::DISK_LAYER);
+        assert_eq!(layered, tag == "lab-dos:1.0.0", "{tag}");
+    }
+}

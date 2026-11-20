@@ -5895,7 +5895,7 @@ Beads that edit the same files go one after the other, in either order:
   folder, four jobs on a shared machine) took 167 s before and 149 s after,
   within the noise of that machine: the split adds no measurable build time.
 
-**S3. `provider::prepare` splits into a store half and a codec half.**
+**S3. `provider::prepare` splits into a store half and a codec half.** **Done.**
 
 - **Scope.** Inside `pc-image`; no crate changes. The store half reads
   descriptors and blobs (kind, size limit, source link, the chain walk, the
@@ -5912,6 +5912,62 @@ Beads that edit the same files go one after the other, in either order:
   `crates/pc-image/tests`. The codec half names no `image_store` item but
   `Digest`. The order of the closure `validate` returns is unchanged: a
   test compares it for the fixtures before and after.
+- **As landed.** `prepare` (`crates/pc-image/src/provider.rs`) is the
+  store half `store_half` followed by the codec half `codec::lower`, a
+  module of the same file. The store half walks the config's firmware
+  bindings (only as many as the hardware has ROMs), its slots paired with
+  the hardware's drives, and its CMOS binding; it finds each descriptor of
+  the right kind, checks the PC size limit, the ROM's source link and source
+  archive, the 64-byte CMOS, walks a fixed disk's chain, applies the
+  zero-base rule and collects the closure. It answers a `ContentRow` per
+  bound digest (the SHA-256 of the flat bytes, from `disk::identity`, and
+  their length: the decoded size, or the geometry's capacity for a layered or
+  zero head), the closure, whether the platform is the PC's or its alias,
+  and a `StoreContent` that reads a bound ROM or CMOS image through
+  `BlobSource`. The codec half takes the config, the rows, a
+  `codec::SmallContent` (the bytes of small content by digest), that
+  platform answer and the `AssemblyOptions` from `firmware_options()`, and
+  does the rest: the envelope, every binding against the hardware, the
+  slots, each medium's size against its geometry, the lowering, the drive
+  lists and the BIOS check (`validate_bios_with`, `lib.rs`; `validate_bios`
+  keeps its signature over it, so `import.rs` is unchanged). It names no
+  `image_store` item but `Digest`, no descriptor, blob source, media type
+  constant, `disk` or `zero` (MEASURED: `grep` over the module). The
+  store half stops its walk where the codec half refuses the config's shape:
+  at a firmware binding that differs from its ROM, a ROM count that differs
+  from the bindings, a duplicate or empty medium id, a slot that fails the
+  codec half's own `check_media_fields` and `check_slot` (position,
+  selection, the IDE and single-image shapes), an unknown medium, and a
+  writable medium bound again. So a config with one defect fails with the
+  same sentence as before; a config with a shape defect and a store defect
+  before it may now name the store's. MEASURED: every outcome of `prepare` in the test runs of
+  `pc-image`, `pc-library` and `cli-pc` with the ignored tests (2700 calls,
+  234 distinct inputs; each keyed by the config and descriptors, with the
+  refusal's words, or a hash of the lowered machine and the closure) was
+  logged by a throw-away probe before and after: the two sets are equal, and
+  the only new entry is the new test's (measured before the review's fix,
+  which only makes the store half return earlier on configs the codec half
+  refuses). Three unit tests, each failing before that fix, hold one
+  slot-pairing defect to its old sentence: slots in another order than the
+  drives, a journalled floppy in the IDE slot as well, an IDE catalogue of
+  two media. Tests: two unit tests run the codec
+  half over a config, rows and small content in memory (no descriptor, blob
+  source or store; the floppy's bytes are not given and never read) and
+  compare its machine and closure with the store's path, and refuse from a
+  row's size, a missing row and the platform argument; an integration test
+  in `zero_base.rs` pins the closure order for a blank and a layered fixed
+  disk image against the order the config states, and it passed on the code
+  before the split. `cargo test --workspace --release -- --include-ignored`
+  passes whole (4396 tests, the slow goldens among them).
+  Left for S4, which moves the codec half to `pc-config`:
+  - it still names `machine_file::LoadError` (wrap `ParseError` directly),
+    `crate::Error`'s `Load` and `Lower` variants with `needs_firmware`, and
+    `super::hash_array`;
+  - a `ContentRow`'s key stays a digest, `pc-config`'s own with the same text
+    form; `ContentRow::sha256` becomes `[u8; 32]`;
+  - `SmallContent::read(digest)` becomes `ContentSource::open(row.sha256,
+    row.size)` through the firmware and CMOS rows, which S3 fills and does
+    not read yet.
 
 **S4. `pc-config`: the image config and its codec move.**
 

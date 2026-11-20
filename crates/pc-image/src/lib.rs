@@ -421,6 +421,14 @@ fn firmware_options() -> assembly::AssemblyOptions {
     }
 }
 fn validate_bios(config: &assembly::MachineConfig) -> Result<()> {
+    validate_bios_with(config, firmware_options())
+}
+/// [`validate_bios`] with the firmware permission as an argument, for the
+/// half of the provider that reads no store and no thread-local.
+fn validate_bios_with(
+    config: &assembly::MachineConfig,
+    options: assembly::AssemblyOptions,
+) -> Result<()> {
     let bios = config
         .images
         .iter()
@@ -436,7 +444,7 @@ fn validate_bios(config: &assembly::MachineConfig) -> Result<()> {
     let assembly::ImageSource::Inline(bytes) = &bios.source else {
         return Err(invalid("system BIOS must already be resolved"));
     };
-    assembly::check_board_system_bios(config, config.board, bios.base, bytes, firmware_options())
+    assembly::check_board_system_bios(config, config.board, bios.base, bytes, options)
         .map_err(|e| invalid(e.to_string()))?;
     Ok(())
 }
