@@ -5,6 +5,13 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — PC CPU dependency disables host-environment APIs:** the
+  workspace uses `x86jit-core` with `default-features = false` and no optional
+  features. The PC needs neither `environment` nor `test-hooks`; the exact CPU
+  revision and lock file stay unchanged. The whole workspace builds; feature
+  trees for `cpu`, `upcli` and `window` contain no x86jit feature. All 44 selected
+  slow goldens pass; BIOS and DOS goldens preserve their exact retired counts.
+  See `design/core-contract.md` §12.10 step 3.
 - **2026-11-20 — Stored-image run commands are platform-neutral:** `image run`
   and `image machine run` now parse and execute in `cli-core` through the
   binary's `Cores`, with store aliases canonicalized before core selection.
