@@ -3887,7 +3887,9 @@ What the rename covers, and what it does not:
   (`unemupc-<version>-<target>.tar.gz`) while both programs ship from it;
   "Needs unemupc X or newer" and `image_store::compat::PROGRAM`, which
   name the core's release (§9, decision-30); the environment variables
-  `UNEMUPC_*`; the host directories (§12.13 Q5).
+  `UNEMUPC_*`; the core's host directories (the firmware index stays
+  `unemupc`). The front end's directories follow `unemu` in step 14
+  (§12.13 Q5); step 4 deliberately left them alone.
 
 ### 12.10. Steps
 
@@ -3910,6 +3912,8 @@ tests with the code they test. Sizes are ASSUMED.
 | 11 | **The crates split** (move 3), as three beads: `journal`; the journal's file code onto `unemu-core-files`, which exists since step 6 of §13.6; `journal-files` with the journal commands moving from `cli-core` to `cli-pc` and `unemupc` | None in `upcli`'s output: the journal commands change crate, and with one platform their words, output and exit codes are the same. New: the four journal commands of `unemupc` | Test names unchanged apart from the crate (§8.1.5 rule 3); `media_tools` and `media_fifo` pass in their new package; both `assembly` → `media` lines leave the allow list; `libc` keeps one way in, through `cpufeatures`, and the reasons of the `serde` and `toml` crates no longer name `media` (corrected 2026-11-20, S2: `pc-config` keeps the thirteen crates, `serde_derive` and `syn` 3, so the list does not lose them); `persistence.rs` and `assemble.rs` leave the host guard's list |
 | 12 | **Firmware discovery leaves `assembly`** (move 4) | None | The discovery tests move with the module and pass; the user-ROM helper of the tests keeps working from its new place; `assembly` has no line left in the host guard's list, and the list is empty |
 | 13 | **The command line joins `unemu`**, or `upcli` is renamed, as Q1 is answered: the binary, the release workflow, the `setup-upcli` action and its docs | **Stated:** the program name in usage and in the release | `command_line_pin` changes only in the program's name; the action's own workflow installs and runs the new binary |
+
+| 14 | **Done.** **Front-end host directories follow `unemu`**, with a one-time read of the old place (§12.13 Q5). As landed: only the small, self-contained preferences document is copied once to a missing `unemu/preferences.toml`, from `unemupc` or the original project directory. Machines (including journals), diagnostics/trace logs, saves and states each keep using their existing `<data>/unemupc/NAME` tree, including for new writes, until the user moves it; only an absent old tree selects `<data>/unemu/NAME`. The old tree takes precedence even if a new tree exists, so empty or abandoned destinations cannot hide user data. No tree is traversed, copied, merged, rewritten or deleted during location selection. This interprets “a one-time read of the old place” as discovery and continued use, rather than duplicating path-bearing files: absolute journals must have one writable identity, symlinked machine files must retain target-relative paths, private permissions must remain private, and multi-GB journals must not be copied at startup. Preferences alone use a lock, temporary file, sync and rename; an interrupted copy can be retried. The image store, caches, workspaces, explicit roots, source-tree paths, `UNEMUPC_*` and PC firmware index stay unchanged. `commands.md` inventories the locations | **Stated:** new front-end defaults use `unemu`; existing trees stay in use in place until the user moves them, with no automatic tree migration | Temporary HOME/XDG probes cover every directory, repeat and concurrent starts, old-tree precedence and absence, external/dangling/cyclic symlinks, private permissions and abandoned staging. Machine-loader tests cover target-relative symlinks and sector writes to one absolute journal; preferences test an error after a partial write and retry. Store/cache/workspace and core firmware-cache pins remain unchanged |
 
 Not steps of this plan, and where each is:
 
@@ -4104,6 +4108,11 @@ expected `cli-core` loopback denial after 676 passes.
   4 and 5 of §13.6 now.
 - **Step 13** waits for Q1 and is best done with the first release that
   ships `unemu`.
+- **Step 14** follows step 4 and is independent of the command-line join
+  and firmware-discovery move. It changes only front-end host-location
+  preparation and its tests; the core's cache keeps its name. It touches
+  `image-store`'s locations, the window's startup and directory pins, and
+  the directory descriptions in the user guides.
 - **The recipe track** is on the front end's side and needs none of these
   steps. Two later meetings: the Machinefile's input steps and
   `unemupc`'s key script should be one vocabulary (§12.8), and a recipe

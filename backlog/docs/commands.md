@@ -473,7 +473,33 @@ Preferences store root when set, otherwise the shared unemu family default:
 `~/Library/Application Support/unemu/` on macOS,
 `$XDG_DATA_HOME/unemu/` (or `~/.local/share/unemu/`) on Linux,
 and `%LOCALAPPDATA%/unemu/` on Windows. Linux falls back when XDG_DATA_HOME
-is unset or empty. This directory itself contains `store.toml` and `images/`;
+is unset, empty or relative. This directory itself contains `store.toml` and
+`images/`.
+
+The shared preferences are `unemu/preferences.toml` under the platform config
+directory: `~/Library/Application Support` on macOS, an absolute
+`$XDG_CONFIG_HOME` (otherwise `~/.config`) on Linux, `%APPDATA%` on Windows.
+On first use, a missing file is copied from `unemupc/preferences.toml`, falling
+back to the original project directory for users who skipped the earlier rename.
+Machines (including their journals), diagnostics/trace logs, saves and states
+keep using their `<data>/unemupc/NAME` tree while that old tree exists, including
+for new writes. Only an absent old tree selects `<data>/unemu/NAME`; an existing
+new tree never hides an old one. Location selection never traverses, copies,
+merges or removes trees. This keeps absolute journals, relative paths in
+symlinked machine files and private permissions intact, and avoids duplicating
+large journals. Move a tree explicitly to switch its location, taking care of
+absolute paths inside machine files. Abandoned `.NAME-import` staging trees
+are left alone and never published. Preferences alone are copied with a lock
+and atomic publication; a failed copy can be retried and leaves the old file.
+Explicit paths (including `UNEMUPC_MACHINES_DIR` and `store_root`) and cargo's
+source-tree directories keep their locations. The default image store is
+already `unemu`: its summary index (`cache/summaries/index.json`), recipe
+library index (`cache/libraries/`), decoded index (`cache/decoded/index.json`),
+materialized blobs, download/build caches and `workspaces/` stay there. Diagnostics'
+`trace-N.txt` files move with `diagnostics/`; other application messages go to
+standard error, with no separate default log directory. The PC firmware index
+stays `<cache>/unemupc/firmware-index.v2` (macOS `~/Library/Caches`, Linux an
+absolute `$XDG_CACHE_HOME` or `~/.cache`); `UNEMUPC_*` names are unchanged.
 The Insert dialog also accepts an explicit root.
 CLI image/media commands require explicit `--store`; firmware commands and
 `run` also accept the shared default.
@@ -733,7 +759,7 @@ leave a private registry or to enter `unemu/`; the guard refuses it
 otherwise. Any user-supplied layer keeps a package in private registries
 outside `unemu/`.
 
-Registries are listed in the shared preferences file (`unemupc/preferences.toml`
+Registries are listed in the shared preferences file (`unemu/preferences.toml`
 in the platform config directory, or `--config FILE`; a file left in the
 directory named after the project's former name is copied there once):
 
@@ -1254,8 +1280,8 @@ In the window, Tools › Diagnostics holds three items:
 
 - **Save machine report** (Ctrl+Alt+Shift+D, ⌘⇧D on macOS, with the pointer
   captured or not) writes the running PC's report to `diag-N.txt` in
-  `unemupc/diagnostics` of the platform data directory (on macOS
-  `~/Library/Application Support/unemupc/diagnostics`), N counting on from
+  `unemu/diagnostics` of the platform data directory (on macOS
+  `~/Library/Application Support/unemu/diagnostics`), N counting on from
   the highest number already there, and the status line shows `Machine
   report saved to PATH`. It works whenever a PC runs, paused too, and is
   disabled without one. The machine keeps its code trail from every Start;
@@ -1440,7 +1466,7 @@ selects its `at-freedos.toml` when that file exists (a fresh install selects
 nothing): `UNEMUPC_MACHINES_DIR` when set; else, when cargo started the program,
 the tree's `machines/` (cargo names the crate's directory in
 `CARGO_MANIFEST_DIR` at run time, so nothing of the tree is compiled in); else
-`unemupc/machines` in the platform data directory (`~/Library/Application
+`unemu/machines` in the platform data directory (`~/Library/Application
 Support` on macOS, `$XDG_DATA_HOME` or `~/.local/share` on Linux,
 `%LOCALAPPDATA%` on Windows). `--help` prints the directory in use. The
 desktop's ROM folders are its preferences, `--rom-dir`, `UNEMUPC_USER_ROMS_DIR`
@@ -1469,9 +1495,9 @@ the file is hashed whole on a worker thread, the cores that list its
 extension are asked first, then the others (only `ID` with `--core`), and a
 file no core runs, or that several run, is refused with a message box.
 `--core` without `--open`, and `--open` with `--machine`, are usage errors.
-What such a machine leaves behind goes under `unemupc/saves/CORE/aa/DIGEST/`
+What such a machine leaves behind goes under `unemu/saves/CORE/aa/DIGEST/`
 in the platform data directory (and saved states, later, under
-`unemupc/states/`), keyed by the content's SHA-256, not its name or place.
+`unemu/states/`), keyed by the content's SHA-256, not its name or place.
 The release's cores are the PC, which opens no files, and the NES core of
 unemunes, which opens NROM (mapper 0) cartridge images: File › Open…'s dialog
 offers "NES cartridge images (*.nes)", and `--open game.nes` starts one, say

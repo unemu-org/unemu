@@ -5,7 +5,7 @@
 //! Save machine report (Ctrl+Alt+Shift+D; Command+Shift+D on macOS, where
 //! the desktop's Ctrl+Alt chords become Command chords) writes the running
 //! PC's diagnostic report (`assembly::diagnostic`) to
-//! `<data>/unemupc/diagnostics/diag-N.txt`, beside the `saves` and `states`
+//! `<data>/unemu/diagnostics/diag-N.txt`, beside the `saves` and `states`
 //! of the platform data directory, and the status line says where. N is one
 //! more than the highest number already in the folder, so reports of earlier
 //! sessions stay. The chord is the host's whether or not the pointer is
@@ -34,8 +34,11 @@ use winit::keyboard::KeyCode;
 /// The diagnostics folder in the platform data directory, or why there is
 /// none.
 pub(crate) fn folder<E: std::fmt::Display>(data: Result<PathBuf, E>) -> Result<PathBuf, String> {
-    data.map(|data| data.join("unemupc").join("diagnostics"))
-        .map_err(|error| format!("the host has no data directory ({error})"))
+    data.map_err(|error| format!("the host has no data directory ({error})"))
+        .and_then(|data| {
+            image_store::location::frontend::directory(&data, "diagnostics")
+                .map_err(|error| error.to_string())
+        })
 }
 
 /// Whether a press of `key` with `modifiers` (left and right Ctrl, Alt,
@@ -183,9 +186,26 @@ mod tests {
     fn the_folder_is_in_the_data_directory() {
         assert_eq!(
             folder(io::Result::Ok(PathBuf::from("/data"))),
-            Ok(PathBuf::from("/data/unemupc/diagnostics"))
+            Ok(PathBuf::from("/data/unemu/diagnostics"))
         );
         assert!(folder(Err::<PathBuf, _>(io::Error::other("none"))).is_err());
+    }
+
+    #[test]
+    fn old_diagnostics_and_logs_stay_in_use_for_the_next_report() {
+        let temp = assembly::test_support::TempDir::new("diagnostics-upgrade");
+        let old = temp.path().join("unemupc/diagnostics");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("diag-7.txt"), "report").unwrap();
+        std::fs::write(old.join("trace-3.txt"), "trace").unwrap();
+        let new = folder(io::Result::Ok(temp.path().to_path_buf())).unwrap();
+        assert_eq!(new, old);
+        assert_eq!(save(&new, "new").unwrap(), new.join("diag-8.txt"));
+        assert_eq!(std::fs::read(new.join("trace-3.txt")).unwrap(), b"trace");
+        assert_eq!(std::fs::read(old.join("diag-7.txt")).unwrap(), b"report");
+        assert_eq!(std::fs::read(old.join("trace-3.txt")).unwrap(), b"trace");
+        assert!(old.join("diag-8.txt").exists());
+        assert!(!temp.path().join("unemu/diagnostics").exists());
     }
 
     /// A recording takes the next free number the first time, created new,

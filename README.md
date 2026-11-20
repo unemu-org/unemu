@@ -139,8 +139,9 @@ The full command reference is in [`backlog/docs/commands.md`](backlog/docs/comma
 the toolchain in [`backlog/docs/dev-setup.md`](backlog/docs/dev-setup.md);
 playing DOS games in [`machines/README.md`](machines/README.md#playing-dos-games).
 Under `cargo run` the desktop app lists the tree's `machines/` and searches
-`vendor/user-roms`; an installed binary uses `unemupc/machines` in the platform
-data directory, or `UNEMUPC_MACHINES_DIR`, and the ROM folders set in Preferences.
+`vendor/user-roms`; an installed binary uses `unemu/machines` in the platform
+data directory (retaining `unemupc/machines` while it exists), or
+`UNEMUPC_MACHINES_DIR`, and the ROM folders set in Preferences.
 
 ### Building without Nix
 

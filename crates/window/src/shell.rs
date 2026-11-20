@@ -9406,7 +9406,7 @@ mod tests {
     #[test]
     fn the_diagnostic_chord_saves_a_report_and_never_types_d() {
         let temp = assembly::test_support::TempDir::new("shell-diagnostics");
-        let folder = temp.path().join("unemupc").join("diagnostics");
+        let folder = temp.path().join("unemu").join("diagnostics");
         let chord = |shell: &mut Shell| {
             let ctx = egui::Context::default();
             let keys: &[KeyCode] = if shell.macos_shortcuts {
@@ -10157,7 +10157,7 @@ mod tests {
     #[test]
     fn record_exceptions_writes_the_last_entries_at_every_trigger() {
         let temp = assembly::test_support::TempDir::new("shell-record-exceptions");
-        let folder = temp.path().join("unemupc").join("diagnostics");
+        let folder = temp.path().join("unemu").join("diagnostics");
         let ctx = egui::Context::default();
         let trace = |n: u32| folder.join(format!("trace-{n}.txt"));
         let check = |lines: &[String]| {
@@ -10265,7 +10265,7 @@ mod tests {
     #[test]
     fn the_report_says_why_a_checked_recording_is_missing() {
         let temp = assembly::test_support::TempDir::new("shell-recording-refused");
-        let folder = temp.path().join("unemupc").join("diagnostics");
+        let folder = temp.path().join("unemu").join("diagnostics");
         let mut shell = keyboard_shell();
         shell.args.diagnostics = Ok(folder.clone());
         shell.record_exceptions = true;
@@ -10340,7 +10340,7 @@ mod tests {
     #[test]
     fn the_tools_menu_has_the_diagnostics_items() {
         let temp = assembly::test_support::TempDir::new("shell-diagnostics-menu");
-        let folder = temp.path().join("unemupc").join("diagnostics");
+        let folder = temp.path().join("unemu").join("diagnostics");
         let ctx = egui::Context::default();
         let item = |nodes: &[(String, bool, Option<bool>)], label: &str| {
             nodes
@@ -17053,7 +17053,7 @@ kind='mda'
         shell.presenter = None;
         shell.guest_focus = false;
         shell.cores = Arc::new(core_launch::Cores::new(&OPENING_CORES));
-        shell.host_dirs = Ok(crate::host_dirs_in(temp.path()));
+        shell.host_dirs = Ok(crate::host_dirs_in(temp.path()).unwrap());
         shell
     }
 

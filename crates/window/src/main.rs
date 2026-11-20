@@ -466,7 +466,7 @@ const MACHINES_DIR_VAR: &str = "UNEMUPC_MACHINES_DIR";
 /// The directory of machine files: [`MACHINES_DIR_VAR`] when set; else the
 /// source tree's `machines` when cargo started the program (`cargo run` names
 /// the crate's directory in `CARGO_MANIFEST_DIR` at run time); else
-/// `unemupc/machines` in the platform data directory. None when the host has
+/// the platform data directory, keeping the legacy tree while it exists. None when the host has
 /// no data directory either.
 fn machines_dir() -> Option<PathBuf> {
     machines_dir_from(
@@ -491,7 +491,9 @@ fn machines_dir_from(
                 .filter(|path| !path.is_empty())
                 .map(|crate_dir| PathBuf::from(crate_dir).join("../../machines"))
         })
-        .or_else(|| data.map(|data| data.join("unemupc").join("machines")))
+        .or_else(|| {
+            data.and_then(|data| image_store::location::frontend::directory(&data, "machines").ok())
+        })
 }
 
 fn default_machine() -> Option<PathBuf> {
@@ -499,25 +501,25 @@ fn default_machine() -> Option<PathBuf> {
 }
 
 /// Where machines started from a file keep what they leave behind:
-/// `unemupc/saves` and `unemupc/states` in the platform data directory,
+/// `unemu/saves` and `unemu/states` in the platform data directory,
+/// retaining each legacy tree in place while it exists,
 /// beside the machine files. `core_launch::start` creates a machine's own
 /// directory under `saves` when the machine first starts; nothing is made
 /// before. The reason is shown when Open… meets a host without a data
 /// directory.
 fn host_dirs() -> Result<core_launch::HostDirs, String> {
     image_store::location::data_directory()
-        .map(|data| host_dirs_in(&data))
         .map_err(|error| {
             format!("Files cannot be opened: the host has no data directory ({error})")
         })
+        .and_then(|data| host_dirs_in(&data).map_err(|error| error.to_string()))
 }
 
-fn host_dirs_in(data: &Path) -> core_launch::HostDirs {
-    let root = data.join("unemupc");
-    core_launch::HostDirs {
-        saves: root.join("saves"),
-        states: root.join("states"),
-    }
+fn host_dirs_in(data: &Path) -> io::Result<core_launch::HostDirs> {
+    Ok(core_launch::HostDirs {
+        saves: image_store::location::frontend::directory(data, "saves")?,
+        states: image_store::location::frontend::directory(data, "states")?,
+    })
 }
 
 #[derive(Debug)]
@@ -1417,11 +1419,111 @@ mod tests {
         }
     }
 
+    fn legacy_machine(data: &Path, journal: &Path) -> PathBuf {
+        let directory = data.join("unemupc/machines/target");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("bios.bin"), vec![0xf4; 0x8000]).unwrap();
+        std::fs::write(directory.join("base.img"), vec![0; 368_640]).unwrap();
+        let machine = directory.join("machine.toml");
+        let journal = toml::Value::String(journal.to_string_lossy().into_owned());
+        std::fs::write(&machine, format!(
+            "schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='bios.bin'\nprovides=['floppy']\n[[card]]\nkind='fdc-765'\n[[card.drives]]\nunit=0\ntype='360K'\nimage='base.img'\nwrite='journal'\njournal={journal}\n"
+        )).unwrap();
+        machine
+    }
+
+    #[test]
+    fn an_absolute_legacy_journal_remains_the_only_journal() {
+        use media::{JournalMedia, SectorSource, SinkStatus, VerifiedBase};
+        let temp = assembly::test_support::TempDir::new("legacy-absolute-journal");
+        let data = temp.path().canonicalize().unwrap();
+        let journal = data.join("unemupc/machines/target/disk.upfj");
+        legacy_machine(&data, &journal);
+        let base_path = data.join("unemupc/machines/target/base.img");
+        let base_bytes = std::fs::read(&base_path).unwrap();
+        let base = VerifiedBase::open(&base_path).unwrap();
+        let open = |path: &Path| {
+            JournalMedia::open_verified(path, &base, base.byte_len(), SinkStatus::default())
+                .unwrap()
+        };
+        {
+            let mut disk = open(&journal);
+            disk.write_batch(&[(0, [1; 512])]);
+            disk.checkpoint().unwrap();
+        }
+        let selected = image_store::location::frontend::directory(&data, "machines").unwrap();
+        for value in [2, 3] {
+            let config = machine_file::load(selected.join("target/machine.toml")).unwrap();
+            let assembly::WriteMode::Journal { path, .. } = &config.drives[0].write else {
+                panic!("expected journal persistence");
+            };
+            assert_eq!(path, &journal);
+            {
+                let mut disk = open(path);
+                disk.write_batch(&[(0, [value; 512])]);
+                disk.checkpoint().unwrap();
+            }
+            let disk = open(&selected.join("target/disk.upfj"));
+            assert_eq!(
+                disk.read_sector(0),
+                [value; 512],
+                "the selected tree must see the same journal"
+            );
+        }
+        assert!(!data.join("unemu/machines").exists());
+        assert_eq!(std::fs::read(base_path).unwrap(), base_bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_legacy_machine_keeps_target_relative_paths() {
+        let temp = assembly::test_support::TempDir::new("legacy-machine-link");
+        let data = temp.path().canonicalize().unwrap();
+        let target = legacy_machine(&data, Path::new("disk.upfj"));
+        let old = data.join("unemupc/machines");
+        std::os::unix::fs::symlink("target/machine.toml", old.join("alias.toml")).unwrap();
+        let selected = image_store::location::frontend::directory(&data, "machines").unwrap();
+        let config = machine_file::load(selected.join("alias.toml")).unwrap();
+        assert_eq!(
+            config.drives[0].write,
+            assembly::WriteMode::journal(target.parent().unwrap().join("disk.upfj"))
+        );
+        assert!(std::fs::symlink_metadata(selected.join("alias.toml"))
+            .unwrap()
+            .is_symlink());
+        assert!(!data.join("unemu/machines").exists());
+    }
+
     #[test]
     fn files_opened_keep_their_saves_and_states_in_the_data_directory() {
-        let dirs = host_dirs_in(Path::new("/data/user"));
-        assert_eq!(dirs.saves, PathBuf::from("/data/user/unemupc/saves"));
-        assert_eq!(dirs.states, PathBuf::from("/data/user/unemupc/states"));
+        let temp = assembly::test_support::TempDir::new("host-dirs");
+        for name in ["saves", "states"] {
+            let old = temp
+                .path()
+                .join("unemupc")
+                .join(name)
+                .join("core/aa/content");
+            std::fs::create_dir_all(&old).unwrap();
+            std::fs::write(old.join("record"), name).unwrap();
+        }
+        let dirs = host_dirs_in(temp.path()).unwrap();
+        assert_eq!(dirs.saves, temp.path().join("unemupc/saves"));
+        assert_eq!(dirs.states, temp.path().join("unemupc/states"));
+        for (name, path) in [("saves", dirs.saves), ("states", dirs.states)] {
+            let record = path.join("core/aa/content/record");
+            assert_eq!(std::fs::read_to_string(&record).unwrap(), name);
+            std::fs::write(&record, "new").unwrap();
+            assert_eq!(
+                std::fs::read_to_string(
+                    temp.path()
+                        .join("unemupc")
+                        .join(name)
+                        .join("core/aa/content/record")
+                )
+                .unwrap(),
+                "new"
+            );
+        }
     }
 
     #[test]
@@ -1429,7 +1531,7 @@ mod tests {
         let data = || Some(PathBuf::from("/data/user"));
         let crate_dir = || Some(std::ffi::OsString::from("/src/tree/crates/window"));
         let from_cargo = PathBuf::from("/src/tree/crates/window/../../machines");
-        let from_data = PathBuf::from("/data/user/unemupc/machines");
+        let from_data = PathBuf::from("/data/user/unemu/machines");
         assert_eq!(
             machines_dir_from(Some("/srv/machines".into()), crate_dir(), data()),
             Some(PathBuf::from("/srv/machines"))

@@ -984,7 +984,7 @@ opt-level 3).
 The desktop takes one from Tools › Diagnostics › Save machine report, or
 its chord Ctrl+Alt+Shift+D (⌘⇧D on macOS), whenever a PC runs, paused or
 not; with no machine the item is disabled and says so. It writes the
-running PC's report to `<data>/unemupc/diagnostics/diag-N.txt` in the
+running PC's report to `<data>/unemu/diagnostics/diag-N.txt` in the
 platform data directory, N one more than the highest number already there;
 with Record exceptions on it also writes the recording (§Exception and
 interrupt deliveries) and the report names that file; with Record exceptions
@@ -1144,7 +1144,7 @@ faults ends in shutdown, which is not a delivery.
 **The recording.** Tools › Diagnostics › Record exceptions, a check item off
 at every launch, records the running PC from the moment it is checked and
 every PC started while it stays checked. Each recording goes to one
-`<data>/unemupc/diagnostics/trace-N.txt`, created new when it is first
+`<data>/unemu/diagnostics/trace-N.txt`, created new when it is first
 written (never over an existing file) and rewritten with the latest ring,
 while it still holds what the recording wrote last (otherwise the text takes
 the next free number), at each of: Save machine report, Stop,

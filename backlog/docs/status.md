@@ -5,6 +5,20 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — Front-end host directories use `unemu`:** only shared
+  preferences copy once from `unemupc`, retaining the original-directory fallback.
+  Machines and journals, diagnostics/trace logs, saves and states each keep using
+  their old `unemupc` tree while it exists, including new writes; `unemu` is used
+  only when that old tree is absent. Old trees take precedence even over an
+  existing new tree. No tree is copied, traversed or removed at startup: this
+  preserves absolute journal identity, target-relative symlink paths and private
+  permissions without copying multi-GB data. The user can move a tree explicitly.
+  This is the safe interpretation of “a one-time read of the old place”.
+  The image store, caches, workspaces, explicit roots, source-tree paths,
+  `UNEMUPC_*` and the PC firmware index stay unchanged. Tests cover concurrent
+  starts, interrupted preferences and abandoned tree staging, links, permissions
+  and writes to a single journal. See `design/core-contract.md` §12.10 step 14
+  and `commands.md`.
 - **2026-11-20 — Raw commands belong to the standalone PC core:**
   `--boot`, `--bios` and `machine check` run only in `unemupc`;
   `upcli` rejects them with its normal usage error (exit 2). The frontend

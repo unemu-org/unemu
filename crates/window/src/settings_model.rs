@@ -25,7 +25,7 @@ mod tests {
         // The release environment: no switch and no cargo, a data directory.
         let library = crate::machines_dir_from(None, None, Some(temp.path().join("data")));
         let model = SettingsModel::open_with_library(&parent, false, library).unwrap();
-        let expected = std::path::absolute(temp.path().join("data/unemupc/machines/local"))
+        let expected = std::path::absolute(temp.path().join("data/unemu/machines/local"))
             .unwrap()
             .join("example-custom.toml");
         assert_eq!(model.target, expected);
