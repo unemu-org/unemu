@@ -2468,8 +2468,8 @@ Future software images get their own names when their licence decision is
 made.
 
 **Who publishes what (2026-11-16).** The firmware packages and the
-installation sets are built and published by the unemu-media repository
-(<https://github.com/unemu-org/unemu-media>) with a pinned `upcli` release;
+installation sets are built and published by the software repository
+(<https://github.com/unemu-org/software>) with a pinned `upcli` release;
 `image template build` builds the template machines only.
 `pc_image::template::build_firmware` and `build_media` build the same images
 locally from this repository's fixtures, under the published tags and with

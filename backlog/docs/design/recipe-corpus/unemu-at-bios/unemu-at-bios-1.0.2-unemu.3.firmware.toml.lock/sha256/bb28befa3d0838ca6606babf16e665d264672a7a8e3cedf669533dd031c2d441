@@ -3,6 +3,7 @@ platform = "ibm-pc"
 name = "unemu AT BIOS 1.0.2-unemu.3"
 vendor = "unemu (fork of Sergey Kiselev's 8088_bios)"
 version = "1.0.2-unemu.3"
+date = "2026-03-27"
 description = "The system BIOS of the open AT templates: release 1.0.2-unemu.3 of unemu-at-bios, the unemu fork of 8088_bios 1.0.2 by Sergey Kiselev, its original author. Its unemu-at build is a 32 KiB ROM at F8000h-FFFFFh for IBM 5170-class 80286 boards with two 8259s, two 8237s, an 8042 and an MC146818. Unlike upstream it resumes through the CMOS shutdown byte, answers INT 15h AH=87h and AH=88h, measures extended memory into CMOS 30h-31h, clears the memory it finds above 1 MiB on every POST and checks the CMOS as the IBM PC/AT BIOS does. It serves diskettes only; fixed disks come from an option ROM such as the XTIDE Universal BIOS. Licensed under GPL-3.0-or-later; the package includes its corresponding source archive."
 labels = ["open-source", "pc-at", "system-bios"]
 extras = []
@@ -31,5 +32,5 @@ format = "tar"
 roms = ["system-bios"]
 
 [readme]
-blob = "sha256:d2836be4d92bbd02170e26fadd125b1c3450247c7b5befc2eff7cf17a1bd7d0c"
-size = 1775
+blob = "sha256:0db9090a14cc29cd4e83f467d0dc7d38c77f953f0e910cb802cdd613ae041622"
+size = 1773

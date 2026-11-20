@@ -24,7 +24,7 @@ case "$step" in
     guard)
         gate_command=(bash -uc '
             status=0
-            bash scripts/publication-guard.sh || status=1
+            bash scripts/publication-guard-test.sh && bash scripts/publication-guard.sh || status=1
             nix develop --no-update-lock-file --command bash -euc "
                 cargo fetch --locked
                 bash scripts/crate-boundaries.sh --self-test

@@ -61,7 +61,7 @@ input "source" {
   size   = 22835200
   sha256 = "dfa7006e742cb9676a0a6401ce64214089923f055f4a7ba8f36960115b5362b6"
   urls   = [
-    "https://github.com/unemu-org/unemu-media/releases/download/freedos-1.4-floppy/freedos-1.4-floppy-src.tar",
+    "https://github.com/unemu-org/software/releases/download/freedos-1.4-floppy/freedos-1.4-floppy-src.tar",
   ]
 }
 

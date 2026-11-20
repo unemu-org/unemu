@@ -5,6 +5,13 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — The recipe corpus tracks the migrated software recipes:**
+  The seven real recipes, their two work files and their locks are refreshed
+  from `unemu-org/software` at `3c493f7`, under `recipes/media/freedos/`,
+  `recipes/media/kenslab/` and `recipes/firmware/`. Design-only recipes and
+  first-round HCL snapshots are preserved; current GitHub links use the
+  repository's new name. See `design/recipe-corpus/README.md` for the mapping.
+
 - **2026-11-20 — The core's host interfaces are guarded:** (`upc-dfs.29`,
   embeddability step 2; design/core-contract.md §12.10). No guest behaviour change.
   `scripts/core-host-guard.sh` checks the production source spellings of the contract

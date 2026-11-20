@@ -102,6 +102,8 @@ old_name_text() {
 all_files=()
 files=()
 while IFS= read -r -d '' file; do
+  # The index still lists tracked files removed from the working tree.
+  [[ -e $file || -L $file ]] || continue
   all_files+=("$file")
   case "$file" in
     scripts/publication-guard.sh|Cargo.lock) ;;

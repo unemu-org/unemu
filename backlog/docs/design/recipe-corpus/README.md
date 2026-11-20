@@ -1,5 +1,34 @@
 # Recipe corpus
 
+## Current copies (2026-11-20)
+
+The real TOML recipes, work files and locks track the
+[`software` repository](https://github.com/unemu-org/software) at `3c493f7`:
+
+| Corpus folder | Source at that revision |
+| --- | --- |
+| `freedos-1.4-floppy/` | `recipes/media/freedos/`: three recipes, `freedos.work.toml` and their locks |
+| `kenslab-2.01/` | `recipes/media/kenslab/`: the 2.01 recipe, `kenslab.work.toml` and its lock |
+| `unemu-at-bios/`, `vgabios/`, `xtide-universal-bios/` | `recipes/firmware/`: three recipes and their locks |
+
+The FreeDOS source-archive URLs use the repository's new name, `software`
+(formerly `unemu-media`). Locks are copied byte for byte and contain no
+payload. Bundled licence indexes and source-building scripts stay in the
+software repository; the corpus's build tests supply inputs from fixtures.
+All seven real recipes are now pinned. Their cited metadata supersedes the
+earlier assumptions: work ids, requirements and needs, and firmware dates
+and board compatibility. Firmware configs therefore differ from the older
+template imports in those descriptive fields and the generated README.
+
+The other TOML recipes remain design examples: Ken's Labyrinth 1.0
+shareware, AZURAMON, FreeDOS LiveCD, Windows 3.0, IBM 5170 BIOS, Contra and
+the Amiga disk. The shareware example still uses the shared Ken's Labyrinth
+work file. HCL files remain first-round snapshots, with only the FreeDOS
+source-archive URL rename applied. Tests compare the current TOML records
+with those snapshots plus the explicit metadata corrections above.
+
+## Design history
+
 Status: **drafts** for the design in [`../recipes.md`](../recipes.md)
 (`upc-5pw.113`), 2026-11-17. Nine recipes, each in the chosen syntax (TOML
 1.0, `*.toml`) and in the strongest alternative (an HCL literal subset,

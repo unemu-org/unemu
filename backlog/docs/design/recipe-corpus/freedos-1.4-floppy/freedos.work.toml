@@ -1,4 +1,21 @@
-# FreeDOS, the work: what every release and format of it shares.
+# FreeDOS, the work: what every FreeDOS release of this folder shares, and
+# so what unemu/media/ibm-pc/freedos says above its releases (unemupc's
+# work files, its decision-39). Every value is cited; nothing is guessed.
+#   synopsis  after the FreeDOS Project's home page, https://www.freedos.org/
+#             (retrieved 2026-11-19): "FreeDOS is an open source
+#             DOS-compatible operating system ...".
+#   ids       wikidata: https://www.wikidata.org/wiki/Q473751, label
+#             "FreeDOS", description "freely-licensed PC-compatible DOS
+#             clone" (retrieved 2026-11-19). The item has no P1933
+#             (MobyGames game ID) and no P5794 (IGDB game ID) claim, so no
+#             mobygames or igdb id is stated.
+#   needs     FD14-FloppyEdition.zip, readme.txt, section "FreeDOS
+#             Floppy-Only Edition (FD14-x86)": the edition "should run on
+#             any hardware that can run FreeDOS and has EGA or better
+#             graphics". The readme states no CPU and no memory size, so
+#             neither is stated here.
+# A pinned recipe writes its lock's record, never this file's: an edit here
+# reaches a published set only with a new pin (docs/recipes.md).
 
 recipe = "0.1"
 
@@ -12,10 +29,10 @@ developers = ["The FreeDOS Project"]
 genres = ["operating system"]
 software_platform = "DOS"
 labels = ["freedos", "open-source", "operating-system"]
-synopsis = "A free, open source operating system compatible with MS-DOS, by the FreeDOS Project."
+synopsis = "An open source DOS-compatible operating system, by the FreeDOS Project."
 
-# ASSUMED: read off the sets' descriptions.
+[ids]
+wikidata = "Q473751"
+
 [needs]
-cpu = "8088+"
-memory = "640K"
 video = ["vga", "ega"]

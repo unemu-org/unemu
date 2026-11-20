@@ -5,7 +5,7 @@ The system BIOS of the open AT templates: release 1.0.2-unemu.3 of unemu-at-bios
 - Platform: IBM PC compatible
 - Vendor: unemu (fork of Sergey Kiselev's 8088_bios)
 - Version: 1.0.2-unemu.3
-- Date: not recorded
+- Date: 2026-03-27
 - Labels: open-source, pc-at, system-bios
 
 ## Fits

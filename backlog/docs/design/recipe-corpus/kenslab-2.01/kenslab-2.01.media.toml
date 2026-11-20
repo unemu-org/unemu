@@ -1,8 +1,17 @@
-# Ken's Labyrinth 2.01, the full version, freeware since 1999: unemu/media/ibm-pc/kenslab:2.01-r1.
-# Open. One 1.44M disk built from the 19 files of the author's LABFULL.ZIP, in the
-# archive's order and with the archive's times, written out. Real data from unemu-media
-# (commit 69f6d65); member sizes and times as measured for the earlier design draft.
-# A draft: no digest. The image will differ from the mtools-built one of that branch.
+# Ken's Labyrinth 2.01, the full version (Epic MegaGames, 1993), released by
+# Ken Silverman as freeware, with Epic MegaGames' permission, on 1999-11-16:
+# the media set unemu/media/ibm-pc/kenslab:2.01-r1 (alias 2.01). The upstream
+# release is an archive without disks, LABFULL.ZIP from the author's page
+# (https://advsys.net/ken/klab.htm), so the fat step builds the set's one
+# 1.44M diskette from all 19 files of the archive, unmodified, in the
+# archive's order and with the archive's times. The version is the one the
+# game displays, V2.01 on its title art (the author's page names the archive
+# v2.1); "Full Version" is the edition README.TXT states, the work's primary
+# edition, so the release has no edition part. The licence is the author's
+# terms, README.TXT, carried unmodified; LICENSES.TXT is our licence index
+# (licenses.txt, CC0-1.0). The terms are not copyleft: no source archive.
+# What the releases of the work share is in kenslab.work.toml. digest and
+# the lock beside this file pin the set (docs/recipes.md).
 
 recipe = "0.1"
 work = "kenslab"
@@ -12,10 +21,13 @@ name = "unemu/media/ibm-pc/kenslab"
 platform = "ibm-pc"
 release = "2.01"
 revision = 1
+digest = "sha256:1e34b66a682475182c0092cba2679c8da64e65160f91159a5c9ef3f944a40395"
 
 [title]
 version = "2.01"
 edition = "Full Version"
+# HELPME.DOC, "Requirements", word for word.
+requirements = "IBM AT-Compatible computer (386 or 486 highly recommended); VGA Graphics; 512K of total memory (at least 365K available); About 1 megabyte of hard disk space"
 year = 1993
 labels = ["freeware"]
 description = "Ken's Labyrinth 2.01, the full version of Ken Silverman's first-person shooter, published by Epic MegaGames in 1993: the aliens of the planet Zogar have taken your dog Sparky, and you go through their labyrinth in three episodes of ten levels. One 3.5-inch 1.44M diskette holds all 19 files of the author's LABFULL.ZIP, unmodified: the game (KEN.EXE); KENSBFIX.EXE, the author's 2008 build that fixes the 'Digitized Sound' crash and replaces KEN.EXE when Digitized Sound is enabled; SETUP.EXE; the game data; the manual (HELPME.DOC); the hint manual (HINTS.TXT); and four bonus saved games. Copy them to a hard disk, run SETUP, then KEN. Released by the author as freeware, with Epic MegaGames' permission, on 16 November 1999: it may be copied freely, but not sold, and only with all of its files (README.TXT, the set's licence text)."
@@ -34,6 +46,7 @@ urls = [
     "https://web.archive.org/web/20131026024809id_/http://advsys.net/ken/klab/labfull.zip",
 ]
 
+# The licence index, our own text: bundled with the recipe.
 [input.licenses-lf]
 name = "licenses.txt"
 size = 3442
@@ -67,6 +80,8 @@ members = [
     { path = "WALLS.KZP", size = 374133, sha256 = "7643f5f26ed9906f1ede6b6e54c18265debeffb4e8c9140fbf8c51fb0af4d42d", time = 1993-06-06T14:17:42 },
 ]
 
+# The volume label, serial and label time are this recipe's: 2008-07-03, the
+# date the author's page gives LABFULL.ZIP's latest change (KENSBFIX.EXE).
 [[step]]
 id = "disk"
 fat = "files"
@@ -89,15 +104,15 @@ file_name = "labfull.img"
 from = "disk"
 
 [[extra]]
-id = "readme"
-file_name = "README.TXT"
-dos_name = "README.TXT"
-kind = "document"
-from = "files/README.TXT"
-
-[[extra]]
 id = "licenses"
 file_name = "LICENSES.TXT"
 dos_name = "LICENSES.TXT"
 kind = "document"
 from = "licenses"
+
+[[extra]]
+id = "readme"
+file_name = "README.TXT"
+dos_name = "README.TXT"
+kind = "document"
+from = "files/README.TXT"

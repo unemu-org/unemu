@@ -4,8 +4,8 @@
 //!
 //! - The open firmware recipes of the corpus build the packages
 //!   `image firmware import` makes from the same fixtures, as the template
-//!   build imports them with the metadata flags: the same configs byte for
-//!   byte, and the same manifests.
+//!   build imports them with the metadata flags: the same payloads, with
+//!   explicitly pinned descriptive metadata from the real recipes.
 //! - The three FreeDOS recipes build sets whose configs equal byte for byte
 //!   those the importer makes from the same disks and extras as `image media
 //!   import` states them; the edition archive is not needed, as its disks
@@ -172,7 +172,7 @@ fn firmware_present() -> bool {
 }
 
 #[test]
-fn the_open_firmware_recipes_build_the_packages_the_importer_makes() {
+fn the_open_firmware_recipes_match_the_importer_with_their_pinned_metadata() {
     if !firmware_present() {
         return;
     }
@@ -183,7 +183,29 @@ fn the_open_firmware_recipes_build_the_packages_the_importer_makes() {
     let catalogue = pc_image::firmware::catalogue();
     let validator =
         image_store::firmware::Validator(&pc_image::firmware::PcFirmwareRules(catalogue));
-    for (file, package) in FIRMWARE.iter().zip(&packages) {
+    let expected_metadata = [
+        (
+            "2026-03-27",
+            "0db9090a14cc29cd4e83f467d0dc7d38c77f953f0e910cb802cdd613ae041622",
+            1773,
+            "c4c53a6a5c0727d8cccb26b22a92dcbf68e906aed7d9424be80763ea30533ff2",
+        ),
+        (
+            "2026-08-07",
+            "91905d8f6a628d3a738729e4f6ea3a6016671e7ced88f308e7a96cd37bb492f9",
+            1534,
+            "c1972247ba5fc03dee5bc011b137e49c547ef1f4fc32dc3f74fa09b205c235e7",
+        ),
+        (
+            "2026-06-09",
+            "3446552c5291c89f1e1506e3ec37212324732aabe14e06cc68a86157363d27ed",
+            1588,
+            "4dc25f1c00342e44b2476e84befc9dbbb1817d478cdda9b1fd0a5d8e026026a1",
+        ),
+    ];
+    for ((file, package), (date, readme, size, digest)) in
+        FIRMWARE.iter().zip(&packages).zip(expected_metadata)
+    {
         let (outcome, lines) = build(&corpus(file), &from_recipes, &[vendor()], None);
         assert!(lines.is_empty(), "nothing to fetch: {lines:?}");
         let report = built(outcome);
@@ -191,16 +213,16 @@ fn the_open_firmware_recipes_build_the_packages_the_importer_makes() {
         assert_eq!(&report.reference, tag);
         let recipe_config = from_recipes.resolve(tag, &validator).unwrap().config;
         let import_config = imported.resolve(tag, &validator).unwrap().config;
-        assert_eq!(
-            String::from_utf8(recipe_config).unwrap(),
-            String::from_utf8(import_config).unwrap(),
-            "{file}"
-        );
-        // More than the config: the same package.
-        assert_eq!(
-            report.published.descriptor.digest, package.descriptor.digest,
-            "{file}"
-        );
+        // Real recipes add dates; their locked README
+        // also comes from a newer writer than the template importer's.
+        let mut expected = image_store::firmware::Config::decode(&import_config).unwrap();
+        expected.date = Some(date.into());
+        expected.readme = Some(image_store::firmware::Readme {
+            blob: format!("sha256:{readme}").parse().unwrap(),
+            size,
+        });
+        assert_eq!(recipe_config, expected.encode().unwrap(), "{file}");
+        assert_eq!(report.published.descriptor.digest.hex(), digest, "{file}");
         assert!(report.published.created);
     }
     // A second build finds every package already built.
@@ -795,6 +817,10 @@ fn user_rom_kenslab_builds_from_the_users_files_and_its_disk_is_the_pinned_one()
     let licences = b"Ken's Labyrinth: README.TXT states its licence.\n";
     let text = fs::read_to_string(folder.join("kenslab-2.01.media.toml"))
         .unwrap()
+        .lines()
+        .filter(|line| !line.starts_with("digest = "))
+        .collect::<Vec<_>>()
+        .join("\n")
         .replace(
             "size = 3442\nsha256 = \"b4b52913919b8f481289fe0beef2a76a812b4014e6a2b09357caa2aec91f4ff7\"",
             &format!("size = {}\nsha256 = \"{}\"", licences.len(), sha(licences)),

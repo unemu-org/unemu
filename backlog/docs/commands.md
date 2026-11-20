@@ -223,7 +223,7 @@ VALUE,VALUE` line per kind in kind order, `work` and `synopsis` lines and
 one `work-id KIND "ID"` line per kind, after `edition`.
 
 The command line reproduces the FreeDOS 1.4 Floppy Edition sets that the
-unemu-media repository (<https://github.com/unemu-org/unemu-media>) builds and
+software repository (<https://github.com/unemu-org/software>) builds and
 publishes as `unemu/media/ibm-pc/freedos:1.4-r1` (the edition's own 1.44M
 disks), `:1.4-1.2m-r1` and `:1.4-720k-r1`, with the release aliases `:1.4`,
 `:1.4-1.2m` and `:1.4-720k`, byte for byte, with the same set digests: these
@@ -865,8 +865,8 @@ machine-images §5.5):
 
 **Firmware packages and installation sets.** The open firmware packages the
 templates bind and the FreeDOS 1.4 Floppy Edition installation sets are built
-and published by the unemu-media repository
-(<https://github.com/unemu-org/unemu-media>), not by this command. Pull them
+and published by the software repository
+(<https://github.com/unemu-org/software>), not by this command. Pull them
 from the default registry (`--create` for a new store):
 
 ```sh

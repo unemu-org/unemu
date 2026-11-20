@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `upcli recipe check` and `upcli recipe show` (recipes.md §6.11, §6.15,
 //! §6.16): their output and exit codes on the recipe corpus and on usage
-//! errors. Reads files only.
+//! errors. Uses synthetic draft files and reads the corpus only.
 
 use std::ffi::OsString;
 
@@ -101,40 +101,127 @@ fn the_usage_names_the_command() {
     assert!(output.contains("upcli recipe show FILE"));
 }
 
-/// Ken's Labyrinth 2.01 merged with its work file: the shared fields carry
-/// a comment naming the work file, the release's own do not, and the
-/// labels are the work's two, then the release's own.
+/// Ken's Labyrinth 2.01 now has a lock: show prints its pinned record,
+/// requirements and work ids, with labels in their merged order.
 #[test]
-fn show_prints_the_merged_record_and_marks_what_came_from_the_work_file() {
+fn show_prints_the_pinned_corpus_record() {
     let recipe = format!("{CORPUS}/kenslab-2.01/kenslab-2.01.media.toml");
     let (code, output, errors) = upcli(&["recipe", "show", &recipe]);
     assert_eq!((code, errors.as_str()), (0, ""), "{output}");
     let description = "Ken's Labyrinth 2.01, the full version of Ken Silverman's first-person shooter, published by Epic MegaGames in 1993: the aliens of the planet Zogar have taken your dog Sparky, and you go through their labyrinth in three episodes of ten levels. One 3.5-inch 1.44M diskette holds all 19 files of the author's LABFULL.ZIP, unmodified: the game (KEN.EXE); KENSBFIX.EXE, the author's 2008 build that fixes the 'Digitized Sound' crash and replaces KEN.EXE when Digitized Sound is enabled; SETUP.EXE; the game data; the manual (HELPME.DOC); the hint manual (HINTS.TXT); and four bonus saved games. Copy them to a hard disk, run SETUP, then KEN. Released by the author as freeware, with Epic MegaGames' permission, on 16 November 1999: it may be copied freely, but not sold, and only with all of its files (README.TXT, the set's licence text).";
-    let synopsis = "Ken Silverman's first-person shooter of 1993: the aliens of the planet Zogar have taken your dog Sparky, and you go through their labyrinth in three episodes of ten levels.";
-    let work = "\t# from kenslab.work.toml";
+    let synopsis = "Ken Silverman's 3D arcade game of 1993, with 256-colour graphics, music and digital sound, in three episodes: The Search for Sparky, Sparky's Revenge and Find the Way Home.";
+    let requirements = "IBM AT-Compatible computer (386 or 486 highly recommended); VGA Graphics; 512K of total memory (at least 365K available); About 1 megabyte of hard disk space";
+    let digest = "sha256:1e34b66a682475182c0092cba2679c8da64e65160f91159a5c9ef3f944a40395";
     assert_eq!(
         output,
         format!(
-            "unemu/media/ibm-pc/kenslab:2.01-r1\tdraft\tibm-pc\n\
-             title\t\"Ken's Labyrinth\"{work}\n\
-             publisher\t\"Epic MegaGames\"{work}\n\
-             developer\t\"Ken Silverman\"{work}\n\
-             developer\t\"Andy Cotter\"{work}\n\
+            "unemu/media/ibm-pc/kenslab:2.01-r1\t{digest}\tibm-pc\n\
+             # locked: the record of {digest}, which a build writes; the work file's edits wait for a new revision\n\
+             title\t\"Ken's Labyrinth\"\n\
+             publisher\t\"Epic MegaGames\"\n\
+             developer\t\"Ken Silverman\"\n\
+             developer\t\"Andy Cotter\"\n\
              year\t1993\n\
-             genre\t\"first-person shooter\"{work}\n\
-             platform\t\"DOS\"{work}\n\
+             genre\t\"first-person shooter\"\n\
+             platform\t\"DOS\"\n\
              description\t{description:?}\n\
              version\t\"2.01\"\n\
              edition\t\"Full Version\"\n\
-             need\tcpu\t286+{work}\n\
-             need\tsound\tsb,adlib,pc-speaker,none{work}\n\
-             need\tvideo\tvga{work}\n\
+             requirements\t{requirements:?}\n\
+             need\tcpu\t286+\n\
+             need\tinput\tjoystick,mouse,none\n\
+             need\tmemory\t512K\n\
+             need\tsound\tsb,adlib,none\n\
+             need\tvideo\tvga\n\
              work\t\"kenslab\"\n\
-             synopsis\t{synopsis:?}{work}\n\
-             set-label\t\"game\"{work}\n\
-             set-label\t\"first-person-shooter\"{work}\n\
+             synopsis\t{synopsis:?}\n\
+             work-id\tigdb\t\"kens-labyrinth\"\n\
+             work-id\tmobygames\t\"kens-labyrinth\"\n\
+             work-id\twikidata\t\"Q3814453\"\n\
+             set-label\t\"game\"\n\
+             set-label\t\"first-person-shooter\"\n\
              set-label\t\"freeware\"\n"
         )
+    );
+}
+
+#[test]
+fn show_marks_only_the_fields_inherited_from_a_draft_work_file() {
+    struct Temp(std::path::PathBuf);
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let temp = Temp(std::env::temp_dir().join(format!("recipe-show-draft-{}", std::process::id())));
+    std::fs::create_dir_all(&temp.0).unwrap();
+    std::fs::write(
+        temp.0.join("draft.work.toml"),
+        r#"recipe = "0.1"
+[work]
+id = "draft"
+[title]
+title = "Lantern Maze"
+publishers = ["Work Publisher"]
+developers = ["Lantern Studio"]
+genres = ["puzzle"]
+software_platform = "DOS"
+labels = ["game"]
+synopsis = "Find a path through a maze of lanterns."
+[ids]
+wikidata = "Q1"
+[needs]
+cpu = "286+"
+memory = "512K"
+"#,
+    )
+    .unwrap();
+    let recipe = temp.0.join("draft.media.toml");
+    std::fs::write(
+        &recipe,
+        r#"recipe = "0.1"
+work = "draft"
+[media]
+name = "private/media/ibm-pc/draft"
+platform = "ibm-pc"
+release = "1.0"
+revision = 1
+[title]
+publishers = ["Release Publisher"]
+description = "A synthetic release for the show command."
+labels = ["game", "demo"]
+[needs]
+memory = "640K"
+[input.disk]
+name = "DISK.IMG"
+size = 737280
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[[medium]]
+id = "disk-1"
+label = "Disk 1"
+format = "720K"
+from = "disk"
+"#,
+    )
+    .unwrap();
+    let (code, output, errors) = upcli(&["recipe", "show", recipe.to_str().unwrap()]);
+    assert_eq!((code, errors.as_str()), (0, ""), "{output}");
+    assert_eq!(
+        output,
+        "private/media/ibm-pc/draft:1.0-r1\tdraft\tibm-pc\n\
+         title\t\"Lantern Maze\"\t# from draft.work.toml\n\
+         publisher\t\"Release Publisher\"\n\
+         developer\t\"Lantern Studio\"\t# from draft.work.toml\n\
+         genre\t\"puzzle\"\t# from draft.work.toml\n\
+         platform\t\"DOS\"\t# from draft.work.toml\n\
+         description\t\"A synthetic release for the show command.\"\n\
+         need\tcpu\t286+\t# from draft.work.toml\n\
+         need\tmemory\t640K\n\
+         work\t\"draft\"\n\
+         synopsis\t\"Find a path through a maze of lanterns.\"\t# from draft.work.toml\n\
+         work-id\twikidata\t\"Q1\"\t# from draft.work.toml\n\
+         set-label\t\"game\"\t# from draft.work.toml\n\
+         set-label\t\"demo\"\n"
     );
 }
 

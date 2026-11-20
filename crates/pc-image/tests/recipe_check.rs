@@ -522,7 +522,8 @@ fn synopsis(work: &str) -> String {
 
 /// Each recipe of the three corpus folders with a work file, merged with
 /// it, gives the title record its first-round copy stated in full, field by
-/// field, and its labels as a set. What the merge adds is the work's own
+/// field, with the real recipes' cited corrections, and its labels as a set.
+/// What the merge adds is the work's own
 /// fields of metadata schema 2, the work id and the synopsis, and the
 /// record's id, which is the last component of the recipe's `name`
 /// (recipes §6.4). The two releases added with the work files have no
@@ -545,6 +546,36 @@ fn the_corpus_work_files_merge_into_the_first_rounds_full_records() {
         let (mut expected, labels) = first_round(&format!("{recipe}.media.hcl"));
         expected.work_id = Some(work.into());
         expected.synopsis = Some(synopsis(&format!("{folder}/{work}.work.toml")));
+        // The HCL snapshots retain assumptions the real work records corrected.
+        match work {
+            "freedos" => {
+                expected.needs.remove("cpu");
+                expected.needs.remove("memory");
+                expected.requirements = Some("This edition should run on any hardware that can run FreeDOS and has EGA or better graphics".into());
+                expected
+                    .work_ids
+                    .insert("wikidata".into(), "Q473751".into());
+            }
+            "kenslab" => {
+                expected.needs.insert("memory".into(), vec!["512K".into()]);
+                expected.needs.insert(
+                    "sound".into(),
+                    vec!["sb".into(), "adlib".into(), "none".into()],
+                );
+                expected.needs.insert(
+                    "input".into(),
+                    vec!["joystick".into(), "mouse".into(), "none".into()],
+                );
+                expected.requirements = Some("IBM AT-Compatible computer (386 or 486 highly recommended); VGA Graphics; 512K of total memory (at least 365K available); About 1 megabyte of hard disk space".into());
+                expected.work_ids = [
+                    ("wikidata".into(), "Q3814453".into()),
+                    ("mobygames".into(), "kens-labyrinth".into()),
+                    ("igdb".into(), "kens-labyrinth".into()),
+                ]
+                .into();
+            }
+            _ => {}
+        }
         let merged = merged(&format!("{recipe}.media.toml"), &providers);
         let title = merged.title();
         // The record's id, read from the recipe's own `name`.
