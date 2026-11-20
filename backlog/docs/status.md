@@ -5,6 +5,17 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — Stored PC launch objects are available:** `pc_image::launch`
+  prepares an image workspace, a machine or a disposable copy as a
+  `core_launch::Prepared`, with the edited launch document, verified content
+  and session storage plans. Plans reopen at every start; sparse disks stay
+  sparse, changed files fail with `Content`, and records retain existing
+  journal paths and `FILE.lock` exclusion with sessions and offline tools.
+  Five-session comparisons alternate existing and contract starts and compare
+  frames, audio, drive activity, messages, sector reads/writes and disk/CMOS
+  journal bytes through retention. CLI and desktop starts remain unchanged.
+  See `design/core-contract.md` §14.3 S10.
+
 - **2026-11-20 — Created disks and kept catalogues derive their start from the launch:**
   (`upc-dfs.43.7`, stage B step S7; design/core-contract.md §14.3).
   Both catalogue editors now update launch bindings transactionally before the

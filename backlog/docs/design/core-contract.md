@@ -6598,7 +6598,7 @@ Beads that edit the same files go one after the other, in either order:
   alias. MEASURED: the scan failed on precisely these two lines before the
   entries. This changes no alias handling and no host-guard allowance.
 
-**S10. `pc-image::launch`: the store's side as objects.**
+**S10. `pc-image::launch`: the store's side as objects.** **Done.**
 
 - **Scope.** §14.2.4: the content plan (today's `SessionTransfer` content
   plus the firmware and CMOS receipts), the storage plan (record name to
@@ -6620,6 +6620,66 @@ Beads that edit the same files go one after the other, in either order:
   sentence. A base that changes after verification fails the run with
   `Content`, not a wrong read. The content source refuses a digest or a
   size the launch does not list.
+
+
+- **As landed.** `pc_image::launch` hands `core_launch::Prepared::from_parts`
+  the edited launch document, a `ContentPlan` and a `StoragePlan`, and returns
+  the pinned image digest alongside it (`launch::Prepared`). Its entry points
+  are `prepare_workspace`, `prepare_pinned`, `prepare_machine`, `prepare_copy`
+  and `resume_copy`; `from_session` freezes a session after catalogue editors
+  have run. Machine preparation returns pending inserts for the caller to
+  confirm after successful creation. Workspace ownership remains the caller's
+  through the run and finish. No command or desktop start changed.
+  The content plan reuses `SessionTransfer`'s verified file descriptors and
+  metadata, decoded floppy bytes and sparse zero-chain parts, plus the
+  launch's firmware and CMOS snapshots. Every row is checked against its
+  receipt (full SHA-256 and length); byte snapshots are hashed, file and zero
+  receipts retain the full verification already done during preparation.
+  No large disk hash is skipped. Equal flat identities share a source only
+  after every row was checked. Every start opens the plan anew on the machine
+  thread; it refuses unlisted digest/size pairs and builds readers there.
+  File readers retain change checks; changes after preparation or during a
+  run are `Content`, out-of-bounds reads are `Usage`, other host I/O failures
+  are `Storage`. Zero-rooted disks stay sparse and unmaterialized.
+  The storage plan maps only the launch's record names to their existing
+  journal paths and base identities, with file metadata for alias protection.
+  It opens no journal until `Storage::open`, so uninserted catalogue records
+  stay free. `JournalFile` owns the existing `FILE.lock` until the returned
+  record is released. A held record is `Usage` with the unchanged journal
+  sentence, `lock: journal is locked by another session or tool`; the old
+  assembler still adds its mount context and confirmed-sequence suffix.
+  Header-creation failures through records keep the wording difference
+  documented in §12.10 step 9. Base files, journal format, retention and
+  existing start functions are unchanged.
+  Tests: two unit tests cover `Send` and each byte/file receipt's digest and
+  length (firmware, CMOS and floppy), including failure before a core requests
+  content. Seven integration tests in `pc-session-tests` cover the stored path.
+  The five-session comparison reuses the factory comparison's assertions for
+  both frames, sound, drive activity, messages, virtual counters, complete
+  sector patterns and command results. Each workspace alternates the old and
+  contract paths, so old journals mount through the contract and vice versa,
+  including retention to three generations; disk and CMOS journals remain
+  byte-equal after every session. Other tests cover boxed and typed starts,
+  repeated starts of one prepared value, mutual exclusion with the rollback
+  tool (the same `JournalTool` used by `upcli media rollback`), lock release,
+  exact content requests and arbitrary byte offsets, changed verified files,
+  compressed floppies and zero disks across a thread transfer, every prepare
+  helper, machine settings and copy isolation, and external kept-catalogue
+  journal paths without modifying their bases.
+  MEASURED: all nine launch integration tests (seven new, two reused) and
+  both plan unit tests pass. Removing the new public module makes the new
+  integration tests fail to compile. Four behavior mutations fail their
+  targeted tests: omit the receipt comparison, accept an unlisted size,
+  redirect a journal to another path, or classify a changed base as `Storage`.
+  Every mutated source was restored with a plain copy and touched before the
+  final checks. The dependency additions are `core-launch` for `pc-image`
+  and the comparison crate, and `toml` for the latter's fixture; no new
+  external crate, host-guard allowance, CPU pin, machine file or fixture.
+  MEASURED final gate: 4,305 workspace/golden tests pass; 140 fail at
+  sandbox loopback binds (OS error 1) and one at the unsupported host clipboard.
+  All 894 release device tests and the doctest pass. Formatting, publication
+  and host guards, both clippy runs and rustdoc pass. Cargo-deny is left to
+  the supervisor, as the sandbox brief requires.
 
 **S11. `image run` and `image machine run` through the contract.**
 

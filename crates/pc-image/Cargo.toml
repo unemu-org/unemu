@@ -13,6 +13,7 @@ description = "IBM PC/AT machine-file import and resolved OCI bundle provider."
 layer = "pc"
 
 [dependencies]
+core-launch = { path = "../core-launch", version = "0.0.3" }
 assembly.workspace = true
 machine-file.workspace = true
 media.workspace = true

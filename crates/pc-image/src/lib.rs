@@ -18,6 +18,7 @@ mod firmware_package;
 mod firmware_readme;
 mod import;
 pub mod inspection;
+pub mod launch;
 pub mod machine;
 pub mod media_create;
 pub mod media_import;

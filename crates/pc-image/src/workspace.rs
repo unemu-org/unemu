@@ -1021,18 +1021,18 @@ fn save_retention(
 /// Thread-transferable launch inputs keep verified file descriptors instead of
 /// the execution thread's reference-counted sector readers.
 pub struct SessionTransfer {
-    launch: Option<PreparedLaunch>,
+    pub(crate) launch: Option<PreparedLaunch>,
     machine: assembly::MachineConfig,
     image: Digest,
-    bases: std::collections::BTreeMap<std::path::PathBuf, Transfer>,
-    zero: std::collections::BTreeMap<std::path::PathBuf, crate::zero::ZeroChain>,
+    pub(crate) bases: std::collections::BTreeMap<std::path::PathBuf, Transfer>,
+    pub(crate) zero: std::collections::BTreeMap<std::path::PathBuf, crate::zero::ZeroChain>,
 }
 /// A file-backed base travels as its verified descriptor; an in-memory base,
 /// a compressed floppy, as its decoded bytes. A zero-rooted disk travels as
 /// its parts (`zero`), never as its whole decoded length. The metadata is
 /// boxed because its size depends on the host, and on Linux it alone makes
 /// the file variant several times larger than the byte-buffer one.
-enum Transfer {
+pub(crate) enum Transfer {
     File(fs::File, media::Header, Box<fs::Metadata>),
     Memory(Vec<u8>),
 }

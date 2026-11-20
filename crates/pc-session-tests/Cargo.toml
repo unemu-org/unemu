@@ -18,6 +18,8 @@ doctest = false
 # Everything is for the tests: a change to the session, the PC core or the
 # emulation below it runs them, a change to the desktop does not.
 [dev-dependencies]
+core-launch = { path = "../core-launch", version = "0.0.3" }
+toml.workspace = true
 assembly = { workspace = true, features = ["test-support"] }
 audio.workspace = true
 cpu.workspace = true
@@ -34,5 +36,5 @@ unemu-pc-core = { workspace = true, features = ["test-support"] }
 winit.workspace = true
 # The open games template image, built and started as the library starts it.
 image-store = { path = "../image-store", version = "0.0.3" }
-pc-image = { path = "../pc-image", version = "0.0.3" }
+pc-image = { path = "../pc-image", version = "0.0.3", features = ["test-support"] }
 pc-library = { path = "../pc-library", version = "0.0.3" }

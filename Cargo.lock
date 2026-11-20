@@ -2701,6 +2701,7 @@ name = "pc-image"
 version = "0.0.3"
 dependencies = [
  "assembly",
+ "core-launch",
  "cpu",
  "image-registry",
  "image-store",
@@ -2756,6 +2757,7 @@ version = "0.0.3"
 dependencies = [
  "assembly",
  "audio",
+ "core-launch",
  "cpu",
  "device",
  "image-store",
@@ -2766,6 +2768,7 @@ dependencies = [
  "pc-config",
  "pc-image",
  "pc-library",
+ "toml",
  "unemu-core-api",
  "unemu-pc-core",
  "video",
