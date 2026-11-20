@@ -136,12 +136,7 @@ fn firmware_import_assembles_chips_reports_incomplete_unmatched_and_preserves_so
     // Two chips, the document and the generated README.
     assert_eq!(image.manifest.layers.len(), 4);
     assert_eq!(
-        machine_file::firmware_package::reconstructed(
-            &config.roms[0],
-            &store,
-            &image.manifest.layers
-        )
-        .unwrap(),
+        pc_image::firmware::reconstructed(&config.roms[0], &store, &image.manifest.layers).unwrap(),
         [0x31, 0x72].repeat(16384)
     );
     assert!(image
@@ -278,7 +273,7 @@ fn firmware_store_first_resolves_without_folders_rechecks_pins_and_blocks_tamper
     let control = assembly::firmware_discovery::DiscoveryControl::default();
     let prepared =
         assembly::firmware_discovery::with_discovery_session(None, false, &control, || {
-            machine_file::prepare_for_assembly_with_firmware_store(
+            pc_image::firmware::prepare_for_assembly_with_firmware_store(
                 &machine,
                 &[],
                 &mut Vec::new(),
@@ -286,7 +281,10 @@ fn firmware_store_first_resolves_without_folders_rechecks_pins_and_blocks_tamper
             )
         })
         .unwrap();
-    assert_eq!(prepared.firmware_sources(), std::slice::from_ref(&d.digest));
+    assert_eq!(
+        pc_image::firmware::firmware_sources(&prepared).unwrap(),
+        std::slice::from_ref(&d.digest)
+    );
     assert_eq!(control.snapshot().folder_listings, 0);
     let options = assembly::AssemblyOptions {
         allow_unlisted_firmware: true,
@@ -330,25 +328,29 @@ fn firmware_store_first_resolves_without_folders_rechecks_pins_and_blocks_tamper
     let mut frame = fs::read(&path).unwrap();
     *frame.last_mut().unwrap() ^= 0xff;
     fs::write(path, frame).unwrap();
-    assert!(machine_file::prepare_for_assembly_with_firmware_store(
-        &machine,
-        &[],
-        &mut Vec::new(),
-        Some(&store)
-    )
-    .is_err());
+    assert!(
+        pc_image::firmware::prepare_for_assembly_with_firmware_store(
+            &machine,
+            &[],
+            &mut Vec::new(),
+            Some(&store)
+        )
+        .is_err()
+    );
     let root = chips(&t);
     let roots = [assembly::firmware_discovery::FirmwareRoot::new(
         root,
         assembly::firmware_discovery::RootOrigin::CommandLine,
     )];
-    assert!(machine_file::prepare_for_assembly_with_firmware_store(
-        &machine,
-        &roots,
-        &mut Vec::new(),
-        Some(&store)
-    )
-    .is_err());
+    assert!(
+        pc_image::firmware::prepare_for_assembly_with_firmware_store(
+            &machine,
+            &roots,
+            &mut Vec::new(),
+            Some(&store)
+        )
+        .is_err()
+    );
 }
 #[test]
 fn firmware_store_miss_falls_back_to_pinned_folder_and_unpinned_path_is_not_guessed() {
@@ -371,7 +373,7 @@ fn firmware_store_miss_falls_back_to_pinned_folder_and_unpinned_path_is_not_gues
         &root,
         assembly::firmware_discovery::RootOrigin::CommandLine,
     )];
-    let p = machine_file::prepare_for_assembly_with_firmware_store(
+    let p = pc_image::firmware::prepare_for_assembly_with_firmware_store(
         &machine,
         &roots,
         &mut Vec::new(),
@@ -399,7 +401,7 @@ fn firmware_store_miss_falls_back_to_pinned_folder_and_unpinned_path_is_not_gues
         "schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='absent'\n",
     )
     .unwrap();
-    let p = machine_file::prepare_for_assembly_with_firmware_store(
+    let p = pc_image::firmware::prepare_for_assembly_with_firmware_store(
         &machine,
         &[],
         &mut Vec::new(),
@@ -553,7 +555,7 @@ fn firmware_store_hit_preserves_declared_chip_order_and_never_lists_fallback_roo
     let mut warnings = Vec::new();
     let prepared =
         assembly::firmware_discovery::with_discovery_session(None, false, &control, || {
-            machine_file::prepare_for_assembly_with_firmware_store(
+            pc_image::firmware::prepare_for_assembly_with_firmware_store(
                 &path,
                 &roots,
                 &mut warnings,
@@ -638,7 +640,7 @@ fn firmware_store_skips_foreign_provider_packages_with_matching_pins() {
     fs::write(t.0.join("declared.bin"), [0x31, 0x72].repeat(16384)).unwrap();
     let machine = t.0.join("machine.toml");
     fs::write(&machine,format!("schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='declared.bin'\nsha256='{}'\n",cat[0].sha256)).unwrap();
-    let prepared = machine_file::prepare_for_assembly_with_firmware_store(
+    let prepared = pc_image::firmware::prepare_for_assembly_with_firmware_store(
         &machine,
         &[],
         &mut Vec::new(),
@@ -666,7 +668,7 @@ fn partial_chip_pins_never_replace_an_unpinned_explicit_image() {
     fs::write(t.0.join("patched.bin"), vec![0x99; 16384]).unwrap();
     let path = t.0.join("partial.toml");
     fs::write(&path, machine_text(&format!("parts=[{{image='even.bin',lane='even',sha256='{}'}},{{image='patched.bin',lane='odd'}}]", cat[0].parts[0][0].sha256))).unwrap();
-    let prepared = machine_file::prepare_for_assembly_with_firmware_store(
+    let prepared = pc_image::firmware::prepare_for_assembly_with_firmware_store(
         &path,
         &[],
         &mut Vec::new(),
@@ -694,7 +696,7 @@ fn partial_chip_pins_never_replace_an_unpinned_explicit_image() {
         assembly::ImageSource::Inline([0x31, 0x99].repeat(16384))
     );
     fs::write(&path, machine_text(&format!("parts=[{{image='absent-even',lane='even',sha256='{}'}},{{image='absent-odd',lane='odd',sha256='{}'}}]", cat[0].parts[0][0].sha256, cat[0].parts[0][1].sha256))).unwrap();
-    let pinned = machine_file::prepare_for_assembly_with_firmware_store(
+    let pinned = pc_image::firmware::prepare_for_assembly_with_firmware_store(
         &path,
         &[],
         &mut Vec::new(),
@@ -723,7 +725,7 @@ fn store_chip_matching_is_bijective_and_preserves_scalar_declarations() {
         )),
     )
     .unwrap();
-    let duplicate = machine_file::prepare_for_assembly_with_firmware_store(
+    let duplicate = pc_image::firmware::prepare_for_assembly_with_firmware_store(
         &path,
         &[],
         &mut Vec::new(),
@@ -737,7 +739,7 @@ fn store_chip_matching_is_bijective_and_preserves_scalar_declarations() {
         machine_text(&format!("image='declared.bin'\nsha256='{}'", cat[0].sha256)),
     )
     .unwrap();
-    let scalar = machine_file::prepare_for_assembly_with_firmware_store(
+    let scalar = pc_image::firmware::prepare_for_assembly_with_firmware_store(
         &path,
         &[],
         &mut Vec::new(),
@@ -868,12 +870,8 @@ fn four_chip_offsets_ambiguity_and_assembled_input_are_distinct_choices() {
         .unwrap();
     let config = Config::decode(&resolved.config).unwrap();
     assert_eq!(
-        machine_file::firmware_package::reconstructed(
-            &config.roms[0],
-            &store,
-            &resolved.manifest.layers
-        )
-        .unwrap(),
+        pc_image::firmware::reconstructed(&config.roms[0], &store, &resolved.manifest.layers)
+            .unwrap(),
         assembled
     );
     fs::write(root.join("assembled"), &assembled).unwrap();
@@ -935,7 +933,7 @@ fn store_selection_uses_the_declared_two_or_four_chip_layout() {
     let path = t.0.join("machine.toml");
     for (parts,expected) in [("[{image='a',lane='even',offset=0},{image='b',lane='odd',offset=0},{image='c',lane='even',offset=32768},{image='d',lane='odd',offset=32768}]",four_digest.digest),("[{image='e',lane='even'},{image='o',lane='odd'}]",two_digest.digest)] {
         fs::write(&path,machine_text(&format!("sha256='{}'\nparts={parts}",cat[0].sha256))).unwrap();
-        let p=machine_file::prepare_for_assembly_with_firmware_store(&path,&[],&mut Vec::new(),Some(&store)).unwrap();assert_eq!(p.firmware_sources(),&[expected]);
+        let p=pc_image::firmware::prepare_for_assembly_with_firmware_store(&path,&[],&mut Vec::new(),Some(&store)).unwrap();assert_eq!(pc_image::firmware::firmware_sources(&p).unwrap(),&[expected]);
         let loaded=p.load(assembly::AssemblyOptions{allow_unlisted_firmware:true}).unwrap();assert_eq!(loaded.config.images[0].source,assembly::ImageSource::Inline(assembled.clone()));
     }
     fs::write(t.0.join("assembled.bin"), &assembled).unwrap();
@@ -947,7 +945,7 @@ fn store_selection_uses_the_declared_two_or_four_chip_layout() {
         )),
     )
     .unwrap();
-    let p = machine_file::prepare_for_assembly_with_firmware_store(
+    let p = pc_image::firmware::prepare_for_assembly_with_firmware_store(
         &path,
         &[],
         &mut Vec::new(),
@@ -986,7 +984,7 @@ fn unavailable_store_open_and_summary_cache_warn_and_fall_back() {
     )];
     // A default root where no store has been created yet is an ordinary miss.
     let mut warnings = Vec::new();
-    let p = machine_file::prepare_for_assembly_with_store_root(
+    let p = pc_image::firmware::prepare_for_assembly_with_store_root(
         &machine,
         &roots,
         &mut warnings,
@@ -1007,7 +1005,7 @@ fn unavailable_store_open_and_summary_cache_warn_and_fall_back() {
     let bad = t.0.join("not-a-store");
     fs::write(&bad, b"not a directory").unwrap();
     let mut warnings = Vec::new();
-    let p = machine_file::prepare_for_assembly_with_store_root(
+    let p = pc_image::firmware::prepare_for_assembly_with_store_root(
         &machine,
         &roots,
         &mut warnings,
@@ -1031,7 +1029,7 @@ fn unavailable_store_open_and_summary_cache_warn_and_fall_back() {
     )
     .unwrap();
     let mut warnings = Vec::new();
-    let p = machine_file::prepare_for_assembly_with_firmware_store(
+    let p = pc_image::firmware::prepare_for_assembly_with_firmware_store(
         &machine,
         &roots,
         &mut warnings,
@@ -1178,7 +1176,7 @@ fn legacy_option_chip_package_does_not_replace_a_scalar_option_rom() {
         ),
     )
     .unwrap();
-    let prepared = machine_file::prepare_for_assembly_with_firmware_store(
+    let prepared = pc_image::firmware::prepare_for_assembly_with_firmware_store(
         &path,
         &[],
         &mut Vec::new(),
@@ -1222,7 +1220,7 @@ fn preselection_lease_and_cache_save_failures_are_misses() {
     let denied = fs::write(&probe, []).is_err();
     let _ = fs::remove_file(&probe);
     let mut warnings = Vec::new();
-    let result = machine_file::prepare_for_assembly_with_firmware_store(
+    let result = pc_image::firmware::prepare_for_assembly_with_firmware_store(
         &machine,
         &[],
         &mut warnings,
@@ -1247,7 +1245,7 @@ fn preselection_lease_and_cache_save_failures_are_misses() {
     fs::remove_file(&lease).unwrap();
     fs::create_dir(&lease).unwrap();
     let mut warnings = Vec::new();
-    let p = machine_file::prepare_for_assembly_with_firmware_store(
+    let p = pc_image::firmware::prepare_for_assembly_with_firmware_store(
         &machine,
         &[],
         &mut warnings,
@@ -1407,7 +1405,7 @@ fn compressed_and_older_raw_packages_resolve_and_summarize_both_sizes() {
     store.update_tag(tag, &raw, None, &validator).unwrap();
     let machine = t.0.join("machine.toml");
     fs::write(&machine, format!("schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nsha256='{}'\nparts=[{{image='absent-even',lane='even'}},{{image='absent-odd',lane='odd'}}]\n[[card]]\nkind='mda'\n", cat[0].sha256)).unwrap();
-    let prepared = machine_file::prepare_for_assembly_with_firmware_store(
+    let prepared = pc_image::firmware::prepare_for_assembly_with_firmware_store(
         &machine,
         &[],
         &mut Vec::new(),
@@ -1415,7 +1413,7 @@ fn compressed_and_older_raw_packages_resolve_and_summarize_both_sizes() {
     )
     .unwrap();
     assert_eq!(
-        prepared.firmware_sources(),
+        pc_image::firmware::firmware_sources(&prepared).unwrap(),
         std::slice::from_ref(&raw.digest)
     );
     let (doc, _) = prepared.resolved();
@@ -1489,7 +1487,7 @@ fn an_in_memory_package_rom_is_not_searched_for_in_fallback_folders() {
     let mut warnings = Vec::new();
     let prepared =
         assembly::firmware_discovery::with_discovery_session(None, false, &control, || {
-            machine_file::prepare_for_assembly_with_firmware_store(
+            pc_image::firmware::prepare_for_assembly_with_firmware_store(
                 &path,
                 &roots,
                 &mut warnings,

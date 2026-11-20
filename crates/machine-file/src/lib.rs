@@ -18,13 +18,13 @@
 //! (`backlog/docs/design/core-contract.md` §14.2.1); this crate re-exports
 //! each of their names at its old path and adds what touches the host: the
 //! YAML reader, `extends` and presets, journal path checks, firmware
-//! discovery and the firmware-package lookup, the host's image reader and the
-//! loaders.
+//! discovery, the seam of the firmware-package lookup ([`FirmwarePackages`],
+//! which the PC image provider implements over the image store;
+//! core-contract.md §9 item 3), the host's image reader and the loaders.
 
 use std::path::{Path, PathBuf};
 
 mod firmware_discovery;
-pub mod firmware_package;
 #[cfg(test)]
 mod lower;
 mod origin;
@@ -387,11 +387,34 @@ pub fn load_for_assembly_with_firmware_roots(
     prepare_for_assembly_with_firmware_roots(path, roots, warnings)?.load(options)
 }
 
+/// The failure of a firmware-package lookup, reported against the machine
+/// file being prepared.
+pub type PackageError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Firmware packages a machine file's pinned ROMs may come from, asked before
+/// the host's ROM folders are searched. The PC image provider implements it
+/// over the image store's firmware packages; this crate knows no store.
+pub trait FirmwarePackages {
+    /// Point each ROM (or each chip of a ROM) of `document` whose pins a
+    /// package holds at that package's bytes, and return the ids of the
+    /// packages used, in first-use order. A ROM whose bytes cannot be named
+    /// by a host path gets a path that is never created and its bytes in
+    /// `images` under that path, so no decoded copy reaches the disk. An
+    /// unavailable package source is a warning and a miss; an error fails the
+    /// preparation.
+    fn resolve(
+        &self,
+        document: &mut MachineFile,
+        warnings: &mut Vec<String>,
+        images: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>,
+    ) -> Result<Vec<String>, PackageError>;
+}
+
 /// A resolved host document that can cross the worker boundary without moving
 /// verified disk handles or guest execution state between threads. Loading it
 /// revalidates pins in place and performs no directory discovery.
 pub struct PreparedMachineFile {
-    firmware_sources: Vec<image_store::Digest>,
+    firmware_sources: Vec<String>,
     /// Decoded ROMs of compressed firmware packages, keyed by the never-created
     /// path the document names; see [`PreparedMachineFile::firmware_image`].
     firmware_images: std::collections::BTreeMap<PathBuf, Vec<u8>>,
@@ -405,38 +428,17 @@ pub fn prepare_for_assembly_with_firmware_roots(
     roots: &[assembly::firmware_discovery::FirmwareRoot],
     warnings: &mut Vec<String>,
 ) -> Result<PreparedMachineFile, LoadError> {
-    prepare_for_assembly_with_firmware_store(path, roots, warnings, None)
+    prepare_for_assembly_with_firmware_packages(path, roots, warnings, None)
 }
 
-/// Prepare using a frontend-selected store root. A root that does not exist yet
-/// is a silent miss, because frontends pass the shared default before any store
-/// has been created. Other unavailable store infrastructure is a warning and a
-/// miss; corruption after selecting a package remains fatal.
-pub fn prepare_for_assembly_with_store_root(
+/// Prepare with a firmware-package lookup, or disable package lookup with
+/// None. Pins a package holds are resolved first, then the remaining ones by
+/// folder discovery.
+pub fn prepare_for_assembly_with_firmware_packages(
     path: impl AsRef<Path>,
     roots: &[assembly::firmware_discovery::FirmwareRoot],
     warnings: &mut Vec<String>,
-    store_root: Option<&Path>,
-) -> Result<PreparedMachineFile, LoadError> {
-    let store_root = store_root.filter(|root| !matches!(root.try_exists(), Ok(false)));
-    let store = match store_root.map(image_store::Store::open_existing) {
-        Some(Ok(store)) => Some(store),
-        Some(Err(error)) => {
-            warnings.push(format!("firmware store unavailable: {error}"));
-            None
-        }
-        None => None,
-    };
-    prepare_for_assembly_with_firmware_store(path, roots, warnings, store.as_ref())
-}
-
-/// Prepare against an explicit local store, or disable package lookup with None.
-/// Import and readiness share this seam without changing global host settings.
-pub fn prepare_for_assembly_with_firmware_store(
-    path: impl AsRef<Path>,
-    roots: &[assembly::firmware_discovery::FirmwareRoot],
-    warnings: &mut Vec<String>,
-    store: Option<&image_store::Store>,
+    packages: Option<&dyn FirmwarePackages>,
 ) -> Result<PreparedMachineFile, LoadError> {
     let (mut document, origins) = resolve(&path)?;
     let roots = roots
@@ -457,11 +459,10 @@ pub fn prepare_for_assembly_with_firmware_store(
         })
         .collect::<Vec<_>>();
     let mut firmware_images = std::collections::BTreeMap::new();
-    let firmware_sources = match store {
-        Some(store) => {
-            firmware_package::resolve_document(&mut document, store, warnings, &mut firmware_images)
-                .map_err(|e| ParseError::new(path.as_ref(), None, e.to_string(), None))?
-        }
+    let firmware_sources = match packages {
+        Some(packages) => packages
+            .resolve(&mut document, warnings, &mut firmware_images)
+            .map_err(|e| ParseError::new(path.as_ref(), None, e.to_string(), None))?,
         None => Vec::new(),
     };
     firmware_discovery::resolve(&mut document, &origins, &roots, warnings, &firmware_images)?;
@@ -474,8 +475,9 @@ pub fn prepare_for_assembly_with_firmware_store(
 }
 
 impl PreparedMachineFile {
-    /// Contributing immutable packages, in first-use order; provenance only.
-    pub fn firmware_sources(&self) -> &[image_store::Digest] {
+    /// The ids of the contributing immutable packages, as the lookup names
+    /// them, in first-use order; provenance only.
+    pub fn firmware_sources(&self) -> &[String] {
         &self.firmware_sources
     }
 

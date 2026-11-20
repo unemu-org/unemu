@@ -5,6 +5,17 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — `machine-file` no longer depends on the image store:** (`upc-dfs.34`,
+  embeddability step 7; design/core-contract.md §12.10 and §9 item 3). No behaviour change.
+  The firmware-package lookup is the trait `machine_file::FirmwarePackages`, which
+  `pc_image::firmware::StorePackages` implements over the store; the PC package rules and the
+  lookup moved to `pc-image/src/firmware_package.rs`, and the preparations that take a store or
+  a store root are now `pc_image::firmware::prepare_for_assembly_with_firmware_store` and
+  `prepare_for_assembly_with_store_root`. `PreparedMachineFile::firmware_sources` gives the
+  packages' ids as text (`sha256:<hex>`); `pc_image::firmware::firmware_sources` parses them.
+  `machine-file`'s closure loses `image-store`, `zstd-sys`, `cc` and `serde_json` (62 to 54
+  run-time packages). `upcli run --machine` gives the same output with and without a store.
+
 - **2026-11-20 — A launch from parts in `core-launch`:** (`upc-dfs.43.8`, stage B step S8;
   design/core-contract.md §14.3). No behaviour change for a file opened with Open… or
   `--open`. `core_launch::Prepared::from_parts` makes a start from a platform's own `Parts`: the

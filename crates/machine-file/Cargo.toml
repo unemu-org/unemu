@@ -13,7 +13,6 @@ description = "Machine description files (TOML and YAML) over one versioned sche
 layer = "pc"
 
 [dependencies]
-image-store = { path = "../image-store", version = "0.0.3" }
 assembly.workspace = true
 pc-config.workspace = true
 media.workspace = true

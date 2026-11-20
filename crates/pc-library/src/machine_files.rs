@@ -103,7 +103,7 @@ impl LibraryEntry {
             source,
         };
         let mut prepared = None;
-        match machine_file::prepare_for_assembly_with_store_root(
+        match pc_image::firmware::prepare_for_assembly_with_store_root(
             &entry.path,
             roots,
             &mut entry.discovery_warnings,

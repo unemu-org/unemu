@@ -68,9 +68,13 @@ pub(super) fn run_machine(
         })
         .collect::<Vec<_>>();
     let mut warnings = Vec::new();
-    let result =
-        machine_file::prepare_for_assembly_with_store_root(path, &roots, &mut warnings, store_root)
-            .and_then(|document| document.load(options));
+    let result = pc_image::firmware::prepare_for_assembly_with_store_root(
+        path,
+        &roots,
+        &mut warnings,
+        store_root,
+    )
+    .and_then(|document| document.load(options));
     for warning in warnings {
         writeln!(errors, "warning: {warning}")?;
     }

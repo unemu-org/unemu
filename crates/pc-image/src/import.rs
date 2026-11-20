@@ -621,7 +621,7 @@ pub fn import_machine(
             )
         })
         .collect::<Vec<_>>();
-    let prepared = machine_file::prepare_for_assembly_with_firmware_store(
+    let prepared = crate::firmware::prepare_for_assembly_with_firmware_store(
         path,
         &roots,
         &mut warnings,
@@ -680,7 +680,7 @@ pub fn import_machine(
         slots: Vec::new(),
         nvram: None,
     };
-    let embedded = open_sources(store, prepared.firmware_sources())?;
+    let embedded = open_sources(store, &crate::firmware::firmware_sources(&prepared)?)?;
     let mut layers = Vec::new();
     firmware_images(&mut config.machine, |field, rom| {
         let name = rom

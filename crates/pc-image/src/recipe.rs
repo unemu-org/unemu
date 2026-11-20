@@ -313,7 +313,7 @@ mod tests {
             assert_eq!(volume.0, floppy);
         }
         for lane in LANES {
-            assert!(machine_file::firmware_package::lane(lane).is_ok());
+            assert!(crate::firmware::lane(lane).is_ok());
         }
     }
 

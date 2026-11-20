@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! PC package rules shared by store resolution and the PC image provider.
-//! IBM Personal Computer AT Technical Reference, Section 1, System Board ROM:
-//! even and odd byte lanes retain socket identities; machine-images §5.3.
+//! PC package rules shared by store resolution and the PC image provider,
+//! and the machine file's firmware-package lookup over the store
+//! ([`StorePackages`], which implements `machine_file::FirmwarePackages`;
+//! core-contract.md §9 item 3). IBM Personal Computer AT Technical
+//! Reference, Section 1, System Board ROM: even and odd byte lanes retain
+//! socket identities; machine-images §5.3.
 
 use assembly::{FirmwareEntry, FirmwareKind, Lane};
 use image_store::{
@@ -88,7 +91,7 @@ impl FirmwareRules for PcFirmwareRules<'_> {
         PLATFORM
     }
     fn validate_name(&self, name: &str) -> Result<()> {
-        if !crate::pc_names::valid_dos_name(name) {
+        if !machine_file::pc_names::valid_dos_name(name) {
             return Err(invalid(
                 "expected canonical uppercase DOS 8.3 name (no reserved device names)",
             ));
@@ -213,13 +216,81 @@ pub fn reconstructed(
     assembly::interleave_parts(&parts).map_err(|e| invalid(e.to_string()))
 }
 
+/// The store's firmware packages, as the lookup a machine file's pinned ROMs
+/// are resolved through before folder discovery. A package's id is its
+/// manifest digest, spelled `sha256:<hex>` ([`Digest`]'s text form).
+pub struct StorePackages<'a>(pub &'a image_store::Store);
+
+impl machine_file::FirmwarePackages for StorePackages<'_> {
+    fn resolve(
+        &self,
+        document: &mut machine_file::MachineFile,
+        warnings: &mut Vec<String>,
+        images: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+    ) -> std::result::Result<Vec<String>, machine_file::PackageError> {
+        let sources = resolve_document(document, self.0, warnings, images)?;
+        Ok(sources.iter().map(Digest::to_string).collect())
+    }
+}
+
+/// Prepare using a frontend-selected store root. A root that does not exist yet
+/// is a silent miss, because frontends pass the shared default before any store
+/// has been created. Other unavailable store infrastructure is a warning and a
+/// miss; corruption after selecting a package remains fatal.
+pub fn prepare_for_assembly_with_store_root(
+    path: impl AsRef<std::path::Path>,
+    roots: &[assembly::firmware_discovery::FirmwareRoot],
+    warnings: &mut Vec<String>,
+    store_root: Option<&std::path::Path>,
+) -> std::result::Result<machine_file::PreparedMachineFile, machine_file::LoadError> {
+    let store_root = store_root.filter(|root| !matches!(root.try_exists(), Ok(false)));
+    let store = match store_root.map(image_store::Store::open_existing) {
+        Some(Ok(store)) => Some(store),
+        Some(Err(error)) => {
+            warnings.push(format!("firmware store unavailable: {error}"));
+            None
+        }
+        None => None,
+    };
+    prepare_for_assembly_with_firmware_store(path, roots, warnings, store.as_ref())
+}
+
+/// Prepare against an explicit local store, or disable package lookup with None.
+/// Import and readiness share this seam without changing global host settings.
+pub fn prepare_for_assembly_with_firmware_store(
+    path: impl AsRef<std::path::Path>,
+    roots: &[assembly::firmware_discovery::FirmwareRoot],
+    warnings: &mut Vec<String>,
+    store: Option<&image_store::Store>,
+) -> std::result::Result<machine_file::PreparedMachineFile, machine_file::LoadError> {
+    let packages = store.map(StorePackages);
+    machine_file::prepare_for_assembly_with_firmware_packages(
+        path,
+        roots,
+        warnings,
+        packages
+            .as_ref()
+            .map(|packages| packages as &dyn machine_file::FirmwarePackages),
+    )
+}
+
+/// The packages a prepared machine file's ROMs came from, as store digests,
+/// in first-use order; provenance only.
+pub fn firmware_sources(prepared: &machine_file::PreparedMachineFile) -> Result<Vec<Digest>> {
+    prepared
+        .firmware_sources()
+        .iter()
+        .map(|id| id.parse())
+        .collect()
+}
+
 /// Resolve matching pins in stable package-digest order without visiting ROM roots.
 /// A selected package is fully verified; corruption is an error, never a miss.
 /// A raw ROM blob is named by its store path. A compressed ROM is decoded into
 /// `memory` under a key path that is never created, so no decoded copy of a
 /// ROM reaches the disk; loaders read that key from `memory`.
-pub(crate) fn resolve_document(
-    document: &mut crate::MachineFile,
+fn resolve_document(
+    document: &mut machine_file::MachineFile,
     store: &image_store::Store,
     warnings: &mut Vec<String>,
     memory: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
@@ -229,7 +300,7 @@ pub(crate) fn resolve_document(
         summary::{ArtifactKind, SummaryCache},
     };
     let model = match document.board.as_ref().and_then(|b| b.model) {
-        Some(crate::schema::v1::BoardModel::Ibm5170) => assembly::BoardModel::Ibm5170,
+        Some(machine_file::schema::v1::BoardModel::Ibm5170) => assembly::BoardModel::Ibm5170,
         None => return Ok(Vec::new()),
     };
     let board = model.id();
@@ -407,7 +478,7 @@ fn path_text(path: &std::path::Path) -> Result<String> {
         .map(str::to_owned)
         .ok_or_else(|| invalid("store path is not Unicode"))
 }
-fn binding_matches(machine: &crate::schema::v1::Rom, package: &Rom, bios: bool) -> bool {
+fn binding_matches(machine: &machine_file::schema::v1::Rom, package: &Rom, bios: bool) -> bool {
     if if bios {
         package.role != "system-bios"
     } else {
@@ -457,11 +528,12 @@ fn bijection<A, B>(
     Some(indices)
 }
 
-fn part_matches(a: &crate::schema::v1::RomPart, b: &image_store::firmware::Part) -> bool {
+fn part_matches(a: &machine_file::schema::v1::RomPart, b: &image_store::firmware::Part) -> bool {
     a.offset == b.offset
         && matches!(
             (a.lane, b.lane.as_str()),
-            (crate::schema::v1::Lane::Even, "even") | (crate::schema::v1::Lane::Odd, "odd")
+            (machine_file::schema::v1::Lane::Even, "even")
+                | (machine_file::schema::v1::Lane::Odd, "odd")
         )
         && a.sha256.as_ref().is_none_or(|s| s.as_str() == b.sha256)
 }

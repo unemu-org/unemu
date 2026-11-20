@@ -1994,7 +1994,6 @@ name = "machine-file"
 version = "0.0.3"
 dependencies = [
  "assembly",
- "image-store",
  "machine",
  "media",
  "pc-config",

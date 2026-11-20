@@ -3,7 +3,11 @@
 //! IBM Personal Computer AT Technical Reference, Section 1, System Board ROM:
 //! logical BIOS packages preserve even/odd socket lanes and assembled offsets.
 
-pub use machine_file::firmware_package::{role, Fit, PcFirmwareRules, BOARDS, MACHINE_CLASSES};
+pub use crate::firmware_package::{
+    firmware_sources, lane, prepare_for_assembly_with_firmware_store,
+    prepare_for_assembly_with_store_root, reconstructed, role, Fit, PcFirmwareRules, StorePackages,
+    BOARDS, MACHINE_CLASSES,
+};
 
 /// Storage roles include controllers which are not yet executable by the machine.
 pub const ROLES: &[&str] = &[

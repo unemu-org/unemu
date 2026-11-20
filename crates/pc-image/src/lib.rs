@@ -14,6 +14,7 @@ pub mod desktop;
 mod disk;
 pub mod firmware;
 pub mod firmware_import;
+mod firmware_package;
 mod firmware_readme;
 mod import;
 pub mod inspection;
@@ -32,8 +33,8 @@ pub mod test_support;
 pub mod workspace;
 pub mod zero;
 
+pub use firmware_package::PLATFORM;
 pub use import::{import_machine, ChosenGeneration, ImportOptions, ImportRecord, RecoveryChoice};
-pub use machine_file::firmware_package::PLATFORM;
 pub use provider::{compress_image, resolve, PcProvider, CMOS, DISK_ZERO, PAYLOAD_TYPES};
 
 const MEDIA_SETS: image_store::media_set::Validator<'static> =

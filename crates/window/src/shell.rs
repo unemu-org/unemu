@@ -11355,7 +11355,7 @@ kind='mda'
             );
             assert_eq!(progress.folder_listings, 0);
             assert_eq!(
-                shell.prepared[&0].firmware_sources(),
+                pc_image::firmware::firmware_sources(&shell.prepared[&0]).unwrap(),
                 std::slice::from_ref(&package.digest)
             );
         }
