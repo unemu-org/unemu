@@ -13,15 +13,16 @@
 //!
 //! The firmware packages ([`FIRMWARE`], [`build_firmware`]) and the
 //! installation sets ([`MEDIA`], [`build_media`]) are published by the
-//! unemu-media repository, not by this build. The local builders here make
+//! software repository, not by this build. The local builders here make
 //! the same images from the same fixtures under the published names, and
 //! their tests pin the published digests, so each pin cross-checks the two
-//! repositories. A template build imports the packages it binds with
-//! [`build_firmware`], the same packages `image pull` gives. A package holds
-//! the source archive its fetch script builds (the archive the firmware
-//! catalogue pins) and states a title, description, vendor, version and
-//! labels. An installation set holds an official release's disks for one
-//! floppy format, unmodified, with a licence index and the source archive,
+//! repositories. The local builders run the corpus's embedded recipes and
+//! locks through the recipe builder, without download consent. The locks
+//! preserve the published metadata and generated README even when a newer
+//! importer would write them differently. A template binds the packages
+//! [`build_firmware`] builds, the same packages `image pull` gives. An
+//! installation set holds an official release's disks for one floppy
+//! format, unmodified, with a licence index and the source archive,
 //! open under the licences of its programs (machine-images §5.2).
 //!
 //! The machines are IBM 5170-class boards, as the IBM Personal Computer AT
@@ -32,15 +33,16 @@
 
 use crate::create::{self, Chs, Ems, Hardware, NewImage, PackageRom, Sb16, Serial, Video};
 use crate::firmware_import::{self, Statement};
-use crate::media_import::{self, ExtraSource, OpenStatement, Request, Source};
 use crate::media_set::PcMediaFormats;
 use crate::{invalid, PcProvider, Result};
 use image_store::{
     media_set::{ExtraKind, Validator as MediaValidator},
-    metadata::Title,
     ConfigValidator, Descriptor, Digest, Manifest, Store,
 };
 use std::path::{Path, PathBuf};
+
+#[path = "template_recipe.rs"]
+mod recipe_build;
 
 /// The version tag of this template generation. Version tags never move, so
 /// a changed template needs a new version here.
@@ -723,8 +725,7 @@ fn build_package(
         )));
     }
     let scan = firmware_import::scan(std::slice::from_ref(&rom), catalogue)?;
-    let candidate = scan
-        .candidates
+    scan.candidates
         .into_iter()
         .find(|c| c.catalogue_id == entry.id)
         .ok_or_else(|| {
@@ -734,28 +735,17 @@ fn build_package(
                 entry.id
             ))
         })?;
-    let statement = source.statement(archive);
     let repository = source.repository();
-    let preview = firmware_import::preview_manifest_with(&candidate, &[], &statement, catalogue)?;
-    check(
-        guard,
-        &repository,
-        FIRMWARE_REVISION,
-        &preview.manifest,
-        &preview.config.encode()?,
-    )?;
-    let judged = Digest::of(&preview.manifest.encode()?);
     let revision = local_tag(&repository, FIRMWARE_REVISION);
-    let before = version_state(store, &revision, &judged, PACKAGE_CONFLICT)?;
-    let descriptor = firmware_import::publish_as(
-        store,
-        &candidate,
-        &[],
-        &statement,
-        catalogue,
-        &revision,
-        Some(&judged),
-    )?;
+    let before = current(store, &revision)?;
+    let rules = crate::firmware::PcFirmwareRules(catalogue);
+    let validator = image_store::firmware::Validator(&rules);
+    let descriptor = recipe_build::build(store, vendor, &revision, &validator, guard)?;
+    let before = if before.is_some() {
+        Outcome::Present
+    } else {
+        Outcome::Created
+    };
     Ok(Built {
         kind: Kind::Firmware,
         repository,
@@ -791,81 +781,10 @@ fn build_machine(
     })
 }
 
-/// What an installation set is imported from under `tag`, as `image media
-/// import` states it with its flags: the disks in installer order with their
-/// labels and format, the extras with their DOS names and kinds, and the
-/// catalogue fields. Every fixture is checked against its pin first.
-fn media_request(vendor: &Path, source: &MediaSource, tag: &str) -> Result<Request> {
-    let release = source.release;
-    // Another file at a fixture path is refused, never imported under the
-    // licence statement.
-    let fixture = |file: &MediaFile| media_fixture(vendor, file, release.fetch);
-    let media = source
-        .disks
-        .iter()
-        .map(|disk| {
-            Ok(Source {
-                path: fixture(disk)?,
-                label: Some(disk.name.into()),
-                format: Some(source.format.into()),
-                file_name: None,
-            })
-        })
-        .collect::<Result<_>>()?;
-    let extras = release
-        .extras
-        .iter()
-        .map(|(file, kind)| {
-            Ok(ExtraSource {
-                path: fixture(file)?,
-                dos_name: Some(file.name.into()),
-                kind: Some(*kind),
-            })
-        })
-        .collect::<Result<_>>()?;
-    let title = Title {
-        title: release.title.into(),
-        description: Some(source.description.into()),
-        publishers: vec![release.publisher.into()],
-        developers: vec![release.publisher.into()],
-        release_year: Some(release.year),
-        genres: release.genres.iter().map(|g| (*g).into()).collect(),
-        platform: Some("DOS".into()),
-        version: Some(release.release.into()),
-        edition: Some(release.edition.into()),
-        ..Title::default()
-    };
-    Ok(Request {
-        tag: tag.into(),
-        title,
-        labels: release.labels.iter().map(|l| (*l).into()).collect(),
-        media,
-        extras,
-        compress: true,
-    })
-}
-
-/// The statement that opens a release's sets: its licence, the licence index
-/// as the licence's text and the source archive.
-fn media_statement(release: &MediaRelease) -> OpenStatement {
-    OpenStatement {
-        license: release.license.into(),
-        terms: release.terms.into(),
-        source: Some(release.source.into()),
-    }
-}
-
-/// The plan of one set under `tag`, open under its release's statement.
-fn media_plan(vendor: &Path, source: &MediaSource, tag: &str) -> Result<media_import::Plan> {
-    let request = media_request(vendor, source, tag)?;
-    media_import::plan_with(&request, Some(&media_statement(source.release)))
-        .map_err(|refusal| invalid(refusal.to_string()))
-}
-
-/// Import one installation set under its own tag. A new set is offered to
-/// the guard before its manifest is stored; a tag that already names it is
-/// compared without writing and offered as stored. The stored set must name
-/// the pinned bytes, so a fixture replaced between the check and the import
+/// Build one locked installation set under its own tag. A new set is offered to
+/// the guard before it is tagged; a tag that already names it is
+/// compared without moving it and offered as stored. The stored set must name
+/// the pinned bytes, so a fixture replaced between the check and the build
 /// is caught.
 fn build_set(
     store: &Store,
@@ -878,32 +797,14 @@ fn build_set(
     let version = local_tag(&repository, source.tag);
     let alias = local_tag(&repository, source.alias());
     let alias_before = current(store, &alias)?;
-    let plan = media_plan(vendor, source, &version)?;
     let validator = MediaValidator(&PcMediaFormats);
-    let before = match current(store, &version)? {
-        Some(_) => {
-            media_import::publish(store, &plan, &|_, _| {}, &|| false)
-                .map_err(|refusal| invalid(refusal.to_string()))?;
-            let stored = store.resolve(&version, &validator)?;
-            check(
-                guard,
-                &repository,
-                source.tag,
-                &stored.manifest,
-                &stored.config,
-            )?;
-            Outcome::Present
-        }
-        None => {
-            let judge = |manifest: &Manifest, config: &[u8]| {
-                check(guard, &repository, source.tag, manifest, config).map_err(|e| e.to_string())
-            };
-            media_import::publish_checked(store, &plan, &|_, _| {}, &|| false, &judge)
-                .map_err(|refusal| invalid(refusal.to_string()))?;
-            Outcome::Created
-        }
+    let before = current(store, &version)?;
+    let descriptor = recipe_build::build(store, vendor, &version, &validator, guard)?;
+    let before = if before.is_some() {
+        Outcome::Present
+    } else {
+        Outcome::Created
     };
-    let descriptor = store.tag_descriptor(&version)?;
     let stored = store.resolve_descriptor(&descriptor, &validator)?;
     let config = image_store::media_set::Config::decode(&stored.config)?;
     let names: Vec<&str> = config

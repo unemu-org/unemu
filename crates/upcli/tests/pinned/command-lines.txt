@@ -694,8 +694,8 @@ Ok(Line(Platform(Check { rom_dirs: [], path: "machines/at-freedos.toml", options
 $ run --machine machines/at-freedos.toml --max-steps 12000000 --idle-limit 1000000 --print mda
 Ok(Line(Platform(Run { store: Default, rom_dirs: [], path: "machines/at-freedos.toml", max_steps: 12000000, idle_limit: 1000000, diag_at: None, trace_exceptions: false, print: Some("mda"), options: AssemblyOptions { allow_unlisted_firmware: false } })))
 
-$ recipe check backlog/docs/design/recipe-corpus
-Ok(Line(Recipe(Check(["backlog/docs/design/recipe-corpus"]))))
+$ recipe check backlog/docs/design/recipe-corpus crates/pc-image/data/recipes
+Ok(Line(Recipe(Check(["backlog/docs/design/recipe-corpus", "crates/pc-image/data/recipes"]))))
 
 $ recipe check my.media.toml other.firmware.toml
 Ok(Line(Recipe(Check(["my.media.toml", "other.firmware.toml"]))))

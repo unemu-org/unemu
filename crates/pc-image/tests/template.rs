@@ -330,47 +330,75 @@ fn template_machines_validate_lower_and_describe_themselves() {
     }
 }
 
+/// Firmware package descriptions may change; the runnable machine and all
+/// payload descriptors must stay byte-identical.
+#[test]
+fn the_published_machine_configs_and_payloads_keep_their_pins() {
+    if !firmware_present(&template::FIRMWARE) {
+        return;
+    }
+    let t = Temp::new("template-payload-pins");
+    let store = Store::open(t.0.join("store")).unwrap();
+    let expected = [
+        "sha256:a73e08dd524459bfe1d2461abbc37523be6066da3eb837f824f26a9430a77ad2",
+        "sha256:87802544d50ee31b1ed77af8443eea2e558799212e9955733e6bbb8ca721d957",
+    ];
+    for (built, pinned) in template::build(&store, &vendor(), &allow, &mut |_| {})
+        .unwrap()
+        .iter()
+        .zip(expected)
+    {
+        let resolved = store
+            .resolve_descriptor(&built.descriptor, &pc_image::PcProvider)
+            .unwrap();
+        let mut manifest = resolved.manifest;
+        // Package metadata changes provenance, while ROM, source, disk and
+        // machine-config descriptors must keep the pre-recipe bytes.
+        manifest.annotations.remove("unemu.firmware.sources");
+        assert_eq!(
+            image_store::Digest::of(&manifest.encode_with_types(pc_image::PAYLOAD_TYPES).unwrap())
+                .to_string(),
+            pinned,
+            "{}",
+            built.repository
+        );
+    }
+}
+
 /// The digests of this template generation. Any change to the templates, or
 /// to what they are built from, changes them; version tags never move, so a
 /// changed template needs a new `pc_image::template::VERSION` and new pins.
-/// Two exceptions moved every pin of this file under the same tags, because
-/// the artifacts published before the first public release are replaced, not
-/// revised: the rename of the platform id to `ibm-pc`, and the export file
-/// names on every layer of the firmware packages. A template copies the
+/// Pre-release replacements moved these pins under the same tags: the
+/// platform rename, export file names and now recipe-locked metadata.
+/// A template copies the
 /// packages' ROM and source layers with their names, and its manifest names
 /// the package digests in `unemu.firmware.sources`, so any change to a
 /// package moves these pins too.
 const PINNED: [(&str, &str); 2] = [
     (
         "unemu/open-at",
-        "sha256:750981c254e3107c46808f43c109ed2ca155f00204f3ccc0635d57c2ad3fd363",
+        "sha256:e821e8e8d864e8b2931af6e124487ac88a838a498a5ce6c2874819509908f9db",
     ),
     (
         "unemu/open-at-games",
-        "sha256:01028f9cd51b45053ee70b38af5be29f591537fc719e48f7c8f5572c7ce23a1f",
+        "sha256:95a9030d5d46cd773659caf637aaa2a3f649dab5560bceaf3abedf1ae65ae5d0",
     ),
 ];
 
-/// The firmware packages as the unemu-media repository builds them
-/// (`recipes/*/firmware.toml`) for the push that replaces the published ones
-/// under the names with the platform in the path and the revision tag: the
-/// names change no manifest byte, but the export file name now on every
-/// layer does, so the packages read back from the registry before that push
-/// have other digests. The local build must give these digests: a pin that
-/// fails means the two repositories no longer build the same package, and a
-/// package's revision tag never moves.
+/// The firmware packages published from the software repository's recipes
+/// on 2026-11-20. The embedded corpus locks must reproduce them offline.
 const FIRMWARE_PINNED: [(&str, &str); 3] = [
     (
         "unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1",
-        "sha256:e3c226ae2cb8935ffacf9fb806124d1c1219388c8af4f0fb60ef5a96fbd86c58",
+        "sha256:c4c53a6a5c0727d8cccb26b22a92dcbf68e906aed7d9424be80763ea30533ff2",
     ),
     (
         "unemu/firmware/ibm-pc/vgabios-0.9d-unemu.1-std:r1",
-        "sha256:179a11dbd20741e1e3775388ed42bdf9de2b62e9136c0467271d34271b769d57",
+        "sha256:c1972247ba5fc03dee5bc011b137e49c547ef1f4fc32dc3f74fa09b205c235e7",
     ),
     (
         "unemu/firmware/ibm-pc/xub-r638-xtp-ata1f0:r1",
-        "sha256:7d42e80e6297cadbd2c08c1c26a19a4a68c33c9651aceec2c98053bf81f90547",
+        "sha256:4dc25f1c00342e44b2476e84befc9dbbb1817d478cdda9b1fd0a5d8e026026a1",
     ),
 ];
 
@@ -670,14 +698,15 @@ fn only_the_judged_manifest_is_tagged() {
         "{error}"
     );
     assert!(store.tag_descriptor("judged/bios:r1").is_err());
-    // The template's own package, under its published tag, is the judged one.
-    let package = store
-        .tag_descriptor("unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1")
-        .unwrap();
-    assert_eq!(
-        publish("judged/bios:r1", &package.digest).unwrap().digest,
-        package.digest
-    );
+    let preview = pc_image::firmware_import::preview_manifest_with(
+        &scan.candidates[0],
+        &[],
+        &statement,
+        catalogue,
+    )
+    .unwrap();
+    let package = image_store::Digest::of(&preview.manifest.encode().unwrap());
+    assert_eq!(publish("judged/bios:r1", &package).unwrap().digest, package);
 }
 
 /// Each firmware package carries its title, description, vendor, version and
@@ -960,34 +989,20 @@ fn another_file_at_a_media_fixture_path_is_refused_before_any_set_is_tagged() {
     assert_eq!(media_tags(&store), 0);
 }
 
-/// The installation sets as the unemu-media repository builds them
-/// (`recipes/freedos-1.4-floppy/media.toml`) for the push that replaces the
-/// published ones under the revision tags with the platform in the path: the
-/// names change no manifest byte, but the export file name now on every
-/// layer does, so the sets read back from the registry before that push have
-/// other digests. The local build must give these digests: a pin that fails
-/// means the two repositories no longer build the same set, and a set's
-/// revision tag never moves. The pins moved once more, on 2026-11-18, when
-/// the import began to give a set's title record the id of its repository,
-/// `freedos`, instead of `title` (recipes.md §6.4): the metadata layer
-/// changed and nothing else. The sets published before that carry `title`
-/// and are replaced, as before the first public release. The corpus's
-/// pinned FreeDOS recipes (recipes.md §19.2, B8) pin other digests for the
-/// same tags: their sets carry the recipe's title record merged with its work
-/// file, so the metadata layer differs while the config and the payloads are
-/// these sets'.
+/// The installation sets published from the software repository's recipes
+/// on 2026-11-20, including their locked title records and manifest needs.
 const MEDIA_PINNED: [(&str, &str); 3] = [
     (
         "unemu/media/ibm-pc/freedos:1.4-r1",
-        "sha256:2ee5d72d786f38a045aa16b2ece05fa36c488d7a9ec5af60d77b9ab595f3b7b0",
+        "sha256:77060710c8e05136896a9e84ebee82035b1212114f9e288630dfabe730a5b754",
     ),
     (
         "unemu/media/ibm-pc/freedos:1.4-1.2m-r1",
-        "sha256:1320a2879fafc3ad55c36925557bf6a619b32fcd75f30fbec98fd71a1a9f5f6d",
+        "sha256:6508d997b31b3cd673a732cf18591c387dbd3c7e44f5c90f83463af038f1c044",
     ),
     (
         "unemu/media/ibm-pc/freedos:1.4-720k-r1",
-        "sha256:bd3a30078c09e13299484449930377ff0234f06cea8c2922b331526305c35e57",
+        "sha256:d8c593a829fedf14c118c099efa07883c200191f5acc0103d3dc475cc804186e",
     ),
 ];
 

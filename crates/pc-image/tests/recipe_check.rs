@@ -11,6 +11,7 @@ use recipe::Providers;
 use std::path::{Path, PathBuf};
 
 const CORPUS: &str = "../../backlog/docs/design/recipe-corpus";
+const TEMPLATE_RECIPES: &str = "data/recipes";
 const SCHEMA: &str = "../../backlog/docs/design/recipe-schema-0.1.json";
 const FIXTURES: &str = "tests/recipe-fixtures";
 
@@ -220,7 +221,7 @@ fn a_digest_with_an_empty_lock_is_reported() {
 /// once at its platform (rule 7); nothing behind the platform is reported.
 #[test]
 fn the_corpus_passes_on_ibm_pc_and_names_the_platforms_it_lacks() {
-    let report = check(&[CORPUS], &[&PcRecipes]);
+    let report = check(&[CORPUS, TEMPLATE_RECIPES], &[&PcRecipes]);
     let lines: Vec<String> = report
         .findings
         .iter()
@@ -387,7 +388,7 @@ fn the_whole_corpus_passes_with_a_provider_for_every_platform() {
             },
         ],
     };
-    let report = check(&[CORPUS], &[&PcRecipes, &nes, &amiga]);
+    let report = check(&[CORPUS, TEMPLATE_RECIPES], &[&PcRecipes, &nes, &amiga]);
     assert!(report.is_clean(), "{}", report.render());
     assert!(report.render().ends_with("20 files checked, 0 findings\n"));
 }
@@ -505,8 +506,17 @@ fn first_round(hcl: &str) -> (metadata::Title, Vec<String>) {
     (record, list("labels"))
 }
 
+fn recipe_path(relative: &str) -> PathBuf {
+    let root = if relative.starts_with("freedos-1.4-floppy/") {
+        TEMPLATE_RECIPES
+    } else {
+        CORPUS
+    };
+    Path::new(root).join(relative)
+}
+
 fn merged(recipe: &str, providers: &[&dyn Provider]) -> recipe::merge::Merged {
-    let path = PathBuf::from(format!("{CORPUS}/{recipe}"));
+    let path = recipe_path(recipe);
     match recipe::merge_path(&path, Providers(providers)).unwrap() {
         recipe::Shown::Merged(merged) => *merged,
         other => panic!("{recipe}: {other:?}"),
@@ -515,7 +525,7 @@ fn merged(recipe: &str, providers: &[&dyn Provider]) -> recipe::merge::Merged {
 
 /// The work file's synopsis, read as written.
 fn synopsis(work: &str) -> String {
-    let text = std::fs::read_to_string(format!("{CORPUS}/{work}")).unwrap();
+    let text = std::fs::read_to_string(recipe_path(work)).unwrap();
     let table: toml::Table = text.parse().unwrap();
     table["title"]["synopsis"].as_str().unwrap().to_owned()
 }
@@ -579,7 +589,7 @@ fn the_corpus_work_files_merge_into_the_first_rounds_full_records() {
         let merged = merged(&format!("{recipe}.media.toml"), &providers);
         let title = merged.title();
         // The record's id, read from the recipe's own `name`.
-        let text = std::fs::read_to_string(format!("{CORPUS}/{recipe}.media.toml")).unwrap();
+        let text = std::fs::read_to_string(recipe_path(&format!("{recipe}.media.toml"))).unwrap();
         let table: toml::Table = text.parse().unwrap();
         let name = table["media"]["name"].as_str().unwrap();
         assert_eq!(title.id, name.rsplit('/').next().unwrap(), "{recipe}");

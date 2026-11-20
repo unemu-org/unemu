@@ -5,6 +5,27 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — Templates reproduce the published recipe-built packages and sets:**
+  `pc_image::template` builds its three firmware packages and three FreeDOS
+  sets through the recipe builder from the recipes, work file and locks in
+  `crates/pc-image/data/recipes/` (moved there from the docs corpus), offline
+  from `vendor/`. This preserves the software repository's
+  published metadata instead of regenerating it with today's importer.
+  Firmware pins move: AT BIOS `e3c226ae…` → `c4c53a6a…`, VGA BIOS
+  `179a11db…` → `c1972247…`, XUB `7d42e80e…` → `4dc25f1c…`.
+  FreeDOS pins move: 1.44M `2ee5d72d…` → `77060710…`, 1.2M
+  `1320a287…` → `6508d997…`, 720K `bd3a3007…` → `d8c593a8…`.
+  The pre-release 1.2.0 template pins move: `open-at` `750981c2…` →
+  `e821e8e8…`, `open-at-games` `01028f9c…` → `95a9030d…`.
+  Packages gain their locked dates and README text; sets gain their locked
+  work id, synopsis and needs (`video=vga,ega` in the manifest). Template
+  machines change only their `unemu.firmware.sources` package digests:
+  the machine configs and every payload descriptor remain byte-identical,
+  pinned by a regression test against the pre-change manifests. ROMs,
+  sources, floppy contents, blank disks and hardware settings are unchanged.
+  Guards still run before tags; existing differing revision tags are refused.
+  See `design/machine-images.md` §5.5 and `design/recipes.md` §19.2.
+
 - **2026-11-20 — The PC launch document:** (`upc-dfs.43.5`, stage B step S5;
   design/core-contract.md §14.2.2, §14.3). `pc_config::launch` holds the document the PC core
   is to build a stored image's machine from (`application/vnd.unemu.pc.launch.v1+toml`): the

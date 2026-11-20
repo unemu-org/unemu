@@ -14,7 +14,8 @@ Source of the data: unemu-media `recipes/freedos-1.4-floppy/` (`media.toml`,
   text and a corresponding-source archive.
 - Two URLs for one input, tried in order.
 
-Second round: the folder has a work file, `freedos.work.toml`, with the
+Second round: the recipes share `freedos.work.toml`, now shipped beside
+them in `crates/pc-image/data/recipes/freedos-1.4-floppy/`, with the
 title, people, genre, labels, synopsis and needs. Each recipe is 9 lines
 shorter. The numbers under Sharing are the first round's.
 

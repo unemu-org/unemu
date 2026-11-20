@@ -13,7 +13,12 @@ guarantees) with every remaining recommendation (§16, Also decided). All
 seven records are accepted. The proposed order of work is §19. The
 throwaway corpus check (§19.2, B1) ran the same day; its findings, the
 fixes it made and the points it leaves open are §4.6. The corpus of
-real recipes in two syntaxes is in [`recipe-corpus/`](recipe-corpus/README.md).
+design examples and first-round HCL snapshots is in
+[`recipe-corpus/`](recipe-corpus/README.md). The three firmware and three
+FreeDOS TOML recipes, their locks and `freedos.work.toml` are shipped inputs
+in [`crates/pc-image/data/recipes/`](../../../crates/pc-image/data/recipes/),
+under the same subfolder names; the template builder embeds them. Recipe
+checks read both locations.
 
 Markers: **[REPO]** = read in this repository or in unemu-media; **[SRC n]** =
 external source listed in §18; **ASSUMED** = not verified, to be checked by the
@@ -1741,9 +1746,10 @@ something existing and gets a new media type. Each row of the decision-30
 table that a recipe uses (its version, each step, each format) sets the
 recipe artifact's `unemu.min-app-version`.
 
-**The conformance corpus.** unemu-media's recipes with their locks are the
-test: every release builds each one from a fixture library and compares the
-manifest digest. A release that cannot reproduce one is not released. This
+**The conformance corpus.** The shipped recipes and their locks in
+`crates/pc-image/data/recipes/`, plus the remaining pinned recipes in
+`recipe-corpus/`, are the test: every release builds each one from a fixture
+library and compares the manifest digest. A release that cannot reproduce one is not released. This
 is the only way promise 3 is kept in practice.
 
 ## 10. Platform neutrality
@@ -2748,8 +2754,9 @@ conformance). Decisions taken while building it:
   exit 1 when one differs or cannot be built. The corpus's six open
   recipes are pinned, their locks beside them (the three FreeDOS floppy
   sets and the three firmware packages, whose digests are the template
-  packages'; the FreeDOS sets' digests differ from the template sets', as
-  their metadata is the recipe's merged record, B7). The test
+  packages'. The template builder now uses these same shipped recipes
+  from `crates/pc-image/data/recipes/`, so the FreeDOS set digests also
+  equal the template sets', including their locked metadata). The test
   `the_pinned_corpus_builds_the_digests_it_pins` runs the harness on them
   from `vendor/` and `vendor/freedos`; unemu-media runs `upcli recipe
   conformance RECIPES --library DIR` against its own library.

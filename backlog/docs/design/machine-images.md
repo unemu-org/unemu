@@ -2472,10 +2472,11 @@ installation sets are built and published by the software repository
 (<https://github.com/unemu-org/software>) with a pinned `upcli` release;
 `image template build` builds the template machines only.
 `pc_image::template::build_firmware` and `build_media` build the same images
-locally from this repository's fixtures, under the published tags and with
-the values `image firmware import` and `image media import` take there; their
-tests pin the published digests, so each pin cross-checks the two
-repositories. A template binds the packages by digest, so its digest does not
+locally from this repository's fixtures through the six pinned corpus recipes
+and their locks (recipes §19.2), under the published tags. The recipes, work
+file and locks are embedded in the binary; no source checkout or network is
+needed at build time. Their tests pin the published digests, so each pin
+cross-checks the two repositories. A template binds the packages by digest, so its digest does not
 depend on where the packages came from. The packages and sets published so
 far name the retired id `ibm-pc-at` (§1) and the names before the platform
 segment and revisions (`unemu/firmware/<id>:1`, `unemu/media/freedos:1.4`);
@@ -2569,19 +2570,22 @@ hardware are unchanged. Generation 1.1.1 was never published; it is replaced
 rather than re-pinned because a local store may already hold it.
 
 **Build.** `image template build` (commands.md, Official template images)
-imports the three packages from the fetched fixtures with their pinned source
-archives (`pc_image::template::build_firmware`, as local copies of the
-published packages under their published tags, with no output line and no
-guard check of their own), then creates each machine through the New machine create API
-(§5.3, `pc_image::create`): zero-base blank disks, a generated configuration
+builds the three packages from the fetched fixtures and pinned source
+archives through the embedded locked recipes in `crates/pc-image/data/recipes/`
+(`pc_image::template::build_firmware`, as local copies of the published
+packages under their published tags, with no output line and with the
+caller's guard checked before tagging), then creates each machine through
+the New machine create API (§5.3, `pc_image::create`): zero-base blank disks, a generated configuration
 (CC0) and the packages' ROM and archive blobs bound by digest. Titles and
-descriptions are manifest annotations. Each package states its title,
-description, vendor, version (the release tag or revision its catalogue
-provenance names) and labels through the same statement as the metadata flags
-of `image firmware import`, so its config and README carry them and its
-manifest carries the standard `org.opencontainers.image.title`, `.description`,
-`.vendor` and `.version` annotations that registry web UIs show. No source URL
-is stated; each source archive's `NOTICE` names the fork's public repository
+descriptions are manifest annotations. Each package takes its title,
+description, vendor, version, date, labels and generated README from the
+recipe lock. FreeDOS sets likewise take the locked title record, including
+work id, synopsis and needs, while their disks and extras stay unchanged.
+The lock preserves the published writer's bytes instead of regenerating
+metadata with today's importer. Before a package or set is tagged, the
+builder validates the stored closure and offers its locked manifest and
+config to the caller's guard. No source URL is stated; each source archive's
+`NOTICE` names the fork's public repository
 (<https://github.com/unemu-org/at-bios>, <https://github.com/unemu-org/vgabios>). Nothing
 depends on the clock, the host or the fixture paths, so the same fixtures give
 the same manifests and digests on

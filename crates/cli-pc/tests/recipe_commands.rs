@@ -6,6 +6,7 @@
 use std::ffi::OsString;
 
 const CORPUS: &str = "../../backlog/docs/design/recipe-corpus";
+const TEMPLATE_RECIPES: &str = "../pc-image/data/recipes";
 
 fn upcli(args: &[&str]) -> (u8, String, String) {
     let args: Vec<OsString> = args.iter().map(OsString::from).collect();
@@ -21,19 +22,16 @@ fn upcli(args: &[&str]) -> (u8, String, String) {
 #[test]
 fn the_ibm_pc_recipes_of_the_corpus_pass_with_exit_0() {
     let folders = [
-        "freedos-1.4-floppy",
         "freedos-1.4-livecd",
         "kenslab-2.01",
         "azuramon",
         "windows-3.0",
-        "unemu-at-bios",
-        "vgabios",
-        "xtide-universal-bios",
         "ibm-5170-bios",
     ]
     .map(|f| format!("{CORPUS}/{f}"));
     let mut args = vec!["recipe", "check"];
     args.extend(folders.iter().map(String::as_str));
+    args.push(TEMPLATE_RECIPES);
     let (code, output, errors) = upcli(&args);
     assert_eq!((code, errors.as_str()), (0, ""), "{output}");
     assert!(
@@ -47,7 +45,7 @@ fn the_ibm_pc_recipes_of_the_corpus_pass_with_exit_0() {
 
 #[test]
 fn the_whole_corpus_has_one_finding_per_recipe_of_a_platform_without_provider() {
-    let (code, output, _) = upcli(&["recipe", "check", CORPUS]);
+    let (code, output, _) = upcli(&["recipe", "check", CORPUS, TEMPLATE_RECIPES]);
     assert_eq!(code, 1);
     let findings: Vec<&str> = output.lines().filter(|l| l.contains(": error[")).collect();
     assert_eq!(findings.len(), 5, "{output}");
@@ -246,7 +244,8 @@ fn show_refuses_a_recipe_with_findings_with_the_checks_report() {
 /// is exit 2.
 #[test]
 fn show_takes_one_readable_media_recipe() {
-    let firmware = format!("{CORPUS}/unemu-at-bios/unemu-at-bios-1.0.2-unemu.3.firmware.toml");
+    let firmware =
+        format!("{TEMPLATE_RECIPES}/unemu-at-bios/unemu-at-bios-1.0.2-unemu.3.firmware.toml");
     let work = format!("{CORPUS}/kenslab-2.01/kenslab.work.toml");
     let folder = format!("{CORPUS}/kenslab-2.01");
     for (path, message) in [

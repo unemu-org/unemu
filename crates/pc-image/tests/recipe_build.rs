@@ -3,12 +3,10 @@
 //! (recipes.md §3.1, §6.9, §6.12, §6.14).
 //!
 //! - The open firmware recipes of the corpus build the packages
-//!   `image firmware import` makes from the same fixtures, as the template
-//!   build imports them with the metadata flags: the same payloads, with
-//!   explicitly pinned descriptive metadata from the real recipes.
-//! - The three FreeDOS recipes build sets whose configs equal byte for byte
-//!   those the importer makes from the same disks and extras as `image media
-//!   import` states them; the edition archive is not needed, as its disks
+//!   template build makes from the same fixtures, with the locked dates
+//!   and generated README bytes of the published recipes.
+//! - The three FreeDOS recipes build the same locked sets as the template
+//!   builder from the same disks and extras; the edition archive is not needed, as its disks
 //!   are found loose.
 //! - Nothing is tagged when an input is missing or a step refuses.
 //! - A build is a pure function of its inputs: two builds into two stores,
@@ -35,6 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod fixtures;
 
 const CORPUS: &str = "../../backlog/docs/design/recipe-corpus";
+const TEMPLATE_RECIPES: &str = "data/recipes";
 
 const PROVIDERS: [&dyn Provider; 1] = [&PcRecipes];
 
@@ -63,6 +62,12 @@ impl Drop for Temp {
 
 fn vendor() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor")
+}
+
+fn template_recipe(relative: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(TEMPLATE_RECIPES)
+        .join(relative)
 }
 
 fn corpus(relative: &str) -> PathBuf {
@@ -172,7 +177,7 @@ fn firmware_present() -> bool {
 }
 
 #[test]
-fn the_open_firmware_recipes_match_the_importer_with_their_pinned_metadata() {
+fn the_open_firmware_recipes_match_the_template_packages_with_their_locked_metadata() {
     if !firmware_present() {
         return;
     }
@@ -206,28 +211,25 @@ fn the_open_firmware_recipes_match_the_importer_with_their_pinned_metadata() {
     for ((file, package), (date, readme, size, digest)) in
         FIRMWARE.iter().zip(&packages).zip(expected_metadata)
     {
-        let (outcome, lines) = build(&corpus(file), &from_recipes, &[vendor()], None);
+        let (outcome, lines) = build(&template_recipe(file), &from_recipes, &[vendor()], None);
         assert!(lines.is_empty(), "nothing to fetch: {lines:?}");
         let report = built(outcome);
         let tag = &package.tags[0].0;
         assert_eq!(&report.reference, tag);
         let recipe_config = from_recipes.resolve(tag, &validator).unwrap().config;
         let import_config = imported.resolve(tag, &validator).unwrap().config;
-        // Real recipes add dates; their locked README
-        // also comes from a newer writer than the template importer's.
-        let mut expected = image_store::firmware::Config::decode(&import_config).unwrap();
-        expected.date = Some(date.into());
-        expected.readme = Some(image_store::firmware::Readme {
-            blob: format!("sha256:{readme}").parse().unwrap(),
-            size,
-        });
-        assert_eq!(recipe_config, expected.encode().unwrap(), "{file}");
+        let config = image_store::firmware::Config::decode(&import_config).unwrap();
+        assert_eq!(config.date.as_deref(), Some(date));
+        assert_eq!(config.readme.as_ref().unwrap().blob.hex(), readme);
+        assert_eq!(config.readme.as_ref().unwrap().size, size);
+        assert_eq!(recipe_config, import_config, "{file}");
+        assert_eq!(report.published.descriptor, package.descriptor, "{file}");
         assert_eq!(report.published.descriptor.digest.hex(), digest, "{file}");
         assert!(report.published.created);
     }
     // A second build finds every package already built.
     for file in FIRMWARE {
-        let report = built(build(&corpus(file), &from_recipes, &[vendor()], None).0);
+        let report = built(build(&template_recipe(file), &from_recipes, &[vendor()], None).0);
         assert!(!report.published.created, "{file}");
     }
 }
@@ -246,7 +248,7 @@ fn media_present() -> bool {
 }
 
 #[test]
-fn the_freedos_recipes_build_the_configs_the_importer_makes() {
+fn the_freedos_recipes_build_the_same_locked_sets_as_the_templates() {
     if !media_present() {
         return;
     }
@@ -264,7 +266,7 @@ fn the_freedos_recipes_build_the_configs_the_importer_makes() {
         // `floppy-1.4/LICENSES.TXT`: it is found by its locked payload
         // instead of made, so the LF text is not needed (recipes §3.4).
         let (outcome, lines) = build(
-            &corpus(file),
+            &template_recipe(file),
             &from_recipes,
             &[vendor().join("freedos")],
             None,
@@ -298,6 +300,7 @@ fn the_freedos_recipes_build_the_configs_the_importer_makes() {
         assert!(line.ends_with(", not made"), "{line}");
         let tag = &set.tags[0].0;
         assert_eq!(&report.reference, tag);
+        assert_eq!(report.published.descriptor, set.descriptor, "{file}");
         let (recipe_config, recipe_metadata) = stored(&from_recipes, tag, &validator);
         let (import_config, import_metadata) = stored(&imported, tag, &validator);
         assert_eq!(
@@ -305,6 +308,7 @@ fn the_freedos_recipes_build_the_configs_the_importer_makes() {
             String::from_utf8(import_config).unwrap(),
             "{file}"
         );
+        assert_eq!(recipe_metadata, import_metadata, "{file}");
         // One title id for both writers: the work, the repository's last
         // component.
         assert_eq!(recipe_metadata.titles[0].id, "freedos");
@@ -688,7 +692,7 @@ fn nothing_is_tagged_when_an_input_is_missing_or_a_step_refuses() {
     }
     let store = Store::open(t.path("freedos")).unwrap();
     let (outcome, _) = build(
-        &corpus(FREEDOS[0]),
+        &template_recipe(FREEDOS[0]),
         &store,
         &[vendor().join("freedos/floppy-1.4/144m")],
         None,

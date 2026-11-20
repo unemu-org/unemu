@@ -578,8 +578,7 @@ fn media_fetched() -> Option<()> {
 }
 
 /// The `image media import` command line that imports one installation set
-/// into `store`, with the arguments the unemu-media repository's publish
-/// step passes it (`lib/manifest.py sets`): the disks, the title and tag,
+/// into `store`, with the software recipes' metadata: the disks, the title and tag,
 /// each disk's label and format, the extras with their DOS names, the
 /// catalogue record with its version, edition and set labels, and the open
 /// statement. Each extra's kind comes from its extension.
@@ -614,6 +613,17 @@ fn media_import_args(source: &pc_image::template::MediaSource, store: &Path) -> 
     flag("--description", source.description.into());
     flag("--version", release.release.into());
     flag("--edition", release.edition.into());
+    flag("--work", "freedos".into());
+    flag("--work-id", "wikidata=Q473751".into());
+    flag(
+        "--synopsis",
+        "An open source DOS-compatible operating system, by the FreeDOS Project.".into(),
+    );
+    flag("--need", "video=vga,ega".into());
+    flag(
+        "--requirements",
+        "This edition should run on any hardware that can run FreeDOS and has EGA or better graphics".into(),
+    );
     for label in release.labels {
         flag("--set-label", label.into());
     }

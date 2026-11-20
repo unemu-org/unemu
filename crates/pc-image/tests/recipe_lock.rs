@@ -649,9 +649,9 @@ fn a_lock_mismatch_tags_nothing() {
     );
 }
 
-fn corpus(relative: &str) -> PathBuf {
+fn template_recipe(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../backlog/docs/design/recipe-corpus")
+        .join("data/recipes")
         .join(relative)
 }
 
@@ -683,10 +683,10 @@ fn the_pinned_corpus_builds_the_digests_it_pins() {
     ];
     let results = recipe::pin::conformance(
         &[
-            corpus("freedos-1.4-floppy"),
-            corpus("unemu-at-bios"),
-            corpus("vgabios"),
-            corpus("xtide-universal-bios"),
+            template_recipe("freedos-1.4-floppy"),
+            template_recipe("unemu-at-bios"),
+            template_recipe("vgabios"),
+            template_recipe("xtide-universal-bios"),
         ],
         recipe::Providers(&THIS),
         &scratch,
@@ -878,12 +878,14 @@ fn vgabios_present() -> bool {
 fn vgabios_draft(t: &Temp) -> PathBuf {
     let folder = t.path("recipes");
     fs::create_dir_all(&folder).unwrap();
-    let text: String = fs::read_to_string(corpus("vgabios/vgabios-0.9d-unemu.1-std.firmware.toml"))
-        .unwrap()
-        .lines()
-        .filter(|l| !l.starts_with("digest = "))
-        .map(|l| format!("{l}\n"))
-        .collect();
+    let text: String = fs::read_to_string(template_recipe(
+        "vgabios/vgabios-0.9d-unemu.1-std.firmware.toml",
+    ))
+    .unwrap()
+    .lines()
+    .filter(|l| !l.starts_with("digest = "))
+    .map(|l| format!("{l}\n"))
+    .collect();
     let recipe = folder.join("vgabios.firmware.toml");
     fs::write(&recipe, text).unwrap();
     recipe

@@ -1,5 +1,65 @@
 [
   {
+    "name": "a shipped template recipe selects its readers and their ignored tests",
+    "changed": [
+      "crates/pc-image/data/recipes/freedos-1.4-floppy/freedos-1.4.media.toml"
+    ],
+    "expect": {
+      "mode": "crates",
+      "seeds": [
+        "cli-pc",
+        "pc-harness",
+        "pc-image"
+      ],
+      "tier": "fast",
+      "targeted_crates": [
+        "cli-pc",
+        "pc-harness",
+        "window"
+      ]
+    }
+  },
+  {
+    "name": "a shipped template lock selects its readers and their ignored tests",
+    "changed": [
+      "crates/pc-image/data/recipes/freedos-1.4-floppy/freedos-1.4.media.toml.lock/sha256/2282671de117a3500e5d40b28ffb5ec2079b7f80b86de9ecf61ed594aea90a5b"
+    ],
+    "expect": {
+      "mode": "crates",
+      "seeds": [
+        "cli-pc",
+        "pc-harness",
+        "pc-image"
+      ],
+      "tier": "fast",
+      "targeted_crates": [
+        "cli-pc",
+        "pc-harness",
+        "window"
+      ]
+    }
+  },
+  {
+    "name": "a shipped template work file selects its readers and their ignored tests",
+    "changed": [
+      "crates/pc-image/data/recipes/freedos-1.4-floppy/freedos.work.toml"
+    ],
+    "expect": {
+      "mode": "crates",
+      "seeds": [
+        "cli-pc",
+        "pc-harness",
+        "pc-image"
+      ],
+      "tier": "fast",
+      "targeted_crates": [
+        "cli-pc",
+        "pc-harness",
+        "window"
+      ]
+    }
+  },
+  {
     "name": "window-only change, with the window's own ignored tests by name",
     "changed": ["crates/window/src/shell_model.rs"],
     "expect": {

@@ -1,11 +1,20 @@
 # Recipe corpus
 
+The three firmware recipes, three FreeDOS recipes, `freedos.work.toml` and
+all six `.toml.lock/` directories now live in
+[`crates/pc-image/data/recipes/`](../../../../crates/pc-image/data/recipes/),
+with the same subfolder names: `unemu-at-bios/`, `vgabios/`,
+`xtide-universal-bios/` and `freedos-1.4-floppy/`. They are shipped build
+inputs embedded by the template builder. This corpus retains their design
+notes and HCL snapshots; Ken's Labyrinth and all other design examples stay
+here. Recipe checks cover both locations.
+
 ## Current copies (2026-11-20)
 
 The real TOML recipes, work files and locks track the
 [`software` repository](https://github.com/unemu-org/software) at `3c493f7`:
 
-| Corpus folder | Source at that revision |
+| Recipe folder (shipped inputs above; other files here) | Source at that revision |
 | --- | --- |
 | `freedos-1.4-floppy/` | `recipes/media/freedos/`: three recipes, `freedos.work.toml` and their locks |
 | `kenslab-2.01/` | `recipes/media/kenslab/`: the 2.01 recipe, `kenslab.work.toml` and its lock |
@@ -91,10 +100,10 @@ and compares the digests (a test in `pc-image`, `recipe_lock`). A change to
 one of their payload builders that alters a byte fails that test; a change
 to how a release writes manifests, configs or metadata does not, as a pinned
 build publishes the lock's bytes. To change a pinned artifact, raise
-`revision`, remove `digest` and pin again. The FreeDOS pins are not the digests of the
-template sets of the same tags (`pc-image` test `template`, `MEDIA_PINNED`):
-a recipe's set carries the recipe's title record merged with its work file,
-so its metadata layer differs, while its config and payloads are the same.
+`revision`, remove `digest` and pin again. The FreeDOS pins equal the
+digests of the template sets of the same tags (`pc-image` test `template`,
+`MEDIA_PINNED`): the template builder now uses the same locked recipes,
+including their title records merged with the work file.
 
 ## Second round: work files, TOML only (2026-11-17)
 

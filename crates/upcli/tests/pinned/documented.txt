@@ -82,7 +82,7 @@ image push private/media/ibm-pc/wolf3d-shareware:1.4-r1 unemu/media/ibm-pc/wolf3
 --bios /path/to/bios.bin --allow-unlisted-firmware
 machine check machines/at-freedos.toml
 run --machine machines/at-freedos.toml --max-steps 12000000 --idle-limit 1000000 --print mda
-recipe check backlog/docs/design/recipe-corpus
+recipe check backlog/docs/design/recipe-corpus crates/pc-image/data/recipes
 recipe check my.media.toml other.firmware.toml
 recipe show backlog/docs/design/recipe-corpus/kenslab-2.01/kenslab-2.01.media.toml
 recipe build my.media.toml --library /path/to/games

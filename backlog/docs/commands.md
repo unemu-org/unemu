@@ -1566,7 +1566,7 @@ both `machines/` and `vendor/`.
 work file it names and, for a pinned recipe, its lock, and no input.
 
 ```sh
-cargo run --offline -p upcli -- recipe check backlog/docs/design/recipe-corpus
+cargo run --offline -p upcli -- recipe check backlog/docs/design/recipe-corpus crates/pc-image/data/recipes
 cargo run --offline -p upcli -- recipe check my.media.toml other.firmware.toml
 ```
 
@@ -1927,7 +1927,7 @@ then writes the lock beside the recipe and the manifest digest into it.
 
 ```sh
 cargo run --offline -p upcli -- recipe pin my.media.toml --library /path/to/games
-cargo run --offline -p upcli -- recipe pin backlog/docs/design/recipe-corpus/vgabios/vgabios-0.9d-unemu.1-std.firmware.toml --library vendor
+cargo run --offline -p upcli -- recipe pin crates/pc-image/data/recipes/vgabios/vgabios-0.9d-unemu.1-std.firmware.toml --library vendor
 ```
 
 - **The lock** is the folder `FILE.lock` beside the recipe, holding
@@ -2004,8 +2004,8 @@ and is `not built: …` with the lost-lock message, both digests in it,
 otherwise.
 
 ```sh
-# this repository: the pinned open recipes of the corpus, from the fixtures
-cargo run --offline -p upcli -- recipe conformance backlog/docs/design/recipe-corpus --library vendor/freedos --library vendor
+# this repository: the shipped template recipes, from the fixtures
+cargo run --offline -p upcli -- recipe conformance crates/pc-image/data/recipes --library vendor/freedos --library vendor
 # a repository of recipes, against a release of upcli and its own library
 upcli recipe conformance recipes/ --library /path/to/library --store ./conformance-store
 ```
