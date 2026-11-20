@@ -5,6 +5,18 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — Stored-image run commands are platform-neutral:** `image run`
+  and `image machine run` now parse and execute in `cli-core` through the
+  binary's `Cores`, with store aliases canonicalized before core selection.
+  `CliPlatform::own_run` retains platform session pins, migration and ownership;
+  `prepare_run` supplies the launch and confirmation after creation. The PC
+  adapter preserves failed-run CMOS/journal persistence and diagnostics.
+  Usage and all pinned parses are unchanged. S11's 131-call set and 11 binary
+  invocations retain their output; the binary matrix also keeps every written
+  file byte. A toy stored image runs and durably saves through the test core
+  with no PC crate in its build. The old start APIs remain for the next step.
+  See `design/core-contract.md` §14.3 S12.
+
 - **2026-11-20 — Stored-image CLI runs use the core contract:**
   `image run` and `image machine run` remain in `cli-pc`, prepare through
   `pc_image::launch`, start with `core_launch::start`, run to

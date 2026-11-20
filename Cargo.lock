@@ -684,12 +684,15 @@ name = "cli-core"
 version = "0.0.3"
 dependencies = [
  "anyhow",
+ "core-launch",
  "image-registry",
  "image-store",
  "libc",
  "media",
  "recipe",
  "toml",
+ "unemu-core-api",
+ "unemu-test-core",
 ]
 
 [[package]]

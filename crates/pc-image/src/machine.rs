@@ -1680,12 +1680,12 @@ pub fn pinned_image(store: &Store, id: &str) -> Result<Descriptor> {
         .unwrap_or(machine.image))
 }
 
-/// Prepare a machine to run in `owner`, from [`own`], which the caller keeps
-/// for the whole run and journal finish. The session opens the machine's
-/// journals on its pinned image with its settings overlay and puts each
-/// pending insert into its drive. Nothing in the record changes until the
-/// caller [`confirm`]s the launch, once the machine has assembled.
-pub fn prepare(owner: &Workspace<'_>) -> Result<Prepared> {
+/// Select the machine's image after ownership and migration checks, before decoding.
+pub fn select_run_image(owner: &Workspace<'_>) -> Result<Descriptor> {
+    Ok(select_run(owner)?.1)
+}
+
+fn select_run(owner: &Workspace<'_>) -> Result<(Machine, Descriptor)> {
     let store = owner.store();
     let id = owner.name();
     let machine = record(store, id)?;
@@ -1697,6 +1697,17 @@ pub fn prepare(owner: &Workspace<'_>) -> Result<Prepared> {
         }
     }
     let image = pinned(owner, &machine)?;
+    Ok((machine, image))
+}
+
+/// Prepare a machine to run in `owner`, from [`own`], which the caller keeps
+/// for the whole run and journal finish. The session opens the machine's
+/// journals on its pinned image with its settings overlay and puts each
+/// pending insert into its drive. Nothing in the record changes until the
+/// caller [`confirm`]s the launch, once the machine has assembled.
+pub fn prepare(owner: &Workspace<'_>) -> Result<Prepared> {
+    let store = owner.store();
+    let (machine, image) = select_run(owner)?;
     let mut session = workspace::prepare_machine(owner, &image, machine.settings.as_ref())?;
     finish_cmos_reset(owner, &session)?;
     for insert in &machine.pending {

@@ -77,7 +77,12 @@ that names another image; `image publish --from-workspace ID` and
 command to use.
 
 Stored-image runs (`image run` and `image machine run`) start through the
-core contract. Their last output field is its stop: `Steps`, `Halted` or
+core contract in the platform-neutral `cli-core` runner. The binary supplies
+its compiled-in cores; platform hooks select and own the pinned session, prepare
+the launch and confirm pending inserts after creation. The PC hook also keeps
+failed-run CMOS/journal persistence and the existing diagnostic chain. Platforms
+without a stored-image runner refuse the command explicitly.
+Their last output field is its stop: `Steps`, `Halted` or
 `PoweredOff`, replacing the old `RunOutcome` debug text (for example,
 `RetiredCapReached` becomes `Steps`). A guest-requested reset is performed
 inside the core and reported on standard error; the old assembly loop also

@@ -7,12 +7,14 @@ license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "The platform-neutral command line: its parser, usage text, exit codes, the commands that need no emulator and the provider seam of the platforms (core-contract.md §7)."
+description = "The platform-neutral command line: its parser, usage text, exit codes, stored runs through the core contract and the provider seam of the platforms (core-contract.md §7)."
 
 [package.metadata.unemu]
 layer = "neutral"
 
 [dependencies]
+core-launch = { path = "../core-launch", version = "0.0.3" }
+unemu-core-api.workspace = true
 image-store = { path = "../image-store", version = "0.0.3" }
 image-registry = { path = "../registry", version = "0.0.3" }
 media.workspace = true
@@ -25,5 +27,7 @@ toml.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
+unemu-test-core = { path = "../test-core", version = "0.0.3" }
+unemu-core-api = { workspace = true, features = ["test-support"] }
 # The mock registry of the push, pull and login tests.
 image-registry = { path = "../registry", version = "0.0.3", features = ["test-support"] }

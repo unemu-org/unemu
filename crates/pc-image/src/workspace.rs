@@ -262,13 +262,23 @@ fn retention_of(store: &Store, image: &Digest) -> Result<std::collections::BTree
         .unwrap_or_default())
 }
 
-fn prepare_selected(
+/// Select a run's image under ownership, preserving preparation's refusal order.
+/// CLI core selection must not decode a manifest before these workspace checks.
+pub fn select_run_image(
     workspace: &Workspace<'_>,
     tag: &str,
     fresh: bool,
     selected: Option<&Descriptor>,
-    settings: Option<&toml::Table>,
-) -> Result<PreparedSession> {
+) -> Result<Descriptor> {
+    Ok(select_session(workspace, tag, fresh, selected)?.0.image)
+}
+
+fn select_session(
+    workspace: &Workspace<'_>,
+    tag: &str,
+    fresh: bool,
+    selected: Option<&Descriptor>,
+) -> Result<(Session, bool)> {
     if workspace.read("discard.toml")?.is_some() {
         return Err(invalid("discard pending; finish discarding this workspace"));
     }
@@ -292,7 +302,7 @@ fn prepare_selected(
             "orphaned media without a session; refusing to overwrite it",
         ));
     }
-    let mut state = if existing {
+    let state = if existing {
         session(workspace)?
     } else {
         let image = match selected {
@@ -323,6 +333,18 @@ fn prepare_selected(
             Err(error) => return Err(error.into()),
         }
     }
+    Ok((state, existing))
+}
+
+fn prepare_selected(
+    workspace: &Workspace<'_>,
+    tag: &str,
+    fresh: bool,
+    selected: Option<&Descriptor>,
+    settings: Option<&toml::Table>,
+) -> Result<PreparedSession> {
+    let (mut state, existing) = select_session(workspace, tag, fresh, selected)?;
+    let store = workspace.store();
     let directory = workspace.path().join("media");
     let (image, machine, (bases, zero), launch) = crate::provider::resolve_pinned(
         store,

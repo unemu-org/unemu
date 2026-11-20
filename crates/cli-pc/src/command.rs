@@ -31,5 +31,13 @@ pub fn run_with_firmware_sources(
     errors: &mut impl Write,
     sources: &FirmwareSources,
 ) -> u8 {
-    crate::with_platform(|pc| cli_core::run(args, &mut Io { output, errors }, sources, &[pc]))
+    crate::with_platform(|pc| {
+        cli_core::run(
+            args,
+            &mut Io { output, errors },
+            sources,
+            &[pc],
+            &core_launch::Cores::new(&[&unemu_pc_core::PcCore]),
+        )
+    })
 }

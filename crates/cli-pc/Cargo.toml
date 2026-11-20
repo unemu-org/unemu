@@ -33,6 +33,7 @@ media.workspace = true
 video.workspace = true
 
 [dev-dependencies]
+pc-image = { path = "../pc-image", version = "0.0.3", features = ["test-support"] }
 cpu.workspace = true
 devices.workspace = true
 # The FAT12 reader that checks disks built from host files.

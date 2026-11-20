@@ -6767,7 +6767,7 @@ Beads that edit the same files go one after the other, in either order:
   publication and host guards, both clippy checks and rustdoc pass.
   Cargo-deny is left to the supervisor as required by the sandbox brief.
 
-**S12. The two commands move to `cli-core`.**
+**S12. The two commands move to `cli-core`.** **Done.**
 
 - **Scope.** §14.2.7. `CliPlatform::prepare_run` and the
   machine-ownership hook; the neutral command and its usage lines;
@@ -6784,6 +6784,69 @@ Beads that edit the same files go one after the other, in either order:
   tests the toy platform with the test core runs `image run` end to end
   with no PC crate in the build. Layer proof; a planted
   `cli-core → pc-image` dependency still fails.
+
+- **As landed.** `cli-core::image` owns both parsed commands, their run
+  loop, pinned/result lines, message draining and finish warnings.
+  `cli_core::run` receives the binary's `Cores`; the command canonicalizes
+  the selected manifest's platform before `Cores::for_platform`.
+  `CliPlatform::own_run(store, request, errors)` returns an optional
+  `OwnedRun` (the workspace owner, selected descriptor and whether it is a
+  machine). The default owns a new tagged workspace of that platform;
+  the PC implementation retains its pinned-session selection, machine
+  migration and diagnostics, machine/tag checks and `machine::own`.
+  Ownership lasts through creation, confirmation, run and finish. This
+  broader ownership hook keeps the PC session schema out of neutral code
+  and still resumes a pin whose tag has disappeared.
+  `CliPlatform::prepare_run(owner, request, core)` returns `StoredRun`:
+  a `core_launch::Prepared`, pinned digest, post-creation confirmation
+  callback and starter. Its default refuses with "this platform's images
+  do not run from the command line yet". The PC uses S10's
+  `prepare_workspace` and `prepare_machine`; confirmation and `inserted:`
+  lines still follow successful creation.
+  The default starter is `core_launch::start`. The PC supplies a typed
+  `start_with` adapter exposing `Machine` and a failed-run operation:
+  preserve the typed guest error and call `pc_harness::finish_persistence`.
+  Neutral code calls contract `finish` only after a successful run, drains
+  messages in either case and preserves persistence-error precedence and
+  best-effort warning output. This small CLI-only adapter is necessary to
+  retain S11's failed-run behavior without adding a downcast or operation
+  to the core contract. The old stored-session start APIs remain for S14.
+  The usage lines keep their words and positions; two slots split the PC
+  machine/media block around the neutral machine-run line. The `upcli`
+  parser's Debug implementation preserves the historical platform nesting
+  of these two commands, because the unchanged parse pin records it;
+  their actual parsed values and execution belong to `cli-core`.
+  Mechanical changes outside the code list: the `cli-pc::command` runner
+  and the two neutral journal test runners pass `Cores`; `Cargo.lock`
+  records existing dependencies. A test-only `pc-image/test-support`
+  dependency in `cli-pc` permits the synthetic failed-run hook regression.
+  No external package, boundary allowance, core, fixture or machine file
+  changes.
+  MEASURED: the unchanged `command_line_pin` passes all four tests (usage,
+  About, shell words and all 252 pinned parses, including both `image run`
+  refusals). Repeating S11's three existing test binaries records 131 calls
+  before and after: all 131 outcomes are equal after normalizing temporary
+  roots and host last-run text, with no stop-word normalization. Repeating
+  its 11 binary invocations also gives equal stdout, stderr, exit codes and
+  complete written-file SHA-256 inventories, including pending insertion and
+  the 10,000,000-step FreeDOS run; file contents are not normalized.
+  The toy platform's end-to-end test uses the test core alone: a stored
+  config and content reach `create`, confirmation holds ownership, exact
+  step limits and power-off reach the result line, messages reach stderr,
+  and finish durably saves the battery record across two starts. Its build
+  closure has no PC crate. The new PC hook regression compares a CPU
+  refusal's complete diagnostic chain and changed CMOS journal bytes with
+  the old assembly path, including a sealed generation. Mutations that
+  leave `image run` to platforms, omit canonicalization, replace the typed
+  starter, or omit failed-run persistence each fail their targeted test.
+  Every source is restored with a plain copy and touched before the gate.
+  The layer check passes with its existing allowances and rejects a live
+  planted `cli-core → pc-image` dependency; all 42 boundary self-tests pass.
+  MEASURED final gate: 4,319 workspace/golden tests pass; 140 fail at sandbox
+  loopback binds (OS error 1), and one at the unsupported host clipboard.
+  All 894 release device tests and the doctest pass. Formatting, publication
+  and host guards, both clippy checks and rustdoc pass. Cargo-deny remains
+  supervisor-owned, as the sandbox brief requires.
 
 **S13. The desktop's Start through `core_launch`.** **Done.**
 

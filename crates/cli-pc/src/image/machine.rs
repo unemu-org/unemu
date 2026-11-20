@@ -46,10 +46,6 @@ pub enum Action {
         title: Option<String>,
         keep_on_old_image: bool,
     },
-    Run {
-        id: String,
-        max_steps: u64,
-    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -99,7 +95,7 @@ pub fn parse(args: &[OsString]) -> Result<MachineCommand, &'static str> {
     let (id, mut index) = match verb {
         "ls" => (String::new(), 1),
         "new" => (word(args, 1, "image machine new requires NAME:TAG")?, 2),
-        "rename" | "duplicate" | "reset" | "rm" | "settings" | "commit" | "run" => (
+        "rename" | "duplicate" | "reset" | "rm" | "settings" | "commit" => (
             word(args, 1, "image machine commands require a machine ID")?,
             2,
         ),
@@ -111,7 +107,7 @@ pub fn parse(args: &[OsString]) -> Result<MachineCommand, &'static str> {
     } else {
         None
     };
-    let (mut store, mut name, mut tag, mut title, mut max_steps) = (None, None, None, None, None);
+    let (mut store, mut name, mut tag, mut title) = (None, None, None, None);
     let (mut yes, mut clear, mut dry_run, mut keep) = (false, false, false, false);
     let mut set = Vec::new();
     while index < args.len() {
@@ -149,15 +145,6 @@ pub fn parse(args: &[OsString]) -> Result<MachineCommand, &'static str> {
             "--tag" if verb == "commit" && tag.is_none() => tag = Some(value),
             "--title" if verb == "commit" && title.is_none() => title = Some(value),
             "--set" if verb == "settings" => set.push(setting(&value)?),
-            "--max-steps" if verb == "run" && max_steps.is_none() => {
-                max_steps = Some(
-                    value
-                        .parse()
-                        .ok()
-                        .filter(|n| *n > 0)
-                        .ok_or("invalid step limit")?,
-                )
-            }
             _ => return Err("unknown or duplicate machine option"),
         }
     }
@@ -186,10 +173,7 @@ pub fn parse(args: &[OsString]) -> Result<MachineCommand, &'static str> {
             title,
             keep_on_old_image: keep,
         },
-        _ => Action::Run {
-            id,
-            max_steps: max_steps.unwrap_or(1_000_000),
-        },
+        _ => return Err(EXPECTED),
     };
     Ok(MachineCommand {
         store: store.ok_or("image commands require --store DIR")?,
@@ -384,36 +368,6 @@ pub fn execute(
             let now = machine::pinned_image(&store, &id)?;
             writeln!(output, "machine:{id}\tpinned-image:{}", now.digest)?;
         }
-        Action::Run { id, max_steps } => {
-            let owner = machine::own(&store, &id)?;
-            run_owned(&owner, max_steps, "machine", output, errors)?;
-        }
     }
-    Ok(())
-}
-
-/// Start and run a machine in its owned workspace (from `machine::own`),
-/// then finish its journals. The launch is confirmed (last run, consumed
-/// inserts) only once the machine has assembled. The result line starts with
-/// `label`, so `image run` keeps its output.
-pub fn run_owned(
-    owner: &image_store::workspace::Workspace<'_>,
-    max_steps: u64,
-    label: &str,
-    output: &mut impl Write,
-    errors: &mut impl Write,
-) -> anyhow::Result<()> {
-    let prepared =
-        pc_image::launch::prepare_machine(owner, &unemu_pc_core::PcCore, owner.name().to_owned())?;
-    writeln!(output, "pinned-image:{}", prepared.image)?;
-    let mut started = core_launch::start_with(&prepared.prepared, |request| {
-        unemu_pc_core::PcCore.create_machine(request)
-    })?;
-    machine::confirm(owner, &prepared.inserted, host_time())?;
-    for insert in &prepared.inserted {
-        writeln!(output, "inserted:{}\t{}", insert.drive, insert.medium)?;
-    }
-    let stop = super::run_started(&mut started, max_steps, errors)?;
-    writeln!(output, "{label}:{}\t{stop:?}", owner.name())?;
     Ok(())
 }

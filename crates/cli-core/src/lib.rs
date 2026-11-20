@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The platform-neutral command line (`backlog/docs/design/core-contract.md`
 //! §7.1 and §7.2): the top-level parser, the usage text, the exit-code
-//! policy, the commands that need no emulator, and the provider seam through
+//! policy, stored-image runs through the core contract, and the provider seam through
 //! which each platform compiled into the program adds its own commands and
 //! answers what the neutral ones ask of it.
 //!
-//! The neutral commands are `image ls`, `sweep`, `compress`, `image
+//! The neutral commands are `image run`, `image machine run`, `image ls`, `sweep`, `compress`, `image
 //! workspace ls` and `discard`, `image media ls` and `show`, `image firmware
 //! ls` and `show`, `image export`, the registry commands (`image push`, `pull`, `remote ls`,
 //! `login`, `registry set`), `recipe check`, `show`, `plan` and `build`, the
@@ -62,6 +62,10 @@ pub enum UsageSlot {
     AfterImageSweep,
     /// After `image workspace discard`.
     AfterWorkspaceDiscard,
+    /// Before the neutral machine-run line.
+    BeforeMachineRun,
+    /// After the neutral machine-run line.
+    AfterMachineRun,
     /// After `image registry set`.
     AfterRegistry,
     /// After `recipe show`.
@@ -70,7 +74,7 @@ pub enum UsageSlot {
     Last,
 }
 
-/// One platform's part of the command line.
+/// One platform's part of the command line (core-contract.md §§7.2, 14.2.7).
 pub trait CliPlatform {
     /// The platform id, in its current spelling.
     fn platform(&self) -> &str;
@@ -91,6 +95,40 @@ pub trait CliPlatform {
     /// The name of a medium's format, from its table in a media set's
     /// config, as `image media show` prints it.
     fn medium_format(&self, format: &toml::Table) -> anyhow::Result<&'static str>;
+    /// Select this platform's pinned image and retain its workspace ownership.
+    /// `None` leaves the request to another platform. Session formats and
+    /// machine migration stay with the platform that owns them.
+    fn own_run<'a>(
+        &self,
+        store: &'a Store,
+        request: &image::RunRequest<'_>,
+        errors: &mut dyn Write,
+    ) -> anyhow::Result<Option<image::OwnedRun<'a>>> {
+        let _ = errors;
+        let image = match request.tag {
+            Some(tag) => store.tag_descriptor(tag)?,
+            None => return Ok(None),
+        };
+        if !image_store::platform::same(&image::run_platform(store, &image)?, self.platform()) {
+            return Ok(None);
+        }
+        Ok(Some(image::OwnedRun {
+            owner: store.workspace(request.workspace)?,
+            image,
+            machine: false,
+        }))
+    }
+    /// Prepare a stored run through the selected core. A platform without
+    /// stored-image support keeps the default refusal.
+    fn prepare_run<'a>(
+        &self,
+        owner: &'a image::OwnedRun<'_>,
+        request: &image::RunRequest<'_>,
+        core: &'static dyn unemu_core_api::Core,
+    ) -> anyhow::Result<image::StoredRun<'a>> {
+        let _ = (owner, request, core);
+        anyhow::bail!(image::NO_STORED_RUN)
+    }
     /// The usage lines of the platform's own commands that go in `slot`,
     /// each ending in a line break; empty when none do.
     fn usage(&self, slot: UsageSlot) -> &str;
@@ -177,12 +215,18 @@ pub fn usage(platforms: &[&dyn CliPlatform]) -> String {
         "       upcli image ls --store DIR\n",
         "       upcli image sweep --store DIR\n",
     ));
+    text.push_str(
+        "       upcli image run NAME:TAG --store DIR --workspace NAME [--new] [--max-steps N]\n",
+    );
     slot(&mut text, UsageSlot::AfterImageSweep);
     text.push_str(concat!(
         "       upcli image workspace ls --store DIR\n",
         "       upcli image workspace discard NAME --store DIR --yes\n",
     ));
     slot(&mut text, UsageSlot::AfterWorkspaceDiscard);
+    slot(&mut text, UsageSlot::BeforeMachineRun);
+    text.push_str("       upcli image machine run ID --store DIR [--max-steps N]\n");
+    slot(&mut text, UsageSlot::AfterMachineRun);
     text.push_str(concat!(
         "       upcli image firmware ls [--store DIR]\n",
         "       upcli image firmware show NAME:TAG [--store DIR]\n",
@@ -235,6 +279,7 @@ pub fn run(
     io: &mut Io<'_>,
     host: &HostSources,
     platforms: &[&dyn CliPlatform],
+    cores: &core_launch::Cores,
 ) -> u8 {
     let command = match parse(args, platforms) {
         Ok(command) => command,
@@ -257,7 +302,7 @@ pub fn run(
             }
         },
         Command::Image(command) => {
-            let result = image::execute(command, io, host, platforms);
+            let result = image::execute(command, io, host, platforms, cores);
             finish(result, io)
         }
         Command::Journal(command) => journal::run(command, io),
@@ -318,7 +363,7 @@ pub(crate) mod tests {
     }
     impl CliPlatform for Toy {
         fn platform(&self) -> &str {
-            "toy"
+            unemu_test_core::PLATFORM
         }
         fn validators(&self) -> Vec<&dyn ConfigValidator> {
             Vec::new()
@@ -337,6 +382,51 @@ pub(crate) mod tests {
         }
         fn medium_format(&self, _: &toml::Table) -> anyhow::Result<&'static str> {
             anyhow::bail!("toy media have no formats")
+        }
+        fn prepare_run<'a>(
+            &self,
+            owner: &'a image::OwnedRun<'_>,
+            _: &image::RunRequest<'_>,
+            core: &'static dyn unemu_core_api::Core,
+        ) -> anyhow::Result<image::StoredRun<'a>> {
+            use image_store::BlobSource;
+            let store = owner.owner.store();
+            let manifest = Manifest::decode_for_summary(
+                &store.read_verified(&owner.image, image_store::MAX_SMALL_BLOB)?,
+            )?;
+            let table: toml::Table = std::str::from_utf8(
+                &store.read_verified(&manifest.config, image_store::MAX_SMALL_BLOB)?,
+            )?
+            .parse()?;
+            let script = table["script"].as_str().unwrap().as_bytes().to_vec();
+            let digest = Digest::of(&script);
+            let prepared = core_launch::Prepared::from_parts(core_launch::Parts {
+                core,
+                platform: unemu_test_core::PLATFORM,
+                title: "Toy".into(),
+                notes: Vec::new(),
+                config: unemu_core_api::ConfigDocumentBuf::new(
+                    unemu_test_core::CONFIG_TYPE,
+                    format!(
+                        "unemu-test-core-config 1\nscript {} {}\n",
+                        digest.hex(),
+                        script.len()
+                    )
+                    .into_bytes(),
+                ),
+                content: Box::new(ToyContent(script)),
+                storage: Box::new(ToyStorage),
+                options: Vec::new(),
+            });
+            let mut stored = image::StoredRun::new(prepared, owner.image.digest.clone());
+            stored.created = Box::new(move || {
+                assert!(
+                    store.workspace(owner.owner.name()).is_err(),
+                    "ownership must span creation"
+                );
+                Ok(vec!["toy created".into()])
+            });
+            Ok(stored)
         }
         fn usage(&self, slot: UsageSlot) -> &str {
             match slot {
@@ -357,6 +447,154 @@ pub(crate) mod tests {
         }
     }
 
+    struct ToyContent(Vec<u8>);
+    impl core_launch::ContentPlan for ToyContent {
+        fn open(&self) -> Result<Box<dyn unemu_core_api::ContentSource>, unemu_core_api::Error> {
+            Ok(Box::new(Self(self.0.clone())))
+        }
+    }
+    impl unemu_core_api::ContentSource for ToyContent {
+        fn open(
+            &self,
+            sha256: &[u8; 32],
+            size: u64,
+        ) -> Result<unemu_core_api::Content, unemu_core_api::Error> {
+            let hex: String = sha256.iter().map(|byte| format!("{byte:02x}")).collect();
+            assert_eq!(hex, Digest::of(&self.0).hex());
+            assert_eq!(size, self.0.len() as u64);
+            Ok(unemu_core_api::Content::Bytes(self.0.clone()))
+        }
+    }
+    struct ToyStorage;
+    thread_local! {
+        static TOY_RECORDS: std::cell::RefCell<unemu_core_api::test_support::MemoryStorage> =
+            std::cell::RefCell::new(unemu_core_api::test_support::MemoryStorage::new());
+    }
+    impl core_launch::StoragePlan for ToyStorage {
+        fn open(&self) -> Result<std::rc::Rc<dyn unemu_core_api::Storage>, unemu_core_api::Error> {
+            Ok(TOY_RECORDS.with(|records| {
+                std::rc::Rc::new(records.borrow().clone())
+                    as std::rc::Rc<dyn unemu_core_api::Storage>
+            }))
+        }
+    }
+
+    #[test]
+    fn the_toy_platform_runs_a_stored_image_through_the_test_core() {
+        use image_store::{media_type, BlobSource};
+        struct Validator;
+        impl ConfigValidator for Validator {
+            fn platform(&self) -> &str {
+                unemu_test_core::PLATFORM
+            }
+            fn validate(
+                &self,
+                _: &toml::Table,
+                _: &[Descriptor],
+                _: &dyn BlobSource,
+            ) -> image_store::Result<Vec<Digest>> {
+                Ok(Vec::new())
+            }
+        }
+        let root = std::env::temp_dir().join(format!("cli-toy-run-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = Store::open(&root).unwrap();
+        let config = format!("schema = 1\nplatform = {:?}\nscript = \"\"\"\nunemu-test-core 1\nbattery\nat 2 note hello\nat 3 warning careful\nat 5 power-off\n\"\"\"\n", unemu_test_core::PLATFORM);
+        let blob = store.import(config.as_bytes(), None).unwrap();
+        let metadata = image_store::metadata::Metadata::new(unemu_test_core::PLATFORM)
+            .encode(&[])
+            .unwrap();
+        let metadata = store.import(metadata.as_slice(), None).unwrap();
+        let manifest = Manifest::new(
+            unemu_test_core::PLATFORM,
+            Descriptor::new(media_type::CONFIG, blob.digest, blob.size),
+            vec![Descriptor::new(
+                media_type::METADATA,
+                metadata.digest,
+                metadata.size,
+            )],
+        )
+        .unwrap();
+        let image = store.import_manifest(&manifest).unwrap();
+        store.update_tag("toy:1", &image, None, &Validator).unwrap();
+        let args = |steps: &str| {
+            vec![
+                "image".into(),
+                "run".into(),
+                "toy:1".into(),
+                "--store".into(),
+                root.clone().into_os_string(),
+                "--workspace".into(),
+                "play".into(),
+                "--max-steps".into(),
+                steps.into(),
+            ]
+        };
+        assert!(matches!(
+            parse(&args("4"), &[]),
+            Ok(Command::Image(image::ImageCommand::Run { .. }))
+        ));
+        let cores = core_launch::Cores::new(&[&unemu_test_core::TestCore]);
+        TOY_RECORDS.with(|records| {
+            *records.borrow_mut() = unemu_core_api::test_support::MemoryStorage::new()
+        });
+        for (steps, stop, starts) in [("4", "Steps", 1), ("10", "PoweredOff", 2)] {
+            let (mut output, mut errors) = (Vec::new(), Vec::new());
+            assert_eq!(
+                run(
+                    &args(steps),
+                    &mut Io {
+                        output: &mut output,
+                        errors: &mut errors
+                    },
+                    &HostSources::default(),
+                    &[&Toy::default()],
+                    &cores
+                ),
+                0
+            );
+            assert_eq!(
+                String::from_utf8(output).unwrap(),
+                format!(
+                    "pinned-image:{}\ntoy created\nworkspace:play\t{stop}\n",
+                    image.digest
+                )
+            );
+            assert_eq!(errors, b"hello\ncareful\n");
+            TOY_RECORDS.with(|records| {
+                assert!(String::from_utf8(
+                    records
+                        .borrow()
+                        .durable(unemu_test_core::BATTERY_RECORD)
+                        .unwrap()
+                )
+                .unwrap()
+                .ends_with(&format!("starts {starts}\n")))
+            });
+            assert!(store.workspace("play").is_ok(), "finish releases ownership");
+        }
+        let (mut output, mut errors) = (Vec::new(), Vec::new());
+        assert_eq!(
+            run(
+                &args("4"),
+                &mut Io {
+                    output: &mut output,
+                    errors: &mut errors
+                },
+                &HostSources::default(),
+                &[&Toy::default()],
+                &core_launch::Cores::new(&[])
+            ),
+            1
+        );
+        assert!(output.is_empty());
+        assert_eq!(
+            String::from_utf8(errors).unwrap(),
+            format!("{}\n", image::NO_STORED_RUN)
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn words(text: &str) -> Vec<OsString> {
         text.split_whitespace().map(OsString::from).collect()
     }
@@ -371,6 +609,7 @@ pub(crate) mod tests {
             },
             &HostSources::default(),
             platforms,
+            &core_launch::Cores::new(&[]),
         );
         (
             code,

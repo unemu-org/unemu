@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The PC's image commands; machine-images §§2–3, §5.1 and §8: `image
-//! import` (a machine file to an image), `image run` and `image publish`
+//! import` (a machine file to an image) and `image publish`
 //! (a workspace's session and its publication), `image workspace
 //! abandon-publication`, and through the submodules `image media import`,
 //! `image firmware import` and `edit`, `image machine` and `image template
@@ -21,13 +21,6 @@ use std::{ffi::OsString, io::Write, path::PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PcImageCommand {
-    Run {
-        store: PathBuf,
-        tag: String,
-        workspace: String,
-        max_steps: u64,
-        fresh: bool,
-    },
     Abandon {
         store: PathBuf,
         workspace: String,
@@ -55,10 +48,7 @@ pub enum PcImageCommand {
 pub fn parse(args: &[OsString]) -> Option<Result<PcImageCommand, &'static str>> {
     let word = |index: usize, text: &str| args.get(index).is_some_and(|a| a == text);
     Some(
-        if word(0, "run")
-            || word(0, "publish")
-            || (word(0, "workspace") && word(1, "abandon-publication"))
-        {
+        if word(0, "publish") || (word(0, "workspace") && word(1, "abandon-publication")) {
             workspace(args)
         } else if word(0, "firmware") && (word(1, "import") || word(1, "edit")) {
             firmware::parse(&args[1..]).map(PcImageCommand::Firmware)
@@ -76,7 +66,7 @@ pub fn parse(args: &[OsString]) -> Option<Result<PcImageCommand, &'static str>> 
     )
 }
 
-/// `image run`, `image publish` and `image workspace abandon-publication`,
+/// `image publish` and `image workspace abandon-publication`,
 /// whose words the neutral workspace commands share.
 fn workspace(args: &[OsString]) -> Result<PcImageCommand, &'static str> {
     let words = parse_workspace(args)?;
@@ -85,13 +75,6 @@ fn workspace(args: &[OsString]) -> Result<PcImageCommand, &'static str> {
         ("workspace", Some("abandon-publication")) => Ok(PcImageCommand::Abandon {
             store,
             workspace: words.workspace.ok_or("workspace required")?,
-        }),
-        ("run", _) => Ok(PcImageCommand::Run {
-            store,
-            tag: words.tag.ok_or("tag required")?,
-            workspace: words.workspace.ok_or("--workspace required")?,
-            max_steps: words.max_steps.unwrap_or(1_000_000),
-            fresh: words.fresh,
         }),
         ("publish", _) => Ok(PcImageCommand::Publish {
             store,
@@ -180,49 +163,6 @@ fn import(args: &[OsString]) -> Result<PcImageCommand, &'static str> {
 pub fn execute(command: PcImageCommand, io: &mut Io<'_>, host: &HostSources) -> anyhow::Result<u8> {
     let (output, errors) = (&mut io.output, &mut io.errors);
     match command {
-        PcImageCommand::Run {
-            store,
-            tag,
-            workspace,
-            max_steps,
-            fresh,
-        } => {
-            let store = image_store::Store::open_existing(store)?;
-            if store.read_machines()?.get(&workspace).is_some() {
-                // A machine's workspace starts as the machine does: with its
-                // settings, pending inserts and last run.
-                if fresh {
-                    anyhow::bail!("--new requires a fresh workspace name");
-                }
-                let pinned = pc_image::machine::pinned_image(&store, &workspace)?;
-                match store.tag_descriptor(&tag) {
-                    Ok(requested) if requested.digest != pinned.digest => anyhow::bail!(
-                        "workspace pins {}; requested tag points to {}",
-                        pinned.digest,
-                        requested.digest
-                    ),
-                    Ok(_) | Err(image_store::Error::TagNotFound(_)) => (),
-                    Err(error) => return Err(error.into()),
-                }
-                let owner = pc_image::machine::own(&store, &workspace)?;
-                machine::run_owned(&owner, max_steps, "workspace", output, errors)?;
-                return Ok(0);
-            }
-            let owner = store.workspace(&workspace)?;
-            let prepared = pc_image::launch::prepare_workspace(
-                &owner,
-                &tag,
-                fresh,
-                &unemu_pc_core::PcCore,
-                tag.clone(),
-            )?;
-            writeln!(output, "pinned-image:{}", prepared.image)?;
-            let mut machine = core_launch::start_with(&prepared.prepared, |request| {
-                unemu_pc_core::PcCore.create_machine(request)
-            })?;
-            let stop = run_started(&mut machine, max_steps, errors)?;
-            writeln!(output, "workspace:{workspace}\t{stop:?}")?;
-        }
         PcImageCommand::Abandon { store, workspace } => {
             let store = image_store::Store::open_existing(store)?;
             let owner = store.open_workspace(&workspace)?;
@@ -280,49 +220,84 @@ pub fn execute(command: PcImageCommand, io: &mut Io<'_>, host: &HostSources) -> 
     Ok(0)
 }
 
-/// Preserve stored-image persistence on errors as well as successful runs.
+/// Keep the typed PC for the persistence operation absent from the contract.
+struct PcRun<T>(T);
+
+impl<T: std::borrow::BorrowMut<unemu_pc_core::PcMachine>> cli_core::image::RunMachine for PcRun<T> {
+    fn machine(&mut self) -> &mut dyn unemu_core_api::Machine {
+        self.0.borrow_mut()
+    }
+
+    fn failed(
+        &mut self,
+        error: unemu_core_api::Error,
+        errors: &mut dyn Write,
+    ) -> (anyhow::Error, anyhow::Result<unemu_core_api::Finished>) {
+        let machine = self.0.borrow_mut();
+        let error = match machine.take_guest_failure() {
+            Some(failure) => anyhow::Error::new(failure),
+            None => anyhow::Error::new(error),
+        };
+        let persisted = pc_harness::finish_persistence(machine.assembled(), &mut &mut *errors)
+            .map(|()| unemu_core_api::Finished::new())
+            .map_err(anyhow::Error::from);
+        (error, persisted)
+    }
+}
+
+pub(crate) fn prepare_run<'a>(
+    owner: &'a cli_core::image::OwnedRun<'_>,
+    request: &cli_core::image::RunRequest<'_>,
+    core: &'static dyn unemu_core_api::Core,
+) -> anyhow::Result<cli_core::image::StoredRun<'a>> {
+    let prepared = if owner.machine {
+        pc_image::launch::prepare_machine(&owner.owner, core, owner.owner.name().to_owned())?
+    } else {
+        pc_image::launch::prepare_workspace(
+            &owner.owner,
+            request
+                .tag
+                .ok_or_else(|| anyhow::anyhow!(cli_core::image::NO_STORED_RUN))?,
+            request.fresh,
+            core,
+            request.tag.unwrap_or_default().to_owned(),
+        )?
+    };
+    let mut stored = cli_core::image::StoredRun::new(prepared.prepared, prepared.image);
+    stored.start = |prepared| {
+        use unemu_core_api::Core;
+        if prepared.core().description().id != unemu_pc_core::PcCore.description().id {
+            return Ok(Box::new(core_launch::start(prepared)?));
+        }
+        Ok(Box::new(PcRun(core_launch::start_with(
+            prepared,
+            |request| unemu_pc_core::PcCore.create_machine(request),
+        )?)))
+    };
+    if owner.machine {
+        stored.created = Box::new(move || {
+            pc_image::machine::confirm(&owner.owner, &prepared.inserted, machine::host_time())?;
+            Ok(prepared
+                .inserted
+                .iter()
+                .map(|insert| format!("inserted:{}\t{}", insert.drive, insert.medium))
+                .collect())
+        });
+    }
+    Ok(stored)
+}
+
+#[cfg(test)]
 fn run_started(
     machine: &mut unemu_pc_core::PcMachine,
     max_steps: u64,
     errors: &mut impl Write,
 ) -> anyhow::Result<unemu_core_api::Stop> {
-    use unemu_core_api::Machine;
-
-    let result = machine
-        .run(unemu_core_api::RunLimit::steps(max_steps))
-        .map_err(|error| match machine.take_guest_failure() {
-            Some(failure) => anyhow::Error::new(failure),
-            None => anyhow::Error::new(error),
-        });
-    // The contract forbids finish after failure, but these PC commands have
-    // always saved CMOS and closed journals before returning a run error.
-    let finished = if result.is_err() {
-        pc_harness::finish_persistence(machine.assembled(), errors)
-            .map(|()| unemu_core_api::Finished::new())
-            .map_err(anyhow::Error::from)
-    } else {
-        machine.finish().map_err(anyhow::Error::from)
-    };
-    let mut messages = Vec::new();
-    machine.drain_messages(&mut messages);
-    for message in messages {
-        let written = writeln!(errors, "{}", message.text);
-        if message.level != unemu_core_api::MessageLevel::Warning {
-            written?;
-        }
-    }
-    if let Ok(finished) = &finished {
-        write_finish_warnings(finished, errors);
-    }
-    finished?;
-    result
+    cli_core::image::run_started(&mut PcRun(machine), max_steps, errors)
 }
 
-fn write_finish_warnings(finished: &unemu_core_api::Finished, errors: &mut impl Write) {
-    for warning in &finished.warnings {
-        let _ = writeln!(errors, "warning: {warning}");
-    }
-}
+#[cfg(test)]
+use cli_core::image::write_finish_warnings;
 
 #[cfg(test)]
 mod tests {
@@ -439,6 +414,101 @@ mod tests {
         assert_eq!(scan.report.last_closed_generation, Some(1));
         assert!(scan.report.unsealed_tip.is_none());
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn the_run_hook_persists_a_failed_pc_and_keeps_its_diagnostic() {
+        pc_image::test_support::with_synthetic_firmware(|| {
+            let temp = assembly::test_support::TempDir::new("run-hook-failure");
+            let refused = assembly::test_support::refused_gate_call();
+            let guest = refused
+                .images
+                .iter()
+                .find_map(|image| match &image.source {
+                    assembly::ImageSource::Inline(bytes) if image.base == 0x7c00 => Some(bytes),
+                    _ => None,
+                })
+                .unwrap();
+            let mut rom = vec![0xf4; 32768];
+            let mut loader = vec![
+                0xfa, 0xb8, 0x00, 0xf8, 0x8e, 0xd8, 0x31, 0xc0, 0x8e, 0xc0, 0xfc, 0xbe, 0x00, 0x01,
+                0xbf, 0x00, 0x7c, 0xb9,
+            ];
+            loader.extend((guest.len() as u16).to_le_bytes());
+            loader.extend([
+                0xf3, 0xa4, 0x31, 0xc0, 0x8e, 0xd8, 0xb0, 0x10, 0xe6, 0x70, 0xb0, 0x5a, 0xe6, 0x71,
+                0xea, 0x00, 0x7c, 0x00, 0x00,
+            ]);
+            rom[..loader.len()].copy_from_slice(&loader);
+            rom[0x100..0x100 + guest.len()].copy_from_slice(guest);
+            rom[0x7ff0..0x7ff5].copy_from_slice(&[0xea, 0x00, 0x00, 0x00, 0xf8]);
+            std::fs::write(temp.path().join("bios.bin"), rom).unwrap();
+            std::fs::write(temp.path().join("cmos.bin"), [0; 64]).unwrap();
+            let file = temp.path().join("machine.toml");
+            std::fs::write(&file, "schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='bios.bin'\n[board.rtc.nvram]\nimage='cmos.bin'\nwrite='journal'\njournal='source.upfj'\n[[card]]\nkind='vga-text'\n").unwrap();
+            let store = image_store::Store::open(temp.path().join("store")).unwrap();
+            pc_image::import_machine(
+                &store,
+                &file,
+                "toy:failed",
+                &pc_image::ImportOptions::default(),
+            )
+            .unwrap();
+            let expected = {
+                let owner = store.workspace("legacy").unwrap();
+                let prepared =
+                    pc_image::workspace::prepare_start(&owner, "toy:failed", false).unwrap();
+                let mut machine = assembly::assemble_with_verified_bases(
+                    &prepared.machine,
+                    &assembly::ObservationPolicy::default(),
+                    assembly::AssemblyOptions {
+                        allow_unlisted_firmware: true,
+                    },
+                    &prepared.bases,
+                )
+                .unwrap();
+                let error = machine
+                    .run_session(&assembly::RunPolicy::natural(
+                        Some(100_000),
+                        Some(1_000_000),
+                    ))
+                    .unwrap_err();
+                pc_harness::finish_persistence(&mut machine, &mut Vec::new()).unwrap();
+                format!("{:#}", anyhow::Error::new(error))
+            };
+            crate::with_platform(|pc| {
+                let request = cli_core::image::RunRequest {
+                    workspace: "hook",
+                    tag: Some("toy:failed"),
+                    fresh: false,
+                };
+                let owner = pc
+                    .own_run(&store, &request, &mut Vec::new())
+                    .unwrap()
+                    .unwrap();
+                let stored = pc
+                    .prepare_run(&owner, &request, &unemu_pc_core::PcCore)
+                    .unwrap();
+                let prepared = stored
+                    .prepared
+                    .with_options(vec![("allow-unlisted-firmware".into(), "true".into())]);
+                let mut machine = (stored.start)(&prepared).unwrap();
+                (stored.created)().unwrap();
+                let error =
+                    cli_core::image::run_started(machine.as_mut(), 100_000, &mut Vec::new())
+                        .unwrap_err();
+                assert_eq!(format!("{error:#}"), expected);
+            });
+            let bytes = |name| {
+                std::fs::read(store.workspace_path(name).unwrap().join("media/cmos.upfj")).unwrap()
+            };
+            let actual = bytes("hook");
+            assert_eq!(actual, bytes("legacy"));
+            let scan = media::scan(&actual, &[0; 64], 64);
+            assert_eq!(scan.image.unwrap()[0x10], 0x5a);
+            assert_eq!(scan.report.last_closed_generation, Some(1));
+            assert!(scan.report.unsealed_tip.is_none());
+        });
     }
 
     #[test]

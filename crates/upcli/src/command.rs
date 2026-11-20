@@ -16,12 +16,33 @@ pub use cli_core::journal::{render_report, report_exit_code};
 pub use cli_core::HostSources as FirmwareSources;
 
 /// A parsed `upcli` command line.
-#[derive(Debug)]
 pub enum Command {
     /// `--version` or `--about`: the licence and third-party notices.
     About,
     /// A command of the neutral command line or of a platform.
     Line(cli_core::Command),
+}
+
+// The program's parse pin predates the neutral stored-run commands. Keep
+// its diagnostic representation stable while their implementation moves.
+impl std::fmt::Debug for Command {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use cli_core::image::ImageCommand;
+        match self {
+            Self::About => f.write_str("About"),
+            Self::Line(cli_core::Command::Image(command @ ImageCommand::Run { .. })) => {
+                write!(f, "Line(Platform(Image({command:?})))")
+            }
+            Self::Line(cli_core::Command::Image(ImageCommand::MachineRun {
+                store,
+                id,
+                max_steps,
+            })) => {
+                write!(f, "Line(Platform(Image(Machine(MachineCommand {{ store: {store:?}, action: Run {{ id: {id:?}, max_steps: {max_steps:?} }} }}))))")
+            }
+            Self::Line(command) => f.debug_tuple("Line").field(command).finish(),
+        }
+    }
 }
 
 /// `--version` and `--about` stand alone; nothing else on the command line
@@ -67,7 +88,7 @@ pub fn run_program(
     cores: &Cores,
 ) -> u8 {
     if !about(args) {
-        return cli_core::run(args, io, host, platforms);
+        return cli_core::run(args, io, host, platforms, cores);
     }
     match io
         .output

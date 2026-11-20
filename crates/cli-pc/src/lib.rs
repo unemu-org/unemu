@@ -3,14 +3,15 @@
 //! (`backlog/docs/design/core-contract.md` §7.1 and §7.2): the
 //! [`CliPlatform`] of the PC, which owns the parse and execution of every
 //! PC command (`--boot`, `--bios`, `machine check`, `run --machine`, `image
-//! import`, `image run`, `image publish`, `image workspace
+//! import`, `image publish`, `image workspace
 //! abandon-publication`, `image machine`, `image media import`, `image
 //! firmware import` and `edit`, `image template build`, `media create`) and
 //! answers the neutral commands' questions: the PC's validators (its
 //! provider list, [`pc_image::with_providers`]), the firmware catalogue's
 //! restrictions on a push, the compression that keeps the PC import record,
 //! the images PC workspaces and machines pin, the PC recipe provider and
-//! the names of the PC media formats.
+//! the names of the PC media formats, and ownership and preparation for the
+//! neutral stored-image runners (core-contract.md §14.2.7).
 //!
 //! The crate is in the PC layer (core-contract.md §7.3): it builds on the
 //! neutral command line of `cli-core` and on the PC and emulation crates, and
@@ -107,6 +108,77 @@ impl CliPlatform for PcPlatform<'_> {
         Ok(pc_image::media_set::format_name(format)?)
     }
 
+    fn own_run<'a>(
+        &self,
+        store: &'a Store,
+        request: &cli_core::image::RunRequest<'_>,
+        errors: &mut dyn std::io::Write,
+    ) -> anyhow::Result<Option<cli_core::image::OwnedRun<'a>>> {
+        if request.tag.is_none() {
+            let (_, migration) = pc_image::machine::open_store(store.root())?;
+            for id in migration.adopted {
+                writeln!(errors, "migrated:{id}")?;
+            }
+            for (name, reason) in migration.skipped {
+                writeln!(errors, "migration-skipped:{name}\t{reason}")?;
+            }
+        }
+        let is_machine =
+            request.tag.is_none() || store.read_machines()?.get(request.workspace).is_some();
+        let (owner, image) = if is_machine {
+            if request.fresh {
+                anyhow::bail!("--new requires a fresh workspace name");
+            }
+            if let Some(tag) = request.tag {
+                let pinned = pc_image::machine::pinned_image(store, request.workspace)?;
+                match store.tag_descriptor(tag) {
+                    Ok(requested) if requested.digest != pinned.digest => anyhow::bail!(
+                        "workspace pins {}; requested tag points to {}",
+                        pinned.digest,
+                        requested.digest
+                    ),
+                    Ok(_) | Err(image_store::Error::TagNotFound(_)) => (),
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            let owner = pc_image::machine::own(store, request.workspace)?;
+            let image = pc_image::machine::select_run_image(&owner)?;
+            (owner, image)
+        } else {
+            let owner = store.workspace(request.workspace)?;
+            let image = pc_image::workspace::select_run_image(
+                &owner,
+                request.tag.unwrap_or_default(),
+                request.fresh,
+                None,
+            )?;
+            (owner, image)
+        };
+        if is_machine {
+            pc_image::workspace::select_run_image(&owner, "", false, Some(&image))?;
+        }
+        if !image_store::platform::same(
+            &cli_core::image::run_platform(store, &image)?,
+            self.platform(),
+        ) {
+            return Ok(None);
+        }
+        Ok(Some(cli_core::image::OwnedRun {
+            owner,
+            image,
+            machine: is_machine,
+        }))
+    }
+
+    fn prepare_run<'a>(
+        &self,
+        owner: &'a cli_core::image::OwnedRun<'_>,
+        request: &cli_core::image::RunRequest<'_>,
+        core: &'static dyn unemu_core_api::Core,
+    ) -> anyhow::Result<cli_core::image::StoredRun<'a>> {
+        image::prepare_run(owner, request, core)
+    }
+
     fn usage(&self, slot: UsageSlot) -> &str {
         match slot {
         UsageSlot::First => "       upcli --boot (Real16 timer demo)\n",
@@ -119,10 +191,12 @@ impl CliPlatform for PcPlatform<'_> {
             "       upcli image import FILE --store DIR --tag NAME:TAG [--create] [--no-compress] [--rom-dir DIR]... [--recover MEDIUM=tip|MEDIUM=generation:N]... [--min-app-version X.Y.Z]\n",
             "         --min-app-version (here, on image media import and on image firmware import and edit) raises the oldest unemupc the image declares it needs: never below what this release computes, never above this release\n",
         ),
-        UsageSlot::AfterImageSweep => "       upcli image run NAME:TAG --store DIR --workspace NAME [--new] [--max-steps N]\n",
+        UsageSlot::AfterImageSweep => "",
         UsageSlot::AfterWorkspaceDiscard => concat!(
             "       upcli image workspace abandon-publication NAME --store DIR\n",
             "       upcli image publish --from-workspace NAME --store DIR --tag NAME:TAG [--flatten]\n",
+        ),
+        UsageSlot::BeforeMachineRun => concat!(
             "       upcli image machine ls --store DIR\n",
             "       upcli image machine new NAME:TAG --store DIR [--name NAME]\n",
             "       upcli image machine rename ID NAME --store DIR\n",
@@ -131,7 +205,8 @@ impl CliPlatform for PcPlatform<'_> {
             "       upcli image machine rm ID --store DIR --yes\n",
             "       upcli image machine settings ID --store DIR [--set PATH=VALUE]... [--clear] [--dry-run]\n",
             "       upcli image machine commit ID --store DIR --tag NAME:TAG [--title TITLE] [--keep-on-old-image]\n",
-            "       upcli image machine run ID --store DIR [--max-steps N]\n",
+        ),
+        UsageSlot::AfterMachineRun => concat!(
             "       upcli image media import FILE...|DIR --title TITLE --tag NAME:TAG --store DIR [--create] [--dry-run] [--no-compress] [--label N=TEXT]... [--format N=FORMAT]... [--extra PATH[:DOSNAME]]... [--open --license LicenseRef-NAME --license-text EXTRA] [--open --license EXPRESSION --license-text EXTRA --source EXTRA] [--min-app-version X.Y.Z] [SET-METADATA]\n",
             "         SET-METADATA: [--publisher P]... [--developer D]... [--year YYYY] [--genre G]... [--platform PLATFORM] [--description TEXT] [--version V] [--edition E] [--set-label L]...\n",
             "                       [--need KIND=VALUE[,VALUE]...]... [--requirements TEXT] [--work ID] [--synopsis TEXT] [--work-id wikidata|mobygames|igdb=ID]...\n",

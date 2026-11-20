@@ -862,22 +862,10 @@ impl Store {
         Ok(tags)
     }
 
-    pub(crate) fn resolve_image_inner(
-        &self,
-        image: &Descriptor,
-        validator: &dyn ConfigValidator,
-        require_artwork: bool,
-    ) -> Result<ResolvedImage> {
-        self.resolve_image_reusing(image, validator, require_artwork, None, None)
-    }
-    fn resolve_image_reusing(
-        &self,
-        image: &Descriptor,
-        validator: &dyn ConfigValidator,
-        require_artwork: bool,
-        reuse: Option<&ResolvedImage>,
-        progress: Option<&dyn Fn(usize, usize)>,
-    ) -> Result<ResolvedImage> {
+    /// Read a manifest only after descriptor and release compatibility checks.
+    /// Platform dispatch uses this before decoding even a future envelope.
+    pub fn read_compatible_manifest(&self, image: &Descriptor) -> Result<Vec<u8>> {
+        let _lease = self.lease()?;
         image.validate()?;
         if image.media_type != media_type::MANIFEST {
             return Err(invalid("tag target is not a manifest"));
@@ -903,6 +891,26 @@ impl Store {
                     .unwrap_or_else(|| image.digest.to_string()),
             )?;
         }
+        Ok(bytes)
+    }
+
+    pub(crate) fn resolve_image_inner(
+        &self,
+        image: &Descriptor,
+        validator: &dyn ConfigValidator,
+        require_artwork: bool,
+    ) -> Result<ResolvedImage> {
+        self.resolve_image_reusing(image, validator, require_artwork, None, None)
+    }
+    fn resolve_image_reusing(
+        &self,
+        image: &Descriptor,
+        validator: &dyn ConfigValidator,
+        require_artwork: bool,
+        reuse: Option<&ResolvedImage>,
+        progress: Option<&dyn Fn(usize, usize)>,
+    ) -> Result<ResolvedImage> {
+        let bytes = self.read_compatible_manifest(image)?;
         let manifest = Manifest::decode_with_types(&bytes, validator.payload_types())?;
         if manifest.artifact_type() != validator.artifact_type() {
             return Err(invalid("artifact type does not match validator"));

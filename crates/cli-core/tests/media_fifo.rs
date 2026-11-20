@@ -16,6 +16,7 @@ fn run(args: &[OsString], output: &mut Vec<u8>, errors: &mut Vec<u8>) -> u8 {
         &mut cli_core::Io { output, errors },
         &cli_core::HostSources::default(),
         &[],
+        &core_launch::Cores::new(&[]),
     )
 }
 

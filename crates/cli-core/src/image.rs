@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The image commands that need no emulator; machine-images §§2–3, §5.1 and
-//! §8: `image ls`, `sweep`, `compress`, `image workspace ls` and `discard`,
+//! The neutral image commands; machine-images §§2–3, §5.1 and
+//! §8: `image run` and `image machine run` through the core contract
+//! (core-contract.md §14.2.7), `image ls`, `sweep`, `compress`,
+//! `image workspace ls` and `discard`,
 //! and through the submodules `image media ls` and `show`, `image firmware
 //! ls` and `show`, `image export`, and the registry commands. The other `image` words are a
 //! platform's; [`parse`] leaves them to the platforms. The helpers the
@@ -20,6 +22,18 @@ use std::{ffi::OsString, io::Write, path::PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ImageCommand {
+    Run {
+        store: PathBuf,
+        tag: String,
+        workspace: String,
+        max_steps: u64,
+        fresh: bool,
+    },
+    MachineRun {
+        store: PathBuf,
+        id: String,
+        max_steps: u64,
+    },
     Compress {
         store: PathBuf,
         source: String,
@@ -45,19 +59,209 @@ pub enum ImageCommand {
     },
 }
 
+/// The refusal shared by platforms that have no stored-image runner.
+pub const NO_STORED_RUN: &str = "this platform's images do not run from the command line yet";
+
+/// A workspace run (`tag` is present), or a named machine run.
+pub struct RunRequest<'a> {
+    pub workspace: &'a str,
+    pub tag: Option<&'a str>,
+    pub fresh: bool,
+}
+
+/// A platform's selected image and the ownership kept through run and finish.
+pub struct OwnedRun<'a> {
+    pub owner: image_store::workspace::Workspace<'a>,
+    pub image: image_store::Descriptor,
+    pub machine: bool,
+}
+
+/// The CLI keeps the typed machine only where a platform must persist a failed
+/// run. The core contract forbids `finish` after failure (§14.2.7).
+pub trait RunMachine {
+    /// The machine driven through the contract on both run commands.
+    fn machine(&mut self) -> &mut dyn unemu_core_api::Machine;
+    /// Return the original run error and the outcome of platform persistence.
+    /// Persistence errors take precedence after messages have been drained.
+    fn failed(
+        &mut self,
+        error: unemu_core_api::Error,
+        errors: &mut dyn Write,
+    ) -> (anyhow::Error, anyhow::Result<unemu_core_api::Finished>) {
+        let _ = errors;
+        (error.into(), Ok(unemu_core_api::Finished::new()))
+    }
+}
+
+impl RunMachine for Box<dyn unemu_core_api::Machine> {
+    fn machine(&mut self) -> &mut dyn unemu_core_api::Machine {
+        self.as_mut()
+    }
+}
+
+/// Prepared launch, confirmation after creation, and an optional typed starter.
+/// The default starter drives only the core contract.
+pub struct StoredRun<'a> {
+    pub prepared: core_launch::Prepared,
+    pub image: image_store::Digest,
+    pub created: Box<dyn FnOnce() -> anyhow::Result<Vec<String>> + 'a>,
+    pub start: fn(&core_launch::Prepared) -> anyhow::Result<Box<dyn RunMachine>>,
+}
+
+impl StoredRun<'_> {
+    pub fn new(prepared: core_launch::Prepared, image: image_store::Digest) -> Self {
+        Self {
+            prepared,
+            image,
+            created: Box::new(|| Ok(Vec::new())),
+            start: |prepared| Ok(Box::new(core_launch::start(prepared)?)),
+        }
+    }
+}
+
+/// Read the manifest's platform without interpreting a platform's session.
+pub fn run_platform(store: &Store, image: &image_store::Descriptor) -> anyhow::Result<String> {
+    let manifest = Manifest::decode_for_summary(&store.read_compatible_manifest(image)?)?;
+    Ok(manifest.platform()?.to_owned())
+}
+
+fn stored_run(
+    root: &std::path::Path,
+    request: RunRequest<'_>,
+    max_steps: u64,
+    io: &mut Io<'_>,
+    platforms: &[&dyn CliPlatform],
+    cores: &core_launch::Cores,
+) -> anyhow::Result<()> {
+    let store = Store::open_existing(root)?;
+    for provider in platforms {
+        let Some(owner) = provider.own_run(&store, &request, io.errors)? else {
+            continue;
+        };
+        let platform = run_platform(&store, &owner.image)?;
+        let platform = image_store::platform::canonical(&platform);
+        let core = cores
+            .for_platform(platform)
+            .ok_or_else(|| anyhow::anyhow!(NO_STORED_RUN))?;
+        let stored = provider.prepare_run(&owner, &request, core)?;
+        writeln!(io.output, "pinned-image:{}", stored.image)?;
+        let mut machine = (stored.start)(&stored.prepared)?;
+        for line in (stored.created)()? {
+            writeln!(io.output, "{line}")?;
+        }
+        let stop = run_started(machine.as_mut(), max_steps, io.errors)?;
+        let label = if request.tag.is_some() {
+            "workspace"
+        } else {
+            "machine"
+        };
+        writeln!(io.output, "{label}:{}\t{stop:?}", owner.owner.name())?;
+        return Ok(());
+    }
+    anyhow::bail!(NO_STORED_RUN)
+}
+
+/// Run, persist and drain diagnostics while the caller retains ownership.
+pub fn run_started(
+    machine: &mut dyn RunMachine,
+    max_steps: u64,
+    errors: &mut dyn Write,
+) -> anyhow::Result<unemu_core_api::Stop> {
+    let (result, finished) = match machine
+        .machine()
+        .run(unemu_core_api::RunLimit::steps(max_steps))
+    {
+        Ok(stop) => (
+            Ok(stop),
+            machine.machine().finish().map_err(anyhow::Error::from),
+        ),
+        Err(error) => {
+            let (error, finished) = machine.failed(error, errors);
+            (Err(error), finished)
+        }
+    };
+    let mut messages = Vec::new();
+    machine.machine().drain_messages(&mut messages);
+    for message in messages {
+        let written = writeln!(errors, "{}", message.text);
+        if message.level != unemu_core_api::MessageLevel::Warning {
+            written?;
+        }
+    }
+    if let Ok(finished) = &finished {
+        write_finish_warnings(finished, errors);
+    }
+    finished?;
+    result
+}
+
+/// Warning output remains best effort, as on the platform command paths.
+pub fn write_finish_warnings(finished: &unemu_core_api::Finished, errors: &mut dyn Write) {
+    for warning in &finished.warnings {
+        let _ = writeln!(errors, "warning: {warning}");
+    }
+}
+
+fn parse_machine_run(args: &[OsString]) -> Result<ImageCommand, &'static str> {
+    let id = args
+        .first()
+        .and_then(|a| a.to_str())
+        .filter(|a| !a.is_empty() && !a.starts_with("--"))
+        .ok_or("image machine commands require a machine ID")?
+        .to_owned();
+    let (mut store, mut max_steps) = (None, None);
+    let mut args = args[1..].iter();
+    while let Some(option) = args.next() {
+        let option = option.to_str().ok_or("invalid machine option")?;
+        let value = args
+            .next()
+            .and_then(|a| a.to_str())
+            .filter(|s| !s.is_empty() && !s.starts_with("--"))
+            .ok_or("missing machine option value")?;
+        match option {
+            "--store" if store.is_none() => store = Some(PathBuf::from(value)),
+            "--max-steps" if max_steps.is_none() => {
+                max_steps = Some(
+                    value
+                        .parse()
+                        .ok()
+                        .filter(|n| *n > 0)
+                        .ok_or("invalid step limit")?,
+                )
+            }
+            _ => return Err("unknown or duplicate machine option"),
+        }
+    }
+    Ok(ImageCommand::MachineRun {
+        store: store.ok_or("image commands require --store DIR")?,
+        id,
+        max_steps: max_steps.unwrap_or(1_000_000),
+    })
+}
+
 /// Parse the words after `image`: `Ok(None)` when they are a platform's.
 pub fn parse(args: &[OsString]) -> Result<Option<ImageCommand>, &'static str> {
+    if args.first().is_some_and(|a| a == "machine") && args.get(1).is_some_and(|a| a == "run") {
+        return parse_machine_run(&args[2..]).map(Some);
+    }
     if args
         .first()
         .is_some_and(|s| matches!(s.to_str(), Some("run" | "workspace" | "publish")))
     {
-        let platform = matches!(args[0].to_str(), Some("run" | "publish"))
+        let platform = matches!(args[0].to_str(), Some("publish"))
             || (args[0] == "workspace" && args.get(1).is_some_and(|a| a == "abandon-publication"));
         if platform {
             return Ok(None);
         }
         let words = parse_workspace(args)?;
         return Ok(match (words.action, words.sub) {
+            ("run", _) => Some(ImageCommand::Run {
+                store: words.store,
+                tag: words.tag.ok_or("tag required")?,
+                workspace: words.workspace.ok_or("--workspace required")?,
+                max_steps: words.max_steps.unwrap_or(1_000_000),
+                fresh: words.fresh,
+            }),
             ("workspace", Some("ls")) => Some(ImageCommand::Workspaces { store: words.store }),
             ("workspace", Some("discard")) => Some(ImageCommand::Discard {
                 store: words.store,
@@ -139,9 +343,48 @@ pub fn execute(
     io: &mut Io<'_>,
     host: &HostSources,
     platforms: &[&dyn CliPlatform],
+    cores: &core_launch::Cores,
 ) -> anyhow::Result<u8> {
     let output = &mut io.output;
     match command {
+        ImageCommand::Run {
+            store,
+            tag,
+            workspace,
+            max_steps,
+            fresh,
+        } => {
+            stored_run(
+                &store,
+                RunRequest {
+                    workspace: &workspace,
+                    tag: Some(&tag),
+                    fresh,
+                },
+                max_steps,
+                io,
+                platforms,
+                cores,
+            )?;
+        }
+        ImageCommand::MachineRun {
+            store,
+            id,
+            max_steps,
+        } => {
+            stored_run(
+                &store,
+                RunRequest {
+                    workspace: &id,
+                    tag: None,
+                    fresh: false,
+                },
+                max_steps,
+                io,
+                platforms,
+                cores,
+            )?;
+        }
         ImageCommand::Compress { store, source, tag } => {
             let store = Store::open_existing(store)?;
             let result = super::platform_of(platforms)?.compress(&store, &source, &tag)?;
