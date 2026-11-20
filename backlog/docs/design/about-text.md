@@ -901,7 +901,7 @@ Drawn in [`mockups/about.html`](mockups/about.html); this is the behaviour.
   focused link, opens **Open link?** and nothing else:
   - the host, alone on a line, as the address spells it;
   - the whole address in a field that can be selected, wrapped, never cut;
-  - "unemupc does not contact this address. Your web browser opens it.";
+  - "unemu does not contact this address. Your web browser opens it.";
   - **Open in browser**, **Copy address**, and **Cancel**, which is the
     default button and what Escape does.
 

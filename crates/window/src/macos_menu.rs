@@ -205,7 +205,7 @@ fn hook_system_quit(app: &NSApplication) {
     let answered = class.instance_method(selector).is_some();
     if answered {
         eprintln!(
-            "unemupc: the application delegate already answers applicationShouldTerminate:; \
+            "unemu: the application delegate already answers applicationShouldTerminate:; \
              Dock Quit and logout will not ask before stopping a running machine"
         );
     }

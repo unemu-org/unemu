@@ -1580,7 +1580,7 @@ fn keep_catalogue(
     match pc_media::kept_catalogue::keep(store, workspace.path(), drives) {
         Ok(notes) => {
             for note in &notes {
-                eprintln!("unemupc: {note}");
+                eprintln!("unemu: {note}");
             }
             notes
         }
@@ -1606,7 +1606,7 @@ fn note_stop(send: &dyn Fn(Event), notes: Vec<String>) {
 fn note_start(send: &dyn Fn(Event), notes: Vec<String>) {
     if !notes.is_empty() {
         for note in &notes {
-            eprintln!("unemupc: {note}");
+            eprintln!("unemu: {note}");
         }
         send(Event::StartNotes(notes));
     }

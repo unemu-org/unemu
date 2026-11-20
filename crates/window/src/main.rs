@@ -433,7 +433,7 @@ fn informational_text(arg: &OsStr, cores: &core_launch::Cores) -> Option<String>
     let shown = shown_path;
     if arg == "--help" {
         Some(format!(
-            "usage: unemupc [--machine FILE] [--open FILE [--core ID]] [--display CARD] [--rom-dir DIR]... [--allow-unlisted-firmware]\n\ndefault selection: {} (opens the machine library; --machine starts immediately)\nmachine files: {} (set {MACHINES_DIR_VAR} to use another directory)\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}\n\n{opl3}", shown(default_machine()), shown(machines_dir())
+            "usage: unemu [--machine FILE] [--open FILE [--core ID]] [--display CARD] [--rom-dir DIR]... [--allow-unlisted-firmware]\n\ndefault selection: {} (opens the machine library; --machine starts immediately)\nmachine files: {} (set {MACHINES_DIR_VAR} to use another directory)\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}\n\n{opl3}", shown(default_machine()), shown(machines_dir())
         ))
     } else if arg == "--version" || arg == "--about" {
         let mut lines = String::new();
@@ -442,7 +442,7 @@ fn informational_text(arg: &OsStr, cores: &core_launch::Cores) -> Option<String>
             lines.push('\n');
         }
         Some(format!(
-            "unemupc {}\n{lines}{}\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}\n\n{opl3}",
+            "unemu {}\n{lines}{}\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}\n\n{opl3}",
             env!("CARGO_PKG_VERSION"),
             platforms::licence_notice(),
         ))
@@ -1309,11 +1309,17 @@ mod tests {
     }
 
     #[test]
+    fn desktop_binary_and_host_access_hint_name_unemu() {
+        assert_eq!(env!("CARGO_BIN_NAME"), "unemu");
+        assert!(system_keys::REFUSED_HINT.contains("allow unemu,"));
+    }
+
+    #[test]
     fn informational_options_carry_the_embedded_font_notice() {
         for option in ["--help", "--version", "--about"] {
             let output = informational_output(OsStr::new(option)).unwrap();
             assert!(output.contains(FONT_NOTICE), "{option}");
-            assert!(output.contains("unemupc"));
+            assert!(output.starts_with("unemu ") || output.starts_with("usage: unemu "));
         }
         assert!(informational_output(OsStr::new("bios.bin")).is_none());
     }
@@ -1352,7 +1358,7 @@ mod tests {
                 .replace(env!("CARGO_PKG_VERSION"), "VERSION");
             assert_eq!(
                 text,
-                "unemupc VERSION\n\
+                "unemu VERSION\n\
                  core unemupc VERSION (unemupc), contract 0.2\n\
                  core unemunes 0.0.1 (unemunes), contract 0.2\n\
                  LICENCE NOTICE\n\nFONT NOTICE\n\nEGUI FONT NOTICE\n\n\
@@ -1376,7 +1382,7 @@ mod tests {
             .replace(devices::OPL3_NOTICE, "OPL3 NOTICE");
         assert_eq!(
             text,
-            "usage: unemupc [--machine FILE] [--open FILE [--core ID]] [--display CARD] [--rom-dir DIR]... [--allow-unlisted-firmware]\n\n\
+            "usage: unemu [--machine FILE] [--open FILE [--core ID]] [--display CARD] [--rom-dir DIR]... [--allow-unlisted-firmware]\n\n\
              default selection: DEFAULT (opens the machine library; --machine starts immediately)\n\
              machine files: MACHINES (set UNEMUPC_MACHINES_DIR to use another directory)\n\n\
              FONT NOTICE\n\nEGUI FONT NOTICE\n\nSYMBOL FONT NOTICE\n\nOPL3 NOTICE"

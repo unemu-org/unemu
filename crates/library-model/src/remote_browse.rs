@@ -1853,7 +1853,7 @@ impl RegistryView {
             State::LoginRequired { challenge, .. } => (
                 format!("{host} asks for a login"),
                 format!(
-                    "The registry answered with 401 Unauthorized and {}, which unemupc cannot answer. {login_tail}",
+                    "The registry answered with 401 Unauthorized and {}, which unemu cannot answer. {login_tail}",
                     match challenge {
                         // A 401 without a challenge parses as the scheme "none".
                         Some(Challenge::Other(scheme)) if scheme != "none" => {
@@ -2786,7 +2786,7 @@ mod tests {
         );
         assert_eq!(view.message().unwrap().action, None);
 
-        // A 401 without a challenge unemupc can answer offers no login.
+        // A 401 without a challenge unemu can answer offers no login.
         let other = MockRegistry::start(open_registry());
         let setup = Setup::with(&other);
         let mut remotes = setup.remotes();

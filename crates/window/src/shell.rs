@@ -269,7 +269,7 @@ pub(super) fn run(
     }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("unemupc")
+            .with_title("unemu")
             .with_icon(ui_kit::logo::icon()?)
             .with_inner_size([1040.0, 700.0])
             .with_min_inner_size([760.0, 500.0]),
@@ -281,7 +281,7 @@ pub(super) fn run(
         ..Default::default()
     };
     let app = eframe::create_native(
-        "unemupc",
+        "unemu",
         options,
         Box::new(move |cc| {
             configure_context(&cc.egui_ctx);
@@ -4347,9 +4347,9 @@ impl Shell {
         egui::Modal::new(egui::Id::unique("quit-during-transfer")).show(ctx, |ui| {
             ui.set_max_width(420.0);
             if self.classic {
-                gradient_title(ui, "unemupc");
+                gradient_title(ui, "unemu");
             } else {
-                ui.heading("unemupc");
+                ui.heading("unemu");
             }
             ui.add(egui::Label::new(format!("A {kind} is running. Cancel it and quit?")).wrap());
             ui.separator();
@@ -4373,16 +4373,16 @@ impl Shell {
     fn stop_prompt_modal(&self, ctx: &egui::Context, escape: bool) -> Option<bool> {
         self.stop_prompt?;
         let question = format!(
-            "unemupc is running {}. Stop it and continue?",
+            "unemu is running {}. Stop it and continue?",
             self.session_name().unwrap_or("a machine")
         );
         let mut answer = None;
         egui::Modal::new(egui::Id::unique("stop-running-machine")).show(ctx, |ui| {
             ui.set_max_width(420.0);
             if self.classic {
-                gradient_title(ui, "unemupc");
+                gradient_title(ui, "unemu");
             } else {
-                ui.heading("unemupc");
+                ui.heading("unemu");
             }
             ui.add(egui::Label::new(question).wrap());
             ui.separator();
@@ -4526,7 +4526,7 @@ impl Shell {
             Minimize => { self.release(); ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)); },
             Exit => self.request_exit(ctx),
             Shortcuts => self.dialog = Some(("Keyboard shortcuts", shortcuts_help(self.macos_shortcuts))),
-            About => self.dialog = Some(("About unemupc", format!("unemupc {}\nemulator of period IBM-compatible PCs\n{}\nx86jit · egui / eframe · cpal\n\n{}\n\n{}\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), platforms::licence_notice(), unemu_pc_core::FONT_NOTICE, ui_kit::EGUI_FONT_NOTICE, ui_kit::SYMBOL_FONT_NOTICE, devices::OPL3_NOTICE))),
+            About => self.dialog = Some(("About unemu", format!("unemu {}\nemulator of period IBM-compatible PCs\n{}\nx86jit · egui / eframe · cpal\n\n{}\n\n{}\n\n{}\n\n{}", env!("CARGO_PKG_VERSION"), platforms::licence_notice(), unemu_pc_core::FONT_NOTICE, ui_kit::EGUI_FONT_NOTICE, ui_kit::SYMBOL_FONT_NOTICE, devices::OPL3_NOTICE))),
             Placeholder("Open machine file") => self.open_machine_dialog(),
             Placeholder("New machine") => { self.release(); self.image_library.begin_new_machine(); },
             Placeholder(title) => self.dialog = Some((title, "not yet available".into())),
@@ -4817,7 +4817,7 @@ impl Shell {
             });
             ui.menu_button("Help", |ui| {
                 self.item(ui, "Keyboard shortcuts", "F1", Shortcuts, commands);
-                self.item(ui, "About unemupc", "", About, commands);
+                self.item(ui, "About unemu", "", About, commands);
             });
         });
         match diagnostics {
@@ -5236,7 +5236,7 @@ impl Shell {
 
     fn title(&self) -> String {
         if let Some(player) = &self.player {
-            player.title("unemupc")
+            player.title("unemu")
         } else if self.presenter.is_some() {
             match (
                 &self.image_library.active_machine,
@@ -5244,12 +5244,12 @@ impl Shell {
             ) {
                 // The machines mock-up names the machine and its image.
                 (Some((_, name)), Some((row, _, _))) => {
-                    format!("{name} — {} — unemupc", row.reference)
+                    format!("{name} — {} — unemu", row.reference)
                 }
-                _ => format!("{} — unemupc", self.session_name().unwrap_or("Machine")),
+                _ => format!("{} — unemu", self.session_name().unwrap_or("Machine")),
             }
         } else {
-            "unemupc".into()
+            "unemu".into()
         }
     }
 
@@ -6038,7 +6038,7 @@ impl eframe::App for Shell {
                 } else {
                     ui.heading(*title);
                 }
-                if *title == "About unemupc" {
+                if *title == "About unemu" {
                     if let Some(logo) = &self.logo {
                         logo.about(ui);
                     }
@@ -6597,7 +6597,7 @@ fn toolbar_button(
 
 /// Shown in Preferences when the system-shortcut option is on without the
 /// Accessibility privilege.
-const ACCESS_NOTE: &str = "Allow unemupc, or the terminal that started it, in System \
+const ACCESS_NOTE: &str = "Allow unemu, or the terminal that started it, in System \
     Settings › Privacy & Security › Accessibility. Until then these shortcuts stay with macOS.";
 
 /// Hands the keys the keyboard tap takes from macOS to the window's key
@@ -8081,13 +8081,13 @@ mod tests {
             (
                 "drive image, another dialog open",
                 |shell, _| shell.apply_picker(crate::media_picker::Outcome::Browse(0)),
-                |shell, _| shell.dialog = Some(("About unemupc", String::new())),
+                |shell, _| shell.dialog = Some(("About unemu", String::new())),
                 image,
                 |shell, _, row| {
                     assert!(shell.insert_dialog.is_none(), "{row}");
                     assert_eq!(
                         shell.dialog.as_ref().map(|(title, _)| *title),
-                        Some("About unemupc"),
+                        Some("About unemu"),
                         "{row}"
                     );
                     assert_eq!(
@@ -11107,22 +11107,22 @@ mod tests {
     }
 
     #[test]
-    fn title_about_and_menu_name_the_project_unemupc() {
+    fn title_about_and_menu_name_the_desktop_unemu() {
         let former = image_store::location::preferences::FORMER_DIRECTORY;
         let mut shell = shell();
-        assert_eq!(shell.title(), "Machine — unemupc");
+        assert_eq!(shell.title(), "Machine — unemu");
         shell.presenter = None;
-        assert_eq!(shell.title(), "unemupc");
-        assert_eq!(crate::app_menu::APP_NAME, "unemupc");
+        assert_eq!(shell.title(), "unemu");
+        assert_eq!(crate::app_menu::APP_NAME, "unemu");
         let menu = format!("{:?}", crate::app_menu::application_menu());
-        assert!(menu.contains("\"About unemupc\"") && menu.contains("\"Quit unemupc\""));
+        assert!(menu.contains("\"About unemu\"") && menu.contains("\"Quit unemu\""));
         assert!(!menu.to_ascii_lowercase().contains(former), "{menu}");
         let ctx = egui::Context::default();
         shell.command(Command::About, &ctx);
         let (title, text) = shell.dialog.as_ref().unwrap();
-        assert_eq!(*title, "About unemupc");
+        assert_eq!(*title, "About unemu");
         assert!(
-            text.starts_with(&format!("unemupc {}\n", env!("CARGO_PKG_VERSION"))),
+            text.starts_with(&format!("unemu {}\n", env!("CARGO_PKG_VERSION"))),
             "{text}"
         );
         assert!(!text.to_ascii_lowercase().contains(former), "{text}");
@@ -11139,7 +11139,7 @@ mod tests {
         }
         assert!(crate::informational_output(std::ffi::OsStr::new("--help"))
             .unwrap()
-            .starts_with("usage: unemupc [--machine FILE]"));
+            .starts_with("usage: unemu [--machine FILE]"));
     }
 
     #[test]
@@ -11405,7 +11405,7 @@ kind='mda'
         ] {
             assert!(texts.iter().any(|t| t == entry), "{entry}: {texts:?}");
         }
-        assert!(!texts.iter().any(|t| t == "unemupc"), "{texts:?}");
+        assert!(!texts.iter().any(|t| t == "unemu"), "{texts:?}");
     }
 
     #[test]
@@ -12614,7 +12614,7 @@ kind='mda'
         assert_eq!(shell.library[0].name, "DOS games");
         assert!(shows(
             &text,
-            "unemupc is running DOS games. Stop it and continue?"
+            "unemu is running DOS games. Stop it and continue?"
         ));
         assert!(shows(&text, "Stop machine"));
         assert!(shows(&text, "Cancel"));
@@ -15206,7 +15206,7 @@ kind='mda'
         let commands = pass(&ctx, Default::default(), |ctx| shell.visibility(ctx, true)).0;
         assert_eq!(
             shell.dialog.as_ref().map(|(title, _)| *title),
-            Some("About unemupc")
+            Some("About unemu")
         );
         assert!(commands.contains(&egui::ViewportCommand::Minimized(false)));
         assert!(commands.contains(&egui::ViewportCommand::Focus));
@@ -15216,7 +15216,7 @@ kind='mda'
         let commands = quit_pass(&mut shell, &ctx);
         assert_eq!(
             shell.dialog.as_ref().map(|(title, _)| *title),
-            Some("About unemupc")
+            Some("About unemu")
         );
         assert!(!commands.contains(&egui::ViewportCommand::Focus));
         // Quit closes the dialog and asks, exactly like File › Exit; a menu
@@ -16608,7 +16608,7 @@ kind='mda'
         let strip = |icon: bool| {
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 if icon {
-                    window_title(ui, "unemupc");
+                    window_title(ui, "unemu");
                 } else {
                     gradient_title(ui, "Settings");
                 }
@@ -17106,7 +17106,7 @@ kind='mda'
         assert!(shell.player.is_some());
         assert!(shell.presenter.is_none());
         assert_eq!(shell.state(), State::Running);
-        assert_eq!(shell.title(), "Scripted machine — Test machine — unemupc");
+        assert_eq!(shell.title(), "Scripted machine — Test machine — unemu");
         assert!(shell.stop());
         assert!(shell.player.is_none());
 
@@ -17622,7 +17622,7 @@ kind='mda'
                 shell.tick(&ctx, false, at);
             }
         };
-        shell.dialog = Some(("About unemupc", String::new()));
+        shell.dialog = Some(("About unemu", String::new()));
         run_for(&mut shell, 400);
         assert!(!player_log(&shell).contains("a tenth"));
         shell.dialog = None;

@@ -161,7 +161,7 @@ pub trait TapBackend {
 
 /// The status hint shown when macOS refuses the tap.
 pub const REFUSED_HINT: &str = "macOS keeps Ctrl+arrows and other system shortcuts: \
-     allow unemupc, or the terminal that started it, in System Settings › Privacy & \
+     allow unemu, or the terminal that started it, in System Settings › Privacy & \
      Security › Accessibility";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

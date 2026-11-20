@@ -1051,7 +1051,7 @@ cargo run --offline -p upcli -- --bios vendor/kiselev-bios/bios-xi8088.bin
 cargo run --offline -p upcli -- --bios /path/to/bios.bin --allow-unlisted-firmware
 cargo run --offline -p upcli -- machine check machines/at-freedos.toml
 cargo run --offline -p upcli -- run --machine machines/at-freedos.toml --max-steps 12000000 --idle-limit 1000000 --print mda
-cargo run --offline -p window --bin unemupc -- --machine machines/at-freedos.toml --display mda
+cargo run --offline -p window --bin unemu -- --machine machines/at-freedos.toml --display mda
 cargo test --workspace                       # unit + golden + integration
 cargo test --release -p devices              # release-only device behaviour (CI runs it too)
 cargo test --workspace -- --ignored          # slow goldens: BIOS POST, FreeDOS boot, DOS sessions
@@ -1075,13 +1075,13 @@ UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test at_loadall_
 # Open AT privilege-level test floppy: IRET to ring 3, INT, #GP and a call gate back to ring 0 on SS0:SP0 (design/at-privilege-test.md)
 UNEMUPC_REQUIRE_FIXTURES=1 cargo test --offline -p pc-harness --test at_privilege_test_golden -- --include-ignored --nocapture
 cargo test -p devices                        # one crate's tests
-cargo build --offline -p window --bin unemupc
-cargo run --offline -p window --bin unemupc # lists machines/, selects at-freedos.toml
-cargo run --offline -p window --bin unemupc -- --machine machines/local.toml --allow-unlisted-firmware
-cargo run --offline -p window --bin unemupc -- --open FILE [--core ID] # a file, run by whichever compiled-in core opens it
+cargo build --offline -p window --bin unemu
+cargo run --offline -p window --bin unemu # lists machines/, selects at-freedos.toml
+cargo run --offline -p window --bin unemu -- --machine machines/local.toml --allow-unlisted-firmware
+cargo run --offline -p window --bin unemu -- --open FILE [--core ID] # a file, run by whichever compiled-in core opens it
 # Trying File › Open… and --open by hand before a core that opens files is in
 # the release: the scripted test core (it emulates nothing), never in a release.
-cargo run --offline -p window --bin unemupc --features platforms/test-core -- --open machine.utc
+cargo run --offline -p window --bin unemu --features platforms/test-core -- --open machine.utc
 cargo tree --offline -i window               # window is a leaf frontend
 ```
 
@@ -1308,7 +1308,7 @@ New machine remains a placeholder. Enter starts the selection when stopped.
 While a machine runs, File > Machine library, Open in File > Open machine
 file… (after a path is entered; closing that dialog changes nothing), Exit,
 ⌘Q, ⌘W and the window's close button pause it first and ask
-"unemupc is running <machine>. Stop it and continue?" with Stop machine and
+"unemu is running <machine>. Stop it and continue?" with Stop machine and
 Cancel (Esc; Enter and Space do not answer). Cancel resumes the machine where
 it paused, without catch-up, and hands back guest keyboard focus and pointer
 capture if the guest had them; an explicit pause stays in effect. Exit, ⌘Q,
@@ -1318,12 +1318,12 @@ keep-or-discard question. One Escape closes only the top-most dialog. A
 stopped, halted or failed machine is not asked about, and Machine > Stop and
 Power cycle act at once. A Gaming-mode session asks Keep as new image or
 Discard after stopping instead. On macOS the global menu bar holds only the
-application menu: About unemupc, Hide unemupc (⌘H), Hide Others (⌥⌘H),
-Show All and Quit unemupc (⌘Q). Quit and ⌘Q reach this question like Exit.
+application menu: About unemu, Hide unemu (⌘H), Hide Others (⌥⌘H),
+Show All and Quit unemu (⌘Q). Quit and ⌘Q reach this question like Exit.
 Dock › Quit, logout, restart and shutdown wait for it as well: with no machine
 running they quit at once after persistence; Stop machine quits once the stop
 and persistence have finished; Cancel keeps the application running (logout
-reports that unemupc cancelled it). A stop that fails to finish its journals
+reports that unemu cancelled it). A stop that fails to finish its journals
 also cancels them and keeps the error dialog up. While a file dialog is open
 they are cancelled; close the dialog and quit again.
 
@@ -1452,7 +1452,7 @@ in the platform data directory (and saved states, later, under
 The release's cores are the PC, which opens no files, and the NES core of
 unemunes, which opens NROM (mapper 0) cartridge images: File › Open…'s dialog
 offers "NES cartridge images (*.nes)", and `--open game.nes` starts one, say
-`cargo run --offline -p window --bin unemupc -- --open /path/to/game.nes`. A build whose
+`cargo run --offline -p window --bin unemu -- --open /path/to/game.nes`. A build whose
 cores open nothing greys File › Open… ("No core in this release opens
 files"). `--features platforms/test-core` adds the scripted test core, whose
 `.utc` scripts it runs (`crates/test-core/src/lib.rs` has the grammar, and
@@ -2788,7 +2788,7 @@ through `scripts/ci-gate.sh`.
 `bash scripts/third-party-licenses.sh [OUTPUT [TARGET]]` (in the devShell or with any cargo, jq and SHA-256 tool),
 writes `THIRD-PARTY-LICENSES.md` (gitignored) for the release binaries: the
 repository's own third-party components (Nuked-OPL3, the fonts, the logo) and
-every crate `unemupc` and `upcli` link for the exact `Cargo.lock`, with the
+every crate `unemu` and `upcli` link for the exact `Cargo.lock`, with the
 licence files of each published crate (and, for a git dependency, of its
 repository root), identical texts written once. A crate that publishes no
 licence file is listed with its `authors` as copyright holders, and the
@@ -3040,7 +3040,7 @@ written for the release keep their literal version. The same commit updates
 the sentence in Minimum release of an image that names this build's level and
 package version. The maintainer pushes the
 tag and creates and publishes the GitHub release for it. Publishing starts
-`.github/workflows/release.yml`, which builds `upcli` and `unemupc` and
+`.github/workflows/release.yml`, which builds `upcli` and `unemu` and
 attaches them to that release; nothing goes to a package registry.
 Before tagging, run every test tier on the whole workspace, including the
 user-ROM tests CI never has:
@@ -3062,7 +3062,7 @@ unsigned) and `SHA256SUMS`. Each archive unpacks to
 target, and `notices/`: the repository's own notices that file quotes and
 `LICENSES/`, at their repository paths. The workflow appends download notes
 to the release text once, including how to clear the macOS quarantine flag
-(`xattr -d com.apple.quarantine unemupc upcli`).
+(`xattr -d com.apple.quarantine unemu upcli`).
 
 The binaries are built outside Nix, with rustup at the devShell's Rust
 (`RUSTUP_TOOLCHAIN` in the workflow; a step checks it against

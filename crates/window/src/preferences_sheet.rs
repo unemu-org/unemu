@@ -34,7 +34,7 @@ pub(crate) struct SystemShortcuts {
 pub(crate) const SYSTEM_SHORTCUTS_WHY: &str = "macOS takes Ctrl+arrows, Ctrl+digits, \
     Ctrl+F1–F8, Ctrl+Space and F11 for Mission Control, Spaces and keyboard navigation \
     before any app sees them, so passing them to the guest needs Accessibility access \
-    for unemupc; Command shortcuts always stay with macOS.";
+    for unemu; Command shortcuts always stay with macOS.";
 
 impl PreferencesDialog {
     pub fn new(path: Option<PathBuf>, store: Arc<dyn CredentialStore>) -> Self {

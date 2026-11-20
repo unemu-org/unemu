@@ -24,7 +24,7 @@
 #   application  anything
 #
 # and no window crate (window, window-*, ui-kit, machine-view, library-model,
-# library-ui, pc-media, pc-library, media-ui, pc-ui, player-ui, unemupc)
+# library-ui, pc-media, pc-library, media-ui, pc-ui, player-ui, unemu)
 # depends on a CLI crate (cli, cli-*, upcli), nor the other way round. The
 # launch crate, core-launch, is neutral and in neither family: both programs
 # make their list of cores with it, and the command line will start machines
@@ -132,7 +132,7 @@ def known_layer: . as $l | any(layers[]; . == $l);
 def article: if test("^[aeiou]") then "an \(.)" else "a \(.)" end;
 def family:
   if . == "cli" or . == "upcli" or startswith("cli-") then "CLI"
-  elif . == "window" or . == "unemupc" or . == "ui-kit" or . == "machine-view"
+  elif . == "window" or . == "unemu" or . == "ui-kit" or . == "machine-view"
        or . == "library-model" or . == "library-ui" or . == "pc-media"
        or . == "pc-library" or . == "media-ui" or . == "pc-ui"
        or . == "player-ui" or startswith("window-") then "window"

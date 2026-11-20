@@ -2924,7 +2924,7 @@ the active emulator.
 | Media | Per-slot inserted names, Insert…, Next image in catalogue and Eject; absent drives and unsupported CD-ROM are disabled with reasons. |
 | View | Toolbar/status-bar visibility, scale, full screen and host audio mute. |
 | Tools | Image store folder…, Import ROM folder…, Media catalogue…, Locate firmware…, Create blank disk… and Preferences…; the Diagnostics submenu holds Save machine report, Record exceptions and Open diagnostics folder (design/observation.md §Diagnostic report of a running machine). |
-| Help | Keyboard shortcuts and About unemupc. |
+| Help | Keyboard shortcuts and About unemu. |
 
 The toolbar repeats common Start, Pause, Stop, Send Ctrl+Alt+Del, floppy,
 Settings and Layers commands outside guest pixels. Enablement follows machine

@@ -1046,8 +1046,8 @@ fn a_cancelled_question_gives_the_captured_pointer_back() {
 fn the_title_and_the_status_line_name_the_content_and_its_platform() {
     let rig = rig(&format!("title Two drives\n{}", two_disks()));
     assert_eq!(
-        rig.player.title("unemupc"),
-        "Two drives — Test machine — unemupc"
+        rig.player.title("unemu"),
+        "Two drives — Test machine — unemu"
     );
     assert_eq!(
         rig.player.status_cells(),

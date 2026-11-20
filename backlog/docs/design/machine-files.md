@@ -810,7 +810,7 @@ The machine file never carries these. A top-level `run`, `presentation` or
 
 Frontends:
 
-- **Window:** `unemupc [--machine FILE] [--display CARD] [--allow-unlisted-firmware]`.
+- **Window:** `unemu [--machine FILE] [--display CARD] [--allow-unlisted-firmware]`.
   `--machine` defaults to `machines/at-freedos.toml` in the workspace. The
   default display is the first display card in file order, which in the FreeDOS
   file is the MDA the Xi8088 BIOS writes to. The positional

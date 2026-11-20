@@ -176,7 +176,7 @@ fn local_sentence(row: &TagRow) -> String {
             row.tag
         ),
         Some(LocalState::OtherImage { current }) => format!(
-            "⚠ Your copy under this name is another image ({}): the registry's tag {} changed after you pulled it. Version and revision tags never move in unemupc, so another tool or a rebuilt registry moved it. Pull does not overwrite your copy; Pull… offers another local tag.",
+            "⚠ Your copy under this name is another image ({}): the registry's tag {} changed after you pulled it. Version and revision tags never move in unemu, so another tool or a rebuilt registry moved it. Pull does not overwrite your copy; Pull… offers another local tag.",
             short(current),
             row.tag
         ),

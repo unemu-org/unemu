@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: Release
 
-# Builds upcli and unemupc for each release platform and attaches them to the
+# Builds upcli and unemu for each release platform and attaches them to the
 # GitHub release: one unemupc-<version>-<target>.tar.gz per platform and a
 # SHA256SUMS file. Publishing a release for a tag (v0.1.0) starts it; a manual
 # run with that tag builds again and replaces the release's assets. Nothing is
@@ -125,7 +125,7 @@ jobs:
           export UNEMUPC_SOURCE_COMMIT
           export CFLAGS="-ffile-prefix-map=$GITHUB_WORKSPACE=/build/unemupc -ffile-prefix-map=$cargo_home/registry/src=/cargo/registry/src -ffile-prefix-map=$cargo_home/git/checkouts=/cargo/git/checkouts"
           cargo build --locked --release --target "$TARGET" \
-            -p upcli -p window --bin upcli --bin unemupc
+            -p upcli -p window --bin upcli --bin unemu
 
       - name: Check the binaries
         run: |
@@ -133,7 +133,7 @@ jobs:
           cargo_home=${CARGO_HOME:-$HOME/.cargo}
           sysroot=$(rustc --print sysroot)
           failed=0
-          for bin in upcli unemupc; do
+          for bin in upcli unemu; do
             file=target/$TARGET/release/$bin
             list=$RUNNER_TEMP/$bin.strings
             # `-` scans every byte with both GNU and Apple strings; Apple's -a
@@ -182,7 +182,7 @@ jobs:
           name=unemupc-${TAG#v}-$TARGET
           stage=dist/$name
           mkdir -p "$stage/notices"
-          cp "target/$TARGET/release/upcli" "target/$TARGET/release/unemupc" LICENSE README.md "$stage/"
+          cp "target/$TARGET/release/upcli" "target/$TARGET/release/unemu" LICENSE README.md "$stage/"
           bash scripts/third-party-licenses.sh "$stage/THIRD-PARTY-LICENSES.md" "$TARGET"
           # The headings of "Components in this repository" name those files;
           # the licence texts between the fences are skipped.
@@ -270,7 +270,7 @@ jobs:
           - Linux x86-64 (glibc 2.35 or newer): `unemupc-<version>-x86_64-unknown-linux-gnu.tar.gz`
           - macOS on Apple silicon: `unemupc-<version>-aarch64-apple-darwin.tar.gz`
 
-          Each archive holds `unemupc` (the desktop app), `upcli` (the command
+          Each archive holds `unemu` (the desktop app), `upcli` (the command
           line), `LICENSE`, `README.md`, `THIRD-PARTY-LICENSES.md` and the
           notices it quotes. Check a download against `SHA256SUMS`:
 
@@ -284,7 +284,7 @@ jobs:
           the unpacked folder:
 
           ```sh
-          xattr -d com.apple.quarantine unemupc upcli
+          xattr -d com.apple.quarantine unemu upcli
           ```
 
           On Linux the desktop app needs ALSA (`libasound.so.2`) and an X11 or

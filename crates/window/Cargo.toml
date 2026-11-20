@@ -88,5 +88,5 @@ unemu-pc-core = { workspace = true, features = ["test-support"] }
 unemu-test-core = { path = "../test-core", version = "0.0.3" }
 
 [[bin]]
-name = "unemupc"
+name = "unemu"
 path = "src/main.rs"

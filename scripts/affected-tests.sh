@@ -499,13 +499,13 @@ run_self_test() {
   # Both runners' failures are reported by test name.
   printf '%s\n' '        PASS [   0.010s] (1/3) cli::quantum passes' \
     '        FAIL [   1.250s] (2/3) cli::quantum real16_spin_reaches_cap' \
-    '     SIGSEGV [   0.300s] (3/3) window::bin/unemupc shell::tests::crashes' \
+    '     SIGSEGV [   0.300s] (3/3) window::bin/unemu shell::tests::crashes' \
     '     Summary [   1.300s] 3 tests run: 1 passed, 2 failed' \
     '        FAIL [   1.250s] (2/3) cli::quantum real16_spin_reaches_cap' > "$tmp/nextest.log"
   printf '%s\n' 'test passes ... ok' 'test shell::tests::breaks ... FAILED' \
     'test result: FAILED. 1 passed; 1 failed' > "$tmp/cargo.log"
   got=$( { failed_tests nextest "$tmp/nextest.log"; failed_tests cargo "$tmp/cargo.log"; } | tr '\n' '|')
-  expect='cli::quantum real16_spin_reaches_cap|window::bin/unemupc shell::tests::crashes|shell::tests::breaks|'
+  expect='cli::quantum real16_spin_reaches_cap|window::bin/unemu shell::tests::crashes|shell::tests::breaks|'
   if [[ $got == "$expect" ]]; then
     echo "ok   failed tests are reported by name for both runners"
   else

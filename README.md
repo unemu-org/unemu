@@ -106,7 +106,7 @@ cards, firmware and drives. `at-games-open.toml` is the open DOS games machine
 
 ### Applications
 
-- **Desktop app** (`unemupc`, egui): machine, media and firmware
+- **Desktop app** (`unemu`, egui): machine, media and firmware
   library; New machine… wizard; Settings on an image and Save as new image…;
   Remotes, which browse the configured registries and pull from them (File ›
   Get templates… shows the official templates there); Push… and Pull by
@@ -130,7 +130,7 @@ binaries. On other platforms, build from source as below.
 ```sh
 nix develop                                   # toolchain and fixture tools (or let direnv load it)
 bash scripts/ci-gate.sh fixtures              # build the open firmware and fixture images
-cargo run --release -p window --bin unemupc
+cargo run --release -p window --bin unemu
 cargo run --release -p upcli -- run --machine machines/at-freedos.toml --print mda
 cargo test --workspace                        # unit, golden and integration tests
 ```
@@ -149,7 +149,7 @@ data directory, or `UNEMUPC_MACHINES_DIR`, and the ROM folders set in Preference
 - On Linux, `pkg-config` and the ALSA development files (`libasound2-dev` on
   Debian and Ubuntu, `alsa-lib-devel` on Fedora). The X11 or Wayland libraries
   are loaded at run time.
-- `cargo build --release --bin unemupc --bin upcli`.
+- `cargo build --release --bin unemu --bin upcli`.
 
 The firmware and disk fixtures that the tests and templates use are built by
 the scripts under `vendor/`, which expect the devShell's tools (`nasm`,
@@ -184,7 +184,7 @@ revision. Real-mode and 286 support live there under `CpuMode::Real16`.
 - **The unemupc logo**: CC0 1.0 ([notice](assets/brand/README.md)).
 - **Rust crates**: `scripts/third-party-licenses.sh` writes their licences
   for the exact `Cargo.lock` into `THIRD-PARTY-LICENSES.md`, which ships with
-  the release binaries. `upcli --about` and `unemupc --about` print the notices.
+  the release binaries. `upcli --about` and `unemu --about` print the notices.
 
 ## License
 

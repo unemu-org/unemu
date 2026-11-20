@@ -1443,7 +1443,7 @@ fn split(
         hint_under(
             ui,
             format!(
-                "Writes the files into {machine}'s fixed disk C: as a new disk layer: no floppies and no XCOPY. A separate, bigger feature: unemupc would write the fixed disk's own file system from outside the guest."
+                "Writes the files into {machine}'s fixed disk C: as a new disk layer: no floppies and no XCOPY. A separate, bigger feature: unemu would write the fixed disk's own file system from outside the guest."
             ),
         );
     });

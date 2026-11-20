@@ -5,6 +5,16 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — The desktop binary is `unemu`:** the package remains
+  `window`. Desktop titles, application menus, native application identity,
+  help/version/about, own-name messages, release contents, licence output and
+  command examples use `unemu`; `upcli` is unchanged. The PC core still identifies
+  itself as `unemupc`. Repository/archive names, compatibility requirements,
+  environment variables, host directories and file formats stay unchanged.
+  Name pins, the affected-test runner self-test, workflow syntax and local
+  packing are checked without opening windows. The hosted release check on a
+  test tag remains for the maintainer. See `design/core-contract.md` §12.10 step 4.
+
 - **2026-11-20 — Stage B's launch migration is complete:** both front ends
   start stored PC images through `core_launch` and the PC factory. The final
   cleanup removes `pc_image::resolve`, `workspace::start` and `start_new`, whose

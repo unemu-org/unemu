@@ -25,7 +25,7 @@ use std::ffi::CStr;
 
 /// The application name the menu shows.
 #[cfg(any(target_os = "macos", test))]
-pub(crate) const APP_NAME: &str = "unemupc";
+pub(crate) const APP_NAME: &str = "unemu";
 
 /// What choosing a menu item does.
 #[cfg(any(target_os = "macos", test))]
@@ -63,13 +63,13 @@ pub(crate) fn application_menu() -> [MenuEntry; 7] {
     let command = |key| Some(KeyEquivalent { key, option: false });
     [
         Item {
-            title: "About unemupc",
+            title: "About unemu",
             key: None,
             action: MenuAction::Shell(Command::About),
         },
         Separator,
         Item {
-            title: "Hide unemupc",
+            title: "Hide unemu",
             key: command("h"),
             action: MenuAction::Application(c"hide:"),
         },
@@ -88,7 +88,7 @@ pub(crate) fn application_menu() -> [MenuEntry; 7] {
         },
         Separator,
         Item {
-            title: "Quit unemupc",
+            title: "Quit unemu",
             key: command("q"),
             action: MenuAction::Shell(Command::Exit),
         },
@@ -243,13 +243,13 @@ mod tests {
         assert_eq!(
             titles,
             [
-                "About unemupc",
+                "About unemu",
                 "-",
-                "Hide unemupc",
+                "Hide unemu",
                 "Hide Others",
                 "Show All",
                 "-",
-                "Quit unemupc"
+                "Quit unemu"
             ]
         );
         for title in ["About ", "Hide ", "Quit "] {

@@ -84,7 +84,7 @@ defaults are in
 Start the desktop library from the repository root with:
 
 ```sh
-cargo run --offline -p window --bin unemupc
+cargo run --offline -p window --bin unemu
 ```
 
 The welcome screen lists machine files in the library's machines directory
@@ -95,7 +95,7 @@ when that file exists. The directory is `UNEMUPC_MACHINES_DIR` when set
 `~/Library/Application Support/unemupc/machines` on macOS,
 `$XDG_DATA_HOME/unemupc/machines` on Linux (default
 `~/.local/share/unemupc/machines`), `%LOCALAPPDATA%\unemupc\machines` on
-Windows. `unemupc --help` prints the directory in use. Select a ready machine and press Start, Enter, or
+Windows. `unemu --help` prints the directory in use. Select a ready machine and press Start, Enter, or
 double-click its name. Missing firmware or invalid media shows the existing
 validator diagnostic and disables Start. File › Open machine file… accepts a
 TOML/YAML path. Machine › Settings… (⌘, on macOS; Ctrl+, elsewhere outside guest focus) opens the
@@ -136,7 +136,7 @@ version available" in the details pane, with Switch to …. See
 To start a specific machine immediately in the same shell:
 
 ```sh
-cargo run --offline -p window --bin unemupc -- --machine machines/at-freedos.toml
+cargo run --offline -p window --bin unemu -- --machine machines/at-freedos.toml
 ```
 
 To locate user-supplied firmware, open **Tools › Locate firmware…** (or
@@ -264,7 +264,7 @@ image = "images/work.img"      # replaces drive A and removes its inherited pin
 ```
 
 Run `upcli machine check machines/local.toml` before booting with
-`unemupc --machine machines/local.toml`. Unknown development firmware
+`unemu --machine machines/local.toml`. Unknown development firmware
 requires `--allow-unlisted-firmware` on either command. For a headless run, use
 `upcli run --machine machines/local.toml --print mda`. Run limits and host
 output selection stay outside the hardware description.
@@ -845,11 +845,11 @@ mkdir -p machines/local
 upcli media create hd --chs 615/4/17 machines/local/games.img
 upcli media create floppy --type 1.2M --format --label TRANSFER machines/local/transfer-1200.img
 upcli machine check machines/at-games.toml
-unemupc --machine machines/at-games.toml
+unemu --machine machines/at-games.toml
 # Open firmware, no user ROMs (also run vendor/unemu-at-bios/fetch.sh,
 # vendor/vgabios/fetch.sh and vendor/xtide-universal-bios/fetch.sh):
 # upcli machine check machines/at-games-open.toml
-# unemupc --machine machines/at-games-open.toml
+# unemu --machine machines/at-games-open.toml
 ```
 
 The disk is blank, 21,411,840 bytes (about 20.42 MiB), IBM fixed-disk type 2.
@@ -871,7 +871,7 @@ switch Spaces instead. There are two ways to keep these keys in the guest:
 
 - **Preferences › General › Send macOS system shortcuts to the guest while
   it has the keyboard** (off by default). Turning it on asks macOS for
-  Accessibility access; allow unemupc (or the terminal that started it) in
+  Accessibility access; allow unemu (or the terminal that started it) in
   System Settings › Privacy & Security › Accessibility. While a running guest
   has the keyboard, Ctrl with an arrow, Home/End/Page Up/Page Down, a digit,
   Space or a function key, and every function key go to the guest. Command
