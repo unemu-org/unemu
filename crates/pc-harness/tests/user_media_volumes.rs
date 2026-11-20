@@ -81,7 +81,7 @@ fn find(title: &str, files: &[Wanted]) -> Option<HashMap<String, Vec<u8>>> {
     let hashes: HashSet<&str> = files.iter().map(|file| file.sha256.as_str()).collect();
     let mut paths = Vec::new();
     let mut seen = HashSet::new();
-    for root in assembly::firmware_discovery::default_search_roots() {
+    for root in machine_file::firmware_discovery::default_search_roots() {
         candidates(&root, &sizes, &mut seen, &mut paths);
     }
     let mut found = HashMap::new();

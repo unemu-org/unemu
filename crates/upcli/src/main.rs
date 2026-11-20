@@ -7,7 +7,7 @@ fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let host = cli_core::HostSources {
         store_root: image_store::location::default_store_root().ok(),
-        index: assembly::firmware_discovery::firmware_cache_path(),
+        index: machine_file::firmware_discovery::firmware_cache_path(),
     };
     let cores = core_launch::Cores::new(platforms::cores());
     let code = cli_pc::with_platform(|pc| {

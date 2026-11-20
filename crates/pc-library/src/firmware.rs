@@ -11,13 +11,13 @@
 
 use crate::firmware_metadata::{Catalogue, Facts, Fields, Verdict};
 use crate::snapshot::{Filter, Query};
-use assembly::firmware_discovery::DiscoveryControl;
 use image_store::{
     license, media_type,
     summary::{FirmwareSummary, ImageSummary, SummaryCache},
     Descriptor, Digest, Store,
 };
 use library_model::listing::{source_cell, ImageRow, Listed};
+use machine_file::firmware_discovery::DiscoveryControl;
 use pc_image::firmware_import::{self, Candidate, Statement};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -453,10 +453,11 @@ pub fn scan_folder(
     control: &DiscoveryControl,
     catalogue: &[assembly::FirmwareEntry],
 ) -> Result<(ScanReport, Vec<Candidate>)> {
-    let scan = assembly::firmware_discovery::with_discovery_session(index, false, control, || {
-        firmware_import::scan(&[folder.to_owned()], catalogue)
-    })
-    .map_err(|e| e.to_string())?;
+    let scan =
+        machine_file::firmware_discovery::with_discovery_session(index, false, control, || {
+            firmware_import::scan(&[folder.to_owned()], catalogue)
+        })
+        .map_err(|e| e.to_string())?;
     if control.is_cancelled() {
         return Ok((
             ScanReport {

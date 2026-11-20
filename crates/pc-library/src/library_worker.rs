@@ -108,7 +108,7 @@ pub enum Request {
     ScanFirmware(
         PathBuf,
         Option<PathBuf>,
-        assembly::firmware_discovery::DiscoveryControl,
+        machine_file::firmware_discovery::DiscoveryControl,
     ),
     /// The library's verdict on a set of the last scan with a statement, at a
     /// revision of the set's editor.

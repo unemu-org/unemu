@@ -704,7 +704,7 @@ fn names_one_host_takes_as_one_file_leave_nothing_behind() {
 
 /// The user-ROM roots, as the other user-file tests take them.
 fn roots() -> Vec<PathBuf> {
-    assembly::firmware_discovery::default_search_roots()
+    machine_file::firmware_discovery::default_search_roots()
         .into_iter()
         .filter(|root| root.is_dir())
         .collect()

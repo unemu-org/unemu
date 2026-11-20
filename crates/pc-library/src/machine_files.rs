@@ -64,9 +64,9 @@ impl LibraryEntry {
         let roots = roots
             .iter()
             .map(|path| {
-                assembly::firmware_discovery::FirmwareRoot::new(
+                machine_file::firmware_discovery::FirmwareRoot::new(
                     path,
-                    assembly::firmware_discovery::RootOrigin::CommandLine,
+                    machine_file::firmware_discovery::RootOrigin::CommandLine,
                 )
             })
             .collect::<Vec<_>>();
@@ -76,8 +76,8 @@ impl LibraryEntry {
     fn prepare(
         path: PathBuf,
         options: assembly::AssemblyOptions,
-        roots: &[assembly::firmware_discovery::FirmwareRoot],
-        control: Option<&assembly::firmware_discovery::DiscoveryControl>,
+        roots: &[machine_file::firmware_discovery::FirmwareRoot],
+        control: Option<&machine_file::firmware_discovery::DiscoveryControl>,
         store_root: Option<&Path>,
     ) -> PreparedEntry {
         let name = machine_file::resolve(&path)
@@ -277,13 +277,13 @@ pub type PreparedEntry = (LibraryEntry, Option<machine_file::PreparedMachineFile
 pub struct LibraryCheck {
     pub path: PathBuf,
     pub options: assembly::AssemblyOptions,
-    pub roots: Vec<assembly::firmware_discovery::FirmwareRoot>,
+    pub roots: Vec<machine_file::firmware_discovery::FirmwareRoot>,
     pub cache: Option<PathBuf>,
     pub store_root: Option<PathBuf>,
     pub rescan: bool,
     pub refresh_listing: bool,
-    pub control: assembly::firmware_discovery::DiscoveryControl,
-    pub session: assembly::firmware_discovery::DiscoverySession,
+    pub control: machine_file::firmware_discovery::DiscoveryControl,
+    pub session: machine_file::firmware_discovery::DiscoverySession,
     pub prepared: Option<PreparedEntry>,
 }
 
@@ -308,7 +308,7 @@ pub fn spawn_library_check(
         let roots = roots
             .into_iter()
             .map(|root| {
-                assembly::firmware_discovery::FirmwareRoot::new(
+                machine_file::firmware_discovery::FirmwareRoot::new(
                     std::path::absolute(&root.path).unwrap_or(root.path),
                     root.origin,
                 )
@@ -319,7 +319,7 @@ pub fn spawn_library_check(
                 return (LibraryEntry::pending(path), None);
             }
             if refresh_listing {
-                assembly::firmware_discovery::refresh_firmware_roots(&roots);
+                machine_file::firmware_discovery::refresh_firmware_roots(&roots);
             }
             if let Some((mut entry, Some(document))) = prepared {
                 if entry.source.is_some() && entry.source == source_revision(&path) {
@@ -340,7 +340,7 @@ pub fn spawn_library_check(
                             };
                             let error = error.to_string();
                             if let Some(paths) = failed_paths {
-                                assembly::firmware_discovery::refresh_changed_firmware_roots(
+                                machine_file::firmware_discovery::refresh_changed_firmware_roots(
                                     &roots, &paths,
                                 );
                             } else {

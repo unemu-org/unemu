@@ -9,27 +9,6 @@ crates/assembly/src/assemble.rs: pub device_index: HashMap<DeviceId, usize>,: Ex
 crates/assembly/src/assemble.rs: pub floppy_names: HashMap<(DeviceId, u8), Vec<String>>,: Existing device lookup map uses the default host-seeded hasher; guest order is pinned by goldens
 crates/assembly/src/assemble.rs: type NvramBases = HashMap<usize, ([u8; 64], Option<std::fs::Metadata>)>;: Existing device lookup map uses the default host-seeded hasher; guest order is pinned by goldens
 crates/assembly/src/assemble.rs: use std::collections::HashMap;: Existing device lookup map uses the default host-seeded hasher; guest order is pinned by goldens
-crates/assembly/src/firmware_discovery.rs: fs,: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery.rs: sync::{Mutex, OnceLock},: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/frontend.rs: let changed = fs::metadata(&path).map_or(true, |metadata| {: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/frontend.rs: let children = match fs::read_dir(path) {: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/frontend.rs: let metadata = match fs::metadata(path) {: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/frontend.rs: std::env::var_os("CARGO_MANIFEST_DIR"),: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/frontend.rs: std::env::var_os("UNEMUPC_USER_ROMS_DIR"),: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/persistent.rs: #[cfg(not(unix))]: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/persistent.rs: #[cfg(unix)]: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/persistent.rs: cfg!(target_os = "macos"),: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/persistent.rs: cfg!(windows),: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/persistent.rs: let change: Option<SystemTime> = None;: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/persistent.rs: let path = path.filter(|_| !cfg!(windows));: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/persistent.rs: let recent = |time: SystemTime| {: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/persistent.rs: pub(super) fn racy_timestamp(key: &HashKey, hashed_at: SystemTime) -> bool {: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/persistent.rs: std::env::var_os("HOME").map(PathBuf::from),: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/persistent.rs: std::env::var_os("LOCALAPPDATA").map(PathBuf::from),: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/persistent.rs: std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from),: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/persistent.rs: sweep_temps(path, SystemTime::now());: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/persistent.rs: thread_local! {: Host firmware discovery and its metadata-validated hash cache await extraction
-crates/assembly/src/firmware_discovery/persistent.rs: time::{Duration, SystemTime, UNIX_EPOCH},: Host firmware discovery and its metadata-validated hash cache await extraction
 crates/assembly/src/lib.rs: let _ = std::fs::remove_dir_all(&self.0);: Feature-gated test support creates and removes temporary input directories
 crates/assembly/src/lib.rs: let path = std::env::temp_dir().join(format!(: Feature-gated test support creates and removes temporary input directories
 crates/assembly/src/lib.rs: match std::fs::create_dir(&path) {: Feature-gated test support creates and removes temporary input directories

@@ -13,6 +13,9 @@ description = "Machine description files (TOML and YAML) over one versioned sche
 layer = "pc"
 side = "core"
 
+[features]
+test-support = []
+
 [dependencies]
 assembly.workspace = true
 pc-config.workspace = true
@@ -24,6 +27,7 @@ serde-saphyr.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+machine-file = { path = ".", features = ["test-support"] }
 pc-config = { workspace = true, features = ["test-support"] }
 assembly = { workspace = true, features = ["test-support"] }
 machine.workspace = true

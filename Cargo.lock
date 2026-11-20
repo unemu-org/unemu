@@ -2002,6 +2002,7 @@ version = "0.0.3"
 dependencies = [
  "assembly",
  "machine",
+ "machine-file",
  "media",
  "pc-config",
  "serde",
@@ -2796,6 +2797,7 @@ dependencies = [
  "image-store",
  "library-model",
  "library-ui",
+ "machine-file",
  "machine-view",
  "media",
  "media-ui",
@@ -4001,6 +4003,7 @@ dependencies = [
  "image-registry",
  "image-store",
  "machine",
+ "machine-file",
  "pc-harness",
  "pc-image",
  "platforms",

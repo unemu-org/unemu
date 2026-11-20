@@ -9,7 +9,7 @@ pub use crate::firmware_discovery::{
 /// test API while sharing all hashing and layout matching with frontends.
 pub fn find_user_firmware(
     entry_id: &str,
-    catalogue: &[crate::FirmwareEntry],
+    catalogue: &[assembly::FirmwareEntry],
 ) -> Result<Option<FoundUserFirmware>, UserFirmwareError> {
     crate::firmware_discovery::find_test_firmware(
         entry_id,

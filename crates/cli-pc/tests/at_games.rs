@@ -146,8 +146,8 @@ fn user_rom_at_games_freedos_prompt() {
     use machine::RunOutcome;
 
     let catalogue = BoardModel::Ibm5170.firmware_catalogue();
-    let bios = assembly::require_user_firmware!(support::SYSTEM, catalogue);
-    let video = assembly::require_user_firmware!(support::VIDEO, catalogue);
+    let bios = machine_file::require_user_firmware!(support::SYSTEM, catalogue);
+    let video = machine_file::require_user_firmware!(support::VIDEO, catalogue);
     let Some(floppy) = fixtures::fixture("freedos/freedos-1200.img") else {
         return;
     };
@@ -304,8 +304,8 @@ fn run_ctrl_alt_del_reboot(frame_chunk: Option<u64>) {
         Some("469b33578f197882383cfff84f86c9621593f74df1a97e5d96aae8617d551229");
 
     let catalogue = BoardModel::Ibm5170.firmware_catalogue();
-    let bios = assembly::require_user_firmware!(support::SYSTEM, catalogue);
-    let video = assembly::require_user_firmware!(support::VIDEO, catalogue);
+    let bios = machine_file::require_user_firmware!(support::SYSTEM, catalogue);
+    let video = machine_file::require_user_firmware!(support::VIDEO, catalogue);
     let Some(floppy) = fixtures::fixture("freedos/freedos-1200.img") else {
         return;
     };

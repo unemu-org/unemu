@@ -260,7 +260,7 @@ pub fn scan_with_limits(
                 scan.size_mismatches += 1;
                 return Ok(());
             }
-            let hash = assembly::firmware_discovery::hash_firmware_file(&path)
+            let hash = machine_file::firmware_discovery::hash_firmware_file(&path)
                 .map_err(|e| invalid(format!("unreadable ROM: {e}")))?;
             let matches = catalogue.iter().any(|e| {
                 (e.sha256 == hash && e.size == stat.len())
@@ -1381,7 +1381,7 @@ fn plan(
         let filename = file_name(&extra.path)?;
         let digest: Digest = format!(
             "sha256:{}",
-            assembly::firmware_discovery::hash_firmware_file(&extra.path)?
+            machine_file::firmware_discovery::hash_firmware_file(&extra.path)?
         )
         .parse()?;
         let kind = extra_kind(&extra.path);

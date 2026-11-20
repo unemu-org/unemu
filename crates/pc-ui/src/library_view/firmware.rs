@@ -13,8 +13,8 @@ use super::firmware_metadata::{
     layer_text, provenance_lines, Catalogue, Draft, DraftView, EditDialog, PackageDetails, Rights,
 };
 use super::{human_size, LibraryView};
-use assembly::firmware_discovery::DiscoveryControl;
 use image_store::{firmware::Rom, license, media_type, summary::ImageSummary, Descriptor, Digest};
+use machine_file::firmware_discovery::DiscoveryControl;
 use pc_image::firmware_import::Statement;
 use std::{
     collections::{BTreeMap, BTreeSet},

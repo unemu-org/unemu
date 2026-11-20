@@ -291,7 +291,7 @@ pub(super) fn run(
                 shell_events,
                 shell_errors,
                 cc.winit_window().cloned(),
-                assembly::firmware_discovery::default_firmware_roots(),
+                machine_file::firmware_discovery::default_firmware_roots(),
                 cores,
             );
             shell.logo = Some(ui_kit::logo::Logo::load(&cc.egui_ctx)?);
@@ -396,8 +396,8 @@ struct Shell {
     library_revision: u64,
     readiness: Option<ReadinessJob>,
     prepared: std::collections::BTreeMap<usize, machine_file::PreparedMachineFile>,
-    discovery_session: assembly::firmware_discovery::DiscoverySession,
-    discovery_roots: Vec<assembly::firmware_discovery::FirmwareRoot>,
+    discovery_session: machine_file::firmware_discovery::DiscoverySession,
+    discovery_roots: Vec<machine_file::firmware_discovery::FirmwareRoot>,
     start_request: Option<usize>,
     checked_selection: Option<usize>,
     insert_dialog: Option<crate::media_dialog::InsertDialog>,
@@ -413,10 +413,10 @@ struct Shell {
     /// Preferences dialog of this session so session-only logins persist.
     credential_store: Arc<dyn image_registry::credential_store::CredentialStore>,
     discovery_warnings: BTreeSet<String>,
-    discovery_control: assembly::firmware_discovery::DiscoveryControl,
+    discovery_control: machine_file::firmware_discovery::DiscoveryControl,
     firmware_cache: Option<std::path::PathBuf>,
     default_store_root: Option<std::path::PathBuf>,
-    default_firmware_roots: Vec<assembly::firmware_discovery::FirmwareRoot>,
+    default_firmware_roots: Vec<machine_file::firmware_discovery::FirmwareRoot>,
     rescan: bool,
     refresh_listing: bool,
     discovery_finished: bool,
@@ -527,7 +527,7 @@ struct ReadinessJob {
     index: usize,
     revision: u64,
     user_cancelled: bool,
-    control: assembly::firmware_discovery::DiscoveryControl,
+    control: machine_file::firmware_discovery::DiscoveryControl,
     receiver: std::sync::mpsc::Receiver<shell_model::PreparedEntry>,
 }
 
@@ -2693,7 +2693,7 @@ impl Shell {
         events: Rc<RefCell<Events>>,
         errors: Rc<RefCell<Option<String>>>,
         window: Option<Arc<Window>>,
-        default_firmware_roots: Vec<assembly::firmware_discovery::FirmwareRoot>,
+        default_firmware_roots: Vec<machine_file::firmware_discovery::FirmwareRoot>,
         cores: core_launch::Cores,
     ) -> Self {
         let root = crate::machines_dir();
@@ -2791,7 +2791,7 @@ impl Shell {
             credential_store: image_registry::credential_store::detect(),
             discovery_warnings: BTreeSet::new(),
             discovery_control: Default::default(),
-            firmware_cache: assembly::firmware_discovery::firmware_cache_path(),
+            firmware_cache: machine_file::firmware_discovery::firmware_cache_path(),
             default_store_root: image_store::location::default_store_root().ok(),
             default_firmware_roots,
             rescan: false,
@@ -5886,10 +5886,10 @@ fn recording_finished(
 
 fn firmware_progress(
     ui: &mut egui::Ui,
-    progress: &assembly::firmware_discovery::DiscoveryProgress,
+    progress: &machine_file::firmware_discovery::DiscoveryProgress,
     reduced_motion: bool,
 ) {
-    use assembly::firmware_discovery::DiscoveryPhase;
+    use machine_file::firmware_discovery::DiscoveryPhase;
     if progress.phase == DiscoveryPhase::Idle {
         return;
     }
@@ -11281,7 +11281,7 @@ kind='mda'
     fn finish_discovery(
         shell: &mut Shell,
         ctx: &egui::Context,
-    ) -> assembly::firmware_discovery::DiscoveryProgress {
+    ) -> machine_file::firmware_discovery::DiscoveryProgress {
         shell.poll_readiness(ctx);
         let job = shell.readiness.take().unwrap();
         let prepared = job
@@ -11655,7 +11655,7 @@ kind='mda'
 
     #[test]
     fn discovery_job_uses_only_explicit_and_injected_roots() {
-        use assembly::firmware_discovery::{FirmwareRoot, RootOrigin};
+        use machine_file::firmware_discovery::{FirmwareRoot, RootOrigin};
         let temp = assembly::test_support::TempDir::new("isolated-shell-discovery");
         let mut shell = discovery_shell(&temp);
         let env_like = FirmwareRoot::new(
@@ -11801,7 +11801,7 @@ kind='mda'
 
     #[test]
     fn discovery_uses_the_existing_status_cell_without_changing_height() {
-        use assembly::firmware_discovery::{DiscoveryPhase, DiscoveryProgress};
+        use machine_file::firmware_discovery::{DiscoveryPhase, DiscoveryProgress};
         let mut shell = shell();
         assert_eq!(
             shell.discovery_control.snapshot().phase,
@@ -11885,7 +11885,7 @@ kind='mda'
 
     #[test]
     fn firmware_progress_renders_headlessly_in_each_phase() {
-        use assembly::firmware_discovery::{DiscoveryPhase, DiscoveryProgress};
+        use machine_file::firmware_discovery::{DiscoveryPhase, DiscoveryProgress};
         let ctx = egui::Context::default();
         for phase in [
             DiscoveryPhase::Listing,

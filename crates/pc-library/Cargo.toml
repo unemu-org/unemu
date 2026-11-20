@@ -42,6 +42,7 @@ unemu-core-api.workspace = true
 unemu-pc-core.workspace = true
 
 [dev-dependencies]
+machine-file = { workspace = true, features = ["test-support"] }
 assembly = { workspace = true, features = ["test-support"] }
 image-store = { path = "../image-store", version = "0.0.3", features = ["test-support"] }
 image-registry = { path = "../registry", version = "0.0.3", features = ["test-support"] }

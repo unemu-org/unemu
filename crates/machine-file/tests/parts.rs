@@ -726,7 +726,7 @@ fn repository_machine_cpu_regions_cover_the_full_firmware_board_space() {
 #[ignore = "requires separately supplied proprietary firmware; identity and diagnostics only"]
 fn user_rom_landmark_at_identity() {
     let catalogue = assembly::BoardModel::Ibm5170.firmware_catalogue();
-    let found = assembly::require_user_firmware!("landmark-rom-post-at-1.2.0", catalogue);
+    let found = machine_file::require_user_firmware!("landmark-rom-post-at-1.2.0", catalogue);
     let entry = catalogue
         .iter()
         .find(|entry| entry.id == "landmark-rom-post-at-1.2.0")
@@ -778,7 +778,7 @@ fn user_rom_landmark_at_identity() {
 fn user_rom_ibm_1985_identity() {
     use assembly::{ImagePart, Lane};
     let catalogue = assembly::BoardModel::Ibm5170.firmware_catalogue();
-    let found = assembly::require_user_firmware!("ibm-5170-bios-1985-06-10", catalogue);
+    let found = machine_file::require_user_firmware!("ibm-5170-bios-1985-06-10", catalogue);
     let entry = found.expect_redacted(
         catalogue
             .iter()

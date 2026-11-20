@@ -311,7 +311,7 @@ fn a_recipe_with_findings_prints_the_checks_and_usage_errors_exit_2() {
 fn user_rom_azuramoon_plan_finds_561_entries_from_204_files() {
     let temp = Temp::new("azuramoon");
     store(&temp);
-    let roots: Vec<PathBuf> = assembly::firmware_discovery::default_search_roots()
+    let roots: Vec<PathBuf> = machine_file::firmware_discovery::default_search_roots()
         .into_iter()
         .filter(|root| root.is_dir())
         .collect();

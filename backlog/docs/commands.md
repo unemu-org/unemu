@@ -2884,8 +2884,8 @@ cargo test --locked --profile test --workspace --no-fail-fast -- --ignored user_
 ```
 
 These tests are `#[ignore]` with names starting with `user_rom_`. The shared
-`assembly::require_user_firmware!(entry_id, board.firmware_catalogue())` helper
-is available through assembly's `test-support` feature. It searches recursively
+`machine_file::require_user_firmware!(entry_id, board.firmware_catalogue())` helper
+is available through machine-file's `test-support` feature. It searches recursively
 in `vendor/user-roms/` first (found from the `CARGO_MANIFEST_DIR` that `cargo
 test` sets), then the optional directory
 `UNEMUPC_USER_ROMS_DIR`. Set it to an absolute path to a folder of unpacked,

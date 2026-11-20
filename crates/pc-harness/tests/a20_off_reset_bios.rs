@@ -18,9 +18,10 @@
 //! Compatibility Considerations ("Address after Reset"), and Appendix B,
 //! LIDT and INT (a real-mode interrupt beyond the IDT limit shuts down).
 
-use assembly::test_support::{fixture_sha256, TempDir, UserFirmwareLayout};
+use assembly::test_support::{fixture_sha256, TempDir};
 use assembly::{AssemblyOptions, BoardModel, ObservationPolicy, RunPolicy};
 use machine::RunOutcome;
+use machine_file::test_support::UserFirmwareLayout;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -271,7 +272,7 @@ fn open_bios_resumes_after_cpu_resets_with_the_gate_off() {
 #[ignore = "requires the user-supplied IBM 5170 system ROM"]
 fn user_rom_ibm_5170_resumes_after_cpu_resets_with_the_gate_off() {
     let catalogue = BoardModel::Ibm5170.firmware_catalogue();
-    let found = assembly::require_user_firmware!(IBM_ENTRY, catalogue);
+    let found = machine_file::require_user_firmware!(IBM_ENTRY, catalogue);
     assert!(
         include_str!("../../../Cargo.lock").contains(CPU_REV),
         "CPU pin drifted"

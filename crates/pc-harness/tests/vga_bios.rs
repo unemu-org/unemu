@@ -340,8 +340,8 @@ fn ibm_vga_measurement_machine_keeps_the_ibm_post_hardware() {
 #[ignore = "requires separately supplied IBM 5170 and IBM Display Adapter ROMs"]
 fn user_rom_ibm_vga_bios_mode13_pattern() {
     let catalogue = BoardModel::Ibm5170.firmware_catalogue();
-    let bios = assembly::require_user_firmware!("ibm-5170-bios-1985-06-10", catalogue);
-    let video = assembly::require_user_firmware!(FirmwareEntry::IBM_VGA_1987.id, catalogue);
+    let bios = machine_file::require_user_firmware!("ibm-5170-bios-1985-06-10", catalogue);
+    let video = machine_file::require_user_firmware!(FirmwareEntry::IBM_VGA_1987.id, catalogue);
     assert!(include_str!("../../../Cargo.lock").contains(CPU_REV));
     let temporary = assembly::test_support::TempDir::new("ibm-vga-post-machine");
     let redact = |message: &str| {

@@ -270,9 +270,9 @@ fn firmware_store_first_resolves_without_folders_rechecks_pins_and_blocks_tamper
     let machine = t.0.join("machine.toml");
     fs::write(&machine, format!("schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nsha256='{}'\nparts=[{{image='absent-even',lane='even'}},{{image='absent-odd',lane='odd'}}]\n[[card]]\nkind='mda'\n", cat[0].sha256)).unwrap();
     fs::remove_dir_all(&root).unwrap();
-    let control = assembly::firmware_discovery::DiscoveryControl::default();
+    let control = machine_file::firmware_discovery::DiscoveryControl::default();
     let prepared =
-        assembly::firmware_discovery::with_discovery_session(None, false, &control, || {
+        machine_file::firmware_discovery::with_discovery_session(None, false, &control, || {
             pc_image::firmware::prepare_for_assembly_with_firmware_store(
                 &machine,
                 &[],
@@ -338,9 +338,9 @@ fn firmware_store_first_resolves_without_folders_rechecks_pins_and_blocks_tamper
         .is_err()
     );
     let root = chips(&t);
-    let roots = [assembly::firmware_discovery::FirmwareRoot::new(
+    let roots = [machine_file::firmware_discovery::FirmwareRoot::new(
         root,
-        assembly::firmware_discovery::RootOrigin::CommandLine,
+        machine_file::firmware_discovery::RootOrigin::CommandLine,
     )];
     assert!(
         pc_image::firmware::prepare_for_assembly_with_firmware_store(
@@ -369,9 +369,9 @@ fn firmware_store_miss_falls_back_to_pinned_folder_and_unpinned_path_is_not_gues
         ),
     )
     .unwrap();
-    let roots = [assembly::firmware_discovery::FirmwareRoot::new(
+    let roots = [machine_file::firmware_discovery::FirmwareRoot::new(
         &root,
-        assembly::firmware_discovery::RootOrigin::CommandLine,
+        machine_file::firmware_discovery::RootOrigin::CommandLine,
     )];
     let p = pc_image::firmware::prepare_for_assembly_with_firmware_store(
         &machine,
@@ -547,14 +547,14 @@ fn firmware_store_hit_preserves_declared_chip_order_and_never_lists_fallback_roo
     let path = t.0.join("machine.toml");
     fs::write(&path,format!("schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nsha256='{}'\nparts=[{{image='absent-odd',lane='odd',sha256='{}'}},{{image='absent-even',lane='even',sha256='{}'}}]\n",cat[0].sha256,layout[1].sha256,layout[0].sha256)).unwrap();
     fs::remove_dir_all(root).unwrap();
-    let roots = [assembly::firmware_discovery::FirmwareRoot::new(
+    let roots = [machine_file::firmware_discovery::FirmwareRoot::new(
         t.0.join("offline-folder"),
-        assembly::firmware_discovery::RootOrigin::CommandLine,
+        machine_file::firmware_discovery::RootOrigin::CommandLine,
     )];
-    let control = assembly::firmware_discovery::DiscoveryControl::default();
+    let control = machine_file::firmware_discovery::DiscoveryControl::default();
     let mut warnings = Vec::new();
     let prepared =
-        assembly::firmware_discovery::with_discovery_session(None, false, &control, || {
+        machine_file::firmware_discovery::with_discovery_session(None, false, &control, || {
             pc_image::firmware::prepare_for_assembly_with_firmware_store(
                 &path,
                 &roots,
@@ -978,9 +978,9 @@ fn unavailable_store_open_and_summary_cache_warn_and_fall_back() {
         machine_text(&format!("image='absent'\nsha256='{}'", cat[0].sha256)),
     )
     .unwrap();
-    let roots = [assembly::firmware_discovery::FirmwareRoot::new(
+    let roots = [machine_file::firmware_discovery::FirmwareRoot::new(
         roms,
-        assembly::firmware_discovery::RootOrigin::CommandLine,
+        machine_file::firmware_discovery::RootOrigin::CommandLine,
     )];
     // A default root where no store has been created yet is an ordinary miss.
     let mut warnings = Vec::new();
@@ -1479,14 +1479,14 @@ fn an_in_memory_package_rom_is_not_searched_for_in_fallback_folders() {
         ),
     )
     .unwrap();
-    let roots = [assembly::firmware_discovery::FirmwareRoot::new(
+    let roots = [machine_file::firmware_discovery::FirmwareRoot::new(
         folder,
-        assembly::firmware_discovery::RootOrigin::CommandLine,
+        machine_file::firmware_discovery::RootOrigin::CommandLine,
     )];
-    let control = assembly::firmware_discovery::DiscoveryControl::default();
+    let control = machine_file::firmware_discovery::DiscoveryControl::default();
     let mut warnings = Vec::new();
     let prepared =
-        assembly::firmware_discovery::with_discovery_session(None, false, &control, || {
+        machine_file::firmware_discovery::with_discovery_session(None, false, &control, || {
             pc_image::firmware::prepare_for_assembly_with_firmware_store(
                 &path,
                 &roots,

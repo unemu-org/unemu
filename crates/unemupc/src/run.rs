@@ -27,9 +27,9 @@ pub(super) fn check_machine(
     let roots = rom_dirs
         .iter()
         .map(|path| {
-            assembly::firmware_discovery::FirmwareRoot::new(
+            machine_file::firmware_discovery::FirmwareRoot::new(
                 path,
-                assembly::firmware_discovery::RootOrigin::CommandLine,
+                machine_file::firmware_discovery::RootOrigin::CommandLine,
             )
         })
         .collect::<Vec<_>>();
@@ -47,13 +47,13 @@ pub(super) fn check_machine(
 }
 
 /// Firmware discovery roots in command-line order.
-pub fn firmware_roots(rom_dirs: &[PathBuf]) -> Vec<assembly::firmware_discovery::FirmwareRoot> {
+pub fn firmware_roots(rom_dirs: &[PathBuf]) -> Vec<machine_file::firmware_discovery::FirmwareRoot> {
     rom_dirs
         .iter()
         .map(|path| {
-            assembly::firmware_discovery::FirmwareRoot::new(
+            machine_file::firmware_discovery::FirmwareRoot::new(
                 path,
-                assembly::firmware_discovery::RootOrigin::CommandLine,
+                machine_file::firmware_discovery::RootOrigin::CommandLine,
             )
         })
         .collect()

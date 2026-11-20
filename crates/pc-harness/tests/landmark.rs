@@ -11,12 +11,13 @@ use cpu::{Cpu, CpuError, CpuReg};
 use machine::{MachineError, RunOutcome};
 use video::{Frame, TextGrid};
 
-use assembly::test_support::{FoundUserFirmware, TempDir};
+use assembly::test_support::TempDir;
 use assembly::{
     AssemblyOptions, BoardModel, ConsoleProbe, DeviceId, ImageSource, InjectionSchedule,
     KeyboardStimulus, ObservationPolicy, ObservationRequest, OutputKind, RunError, RunPolicy,
     StopCondition,
 };
+use machine_file::test_support::FoundUserFirmware;
 use std::{
     fmt::Write as _,
     path::{Path, PathBuf},
@@ -647,7 +648,7 @@ fn landmark_status_cells_ignore_surrounding_text() {
 #[ignore = "requires separately supplied proprietary firmware; I286 stop awaits measurement"]
 fn user_rom_landmark_at_real_mode_prefix() {
     let catalogue = BoardModel::Ibm5170.firmware_catalogue();
-    let found = assembly::require_user_firmware!(ENTRY_ID, catalogue);
+    let found = machine_file::require_user_firmware!(ENTRY_ID, catalogue);
     assert!(
         include_str!("../../../Cargo.lock").contains(CPU_REV),
         "CPU pin drifted"
@@ -717,7 +718,7 @@ fn user_rom_landmark_at_real_mode_prefix() {
 #[ignore = "requires separately supplied proprietary firmware"]
 fn user_rom_landmark_at_full_pass() {
     let catalogue = BoardModel::Ibm5170.firmware_catalogue();
-    let found = assembly::require_user_firmware!(ENTRY_ID, catalogue);
+    let found = machine_file::require_user_firmware!(ENTRY_ID, catalogue);
     assert!(
         include_str!("../../../Cargo.lock").contains(CPU_REV),
         "CPU pin drifted"
@@ -818,7 +819,7 @@ const IBM_GOLDEN_TEXT_SHA256: Option<&str> =
 fn user_rom_ibm_5170_1985_post() {
     const IBM_ENTRY: &str = "ibm-5170-bios-1985-06-10";
     let catalogue = BoardModel::Ibm5170.firmware_catalogue();
-    let found = assembly::require_user_firmware!(IBM_ENTRY, catalogue);
+    let found = machine_file::require_user_firmware!(IBM_ENTRY, catalogue);
     assert!(
         include_str!("../../../Cargo.lock").contains(CPU_REV),
         "CPU pin drifted"

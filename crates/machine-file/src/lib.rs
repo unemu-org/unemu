@@ -24,7 +24,8 @@
 
 use std::path::{Path, PathBuf};
 
-mod firmware_discovery;
+pub mod firmware_discovery;
+mod firmware_resolve;
 #[cfg(test)]
 mod lower;
 mod origin;
@@ -362,7 +363,7 @@ pub fn load_for_assembly_with_rom_dirs(
     options: assembly::AssemblyOptions,
     roots: &[PathBuf],
 ) -> Result<LoadedMachine, LoadError> {
-    use assembly::firmware_discovery::{FirmwareRoot, RootOrigin};
+    use crate::firmware_discovery::{FirmwareRoot, RootOrigin};
     let roots = roots
         .iter()
         .map(|path| FirmwareRoot::new(path, RootOrigin::CommandLine))
@@ -381,7 +382,7 @@ pub fn load_for_assembly_with_rom_dirs(
 pub fn load_for_assembly_with_firmware_roots(
     path: impl AsRef<Path>,
     options: assembly::AssemblyOptions,
-    roots: &[assembly::firmware_discovery::FirmwareRoot],
+    roots: &[crate::firmware_discovery::FirmwareRoot],
     warnings: &mut Vec<String>,
 ) -> Result<LoadedMachine, LoadError> {
     prepare_for_assembly_with_firmware_roots(path, roots, warnings)?.load(options)
@@ -425,7 +426,7 @@ pub struct PreparedMachineFile {
 /// Locate firmware on a host worker before launch; no guest state is created.
 pub fn prepare_for_assembly_with_firmware_roots(
     path: impl AsRef<Path>,
-    roots: &[assembly::firmware_discovery::FirmwareRoot],
+    roots: &[crate::firmware_discovery::FirmwareRoot],
     warnings: &mut Vec<String>,
 ) -> Result<PreparedMachineFile, LoadError> {
     prepare_for_assembly_with_firmware_packages(path, roots, warnings, None)
@@ -436,7 +437,7 @@ pub fn prepare_for_assembly_with_firmware_roots(
 /// folder discovery.
 pub fn prepare_for_assembly_with_firmware_packages(
     path: impl AsRef<Path>,
-    roots: &[assembly::firmware_discovery::FirmwareRoot],
+    roots: &[crate::firmware_discovery::FirmwareRoot],
     warnings: &mut Vec<String>,
     packages: Option<&dyn FirmwarePackages>,
 ) -> Result<PreparedMachineFile, LoadError> {
@@ -444,7 +445,7 @@ pub fn prepare_for_assembly_with_firmware_packages(
     let roots = roots
         .iter()
         .filter_map(|root| match std::path::absolute(&root.path) {
-            Ok(path) => Some(assembly::firmware_discovery::FirmwareRoot::new(
+            Ok(path) => Some(crate::firmware_discovery::FirmwareRoot::new(
                 path,
                 root.origin,
             )),
@@ -465,7 +466,7 @@ pub fn prepare_for_assembly_with_firmware_packages(
             .map_err(|e| ParseError::new(path.as_ref(), None, e.to_string(), None))?,
         None => Vec::new(),
     };
-    firmware_discovery::resolve(&mut document, &origins, &roots, warnings, &firmware_images)?;
+    firmware_resolve::resolve(&mut document, &origins, &roots, warnings, &firmware_images)?;
     Ok(PreparedMachineFile {
         document,
         origins,
@@ -609,4 +610,14 @@ mod vga_tests {
             assert_eq!(card.kind, Some(schema::v1::CardKind::Vga));
         }
     }
+}
+
+/// Shared user-ROM discovery and skip policy for host-side tests.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    mod user_firmware;
+    pub use user_firmware::{
+        find_user_firmware, required_user_firmware, FoundUserFirmware, UserFirmwareError,
+        UserFirmwareLayout,
+    };
 }

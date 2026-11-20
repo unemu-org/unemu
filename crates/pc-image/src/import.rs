@@ -615,9 +615,9 @@ pub fn import_machine(
         .rom_dirs
         .iter()
         .map(|p| {
-            assembly::firmware_discovery::FirmwareRoot::new(
+            machine_file::firmware_discovery::FirmwareRoot::new(
                 p,
-                assembly::firmware_discovery::RootOrigin::CommandLine,
+                machine_file::firmware_discovery::RootOrigin::CommandLine,
             )
         })
         .collect::<Vec<_>>();

@@ -24,6 +24,7 @@ test-support = [
 ]
 
 [dependencies]
+machine-file.workspace = true
 assembly.workspace = true
 egui = { workspace = true, features = ["monochrome_emoji_fonts"] }
 image-registry = { path = "../registry", version = "0.0.3" }

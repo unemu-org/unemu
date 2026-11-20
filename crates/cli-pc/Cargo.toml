@@ -34,6 +34,7 @@ media.workspace = true
 video.workspace = true
 
 [dev-dependencies]
+machine-file = { workspace = true, features = ["test-support"] }
 pc-image = { path = "../pc-image", version = "0.0.3", features = ["test-support"] }
 cpu.workspace = true
 devices.workspace = true

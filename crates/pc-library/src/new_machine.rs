@@ -2056,7 +2056,7 @@ mod tests {
     #[ignore = "requires separately supplied IBM 5170 BIOS chips"]
     fn user_rom_cmos_typed_bios_refuses_untyped_geometries_per_option() {
         let catalogue = assembly::BoardModel::Ibm5170.firmware_catalogue();
-        let found = assembly::require_user_firmware!("ibm-5170-bios-1985-06-10", catalogue);
+        let found = machine_file::require_user_firmware!("ibm-5170-bios-1985-06-10", catalogue);
         let Some(store) = FirmwareStore::new(false) else {
             return;
         };

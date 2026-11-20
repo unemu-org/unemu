@@ -70,3 +70,29 @@ fn launch_discovers_split_chips_and_assembled_image_pins() {
     assert!(machine_file::load_for_assembly_with_rom_dirs(&path, options, &[dumps]).is_err());
     assert_eq!(std::fs::read_to_string(path).unwrap(), text);
 }
+
+#[test]
+fn discovery_is_available_without_loading_a_machine_file() {
+    use assembly::ImageSource;
+    use machine_file::firmware_discovery::{
+        locate_firmware_with_roots, with_discovery_session, DiscoveryControl, FirmwarePin,
+        FirmwareRoot, RootOrigin,
+    };
+    let temp = TempDir::new("host-discovery-api");
+    let bytes = b"synthetic firmware";
+    let path = temp.path().join("renamed.rom");
+    std::fs::write(&path, bytes).unwrap();
+    let pin = FirmwarePin {
+        sha256: format!("{:x}", Sha256::digest(bytes)),
+        length: Some(bytes.len() as u64),
+    };
+    let roots = [FirmwareRoot::new(temp.path(), RootOrigin::CommandLine)];
+    let control = DiscoveryControl::default();
+    let mut warnings = Vec::new();
+    let found = with_discovery_session(None, false, &control, || {
+        locate_firmware_with_roots(&roots, None, Some(&pin), &[], &mut warnings)
+    })
+    .unwrap();
+    assert_eq!(found, Some(ImageSource::File(path)));
+    assert!(warnings.is_empty());
+}

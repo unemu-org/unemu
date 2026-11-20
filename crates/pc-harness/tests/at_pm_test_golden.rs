@@ -20,7 +20,7 @@
 //! Exceptions (double fault and shutdown) and System Control and
 //! Initialization (LMSW).
 
-use assembly::test_support::{FoundUserFirmware, TempDir, UserFirmwareLayout};
+use assembly::test_support::TempDir;
 use assembly::{
     AssemblyOptions, BoardModel, DeviceId, ImageSource, ObservationPolicy, ObservationRequest,
     OutputKind, RunPolicy,
@@ -28,6 +28,7 @@ use assembly::{
 use cpu::Cpu;
 use device::ByteStreamKind;
 use machine::RunOutcome;
+use machine_file::test_support::{FoundUserFirmware, UserFirmwareLayout};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -502,7 +503,7 @@ fn open_bios_resumes_the_protected_mode_test_through_the_shutdown_byte() {
 #[ignore = "requires the user-supplied IBM 5170 system ROM and the at-pm-test floppy"]
 fn user_rom_ibm_5170_at_pm_test_resumes_through_the_shutdown_byte() {
     let catalogue = BoardModel::Ibm5170.firmware_catalogue();
-    let found = assembly::require_user_firmware!(IBM_ENTRY, catalogue);
+    let found = machine_file::require_user_firmware!(IBM_ENTRY, catalogue);
     assert!(
         include_str!("../../../Cargo.lock").contains(CPU_REV),
         "CPU pin drifted"

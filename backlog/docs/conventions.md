@@ -108,9 +108,10 @@ No device or machine feature merges without its tests.
 Proprietary-firmware goldens store hashes and our own interpretation (POST codes,
 which tests passed, retired-instruction counts), never firmware bytes or copies
 of the firmware's screen text beyond short identifiers. Do not commit screenshots
-or full console transcripts from that firmware. User-ROM tests are ignored,
-start with `user_rom_`, and use the shared `assembly::require_user_firmware!`
-helper; see `commands.md` §User-supplied ROM tests. Discovery tests use synthetic
+or full console transcripts from that firmware. User-ROM tests are ignored and
+start with `user_rom_`; those that need user firmware use the shared
+`machine_file::require_user_firmware!` helper (the user-media tests keep their
+own skip); see `commands.md` §User-supplied ROM tests. Discovery tests use synthetic
 bytes only.
 
 Keep process-spawning tests in separate test binaries from tests holding journal

@@ -37,7 +37,7 @@ fn firmware_host_guard_child() {
     };
     let root = PathBuf::from(root);
     let default_root = image_store::location::default_store_root().unwrap();
-    let index = assembly::firmware_discovery::firmware_cache_path();
+    let index = machine_file::firmware_discovery::firmware_cache_path();
     let store = image_store::Store::open(&default_root).unwrap();
     let bytes = vec![0xf4; 32768];
     let rom = root.join("store-source.bin");

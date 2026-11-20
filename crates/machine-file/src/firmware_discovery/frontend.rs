@@ -628,7 +628,7 @@ pub fn locate_firmware_with_roots(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::TempDir;
+    use assembly::test_support::TempDir;
 
     fn pin(bytes: &[u8], length: Option<u64>) -> FirmwarePin {
         FirmwarePin {
@@ -833,9 +833,9 @@ mod tests {
                 part: ImagePart {
                     path: temp.path().join("absent"),
                     lane: if index % 2 == 0 {
-                        crate::Lane::Even
+                        assembly::Lane::Even
                     } else {
-                        crate::Lane::Odd
+                        assembly::Lane::Odd
                     },
                     offset: (index / 2) as u64 * 1024,
                 },
@@ -892,7 +892,7 @@ mod tests {
         let parts = [PinnedPart {
             part: ImagePart {
                 path: large,
-                lane: crate::Lane::Even,
+                lane: assembly::Lane::Even,
                 offset: 0,
             },
             pin: Some(oversized),
@@ -963,7 +963,7 @@ mod tests {
     fn unpinned_odd_sized_declared_parts_do_not_walk_folders() {
         let temp = TempDir::new("odd-declared-parts");
         let mut parts = Vec::new();
-        for lane in [crate::Lane::Even, crate::Lane::Odd] {
+        for lane in [assembly::Lane::Even, assembly::Lane::Odd] {
             let path = temp.path().join(format!("{lane:?}"));
             fs::write(&path, [1; 3]).unwrap();
             parts.push(PinnedPart {
@@ -1038,7 +1038,7 @@ mod tests {
 
     #[test]
     fn catalogue_pins_supply_assembled_and_chip_lengths() {
-        let catalogue = crate::BoardModel::Ibm5170.firmware_catalogue();
+        let catalogue = assembly::BoardModel::Ibm5170.firmware_catalogue();
         for entry in catalogue {
             assert_eq!(
                 FirmwarePin::from_catalogue(entry.sha256, catalogue, None).length,

@@ -17,6 +17,7 @@ name = "upcli"
 path = "src/main.rs"
 
 [dependencies]
+machine-file.workspace = true
 cli-core = { path = "../cli-core", version = "0.0.3" }
 cli-pc = { path = "../cli-pc", version = "0.0.3" }
 # The platforms compiled in: their cores and the licence notice.

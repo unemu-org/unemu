@@ -526,7 +526,7 @@ fn a_file_set_lists_each_folder_in_the_fat_builders_name_order() {
 
 /// The user-ROM roots, as the other user-file tests take them.
 fn roots() -> Vec<PathBuf> {
-    assembly::firmware_discovery::default_search_roots()
+    machine_file::firmware_discovery::default_search_roots()
         .into_iter()
         .filter(|root| root.is_dir())
         .collect()

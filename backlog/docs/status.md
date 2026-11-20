@@ -5,6 +5,14 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — Firmware discovery is host-side:** directory scanning,
+  environment roots, the persistent hash index and discovery sessions now live
+  in `machine_file::firmware_discovery`, with all 60 existing tests. The
+  user-ROM test helper moves to `machine-file`'s `test-support` feature;
+  firmware catalogues and byte identity checks stay in `assembly`. The host
+  guard loses 21 discovery entries (41 → 20); its remaining mount, map,
+  temporary-directory and CPU-cache entries are outside this move. See
+  `design/core-contract.md` §12.10 step 12.
 - **2026-11-20 — Front-end host directories use `unemu`:** only shared
   preferences copy once from `unemupc`, retaining the original-directory fallback.
   Machines and journals, diagnostics/trace logs, saves and states each keep using

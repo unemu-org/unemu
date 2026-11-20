@@ -274,13 +274,13 @@ pub fn execute(
             .ok_or_else(|| anyhow::anyhow!("default store unavailable; use --store DIR"))?;
     }
     if command.action == "import" {
-        let control = assembly::firmware_discovery::DiscoveryControl::default();
+        let control = machine_file::firmware_discovery::DiscoveryControl::default();
         let cache = if command.dry_run {
             None
         } else {
             sources.index.as_deref()
         };
-        return assembly::firmware_discovery::with_discovery_session(
+        return machine_file::firmware_discovery::with_discovery_session(
             cache,
             command.rescan,
             &control,

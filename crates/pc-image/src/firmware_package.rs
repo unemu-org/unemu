@@ -239,7 +239,7 @@ impl machine_file::FirmwarePackages for StorePackages<'_> {
 /// miss; corruption after selecting a package remains fatal.
 pub fn prepare_for_assembly_with_store_root(
     path: impl AsRef<std::path::Path>,
-    roots: &[assembly::firmware_discovery::FirmwareRoot],
+    roots: &[machine_file::firmware_discovery::FirmwareRoot],
     warnings: &mut Vec<String>,
     store_root: Option<&std::path::Path>,
 ) -> std::result::Result<machine_file::PreparedMachineFile, machine_file::LoadError> {
@@ -259,7 +259,7 @@ pub fn prepare_for_assembly_with_store_root(
 /// Import and readiness share this seam without changing global host settings.
 pub fn prepare_for_assembly_with_firmware_store(
     path: impl AsRef<std::path::Path>,
-    roots: &[assembly::firmware_discovery::FirmwareRoot],
+    roots: &[machine_file::firmware_discovery::FirmwareRoot],
     warnings: &mut Vec<String>,
     store: Option<&image_store::Store>,
 ) -> std::result::Result<machine_file::PreparedMachineFile, machine_file::LoadError> {
