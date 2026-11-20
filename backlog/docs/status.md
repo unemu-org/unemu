@@ -5,6 +5,15 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — Machinefile syntax corpus:** three documented installation
+  routes (FreeDOS 1.4, private MS-DOS 3.30, private Windows 3.1) now have
+  equal TOML/HCL pairs with proposed input steps, waits, disk capture and
+  lock snapshots. The pre-freeze review recommends keeping TOML, with
+  concrete nested-input and multiline examples. These are design documents
+  with explicit assumptions and placeholder pins; no guest installation or
+  Machinefile implementation is claimed. See `design/recipe-corpus/README.md`
+  and `design/recipes.md` §14.
+
 - **2026-11-20 — Standalone PC core command line:** the new `unemupc`
   package supplies a library and binary for `--boot`, `--bios`,
   `machine check`, `run --machine`, `--version` and `--about`, without

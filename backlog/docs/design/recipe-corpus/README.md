@@ -231,3 +231,234 @@ stay open:
 12. **The ROM's hash was written twice** in the open firmware recipe (input
     and `[[rom]]`). Fixed in the specification: a `[[rom]]` with `from`
     takes size and hash from its value; only a ROM in `parts` states them.
+
+## Machinefile corpus (2026-11-20)
+
+**Recommendation: TOML stays.** This is the pre-freeze syntax review required
+by recipes.md §14 step 5 and decision-33 point 7. The maintainer still decides;
+this review neither changes decision-33 nor freezes the Machinefile schema.
+The three installations below are documents in both syntaxes, outside the
+shipped inputs. They are **not executable recipes**: `[machine]` and these
+verbs are future work (recipes.md §11 and §13). Plain `.toml`/`.hcl`
+filenames deliberately keep these drafts out of the current recursive recipe
+checker's `*.machine.toml` executable-input discovery. None was installed in
+this review. The historical media-corpus HCL snapshots above remain unchanged;
+these new Machinefile pairs describe equal trees today.
+
+| TOML / HCL pair | Real installation route | Syntax pressure |
+| --- | --- | --- |
+| [freedos-1.4.toml](machinefiles/freedos-1.4.toml) / [HCL](machinefiles/freedos-1.4.hcl) | FreeDOS 1.4 Floppy Edition: boot disk and six package disks onto a blank hard disk | 42 steps, seven inserts, repeated bounded text waits, multiline command input and screen match |
+| [msdos-3.30.toml](machinefiles/msdos-3.30.toml) / [HCL](machinefiles/msdos-3.30.hcl) | Private MS-DOS 3.30 boot/utility floppies: FDISK, reboot, FORMAT /S, COPY, boot C: | 22 steps, 52 nested input actions; the longest input group has 17 actions |
+| [windows-3.1.toml](machinefiles/windows-3.1.toml) / [HCL](machinefiles/windows-3.1.hcl) | Private Windows 3.1 six-disk Setup on the preceding DOS image, standard mode on a 286 | 27 steps, 30 nested input actions, graphics checkpoints, DOS paths and disk swaps |
+
+READ: the [FreeDOS download page](https://www.freedos.org/download/) and
+[installation guide](https://help.freedos.org/docs/howto/install.html)
+describe the classic-PC floppy installation route. The shipped
+[FreeDOS Mediafile](../../../../crates/pc-image/data/recipes/freedos-1.4-floppy/freedos-1.4.media.toml)
+supplies the actual artifact digest, seven disks and medium ids used here.
+[Microsoft's MS-DOS command reference](https://msarchive.pcjs.org/mspl13/msdos/encyclopedia/section3/)
+documents partitioning and FORMAT's system transfer. Microsoft's archived
+[KB Q113230](https://jeffpar.github.io/kbarchive/kb/113/Q113230/)
+identifies disk 6 of the Windows 3.1 1.44 MB distribution;
+[PCjs's Windows 3.10 machine](https://www.pcjs.org/software/pcx86/sys/windows/3.10/)
+provides a separate AT/DOS 3.30 example (its seven 1.2 MB disks are a different
+edition). These sources establish the routes, **not** the proposed key sequences.
+No private media, title-file text or screenshots are included.
+
+### Chosen shape and evidence boundaries
+
+Every file marks the following **ASSUMED**. These are syntax probes, not
+extensions to the accepted recipe schema:
+
+- `recipe = "0.1"` retains the sketch's experimental family marker; it does
+  not mean the current 0.1 checker accepts Machinefiles. `[machine]`, `[from]`
+  and `[use.install]` follow §11. Steps have no ids. Each action has exactly
+  one verb; `drive`, `budget`, `card`, `match`, `label` and `write` are arguments.
+- The blank template is a proposed artifact, not an existing template tag.
+  It contains the hardware described in each file's header: an AT/80286,
+  VGA, 640 KiB conventional plus 2048 KiB extended RAM, a 1.44M drive and a
+  30 MiB IDE master named `system` (960 cylinders, 4 heads, 16 sectors,
+  512 bytes per sector). It is a base machine image, distinct from the
+  hardware-only `schema = 1` documents in [machine-files.md](../machine-files.md).
+  The Windows parent is the DOS output here, with matching placeholder pins.
+- `insert` selects a medium of a digest-pinned set; `eject` empties the drive.
+  Install media stay read-only. `start` powers on once; `reset = "warm"`
+  restarts the guest while preserving its sector overlay. No host command is
+  executed: `type = 'FORMAT C: /S'` types into the guest, then `key = "enter"`
+  submits it. Commands are not a host shell escape.
+- `[[step.input]]` is a finite, one-level sequence of the same input/wait
+  actions, useful for a dialog or batch-file entry. It cannot nest another
+  `input`, loop, branch or include another script. Named keys include `enter`,
+  `escape`, `tab` and `ctrl+z`; `type` maps US-layout characters to make/break
+  events and maps LF to Enter. It never submits a trailing Enter implicitly.
+  Actions drain their queued input before the next action starts.
+- `wait_text` searches the selected card's current text screen, with CRLF
+  normalized to LF and trailing cell spaces removed per row. Multiline
+  `contains` matches adjacent rows, not a concatenation of past frames.
+  The three-line matches come from our own `VERIFY.BAT`, entered with
+  `COPY CON` and Ctrl+Z. They prove only return to DOS and execution of that
+  batch file; they do not verify installed files or boot Windows.
+- `wait_state.kind = "screen-digest"` compares a complete visible VGA frame:
+  SHA-256 over little-endian u32 width, u32 height, then row-major RGBA8.
+  This proposed observer is not implemented. Private checkpoints use distinct
+  placeholder hashes, so no installer text is copied. A real run must pin the
+  exact frame and dialog order; hashes must not be interpreted as measured
+  successes. The FreeDOS prompt fragments are also unverified hypotheses.
+- Each wait has a positive `budget` in retired instructions as §11 sketches;
+  exhaustion fails the build and prevents commit. This is a diagnostic cap,
+  not elapsed time or a JIT-block count. No wall-clock delays are used. Future
+  `run_for`/`--max-time` durations use virtual time, as core-contract.md §12.8
+  requires; this corpus does not invent a host sleep action.
+- `[output]` selects the captured disk, and the final `commit = "system"`
+  emits a new base plus artifact metadata. Full-size disk bases are always
+  SHA-256 identified and immutable; guest writes remain in a separate sector
+  overlay until capture. The output records its parent, leaving hash-linked
+  layers possible; commit never rewrites the parent. Publication permissions
+  do not follow from a script completing: the DOS and Windows outputs stay
+  private. No open licence claim is made for an installed image here.
+- `[lock]` is an **inline draft snapshot** solely to compare readable pin
+  structures in both syntaxes. It records the engine/CPU revision, deterministic
+  run choices, parent disk, artifact inputs (including inherited firmware),
+  captured disk hash/size and output manifest. It is not a replacement for
+  §7.2's emitted manifest/config/metadata lock directory. Recipe-content pins
+  belong in an enclosing recipe artifact, avoiding an inline self-hash.
+  Missing exact engine/output pins make a build unverified, never silently
+  reproducible. Zero-padded digests/revisions are placeholders.
+
+READ: core-contract.md **§12.8**, not recipes.md, describes the shared future
+key-script vocabulary. `crates/pc-harness/src/lib.rs` already drives FreeCOM through
+`PromptThen`, `KeyboardStimulus` and set-1 make/break input; its small
+`type_set1` helper does not support all the characters this corpus proposes.
+`crates/unemupc/src/lib.rs` currently parses `--max-steps`, `--idle-limit`, `--diag-at`,
+`--trace-exceptions` and `--print` for `run --machine`; `--keys` and
+`--max-time` remain design work. The corpus therefore supplies no command line
+that claims to run these files now. Input pacing, key names, graphics observers,
+installer choices and budgets still need an implementation and guest validation.
+
+READ: CPU revision and the three firmware package digests in each lock match
+Cargo.toml and the shipped Firmwarefiles. MEASURED: hashing the specified
+31,457,280 zero bytes produces the blank-disk hash in the two blank parents;
+no base artifact was built. All other parent/media/output pins except the
+FreeDOS media pin are placeholders. The MS-DOS two-disk layout, six-disk Windows
+edition's exact Setup flow and all guest interactions remain ASSUMED.
+
+### Where TOML reads badly
+
+The cost is visible in a real long input list. The Windows destination and
+confirmation take this much TOML (verbatim):
+
+```toml
+[[step.input]]
+type = 'C:\WINDOWS'
+
+[[step.input]]
+key = "enter"
+
+[[step.input]]
+# ASSUMED checkpoint: Setup hardware selection.
+budget = 400_000_000
+
+[step.input.wait_state]
+kind = "screen-digest"
+card = "vga"
+sha256 = "sha256:0000000000000000000000000000000000000000000000000000000000000409"
+```
+
+HCL makes the parentage local; in TOML the reader must remember which
+`[[step]]` owns `[step.input.wait_state]`. The corresponding HCL is:
+
+```hcl
+input {
+  type = "C:\\WINDOWS"
+}
+input {
+  key = "enter"
+}
+input {
+  # ASSUMED checkpoint: Setup hardware selection.
+  budget = 400000000
+  wait_state {
+    kind = "screen-digest"
+    card = "vga"
+    sha256 = "sha256:0000000000000000000000000000000000000000000000000000000000000409"
+  }
+}
+```
+
+The DOS FDISK group repeats `[[step.input]]` 17 times. Reading it is linear;
+editing it is less comfortable: a misplaced table header can silently attach
+fields to the wrong input. Long command scripts also need the distinction
+between characters and physical keys. From the DOS batch entry (verbatim):
+
+```toml
+[[step.input]]
+type = '''
+@ECHO OFF
+PATH C:\DOS
+PROMPT $P$G
+'''
+
+[[step.input]]
+key = "ctrl+z"
+
+[[step.input]]
+key = "enter"
+```
+
+A single opaque `boot_command` string could be shorter, but would hide the
+same key/wait ordering in another mini-language in **both** syntaxes.
+The explicit input list keeps that ordering inspectable. HCL's heredoc is no
+shorter for the command body; TOML's literal string keeps DOS backslashes plain.
+
+The multiline FreeDOS match also stays plain (verbatim):
+
+```toml
+[[step]]
+wait_text = '''
+CORPUS-READY
+SYSTEM=FREEDOS-1.4
+ROOT=C:\FDOS
+'''
+card = "vga"
+match = "contains"
+budget = 400_000_000
+```
+
+HCL uses `wait_text = <<-TEXT` through `TEXT` for the same bytes, followed by
+the same arguments inside `step { ... }`. Neither syntax resolves screen
+whitespace, trailing-newline or graphics-mode semantics; those need explicit
+observer rules. TOML multiline literal strings are readable here and avoid
+escaping paths. A long screen transcript would obscure intent in either
+syntax; three authored adjacent lines test the syntax without copying one.
+
+### Measurement and verdict
+
+MEASURED on 2026-11-20: Python `tomllib` parses all three TOML documents.
+A throwaway literal-subset reader of HCL blocks, string/heredoc attributes,
+booleans and decimal integers reconstructs exactly the same three trees.
+This is a pair-equivalence check, **not** official HCL parser conformance.
+Additional checks cover one verb per action, positive wait budgets, read-only
+media references, commit/output/lock agreement, the DOS-to-Windows parent pin,
+and the complete ordered seven/six-disk insert sequences. No corpus installation
+was run.
+
+Counts exclude blank lines and full-line comments; bytes include them:
+
+| Installation | Steps | TOML lines | HCL lines | TOML bytes | HCL bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| FreeDOS 1.4 | 42 | 233 | 300 | 6,439 | 6,798 |
+| MS-DOS 3.30 | 22 | 298 | 406 | 9,923 | 10,538 |
+| Windows 3.1 | 27 | 261 | 350 | 9,285 | 9,831 |
+| Total | 91 | 792 | 1,056 | 25,647 | 27,167 |
+
+TOML's worst case is repeated absolute table paths in nested input groups;
+HCL's braces show scope more clearly. Even at 42 top-level steps and a
+17-action input group, TOML preserves visible execution order without an
+escape language, computation or encoded key/wait tokens. Multiline literal
+strings and DOS paths read well. HCL costs 33% more nonblank/noncomment lines
+in this spelling, largely closing braces; line count alone does not choose a
+syntax, but the gain in scope readability does not justify the fallback here.
+**Keep TOML per decision-33.** The syntax-review gate has concrete evidence;
+the schema and installation behaviour remain future work. If maintainer review
+finds these nested lists unreadable, take point 7's HCL fallback before §14's
+freeze, using these same trees. Do not postpone that choice until after 1.0.

@@ -527,10 +527,10 @@ find HCL more natural, and people who know Docker will miss `COPY`.
 
 **The fallback is cheap.** The model of §3 and the schema of §6 are a tree of
 tables, arrays and scalars, and the corpus generator writes both syntaxes
-from it. If the Machinefile corpus, which does not exist yet and will have
-the long step lists, shows TOML to be unreadable there, the fallback is the
+from it. If the Machinefile corpus with its long step lists (§14, review
+dated 2026-11-20) shows TOML to be unreadable there, the fallback is the
 HCL subset of the corpus with the same schema. That is a second parser, not
-a second design. The syntax stays `0.x` until that corpus exists (§14).
+a second design. The syntax stays `0.x` until the freeze gates pass (§14).
 
 ### 4.6. Findings of the corpus check (B1)
 
@@ -1921,6 +1921,24 @@ As the maintainer accepted: nothing freezes before it meets reality.
    library by someone who did not write it.
 5. **A Machinefile corpus**, before the freeze, because it tests the syntax
    where it is weakest.
+   **2026-11-20 review:** the [Machinefile corpus](recipe-corpus/README.md#machinefile-corpus-2026-11-20)
+   now has three real installation routes in TOML and HCL: FreeDOS 1.4's
+   seven floppies to a hard disk, private MS-DOS 3.30 with FDISK/FORMAT,
+   and private Windows 3.1 Setup from six floppies on that DOS parent.
+   These are syntax documents with ASSUMED extensions and placeholder locks,
+   not executed installations or currently accepted 0.1 recipes.
+   The worst TOML excerpt is `[[step.input]]` followed by
+   `[step.input.wait_state]`: the parent step is remembered rather than
+   enclosed. DOS FDISK uses 17 nested actions; Windows types
+   `type = 'C:\WINDOWS'` between repeated input headers. Multiline
+   `wait_text = '''` with our own three-line batch output stays readable;
+   the corpus README gives the complete paired excerpts and newline rules.
+   MEASURED: equal parsed trees, 91 top-level steps, 792 TOML versus 1,056 HCL
+   nonblank/noncomment lines. Recommendation: **TOML stays**; HCL's clearer
+   scope does not outweigh TOML's readable linear order and literal strings
+   in these cases. This supplies the syntax-review evidence for step 5,
+   not guest validation or the freeze. The maintainer decides; decision-33
+   is unchanged and its point 7 fallback remains available before step 7.
 6. **The FAT builder's last free choices**, before the freeze, because the
    freeze makes them permanent. The boot sector is decided (§6.9); the
    builder's remaining defaults are reviewed once more at the freeze.
