@@ -26,6 +26,8 @@
 //! guest fonts for the presenter. Scrolled VGA text uses indexed pixels instead,
 //! because partial cells and splits through glyphs require rasterisation here.
 
+#![forbid(unsafe_code)]
+
 /// A finished frame handed across the [`FrameSink`] seam (§9.1).
 ///
 /// Owned text or indexed pixels, independent of host presentation.

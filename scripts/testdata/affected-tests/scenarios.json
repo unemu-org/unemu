@@ -254,7 +254,7 @@
     "expect": {
       "mode": "crates",
       "seeds": [
-        "assembly", "cli-pc", "machine-file", "pc-harness", "pc-image", "pc-library", "upcli", "window"
+        "assembly", "cli-pc", "machine-file", "pc-config", "pc-harness", "pc-image", "pc-library", "upcli", "window"
       ],
       "tier": "goldens"
     }

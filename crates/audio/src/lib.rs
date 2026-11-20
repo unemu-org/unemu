@@ -6,6 +6,8 @@
 //! See `backlog/docs/design/audio.md` §Time base and §Mixing for the exact
 //! board-clock convention and interval rendering contracts.
 
+#![forbid(unsafe_code)]
+
 use std::num::NonZeroU64;
 
 mod sources;

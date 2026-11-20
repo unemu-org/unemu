@@ -11,6 +11,8 @@
 //! opt into a bounded newest-event ring independently of output, and stay out
 //! of snapshots. See `backlog/docs/design/observation.md`, §Traces and later audio.
 
+#![forbid(unsafe_code)]
+
 pub mod a20;
 pub mod ata;
 pub mod cmos_rtc;

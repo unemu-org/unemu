@@ -12,6 +12,8 @@
 //! [`TracePolicy::Off`] independently of display or byte-output observation;
 //! snapshots contain hardware state, never trace histories or counters.
 
+#![forbid(unsafe_code)]
+
 pub mod clock;
 
 pub mod media;

@@ -29,6 +29,8 @@ case "$step" in
                 cargo fetch --locked
                 bash scripts/crate-boundaries.sh --self-test
                 bash scripts/crate-boundaries.sh
+                bash scripts/core-host-guard.sh --self-test
+                bash scripts/core-host-guard.sh
             " || status=1
             exit "$status"
         ')

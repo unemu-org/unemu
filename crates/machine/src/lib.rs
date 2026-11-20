@@ -36,6 +36,8 @@
 //! caps are exact and halted caps round up to a whole virtual tick. No wall time
 //! enters execution. See `backlog/docs/design/scheduler.md` §Adoption.
 
+#![forbid(unsafe_code)]
+
 mod code_trail;
 pub mod delivery_tap;
 

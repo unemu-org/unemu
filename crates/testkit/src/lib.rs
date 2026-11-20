@@ -13,6 +13,8 @@
 //! - [`golden`]: tiny helpers to assert captured output against a committed
 //!   golden.
 
+#![forbid(unsafe_code)]
+
 use std::collections::VecDeque;
 
 use cpu::{Cpu, CpuError, CpuReg, CpuStepRun, CpuStepStop, CpuStop, StepRunOptions};

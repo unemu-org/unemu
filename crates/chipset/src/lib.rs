@@ -19,6 +19,8 @@
 //! owning its register-sharing implementation. Intel 8259A datasheet,
 //! Cascading; see `backlog/docs/architecture.md`, §Contracts and ownership.
 
+#![forbid(unsafe_code)]
+
 mod shared_pic;
 
 pub use shared_pic::{CascadedPic, PicObservation, PicObservationLog, SharedPic};

@@ -43,6 +43,8 @@
 //! with a low reset entry. Host memory APIs and ISA DMA bypass the CPU gate.
 //! CPU reset retains both an effective line and a pending boundary change.
 
+#![forbid(unsafe_code)]
+
 pub mod delivery;
 pub mod diagnostic;
 pub mod stop_report;

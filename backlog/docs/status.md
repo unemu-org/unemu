@@ -5,6 +5,16 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — The core's host interfaces are guarded:** (`upc-dfs.29`,
+  embeddability step 2; design/core-contract.md §12.10). No guest behaviour change.
+  `scripts/core-host-guard.sh` checks the production source spellings of the contract
+  and emulation layers against 41 exact exceptions (42 matched lines), rejects stale
+  exceptions and new host access, including direct libc use, and runs with its planted
+  self-tests in the bead and CI guard lanes. It uses the specified first-`#[cfg(test)]`
+  cutoff, so it is a coarse source check rather than Rust name resolution. All twelve
+  emulation crates now forbid unsafe code; ten gained the attribute, while `pc-config`
+  and `unemu-pc-core` already had it.
+
 - **2026-11-20 — `machine-file` no longer depends on the image store:** (`upc-dfs.34`,
   embeddability step 7; design/core-contract.md §12.10 and §9 item 3). No behaviour change.
   The firmware-package lookup is the trait `machine_file::FirmwarePackages`, which

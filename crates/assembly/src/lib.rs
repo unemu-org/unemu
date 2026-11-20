@@ -37,6 +37,8 @@
 //! match its geometry. Every failure is a distinct [`ConfigError`], and the
 //! validators are unit-tested here without assembling a machine.
 
+#![forbid(unsafe_code)]
+
 mod assemble;
 mod board;
 pub mod capabilities;

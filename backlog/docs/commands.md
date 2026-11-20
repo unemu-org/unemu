@@ -1541,7 +1541,7 @@ FILE` from saved `cargo metadata` output; the self-test uses both with
 the sources' ignored tests, the scenarios and their expected plans).
 
 `scripts/bead-gate.sh` gates one change: `cargo fmt --check`, the publication
-guard, clippy with `-D warnings` on the affected crates (`--all-targets
+guard and the core host-interface self-test and check, clippy with `-D warnings` on the affected crates (`--all-targets
 --all-features`, plus the production `upcli` binary when `upcli` is affected),
 the affected tests in their tier, rustdoc with `-D warnings` for the
 affected crates, and `cargo deny` only when `Cargo.lock`, a manifest or
@@ -2632,7 +2632,7 @@ From the repository root, run the same gates locally:
 ```sh
 bash scripts/ci-gate.sh devshell
 bash scripts/ci-gate.sh fmt
-bash scripts/ci-gate.sh guard                    # publication guard, crate-boundary self-test and check
+bash scripts/ci-gate.sh guard                    # publication, crate boundaries and core host interfaces (self-tests and checks)
 bash scripts/ci-gate.sh clippy
 bash scripts/ci-gate.sh deny                     # advisories, licences, bans, sources; all features
 bash scripts/ci-gate.sh tests
@@ -2721,6 +2721,49 @@ fails. The check takes well under a second. The check resolves the full graph
 offline, so the gate runs `cargo fetch --locked` before it: a runner's empty
 Cargo cache, or one restored from an older lock file, lacks the pinned git
 dependencies.
+
+### Core host interfaces
+
+```sh
+bash scripts/core-host-guard.sh              # exact host-interface exceptions in the core layers
+bash scripts/core-host-guard.sh --self-test  # planted host uses and allow-list changes
+bash scripts/core-host-guard.sh --allow FILE # check a candidate exception list
+```
+
+The script needs cargo and jq in the devShell. It reads the workspace's
+`cargo metadata --offline --no-deps` layer tags, as the crate-boundary guard
+does, and scans `src/**/*.rs` in `contract` and `emulation` packages. It
+skips separate `tests/`, `tests.rs` and `*_tests.rs` files and stops each other
+file at its first real `#[cfg(test)]` attribute ([core contract](design/core-contract.md)
+§12.2–12.3). Line, doc and block comments (including nested and multiline
+blocks) are ignored before detecting that cutoff or matching host access.
+This is a spelling check: it catches common grouped and renamed imports,
+including standard-stream handles, and short paths, but does not resolve
+aliases at their later uses or scan past that cutoff.
+It checks host filesystem, environment, network, process, threads, clocks,
+OS modules and cfgs, streams and printing, mutable statics, thread-locals,
+lazy caches, foreign functions, random sources and host-seeded `HashMap`s;
+in emulation crates it also rejects `libc::` and `extern crate libc`.
+Unsafe spellings are scanned too; `#![forbid(unsafe_code)]` in each emulation
+crate makes the compiler enforce that rule throughout the crate, including tests.
+
+`scripts/core-host-guard.allow` lists `FILE: MATCHED SOURCE LINE: REASON`.
+Matches are literal full source lines with indentation and trailing whitespace
+removed, keyed by repository-relative file. Every match must be listed and
+every entry must still match; malformed and duplicate entries fail too. One
+entry covers repeated identical lines in the same file. The initial list has
+41 entries for 42 matched lines. Review and remove exceptions as host code
+leaves the core. The self-test reports its case and planted-host counts. It
+plants Instant in `devices`, both libc spellings and unsafe in `device`,
+other host families, grouped and renamed imports, and production uses after
+comments containing `#[cfg(test)]`. It checks comment filtering, separate
+`tests/`, `tests.rs`, `*_tests.rs`, benches and examples, guest identifiers,
+missing and stale entries, and a moved use, while excluding host-layer packages.
+`--metadata FILE --root DIR` runs the same scanner on a fixture tree and its
+`cargo metadata --no-deps` document. `AFFECTED_CARGO` selects a cargo wrapper,
+as for the affected-tests runner. Both the bead gate's `guard` step and the
+CI guard lane run the self-test and the check; CI already invokes that lane
+through `scripts/ci-gate.sh`.
 
 ### Third-party licences
 

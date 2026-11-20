@@ -91,7 +91,7 @@ def runner_files: ["crates/pc-harness/src/", "crates/cli-core/src/lib.rs",
 # repository root reads both machines/ and vendor/.
 def data_rules: [
   {prefix: "crates/pc-harness/tests/support/", goldens: true,
-   crates: ["assembly", "cli-pc", "machine-file", "pc-harness", "pc-image", "pc-library", "upcli",
+   crates: ["assembly", "cli-pc", "machine-file", "pc-config", "pc-harness", "pc-image", "pc-library", "upcli",
      "window"],
    why: "golden test support shared by several crates"},
   {prefix: "crates/pc-image/tests/support/", goldens: false,

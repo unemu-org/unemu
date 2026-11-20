@@ -41,6 +41,8 @@
 //! device once in bus order. `EveryPitClock` devices need no extra sync in either
 //! path. See `backlog/docs/design/scheduler.md`, §Adoption.
 
+#![forbid(unsafe_code)]
+
 use std::ops::RangeInclusive;
 
 use device::{AccessDir, Device, DeviceError, NextEvent, TraceEvent, VClock};

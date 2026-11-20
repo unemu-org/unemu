@@ -104,7 +104,13 @@ else
   skip fmt "no crate affected"
 fi
 
-step guard bash scripts/publication-guard.sh
+guard_lane() {
+  local status=0
+  bash scripts/publication-guard.sh || status=1
+  bash scripts/core-host-guard.sh --self-test && bash scripts/core-host-guard.sh || status=1
+  return "$status"
+}
+step guard guard_lane
 
 if [[ $mode == crates || $mode == full ]]; then
   step clippy "${cargo_cmd[@]}" clippy --locked "${packages[@]}" --all-targets --all-features -- -D warnings
