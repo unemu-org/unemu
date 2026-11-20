@@ -22,13 +22,8 @@ use std::path::Path;
 /// Each form of each usage line, with every option it documents.
 const USAGE_FORMS: &[&str] = &[
     "",
-    "--boot",
     "--version",
     "--about",
-    "--bios PATH",
-    "--bios PATH --allow-unlisted-firmware",
-    "machine check FILE",
-    "machine check FILE --allow-unlisted-firmware --rom-dir DIR --rom-dir DIR2",
     "run --machine FILE",
     "run --machine FILE --no-store",
     "run --machine FILE --store DIR --rom-dir DIR --max-steps 5 --idle-limit 6 --print CARD --allow-unlisted-firmware",

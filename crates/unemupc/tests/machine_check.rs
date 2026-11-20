@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Non-writing machine checks; persistent-media § Session lifecycle and inspection.
-//! No test in this binary spawns a process while another test can hold a lock.
+//! These tests run in-process so sibling children cannot inherit journal locks.
 
-use media::{Header, JournalMedia, SinkStatus, HEADER_LEN};
+use assembly::test_support::{Header, JournalMedia, SinkStatus, HEADER_LEN};
 use std::{
     collections::BTreeMap,
     ffi::OsString,
     path::PathBuf,
     sync::atomic::{AtomicUsize, Ordering},
 };
+
+use unemupc::run;
 
 struct Files {
     root: PathBuf,
@@ -68,7 +70,7 @@ impl Files {
             "--allow-unlisted-firmware".into(),
         ];
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let code = cli_pc::command::run(&args, &mut out, &mut err);
+        let code = run(&args, &mut out, &mut err);
         let err = String::from_utf8(err).unwrap();
         assert_eq!(
             self.snapshot(),
@@ -193,7 +195,7 @@ fn catalogue_checks_still_run_after_read_only_journal_inspection() {
     let before = files.snapshot();
     let args: Vec<OsString> = vec!["machine".into(), "check".into(), files.machine().into()];
     let (mut out, mut err) = (Vec::new(), Vec::new());
-    assert_eq!(cli_pc::command::run(&args, &mut out, &mut err), 1);
+    assert_eq!(run(&args, &mut out, &mut err), 1);
     assert_eq!(files.snapshot(), before);
     let err = String::from_utf8(err).unwrap();
     assert!(

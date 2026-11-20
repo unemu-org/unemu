@@ -112,7 +112,7 @@ mod tests {
         let mut output = Vec::new();
         assert_eq!(run(&[], &mut output, &mut io::sink()), 0);
         let usage = String::from_utf8(output).unwrap();
-        assert!(usage.starts_with("usage: upcli --boot"), "{usage}");
+        assert!(usage.starts_with("usage: upcli --version"), "{usage}");
         let commands = usage
             .lines()
             .skip(1)

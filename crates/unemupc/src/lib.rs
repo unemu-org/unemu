@@ -47,7 +47,7 @@ pub fn parse(args: &[OsString]) -> Option<Result<Command, &'static str>> {
     machine_words(args, false).transpose()
 }
 
-/// Parse the frontend's machine words, including its firmware-store selection.
+/// Parse the frontend's file run, including its firmware-store selection.
 /// The library only carries that selection; the frontend prepares the file.
 pub fn parse_with_store(args: &[OsString]) -> Option<Result<Command, &'static str>> {
     machine_words(args, true).transpose()
@@ -78,16 +78,16 @@ fn machine_words(args: &[OsString], with_store: bool) -> Result<Option<Command>,
     {
         return Err("--rom-dir requires run or machine check");
     }
-    if frontend.len() == 1 && frontend[0] == "--boot" {
+    if !with_store && frontend.len() == 1 && frontend[0] == "--boot" {
         return Ok(Some(Command::Boot));
     }
-    if frontend.len() == 2 && frontend[0] == "--bios" {
+    if !with_store && frontend.len() == 2 && frontend[0] == "--bios" {
         return Ok(Some(Command::Bios {
             path: frontend[1].into(),
             options,
         }));
     }
-    if frontend.first().is_some_and(|arg| *arg == "machine") {
+    if !with_store && frontend.first().is_some_and(|arg| *arg == "machine") {
         return if frontend.len() == 3
             && frontend[1] == "check"
             && !frontend[2].is_empty()
@@ -274,15 +274,11 @@ pub fn notice() -> String {
     }
     text
 }
-/// The frontend's first machine usage line, kept in its original slot.
-pub const FRONTEND_BOOT_USAGE: &str = "       upcli --boot (Real16 timer demo)\n";
 /// The frontend's remaining machine usage lines, before image import.
 #[macro_export]
 macro_rules! machine_usage {
     ($($tail:literal),* $(,)?) => {
         concat!(
-            "       upcli --bios PATH [--allow-unlisted-firmware]\n",
-            "       upcli machine check FILE [--allow-unlisted-firmware] [--rom-dir DIR]...\n",
             "       upcli run --machine FILE [--store DIR | --no-store] [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--diag-at N] [--trace-exceptions] [--print CARD] [--allow-unlisted-firmware]\n",
             "         --diag-at N writes the machine's diagnostic report to stderr when the run reaches step N (the unit of --max-steps), then runs on\n",
             "         --trace-exceptions writes the exceptions and interrupts the guest takes to stderr when the run ends: the last 10000 entries, each with the registers of the interrupted code (the bytes at CS:IP as at the end of each run slice), consecutive identical deliveries folded into one with a count and the last one's registers, and a summary per vector\n", $($tail),*)
@@ -294,8 +290,15 @@ pub const FRONTEND_MACHINE_USAGE: &str = machine_usage!();
 /// Standalone usage names the core and offers no frontend store options.
 pub fn usage() -> String {
     let text = format!(
-        "{}       upcli --version | --about\n{}",
-        FRONTEND_BOOT_USAGE, FRONTEND_MACHINE_USAGE
+        concat!(
+            "       upcli --boot (Real16 timer demo)\n",
+            "       upcli --version | --about\n",
+            "       upcli --bios PATH [--allow-unlisted-firmware]\n",
+            "       upcli machine check FILE [--allow-unlisted-firmware] [--rom-dir DIR]...\n",
+            "{}",
+            "DOS boot and interactive sessions: see crates/pc-harness/tests/*dos*golden.rs\n",
+        ),
+        FRONTEND_MACHINE_USAGE
     );
     text.replacen("       ", "usage: ", 1)
         .replace("upcli", "unemupc")

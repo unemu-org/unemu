@@ -631,7 +631,7 @@ fn synthetic_game_profiles_lower_and_pass_machine_check_without_opening_journals
         ];
         let (mut out, mut err) = (Vec::new(), Vec::new());
         assert_eq!(
-            cli_pc::command::run(&args, &mut out, &mut err),
+            unemupc::run(&args, &mut out, &mut err),
             0,
             "{}",
             String::from_utf8_lossy(&err)
@@ -695,7 +695,7 @@ fn open_game_profile_checks_real_pinned_fixtures_without_creating_journals() {
     ];
     let (mut out, mut err) = (Vec::new(), Vec::new());
     assert_eq!(
-        cli_pc::command::run(&args, &mut out, &mut err),
+        unemupc::run(&args, &mut out, &mut err),
         0,
         "{}",
         String::from_utf8_lossy(&err)
@@ -712,7 +712,7 @@ fn open_game_profile_checks_real_pinned_fixtures_without_creating_journals() {
     std::fs::write(bios, bytes).unwrap();
     out.clear();
     err.clear();
-    assert_eq!(cli_pc::command::run(&args, &mut out, &mut err), 1);
+    assert_eq!(unemupc::run(&args, &mut out, &mut err), 1);
     assert!(String::from_utf8_lossy(&err).contains("sha256 mismatch"));
     assert!(!profile.journal().exists());
     assert!(!profile.journal().with_extension("upfj.lock").exists());

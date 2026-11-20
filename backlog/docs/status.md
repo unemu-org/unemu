@@ -5,6 +5,13 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — Raw commands belong to the standalone PC core:**
+  `--boot`, `--bios` and `machine check` run only in `unemupc`;
+  `upcli` rejects them with its normal usage error (exit 2). The frontend
+  keeps `run --machine` and its store-backed library call. Raw-command
+  integration tests follow the standalone binary; release archives now
+  include it alongside `unemu` and `upcli`.
+  See `design/core-contract.md` §12.10 step 6.
 - **2026-11-20 — Recipe CLI exit policies:** work-file drift remains a
   warning by default, as recipes §3.8 specifies. `recipe check` and
   `recipe build` accept `--deny-drift` for CI (exit 1; build refuses before

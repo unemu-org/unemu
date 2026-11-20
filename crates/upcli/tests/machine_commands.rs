@@ -63,82 +63,6 @@ fn stderr(output: &Output) -> &str {
 }
 
 #[test]
-fn machine_check_has_valid_invalid_and_usage_exit_codes() {
-    // Executing this ROM would fail; check must assemble without executing it.
-    let files = Files::new(REFUSED_LOADALL);
-    let accepted = command(
-        &["machine", "check"],
-        &files.machine(),
-        &["--allow-unlisted-firmware"],
-    );
-    assert_eq!(accepted.status.code(), Some(0), "{accepted:?}");
-    assert!(accepted.stdout.is_empty());
-    let invalid = files.write("invalid.toml", "schema=1\n[board]\nmodel='unknown'\n");
-    let rejected = command(&["machine", "check"], &invalid, &[]);
-    assert_eq!(rejected.status.code(), Some(1), "{rejected:?}");
-    assert!(stderr(&rejected).contains(&format!("{}:", invalid.display())));
-    assert!(stderr(&rejected).contains("line 3"), "{rejected:?}");
-    for args in [
-        vec!["machine"],
-        vec!["machine", "check"],
-        vec!["machine", "check", "a.toml", "extra"],
-        vec!["run", "--machine"],
-        vec!["run", "--machine", "a.toml", "--max-steps", "-1"],
-        vec![
-            "run",
-            "--machine",
-            "a.toml",
-            "--idle-limit",
-            "18446744073709551616",
-        ],
-    ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_upcli"))
-            .args(args)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(2), "{output:?}");
-    }
-}
-
-#[test]
-fn inherited_unlisted_firmware_is_positioned_and_escape_reaches_both_commands() {
-    let files = Files::new(&[0xFA, 0xBA, 0xF8, 0x03, 0xB0, b'Z', 0xEE, 0xF4]);
-    let child = files.write("child.toml", "schema=1\nextends='machine.toml'\n");
-    for args in [&["machine", "check"][..], &["run", "--machine"][..]] {
-        let rejected = command(args, &child, &[]);
-        assert_eq!(rejected.status.code(), Some(1), "{rejected:?}");
-        assert!(
-            stderr(&rejected).contains(&format!("{}:5:", files.machine().display())),
-            "{rejected:?}"
-        );
-        assert!(stderr(&rejected).contains("firmware.bios.image: bios image (sha256"));
-        let accepted = command(args, &child, &["--allow-unlisted-firmware"]);
-        assert_eq!(accepted.status.code(), Some(0), "{accepted:?}");
-        assert_eq!(
-            stderr(&accepted)
-                .matches("warning: running unlisted firmware")
-                .count(),
-            1
-        );
-    }
-    let run = command(
-        &["run", "--machine"],
-        &child,
-        &["--allow-unlisted-firmware", "--print", "console"],
-    );
-    assert_eq!(run.status.code(), Some(0), "{run:?}");
-    assert_eq!(run.stdout, b"Z");
-    assert!(stderr(&run).ends_with("stopped: halt\n"));
-    let bad_card = command(
-        &["run", "--machine"],
-        &child,
-        &["--allow-unlisted-firmware", "--print", "absent"],
-    );
-    assert_eq!(bad_card.status.code(), Some(1));
-    assert!(stderr(&bad_card).contains("output card \"absent\" is not configured"));
-}
-
-#[test]
 fn run_prints_text_and_reports_budget_and_execution_failure() {
     let files = Files::new(&[
         0xFA, 0xB8, 0x00, 0xB0, 0x8E, 0xC0, 0x26, 0xC7, 0x06, 0, 0, b'H', 7, 0xF4,
@@ -178,22 +102,6 @@ fn run_prints_text_and_reports_budget_and_execution_failure() {
     assert!(stderr(&failed).contains(
         "stopped: unsupported instruction: unsupported cpu system operation I286LoadallTable"
     ));
-}
-
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
-
-#[test]
-fn machine_check_accepts_the_shipped_machine() {
-    let (Some(_rom), Some(_)) = (
-        fixtures::fixture("kiselev-bios/bios-xi8088.bin"),
-        fixtures::fixture("freedos/freedos.img"),
-    ) else {
-        return;
-    };
-    let machine = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml");
-    let valid = command(&["machine", "check"], &machine, &[]);
-    assert_eq!(valid.status.code(), Some(0), "{valid:?}");
 }
 
 #[test]
@@ -387,46 +295,4 @@ fn run_machine_reboots_at_reset_vector_with_ram_retained() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(output.stdout, b"Z");
     assert!(stderr(&output).ends_with("stopped: halt\n"));
-}
-
-#[test]
-fn rom_discovery_requires_explicit_flags_and_reports_skipped_roots() {
-    let files = Files::new(&[0xF4]);
-    let dumps = files.0.join("dumps");
-    std::fs::create_dir(&dumps).unwrap();
-    std::fs::write(dumps.join("renamed.bin"), vec![0xf4; 32768]).unwrap();
-    files.write("bios.bin", vec![0; 32768]);
-    files.write("machine.toml", "schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='bios.bin'\nsha256='d7da9668c2e0720cf257c00882bf495ca672e7a4d972b4b124b6b853e7ac9668'\n[[card]]\nkind='mda'\n");
-    for args in [vec!["machine", "check"], vec!["run", "--machine"]] {
-        let output = Command::new(env!("CARGO_BIN_EXE_upcli"))
-            .args(&args)
-            .arg(files.machine())
-            .args(if args.first() == Some(&"run") {
-                &["--no-store"][..]
-            } else {
-                &[]
-            })
-            .arg("--allow-unlisted-firmware")
-            .env("UNEMUPC_USER_ROMS_DIR", &dumps)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(1));
-        assert!(
-            stderr(&output).contains("sha256 mismatch"),
-            "{}",
-            stderr(&output)
-        );
-    }
-    let output = Command::new(env!("CARGO_BIN_EXE_upcli"))
-        .args(["machine", "check"])
-        .arg(files.machine())
-        .arg("--allow-unlisted-firmware")
-        .arg("--rom-dir")
-        .arg(files.0.join("unmounted"))
-        .arg("--rom-dir")
-        .arg(dumps)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert!(stderr(&output).contains("warning: <--rom-dir>: skipped"));
 }

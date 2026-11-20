@@ -116,6 +116,7 @@ pub use speaker_trace::{GuestStamp, ResetCause, ResetSource, SpeakerTraceEvent};
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     pub use ::cpu::{Cpu, CpuStop, DmaAccess};
+    pub use media::{Header, JournalMedia, SinkStatus, HEADER_LEN};
     mod user_firmware;
     pub use user_firmware::{
         find_user_firmware, required_user_firmware, FoundUserFirmware, UserFirmwareError,

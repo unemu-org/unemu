@@ -114,9 +114,9 @@ cards, firmware and drives. `at-games-open.toml` is the open DOS games machine
   lights; Media menu with Insert…, Create from files… and a Catalogue
   submenu per floppy drive, which a drive chip's menu has too; speed
   controls; macOS application menu.
-- **Command line** (`upcli`): run machines headless, check machine files,
-  and manage images, media sets, firmware packages, registries and media
-  journals.
+- **Command line** (`upcli`): run machines headless and manage images,
+  media sets, firmware packages, registries and media journals. The standalone PC core command line (`unemupc`) provides
+  `--boot`, `--bios` and `machine check`, as well as `run --machine`.
 
 ## Downloads
 
@@ -149,7 +149,7 @@ data directory, or `UNEMUPC_MACHINES_DIR`, and the ROM folders set in Preference
 - On Linux, `pkg-config` and the ALSA development files (`libasound2-dev` on
   Debian and Ubuntu, `alsa-lib-devel` on Fedora). The X11 or Wayland libraries
   are loaded at run time.
-- `cargo build --release --bin unemu --bin upcli`.
+- `cargo build --release --bin unemu --bin upcli --bin unemupc`.
 
 The firmware and disk fixtures that the tests and templates use are built by
 the scripts under `vendor/`, which expect the devShell's tools (`nasm`,

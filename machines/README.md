@@ -213,7 +213,7 @@ and never advance guest time.
 The CLI accepts repeatable ROM directories for both validation and running:
 
 ```sh
-upcli machine check machines/at-games.toml --rom-dir /path/to/roms
+unemupc machine check machines/at-games.toml --rom-dir /path/to/roms
 upcli run --machine machines/at-games.toml --rom-dir /path/to/roms --print vga
 ```
 
@@ -263,7 +263,7 @@ unit = 0
 image = "images/work.img"      # replaces drive A and removes its inherited pin
 ```
 
-Run `upcli machine check machines/local.toml` before booting with
+Run `unemupc machine check machines/local.toml` before booting with
 `unemu --machine machines/local.toml`. Unknown development firmware
 requires `--allow-unlisted-firmware` on either command. For a headless run, use
 `upcli run --machine machines/local.toml --print mda`. Run limits and host
@@ -366,7 +366,7 @@ a 1.2M drive 1.2M and 360K images, and 720K and 360K drives only their own
 format (see [Removable floppy media](#removable-floppy-media)). The tools floppy includes FDISK,
 FORMAT, SYS, XCOPY, EDIT, MEM and CTMOUSE; package versions, licences and CPU
 compatibility evidence are in [the fixture README](../vendor/freedos/README.md).
-Check the local file with `upcli machine check FILE`, then boot it with the
+Check the local file with `unemupc machine check FILE`, then boot it with the
 window frontend's `--machine FILE` option. Configure installation/data disks on
 B: before booting, or use the [media-list and swap controls](#removable-floppy-media)
 below. The single-image B: override below uses the inherited `fdc-765` card id.
@@ -844,11 +844,11 @@ vendor/freedos/fetch.sh
 mkdir -p machines/local
 upcli media create hd --chs 615/4/17 machines/local/games.img
 upcli media create floppy --type 1.2M --format --label TRANSFER machines/local/transfer-1200.img
-upcli machine check machines/at-games.toml
+unemupc machine check machines/at-games.toml
 unemu --machine machines/at-games.toml
 # Open firmware, no user ROMs (also run vendor/unemu-at-bios/fetch.sh,
 # vendor/vgabios/fetch.sh and vendor/xtide-universal-bios/fetch.sh):
-# upcli machine check machines/at-games-open.toml
+# unemupc machine check machines/at-games-open.toml
 # unemu --machine machines/at-games-open.toml
 ```
 

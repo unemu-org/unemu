@@ -13,15 +13,17 @@ cargo run --offline -p unemupc -- --version
 cargo run --offline -p unemupc -- --about
 ```
 
-`unemupc` runs without the frontend's store, registry or recipes. For the
-four machine commands its output and exit codes match `upcli` (add
-`--no-store` to `upcli run --machine`). Firmware comes from the machine
-file and repeated `--rom-dir DIR` roots; `--allow-unlisted-firmware`,
+`unemupc` runs without the frontend's store, registry or recipes.
+`--boot`, `--bios PATH` and `machine check FILE` are available only here. The frontend keeps
+`upcli run --machine`, calling the same library with firmware-store lookup;
+add `--no-store` for the standalone run's output and exit codes.
+Firmware comes from the machine file and repeated `--rom-dir DIR` roots;
+`--allow-unlisted-firmware`,
 `--diag-at` and `--trace-exceptions` retain the machine runner's semantics.
 `--store` and `--no-store` are refused here. Usage names `unemupc`, and
-version/about list only the PC core and its notices. The raw commands
-remain available in `upcli` until the next CLI move. The workspace builds
-the new binary; release packaging still ships `unemu` and `upcli`.
+version/about list only the PC core and its notices. Removed raw commands
+in `upcli` receive the usual unknown-command usage error (exit 2). Release
+archives ship `unemu`, `upcli` and `unemupc`.
 
 ## Local machine images
 
@@ -1067,10 +1069,10 @@ stay local, in `extras/`.
 
 ```sh
 cargo build                                  # build the workspace
-cargo run -p upcli -- --boot                   # Real16 timer demo; no args print usage
-cargo run --offline -p upcli -- --bios vendor/kiselev-bios/bios-xi8088.bin
-cargo run --offline -p upcli -- --bios /path/to/bios.bin --allow-unlisted-firmware
-cargo run --offline -p upcli -- machine check machines/at-freedos.toml
+cargo run -p unemupc -- --boot                   # Real16 timer demo; no args print usage
+cargo run --offline -p unemupc -- --bios vendor/kiselev-bios/bios-xi8088.bin
+cargo run --offline -p unemupc -- --bios /path/to/bios.bin --allow-unlisted-firmware
+cargo run --offline -p unemupc -- machine check machines/at-freedos.toml
 cargo run --offline -p upcli -- run --machine machines/at-freedos.toml --max-steps 12000000 --idle-limit 1000000 --print mda
 cargo run --offline -p window --bin unemu -- --machine machines/at-freedos.toml --display mda
 cargo test --workspace                       # unit + golden + integration
@@ -1169,12 +1171,12 @@ with its full hash and the known entries' fetch instructions. For development,
 `--allow-unlisted-firmware` accepts unknown bytes and prints exactly one
 `warning: running unlisted firmware (sha256 HASH)` line to stderr. Placement
 (positive size divisible by 8 KiB, ending at `0x100000`) is still checked; listed
-images still meet board, CPU and required-part constraints. The CLI `--bios`
+images still meet board, CPU and required-part constraints. The standalone `unemupc --bios`
 automatically top-aligns any positive image whose size is a multiple of 8 KiB
 and at most 1 MiB: base = `0x100000 - size` (16 KiB gives `0xFC000`). Other
 sizes are rejected. An explicit machine-file base is checked as supplied.
 This run-only flag
-is never saved in machine files or used by goldens. The CLI `--bios PATH`
+is never saved in machine files or used by goldens. The standalone `unemupc --bios PATH`
 boots the complete board with a volatile blank 1.44 MB floppy and writes COM1
 bytes to stdout. It prints one `stopped: ...` line to stderr and exits with
 status 1 for unsupported instructions, execution/exception failures, or
@@ -1185,7 +1187,7 @@ Catalogue boards must have a system BIOS ROM, start at their power-on reset
 vector and keep all RAM and other images outside that ROM's range. The escape
 flag does not relax these requirements; custom-entry Rust rigs use `Bare`.
 
-`machine check FILE` parses, merges, lowers, validates and assembles to run
+`unemupc machine check FILE` parses, merges, lowers, validates and assembles to run
 image-byte catalogue checks, without executing guest instructions. It exits
 0 for valid input, 1 for load/validation/assembly errors and 2 for usage errors;
 diagnostics retain the defining file and line, including inherited firmware.
@@ -1277,8 +1279,8 @@ In the window, Tools › Diagnostics holds three items:
 The window reads no environment switch for these; `UNEMUPC_DIAG` and
 `UNEMUPC_TRACE_EXCEPTIONS` are gone.
 A configured card without printable output is an argument error (exit 2). Both file commands accept
-`--allow-unlisted-firmware` for development. Existing `--boot`, `--bios` and
-`media` commands retain their contracts. The FreeDOS prompt, DIR and file-write
+`--allow-unlisted-firmware` for development. The standalone `unemupc --boot`, `unemupc --bios` and frontend
+`upcli media` commands retain their contracts. The FreeDOS prompt, DIR and file-write
 goldens load `machines/at-freedos.toml`; BIOS goldens and synthetic rigs retain
 Rust presets.
 

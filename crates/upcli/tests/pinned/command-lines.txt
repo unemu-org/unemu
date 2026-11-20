@@ -1,26 +1,11 @@
 $ 
 Ok(Line(Usage))
 
-$ --boot
-Ok(Line(Platform(Boot)))
-
 $ --version
 Ok(About)
 
 $ --about
 Ok(About)
-
-$ --bios PATH
-Ok(Line(Platform(Bios { path: "PATH", options: AssemblyOptions { allow_unlisted_firmware: false } })))
-
-$ --bios PATH --allow-unlisted-firmware
-Ok(Line(Platform(Bios { path: "PATH", options: AssemblyOptions { allow_unlisted_firmware: true } })))
-
-$ machine check FILE
-Ok(Line(Platform(Check { rom_dirs: [], path: "FILE", options: AssemblyOptions { allow_unlisted_firmware: false } })))
-
-$ machine check FILE --allow-unlisted-firmware --rom-dir DIR --rom-dir DIR2
-Ok(Line(Platform(Check { rom_dirs: ["DIR", "DIR2"], path: "FILE", options: AssemblyOptions { allow_unlisted_firmware: true } })))
 
 $ run --machine FILE
 Ok(Line(Platform(Run { store: Default, rom_dirs: [], path: "FILE", max_steps: 20000000, idle_limit: 1000000, diag_at: None, trace_exceptions: false, print: None, options: AssemblyOptions { allow_unlisted_firmware: false } })))
@@ -678,18 +663,6 @@ Ok(Line(Platform(Image(Media(MediaCommand { store: "/path/to/store", create: fal
 
 $ image push private/media/ibm-pc/wolf3d-shareware:1.4-r1 unemu/media/ibm-pc/wolf3d-shareware:1.4-r1 --store /path/to/store --dry-run
 Ok(Line(Image(Registry(Push { store: "/path/to/store", local_tag: "private/media/ibm-pc/wolf3d-shareware:1.4-r1", target: Some("unemu/media/ibm-pc/wolf3d-shareware:1.4-r1"), options: Common { registry: None, config: None }, allow_move: false, dry_run: true }))))
-
-$ --boot
-Ok(Line(Platform(Boot)))
-
-$ --bios vendor/kiselev-bios/bios-xi8088.bin
-Ok(Line(Platform(Bios { path: "vendor/kiselev-bios/bios-xi8088.bin", options: AssemblyOptions { allow_unlisted_firmware: false } })))
-
-$ --bios /path/to/bios.bin --allow-unlisted-firmware
-Ok(Line(Platform(Bios { path: "/path/to/bios.bin", options: AssemblyOptions { allow_unlisted_firmware: true } })))
-
-$ machine check machines/at-freedos.toml
-Ok(Line(Platform(Check { rom_dirs: [], path: "machines/at-freedos.toml", options: AssemblyOptions { allow_unlisted_firmware: false } })))
 
 $ run --machine machines/at-freedos.toml --max-steps 12000000 --idle-limit 1000000 --print mda
 Ok(Line(Platform(Run { store: Default, rom_dirs: [], path: "machines/at-freedos.toml", max_steps: 12000000, idle_limit: 1000000, diag_at: None, trace_exceptions: false, print: Some("mda"), options: AssemblyOptions { allow_unlisted_firmware: false } })))

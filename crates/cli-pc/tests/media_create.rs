@@ -476,7 +476,7 @@ fn preparing_disks_guide_override_loads_the_real_ide_profile() {
     ];
     let (mut output, mut errors) = (Vec::new(), Vec::new());
     assert_eq!(
-        run(&args, &mut output, &mut errors),
+        unemupc::run(&args, &mut output, &mut errors),
         0,
         "{}",
         String::from_utf8_lossy(&errors)

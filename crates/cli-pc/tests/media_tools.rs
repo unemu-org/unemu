@@ -1,17 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The journal tools' usage errors on the command line with the PC platform
-//! compiled in, where `--boot` still runs; persistent-media.md § Offline
-//! commands. The journal tools themselves are tested with the neutral
+//! The journal tools' usage errors on the frontend command line;
+//! persistent-media.md § Offline commands. The journal tools themselves are tested with the neutral
 //! command line, in the `cli-core` package.
 
 use cli_pc::command::run;
 use std::ffi::OsString;
 
 #[test]
-fn usage_errors_are_two_and_boot_still_runs() {
+fn usage_errors_are_two() {
     for arguments in [
         vec!["--unknown"],
-        vec!["--boot", "extra"],
         vec!["media"],
         vec!["media", "commit"],
         vec!["media", "compact"],
@@ -140,15 +138,7 @@ fn usage_errors_are_two_and_boot_still_runs() {
         assert!(out.is_empty());
         assert!(String::from_utf8(err).unwrap().contains("usage:"));
     }
-    assert_eq!(
-        cli_pc::parse(&["--boot".into()]),
-        Some(Ok(cli_pc::PcCommand::Machine(unemupc::Command::Boot)))
-    );
     let (mut out, mut err) = (Vec::new(), Vec::new());
-    assert_eq!(run(&["--boot".into()], &mut out, &mut err), 0);
-    assert_eq!(out, b".....");
-    assert!(err.is_empty());
-    out.clear();
     assert_eq!(run(&[], &mut out, &mut err), 0);
     assert!(String::from_utf8(out).unwrap().contains("media verify"));
 }

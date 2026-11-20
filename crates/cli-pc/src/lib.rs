@@ -2,7 +2,7 @@
 //! The IBM PC/AT family's part of the command line
 //! (`backlog/docs/design/core-contract.md` §7.1 and §7.2): the
 //! [`CliPlatform`] of the PC, which owns the parse and execution of every
-//! PC command (`--boot`, `--bios`, `machine check`, `run --machine`, `image
+//! PC command (`run --machine`, `image
 //! import`, `image publish`, `image workspace
 //! abandon-publication`, `image machine`, `image media import`, `image
 //! firmware import` and `edit`, `image template build`, `media create`) and
@@ -181,7 +181,7 @@ impl CliPlatform for PcPlatform<'_> {
 
     fn usage(&self, slot: UsageSlot) -> &str {
         match slot {
-        UsageSlot::First => unemupc::FRONTEND_BOOT_USAGE,
+        UsageSlot::First => "",
         UsageSlot::AfterAbout => MACHINE_AND_IMPORT_USAGE,
         UsageSlot::AfterImageSweep => "",
         UsageSlot::AfterWorkspaceDiscard => concat!(
