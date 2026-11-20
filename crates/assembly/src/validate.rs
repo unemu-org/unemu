@@ -136,6 +136,19 @@ impl MachineConfig {
     /// Journal outputs additionally check canonical paths and
     /// existing file identities against mounted inputs and other outputs.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        self.validate_mounted(crate::persistence::validate_paths)
+    }
+
+    /// [`MachineConfig::validate`] with the last step, the check of the
+    /// journal outputs against the host, left to `check_outputs`, which a
+    /// mount answers ([`crate::Mount::check_outputs`]). It takes the config
+    /// with one drive per catalogue entry. Whatever the mount, a positive
+    /// retention for NVRAM journals is checked before it and distinct
+    /// journal keys after it.
+    pub(crate) fn validate_mounted(
+        &self,
+        check_outputs: impl FnOnce(&Self) -> Result<(), ConfigError>,
+    ) -> Result<(), ConfigError> {
         let media = self.expanded_media()?;
         let original_indices: Vec<_> = self
             .drives
@@ -161,7 +174,11 @@ impl MachineConfig {
         media.check_journal_modes().map_err(original_drive)?;
         media.check_part_sources()?;
         self.validate_resolved()?;
-        crate::persistence::validate_paths(&media).map_err(original_drive)
+        crate::persistence::check_nvram_retention(&media)?;
+        check_outputs(&media).map_err(original_drive)?;
+        // After the mount's check, so that a file mount, which refuses equal
+        // outputs as aliases, reports exactly what it did before.
+        crate::persistence::check_distinct_journals(&media).map_err(original_drive)
     }
 
     pub(crate) fn expanded_media(&self) -> Result<Self, ConfigError> {

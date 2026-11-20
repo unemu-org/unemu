@@ -275,6 +275,7 @@ dependencies = [
  "sha2",
  "testkit",
  "thiserror 1.0.69",
+ "unemu-core-api",
  "video",
 ]
 

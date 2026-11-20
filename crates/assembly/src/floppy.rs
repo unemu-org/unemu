@@ -4,7 +4,10 @@
 //! (3F7h) and Interface Lines; `backlog/docs/design/spec.md` §7.8 and
 //! `backlog/docs/design/persistent-media.md` § Media changes.
 
-use crate::{AssembledMachine, DeviceId, RunPolicy};
+use std::rc::Rc;
+
+use crate::mount::{FileMount, MountKind};
+use crate::{AssembledMachine, ConfigError, DeviceId, FloppyMedium, MachineConfig, RunPolicy};
 use devices::Upd765;
 use machine::RunOutcome;
 
@@ -57,6 +60,10 @@ impl AssembledMachine {
     /// drive's change line have exactly the same semantics as catalogue cycling.
     /// The caller retains the live configuration; successful appends update it
     /// so shared validation protects every mounted input and journal path.
+    /// The medium is a host file whatever the machine's mount: its journal
+    /// opens by path. On a machine assembled over another mount
+    /// ([`crate::assemble_mounted`]) its paths are checked against the other
+    /// media appended by path, since the mount's own keys are not host paths.
     /// See persistent-media.md § Media changes and § Memory and hashing.
     pub fn append_floppy(
         &mut self,
@@ -92,7 +99,7 @@ impl AssembledMachine {
         verified: Option<media::VerifiedBase>,
         readonly_bytes: Option<&[u8]>,
     ) -> Result<usize, FloppyError> {
-        use crate::{ConfigError, ImageSource, WriteMode};
+        use crate::{ImageSource, WriteMode};
         use media::SectorSource;
         self.check_persistence()?;
         let drive_index = config
@@ -120,7 +127,19 @@ impl AssembledMachine {
         if let Some(list) = &mut drive.media {
             list.entries.push(medium.clone());
         }
-        candidate.validate()?;
+        let host_media = match &self.mount.0 {
+            MountKind::Files => {
+                candidate.validate()?;
+                None
+            }
+            MountKind::Other { mount, host_media } => {
+                candidate.validate_mounted(|media| mount.check_outputs(media))?;
+                let mut host_media = host_media.clone();
+                host_media.push((drive_index, medium.clone()));
+                check_host_media(&candidate, &host_media)?;
+                Some(host_media)
+            }
+        };
         // The drive's own format passes the type check; the base's size picks
         // the medium's format once it is open.
         self.floppy(controller)?
@@ -174,10 +193,11 @@ impl AssembledMachine {
                     }
                     .into());
                 }
-                let (mut handle, media) = crate::PersistenceHandle::prepare_removable(
+                let (mut handle, media) = crate::PersistenceHandle::prepare_mounted(
                     drive_index,
+                    Rc::new(FileMount::new()),
                     path,
-                    base,
+                    base.into(),
                     *keep_generations,
                 );
                 handle.floppy = Some((controller, unit, count));
@@ -223,6 +243,15 @@ impl AssembledMachine {
         }
         if let Some(names) = self.floppy_names.get_mut(&(controller, unit)) {
             names.push(medium.name.clone());
+        }
+        if let (
+            Some(appended),
+            MountKind::Other {
+                ref mut host_media, ..
+            },
+        ) = (host_media, &mut self.mount.0)
+        {
+            *host_media = appended;
         }
         *config = candidate;
         Ok(index)
@@ -346,6 +375,42 @@ impl AssembledMachine {
         }
         Ok(self.run_session(&RunPolicy::natural(Some(cap), idle_limit))?)
     }
+}
+
+/// Check the host paths of the media appended by path to a machine whose
+/// own mount is not host files, against each other only: the inputs and
+/// journals of those media, with the file rules of
+/// [`MachineConfig::validate`]. Errors name the drive of the config.
+fn check_host_media(
+    config: &MachineConfig,
+    media: &[(usize, FloppyMedium)],
+) -> Result<(), ConfigError> {
+    let mut host = config.clone();
+    host.images.clear();
+    host.devices.clear();
+    host.drives = media
+        .iter()
+        .map(|(drive_index, medium)| config.drives[*drive_index].with_medium(medium))
+        .collect();
+    crate::persistence::validate_paths(&host).map_err(|error| match error {
+        ConfigError::Journal {
+            drive_index,
+            message,
+        } => ConfigError::Journal {
+            drive_index: media[drive_index].0,
+            message,
+        },
+        ConfigError::DriveInput {
+            drive_index,
+            path,
+            message,
+        } => ConfigError::DriveInput {
+            drive_index: media[drive_index].0,
+            path,
+            message,
+        },
+        other => other,
+    })
 }
 
 #[cfg(test)]

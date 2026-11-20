@@ -5,6 +5,22 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — The assembler mounts through one seam:** (`upc-dfs.36`; design/core-contract.md
+  §12.5 move 2, step 10 of §12.10, §14.4). Assembly asks the machine's `assembly::Mount` for
+  what a config names by path (the bytes of an image, the verified base of a journalled disk, the
+  journal of a disk or of CMOS RAM) instead of opening it. `FileMount` answers with the files the
+  paths name, exactly as before; every `assemble*` function but `assemble_mounted` uses it, as do
+  a floppy appended by path and the byte loads of an already resolved config, so no caller and nothing a user sees changed: the same journal bytes, host
+  calls and messages. Two journal outputs with one key are now refused for every mount (a file
+  mount refused them before, as aliases). `assemble_mounted` takes any other mount; one in memory serves a base as the
+  contract's `ContentReader` and a journal as its `Record`, so the PC core can mount a machine
+  from a `ContentSource` and a `Storage` without naming the media crate (stage B, S9). The
+  machine keeps its mount for its life, so a catalogue's journal opens through it at insert, and
+  a floppy appended by path is still a host file with its own journal and lock. A new test runs
+  a machine with floppy, fixed-disk and CMOS journals over records in memory beside the same
+  machine over files: equal guest results, and the records hold the journal files' bytes.
+  The workspace tests and the ignored goldens pass, the journal goldens among them.
+
 - **2026-11-20 — `pc-config`: the machine schema and its lowering move below the contract:**
   (`upc-dfs.43.2`, stage B step S2; design/core-contract.md §14.3). No behaviour change. The new
   `emulation` crate `pc-config` holds the machine schema, its TOML decoder, the source origins

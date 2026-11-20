@@ -15,11 +15,17 @@ use media::{
     VerifiedBase,
 };
 
+#[cfg(test)]
+use crate::mount::FileMount;
+use crate::mount::{DiskBase, Mount, MountError, Store};
 use crate::{ConfigError, ImageSource, MachineConfig, WriteMode};
 
+/// What a removable medium needs to open its journal again at each insert:
+/// the machine's mount, the journal's key in it and the medium's base.
 struct Remount {
+    mount: Rc<dyn Mount>,
     path: PathBuf,
-    base: VerifiedBase,
+    base: DiskBase,
 }
 
 enum Session {
@@ -60,6 +66,8 @@ pub struct PersistenceHandle {
 }
 
 impl PersistenceHandle {
+    /// Open the journal at host `path` over `base`, a test's shortcut.
+    #[cfg(test)]
     pub(crate) fn mount(
         drive_index: usize,
         path: &Path,
@@ -73,32 +81,55 @@ impl PersistenceHandle {
                 drive_index,
                 source: source.into(),
             })?;
-        Self::mount_verified(
+        Self::mount_journal(
             drive_index,
+            &FileMount::new(),
             path,
-            &base,
+            &DiskBase::from(base).with_origin(base_metadata.cloned()),
             geometry_length,
             keep_generations,
-            base_metadata,
         )
     }
 
-    pub(crate) fn mount_verified(
+    /// Open the journal that `mount` keeps under `path` over `base`, and
+    /// replay it. A file journal opens through the journal's path
+    /// constructors, as it always has; a record opens through
+    /// [`JournalMedia::open_record`].
+    pub(crate) fn mount_journal(
         drive_index: usize,
+        mount: &dyn Mount,
         path: &Path,
-        base: &VerifiedBase,
+        base: &DiskBase,
         geometry_length: u64,
         keep_generations: u32,
-        metadata: Option<&std::fs::Metadata>,
     ) -> Result<(Self, Box<dyn SectorMedia>), crate::AssemblyError> {
         let status = SinkStatus::default();
-        let journal = JournalMedia::open_verified_with_metadata(
-            path,
-            base,
-            geometry_length,
-            status.clone(),
-            metadata,
-        )
+        let store = match mount.journal(path) {
+            Ok(store) => store.into_store(),
+            Err(MountError::Config(error)) => return Err(error.into()),
+            Err(MountError::Host(error)) => {
+                return Err(crate::AssemblyError::Journal {
+                    drive_index,
+                    source: media::OpenError::Host(SinkFailure {
+                        operation: "open journal record",
+                        message: error.to_string(),
+                        last_confirmed_sequence: 0,
+                    }),
+                })
+            }
+        };
+        let journal = match store {
+            Store::File(path) => JournalMedia::open_verified_with_metadata(
+                &path,
+                base.verified(),
+                geometry_length,
+                status.clone(),
+                base.origin(),
+            ),
+            Store::Record(record) => {
+                JournalMedia::open_record(record, base.verified(), geometry_length, status.clone())
+            }
+        }
         .map_err(|source| crate::AssemblyError::Journal {
             drive_index,
             source,
@@ -125,10 +156,31 @@ impl PersistenceHandle {
         ))
     }
 
+    /// A removable medium whose journal at host `path` opens at insert.
+    #[cfg(test)]
     pub(crate) fn prepare_removable(
         drive_index: usize,
         path: &Path,
         base: VerifiedBase,
+        keep_generations: u32,
+    ) -> (Self, Box<dyn SectorMedia>) {
+        Self::prepare_mounted(
+            drive_index,
+            Rc::new(FileMount::new()),
+            path,
+            base.into(),
+            keep_generations,
+        )
+    }
+
+    /// A removable medium, ejected: its journal, which `mount` keeps under
+    /// `path`, opens at each insert and closes at each eject. The handle
+    /// keeps the mount for that.
+    pub(crate) fn prepare_mounted(
+        drive_index: usize,
+        mount: Rc<dyn Mount>,
+        path: &Path,
+        base: DiskBase,
         keep_generations: u32,
     ) -> (Self, Box<dyn SectorMedia>) {
         let session = Rc::new(RefCell::new(Session::Empty));
@@ -144,6 +196,7 @@ impl PersistenceHandle {
             report: media::scan(&[], &[], 0).report,
             nvram: None,
             remount: Some(Remount {
+                mount,
                 path: path.into(),
                 base,
             }),
@@ -163,13 +216,13 @@ impl PersistenceHandle {
                 message: e.to_string(),
             })
         })?;
-        let (mounted, _) = Self::mount_verified(
+        let (mounted, _) = Self::mount_journal(
             self.drive_index,
+            remount.mount.as_ref(),
             &remount.path,
             &remount.base,
-            remount.base.byte_len(),
+            remount.base.len(),
             self.keep_generations,
-            remount.base.metadata(),
         )?;
         let state = std::mem::replace(&mut *mounted.session.borrow_mut(), Session::Empty);
         *self.session.borrow_mut() = state;
@@ -191,26 +244,34 @@ impl PersistenceHandle {
 
     pub(crate) fn mount_nvram(
         device_index: usize,
+        mount: &dyn Mount,
         path: &Path,
         base: &[u8; 64],
         keep_generations: u32,
-        metadata: &std::fs::Metadata,
+        origin: Option<&std::fs::Metadata>,
         rtc: &mut devices::CmosRtc,
     ) -> Result<Self, crate::AssemblyError> {
-        let (mut handle, _) = Self::mount(
-            device_index,
-            path,
-            base,
-            64,
-            keep_generations,
-            Some(metadata),
-        )
-        .map_err(|error| match error {
-            crate::AssemblyError::Journal { source, .. } => {
-                crate::AssemblyError::NvramJournal { source }
-            }
-            other => other,
-        })?;
+        let (mut handle, _) = VerifiedBase::from_bytes(base)
+            .map_err(|source| crate::AssemblyError::Journal {
+                drive_index: device_index,
+                source: source.into(),
+            })
+            .and_then(|base| {
+                Self::mount_journal(
+                    device_index,
+                    mount,
+                    path,
+                    &DiskBase::from(base).with_origin(origin.cloned()),
+                    64,
+                    keep_generations,
+                )
+            })
+            .map_err(|error| match error {
+                crate::AssemblyError::Journal { source, .. } => {
+                    crate::AssemblyError::NvramJournal { source }
+                }
+                other => other,
+            })?;
         let mut bytes = [0; 64];
         if let Session::Active(journal) = &*handle.session.borrow() {
             bytes[14..].copy_from_slice(&journal.read_sector(0)[14..64]);
@@ -466,6 +527,61 @@ fn path_error(config: &MachineConfig, index: usize, message: String) -> ConfigEr
             message,
         }
     }
+}
+
+/// NVRAM journals keep at least one closed generation, whatever holds them.
+pub(crate) fn check_nvram_retention(config: &MachineConfig) -> Result<(), ConfigError> {
+    let zero = config.devices.iter().any(|device| {
+        matches!(
+            &device.kind,
+            crate::DeviceKind::Rtc(crate::CmosCfg {
+                nvram: crate::NvramSource::Journal {
+                    keep_generations: 0,
+                    ..
+                },
+                ..
+            })
+        )
+    });
+    if zero {
+        return Err(ConfigError::Nvram {
+            message: "keep_generations must be positive".into(),
+        });
+    }
+    Ok(())
+}
+
+/// No two journal outputs (fixed drives, catalogue entries, NVRAM journals)
+/// name the same key, whatever the mount: two media would share one journal.
+/// `config` has one drive per catalogue entry.
+pub(crate) fn check_distinct_journals(config: &MachineConfig) -> Result<(), ConfigError> {
+    let drives = config.drives.iter().map(|drive| match &drive.write {
+        WriteMode::Journal { path, .. } => Some(path),
+        _ => None,
+    });
+    let nvram = config.devices.iter().map(|device| match &device.kind {
+        crate::DeviceKind::Rtc(crate::CmosCfg {
+            nvram: crate::NvramSource::Journal { journal, .. },
+            ..
+        }) => Some(journal),
+        _ => None,
+    });
+    let mut seen = std::collections::BTreeSet::new();
+    for (index, path) in drives.chain(nvram).enumerate() {
+        if let Some(path) = path {
+            if !seen.insert(path) {
+                return Err(path_error(
+                    config,
+                    index,
+                    format!(
+                        "journal {} is also another medium's journal",
+                        path.display()
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_media_paths(config: &MachineConfig) -> Result<(), ConfigError> {

@@ -325,6 +325,22 @@ only ST1-successful commands or the unpadded DMA buffer would change behavior.
 Reset keeps the mounted media and does not create a generation; device snapshots
 continue to exclude media. This does not implement machine snapshot/replay.
 
+### Where bases and journals come from
+
+When it assembles a machine, the assembler asks the machine's mount
+(`assembly::Mount`, `crates/assembly/src/mount.rs`) for the bytes of an image
+named by path, for the verified base of a journalled disk and for the journal
+of a disk or of CMOS RAM, instead of opening them. `FileMount` answers each path
+with the file it names, through the journal's path constructors and its
+`FILE.lock`; every `assemble*` function but `assemble_mounted` uses it, and so
+does a floppy appended by path, which still opens its base itself. No two
+journal outputs may share a key, whatever the mount. Another mount answers with the contract's objects: a
+`ContentReader` for a base, read on demand and never hashed again, and a
+`Record` for a journal, whose bytes are the same version-1 journal
+(`assemble_mounted`; core-contract.md §12.5 move 2 and §14.4). The machine keeps
+its mount for its life, so a catalogue medium's journal opens through it at each
+insert. A medium appended by path is a host file whatever the mount.
+
 ### IDE hard disks
 
 ATA drives use the same `JournalAdapter`, version-1 codec, immutable file-backed

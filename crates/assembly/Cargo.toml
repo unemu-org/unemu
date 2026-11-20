@@ -16,6 +16,9 @@ layer = "emulation"
 thiserror.workspace = true
 media = { path = "../media", version = "0.0.3" }
 sha2.workspace = true
+# The contract's content and records: what the mount seam hands over
+# (core-contract.md §12.5, step 10 of §12.10).
+unemu-core-api.workspace = true
 # The seams whose types the configuration names. The config is declarative data
 # about these crates' hardware; the assembler (a later task) turns it into the
 # concrete Bus/DecodeMap/IrqLine/Machine those crates define.
@@ -38,3 +41,4 @@ reference-scheduler = ["machine/reference-scheduler"]
 [dev-dependencies]
 testkit.workspace = true
 media = { path = "../media", version = "0.0.3", features = ["test-support"] }
+unemu-core-api = { workspace = true, features = ["test-support"] }

@@ -1770,6 +1770,7 @@ mod tests {
             persistence: Vec::new(),
             unlisted_firmware: Vec::new(),
             option_roms: Vec::new(),
+            mount: Default::default(),
         };
         assert_eq!(assembled.observation.subscriber_count(DeviceId::Vga), 1);
         let frame = assembled.capture_text(DeviceId::Vga).unwrap().frame;

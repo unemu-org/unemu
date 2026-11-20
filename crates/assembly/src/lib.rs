@@ -55,6 +55,7 @@ mod fw_cfg;
 mod image;
 mod machine;
 mod memory;
+mod mount;
 mod observation;
 mod output;
 mod persistence;
@@ -65,7 +66,7 @@ mod speaker_trace;
 mod validate;
 
 pub use assemble::{
-    assemble, assemble_with_observation, assemble_with_observation_and_options,
+    assemble, assemble_mounted, assemble_with_observation, assemble_with_observation_and_options,
     assemble_with_options, assemble_with_verified_bases, derive_cmos_config, derive_cmos_layout,
     AssembledMachine, AssemblyError,
 };
@@ -92,6 +93,7 @@ pub use image::{
 };
 pub use machine::MachineConfig;
 pub use memory::{MemoryConfig, MmioWindow, RamRegion, IBM5170_MAX_EXTENDED_KIB};
+pub use mount::{DiskBase, FileMount, ImageBytes, JournalStore, MachineMount, Mount, MountError};
 pub use observation::{
     Observation, ObservationError, ObservationPolicy, ObservationRequest, ObservationRoute,
     OutputKind,

@@ -492,6 +492,7 @@ fn speaker_history_stays_bounded_without_capture_on_direct_and_session_runs() {
             persistence: Vec::new(),
             unlisted_firmware: Vec::new(),
             option_roms: Vec::new(),
+            mount: Default::default(),
         };
         for cap in (1..=10).map(|chunk| chunk * 100_000) {
             if direct {

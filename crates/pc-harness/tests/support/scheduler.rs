@@ -311,6 +311,7 @@ pub fn prepare_with_bios(workload: Workload, bios: Option<Vec<u8>>) -> Result<Op
                 persistence: Vec::new(),
                 unlisted_firmware: Vec::new(),
                 option_roms: Vec::new(),
+                mount: Default::default(),
             }
         }
         Workload::Boot => {
