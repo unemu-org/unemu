@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! IBM PC/AT OCI bundle import and validation; machine-images §§1–2, 4, 5 and 8.
-//! Hardware parsing, defaults and catalogue checks remain in machine-file and assembly.
+//! The stored config's model, its decode and encode, the frozen defaults and
+//! the codec half of validation live in `pc_config::image`, below the
+//! contract; this crate keeps the store's side (descriptors, kinds, size
+//! limits, layer chains, the closure) and calls the codec to validate
+//! (core-contract.md §14.3). Hardware parsing and catalogue checks
+//! remain in pc-config, machine-file and assembly.
 //! The platform-neutral store never depends on this provider.
 
 pub mod compat;
 pub mod create;
-mod defaults;
 pub mod desktop;
 mod disk;
-mod encode;
 pub mod firmware;
 pub mod firmware_import;
 mod firmware_readme;
@@ -94,6 +97,10 @@ pub fn platform_name(id: &str) -> &str {
 }
 
 use image_store::{Descriptor, Digest};
+pub use pc_config::image::Policy;
+use pc_config::image::{
+    defaults, encode, Config, Firmware, Geometry, Medium, Nvram, NvramMode, Slot,
+};
 use serde::{Deserialize, Serialize};
 
 /// Import and bundle validation failures, preserving source diagnostics.
@@ -127,6 +134,16 @@ impl Error {
         }
     }
 }
+impl From<pc_config::image::Error> for Error {
+    /// The codec's refusals keep the variants and words they had here.
+    fn from(error: pc_config::image::Error) -> Self {
+        match error {
+            pc_config::image::Error::Parse(e) => Self::Load(e.into()),
+            pc_config::image::Error::Lower(e) => Self::Lower(e),
+            pc_config::image::Error::Invalid(message) => Self::Invalid(message),
+        }
+    }
+}
 pub type Result<T> = std::result::Result<T, Error>;
 /// The metadata blob of a new machine: schema, platform, no labels or titles.
 pub(crate) const EMPTY_METADATA: &[u8] =
@@ -150,159 +167,8 @@ pub(crate) fn generated(mut descriptor: Descriptor) -> Descriptor {
 fn invalid(message: impl Into<String>) -> Error {
     Error::Invalid(message.into())
 }
-fn decode<T: serde::de::DeserializeOwned>(table: toml::Table) -> Result<T> {
-    toml::Value::Table(table)
-        .try_into()
-        .map_err(|e: toml::de::Error| invalid(e.to_string()))
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Config {
-    schema: u32,
-    platform: String,
-    machine: toml::Table,
-    #[serde(default)]
-    firmware: Vec<Firmware>,
-    #[serde(default)]
-    media: Vec<Medium>,
-    #[serde(default)]
-    slots: Vec<Slot>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    nvram: Option<Nvram>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Firmware {
-    key: String,
-    source: String,
-    blob: Digest,
-    /// The corresponding source archive embedded with an open copyleft ROM.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    source_archive: Option<Digest>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Medium {
-    #[serde(deserialize_with = "medium_id")]
-    id: String,
-    source: String,
-    head: Digest,
-    name: Option<String>,
-    policy: Policy,
-    geometry: Geometry,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-/// Local media persistence intent, independent of a chosen recovery generation.
-pub enum Policy {
-    Readonly,
-    Volatile,
-    Journal,
-}
-impl Policy {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Readonly => "readonly",
-            Self::Volatile => "volatile",
-            Self::Journal => "journal",
-        }
-    }
-    fn from_write(write: &assembly::WriteMode) -> Self {
-        match write {
-            assembly::WriteMode::ReadOnly => Self::Readonly,
-            assembly::WriteMode::Volatile => Self::Volatile,
-            assembly::WriteMode::Journal { .. } => Self::Journal,
-        }
-    }
-    fn write(self, path: std::path::PathBuf) -> assembly::WriteMode {
-        match self {
-            Self::Readonly => assembly::WriteMode::ReadOnly,
-            Self::Volatile => assembly::WriteMode::Volatile,
-            Self::Journal => assembly::WriteMode::journal(path),
-        }
-    }
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Geometry {
-    cylinders: u32,
-    heads: u32,
-    sectors: u32,
-    sector_bytes: u32,
-}
-impl Geometry {
-    fn of(kind: assembly::DriveKind) -> Self {
-        match kind {
-            assembly::DriveKind::Floppy { geometry: g } => Self {
-                cylinders: g.cylinders,
-                heads: g.heads,
-                sectors: g.sectors_per_track,
-                sector_bytes: g.bytes_per_sector,
-            },
-            assembly::DriveKind::HardDisk { geometry: g } => Self {
-                cylinders: g.cylinders,
-                heads: g.heads,
-                sectors: g.sectors_per_track,
-                sector_bytes: g.bytes_per_sector,
-            },
-        }
-    }
-
-    /// The geometry of a `size`-byte medium in a drive of `kind`: a fixed
-    /// disk's own geometry, or the floppy medium of that size the drive type
-    /// takes (`FloppyGeometry::accepted_media`: 720K in a 1.44M drive, 360K in
-    /// a 1.2M drive).
-    fn of_medium(kind: assembly::DriveKind, size: u64) -> Result<Self> {
-        match kind {
-            assembly::DriveKind::Floppy { geometry } => geometry
-                .medium_for_len(size)
-                .map(|medium| Self::of(assembly::DriveKind::Floppy { geometry: medium }))
-                .ok_or_else(|| {
-                    invalid(format!(
-                        "floppy medium is {size} bytes but {}",
-                        assembly::descriptors::floppy_drive_media(geometry)
-                    ))
-                }),
-            assembly::DriveKind::HardDisk { .. } => Ok(Self::of(kind)),
-        }
-    }
-
-    /// Whether a medium of this geometry fits a drive of `kind` by the same
-    /// rule: a fixed disk needs its own geometry, a floppy drive any medium
-    /// its type takes.
-    fn fits(&self, kind: assembly::DriveKind) -> bool {
-        match kind {
-            assembly::DriveKind::Floppy { geometry } => geometry
-                .accepted_media()
-                .into_iter()
-                .any(|medium| Self::of(assembly::DriveKind::Floppy { geometry: medium }) == *self),
-            assembly::DriveKind::HardDisk { .. } => Self::of(kind) == *self,
-        }
-    }
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Slot {
-    controller: String,
-    unit: u8,
-    catalogue: Vec<String>,
-    catalogue_mode: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    inserted: Option<String>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Nvram {
-    mode: NvramMode,
-    source: String,
-    head: Digest,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum NvramMode {
-    Image,
-    Journal,
+fn decode(table: toml::Table) -> Result<Config> {
+    Ok(Config::decode(table)?)
 }
 
 fn descriptor(descriptors: &[Descriptor], digest: &Digest, kind: &str) -> Result<Descriptor> {
@@ -311,104 +177,6 @@ fn descriptor(descriptors: &[Descriptor], digest: &Digest, kind: &str) -> Result
         .find(|d| d.names(digest) && d.decoded_media_type() == kind)
         .cloned()
         .ok_or_else(|| invalid(format!("missing {kind} descriptor for {digest}")))
-}
-
-fn firmware_images(
-    table: &mut toml::Table,
-    mut visit: impl FnMut(&str, &mut toml::Table) -> Result<()>,
-) -> Result<()> {
-    let Some(firmware) = table
-        .get_mut("firmware")
-        .and_then(toml::Value::as_table_mut)
-    else {
-        return Ok(());
-    };
-    let mut roms = Vec::new();
-    if let Some(bios) = firmware.get_mut("bios") {
-        roms.push(("firmware.bios".to_owned(), bios));
-    }
-    for (field, rom) in roms {
-        visit_rom(&field, rom, &mut visit)?;
-    }
-    if let Some(roms) = firmware
-        .get_mut("option_roms")
-        .and_then(toml::Value::as_array_mut)
-    {
-        for (i, rom) in roms.iter_mut().enumerate() {
-            visit_rom(&format!("firmware.option_roms[{i}]"), rom, &mut visit)?;
-        }
-    }
-    Ok(())
-}
-fn visit_rom(
-    field: &str,
-    rom: &mut toml::Value,
-    visit: &mut impl FnMut(&str, &mut toml::Table) -> Result<()>,
-) -> Result<()> {
-    let rom = rom
-        .as_table_mut()
-        .ok_or_else(|| invalid("ROM must be a table"))?;
-    if let Some(parts) = rom.get_mut("parts").and_then(toml::Value::as_array_mut) {
-        for (i, part) in parts.iter_mut().enumerate() {
-            visit(
-                &format!("{field}.parts[{i}]"),
-                part.as_table_mut()
-                    .ok_or_else(|| invalid("ROM part must be a table"))?,
-            )?;
-        }
-    } else {
-        visit(field, rom)?;
-    }
-    Ok(())
-}
-fn drive_tables(
-    machine: &mut toml::Table,
-    mut visit: impl FnMut(&str, &str, &mut toml::Table) -> Result<()>,
-) -> Result<()> {
-    if let Some(cards) = machine.get_mut("card").and_then(toml::Value::as_array_mut) {
-        for card in cards {
-            let card = card
-                .as_table_mut()
-                .ok_or_else(|| invalid("card must be a table"))?;
-            let kind = card
-                .get("kind")
-                .and_then(toml::Value::as_str)
-                .ok_or_else(|| invalid("missing card kind"))?
-                .to_owned();
-            let id = card
-                .get("id")
-                .and_then(toml::Value::as_str)
-                .unwrap_or(&kind)
-                .to_owned();
-            if let Some(drives) = card.get_mut("drives").and_then(toml::Value::as_array_mut) {
-                for drive in drives {
-                    visit(
-                        &id,
-                        &kind,
-                        drive
-                            .as_table_mut()
-                            .ok_or_else(|| invalid("drive must be a table"))?,
-                    )?;
-                }
-            }
-        }
-    }
-    Ok(())
-}
-fn unit(kind: &str, drive: &toml::Table) -> Result<u8> {
-    if kind == "ide" {
-        match drive.get("channel").and_then(toml::Value::as_str) {
-            Some("master") => Ok(0),
-            Some("slave") => Ok(1),
-            _ => Err(invalid("invalid IDE channel")),
-        }
-    } else {
-        drive
-            .get("unit")
-            .and_then(toml::Value::as_integer)
-            .and_then(|n| u8::try_from(n).ok())
-            .ok_or_else(|| invalid("missing drive unit"))
-    }
 }
 
 fn firmware_options() -> assembly::AssemblyOptions {
@@ -421,48 +189,47 @@ fn firmware_options() -> assembly::AssemblyOptions {
     }
 }
 fn validate_bios(config: &assembly::MachineConfig) -> Result<()> {
-    validate_bios_with(config, firmware_options())
+    Ok(pc_config::image::validate_bios(config, firmware_options())?)
 }
-/// [`validate_bios`] with the firmware permission as an argument, for the
-/// half of the provider that reads no store and no thread-local.
-fn validate_bios_with(
-    config: &assembly::MachineConfig,
-    options: assembly::AssemblyOptions,
+/// The stored config's walk over the hardware's firmware ROMs, failing with
+/// this crate's errors.
+fn firmware_images(
+    table: &mut toml::Table,
+    visit: impl FnMut(&str, &mut toml::Table) -> Result<()>,
 ) -> Result<()> {
-    let bios = config
-        .images
-        .iter()
-        .find(|image| {
-            image.kind == assembly::ImageKind::Rom
-                && image
-                    .source
-                    .known_len()
-                    .and_then(|n| image.base.checked_add(n))
-                    == Some(0x100000)
-        })
-        .ok_or_else(|| invalid("missing resolved system BIOS"))?;
-    let assembly::ImageSource::Inline(bytes) = &bios.source else {
-        return Err(invalid("system BIOS must already be resolved"));
-    };
-    assembly::check_board_system_bios(config, config.board, bios.base, bytes, options)
-        .map_err(|e| invalid(e.to_string()))?;
-    Ok(())
+    pc_config::image::firmware_images(table, visit)
+}
+/// The stored config's walk over the hardware's drive tables, failing with
+/// this crate's errors.
+fn drive_tables(
+    machine: &mut toml::Table,
+    visit: impl FnMut(&str, &str, &mut toml::Table) -> Result<()>,
+) -> Result<()> {
+    pc_config::image::drive_tables(machine, visit)
+}
+fn unit(kind: &str, drive: &toml::Table) -> Result<u8> {
+    Ok(pc_config::image::unit(kind, drive)?)
 }
 
-fn medium_id<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<String, D::Error> {
-    let id = String::deserialize(deserializer)?;
-    if id == "cmos"
-        || id.is_empty()
-        || id.len() > 32
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-    {
-        return Err(serde::de::Error::custom("invalid or reserved medium id"));
+/// The store's digest for a digest of the stored config: the same text form.
+pub(crate) trait StoreDigest {
+    fn store(&self) -> Result<Digest>;
+}
+impl StoreDigest for pc_config::image::Digest {
+    fn store(&self) -> Result<Digest> {
+        Ok(self.to_string().parse()?)
     }
-    Ok(id)
+}
+/// The stored config's digest for a digest of the store: the same text form.
+pub(crate) trait ConfigDigest {
+    fn to_config(&self) -> Result<pc_config::image::Digest>;
+}
+impl ConfigDigest for Digest {
+    fn to_config(&self) -> Result<pc_config::image::Digest> {
+        self.to_string()
+            .parse()
+            .map_err(|e: pc_config::image::DigestError| invalid(e.to_string()))
+    }
 }
 
 #[cfg(test)]

@@ -8,11 +8,12 @@
 
 use crate::*;
 use image_store::{media_type as mt, BlobSource, ConfigValidator, PayloadType, Store};
+use pc_config::image::{self as codec, ContentRow};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io,
     path::Path,
 };
+use unemu_core_api::{Content, ContentSource, ErrorKind};
 
 pub const CMOS: &str = "application/vnd.unemu.cmos.v1";
 /// A blank fixed disk: geometry only, every sector zero (see [`crate::zero`]).
@@ -123,8 +124,9 @@ pub(crate) struct Prepared {
     pub(crate) references: Vec<Digest>,
 }
 /// Check a config against the store, then lower it. The store half reads the
-/// descriptors and blobs; the codec half reads only what the store half hands
-/// it, so the same lowering can later run where there is no store.
+/// descriptors and blobs; the codec half, `pc_config::image::lower`, reads
+/// only what the store half hands it: the content rows, and the firmware and
+/// CMOS bytes through a `ContentSource` over the blobs.
 pub(crate) fn prepare(
     config: Config,
     descriptors: &[Descriptor],
@@ -151,7 +153,7 @@ struct Stored<'a> {
     /// retired alias.
     platform_known: bool,
     /// One row per firmware blob, disk head and CMOS image the config binds.
-    rows: BTreeMap<Digest, codec::ContentRow>,
+    rows: BTreeMap<codec::Digest, ContentRow>,
     /// The closure, in the order the store expects it.
     references: Vec<Digest>,
     /// The firmware and CMOS bytes, read on demand.
@@ -195,37 +197,39 @@ fn store_half<'a>(
         if binding.key != *field || image.as_deref() != Some(binding.source.as_str()) {
             return Ok(stored);
         }
-        let (d, size) = bound(descriptors, &binding.blob, mt::FIRMWARE)?;
-        stored.references.push(binding.blob.clone());
+        let blob = binding.blob.store()?;
+        let (d, size) = bound(descriptors, &blob, mt::FIRMWARE)?;
+        stored.references.push(blob);
         // The push guard reads the ROM's source link from its descriptor.
         let link = d.annotations.get(image_store::license::SOURCE);
         if link
             != binding
                 .source_archive
                 .as_ref()
-                .map(Digest::to_string)
+                .map(codec::Digest::to_string)
                 .as_ref()
         {
             return Err(invalid("firmware source link differs from binding"));
         }
         if let Some(archive) = &binding.source_archive {
+            let archive = archive.store()?;
             descriptors
                 .iter()
-                .find(|d| d.names(archive) && matches!(d.decoded_media_type(), mt::TAR | mt::ZIP))
+                .find(|d| d.names(&archive) && matches!(d.decoded_media_type(), mt::TAR | mt::ZIP))
                 .ok_or_else(|| invalid("missing firmware source archive"))?;
-            stored.references.push(archive.clone());
+            stored.references.push(archive);
         }
         stored.rows.insert(
-            binding.blob.clone(),
-            codec::ContentRow {
-                sha256: binding.blob.clone(),
+            binding.blob,
+            ContentRow {
+                sha256: binding.blob.sha256(),
                 size,
             },
         );
         stored
             .content
             .small
-            .entry(binding.blob.clone())
+            .entry(binding.blob.sha256())
             .or_insert(d);
     }
     let mut ids = BTreeSet::new();
@@ -262,10 +266,11 @@ fn store_half<'a>(
             if !first_use && medium.policy != Policy::Readonly {
                 return Ok(stored);
             }
+            let head_digest = medium.head.store()?;
             let payload_type = if ide {
                 let head = descriptors
                     .iter()
-                    .find(|d| d.names(&medium.head))
+                    .find(|d| d.names(&head_digest))
                     .ok_or_else(|| invalid("missing disk head"))?;
                 match head.media_type.as_str() {
                     mt::DISK_LAYER => mt::DISK_LAYER,
@@ -275,20 +280,20 @@ fn store_half<'a>(
             } else {
                 mt::FLOPPY
             };
-            stored.references.push(medium.head.clone());
+            stored.references.push(head_digest.clone());
             let d = if first_use {
-                bound(descriptors, &medium.head, payload_type)?.0
+                bound(descriptors, &head_digest, payload_type)?.0
             } else {
-                descriptor(descriptors, &medium.head, payload_type)?
+                descriptor(descriptors, &head_digest, payload_type)?
             };
             let size = if ide && payload_type != mt::DISK_BASE {
                 let refs =
-                    crate::disk::references(&medium.head, &medium.geometry, descriptors, blobs)?;
+                    crate::disk::references(&head_digest, &medium.geometry, descriptors, blobs)?;
                 stored.references.extend(refs.into_iter().skip(1));
                 // A zero-rooted disk has no bytes to load: only a journal over the
                 // chain can mount it without materializing the whole disk.
                 if medium.policy != Policy::Journal
-                    && crate::zero::rooted(&medium.head, &medium.geometry, descriptors, blobs)?
+                    && crate::zero::rooted(&head_digest, &medium.geometry, descriptors, blobs)?
                 {
                     return Err(invalid(
                         "a blank (zero base) disk mounts only through a journal",
@@ -298,26 +303,25 @@ fn store_half<'a>(
             } else {
                 d.decoded_size()?
             };
-            let sha256 = crate::disk::identity(&medium.head, descriptors, blobs)?;
-            stored
-                .rows
-                .insert(medium.head.clone(), codec::ContentRow { sha256, size });
+            let sha256 = hash_array(&crate::disk::identity(&head_digest, descriptors, blobs)?)?;
+            stored.rows.insert(medium.head, ContentRow { sha256, size });
         }
     }
     if let Some(nvram) = &config.nvram {
-        let (d, size) = bound(descriptors, &nvram.head, CMOS)?;
-        stored.references.push(nvram.head.clone());
+        let head = nvram.head.store()?;
+        let (d, size) = bound(descriptors, &head, CMOS)?;
+        stored.references.push(head);
         if d.size != 64 {
             return Err(invalid("CMOS must contain exactly 64 bytes"));
         }
         stored.rows.insert(
-            nvram.head.clone(),
-            codec::ContentRow {
-                sha256: nvram.head.clone(),
+            nvram.head,
+            ContentRow {
+                sha256: nvram.head.sha256(),
                 size,
             },
         );
-        stored.content.small.entry(nvram.head.clone()).or_insert(d);
+        stored.content.small.entry(nvram.head.sha256()).or_insert(d);
     }
     Ok(stored)
 }
@@ -336,402 +340,39 @@ fn bound(descriptors: &[Descriptor], digest: &Digest, kind: &str) -> Result<(Des
     }
     Ok((d, size))
 }
-/// The firmware and CMOS blobs the store half bound, read whole and verified.
+/// The firmware and CMOS blobs the store half bound, by the SHA-256 of
+/// their rows, read whole and verified: the content source the codec half
+/// opens small content through.
 struct StoreContent<'a> {
     blobs: &'a dyn BlobSource,
-    small: BTreeMap<Digest, Descriptor>,
+    small: BTreeMap<[u8; 32], Descriptor>,
 }
-impl codec::SmallContent for StoreContent<'_> {
-    fn read(&self, digest: &Digest) -> io::Result<Vec<u8>> {
+impl ContentSource for StoreContent<'_> {
+    fn open(
+        &self,
+        sha256: &[u8; 32],
+        size: u64,
+    ) -> std::result::Result<Content, unemu_core_api::Error> {
+        let content = |message: String| unemu_core_api::Error::new(ErrorKind::Content, message);
         let d = self
             .small
-            .get(digest)
-            .ok_or_else(|| io::Error::other("unbound logical asset"))?;
+            .get(sha256)
+            .ok_or_else(|| content("unbound logical asset".into()))?;
         let limit = PAYLOAD_TYPES
             .iter()
             .find(|t| t.media_type == d.decoded_media_type())
             .map(|t| t.max_size)
-            .ok_or_else(|| io::Error::other("unsupported payload"))?;
-        self.blobs.read_verified(d, limit).map_err(io::Error::other)
-    }
-}
-
-/// The codec half: the config's envelope, its bindings against the hardware
-/// tables, the slots, each medium's size against its geometry, and the
-/// lowering. It reads nothing of the store: what it knows of content comes
-/// from the store half's rows, and the firmware and CMOS bytes from a reader
-/// of small content. Of the store's crate it names only `Digest`.
-mod codec {
-    use super::hash_array;
-    use crate::{
-        drive_tables, firmware_images, invalid, unit, validate_bios_with, Config, Policy, Result,
-        Slot,
-    };
-    use image_store::Digest;
-    use std::{
-        collections::{BTreeMap, BTreeSet},
-        io,
-        path::Path,
-    };
-
-    /// What the codec half knows of one blob or disk head: the SHA-256 of the
-    /// flat bytes a machine opens, and their length. The codec half reads a
-    /// disk's rows here; the firmware and CMOS rows are not read yet, and are
-    /// what a content source will open those blobs by.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub(crate) struct ContentRow {
-        /// For a raw blob its own digest; for a layered head the chain's
-        /// result; for a zero base the digest of that many zero bytes.
-        pub(crate) sha256: Digest,
-        /// The decoded size of a raw blob. For a layered or zero head, the
-        /// capacity of the medium's geometry, which the store half's chain
-        /// walk holds equal to the chain's root.
-        pub(crate) size: u64,
-    }
-    /// Small content the lowering reads whole: a firmware ROM or a CMOS
-    /// image, by the digest its binding names.
-    pub(crate) trait SmallContent {
-        fn read(&self, digest: &Digest) -> io::Result<Vec<u8>>;
-    }
-    pub(crate) struct Lowered {
-        pub(crate) config: Config,
-        pub(crate) machine: assembly::MachineConfig,
-    }
-
-    /// The path a fixed disk lowers from while its size is checked: a disk
-    /// payload is never read in validation.
-    const VALIDATION_DISK: &str = "__pc_image_validation_disk__";
-    struct Reader<'a> {
-        content: &'a dyn SmallContent,
-        /// Logical asset name to its digest, and whether it is small content.
-        bindings: BTreeMap<String, (Digest, bool)>,
-    }
-    impl machine_file::ImageReader for Reader<'_> {
-        fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
-            if path == Path::new(VALIDATION_DISK) {
-                return Ok(vec![0; 512]);
+            .ok_or_else(|| content("unsupported payload".into()))?;
+        let bytes = self.blobs.read_verified(d, limit).map_err(|e| match e {
+            image_store::Error::Io(_) => {
+                unemu_core_api::Error::new(ErrorKind::Storage, e.to_string())
             }
-            let (digest, small) = self
-                .bindings
-                .get(&path.to_string_lossy().to_string())
-                .ok_or_else(|| io::Error::other("unbound logical asset"))?;
-            if !small {
-                return Err(io::Error::other("disk payload must stay file-backed"));
-            }
-            self.content.read(digest)
-        }
-    }
-    fn logical(name: &str) -> Result<()> {
-        if !name.starts_with("assets/")
-            || name.len() > 200
-            || name
-                .split('/')
-                .any(|s| s.is_empty() || s == "." || s == "..")
-            || !name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"/-_.".contains(&b))
-        {
-            return Err(invalid("invalid logical asset name"));
-        }
-        Ok(())
-    }
-    fn bind(
-        reader: &mut Reader<'_>,
-        names: &mut BTreeSet<String>,
-        source: &str,
-        digest: &Digest,
-        small: bool,
-    ) -> Result<()> {
-        logical(source)?;
-        if !names.insert(source.into()) {
-            return Err(invalid("duplicate logical asset name"));
-        }
-        reader
-            .bindings
-            .insert(source.into(), (digest.clone(), small));
-        Ok(())
-    }
-    fn row<'a>(rows: &'a BTreeMap<Digest, ContentRow>, digest: &Digest) -> Result<&'a ContentRow> {
-        rows.get(digest)
-            .ok_or_else(|| invalid(format!("missing content row for {digest}")))
-    }
-
-    /// A stored drive table names no medium: the slots do.
-    pub(crate) fn check_media_fields(drive: &toml::Table) -> Result<()> {
-        if [
-            "image",
-            "sha256",
-            "media",
-            "empty",
-            "write",
-            "journal",
-            "keep_generations",
-        ]
-        .iter()
-        .any(|k| drive.contains_key(*k))
-        {
-            return Err(invalid("bundle hardware contains media fields"));
-        }
-        Ok(())
-    }
-    /// A slot sits at its drive's position and has the shape its drive
-    /// takes. The store half stops its walk where this refuses, so that the
-    /// codec half's sentence is the one a person reads.
-    pub(crate) fn check_slot(
-        controller: &str,
-        kind: &str,
-        drive: &toml::Table,
-        slot: &Slot,
-    ) -> Result<()> {
-        if slot.controller != controller || slot.unit != unit(kind, drive)? {
-            return Err(invalid("slot binding differs from hardware position"));
-        }
-        if slot
-            .inserted
-            .as_ref()
-            .is_some_and(|id| slot.catalogue.first() != Some(id))
-        {
-            return Err(invalid("unsupported initial selection"));
-        }
-        if kind == "ide"
-            && (slot.catalogue_mode || slot.catalogue.len() != 1 || slot.inserted.is_none())
-        {
-            return Err(invalid("IDE needs exactly one inserted medium"));
-        }
-        if !slot.catalogue_mode && (slot.catalogue.len() != 1 || slot.inserted.is_none()) {
-            return Err(invalid("single image slot requires one inserted medium"));
-        }
-        Ok(())
-    }
-
-    /// Lower `config`. `platform_known` is whether its platform names this
-    /// provider, the alias check the store half makes; `options` carries the
-    /// permission for unlisted firmware.
-    pub(crate) fn lower(
-        config: Config,
-        rows: &BTreeMap<Digest, ContentRow>,
-        content: &dyn SmallContent,
-        platform_known: bool,
-        options: assembly::AssemblyOptions,
-    ) -> Result<Lowered> {
-        if config.schema != 1 || !platform_known {
-            return Err(invalid("unsupported PC config envelope"));
-        }
-        let mut hardware = config.machine.clone();
-        let raw_text = toml::to_string(&hardware).map_err(|e| invalid(e.to_string()))?;
-        machine_file::parse_toml("bundle.toml", &raw_text)
-            .map_err(machine_file::LoadError::from)?;
-        if ["extends", "name", "description"]
-            .iter()
-            .any(|k| hardware.contains_key(*k))
-        {
-            return Err(invalid(
-                "bundle hardware must be resolved and contain no descriptive fields",
-            ));
-        }
-        let mut reader = Reader {
-            content,
-            bindings: BTreeMap::new(),
-        };
-        let mut names = BTreeSet::new();
-        let mut firmware_count = 0;
-        firmware_images(&mut hardware, |field, rom| {
-            let binding = config
-                .firmware
-                .get(firmware_count)
-                .ok_or_else(|| invalid("missing firmware binding"))?;
-            if binding.key != field
-                || rom.get("image").and_then(toml::Value::as_str) != Some(&binding.source)
-            {
-                return Err(invalid("firmware binding differs from hardware"));
-            }
-            bind(
-                &mut reader,
-                &mut names,
-                &binding.source,
-                &binding.blob,
-                true,
-            )?;
-            if rom.get("sha256").and_then(toml::Value::as_str) != Some(binding.blob.hex()) {
-                return Err(invalid("firmware hash differs from binding"));
-            }
-            firmware_count += 1;
-            Ok(())
+            e => content(e.to_string()),
         })?;
-        if firmware_count != config.firmware.len() {
-            return Err(invalid("unreferenced firmware binding"));
+        if bytes.len() as u64 != size {
+            return Err(content("content size differs from its row".into()));
         }
-        let mut used = BTreeSet::new();
-        let mut slot_index = 0;
-        let mut ids = BTreeSet::new();
-        if config
-            .media
-            .iter()
-            .any(|m| !ids.insert(m.id.clone()) || m.id.is_empty())
-        {
-            return Err(invalid("duplicate or empty medium id"));
-        }
-        drive_tables(&mut hardware, |controller, kind, drive| {
-            check_media_fields(drive)?;
-            let slot = config
-                .slots
-                .get(slot_index)
-                .ok_or_else(|| invalid("missing slot binding"))?;
-            check_slot(controller, kind, drive, slot)?;
-            for id in &slot.catalogue {
-                let medium = config
-                    .media
-                    .iter()
-                    .find(|m| &m.id == id)
-                    .ok_or_else(|| invalid("unknown catalogue medium"))?;
-                if used.insert(id.clone()) {
-                    bind(&mut reader, &mut names, &medium.source, &medium.head, false)?;
-                } else if !matches!(medium.policy, Policy::Readonly) {
-                    return Err(invalid("writable medium bound more than once"));
-                }
-                let disk_size = row(rows, &medium.head)?.size;
-                let g = &medium.geometry;
-                if g.sector_bytes != 512
-                    || u64::from(g.cylinders)
-                        .checked_mul(u64::from(g.heads))
-                        .and_then(|n| n.checked_mul(u64::from(g.sectors)))
-                        .and_then(|n| n.checked_mul(512))
-                        != Some(disk_size)
-                {
-                    return Err(invalid("medium geometry differs from payload length"));
-                }
-                if medium
-                    .name
-                    .as_ref()
-                    .is_some_and(|n| n.contains(['/', '\\', '\0']) || n.is_empty())
-                {
-                    return Err(invalid("invalid medium name"));
-                }
-                if slot.catalogue_mode != medium.name.is_some() {
-                    return Err(invalid("medium name differs from catalogue shape"));
-                }
-                if kind == "ide" {
-                    let expected = toml::Table::from_iter([
-                        ("cylinders".into(), i64::from(g.cylinders).into()),
-                        ("heads".into(), i64::from(g.heads).into()),
-                        ("sectors".into(), i64::from(g.sectors).into()),
-                    ]);
-                    if drive.get("geometry").and_then(toml::Value::as_table) != Some(&expected) {
-                        return Err(invalid("medium geometry differs from hardware"));
-                    }
-                }
-            }
-            // Lower only a bounded placeholder; the medium's geometry is checked
-            // above against the store half's size, and a disk is never read here.
-            // The store verifies raw payloads; the resolved callback verifies a
-            // layered head once.
-            if kind == "ide" {
-                drive.insert("image".into(), VALIDATION_DISK.into());
-                drive.insert("write".into(), "volatile".into());
-                drive.insert(
-                    "geometry".into(),
-                    toml::Table::from_iter([
-                        ("cylinders".into(), 1.into()),
-                        ("heads".into(), 1.into()),
-                        ("sectors".into(), 1.into()),
-                    ])
-                    .into(),
-                );
-            } else {
-                drive.insert("media".into(), Vec::<toml::Value>::new().into());
-                drive.insert("empty".into(), true.into());
-            }
-            slot_index += 1;
-            Ok(())
-        })?;
-        if used.len() != config.media.len() || slot_index != config.slots.len() {
-            return Err(invalid("unreferenced medium or slot binding"));
-        }
-        let rtc_nvram = hardware
-            .get_mut("board")
-            .and_then(toml::Value::as_table_mut)
-            .and_then(|b| b.get_mut("rtc"))
-            .and_then(toml::Value::as_table_mut)
-            .and_then(|rtc| rtc.get_mut("nvram"));
-        if let Some(nvram) = &config.nvram {
-            let target = rtc_nvram.ok_or_else(|| invalid("missing hardware NVRAM"))?;
-            let expected = toml::Table::from_iter([("image".into(), nvram.source.clone().into())]);
-            if target.as_table() != Some(&expected) {
-                return Err(invalid("NVRAM hardware differs from binding"));
-            }
-            bind(&mut reader, &mut names, &nvram.source, &nvram.head, true)?;
-            let mut table = expected;
-            table.insert("sha256".into(), nvram.head.hex().into());
-            table.insert("write".into(), "volatile".into());
-            *target = table.into();
-        } else if rtc_nvram.is_some_and(|n| n.as_str().is_none()) {
-            return Err(invalid("unbound hardware NVRAM"));
-        }
-        let text = toml::to_string(&hardware).map_err(|e| invalid(e.to_string()))?;
-        let document = machine_file::parse_toml("bundle.toml", &text)
-            .map_err(machine_file::LoadError::from)?;
-        let mut machine = machine_file::lower(
-            &document,
-            &machine_file::Origins::new("bundle.toml"),
-            &mut reader,
-        )?;
-        for (drive, slot) in machine.drives.iter_mut().zip(&config.slots) {
-            if drive.unit != slot.unit {
-                return Err(invalid("slot order differs from effective drive order"));
-            }
-            let mut entries = Vec::new();
-            for id in &slot.catalogue {
-                let m = config
-                    .media
-                    .iter()
-                    .find(|m| &m.id == id)
-                    .ok_or_else(|| invalid("missing medium"))?;
-                if matches!(drive.kind, assembly::DriveKind::HardDisk { .. }) {
-                    drive.kind = assembly::DriveKind::HardDisk {
-                        geometry: assembly::HardDiskGeometry {
-                            cylinders: m.geometry.cylinders,
-                            heads: m.geometry.heads,
-                            sectors_per_track: m.geometry.sectors,
-                            bytes_per_sector: m.geometry.sector_bytes,
-                        },
-                    };
-                }
-                if !m.geometry.fits(drive.kind) {
-                    return Err(invalid("medium geometry differs from hardware"));
-                }
-                entries.push(assembly::FloppyMedium {
-                    image: assembly::ImageSource::File(m.source.clone().into()),
-                    expected_sha256: Some(hash_array(&row(rows, &m.head)?.sha256)?),
-                    write: m.policy.write(format!("{}.upfj", m.id).into()),
-                    name: m.name.clone().unwrap_or_default(),
-                });
-            }
-            if slot.catalogue_mode {
-                drive.media = Some(assembly::FloppyMediaList {
-                    entries,
-                    empty: slot.inserted.is_none(),
-                    inserted: 0,
-                });
-                drive.expected_sha256 = None;
-                drive.write = assembly::WriteMode::Volatile;
-                drive.image = assembly::ImageSource::Blank {
-                    size: drive.kind.image_bytes(),
-                };
-            } else {
-                let entry = entries
-                    .pop()
-                    .ok_or_else(|| invalid("empty single image slot"))?;
-                drive.media = None;
-                drive.image = entry.image;
-                drive.expected_sha256 = entry.expected_sha256;
-                drive.write = entry.write;
-            }
-        }
-        machine.validate().map_err(|e| invalid(e.to_string()))?;
-        assembly::check_option_rom_catalogue(&machine, assembly::AssemblyOptions::default())
-            .map_err(|e| invalid(e.to_string()))?;
-        validate_bios_with(&machine, options)?;
-        Ok(Lowered { config, machine })
+        Ok(Content::Bytes(bytes))
     }
 }
 
@@ -759,7 +400,7 @@ pub(crate) struct PreparedImage {
     pub image: image_store::ResolvedImage,
     pub config: Config,
     pub machine: assembly::MachineConfig,
-    pub bases: BTreeMap<Digest, crate::disk::Disk>,
+    pub bases: BTreeMap<codec::Digest, crate::disk::Disk>,
 }
 /// Resolve a pinned image. With `mount`, every medium is prepared for a
 /// machine, which may materialize decoded files; without it the image is
@@ -771,7 +412,7 @@ pub(crate) fn load_pinned(
     mount: bool,
 ) -> Result<PreparedImage> {
     struct Capture(
-        std::cell::RefCell<Option<(Prepared, BTreeMap<Digest, crate::disk::Disk>)>>,
+        std::cell::RefCell<Option<(Prepared, BTreeMap<codec::Digest, crate::disk::Disk>)>>,
         bool,
     );
     impl ConfigValidator for Capture {
@@ -941,8 +582,8 @@ pub(crate) fn resolve_pinned(
             for device in &mut prepared.machine.devices {
                 if let assembly::DeviceKind::Rtc(rtc) = &mut device.kind {
                     rtc.nvram = assembly::NvramSource::Journal {
-                        image: base_path(&n.head)?,
-                        expected_sha256: hash_array(&n.head)?,
+                        image: base_path(&n.head.store()?)?,
+                        expected_sha256: n.head.sha256(),
                         journal: session.join("cmos.upfj"),
                         keep_generations: retention("cmos"),
                     };
@@ -1049,13 +690,19 @@ mod tests {
             }
         }
     }
-    impl codec::SmallContent for Memory {
-        fn read(&self, digest: &Digest) -> io::Result<Vec<u8>> {
+    impl ContentSource for Memory {
+        fn open(
+            &self,
+            sha256: &[u8; 32],
+            size: u64,
+        ) -> std::result::Result<Content, unemu_core_api::Error> {
+            let digest = codec::Digest::from_sha256(*sha256).store().unwrap();
             self.reads.borrow_mut().push(digest.clone());
             self.blobs
-                .get(digest)
-                .cloned()
-                .ok_or_else(|| io::Error::other("not in memory"))
+                .get(&digest)
+                .filter(|bytes| bytes.len() as u64 == size)
+                .map(|bytes| Content::Bytes(bytes.clone()))
+                .ok_or_else(|| unemu_core_api::Error::new(ErrorKind::Content, "not in memory"))
         }
     }
     impl BlobSource for Memory {
@@ -1125,13 +772,13 @@ head = "{c}"
         ];
         Some((config, descriptors, [bios, floppy, cmos]))
     }
-    fn rows(blobs: &[Vec<u8>; 3]) -> BTreeMap<Digest, codec::ContentRow> {
+    fn rows(blobs: &[Vec<u8>; 3]) -> BTreeMap<codec::Digest, ContentRow> {
         blobs
             .iter()
             .map(|bytes| {
-                let digest = Digest::of(bytes);
-                let row = codec::ContentRow {
-                    sha256: digest.clone(),
+                let digest = codec::Digest::of(bytes);
+                let row = ContentRow {
+                    sha256: digest.sha256(),
                     size: bytes.len() as u64,
                 };
                 (digest, row)
@@ -1140,9 +787,9 @@ head = "{c}"
     }
 
     /// The codec half runs over a config, rows and small content in memory,
-    /// with no descriptor, blob source or store anywhere: it reads the ROM
-    /// and the CMOS image and never the floppy, whose bytes it is not even
-    /// given. Its machine is the one the store's path lowers.
+    /// with no descriptor, blob source or store anywhere: it opens the ROM
+    /// and the CMOS image by their rows and never the floppy, whose bytes it
+    /// is not even given. Its machine is the one the store's path lowers.
     #[test]
     fn the_codec_half_lowers_from_memory_and_reads_only_small_content() {
         let Some((config, descriptors, blobs)) = image() else {
@@ -1186,45 +833,8 @@ head = "{c}"
         );
     }
 
-    /// What the codec half knows of a medium's size comes from its row, and
-    /// whether the platform is this provider's from its argument.
-    #[test]
-    fn the_codec_half_refuses_from_its_rows_and_arguments() {
-        let Some((config, _, blobs)) = image() else {
-            return;
-        };
-        let small = Memory::new([&blobs[0][..], &blobs[2][..]]);
-        let lower = |rows: &BTreeMap<Digest, codec::ContentRow>, platform_known| {
-            codec::lower(
-                config.clone(),
-                rows,
-                &small,
-                platform_known,
-                assembly::AssemblyOptions::default(),
-            )
-            .err()
-            .map(|e| e.to_string())
-        };
-        let floppy = Digest::of(&blobs[1]);
-        let mut short = rows(&blobs);
-        short.get_mut(&floppy).unwrap().size -= 512;
-        assert_eq!(
-            lower(&short, true).as_deref(),
-            Some("invalid PC image: medium geometry differs from payload length")
-        );
-        let mut missing = rows(&blobs);
-        missing.remove(&floppy);
-        assert_eq!(
-            lower(&missing, true),
-            Some(format!(
-                "invalid PC image: missing content row for {floppy}"
-            ))
-        );
-        assert_eq!(
-            lower(&rows(&blobs), false).as_deref(),
-            Some("invalid PC image: unsupported PC config envelope")
-        );
-    }
+    // The codec half's refusals from its rows and its platform argument are
+    // tested where the codec lives, in `pc_config::image`.
 
     /// An AT with a 360K floppy drive and then an IDE master, a journalled
     /// floppy `a` and fixed disk `c`, and `slots` as given (the heads of

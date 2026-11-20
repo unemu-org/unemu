@@ -2675,6 +2675,7 @@ dependencies = [
  "sha2",
  "thiserror 1.0.69",
  "toml",
+ "unemu-core-api",
 ]
 
 [[package]]
@@ -2707,10 +2708,12 @@ dependencies = [
  "machine",
  "machine-file",
  "media",
+ "pc-config",
  "recipe",
  "serde",
  "thiserror 1.0.69",
  "toml",
+ "unemu-core-api",
 ]
 
 [[package]]

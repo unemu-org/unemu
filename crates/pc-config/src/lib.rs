@@ -12,6 +12,10 @@
 //! at its old path. See `backlog/docs/design/core-contract.md` §14.2.1 and
 //! `backlog/docs/design/machine-files.md` § Schema.
 //!
+//! The stored config of a PC machine image, its decode and encode and the
+//! codec half of its validation are [`image`]'s: they read content through
+//! the contract's `ContentSource` and name nothing of a store.
+//!
 //! Documents decode into schema-versioned layers ([`schema`]) whose omitted
 //! fields stay omitted, so the merge of `machine-file` can tell inheritance
 //! from an explicit override. Complete documents lower to
@@ -24,6 +28,7 @@ use std::{fmt, ops::Range, path::Path, path::PathBuf};
 
 use serde::Deserialize;
 
+pub mod image;
 mod integrity;
 mod lower;
 mod origin;

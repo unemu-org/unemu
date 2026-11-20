@@ -439,9 +439,10 @@ pub(crate) fn publish_machine(
         let disk = bases
             .get(&m.head)
             .ok_or_else(|| invalid("missing verified medium"))?;
+        let head_digest = m.head.store()?;
         let old_head = descriptors
             .iter()
-            .find(|d| d.names(&m.head))
+            .find(|d| d.names(&head_digest))
             .ok_or_else(|| invalid("missing medium head"))?;
         let flatten_disk = flatten
             && matches!(
@@ -519,7 +520,7 @@ pub(crate) fn publish_machine(
             file.sync_all()?;
             if flatten_disk && layer.sector_count == 0 {
                 // Every sector is zero again: the flattened head is the zero base.
-                m.head = disk.root.clone();
+                m.head = disk.root.to_config()?;
                 continue;
             }
             hook(PublicationStep::PackStaged(m.id.clone()))?;
@@ -535,7 +536,7 @@ pub(crate) fn publish_machine(
             descriptors.push(classify(d));
             stored(store, mt::DISK_LAYER, &layer.encode()?, &mut hook)?
         };
-        m.head = d.decoded_digest()?;
+        m.head = d.decoded_digest()?.to_config()?;
         descriptors.push(d);
     }
     if let Some(n) = &mut config.nvram {
@@ -553,14 +554,14 @@ pub(crate) fn publish_machine(
                 None,
             )?;
             hook(PublicationStep::BlobStored(blob.digest.clone()))?;
-            n.head = blob.digest.clone();
+            n.head = blob.digest.to_config()?;
             descriptors.push(classify(Descriptor::new(CMOS, blob.digest, blob.size)));
         } else if let Some(bytes) = overlay_cmos {
             // An unjournaled CMOS image gets the SETUP fields of the machine's
             // settings, as Settings on an image stores them.
             let blob = store.import(bytes.as_slice(), None)?;
             hook(PublicationStep::BlobStored(blob.digest.clone()))?;
-            n.head = blob.digest.clone();
+            n.head = blob.digest.to_config()?;
             descriptors.push(classify(Descriptor::new(CMOS, blob.digest, blob.size)));
         }
     }

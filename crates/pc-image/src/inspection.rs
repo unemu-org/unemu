@@ -88,7 +88,7 @@ pub fn inspect(
     let mut media = Vec::new();
     for m in &config.media {
         let mut chain = Vec::new();
-        let mut head = m.head.clone();
+        let mut head = m.head.store()?;
         loop {
             let d = manifest
                 .layers
@@ -155,10 +155,11 @@ pub fn inspect(
         });
     }
     if let Some(nvram) = &config.nvram {
+        let nvram_head = nvram.head.store()?;
         let descriptor = manifest
             .layers
             .iter()
-            .find(|d| d.digest == nvram.head)
+            .find(|d| d.digest == nvram_head)
             .ok_or_else(|| invalid("missing CMOS blob"))?;
         let journaled = matches!(nvram.mode, NvramMode::Journal);
         media.push(MediumDetails {
@@ -171,9 +172,9 @@ pub fn inspect(
                 Policy::Volatile
             },
             chain: vec![ChainMember {
-                digest: nvram.head.clone(),
+                shared_by: uses.get(&nvram_head).copied().unwrap_or(0),
+                digest: nvram_head,
                 size: descriptor.size,
-                shared_by: uses.get(&nvram.head).copied().unwrap_or(0),
                 blank_bytes: None,
             }],
             working_sectors: if journaled {

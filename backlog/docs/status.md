@@ -5,6 +5,19 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — The stored PC image config and its codec move below the contract:**
+  (`upc-dfs.43.4`, stage B step S4; design/core-contract.md §14.3). No behaviour change.
+  `pc_config::image` now holds the stored config's model (`Config`, `Firmware`, `Medium`,
+  `Slot`, `Nvram`, `Policy`, `Geometry`) with its decode and encode, the hardware-table encoding
+  and frozen defaults of an import, the binding walks and the codec half of validation
+  (`image::lower`), which opens firmware and CMOS bytes through the contract's `ContentSource`
+  by the SHA-256 and size of their content rows. `pc-config` has its own `Digest` in the store's
+  text form (`sha256:` and 64 hex digits); it still declares no store, `media` or
+  `machine-file` and reaches `media` only through `assembly`, the allowed crossing. `pc-image` keeps the store's half and the store operations, serves the codec a
+  `ContentSource` over its blobs and converts digests at its edge; `pc_image::Policy` and every
+  refusal's words are unchanged. Every config the workspace's tests encode or decode has the same
+  bytes before and after, and the pinned template digests hold.
+
 - **2026-11-20 — x86jit moves to `6cb817b8`; the exception trace shows the registers:**
   (`upc-f7j.21`). Two x86jit changes: the delivery log can record the interrupted code's
   registers with each delivery (xj-ir6.40 (x86jit)), and on the 80286/80386 machine models a

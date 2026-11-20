@@ -56,7 +56,7 @@ impl Source {
         )?;
         let cmos = match &config.nvram {
             Some(nvram) => {
-                let d = crate::descriptor(&manifest.layers, &nvram.head, CMOS)?;
+                let d = crate::descriptor(&manifest.layers, &nvram.head.store()?, CMOS)?;
                 Some(
                     store
                         .read_verified(&d, 64)?
@@ -550,8 +550,8 @@ fn bind_firmware(
             bindings.push(Firmware {
                 key: field.into(),
                 source: name,
-                blob: binding.blob.clone(),
-                source_archive: binding.source_archive.clone(),
+                blob: binding.blob,
+                source_archive: binding.source_archive,
             });
             return Ok(());
         }
@@ -581,11 +581,11 @@ fn bind_firmware(
         bindings.push(Firmware {
             key: field.into(),
             source: name,
-            blob: found.blob.decoded_digest()?,
+            blob: found.blob.decoded_digest()?.to_config()?,
             source_archive: found
                 .archive
                 .as_ref()
-                .map(Descriptor::decoded_digest)
+                .map(|d| d.decoded_digest()?.to_config())
                 .transpose()?,
         });
         if !bound.iter().any(|b| b.blob.digest == found.blob.digest) {
@@ -868,7 +868,7 @@ pub fn plan(store: &Store, source: &Source, machine: Table) -> Result<Plan> {
                 d.annotations
                     .insert("unemu.redistribution".into(), "user-supplied".into());
                 if let Some(nvram) = &mut config.nvram {
-                    nvram.head = d.digest.clone();
+                    nvram.head = d.digest.to_config()?;
                 }
                 if !descriptors.iter().any(|known| known.digest == d.digest) {
                     descriptors.push(d.clone());

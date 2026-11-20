@@ -280,14 +280,15 @@ pub(crate) fn disk(
     image: &ResolvedImage,
 ) -> Result<Option<crate::disk::Disk>> {
     let descriptors = &image.manifest.layers;
+    let head_digest = crate::StoreDigest::store(&medium.head)?;
     let head = descriptors
         .iter()
-        .find(|d| d.names(&medium.head))
+        .find(|d| d.names(&head_digest))
         .ok_or_else(|| invalid("missing disk head"))?;
     if !matches!(head.media_type.as_str(), MEDIA_TYPE | mt::DISK_LAYER) {
         return Ok(None);
     }
-    let graph = crate::disk::graph(&medium.head, &medium.geometry, descriptors, store)?;
+    let graph = crate::disk::graph(&head_digest, &medium.geometry, descriptors, store)?;
     if graph.root.media_type != MEDIA_TYPE {
         return Ok(None);
     }

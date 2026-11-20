@@ -3,7 +3,7 @@
 //! IBM Personal Computer AT Technical Reference, System Board: defaults come
 //! from the lowered configuration rather than a second set of hardware constants.
 
-use crate::{invalid, Result};
+use super::{invalid, Result};
 use assembly::{DeviceId, DeviceKind};
 use toml::{Table, Value};
 
@@ -18,6 +18,8 @@ fn line(value: Option<u8>) -> Value {
     value.map_or_else(|| "none".into(), |n| i64::from(n).into())
 }
 
+/// Write into `hardware` every default the lowering chose for `config`, so
+/// the stored tables name them and a later lowering cannot choose others.
 pub fn materialize(hardware: &mut Table, config: &assembly::MachineConfig) -> Result<()> {
     let board = table(hardware, "board")?;
     board.insert(

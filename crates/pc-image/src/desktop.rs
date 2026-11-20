@@ -55,22 +55,23 @@ pub fn check(
     }
     for firmware in &config.firmware {
         stop()?;
-        descriptor(&manifest.layers, &firmware.blob, mt::FIRMWARE)?;
+        descriptor(&manifest.layers, &firmware.blob.store()?, mt::FIRMWARE)?;
     }
     let mut media = Vec::new();
     for m in &config.media {
         stop()?;
+        let head_digest = m.head.store()?;
         let head = manifest
             .layers
             .iter()
-            .find(|d| d.names(&m.head))
+            .find(|d| d.names(&head_digest))
             .ok_or_else(|| invalid("missing disk head"))?;
         let members = if matches!(
             head.decoded_media_type(),
             mt::DISK_BASE | mt::DISK_LAYER | DISK_ZERO
         ) {
             crate::disk::display_chain(
-                &m.head,
+                &head_digest,
                 &m.geometry,
                 &manifest.layers,
                 &Cancellable {
@@ -116,7 +117,7 @@ pub fn check(
         });
     }
     if let Some(n) = &config.nvram {
-        let d = descriptor(&manifest.layers, &n.head, CMOS)?;
+        let d = descriptor(&manifest.layers, &n.head.store()?, CMOS)?;
         let policy = if matches!(n.mode, NvramMode::Journal) {
             Policy::Journal
         } else {
@@ -128,7 +129,7 @@ pub fn check(
             name: "CMOS settings".into(),
             policy,
             chain: vec![ChainMember {
-                digest: n.head.clone(),
+                digest: n.head.store()?,
                 size: d.size,
                 shared_by: 0,
                 blank_bytes: None,

@@ -2,8 +2,8 @@
 //! Lossless schema-1 field projection after inheritance; machine-images §2.
 //! Default values are materialized from the existing lowering implementation.
 
-use machine_file::schema::v1::projection;
-use machine_file::schema::v1::*;
+use crate::schema::v1::projection;
+use crate::schema::v1::*;
 use toml::{Table, Value};
 
 /// Retain schema-owned spellings without introducing another document parser.
@@ -205,6 +205,8 @@ impl Field for Drive {
     }
 }
 
+/// The hardware tables of a resolved machine document, with each drive table
+/// in its controller-local unit order: the `machine` table of a stored config.
 pub fn machine(document: &MachineFile) -> Table {
     let projection::MachineFile {
         schema: _,

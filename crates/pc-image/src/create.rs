@@ -696,8 +696,8 @@ fn plan(image: &NewImage) -> Result<Plan> {
         config.firmware.push(Firmware {
             key: field.into(),
             source: name.into(),
-            blob: blob.clone(),
-            source_archive: archives.get(name).cloned(),
+            blob: blob.to_config()?,
+            source_archive: archives.get(name).map(Digest::to_config).transpose()?,
         });
         Ok(())
     })?;
@@ -738,7 +738,7 @@ fn plan(image: &NewImage) -> Result<Plan> {
         config.media.push(Medium {
             id: id.clone(),
             source: format!("assets/{id}.img"),
-            head: d.digest.clone(),
+            head: d.digest.to_config()?,
             name: None,
             policy: Policy::Journal,
             geometry: Geometry {

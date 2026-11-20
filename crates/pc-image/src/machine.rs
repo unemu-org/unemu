@@ -773,7 +773,11 @@ fn changes(store: &Store, id: &str, image: &Descriptor) -> Result<(Vec<Change>, 
     changes.extend(inserted);
     let cmos = match &config.nvram {
         Some(nvram) if matches!(nvram.mode, NvramMode::Journal) => {
-            let d = crate::descriptor(&manifest.layers, &nvram.head, CMOS)?;
+            let d = crate::descriptor(
+                &manifest.layers,
+                &crate::StoreDigest::store(&nvram.head)?,
+                CMOS,
+            )?;
             let base = store.read_verified(&d, 64)?;
             let current = current_cmos(&store.workspace_path(id)?, &base)?;
             current.is_none_or(|bytes| bytes[..] != base[..])

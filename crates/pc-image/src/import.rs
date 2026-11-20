@@ -716,8 +716,10 @@ pub fn import_machine(
         config.firmware.push(Firmware {
             key: field.into(),
             source,
-            blob: b.decoded_digest()?,
-            source_archive: archive.map(|e| e.archive.decoded_digest()).transpose()?,
+            blob: b.decoded_digest()?.to_config()?,
+            source_archive: archive
+                .map(|e| e.archive.decoded_digest()?.to_config())
+                .transpose()?,
         });
         layers.push(b);
         if let Some(e) = archive {
@@ -759,7 +761,7 @@ pub fn import_machine(
             config.media.push(Medium {
                 id: id.clone(),
                 source: format!("assets/{id}.img"),
-                head: d.decoded_digest()?,
+                head: d.decoded_digest()?.to_config()?,
                 name,
                 policy: Policy::from_write(write),
                 geometry: Geometry::of_medium(drive.kind, d.decoded_size()?)?,
@@ -832,7 +834,7 @@ pub fn import_machine(
         config.nvram = Some(Nvram {
             mode,
             source,
-            head: d.decoded_digest()?,
+            head: d.decoded_digest()?.to_config()?,
         });
         layers.push(d);
     }

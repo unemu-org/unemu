@@ -5969,7 +5969,7 @@ Beads that edit the same files go one after the other, in either order:
     row.size)` through the firmware and CMOS rows, which S3 fills and does
     not read yet.
 
-**S4. `pc-config`: the image config and its codec move.**
+**S4. `pc-config`: the image config and its codec move.** **Done.**
 
 - **Scope.** Move to `pc_config::image` the model of `lib.rs` with public
   fields, `medium_id`, `firmware_images`, `drive_tables`, `unit`,
@@ -5989,6 +5989,70 @@ Beads that edit the same files go one after the other, in either order:
   digest are the same before and after; a new test pins one image digest
   if none is pinned. Name proof. Layer proof; `pc-config` still has no
   store dependency. `pc-image`'s tests pass unchanged.
+- **As landed.** `crates/pc-config/src/image/` holds `mod.rs` (the model
+  with public fields: `Config` with `Config::decode` and `Config::encode`,
+  `Firmware`, `Medium`, `Slot`, `Nvram`, `NvramMode`, `Policy` with
+  `from_write` and `write`, `Geometry` with `of`, `of_medium` and `fits`;
+  `firmware_images`, `drive_tables`, `unit`, `validate_bios`, and the
+  private deserializer `medium_id`;
+  the error `image::Error` with `Parse`, `Lower` and `Invalid`, whose words are
+  `pc-image`'s), `codec.rs` (S3's codec half: `lower`, `Lowered`,
+  `ContentRow`, `check_media_fields`, `check_slot`), `encode.rs` and
+  `defaults.rs` (moved whole but for their import paths and two doc
+  comments) and `tests.rs`. The
+  digest is `pc_config::image::Digest`, 32 bytes, read and written as
+  `sha256:` and 64 lowercase hex digits with the store's refusal sentence, so
+  its order is the store's and a config's bytes are the same whichever crate
+  decodes it. `ContentRow` is `{ sha256: [u8; 32], size }`, keyed by that
+  digest; the codec opens a bound ROM or CMOS image with
+  `ContentSource::open(row.sha256, row.size)` and takes `Content::Bytes` or
+  reads a `Content::Reader` whole; content of another length than its row,
+  as bytes or as a reader, is refused before it is read (a test with a lying
+  source). For S5: the codec puts no PC size limit on `row.size`; on the
+  store's path `bound` holds it, but on the core's path the row sizes come
+  from the launch document, so S5 must bound them. `pc-config` gains `unemu-core-api`, and
+  `pc-image` gains `pc-config` and `unemu-core-api` (no new external crate;
+  three lines of the lock file). Two things differ from the
+  plan's words: `firmware_images` and `drive_tables` are generic over the
+  caller's error type (`E: From<image::Error>`), and `pc-image` keeps
+  private wrappers of them, of `unit`, of `decode` and of `validate_bios` (the
+  last over its test-only firmware permission), so its modules call them as
+  before; and the digest conversion at `pc-image`'s edge (`StoreDigest::store`,
+  `ConfigDigest::to_config`, `lib.rs`) goes through the text form and so returns
+  a `Result`, since `image_store::Digest` has no public constructor from bytes
+  (it never fails: both sides check the same form). `pc-image` keeps the
+  store half and every store operation; `prepare` calls
+  `pc_config::image::lower` with a `StoreContent`, a `ContentSource` over
+  `BlobSource` keyed by the rows' SHA-256 that refuses an unbound digest, a
+  payload without a PC limit and a size that differs from the row. Its
+  `Error` is unchanged; `From<image::Error>` maps `Parse` to
+  `Load(LoadError::Parse)`, `Lower` to `Lower` and `Invalid` to `Invalid`, so
+  `needs_firmware` and every refusal's text are as before. `disk::bases` is
+  keyed by the config's digest. `pc_image::Policy` is a re-export.
+  `template.rs` and `compat.rs` needed no change. Tests: the S3 test of the
+  codec's refusals from its rows and platform argument moved to
+  `pc_config::image::tests` over content in memory (no store, no
+  descriptor); a new test there holds the digest's text form, its refusal
+  sentence and its round trip. MEASURED: byte identity by a throw-away probe
+  over `cargo test --workspace --release -- --include-ignored` before and
+  after, logging the SHA-256 of every config `pc-image` encodes (import,
+  create, revision, publication), of every decoded config encoded again (at
+  each `prepare` and each resolved image), and every `prepare` outcome (the
+  lowered machine, the closure and the config, or the refusal's words) keyed
+  by its config and descriptors: 677 distinct lines before, the same 677
+  after. The pinned template digests (`unemu/open-at`, `unemu/open-at-games`
+  in `crates/pc-image/tests/template.rs`) hold, so no new pin was needed. The
+  name proof holds: the test lists are equal but for the moved test (from
+  `pc_image` `provider::tests` to `pc_config` `image::tests`) and the new
+  ones (the digest test, and the length test of the review's fix;
+  `pc-config` 25 to 28 unit tests, `pc-image` 62 to 61). The layer proof
+  holds with the allow list and the external list unchanged; a planted
+  `pc-config → image-store` fails the check; `cargo tree -p pc-config`
+  declares `assembly`, `serde`, `sha2`, `thiserror`, `toml` and
+  `unemu-core-api` only, with no `image-store`, `machine-file` or
+  `serde-saphyr` in its tree. `cargo test --workspace --release --
+  --include-ignored` passes whole after the bead, the slow goldens and every
+  doc test among them.
 
 **S5. `pc-config`: the launch document.**
 
