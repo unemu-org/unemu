@@ -83,8 +83,104 @@ pub fn start_new(workspace: &Workspace<'_>, tag: &str) -> Result<assembly::Machi
 pub fn pinned_image(workspace: &Workspace<'_>) -> Result<Digest> {
     Ok(session(workspace)?.image.digest)
 }
+/// A start's launch document and the host paths behind its logical keys.
+/// Small content travels with it so an edit never reopens a store blob.
+/// See `backlog/docs/design/core-contract.md` §14.3.
+#[derive(Clone, Debug)]
+pub struct PreparedLaunch {
+    pub(crate) document: pc_config::launch::Launch,
+    pub(crate) small: std::collections::BTreeMap<[u8; 32], Vec<u8>>,
+    pub(crate) sources: std::collections::BTreeMap<std::path::PathBuf, std::path::PathBuf>,
+    pub(crate) memory: std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+    pub(crate) records: std::collections::BTreeMap<String, std::path::PathBuf>,
+}
+impl PreparedLaunch {
+    /// The document this start derives its machine from.
+    pub fn document(&self) -> &pc_config::launch::Launch {
+        &self.document
+    }
+
+    pub(crate) fn prune(&mut self) {
+        let document = &mut self.document;
+        document.config.media.retain(|m| {
+            document
+                .config
+                .slots
+                .iter()
+                .any(|s| s.catalogue.contains(&m.id))
+        });
+        document.records.retain(|r| {
+            document
+                .config
+                .media
+                .iter()
+                .any(|m| m.id == r.medium && m.policy == Policy::Journal)
+                || (r.medium == pc_config::launch::CMOS_MEDIUM
+                    && document
+                        .config
+                        .nvram
+                        .as_ref()
+                        .is_some_and(|n| matches!(n.mode, NvramMode::Journal)))
+        });
+        document.content.retain(|r| {
+            document.config.firmware.iter().any(|f| f.blob == r.digest)
+                || document.config.media.iter().any(|m| m.head == r.digest)
+                || document
+                    .config
+                    .nvram
+                    .as_ref()
+                    .is_some_and(|n| n.head == r.digest)
+        });
+        self.sources.retain(|source, _| {
+            document
+                .config
+                .media
+                .iter()
+                .any(|m| source == std::path::Path::new(&m.source))
+                || document
+                    .config
+                    .firmware
+                    .iter()
+                    .any(|f| source == std::path::Path::new(&f.source))
+                || document
+                    .config
+                    .nvram
+                    .as_ref()
+                    .is_some_and(|n| source == std::path::Path::new(&n.source))
+        });
+        self.memory
+            .retain(|source, _| self.sources.contains_key(source));
+        self.records
+            .retain(|name, _| document.records.iter().any(|r| &r.name == name));
+        self.small
+            .retain(|hash, _| document.content.iter().any(|r| &r.sha256 == hash));
+    }
+}
+impl unemu_core_api::ContentSource for PreparedLaunch {
+    fn open(
+        &self,
+        sha256: &[u8; 32],
+        size: u64,
+    ) -> std::result::Result<unemu_core_api::Content, unemu_core_api::Error> {
+        let bytes = self
+            .small
+            .get(sha256)
+            .filter(|b| b.len() as u64 == size)
+            .ok_or_else(|| {
+                unemu_core_api::Error::new(
+                    unemu_core_api::ErrorKind::Content,
+                    "unbound small content",
+                )
+            })?;
+        Ok(unemu_core_api::Content::Bytes(bytes.clone()))
+    }
+}
+
 /// Captured launch input retains verified bases through assembly.
 pub struct PreparedSession {
+    /// The document and its path bindings for a stored-image start. Synthetic
+    /// callers that supply an assembled config directly have no document.
+    pub launch: Option<PreparedLaunch>,
     pub machine: assembly::MachineConfig,
     pub bases: std::collections::BTreeMap<std::path::PathBuf, VerifiedBase>,
     pub image: Digest,
@@ -222,7 +318,7 @@ fn prepare_selected(
         }
     }
     let directory = workspace.path().join("media");
-    let (image, machine, (bases, zero)) = crate::provider::resolve_pinned(
+    let (image, machine, (bases, zero), launch) = crate::provider::resolve_pinned(
         store,
         &state.image,
         &directory,
@@ -239,6 +335,7 @@ fn prepare_selected(
     fs::create_dir_all(&directory)?;
     fs::File::open(workspace.path())?.sync_all()?;
     Ok(PreparedSession {
+        launch: Some(launch),
         machine,
         bases,
         image: state.image.digest,
@@ -918,6 +1015,7 @@ fn save_retention(
 /// Thread-transferable launch inputs keep verified file descriptors instead of
 /// the execution thread's reference-counted sector readers.
 pub struct SessionTransfer {
+    launch: Option<PreparedLaunch>,
     machine: assembly::MachineConfig,
     image: Digest,
     bases: std::collections::BTreeMap<std::path::PathBuf, Transfer>,
@@ -933,6 +1031,30 @@ enum Transfer {
     Memory(Vec<u8>),
 }
 impl PreparedSession {
+    /// Apply an edit and derive the machine before publishing either value.
+    /// A refused document leaves the previous start intact.
+    pub fn edit_launch(&mut self, edit: impl FnOnce(&mut pc_config::launch::Launch)) -> Result<()> {
+        self.update_launch(|input| {
+            edit(&mut input.document);
+            Ok(())
+        })
+    }
+
+    pub(crate) fn update_launch(
+        &mut self,
+        edit: impl FnOnce(&mut PreparedLaunch) -> Result<()>,
+    ) -> Result<()> {
+        let mut launch = self
+            .launch
+            .clone()
+            .ok_or_else(|| invalid("this session has no launch document"))?;
+        edit(&mut launch)?;
+        let machine = crate::provider::lower_session(&launch)?;
+        self.launch = Some(launch);
+        self.machine = machine;
+        Ok(())
+    }
+
     /// Duplicate already verified handles; paths are never reopened during transfer.
     pub fn into_transfer(self) -> Result<SessionTransfer> {
         let mut bases = std::collections::BTreeMap::new();
@@ -964,6 +1086,7 @@ impl PreparedSession {
             bases.insert(path, transfer);
         }
         Ok(SessionTransfer {
+            launch: self.launch,
             machine: self.machine,
             image: self.image,
             bases,
@@ -996,6 +1119,7 @@ impl SessionTransfer {
             zero.insert(path, std::rc::Rc::new(chain));
         }
         Ok(PreparedSession {
+            launch: self.launch,
             machine: self.machine,
             image: self.image,
             bases,

@@ -645,16 +645,15 @@ pub(crate) fn lower_revision(
 }
 
 /// A machine's settings overlay on an image configuration: the configuration
-/// it makes, its lowered machine and the package firmware it binds. A stored
+/// it makes, the recomputed CMOS and the package firmware it binds. A stored
 /// CMOS image without a journal is copied afresh at every Start, so its SETUP
 /// fields are recomputed here for the overlay (`cmos`, when they change) and
-/// the lowered machine starts from those bytes; a system BIOS of another CMOS
+/// the launch binds those bytes; a system BIOS of another CMOS
 /// layout starts from the bytes derived from the configuration instead. A
 /// journaled CMOS received the recomputed or derived bytes in its journal
 /// when the settings changed, so it needs nothing here.
 pub(crate) struct Overlay {
     pub config: Config,
-    pub machine: assembly::MachineConfig,
     pub cmos: Option<[u8; 64]>,
     pub bound: Vec<Bound>,
 }
@@ -718,7 +717,6 @@ pub(crate) fn overlay(
     }
     Ok(Overlay {
         config,
-        machine: lowered,
         cmos,
         bound,
     })

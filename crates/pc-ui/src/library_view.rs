@@ -4829,6 +4829,7 @@ pub(super) mod tests {
         let path = temp.path().join("disk.img");
         std::fs::write(&path, [0u8; 512]).unwrap();
         let make = || pc_image::workspace::PreparedSession {
+            launch: None,
             machine: assembly::bios(vec![0xf4; 32768], None),
             image: Digest::of(b"synthetic image"),
             bases: BTreeMap::from([(path.clone(), media::VerifiedBase::open(&path).unwrap())]),
@@ -4870,6 +4871,7 @@ pub(super) mod tests {
             .set_times(std::fs::FileTimes::new().set_modified(modified))
             .unwrap();
         let prepared = pc_image::workspace::PreparedSession {
+            launch: None,
             machine: assembly::bios(vec![0xf4; 32768], None),
             image: Digest::of(b"synthetic"),
             bases: BTreeMap::from([(path.clone(), base)]),

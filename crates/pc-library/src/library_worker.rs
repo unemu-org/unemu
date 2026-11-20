@@ -2496,6 +2496,7 @@ mod tests {
                 fs::create_dir(library).unwrap();
             }
             Ok(pc_image::workspace::PreparedSession {
+                launch: None,
                 machine: assembly::bios(vec![0xf4; 32768], None),
                 image: image.digest.clone(),
                 bases: if self.phase == 1 {

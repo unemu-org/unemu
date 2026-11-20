@@ -229,6 +229,14 @@ pub fn lower(
     platform_known: bool,
     options: assembly::AssemblyOptions,
 ) -> Result<Lowered> {
+    if config.media.iter().any(|medium| {
+        medium
+            .name
+            .as_ref()
+            .is_some_and(|name| name.contains(['/', '\\', '\0']) || name.is_empty())
+    }) {
+        return Err(invalid("invalid medium name"));
+    }
     let bound = bind(&config, rows, platform_known)?;
     let machine = finish(&config, rows, bound, Some(content), options, None)?;
     Ok(Lowered { config, machine })
@@ -325,10 +333,11 @@ pub(crate) fn bind(
             {
                 return Err(invalid("medium geometry differs from payload length"));
             }
+            // Launch-only labels keep the text accepted by live inserts.
             if medium
                 .name
                 .as_ref()
-                .is_some_and(|n| n.contains(['/', '\\', '\0']) || n.is_empty())
+                .is_some_and(|n| n.contains('\0') || n.is_empty())
             {
                 return Err(invalid("invalid medium name"));
             }

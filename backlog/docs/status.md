@@ -5,6 +5,19 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — Stored PC starts derive their machine from a launch:**
+  (`upc-dfs.43.6`, stage B step S6; design/core-contract.md §14.3).
+  `pc-image` builds the effective launch after Settings, with verified flat-content
+  identities and session retention. One lowering and path translation derives the
+  assembly config; pending inserts edit the launch, and edits install the document
+  and machine together only after successful lowering. Thread transfer preserves both.
+  Stored-image starts keep their machine, base keys, journal paths and retired counts;
+  unjournalled CMOS recomputation is represented by launch-only content. Invalid core
+  record ids (including the reserved `kept-` prefix) are refused at start even for
+  read-only media. Catalogue names retain media-set display labels with slashes, and
+  compressed floppies select inline bytes or a journal key from the launch's policy.
+  Assembly and front-end start callers are unchanged. Created disks and kept catalogues
+  still use their existing path; their launch edits belong to S7. No crate-map change.
 - **2026-11-20 — Templates reproduce the published recipe-built packages and sets:**
   `pc_image::template` builds its three firmware packages and three FreeDOS
   sets through the recipe builder from the recipes, work file and locks in

@@ -136,6 +136,16 @@ pub(crate) fn prepare(
     descriptors: &[Descriptor],
     blobs: &dyn BlobSource,
 ) -> Result<Prepared> {
+    // A launch also carries live-insert labels, but stored images keep
+    // their original name restrictions.
+    if config.media.iter().any(|medium| {
+        medium
+            .name
+            .as_ref()
+            .is_some_and(|name| name.contains(['/', '\\', '\0']) || name.is_empty())
+    }) {
+        return Err(invalid("invalid medium name"));
+    }
     let stored = store_half(&config, descriptors, blobs)?;
     let launch = validation_launch(&config, &stored);
     let lowered = launch::lower(&launch, &stored.content, firmware_options())?;
@@ -522,7 +532,7 @@ pub(crate) fn load_pinned(
     })
 }
 /// `settings`, a machine's overlay of hardware tables, replaces the image's
-/// for this launch; media, firmware and CMOS bases stay the image's.
+/// for this launch; disk bases stay the image's.
 pub(crate) fn resolve_pinned(
     store: &Store,
     descriptor: &Descriptor,
@@ -533,15 +543,13 @@ pub(crate) fn resolve_pinned(
     image_store::ResolvedImage,
     assembly::MachineConfig,
     LaunchBases,
+    crate::workspace::PreparedLaunch,
 )> {
+    use media::SectorSource;
     let resolved = load_pinned(store, descriptor, false, true)?;
     let image = resolved.image;
-    let mut prepared = match settings {
-        None => Prepared {
-            config: resolved.config,
-            machine: resolved.machine,
-            references: Vec::new(),
-        },
+    let (config, descriptors, cmos) = match settings {
+        None => (resolved.config, image.manifest.layers.clone(), None),
         Some(machine) => {
             let packages = crate::revision::Packages::new(store);
             let overlay = crate::revision::overlay(
@@ -550,91 +558,108 @@ pub(crate) fn resolve_pinned(
                 &image.manifest.layers,
                 machine,
             )?;
-            Prepared {
-                config: overlay.config,
-                machine: overlay.machine,
-                references: Vec::new(),
-            }
+            let descriptors = image
+                .manifest
+                .layers
+                .iter()
+                .cloned()
+                .chain(overlay.firmware())
+                .collect();
+            (overlay.config, descriptors, overlay.cmos)
         }
     };
+    let stored = store_half(&config, &descriptors, store)?;
+    let mut document = validation_launch(&config, &stored);
+    let mut small = BTreeMap::new();
+    for (sha256, descriptor) in &stored.content.small {
+        let size = descriptor.decoded_size()?;
+        if let Content::Bytes(bytes) = stored
+            .content
+            .open(sha256, size)
+            .map_err(|e| invalid(e.to_string()))?
+        {
+            small.insert(*sha256, bytes);
+        }
+    }
     let bases = resolved.bases;
-    let record = crate::ImportRecord::read(store, &image.image.digest)?;
-    let retention = |id: &str| {
-        overrides
-            .and_then(|map| map.get(id).copied())
+    for medium in &document.config.media {
+        let disk = bases
+            .get(&medium.head)
+            .ok_or_else(|| invalid("missing prepared disk"))?;
+        let row = document
+            .content
+            .iter_mut()
+            .find(|r| r.digest == medium.head)
+            .ok_or_else(|| invalid("missing content row"))?;
+        row.sha256 = disk.base.identity().base_digest;
+        row.size = disk.base.byte_len();
+    }
+    // A copied CMOS is recomputed for Settings at each start. Give those
+    // bytes their own binding so lowering the document is the whole answer.
+    if let Some(bytes) = cmos {
+        let digest = codec::Digest::of(&bytes);
+        let nvram = document
+            .config
+            .nvram
+            .as_mut()
+            .ok_or_else(|| invalid("missing CMOS binding"))?;
+        nvram.head = digest;
+        if !document.content.iter().any(|r| r.digest == digest) {
+            document.content.push(launch::ContentRow {
+                digest,
+                sha256: digest.sha256(),
+                size: bytes.len() as u64,
+            });
+        }
+        small.insert(digest.sha256(), bytes.to_vec());
+    }
+    let imported = crate::ImportRecord::read(store, &image.image.digest)?;
+    for row in &mut document.records {
+        row.keep_generations = overrides
+            .and_then(|map| map.get(&row.medium).copied())
             .or_else(|| {
-                record
+                imported
                     .as_ref()
-                    .and_then(|r| r.generations.iter().find(|g| g.medium == id))
+                    .and_then(|r| r.generations.iter().find(|g| g.medium == row.medium))
                     .and_then(|g| g.keep_generations)
             })
-            .unwrap_or(assembly::WriteMode::DEFAULT_KEEP_GENERATIONS)
-    };
-    let base_path = |digest: &Digest| -> Result<std::path::PathBuf> {
-        Ok(store.resolved_file_path(&image, digest)?)
-    };
-    for (drive, slot) in prepared
-        .machine
-        .drives
-        .iter_mut()
-        .zip(&prepared.config.slots)
-    {
-        if let Some(list) = &mut drive.media {
-            for (entry, id) in list.entries.iter_mut().zip(&slot.catalogue) {
-                let m = prepared
-                    .config
-                    .media
-                    .iter()
-                    .find(|m| &m.id == id)
-                    .ok_or_else(|| invalid("missing medium"))?;
-                let disk = bases
-                    .get(&m.head)
-                    .ok_or_else(|| invalid("missing prepared disk"))?;
-                entry.write = m.policy.write(session.join(format!("{}.upfj", m.id)));
-                if let assembly::WriteMode::Journal {
-                    keep_generations, ..
-                } = &mut entry.write
-                {
-                    *keep_generations = retention(&m.id);
-                }
-                entry.image = source(store, disk, &entry.write)?;
-                entry.expected_sha256 = Some(hash_array(&disk.identity)?);
-            }
-        } else {
-            let m = prepared
-                .config
-                .media
-                .iter()
-                .find(|m| slot.catalogue.first() == Some(&m.id))
-                .ok_or_else(|| invalid("missing medium"))?;
-            drive.write = m.policy.write(session.join(format!("{}.upfj", m.id)));
-            if let assembly::WriteMode::Journal {
-                keep_generations, ..
-            } = &mut drive.write
-            {
-                *keep_generations = retention(&m.id);
-            }
-            let disk = bases
-                .get(&m.head)
-                .ok_or_else(|| invalid("missing prepared disk"))?;
-            drive.image = source(store, disk, &drive.write)?;
-            drive.expected_sha256 = Some(hash_array(&disk.identity)?);
+            .unwrap_or(assembly::WriteMode::DEFAULT_KEEP_GENERATIONS);
+    }
+    let mut sources = BTreeMap::new();
+    let mut memory = BTreeMap::new();
+    for medium in &document.config.media {
+        let disk = bases
+            .get(&medium.head)
+            .ok_or_else(|| invalid("missing prepared disk"))?;
+        sources.insert(medium.source.clone().into(), base_key(store, disk));
+        if disk.path.is_none() {
+            let mut bytes = vec![0; disk.base.byte_len() as usize];
+            disk.base.read_range(0, &mut bytes)?;
+            memory.insert(medium.source.clone().into(), bytes);
         }
     }
-    if let Some(n) = &prepared.config.nvram {
+    if let Some(n) = &document.config.nvram {
         if matches!(n.mode, NvramMode::Journal) {
-            for device in &mut prepared.machine.devices {
-                if let assembly::DeviceKind::Rtc(rtc) = &mut device.kind {
-                    rtc.nvram = assembly::NvramSource::Journal {
-                        image: base_path(&n.head.store()?)?,
-                        expected_sha256: n.head.sha256(),
-                        journal: session.join("cmos.upfj"),
-                        keep_generations: retention("cmos"),
-                    };
-                }
-            }
+            sources.insert(
+                n.source.clone().into(),
+                store.resolved_file_path(&image, &n.head.store()?)?,
+            );
         }
     }
+    let records = document
+        .records
+        .iter()
+        .map(|r| (r.name.clone(), session.join(&r.name)))
+        .collect();
+    let mut launch = crate::workspace::PreparedLaunch {
+        document,
+        small,
+        sources,
+        memory,
+        records,
+    };
+    launch.prune();
+    let machine = lower_session(&launch)?;
     let verified = bases
         .values()
         .map(|disk| (base_key(store, disk), disk.base.clone()))
@@ -643,7 +668,86 @@ pub(crate) fn resolve_pinned(
         .values()
         .filter_map(|disk| Some((base_key(store, disk), disk.zero.clone()?)))
         .collect();
-    Ok((image, prepared.machine, (verified, zero)))
+    Ok((image, machine, (verified, zero), launch))
+}
+
+/// Translate only the keys the codec reports. All hardware, catalogue and
+/// retention choices have already been made by lowering the document.
+pub(crate) fn lower_session(
+    input: &crate::workspace::PreparedLaunch,
+) -> Result<assembly::MachineConfig> {
+    for medium in &input.document.config.media {
+        if !unemu_core_api::is_record_name(&format!("{}{}", medium.id, launch::RECORD_SUFFIX))
+            || medium.id.starts_with(unemu_core_api::KEPT_RECORD_PREFIX)
+        {
+            return Err(invalid(format!(
+                "the medium id {:?} cannot form a core record name",
+                medium.id
+            )));
+        }
+    }
+    let lowered = launch::lower(&input.document, input, firmware_options())?;
+    let mut machine = lowered.machine;
+    let source = |image: &mut assembly::ImageSource, write: &assembly::WriteMode| -> Result<()> {
+        if let assembly::ImageSource::File(key) = image {
+            if !lowered.bases.contains_key(key) {
+                return Err(invalid("unbound launch base key"));
+            }
+            let path = input
+                .sources
+                .get(key)
+                .ok_or_else(|| invalid("missing launch base path"))?;
+            *image = match (input.memory.get(key), write) {
+                (Some(bytes), mode) if !matches!(mode, assembly::WriteMode::Journal { .. }) => {
+                    assembly::ImageSource::Inline(bytes.clone())
+                }
+                _ => assembly::ImageSource::File(path.clone()),
+            };
+        }
+        Ok(())
+    };
+    let record = |key: &mut std::path::PathBuf| -> Result<()> {
+        let name = lowered
+            .records
+            .get(key)
+            .ok_or_else(|| invalid("unbound launch record key"))?;
+        *key = input
+            .records
+            .get(name)
+            .ok_or_else(|| invalid("missing launch record path"))?
+            .clone();
+        Ok(())
+    };
+    let write = |write: &mut assembly::WriteMode| -> Result<()> {
+        if let assembly::WriteMode::Journal { path, .. } = write {
+            record(path)?;
+        }
+        Ok(())
+    };
+    for drive in &mut machine.drives {
+        source(&mut drive.image, &drive.write)?;
+        write(&mut drive.write)?;
+        if let Some(list) = &mut drive.media {
+            for medium in &mut list.entries {
+                source(&mut medium.image, &medium.write)?;
+                write(&mut medium.write)?;
+            }
+        }
+    }
+    for device in &mut machine.devices {
+        if let assembly::DeviceKind::Rtc(rtc) = &mut device.kind {
+            if let assembly::NvramSource::Journal { image, journal, .. } = &mut rtc.nvram {
+                let mut base = assembly::ImageSource::File(image.clone());
+                source(&mut base, &assembly::WriteMode::ReadOnly)?;
+                let assembly::ImageSource::File(path) = base else {
+                    return Err(invalid("CMOS base must be a file"));
+                };
+                *image = path;
+                record(journal)?;
+            }
+        }
+    }
+    Ok(machine)
 }
 /// The verified-base key assembly looks a medium up by: its file, or for a
 /// compressed floppy held in memory a path under `cache/in-memory` that is
@@ -655,27 +759,6 @@ fn base_key(store: &Store, disk: &crate::disk::Disk) -> std::path::PathBuf {
             .root()
             .join("cache/in-memory")
             .join(disk.identity.hex())
-    })
-}
-/// A file-backed medium is opened by path. A compressed floppy stays in
-/// memory: a journal needs a file-shaped source, so it names the in-memory
-/// key; read-only and volatile drives receive the verified decoded bytes.
-fn source(
-    store: &Store,
-    disk: &crate::disk::Disk,
-    write: &assembly::WriteMode,
-) -> Result<assembly::ImageSource> {
-    use media::SectorSource;
-    Ok(match (&disk.path, write) {
-        (Some(path), _) => assembly::ImageSource::File(path.clone()),
-        (None, assembly::WriteMode::Journal { .. }) => {
-            assembly::ImageSource::File(base_key(store, disk))
-        }
-        (None, _) => {
-            let mut bytes = vec![0; disk.base.byte_len() as usize];
-            disk.base.read_range(0, &mut bytes)?;
-            assembly::ImageSource::Inline(bytes)
-        }
     })
 }
 /// Publish `target` as a compressed copy of the PC machine at `source`. The
@@ -1013,5 +1096,483 @@ inserted = "HEAD_C"
             refusal(&format!("{FLOPPY_SLOT}{ide}")),
             "invalid PC image: IDE needs exactly one inserted medium"
         );
+    }
+    fn test_blob(store: &Store, kind: &str, bytes: &[u8]) -> Descriptor {
+        let blob = store.import(bytes, None).unwrap();
+        Descriptor::new(kind, blob.digest, blob.size)
+    }
+
+    fn start_fixture(
+        mutate: impl FnOnce(&mut Config),
+    ) -> Option<(image_store::test_support::TempDir, Store)> {
+        let (mut config, mut descriptors, blobs) = image()?;
+        mutate(&mut config);
+        let temp = image_store::test_support::TempDir::new("launch-start");
+        let store = Store::open(temp.path().join("store")).unwrap();
+        for bytes in &blobs {
+            store.import(bytes.as_slice(), None).unwrap();
+        }
+        descriptors.push(test_blob(&store, mt::METADATA, crate::EMPTY_METADATA));
+        let bytes = config.encode().unwrap();
+        let blob = store.import(bytes.as_bytes(), None).unwrap();
+        let manifest = image_store::Manifest::new_with_types(
+            PLATFORM,
+            Descriptor::new(mt::CONFIG, blob.digest, blob.size),
+            descriptors,
+            PAYLOAD_TYPES,
+        )
+        .unwrap();
+        let image = store
+            .import_manifest_with_types(&manifest, PAYLOAD_TYPES)
+            .unwrap();
+        store
+            .update_tag("test:launch", &image, None, &PcProvider)
+            .unwrap();
+        Some((temp, store))
+    }
+
+    #[test]
+    fn launch_edits_rederive_catalogues_and_retention_and_survive_transfer() {
+        let Some((_temp, store)) = start_fixture(|_| {}) else {
+            return;
+        };
+        let owner = store.workspace("launch").unwrap();
+        let mut session = crate::workspace::prepare_start(&owner, "test:launch", false).unwrap();
+        let before_bases: Vec<_> = session.bases.keys().cloned().collect();
+        let original = session.machine.clone();
+        session
+            .edit_launch(|document| {
+                document.config.media[0].name = Some("Launch disk".into());
+                document.config.slots[0].catalogue_mode = true;
+                document.config.slots[0].inserted = None;
+                for row in &mut document.records {
+                    row.keep_generations = 7;
+                }
+            })
+            .unwrap();
+        assert_ne!(session.machine, original);
+        let list = session.machine.drives[0].media.as_ref().unwrap();
+        assert!(list.empty);
+        assert_eq!(list.entries[0].name, "Launch disk");
+        assert!(
+            matches!(&list.entries[0].write, assembly::WriteMode::Journal { path, keep_generations: 7 } if path == &owner.path().join("media/a.upfj"))
+        );
+        assert!(session.machine.devices.iter().any(|d| matches!(&d.kind, assembly::DeviceKind::Rtc(rtc) if matches!(&rtc.nvram, assembly::NvramSource::Journal { keep_generations: 7, .. }))));
+        assert_eq!(
+            session.bases.keys().cloned().collect::<Vec<_>>(),
+            before_bases
+        );
+        let expected = session.machine.clone();
+        let document = launch::encode(session.launch.as_ref().unwrap().document()).unwrap();
+        let transfer = session.into_transfer().unwrap();
+        let mut restored =
+            std::thread::spawn(move || transfer.restore().unwrap().into_transfer().unwrap())
+                .join()
+                .unwrap()
+                .restore()
+                .unwrap();
+        assert_eq!(restored.machine, expected);
+        assert_eq!(
+            launch::encode(restored.launch.as_ref().unwrap().document()).unwrap(),
+            document
+        );
+        restored
+            .edit_launch(|document| {
+                document.config.slots[0].inserted = Some("a".into());
+            })
+            .unwrap();
+        assert!(!restored.machine.drives[0].media.as_ref().unwrap().empty);
+    }
+
+    #[test]
+    fn a_refused_launch_edit_keeps_both_the_document_and_the_machine() {
+        let Some((_temp, store)) = start_fixture(|_| {}) else {
+            return;
+        };
+        let owner = store.workspace("launch").unwrap();
+        let mut session = crate::workspace::prepare_start(&owner, "test:launch", false).unwrap();
+        let machine = session.machine.clone();
+        let document = launch::encode(session.launch.as_ref().unwrap().document()).unwrap();
+        let error = session
+            .edit_launch(|document| {
+                document.records[0].keep_generations = 0;
+            })
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("at least one generation"),
+            "{error}"
+        );
+        assert_eq!(session.machine, machine);
+        assert_eq!(
+            launch::encode(session.launch.as_ref().unwrap().document()).unwrap(),
+            document
+        );
+    }
+
+    #[test]
+    fn a_start_refuses_medium_ids_that_cannot_name_core_records_even_when_readonly() {
+        for id in ["-a", "kept-a"] {
+            let Some((_temp, store)) = start_fixture(|config| {
+                config.media[0].id = id.into();
+                config.media[0].policy = Policy::Readonly;
+                config.slots[0].catalogue = vec![id.into()];
+                config.slots[0].inserted = Some(id.into());
+            }) else {
+                return;
+            };
+            let owner = store.workspace("launch").unwrap();
+            let error = crate::workspace::prepare_start(&owner, "test:launch", false)
+                .err()
+                .unwrap();
+            assert_eq!(
+                error.to_string(),
+                format!("invalid PC image: the medium id {id:?} cannot form a core record name")
+            );
+            assert!(owner.read("session.toml").unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn pending_inserts_edit_the_launch_and_keep_the_previous_catalogue_and_journal_paths() {
+        use image_store::media_set;
+        let Some((_temp, store)) = start_fixture(|config| {
+            config.media[0].source = "assets/insert-0.img".into();
+        }) else {
+            return;
+        };
+        let blob = store.import(vec![0x42; 368_640].as_slice(), None).unwrap();
+        let set_config = media_set::Config {
+            schema: 1,
+            platform: PLATFORM.into(),
+            extras: Vec::new(),
+            media: ["one", "two"]
+                .into_iter()
+                .map(|id| media_set::Medium {
+                    id: id.into(),
+                    label: format!("Disk {id} / side \\"),
+                    format: crate::media_set::format("360K").unwrap(),
+                    blob: blob.digest.clone(),
+                })
+                .collect(),
+        };
+        let bytes = set_config.encode().unwrap();
+        let config = store.import(bytes.as_slice(), None).unwrap();
+        let manifest = image_store::Manifest::new_media_set(
+            PLATFORM,
+            Descriptor::new(mt::MEDIA_SET_CONFIG, config.digest, config.size),
+            vec![
+                Descriptor::new(mt::FLOPPY, blob.digest.clone(), blob.size),
+                test_blob(&store, mt::METADATA, crate::EMPTY_METADATA),
+            ],
+        )
+        .unwrap();
+        let set = store.import_manifest(&manifest).unwrap();
+        for (all, journal) in [(false, false), (false, true), (true, true)] {
+            let id = crate::machine::create_from_tag(&store, "test:launch", None, None).unwrap();
+            let insert = image_store::machine::PendingInsert {
+                drive: "A:".into(),
+                set: set.clone(),
+                reference: "test:set".into(),
+                medium: "two".into(),
+                all,
+                journal,
+            };
+            crate::machine::set_pending_insert(&store, &id, "A:", Some(insert)).unwrap();
+            let owner = crate::machine::own(&store, &id).unwrap();
+            let original = crate::workspace::prepare_start(&owner, "test:launch", false).unwrap();
+            let mut expected = original.machine.clone();
+            let resolved = store
+                .resolve_descriptor(
+                    &set,
+                    &media_set::Validator(&crate::media_set::PcMediaFormats),
+                )
+                .unwrap();
+            let path = store.resolved_file_path(&resolved, &blob.digest).unwrap();
+            let mut entries = Vec::new();
+            for label in if all { vec!["two", "one"] } else { vec!["two"] } {
+                entries.push(assembly::FloppyMedium {
+                    image: assembly::ImageSource::File(path.clone()),
+                    expected_sha256: Some(hash_array(&blob.digest).unwrap()),
+                    write: if journal {
+                        assembly::WriteMode::journal(
+                            owner
+                                .path()
+                                .join(format!("media/{}-{label}.upfj", set.digest.hex())),
+                        )
+                    } else {
+                        assembly::WriteMode::ReadOnly
+                    },
+                    name: format!("Disk {label} / side \\"),
+                });
+            }
+            let drive = &mut expected.drives[0];
+            entries.push(assembly::FloppyMedium {
+                image: drive.image.clone(),
+                expected_sha256: drive.expected_sha256,
+                write: drive.write.clone(),
+                name: "A: image".into(),
+            });
+            drive.media = Some(assembly::FloppyMediaList {
+                entries,
+                empty: false,
+                inserted: 0,
+            });
+            drive.image = assembly::ImageSource::Blank {
+                size: drive.kind.image_bytes(),
+            };
+            drive.expected_sha256 = None;
+            drive.write = assembly::WriteMode::Volatile;
+            let mut prepared = crate::machine::prepare(&owner).unwrap();
+            assert_eq!(prepared.session.machine, expected);
+            let document = prepared.session.launch.as_ref().unwrap().document();
+            let slot = &document.config.slots[0];
+            assert_eq!(slot.inserted.as_ref(), slot.catalogue.first());
+            assert_eq!(slot.catalogue.len(), if all { 3 } else { 2 });
+            let added = document
+                .config
+                .media
+                .iter()
+                .find(|m| Some(&m.id) == slot.inserted.as_ref())
+                .unwrap();
+            assert_eq!(added.name.as_deref(), Some("Disk two / side \\"));
+            assert!(document
+                .records
+                .iter()
+                .filter(|r| r.medium.starts_with("insert-"))
+                .all(|r| unemu_core_api::is_kept_record_name(&r.name)));
+            prepared
+                .session
+                .edit_launch(|document| {
+                    document.config.slots[0].inserted = None;
+                })
+                .unwrap();
+            assert!(
+                prepared.session.machine.drives[0]
+                    .media
+                    .as_ref()
+                    .unwrap()
+                    .empty
+            );
+        }
+    }
+
+    #[test]
+    fn stored_image_start_keeps_its_retired_count() {
+        use cpu::Cpu;
+        assert!(include_str!("../../../Cargo.lock")
+            .contains("#6cb817b86c1fbf463f7aab8c0da1ce0eec3db0b7"));
+        let Some((_temp, store)) = start_fixture(|_| {}) else {
+            return;
+        };
+        let owner = store.workspace("count").unwrap();
+        let session = crate::workspace::prepare_start(&owner, "test:launch", false).unwrap();
+        let mut assembled = assembly::assemble_with_verified_bases(
+            &session.machine,
+            &Default::default(),
+            Default::default(),
+            &session.bases,
+        )
+        .unwrap();
+        let outcome = assembled
+            .run_session(&assembly::RunPolicy::natural(
+                Some(100_000),
+                Some(1_000_000),
+            ))
+            .unwrap();
+        assert_eq!(outcome, ::machine::RunOutcome::RetiredCapReached);
+        assert_eq!(assembled.machine.cpu().retired(), 67_234);
+        assert_eq!(assembled.machine.clock().0, 162_500);
+        assembled.finish_persistence().unwrap();
+    }
+    #[test]
+    fn stored_catalogue_labels_keep_their_original_restrictions() {
+        let Some((config, descriptors, blobs)) = image() else {
+            return;
+        };
+        for label in ["Disk / side", "Disk \\ side", "", "Disk\0side"] {
+            let mut config = config.clone();
+            config.media[0].name = Some(label.into());
+            config.slots[0].catalogue_mode = true;
+            let content = Memory::new(blobs.iter().map(Vec::as_slice));
+            let stored = prepare(config.clone(), &descriptors, &content);
+            assert_eq!(
+                stored.err().map(|e| e.to_string()).as_deref(),
+                Some("invalid PC image: invalid medium name"),
+                "stored label {label:?}"
+            );
+            let lowered = codec::lower(
+                config,
+                &rows(&blobs),
+                &content,
+                true,
+                assembly::AssemblyOptions::default(),
+            );
+            assert_eq!(
+                lowered.err().map(|e| e.to_string()).as_deref(),
+                Some("invalid PC image: invalid medium name"),
+                "codec label {label:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_drive_inserts_reuse_source_keys_without_stale_compressed_bytes() {
+        use image_store::media_set;
+        let Some((_temp, store)) = start_fixture(|config| {
+            config.media[0].id = "insert-1".into();
+            config.media[0].source = "assets/insert-1.img".into();
+            config.media[0].name = Some("Disk a".into());
+            config.media[0].policy = Policy::Readonly;
+            config.slots[0].catalogue = vec!["insert-1".into()];
+            config.slots[0].inserted = Some("insert-1".into());
+            config.slots[0].catalogue_mode = true;
+            let drives = config.machine["card"][0]["drives"].as_array_mut().unwrap();
+            let mut second = drives[0].clone();
+            second["unit"] = 1.into();
+            drives.push(second);
+            let mut second = config.slots[0].clone();
+            second.unit = 1;
+            second.catalogue.clear();
+            second.inserted = None;
+            config.slots.push(second);
+        }) else {
+            return;
+        };
+        compress_image(&store, "test:launch", "test:compressed").unwrap();
+        let disks = [
+            test_blob(&store, mt::FLOPPY, &vec![0xf6; 368_640]),
+            test_blob(&store, mt::FLOPPY, &vec![0x42; 368_640]),
+        ];
+        let config = media_set::Config {
+            schema: 1,
+            platform: PLATFORM.into(),
+            extras: Vec::new(),
+            media: ["a", "b"]
+                .into_iter()
+                .zip(&disks)
+                .map(|(id, disk)| media_set::Medium {
+                    id: id.into(),
+                    label: format!("Disk {id}"),
+                    format: crate::media_set::format("360K").unwrap(),
+                    blob: disk.digest.clone(),
+                })
+                .collect(),
+        };
+        let config = test_blob(&store, mt::MEDIA_SET_CONFIG, &config.encode().unwrap());
+        let manifest = image_store::Manifest::new_media_set(
+            PLATFORM,
+            config,
+            vec![
+                disks[0].clone(),
+                disks[1].clone(),
+                test_blob(&store, mt::METADATA, crate::EMPTY_METADATA),
+            ],
+        )
+        .unwrap();
+        let set = store.import_manifest(&manifest).unwrap();
+        let id = crate::machine::create_from_tag(&store, "test:compressed", None, None).unwrap();
+        let inserts = [("A:", "a"), ("B:", "b")]
+            .into_iter()
+            .map(|(drive, medium)| image_store::machine::PendingInsert {
+                drive: drive.into(),
+                set: set.clone(),
+                reference: "test:set".into(),
+                medium: medium.into(),
+                all: false,
+                journal: false,
+            })
+            .collect();
+        crate::machine::set_pending_inserts(&store, &id, inserts).unwrap();
+        let owner = crate::machine::own(&store, &id).unwrap();
+        let prepared = crate::machine::prepare(&owner).unwrap();
+        let input = prepared.session.launch.as_ref().unwrap();
+        assert_eq!(input.document.config.slots[0].catalogue, ["insert-0"]);
+        assert_eq!(input.document.config.slots[1].catalogue, ["insert-1"]);
+        let resolved = store
+            .resolve_descriptor(
+                &set,
+                &media_set::Validator(&crate::media_set::PcMediaFormats),
+            )
+            .unwrap();
+        let expected = store
+            .resolved_file_path(&resolved, &disks[1].digest)
+            .unwrap();
+        let b = &prepared.session.machine.drives[1]
+            .media
+            .as_ref()
+            .unwrap()
+            .entries[0];
+        assert!(matches!(&b.image, assembly::ImageSource::File(path) if path == &expected));
+        assert_eq!(
+            b.expected_sha256,
+            Some(hash_array(&disks[1].digest).unwrap())
+        );
+        assert_eq!(std::fs::read(expected).unwrap(), vec![0x42; 368_640]);
+        assert!(!input
+            .memory
+            .contains_key(std::path::Path::new("assets/insert-1.img")));
+    }
+
+    #[test]
+    fn launch_pruning_removes_unused_backing_bindings() {
+        let Some((_temp, store)) = start_fixture(|_| {}) else {
+            return;
+        };
+        compress_image(&store, "test:launch", "test:compressed").unwrap();
+        let owner = store.workspace("pruning").unwrap();
+        let session = crate::workspace::prepare_start(&owner, "test:compressed", false).unwrap();
+        let mut input = session.launch.unwrap();
+        assert!(input
+            .sources
+            .contains_key(std::path::Path::new("assets/a.img")));
+        assert!(input
+            .memory
+            .contains_key(std::path::Path::new("assets/a.img")));
+        input.document.config.slots[0].catalogue.clear();
+        input.document.config.slots[0].inserted = None;
+        input.document.config.nvram = None;
+        input.prune();
+        assert!(input.sources.is_empty());
+        assert!(input.memory.is_empty());
+        assert!(input.records.is_empty());
+        assert_eq!(input.small.len(), 1);
+        let bios = input.document.config.firmware[0].blob.sha256();
+        assert!(input.small.contains_key(&bios));
+    }
+
+    #[test]
+    fn a_compressed_floppys_source_follows_the_edited_launch_policy() {
+        let Some((_temp, store)) = start_fixture(|_| {}) else {
+            return;
+        };
+        compress_image(&store, "test:launch", "test:compressed").unwrap();
+        let owner = store.workspace("policy").unwrap();
+        let mut session =
+            crate::workspace::prepare_start(&owner, "test:compressed", false).unwrap();
+        let original = session.machine.clone();
+        session
+            .edit_launch(|document| {
+                document.config.media[0].policy = Policy::Readonly;
+                document.records.retain(|r| r.medium != "a");
+            })
+            .unwrap();
+        assert!(
+            matches!(&session.machine.drives[0].image, assembly::ImageSource::Inline(bytes) if bytes.len() == 368_640 && bytes.iter().all(|b| *b == 0xf6))
+        );
+        assert_eq!(
+            session.machine.drives[0].write,
+            assembly::WriteMode::ReadOnly
+        );
+        session
+            .edit_launch(|document| {
+                document.config.media[0].policy = Policy::Journal;
+                document.records.push(launch::RecordRow {
+                    medium: "a".into(),
+                    name: "a.upfj".into(),
+                    keep_generations: assembly::WriteMode::DEFAULT_KEEP_GENERATIONS,
+                });
+            })
+            .unwrap();
+        assert_eq!(session.machine, original);
     }
 }

@@ -6237,7 +6237,7 @@ Beads that edit the same files go one after the other, in either order:
   limit. Each source was restored with a plain copy and touched before the
   final gate.
 
-**S6. A start is a launch: `pc-image`.**
+**S6. A start is a launch: `pc-image`.** **Done.**
 
 - **Scope.** `resolve_pinned` builds a `Launch`: the effective config
   after the settings overlay, the `content` rows from the bases, the
@@ -6257,6 +6257,89 @@ Beads that edit the same files go one after the other, in either order:
   name is refused with its sentence; MEASURED: no fixture and no template
   has one. A test fails when an editor changes the launch without the
   derived config.
+
+- **As landed.** `resolve_pinned` builds a `workspace::PreparedLaunch`:
+  the effective config after the settings overlay (under `ibm-pc`), content
+  rows with each verified base's flat SHA-256 and length, record rows with
+  the session/import retention, small firmware and CMOS content, and maps
+  from logical base keys and record names to today's host sources and
+  journal files, plus the decoded bytes of in-memory floppies.
+  `provider::lower_session` calls `pc_config::launch::lower`
+  and is the one function that translates its reported base and record keys
+  to those paths (or inline bytes for a compressed, non-journalled floppy,
+  chosen from the edited policy). It changes no hardware, catalogue, pin or
+  retention field. An
+  unjournalled CMOS recomputed by Settings gets a launch-only content binding
+  for its new bytes; no store object is written. The source image, stored
+  config and base files stay unchanged.
+  `PreparedSession` carries this launch alongside its derived `machine`;
+  `edit_launch` lowers an edited copy before installing either value, and a
+  refused edit leaves both unchanged. `SessionTransfer` carries the launch
+  and its small content too, while verified bases still travel as handles,
+  bytes or zero-chain parts. Decided here: the launch field is optional for
+  callers that construct synthetic sessions directly; every stored-image
+  preparation supplies it. Three such test literals needed `launch: None`
+  (one in `pc-library/src/library_worker.rs`, two in
+  `pc-ui/src/library_view.rs`); their assertions and production callers are
+  unchanged. `machine::insert_medium` now edits the document's media,
+  catalogue, content and record tables through the same transactional editor,
+  then extends the verified bases. Its generated `insert-N` ids and
+  `kept-insert-N.upfj` record names are bounded and valid; the storage map
+  preserves `<set digest>-<medium>.upfj`. The chosen medium still leads,
+  duplicate entries are replaced by flat digest and label, and a single
+  image converted to a catalogue keeps its old source, policy, journal and
+  `A: image`/`B: image` name. Generated ids also avoid existing logical asset
+  names. A read-only image shared with another slot gets
+  a separate binding before it gains a catalogue name.
+  A start refuses ids that cannot form a core record name, including the
+  reserved `kept-` prefix, even for a read-only medium; the sentence names
+  the id. Validation's earlier journal-name refusal is unchanged. Created
+  disks and kept catalogues still edit the public machine after preparation:
+  S7 owns their move, so transfer preserves that machine rather than
+  deriving it again. Assembly, desktop starts, CLI runners and session-test
+  callers are unchanged. No crate or dependency changed. The now-unused
+  `Overlay::machine` field and its initializer were removed in `revision.rs`.
+  Stored-image validation retains its original medium-name restriction:
+  slashes, backslashes, empty names and NUL are refused with the original
+  sentence. Only launch labels accept slashes and backslashes, preserving
+  pending media-set labels without changing their text. A pending-insert
+  test failed when the stored-image restriction was applied to its launch.
+  It also fails when generated ids ignore an existing logical asset of the
+  same name. A compressed-floppy policy-edit test failed before path
+  restoration chose file keys or inline bytes from the edited policy.
+  Tests (`provider::tests`, six new; `pc-image` unit tests 61 to 67): a launch
+  edit rederives catalogue selection, labels and floppy/CMOS retention, and
+  survives a thread transfer; a rejected edit preserves both values; read-only
+  media ids `-a` and `kept-a` are refused before the session is written; one
+  pending disk and a whole set, read-only and journalled, produce exactly the
+  former assembly config and journal paths, including labels with slashes and
+  an existing logical asset that could collide with a generated name; a
+  compressed floppy switches from a journal key to inline bytes and back when
+  its launch policy changes; a stored-image run pins the unchanged CPU revision,
+  67,234 retired instructions and VClock 162,500 at the same 100,000-step cap,
+  measured on the old path first. MEASURED: five source mutations each fail a
+  targeted test (leaving `machine` stale, publishing a rejected edit, dropping
+  the document at transfer, omitting the start's id check, ignoring a logical
+  asset collision). The label and compressed-policy regressions also failed
+  before their fixes. Every mutant was restored with a plain copy and touched.
+  Review regressions (three additional tests) reproduce a compressed
+  catalogue's source key being reused by another drive's read-only insert,
+  unused backing maps surviving document pruning, and stored labels being
+  accepted with slashes. Rebinding now clears inline bytes, and pruning
+  retains only the document's source, content and record bindings. All three
+  tests fail against the reviewed code and pass after the corrections.
+  A temporary probe of each `resolve_pinned` and `machine::prepare` result over
+  the fixture tests of `pc-image`, `pc-library` and `cli-pc`, their dependent
+  front ends and the slow goldens hashes the whole `MachineConfig` plus the
+  verified-base keys and identities, normalizing only temporary store/session
+  roots: 610 starts and 92 distinct signatures before; 623 starts and 97 after,
+  the baseline signature set is a subset of the new set (the new tests
+  account for the additions). This establishes set inclusion, not equality
+  of the signatures of each paired start.
+  No fixture or template start has an invalid core record id. The comparison
+  run passes 1,662 of 1,731 tests; its 69 failures are exactly the baseline's
+  sandbox loopback-bind refusals, each OS error 1. The slow BIOS, FreeDOS,
+  journal, front-end and session goldens pass with their assertions unchanged.
 
 **S7. Created disks and kept catalogues edit the launch.**
 

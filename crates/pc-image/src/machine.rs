@@ -20,6 +20,7 @@
 //! machine's CMOS journal when the image journals CMOS, or at every Start when
 //! it copies a stored CMOS image afresh.
 
+use crate::ConfigDigest;
 use crate::{
     decode, invalid, revision, workspace, Config, NvramMode, Policy, Result, CMOS, PAYLOAD_TYPES,
 };
@@ -28,6 +29,7 @@ use image_store::{
     workspace::Workspace,
     BlobSource, Descriptor, Digest, Manifest, Store, Tag, MAX_SMALL_BLOB,
 };
+use media::SectorSource;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs, io,
@@ -1737,13 +1739,13 @@ fn insert_medium(
     insert: &PendingInsert,
 ) -> Result<()> {
     let unit = floppy_unit(&insert.drive)?;
-    let drive = session
+    let slot_index = session
         .machine
         .drives
-        .iter_mut()
-        .find(|d| d.unit == unit && matches!(d.kind, assembly::DriveKind::Floppy { .. }))
+        .iter()
+        .position(|d| d.unit == unit && matches!(d.kind, assembly::DriveKind::Floppy { .. }))
         .ok_or_else(|| invalid(format!("{} is not a floppy drive here", insert.drive)))?;
-    let assembly::DriveKind::Floppy { geometry } = drive.kind else {
+    let assembly::DriveKind::Floppy { geometry } = session.machine.drives[slot_index].kind else {
         return Err(invalid("floppy drive expected"));
     };
     let resolved = store.resolve_descriptor(
@@ -1777,61 +1779,152 @@ fn insert_medium(
         }
         let path = store.resolved_file_path(&resolved, &medium.blob)?;
         let base = crate::media_set::verified_base(&resolved, &medium.blob)?;
-        let hash = base.identity().base_digest;
-        let write = if insert.journal {
-            assembly::WriteMode::journal(directory.join(format!(
-                "{}-{}.upfj",
-                insert.set.digest.hex(),
-                medium.id
-            )))
-        } else {
-            assembly::WriteMode::ReadOnly
-        };
-        session.bases.insert(path.clone(), base);
-        entries.push((
-            index != chosen,
-            assembly::FloppyMedium {
-                image: assembly::ImageSource::File(path),
-                expected_sha256: Some(hash),
-                write,
-                name: medium.label.clone(),
-            },
-        ));
+        entries.push((index != chosen, medium, format, path, base));
     }
-    entries.sort_by_key(|(later, _)| *later);
-    let mut media: Vec<_> = entries.into_iter().map(|(_, m)| m).collect();
-    match &mut drive.media {
-        Some(list) => {
-            list.entries.retain(|e| {
-                !media
+    entries.sort_by_key(|(later, ..)| *later);
+    session.update_launch(|input| {
+        let mut added = Vec::new();
+        for (_, medium, format, path, base) in &entries {
+            let id = next_insert_id(&input.document.config);
+            let source = format!("assets/{id}.img");
+            let digest = medium.blob.to_config()?;
+            let hash = base.identity().base_digest;
+            if !input.document.content.iter().any(|r| r.digest == digest) {
+                input.document.content.push(pc_config::launch::ContentRow {
+                    digest,
+                    sha256: hash,
+                    size: base.byte_len(),
+                });
+            }
+            input.memory.remove(Path::new(&source));
+            input.sources.insert(source.clone().into(), path.clone());
+            if insert.journal {
+                let name = format!("kept-{id}.upfj");
+                input.records.insert(
+                    name.clone(),
+                    directory.join(format!("{}-{}.upfj", insert.set.digest.hex(), medium.id)),
+                );
+                input.document.records.push(pc_config::launch::RecordRow {
+                    medium: id.clone(),
+                    name,
+                    keep_generations: assembly::WriteMode::DEFAULT_KEEP_GENERATIONS,
+                });
+            }
+            input.document.config.media.push(pc_config::image::Medium {
+                id: id.clone(),
+                source,
+                head: digest,
+                name: Some(medium.label.clone()),
+                policy: if insert.journal {
+                    Policy::Journal
+                } else {
+                    Policy::Readonly
+                },
+                geometry: pc_config::image::Geometry::of(assembly::DriveKind::Floppy {
+                    geometry: *format,
+                }),
+            });
+            added.push(id);
+        }
+        let old_slot = input.document.config.slots[slot_index].clone();
+        let mut catalogue = added.clone();
+        for id in &old_slot.catalogue {
+            let old = input
+                .document
+                .config
+                .media
+                .iter()
+                .find(|m| &m.id == id)
+                .ok_or_else(|| invalid("missing medium"))?
+                .clone();
+            let duplicate = old_slot.catalogue_mode
+                && added.iter().any(|id| {
+                    let new = input.document.config.media.iter().find(|m| &m.id == id);
+                    new.is_some_and(|m| {
+                        m.name == old.name
+                            && input
+                                .document
+                                .content
+                                .iter()
+                                .find(|r| r.digest == m.head)
+                                .map(|r| r.sha256)
+                                == input
+                                    .document
+                                    .content
+                                    .iter()
+                                    .find(|r| r.digest == old.head)
+                                    .map(|r| r.sha256)
+                    })
+                });
+            if duplicate {
+                continue;
+            }
+            let mut id = id.clone();
+            if !old_slot.catalogue_mode {
+                // A shared read-only image needs its own binding when this
+                // slot becomes a catalogue and gives the image a name.
+                let shared = input
+                    .document
+                    .config
+                    .slots
                     .iter()
-                    .any(|m| m.expected_sha256 == e.expected_sha256 && m.name == e.name)
-            });
-            media.append(&mut list.entries);
-            list.entries = media;
-            list.empty = false;
-            // The chosen medium leads, so it is the one in the drive.
-            list.inserted = 0;
+                    .enumerate()
+                    .any(|(i, s)| i != slot_index && s.catalogue.contains(&id));
+                if shared {
+                    let mut copy = old.clone();
+                    id = next_insert_id(&input.document.config);
+                    copy.id = id.clone();
+                    copy.source = format!("assets/{id}.img");
+                    let source = input
+                        .sources
+                        .get(Path::new(&old.source))
+                        .ok_or_else(|| invalid("missing launch base path"))?
+                        .clone();
+                    input.memory.remove(Path::new(&copy.source));
+                    input.sources.insert(copy.source.clone().into(), source);
+                    if let Some(bytes) = input.memory.get(Path::new(&old.source)).cloned() {
+                        input.memory.insert(copy.source.clone().into(), bytes);
+                    }
+                    input.document.config.media.push(copy);
+                }
+                let medium = input
+                    .document
+                    .config
+                    .media
+                    .iter_mut()
+                    .find(|m| m.id == id)
+                    .ok_or_else(|| invalid("missing medium"))?;
+                medium.name = Some(format!("{} image", insert.drive));
+            }
+            catalogue.push(id);
         }
-        None => {
-            // A drive with one fixed image becomes a catalogue for this run.
-            media.push(assembly::FloppyMedium {
-                image: drive.image.clone(),
-                expected_sha256: drive.expected_sha256,
-                write: drive.write.clone(),
-                name: format!("{} image", insert.drive),
-            });
-            drive.media = Some(assembly::FloppyMediaList {
-                entries: media,
-                empty: false,
-                inserted: 0,
-            });
-            drive.image = assembly::ImageSource::Blank {
-                size: drive.kind.image_bytes(),
-            };
-            drive.expected_sha256 = None;
-            drive.write = assembly::WriteMode::Volatile;
-        }
+        let slot = &mut input.document.config.slots[slot_index];
+        slot.inserted = catalogue.first().cloned();
+        slot.catalogue = catalogue;
+        slot.catalogue_mode = true;
+        input.prune();
+        Ok(())
+    })?;
+    for (_, _, _, path, base) in entries {
+        session.bases.insert(path, base);
     }
     Ok(())
+}
+
+fn next_insert_id(config: &Config) -> String {
+    let mut index = 0u64;
+    loop {
+        let id = format!("insert-{index}");
+        let source = format!("assets/{id}.img");
+        if !config
+            .media
+            .iter()
+            .any(|m| m.id == id || m.source == source)
+            && !config.firmware.iter().any(|f| f.source == source)
+            && !config.nvram.as_ref().is_some_and(|n| n.source == source)
+        {
+            return id;
+        }
+        index += 1;
+    }
 }
