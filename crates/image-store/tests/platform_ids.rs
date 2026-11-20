@@ -55,12 +55,22 @@ const SOFTWARE_PLATFORM: &[(&str, &str)] = &[
 /// exactly. The file and code its logical line contains.
 /// The launch path's lookup of the platform a core's `identify` answered
 /// with, in that same core's description, is the same kind of check: both
-/// sides are the core's own current spelling.
+/// sides are the core's own current spelling. So are the launch path's
+/// lookups of a platform id a platform's own code hands it in the current
+/// spelling: the core that describes it, and that core's name for it.
 const CORE_OWN_PLATFORM: &[(&str, &str)] = &[
     ("test-core/src/lib.rs", "if platform == PLATFORM {"),
     (
         "core-launch/src/launch.rs",
         ".find(|platform| platform.id == identified.platform)",
+    ),
+    (
+        "core-launch/src/launch.rs",
+        ".find(|platform| platform.id == parts.platform)",
+    ),
+    (
+        "core-launch/src/lib.rs",
+        ".any(|described| described.id == platform)",
     ),
 ];
 /// This file, whose detector tests quote the forms it flags.

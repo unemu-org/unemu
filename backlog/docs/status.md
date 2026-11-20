@@ -5,6 +5,18 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — A launch from parts in `core-launch`:** (`upc-dfs.43.8`, stage B step S8;
+  design/core-contract.md §14.3). No behaviour change for a file opened with Open… or
+  `--open`. `core_launch::Prepared::from_parts` makes a start from a platform's own `Parts`: the
+  core, the platform, a title, notes, the config, and a `ContentPlan` and a `StoragePlan` made
+  on a worker and opened on the machine's thread at every start; `with_options` adds run-only
+  options; `start_with` builds a platform's own machine type from the same request, and `start`
+  is `start_with` over `Core::create`; `Cores::for_platform` finds a platform's core. The
+  file-only accessors of `Prepared` (`kind`, `file_name`, `sha256`, `size`, `saves_dir`,
+  `states_dir`) now answer `Option`, `None` for parts, and the player offers Save and Load state
+  only for a start with a states directory. Nothing starts from parts yet; the PC's store side
+  comes with S10.
+
 - **2026-11-20 — The stored PC image config and its codec move below the contract:**
   (`upc-dfs.43.4`, stage B step S4; design/core-contract.md §14.3). No behaviour change.
   `pc_config::image` now holds the stored config's model (`Config`, `Firmware`, `Medium`,

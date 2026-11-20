@@ -116,13 +116,16 @@ impl Player {
         if !self.offers.saved_state {
             return;
         }
+        let Some(states) = self.prepared.states_dir() else {
+            return;
+        };
         let Some(session) = self.session.as_mut().filter(|s| s.takes_media()) else {
             return;
         };
         let identity = session.state_identity();
         let saved = match identity.as_deref() {
             Some(identity) if !identity.contains(['\n', '\r']) => {
-                write_atomically(self.prepared.states_dir(), identity, |out| {
+                write_atomically(states, identity, |out| {
                     session.save_state(out).map_err(|error| error.to_string())
                 })
             }
@@ -156,11 +159,14 @@ impl Player {
         if !self.offers.saved_state || !self.state_saved {
             return;
         }
+        let Some(states) = self.prepared.states_dir() else {
+            return;
+        };
         let Some(session) = self.session.as_mut().filter(|s| s.takes_media()) else {
             return;
         };
         let unreadable = |error: io::Error| format!("the file could not be read: {error}");
-        let refusal = match fs::File::open(path(self.prepared.states_dir())) {
+        let refusal = match fs::File::open(path(states)) {
             Err(error) => Some(unreadable(error)),
             Ok(file) => {
                 let mut file = BufReader::new(file);

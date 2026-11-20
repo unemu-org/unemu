@@ -241,15 +241,22 @@ impl Player {
     ) -> Result<Self, Box<dyn Error>> {
         let session = new_session(&prepared, &bindings, Duration::ZERO, warnings)?;
         let display = session.display();
-        let (offers, pads, slots) = describe(session.machine().description(), display);
+        let (offers, pads, slots) = describe(
+            session.machine().description(),
+            display,
+            prepared.states_dir().is_some(),
+        );
         let message = match aimed_label(session.machine().description(), display) {
             Some((label, buttons)) if buttons > 0 => format!(
                 "The pointer over the screen aims the {label}; the primary button is its trigger"
             ),
             Some((label, _)) => format!("The pointer over the screen aims the {label}"),
-            None => format!("Opened {}", prepared.file_name()),
+            None => format!(
+                "Opened {}",
+                prepared.file_name().unwrap_or(prepared.title())
+            ),
         };
-        let state_saved = quick_state::exists(prepared.states_dir());
+        let state_saved = prepared.states_dir().is_some_and(quick_state::exists);
         let mut player = Self {
             prepared,
             session: Some(session),
@@ -662,8 +669,11 @@ impl Player {
                 {
                     session.full_slices = self.full_slices;
                 }
-                let (offers, pads, slots) =
-                    describe(session.machine().description(), session.display());
+                let (offers, pads, slots) = describe(
+                    session.machine().description(),
+                    session.display(),
+                    self.prepared.states_dir().is_some(),
+                );
                 (self.offers, self.pads, self.slots) = (offers, pads, slots);
                 self.session = Some(session);
                 self.paused = false;
@@ -860,9 +870,12 @@ fn aimed_label(description: &MachineDescription, display: DisplayId) -> Option<(
 }
 
 /// What the description offers, its pad ports and its removable slots.
+/// Saved states are offered only when the start has a place for them
+/// (`keeps_states`): a start from parts has none.
 fn describe(
     description: &MachineDescription,
     display: DisplayId,
+    keeps_states: bool,
 ) -> (Offers, Vec<PadPort>, Vec<SlotView>) {
     let resets = description.features.resets;
     let mut pads: Vec<(PortId, PadPort)> = description
@@ -895,7 +908,7 @@ fn describe(
         reset: resets.contains(&ResetKind::Soft),
         power_cycle_by_reset: resets.contains(&ResetKind::Hard),
         media: slots.iter().map(|slot| slot.id).collect(),
-        saved_state: description.features.saved_state,
+        saved_state: description.features.saved_state && keeps_states,
         input: !pads.is_empty(),
         show_overscan: false,
         pointer_capture: description

@@ -1223,7 +1223,7 @@ fn the_marks_the_player_writes_are_the_mockups_characters() {
 
 /// The quick slot's file of the rig's content.
 fn quick_state(rig: &Rig) -> PathBuf {
-    quick_state::path(rig.player.prepared().states_dir())
+    quick_state::path(rig.player.prepared().states_dir().unwrap())
 }
 
 /// The title and the text of the message box the player shows.
@@ -1279,7 +1279,7 @@ fn save_state_run_on_and_load_state_bring_the_saved_picture_back() {
     let saved_picture = pixels(&mut rig);
     let saved_frames = rig.frames();
     let path = quick_state(&rig);
-    let digest: String = (rig.player.prepared().sha256().iter())
+    let digest: String = (rig.player.prepared().sha256().unwrap().iter())
         .map(|byte| format!("{byte:02x}"))
         .collect();
     assert!(path.ends_with(format!(
@@ -1293,7 +1293,7 @@ fn save_state_run_on_and_load_state_bring_the_saved_picture_back() {
         std::fs::read(&path).unwrap(),
         quick_state::encode(&identity, &core)
     );
-    assert!(!quick_state::partial_path(rig.player.prepared().states_dir()).exists());
+    assert!(!quick_state::partial_path(rig.player.prepared().states_dir().unwrap()).exists());
     assert!(item(&rig.player.machine_entries(), "Load state").enabled);
 
     // Run on, then load: the saved picture and the saved time are back.
@@ -1434,7 +1434,7 @@ fn a_save_that_fails_keeps_the_state_saved_before() {
     rig.run(200);
     // Something in the way of the temporary file: the save fails before the
     // slot is touched.
-    let partial = quick_state::partial_path(rig.player.prepared().states_dir());
+    let partial = quick_state::partial_path(rig.player.prepared().states_dir().unwrap());
     std::fs::create_dir(&partial).unwrap();
     rig.command(Command::SaveState);
     let (title, text) = message_box(&rig);
@@ -1464,7 +1464,7 @@ fn a_machine_without_saved_state_has_neither_item_and_saves_nothing() {
     rig.command(Command::SaveState);
     rig.command(Command::LoadState);
     assert!(!rig.player.has_dialog());
-    assert!(!rig.player.prepared().states_dir().exists());
+    assert!(!rig.player.prepared().states_dir().unwrap().exists());
     // A stopped machine greys both, so neither key acts.
     let mut rig = self::rig("saved-state\nat 600 power-off");
     rig.run(100);
@@ -1481,4 +1481,85 @@ fn a_machine_without_saved_state_has_neither_item_and_saves_nothing() {
     let (texts, _) = open_menu(&rig.player, "Machine", None);
     assert!(texts.contains(&"⌘S".to_owned()), "{texts:?}");
     assert!(texts.contains(&"⌘L".to_owned()), "{texts:?}");
+}
+
+/// The script's bytes, served by their digest and size.
+struct ScriptPlan(Vec<u8>, [u8; 32]);
+
+impl core_launch::ContentPlan for ScriptPlan {
+    fn open(&self) -> Result<Box<dyn unemu_core_api::ContentSource>, unemu_core_api::Error> {
+        Ok(Box::new(ScriptPlan(self.0.clone(), self.1)))
+    }
+}
+
+impl unemu_core_api::ContentSource for ScriptPlan {
+    fn open(
+        &self,
+        sha256: &[u8; 32],
+        size: u64,
+    ) -> Result<unemu_core_api::Content, unemu_core_api::Error> {
+        assert_eq!((*sha256, size), (self.1, self.0.len() as u64));
+        Ok(unemu_core_api::Content::Bytes(self.0.clone()))
+    }
+}
+
+/// A storage for a script that keeps no record.
+struct NoRecords;
+
+impl core_launch::StoragePlan for NoRecords {
+    fn open(&self) -> Result<std::rc::Rc<dyn unemu_core_api::Storage>, unemu_core_api::Error> {
+        Ok(std::rc::Rc::new(NoRecords))
+    }
+}
+
+impl unemu_core_api::Storage for NoRecords {
+    fn open(&self, _name: &str) -> Result<Box<dyn unemu_core_api::Record>, unemu_core_api::Error> {
+        panic!("the script keeps no record")
+    }
+}
+
+#[test]
+fn a_machine_started_from_parts_has_no_place_for_saved_states_and_is_named_by_its_title() {
+    // The same script a file start runs, its config and content handed in as
+    // parts, with no states directory.
+    let scratch = Scratch::new();
+    let script = b"unemu-test-core 1\nsaved-state\n".to_vec();
+    let path = scratch.0.join("files").join("machine.utc");
+    std::fs::write(&path, &script).unwrap();
+    let dirs = HostDirs {
+        saves: scratch.0.join("saves"),
+        states: scratch.0.join("states"),
+    };
+    let opened = prepare(&path, &Cores::new(&CORES), None, &dirs)
+        .unwrap()
+        .into_ready()
+        .unwrap();
+    let parts = core_launch::Parts {
+        core: &TestCore,
+        platform: unemu_test_core::PLATFORM,
+        title: "Stored machine".to_owned(),
+        notes: Vec::new(),
+        config: opened.config().clone(),
+        content: Box::new(ScriptPlan(script, *opened.sha256().unwrap())),
+        storage: Box::new(NoRecords),
+        options: Vec::new(),
+    };
+    let mut player = Player::start(
+        Prepared::from_parts(parts),
+        PadBindings::defaults(),
+        &mut io::sink(),
+    )
+    .unwrap();
+    assert_eq!(player.message(), "Opened Stored machine");
+    assert!(!player.offers().saved_state);
+    assert!(!labels(&player.machine_entries())
+        .iter()
+        .any(|label| label.ends_with(" state")));
+    player.command(Command::SaveState, Duration::ZERO, &mut io::sink());
+    player.command(Command::LoadState, Duration::ZERO, &mut io::sink());
+    assert!(!player.has_dialog());
+    assert!(!scratch.0.join("states").exists());
+    // The file's own start offers them.
+    let player = Player::start(opened, PadBindings::defaults(), &mut io::sink()).unwrap();
+    assert!(player.offers().saved_state);
 }

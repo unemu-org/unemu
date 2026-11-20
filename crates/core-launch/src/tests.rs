@@ -3,7 +3,7 @@
 //! About lines.
 
 use super::*;
-use unemu_core_api::{CreateRequest, Error, ErrorKind, Machine};
+use unemu_core_api::{CreateRequest, Error, ErrorKind, Machine, PlatformDescription};
 use unemu_test_core::TestCore;
 
 /// A core that states `implements` and can do nothing else.
@@ -134,4 +134,47 @@ fn the_check_is_the_contract_s_rule() {
         refusal(ContractVersion::new(2, 0), &older).as_deref(),
         Some("core A implements contract 1.0; this program needs 2.0")
     );
+}
+
+static TEST_PLATFORM: [PlatformDescription; 1] = [PlatformDescription::new(
+    unemu_test_core::PLATFORM,
+    "Test machine",
+)];
+/// A core of another contract that states the test core's platform.
+static OLD_TEST: Stating = Stating(
+    CoreDescription::new(
+        ContractVersion::new(0, 1),
+        "old-test",
+        "Old test core",
+        "0.1.0",
+    )
+    .with_platforms(&TEST_PLATFORM),
+);
+/// A second usable core of the test core's platform.
+static SECOND_TEST: Stating = Stating(
+    CoreDescription::new(
+        ContractVersion::new(0, 2),
+        "second-test",
+        "Second test core",
+        "0.1.0",
+    )
+    .with_platforms(&TEST_PLATFORM),
+);
+
+#[test]
+fn a_platform_is_found_in_the_first_usable_core_that_provides_it() {
+    static PLATFORMS: [&dyn Core; 4] = [&OLD_TEST, &SAME, &TestCore, &SECOND_TEST];
+    let cores = Cores::new(&PLATFORMS);
+    // The refused core is never asked; the first usable one answers.
+    let found = cores.for_platform(unemu_test_core::PLATFORM).unwrap();
+    assert_eq!(found.description().id, unemu_test_core::CORE_ID);
+    // The id is compared as it is: no alias and no other case.
+    for platform in ["Unemu-Test", "unemu-test ", "nes", ""] {
+        assert!(cores.for_platform(platform).is_none(), "{platform:?}");
+    }
+    // Only a refused core provides it: none.
+    static REFUSED_ONLY: [&dyn Core; 2] = [&OLD_TEST, &SAME];
+    assert!(Cores::new(&REFUSED_ONLY)
+        .for_platform(unemu_test_core::PLATFORM)
+        .is_none());
 }

@@ -151,7 +151,7 @@ fn a_cartridge_image_opens_through_the_release_cores_and_draws_its_golden() {
         prepared.platform_name(),
         "Nintendo Entertainment System (NTSC)"
     );
-    assert_eq!(prepared.kind(), "ines");
+    assert_eq!(prepared.kind(), Some("ines"));
     assert_eq!(prepared.title(), "checkerboard.nes");
 
     let mut machine = start(&prepared).unwrap();

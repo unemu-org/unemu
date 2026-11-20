@@ -16,12 +16,20 @@
 //! the answering core wrote (on a worker thread), and [`start`], which
 //! builds the machine over the verified file and a storage in the
 //! directories the application chose ([`HostDirs`]).
+//!
+//! A platform whose machines start from more than one file gathers their
+//! content and records itself, on the store's side, and hands them here as
+//! [`Parts`] (§14.2.5): [`Cores::for_platform`] finds its core,
+//! [`Prepared::from_parts`] makes the start, and [`start`] or
+//! [`start_with`] builds the machine, as for a file.
 
 mod error;
 mod launch;
 
 pub use crate::error::LaunchError;
-pub use crate::launch::{prepare, start, HostDirs, Outcome, Prepared};
+pub use crate::launch::{
+    prepare, start, start_with, ContentPlan, HostDirs, Outcome, Parts, Prepared, StoragePlan,
+};
 
 use unemu_core_api::{ContentKind, ContractVersion, Core, CoreDescription, CONTRACT};
 
@@ -68,6 +76,20 @@ impl Cores {
     /// anything, so it is not found here either.
     pub fn by_id(&self, id: &str) -> Option<&'static dyn Core> {
         self.usable().find(|core| core.description().id == id)
+    }
+
+    /// The first usable core that provides the platform `platform`, in its
+    /// current spelling (the id its description lists). A refused core is
+    /// never asked anything, so it is not found here either. The id is
+    /// compared as it is: an id read from a store, which may be a retired
+    /// spelling, goes through the store's alias table first.
+    pub fn for_platform(&self, platform: &str) -> Option<&'static dyn Core> {
+        self.usable().find(|core| {
+            core.description()
+                .platforms
+                .iter()
+                .any(|described| described.id == platform)
+        })
     }
 
     /// One line per core of the list, in its order, for the About text of

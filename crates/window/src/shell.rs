@@ -17027,6 +17027,7 @@ kind='mda'
             .unwrap()
             .prepared()
             .saves_dir()
+            .unwrap()
             .to_owned();
         shell.command(Command::Stop, &ctx);
         assert!(shell.player.is_none());
@@ -17190,7 +17191,7 @@ kind='mda'
         chord(&mut shell, KeyCode::KeyS);
         let player = shell.player.as_ref().unwrap();
         assert_eq!(player.message(), "State saved");
-        let slot = player.prepared().states_dir().join("quick.state");
+        let slot = player.prepared().states_dir().unwrap().join("quick.state");
         assert!(slot.is_file());
         assert!(slot.starts_with(temp.path()));
         shell.tick(&ctx, false, std::time::Duration::from_millis(100));

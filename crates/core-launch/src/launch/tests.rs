@@ -304,6 +304,7 @@ fn script_dir(root: &Path) -> PathBuf {
 fn battery_file(prepared: &Prepared) -> PathBuf {
     prepared
         .saves_dir()
+        .unwrap()
         .join(unemu_core_files::file_name(BATTERY_RECORD).unwrap())
 }
 
@@ -446,8 +447,8 @@ fn one_core_that_runs_the_file_makes_it_ready() {
     assert_eq!(prepared.core().description().id, "unemu-test-core");
     assert_eq!(prepared.platform(), "unemu-test");
     assert_eq!(prepared.platform_name(), "Test machine");
-    assert_eq!(prepared.kind(), "script");
-    assert_eq!(prepared.file_name(), "two-players.utc");
+    assert_eq!(prepared.kind(), Some("script"));
+    assert_eq!(prepared.file_name(), Some("two-players.utc"));
     assert_eq!(prepared.title(), "Two players");
     assert_eq!(
         prepared
@@ -457,11 +458,17 @@ fn one_core_that_runs_the_file_makes_it_ready() {
             .collect::<Vec<_>>(),
         ["the header says PAL"]
     );
-    assert_eq!(prepared.sha256(), &sha256_of(SCRIPT));
-    assert_eq!(prepared.size(), SCRIPT.len() as u64);
+    assert_eq!(prepared.sha256(), Some(&sha256_of(SCRIPT)));
+    assert_eq!(prepared.size(), Some(SCRIPT.len() as u64));
     assert_eq!(prepared.config().media_type, unemu_test_core::CONFIG_TYPE);
-    assert_eq!(prepared.saves_dir(), script_dir(&scratch.0.join("saves")));
-    assert_eq!(prepared.states_dir(), script_dir(&scratch.0.join("states")));
+    assert_eq!(
+        prepared.saves_dir(),
+        Some(script_dir(&scratch.0.join("saves")).as_path())
+    );
+    assert_eq!(
+        prepared.states_dir(),
+        Some(script_dir(&scratch.0.join("states")).as_path())
+    );
     // Preparing writes nothing.
     assert!(!scratch.0.join("saves").exists());
     assert!(!scratch.0.join("states").exists());
@@ -484,12 +491,12 @@ fn the_whole_file_is_hashed_however_large() {
     let bytes: Vec<u8> = (0..CHUNK * 2 + 12_345).map(|i| (i % 251) as u8).collect();
     let path = scratch.file("large.nes", &bytes);
     let prepared = ready(prepare(&path, &Cores::new(&LIST), None, &scratch.dirs()));
-    assert_eq!(prepared.sha256(), &sha256_of(&bytes));
-    assert_eq!(prepared.size(), bytes.len() as u64);
+    assert_eq!(prepared.sha256(), Some(&sha256_of(&bytes)));
+    assert_eq!(prepared.size(), Some(bytes.len() as u64));
 
     let empty = scratch.file("empty.nes", b"");
     let prepared = ready(prepare(&empty, &Cores::new(&LIST), None, &scratch.dirs()));
-    assert_eq!(prepared.sha256(), &sha256_of(b""));
+    assert_eq!(prepared.sha256(), Some(&sha256_of(b"")));
 }
 
 #[test]
@@ -842,4 +849,354 @@ fn a_file_whose_modification_time_changes_after_hashing_is_refused() {
     drop(file);
     assert_eq!(std::fs::read(&path).unwrap(), SCRIPT);
     assert_eq!(start(&prepared).err().unwrap().kind, ErrorKind::Content);
+}
+
+// Starts from parts: a platform's own content and storage, made on a worker
+// and opened at each start.
+
+/// A script in memory, for `identify` to write its config.
+struct InMemory(Vec<u8>);
+
+impl ContentReader for InMemory {
+    fn size(&self) -> u64 {
+        self.0.len() as u64
+    }
+
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
+        let start = usize::try_from(offset).unwrap_or(usize::MAX);
+        let bytes = start
+            .checked_add(buf.len())
+            .and_then(|end| self.0.get(start..end))
+            .ok_or_else(|| Error::new(ErrorKind::Usage, "a read past the end"))?;
+        buf.copy_from_slice(bytes);
+        Ok(())
+    }
+}
+
+/// The test core's config for `script`, as it writes it.
+fn script_config(script: &[u8]) -> ConfigDocumentBuf {
+    let reader = InMemory(script.to_vec());
+    let offered = OfferedContent::new("script", sha256_of(script), reader.size(), &reader);
+    TestCore
+        .identify(&offered)
+        .unwrap()
+        .expect("the test core runs the script")
+        .config
+}
+
+/// Content in memory, opened as bytes; counts its opens.
+struct BytesPlan {
+    bytes: Vec<u8>,
+    opens: Arc<AtomicUsize>,
+}
+
+impl ContentPlan for BytesPlan {
+    fn open(&self) -> Result<Box<dyn ContentSource>, Error> {
+        self.opens.fetch_add(1, Ordering::Relaxed);
+        Ok(Box::new(BytesSource(self.bytes.clone())))
+    }
+}
+
+/// The plan's one piece of content, by its digest and size.
+struct BytesSource(Vec<u8>);
+
+impl ContentSource for BytesSource {
+    fn open(&self, sha256: &[u8; 32], size: u64) -> Result<Content, Error> {
+        if *sha256 == sha256_of(&self.0) && size == self.0.len() as u64 {
+            Ok(Content::Bytes(self.0.clone()))
+        } else {
+            Err(Error::new(ErrorKind::Content, "not in this plan"))
+        }
+    }
+}
+
+/// Records in one directory; counts its opens.
+struct DirectoryPlan {
+    dir: PathBuf,
+    opens: Arc<AtomicUsize>,
+}
+
+impl StoragePlan for DirectoryPlan {
+    fn open(&self) -> Result<Rc<dyn Storage>, Error> {
+        self.opens.fetch_add(1, Ordering::Relaxed);
+        Ok(Rc::new(FileStorage::open(&self.dir)?))
+    }
+}
+
+/// A plan that cannot open.
+struct Broken;
+
+impl ContentPlan for Broken {
+    fn open(&self) -> Result<Box<dyn ContentSource>, Error> {
+        Err(Error::new(ErrorKind::Storage, "the plan's file is gone"))
+    }
+}
+
+impl StoragePlan for Broken {
+    fn open(&self) -> Result<Rc<dyn Storage>, Error> {
+        Err(Error::new(ErrorKind::Storage, "the plan's file is gone"))
+    }
+}
+
+/// Parts for the test core over `SCRIPT`, its records in `dir`, with the
+/// plans' open counters.
+fn script_parts(dir: &Path) -> (Parts, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    let content = Arc::new(AtomicUsize::new(0));
+    let storage = Arc::new(AtomicUsize::new(0));
+    let parts = Parts {
+        core: &TestCore,
+        platform: unemu_test_core::PLATFORM,
+        title: "A stored machine".to_owned(),
+        notes: vec![Message::new(
+            unemu_core_api::MessageLevel::Note,
+            "started from parts",
+        )],
+        config: script_config(SCRIPT),
+        content: Box::new(BytesPlan {
+            bytes: SCRIPT.to_vec(),
+            opens: Arc::clone(&content),
+        }),
+        storage: Box::new(DirectoryPlan {
+            dir: dir.to_owned(),
+            opens: Arc::clone(&storage),
+        }),
+        options: Vec::new(),
+    };
+    (parts, content, storage)
+}
+
+fn starts_in(dir: &Path) -> String {
+    std::fs::read_to_string(dir.join(unemu_core_files::file_name(BATTERY_RECORD).unwrap())).unwrap()
+}
+
+#[test]
+fn a_start_from_parts_keeps_its_record_for_the_next_start_of_the_same_prepared() {
+    let scratch = Scratch::new();
+    let records = scratch.0.join("records");
+    let (parts, content, storage) = script_parts(&records);
+    let prepared = Prepared::from_parts(parts);
+    // A power cycle starts again from the same `Prepared`: each start opens
+    // the plans anew and finds what the one before it kept.
+    for starts in 1..=3 {
+        let mut machine = start(&prepared).unwrap();
+        machine.finish().unwrap();
+        drop(machine);
+        assert!(
+            starts_in(&records).ends_with(&format!("starts {starts}\n")),
+            "start {starts}"
+        );
+        assert_eq!(content.load(Ordering::Relaxed), starts);
+        assert_eq!(storage.load(Ordering::Relaxed), starts);
+    }
+    // A second `Prepared` over the same records continues them.
+    let (parts, _, _) = script_parts(&records);
+    let mut machine = start(&Prepared::from_parts(parts)).unwrap();
+    machine.finish().unwrap();
+    drop(machine);
+    assert!(starts_in(&records).ends_with("starts 4\n"));
+}
+
+#[test]
+fn a_start_from_parts_answers_what_the_parts_say_and_no_file_s_facts() {
+    let scratch = Scratch::new();
+    let (parts, _, _) = script_parts(&scratch.0);
+    let prepared = Prepared::from_parts(parts);
+    assert_eq!(prepared.core().description().id, unemu_test_core::CORE_ID);
+    assert_eq!(prepared.platform(), "unemu-test");
+    assert_eq!(prepared.platform_name(), "Test machine");
+    assert_eq!(prepared.title(), "A stored machine");
+    assert_eq!(
+        prepared
+            .notes()
+            .iter()
+            .map(|note| note.text.as_str())
+            .collect::<Vec<_>>(),
+        ["started from parts"]
+    );
+    assert_eq!(prepared.config().media_type, unemu_test_core::CONFIG_TYPE);
+    // The facts of an opened file are not there.
+    assert_eq!(prepared.kind(), None);
+    assert_eq!(prepared.file_name(), None);
+    assert_eq!(prepared.sha256(), None);
+    assert_eq!(prepared.size(), None);
+    assert_eq!(prepared.saves_dir(), None);
+    assert_eq!(prepared.states_dir(), None);
+    // Nothing was opened: preparing writes nothing.
+    assert!(!scratch
+        .0
+        .join(unemu_core_files::file_name(BATTERY_RECORD).unwrap())
+        .exists());
+
+    // A platform the core does not describe is named by its id, and the
+    // core refuses it at the start.
+    let (mut parts, _, _) = script_parts(&scratch.0);
+    parts.platform = "nes";
+    let prepared = Prepared::from_parts(parts);
+    assert_eq!(prepared.platform_name(), "nes");
+    let error = start(&prepared).err().unwrap();
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert_eq!(error.message, "the test core has no platform nes");
+}
+
+#[test]
+fn start_with_hands_back_the_caller_s_own_type() {
+    /// A platform's own machine type, built from the request.
+    struct Typed {
+        platform: String,
+        machine: Box<dyn Machine>,
+    }
+    let scratch = Scratch::new();
+    let (parts, _, _) = script_parts(&scratch.0);
+    let prepared = Prepared::from_parts(parts);
+    let mut typed: Typed = start_with(&prepared, |request| {
+        Ok(Typed {
+            platform: request.platform.to_owned(),
+            machine: TestCore.create(request)?,
+        })
+    })
+    .unwrap();
+    assert_eq!(typed.platform, "unemu-test");
+    typed.machine.finish().unwrap();
+    drop(typed);
+    assert!(starts_in(&scratch.0).ends_with("starts 1\n"));
+
+    // A file's start, too, and its records are where `start` keeps them.
+    static LIST: [&dyn Core; 1] = [&TestCore];
+    let path = scratch.file("two-players.utc", SCRIPT);
+    let opened = ready(prepare(&path, &Cores::new(&LIST), None, &scratch.dirs()));
+    let size = start_with(&opened, |request| {
+        let script = sha256_of(SCRIPT);
+        match request.content.open(&script, SCRIPT.len() as u64)? {
+            Content::Reader(reader) => Ok(reader.size()),
+            _ => panic!("the file came as bytes"),
+        }
+    })
+    .unwrap();
+    assert_eq!(size, SCRIPT.len() as u64);
+}
+
+thread_local! {
+    /// The options the recording core was created with on this thread.
+    static OPTIONS: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A core that keeps the options it is created with and builds nothing.
+struct Recording;
+
+static RECORDING: CoreDescription = CoreDescription::new(
+    ContractVersion::new(0, 2),
+    "recording",
+    "Recording core",
+    "1.0.0",
+);
+
+impl Core for Recording {
+    fn description(&self) -> &CoreDescription {
+        &RECORDING
+    }
+
+    fn create(&self, request: &CreateRequest<'_>) -> Result<Box<dyn Machine>, Error> {
+        OPTIONS.with(|options| {
+            *options.borrow_mut() = request
+                .options
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect();
+        });
+        Err(Error::new(ErrorKind::Unsupported, "a recording core"))
+    }
+}
+
+fn option(key: &str, value: &str) -> (String, String) {
+    (key.to_owned(), value.to_owned())
+}
+
+#[test]
+fn an_option_reaches_create_and_an_unknown_one_is_the_core_s_refusal() {
+    let scratch = Scratch::new();
+    let (mut parts, _, _) = script_parts(&scratch.0);
+    parts.core = &Recording;
+    parts.options = vec![option("allow-unlisted-firmware", "yes")];
+    // The application's run-only options come after those of the parts.
+    let prepared = Prepared::from_parts(parts).with_options(vec![option("speaker-trace", "on")]);
+    start(&prepared).err().unwrap();
+    assert_eq!(
+        OPTIONS.with(|options| options.take()),
+        [
+            option("allow-unlisted-firmware", "yes"),
+            option("speaker-trace", "on")
+        ]
+    );
+
+    // The test core describes no option: its refusal comes back as it is,
+    // from parts and from a file alike.
+    let (parts, _, _) = script_parts(&scratch.0);
+    let prepared = Prepared::from_parts(parts).with_options(vec![option("speaker-trace", "on")]);
+    let error = start(&prepared).err().unwrap();
+    assert_eq!(error.kind, ErrorKind::Config);
+    assert_eq!(error.message, "the test core takes no option speaker-trace");
+    static LIST: [&dyn Core; 1] = [&TestCore];
+    let path = scratch.file("two-players.utc", SCRIPT);
+    let opened = ready(prepare(&path, &Cores::new(&LIST), None, &scratch.dirs()))
+        .with_options(vec![option("speaker-trace", "on")]);
+    let error = start(&opened).err().unwrap();
+    assert_eq!(error.message, "the test core takes no option speaker-trace");
+    // Without options, it starts.
+    let (parts, _, _) = script_parts(&scratch.0);
+    start(&Prepared::from_parts(parts)).unwrap();
+}
+
+#[test]
+fn a_plan_that_cannot_open_fails_the_start_with_its_own_error() {
+    let scratch = Scratch::new();
+    for broken in ["content", "storage"] {
+        let (mut parts, _, _) = script_parts(&scratch.0);
+        match broken {
+            "content" => parts.content = Box::new(Broken),
+            _ => parts.storage = Box::new(Broken),
+        }
+        let error = start(&Prepared::from_parts(parts)).err().unwrap();
+        assert_eq!(error.kind, ErrorKind::Storage, "{broken}");
+        assert_eq!(error.message, "the plan's file is gone", "{broken}");
+    }
+}
+
+#[test]
+fn a_prepared_start_from_parts_crosses_threads() {
+    let scratch = Scratch::new();
+    let records = scratch.0.join("records");
+    let worker_dir = records.clone();
+    // Made on a worker, started on this thread.
+    let prepared = std::thread::spawn(move || Prepared::from_parts(script_parts(&worker_dir).0))
+        .join()
+        .unwrap();
+    let mut machine = start(&prepared).unwrap();
+    machine.finish().unwrap();
+    drop(machine);
+    assert!(starts_in(&records).ends_with("starts 1\n"));
+}
+
+#[test]
+fn a_held_record_of_a_start_from_parts_comes_back_as_the_storage_said_it() {
+    let scratch = Scratch::new();
+    let records = scratch.0.join("records");
+    let (first, _, _) = script_parts(&records);
+    let mut running = start(&Prepared::from_parts(first)).unwrap();
+    // What the storage itself answers for the held record.
+    let held = FileStorage::open(&records)
+        .unwrap()
+        .open(BATTERY_RECORD)
+        .err()
+        .unwrap();
+    assert_eq!(held.kind, ErrorKind::Usage);
+    let (second, _, _) = script_parts(&records);
+    let error = start(&Prepared::from_parts(second)).err().unwrap();
+    // Not the file start's sentence: the plan's storage words its own.
+    assert_eq!(error, held);
+    assert!(
+        !error.message.contains("already running"),
+        "{}",
+        error.message
+    );
+    running.finish().unwrap();
 }

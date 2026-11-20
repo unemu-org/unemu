@@ -5713,7 +5713,7 @@ contract in `cli-pc` (S11), then become neutral commands of `cli-core`
 open the store; own the workspace (or the machine's)
 platform  = the image's platform, from its manifest
 provider  = the CliPlatform of that platform
-core      = cores.for_platform(platform)
+core      = cores.for_platform(image_store::platform::canonical(platform))
 stored    = provider.prepare_run(owner, request, core)   // the new hook
 print "pinned-image:DIGEST"
 machine   = core_launch::start(&stored.prepared)
@@ -5722,6 +5722,10 @@ stop      = machine.run(RunLimit::steps(max_steps))
 finished  = machine.finish()        // warnings and drained messages to standard error
 print "workspace:NAME\tSTOP"  or  "machine:ID\tSTOP"
 ```
+
+The manifest's platform goes through the store's alias table before
+`for_platform`, which compares ids exactly: an old store names the retired
+`ibm-pc-at` (corrected 2026-11-20, S8 review).
 
 `cli-core` gains `core-launch` and `unemu-core-api` (both allowed);
 `cli_core::run` takes the `Cores` the binary already makes. `CliPlatform`
@@ -6107,7 +6111,7 @@ Beads that edit the same files go one after the other, in either order:
   catalogue equals the one before the bead. Every `kept-…` name is a valid
   kept record name of at most 64 bytes, for a 64-digit digest too.
 
-**S8. `core-launch`: a `Prepared` from parts.**
+**S8. `core-launch`: a `Prepared` from parts.** **Done.**
 
 - **Scope.** §14.2.5: `ContentPlan`, `StoragePlan`, `Parts`,
   `Prepared::from_parts`, `with_options`, `start_with`,
@@ -6124,6 +6128,75 @@ Beads that edit the same files go one after the other, in either order:
   the core's refusal; `Prepared` is still `Send` (the compile-time
   assertion). The existing tests pass unchanged. `core-launch` still
   depends on the contract, `unemu-core-files` and `sha2` only.
+- **As landed.** `crates/core-launch/src/launch.rs` has `ContentPlan`
+  and `StoragePlan` (each `Send`, `open(&self)`), `Parts` with public
+  fields (`core`, `platform: &'static str`, `title`, `notes`, `config`,
+  `content`, `storage`, `options`), `Prepared::from_parts`,
+  `Prepared::with_options` (appends, after the options the start has) and
+  `start_with`; `start` is `start_with` over `Core::create`. `lib.rs` has
+  `Cores::for_platform`: the first usable core whose description lists the
+  id, compared as it is (no alias). `Prepared` keeps what both starts share
+  and a private source, the opened file or the two plans; each start opens
+  the plans anew, so a power cycle starts again from the same `Prepared`.
+  A start from parts passes a plan's failure and `create`'s error back as
+  they are: the sentence for a record another machine holds stays the file
+  start's, and a platform's storage plan words its own (§14.3 S10). A
+  platform the core does not describe is named by its id, and `create`
+  refuses it. Decided here: the file-only accessors answer `Option`, `None`
+  for parts, and they are six, not the three the scope names, since
+  `kind`, `size` and `states_dir` have no answer for parts either; the
+  accessor types changed, so their callers changed. Production: in
+  `player-ui`, `lib.rs` (the "Opened …" message falls back to the title;
+  `describe` offers Save and Load state only with a states directory) and
+  `quick_state.rs` (`save_state` and `load_state` take the directory from
+  the accessor). Tests, each line only reading the accessor through
+  `Some`/`unwrap`: `window/src/shell.rs`, one line in each of
+  `pause_reset_power_cycle_and_stop_reach_the_players_machine` and
+  `save_and_load_state_chords_reach_a_player_that_saves_state_and_the_pc_s_guest`;
+  `platforms/tests/nes_cartridge.rs`, one line; `player-ui/src/tests.rs`,
+  five lines (the helper `quick_state`, two in
+  `save_state_run_on_and_load_state_bring_the_saved_picture_back`, one each
+  in `a_save_that_fails_keeps_the_state_saved_before` and
+  `a_machine_without_saved_state_has_neither_item_and_saves_nothing`);
+  `core-launch/src/launch/tests.rs`, the helper `battery_file` and the
+  assertions of `one_core_that_runs_the_file_makes_it_ready` and
+  `the_whole_file_is_hashed_however_large`. So "the existing tests pass
+  unchanged" holds only up to those `Option` reads: no assertion changed
+  what it checks, and no other test changed. `with_options` appends, so
+  `create` can see a key twice; core-launch neither merges nor refuses it.
+  For S9: `PcCore::create` must define the rule for a repeated option key
+  (recommended: refuse it with `Usage`). For S12: `for_platform` compares
+  the id exactly, and an old store's manifest may name the retired
+  `ibm-pc-at` (`cli-pc/tests/platform_alias.rs` runs such an image), so the
+  neutral command passes the manifest's platform through
+  `image_store::platform::canonical` first; §14.2.7's pseudo-code says so
+  (corrected 2026-11-20, S8 review). The platform-id scan (`crates/image-store/tests/platform_ids.rs`)
+  lists the two new exact lookups, `for_platform`'s and `from_parts`'s name
+  of the platform, beside the launch path's one before them: both sides
+  are a core's current spelling, and `core-launch` may not depend on
+  `image-store` for `platform::same`. No crate gains a dependency. Tests
+  (`core-launch` 33 to 41,
+  `player-ui` 34 to 35): with the test core, a `Prepared` from parts starts
+  three times, each start opening both plans once and reading the record
+  the one before wrote, and a second `Prepared` over the same records
+  continues them; `start_with` hands back a caller's type, for parts and
+  for a file; options from the parts and from `with_options` reach `create`
+  in that order (a recording core), and the test core's refusal of an
+  option it does not describe comes back as it is, for parts and for a
+  file; a plan that cannot open fails the start with its own error; a
+  record held by another machine of a start from parts comes back as the
+  plan's storage worded it, not as the file start's sentence (it fails with
+  the parts branch rewriting a `Usage` error); a
+  `Prepared` from parts made on another thread starts; the accessors of a
+  start from parts; `for_platform` skips a refused core and takes the first
+  usable one; in `player-ui`, a machine started from parts offers no saved
+  state and is named by its title. MEASURED: the new tests do not compile
+  on the code before the bead; with the options left out of the request,
+  or `for_platform` asking refused cores, the option test and the
+  `for_platform` test fail; with `describe` offering saved states without
+  a states directory, the `player-ui` test fails. `Prepared` and `Parts`
+  are `Send` by the compile-time assertion. `core-launch`'s dependencies
+  are unchanged (`unemu-core-api`, `unemu-core-files`, `sha2`).
 
 **S9. `PcCore::create`, `create_machine` and `validate`.**
 

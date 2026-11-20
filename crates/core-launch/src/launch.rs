@@ -1,13 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! From a file to a machine: hashing, choosing the core, checking its
 //! config, and creating the machine (core-contract.md §13.3, steps 2 to 5
-//! of "The path, step by step").
+//! of "The path, step by step"), and the same start for a machine whose
+//! content and storage a platform's own code gathered (§14.2.5).
 //!
 //! [`prepare`] does everything that may take time and touches no machine:
 //! it reads the whole file once, asks the cores, and checks the config the
 //! answering core wrote. It runs on a worker thread, so its result,
 //! [`Prepared`], is `Send`. [`start`] then builds the machine on the thread
 //! that will drive it, because a machine need not be `Send`.
+//!
+//! A platform whose machines start from more than one file, such as a
+//! stored PC image with its firmware, disks and journals, makes its
+//! [`Prepared`] with [`Prepared::from_parts`] instead: the config, a
+//! [`ContentPlan`] and a [`StoragePlan`], each made on the worker and opened
+//! on the machine's thread at every start. [`start_with`] lets that
+//! platform's code build its own machine type from the same request.
 
 use crate::{kind_lines, valid_kinds, Cores, LaunchError};
 use sha2::{Digest, Sha256};
@@ -46,39 +54,133 @@ impl HostDirs {
     }
 }
 
-/// Everything decided about one file, ready to start. `Send`: it is made on
-/// a worker thread.
+/// The content of one start, made on a worker thread and opened on the
+/// thread that drives the machine. It is opened again at every start of
+/// the same [`Prepared`] (a power cycle starts the machine anew), so
+/// `open` must give an equal source each time.
+pub trait ContentPlan: Send {
+    /// The source the machine's `create` reads its content from.
+    fn open(&self) -> Result<Box<dyn ContentSource>, Error>;
+}
+
+/// The machine's storage, made and opened as a [`ContentPlan`] is: on a
+/// worker, then on the machine's thread at every start, each time over the
+/// same records.
+pub trait StoragePlan: Send {
+    /// The storage the machine keeps for its life.
+    fn open(&self) -> Result<Rc<dyn Storage>, Error>;
+}
+
+/// Everything a platform's own code decided for one start, for
+/// [`Prepared::from_parts`].
+pub struct Parts {
+    /// The core that runs the machine.
+    pub core: &'static dyn Core,
+    /// The platform id, in its current spelling. When the core does not
+    /// describe it, its name for people is the id, and `create` refuses it.
+    pub platform: &'static str,
+    /// The machine's name for people, for the window's title.
+    pub title: String,
+    /// What a person should know before the machine starts.
+    pub notes: Vec<Message>,
+    /// The config `create` reads.
+    pub config: ConfigDocumentBuf,
+    /// The content `create` reads, by digest and size.
+    pub content: Box<dyn ContentPlan>,
+    /// The machine's records.
+    pub storage: Box<dyn StoragePlan>,
+    /// Run-only options, by the keys the platform describes.
+    pub options: Vec<(String, String)>,
+}
+
+/// Everything decided about one start, ready to start: a file [`prepare`]
+/// checked, or the [`Parts`] a platform's code gathered. `Send`: it is made
+/// on a worker thread.
 pub struct Prepared {
     core: &'static dyn Core,
     platform: &'static str,
     platform_name: &'static str,
-    kind: &'static str,
-    file: String,
     title: String,
     notes: Vec<Message>,
     config: ConfigDocumentBuf,
+    options: Vec<(String, String)>,
+    source: Source,
+}
+
+/// Where a start's content and records come from.
+enum Source {
+    /// One file, from [`prepare`].
+    File(Opened),
+    /// Plans, from [`Prepared::from_parts`].
+    Parts {
+        content: Box<dyn ContentPlan>,
+        storage: Box<dyn StoragePlan>,
+    },
+}
+
+/// What [`prepare`] learnt about the file it opened.
+struct Opened {
+    kind: &'static str,
+    file: String,
     sha256: [u8; 32],
     content: Arc<FileContent>,
     saves: PathBuf,
     states: PathBuf,
 }
 
-// A prepared file crosses from the worker that hashed it to the thread that
+// A prepared start crosses from the worker that made it to the thread that
 // starts it. A field that is not `Send` fails the build here.
 const _: () = {
     const fn assert_send<T: Send>() {}
     assert_send::<Prepared>();
+    assert_send::<Parts>();
     assert_send::<Outcome>();
     assert_send::<LaunchError>();
 };
 
 impl Prepared {
-    /// The core that runs the file.
+    /// A start from the parts a platform's code gathered. Nothing is
+    /// checked here: the core's `create` checks the config and asks the
+    /// content and the records it needs.
+    pub fn from_parts(parts: Parts) -> Prepared {
+        let platform_name = parts
+            .core
+            .description()
+            .platforms
+            .iter()
+            .find(|platform| platform.id == parts.platform)
+            .map_or(parts.platform, |platform| platform.name);
+        Prepared {
+            core: parts.core,
+            platform: parts.platform,
+            platform_name,
+            title: parts.title,
+            notes: parts.notes,
+            config: parts.config,
+            options: parts.options,
+            source: Source::Parts {
+                content: parts.content,
+                storage: parts.storage,
+            },
+        }
+    }
+
+    /// Run-only options the application adds before the start, after those
+    /// it has, by the keys the platform describes. The core refuses a key it
+    /// does not describe when the machine is created. Nothing here merges or
+    /// refuses a key given twice: `create` sees both, in this order, and the
+    /// core decides what a repeated key means.
+    pub fn with_options(mut self, options: Vec<(String, String)>) -> Prepared {
+        self.options.extend(options);
+        self
+    }
+
+    /// The core that runs the machine.
     pub fn core(&self) -> &'static dyn Core {
         self.core
     }
 
-    /// The platform id the core answered with.
+    /// The platform id the core answered with, or the one of the parts.
     pub fn platform(&self) -> &'static str {
         self.platform
     }
@@ -88,17 +190,20 @@ impl Prepared {
         self.platform_name
     }
 
-    /// The id of the content kind the core answered with.
-    pub fn kind(&self) -> &'static str {
-        self.kind
+    /// The id of the content kind the core answered with; `None` for a
+    /// start from parts, which opens no file.
+    pub fn kind(&self) -> Option<&'static str> {
+        self.opened().map(|opened| opened.kind)
     }
 
-    /// The file's name, without its directory.
-    pub fn file_name(&self) -> &str {
-        &self.file
+    /// The file's name, without its directory; `None` for a start from
+    /// parts.
+    pub fn file_name(&self) -> Option<&str> {
+        self.opened().map(|opened| opened.file.as_str())
     }
 
-    /// The content's own title, or the file's name when it carries none.
+    /// The content's own title, or the file's name when it carries none;
+    /// for a start from parts, the title of the parts.
     pub fn title(&self) -> &str {
         &self.title
     }
@@ -108,30 +213,39 @@ impl Prepared {
         &self.notes
     }
 
-    /// The config the core wrote for the file.
+    /// The config the core wrote for the file, or the one of the parts.
     pub fn config(&self) -> &ConfigDocumentBuf {
         &self.config
     }
 
-    /// The SHA-256 of the whole file.
-    pub fn sha256(&self) -> &[u8; 32] {
-        &self.sha256
+    /// The SHA-256 of the whole file; `None` for a start from parts.
+    pub fn sha256(&self) -> Option<&[u8; 32]> {
+        self.opened().map(|opened| &opened.sha256)
     }
 
-    /// The file's length in bytes.
-    pub fn size(&self) -> u64 {
-        self.content.size()
+    /// The file's length in bytes; `None` for a start from parts.
+    pub fn size(&self) -> Option<u64> {
+        self.opened().map(|opened| opened.content.size())
     }
 
-    /// The directory of the machine's records: `saves/CORE/aa/DIGEST`.
-    pub fn saves_dir(&self) -> &Path {
-        &self.saves
+    /// The directory of the machine's records: `saves/CORE/aa/DIGEST`;
+    /// `None` for a start from parts, whose records are its storage plan's.
+    pub fn saves_dir(&self) -> Option<&Path> {
+        self.opened().map(|opened| opened.saves.as_path())
     }
 
     /// The directory of the machine's saved states:
-    /// `states/CORE/aa/DIGEST`.
-    pub fn states_dir(&self) -> &Path {
-        &self.states
+    /// `states/CORE/aa/DIGEST`; `None` for a start from parts.
+    pub fn states_dir(&self) -> Option<&Path> {
+        self.opened().map(|opened| opened.states.as_path())
+    }
+
+    /// The file this start opened, if it is one.
+    fn opened(&self) -> Option<&Opened> {
+        match &self.source {
+            Source::File(opened) => Some(opened),
+            Source::Parts { .. } => None,
+        }
     }
 }
 
@@ -158,7 +272,8 @@ impl Outcome {
             Self::Choose(choices) => Err(LaunchError::Several {
                 file: choices
                     .first()
-                    .map(|prepared| prepared.file.clone())
+                    .and_then(|prepared| prepared.file_name())
+                    .map(str::to_owned)
                     .unwrap_or_default(),
                 cores: choices
                     .iter()
@@ -468,15 +583,18 @@ fn check(
         core,
         platform: platform.id,
         platform_name: platform.name,
-        kind: identified.kind,
-        file: file.file.to_owned(),
         title: identified.title.unwrap_or_else(|| file.file.to_owned()),
         notes: identified.notes,
         config: identified.config,
-        sha256: file.sha256,
-        content: Arc::clone(file.content),
-        saves: HostDirs::of(&file.dirs.saves, description.id, file.digest),
-        states: HostDirs::of(&file.dirs.states, description.id, file.digest),
+        options: Vec::new(),
+        source: Source::File(Opened {
+            kind: identified.kind,
+            file: file.file.to_owned(),
+            sha256: file.sha256,
+            content: Arc::clone(file.content),
+            saves: HostDirs::of(&file.dirs.saves, description.id, file.digest),
+            states: HostDirs::of(&file.dirs.states, description.id, file.digest),
+        }),
     })
 }
 
@@ -516,15 +634,14 @@ struct OneFile<'a>(&'a Prepared);
 
 impl ContentSource for OneFile<'_> {
     fn open(&self, sha256: &[u8; 32], size: u64) -> Result<Content, Error> {
-        if *sha256 == self.0.sha256 && size == self.0.size() {
-            Ok(Content::Reader(Box::new(Shared(Arc::clone(
-                &self.0.content,
-            )))))
-        } else {
-            Err(Error::new(
+        match self.0.opened() {
+            Some(opened) if *sha256 == opened.sha256 && size == opened.content.size() => Ok(
+                Content::Reader(Box::new(Shared(Arc::clone(&opened.content)))),
+            ),
+            _ => Err(Error::new(
                 ErrorKind::Content,
                 "a machine opened from a file has that one file and nothing else",
-            ))
+            )),
         }
     }
 }
@@ -562,43 +679,85 @@ impl Storage for Watched {
 }
 
 /// Build the machine. On the thread that will drive it: a machine need not
-/// be `Send` (§3.5).
-///
-/// The request names the platform and the config the core wrote, a content
-/// source that answers the file's digest with the verified file and nothing
-/// else, and a storage over the files of [`Prepared::saves_dir`], created
-/// when missing. The core's error comes back as it is, with one exception:
-/// when the storage refused to open a record because another machine holds
-/// it, here or in another program, and `create` failed with that
-/// [`ErrorKind::Usage`], the error is `Usage` with the sentence the
-/// application shows. Any other `Usage`, such as a record name the storage
-/// does not take or a read past a record's end, is the core's and comes
-/// back unchanged.
+/// be `Send` (§3.5). This is [`start_with`] with the core's own `create`.
 pub fn start(prepared: &Prepared) -> Result<Box<dyn Machine>, Error> {
-    let storage = Rc::new(Watched {
-        files: FileStorage::open(&prepared.saves)?,
-        held: Cell::new(false),
-    });
-    let source = OneFile(prepared);
-    let request = CreateRequest::new(
+    start_with(prepared, |request| prepared.core.create(request))
+}
+
+/// [`start`], with the caller making the machine from the request, so that
+/// a platform's own code can keep its machine's type: `create` is that
+/// platform's typed form of `Core::create`. On the thread that will drive
+/// the machine.
+///
+/// The request names the platform, the config and the run-only options of
+/// `prepared`, with its content and storage:
+///
+/// - For a file, a content source that answers the file's digest with the
+///   verified file and nothing else, and a storage over the files of
+///   [`Prepared::saves_dir`], created when missing. The error of `create`
+///   comes back as it is, with one exception: when the storage refused to
+///   open a record because another machine holds it, here or in another
+///   program, and `create` failed with that [`ErrorKind::Usage`], the error
+///   is `Usage` with the sentence the application shows. Any other `Usage`,
+///   such as a record name the storage does not take or a read past a
+///   record's end, is the core's and comes back unchanged.
+/// - For parts, the source and the storage their plans open now, each
+///   opened again at every start. A plan's failure and the error of
+///   `create` come back as they are: the plans are the platform's, and so
+///   is the sentence for a record another machine holds.
+pub fn start_with<M>(
+    prepared: &Prepared,
+    create: impl FnOnce(&CreateRequest<'_>) -> Result<M, Error>,
+) -> Result<M, Error> {
+    let options: Vec<(&str, &str)> = prepared
+        .options
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    match &prepared.source {
+        Source::File(opened) => {
+            let storage = Rc::new(Watched {
+                files: FileStorage::open(&opened.saves)?,
+                held: Cell::new(false),
+            });
+            let source = OneFile(prepared);
+            let shared = Rc::clone(&storage) as Rc<dyn Storage>;
+            create(&request(prepared, &options, &source, shared)).map_err(|error| {
+                if error.kind == ErrorKind::Usage && storage.held.get() {
+                    Error::new(
+                        ErrorKind::Usage,
+                        format!(
+                            "{} is already running in another machine, here or in another program, and its saved data is in use. Stop that machine first.",
+                            opened.file
+                        ),
+                    )
+                } else {
+                    error
+                }
+            })
+        }
+        Source::Parts { content, storage } => {
+            let source = content.open()?;
+            let storage = storage.open()?;
+            create(&request(prepared, &options, source.as_ref(), storage))
+        }
+    }
+}
+
+/// The request of one start of `prepared`.
+fn request<'a>(
+    prepared: &'a Prepared,
+    options: &'a [(&'a str, &'a str)],
+    content: &'a dyn ContentSource,
+    storage: Rc<dyn Storage>,
+) -> CreateRequest<'a> {
+    CreateRequest::new(
         prepared.platform,
         prepared.config.as_document(),
-        &source,
-        Rc::clone(&storage) as Rc<dyn Storage>,
-    );
-    prepared.core.create(&request).map_err(|error| {
-        if error.kind == ErrorKind::Usage && storage.held.get() {
-            Error::new(
-                ErrorKind::Usage,
-                format!(
-                    "{} is already running in another machine, here or in another program, and its saved data is in use. Stop that machine first.",
-                    prepared.file
-                ),
-            )
-        } else {
-            error
-        }
-    })
+        content,
+        storage,
+    )
+    .with_options(options)
 }
 
 #[cfg(test)]
