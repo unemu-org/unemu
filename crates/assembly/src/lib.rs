@@ -325,15 +325,18 @@ pub mod test_support {
     /// #UD handler's first instruction on a stack that overruns: from the
     /// reset vector it counts its starts in the byte at 0000:0500h and halts
     /// at the second. On the first it points INT 6 at F800:0040h, sets
-    /// SS:SP to 1000:FFFEh and executes 0F FF, an invalid opcode, as is the
-    /// handler. Each delivery pushes a 6-byte frame and retires nothing;
-    /// FFFEh is not a multiple of 6, so after 10,922 frames the next one
-    /// crosses the bottom of the stack, its fault escalates to a double
-    /// fault and then to shutdown, and the AT board resets the processor
-    /// (Intel 80286 Programmer's Reference Manual, §9.6.2 and Appendix B,
-    /// INT; IBM Personal Computer AT Technical Reference, System Board,
-    /// shutdown decoding). RAM survives the CPU reset, so the second start
-    /// halts. The bytes are this NASM listing (`nasm -f bin`, org 0):
+    /// SS:SP to 1000:FFFFh and executes 0F FF, an invalid opcode, as is the
+    /// handler. Each delivery pushes a 6-byte frame and retires nothing.
+    /// A real-mode frame wraps inside the segment and faults only where a
+    /// word sits at offset FFFFh: after 10,922 frames SP is 3, the next
+    /// frame's second word crosses the top of the segment, its fault
+    /// escalates to a double fault and then to shutdown, and the AT board
+    /// resets the processor (Intel 80286 Programmer's Reference Manual,
+    /// §9.6.2 and Appendix B, INT, which shuts down only at SP 1, 3 or 5;
+    /// IBM Personal Computer AT Technical Reference, System Board, shutdown
+    /// decoding). From an even SP the frames would wrap without a fault.
+    /// RAM survives the CPU reset, so the second start halts. The bytes are
+    /// this NASM listing (`nasm -f bin`, org 0):
     ///
     /// ```text
     /// 0000 FA               cli
@@ -346,7 +349,7 @@ pub mod test_support {
     /// 0016 C7061A0000F8     mov word [001Ah], 0F800h  ; INT 6 segment
     /// 001C B80010           mov ax, 1000h
     /// 001F 8ED0             mov ss, ax
-    /// 0021 BCFEFF           mov sp, 0FFFEh
+    /// 0021 BCFFFF           mov sp, 0FFFFh
     /// 0024 0FFF             (invalid opcode: #UD)
     /// 0026 F4               hlt
     /// 0040 0FFF             the handler: #UD again
@@ -363,7 +366,7 @@ pub mod test_support {
             0xC7, 0x06, 0x18, 0x00, 0x40, 0x00, // MOV WORD [0018h],0040h
             0xC7, 0x06, 0x1A, 0x00, 0x00, 0xF8, // MOV WORD [001Ah],0F800h
             0xB8, 0x00, 0x10, 0x8E, 0xD0, // MOV AX,1000h; MOV SS,AX
-            0xBC, 0xFE, 0xFF, // MOV SP,0FFFEh
+            0xBC, 0xFF, 0xFF, // MOV SP,0FFFFh
             0x0F, 0xFF, // #UD
             0xF4, // HLT
         ];

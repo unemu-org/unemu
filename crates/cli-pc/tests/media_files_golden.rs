@@ -193,7 +193,7 @@ fn command(
 #[test]
 fn freedos_reads_a_floppy_built_from_host_files() {
     assert!(include_str!("../../../Cargo.lock")
-        .contains("rev=e63c1321401893d8cd1377228965500c0a5d52fc"));
+        .contains("rev=6cb817b86c1fbf463f7aab8c0da1ce0eec3db0b7"));
     let (Some(_), Some(_)) = (
         fixtures::fixture("kiselev-bios/bios-xi8088.bin"),
         fixtures::fixture("freedos/freedos.img"),
@@ -278,7 +278,7 @@ fn freedos_reads_a_floppy_built_from_host_files() {
 #[test]
 fn freedos_enters_and_rebuilds_a_split_set_with_xcopy() {
     assert!(include_str!("../../../Cargo.lock")
-        .contains("rev=e63c1321401893d8cd1377228965500c0a5d52fc"));
+        .contains("rev=6cb817b86c1fbf463f7aab8c0da1ce0eec3db0b7"));
     let (Some(_), Some(mut boot_disk), Some(tools)) = (
         fixtures::fixture("kiselev-bios/bios-xi8088.bin"),
         fixtures::fixture("freedos/freedos.img"),

@@ -307,9 +307,12 @@ decodes through its high ROM alias: FF0000h–FFFFFFh duplicates the system ROM
 (FE0000h–FEFFFFh duplicates the E segment). A guest that turns A20 off and then
 resets only the CPU, by a shutdown or the 8042's reset pulse, would have that
 fetch masked to EFFFF0h, where the board decodes nothing: FFh bytes, #UD through
-the guest IVT and, with no room on the stack (SS:SP 0000:0002 in the reported
-case), another shutdown before any instruction retires. MEASURED by the
-maintainer: that stop with Windows 3.1 Standard mode under the open AT BIOS and
+the guest IVT and, with no room on the stack, another shutdown before any
+instruction retires (SS:SP 0000:0002 in the reported case, which shut down at
+the CPU pins before x86jit `6cb817b8`; since that pin a real-mode frame wraps
+inside the segment and the 80286 shuts down only at SP 1, 3 or 5, so at SP 2
+the #UD is delivered, and a handler that returns reloads CS with a real-mode
+base and reaches the low ROM copy). MEASURED by the maintainer: that stop with Windows 3.1 Standard mode under the open AT BIOS and
 under the IBM 5170 BIOS. INFERRED: real hardware reaches the BIOS here, because
 the guest runs on hardware; not ruled out is that the gate is on at this reset
 on hardware and an earlier divergence leaves it off here.
@@ -331,7 +334,8 @@ Tests: `assembly::test_support::a20_off_reset_rom` (an open ROM that turns the
 gate off through D1h, resets through a triple fault and through FEh, and checks
 the D0h read-back, the CMOS shutdown byte and the 1 MiB wrap after each reset),
 the machine-level window test, and `crates/pc-harness/tests/a20_off_reset_bios.rs`
-(an open boot sector that leaves SP at 2, resumed through shutdown code 0Ah by
+(an open boot sector that leaves SP at 1, so that without the window the
+#UD still shuts down, resumed through shutdown code 0Ah by
 the open AT BIOS and by the user-supplied IBM 5170 BIOS).
 
 Host image loading/readback and ISA DMA use physical memory directly and bypass CPU A20.

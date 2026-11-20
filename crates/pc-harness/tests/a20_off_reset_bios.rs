@@ -5,8 +5,9 @@
 //! both times the BIOS resumes it through the CMOS shutdown byte (code 0Ah,
 //! a jump through 0040:0067h without EOI). On the 80286 the reset fetch goes
 //! to FFFFF0h; the board's gate would turn it into EFFFF0h, where nothing
-//! answers, so before the reset-fetch window the processor took #UD at
-//! F000:FFF0 and shut down again and again (machine-config.md §A20 line and
+//! answers, so without the reset-fetch window, at SP 1, the processor takes
+//! #UD at F000:FFF0 and shuts down again and again: "64 resets within
+//! 0 steps, the last shutdown at f000:fff0" (machine-config.md §A20 line and
 //! System Control Port A, "Reset fetch with the gate off").
 //!
 //! IBM Personal Computer AT Technical Reference: System Board, Keyboard
@@ -26,7 +27,7 @@ use std::path::{Path, PathBuf};
 #[path = "support/fixtures.rs"]
 mod fixtures;
 
-const CPU_REV: &str = "e63c1321401893d8cd1377228965500c0a5d52fc";
+const CPU_REV: &str = "6cb817b86c1fbf463f7aab8c0da1ce0eec3db0b7";
 const OPEN_BIOS: &str = "unemu-at-bios/bios-unemu-at.bin";
 // The BIOS image of machines/at-games-open.toml.
 const OPEN_BIOS_SHA256: &str = "6938dc8b665fa120f33775163ab6bacc559389525db87adedf734416f9ef2442";
@@ -37,9 +38,16 @@ const CAP: u64 = 300_000_000;
 /// The boot sector (its first 97h bytes; the rest is zero up to the 55h AAh
 /// signature). The bytes are this NASM listing (`nasm -f bin`, org 7C00h);
 /// the whole 512-byte sector's SHA-256 is pinned by [`BOOT_SECTOR_SHA256`].
-/// Before each reset it leaves SP at 2, as the stop report showed, so a reset
-/// fetch that missed the ROM could not even deliver its #UD: the exception
-/// frame has no room, and the processor shuts down again. At each resume n
+/// Before each reset it leaves SP at 1, so a reset fetch that missed the ROM
+/// cannot deliver its #UD: the frame's second word would sit at offset FFFFh,
+/// across the top of the stack segment, and the processor shuts down again
+/// (Intel 80286 Programmer's Reference Manual, Appendix B, INT: a real-mode
+/// delivery shuts down at SP 1, 3 or 5 and wraps inside the segment at any
+/// other SP). The reported Windows 3.1 stop had SP at 2, which shut down
+/// while the CPU core required the whole frame to fit below SP; at 2 the #UD
+/// now delivers, and its handler's IRET reloads CS with a real-mode base,
+/// which reaches the low ROM copy and would hide the missing reset fetch. At
+/// each resume n
 /// (1, 2) it stores at 0510h + n the 8042 output port read back with
 /// command D0h and at 0530h + n the byte at FFFF:0610h after writing n to
 /// 0000:0600h (n when the gate wraps).
@@ -60,7 +68,7 @@ const CAP: u64 = 300_000_000;
 /// 7C22 E660             out 60h, al
 /// 7C24 E86300           call 7C8Ah
 /// 7C27 E85700           call 7C81h                ; shutdown code 0Ah
-/// 7C2A BC0200           mov sp, 2                 ; no room for an exception frame
+/// 7C2A BC0100           mov sp, 1                 ; a frame word would sit at FFFFh
 /// 7C2D 0F011E917C       lidt [7C91h]
 /// 7C32 CC               int3                      ; beyond the limit: shutdown
 /// 7C33 F4               hlt
@@ -88,7 +96,7 @@ const CAP: u64 = 300_000_000;
 /// 7C6C 80FB01           cmp bl, 1
 /// 7C6F 750D             jne 7C7Eh
 /// 7C71 E80D00           call 7C81h                ; shutdown code 0Ah
-/// 7C74 BC0200           mov sp, 2
+/// 7C74 BC0100           mov sp, 1                 ; a frame word would sit at FFFFh
 /// 7C77 B0FE             mov al, 0FEh              ; pulse the reset line
 /// 7C79 E664             out 64h, al
 /// 7C7B F4               hlt
@@ -111,18 +119,18 @@ const CAP: u64 = 300_000_000;
 const BOOT_CODE: &[u8] = &[
     0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xD0, 0xBC, 0x00, 0x7C, 0xC7, 0x06, 0x67, 0x04, 0x34, 0x7C,
     0xC7, 0x06, 0x69, 0x04, 0x00, 0x00, 0xE8, 0x71, 0x00, 0xB0, 0xD1, 0xE6, 0x64, 0xE8, 0x6A, 0x00,
-    0xB0, 0xDD, 0xE6, 0x60, 0xE8, 0x63, 0x00, 0xE8, 0x57, 0x00, 0xBC, 0x02, 0x00, 0x0F, 0x01, 0x1E,
+    0xB0, 0xDD, 0xE6, 0x60, 0xE8, 0x63, 0x00, 0xE8, 0x57, 0x00, 0xBC, 0x01, 0x00, 0x0F, 0x01, 0x1E,
     0x91, 0x7C, 0xCC, 0xF4, 0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xD0, 0xBC, 0x00, 0x7C, 0xFE, 0x06,
     0x00, 0x05, 0x8A, 0x1E, 0x00, 0x05, 0x30, 0xFF, 0xE8, 0x3F, 0x00, 0xB0, 0xD0, 0xE6, 0x64, 0xE4,
     0x64, 0xA8, 0x01, 0x74, 0xFA, 0xE4, 0x60, 0x88, 0x87, 0x10, 0x05, 0x88, 0x1E, 0x00, 0x06, 0xB8,
     0xFF, 0xFF, 0x8E, 0xC0, 0x26, 0xA0, 0x10, 0x06, 0x88, 0x87, 0x30, 0x05, 0x80, 0xFB, 0x01, 0x75,
-    0x0D, 0xE8, 0x0D, 0x00, 0xBC, 0x02, 0x00, 0xB0, 0xFE, 0xE6, 0x64, 0xF4, 0xEB, 0xFD, 0xF4, 0xEB,
+    0x0D, 0xE8, 0x0D, 0x00, 0xBC, 0x01, 0x00, 0xB0, 0xFE, 0xE6, 0x64, 0xF4, 0xEB, 0xFD, 0xF4, 0xEB,
     0xFD, 0xB0, 0x8F, 0xE6, 0x70, 0xB0, 0x0A, 0xE6, 0x71, 0xC3, 0xE4, 0x64, 0xA8, 0x02, 0x75, 0xFA,
     0xC3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
 /// SHA-256 of [`boot_sector`], the output of its NASM listing.
-const BOOT_SECTOR_SHA256: &str = "fadda0021475bc72c639e1ad2fb3568a344ef3780610a3ca0aeb0b07c1812372";
+const BOOT_SECTOR_SHA256: &str = "6872f80f1a05a8dcbf848af74cf77b3a96caef285894a005d6c73d5e3c4a1cad";
 
 fn boot_sector() -> Vec<u8> {
     let mut sector = vec![0; 512];

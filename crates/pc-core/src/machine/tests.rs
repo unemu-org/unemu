@@ -441,7 +441,7 @@ fn a_stall_in_exception_delivery_fails_the_machine_with_a_report() {
 }
 
 /// A guest whose #UD handler is itself an invalid opcode, on a stack that
-/// overruns (6-byte frames from SP FFFEh), shuts down after 10,922
+/// overruns (6-byte frames from SP FFFFh), shuts down after 10,922
 /// deliveries, as an 80286 does, and the board resets the processor: the ROM
 /// starts again from the reset vector, counts its second start in RAM and
 /// halts. No delivery stall is reported, so a guest that leaves protected
@@ -452,7 +452,7 @@ fn a_stall_that_overruns_its_stack_shuts_down_and_the_board_resets() {
     let rom = assembly::test_support::delivery_overrun_rom();
     assert_eq!(
         assembly::test_support::fixture_sha256(&rom),
-        "21c24a283923b82c03e0f837da6110bb1843285b319111c2307446a1087328db"
+        "10c34266f57445874cb2c8724d536944dcb7817c9b814ec563533c47fe8f290c"
     );
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {

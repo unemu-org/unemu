@@ -31,11 +31,16 @@ pub const DELIVERY_STALL_LIMIT: u32 = 1024;
 /// [`Cpu::run_steps`] call runs through before it reports
 /// [`CpuError::DeliveryStalled`]: 11 × 1024 = 11,264 deliveries. A frame on a
 /// 16-bit stack takes at least 6 bytes, so within ⌈65,536 / 6⌉ = 10,923
-/// deliveries the frames reach the bottom of the stack. Where SP is not a
-/// multiple of the frame size (or the limit is below FFFFh) the next frame
-/// overruns it and the processor shuts down, which the board answers with a
-/// reset (Intel 80286 Programmer's Reference Manual, §9.6.2 and Appendix B,
-/// INT); where it is, the frames wrap without a fault and the loop has no end.
+/// deliveries the frames reach the bottom of the stack. In real mode a frame
+/// wraps inside the segment and faults only where a word sits at offset
+/// FFFFh: from an odd SP a frame soon does (at SP 1, 3 or 5) and the
+/// processor shuts down, which the board answers with a reset (Intel 80286
+/// Programmer's Reference Manual, §9.6.2 and Appendix B, INT); from an even
+/// SP the frames wrap without a fault and the loop has no end. In protected
+/// mode the frame must fit: where SP is not a multiple of the frame size (or
+/// the limit is below FFFFh) the next frame overruns the stack and the
+/// processor shuts down; where it is, the frames wrap and the loop has no
+/// end.
 pub const STALL_RETURNS: u32 = 11;
 
 /// The linear address of byte `index` after a saved CS:IP whose linear
@@ -488,6 +493,22 @@ impl X86JitCpu {
                     index,
                 ))
             }),
+            regs: record.regs.as_deref().map(|regs| crate::DeliveryRegisters {
+                eax: regs.eax,
+                ebx: regs.ebx,
+                ecx: regs.ecx,
+                edx: regs.edx,
+                esi: regs.esi,
+                edi: regs.edi,
+                ebp: regs.ebp,
+                esp: regs.esp,
+                ds: regs.ds,
+                es: regs.es,
+                ss: regs.ss,
+                fs: regs.fs,
+                gs: regs.gs,
+                flags: regs.flags,
+            }),
         }
     }
 
@@ -877,10 +898,14 @@ impl Cpu for X86JitCpu {
     }
 
     /// The core's delivery log (`x86jit-core` spec.md §17.10, Delivery
-    /// log), which only its machine profiles keep.
+    /// log), which only its machine profiles keep, with the registers of
+    /// the interrupted code in every record.
     fn enable_delivery_log(&mut self, capacity: usize) -> Result<(), crate::DeliveryLogError> {
         self.cpu
-            .enable_delivery_log(capacity)
+            .enable_delivery_log_with(
+                capacity,
+                x86jit_core::DeliveryLogOptions::default().registers(true),
+            )
             .map_err(|error| crate::DeliveryLogError(error.to_string()))
     }
 
@@ -974,15 +999,17 @@ mod tests {
     }
 
     /// The delivery log: off by default; enabled, a software interrupt and a
-    /// #UD come back oldest first with their saved CS:IP and the bytes
-    /// there; a peek leaves them, a drain takes them; a twin without the log
-    /// retires the same instructions to the same state. An application
-    /// profile refuses the log.
+    /// #UD come back oldest first with their saved CS:IP, the bytes there
+    /// and the registers of the interrupted code (the INT's function number
+    /// in AH, SS:SP before the frame); a peek leaves them, a drain takes
+    /// them; a twin without the log retires the same instructions to the
+    /// same state. An application profile refuses the log.
     #[test]
     fn the_delivery_log_reports_software_interrupts_and_faults_without_changing_the_run() {
         let program = [
-            0xCD, 0x21, // 1000 INT 21h
-            0x0F, 0xFF, // 1002 invalid opcode: #UD
+            0xB4, 0x09, // 1000 MOV AH,09h
+            0xCD, 0x21, // 1002 INT 21h
+            0x0F, 0xFF, // 1004 invalid opcode: #UD
         ];
         let run = |log: bool| {
             let mut cpu = i286_guest(&program);
@@ -1011,10 +1038,12 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "1 software INT 21h vector 21 at 0000:1002 linear 001002 error - cpl 0->0 \
-                 bytes 0f ff 00 00 00 00 00 00",
-                "2 fault #UD vector 06 at 0000:1002 linear 001002 error - cpl 0->0 \
-                 bytes 0f ff 00 00 00 00 00 00",
+                "2 software INT 21h vector 21 at 0000:1004 linear 001004 error - cpl 0->0 \
+                 bytes 0f ff 00 00 00 00 00 00 ax 0900 bx 0000 cx 0000 dx 0000 si 0000 \
+                 di 0000 bp 0000 ds 0000 es 0000 ss:sp 0000:7000 flags 0002",
+                "3 fault #UD vector 06 at 0000:1004 linear 001004 error - cpl 0->0 \
+                 bytes 0f ff 00 00 00 00 00 00 ax 0900 bx 0000 cx 0000 dx 0000 si 0000 \
+                 di 0000 bp 0000 ds 0000 es 0000 ss:sp 0000:7000 flags 0002",
             ]
         );
         let mut drained = Vec::new();
@@ -1051,7 +1080,8 @@ mod tests {
         assert_eq!(
             records[0].to_string(),
             "1 fault #UD vector 06 at 0000:fffe linear 00fffe error - cpl 0->0 \
-             bytes 0f ff 11 22 33 44 55 66"
+             bytes 0f ff 11 22 33 44 55 66 ax 0000 bx 0000 cx 0000 dx 0000 si 0000 \
+             di 0000 bp 0000 ds 0000 es 0000 ss:sp 0000:7000 flags 0002"
         );
         assert_eq!(code_byte_address(0xF8010, 0x10, 3), 0xF8013);
         assert_eq!(code_byte_address(0xFFFFF, 0xFFFF, 1), 0xF0000);
@@ -1200,20 +1230,24 @@ mod tests {
         assert_eq!(cpu.reg(CpuReg::Rsp) & 0xFFFF, 0x9000);
     }
 
-    /// A #UD handler that is itself an invalid opcode, on a stack from SP
-    /// FFFEh: each delivery pushes a 6-byte frame (FLAGS, CS, IP), and FFFEh
-    /// is not a multiple of 6. After 10,922 frames the next one crosses the
-    /// bottom of the stack; that fault's own frame faults (double fault),
+    /// A #UD handler that is itself an invalid opcode: each delivery pushes
+    /// a 6-byte frame (FLAGS, CS, IP). In real mode, from SP FFFFh, 10,922
+    /// frames leave SP at 3, and the next one puts a word at offset FFFFh,
+    /// across the top of the segment; in protected mode, from SP FFFEh,
+    /// 10,922 frames leave SP at 2 and the next one has no room above the
+    /// bottom of the stack. That fault's own frame faults (double fault),
     /// and so does the double fault's: shutdown (Intel 80286 Programmer's
-    /// Reference Manual, §9.6.2 and Appendix B, INT). That is within the
-    /// window the backend runs through, so one call ends in Shutdown, the
-    /// stop the board answers with a reset, and no delivery stall is
-    /// reported. In real mode through the vector table and in protected
-    /// mode through an interrupt gate.
+    /// Reference Manual, §9.6.2 and Appendix B, INT, which in real mode
+    /// shuts down only at SP 1, 3 or 5). That is within the window the
+    /// backend runs through, so one call ends in Shutdown, the stop the
+    /// board answers with a reset, and no delivery stall is reported. In
+    /// real mode through the vector table and in protected mode through an
+    /// interrupt gate.
     #[test]
     fn a_stack_that_overruns_shuts_down_within_the_stall_window() {
         // Real mode: INT 6 at 0000:0018h leads to 0000:3000h; SS:SP is
-        // 1000:FFFEh, clear of the code and the vector table.
+        // 1000:FFFFh, clear of the code and the vector table. An even SP
+        // would wrap inside the segment without a fault.
         let mut real = X86JitCpu::new_i286_bare(
             0x100_0000,
             0,
@@ -1222,7 +1256,7 @@ mod tests {
                 ds: 0,
                 es: 0,
                 ss: 0x1000,
-                sp: 0xFFFE,
+                sp: 0xFFFF,
             },
         )
         .unwrap();
@@ -1235,9 +1269,9 @@ mod tests {
         gates_to(&mut protected, &[0x0F, 0xFF]);
         protected.write_mem(0x101C, &[0xFE, 0xFF]).unwrap();
         protected.write_mem(0x1021, &[0x0F, 0xFF]).unwrap();
-        for (label, cpu, retired, handler) in [
-            ("real", &mut real, 0, (0, 0x3000)),
-            ("protected", &mut protected, 10, (0x08, 0x1040)),
+        for (label, cpu, retired, handler, sp) in [
+            ("real", &mut real, 0, (0, 0x3000), 3),
+            ("protected", &mut protected, 10, (0x08, 0x1040), 2),
         ] {
             let run = cpu.run_steps(1_000_000, StepRunOptions::default()).unwrap();
             assert_eq!(run.stop, CpuStepStop::Exit(CpuStop::Shutdown), "{label}");
@@ -1248,8 +1282,8 @@ mod tests {
                 handler,
                 "{label}: the last frame went to the handler"
             );
-            // 10,922 frames of 6 bytes from FFFEh leave SP at 2.
-            assert_eq!(cpu.reg(CpuReg::Rsp) & 0xFFFF, 2, "{label}");
+            // 10,922 frames of 6 bytes from FFFFh leave SP at 3, from FFFEh at 2.
+            assert_eq!(cpu.reg(CpuReg::Rsp) & 0xFFFF, sp, "{label}");
         }
     }
 

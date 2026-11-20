@@ -25,6 +25,15 @@ fetch went to EFFFF0h, where the board decodes nothing, FFh bytes raised #UD, an
 0000:0002 the exception frame had no room, so the processor shut down again before retiring
 anything: "64 resets within 0 steps, the last shutdown at f000:fff0".
 
+Note, 2026-11-20 (`upc-f7j.21`): that shutdown at SP 2 came from the CPU core of the time, which
+required the whole real-mode frame to fit below SP. From x86jit `6cb817b8` on, a real-mode frame
+on the 80286 wraps inside the segment and only SP 1, 3 or 5 shuts down (I286 PRM Appendix B, INT),
+so at SS:SP 0000:0002 the #UD is delivered through the guest IVT; with the window off, a handler
+that returns reloads CS with a real-mode base and reaches the low ROM copy, the reset fetch still
+missing it. The open-BIOS test (`crates/pc-harness/tests/a20_off_reset_bios.rs`) therefore leaves
+SP at 1: with the window disabled it stops again with "64 resets within 0 steps, the last shutdown
+at f000:fff0", and with the window it resumes twice.
+
 MEASURED by the maintainer: that stop with Windows 3.1 in Standard mode, at its DOS prompt, under
 both the open AT BIOS and the user-supplied IBM 5170 BIOS. INFERRED: real hardware reaches the BIOS
 at this point, because the same guest runs on AT-class hardware. Not ruled out: on hardware the gate

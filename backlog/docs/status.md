@@ -5,6 +5,26 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — x86jit moves to `6cb817b8`; the exception trace shows the registers:**
+  (`upc-f7j.21`). Two x86jit changes: the delivery log can record the interrupted code's
+  registers with each delivery (xj-ir6.40 (x86jit)), and on the 80286/80386 machine models a
+  real-mode frame (a delivery, PUSHA, far CALL, IRET/RET/POPA) wraps inside the segment and
+  faults only where a word sits at offset FFFFh, so a delivery at an even SP no longer shuts
+  down; SP 1, 3 or 5 still does (xj-srh.27 (x86jit)). The machine enables the log with the
+  registers on whenever it enables it (Record exceptions, the report's log, `upcli
+  --trace-exceptions`), and every trace and report delivery line ends in `ax bx cx dx si di bp
+  ds es ss:sp flags` as the delivery began (for INT n the INT's inputs, SS:SP before the frame;
+  e-registers and FS/GS on an 80386); folding is unchanged and a folded entry shows its last
+  delivery's registers. Cost on the high-IRQ benchmark: none measurable (5.56–5.69 s with the
+  trail and the log against 5.55–5.66 s with the registers off). The ignored goldens pass
+  unchanged. Three tests relied on a shutdown at an even real-mode SP and now start from SP
+  FFFFh: pc-core's `a_stall_that_overruns_its_stack_shuts_down_and_the_board_resets` and the
+  exception trace's `a_fault_loop_folds_into_one_entry`, both on `delivery_overrun_rom` (its
+  SHA-256 re-pinned), and the backend's
+  `a_stack_that_overruns_shuts_down_within_the_stall_window`; the
+  open-BIOS A20 reset test leaves SP at 1 instead of 2, since at SP 2 the #UD of a missed reset
+  fetch is now delivered and a returning handler reaches the low ROM copy; with the window
+  disabled it again stops with "64 resets within 0 steps", and decision-42 records why.
 - **2026-11-20 — The PC provider's validation splits into a store half and a codec half:**
   (`upc-dfs.43.3`, stage B step S3; design/core-contract.md §14.3). No behaviour change.
   `pc-image`'s `prepare` first reads the store (descriptors, size limits, a ROM's source link,

@@ -55,7 +55,7 @@ fn second_disk() -> Vec<u8> {
 #[test]
 fn freedos_dir_observes_scheduled_second_floppy() {
     assert!(include_str!("../../../Cargo.lock")
-        .contains("rev=e63c1321401893d8cd1377228965500c0a5d52fc"));
+        .contains("rev=6cb817b86c1fbf463f7aab8c0da1ce0eec3db0b7"));
     let (Some(_), Some(_)) = (
         fixtures::fixture("kiselev-bios/bios-xi8088.bin"),
         fixtures::fixture("freedos/freedos.img"),

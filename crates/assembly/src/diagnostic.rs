@@ -454,9 +454,11 @@ mod tests {
 
     /// The report's deliveries on the open delivery ROM, run to its final
     /// halt: the #UD, INT 60h, IRQ 0 and the protected-mode #GP, oldest
-    /// first; a twin without the log halts at the same retired count and
-    /// virtual time with the same CPU, and its report says the deliveries
-    /// were not recorded.
+    /// first, each with the registers of the interrupted code (ES as
+    /// [`crate::bios`] seeds it, F000h, which the ROM never loads); a twin
+    /// without the log halts at the same retired count and virtual time
+    /// with the same CPU, and its report says the deliveries were not
+    /// recorded.
     #[test]
     fn the_report_lists_the_deliveries_of_the_open_delivery_rom() {
         let run = |log: bool| {
@@ -497,10 +499,10 @@ mod tests {
             section,
             [
                 "delivery the last 4 of 4 exceptions and interrupts in 4 entries, oldest first (0 dropped before they were read)",
-                "delivery 12 fault #UD vector 06 at f800:002e linear 0f802e error - cpl 0->0 bytes 0f ff cd 60 b0 11 e6 20",
-                "delivery 18 software INT 60h vector 60 at f800:0032 linear 0f8032 error - cpl 0->0 bytes b0 11 e6 20 b0 08 e6 21",
-                "delivery 37 irq IRQ 0 vector 08 at f800:0054 linear 0f8054 error - cpl 0->0 bytes fa b0 ff e6 21 2e 0f 01",
-                "delivery 54 fault #GP vector 0d at 0008:007b linear 0f807b error 00f8 cpl 0->0 bytes 8e d8 f4 55 89 e5 83 46",
+                "delivery 12 fault #UD vector 06 at f800:002e linear 0f802e error - cpl 0->0 bytes 0f ff cd 60 b0 11 e6 20 ax 0000 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es f000 ss:sp 0000:7000 flags 0046",
+                "delivery 18 software INT 60h vector 60 at f800:0032 linear 0f8032 error - cpl 0->0 bytes b0 11 e6 20 b0 08 e6 21 ax 0000 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es f000 ss:sp 0000:7000 flags 0046",
+                "delivery 37 irq IRQ 0 vector 08 at f800:0054 linear 0f8054 error - cpl 0->0 bytes fa b0 ff e6 21 2e 0f 01 ax 0010 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es f000 ss:sp 0000:7000 flags 0246",
+                "delivery 54 fault #GP vector 0d at 0008:007b linear 0f807b error 00f8 cpl 0->0 bytes 8e d8 f4 55 89 e5 83 46 ax 00f8 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es f000 ss:sp 0010:7000 flags 0046",
             ],
             "{text}"
         );

@@ -78,10 +78,10 @@ fn the_trace_of_one_delivery_of_each_kind_is_exact() {
     assert_eq!(
         after_header(&lines, 4),
         [
-            "delivery 12 fault #UD vector 06 at f800:002e linear 0f802e error - cpl 0->0 bytes 0f ff cd 60 b0 11 e6 20",
-            "delivery 18 software INT 60h vector 60 at f800:0032 linear 0f8032 error - cpl 0->0 bytes b0 11 e6 20 b0 08 e6 21",
-            "delivery 37 irq IRQ 0 vector 08 at f800:0054 linear 0f8054 error - cpl 0->0 bytes fa b0 ff e6 21 2e 0f 01",
-            "delivery 54 fault #GP vector 0d at 0008:007b linear 0f807b error 00f8 cpl 0->0 bytes 8e d8 f4 55 89 e5 83 46",
+            "delivery 12 fault #UD vector 06 at f800:002e linear 0f802e error - cpl 0->0 bytes 0f ff cd 60 b0 11 e6 20 ax 0000 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es 0000 ss:sp 0000:7000 flags 0046",
+            "delivery 18 software INT 60h vector 60 at f800:0032 linear 0f8032 error - cpl 0->0 bytes b0 11 e6 20 b0 08 e6 21 ax 0000 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es 0000 ss:sp 0000:7000 flags 0046",
+            "delivery 37 irq IRQ 0 vector 08 at f800:0054 linear 0f8054 error - cpl 0->0 bytes fa b0 ff e6 21 2e 0f 01 ax 0010 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es 0000 ss:sp 0000:7000 flags 0246",
+            "delivery 54 fault #GP vector 0d at 0008:007b linear 0f807b error 00f8 cpl 0->0 bytes 8e d8 f4 55 89 e5 83 46 ax 00f8 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es 0000 ss:sp 0010:7000 flags 0046",
             "summary  4 deliveries, 4 of them in the entries kept, 0 dropped before they were read",
             "summary  #UD: 1",
             "summary  #GP: 1",
@@ -107,8 +107,8 @@ fn diag_at_lists_the_last_deliveries() {
     assert!(
         errors.contains(
             "\ndelivery the last 2 of 2 exceptions and interrupts in 2 entries, oldest first (0 dropped before they were read)\n\
-             delivery 12 fault #UD vector 06 at f800:002e linear 0f802e error - cpl 0->0 bytes 0f ff cd 60 b0 11 e6 20\n\
-             delivery 18 software INT 60h vector 60 at f800:0032 linear 0f8032 error - cpl 0->0 bytes b0 11 e6 20 b0 08 e6 21\n\
+             delivery 12 fault #UD vector 06 at f800:002e linear 0f802e error - cpl 0->0 bytes 0f ff cd 60 b0 11 e6 20 ax 0000 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es 0000 ss:sp 0000:7000 flags 0046\n\
+             delivery 18 software INT 60h vector 60 at f800:0032 linear 0f8032 error - cpl 0->0 bytes b0 11 e6 20 b0 08 e6 21 ax 0000 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es 0000 ss:sp 0000:7000 flags 0046\n\
              pic      master "
         ),
         "{errors}"
@@ -130,8 +130,8 @@ fn a_fault_loop_folds_into_one_entry() {
     assert_eq!(
         after_header(&lines, 2),
         [
-            "delivery 12 fault #UD vector 06 at f800:0024 linear 0f8024 error - cpl 0->0 bytes 0f ff f4 00 00 00 00 00",
-            "delivery 12..12 x10921 fault #UD vector 06 at f800:0040 linear 0f8040 error - cpl 0->0 bytes 0f ff 00 00 00 00 00 00",
+            "delivery 12 fault #UD vector 06 at f800:0024 linear 0f8024 error - cpl 0->0 bytes 0f ff f4 00 00 00 00 00 ax 1000 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es 0000 ss:sp 1000:ffff flags 0097",
+            "delivery 12..12 x10921 fault #UD vector 06 at f800:0040 linear 0f8040 error - cpl 0->0 bytes 0f ff 00 00 00 00 00 00 ax 1000 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es 0000 ss:sp 1000:0009 flags 0097",
             "summary  10922 deliveries, 10922 of them in the entries kept, 0 dropped before they were read",
             "summary  #UD: 10922",
             "stopped: halt",

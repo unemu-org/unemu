@@ -115,7 +115,7 @@ impl CliPlatform for PcPlatform<'_> {
             "       upcli machine check FILE [--allow-unlisted-firmware] [--rom-dir DIR]...\n",
             "       upcli run --machine FILE [--store DIR | --no-store] [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--diag-at N] [--trace-exceptions] [--print CARD] [--allow-unlisted-firmware]\n",
             "         --diag-at N writes the machine's diagnostic report to stderr when the run reaches step N (the unit of --max-steps), then runs on\n",
-            "         --trace-exceptions writes the exceptions and interrupts the guest takes to stderr when the run ends: the last 10000 entries, consecutive identical deliveries folded into one with a count (the bytes at CS:IP as at the end of each run slice), and a summary per vector\n",
+            "         --trace-exceptions writes the exceptions and interrupts the guest takes to stderr when the run ends: the last 10000 entries, each with the registers of the interrupted code (the bytes at CS:IP as at the end of each run slice), consecutive identical deliveries folded into one with a count and the last one's registers, and a summary per vector\n",
             "       upcli image import FILE --store DIR --tag NAME:TAG [--create] [--no-compress] [--rom-dir DIR]... [--recover MEDIUM=tip|MEDIUM=generation:N]... [--min-app-version X.Y.Z]\n",
             "         --min-app-version (here, on image media import and on image firmware import and edit) raises the oldest unemupc the image declares it needs: never below what this release computes, never above this release\n",
         ),

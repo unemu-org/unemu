@@ -1197,10 +1197,13 @@ recording to stderr when the run ends, before the `stopped: ...` line: the
 last 10,000 entries, oldest first, each with the retired count, the kind
 (fault, trap, software, irq, nmi), the mnemonic (`#UD`, `#GP`, `INT 21h`,
 `IRQ 0`, `NMI` …) and vector, the saved CS:IP and its linear address, the
-error code, the CPL before and after, and the 8 bytes at the saved CS:IP
-(memory only, never a device, read at the end of the run slice);
+error code, the CPL before and after, the 8 bytes at the saved CS:IP
+(memory only, never a device, read at the end of the run slice), and the
+registers of the interrupted code when the delivery began (`ax bx cx dx si
+di bp ds es ss:sp flags`, the INT's inputs for a software interrupt);
 consecutive identical deliveries fold into one entry with their retired
-range and count (`delivery 103..600100 x100000 fault #UD …`), and a summary
+range and count (`delivery 103..600100 x100000 fault #UD …`), showing the
+last one's registers, and a summary
 gives the exact total, the dropped count and a count per mnemonic. The
 desktop's Record exceptions writes the same text. Off, nothing changes; on,
 the run's retired count and every guest effect are the same. The format is

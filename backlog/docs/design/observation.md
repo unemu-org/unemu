@@ -764,15 +764,20 @@ profile that is the only budget exit short of the budget.
 `X86JitCpu::run_steps` runs on through 11 such returns in one call, 11,264
 deliveries, as long as no instruction retires. On an 80286 every delivery
 pushes a frame of at least 6 bytes, so within ⌈65,536 / 6⌉ = 10,923
-deliveries the frames reach the bottom of a 16-bit stack. When SP is not a
+deliveries the frames reach the bottom of a 16-bit stack. In real mode the
+frame wraps inside the segment and faults only where a word sits at offset
+FFFFh, which from an odd SP happens within the bound (a delivery at SP 1, 3
+or 5); in protected mode the whole frame must fit, and when SP is not a
 multiple of the frame size, or the stack's limit is below FFFFh, the next
-frame overruns it: that fault escalates to a double fault and then to
+frame overruns the stack. That fault escalates to a double fault and then to
 shutdown (Intel 80286 Programmer's Reference Manual, §9.6.2 and Appendix B,
 INT), and the run ends in Shutdown, which the AT board answers with a CPU
-reset as for any shutdown. Only when SP is a multiple of the frame size does
-a 64 KiB stack wrap without a fault forever; that stall, which neither
-retires nor shuts down within the bound, becomes `CpuError::DeliveryStalled`
-and fails the machine like a refusal. One call through the whole window
+reset as for any shutdown. From an even SP in real mode, or one that is a
+multiple of the frame size in protected mode, a 64 KiB stack wraps without a
+fault forever, so a real-mode handler that faults in a loop from an even SP
+stalls instead of shutting down; that stall, which neither retires nor shuts
+down within the bound, becomes `CpuError::DeliveryStalled` and fails the
+machine like a refusal. One call through the whole window
 took about 7 ms in a release build (measured on the CPU backend's test), so
 the desktop never waits longer than that inside one run. The report is
 taken where the core stopped, at the handler's first instruction, so `code`
@@ -964,7 +969,10 @@ build, three interleaved runs each) the guest took 5.22–5.44 s plain and
 5.26–5.64 s with the trail, within the noise, but 5.53–5.98 s with the
 trail and the report's delivery log, 6 to 10 per cent more: the CPU takes a
 slower exit from its compiled code while a delivery log exists, and every
-slice drains it. So the desktop keeps the trail on from every Start and
+slice drains it. Recording the registers with every delivery adds nothing
+measurable: at x86jit `6cb817b8` the same load took 5.56–5.69 s with the
+trail and the log with registers, 5.55–5.66 s with the log's registers
+option off, and 5.20–5.49 s plain. So the desktop keeps the trail on from every Start and
 starts the delivery log only with the first Save machine report or with
 Record exceptions (§Exception and interrupt deliveries). On the FreeDOS
 boot, with few interrupts, neither shows: 1.04–1.24 s with both over six
@@ -1065,22 +1073,25 @@ IVT or the IDT (`ExceptionDelivery::InGuest`), so the host never sees them: a
 guest that faults in a loop, or whose #GP handler fixes things up and returns,
 looks from outside like any running guest. x86jit keeps, on request, a
 per-vCPU log of the last N deliveries (`x86jit-core` spec.md §17.10, Delivery
-log; pinned since `e63c1321`), outside `CpuState` and checkpoints, and with it
-off nothing in execution, retirement or generated code changes. The backend
+log; pinned since `e63c1321`, with the registers of the interrupted code
+added in `42a7f272` and pinned since `6cb817b8`), outside `CpuState` and checkpoints, and with it off
+nothing in execution, retirement or generated code changes; the registers
+option changes none of them either. The backend
 exposes it as `Cpu::enable_delivery_log`, `drain_deliveries` and
 `peek_deliveries` (`crates/cpu/src/delivery.rs`, `X86JitCpu`); only the
 machine profiles keep one, an application profile refuses.
 
-When a diagnostic asks, the machine enables the log, at its largest capacity
-of 65,536 records (a slice with at most one delivery per step loses none, and
+When a diagnostic asks, the machine enables the log with the registers on,
+at its largest capacity of 65,536 records (a slice with at most one delivery
+per step loses none, and
 any loss is counted as dropped; the log grows only with the records it
 holds), and moves its records after every run slice into its delivery tap
 (`crates/machine/src/delivery_tap.rs`): a ring of the last 64 entries for the
 report (`Machine::enable_delivery_log`) and, while one runs, a recording
 (`Machine::start_delivery_recording`), a ring of the last 10,000 entries with
 exact totals per vector since it began. Both rings fold consecutive identical
-deliveries (the same kind, vector, saved CS:IP and error code; the bytes are
-not compared) into one entry with a count and the retired range, so a guest
+deliveries (the same kind, vector, saved CS:IP and error code; the bytes and
+the registers are not compared) into one entry with a count and the retired range, so a guest
 that loops on one fault takes one entry and what came before the loop stays
 in the ring. A recording started after the report's log counts from its own
 start. The slice that fails with a delivery stall is read too. The tap lives
@@ -1091,7 +1102,7 @@ slice.
 Each delivery is one line:
 
 ```text
-delivery 54 fault #GP vector 0d at 0008:007b linear 0f807b error 00f8 cpl 0->0 bytes 8e d8 f4 55 89 e5 83 46
+delivery 54 fault #GP vector 0d at 0008:007b linear 0f807b error 00f8 cpl 0->0 bytes 8e d8 f4 55 89 e5 83 46 ax 00f8 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es 0000 ss:sp 0010:7000 flags 0046
 ```
 
 | Field | Content |
@@ -1105,10 +1116,11 @@ delivery 54 fault #GP vector 0d at 0008:007b linear 0f807b error 00f8 cpl 0->0 b
 | `error 00f8` | the error code pushed; `-` when none (every real-mode delivery) |
 | `cpl 0->0` | the privilege level before and after; 0 outside protected mode |
 | `bytes …` | the 8 bytes at the saved CS:IP, read at the end of the run slice from RAM and ROM through the CPU's own map, the offset wrapping at the end of the 16-bit segment; `dv` is a device window (not read), `--` unmapped |
+| `ax … flags …` | the registers of the interrupted code when the delivery began, after the raising instruction's own effects and before the frame push, stack switch and FLAGS changes of the delivery: `ax bx cx dx si di bp ds es`, `ss:sp` (the interrupted stack, before the frame) and `flags` (the image PUSHF would form); for a software interrupt the INT's inputs, for a fault the state its handler is entered from, for an IRQ or NMI the state after the last instruction that completed. On an 80386 the general registers are `eax …` with 8 digits, `fs` and `gs` follow `es`, and `ss:esp` and `flags` have 8 digits. Absent when the CPU did not record them |
 
 A folded entry gives the retired counts of the first and the last delivery
-of the run and their number, then the latest delivery's fields, bytes
-included. A range such as `12..12 x10921` is a run of deliveries at one
+of the run and their number, then the latest delivery's fields, bytes and
+registers included. A range such as `12..12 x10921` is a run of deliveries at one
 retired count: each faulted again in its handler before any instruction
 retired.
 
@@ -1149,7 +1161,7 @@ IRQs, software interrupts, each by number):
 ```text
 trace    exceptions and interrupts the guest took from retired 0 to retired 61
 trace    the last 4 entries, oldest first; an entry with a range and xN stands for N identical deliveries in a row
-delivery 12 fault #UD vector 06 at f800:002e linear 0f802e error - cpl 0->0 bytes 0f ff cd 60 b0 11 e6 20
+delivery 12 fault #UD vector 06 at f800:002e linear 0f802e error - cpl 0->0 bytes 0f ff cd 60 b0 11 e6 20 ax 0000 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es 0000 ss:sp 0000:7000 flags 0046
 …
 summary  4 deliveries, 4 of them in the entries kept, 0 dropped before they were read
 summary  #UD: 1
@@ -1171,19 +1183,28 @@ listing and SHA-256 are pinned beside it) takes one delivery of each kind and
 halts; its exact trace, in `crates/cli-pc/tests/exception_trace.rs`:
 
 ```text
-delivery 12 fault #UD vector 06 at f800:002e linear 0f802e error - cpl 0->0 bytes 0f ff cd 60 b0 11 e6 20
-delivery 18 software INT 60h vector 60 at f800:0032 linear 0f8032 error - cpl 0->0 bytes b0 11 e6 20 b0 08 e6 21
-delivery 37 irq IRQ 0 vector 08 at f800:0054 linear 0f8054 error - cpl 0->0 bytes fa b0 ff e6 21 2e 0f 01
-delivery 54 fault #GP vector 0d at 0008:007b linear 0f807b error 00f8 cpl 0->0 bytes 8e d8 f4 55 89 e5 83 46
+delivery 12 fault #UD vector 06 at f800:002e linear 0f802e error - cpl 0->0 bytes 0f ff cd 60 b0 11 e6 20 ax 0000 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es 0000 ss:sp 0000:7000 flags 0046
+delivery 18 software INT 60h vector 60 at f800:0032 linear 0f8032 error - cpl 0->0 bytes b0 11 e6 20 b0 08 e6 21 ax 0000 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es 0000 ss:sp 0000:7000 flags 0046
+delivery 37 irq IRQ 0 vector 08 at f800:0054 linear 0f8054 error - cpl 0->0 bytes fa b0 ff e6 21 2e 0f 01 ax 0010 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es 0000 ss:sp 0000:7000 flags 0246
+delivery 54 fault #GP vector 0d at 0008:007b linear 0f807b error 00f8 cpl 0->0 bytes 8e d8 f4 55 89 e5 83 46 ax 00f8 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es 0000 ss:sp 0010:7000 flags 0046
 ```
 
 The #UD saves the invalid opcode `0f ff` itself, INT 60h the instruction
 after it, IRQ0 the CLI after the HLT it ended, the #GP the faulting
-`MOV DS,AX` in protected mode with selector F8h as its error code; the
-report of the same run lists the same four
+`MOV DS,AX` in protected mode with selector F8h as its error code. The
+registers follow the listing: `XOR AX,AX` leaves ZF and PF set and CLI
+clears IF (`flags 0046`) on the stack 0000:7000 the guest set, for the #UD
+and INT 60h alike; the IRQ0 tick ends the HLT after `MOV AL,10h` and STI
+(`ax 0010`, `flags 0246`); the #GP leaves DS as it was and shows the selector
+in AX and the protected-mode stack 0010:7000. The report of the same ROM
+lists the same four, with `es f000` where the machine starts from
+`assembly::bios`'s seed, which sets ES to F000h (the ROM never loads ES)
 (`assembly::diagnostic` tests). `delivery_overrun_rom` (a #UD handler that
-faults until its stack overruns and the CPU shuts down) records two entries,
-the first #UD and the 10,921 at the handler folded, and a summary of 10,922
+faults until its stack overruns and the CPU shuts down, from SP FFFFh: a
+real-mode frame wraps inside the segment and the 80286 shuts down only where
+a frame word would sit at offset FFFFh, at SP 1, 3 or 5) records two entries,
+the first #UD and the 10,921 at the handler folded, the folded one with the
+registers of its last delivery (`ss:sp 1000:0009`), and a summary of 10,922
 #UDs; `delivery_stall_rom` two entries and a summary of 11,264 #GPs before its
 stall stop; both stop as without the recording. `delivery_ring_rom` takes
 12,000 software interrupts that never fold, alternating INT 60h and INT 61h:
@@ -1194,7 +1215,9 @@ from the desktop alike (`crates/window/src/shell.rs`,
 writes it at each trigger and finds the guest halting at the same retired
 count with the recording on or off). On a bare 80286, fifty distinct INT 21h
 and then a loop of 100,000 identical #UDs leave 51 entries, the fifty and one
-folded entry `x100000` with the loop's retired range, in the report and the
+folded entry `x100000` with the loop's retired range and the registers of
+its last #UD (CX and DX change on every pass and do not break the fold), in
+the report and the
 recording alike (`machine::delivery_tap` tests). The twin test of the report
 keeps the log and a recording on one of two machines and finds the same CPU,
 time and device snapshots. The open-BIOS FreeDOS boot of

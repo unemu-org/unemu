@@ -18,7 +18,9 @@
 //! Both rings fold consecutive identical deliveries (the same kind, vector,
 //! saved CS:IP and error code) into one entry with a count and the retired
 //! range, so a guest looping on one fault takes one entry and the entries
-//! before the loop stay. The totals count every delivery.
+//! before the loop stay. The registers of the interrupted code, which the
+//! CPU records with every delivery here, do not break a fold: a folded
+//! entry shows those of its last delivery. The totals count every delivery.
 //!
 //! The log lives outside the CPU state the guest executes on and the tap
 //! outside the CPU: retired counts, virtual time and every guest effect are
@@ -46,7 +48,8 @@ pub const RECORDED_ENTRIES: usize = 10_000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeliveryEntry {
     /// `count` consecutive identical deliveries, the first at
-    /// `first_retired`; `last` is the latest, with its bytes at CS:IP.
+    /// `first_retired`; `last` is the latest, with its bytes at CS:IP and
+    /// its registers.
     Deliveries {
         first_retired: u64,
         count: u64,
@@ -58,7 +61,7 @@ pub enum DeliveryEntry {
 
 impl DeliveryEntry {
     /// Whether `record` repeats this entry's delivery: the same kind,
-    /// vector, saved CS:IP and error code.
+    /// vector, saved CS:IP and error code, whatever the registers.
     fn repeats(&self, record: &Delivery) -> bool {
         matches!(self, Self::Deliveries { last, .. }
             if (last.kind, last.vector, last.cs, last.ip, last.error_code)
@@ -426,6 +429,7 @@ mod tests {
             cpl_before: 0,
             cpl_after: 0,
             bytes: [Peek::Value(0x90); cpu::delivery::DELIVERY_BYTES],
+            regs: None,
         }
     }
 
@@ -514,8 +518,9 @@ mod tests {
 
     /// Fifty distinct software interrupts, then a loop of 100,000 identical
     /// #UD faults: the report's last entries and the recording both show
-    /// the fifty, oldest first, and one folded entry with the loop's count
-    /// and retired range; the totals are exact.
+    /// the fifty, oldest first, and one folded entry with the loop's count,
+    /// retired range and the registers of its last fault; the totals are
+    /// exact.
     #[test]
     fn a_fault_loop_folds_into_one_entry_after_the_distinct_deliveries() {
         let mut program = vec![0xBC, 0x00, 0xF0]; // 1000 MOV SP,0F000h
@@ -566,6 +571,17 @@ mod tests {
         let fold = format!("delivery {first}..{last} x100000 fault #UD vector 06 at 0000:106d ");
         assert!(
             recent.entries[50].to_string().starts_with(&fold),
+            "{}",
+            recent.entries[50]
+        );
+        // CX and DX change on every pass and do not break the fold, which
+        // shows the registers of its last #UD: the second inner loop's last
+        // pass, CX 1 and DX 1, with DEC DX's flags (2 to 1: none set).
+        assert!(
+            recent.entries[50].to_string().ends_with(
+                " ax 0000 bx 0000 cx 0001 dx 0001 si 0000 di 0000 bp 0000 ds 0000 es 0000 \
+                 ss:sp 0000:f000 flags 0002"
+            ),
             "{}",
             recent.entries[50]
         );

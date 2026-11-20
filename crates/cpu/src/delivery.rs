@@ -12,7 +12,8 @@
 //! retired-instruction count when the handler was entered, the kind of
 //! delivery, the vector, the return address the delivery saved (CS:IP and its
 //! linear address), the error code it pushed, the privilege level before and
-//! after, and the eight bytes at the saved CS:IP.
+//! after, the eight bytes at the saved CS:IP, and the registers of the
+//! interrupted code ([`DeliveryRegisters`]) when the backend records them.
 //!
 //! What the saved IP names depends on the kind (Intel 80286 Programmer's
 //! Reference Manual, Chapter 9, Interrupts and Exceptions; Intel SDM Vol. 3A
@@ -164,6 +165,96 @@ pub struct Delivery {
     /// the end of the run slice; the offset wraps at the end of a 16-bit
     /// segment as the 80286's IP does.
     pub bytes: [Peek<u8>; DELIVERY_BYTES],
+    /// The registers of the interrupted code at the delivery; `None` when
+    /// the backend did not record them.
+    pub regs: Option<DeliveryRegisters>,
+}
+
+/// The registers of the interrupted code at one delivery, as the CPU core's
+/// delivery log records them (`x86jit-core` spec.md §17.10, Delivery log):
+/// each holds its value when the delivery began, after the raising
+/// instruction's own effects and before the frame push, the stack switch
+/// and the FLAGS changes the delivery makes. For a software interrupt these
+/// are the INT's inputs (AH holding a DOS or BIOS function number, say);
+/// for a fault, the state the handler is entered from; for an IRQ or NMI,
+/// the state after the last instruction that completed. SS:SP is the
+/// interrupted stack, before the frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeliveryRegisters {
+    /// The general registers. The 80286 fills the low 16 bits (AX, BX, ...)
+    /// and leaves the high 16 zero; the 80386 fills all 32.
+    pub eax: u32,
+    pub ebx: u32,
+    pub ecx: u32,
+    pub edx: u32,
+    pub esi: u32,
+    pub edi: u32,
+    pub ebp: u32,
+    /// The interrupted code's stack pointer: on a 16-bit stack its low 16
+    /// bits are SP.
+    pub esp: u32,
+    pub ds: u16,
+    pub es: u16,
+    pub ss: u16,
+    /// FS and GS, which only the 80386 has; `None` on the 80286.
+    pub fs: Option<u16>,
+    pub gs: Option<u16>,
+    /// The FLAGS image (EFLAGS on the 80386) as PUSHF would form it.
+    pub flags: u32,
+}
+
+impl DeliveryRegisters {
+    /// Whether these are an 80386's 32-bit registers, which is when FS and
+    /// GS are present.
+    fn wide(&self) -> bool {
+        self.fs.is_some() || self.gs.is_some()
+    }
+}
+
+/// `ax 0000 bx 0000 cx 0000 dx 0000 si 0000 di 0000 bp 0000 ds 0000 es 0000
+/// ss:sp 0000:0000 flags 0000` with the 80286's 16-bit registers; with the
+/// 80386's, `eax 00000000` and so on, `fs` and `gs` after `es`, `ss:esp
+/// 0000:00000000` and `flags 00000000`.
+impl fmt::Display for DeliveryRegisters {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let wide = self.wide();
+        let general = [
+            ("ax", self.eax),
+            ("bx", self.ebx),
+            ("cx", self.ecx),
+            ("dx", self.edx),
+            ("si", self.esi),
+            ("di", self.edi),
+            ("bp", self.ebp),
+        ];
+        for (index, (name, value)) in general.into_iter().enumerate() {
+            let space = if index == 0 { "" } else { " " };
+            if wide {
+                write!(f, "{space}e{name} {value:08x}")?;
+            } else {
+                write!(f, "{space}{name} {:04x}", value as u16)?;
+            }
+        }
+        write!(f, " ds {:04x} es {:04x}", self.ds, self.es)?;
+        for (name, selector) in [("fs", self.fs), ("gs", self.gs)] {
+            if let Some(selector) = selector {
+                write!(f, " {name} {selector:04x}")?;
+            }
+        }
+        if wide {
+            write!(
+                f,
+                " ss:esp {:04x}:{:08x} flags {:08x}",
+                self.ss, self.esp, self.flags
+            )
+        } else {
+            write!(
+                f,
+                " ss:sp {:04x}:{:04x} flags {:04x}",
+                self.ss, self.esp as u16, self.flags as u16
+            )
+        }
+    }
 }
 
 impl Delivery {
@@ -184,10 +275,12 @@ impl Delivery {
 
 /// One line, without a label: `retired kind name vector at cs:ip linear
 /// error cpl bytes`, for example `1234 fault #UD vector 06 at f800:0024
-/// linear 0f8024 error - cpl 0->0 bytes 0f ff f4 00 00 00 00 00`. A byte in
-/// a device window reads `dv`, one where nothing is mapped `--`. The format
-/// is described in `backlog/docs/design/observation.md` §Exception and
-/// interrupt deliveries.
+/// linear 0f8024 error - cpl 0->0 bytes 0f ff f4 00 00 00 00 00`, then the
+/// [`DeliveryRegisters`] when the record has them (` ax 0000 bx 0000 ...
+/// ss:sp 0000:7000 flags 0046`). A byte in a device window reads `dv`, one
+/// where nothing is mapped `--`. The format is described in
+/// `backlog/docs/design/observation.md` §Exception and interrupt
+/// deliveries.
 impl fmt::Display for Delivery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -213,7 +306,10 @@ impl fmt::Display for Delivery {
                 Peek::Unmapped | Peek::BeyondLimit => f.write_str(" --")?,
             }
         }
-        Ok(())
+        match &self.regs {
+            Some(regs) => write!(f, " {regs}"),
+            None => Ok(()),
+        }
     }
 }
 
@@ -249,7 +345,60 @@ mod tests {
             cpl_before: 0,
             cpl_after: 0,
             bytes: [Peek::Value(0); DELIVERY_BYTES],
+            regs: None,
         }
+    }
+
+    fn registers() -> DeliveryRegisters {
+        DeliveryRegisters {
+            eax: 0x0900,
+            ebx: 0x1234,
+            ecx: 0x0003,
+            edx: 0x0105,
+            esi: 0x0080,
+            edi: 0xFFFE,
+            ebp: 0x7FF0,
+            esp: 0x6FFA,
+            ds: 0x1000,
+            es: 0xB800,
+            ss: 0x2000,
+            fs: None,
+            gs: None,
+            flags: 0x0246,
+        }
+    }
+
+    /// A record with registers appends them after its bytes: the 80286's
+    /// 16-bit names and SS:SP; the 80386's e-registers, FS and GS and
+    /// SS:ESP. A record without them ends at its bytes.
+    #[test]
+    fn a_line_with_registers_appends_them_after_the_bytes() {
+        let mut record = delivery(DeliveryKind::Software, 0x21);
+        record.regs = Some(registers());
+        assert_eq!(
+            record.to_string(),
+            "1234 software INT 21h vector 21 at f800:0024 linear 0f8024 error - cpl 0->0 \
+             bytes 00 00 00 00 00 00 00 00 \
+             ax 0900 bx 1234 cx 0003 dx 0105 si 0080 di fffe bp 7ff0 ds 1000 es b800 \
+             ss:sp 2000:6ffa flags 0246"
+        );
+        let wide = DeliveryRegisters {
+            eax: 0x8000_0900,
+            esp: 0x0001_6FFA,
+            fs: Some(0x0030),
+            gs: Some(0),
+            flags: 0x0004_0246,
+            ..registers()
+        };
+        assert_eq!(
+            wide.to_string(),
+            "eax 80000900 ebx 00001234 ecx 00000003 edx 00000105 esi 00000080 \
+             edi 0000fffe ebp 00007ff0 ds 1000 es b800 fs 0030 gs 0000 \
+             ss:esp 2000:00016ffa flags 00040246"
+        );
+        assert!(delivery(DeliveryKind::Fault, 6)
+            .to_string()
+            .ends_with(" bytes 00 00 00 00 00 00 00 00"));
     }
 
     #[test]

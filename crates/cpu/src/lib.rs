@@ -48,7 +48,9 @@ pub mod diagnostic;
 pub mod stop_report;
 pub mod x86jit_backend;
 
-pub use delivery::{Delivery, DeliveryCounts, DeliveryKind, DeliveryLogError, DeliveryName};
+pub use delivery::{
+    Delivery, DeliveryCounts, DeliveryKind, DeliveryLogError, DeliveryName, DeliveryRegisters,
+};
 pub use diagnostic::CpuDiagnostic;
 pub use stop_report::CpuStopReport;
 pub use x86jit_backend::X86JitCpu;
@@ -230,15 +232,19 @@ pub enum CpuError {
     /// its budget, and virtual time would stand still. The core returns such
     /// a run every 1024 deliveries; the backend runs on through 11 of those
     /// returns in one call (`x86jit_backend::STALL_RETURNS`). On the 80286
-    /// each delivery pushes a frame of at least 6 bytes: when SP is not a
-    /// multiple of the frame size, or the stack's limit is below FFFFh, the
-    /// frames overrun the bottom of the stack within the bound, the fault in
-    /// that delivery escalates to a double fault and then to shutdown, and
-    /// the run ends in [`CpuStop::Shutdown`], the stop the AT board answers
-    /// with a reset (Intel 80286 Programmer's Reference Manual, §9.6.2 and
-    /// Appendix B, INT). When SP is a multiple of the frame size, a 64 KiB
-    /// stack wraps without a fault and the loop has no end; only that stall
-    /// is reported, with the deliveries it took. `cs:ip` is where the last
+    /// each delivery pushes a frame of at least 6 bytes. In real mode the
+    /// frame wraps inside the segment and faults only where a word sits at
+    /// offset FFFFh, which from an odd SP happens within the bound; in
+    /// protected mode the frame must fit, and when SP is not a multiple of
+    /// the frame size, or the stack's limit is below FFFFh, the frames
+    /// overrun the bottom of the stack within the bound. The fault in that
+    /// delivery escalates to a double fault and then to shutdown, and the
+    /// run ends in [`CpuStop::Shutdown`], the stop the AT board answers with
+    /// a reset (Intel 80286 Programmer's Reference Manual, §9.6.2 and
+    /// Appendix B, INT). From an even SP in real mode, or one that is a
+    /// multiple of the frame size in protected mode, a 64 KiB stack wraps
+    /// without a fault and the loop has no end; only that stall is
+    /// reported, with the deliveries it took. `cs:ip` is where the last
     /// delivery went: the handler's first instruction, which the CPU still
     /// holds, so the stop report shows its bytes. See
     /// `backlog/docs/design/observation.md` §CPU stop report.
@@ -524,7 +530,9 @@ pub trait Cpu {
 
     /// Start a log of the last `capacity` exceptions and interrupts the CPU
     /// delivers in the guest (1 to [`delivery::DELIVERY_LOG_MAX`]); see
-    /// [`delivery`]. A log already kept is replaced, unread. The log stays
+    /// [`delivery`]. A backend that can records the registers of the
+    /// interrupted code with each delivery ([`Delivery::regs`]). A log
+    /// already kept is replaced, unread. The log stays
     /// outside the state the guest executes on: execution, retired counts
     /// and every guest effect are the same with it on or off. The default
     /// refuses, for a backend that delivers nothing in the guest.
