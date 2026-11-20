@@ -2,7 +2,7 @@
 //! Source-located adapter ROM diagnostics; firmware design §6, rules 11–14.
 
 use assembly::ConfigError;
-use machine_file::{lower, parse_toml, parse_yaml, ImageReader, Origins};
+use machine_file::{lower, parse_toml, parse_yaml, ImageReader, Origins, YamlOrigins};
 use sha2::{Digest, Sha256};
 use std::{io, path::Path};
 

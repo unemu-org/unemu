@@ -74,7 +74,8 @@ planner='
 # Crates whose change can alter emulated behaviour; a change to one of them
 # selects the golden tier.
 def emulation_crates: ["assembly", "audio", "bus", "chipset", "cpu", "device",
-  "devices", "machine", "machine-file", "media", "testkit", "unemu-pc-core", "video"];
+  "devices", "machine", "machine-file", "media", "pc-config", "testkit", "unemu-pc-core",
+  "video"];
 # Files that hold the machine runners and the disk builder the goldens drive,
 # and the command line the front-end goldens drive: of the neutral command
 # line its dispatch and the journal tools a golden runs (no golden drives its

@@ -29,6 +29,7 @@ members = [
     "crates/pc-ui",
     "crates/media",
     "crates/machine-file",
+    "crates/pc-config",
     "crates/image-store",
     "crates/registry",
     "crates/pc-image",
@@ -96,6 +97,7 @@ chipset = { path = "crates/chipset", version = "0.0.3" }
 cpu = { path = "crates/cpu", version = "0.0.3" }
 machine = { path = "crates/machine", version = "0.0.3" }
 machine-file = { path = "crates/machine-file", version = "0.0.3" }
+pc-config = { path = "crates/pc-config", version = "0.0.3" }
 media = { path = "crates/media", version = "0.0.3" }
 devices = { path = "crates/devices", version = "0.0.3" }
 video = { path = "crates/video", version = "0.0.3" }

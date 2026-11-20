@@ -1996,6 +1996,7 @@ dependencies = [
  "image-store",
  "machine",
  "media",
+ "pc-config",
  "serde",
  "serde-saphyr",
  "sha2",
@@ -2662,6 +2663,17 @@ dependencies = [
  "redox_syscall 0.5.18",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "pc-config"
+version = "0.0.3"
+dependencies = [
+ "assembly",
+ "serde",
+ "sha2",
+ "thiserror 1.0.69",
+ "toml",
 ]
 
 [[package]]

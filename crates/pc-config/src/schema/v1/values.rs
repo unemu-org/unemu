@@ -130,7 +130,8 @@ named_values! {
 }
 
 impl CardKind {
-    pub(crate) fn descriptor(self) -> assembly::descriptors::CardKind {
+    /// The assembly descriptor of this card kind.
+    pub fn descriptor(self) -> assembly::descriptors::CardKind {
         use assembly::descriptors::CardKind;
         match self {
             Self::Mda => CardKind::Mda,

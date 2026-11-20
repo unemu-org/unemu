@@ -12,174 +12,35 @@
 //! images remain inline. Frontend loads retain verified disk descriptors through assembly.
 //! Assembly owns hardware validation. Inheritance resolves before lowering.
 //! This crate does not model hardware registers.
+//!
+//! The schema, its TOML decoder and the lowering are `pc-config`'s, the part
+//! of a machine description that touches no host
+//! (`backlog/docs/design/core-contract.md` §14.2.1); this crate re-exports
+//! each of their names at its old path and adds what touches the host: the
+//! YAML reader, `extends` and presets, journal path checks, firmware
+//! discovery and the firmware-package lookup, the host's image reader and the
+//! loaders.
 
-use std::{fmt, ops::Range, path::Path, path::PathBuf};
-
-use serde::Deserialize;
+use std::path::{Path, PathBuf};
 
 mod firmware_discovery;
 pub mod firmware_package;
-mod integrity;
+#[cfg(test)]
 mod lower;
 mod origin;
 mod paths;
-pub mod pc_names;
 mod resolve;
-pub mod schema;
 mod source;
 mod yaml;
 
-pub use integrity::{lower, lower_with_options};
-pub use lower::{ImageReader, JournalBase, LowerError};
-pub use origin::{Origin, Origins};
+pub use origin::YamlOrigins;
+pub use pc_config::{
+    lower, lower_with_options, parse_toml, pc_names, schema, ImageReader, JournalBase, LowerError,
+    MachineFile, Origin, Origins, ParseError,
+};
 pub use resolve::resolve;
 
-pub use schema::v1::MachineFile;
-
-pub(crate) const MAX_MACHINE_FILE_BYTES: usize = 1_048_576;
-
-pub(crate) fn check_size(path: &Path, length: usize) -> Result<(), ParseError> {
-    if length > MAX_MACHINE_FILE_BYTES {
-        return Err(ParseError::new(
-            path,
-            None,
-            "machine file exceeds size limit of 1048576 bytes",
-            None,
-        ));
-    }
-    Ok(())
-}
-
-/// A format-neutral diagnostic with optional source position and snippet.
-#[derive(Debug, thiserror::Error)]
-pub struct ParseError {
-    path: PathBuf,
-    line_column: Option<(usize, usize)>,
-    message: String,
-    snippet: Option<String>,
-    span: Option<Range<usize>>,
-}
-
-impl ParseError {
-    /// Construct a diagnostic without retaining a format-specific error chain.
-    pub fn new(
-        path: impl Into<PathBuf>,
-        line_column: Option<(usize, usize)>,
-        message: impl Into<String>,
-        snippet: Option<String>,
-    ) -> Self {
-        Self {
-            path: path.into(),
-            line_column,
-            message: message.into(),
-            snippet,
-            span: None,
-        }
-    }
-
-    fn from_toml(path: &Path, input: &str, source: toml::de::Error) -> Self {
-        let span = source.span();
-        let prefix = span.as_ref().and_then(|span| input.get(..span.start));
-        let line_column = prefix.and_then(|prefix| {
-            let line = prefix.bytes().filter(|&byte| byte == b'\n').count() + 1;
-            let column = prefix.rsplit('\n').next()?.chars().count() + 1;
-            Some((line, column))
-        });
-        let snippet = prefix.and_then(|prefix| {
-            let start = prefix.rfind('\n').map_or(0, |index| index + 1);
-            let line = input.get(start..)?.split('\n').next()?;
-            let column = prefix.get(start..)?.chars().count();
-            Some(source_snippet(line, column))
-        });
-        let mut error = Self::new(path, line_column, source.message(), snippet);
-        error.span = span;
-        error
-    }
-
-    /// The path supplied by the caller; parsing never resolves it.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// One-based line and character column, when the parser supplies a position.
-    pub fn line_column(&self) -> Option<(usize, usize)> {
-        self.line_column
-    }
-
-    /// The diagnostic without file, position or snippet decoration.
-    pub fn message(&self) -> &str {
-        &self.message
-    }
-
-    /// A bounded source window and a caret, when available.
-    pub fn snippet(&self) -> Option<&str> {
-        self.snippet.as_deref()
-    }
-
-    /// The parser's byte range, when available, including missing-field spans.
-    pub fn span(&self) -> Option<Range<usize>> {
-        self.span.clone()
-    }
-}
-
-fn source_snippet(line: &str, column: usize) -> String {
-    const CONTEXT: usize = 40;
-
-    let line = line.strip_suffix('\r').unwrap_or(line);
-    let length = line.chars().count();
-    let column = column.min(length);
-    let first = column.saturating_sub(CONTEXT);
-    let last = column.saturating_add(CONTEXT + 1).min(length);
-    let mut text = String::new();
-    let mut padding = String::new();
-    if first > 0 {
-        text.push_str("...");
-        padding.push_str("   ");
-    }
-    for (index, character) in line.chars().enumerate().skip(first).take(last - first) {
-        text.push(character);
-        if index < column {
-            padding.push(if character == '\t' { '\t' } else { ' ' });
-        }
-    }
-    if last < length {
-        text.push_str("...");
-    }
-    format!("{text}\n{padding}^")
-}
-
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: ", self.path.display())?;
-        if let Some((line, column)) = self.line_column {
-            write!(f, "line {line}, column {column}: ")?;
-        }
-        f.write_str(&self.message)?;
-        if let Some(snippet) = &self.snippet {
-            write!(f, "\n{snippet}")?;
-        }
-        Ok(())
-    }
-}
-
-/// Parse one TOML layer without I/O, merging, defaults or hardware validation.
-///
-/// The version peek intentionally ignores other fields, so a newer schema is
-/// diagnosed before its fields are interpreted using the current schema.
-pub fn parse_toml(path: impl AsRef<Path>, input: &str) -> Result<MachineFile, ParseError> {
-    check_size(path.as_ref(), input.len())?;
-    #[derive(Deserialize)]
-    struct SchemaPeek {
-        schema: schema::v1::SchemaVersion,
-    }
-
-    let parse = || -> Result<MachineFile, toml::de::Error> {
-        let peek: SchemaPeek = toml::from_str(input)?;
-        let _version = peek.schema;
-        toml::from_str(input)
-    };
-    parse().map_err(|source| ParseError::from_toml(path.as_ref(), input, source))
-}
+use pc_config::{check_size, source_snippet, MAX_MACHINE_FILE_BYTES};
 
 /// Parse one hardened YAML layer into the same schema used by TOML.
 pub fn parse_yaml(path: impl AsRef<Path>, input: &str) -> Result<MachineFile, ParseError> {
@@ -241,7 +102,7 @@ pub struct LoadedMachine {
     pub config: assembly::MachineConfig,
     /// Card ids in file order, paired with their assembly roles.
     pub cards: Vec<(String, assembly::DeviceId)>,
-    diagnostics: lower::AssemblyDiagnostics,
+    diagnostics: pc_config::AssemblyDiagnostics,
     options: assembly::AssemblyOptions,
     bases: std::collections::BTreeMap<PathBuf, media::VerifiedBase>,
 }
@@ -366,7 +227,7 @@ impl ImageReader for FileImageReader {
     }
 
     fn verify_journal_base(&mut self, path: &Path) -> std::io::Result<JournalBase> {
-        media::VerifiedBase::open(path).map(|base| JournalBase::from(&base))
+        media::VerifiedBase::open(path).map(|base| journal_base(&base))
     }
 
     fn read_journal_base(&mut self, path: &Path) -> std::io::Result<Vec<u8>> {
@@ -401,16 +262,14 @@ impl ImageReader for FileImageReader {
 }
 
 /// What the lowering needs of a verified base; the caller keeps the base.
-impl From<&media::VerifiedBase> for JournalBase {
-    fn from(base: &media::VerifiedBase) -> Self {
-        JournalBase {
-            length: base.identity().base_length,
-            sha256: base.identity().base_digest,
-        }
+pub fn journal_base(base: &media::VerifiedBase) -> JournalBase {
+    JournalBase {
+        length: base.identity().base_length,
+        sha256: base.identity().base_digest,
     }
 }
 
-/// The reader of `MachineFile::describe`: it sizes an image from the host's
+/// The reader of [`Describe::describe`]: it sizes an image from the host's
 /// file metadata and reads nothing.
 struct MetadataReader;
 
@@ -426,12 +285,18 @@ impl ImageReader for MetadataReader {
     }
 }
 
-impl MachineFile {
+/// `MachineFile::describe`, which sizes ROMs from the host's file metadata:
+/// `pc-config`'s `MachineFile::describe_with` over the host.
+pub trait Describe {
     /// Describe resolved settings through the normal lowering rules without reading or
     /// hashing image bytes or opening journals. Unknown extents stay pending; known
     /// catalogue sizes or file metadata determine ROM placement. This draft cannot
     /// authorize execution. See `backlog/docs/design/machine-images.md` §6.
-    pub fn describe(&self, origins: &Origins) -> Result<assembly::capabilities::Draft, LowerError> {
+    fn describe(&self, origins: &Origins) -> Result<assembly::capabilities::Draft, LowerError>;
+}
+
+impl Describe for MachineFile {
+    fn describe(&self, origins: &Origins) -> Result<assembly::capabilities::Draft, LowerError> {
         self.describe_with(origins, &mut MetadataReader)
     }
 }
@@ -457,10 +322,10 @@ impl ImageReader for LaunchImageReader<'_> {
         use media::SectorSource;
         if let Some(base) = self.bases.get(path) {
             base.check_unchanged()?;
-            return Ok(JournalBase::from(base));
+            return Ok(journal_base(base));
         }
         let base = media::VerifiedBase::open(path)?;
-        let answer = JournalBase::from(&base);
+        let answer = journal_base(&base);
         self.bases.insert(path.into(), base);
         Ok(answer)
     }
@@ -634,7 +499,8 @@ impl PreparedMachineFile {
             memory: Some(&self.firmware_images),
             ..LaunchImageReader::default()
         };
-        let (config, diagnostics) = lower::lower_tracked(document, origins, &mut reader, options)?;
+        let (config, diagnostics) =
+            pc_config::lower_tracked(document, origins, &mut reader, options)?;
         let cards = document
             .card
             .iter()

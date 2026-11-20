@@ -2,7 +2,9 @@
 //! Synthetic system ROM parts, inheritance and integrity; machine-files § User-supplied split system BIOS.
 
 use assembly::{AssemblyOptions, ImageSource};
-use machine_file::{lower_with_options, parse_toml, parse_yaml, ImageReader, MachineFile, Origins};
+use machine_file::{
+    lower_with_options, parse_toml, parse_yaml, ImageReader, MachineFile, Origins, YamlOrigins,
+};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,

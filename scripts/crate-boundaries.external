@@ -32,29 +32,30 @@ emulation: cfg-if (run): sha2's conditional compilation macro; pure Rust, no hos
 emulation: cpufeatures (run): sha2 asks the processor once which SHA instructions it has; no file, no clock, no thread
 emulation: libc (run): declarations of the host C library, reached through cpufeatures on AArch64 Linux, Android, Apple and LoongArch64 Linux targets (one capability query) and through media on Unix (file flags and error numbers, which leave with the journal split, core-contract.md §12.4)
 
-# The disk-layer descriptor and the FAT12 builder's formats, reached only
-# through media (the allowed crossing assembly → media). All leave with the
-# journal split (core-contract.md §12.5, step 11 of §12.10).
-emulation: serde (run): media's disk-layer descriptor and FAT12 builder formats; host-side code in a crate the core links until the journal split
-emulation: serde_core (run): serde's core traits, through media until the journal split
-emulation: toml (run): media's disk-layer descriptor format, until the journal split
-emulation: toml_datetime (run): toml's date and time values, through media until the journal split
-emulation: toml_parser (run): toml's parser, through media until the journal split
-emulation: toml_writer (run): toml's writer, through media until the journal split
-emulation: serde_spanned (run): toml's spanned values, through media until the journal split
-emulation: winnow (run): toml's parser combinators, through media until the journal split
-emulation: indexmap (run): in cargo metadata's resolve through toml's weak `indexmap?/std` feature; not compiled for the core; leaves with media
-emulation: hashbrown (run): in cargo metadata's resolve through indexmap, itself there only through toml's weak `indexmap?/std`; not compiled for the core; leaves with media
-emulation: equivalent (run): in cargo metadata's resolve through indexmap, itself there only through toml's weak `indexmap?/std`; not compiled for the core; leaves with media
-emulation: foldhash (run): in cargo metadata's resolve through hashbrown and indexmap, there only through toml's weak `indexmap?/std`; not compiled for the core; leaves with media
-emulation: memchr (run): in cargo metadata's resolve through winnow's weak `memchr?/std` feature; not compiled for the core; leaves with media
+# The PC config codec: pc-config reads the machine schema and, from S4,
+# reads and writes the stored PC config, both TOML (core-contract.md §14.2.1). media reaches
+# the same crates for its disk-layer descriptor and FAT12 builder formats
+# until the journal split (§12.5, step 11 of §12.10).
+emulation: serde (run): the PC config codec (pc-config): the machine schema's model and the stored config's (from S4)
+emulation: serde_core (run): serde's core traits, for the PC config codec
+emulation: toml (run): the PC config codec (pc-config): the machine schema and the stored config (from S4) are TOML
+emulation: toml_datetime (run): toml's date and time values, for the PC config codec
+emulation: toml_parser (run): toml's parser, for the PC config codec
+emulation: toml_writer (run): toml's writer, for the PC config codec
+emulation: serde_spanned (run): toml's spanned values, which the PC config codec reads for source positions
+emulation: winnow (run): toml's parser combinators, for the PC config codec
+emulation: indexmap (run): in cargo metadata's resolve through toml's weak `indexmap?/std` feature; not compiled for the core
+emulation: hashbrown (run): in cargo metadata's resolve through indexmap, itself there only through toml's weak `indexmap?/std`; not compiled for the core
+emulation: equivalent (run): in cargo metadata's resolve through indexmap, itself there only through toml's weak `indexmap?/std`; not compiled for the core
+emulation: foldhash (run): in cargo metadata's resolve through hashbrown and indexmap, there only through toml's weak `indexmap?/std`; not compiled for the core
+emulation: memchr (run): in cargo metadata's resolve through winnow's weak `memchr?/std` feature; not compiled for the core
 
 # Build time: derive macros and one build script. They run on the build host
 # and are not linked into the core.
 emulation: thiserror-impl (build): thiserror's derive macro
-emulation: serde_derive (build): serde's derive macro, through media until the journal split
+emulation: serde_derive (build): serde's derive macro, for the PC config codec
 emulation: proc-macro2 (build): token streams for the derive macros
 emulation: quote (build): code generation for the derive macros
-emulation: syn (build): Rust syntax for the derive macros; two versions today, the second leaves with media
+emulation: syn (build): Rust syntax for the derive macros; two versions, version 3 through serde_derive for the PC config codec
 emulation: unicode-ident (build): identifier tables for proc-macro2
 emulation: version_check (build): generic-array's build script reads the compiler version

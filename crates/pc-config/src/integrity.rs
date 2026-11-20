@@ -5,7 +5,7 @@
 use crate::{ImageReader, LowerError, MachineFile, Origins};
 
 /// Lower a complete document, retaining the defining pin's source in mismatches.
-/// Resolve inheritance first with [`crate::resolve`]. Assembly owns hardware
+/// Resolve inheritance first with `machine-file`'s `resolve`. Assembly owns hardware
 /// validation; image reads and hashing remain in the lowering implementation.
 pub fn lower<R: ImageReader>(
     document: &MachineFile,

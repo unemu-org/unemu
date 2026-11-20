@@ -21,6 +21,7 @@ use assembly::capabilities::{self as caps, Draft, Value};
 use assembly::{CmosLayout, FirmwareEntry};
 use image_store::Digest;
 use library_model::{listing::ImageRow, save_image::SaveAsImage};
+use machine_file::Describe;
 use pc_image::create::{Package, PackageRom};
 use pc_image::revision::{Plan, Source};
 use std::{cell::RefCell, collections::BTreeMap};

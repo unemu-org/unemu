@@ -11,6 +11,7 @@
 
 use assembly::capabilities::{self as caps, Choice, Domain, Draft, Severity, Value};
 use image_store::{firmware::Rom, Digest, Store};
+use machine_file::Describe;
 use pc_image::create::{
     self, Chs, Ems, Hardware, NewImage, Package, PackageRom, Sb16, Serial, Video,
 };

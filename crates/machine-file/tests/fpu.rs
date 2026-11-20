@@ -5,7 +5,7 @@
 use std::{io, path::Path};
 
 use assembly::*;
-use machine_file::{lower, parse_toml, parse_yaml, ImageReader, Origins, ParseError};
+use machine_file::{lower, parse_toml, parse_yaml, ImageReader, Origins, ParseError, YamlOrigins};
 
 fn probe_rom() -> Vec<u8> {
     let code = [

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! YAML lowering, path and syntax-equivalence integration tests.
 
-use machine_file::{lower, parse_toml, parse_yaml, ImageReader, MachineFile, Origins};
+use machine_file::{lower, parse_toml, parse_yaml, ImageReader, MachineFile, Origins, YamlOrigins};
 use std::{
     io,
     path::{Path, PathBuf},

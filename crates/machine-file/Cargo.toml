@@ -15,6 +15,7 @@ layer = "pc"
 [dependencies]
 image-store = { path = "../image-store", version = "0.0.3" }
 assembly.workspace = true
+pc-config.workspace = true
 media.workspace = true
 sha2.workspace = true
 serde.workspace = true
@@ -23,5 +24,6 @@ serde-saphyr.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+pc-config = { workspace = true, features = ["test-support"] }
 assembly = { workspace = true, features = ["test-support"] }
 machine.workspace = true

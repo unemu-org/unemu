@@ -5,6 +5,20 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — `pc-config`: the machine schema and its lowering move below the contract:**
+  (`upc-dfs.43.2`, stage B step S2; design/core-contract.md §14.3). No behaviour change. The new
+  `emulation` crate `pc-config` holds the machine schema, its TOML decoder, the source origins
+  with their TOML half and the lowering to `assembly::MachineConfig`; it opens no file and
+  forbids unsafe code. `machine-file` depends on it, re-exports every moved name at its old path
+  and keeps what touches the host (YAML, `extends`, firmware discovery, `FileImageReader`, the
+  loaders). Four things changed shape because another crate's type cannot gain methods or a
+  foreign trait impl there: `Origins::from_yaml` and `MachineFile::describe` are the traits
+  `YamlOrigins` and `Describe` of `machine-file` (callers import them),
+  `JournalBase::from(&VerifiedBase)` is `machine_file::journal_base`, and the merge helpers of
+  `Origins` and the lowering's diagnostics context became public for `machine-file`. The boundary check places `pc-config` in the emulation layer
+  with the allow list unchanged; two self-test fixtures plant `pc-config → machine-file` and
+  `pc-config → media`. `pc-config`'s dependency tree still holds `media` through `assembly`
+  until the journal split.
 - **2026-11-19 — The journal sits on a record of the contract:** (`upc-dfs.35`;
   design/core-contract.md §12.5 move 1, step 9 of §12.10, §14.4). `media::JournalMedia` keeps a
   floppy, IDE or CMOS journal in one `unemu_core_api::Record` and opens no file: it reads,

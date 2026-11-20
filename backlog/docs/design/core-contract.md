@@ -3260,13 +3260,17 @@ contract reaches none.
 | `digest`, `block-buffer`, `crypto-common`, `generic-array`, `typenum`, `cfg-if` | `sha2` | Pure Rust; no host access |
 | `cpufeatures` | `sha2` | Asks the processor once which SHA instructions it has. No file, no clock, no thread |
 | `libc` | `cpufeatures` on AArch64 Linux, Android and Apple targets and on LoongArch64 Linux; `media` on Unix | Declarations of the host's C library. Through `cpufeatures` it is one capability query on targets that have a C library by definition. Through `media` it is file flags and error numbers, and leaves with the journal split (§12.4) |
-| `serde`, `serde_core`, `toml`, `toml_datetime`, `toml_parser`, `toml_writer`, `serde_spanned`, `winnow`, `indexmap`, `hashbrown`, `equivalent`, `foldhash`, `memchr` | `media` only | The disk-layer descriptor and the FAT12 builder's formats. Host-side code today inside a crate the core links. All thirteen leave with the journal split |
-| Build time: `thiserror-impl`, `serde_derive`, `proc-macro2`, `quote`, `syn` (two versions), `unicode-ident`, `version_check` | derive macros and one build script | They run on the build host and are not linked into the core. `serde_derive` and the second `syn` leave with `media` |
+| `serde`, `serde_core`, `toml`, `toml_datetime`, `toml_parser`, `toml_writer`, `serde_spanned`, `winnow`, `indexmap`, `hashbrown`, `equivalent`, `foldhash`, `memchr` | `media`; since S2 also `pc-config` | The disk-layer descriptor and the FAT12 builder's formats. Host-side code today inside a crate the core links. Since S2 of §14.3 the PC config codec, `pc-config`, declares `serde` and `toml`, so all thirteen stay after the journal split, for the codec (corrected 2026-11-20, S2) |
+| Build time: `thiserror-impl`, `serde_derive`, `proc-macro2`, `quote`, `syn` (two versions), `unicode-ident`, `version_check` | derive macros and one build script | They run on the build host and are not linked into the core. `serde_derive` and the second `syn` (version 3, its dependency) stay for `pc-config` after the journal split (corrected 2026-11-20, S2) |
 
 After the journal split the emulation layer's run-time list is 13 crates:
 `thiserror`, `x86jit-core`, `iced-x86`, `lazy_static`, `sha2` and its
 seven, and `libc` on the four target families above (MEASURED: the same
-graph walked without `media`). No emulation crate declares an external
+graph walked without `media`). (Corrected 2026-11-20, S2: since S2 of §14.3
+`pc-config` reaches the thirteen crates of the `serde` and `toml` row too, so
+after the journal split the list is those 13 and these 13, 26 crates, with
+`libc` only through `cpufeatures`; at build time `serde_derive` and `syn` 3
+stay.) No emulation crate declares an external
 test dependency today (MEASURED).
 
 **The check.** `scripts/crate-boundaries.sh` gains a second input and a
@@ -3884,7 +3888,7 @@ tests with the code they test. Sizes are ASSUMED.
 | 8 | **Contract 0.2.** The types of §12.5 in `unemu-core-api`; `Content::File`, `CreateRequest::session` and the path of `WriteTarget::Kept` go; `CONTRACT` is 0.2 and `PcCore` states 0.2; a storage in memory behind `test-support`. Since §13 this step is made in the contract's repository together with the additions of §13.2 (steps 4 and 5 of §13.6), and this repository moves its pin in step 7 there | None: `create` and `add_medium` still answer `Unsupported` | The contract's tests: a record's append, sync, truncate; a replacement that is committed, dropped, and failed in both ways; `drives` refuses a 0.1 core. The contract's lines leave the host guard's list, and the guard then refuses `std::fs` and `std::path` in the contract |
 | 9 | **Done.** **The journal over records, inside `media`** (move 1 of §12.5). As landed: `JournalMedia` keeps its journal in one record and opens no file: it scans by `size` and `read_at`, cuts an invalid tail with `truncate`, confirms with `sync`, creates a journal by committing a replacement that holds only the header, and rewrites retained history through a replacement it reads back before `commit`. The record is the contract's `Record` plus one seam of the journal's file record (`media::store::JournalRecord`, crate-private): a retention replacement whose host calls go through the offline tools' `ToolIo`, so their failures stay injectable; any other record ignores it. After a retention commit fails with `StorageUncertain`, the journal reads the record back (reads still work then) and takes the new contents as in place when the record has their length and their header, whose anchor the old contents cannot have; it then reports the new numbering, as it did before for a file whose rename took place and whose directory sync failed. New API: `JournalMedia::open_record(Box<dyn Record>, &VerifiedBase, length, SinkStatus)` and `media::JournalFile`, a journal file as a contract `Record` (`JournalFile::open(path, base identity, base metadata)`; `Usage` when the lock is held, `Storage` otherwise, the message naming the step; an existing file with no bytes is refused, as the path constructors refuse it, because the publication protocol never leaves one; its creation commit publishes only the header of the base it was opened for, and refuses another with `Usage`), which is what §14.4 item 1 asks for and what the storage plan of §14.2.4 opens per record; it takes the base's identity because a creation leftover is removed only when it holds a prefix of that journal's header, and the plan has the identity from its content table. The journal's file code (`HostFilesystem`, the `FILE.lock` sidecar, header publication through `FILE.create-N.tmp` and a hard link that never replaces a file, retention through `FILE.retain-N.tmp` with the journal's exact mode and a rename, the leftover cleanup, `platform_sync`) moved unchanged into `media::journal_file` as that record; the path constructors (`open`, `open_verified`, `open_with_base_metadata`, …) are thin wrappers over it, and no caller in `assembly`, `pc-image`, `cli-core` or the offline tools changed. How journal files map to records: one record is one `.upfj` file, named by the storage's table and not by its path (§12.9, corrected 2026-11-19); its lock `FILE.lock` (§14.6 Q8) and its temporaries are the record's own and are never records. The file record keeps the host calls in their order: its `size` seeks to the end, which also places the next append there, and a read seeks to its offset, so the model traces of `sink_tests.rs` (lock, open, header creation, path check, cleanup, directory sync, seeks, reads, writes, barriers, cut) and every failure's operation name ("lock", "publish header", "directory sync", "append seek", "command/end sync", …) are the same; `sink_tests.rs` and `offline_tests.rs` did not change. One difference exists only through a record, which no caller uses yet, and S10 keeps it: the journal names a failure of the header commit "publish header" whatever the record, so a file record's creation step ("header write", "header sync", "unlink temporary header", "verify journal path", "remove creation temporaries", "directory sync") is not the operation but the start of the message, as `header sync: …`; the path constructors still name the step itself. A failed append to a retention replacement is `Storage` and leaves the record writable, because the replacement's bytes are its own temporary file; when the partial write cannot be cut back, the replacement refuses everything but being dropped. `media` gains the contract as a dependency (layer `neutral` → `contract`, already on the external list); `unemu-core-api` is unchanged. MEASURED: `media`'s 139 unit tests pass unchanged; `media/tests/journal_storage.rs` adds 7: one scripted session (creation, duplicate sectors, checkpoints with retention to 3 and to 2, an interrupted session sealed at the next mount, a torn tail cut at mount) through the path constructors, through `JournalFile` from a name-to-file storage and through the contract's `MemoryStorage` leaves equal bytes after each of its four sessions, pinned to the SHA-256 the parent commit wrote for the same session (so a journal written before the step is the journal written after it, and each stage is mounted by the next); a power cut in memory keeps the synchronized command only; a failed header commit leaves no journal; a session over `JournalFile` and `JournalTool` (inspect and mutate) exclude each other through `disk.upfj.lock`, and both file tests fail when `JournalFile` locks another name; an uncertain retention commit over `MemoryStorage`, once before and once after its contents are in place, reports the numbering of the contents the record holds (fails when the read-back is skipped); a 0-byte journal file is refused by `JournalFile::open` and by the path constructors (fails without the check); a journal file opened for one base refuses to publish another base's header (fails without the check). `cargo test --workspace --release` passes (4 311 tests) and so do the 63 ignored goldens, `ide_journal_golden`, `dos_write_golden` and `media_files_golden` among them. | None | `media`'s own tests pass unchanged, the ones that record the order of writes, barriers and renames among them; the journal goldens (`ide_journal_golden`, `dos_write_golden`, `media_files_golden`) pass; a new test runs one session over the file-backed storage and over the storage in memory and compares the records byte for byte; a journal written before the step mounts after it |
 | 10 | **The mount seam in `assembly`** (move 2) | None | `assembly`'s persistence and image-source tests pass unchanged; the slow goldens; the new seam has a test with a mount that serves from memory |
-| 11 | **The crates split** (move 3), as three beads: `journal`; the journal's file code onto `unemu-core-files`, which exists since step 6 of §13.6; `journal-files` with the journal commands moving from `cli-core` to `cli-pc` and `unemupc` | None in `upcli`'s output: the journal commands change crate, and with one platform their words, output and exit codes are the same. New: the four journal commands of `unemupc` | Test names unchanged apart from the crate (§8.1.5 rule 3); `media_tools` and `media_fifo` pass in their new package; both `assembly` → `media` lines leave the allow list; the external list loses the thirteen crates of `media` and `libc` keeps one way in; `persistence.rs` and `assemble.rs` leave the host guard's list |
+| 11 | **The crates split** (move 3), as three beads: `journal`; the journal's file code onto `unemu-core-files`, which exists since step 6 of §13.6; `journal-files` with the journal commands moving from `cli-core` to `cli-pc` and `unemupc` | None in `upcli`'s output: the journal commands change crate, and with one platform their words, output and exit codes are the same. New: the four journal commands of `unemupc` | Test names unchanged apart from the crate (§8.1.5 rule 3); `media_tools` and `media_fifo` pass in their new package; both `assembly` → `media` lines leave the allow list; `libc` keeps one way in, through `cpufeatures`, and the reasons of the `serde` and `toml` crates no longer name `media` (corrected 2026-11-20, S2: `pc-config` keeps the thirteen crates, `serde_derive` and `syn` 3, so the list does not lose them); `persistence.rs` and `assemble.rs` leave the host guard's list |
 | 12 | **Firmware discovery leaves `assembly`** (move 4) | None | The discovery tests move with the module and pass; the user-ROM helper of the tests keeps working from its new place; `assembly` has no line left in the host guard's list, and the list is empty |
 | 13 | **The command line joins `unemu`**, or `upcli` is renamed, as Q1 is answered: the binary, the release workflow, the `setup-upcli` action and its docs | **Stated:** the program name in usage and in the release | `command_line_pin` changes only in the program's name; the action's own workflow installs and runs the new binary |
 
@@ -5813,7 +5817,7 @@ Beads that edit the same files go one after the other, in either order:
   still resolves a journal's folder on the host, which is §12.10 steps 10
   and 11's.
 
-**S2. `pc-config`: the machine schema and its lowering move.**
+**S2. `pc-config`: the machine schema and its lowering move.** **Done.**
 
 - **Scope.** Create `crates/pc-config`, layer `emulation`, with
   `#![forbid(unsafe_code)]`. Move `schema/`, `lower.rs` (without
@@ -5833,8 +5837,63 @@ Beads that edit the same files go one after the other, in either order:
   temporary files and use `FileImageReader` stay in `machine-file`. Layer
   proof, and a planted `pc-config → machine-file` and `pc-config → media`
   dependency each fail the check. `cargo tree -p pc-config` holds no
-  `serde-saphyr`, no `image-store`, no `media`, no C library. The slow
+  `serde-saphyr`, no `image-store`, no C library; `pc-config` declares no
+  `media`; its tree reaches it only through `assembly`, the allowed crossing
+  of §7.4, until §12.10 step 11 (corrected 2026-11-20, S2). The slow
   goldens pass unchanged. The clean build time before and after (§10).
+- **As landed.** `pc-config` holds `schema/`, `lower.rs`, `integrity.rs`,
+  `pc_names.rs`, `parse_toml`, `ParseError`, `check_size` and
+  `source_snippet`, `Origins` with its TOML decoder, and the provenance walk
+  with its TOML adapter (`source`: `Shape`, `Node`, `children`, `LineIndex`,
+  `record_toml`), all public because `machine-file` names them. `machine-file`
+  depends on it and re-exports `lower`, `lower_with_options`, `parse_toml`,
+  `pc_names`, `schema`, `ImageReader`, `JournalBase`, `LowerError`,
+  `MachineFile`, `Origin`, `Origins` and `ParseError` at their old paths; it
+  keeps the YAML halves of `origin.rs` and `source.rs`. Four things could not
+  stay as they were, because a crate cannot add inherent methods or a foreign
+  trait impl to another crate's type: `Origins::from_yaml` is the trait
+  `machine_file::YamlOrigins` (its caller `yaml.rs` and six test files of
+  `machine-file` import it; their bodies are unchanged); `MachineFile::describe`
+  is the trait `machine_file::Describe` over `pc-config`'s now public
+  `MachineFile::describe_with` (`pc-library`'s `new_machine.rs`,
+  `image_settings.rs` and `settings_model.rs` and the window's `shell.rs`
+  import it); `From<&media::VerifiedBase> for JournalBase` is the function
+  `machine_file::journal_base` (its callers in `machine-file` and
+  `pc-image`'s `import.rs` changed); and `Origins`' merge helpers
+  (`set_image_file`, `layer_files`, `use_document`, `has_field`,
+  `remove_subtree`, `copy_subtree`, `remap_entries`), `keep_pins`,
+  `CardKind::descriptor`, `lower_tracked` and `AssemblyDiagnostics` with its
+  four methods became public, since `machine-file`'s merge and
+  `LoadedMachine` name them. Behind `pc-config`'s `test-support` feature:
+  `has_retention_marker` and `AssemblyDiagnostics::without_sources`, for
+  tests that stay in `machine-file` because they need the journal crate.
+  Tests: the lowering's tests that build without the host moved with it;
+  those that use `FileImageReader` only as a type parameter of the private
+  diagnostics context now use the lowering's own reader that reads nothing
+  (no test read a file). Four tests stay in `machine-file` under their old
+  paths, in a test-only `lower.rs`: the two of `metadata_tests` (temporary
+  files, `FileImageReader`, the host's `describe`), the Lo-tech EMS parse in
+  TOML and YAML (the YAML reader) and the internal-error test of an
+  assembly drive index (it builds a `media::OpenError`; its context is now
+  `AssemblyDiagnostics::without_sources`). MEASURED: the name proof holds
+  (4377 tests before and after, equal with the package prefix removed;
+  `machine-file` 337 before, 312 after and 25 in `pc-config`). The layer
+  proof holds with the allow list unchanged; a planted `pc-config →
+  machine-file` and `pc-config → media` each fail the check (live and as two
+  new self-test fixtures). The external list keeps its lines; the reasons of
+  `serde`, `toml` and their crates name the PC config codec.
+  `scripts/affected-tests.sh` counts `pc-config` among the crates that
+  select the golden tier; no data rule needed it. `pc-config` declares no
+  `media`; `cargo tree -p pc-config` reaches it only through `assembly`, the
+  allowed crossing of §7.4, until §12.10 step 11. It reaches `libc` through
+  `media` until then and through `sha2`'s `cpufeatures` for good: declarations
+  only, and listed. No C library is built, and the tree holds no
+  `serde-saphyr`, `image-store` or `machine-file`.
+  `cargo test --workspace --release -- --include-ignored` passes whole (4380
+  tests, the slow goldens among them), with no test changed but the moves
+  above. A clean `cargo build -p machine-file` (dev profile, an empty target
+  folder, four jobs on a shared machine) took 167 s before and 149 s after,
+  within the noise of that machine: the split adds no measurable build time.
 
 **S3. `provider::prepare` splits into a store half and a codec half.**
 

@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[package]
+name = "pc-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "The PC config codec below the contract: the machine schema, its TOML decoder and its lowering to the assembly config, free of the host (core-contract.md §14.2.1)."
+
+[package.metadata.unemu]
+layer = "emulation"
+
+[features]
+# The journal's retention-name rule and an empty diagnostics context, for the
+# tests machine-file keeps because they need the journal crate.
+test-support = []
+
+[dependencies]
+assembly.workspace = true
+sha2.workspace = true
+serde.workspace = true
+toml.workspace = true
+thiserror.workspace = true

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! End-to-end regressions for machine-files § extends, integrity and input limits.
 
-use machine_file::{load_with_reader, lower, resolve, ImageReader, LoadError};
+use machine_file::{load_with_reader, lower, resolve, ImageReader, LoadError, YamlOrigins};
 use sha2::{Digest, Sha256};
 use std::{
     io,

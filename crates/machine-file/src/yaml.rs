@@ -13,7 +13,9 @@ use serde::Deserialize;
 use serde_saphyr::{Location, MessageFormatter};
 use std::cell::RefCell;
 
-use crate::{schema::v1::SchemaVersion, source_snippet, MachineFile, Origins, ParseError};
+use crate::{
+    schema::v1::SchemaVersion, source_snippet, MachineFile, Origins, ParseError, YamlOrigins,
+};
 
 pub(crate) fn decode<'de, T: Deserialize<'de>>(
     file: &Path,

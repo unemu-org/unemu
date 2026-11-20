@@ -3,7 +3,7 @@
 //! See machine-files.md §Board and machine-config.md §Primary display.
 
 use assembly::{ConfigError, DisplaySwitch, PrimaryDisplay};
-use machine_file::{lower, parse_toml, parse_yaml, ImageReader, Origins};
+use machine_file::{lower, parse_toml, parse_yaml, ImageReader, Origins, YamlOrigins};
 use std::{io, path::Path};
 
 struct Images;

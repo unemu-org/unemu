@@ -2012,7 +2012,7 @@ for storage and display, not executable support. Unknown roles need a provider
 schema extension; shared code never guesses ROM mapping from their names.
 
 **One BIOS, several chips.** `parts` mirrors machine-file `RomPart` in
-`crates/machine-file/src/schema/v1.rs`: `blob` supplies `image` bytes, with the
+`crates/pc-config/src/schema/v1.rs`: `blob` supplies `image` bytes, with the
 same `lane`, assembled-byte `offset` (default zero) and per-chip `sha256` pin.
 Every part also has exact `size` and optional socket `position` and `part_number`.
 Its role and catalogue id are inherited from the logical ROM. `KnownPart` has

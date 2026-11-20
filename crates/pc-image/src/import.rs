@@ -173,10 +173,10 @@ impl ImageReader for BaseReader<'_> {
     fn verify_journal_base(&mut self, path: &Path) -> io::Result<machine_file::JournalBase> {
         if let Some(base) = self.bases.get(path) {
             base.check_unchanged()?;
-            return Ok(base.into());
+            return Ok(machine_file::journal_base(base));
         }
         let base = media::VerifiedBase::open(path)?;
-        let identity = machine_file::JournalBase::from(&base);
+        let identity = machine_file::journal_base(&base);
         self.bases.insert(path.into(), base);
         Ok(identity)
     }

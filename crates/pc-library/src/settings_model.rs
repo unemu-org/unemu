@@ -9,7 +9,7 @@ use assembly::{
     capabilities::{self as caps, Draft, Value},
     FirmwareEntry,
 };
-use machine_file::{schema::v1 as file, MachineFile, Origins};
+use machine_file::{schema::v1 as file, Describe, MachineFile, Origins};
 use std::{
     collections::BTreeMap,
     fs,

@@ -11,6 +11,7 @@ use crate::{
     Args, Presenter,
 };
 use egui::{Color32, Sense, Stroke, Vec2};
+use machine_file::Describe;
 use std::{
     cell::RefCell, collections::BTreeSet, error::Error, io, rc::Rc, sync::Arc, time::Instant,
 };
