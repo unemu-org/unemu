@@ -285,7 +285,7 @@ fn assert_open_profile_levels(path: &str, peaks: [i32; 5]) {
     );
 }
 
-fn open_fixture(relative: &str, fetch: &str) -> Option<PathBuf> {
+pub(super) fn open_fixture(relative: &str, fetch: &str) -> Option<PathBuf> {
     let path = default_fixture(relative);
     if path.exists() {
         return Some(path);

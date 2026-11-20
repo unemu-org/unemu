@@ -310,7 +310,7 @@ pub struct LibraryView {
     pending_operation: bool,
     pub status: Option<String>,
     pub error: Option<String>,
-    pub launched: Option<pc_image::workspace::SessionTransfer>,
+    pub launched: Option<crate::library_worker::DesktopLaunch>,
     /// The pending inserts of the machine's list that the launched session
     /// put into its drives.
     pub launched_inserts: Vec<image_store::machine::PendingInsert>,

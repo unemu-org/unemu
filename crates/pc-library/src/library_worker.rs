@@ -252,6 +252,109 @@ pub struct Refused {
 }
 /// What Settings on an image starts from.
 pub type OpenedSettings = (ImageRow, pc_image::revision::Source, Vec<(String, Digest)>);
+/// Host bindings and verified medium formats for the media dialogs; the core
+/// uses logical content keys and compressed bases need not have host files.
+pub type CataloguePaths = [Vec<(
+    assembly::ImageSource,
+    assembly::WriteMode,
+    String,
+    Option<assembly::FloppyGeometry>,
+)>; 4];
+
+/// A desktop launch, frozen after the worker restores its catalogues.
+pub struct DesktopLaunch {
+    pub launch: pc_image::launch::Prepared,
+    pub catalogue_paths: CataloguePaths,
+    // Lifecycle tests inspect host paths without opening the machine's journals.
+    #[cfg(any(test, feature = "test-support"))]
+    inspection: pc_image::workspace::SessionTransfer,
+}
+
+impl DesktopLaunch {
+    fn freeze(session: pc_image::workspace::PreparedSession, title: String) -> Result<Self> {
+        let catalogue_paths = std::array::from_fn(|slot| {
+            let controller = if slot < 2 {
+                assembly::DeviceId::Fdc
+            } else {
+                assembly::DeviceId::Ide
+            };
+            let unit = slot % 2;
+            session
+                .machine
+                .drives
+                .iter()
+                .find(|drive| drive.controller == controller && usize::from(drive.unit) == unit)
+                .map(|drive| {
+                    let format = |image: &assembly::ImageSource| {
+                        let assembly::DriveKind::Floppy { geometry } = drive.kind else {
+                            return None;
+                        };
+                        let len = match image {
+                            assembly::ImageSource::File(path) => session
+                                .bases
+                                .get(path)
+                                .map(|base| base.identity().base_length),
+                            _ => image.known_len(),
+                        };
+                        len.and_then(|len| geometry.medium_for_len(len))
+                    };
+                    match &drive.media {
+                        Some(list) => list
+                            .entries
+                            .iter()
+                            .map(|entry| {
+                                (
+                                    entry.image.clone(),
+                                    entry.write.clone(),
+                                    entry.name.clone(),
+                                    format(&entry.image),
+                                )
+                            })
+                            .collect(),
+                        None => vec![(
+                            drive.image.clone(),
+                            drive.write.clone(),
+                            match &drive.image {
+                                assembly::ImageSource::File(path) => path
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .into_owned(),
+                                _ => "disk 1".into(),
+                            },
+                            format(&drive.image),
+                        )],
+                    }
+                })
+                .unwrap_or_default()
+        });
+        #[cfg(any(test, feature = "test-support"))]
+        let inspection = pc_image::workspace::PreparedSession {
+            launch: session.launch.clone(),
+            machine: session.machine.clone(),
+            image: session.image.clone(),
+            bases: session.bases.clone(),
+            zero: session.zero.clone(),
+        }
+        .into_transfer()
+        .map_err(|e| e.to_string())?;
+        let launch = pc_image::launch::from_session(session, &unemu_pc_core::PcCore, title)
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            launch,
+            catalogue_paths,
+            #[cfg(any(test, feature = "test-support"))]
+            inspection,
+        })
+    }
+
+    /// Inspect the worker's host bindings without acquiring session records.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn restore(self) -> pc_image::Result<pc_image::workspace::PreparedSession> {
+        self.inspection.restore()
+    }
+}
+
 pub enum Event {
     Snapshot(Arc<crate::snapshot::Snapshot>),
     /// A readiness check, with what the details panes name from the image's
@@ -264,7 +367,7 @@ pub enum Event {
     /// A session to run, with the pending inserts of the machine's list
     /// it put into their drives, by which the window names those disks.
     Launched(
-        Box<pc_image::workspace::SessionTransfer>,
+        Box<DesktopLaunch>,
         Box<ImageRow>,
         String,
         WorkspaceKind,
@@ -1754,7 +1857,7 @@ fn run<B: Backend>(
                                     .map_err(|e| e.to_string())?;
                                 prepared
                             };
-                            prepared.into_transfer().map_err(|e| e.to_string())
+                            DesktopLaunch::freeze(prepared, row.name().into())
                         })();
                         let transfer = match prepared {
                             Ok(p) => p,
@@ -1853,10 +1956,8 @@ fn run<B: Backend>(
                                 let restored = backend.media_launch(|| {
                                     copied_disks(&owner, &mut prepared.session, &send)
                                 })?;
-                                let transfer = prepared
-                                    .session
-                                    .into_transfer()
-                                    .map_err(|e| e.to_string())?;
+                                let transfer =
+                                    DesktopLaunch::freeze(prepared.session, record.title.clone())?;
                                 Ok((transfer, restored))
                             })();
                             drop(source);
@@ -1936,10 +2037,8 @@ fn run<B: Backend>(
                             });
                             let created = applied.done;
                             note_start(&send, [applied.notes, restored.notes].concat());
-                            let transfer = prepared
-                                .session
-                                .into_transfer()
-                                .map_err(|e| e.to_string())?;
+                            let transfer =
+                                DesktopLaunch::freeze(prepared.session, machine.name().into())?;
                             if !restored.drives.is_empty() {
                                 send(Event::StartCatalogue(restored.drives));
                             }

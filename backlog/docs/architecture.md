@@ -17,7 +17,7 @@ crate: `machine-file` (through the lowering of `pc-config`) reads and hashes dec
 
 | Crate | Responsibility | Runtime dependencies | Test-only dependencies |
 | --- | --- | --- | --- |
-| `pc-image` | IBM PC/AT provider: the store's half of resolved bundle-profile validation (descriptors, kinds, size limits, source links, layer chains, the zero-base rule, the closure), which validates a stored config as a `pc_config::launch` document of its content rows and default journal records, with a `ContentSource` over the blobs; machine-file import, disk-chain validation, isolated sessions and offline publication; the PC firmware-package rules and the machine file's firmware-package lookup over the store (`firmware::StorePackages`); the `ibm-pc` recipe provider (`pc_image::recipe::PcRecipes`). Its `launch` module freezes that edited session as `core_launch::Prepared`: the launch document, a `Send` content plan over verified file handles, bytes or sparse zero-chain parts, and a storage plan mapping record names to the existing journal files and their `FILE.lock`; preparation helpers cover workspaces, machines and copies without changing either front end's starts ([core contract](design/core-contract.md) §14.3 S10). | `core-launch`, `assembly`, `machine-file`, `media`, `pc-config`, `image-store`, `recipe`, `unemu-core-api`, `serde`, `toml`, `thiserror` | `cpu`, `machine` |
+| `pc-image` | IBM PC/AT provider: the store's half of resolved bundle-profile validation (descriptors, kinds, size limits, source links, layer chains, the zero-base rule, the closure), which validates a stored config as a `pc_config::launch` document of its content rows and default journal records, with a `ContentSource` over the blobs; machine-file import, disk-chain validation, isolated sessions and offline publication; the PC firmware-package rules and the machine file's firmware-package lookup over the store (`firmware::StorePackages`); the `ibm-pc` recipe provider (`pc_image::recipe::PcRecipes`). Its `launch` module freezes that edited session as `core_launch::Prepared`: the launch document, a `Send` content plan over verified file handles, bytes or sparse zero-chain parts, and a storage plan mapping record names to the existing journal files and their `FILE.lock`; preparation helpers cover workspaces, machines and copies; desktop library Start consumes these objects after restoring its catalogues ([core contract](design/core-contract.md) §14.3 S10, S13). | `core-launch`, `assembly`, `machine-file`, `media`, `pc-config`, `image-store`, `recipe`, `unemu-core-api`, `serde`, `toml`, `thiserror` | `cpu`, `machine` |
 | `recipe` | Platform-neutral recipes ([design](design/recipes.md) §6): the typed model of Mediafiles, Firmwarefiles and work files, the TOML 1.0 parser with file, line, column and key path for every finding, the static checks of §6.11, the provider traits a platform implements (media formats and volume profiles, firmware rules, needs, software platforms, `[ids]` catalogues) and the JSON Schema written from the key tables and the providers. Builds nothing and reads no input | `image-store`, `serde_json`, `toml`, `toml_parser` | None |
 | `image-store` | Platform-neutral OCI Image Layout, streaming SHA-256/zstd blobs, deterministic machine/media-set/firmware manifests, provider-validated closure and atomic compare-and-swap local tags, the orders of tags (set and package revisions, the Semantic Versioning precedence of machine-image versions), stable workspace ownership | `serde`, `serde_json`, `toml`, `sha2`, `zstd`, `thiserror`, `libc` (Unix) | None |
 | `image-registry` | Platform-neutral OCI distribution client: Docker-style references against the default registry, preferences registries list, environment/Keychain credentials, anonymous-then-Basic authentication, resumable chunked push, parallel verified pull, push guard and paged listings | `image-store`, `ureq` (rustls, no default features), `rustls` (ring), `rustls-native-certs`, `serde`, `serde_json`, `toml`, `thiserror` | None |
@@ -598,9 +598,16 @@ use the shared `image_store::location` policy and the unemu family data root.
 
 Image launches use `pc_image::workspace::prepare_pinned`, so a moved tag cannot
 change the selected image. The worker holds workspace ownership through guest
-execution and persistence finish. `SessionTransfer` carries verified open files
-across threads; execution-local sector readers are reconstructed without another
-payload read. Start reuses regular workspaces. Gaming mode creates isolated
+execution and persistence finish. After created disks and kept catalogues are
+restored, `DesktopLaunch` carries a `pc_image::launch::Prepared` across threads,
+with verified content and journal-storage plans and the host drive bindings the
+media tools need. The shell adds its run-only firmware/speaker options and calls
+`core_launch::start_with` with `PcCore::create_machine`. `Presenter::from_machine`
+derives its catalogue from `PcMachine::config()` and retains the previous display
+selection even with both MDA and VGA. Host bindings replace logical asset keys
+only in the presenter's media model and labels; the core mounts through its
+content/storage objects. `SessionTransfer` remains for the old start API and
+test-only inspection until its removal. Start reuses regular workspaces. Gaming mode creates isolated
 disposable workspaces, including catalogue media and CMOS. Durable desktop records
 precede preparation; stop/exit offers Keep as new image or Discard. Successful
 publication removes a disposable workspace. Failures and deferred/forced exits

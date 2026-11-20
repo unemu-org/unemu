@@ -5,6 +5,18 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — Desktop library Start uses the core launch contract:** image,
+  machine and Gaming-copy starts freeze their launch after created disks and
+  kept catalogues are restored. The UI calls `start_with` and
+  `PcCore::create_machine`, retaining the typed PC Presenter and its media
+  tools. Catalogue hardware comes from the core config; host media bindings
+  remain beside the launch so Stop/Start keeps restored disks and journal
+  paths. Display selection and run-only firmware/speaker options are retained.
+  Headless comparisons cover exact pictures, audio, drive state, messages,
+  retired counts and journal bytes, plus created/kept disks, unfinished drops,
+  finished-machine reopens and Gaming power cycles. The old start API remains.
+  See `design/core-contract.md` §14.3 S13.
+
 - **2026-11-20 — Stored PC launch objects are available:** `pc_image::launch`
   prepares an image workspace, a machine or a disposable copy as a
   `core_launch::Prepared`, with the edited launch document, verified content

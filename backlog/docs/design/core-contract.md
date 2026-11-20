@@ -6719,7 +6719,7 @@ Beads that edit the same files go one after the other, in either order:
   with no PC crate in the build. Layer proof; a planted
   `cli-core → pc-image` dependency still fails.
 
-**S13. The desktop's Start through `core_launch`.**
+**S13. The desktop's Start through `core_launch`.** **Done.**
 
 - **Scope.** §14.2.6: the worker's three start flows send a
   `core_launch::Prepared`; the shell starts with `start_with` and
@@ -6738,6 +6738,52 @@ Beads that edit the same files go one after the other, in either order:
   Gaming-mode copy and its power cycle; Insert… while it runs; Stop; Save
   as new image…. The frame digest of a session with two display cards is
   unchanged (MEASURED).
+
+- **As landed.** The worker's image, machine and Gaming-copy starts send a
+  `DesktopLaunch` containing `pc_image::launch::Prepared`. All three freeze
+  the session only after their created-disk and kept-catalogue restoration;
+  the machine's pending inserts still take precedence and are confirmed only
+  after `Request::Assembled`. Firmware checks, workspace ownership, recovery,
+  StartCatalogue, notes and stop/publication handling stay on the worker.
+  The shell appends `allow-unlisted-firmware` and `speaker-trace` from its
+  arguments and calls `core_launch::start_with` with `PcCore::create_machine`.
+  `Presenter::from_machine` derives its catalogue and media config from
+  `PcMachine::config()` and selects the requested card's display id from the
+  description: the factory routes MDA before VGA, while the desktop still
+  selects the first display card in hardware order. Machine-file starts keep
+  `from_assembled`, which delegates to the same presenter constructor.
+  A necessary desktop-only addition accompanies the prepared launch: the host
+  image/journal bindings and original labels of each drive. These
+  replace logical keys only in the presenter's host media model and display
+  names, never in the core's config or mounted content. Kept-catalogue capture
+  distinguishes copied host disks from the image's own disks by those paths;
+  losing them made an unchanged Stop/Start regression discard a restored host
+  disk at the next restart. Media tools also need the real journal paths.
+  A test-support-only snapshot of the worker's original bindings preserves
+  every existing lifecycle assertion without starting a second machine.
+  No crate, dependency, CPU pin, stored format, machine file or fixture changes;
+  the old start API remains for S14. No CLI code changes.
+  Four new headless tests cover a real worker's library Start against the
+  verified-file path over two sessions (both displays' exact pixels, sound,
+  drive state, messages, virtual and retired counts, finish results and
+  byte-equal disk/CMOS journals); reopening while a finished machine stays
+  alive; dropping an unfinished machine and reopening; a factory presenter
+  selecting VGA when both cards exist in VGA/MDA hardware order, with a
+  different letter on each card after 100,000 steps: the old single-display
+  route and the factory have the same VGA frame SHA-256
+  `1e388f1e88e0acec0e0af4344b3211ee6a14cccad8f6864ed2db6559bfa544db`,
+  exact pixels, stop and retired count; created and restored kept disks
+  through the shell, Stop/Start, Save as new image, a Gaming copy and its power
+  cycle, immutable base bytes and the existing journal file. The shell test runs egui and
+  AccessKit without a native window. Existing pending-insert, Insert while
+  running, Save as new image and firmware-readiness tests remain unchanged.
+  The requested manual GUI exercise is replaced by these headless tests,
+  as required by the worker brief; no windows or screenshots were used.
+  MEASURED: four behavior mutations each fail at runtime: freezing before
+  catalogue restoration, omitting host bindings, forcing display id 0, and
+  dropping the speaker-trace option. Sources were restored with plain copies
+  and touched before final verification. The unfinished-drop test adds
+  coverage of the existing storage lifetime contract.
 
 **S14. The old path goes.**
 

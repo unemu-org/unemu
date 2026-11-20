@@ -568,42 +568,25 @@ impl Shell {
                 return;
             }
             self.selected = None;
-            let prepared = match transfer.restore() {
-                Ok(prepared) => prepared,
-                Err(e) => {
-                    self.image_library.start_notes.clear();
-                    self.image_library.finish_with_failure(false, true);
-                    self.show_error(e.to_string());
-                    return;
-                }
-            };
-            let display = display_device(&prepared.machine.devices);
-            let result = display
-                .ok_or_else(|| "Machine has no display card".to_string())
-                .and_then(|display| {
-                    let assembled = assembly::assemble_with_verified_bases(
-                        &prepared.machine,
-                        &assembly::ObservationPolicy {
-                            routes: vec![assembly::ObservationRequest {
-                                device: display,
-                                output: assembly::OutputKind::TextScanout,
-                                byte_limit: 0,
-                            }],
-                            speaker_trace: self.args.speaker_trace,
-                            ..Default::default()
-                        },
-                        self.args.options,
-                        &prepared.bases,
-                    )
-                    .map_err(|e| e.to_string())?;
-                    Presenter::from_assembled(
-                        &prepared.machine,
-                        assembled,
-                        display,
-                        &mut io::stderr(),
-                    )
+            let catalogue_paths = transfer.catalogue_paths;
+            let prepared = transfer.launch.prepared.with_options(vec![
+                (
+                    "allow-unlisted-firmware".into(),
+                    self.args.options.allow_unlisted_firmware.to_string(),
+                ),
+                ("speaker-trace".into(), self.args.speaker_trace.to_string()),
+            ]);
+            let result = core_launch::start_with(&prepared, |request| {
+                unemu_pc_core::PcCore.create_machine(request)
+            })
+            .map_err(|e| e.to_string())
+            .and_then(|machine| {
+                let display = display_device(&machine.config().devices)
+                    .ok_or_else(|| "Machine has no display card".to_string())?;
+                Presenter::from_machine(machine, display, &mut io::stderr())
+                    .map(|presenter| presenter.with_catalogue_paths(catalogue_paths))
                     .map_err(|e| e.to_string())
-                });
+            });
             match result {
                 Ok(mut presenter) => {
                     presenter.audio.open(&mut io::stderr());
@@ -14678,6 +14661,7 @@ kind='mda'
 
     struct Drawn {
         text: Vec<(String, egui::Rect)>,
+        controls: Vec<(String, bool)>,
         /// Selectable items and whether each is marked as the current choice.
         toggled: Vec<(String, bool)>,
         commands: Vec<Command>,
@@ -14714,6 +14698,16 @@ kind='mda'
             })
             .collect();
         let update = output.platform_output.accesskit_update.take();
+        let controls = update
+            .as_ref()
+            .map(|update| {
+                update
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| Some((node.label()?.to_owned(), node.is_disabled())))
+                    .collect()
+            })
+            .unwrap_or_default();
         let toggled = update
             .as_ref()
             .map(|update| {
@@ -14740,6 +14734,7 @@ kind='mda'
         output.drop_without_applying_deltas();
         Drawn {
             text,
+            controls,
             toggled,
             commands,
             focused,
@@ -15604,6 +15599,316 @@ kind='mda'
         let row = shell.image_library.machine_rows()[0].image_row();
         shell.image_library.show_machine(id.clone(), row);
         (shell, id)
+    }
+
+    #[test]
+    fn core_launch_preserves_360k_media_in_a_1200k_drive() {
+        mixed_capacity_core_launch("1.2M", assembly::FloppyGeometry::DD_360K);
+    }
+
+    #[test]
+    fn core_launch_preserves_720k_media_in_a_1440k_drive() {
+        mixed_capacity_core_launch("1.44M", assembly::FloppyGeometry::DD_720K);
+    }
+
+    fn mixed_capacity_core_launch(drive: &str, medium: assembly::FloppyGeometry) {
+        for no_compress in [false, true] {
+            let mut f = crate::library_test_support::Fixture::new();
+            let path = f.temp.path().join("machine.toml");
+            let config = std::fs::read_to_string(&path).unwrap();
+            std::fs::write(
+                &path,
+                config.replace("type='360K'", &format!("type='{drive}'")),
+            )
+            .unwrap();
+            for name in ["one.img", "two.img"] {
+                std::fs::write(
+                    f.temp.path().join(name),
+                    vec![0; medium.image_bytes() as usize],
+                )
+                .unwrap();
+            }
+            f.row.descriptor = pc_image::test_support::with_synthetic_firmware(|| {
+                pc_image::import_machine(
+                    &f.store,
+                    &path,
+                    "test:mixed-capacity",
+                    &pc_image::ImportOptions {
+                        no_compress,
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap()
+            .manifest;
+            f.row.reference = "test:mixed-capacity".into();
+            let (mut shell, id) = machine_shell(&f);
+            let ctx = egui::Context::default();
+            shell.command(Command::Start, &ctx);
+            for _ in crate::test_wait::rounds() {
+                shell.poll_images(&ctx);
+                if shell.presenter.is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(shell.presenter.is_some(), "{:?}", shell.dialog);
+            let chips = shell.drive_views();
+            assert_eq!(chips[0].medium.as_ref().unwrap().format, Some(medium));
+            let status = status_pass(&ctx, &mut shell, 1600.0, Vec::new());
+            assert!(status
+                .labels
+                .contains(&format!("Drive {}", chips[0].chip_text())));
+            shell.command(Command::Insert(0), &ctx);
+            let picker = shell.picker.as_ref().unwrap();
+            assert_eq!(picker.machine().drives[0].catalogue.len(), 2);
+            for disk in &picker.machine().drives[0].catalogue {
+                assert_eq!(disk.format, medium);
+            }
+            shell.picker = None;
+            shell.command(Command::CatalogueDisk(0, 1), &ctx);
+            shell.tick(&ctx, false, std::time::Duration::ZERO);
+            assert_eq!(shell.floppy_inserted()[0], Some(1));
+            assert!(shell.stop());
+            for _ in crate::test_wait::rounds() {
+                shell.poll_images(&ctx);
+                if shell.image_library.active.is_none() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(shell.image_library.active.is_none());
+            let kept = crate::kept_catalogue::read(&f.store.workspace_path(&id).unwrap()).unwrap();
+            assert_eq!(kept[0].disk.len(), 2);
+            let expected = crate::media_dialog::geometry_name(medium);
+            for disk in &kept[0].disk {
+                assert!(
+                    matches!(disk,
+                        crate::kept_catalogue::KeptDisk::Own { format: Some(format), .. }
+                        if format == &expected
+                    ),
+                    "{disk:?}"
+                );
+            }
+            shell.image_library.shutdown();
+        }
+    }
+
+    #[test]
+    fn created_and_kept_disks_start_through_the_core_and_survive_a_gaming_power_cycle() {
+        use crate::created_media::{CreatedDisk, CreatedInsert};
+        use sha2::Digest as _;
+        let f = crate::library_test_support::Fixture::new();
+        let (mut shell, id) = machine_shell(&f);
+        shell.args.speaker_trace = true;
+        let diagnostics = f.temp.path().join("diagnostics");
+        shell.args.diagnostics = Ok(diagnostics.clone());
+        let workspace = f.store.workspace_path(&id).unwrap();
+        std::fs::create_dir_all(workspace.join("media/created")).unwrap();
+        let bytes = vec![0x31; 360 * 1024];
+        let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+        let sha256 = crate::created_media::hex(&digest);
+        let base = workspace.join(format!("media/created/{sha256}.img"));
+        std::fs::write(&base, &bytes).unwrap();
+        crate::created_media::set_pending(
+            &workspace,
+            "A:",
+            Some(CreatedInsert {
+                drive: "A:".into(),
+                title: "Created".into(),
+                disks: vec![CreatedDisk {
+                    sha256: sha256.clone(),
+                    name: "Created disk".into(),
+                }],
+                journal: true,
+                first: Some(0),
+            }),
+        )
+        .unwrap();
+        let ctx = egui::Context::default();
+        let wait_running = |shell: &mut Shell| {
+            for _ in crate::test_wait::rounds() {
+                shell.poll_images(&ctx);
+                if shell.presenter.is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(shell.presenter.is_some(), "{:?}", shell.dialog);
+            assert!(shell
+                .presenter
+                .as_ref()
+                .unwrap()
+                .assembled_ref()
+                .observation
+                .speaker_trace_enabled());
+            let drawn = draw(&ctx, shell, Vec::new());
+            for (label, disabled) in [
+                ("Start", true),
+                ("Stop", false),
+                ("A:", false),
+                ("B:", true),
+            ] {
+                assert!(
+                    drawn.controls.contains(&(label.into(), disabled)),
+                    "{:?}",
+                    drawn.controls
+                );
+            }
+            let drives = shell.drive_views();
+            assert_eq!(drives.len(), 2);
+            let status = status_pass(&ctx, shell, 1600.0, Vec::new());
+            for (drive, letter) in drives.iter().zip(['A', 'C']) {
+                assert_eq!(drive.letter(), letter);
+                assert!(
+                    status
+                        .labels
+                        .contains(&format!("Drive {}", drive.chip_text())),
+                    "{:?}",
+                    status.labels
+                );
+            }
+        };
+        let stop = |shell: &mut Shell| {
+            assert!(shell.stop());
+            for _ in crate::test_wait::rounds() {
+                shell.poll_images(&ctx);
+                if shell.image_library.active.is_none() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(shell.image_library.active.is_none());
+        };
+        shell.command(Command::Start, &ctx);
+        wait_running(&mut shell);
+        for number in 1..=2 {
+            let drawn = open_diagnostics_menu(&ctx, &mut shell);
+            click(
+                &ctx,
+                &mut shell,
+                label_rect(&drawn.text, "Save machine report").center(),
+            );
+            let path = diagnostics.join(format!("diag-{number}.txt"));
+            assert_eq!(
+                shell.message,
+                format!("Machine report saved to {}", path.display())
+            );
+            let report = std::fs::read_to_string(path).unwrap();
+            assert!(
+                report.starts_with("machine diagnostic report\n"),
+                "{report}"
+            );
+            assert!(report.contains("\ndelivery the last "), "{report}");
+        }
+        let drawn = draw(&ctx, &mut shell, Vec::new());
+        assert!(
+            click_toolbar(&ctx, &mut shell, label_rect(&drawn.text, "100%").center()).is_empty()
+        );
+        let drawn = draw(&ctx, &mut shell, Vec::new());
+        let commands = click_toolbar(
+            &ctx,
+            &mut shell,
+            label_rect(&drawn.text, "Unlimited").center(),
+        );
+        assert_eq!(commands, [Command::Speed(crate::pacing::Speed::Unlimited)]);
+        shell.command(commands[0], &ctx);
+        assert_eq!(shell.selected_speed(), crate::pacing::Speed::Unlimited);
+        assert_eq!(shell.toolbar_speed(), crate::pacing::Speed::Unlimited);
+        assert_eq!(marked(&speed_menu(&ctx, &mut shell)), ["Unlimited"]);
+        let presenter = shell.presenter.as_mut().unwrap();
+        assert_eq!(presenter.pacing.target(std::time::Duration::ZERO, 0), None);
+        let config = &shell.presenter.as_ref().unwrap().media_config;
+        let fixed = config
+            .drives
+            .iter()
+            .find(|drive| drive.controller == assembly::DeviceId::Ide)
+            .unwrap();
+        let assembly::ImageSource::File(fixed_base) = &fixed.image else {
+            panic!("fixed disk base");
+        };
+        assert!(fixed_base.is_file());
+        let assembly::WriteMode::Journal {
+            path: fixed_journal,
+            ..
+        } = &fixed.write
+        else {
+            panic!("fixed disk journal");
+        };
+        assert!(fixed_journal.starts_with(&workspace) && fixed_journal.is_file());
+        let entry = &config.drives[0].media.as_ref().unwrap().entries[0];
+        assert_eq!(entry.name, "Created disk");
+        assert_eq!(entry.expected_sha256, Some(digest));
+        assert_eq!(entry.image, assembly::ImageSource::File(base.clone()));
+        let journal = workspace.join(format!("media/{sha256}.upfj"));
+        assert!(journal.is_file());
+        // A host disk added while running becomes the kept selection at restart.
+        let host = f.temp.path().join("kept.img");
+        std::fs::write(&host, vec![0x52; 360 * 1024]).unwrap();
+        shell.browse_into(0, &host);
+        shell.confirm_insert();
+        shell.tick(&ctx, false, std::time::Duration::ZERO);
+        stop(&mut shell);
+        let sealed = std::fs::read(&journal).unwrap();
+        shell.command(Command::Start, &ctx);
+        wait_running(&mut shell);
+        let inserted = shell.floppy_inserted();
+        let catalogue = shell.catalogue(0, inserted).unwrap();
+        assert_eq!(catalogue.disks.last().unwrap().name, "kept.img");
+        assert_eq!(catalogue.in_drive, Some(catalogue.disks.len() - 1));
+        assert_eq!(std::fs::read(&journal).unwrap(), sealed);
+        stop(&mut shell);
+        shell.command(Command::SaveImage, &ctx);
+        assert!(shell.image_library.has_dialog());
+        shell.image_library.close_dialogs();
+        shell
+            .image_library
+            .send(crate::library_worker::Request::Machine(
+                crate::library_worker::MachineJob::Commit {
+                    id: id.clone(),
+                    keep: true,
+                    target: library_model::save_image::Target {
+                        reference: "test:core-saved".into(),
+                        expected: None,
+                        title: None,
+                        flatten: false,
+                    },
+                },
+            ));
+        for _ in crate::test_wait::rounds() {
+            shell.poll_images(&ctx);
+            if f.store.tag_descriptor("test:core-saved").is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            f.store.tag_descriptor("test:core-saved").is_ok(),
+            "{:?}",
+            shell.dialog
+        );
+        shell.command(Command::GamingMode, &ctx);
+        wait_running(&mut shell);
+        let copy = shell.image_library.active.as_ref().unwrap().1.clone();
+        assert_ne!(copy, id);
+        shell.command(Command::PowerCycle, &ctx);
+        wait_running(&mut shell);
+        assert_eq!(shell.image_library.active.as_ref().unwrap().1, copy);
+        let inserted = shell.floppy_inserted();
+        assert_eq!(
+            shell
+                .catalogue(0, inserted)
+                .unwrap()
+                .disks
+                .last()
+                .unwrap()
+                .name,
+            "kept.img"
+        );
+        assert_eq!(std::fs::read(&base).unwrap(), bytes);
+        shell.retain_workspace_on_stop = true;
+        stop(&mut shell);
+        shell.image_library.shutdown();
     }
 
     /// A library machine's drive catalogue survives Stop: a set's disk

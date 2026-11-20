@@ -1031,3 +1031,177 @@ fn edited_catalogue_records_keep_their_external_journal_paths() {
         .is_ok());
     });
 }
+
+#[test]
+fn library_start_matches_verified_file_sessions_and_releases_finished_records() {
+    use cpu::Cpu as _;
+    use pc_library::library_worker::{Event, Finish, Recovery, Request, Worker, WorkspaceKind};
+    use std::{fs, sync::Arc, time::Duration};
+    let temp = assembly::test_support::TempDir::new("library-start-comparison");
+    let Some(bios) = super::sound_levels_tests::open_fixture(
+        "vendor/unemu-at-bios/bios-unemu-at.bin",
+        "vendor/unemu-at-bios/fetch.sh",
+    ) else {
+        return;
+    };
+    fs::copy(bios, temp.path().join("bios.bin")).unwrap();
+    fs::write(temp.path().join("disk.img"), vec![0xf6; 360 * 1024]).unwrap();
+    fs::write(temp.path().join("cmos.bin"), [0; 64]).unwrap();
+    let path = temp.path().join("machine.toml");
+    fs::write(&path, "schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='bios.bin'\n[board.rtc.nvram]\nimage='cmos.bin'\nwrite='journal'\njournal='cmos.upfj'\n[[card]]\nkind='vga-text'\n[[card]]\nid='fdc-765'\n[[card.drives]]\nunit=0\ntype='360K'\n[[card.drives.media]]\nimage='disk.img'\nwrite='journal'\njournal='disk.upfj'\n").unwrap();
+    let store = image_store::Store::open(temp.path().join("store")).unwrap();
+    let image = pc_image::import_machine(&store, &path, "test:library", &Default::default())
+        .unwrap()
+        .manifest;
+    let row = Recovery {
+        schema: 1,
+        kind: WorkspaceKind::Regular,
+        reference: "test:library".into(),
+        image: image.clone(),
+        title: "Library comparison".into(),
+        recovery: false,
+        machine: None,
+        name: String::new(),
+    }
+    .row();
+    let mut worker = Worker::spawn(store.root().to_owned(), Arc::new(|| {}));
+    let receive = |predicate: &dyn Fn(&Event) -> bool| loop {
+        let event = worker
+            .receive
+            .recv_timeout(Duration::from_secs(60))
+            .unwrap();
+        if let Event::Error(error) = &event {
+            panic!("worker: {error}");
+        }
+        if predicate(&event) {
+            break event;
+        }
+    };
+    receive(&|e| matches!(e, Event::Recoveries(_)));
+    let old = store.workspace("comparison").unwrap();
+    for cycle in 0..2 {
+        worker
+            .send
+            .send(Request::Launch(row.clone(), WorkspaceKind::Regular, None))
+            .unwrap();
+        let Event::Launched(start, _, name, _, _) = receive(&|e| matches!(e, Event::Launched(..)))
+        else {
+            unreachable!()
+        };
+        let prepared = start
+            .launch
+            .prepared
+            .with_options(vec![("speaker-trace".into(), "true".into())]);
+        let mut created = core_launch::start_with(&prepared, |r| PcCore.create_machine(r)).unwrap();
+        worker.send.send(Request::Assembled).unwrap();
+        let session = pc_image::workspace::prepare_pinned(&old, &image, false).unwrap();
+        let assembled = assembly::assemble_with_verified_bases(
+            &session.machine,
+            &policy(),
+            Default::default(),
+            &session.bases,
+        )
+        .unwrap();
+        let mut direct = PcMachine::from_assembled(&session.machine, assembled).unwrap();
+        created.set_outputs(Outputs::NONE.with_audio(true));
+        direct.set_outputs(Outputs::NONE.with_audio(true));
+        for steps in [100, 200, 100_000] {
+            assert_eq!(
+                created.run(RunLimit::steps(steps)),
+                direct.run(RunLimit::steps(steps))
+            );
+            assert_eq!(
+                (
+                    created.now(),
+                    created.steps(),
+                    created.assembled_ref().machine.cpu().retired()
+                ),
+                (
+                    direct.now(),
+                    direct.steps(),
+                    direct.assembled_ref().machine.cpu().retired()
+                )
+            );
+            for display in [DisplayId(0), DisplayId(1)] {
+                let left = created.frame(display).unwrap();
+                let right = direct.frame(display).unwrap();
+                assert_eq!(
+                    (
+                        left.width,
+                        left.height,
+                        left.aspect,
+                        left.visible,
+                        left.pixels
+                    ),
+                    (
+                        right.width,
+                        right.height,
+                        right.aspect,
+                        right.visible,
+                        right.pixels
+                    )
+                );
+            }
+            let (mut left, mut right) = (Vec::new(), Vec::new());
+            created.drain_audio(&mut left).unwrap();
+            direct.drain_audio(&mut right).unwrap();
+            assert_eq!(left, right);
+            assert_eq!(created.slot_states(), direct.slot_states());
+            let (mut left, mut right) = (Vec::new(), Vec::new());
+            created.drain_messages(&mut left);
+            direct.drain_messages(&mut right);
+            assert_eq!(left, right);
+        }
+        assert_eq!(created.finish().unwrap(), direct.finish().unwrap());
+        // Finishing releases journals even while the old machine is still alive.
+        let reopened = core_launch::start(&prepared).unwrap();
+        drop(reopened);
+        for record in &session.launch.as_ref().unwrap().document().records {
+            assert_eq!(
+                fs::read(old.path().join("media").join(&record.name)).unwrap(),
+                fs::read(
+                    store
+                        .workspace_path(&name)
+                        .unwrap()
+                        .join("media")
+                        .join(&record.name)
+                )
+                .unwrap(),
+                "{}, cycle {cycle}",
+                record.name
+            );
+        }
+        drop(created);
+        drop(direct);
+        worker.send.send(Request::Finish(Finish::Retain)).unwrap();
+        receive(&|e| matches!(e, Event::Finished));
+    }
+    worker.shutdown();
+}
+
+#[test]
+fn an_unfinished_stored_machine_releases_its_records_on_drop() {
+    pc_image::test_support::with_synthetic_firmware(|| {
+        let (_temp, store, _) = stored_fixture();
+        let owner = store.workspace("unfinished").unwrap();
+        let prepared = pc_image::launch::prepare_workspace(
+            &owner,
+            "test:launch",
+            true,
+            &PcCore,
+            "Unfinished".into(),
+        )
+        .unwrap();
+        let prepared = contract_options(prepared.prepared);
+        let mut machine = core_launch::start(&prepared).unwrap();
+        machine.run(RunLimit::steps(8300)).unwrap();
+        assert_eq!(
+            core_launch::start(&prepared).err().unwrap().kind,
+            ErrorKind::Usage
+        );
+        drop(machine);
+        let mut next = core_launch::start(&prepared).unwrap();
+        next.run(RunLimit::steps(8300)).unwrap();
+        next.finish().unwrap();
+    });
+}

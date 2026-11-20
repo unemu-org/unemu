@@ -22,6 +22,7 @@ use std::{
     time::Duration,
 };
 use ui_kit::{EGUI_FONT_NOTICE, SYMBOL_FONT_NOTICE};
+#[cfg(test)]
 use unemu_core_api::DisplayId;
 use unemu_pc_core::{PcMachine, FONT_NOTICE};
 #[cfg(test)]
@@ -190,20 +191,52 @@ impl Presenter {
         display: DeviceId,
         warnings: &mut impl io::Write,
     ) -> Result<Self, Box<dyn Error>> {
-        let mut media_slots = media_dialog::FloppySlot::from_config(config);
+        Self::from_machine(
+            PcMachine::from_assembled(config, assembled)?,
+            display,
+            warnings,
+        )
+    }
+
+    /// Keep the PC catalogue alongside the contract session, using the core's
+    /// effective configuration rather than a separate prepared machine.
+    fn from_machine(
+        machine: PcMachine,
+        display: DeviceId,
+        warnings: &mut impl io::Write,
+    ) -> Result<Self, Box<dyn Error>> {
+        use unemu_core_api::Machine;
+        let config = machine.config().clone();
+        let display_id = machine
+            .description()
+            .displays
+            .iter()
+            .find(|route| {
+                route.label
+                    == if display == DeviceId::Mda {
+                        "MDA"
+                    } else {
+                        "VGA"
+                    }
+            })
+            .map(|route| route.id)
+            .ok_or("Machine has no display card")?;
+        let mut media_slots = media_dialog::FloppySlot::from_config(&config);
         for (unit, slot) in media_slots.iter_mut().enumerate() {
             if let (Some(slot), Some(names)) = (
                 slot,
-                assembled.floppy_names.get(&(DeviceId::Fdc, unit as u8)),
+                machine
+                    .assembled_ref()
+                    .floppy_names
+                    .get(&(DeviceId::Fdc, unit as u8)),
             ) {
                 for (entry, name) in slot.entries.iter_mut().zip(names) {
                     entry.medium.name = name.clone();
                 }
             }
         }
-        let machine = PcMachine::from_assembled(config, assembled)?;
         #[cfg_attr(not(test), allow(unused_mut))]
-        let mut session = Session::new(Box::new(machine), DisplayId(0), warnings)?;
+        let mut session = Session::new(Box::new(machine), display_id, warnings)?;
         // The shell tests start real machines, whose BIOS plays its POST
         // melody: on a developer's machine that came out of the speakers at
         // random moments during a test run. Tests behave as a host without
@@ -221,6 +254,50 @@ impl Presenter {
             recording_file: diagnostics::RecordingFile::default(),
             recording_error: None,
         })
+    }
+
+    /// Logical asset keys cannot be used by host media tools or by the kept
+    /// catalogue, which distinguishes an image's own disks by their host paths.
+    fn with_catalogue_paths(mut self, paths: library_worker::CataloguePaths) -> Self {
+        for (slot, entries) in paths.into_iter().enumerate() {
+            let controller = if slot < 2 {
+                DeviceId::Fdc
+            } else {
+                DeviceId::Ide
+            };
+            let unit = slot % 2;
+            if let Some(slot) = self.media_slots.get_mut(slot).and_then(Option::as_mut) {
+                for (entry, (image, write, name, format)) in slot.entries.iter_mut().zip(&entries) {
+                    entry.medium.image = image.clone();
+                    entry.medium.write = write.clone();
+                    entry.medium.name = name.clone();
+                    entry.geometry = *format;
+                }
+            }
+            if controller == DeviceId::Fdc && !entries.is_empty() {
+                self.session.machine_mut().assembled().floppy_names.insert(
+                    (DeviceId::Fdc, unit as u8),
+                    entries.iter().map(|(_, _, name, _)| name.clone()).collect(),
+                );
+            }
+            if let Some(drive) = self
+                .media_config
+                .drives
+                .iter_mut()
+                .find(|drive| drive.controller == controller && usize::from(drive.unit) == unit)
+            {
+                if let Some(list) = &mut drive.media {
+                    for (entry, (image, write, _, _)) in list.entries.iter_mut().zip(entries) {
+                        entry.image = image;
+                        entry.write = write;
+                    }
+                } else if let Some((image, write, _, _)) = entries.into_iter().next() {
+                    drive.image = image;
+                    drive.write = write;
+                }
+            }
+        }
+        self
     }
 
     fn assembled(&mut self) -> &mut AssembledMachine {
@@ -638,6 +715,121 @@ fn main() -> std::process::ExitCode {
 mod tests {
     use super::*;
     use assembly::assemble_with_observation;
+
+    #[test]
+    fn a_factory_presenter_keeps_the_selected_card_with_two_displays() {
+        use cpu::Cpu as _;
+        use sha2::Digest as _;
+        use unemu_core_api::{Machine, RunLimit};
+        let mut f = crate::library_test_support::Fixture::new();
+        // Different letters make choosing the wrong observed card visible.
+        let program = [
+            0xfa, 0xb8, 0x00, 0xb0, 0x8e, 0xd8, 0xc7, 0x06, 0, 0, 0x41, 7, 0xb8, 0x00, 0xb8, 0x8e,
+            0xd8, 0xc7, 0x06, 0, 0, 0x42, 7, 0xeb, 0xfe,
+        ];
+        let mut bios = vec![0xf4; 32768];
+        bios[..program.len()].copy_from_slice(&program);
+        bios[0x7ff0..0x7ff5].copy_from_slice(&[0xea, 0, 0, 0, 0xf8]);
+        std::fs::write(f.temp.path().join("bios.bin"), bios).unwrap();
+        f.row.descriptor = pc_image::test_support::with_synthetic_firmware(|| {
+            pc_image::import_machine(
+                &f.store,
+                &f.temp.path().join("machine.toml"),
+                "test:two-displays",
+                &Default::default(),
+            )
+        })
+        .unwrap()
+        .manifest;
+        let owner = f.store.workspace("two-displays").unwrap();
+        let session = pc_image::test_support::with_synthetic_firmware(|| {
+            let mut session =
+                pc_image::workspace::prepare_pinned(&owner, &f.row.descriptor, true).unwrap();
+            session
+                .edit_launch(|launch| {
+                    // Hardware order chooses VGA; the factory's display order starts with MDA.
+                    let cards = launch.config.machine["card"].as_array_mut().unwrap();
+                    let vga = cards
+                        .iter()
+                        .position(|card| card["kind"].as_str() == Some("vga-text"))
+                        .unwrap();
+                    cards.swap(0, vga);
+                })
+                .unwrap();
+            session
+        });
+        let config = session.machine.clone();
+        let direct = assembly::assemble_with_verified_bases(
+            &config,
+            &ObservationPolicy {
+                routes: vec![ObservationRequest {
+                    device: DeviceId::Vga,
+                    output: OutputKind::TextScanout,
+                    byte_limit: 0,
+                }],
+                ..Default::default()
+            },
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+            &session.bases,
+        )
+        .unwrap();
+        let mut before =
+            Presenter::from_assembled(&config, direct, DeviceId::Vga, &mut io::sink()).unwrap();
+        let stop = before.machine_mut().run(RunLimit::steps(100_000)).unwrap();
+        let retired = before.assembled_ref().machine.cpu().retired();
+        let expected = before
+            .machine_mut()
+            .frame(DisplayId(0))
+            .unwrap()
+            .pixels
+            .to_vec();
+        before.finish(&mut io::sink()).unwrap();
+        drop(before);
+        let prepared =
+            pc_image::launch::from_session(session, &unemu_pc_core::PcCore, "Two displays".into())
+                .unwrap();
+        let machine = core_launch::start_with(
+            &prepared
+                .prepared
+                .with_options(vec![("allow-unlisted-firmware".into(), "true".into())]),
+            |r| unemu_pc_core::PcCore.create_machine(r),
+        )
+        .unwrap();
+        assert_eq!(machine.description().displays.len(), 2);
+        let mut presenter =
+            Presenter::from_machine(machine, DeviceId::Vga, &mut io::sink()).unwrap();
+        assert_eq!(presenter.session.display(), DisplayId(1));
+        assert_eq!(
+            presenter
+                .machine_mut()
+                .run(RunLimit::steps(100_000))
+                .unwrap(),
+            stop
+        );
+        assert_eq!(presenter.assembled_ref().machine.cpu().retired(), retired);
+        let digest = |pixels: &[u32]| {
+            sha2::Sha256::digest(
+                pixels
+                    .iter()
+                    .flat_map(|pixel| pixel.to_le_bytes())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let vga_digest = digest(presenter.machine_mut().frame(DisplayId(1)).unwrap().pixels);
+        assert_eq!(vga_digest, digest(&expected));
+        assert_ne!(
+            vga_digest,
+            digest(presenter.machine_mut().frame(DisplayId(0)).unwrap().pixels)
+        );
+        eprintln!("VGA frame SHA-256: {vga_digest:x}");
+        assert_eq!(
+            presenter.machine_mut().frame(DisplayId(1)).unwrap().pixels,
+            expected
+        );
+        presenter.finish(&mut io::sink()).unwrap();
+    }
 
     #[test]
     fn speaker_trace_is_off_unless_the_switch_is_exactly_one() {
