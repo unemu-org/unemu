@@ -5492,22 +5492,26 @@ length and digest (corrected 2026-11-19, S1: the plan said three and missed
 #### 14.2.2. The launch document
 
 The one config type the PC platform lists:
-`application/vnd.unemu.pc.launch.v1+toml` (working name). It is never
+`application/vnd.unemu.pc.launch.v1+toml`. It is never
 stored, never pushed and needs no compatibility row. It is the stored
 config's schema, unchanged, plus two tables the PC provider adds
-(§14.6 Q1):
+(§14.6 Q1). The format as landed with S5 (corrected 2026-11-20, S5; its
+encoding is pinned by `pc-config`'s test
+`a_document_round_trips_byte_for_byte_and_its_encoding_is_pinned`):
 
 ```toml
 schema = 1
-platform = "ibm-pc"          # the current spelling; aliases are the front end's
+platform = "ibm-pc"          # the current spelling; aliases are the store's
 
 [machine]                    # the hardware tables, after the machine's settings overlay
-# [[firmware]], [[media]], [[slots]], [nvram]: as in the stored config; the
-# catalogues as this start has them, pending inserts and created disks included
+
+# [[firmware]], [[media]], [[slots]], [nvram]: top-level, as in the stored
+# config; the catalogues as this start has them, pending inserts and created
+# disks included
 
 [[content]]                  # one row per `blob` and `head` named above
 digest = "sha256:…"          # that blob or head
-sha256 = "…"                 # SHA-256 of the flat bytes the core opens
+sha256 = "…"                 # SHA-256 of the flat bytes the core opens: 64 lowercase hex digits
 size = 2088960               # their length
 
 [[record]]                   # one row per journalled medium, and one for a journalled CMOS
@@ -5530,28 +5534,53 @@ keep_generations = 10
   sentence saying so (ASSUMED: no image has one; S6 measures it).
 - Media the provider adds for one start get records under `kept-…`, which
   its storage maps to their files (§14.2.4).
+- **Rules of the tables** (as landed, S5). No two `content` rows name one
+  digest, every digest the config binds (firmware blob, medium head, CMOS
+  head) has a row and every row is bound. A firmware row is at most 16 MiB
+  and a CMOS row exactly 64 bytes, before anything is opened, since the
+  core reads both whole; a medium's row needs no limit of its own, because
+  its length must equal the medium's geometry and assembly holds that to
+  what the drive takes (ATA CHS 16383/16/63, at most 8,455,200,768 bytes,
+  or a medium of the floppy drive's type). There is one `record` row per
+  journalled medium and per journalled CMOS and no other; its name is a
+  record name: `<medium>.upfj` or a kept record name. No two rows share a
+  name, and each keeps at least one generation. The document is at most 2 MiB, twice the
+  store's limit of a config blob. There is no separate numeric row-count
+  limit: `content` has exactly the distinct digests of the firmware,
+  media and CMOS bindings, and `record` exactly the journalled media plus
+  a journalled CMOS. Every row and binding fits within the document limit.
 
-`pc-config`'s API over it:
+`pc-config`'s API over it (as landed, S5):
 
 ```rust
 pub mod launch {
     pub const MEDIA_TYPE: &str = "application/vnd.unemu.pc.launch.v1+toml";
+    pub const PLATFORM: &str = "ibm-pc";
+    pub const MAX_DOCUMENT_BYTES: usize = 2 * 1024 * 1024;
+    pub const MAX_FIRMWARE_BYTES: u64 = 16 * 1024 * 1024;
+    pub const CMOS_BYTES: u64 = 64;
+    pub const CMOS_MEDIUM: &str = "cmos";
+    pub const RECORD_SUFFIX: &str = ".upfj";
 
     pub struct Launch { pub config: image::Config, pub content: Vec<ContentRow>, pub records: Vec<RecordRow> }
+    pub struct ContentRow { pub digest: image::Digest, pub sha256: [u8; 32], pub size: u64 }
+    pub struct RecordRow { pub medium: String, pub name: String, pub keep_generations: u32 }
 
-    pub fn decode(bytes: &[u8]) -> Result<Launch, ConfigError>;
-    pub fn encode(launch: &Launch) -> Result<Vec<u8>, ConfigError>;
+    pub fn decode(bytes: &[u8]) -> Result<Launch, image::Error>;
+    pub fn encode(launch: &Launch) -> Result<Vec<u8>, image::Error>;
 
-    /// Everything that needs no content: the envelope, every binding, the
-    /// slots, each size against its geometry, the lowering in its metadata
-    /// mode, `MachineConfig::validate`, the option-ROM catalogue. Answers
-    /// what `lower` will open. This is `Core::validate`.
-    pub fn check(launch: &Launch, options: AssemblyOptions) -> Result<Vec<ContentRef>, ConfigError>;
+    /// Everything that needs no content: the tables, the envelope, every
+    /// binding, the slots, each size against its geometry, the lowering in
+    /// its metadata mode, `MachineConfig::validate_logical`, the option-ROM
+    /// catalogue. Answers every `content` row, one per distinct SHA-256 and
+    /// length: what `lower` reads and the bases it names. This is
+    /// `Core::validate`.
+    pub fn check(launch: &Launch, options: AssemblyOptions) -> Result<Vec<ContentRef>, image::Error>;
 
     /// The machine. Reads firmware and CMOS through `content`; names each
     /// disk base and each journal by a key and says what each key is.
     pub fn lower(launch: &Launch, content: &dyn ContentSource, options: AssemblyOptions)
-        -> Result<Lowered, unemu_core_api::Error>;
+        -> Result<Lowered, image::Error>;
 
     pub struct Lowered {
         pub machine: assembly::MachineConfig,
@@ -5564,7 +5593,26 @@ pub mod launch {
 ```
 
 `MachineConfig` keeps its paths, as §12.5 move 2 decides; the keys are
-names the codec makes up and nothing opens them.
+names the codec makes up and nothing opens them: a medium's base is its
+logical asset name (`assets/<id>.img`), its journal `<id>.upfj`, the CMOS
+image of a journalled CMOS its logical asset name and its journal
+`cmos.upfj`. A journalled CMOS lowers to `NvramSource::Journal` over its
+image, with the retention of its record row; each journalled medium keeps
+the retention of its row (corrected 2026-11-20, S5).
+
+`check` and `lower` run the same checks in the same order (the doubled
+content rows; the config's shape and bindings; the content table against
+the bindings; the record table; the lowering), so they refuse a document
+with the same words, except where only the bytes of content decide: the
+firmware and CMOS pins, the system BIOS's and option ROMs' catalogue
+membership, an option ROM's header and checksum, the services of a ROM
+known only by its bytes. Those are `lower`'s alone,
+so `Core::validate` can pass a document whose `create` then refuses its
+content. Both refuse with `pc_config::image::Error`, in `pc-image`'s words
+(`invalid PC image: …`), so that the store's refusals keep their words and
+`needs_firmware`; `PcCore` maps that error to the contract's (S9)
+(corrected 2026-11-20, S5: the plan had `lower` answer
+`unemu_core_api::Error`).
 
 **The store validates with the same function.** `PcProvider::validate`
 keeps its store half (for each digest the config names: the manifest's
@@ -6063,7 +6111,7 @@ Beads that edit the same files go one after the other, in either order:
   --include-ignored` passes whole after the bead, the slow goldens and every
   doc test among them.
 
-**S5. `pc-config`: the launch document.**
+**S5. `pc-config`: the launch document.** **Done.**
 
 - **Scope.** `pc_config::launch` as §14.2.2 has it: `Launch`, `decode`,
   `encode`, `check`, `lower`, `Lowered`. `pc-image`'s validation calls
@@ -6079,6 +6127,115 @@ Beads that edit the same files go one after the other, in either order:
   document with a missing, a doubled or an unused `content` or `record`
   row is refused. For each fixture image, `lower` gives the
   `MachineConfig` that `prepare` gave before the bead (`==`).
+- **As landed.** `crates/pc-config/src/launch.rs` holds the model
+  (`Launch`, `ContentRow`, `RecordRow`, `Lowered`), the wire form (a private
+  `Document`: the stored config's fields in their order, then `[[content]]`
+  and `[[record]]`; `sha256` as 64 lowercase hex digits), `decode`, `encode`,
+  `check` and `lower`, and the bounds of §14.2.2 (document 2 MiB, firmware
+  row 16 MiB, CMOS row 64 bytes; `pc-image`'s payload table now takes its
+  firmware and CMOS limits from these constants). The codec of S4 is split in
+  two halves, `codec::bind` (envelope, bindings, slots, sizes against
+  geometry; it now also answers each bound digest's role) and `codec::finish`
+  (the lowering, the drive lists, validation); `check` and `lower` run the
+  launch's table checks between them, so a shape defect is refused with the
+  codec's sentence before a table defect is looked at, and `pc-image`'s
+  refusals keep their order. `image::lower` is `bind` then `finish`, as
+  before. Five things differ from the plan's words:
+  - `lower` answers `pc_config::image::Error`, not `unemu_core_api::Error`:
+    the store maps its variants (`needs_firmware`, every refusal's words),
+    and `PcCore` maps it to the contract's in S9.
+  - A medium's row has no size limit of its own (the plan named none; S4's
+    note asked for bounds): its length must equal the medium's
+    geometry, which assembly holds to what the drive takes (at most
+    8,455,200,768 bytes for ATA CHS), before a disk is opened.
+    A firmware row above 16 MiB and a CMOS row other than 64 bytes are
+    refused before anything is opened, in the store's words.
+  - `check`'s lowering is the metadata mode with each ROM sized from its
+    row, plus two changes to that mode for a check only (`Mode::Check` in
+    `lower.rs`; the Settings dialog's description is unchanged): the system
+    BIOS is required and the lowered machine is validated, both with the
+    full lowering's words. What only a ROM's bytes decide stays `lower`'s:
+    the firmware and CMOS pins, catalogue membership, an option ROM's header
+    and checksum, and the firmware services of a ROM that validation cannot
+    identify before its bytes are read (it defers them). So `Core::validate`
+    can pass a document whose `create` then refuses its content.
+  - The store's validation builds a launch with each journal in the record
+    `<id>.upfj` / `cmos.upfj` and the default retention, so a stored config
+    with a medium id that starts with `-` is now refused at validation, with
+    the record sentence (MEASURED: import and create make ids `medium-N`; no
+    probed input had one). S6's check at start stays to be done for the ids
+    of a start.
+  - **The validated machine's CMOS.** `lower` turns a journalled CMOS into
+    `NvramSource::Journal` over the CMOS binding's logical asset name, with
+    `cmos.upfj` and the record's retention, where the codec of S4 copied its
+    64 bytes (`NvramSource::Image`). `prepare` now answers that machine, so
+    the `==` of MUST PROVE holds for every fixture without a journalled CMOS,
+    and for one with it up to exactly that field. Every user of `prepare`'s
+    machine was read: `resolve_pinned` replaces the field for a journalled
+    CMOS, the overlay reads the CMOS bytes only in image mode,
+    `defaults::materialize` and `cmos_layout_changes` ignore it, and the
+    settings flow compares two machines that both have it.
+  Review corrections: validation now uses `MachineConfig::validate_logical`,
+  which keeps hardware, journal-retention and distinct-key checks without
+  filesystem normalization. The image codec's reader uses it during lowering
+  as well as after journal keys are installed; file readers keep their host
+  checks, and the start path still receives the same journalled CMOS. A
+  subprocess regression validates and lowers a journalled CMOS with a dangling
+  `cmos.upfj` symlink in its own working directory, without changing the test
+  runner's cwd. Metadata checks use mapped ROM lengths as `Blank` sources
+  on a clone (including container offsets) through the same validation sequence
+  as full lowering. Firmware checks use the original unread sources, so
+  byte-dependent checks remain deferred; descriptions are unchanged. An invalid
+  RTC start preceding overlapping option ROMs now fails with the full lowering's
+  first sentence, as does an overlap alone. The subprocess test uses a unique
+  directory and a drop guard to remove it even if setup or spawning fails.
+  Launch `decode` checks its envelope version, then reuses
+  `image::Config::decode` for the stored fields. That shared decoder parses the
+  hardware of known envelopes with the existing machine-schema decoder. Future
+  stored envelopes stay opaque until platform validation diagnoses their version,
+  preserving the readiness diagnostic. Unknown hardware keys and unsupported hardware
+  versions are therefore refused without adding a separate hardware grammar.
+  The launch envelope, content rows and record rows already rejected unknown
+  fields; regression coverage now pins those refusals too.
+  Tests (`pc_config::launch::tests`, all new, so none could run before the
+  bead): the round trip and the pinned encoding of a document; `decode`'s
+  refusals; `check` lists exactly what `lower` opens (a counting source,
+  with a journalled and with an image CMOS: `lower` opens the ROM and the
+  CMOS, names the floppy bases and the journalled CMOS's image, and opens no
+  floppy); every key of the machine is in `bases` or `records` and each
+  journal keeps its row's retention (a kept record name among them), the
+  machine otherwise equal to `image::lower`'s; seventeen table and binding
+  defects (a missing, doubled and unused row of each table, bad record names,
+  a shared record, retention 0, sizes, the retired platform spelling, an
+  unknown medium) refused by `check` and `lower` with the same words before
+  anything is opened; four hardware defects (memory, CPU, no BIOS) refused by
+  both with the same words, the last of which failed before `Mode::Check`
+  required the BIOS. `pc-image`'s
+  `the_codec_half_lowers_from_memory_and_reads_only_small_content` now
+  expects the journalled CMOS in `prepare`'s machine (it fails on the code
+  before the bead, which copies the bytes). MEASURED by a throw-away probe in
+  `prepare` over the tests of `pc-image`, `pc-library` and `cli-pc` with the
+  ignored ones (2715 calls): each outcome (the lowered machine, the closure
+  and the config, or the refusal's words), keyed by the config and the
+  descriptors, logged before and after the bead, with the old machine's
+  journalled CMOS rewritten to the new form: 238 distinct lines before, the
+  same 238 after. The same probe ran `check` beside every `lower`: 2693
+  agree (2667 accepted, 26 refused with the same words) and 18 differ, all
+  `check` passing what `lower` refuses on content: 16 the services of a
+  ROM identified only by its bytes, 2 a firmware blob missing from the store.
+  Completion review adds coverage of the exact 2 MiB document boundary and
+  an oversized encoding, deduplication of distinct heads naming the same flat
+  content while preserving both base keys, and the largest ATA CHS row
+  (8,455,200,768 bytes), the next cylinder and a `u64::MAX` row, without
+  opening disk content. The wire pin and byte-exact round trip cover the
+  canonical encoding that `encode` writes; `decode` also accepts other TOML
+  formatting, whose whitespace is normalized by `encode`.
+  MEASURED: eight source mutations each fail one targeted test: removing the
+  row-size check, the metadata check's BIOS requirement, flat-identity
+  deduplication, final geometry validation, the pinned retention field name,
+  per-medium retention, the journalled CMOS base key, or the encoding size
+  limit. Each source was restored with a plain copy and touched before the
+  final gate.
 
 **S6. A start is a launch: `pc-image`.**
 

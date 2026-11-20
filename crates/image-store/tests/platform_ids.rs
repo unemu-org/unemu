@@ -27,16 +27,21 @@ const RETIRED_ID: &[&str] = &[
     "image-store/src/platform.rs",
     "image-store/src/compat.rs",
     "cli-pc/tests/platform_alias.rs",
+    // The PC launch document refuses the retired id: the store writes the
+    // current one.
+    "pc-config/src/launch/tests.rs",
 ];
 /// The production files that may spell out the current PC id: its
 /// definition, the alias table, the compatibility rows, the metadata of a
-/// new machine and the PC core's description of its platform.
+/// new machine, the PC core's description of its platform and the platform
+/// of the PC launch document.
 const PC_LITERAL: &[&str] = &[
     "pc-image/src/firmware_package.rs",
     "image-store/src/platform.rs",
     "image-store/src/compat.rs",
     "pc-image/src/lib.rs",
     "pc-core/src/core.rs",
+    "pc-config/src/launch.rs",
 ];
 /// Comparisons of the software platform of a title record ("DOS"), which is
 /// no machine platform id: the file and code its logical line contains.
@@ -57,9 +62,15 @@ const SOFTWARE_PLATFORM: &[(&str, &str)] = &[
 /// with, in that same core's description, is the same kind of check: both
 /// sides are the core's own current spelling. So are the launch path's
 /// lookups of a platform id a platform's own code hands it in the current
-/// spelling: the core that describes it, and that core's name for it.
+/// spelling: the core that describes it, and that core's name for it. So is
+/// the PC launch document's check of its envelope: the store writes the
+/// current spelling into it, and the PC core reads it.
 const CORE_OWN_PLATFORM: &[(&str, &str)] = &[
     ("test-core/src/lib.rs", "if platform == PLATFORM {"),
+    (
+        "pc-config/src/launch.rs",
+        "codec::bind(config, &rows, config.platform == PLATFORM)",
+    ),
     (
         "core-launch/src/launch.rs",
         ".find(|platform| platform.id == identified.platform)",

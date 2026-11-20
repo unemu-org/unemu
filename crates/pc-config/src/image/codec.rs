@@ -5,6 +5,12 @@
 //! what it knows of content comes from the caller's rows, and the firmware
 //! and CMOS bytes through a `ContentSource`, each opened by the SHA-256 and
 //! size of its row. See `backlog/docs/design/core-contract.md` §14.3.
+//!
+//! The work comes in two halves so that the launch document (`crate::launch`)
+//! can check its own tables between them: [`bind`] does every check of the
+//! config's shape and binds each digest to its role, [`finish`] lowers the
+//! bound tables, reading the small content or, for a check without content,
+//! in the lowering's metadata mode.
 
 use super::{
     drive_tables, firmware_images, invalid, unit, validate_bios, Config, Digest, Policy, Result,
@@ -38,11 +44,35 @@ pub struct Lowered {
     pub machine: assembly::MachineConfig,
 }
 
+/// What a digest of the config is bound as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Role {
+    /// A firmware ROM or a part of one.
+    Firmware,
+    /// A medium of a floppy drive.
+    Floppy,
+    /// The medium of a fixed-disk drive.
+    FixedDisk,
+    /// The CMOS image.
+    Cmos,
+}
+
+/// A config whose shape passed every check: its hardware tables with
+/// placeholders where media sit, each logical asset name with its digest,
+/// and each digest with what it is bound as, in binding order.
+pub(crate) struct Bound {
+    hardware: toml::Table,
+    bindings: BTreeMap<String, (Digest, bool)>,
+    pub(crate) roles: Vec<(Digest, Role)>,
+}
+
 /// The path a fixed disk lowers from while its size is checked: a disk
 /// payload is never read in validation.
 const VALIDATION_DISK: &str = "__pc_image_validation_disk__";
 struct Reader<'a> {
-    content: &'a dyn ContentSource,
+    /// `None` for a check without content, which lowers in the metadata
+    /// mode and so reads nothing.
+    content: Option<&'a dyn ContentSource>,
     rows: &'a BTreeMap<Digest, ContentRow>,
     /// Logical asset name to its digest, and whether it is small content.
     bindings: BTreeMap<String, (Digest, bool)>,
@@ -57,8 +87,10 @@ impl Reader<'_> {
             .rows
             .get(digest)
             .ok_or_else(|| io::Error::other("unbound logical asset"))?;
-        match self
+        let content = self
             .content
+            .ok_or_else(|| io::Error::other("a check reads no content"))?;
+        match content
             .open(&row.sha256, row.size)
             .map_err(io::Error::other)?
         {
@@ -79,6 +111,13 @@ impl Reader<'_> {
     }
 }
 impl crate::ImageReader for Reader<'_> {
+    fn validate_machine(
+        &self,
+        config: &assembly::MachineConfig,
+    ) -> std::result::Result<(), assembly::ConfigError> {
+        config.validate_logical()
+    }
+
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>> {
         if path == Path::new(VALIDATION_DISK) {
             return Ok(vec![0; 512]);
@@ -92,6 +131,15 @@ impl crate::ImageReader for Reader<'_> {
         }
         let digest = *digest;
         self.small(&digest)
+    }
+
+    /// A ROM's length from its row, for the metadata mode of a check.
+    fn image_length(&self, path: &Path) -> io::Result<u64> {
+        self.bindings
+            .get(&path.to_string_lossy().to_string())
+            .and_then(|(digest, _)| self.rows.get(digest))
+            .map(|row| row.size)
+            .ok_or_else(|| io::Error::other("unbound logical asset"))
     }
 }
 fn logical(name: &str) -> Result<()> {
@@ -108,18 +156,17 @@ fn logical(name: &str) -> Result<()> {
     }
     Ok(())
 }
-fn bind(
-    reader: &mut Reader<'_>,
-    names: &mut BTreeSet<String>,
+fn bind_name(
+    bindings: &mut BTreeMap<String, (Digest, bool)>,
     source: &str,
     digest: &Digest,
     small: bool,
 ) -> Result<()> {
     logical(source)?;
-    if !names.insert(source.into()) {
+    if bindings.contains_key(source) {
         return Err(invalid("duplicate logical asset name"));
     }
-    reader.bindings.insert(source.into(), (*digest, small));
+    bindings.insert(source.into(), (*digest, small));
     Ok(())
 }
 fn row<'a>(rows: &'a BTreeMap<Digest, ContentRow>, digest: &Digest) -> Result<&'a ContentRow> {
@@ -182,6 +229,19 @@ pub fn lower(
     platform_known: bool,
     options: assembly::AssemblyOptions,
 ) -> Result<Lowered> {
+    let bound = bind(&config, rows, platform_known)?;
+    let machine = finish(&config, rows, bound, Some(content), options, None)?;
+    Ok(Lowered { config, machine })
+}
+
+/// The first half of [`lower`]: the envelope, the hardware tables' form,
+/// every firmware, medium and CMOS binding against the hardware, the slots
+/// and each medium's size against its geometry. Reads nothing.
+pub(crate) fn bind(
+    config: &Config,
+    rows: &BTreeMap<Digest, ContentRow>,
+    platform_known: bool,
+) -> Result<Bound> {
     if config.schema != 1 || !platform_known {
         return Err(invalid("unsupported PC config envelope"));
     }
@@ -196,12 +256,8 @@ pub fn lower(
             "bundle hardware must be resolved and contain no descriptive fields",
         ));
     }
-    let mut reader = Reader {
-        content,
-        rows,
-        bindings: BTreeMap::new(),
-    };
-    let mut names = BTreeSet::new();
+    let mut bindings = BTreeMap::new();
+    let mut roles = Vec::new();
     let mut firmware_count = 0;
     firmware_images(&mut hardware, |field, rom| {
         let binding = config
@@ -213,13 +269,8 @@ pub fn lower(
         {
             return Err(invalid("firmware binding differs from hardware"));
         }
-        bind(
-            &mut reader,
-            &mut names,
-            &binding.source,
-            &binding.blob,
-            true,
-        )?;
+        bind_name(&mut bindings, &binding.source, &binding.blob, true)?;
+        roles.push((binding.blob, Role::Firmware));
         if rom.get("sha256").and_then(toml::Value::as_str) != Some(binding.blob.hex().as_str()) {
             return Err(invalid("firmware hash differs from binding"));
         }
@@ -253,7 +304,13 @@ pub fn lower(
                 .find(|m| &m.id == id)
                 .ok_or_else(|| invalid("unknown catalogue medium"))?;
             if used.insert(id.clone()) {
-                bind(&mut reader, &mut names, &medium.source, &medium.head, false)?;
+                bind_name(&mut bindings, &medium.source, &medium.head, false)?;
+                let role = if kind == "ide" {
+                    Role::FixedDisk
+                } else {
+                    Role::Floppy
+                };
+                roles.push((medium.head, role));
             } else if !matches!(medium.policy, Policy::Readonly) {
                 return Err(invalid("writable medium bound more than once"));
             }
@@ -327,7 +384,8 @@ pub fn lower(
         if target.as_table() != Some(&expected) {
             return Err(invalid("NVRAM hardware differs from binding"));
         }
-        bind(&mut reader, &mut names, &nvram.source, &nvram.head, true)?;
+        bind_name(&mut bindings, &nvram.source, &nvram.head, true)?;
+        roles.push((nvram.head, Role::Cmos));
         let mut table = expected;
         table.insert("sha256".into(), nvram.head.hex().into());
         table.insert("write".into(), "volatile".into());
@@ -335,9 +393,52 @@ pub fn lower(
     } else if rtc_nvram.is_some_and(|n| n.as_str().is_none()) {
         return Err(invalid("unbound hardware NVRAM"));
     }
-    let text = toml::to_string(&hardware).map_err(|e| invalid(e.to_string()))?;
+    Ok(Bound {
+        hardware,
+        bindings,
+        roles,
+    })
+}
+
+/// The second half of [`lower`]: lower the bound tables, put each slot's
+/// media where its drive is, and check the machine. With `content` the
+/// firmware and CMOS are read and checked against their pins and the
+/// system BIOS against its board; without it the lowering runs in its
+/// metadata mode, which reads nothing and sizes each ROM from its row, and
+/// what only those bytes decide is left to a lowering with content.
+///
+/// `retention`, which a launch document gives, holds each journal's
+/// retention by medium id and `cmos`; with it, a journalled CMOS lowers to
+/// an NVRAM journal over its image instead of a copy of its bytes. Every
+/// key the machine names is the config's own: a medium's logical asset name
+/// for its image, `<id>.upfj` for its journal, the CMOS binding's logical
+/// asset name and `cmos.upfj`.
+pub(crate) fn finish(
+    config: &Config,
+    rows: &BTreeMap<Digest, ContentRow>,
+    bound: Bound,
+    content: Option<&dyn ContentSource>,
+    options: assembly::AssemblyOptions,
+    retention: Option<&BTreeMap<String, u32>>,
+) -> Result<assembly::MachineConfig> {
+    let mut reader = Reader {
+        content,
+        rows,
+        bindings: bound.bindings,
+    };
+    let text = toml::to_string(&bound.hardware).map_err(|e| invalid(e.to_string()))?;
     let document = crate::parse_toml("bundle.toml", &text)?;
-    let mut machine = crate::lower(&document, &crate::Origins::new("bundle.toml"), &mut reader)?;
+    let origins = crate::Origins::new("bundle.toml");
+    let mut machine = if content.is_some() {
+        crate::lower(&document, &origins, &mut reader)?
+    } else {
+        crate::lower::lower_metadata(&document, &origins, &mut reader)?
+    };
+    let keep = |id: &str| {
+        retention
+            .and_then(|map| map.get(id).copied())
+            .unwrap_or(assembly::WriteMode::DEFAULT_KEEP_GENERATIONS)
+    };
     for (drive, slot) in machine.drives.iter_mut().zip(&config.slots) {
         if drive.unit != slot.unit {
             return Err(invalid("slot order differs from effective drive order"));
@@ -362,10 +463,17 @@ pub fn lower(
             if !m.geometry.fits(drive.kind) {
                 return Err(invalid("medium geometry differs from hardware"));
             }
+            let mut write = m.policy.write(format!("{}.upfj", m.id).into());
+            if let assembly::WriteMode::Journal {
+                keep_generations, ..
+            } = &mut write
+            {
+                *keep_generations = keep(&m.id);
+            }
             entries.push(assembly::FloppyMedium {
                 image: assembly::ImageSource::File(m.source.clone().into()),
                 expected_sha256: Some(row(rows, &m.head)?.sha256),
-                write: m.policy.write(format!("{}.upfj", m.id).into()),
+                write,
                 name: m.name.clone().unwrap_or_default(),
             });
         }
@@ -390,9 +498,30 @@ pub fn lower(
             drive.write = entry.write;
         }
     }
-    machine.validate().map_err(|e| invalid(e.to_string()))?;
+    if let Some(nvram) = config
+        .nvram
+        .as_ref()
+        .filter(|n| retention.is_some() && matches!(n.mode, super::NvramMode::Journal))
+    {
+        let sha256 = row(rows, &nvram.head)?.sha256;
+        for device in &mut machine.devices {
+            if let assembly::DeviceKind::Rtc(rtc) = &mut device.kind {
+                rtc.nvram = assembly::NvramSource::Journal {
+                    image: nvram.source.clone().into(),
+                    expected_sha256: sha256,
+                    journal: "cmos.upfj".into(),
+                    keep_generations: keep("cmos"),
+                };
+            }
+        }
+    }
+    machine
+        .validate_logical()
+        .map_err(|e| invalid(e.to_string()))?;
     assembly::check_option_rom_catalogue(&machine, assembly::AssemblyOptions::default())
         .map_err(|e| invalid(e.to_string()))?;
-    validate_bios(&machine, options)?;
-    Ok(Lowered { config, machine })
+    if content.is_some() {
+        validate_bios(&machine, options)?;
+    }
+    Ok(machine)
 }

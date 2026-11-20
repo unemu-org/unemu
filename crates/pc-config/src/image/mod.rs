@@ -11,7 +11,7 @@
 //! hands it, and the bytes of small content (firmware ROMs and the CMOS
 //! image) through a [`unemu_core_api::ContentSource`]. The store side
 //! (`pc-image`) checks descriptors, kinds, size limits and layer chains, fills
-//! the rows and calls [`lower`] to validate. See
+//! the rows and calls [`crate::launch::lower`] to validate. See
 //! `backlog/docs/design/core-contract.md` §14.2.1 and §14.3.
 //!
 //! IBM Personal Computer AT Technical Reference, System Board and Diskette
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{fmt, path::PathBuf, str::FromStr};
 
-mod codec;
+pub(crate) mod codec;
 pub mod defaults;
 pub mod encode;
 
@@ -154,11 +154,18 @@ pub struct Config {
 }
 
 impl Config {
-    /// Decode a stored config from its TOML table.
+    /// Decode a stored config and its hardware schema from its TOML table.
     pub fn decode(table: toml::Table) -> Result<Self> {
-        toml::Value::Table(table)
+        let config: Self = toml::Value::Table(table)
             .try_into()
-            .map_err(|e: toml::de::Error| invalid(e.to_string()))
+            .map_err(|e: toml::de::Error| invalid(e.to_string()))?;
+        // A future envelope may use another hardware grammar; its version is
+        // diagnosed by the platform before interpreting those tables.
+        if config.schema == 1 {
+            let hardware = toml::to_string(&config.machine).map_err(|e| invalid(e.to_string()))?;
+            crate::parse_toml("bundle.toml", &hardware)?;
+        }
+        Ok(config)
     }
 
     /// Encode the config as the bytes of its blob.

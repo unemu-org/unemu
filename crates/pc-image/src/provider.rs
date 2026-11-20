@@ -9,6 +9,7 @@
 use crate::*;
 use image_store::{media_type as mt, BlobSource, ConfigValidator, PayloadType, Store};
 use pc_config::image::{self as codec, ContentRow};
+use pc_config::launch;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
@@ -25,7 +26,7 @@ pub const DISK_ZERO: &str = crate::zero::MEDIA_TYPE;
 pub const PAYLOAD_TYPES: &[PayloadType] = &[
     PayloadType {
         media_type: "application/vnd.unemu.firmware.v1+zstd",
-        max_size: 16 * 1024 * 1024,
+        max_size: launch::MAX_FIRMWARE_BYTES,
     },
     PayloadType {
         media_type: "application/vnd.unemu.disk.base.v1+zstd",
@@ -49,7 +50,7 @@ pub const PAYLOAD_TYPES: &[PayloadType] = &[
     },
     PayloadType {
         media_type: mt::FIRMWARE,
-        max_size: 16 * 1024 * 1024,
+        max_size: launch::MAX_FIRMWARE_BYTES,
     },
     PayloadType {
         media_type: mt::DISK_BASE,
@@ -61,7 +62,7 @@ pub const PAYLOAD_TYPES: &[PayloadType] = &[
     },
     PayloadType {
         media_type: CMOS,
-        max_size: 64,
+        max_size: launch::CMOS_BYTES,
     },
     PayloadType {
         media_type: DISK_ZERO,
@@ -124,27 +125,70 @@ pub(crate) struct Prepared {
     pub(crate) references: Vec<Digest>,
 }
 /// Check a config against the store, then lower it. The store half reads the
-/// descriptors and blobs; the codec half, `pc_config::image::lower`, reads
-/// only what the store half hands it: the content rows, and the firmware and
-/// CMOS bytes through a `ContentSource` over the blobs.
+/// descriptors and blobs; the codec half reads only what the store half hands
+/// it, as the launch document the PC core reads (`pc_config::launch::lower`,
+/// the one lowering of the store and the core): the content rows, and the
+/// firmware and CMOS bytes through a `ContentSource` over the blobs. Media
+/// and a journalled CMOS are named by their logical asset names and journals
+/// by `<id>.upfj` and `cmos.upfj`, which a start puts its files in place of.
 pub(crate) fn prepare(
     config: Config,
     descriptors: &[Descriptor],
     blobs: &dyn BlobSource,
 ) -> Result<Prepared> {
     let stored = store_half(&config, descriptors, blobs)?;
-    let lowered = codec::lower(
-        config,
-        &stored.rows,
-        &stored.content,
-        stored.platform_known,
-        firmware_options(),
-    )?;
+    let launch = validation_launch(&config, &stored);
+    let lowered = launch::lower(&launch, &stored.content, firmware_options())?;
     Ok(Prepared {
-        config: lowered.config,
+        config,
         machine: lowered.machine,
         references: stored.references,
     })
+}
+
+/// The launch document a stored config validates as: the config under the
+/// platform's current spelling (an unknown platform stays as it is, and the
+/// codec refuses it), the store half's content rows, and each journal in
+/// the record of today's file name with the default retention. A start
+/// sets the retention of its session instead.
+fn validation_launch(config: &Config, stored: &Stored<'_>) -> launch::Launch {
+    let mut config = config.clone();
+    if stored.platform_known {
+        config.platform = launch::PLATFORM.into();
+    }
+    let content = stored
+        .rows
+        .iter()
+        .map(|(digest, row)| launch::ContentRow {
+            digest: *digest,
+            sha256: row.sha256,
+            size: row.size,
+        })
+        .collect();
+    let journalled = config
+        .media
+        .iter()
+        .filter(|m| m.policy == Policy::Journal)
+        .map(|m| m.id.as_str())
+        .chain(
+            config
+                .nvram
+                .as_ref()
+                .filter(|n| matches!(n.mode, NvramMode::Journal))
+                .map(|_| launch::CMOS_MEDIUM),
+        );
+    let records = journalled
+        .map(|id| launch::RecordRow {
+            medium: id.into(),
+            name: format!("{id}{}", launch::RECORD_SUFFIX),
+            keep_generations: assembly::WriteMode::DEFAULT_KEEP_GENERATIONS,
+        })
+        .collect();
+    launch::Launch {
+        config,
+        content,
+        records,
+    }
 }
 
 /// What the store half answers for one config.
@@ -789,7 +833,10 @@ head = "{c}"
     /// The codec half runs over a config, rows and small content in memory,
     /// with no descriptor, blob source or store anywhere: it opens the ROM
     /// and the CMOS image by their rows and never the floppy, whose bytes it
-    /// is not even given. Its machine is the one the store's path lowers.
+    /// is not even given. Its machine is the one the store's path lowers,
+    /// but for the journalled CMOS: the store validates through the launch
+    /// document, which lowers it to an NVRAM journal over the CMOS image
+    /// instead of a copy of its bytes.
     #[test]
     fn the_codec_half_lowers_from_memory_and_reads_only_small_content() {
         let Some((config, descriptors, blobs)) = image() else {
@@ -826,7 +873,22 @@ head = "{c}"
 
         let store = Memory::new(blobs.iter().map(Vec::as_slice));
         let prepared = prepare(config, &descriptors, &store).unwrap();
-        assert_eq!(prepared.machine, lowered.machine);
+        let mut expected = lowered.machine;
+        for device in &mut expected.devices {
+            if let assembly::DeviceKind::Rtc(rtc) = &mut device.kind {
+                assert_eq!(
+                    rtc.nvram,
+                    assembly::NvramSource::Image(cmos.as_slice().try_into().unwrap())
+                );
+                rtc.nvram = assembly::NvramSource::Journal {
+                    image: "assets/cmos.bin".into(),
+                    expected_sha256: hash_array(&Digest::of(cmos)).unwrap(),
+                    journal: "cmos.upfj".into(),
+                    keep_generations: assembly::WriteMode::DEFAULT_KEEP_GENERATIONS,
+                };
+            }
+        }
+        assert_eq!(prepared.machine, expected);
         assert_eq!(
             prepared.references,
             blobs.iter().map(|b| Digest::of(b)).collect::<Vec<_>>()

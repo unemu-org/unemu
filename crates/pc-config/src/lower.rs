@@ -37,6 +37,12 @@ const MIB: u64 = 0x100000;
 pub trait ImageReader {
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>>;
 
+    /// Validate the machine in the namespace used by this reader. A content
+    /// reader overrides this because its mount keys have no host paths.
+    fn validate_machine(&self, config: &MachineConfig) -> Result<(), ConfigError> {
+        config.validate()
+    }
+
     /// Verify a disk without returning a whole-image buffer, and answer its
     /// length and SHA-256. Synthetic readers refuse persistent media; a
     /// frontend's reader keeps whatever verified handle it opened itself.
@@ -56,9 +62,9 @@ pub trait ImageReader {
         ))
     }
 
-    /// The length of an image without reading it. Only `MachineFile::describe_with`
-    /// asks, to place a ROM whose size no catalogue entry states; a reader
-    /// that cannot tell leaves that size pending.
+    /// The length of an image without reading it. Metadata checks and
+    /// descriptions ask to place unread ROMs; a reader that cannot tell
+    /// leaves that size pending.
     fn image_length(&self, _path: &Path) -> io::Result<u64> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -147,6 +153,7 @@ struct Context<'a, R> {
     options: assembly::AssemblyOptions,
     bios_parts: bool,
     metadata: bool,
+    rom_sizes: Option<Vec<Option<u64>>>,
 }
 
 impl<R: ImageReader> Context<'_, R> {
@@ -398,7 +405,7 @@ impl<R: ImageReader> Context<'_, R> {
         };
         let size = if let Some(bytes) = &bytes {
             Some(bytes.len() as u64)
-        } else if let Some(entry) = identified {
+        } else if let Some(entry) = identified.filter(|_| self.rom_sizes.is_none()) {
             Some(entry.size)
         } else if let Some(parts) = &rom.parts {
             parts
@@ -480,6 +487,9 @@ impl<R: ImageReader> Context<'_, R> {
                     "offset differs from the catalogue ROM layout",
                 ));
             }
+        }
+        if let Some(sizes) = &mut self.rom_sizes {
+            sizes.push(size.map(|size| size.saturating_sub(offset as u64)));
         }
         Ok(LoadImage {
             base,
@@ -1364,7 +1374,42 @@ pub fn lower_tracked<R: ImageReader>(
     reader: &mut R,
     options: assembly::AssemblyOptions,
 ) -> Result<(MachineConfig, AssemblyDiagnostics), LowerError> {
-    lower_tracked_mode(document, origins, reader, options, false)
+    lower_tracked_mode(document, origins, reader, options, Mode::Full)
+}
+
+/// How much of the lowering runs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Every image read and checked, then assembly validation.
+    Full,
+    /// Nothing read and no validation, for a description of a draft that
+    /// may still lack its BIOS.
+    Describe,
+    /// Nothing read, but a complete machine: its BIOS is required and the
+    /// machine validated, as in the full lowering.
+    Check,
+}
+
+/// The lowering in its metadata mode, with the default firmware options: no
+/// image is read, a ROM whose size no catalogue entry states is sized by
+/// `ImageReader::image_length`. Unlike a description, it requires the
+/// system BIOS and validates the machine, with the full lowering's words;
+/// what validation can only decide on the bytes of a ROM (the services of a
+/// ROM the catalogue does not list, its format) waits for them. A launch
+/// document's check without content runs it.
+pub(crate) fn lower_metadata<R: ImageReader>(
+    document: &MachineFile,
+    origins: &Origins,
+    reader: &mut R,
+) -> Result<MachineConfig, LowerError> {
+    lower_tracked_mode(
+        document,
+        origins,
+        reader,
+        assembly::AssemblyOptions::default(),
+        Mode::Check,
+    )
+    .map(|(config, _)| config)
 }
 
 fn lower_tracked_mode<R: ImageReader>(
@@ -1372,8 +1417,9 @@ fn lower_tracked_mode<R: ImageReader>(
     origins: &Origins,
     reader: &mut R,
     options: assembly::AssemblyOptions,
-    metadata: bool,
+    mode: Mode,
 ) -> Result<(MachineConfig, AssemblyDiagnostics), LowerError> {
+    let metadata = mode != Mode::Full;
     let mut context = Context {
         origins,
         reader,
@@ -1395,6 +1441,7 @@ fn lower_tracked_mode<R: ImageReader>(
         options,
         bios_parts: false,
         metadata,
+        rom_sizes: (mode == Mode::Check).then(Vec::new),
     };
     if document.extends.is_some() {
         return Err(context.error(
@@ -1491,7 +1538,7 @@ fn lower_tracked_mode<R: ImageReader>(
     {
         images.push(context.rom("firmware.bios", bios, true, board.firmware_catalogue())?);
         system_bios_image = Some(0);
-    } else if !metadata {
+    } else if mode != Mode::Describe {
         return Err(context.error("firmware.bios", "required field is missing"));
     }
     for (index, rom) in document
@@ -1596,10 +1643,27 @@ fn lower_tracked_mode<R: ImageReader>(
         drives,
         images,
     };
-    if !metadata {
-        config
-            .validate()
-            .map_err(|error| context.validation_error(error))?;
+    // A check validates the machine it lowered, with the full lowering's
+    // words, though with ROMs it has not read.
+    if mode != Mode::Describe {
+        if let Some(sizes) = &context.rom_sizes {
+            // Keep placement in the shared validation order, while firmware
+            // checks still defer anything that needs the unread bytes.
+            let mut placement = config.clone();
+            for (image, size) in placement.images.iter_mut().zip(sizes) {
+                if let Some(size) = size {
+                    image.source = ImageSource::Blank { size: *size };
+                }
+            }
+            placement
+                .validate_logical_with_firmware(&config)
+                .map_err(|error| context.validation_error(error))?;
+        } else {
+            context
+                .reader
+                .validate_machine(&config)
+                .map_err(|error| context.validation_error(error))?;
+        }
         context
             .reader
             .validate_journal_paths(&config, origins, &context.image_paths)
@@ -1655,7 +1719,7 @@ impl MachineFile {
             origins,
             reader,
             assembly::AssemblyOptions::default(),
-            true,
+            Mode::Describe,
         )?;
         let mut draft = assembly::capabilities::Draft::new(config);
         draft.card_ids = diagnostics
@@ -1738,6 +1802,7 @@ mod tests {
             options: assembly::AssemblyOptions::default(),
             bios_parts: false,
             metadata: false,
+            rom_sizes: None,
         }
     }
 
@@ -2424,6 +2489,7 @@ mod tests {
             options: assembly::AssemblyOptions::default(),
             bios_parts: false,
             metadata: false,
+            rom_sizes: None,
         };
         let firmware = document.firmware.unwrap();
         let rom = if bios {
@@ -2544,6 +2610,7 @@ mod tests {
             options: assembly::AssemblyOptions::default(),
             bios_parts: false,
             metadata: false,
+            rom_sizes: None,
         };
         let mut rom = doc.firmware.unwrap().bios.unwrap();
         let error = context
@@ -2702,6 +2769,7 @@ impl AssemblyDiagnostics {
             options: assembly::AssemblyOptions::default(),
             bios_parts: self.bios_parts,
             metadata: false,
+            rom_sizes: None,
         }
     }
 

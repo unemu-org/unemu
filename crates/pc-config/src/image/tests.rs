@@ -5,8 +5,7 @@ use super::*;
 use std::collections::BTreeMap;
 use unemu_core_api::{Content, ContentReader, ContentSource, ErrorKind};
 
-#[path = "../../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use crate::fixtures;
 
 /// Content in memory by SHA-256.
 struct Memory(BTreeMap<[u8; 32], Vec<u8>>);

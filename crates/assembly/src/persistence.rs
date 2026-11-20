@@ -1002,6 +1002,53 @@ mod tests {
         (config, base, journal)
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn logical_validation_ignores_host_paths_but_checks_journal_keys_and_retention() {
+        let temp = crate::test_support::TempDir::new("logical-validation");
+        let (mut config, _, journal) = nvram_config(temp.path(), vec![0xf4]);
+        std::os::unix::fs::symlink("absent", &journal).unwrap();
+        assert!(config.validate().is_err());
+        config.validate_logical().unwrap();
+
+        let rtc = config
+            .devices
+            .iter_mut()
+            .find_map(|d| match &mut d.kind {
+                crate::DeviceKind::Rtc(c) => Some(c),
+                _ => None,
+            })
+            .unwrap();
+        let crate::NvramSource::Journal {
+            keep_generations, ..
+        } = &mut rtc.nvram
+        else {
+            unreachable!()
+        };
+        *keep_generations = 0;
+        assert!(config
+            .validate_logical()
+            .unwrap_err()
+            .to_string()
+            .contains("keep_generations must be positive"));
+        let (nvram, _, _) = nvram_config(temp.path(), vec![0xf4]);
+        let rtc = nvram
+            .devices
+            .iter()
+            .find(|d| matches!(d.kind, crate::DeviceKind::Rtc(_)))
+            .unwrap()
+            .clone();
+        let mut config = crate::at_fdc_write(vec![0xf4], vec![0; 512], 0x1000);
+        config
+            .devices
+            .retain(|d| !matches!(d.kind, crate::DeviceKind::Rtc(_)));
+        config.devices.push(rtc);
+        config.drives[0].image = ImageSource::File(temp.path().join("disk.img"));
+        config.drives[0].write = WriteMode::journal(&journal);
+        let error = config.validate_logical().unwrap_err().to_string();
+        assert!(error.contains("also another medium's journal"), "{error}");
+    }
+
     fn write_cmos(machine: &mut crate::AssembledMachine, index: u8, value: u8) {
         machine
             .machine

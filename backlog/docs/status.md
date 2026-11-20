@@ -5,6 +5,23 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — The PC launch document:** (`upc-dfs.43.5`, stage B step S5;
+  design/core-contract.md §14.2.2, §14.3). `pc_config::launch` holds the document the PC core
+  is to build a stored image's machine from (`application/vnd.unemu.pc.launch.v1+toml`): the
+  stored config unchanged, plus a `content` table (each bound digest's flat SHA-256 and length)
+  and a `record` table (each journal's record and retention). `decode` and `encode` (pinned
+  encoding, byte-exact round trip), `check` without content (the core's `validate` to be), and
+  `lower`, which reads firmware and CMOS and names each disk base and journal by a key. A
+  firmware row is at most 16 MiB and a CMOS row 64 bytes before anything is opened; missing,
+  doubled and unused rows of either table are refused. The store now validates a stored config
+  through `launch::lower`. A journalled CMOS lowers to an NVRAM journal over its image in the
+  validated machine; the start path already replaced that field, so the start's machine is
+  unchanged. A stored journalled medium whose id cannot form a record name now fails validation.
+  Validation treats media and journal names as logical keys and never normalizes host paths;
+  dangling host symlinks cannot invalidate a document. Metadata validation retains ROM lengths
+  and refuses overlapping ROMs with the full lowering's sentence. Decode rejects unsupported
+  document and hardware versions and unknown keys, using the shared stored-config hardware
+  decoder. Nothing starts a machine from the document yet.
 - **2026-11-20 — The recipe corpus tracks the migrated software recipes:**
   The seven real recipes, their two work files and their locks are refreshed
   from `unemu-org/software` at `3c493f7`, under `recipes/media/freedos/`,

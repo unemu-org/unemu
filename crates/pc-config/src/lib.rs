@@ -14,7 +14,9 @@
 //!
 //! The stored config of a PC machine image, its decode and encode and the
 //! codec half of its validation are [`image`]'s: they read content through
-//! the contract's `ContentSource` and name nothing of a store.
+//! the contract's `ContentSource` and name nothing of a store. The launch
+//! document the PC core builds a machine from, a stored config with the
+//! content and records of one start, is [`launch`]'s.
 //!
 //! Documents decode into schema-versioned layers ([`schema`]) whose omitted
 //! fields stay omitted, so the merge of `machine-file` can tell inheritance
@@ -30,11 +32,17 @@ use serde::Deserialize;
 
 pub mod image;
 mod integrity;
+pub mod launch;
 mod lower;
 mod origin;
 pub mod pc_names;
 pub mod schema;
 pub mod source;
+
+// The fixture lookup of the tests of `image` and `launch`.
+#[cfg(test)]
+#[path = "../../pc-harness/tests/support/fixtures.rs"]
+mod fixtures;
 
 pub use integrity::{lower, lower_with_options};
 #[cfg(feature = "test-support")]

@@ -139,6 +139,27 @@ impl MachineConfig {
         self.validate_mounted(crate::persistence::validate_paths)
     }
 
+    /// Validate hardware and logical media keys without consulting the host.
+    ///
+    /// Stored configs and launch documents name mount keys, not filesystem
+    /// paths. Retention and distinct journal keys still apply; the mount
+    /// checks its outputs against inputs when the machine starts. See
+    /// `backlog/docs/design/core-contract.md` §14.2.2.
+    pub fn validate_logical(&self) -> Result<(), ConfigError> {
+        self.validate_logical_with_firmware(self)
+    }
+
+    /// Validate a logical config with sized placeholders for unread ROMs.
+    ///
+    /// `firmware` must be the same config with the original ROM sources.
+    /// Hardware checks use this config's known lengths; firmware checks use
+    /// the originals so a placeholder never stands in for firmware bytes.
+    /// Both run in the normal validation order. See
+    /// `backlog/docs/design/core-contract.md` §14.2.2.
+    pub fn validate_logical_with_firmware(&self, firmware: &Self) -> Result<(), ConfigError> {
+        self.validate_mounted_with_firmware(firmware, |_| Ok(()))
+    }
+
     /// [`MachineConfig::validate`] with the last step, the check of the
     /// journal outputs against the host, left to `check_outputs`, which a
     /// mount answers ([`crate::Mount::check_outputs`]). It takes the config
@@ -147,6 +168,14 @@ impl MachineConfig {
     /// journal keys after it.
     pub(crate) fn validate_mounted(
         &self,
+        check_outputs: impl FnOnce(&Self) -> Result<(), ConfigError>,
+    ) -> Result<(), ConfigError> {
+        self.validate_mounted_with_firmware(self, check_outputs)
+    }
+
+    fn validate_mounted_with_firmware(
+        &self,
+        firmware: &Self,
         check_outputs: impl FnOnce(&Self) -> Result<(), ConfigError>,
     ) -> Result<(), ConfigError> {
         let media = self.expanded_media()?;
@@ -173,7 +202,7 @@ impl MachineConfig {
         };
         media.check_journal_modes().map_err(original_drive)?;
         media.check_part_sources()?;
-        self.validate_resolved()?;
+        self.validate_resolved_with_firmware(firmware)?;
         crate::persistence::check_nvram_retention(&media)?;
         check_outputs(&media).map_err(original_drive)?;
         // After the mount's check, so that a file mount, which refuses equal
@@ -216,9 +245,13 @@ impl MachineConfig {
     // Journal source checks run before file resolution; repeat the remaining
     // checks on the exact loaded bytes without requiring those bytes to be files.
     pub(crate) fn validate_resolved(&self) -> Result<(), ConfigError> {
+        self.validate_resolved_with_firmware(self)
+    }
+
+    fn validate_resolved_with_firmware(&self, firmware: &Self) -> Result<(), ConfigError> {
         self.expanded_media()?;
-        for check in Self::resolved_checks() {
-            check(self)?;
+        for (check, config) in self.resolved_checks(firmware) {
+            check(config)?;
         }
         Ok(())
     }
@@ -248,43 +281,49 @@ impl MachineConfig {
         crate::firmware::validate_option_roms(self)
     }
 
-    fn resolved_checks() -> &'static [ConfigCheck] {
-        &[
-            Self::check_rtc_ram,
-            Self::check_part_sources,
-            Self::check_vga_exclusion,
-            Self::check_unique_device_ids,
-            Self::check_sys_ctrl_port_a,
-            Self::check_debug_console,
-            Self::check_fw_cfg,
-            Self::check_board,
-            Self::check_mouse,
-            Self::check_primary_display,
-            Self::check_firmware_layout,
-            Self::check_firmware_services,
-            Self::check_rtc_starts,
-            Self::check_access_couplings,
-            Self::check_uart_bases,
-            Self::check_ide_resources,
-            Self::check_sb16_resources,
-            Self::check_lotech_ems_resources,
-            Self::check_port_widths,
-            Self::check_port_overlaps,
-            Self::check_mmio_devices_present,
-            Self::check_mmio_sizes,
-            Self::check_mmio_overlaps,
-            Self::check_mmio_vs_ram,
-            Self::check_regions_in_space,
-            Self::check_image_placement,
-            Self::check_board_memory,
-            Self::check_option_roms,
-            Self::check_irq_conflicts,
-            Self::check_pic_faces,
-            Self::check_dma_controllers_present,
-            Self::check_drive_controllers,
-            Self::check_image_geometry,
-            Self::check_clock,
+    fn resolved_checks<'a>(
+        &'a self,
+        firmware: &'a Self,
+    ) -> impl Iterator<Item = (ConfigCheck, &'a Self)> {
+        let hardware = |check: ConfigCheck| (check, self);
+        let firmware = |check: ConfigCheck| (check, firmware);
+        [
+            hardware(Self::check_rtc_ram),
+            hardware(Self::check_part_sources),
+            hardware(Self::check_vga_exclusion),
+            hardware(Self::check_unique_device_ids),
+            hardware(Self::check_sys_ctrl_port_a),
+            hardware(Self::check_debug_console),
+            hardware(Self::check_fw_cfg),
+            hardware(Self::check_board),
+            hardware(Self::check_mouse),
+            hardware(Self::check_primary_display),
+            firmware(Self::check_firmware_layout),
+            firmware(Self::check_firmware_services),
+            hardware(Self::check_rtc_starts),
+            hardware(Self::check_access_couplings),
+            hardware(Self::check_uart_bases),
+            hardware(Self::check_ide_resources),
+            hardware(Self::check_sb16_resources),
+            hardware(Self::check_lotech_ems_resources),
+            hardware(Self::check_port_widths),
+            hardware(Self::check_port_overlaps),
+            hardware(Self::check_mmio_devices_present),
+            hardware(Self::check_mmio_sizes),
+            hardware(Self::check_mmio_overlaps),
+            hardware(Self::check_mmio_vs_ram),
+            hardware(Self::check_regions_in_space),
+            hardware(Self::validate_image_placement),
+            hardware(Self::check_board_memory),
+            firmware(Self::check_option_roms),
+            hardware(Self::check_irq_conflicts),
+            hardware(Self::check_pic_faces),
+            hardware(Self::check_dma_controllers_present),
+            hardware(Self::check_drive_controllers),
+            hardware(Self::check_image_geometry),
+            hardware(Self::check_clock),
         ]
+        .into_iter()
     }
 
     /// Collect independent checks and every resource conflict without changing launch order.
@@ -298,8 +337,8 @@ impl MachineConfig {
             }
             Err(error) => errors.push(error),
         }
-        for check in Self::resolved_checks() {
-            if let Err(error) = check(self) {
+        for (check, config) in self.resolved_checks(self) {
+            if let Err(error) = check(config) {
                 let original = error.clone();
                 match error {
                     ConfigError::IrqConflict { .. } | ConfigError::InvalidIrqLine { .. } => {
@@ -329,7 +368,7 @@ impl MachineConfig {
         [
             self.check_firmware_layout(),
             self.check_regions_in_space(),
-            self.check_image_placement(),
+            self.validate_image_placement(),
             self.check_board_memory(),
         ]
         .into_iter()
@@ -1220,8 +1259,11 @@ impl MachineConfig {
         Ok(())
     }
 
-    /// File lengths are checked by the same pass after assembly reads them.
-    fn check_image_placement(&self) -> Result<(), ConfigError> {
+    /// Check image overlaps and RAM coverage using lengths known without I/O.
+    /// Metadata callers use [`Self::validate_logical_with_firmware`] to keep
+    /// placement in the shared validation sequence. Assembly repeats this
+    /// check after reading file sources.
+    pub fn validate_image_placement(&self) -> Result<(), ConfigError> {
         for (i, image) in self.images.iter().enumerate() {
             let Some(size) = image.source.known_len() else {
                 continue;
