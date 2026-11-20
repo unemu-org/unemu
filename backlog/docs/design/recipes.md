@@ -336,6 +336,20 @@ no longer writes the bytes it once did: the message asks for a report.
 `--keep-as TAG` keeps the differing result under a local tag of the user's
 choosing, never under the recipe's tag.
 
+**CLI exit-policy decision, 2026-11-20.** Keep point 3's distinction: a
+work-file difference is drift, not a broken recipe, and the lock wins.
+`recipe check` and `recipe build` therefore keep their default warning and
+exit 0 for drift alone. Both accept `--deny-drift` for CI: check reports the
+same drift and exits 1; build reports it and exits 1 before reading inputs,
+fetching or publishing anything, even with `--keep-as`. This changes no
+locked bytes or step semantics (§7, §9). `show` remains an inspection of the
+lock. Conformance reports and skips drafts, but exits 1 when any are present
+unless `--allow-drafts` is given. That flag does not permit failed pinned
+builds or a run with no pinned recipe. Other exit codes stay unchanged.
+These policies supplement the B8/B9 as-landed notes (§19.2); the default
+drift behavior follows the design rather than treating drift as a finding.
+See commands.md, Checking recipes, Building recipes and Recipe conformance.
+
 Point 4 has one hard case. A payload stored with `+zstd` has a stored digest
 that depends on the encoder. RFC 8878 fixes the format, and nothing found
 for this document promises that an encoder's output stays the same from one

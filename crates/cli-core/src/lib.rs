@@ -241,12 +241,12 @@ pub fn usage(platforms: &[&dyn CliPlatform]) -> String {
     ));
     slot(&mut text, UsageSlot::AfterRegistry);
     text.push_str(concat!(
-        "       upcli recipe check FILE|FOLDER... (the static checks of recipes and work files; exit 0 clean, 1 with findings)\n",
+        "       upcli recipe check FILE|FOLDER... [--deny-drift] (the static checks of recipes and work files; exit 0 clean, 1 with findings)\n",
         "       upcli recipe show FILE (a media recipe's title record merged with its work file; exit 1 with the check's findings)\n",
         "       upcli recipe plan FILE|REF [--json] [--library DIR]... [--store DIR] [--config FILE] (where each input is found, or why not; a REF is judged from its manifest and config; exit 0 all found, 1 missing)\n",
-        "       upcli recipe build FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] [--keep-as TAG] (builds a recipe and tags it, a pinned one from its lock; --fetch downloads missing inputs; exit 0 tagged, 1 not built)\n",
+        "       upcli recipe build FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] [--keep-as TAG] [--deny-drift] (builds a recipe and tags it, a pinned one from its lock; --fetch downloads missing inputs; exit 0 tagged, 1 not built)\n",
         "       upcli recipe pin FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] (builds a draft, writes its lock beside it and its digest into it; exit 0 pinned, 1 not built)\n",
-        "       upcli recipe conformance FILE|FOLDER... [--library DIR]... [--store DIR] [--config FILE] (builds each pinned recipe into a scratch store and compares its digest; exit 0 all conform, 1 not)\n",
+        "       upcli recipe conformance FILE|FOLDER... [--library DIR]... [--store DIR] [--config FILE] [--allow-drafts] (builds each pinned recipe into a scratch store and compares its digest; exit 0 all conform, 1 not)\n",
         "       upcli recipe scaffold FILE|FOLDER... (the [input] tables, member lists with the archive's times and file sets of files the author has; exit 1 for one a recipe cannot hold)\n",
         "       upcli recipe inputs FILE --format dat|csv|sha256sums (a recipe's inputs for a ROM manager or sha256sum -c; exit 1 with the check's findings)\n",
         "       upcli recipe push FILE REF [--dry-run] [--registry HOST] [--store DIR] [--config FILE] (publishes a pinned recipe with its work file, bundled inputs and lock under the recipe guard; exit 1 refused)\n",

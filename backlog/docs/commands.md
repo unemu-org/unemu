@@ -1607,6 +1607,7 @@ work file it names and, for a pinned recipe, its lock, and no input.
 ```sh
 cargo run --offline -p upcli -- recipe check backlog/docs/design/recipe-corpus crates/pc-image/data/recipes
 cargo run --offline -p upcli -- recipe check my.media.toml other.firmware.toml
+cargo run --offline -p upcli -- recipe check my.media.toml --deny-drift
 ```
 
 A folder is checked with every `*.media.toml`, `*.firmware.toml`,
@@ -1655,6 +1656,12 @@ whose value today comes from the work file and differs from the lock is not
 a finding: the line after the file's line reads `  drift:
 FIELD: the lock has …, NAME.work.toml has …; a build writes the lock's value
 until a new revision is pinned`.
+
+`recipe check --deny-drift FILE|FOLDER...` keeps those drift warnings and
+returns 1 when any is present. Without the flag, drift alone still exits 0:
+the work file is a description for the next revision, and the lock wins
+(design/recipes.md §3.8). Use the flag in CI to require the work file and
+lock to agree. Read and usage errors still exit 2.
 
 The JSON Schema `design/recipe-schema-0.1.json` is written from the
 parser's key tables and the providers; a test in `pc-image` compares it.
@@ -1869,6 +1876,7 @@ hashes every file and tags the artifact last.
 cargo run --offline -p upcli -- recipe build my.media.toml --library /path/to/games
 cargo run --offline -p upcli -- recipe build my.media.toml --fetch --store /path/to/store
 cargo run --offline -p upcli -- recipe build my.media.toml --keep-as 1.0-mine-r1
+cargo run --offline -p upcli -- recipe build my.media.toml --deny-drift
 ```
 
 - The tag is `<name>:<release>-r<revision>` (`<name>:r<revision>` without a
@@ -2025,12 +2033,20 @@ instead of the recipe's tag, as it does for a draft. The build compares the
 lock with the recipe again after the steps, so a lock or recipe file
 changed since the checks refuses it too.
 
+`recipe build FILE --deny-drift` returns 1 on work-file drift before
+reading inputs, fetching, opening the destination store or tagging anything,
+including with `--keep-as`. Without the flag, the build still warns and
+publishes the lock's values. A clean recipe, including a lost-lock rebuild,
+keeps the existing build exit codes. `recipe pin` and `recipe show` are
+unchanged.
+
 ## Recipe conformance
 
 `upcli recipe conformance FILE|FOLDER... [--library DIR]... [--store DIR]
-[--config FILE]` builds every pinned recipe of the files and folders named
-into a scratch store, from the libraries only (the preferences' first, then
-each `--library`; no download, no other store), and compares the digest it
+[--config FILE] [--allow-drafts]` builds every pinned recipe of the files
+and folders named into a scratch store, from the libraries only (the
+preferences' first, then each `--library`; no download, no other store),
+and compares the digest it
 publishes with the recipe's `digest` ([design/recipes.md](design/recipes.md)
 §6.12, §9). The scratch store is `cache/recipe-conformance/<process>` in
 the store of `--store DIR` or the default store, and is removed when the
@@ -2047,19 +2063,23 @@ otherwise.
 cargo run --offline -p upcli -- recipe conformance crates/pc-image/data/recipes --library vendor/freedos --library vendor
 # a repository of recipes, against a release of upcli and its own library
 upcli recipe conformance recipes/ --library /path/to/library --store ./conformance-store
+upcli recipe conformance recipes/ --allow-drafts --library /path/to/library --store ./conformance-store
 ```
 
 One line per recipe: `FILE: conforms: NAME:TAG<TAB>DIGEST`, `FILE: differs:
 …` (the mismatches), `FILE: not built: …` (an input missing, or why it
 failed) or `FILE: draft, not built`; then `N pinned recipes: C conform, D
 differ, M not built; K drafts skipped`. Exit status: 0 when every pinned
-recipe conforms, 1 when one differs or was not built or when no pinned
-recipe was found (`upcli recipe conformance: no pinned recipe found …` on
-standard error: a run that finds nothing proves nothing), 2 on a usage error
-or a store or file that cannot be opened. The test
-`the_pinned_corpus_builds_the_digests_it_pins` (`pc-image`, `recipe_lock`)
-runs the same harness on the corpus's six pinned open recipes, the three
-FreeDOS 1.4 floppy sets and the three open firmware packages.
+recipe conforms and no draft is present (or `--allow-drafts` was given),
+1 when a draft is present without `--allow-drafts`, one differs or was not
+built or when no pinned recipe was found (`upcli recipe conformance: no
+pinned recipe found …` on standard error: a run that finds nothing proves
+nothing), 2 on a usage error
+or a store or file that cannot be opened. `--allow-drafts` only permits
+drafts: a failed pinned build or a run with no pinned recipe still exits 1.
+The test `the_pinned_corpus_builds_the_digests_it_pins` (`pc-image`,
+`recipe_lock`) runs the same harness on the corpus's six pinned open recipes,
+the three FreeDOS 1.4 floppy sets and the three open firmware packages.
 
 ## Scaffolding recipes and listing their inputs
 

@@ -700,6 +700,9 @@ Ok(Line(Recipe(Check(["backlog/docs/design/recipe-corpus", "crates/pc-image/data
 $ recipe check my.media.toml other.firmware.toml
 Ok(Line(Recipe(Check(["my.media.toml", "other.firmware.toml"]))))
 
+$ recipe check my.media.toml --deny-drift
+Ok(Line(Recipe(CheckDenyDrift(["my.media.toml"]))))
+
 $ recipe show backlog/docs/design/recipe-corpus/kenslab-2.01/kenslab-2.01.media.toml
 Ok(Line(Recipe(Show("backlog/docs/design/recipe-corpus/kenslab-2.01/kenslab-2.01.media.toml"))))
 
@@ -711,6 +714,12 @@ Ok(Line(Recipe(Build(BuildOptions { path: "my.media.toml", fetch: true, librarie
 
 $ recipe build my.media.toml --keep-as 1.0-mine-r1
 Ok(Line(Recipe(Build(BuildOptions { path: "my.media.toml", fetch: false, libraries: [], store: None, config: None, keep_as: Some("1.0-mine-r1") }))))
+
+$ recipe build my.media.toml --deny-drift
+Ok(Line(Recipe(BuildDenyDrift(BuildOptions { path: "my.media.toml", fetch: false, libraries: [], store: None, config: None, keep_as: None }))))
+
+$ recipe conformance recipes/ --allow-drafts --library /path/to/library --store ./conformance-store
+Ok(Line(Recipe(ConformanceAllowDrafts(ConformanceOptions { paths: ["recipes/"], libraries: ["/path/to/library"], store: Some("./conformance-store"), config: None }))))
 
 $ recipe scaffold LABFULL.ZIP AZURAMON
 Ok(Line(Recipe(Scaffold(["LABFULL.ZIP", "AZURAMON"]))))

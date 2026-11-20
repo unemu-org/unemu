@@ -1,9 +1,9 @@
-usage: upcli recipe check FILE|FOLDER...
+usage: upcli recipe check FILE|FOLDER... [--deny-drift]
        upcli recipe show FILE
        upcli recipe plan FILE|REF [--json] [--library DIR]... [--store DIR] [--config FILE]
-       upcli recipe build FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] [--keep-as TAG]
+       upcli recipe build FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] [--keep-as TAG] [--deny-drift]
        upcli recipe pin FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE]
-       upcli recipe conformance FILE|FOLDER... [--library DIR]... [--store DIR] [--config FILE]
+       upcli recipe conformance FILE|FOLDER... [--library DIR]... [--store DIR] [--config FILE] [--allow-drafts]
        upcli recipe scaffold FILE|FOLDER...
        upcli recipe inputs FILE --format dat|csv|sha256sums
        upcli recipe push FILE REF [--dry-run] [--registry HOST] [--store DIR] [--config FILE]

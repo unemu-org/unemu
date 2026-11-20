@@ -78,7 +78,7 @@ fn usage_errors_and_unreadable_files_exit_2() {
         assert_eq!(output, "");
         assert!(
             errors.starts_with(
-                "usage: upcli recipe check FILE|FOLDER...\n       upcli recipe show FILE\n"
+                "usage: upcli recipe check FILE|FOLDER... [--deny-drift]\n       upcli recipe show FILE\n"
             ),
             "{errors}"
         );
@@ -95,7 +95,7 @@ fn usage_errors_and_unreadable_files_exit_2() {
 fn the_usage_names_the_command() {
     let (code, output, _) = upcli(&[]);
     assert_eq!(code, 0);
-    assert!(output.contains("upcli recipe check FILE|FOLDER..."));
+    assert!(output.contains("upcli recipe check FILE|FOLDER... [--deny-drift]"));
     assert!(output.contains("upcli recipe show FILE"));
 }
 

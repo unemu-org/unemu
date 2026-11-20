@@ -32,12 +32,12 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "usage: upcli recipe check FILE|FOLDER...
+const USAGE: &str = "usage: upcli recipe check FILE|FOLDER... [--deny-drift]
        upcli recipe show FILE
        upcli recipe plan FILE|REF [--json] [--library DIR]... [--store DIR] [--config FILE]
-       upcli recipe build FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] [--keep-as TAG]
+       upcli recipe build FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] [--keep-as TAG] [--deny-drift]
        upcli recipe pin FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE]
-       upcli recipe conformance FILE|FOLDER... [--library DIR]... [--store DIR] [--config FILE]
+       upcli recipe conformance FILE|FOLDER... [--library DIR]... [--store DIR] [--config FILE] [--allow-drafts]
        upcli recipe scaffold FILE|FOLDER...
        upcli recipe inputs FILE --format dat|csv|sha256sums
        upcli recipe push FILE REF [--dry-run] [--registry HOST] [--store DIR] [--config FILE]
@@ -59,12 +59,18 @@ const USAGE: &str = "usage: upcli recipe check FILE|FOLDER...
 #[derive(Debug, PartialEq, Eq)]
 pub enum RecipeCommand {
     Check(Vec<PathBuf>),
+    /// Work-file drift is fatal for this check.
+    CheckDenyDrift(Vec<PathBuf>),
     Show(PathBuf),
     Plan(PlanOptions),
     Build(BuildOptions),
+    /// Refuse work-file drift before a build reads inputs.
+    BuildDenyDrift(BuildOptions),
     /// `recipe pin`: the build's words without `--keep-as`.
     Pin(BuildOptions),
     Conformance(ConformanceOptions),
+    /// Drafts are reported without failing an otherwise conforming run.
+    ConformanceAllowDrafts(ConformanceOptions),
     /// `recipe scaffold`: the files and folders named.
     Scaffold(Vec<PathBuf>),
     Inputs(InputsOptions),
@@ -326,6 +332,48 @@ fn plan_options(args: &[OsString]) -> Option<PlanOptions> {
 
 /// Parse the words after `recipe`.
 pub fn parse(args: &[OsString]) -> RecipeCommand {
+    // Keep the existing parsed commands stable for callers that pin them.
+    if let [command, rest @ ..] = args {
+        let flag = match command.to_str() {
+            Some("check" | "build") => Some("--deny-drift"),
+            Some("conformance") => Some("--allow-drafts"),
+            _ => None,
+        };
+        if let Some(flag) = flag {
+            let mut filtered = vec![command.clone()];
+            let mut found = false;
+            let mut words = rest.iter();
+            while let Some(word) = words.next() {
+                if word == flag {
+                    if found {
+                        return RecipeCommand::Usage;
+                    }
+                    found = true;
+                } else {
+                    filtered.push(word.clone());
+                    if matches!(
+                        word.to_str(),
+                        Some("--library" | "--store" | "--config" | "--keep-as")
+                    ) {
+                        let Some(value) = words.next() else {
+                            return RecipeCommand::Usage;
+                        };
+                        filtered.push(value.clone());
+                    }
+                }
+            }
+            if found {
+                return match parse(&filtered) {
+                    RecipeCommand::Check(paths) => RecipeCommand::CheckDenyDrift(paths),
+                    RecipeCommand::Build(options) => RecipeCommand::BuildDenyDrift(options),
+                    RecipeCommand::Conformance(options) => {
+                        RecipeCommand::ConformanceAllowDrafts(options)
+                    }
+                    _ => RecipeCommand::Usage,
+                };
+            }
+        }
+    }
     let operand = |p: &OsString| !p.is_empty() && !p.as_encoded_bytes().starts_with(b"-");
     match args {
         [command, paths @ ..]
@@ -381,16 +429,37 @@ pub fn execute(
         .collect();
     let providers = recipe::Providers(&providers);
     match command {
-        RecipeCommand::Check(paths) => check(&paths, providers, &mut io.output, &mut io.errors),
+        RecipeCommand::Check(paths) => {
+            check(&paths, false, providers, &mut io.output, &mut io.errors)
+        }
+        RecipeCommand::CheckDenyDrift(paths) => {
+            check(&paths, true, providers, &mut io.output, &mut io.errors)
+        }
         RecipeCommand::Show(path) => show(&path, providers, &mut io.output, &mut io.errors),
         RecipeCommand::Plan(options) => plan(&options, providers, host, io),
         RecipeCommand::Build(options) => {
             build_command(&options, false, providers, host, platforms, io)
         }
+        RecipeCommand::BuildDenyDrift(options) => {
+            if let Ok(report) = recipe::check_paths(std::slice::from_ref(&options.path), providers)
+            {
+                if report.files.iter().any(|file| !file.drift.is_empty()) {
+                    return if io.output.write_all(report.render().as_bytes()).is_err() {
+                        2
+                    } else {
+                        1
+                    };
+                }
+            }
+            build_command(&options, false, providers, host, platforms, io)
+        }
         RecipeCommand::Pin(options) => {
             build_command(&options, true, providers, host, platforms, io)
         }
-        RecipeCommand::Conformance(options) => conformance(&options, providers, host, io),
+        RecipeCommand::Conformance(options) => conformance(&options, false, providers, host, io),
+        RecipeCommand::ConformanceAllowDrafts(options) => {
+            conformance(&options, true, providers, host, io)
+        }
         RecipeCommand::Scaffold(paths) => scaffold(&paths, io),
         RecipeCommand::Inputs(options) => inputs(&options, providers, io),
         RecipeCommand::Push(options) => push(&options, providers, host, io),
@@ -440,6 +509,7 @@ fn build_command(
 
 fn check(
     paths: &[PathBuf],
+    deny_drift: bool,
     providers: recipe::Providers<'_>,
     output: &mut impl Write,
     errors: &mut impl Write,
@@ -454,7 +524,10 @@ fn check(
     if output.write_all(report.render().as_bytes()).is_err() {
         return 2;
     }
-    u8::from(!report.is_clean())
+    u8::from(
+        !report.is_clean()
+            || (deny_drift && report.files.iter().any(|file| !file.drift.is_empty())),
+    )
 }
 
 fn show(
@@ -1107,6 +1180,7 @@ fn build(
 /// scratch store.
 fn conformance(
     options: &ConformanceOptions,
+    allow_drafts: bool,
     providers: recipe::Providers<'_>,
     host: &HostSources,
     io: &mut Io<'_>,
@@ -1164,7 +1238,12 @@ fn conformance(
         );
         return 1;
     }
-    u8::from(!all)
+    u8::from(
+        !all || (!allow_drafts
+            && results
+                .iter()
+                .any(|r| matches!(r.result, recipe::pin::Conformed::Draft))),
+    )
 }
 
 /// Print the tables of the files and folders named. A text past the size a

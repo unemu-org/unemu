@@ -5,6 +5,13 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — Recipe CLI exit policies:** work-file drift remains a
+  warning by default, as recipes §3.8 specifies. `recipe check` and
+  `recipe build` accept `--deny-drift` for CI (exit 1; build refuses before
+  inputs or publication). `recipe conformance` exits 1 for drafts unless
+  `--allow-drafts` is given; failed pinned builds and runs with no pinned
+  recipe still fail. Usage text and the command-line pin are unchanged.
+  See `commands.md` and `design/recipes.md` §3.8's dated decision.
 - **2026-11-20 — Machinefile syntax corpus:** three documented installation
   routes (FreeDOS 1.4, private MS-DOS 3.30, private Windows 3.1) now have
   equal TOML/HCL pairs with proposed input steps, waits, disk capture and

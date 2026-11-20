@@ -233,3 +233,106 @@ fn recipe_conformance_that_finds_no_pinned_recipe_exits_1() {
         "upcli recipe conformance: no pinned recipe found in the files and folders named\n"
     );
 }
+
+fn pin_then_drift(t: &Temp) -> (PathBuf, PathBuf) {
+    let (path, lib) = recipe(t);
+    let (code, output, errors) = upcli(&words(t, "pin", &path, "author", &lib));
+    assert_eq!((code, errors.as_str()), (0, ""), "{output}");
+    fs::write(
+        path.with_file_name("pinned.work.toml"),
+        WORK.replace("A work.", "A changed work."),
+    )
+    .unwrap();
+    (path, lib)
+}
+
+#[test]
+fn recipe_check_deny_drift_exits_1_but_default_still_warns() {
+    let t = Temp::new("check-drift");
+    let (path, _) = pin_then_drift(&t);
+    let mut args = vec!["recipe".into(), "check".into(), path.clone().into()];
+    let (code, warning, errors) = upcli(&args);
+    assert_eq!((code, errors.as_str()), (0, ""), "{warning}");
+    assert!(warning.contains("drift: title.synopsis:"), "{warning}");
+    args.push("--deny-drift".into());
+    let (code, output, errors) = upcli(&args);
+    assert_eq!((code, errors.as_str()), (1, ""), "{output}");
+    assert_eq!(output, warning);
+
+    fs::write(path.with_file_name("pinned.work.toml"), WORK).unwrap();
+    assert_eq!(upcli(&args).0, 0);
+    fs::remove_file(&path).unwrap();
+    assert_eq!(upcli(&args).0, 2);
+}
+
+#[test]
+fn recipe_build_deny_drift_exits_1_before_reading_inputs_or_publishing() {
+    let t = Temp::new("build-drift");
+    let (path, lib) = pin_then_drift(&t);
+    let mut args = words(&t, "build", &path, "refused", &lib);
+    args.extend(["--deny-drift".into(), "--keep-as".into(), "mine-r1".into()]);
+    let (code, output, errors) = upcli(&args);
+    assert_eq!((code, errors.as_str()), (1, ""), "{output}");
+    assert!(output.contains("drift: title.synopsis:"), "{output}");
+    assert!(!output.contains("built private/"), "{output}");
+    assert!(!t.path("refused").exists());
+
+    fs::remove_dir_all(&lib).unwrap();
+    assert_eq!(upcli(&args), (code, output, errors));
+    fs::write(path.with_file_name("pinned.work.toml"), WORK).unwrap();
+    fs::create_dir_all(&lib).unwrap();
+    assert_eq!(upcli(&args).0, 1);
+
+    let pinned = fs::read_to_string(&path).unwrap();
+    recipe(&t);
+    fs::write(&path, pinned).unwrap();
+    let (code, output, errors) = upcli(&args);
+    assert_eq!((code, errors.as_str()), (0, ""), "{output}");
+}
+
+#[test]
+fn recipe_conformance_with_drafts_exits_1_unless_allowed() {
+    let t = Temp::new("draft-policy");
+    let (path, lib) = recipe(&t);
+    let draft = fs::read_to_string(&path).unwrap();
+    assert_eq!(upcli(&words(&t, "pin", &path, "author", &lib)).0, 0);
+    let draft_path = path.with_file_name("draft.media.toml");
+    fs::write(&draft_path, draft).unwrap();
+    let mut args = words(&t, "conformance", path.parent().unwrap(), "check", &lib);
+    let (code, output, errors) = upcli(&args);
+    assert_eq!((code, errors.as_str()), (1, ""), "{output}");
+    assert!(output.contains("draft, not built"), "{output}");
+    assert!(
+        output.ends_with("1 pinned recipe: 1 conform, 0 differ, 0 not built; 1 draft skipped\n"),
+        "{output}"
+    );
+    args.push("--allow-drafts".into());
+    let (code, allowed, errors) = upcli(&args);
+    assert_eq!((code, errors.as_str()), (0, ""), "{allowed}");
+    assert_eq!(allowed, output);
+
+    fs::remove_dir_all(&lib).unwrap();
+    fs::create_dir_all(&lib).unwrap();
+    assert_eq!(upcli(&args).0, 1);
+    fs::remove_file(path).unwrap();
+    assert_eq!(upcli(&args).0, 1);
+}
+
+#[test]
+fn recipe_policy_flags_reject_duplicates_and_missing_operands() {
+    for args in [
+        vec!["check", "--deny-drift"],
+        vec!["build", "--deny-drift"],
+        vec!["conformance", "--allow-drafts"],
+        vec!["check", "FILE", "--deny-drift", "--deny-drift"],
+        vec!["build", "FILE", "--deny-drift", "--deny-drift"],
+        vec!["conformance", "FILE", "--allow-drafts", "--allow-drafts"],
+        vec!["pin", "FILE", "--deny-drift"],
+    ] {
+        let args = std::iter::once("recipe")
+            .chain(args)
+            .map(OsString::from)
+            .collect::<Vec<_>>();
+        assert_eq!(upcli(&args).0, 2, "{args:?}");
+    }
+}
