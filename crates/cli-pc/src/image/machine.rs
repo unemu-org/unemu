@@ -403,23 +403,17 @@ pub fn run_owned(
     output: &mut impl Write,
     errors: &mut impl Write,
 ) -> anyhow::Result<()> {
-    let prepared = machine::prepare(owner)?;
-    writeln!(output, "pinned-image:{}", prepared.session.image)?;
-    let mut assembled = assembly::assemble_with_verified_bases(
-        &prepared.session.machine,
-        &assembly::ObservationPolicy::default(),
-        assembly::AssemblyOptions::default(),
-        &prepared.session.bases,
-    )?;
+    let prepared =
+        pc_image::launch::prepare_machine(owner, &unemu_pc_core::PcCore, owner.name().to_owned())?;
+    writeln!(output, "pinned-image:{}", prepared.image)?;
+    let mut started = core_launch::start_with(&prepared.prepared, |request| {
+        unemu_pc_core::PcCore.create_machine(request)
+    })?;
     machine::confirm(owner, &prepared.inserted, host_time())?;
     for insert in &prepared.inserted {
         writeln!(output, "inserted:{}\t{}", insert.drive, insert.medium)?;
     }
-    let result = assembled.run_session(&assembly::RunPolicy::natural(
-        Some(max_steps),
-        Some(1_000_000),
-    ));
-    pc_harness::finish_persistence(&mut assembled, errors)?;
-    writeln!(output, "{label}:{}\t{:?}", owner.name(), result?)?;
+    let stop = super::run_started(&mut started, max_steps, errors)?;
+    writeln!(output, "{label}:{}\t{stop:?}", owner.name())?;
     Ok(())
 }

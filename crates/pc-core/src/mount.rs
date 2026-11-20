@@ -192,32 +192,44 @@ impl ContractMount {
         for device in &lowered.machine.devices {
             if let DeviceKind::Rtc(rtc) = &device.kind {
                 if let NvramSource::Journal { journal, .. } = &rtc.nvram {
-                    paths.push(journal);
+                    paths.push((journal, "NVRAM".to_owned()));
                 }
             }
         }
-        for drive in &lowered.machine.drives {
+        for (index, drive) in lowered.machine.drives.iter().enumerate() {
             let write = match &drive.media {
                 Some(media) if media.empty => continue,
                 Some(media) => &media.entries[media.inserted].write,
                 None => &drive.write,
             };
             if let WriteMode::Journal { path, .. } = write {
-                paths.push(path);
+                paths.push((path, format!("drive {index}")));
             }
         }
         // Acquire the initial records before any journal header is written.
         // A catalogue's other records remain free until those media are inserted.
         let failure = Failures::new(&lowered.machine, content.failure.clone());
         let mut initial = BTreeMap::new();
-        for path in paths {
+        for (path, owner) in paths {
             let name = lowered
                 .records
                 .get(path)
                 .ok_or_else(|| Error::new(ErrorKind::Config, "unbound PC record"))?;
             initial.insert(
                 path.clone(),
-                tracked(storage.open(name)?, &failure.records[path]),
+                tracked(
+                    storage.open(name).map_err(|mut error| {
+                        // A record open has confirmed no sequence. Keep the
+                        // assembler's mount context and source chain in the
+                        // contract's flat diagnostic for stored-image commands.
+                        if error.kind == ErrorKind::Storage {
+                            let source = format!("{error} (last confirmed sequence 0)");
+                            error.message = format!("{owner} journal mount: {source}: {source}");
+                        }
+                        error
+                    })?,
+                    &failure.records[path],
+                ),
             );
         }
         Ok(Self {

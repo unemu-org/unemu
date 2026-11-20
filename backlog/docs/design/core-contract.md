@@ -5790,7 +5790,8 @@ The usage lines keep their words and their place.
 **This is not a pure move** (§14.6 Q5). `Machine::run` is not
 `run_session`: the last field of the result line is the contract's stop
 (`Steps`, `Halted`, `PoweredOff`) instead of `RunOutcome`'s `Debug` text;
-a guest reset no longer ends the run; a halted guest waits to the step
+a guest reset is performed and reported by the core (the old assembly loop
+already continued after it); a halted guest waits to the step
 limit instead of 1 000 000 idle clocks. `commands.md` states the change
 in the bead that makes it. `run --machine FILE` is not touched.
 
@@ -6681,25 +6682,90 @@ Beads that edit the same files go one after the other, in either order:
   and host guards, both clippy runs and rustdoc pass. Cargo-deny is left to
   the supervisor, as the sandbox brief requires.
 
-**S11. `image run` and `image machine run` through the contract.**
+**S11. `image run` and `image machine run` through the contract.** **Done.**
 
 - **Scope.** In `cli-pc` still. Both commands start with
-  `pc_image::launch` and `core_launch::start`, run with
+  `pc_image::launch` and `core_launch::start_with`, run with
   `RunLimit::steps(max_steps)`, call `finish`, and print the machine's
   messages and the finish warnings to standard error.
-  `pc_harness::finish_persistence` leaves these two commands.
+  Failed runs keep the old PC-side `pc_harness::finish_persistence` path,
+  because contract §3.9 forbids `finish` after `Status::Failed` and offers
+  no operation to persist that state.
 - **Files.** `crates/cli-pc/src/image.rs`, `image/machine.rs`; their
   tests; `backlog/docs/commands.md`.
 - **Depends on.** S9, S10.
 - **MUST PROVE.** **Stated behaviour change**, listed in the bead and in
   `commands.md` (§14.6 Q5): the last field of the result line is the
-  contract's stop; a guest reset no longer ends the run; no idle limit.
+  contract's stop; guest resets are performed and reported by the core
+  (the old assembly loop already continued after them); no idle limit.
   Everything else is byte-identical over the invocations of §7.5 step 4
   that use the two commands: `pinned-image:`, `inserted:`, the workspace's
   files, the exit codes. `image_commands`, `image_machine_commands` and
   `platform_alias` pass with only the stop word changed where a test names
   it. A run of the FreeDOS fixture to the same step count leaves journals
   byte-equal to the old path's.
+
+- **As landed.** Both commands remain in `cli-pc`. A workspace uses
+  `pc_image::launch::prepare_workspace`; a machine, including `image run`
+  on its workspace id, uses `prepare_machine`. Both print the pinned image,
+  call `core_launch::start_with` with `PcCore::create_machine`, run the
+  typed PC through `Machine` with
+  `RunLimit::steps(max_steps)`, call `finish`, and drain messages and finish
+  warnings to standard error before the result line. Machine confirmation
+  and `inserted:` lines still follow successful creation; the owner stays
+  alive through finish. A run failure still saves CMOS and closes journals
+  through `PcMachine::assembled`, preserving the old commands' behaviour
+  without calling contract `finish` on a failed machine. A persistence error
+  takes precedence over a run error, as before. Warning-output failures are
+  ignored, as in the old helper. No command moves to `cli-core`, no
+  existing start API is removed, and no desktop caller changes.
+  `commands.md` states the contract's stop word and removal of the idle
+  cutoff, and explains that the core now performs and reports guest resets;
+  continuation after a reset was already the old loop's behaviour.
+  The PC core is selected directly in this PC command; there is no
+  `Cores::for_platform` lookup here. Provider validation still accepts the
+  retired store spelling, while the launch document uses the canonical id.
+  S12 must canonicalize a manifest id before its exact core lookup.
+  Files outside the original code list include `pc-core/src/mount.rs`
+  (restore journal-open diagnostics), `pc-core/src/machine.rs` (retain the
+  typed guest failure for the CLI source chain), `cli-pc/Cargo.toml` and
+  `Cargo.lock`: three existing workspace dependencies (`core-launch`,
+  `unemu-core-api`, `unemu-pc-core`); the architecture map lists them.
+  Tests add contract-stop assertions to the existing workspace and machine
+  command tests, preserving all earlier assertions. Both assertions fail
+  against the old command implementations. Three unit tests cover the exact
+  step cap without the idle cutoff, reset continuation and message draining,
+  and preservation of a guest error after persistence. Additional review
+  regressions compare changed CMOS and sealed journal bytes after a CPU
+  refusal against the old path, pin the old pending-insert directory
+  diagnostic, and check that warning-output failures are ignored. Mutating
+  the step limit or discarding messages makes the corresponding test fail.
+  Mutations are restored with plain copies and
+  the sources touched before final checks.
+  A new ignored FreeDOS comparison runs two successive 10,000,000-step
+  sessions through the old assembler, both CLI commands and a typed launch.
+  Workspace files, machine journal bytes and virtual counters match:
+  8,800,473 retired instructions, 10,000,000 steps and VClock 16,250,000
+  on each boot. These counts are measured from the old path and compared
+  directly with the typed factory. Existing golden and session assertions
+  are unchanged.
+  MEASURED: a temporary probe records all 131 calls made by `image_commands`,
+  `image_machine_commands` and `platform_alias` before and after. After
+  normalizing temporary roots, host last-run text and the stop word, 130
+  outcomes are identical. The pending-insert directory diagnostic originally
+  lost drive-mount context and the last confirmed sequence. Review restored
+  that context and its repeated source sentence at the PC mount, with an
+  assertion pinned to the old command's measured output; this is not an
+  accepted exception to byte identity.
+  A separate set of 11 before/after binary invocations also compares every
+  written file and journal byte without normalizing their contents; the
+  accepted stop word is the only successful-output difference. The retired-platform run test passes unchanged; its registry
+  pull companion needs a loopback bind unavailable in the sandbox.
+  MEASURED final gate: 4,309 workspace/golden tests pass; 140 fail at
+  sandbox loopback binds (OS error 1), and one at the unsupported host
+  clipboard. All 894 release device tests and the doctest pass. Formatting,
+  publication and host guards, both clippy checks and rustdoc pass.
+  Cargo-deny is left to the supervisor as required by the sandbox brief.
 
 **S12. The two commands move to `cli-core`.**
 

@@ -76,6 +76,19 @@ that names another image; `image publish --from-workspace ID` and
 `image workspace discard ID` refuse a machine's id and name the machine
 command to use.
 
+Stored-image runs (`image run` and `image machine run`) start through the
+core contract. Their last output field is its stop: `Steps`, `Halted` or
+`PoweredOff`, replacing the old `RunOutcome` debug text (for example,
+`RetiredCapReached` becomes `Steps`). A guest-requested reset is performed
+inside the core and reported on standard error; the old assembly loop also
+continued after a reset.
+There is no idle cutoff: a guest waiting with interrupts enabled advances to
+`--max-steps` rather than stopping after 1,000,000 idle clocks. The PC's step
+budget includes time advanced while halted, as before. Machine messages and
+finish warnings go to standard error; journals finish before the result line.
+The workspace pin, pending-insert confirmation, journal paths and format stay
+the same. `run --machine FILE` keeps its existing policy.
+
 Compression policy (store side). Machine imports, media-set imports and
 workspace publication compress payloads of at least 4 KiB with single-threaded
 zstd level 3 when the provider declares the `+zstd` type: disk bases, sector

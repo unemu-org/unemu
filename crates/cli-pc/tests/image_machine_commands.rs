@@ -368,6 +368,7 @@ fn every_machine_command_mirrors_its_desktop_action() {
     let output = lab.ok(&["image", "machine", "run", "dos-games", "--max-steps", "1"]);
     assert!(output.starts_with("pinned-image:sha256:"), "{output}");
     assert!(output.contains("\nmachine:dos-games\t"), "{output}");
+    assert!(output.ends_with("\tSteps\n"), "{output}");
     assert!(!lab.row("dos-games")[5].ends_with("never"));
     write_floppy(&lab.store(), "dos-games", 0x5A);
     assert_eq!(lab.row("dos-games")[4], "Changed: A:, settings");
@@ -543,7 +544,7 @@ fn a_pending_insert_goes_into_its_drive_at_the_next_start_and_is_consumed() {
     let (code, output, errors) =
         lab.run(&["image", "machine", "run", "installer", "--max-steps", "1"]);
     assert_ne!(code, 0, "{output}");
-    assert!(!errors.is_empty());
+    assert_eq!(errors, "drive 0 journal mount: open: Is a directory (os error 21) (last confirmed sequence 0): open: Is a directory (os error 21) (last confirmed sequence 0)\n");
     let row = lab.row("installer");
     assert!(row.contains(&"insert-pending:A:".to_owned()), "{row:?}");
     assert_eq!(row[5], "last-run:never");

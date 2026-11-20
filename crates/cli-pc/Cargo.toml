@@ -14,6 +14,9 @@ layer = "pc"
 
 [dependencies]
 cli-core = { path = "../cli-core", version = "0.0.3" }
+core-launch = { path = "../core-launch", version = "0.0.3" }
+unemu-core-api.workspace = true
+unemu-pc-core.workspace = true
 # The machine runners behind --boot, --bios and run.
 pc-harness = { path = "../pc-harness", version = "0.0.3" }
 pc-image = { path = "../pc-image", version = "0.0.3" }

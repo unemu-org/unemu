@@ -699,6 +699,7 @@ dependencies = [
  "anyhow",
  "assembly",
  "cli-core",
+ "core-launch",
  "cpu",
  "device",
  "devices",
@@ -711,6 +712,8 @@ dependencies = [
  "pc-image",
  "recipe",
  "toml",
+ "unemu-core-api",
+ "unemu-pc-core",
  "video",
 ]
 

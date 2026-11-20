@@ -5,6 +5,19 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — Stored-image CLI runs use the core contract:**
+  `image run` and `image machine run` remain in `cli-pc`, prepare through
+  `pc_image::launch`, start with `core_launch::start`, run to
+  `RunLimit::steps` and finish through the contract on success. Failed runs
+  still persist CMOS and close journals through the PC assembly path: the
+  contract forbids finishing a failed machine. Output now names the contract
+  stop and the former idle cutoff is removed. Guest resets already continued
+  in the old assembly loop; the core now performs and reports them. Core
+  messages and finish warnings go to standard error. Pins,
+  insert confirmation, existing journal files and retired counts are preserved
+  outside those stated policy changes; the retired platform spelling still
+  runs. The previous start API remains available for other callers.
+  See `design/core-contract.md` §14.3 S11 and `commands.md`.
 - **2026-11-20 — Desktop library Start uses the core launch contract:** image,
   machine and Gaming-copy starts freeze their launch after created disks and
   kept catalogues are restored. The UI calls `start_with` and

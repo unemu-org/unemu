@@ -309,6 +309,7 @@ fn cli_workspace_run_publish_list_and_discard_are_opt_in() {
     ]);
     assert_eq!(code, 0, "{errors}");
     assert!(output.contains("workspace:play"));
+    assert!(output.ends_with("\tSteps\n"), "{output}");
     assert!(output.starts_with("pinned-image:sha256:"));
     assert_ne!(
         execute(&[
@@ -455,5 +456,175 @@ fn destructive_workspace_commands_require_existing_names_and_explicit_discard() 
             cli_pc::command::parse(&args.into_iter().map(OsString::from).collect::<Vec<_>>())
                 .is_ok()
         );
+    }
+}
+
+#[test]
+#[ignore = "slow: compare stored FreeDOS runs and journal bytes on both start paths"]
+fn stored_freedos_runs_keep_the_old_workspace_and_journal_bytes() {
+    use cpu::Cpu;
+    use std::{collections::BTreeMap, path::Path};
+
+    fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        fn visit(root: &Path, dir: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(root, &path, files);
+                } else {
+                    files.insert(
+                        path.strip_prefix(root).unwrap().to_owned(),
+                        std::fs::read(path).unwrap(),
+                    );
+                }
+            }
+        }
+        let mut files = BTreeMap::new();
+        visit(root, root, &mut files);
+        files
+    }
+
+    if fixtures::fixture("kiselev-bios/bios-xi8088.bin").is_none()
+        || fixtures::fixture("freedos/freedos.img").is_none()
+    {
+        return;
+    }
+    let root =
+        std::env::temp_dir().join(format!("stored-freedos-comparison-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let _cleanup = RemoveDir(root.clone());
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let profile = std::fs::read_to_string(repo.join("machines/at-freedos.toml")).unwrap();
+    let file = root.join("machine.toml");
+    std::fs::write(
+        &file,
+        profile.replace("../vendor/", &format!("{}/", repo.join("vendor").display())),
+    )
+    .unwrap();
+    let store = image_store::Store::open(root.join("store")).unwrap();
+    let profile = std::fs::read_to_string(&file).unwrap().replace(
+        "write = \"volatile\"",
+        "write = \"journal\"\njournal = \"source.upfj\"",
+    );
+    std::fs::write(&file, profile).unwrap();
+    pc_image::import_machine(
+        &store,
+        &file,
+        "test:dos",
+        &pc_image::ImportOptions {
+            no_compress: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let id = pc_image::machine::create_from_tag(&store, "test:dos", Some("DOS"), None).unwrap();
+    let cap = 10_000_000;
+    for round in 0..2 {
+        let (retired, time, clock, image) = {
+            let owner = store.workspace("legacy").unwrap();
+            let prepared = pc_image::workspace::prepare_start(&owner, "test:dos", false).unwrap();
+            let mut machine = assembly::assemble_with_verified_bases(
+                &prepared.machine,
+                &assembly::ObservationPolicy::default(),
+                assembly::AssemblyOptions::default(),
+                &prepared.bases,
+            )
+            .unwrap();
+            assert_eq!(
+                machine
+                    .run_session(&assembly::RunPolicy::natural(Some(cap), Some(1_000_000)))
+                    .unwrap(),
+                machine::RunOutcome::RetiredCapReached
+            );
+            pc_harness::finish_persistence(&mut machine, &mut Vec::new()).unwrap();
+            (
+                machine.machine.cpu().retired(),
+                machine.machine.virtual_time(),
+                machine.machine.clock().0,
+                prepared.image,
+            )
+        };
+        let (code, output, errors) = run(&[
+            "image".into(),
+            "run".into(),
+            "test:dos".into(),
+            "--workspace".into(),
+            "contract".into(),
+            "--max-steps".into(),
+            cap.to_string().into(),
+            "--store".into(),
+            store.root().into(),
+        ]);
+        assert_eq!(code, 0, "{errors}");
+        assert!(errors.is_empty(), "{errors}");
+        assert_eq!(
+            output,
+            format!("pinned-image:{image}\nworkspace:contract\tSteps\n")
+        );
+        assert_eq!(
+            snapshot(&store.workspace_path("legacy").unwrap()),
+            snapshot(&store.workspace_path("contract").unwrap())
+        );
+        {
+            use unemu_core_api::Machine;
+            let owner = store.workspace("counters").unwrap();
+            let prepared = pc_image::launch::prepare_workspace(
+                &owner,
+                "test:dos",
+                false,
+                &unemu_pc_core::PcCore,
+                "DOS".into(),
+            )
+            .unwrap();
+            let mut machine = core_launch::start_with(&prepared.prepared, |request| {
+                unemu_pc_core::PcCore.create_machine(request)
+            })
+            .unwrap();
+            assert_eq!(
+                machine.run(unemu_core_api::RunLimit::steps(cap)).unwrap(),
+                unemu_core_api::Stop::Steps
+            );
+            machine.finish().unwrap();
+            let assembled = machine.assembled_ref();
+            assert_eq!(
+                (
+                    assembled.machine.cpu().retired(),
+                    machine.steps(),
+                    machine.now().0
+                ),
+                (retired, time, clock)
+            );
+        }
+        let (code, output, errors) = run(&[
+            "image".into(),
+            "machine".into(),
+            "run".into(),
+            id.clone().into(),
+            "--max-steps".into(),
+            cap.to_string().into(),
+            "--store".into(),
+            store.root().into(),
+        ]);
+        assert_eq!(code, 0, "{errors}");
+        assert_eq!(
+            errors,
+            if round == 0 {
+                "migrated:contract\nmigrated:counters\nmigrated:legacy\n"
+            } else {
+                ""
+            }
+        );
+        assert_eq!(
+            output,
+            format!("pinned-image:{image}\nmachine:{id}\tSteps\n")
+        );
+        assert_eq!(
+            snapshot(&store.workspace_path("legacy").unwrap().join("media")),
+            snapshot(&store.workspace_path(&id).unwrap().join("media"))
+        );
+        assert_eq!(time, cap);
+        assert!(retired > 0);
+        eprintln!("FreeDOS counters: retired={retired}, steps={time}, clock={clock}");
     }
 }

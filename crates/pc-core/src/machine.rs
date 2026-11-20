@@ -106,6 +106,7 @@ pub struct PcMachine {
     maintenance_reported: bool,
     /// The diagnosis of the CPU refusal that failed the machine.
     cpu_stop_report: Option<cpu::CpuStopReport>,
+    guest_failure: Option<machine::MachineError>,
     /// Keyboard bytes delivered at each boundary, for the tests' replays.
     #[cfg(feature = "test-support")]
     pub input_log: Vec<InputLogEntry>,
@@ -275,6 +276,7 @@ impl PcMachine {
             cpu_resets: 0,
             maintenance_reported: false,
             cpu_stop_report: None,
+            guest_failure: None,
             #[cfg(feature = "test-support")]
             input_log: Vec::new(),
             #[cfg(feature = "test-support")]
@@ -353,6 +355,12 @@ impl PcMachine {
     /// it beside the error, which states only the operation and CS:IP.
     pub fn cpu_stop_report(&self) -> Option<&cpu::CpuStopReport> {
         self.cpu_stop_report.as_ref()
+    }
+
+    /// Take the typed run failure so PC commands can preserve its error
+    /// source chain, which the contract's flat diagnostic does not carry.
+    pub fn take_guest_failure(&mut self) -> Option<machine::MachineError> {
+        self.guest_failure.take()
     }
 
     /// Record the CPU's CS:IP after every run slice from now on, for the
@@ -631,7 +639,9 @@ impl Machine for PcMachine {
                     if let Err(failure) = self.assembled.reset_cpu(assembly::ResetCause::Requested)
                     {
                         self.status = Status::Failed;
-                        return Err(error(ErrorKind::Guest, failure));
+                        let error = error(ErrorKind::Guest, &failure);
+                        self.guest_failure = Some(failure);
+                        return Err(error);
                     }
                     self.record_cpu_reset();
                     self.take_speaker_trace();
@@ -657,7 +667,9 @@ impl Machine for PcMachine {
                         self.cpu_stop_report = self.assembled.machine.cpu().stop_report(refusal);
                     }
                     self.take_speaker_trace();
-                    return Err(error(ErrorKind::Guest, failure));
+                    let error = error(ErrorKind::Guest, &failure);
+                    self.guest_failure = Some(failure);
+                    return Err(error);
                 }
             }
         }

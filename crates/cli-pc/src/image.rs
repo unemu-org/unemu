@@ -209,20 +209,19 @@ pub fn execute(command: PcImageCommand, io: &mut Io<'_>, host: &HostSources) -> 
                 return Ok(0);
             }
             let owner = store.workspace(&workspace)?;
-            let prepared = pc_image::workspace::prepare_start(&owner, &tag, fresh)?;
-            writeln!(output, "pinned-image:{}", prepared.image)?;
-            let mut machine = assembly::assemble_with_verified_bases(
-                &prepared.machine,
-                &assembly::ObservationPolicy::default(),
-                assembly::AssemblyOptions::default(),
-                &prepared.bases,
+            let prepared = pc_image::launch::prepare_workspace(
+                &owner,
+                &tag,
+                fresh,
+                &unemu_pc_core::PcCore,
+                tag.clone(),
             )?;
-            let result = machine.run_session(&assembly::RunPolicy::natural(
-                Some(max_steps),
-                Some(1_000_000),
-            ));
-            pc_harness::finish_persistence(&mut machine, errors)?;
-            writeln!(output, "workspace:{workspace}\t{:?}", result?)?;
+            writeln!(output, "pinned-image:{}", prepared.image)?;
+            let mut machine = core_launch::start_with(&prepared.prepared, |request| {
+                unemu_pc_core::PcCore.create_machine(request)
+            })?;
+            let stop = run_started(&mut machine, max_steps, errors)?;
+            writeln!(output, "workspace:{workspace}\t{stop:?}")?;
         }
         PcImageCommand::Abandon { store, workspace } => {
             let store = image_store::Store::open_existing(store)?;
@@ -279,4 +278,196 @@ pub fn execute(command: PcImageCommand, io: &mut Io<'_>, host: &HostSources) -> 
         }
     }
     Ok(0)
+}
+
+/// Preserve stored-image persistence on errors as well as successful runs.
+fn run_started(
+    machine: &mut unemu_pc_core::PcMachine,
+    max_steps: u64,
+    errors: &mut impl Write,
+) -> anyhow::Result<unemu_core_api::Stop> {
+    use unemu_core_api::Machine;
+
+    let result = machine
+        .run(unemu_core_api::RunLimit::steps(max_steps))
+        .map_err(|error| match machine.take_guest_failure() {
+            Some(failure) => anyhow::Error::new(failure),
+            None => anyhow::Error::new(error),
+        });
+    // The contract forbids finish after failure, but these PC commands have
+    // always saved CMOS and closed journals before returning a run error.
+    let finished = if result.is_err() {
+        pc_harness::finish_persistence(machine.assembled(), errors)
+            .map(|()| unemu_core_api::Finished::new())
+            .map_err(anyhow::Error::from)
+    } else {
+        machine.finish().map_err(anyhow::Error::from)
+    };
+    let mut messages = Vec::new();
+    machine.drain_messages(&mut messages);
+    for message in messages {
+        let written = writeln!(errors, "{}", message.text);
+        if message.level != unemu_core_api::MessageLevel::Warning {
+            written?;
+        }
+    }
+    if let Ok(finished) = &finished {
+        write_finish_warnings(finished, errors);
+    }
+    finished?;
+    result
+}
+
+fn write_finish_warnings(finished: &unemu_core_api::Finished, errors: &mut impl Write) {
+    for warning in &finished.warnings {
+        let _ = writeln!(errors, "warning: {warning}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_started;
+    use unemu_core_api::{Machine, Stop};
+    use unemu_pc_core::PcMachine;
+
+    fn start(config: &assembly::MachineConfig) -> PcMachine {
+        let assembled = assembly::assemble_with_observation_and_options(
+            config,
+            &assembly::ObservationPolicy::default(),
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+        )
+        .unwrap();
+        PcMachine::from_assembled(config, assembled).unwrap()
+    }
+
+    #[test]
+    fn a_stored_run_continues_a_guest_reset_and_drains_its_message() {
+        let mut rom = vec![0; 0x8000];
+        rom[..5].copy_from_slice(&[0xb0, 0xfe, 0xe6, 0x64, 0xf4]);
+        rom[0x7ff0..0x7ff2].copy_from_slice(&[0xfa, 0xf4]);
+        let mut config = assembly::bios(rom, None);
+        config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xf800, ip: 0 };
+        let mut machine = start(&config);
+        let mut errors = Vec::new();
+        assert_eq!(
+            run_started(&mut machine, 100, &mut errors).unwrap(),
+            Stop::Halted
+        );
+        assert_eq!(machine.cpu_resets(), 1);
+        assert_eq!(errors, b"cpu reset\n");
+    }
+
+    #[test]
+    fn a_stored_run_has_no_idle_cutoff_and_uses_the_requested_step_limit() {
+        let config = assembly::at_keyboard(vec![0xfb, 0xf4, 0xeb, 0xfd]);
+        let mut machine = start(&config);
+        let mut errors = Vec::new();
+        assert_eq!(
+            run_started(&mut machine, 2_000_000, &mut errors).unwrap(),
+            Stop::Steps
+        );
+        assert_eq!(machine.steps(), 2_000_000);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn a_stored_run_persists_cmos_and_seals_its_generation_after_a_cpu_refusal() {
+        let temp = assembly::test_support::TempDir::new("stored-run-refusal");
+        let base = [0; 64];
+        let image = temp.path().join("cmos.bin");
+        let journal = temp.path().join("cmos.upfj");
+        std::fs::write(&image, base).unwrap();
+        let mut config = assembly::test_support::refused_gate_call();
+        config.images.push(assembly::LoadImage {
+            base: 0x7000,
+            source: assembly::ImageSource::Inline(vec![
+                0xfa, 0xb0, 0x10, 0xe6, 0x70, 0xb0, 0x5a, 0xe6, 0x71, 0xea, 0x00, 0x7c, 0, 0,
+            ]),
+            kind: assembly::ImageKind::RamLoad,
+            provides: vec![],
+        });
+        config.cpu.reset = assembly::ResetSpec::Entry { cs: 0, ip: 0x7000 };
+        let rtc = config
+            .devices
+            .iter_mut()
+            .find_map(|device| {
+                if let assembly::DeviceKind::Rtc(rtc) = &mut device.kind {
+                    Some(rtc)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        rtc.nvram = assembly::NvramSource::Journal {
+            image,
+            expected_sha256: media::VerifiedBase::from_bytes(&base)
+                .unwrap()
+                .identity()
+                .base_digest,
+            journal: journal.clone(),
+            keep_generations: 3,
+        };
+        let mut direct = assembly::assemble(&config).unwrap();
+        let old_error = direct
+            .run_session(&assembly::RunPolicy::natural(
+                Some(100_000),
+                Some(1_000_000),
+            ))
+            .unwrap_err();
+        direct.finish_persistence().unwrap();
+        drop(direct);
+        let expected = std::fs::read(&journal).unwrap();
+        std::fs::remove_file(&journal).unwrap();
+
+        let mut machine = start(&config);
+        let error = run_started(&mut machine, 100_000, &mut Vec::new()).unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            format!("{:#}", anyhow::Error::new(old_error))
+        );
+        assert_eq!(machine.status(), unemu_core_api::Status::Failed);
+        assert_eq!(
+            machine.finish().unwrap_err().kind,
+            unemu_core_api::ErrorKind::Usage
+        );
+        drop(machine);
+        let actual = std::fs::read(&journal).unwrap();
+        let scan = media::scan(&actual, &base, 64);
+        assert_eq!(scan.image.unwrap()[0x10], 0x5a);
+        assert_eq!(scan.report.last_closed_generation, Some(1));
+        assert!(scan.report.unsealed_tip.is_none());
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn a_stored_run_returns_the_guest_error_after_persistence() {
+        let config = assembly::test_support::refused_gate_call();
+        let mut machine = start(&config);
+        let mut errors = Vec::new();
+        let error = run_started(&mut machine, 100_000, &mut errors).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<machine::MachineError>(),
+            Some(machine::MachineError::Cpu(_))
+        ));
+    }
+
+    #[test]
+    fn a_finish_warning_ignores_output_failures() {
+        struct RefusedOutput;
+        impl std::io::Write for RefusedOutput {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let finished = unemu_core_api::Finished::new().with_warnings(vec!["maintenance".into()]);
+        let mut output = Vec::new();
+        super::write_finish_warnings(&finished, &mut output);
+        assert_eq!(output, b"warning: maintenance\n");
+        super::write_finish_warnings(&finished, &mut RefusedOutput);
+    }
 }
