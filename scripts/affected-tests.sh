@@ -122,7 +122,7 @@ def scan_tests: [
    why: "scans the Rust sources of every crate"}
 ];
 def full_files: "^(Cargo[.]toml|Cargo[.]lock|flake[.]nix|flake[.]lock|rust-toolchain([.]toml)?|[.]?rustfmt[.]toml|[.]?clippy[.]toml|[.]cargo/.*)$";
-def docs_files: "^(backlog/.*|[^/]+[.]md|[.]agents/.*|[.]claude/.*|LICENSE.*|LICENSES/.*|[.]markdownlint.*|[.]prettier.*|vendor/.+[.]md)$";
+def docs_files: "^(backlog/.*|[^/]+[.]md|[.]agents/.*|[.]claude/.*|[.]serena/.*|LICENSE.*|LICENSES/.*|[.]markdownlint.*|[.]prettier.*|vendor/.+[.]md)$";
 def config_files: "^([.]github/.*|[.]beads/.*|[.]pre-commit-config[.]yaml|[.]gitignore|[.]envrc)$";
 def runner_self: "^scripts/(affected-tests[.]sh|bead-gate[.]sh|testdata/affected-tests/.*)$";
 

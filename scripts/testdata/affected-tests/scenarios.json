@@ -162,6 +162,15 @@
     }
   },
   {
+    "name": "Serena project configuration is documentation",
+    "changed": [".serena/project.yml"],
+    "expect": {
+      "mode": "checks", "seeds": [], "affected": [],
+      "docs": [".serena/project.yml"], "shell": [],
+      "self_test": false, "deny": false, "release_devices": false
+    }
+  },
+  {
     "name": "a non-ASCII documentation path is documentation",
     "changed": ["backlog/completed/task-1 - Boot the BIOS — first light.md"],
     "expect": { "mode": "checks", "docs": ["backlog/completed/task-1 - Boot the BIOS — first light.md"] }
