@@ -3047,8 +3047,8 @@ Not part of the first beads; recorded so that no step works against it.
 | Destination | Crates |
 |---|---|
 | The contract's own source (§11 Q1) | `unemu-core-api` |
-| The PC core repository (unemupc) | `device`, `bus`, `cpu`, `video`, `audio`, `devices`, `chipset`, `machine`, `testkit`, `assembly`, `unemu-pc-core`, `pc-config` (added 2026-11-19, stage B plan), `pc-harness`, and by the recommendation of §11 Q4 `machine-file` and the journal half of `media` |
-| The front-end repository | `image-store`, `image-registry`, the media builders, the recipe crate, `cli-core`, `cli-pc`, `upcli`, `platforms`, `pc-image`, the window crates |
+| The PC core repository (unemupc) | `device`, `bus`, `cpu`, `video`, `audio`, `devices`, `chipset`, `machine`, `testkit`, `assembly`, `unemu-pc-core`, `pc-config` (added 2026-11-19, stage B plan), `pc-harness`, `machine-file`, `journal` and `journal-files` (§11 Q4, accepted 2026-11-21) |
+| The front-end repository | `image-store`, `image-registry`, `media` (all FAT12 formats, readers and builders), the recipe crate, `cli-core`, `cli-pc`, `upcli`, `platforms`, `pc-image`, the window crates |
 
 What must be true first:
 
@@ -3062,11 +3062,17 @@ What must be true first:
    lookup takes a small trait the provider implements over the store.
    Done: step 7 of §12.10 (`machine_file::FirmwarePackages`, implemented by
    `pc_image::firmware::StorePackages`).
-4. `media` is settled (§11 Q4).
+4. **Done (2026-11-21):** `media` stays with the front end (§11 Q4).
+   `journal` and `journal-files` own the core's journal and file engine.
+   The volume-builder suite `user_media_volumes` lives in `pc-image`, with
+   its names, corpus, full SHA-256 checks and byte-equality assertions
+   unchanged; `pc-harness` no longer has a media dev-dependency. The
+   core-side dependency closure, including dev dependencies, has no media
+   or front-end crate and needs no core-side boundary exception.
 5. The contract is 1.0 and comes from one source.
 
-§12 adds to this list: the core opens no file (§12.5, which settles item
-4 for the journal half of `media`), and the crates that go with the core
+§12 adds to this list: the core opens no file (§12.5; the journal engine
+now lives in `journal` and `journal-files`), and the crates that go with the core
 depend on nothing of the front end (the core-side rule of §12.8).
 
 As of 2026-11-21, the host-interface allow list is empty: the guard scans
@@ -3185,15 +3191,15 @@ crate or a duplicate FAT12 reader.
 | Front end, `pc` | `pc-image`: disk closure/decompression and zero-base OCI adapters (`disk.rs`, `zero.rs`), media creation/recipe orchestration and store publication. They use core-side `journal-files::{create, layer}` rather than copy its codecs or publication rules. |
 | Front end, existing layers | `cli-core` keeps FAT12 file export; `cli-pc` keeps PC media commands. `pc-media`, `pc-library`, `pc-ui`, `media-ui` and `window` keep creation models, host-file selection and views. `pc-session-tests` keeps its front-end integration tests; `platforms` and `upcli` compose the providers/commands. |
 
-Evidence: `cargo tree -i media --offline` and current manifests show direct
+Before the suite move, `cargo tree -i media --offline` and manifests showed direct
 normal dependents `cli-core`, `cli-pc`, `media-ui`, `pc-image`, `pc-library`,
-`pc-media`, `pc-ui`, `window`; additional dev edges include
+`pc-media`, `pc-ui`, `window`; additional dev edges included
 `pc-session-tests` and **`pc-harness`**. All but the latter belong to the
 front end; its transitive users include `platforms` and `upcli`.
 `media/src/lib.rs` now exports only `fat12`, with no journal facade.
 
 **Remove the remaining media boundary exception by moving its tests.**
-The only current `media::` user in `pc-harness` is
+The only `media::` user in `pc-harness` before the move was
 `tests/user_media_volumes.rs`: it builds volumes and reads them back; it
 does not run a guest. It uses `plan_volumes`, names/times and geometry as
 well as `reader::Volume`, so extracting just the reader would not remove
@@ -3218,11 +3224,18 @@ publishes a new base, never rewrites the old inode; sector reads use one
 overlay interface replaceable by a chain of hash-linked layers (§12.5 and
 deferred.md, “Layered disk images”). No layer feature is added by this move.
 
-**Open questions for the maintainer:** Accept front-end ownership of FAT12
-and the suite's move to `pc-image`? Confirm `journal-files` keeps raw/layer
-formats and publication helpers despite front-end callers? On acceptance,
-update §9's destination table/item 4 and §12.8's historical exception text
-with this placement and the measured empty media-crossing proof.
+**Accepted 2026-11-21:** FAT12 and the whole volume-builder suite belong
+with the front end; `journal-files` keeps raw/layer formats and publication
+helpers despite front-end callers. The suite now lives in
+`crates/pc-image/tests/user_media_volumes.rs`; its corpus paths remain valid
+at the same directory depth. The affected-test data rules select only
+front-end recipe readers. The boundary check passes with no core-side
+exception; only the application-composition exception remains (§9, §12.8).
+MEASURED: the relocated 304-line suite is byte-identical to its previous
+source. A manifest audit of all 17 core-side crates' normal, build and dev
+workspace dependencies finds only core-side targets, with no `media` or
+front-end crate. The two user-ROM tests retain their ignored status and
+required-file rule.
 
 **Q5. The PC text rasteriser and its fonts move below the contract, into
 the PC adapter.** The contract then carries pixels only, and the CC BY-SA
@@ -3839,9 +3852,12 @@ allow list starts with what is true today (MEASURED from the manifests):
 `machine-file` → `image-store` (firmware packages from the store; removed
 by item 3 of §9, step 7 of §12.10), `machine-file` → `media` (journal
 inspection; removed by the journal split) and, as a test dependency,
-`pc-harness` → `media` (the FAT12 reader with which the goldens check
-disks the guest wrote; it stays until that reader has a home on the core's
-side, which is settled at extraction with the rest of `media`). Until
+`pc-harness` → `media` (historically described as a FAT12 reader for
+guest-written disks; the actual consumer was the user-file volume-builder
+suite, which runs no guest). Accepted on 2026-11-21 (§11 Q4): FAT12 stays
+with the front end, and that whole suite moves to `pc-image`. This removes
+the final core-side exception, including dev dependencies; the unrelated
+`window` → `upcli` application-composition exception remains. Until
 step 7 `unemupc` therefore still compiles
 `image-store` through `machine-file`, with its Zstandard C library
 (MEASURED: the closure of `machine-file` holds `zstd-sys`, `cc` and

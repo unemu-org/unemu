@@ -5,6 +5,14 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-21 — FAT12 tests stay with the front end:** the complete
+  user-file volume-builder suite moves from `pc-harness` to `pc-image`,
+  retaining both test names, corpus, full SHA-256 checks, skip/required-file
+  rules and byte-equality assertions. Recipe data changes select front-end
+  readers. The core-side closure, including dev dependencies, no longer
+  reaches `media` or a front-end crate; its boundary allow list is empty.
+  The separate `window` → `upcli` application-composition exception remains.
+  See [core contract §9](design/core-contract.md#9-towards-two-repositories).
 - **2026-11-21 — Core host-interface allow list empty:** the four temporary
   directory exceptions move from assembly to host-side `machine-file` test
   support, with all callers following them. The CPU builds only its legacy

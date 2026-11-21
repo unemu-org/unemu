@@ -32,7 +32,5 @@ toml.workspace = true
 # The goldens that boot a shipped machine file load it the way the command
 # line does.
 machine-file = { workspace = true, features = ["test-support"] }
-# The FAT12 reader that checks disks the guest wrote.
-media.workspace = true
 machine = { workspace = true, features = ["reference-scheduler"] }
 assembly = { workspace = true, features = ["reference-scheduler", "test-support"] }

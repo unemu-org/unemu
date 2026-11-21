@@ -2731,7 +2731,6 @@ dependencies = [
  "journal-files",
  "machine",
  "machine-file",
- "media",
  "testkit",
  "toml",
  "video",

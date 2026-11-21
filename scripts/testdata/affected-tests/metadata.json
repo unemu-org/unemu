@@ -512,11 +512,6 @@
           "path": "/workspace/crates/machine-file"
         },
         {
-          "name": "media",
-          "kind": "dev",
-          "path": "/workspace/crates/media"
-        },
-        {
           "name": "testkit",
           "kind": "dev",
           "path": "/workspace/crates/testkit"

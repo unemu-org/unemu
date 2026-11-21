@@ -27,6 +27,7 @@ thiserror.workspace = true
 unemu-core-api.workspace = true
 
 [dev-dependencies]
+machine-file = { workspace = true, features = ["test-support"] }
 unemu-pc-core.workspace = true
 image-registry = { path = "../registry", version = "0.0.3" }
 media.workspace = true

@@ -1,5 +1,10 @@
 [
   {
+    "name": "a recipe corpus change selects front-end readers only",
+    "changed": ["backlog/docs/design/recipe-corpus/kenslab-2.01/kenslab-2.01.media.toml"],
+    "expect": {"mode": "crates", "seeds": ["cli-pc", "pc-image"], "tier": "fast", "user_roms": false}
+  },
+  {
     "name": "the frozen recipe schema selects its checker",
     "changed": ["backlog/docs/design/recipe-schema-1.0.json"],
     "expect": {"mode": "crates", "seeds": ["pc-image"], "tier": "fast"}
@@ -13,13 +18,11 @@
       "mode": "crates",
       "seeds": [
         "cli-pc",
-        "pc-harness",
         "pc-image"
       ],
       "tier": "fast",
       "targeted_crates": [
         "cli-pc",
-        "pc-harness",
         "window"
       ]
     }
@@ -33,13 +36,11 @@
       "mode": "crates",
       "seeds": [
         "cli-pc",
-        "pc-harness",
         "pc-image"
       ],
       "tier": "fast",
       "targeted_crates": [
         "cli-pc",
-        "pc-harness",
         "window"
       ]
     }
@@ -53,13 +54,11 @@
       "mode": "crates",
       "seeds": [
         "cli-pc",
-        "pc-harness",
         "pc-image"
       ],
       "tier": "fast",
       "targeted_crates": [
         "cli-pc",
-        "pc-harness",
         "window"
       ]
     }

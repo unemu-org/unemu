@@ -111,10 +111,10 @@ def data_rules: [
   {prefix: "backlog/docs/design/mockups/", goldens: false, crates: ["ui-kit"],
    why: "approved mock-ups the icon tests of the ui kit read"},
   {prefix: "crates/pc-image/data/recipes/", goldens: false,
-   crates: ["cli-pc", "pc-harness", "pc-image"],
+   crates: ["cli-pc", "pc-image"],
    why: "shipped recipes read by recipe checks and template builds"},
   {prefix: "backlog/docs/design/recipe-corpus/", goldens: false,
-   crates: ["cli-pc", "pc-harness", "pc-image"],
+   crates: ["cli-pc", "pc-image"],
    why: "recipes the recipe checks and the user-file volume tests read"},
   {prefix: "backlog/docs/design/recipe-schema-1.0.json", goldens: false,
    crates: ["pc-image"], why: "the recipe schema a test compares with the generated one"}
