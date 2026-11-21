@@ -89,6 +89,48 @@ fn lower(
     )
 }
 #[test]
+fn host_firmware_files_and_parts_resolve_and_assemble() {
+    use assembly::{ImagePart, Lane};
+
+    let directory = Layers::new();
+    let bytes = [0xF4, 0x90].repeat(16384);
+    let image = directory.0.join("bios.bin");
+    let even = directory.0.join("even.bin");
+    let odd = directory.0.join("odd.bin");
+    std::fs::write(&image, &bytes).unwrap();
+    std::fs::write(&even, vec![0xF4; 16384]).unwrap();
+    std::fs::write(&odd, vec![0x90; 16384]).unwrap();
+    let options = AssemblyOptions {
+        allow_unlisted_firmware: true,
+    };
+    for source in [
+        ImageSource::File(image),
+        ImageSource::Interleaved(vec![
+            ImagePart {
+                path: even,
+                lane: Lane::Even,
+                offset: 0,
+            },
+            ImagePart {
+                path: odd,
+                lane: Lane::Odd,
+                offset: 0,
+            },
+        ]),
+    ] {
+        let mut config = assembly::bios(Vec::new(), None);
+        config.images[0].provides.clear();
+        config.images[0].source = source;
+        let resolved = machine_file::test_support::resolve_file_sources(&config, options).unwrap();
+        assert_eq!(
+            resolved.images[0].source,
+            ImageSource::Inline(bytes.clone())
+        );
+        let _assembled = machine_file::assemble_with_options(&config, options).unwrap();
+    }
+}
+
+#[test]
 fn parts_toml_yaml_parse_and_lower_identical_bytes_with_relative_paths() {
     for (input, yaml) in [(TOML, false), (YAML, true)] {
         let (document, origins) = parse(input, yaml);
@@ -668,7 +710,7 @@ fn repository_machine_cpu_regions_cover_the_full_firmware_board_space() {
                 ]
             };
             assert_eq!(
-                assembly::test_support::cpu_mapping_regions(&config, options).unwrap(),
+                machine_file::test_support::cpu_mapping_regions(&config, options).unwrap(),
                 expected,
                 "{}",
                 name.display()
@@ -694,7 +736,8 @@ fn repository_machine_cpu_regions_cover_the_full_firmware_board_space() {
                 .unwrap();
                 let loaded = machine_file::load_for_assembly(path, options).unwrap();
                 assert_eq!(
-                    assembly::test_support::cpu_mapping_regions(&loaded.config, options).unwrap(),
+                    machine_file::test_support::cpu_mapping_regions(&loaded.config, options)
+                        .unwrap(),
                     ordinary,
                     "preset mapping"
                 );
@@ -708,7 +751,7 @@ fn repository_machine_cpu_regions_cover_the_full_firmware_board_space() {
                 &ordinary
             };
             assert_eq!(
-                &assembly::test_support::cpu_mapping_regions(&loaded.config, options).unwrap(),
+                &machine_file::test_support::cpu_mapping_regions(&loaded.config, options).unwrap(),
                 expected,
                 "{}",
                 name.display()
@@ -737,7 +780,7 @@ fn user_rom_landmark_at_identity() {
     config.images[0].provides.clear();
     config.images[0].source = found.source.clone();
     let resolved = found.expect_redacted(
-        assembly::test_support::resolve_file_sources(&config, AssemblyOptions::default()),
+        machine_file::test_support::resolve_file_sources(&config, AssemblyOptions::default()),
         "resolving diagnostic parts",
     );
     let ImageSource::Inline(bytes) = &resolved.images[0].source else {
@@ -769,7 +812,7 @@ fn user_rom_landmark_at_identity() {
         ),
         "checking diagnostic identity",
     );
-    resolved.validate().unwrap();
+    machine_file::validate(&resolved).unwrap();
     assert!(resolved.images[0].provides.is_empty());
 }
 
@@ -868,12 +911,18 @@ fn user_rom_ibm_1985_identity() {
     let mut config = config_for(&paths);
     config.images[0].source = found.source.clone();
     assert_eq!(config.board, assembly::BoardModel::Ibm5170);
-    found.expect_redacted(config.validate(), "validating firmware config");
+    found.expect_redacted(
+        machine_file::validate(&config),
+        "validating firmware config",
+    );
     let resolved = found.expect_redacted(
-        assembly::test_support::resolve_file_sources(&config, default),
+        machine_file::test_support::resolve_file_sources(&config, default),
         "resolving firmware",
     );
-    found.expect_redacted(resolved.validate(), "validating resolved firmware");
+    found.expect_redacted(
+        machine_file::validate(&resolved),
+        "validating resolved firmware",
+    );
     let ImageSource::Inline(bytes) = &resolved.images[0].source else {
         panic!("unresolved BIOS")
     };
@@ -903,7 +952,10 @@ fn user_rom_ibm_1985_identity() {
         found.redact(
             &found
                 .expect_err_redacted(
-                    assembly::test_support::resolve_file_sources(&config_for(&swapped), default),
+                    machine_file::test_support::resolve_file_sources(
+                        &config_for(&swapped),
+                        default
+                    ),
                     "checking swapped firmware",
                 )
                 .to_string()
@@ -911,7 +963,7 @@ fn user_rom_ibm_1985_identity() {
         message
     );
     found.expect_redacted(
-        assembly::test_support::resolve_file_sources(&config_for(&swapped), escaped),
+        machine_file::test_support::resolve_file_sources(&config_for(&swapped), escaped),
         "resolving swapped firmware with permission",
     );
     let (doc, origins) = document_for(&swapped);
@@ -952,7 +1004,7 @@ fn user_rom_ibm_1985_identity() {
         found.redact(
             &found
                 .expect_err_redacted(
-                    assembly::test_support::resolve_file_sources(&config_for(&wrong), default),
+                    machine_file::test_support::resolve_file_sources(&config_for(&wrong), default),
                     "checking corrupt firmware",
                 )
                 .to_string()

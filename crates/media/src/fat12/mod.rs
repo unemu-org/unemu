@@ -19,7 +19,7 @@
 //! serial is fixed, each folder holds its files first, then its folders, each
 //! by the bytes of their 8.3 names (as XCOPY /S writes a tree), and clusters
 //! are allocated contiguously in that order. Images are built in
-//! memory; [`crate::create::image`] publishes them. Nothing is written for a
+//! memory; `journal_files::create::image` publishes them. Nothing is written for a
 //! request that does not fit. [`HostItem`] and [`Survey`] split the same work
 //! for an editor: host items are read once, then laid out and planned for any
 //! top folder, format and label without reading the host again.

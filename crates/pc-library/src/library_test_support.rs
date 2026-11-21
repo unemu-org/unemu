@@ -153,15 +153,19 @@ impl Fixture {
             // A compressed floppy has no file; its verified base holds the bytes.
             let bytes = match prepared.bases.get(path) {
                 Some(base) if base.metadata().is_none() => {
-                    let mut bytes = vec![0; media::SectorSource::byte_len(base) as usize];
-                    media::SectorSource::read_range(base, 0, &mut bytes).unwrap();
+                    let mut bytes = vec![0; journal_files::SectorSource::byte_len(base) as usize];
+                    journal_files::SectorSource::read_range(base, 0, &mut bytes).unwrap();
                     bytes
                 }
                 _ => fs::read(path).unwrap(),
             };
-            let mut media =
-                media::JournalMedia::open(journal, &bytes, bytes.len() as u64, Default::default())
-                    .unwrap();
+            let mut media = journal_files::JournalMedia::open(
+                journal,
+                &bytes,
+                bytes.len() as u64,
+                Default::default(),
+            )
+            .unwrap();
             media.write_batch(&[(0, [value; 512])]);
             media.finish().unwrap();
         };
@@ -179,7 +183,8 @@ impl Fixture {
                 if let assembly::NvramSource::Journal { image, journal, .. } = &rtc.nvram {
                     let bytes = fs::read(image).unwrap();
                     let mut media =
-                        media::JournalMedia::open(journal, &bytes, 64, Default::default()).unwrap();
+                        journal_files::JournalMedia::open(journal, &bytes, 64, Default::default())
+                            .unwrap();
                     let mut sector = [0; 512];
                     sector[..64].copy_from_slice(&bytes);
                     sector[32] = value;

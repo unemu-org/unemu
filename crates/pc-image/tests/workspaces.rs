@@ -189,7 +189,7 @@ fn live_journal_writer_and_tag_race_block_publication() {
         panic!()
     };
     let bytes = fs::read(path).unwrap();
-    let live = media::JournalMedia::open(
+    let live = journal_files::JournalMedia::open(
         &owner.path().join("media/medium-0.upfj"),
         &bytes,
         bytes.len() as u64,
@@ -217,7 +217,7 @@ fn live_journal_writer_and_tag_race_block_publication() {
         })
         .is_err()
     );
-    let live = media::JournalMedia::open(
+    let live = journal_files::JournalMedia::open(
         &retry.path().join("media/medium-0.upfj"),
         &bytes,
         bytes.len() as u64,
@@ -301,10 +301,14 @@ fn serial_layers_share_a_verified_materialization_and_keep_retention() {
     else {
         panic!()
     };
-    let base = media::VerifiedBase::open(path).unwrap();
-    let mut journal =
-        media::JournalMedia::open_verified(journal_path, &base, 32 * 512, Default::default())
-            .unwrap();
+    let base = journal_files::VerifiedBase::open(path).unwrap();
+    let mut journal = journal_files::JournalMedia::open_verified(
+        journal_path,
+        &base,
+        32 * 512,
+        Default::default(),
+    )
+    .unwrap();
     journal.write_batch(&[(1, [99; 512])]);
     journal.finish().unwrap();
     workspace::publish(&owner, "test:second", None).unwrap();
@@ -336,13 +340,13 @@ fn serial_layers_share_a_verified_materialization_and_keep_retention() {
     let assembly::ImageSource::File(path) = &disk.image else {
         panic!()
     };
-    let base = media::VerifiedBase::open(path).unwrap();
+    let base = journal_files::VerifiedBase::open(path).unwrap();
     assert_eq!(
-        media::SectorSource::read_sector(&base, 0).unwrap(),
+        journal_files::SectorSource::read_sector(&base, 0).unwrap(),
         [41; 512]
     );
     assert_eq!(
-        media::SectorSource::read_sector(&base, 1).unwrap(),
+        journal_files::SectorSource::read_sector(&base, 1).unwrap(),
         [99; 512]
     );
     // Cache names never substitute for verifying the complete bytes at Start.
@@ -365,7 +369,7 @@ fn newer_sessions_and_active_writers_cannot_be_discarded() {
         panic!()
     };
     let bytes = fs::read(path).unwrap();
-    let live = media::JournalMedia::open(
+    let live = journal_files::JournalMedia::open(
         &owner.path().join("media/medium-0.upfj"),
         &bytes,
         bytes.len() as u64,
@@ -615,7 +619,7 @@ fn raw_and_depth_three_starts_verify_each_full_disk_once() {
         .digest
         .clone();
     let before = image_store::verification_passes(&root);
-    let media_before = media::data_passes(32 * 512);
+    let media_before = journal_files::data_passes(32 * 512);
     let owner = fixture.store.workspace("raw-count").unwrap();
     let prepared = workspace::prepare_start(&owner, "test:source", false).unwrap();
     let launch =
@@ -628,7 +632,7 @@ fn raw_and_depth_three_starts_verify_each_full_disk_once() {
     machine.finish_persistence().unwrap();
     drop(pc);
     assert_eq!(
-        image_store::verification_passes(&root) - before + media::data_passes(32 * 512)
+        image_store::verification_passes(&root) - before + journal_files::data_passes(32 * 512)
             - media_before,
         1
     );
@@ -655,7 +659,7 @@ fn raw_and_depth_three_starts_verify_each_full_disk_once() {
             }
         }
         let before = image_store::verification_passes(&root);
-        let media_before = media::data_passes(32 * 512);
+        let media_before = journal_files::data_passes(32 * 512);
         let owner = fixture
             .store
             .workspace(if cold { "cold-count" } else { "warm-count" })
@@ -671,7 +675,7 @@ fn raw_and_depth_three_starts_verify_each_full_disk_once() {
         let machine = pc.assembled();
         machine.finish_persistence().unwrap();
         assert_eq!(image_store::verification_passes(&root) - before, 1);
-        assert_eq!(media::data_passes(32 * 512) - media_before, 1);
+        assert_eq!(journal_files::data_passes(32 * 512) - media_before, 1);
     }
 }
 
@@ -692,7 +696,7 @@ fn depth_limit_accepts_sixty_four_and_flatten_allows_further_publication() {
         .clone();
     let mut descriptors = original.manifest.layers.clone();
     let mut parent = root.clone();
-    let geometry = media::layer::Geometry {
+    let geometry = journal_files::layer::Geometry {
         cylinders: 1,
         heads: 1,
         sectors: 32,
@@ -700,11 +704,11 @@ fn depth_limit_accepts_sixty_four_and_flatten_allows_further_publication() {
     };
     let mut bytes = vec![0; 32 * 512];
     for depth in 1..=65 {
-        let before = media::VerifiedBase::from_bytes(&bytes).unwrap();
+        let before = journal_files::VerifiedBase::from_bytes(&bytes).unwrap();
         bytes[..512].fill(depth);
-        let after = media::VerifiedBase::from_bytes(&bytes).unwrap();
+        let after = journal_files::VerifiedBase::from_bytes(&bytes).unwrap();
         let mut pack = Vec::new();
-        let layer = media::layer::seal(
+        let layer = journal_files::layer::seal(
             &before,
             &after,
             geometry.clone(),
@@ -819,7 +823,7 @@ fn shared_result_cache_does_not_validate_an_unseen_invalid_head() {
         .iter()
         .find(|d| d.media_type == mt::DISK_LAYER)
         .unwrap();
-    let mut layer = media::layer::Descriptor::decode(
+    let mut layer = journal_files::layer::Descriptor::decode(
         &fixture
             .store
             .read_verified(d, image_store::MAX_SMALL_BLOB)
@@ -918,7 +922,8 @@ fn compressed_bases_and_sector_packs_publish_and_resume_through_disk_chains() {
     };
     let raw = fs::read(base).unwrap();
     let mut journal =
-        media::JournalMedia::open(path, &raw, raw.len() as u64, Default::default()).unwrap();
+        journal_files::JournalMedia::open(path, &raw, raw.len() as u64, Default::default())
+            .unwrap();
     let sectors: Vec<_> = (0..9).map(|lba| (lba, [0x91; 512])).collect();
     journal.write_batch(&sectors);
     journal.finish().unwrap();
@@ -1024,7 +1029,8 @@ fn layered_heads_stream_compressed_bases_and_packs_and_flatten_compressed_bases(
     };
     let raw = fs::read(path).unwrap();
     let mut media =
-        media::JournalMedia::open(journal, &raw, raw.len() as u64, Default::default()).unwrap();
+        journal_files::JournalMedia::open(journal, &raw, raw.len() as u64, Default::default())
+            .unwrap();
     // Enough sectors that the pack is large enough to compress.
     let sectors: Vec<_> = (0..9).map(|lba| (lba, [0x93; 512])).collect();
     media.write_batch(&sectors);

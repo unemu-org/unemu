@@ -153,12 +153,12 @@ fn freedos_writes_persist_in_a_machine_until_reset() {
         .unwrap()
         .join("media/medium-0.upfj");
     let replay = || {
-        let scan = media::scan(
+        let scan = journal_files::scan(
             &std::fs::read(&journal).unwrap(),
             &floppy,
             floppy.len() as u64,
         );
-        assert_eq!(scan.report.status, media::Status::Valid);
+        assert_eq!(scan.report.status, journal_files::Status::Valid);
         scan.image.unwrap()
     };
 

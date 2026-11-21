@@ -70,7 +70,7 @@ fn assembled() -> AssembledMachine {
             byte_limit: 1024 * 1024,
         });
     }
-    assembly::assemble_with_observation(&config, &policy).unwrap()
+    machine_file::assemble_with_observation(&config, &policy).unwrap()
 }
 
 fn mda(assembled: &AssembledMachine) -> String {

@@ -66,7 +66,8 @@ fn make_journal(temp: &Temp, cmos: bool, closed: bool) -> Vec<u8> {
     .unwrap();
     let path = temp.0.join(if cmos { "cmos.upfj" } else { "disk.upfj" });
     let mut journal =
-        media::JournalMedia::open(&path, &base, base.len() as u64, Default::default()).unwrap();
+        journal_files::JournalMedia::open(&path, &base, base.len() as u64, Default::default())
+            .unwrap();
     let mut sector = [0; 512];
     if cmos {
         sector[32] = 0xA7;
@@ -173,7 +174,7 @@ fn interior_corruption_and_wrong_original_base_block_import() {
     let journal = temp.0.join("disk.upfj");
     let original = fs::read(&journal).unwrap();
     let mut damaged = original.clone();
-    damaged[media::HEADER_LEN + 100] ^= 1;
+    damaged[journal_files::HEADER_LEN + 100] ^= 1;
     fs::write(&journal, &damaged).unwrap();
     let store = temp.store();
     assert!(import_machine(
@@ -471,7 +472,7 @@ fn short_open_bios_checkpoint_matches_machine_file() {
     assert!(
         include_str!("../../../Cargo.lock").contains("6cb817b86c1fbf463f7aab8c0da1ce0eec3db0b7")
     );
-    let reference = checkpoint(&mut assembly::assemble(&original).unwrap());
+    let reference = checkpoint(&mut machine_file::assemble(&original).unwrap());
     assert_eq!(reference.0, machine::RunOutcome::RetiredCapReached);
     assert_eq!((reference.1, reference.2), (97, 10_000));
     assert_eq!(
@@ -664,7 +665,7 @@ fn retained_journal_history_and_readonly_source_are_untouched() {
     let base = make_journal(&temp, false, true);
     let journal = temp.0.join("disk.upfj");
     let mut writer =
-        media::JournalMedia::open(&journal, &base, base.len() as u64, Default::default())
+        journal_files::JournalMedia::open(&journal, &base, base.len() as u64, Default::default())
             .unwrap()
             .with_retention(1);
     writer.write_batch(&[(0, [0x5C; 512])]);
@@ -794,9 +795,13 @@ fn catalogue_journals(temp: &Temp, absent_first: bool) -> Option<PathBuf> {
             continue;
         }
         let journal_path = temp.0.join(format!("{name}.upfj"));
-        let mut journal =
-            media::JournalMedia::open(&journal_path, &base, base.len() as u64, Default::default())
-                .unwrap();
+        let mut journal = journal_files::JournalMedia::open(
+            &journal_path,
+            &base,
+            base.len() as u64,
+            Default::default(),
+        )
+        .unwrap();
         journal.write_batch(&[(0, [value; 512])]);
         journal.checkpoint().unwrap();
         journal.write_batch(&[(0, [value + 1; 512])]);
@@ -1018,7 +1023,7 @@ fn journaled_ide_resolves_file_backed_and_runs_short_checkpoint() {
     let temp = Temp::new();
     let base = vec![0; 8 * 2 * 4 * 512];
     fs::write(temp.0.join("ide.img"), &base).unwrap();
-    let mut journal = media::JournalMedia::open(
+    let mut journal = journal_files::JournalMedia::open(
         &temp.0.join("ide.upfj"),
         &base,
         base.len() as u64,
@@ -1243,7 +1248,7 @@ fn compressed_import_and_resolution_write_nothing_and_a_mount_decodes_only_the_h
     };
     assert!(!key.exists());
     assert_eq!(
-        media::SectorSource::read_sector(&prepared.bases[key], 0).unwrap(),
+        journal_files::SectorSource::read_sector(&prepared.bases[key], 0).unwrap(),
         [0x29; 512]
     );
     // In-memory bases cross to the execution thread and run with the disk.

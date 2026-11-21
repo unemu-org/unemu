@@ -28,7 +28,7 @@ use std::rc::Rc;
 use thiserror::Error;
 
 /// The units and meaning of a device's semantic byte output.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ByteStreamKind {
     /// Accepted UART transmit-holding-register bytes, excluding divisor writes.
     SerialTx,

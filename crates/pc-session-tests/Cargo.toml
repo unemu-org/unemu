@@ -38,3 +38,5 @@ winit.workspace = true
 image-store = { path = "../image-store", version = "0.0.3" }
 pc-image = { path = "../pc-image", version = "0.0.3", features = ["test-support"] }
 pc-library = { path = "../pc-library", version = "0.0.3" }
+
+journal-files.workspace = true

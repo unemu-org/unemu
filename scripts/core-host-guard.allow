@@ -3,23 +3,9 @@
 # FILE: MATCHED SOURCE LINE: REASON; indentation is ignored, text is literal.
 # Removing an entry with a live use fails; removing or moving its use fails
 # until the stale entry is removed. A repeated identical line needs one entry.
-crates/assembly/src/assemble.rs: let mut bases = HashMap::new();: Existing device lookup map uses the default host-seeded hasher; guest order is pinned by goldens
-crates/assembly/src/assemble.rs: let mut device_index: HashMap<DeviceId, usize> = HashMap::with_capacity(config.devices.len());: Existing device lookup map uses the default host-seeded hasher; guest order is pinned by goldens
-crates/assembly/src/assemble.rs: pub device_index: HashMap<DeviceId, usize>,: Existing device lookup map uses the default host-seeded hasher; guest order is pinned by goldens
-crates/assembly/src/assemble.rs: pub floppy_names: HashMap<(DeviceId, u8), Vec<String>>,: Existing device lookup map uses the default host-seeded hasher; guest order is pinned by goldens
-crates/assembly/src/assemble.rs: type NvramBases = HashMap<usize, ([u8; 64], Option<std::fs::Metadata>)>;: Existing device lookup map uses the default host-seeded hasher; guest order is pinned by goldens
-crates/assembly/src/assemble.rs: use std::collections::HashMap;: Existing device lookup map uses the default host-seeded hasher; guest order is pinned by goldens
 crates/assembly/src/lib.rs: let _ = std::fs::remove_dir_all(&self.0);: Feature-gated test support creates and removes temporary input directories
 crates/assembly/src/lib.rs: let path = std::env::temp_dir().join(format!(: Feature-gated test support creates and removes temporary input directories
 crates/assembly/src/lib.rs: match std::fs::create_dir(&path) {: Feature-gated test support creates and removes temporary input directories
 crates/assembly/src/lib.rs: std::process::id(),: Feature-gated test support creates and removes temporary input directories
-crates/assembly/src/mount.rs: let file = std::fs::File::open(path)?;: File-backed mount metadata and image loading await host-side extraction
-crates/assembly/src/mount.rs: let mut file = std::fs::File::open(path)?;: File-backed mount metadata and image loading await host-side extraction
-crates/assembly/src/mount.rs: origin: Option<std::fs::Metadata>,: File-backed mount metadata and image loading await host-side extraction
-crates/assembly/src/mount.rs: pub(crate) fn from_file(bytes: Vec<u8>, metadata: std::fs::Metadata) -> Self {: File-backed mount metadata and image loading await host-side extraction
-crates/assembly/src/mount.rs: pub(crate) fn into_parts(self) -> (Vec<u8>, Option<std::fs::Metadata>) {: File-backed mount metadata and image loading await host-side extraction
-crates/assembly/src/mount.rs: pub(crate) fn origin(&self) -> Option<&std::fs::Metadata> {: File-backed mount metadata and image loading await host-side extraction
-crates/assembly/src/mount.rs: pub(crate) fn with_origin(mut self, origin: Option<std::fs::Metadata>) -> Self {: File-backed mount metadata and image loading await host-side extraction
-crates/assembly/src/observation.rs: collections::HashMap,: Existing device lookup map uses the default host-seeded hasher; guest order is pinned by goldens
 crates/cpu/src/x86jit_backend.rs: static IMAGE: std::sync::OnceLock<x86jit_core::legacy::LegacyCpuState> =: Immutable CPU reset image cached once to avoid rebuilding the initial state
 crates/cpu/src/x86jit_backend.rs: std::sync::OnceLock::new();: Immutable CPU reset image cached once to avoid rebuilding the initial state

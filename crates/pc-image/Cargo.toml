@@ -13,6 +13,7 @@ description = "IBM PC/AT machine-file import and resolved OCI bundle provider."
 layer = "pc"
 
 [dependencies]
+journal-files.workspace = true
 core-launch = { path = "../core-launch", version = "0.0.3" }
 assembly.workspace = true
 machine-file.workspace = true
@@ -28,7 +29,7 @@ unemu-core-api.workspace = true
 [dev-dependencies]
 unemu-pc-core.workspace = true
 image-registry = { path = "../registry", version = "0.0.3" }
-media = { workspace = true, features = ["test-support"] }
+media.workspace = true
 image-store = { path = "../image-store", version = "0.0.3", features = ["test-support"] }
 cpu.workspace = true
 machine.workspace = true

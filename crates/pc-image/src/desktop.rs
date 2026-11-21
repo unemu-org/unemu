@@ -253,15 +253,15 @@ pub(crate) fn working_count(
         Err(e) => return Err(e.into()),
     };
     // Counts are advisory. Publication still uses the full base-bound scanner.
-    let mut header = [0; media::HEADER_LEN];
+    let mut header = [0; journal_files::HEADER_LEN];
     file.read_exact(&mut header)?;
-    media::Header::decode_unbound(&header).map_err(|e| invalid(e.to_string()))?;
+    journal_files::Header::decode_unbound(&header).map_err(|e| invalid(e.to_string()))?;
     let mut committed = BTreeSet::new();
     let mut command = BTreeSet::new();
     let mut records = 0;
     let mut expected = 1;
     loop {
-        let mut bytes = [0; media::FRAME_LEN];
+        let mut bytes = [0; journal_files::FRAME_LEN];
         let mut first = [0; 1];
         if file.read(&mut first)? == 0 {
             break;
@@ -270,7 +270,7 @@ pub(crate) fn working_count(
         if file.read_exact(&mut bytes[1..]).is_err() {
             return Ok(None);
         }
-        let frame = match media::Frame::decode(&bytes) {
+        let frame = match journal_files::Frame::decode(&bytes) {
             Ok(f) => f,
             Err(_) => return Ok(None),
         };
@@ -279,18 +279,18 @@ pub(crate) fn working_count(
         }
         expected += 1;
         match frame.record {
-            media::Record::Sector { lba, .. } => {
+            journal_files::Record::Sector { lba, .. } => {
                 command.insert(lba);
                 records += 1;
             }
-            media::Record::CommandEnd { sectors } => {
+            journal_files::Record::CommandEnd { sectors } => {
                 if sectors != records {
                     return Ok(None);
                 }
                 committed.append(&mut command);
                 records = 0;
             }
-            media::Record::GenerationEnd { .. } => {
+            journal_files::Record::GenerationEnd { .. } => {
                 if !command.is_empty() {
                     return Ok(None);
                 }
@@ -329,7 +329,7 @@ mod tests {
         let owner = store.workspace("session").unwrap();
         fs::create_dir(owner.path().join("media")).unwrap();
         let journal = owner.path().join("media/disk.upfj");
-        let mut bytes = media::Header::new(&[0; 512], 0)
+        let mut bytes = journal_files::Header::new(&[0; 512], 0)
             .unwrap()
             .encode()
             .unwrap()
@@ -342,22 +342,22 @@ mod tests {
         for (sequence, record) in [
             (
                 1,
-                media::Record::Sector {
+                journal_files::Record::Sector {
                     lba: 0,
                     bytes: Box::new([1; 512]),
                 },
             ),
             (
                 2,
-                media::Record::Sector {
+                journal_files::Record::Sector {
                     lba: 0,
                     bytes: Box::new([2; 512]),
                 },
             ),
-            (3, media::Record::CommandEnd { sectors: 2 }),
+            (3, journal_files::Record::CommandEnd { sectors: 2 }),
         ] {
             bytes.extend(
-                media::Frame {
+                journal_files::Frame {
                     sequence,
                     generation: 1,
                     record,
@@ -372,10 +372,10 @@ mod tests {
             Some(1)
         );
         bytes.extend(
-            media::Frame {
+            journal_files::Frame {
                 sequence: 4,
                 generation: 1,
-                record: media::Record::Sector {
+                record: journal_files::Record::Sector {
                     lba: 1,
                     bytes: Box::new([3; 512]),
                 },

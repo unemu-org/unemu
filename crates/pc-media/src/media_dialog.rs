@@ -5,6 +5,7 @@
 //! `backlog/docs/design/machine-images.md` §7 and persistent-media.md § Media changes.
 
 use assembly::{DriveKind, FloppyGeometry, FloppyMedium, ImageSource, MachineConfig, WriteMode};
+use machine_file::FileMachineExt;
 use std::{
     io,
     path::{Path, PathBuf},
@@ -234,7 +235,11 @@ pub fn browse(path: &Path, drive: FloppyGeometry) -> io::Result<CatalogueEntry> 
         .map(|kind| kind.geometry);
     let reason = compatibility(geometry, drive);
     let expected_sha256 = if geometry.is_some() {
-        Some(media::VerifiedBase::from_file(file)?.identity().base_digest)
+        Some(
+            journal_files::VerifiedBase::from_file(file)?
+                .identity()
+                .base_digest,
+        )
     } else {
         None
     };
@@ -792,7 +797,7 @@ mod tests {
         let path = root.join("extra.img");
         std::fs::write(&path, vec![0; 1_474_560]).unwrap();
         let mut config = assembly::floppy_boot(vec![0xEB, 0xFE], vec![0; 1_474_560]);
-        let mut assembled = assembly::assemble(&config).unwrap();
+        let mut assembled = machine_file::assemble(&config).unwrap();
         let mut slots = FloppySlot::from_config(&config);
         let dialog =
             |slots: &[Option<FloppySlot>; 2]| InsertDialog::new(0, slots[0].clone().unwrap());
@@ -861,7 +866,7 @@ mod tests {
         std::fs::write(&path, vec![0; 1_474_560]).unwrap();
         std::fs::write(&copy, vec![0; 1_474_560]).unwrap();
         let mut config = assembly::floppy_boot(vec![0xEB, 0xFE], vec![0; 1_474_560]);
-        let mut assembled = assembly::assemble(&config).unwrap();
+        let mut assembled = machine_file::assemble(&config).unwrap();
         let mut slots = FloppySlot::from_config(&config);
         let mut draft = InsertDialog::new(0, slots[0].clone().unwrap());
         for _ in 0..2 {
@@ -907,7 +912,7 @@ mod tests {
         config.drives[0].image = ImageSource::File(path.clone());
         config.drives[0].expected_sha256 = Some(Sha256::digest(vec![0; 1_474_560]).into());
         config.drives[0].write = WriteMode::ReadOnly;
-        let mut assembled = assembly::assemble(&config).unwrap();
+        let mut assembled = machine_file::assemble(&config).unwrap();
         let mut slots = FloppySlot::from_config(&config);
         let declared = &slots[0].as_ref().unwrap().entries[0];
         assert!(declared.declared);
@@ -1458,7 +1463,7 @@ pub fn append_entries(
             }
         }
     }
-    candidate.validate().map_err(|e| e.to_string())?;
+    machine_file::validate(&candidate).map_err(|e| e.to_string())?;
     let result = (|| {
         let mut indices = Vec::new();
         for entry in entries {

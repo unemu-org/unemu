@@ -297,7 +297,7 @@ mod serial_tests {
                 c.mouse = true;
             }
         }
-        let mut assembled = assembly::assemble(&config).unwrap();
+        let mut assembled = machine_file::assemble(&config).unwrap();
         let index = assembled.device_index[&DeviceId::Uart];
         assert_eq!(assembled.mouse_device_index(), Some(index));
         for (port, value) in [

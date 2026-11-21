@@ -182,11 +182,11 @@ mod tests {
 pub fn verified_base(
     image: &image_store::ResolvedImage,
     digest: &image_store::Digest,
-) -> crate::Result<media::VerifiedBase> {
+) -> crate::Result<journal_files::VerifiedBase> {
     let (file, metadata) = image.verified_file(digest)?;
-    Ok(media::VerifiedBase::from_verified_file(
+    Ok(journal_files::VerifiedBase::from_verified_file(
         file,
-        media::Header {
+        journal_files::Header {
             base_length: metadata.len(),
             base_digest: crate::provider::hash_array(digest)?,
             anchor_generation: 0,

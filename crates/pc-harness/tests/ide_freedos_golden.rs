@@ -22,11 +22,12 @@
 //! Prompt polls use the existing DOS session cadence.
 
 use assembly::{
-    assemble_with_observation, ConsoleProbe, DeviceId, InjectionSchedule, KeyboardStimulus,
-    ObservationPolicy, ObservationRequest, OutputKind, RunPolicy, StopCondition,
+    ConsoleProbe, DeviceId, InjectionSchedule, KeyboardStimulus, ObservationPolicy,
+    ObservationRequest, OutputKind, RunPolicy, StopCondition,
 };
 use cpu::Cpu;
 use device::ByteStreamKind;
+use machine_file::assemble_with_observation;
 use video::Frame;
 
 #[path = "support/fixtures.rs"]

@@ -306,7 +306,7 @@ mod tests {
     use unemu_pc_core::PcMachine;
 
     fn start(config: &assembly::MachineConfig) -> PcMachine {
-        let assembled = assembly::assemble_with_observation_and_options(
+        let assembled = machine_file::assemble_with_observation_and_options(
             config,
             &assembly::ObservationPolicy::default(),
             assembly::AssemblyOptions {
@@ -377,14 +377,14 @@ mod tests {
             .unwrap();
         rtc.nvram = assembly::NvramSource::Journal {
             image,
-            expected_sha256: media::VerifiedBase::from_bytes(&base)
+            expected_sha256: journal_files::VerifiedBase::from_bytes(&base)
                 .unwrap()
                 .identity()
                 .base_digest,
             journal: journal.clone(),
             keep_generations: 3,
         };
-        let mut direct = assembly::assemble(&config).unwrap();
+        let mut direct = machine_file::assemble(&config).unwrap();
         let old_error = direct
             .run_session(&assembly::RunPolicy::natural(
                 Some(100_000),
@@ -409,7 +409,7 @@ mod tests {
         );
         drop(machine);
         let actual = std::fs::read(&journal).unwrap();
-        let scan = media::scan(&actual, &base, 64);
+        let scan = journal_files::scan(&actual, &base, 64);
         assert_eq!(scan.image.unwrap()[0x10], 0x5a);
         assert_eq!(scan.report.last_closed_generation, Some(1));
         assert!(scan.report.unsealed_tip.is_none());
@@ -458,7 +458,7 @@ mod tests {
                 let owner = store.workspace("legacy").unwrap();
                 let prepared =
                     pc_image::workspace::prepare_start(&owner, "toy:failed", false).unwrap();
-                let mut machine = assembly::assemble_with_verified_bases(
+                let mut machine = machine_file::assemble_with_verified_bases(
                     &prepared.machine,
                     &assembly::ObservationPolicy::default(),
                     assembly::AssemblyOptions {
@@ -504,7 +504,7 @@ mod tests {
             };
             let actual = bytes("hook");
             assert_eq!(actual, bytes("legacy"));
-            let scan = media::scan(&actual, &[0; 64], 64);
+            let scan = journal_files::scan(&actual, &[0; 64], 64);
             assert_eq!(scan.image.unwrap()[0x10], 0x5a);
             assert_eq!(scan.report.last_closed_generation, Some(1));
             assert!(scan.report.unsealed_tip.is_none());

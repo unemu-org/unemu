@@ -544,25 +544,3 @@ fn no_rom_ending_at_one_mib_cannot_select_the_highest_option_rom() {
         );
     }
 }
-
-#[test]
-fn file_backed_system_bios_is_identified_after_resolution() {
-    let Some(_) = fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
-        return;
-    };
-    let mut config = config();
-    config.images[0].source = ImageSource::File(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../vendor/kiselev-bios/bios-xi8088.bin"),
-    );
-    config.images.reverse();
-    config.system_bios_image = Some(1);
-    assert_eq!(config.validate(), Ok(()));
-    assert!(assemble_with_options(
-        &config,
-        AssemblyOptions {
-            allow_unlisted_firmware: true
-        }
-    )
-    .is_ok());
-}

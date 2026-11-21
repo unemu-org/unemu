@@ -5,6 +5,7 @@
 //! bytes in its records; the mount lives as long as the machine; a medium
 //! appended by path still mounts as a host file.
 
+use machine_file::FileMachineExt;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -12,11 +13,12 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use assembly::{
-    assemble, assemble_mounted, AssembledMachine, ConfigError, DeviceId, DeviceKind, DiskBase,
-    DriveConfig, DriveKind, FloppyAction, FloppyMediaList, FloppyMedium, HardDiskGeometry, IdeCfg,
-    ImageBytes, ImageSource, JournalStore, MachineConfig, Mount, MountError, ObservationPolicy,
-    RunPolicy, WriteMode,
+    assemble_mounted, AssembledMachine, ConfigError, DeviceId, DeviceKind, DiskBase, DriveConfig,
+    DriveKind, FloppyAction, FloppyMediaList, FloppyMedium, HardDiskGeometry, IdeCfg, ImageBytes,
+    ImageSource, JournalStore, MachineConfig, Mount, MountError, ObservationPolicy, RunPolicy,
+    WriteMode,
 };
+use machine_file::assemble;
 use sha2::{Digest, Sha256};
 use unemu_core_api::test_support::{MemoryContent, MemoryStorage};
 use unemu_core_api::{Error, ErrorKind, Storage};
@@ -374,7 +376,7 @@ fn a_machine_mounted_from_memory_runs_and_its_records_hold_the_journal_files_byt
         }
     }
     // Two sessions: the second continued the first's journals.
-    let scan = media::scan(
+    let scan = journal_files::scan(
         &storage.contents("floppy.upfj").unwrap(),
         &floppy_base(),
         368_640,
@@ -439,7 +441,7 @@ fn the_mount_lives_with_the_machine_and_opens_a_catalogue_journal_at_insert() {
         !storage.is_open("floppy.upfj"),
         "the ejected medium's record is released"
     );
-    let sealed = media::scan(
+    let sealed = journal_files::scan(
         &storage.contents("floppy.upfj").unwrap(),
         &floppy_base(),
         368_640,
@@ -469,7 +471,7 @@ fn a_machine_mounted_from_memory_takes_a_medium_appended_by_path() {
         write: WriteMode::journal(temp.path(journal)),
         name: journal.into(),
     };
-    let base = || media::VerifiedBase::open(&temp.path("host.img")).unwrap();
+    let base = || journal_files::VerifiedBase::open(&temp.path("host.img")).unwrap();
 
     // The appended medium's paths are host files and are checked as such.
     let aliased = machine
@@ -537,7 +539,7 @@ fn a_machine_mounted_from_memory_takes_a_medium_appended_by_path() {
     machine.finish_persistence().unwrap();
     drop(machine);
 
-    let host = media::scan(
+    let host = journal_files::scan(
         &std::fs::read(temp.path("host.upfj")).unwrap(),
         &floppy_base(),
         368_640,
@@ -547,7 +549,7 @@ fn a_machine_mounted_from_memory_takes_a_medium_appended_by_path() {
         temp.path("host.upfj.lock").exists(),
         "the journal's own lock"
     );
-    let memory = media::scan(
+    let memory = journal_files::scan(
         &storage.contents("floppy.upfj").unwrap(),
         &floppy_base(),
         368_640,
@@ -670,4 +672,78 @@ fn two_catalogue_media_with_one_journal_key_are_refused_on_a_record_mount() {
         ),
         "{error}"
     );
+}
+
+#[test]
+fn file_and_record_mounts_keep_retained_journal_bytes_identical() {
+    let temp = Temp::new();
+    write_inputs(&temp.0);
+    let storage = MemoryStorage::new();
+    for _ in 0..4 {
+        let retention = |root: &Path| {
+            let mut config = config(root, true);
+            for drive in &mut config.drives {
+                if let WriteMode::Journal {
+                    keep_generations, ..
+                } = &mut drive.write
+                {
+                    *keep_generations = 1;
+                }
+            }
+            for device in &mut config.devices {
+                if let DeviceKind::Rtc(cmos) = &mut device.kind {
+                    if let assembly::NvramSource::Journal {
+                        keep_generations, ..
+                    } = &mut cmos.nvram
+                    {
+                        *keep_generations = 1;
+                    }
+                }
+            }
+            config
+        };
+        let mut files = assemble(&retention(&temp.0)).unwrap();
+        let mut memory = mounted(&retention(memory_root()), memory_mount(&storage));
+        assert_eq!(session(&mut files, true), session(&mut memory, true));
+        drop((files, memory));
+        for name in ["floppy.upfj", "cmos.upfj", "ide.upfj"] {
+            assert_eq!(
+                storage.contents(name).unwrap(),
+                std::fs::read(temp.path(name)).unwrap(),
+                "{name}"
+            );
+            assert_eq!(storage.durable(name), storage.contents(name));
+            assert!(!storage.is_open(name));
+        }
+    }
+    for (name, base) in [
+        ("floppy.upfj", floppy_base()),
+        ("cmos.upfj", cmos_base().to_vec()),
+        ("ide.upfj", ide_base()),
+    ] {
+        let scan = journal_files::scan(&storage.contents(name).unwrap(), &base, base.len() as u64);
+        assert_eq!(scan.report.generations.len(), 1, "{name}");
+        assert!(scan.report.header.unwrap().anchor_generation > 0, "{name}");
+    }
+    assert_eq!(
+        std::fs::read(temp.path("floppy.img")).unwrap(),
+        floppy_base()
+    );
+    assert_eq!(std::fs::read(temp.path("ide.img")).unwrap(), ide_base());
+    assert_eq!(std::fs::read(temp.path("cmos.bin")).unwrap(), cmos_base());
+}
+
+#[test]
+fn file_retention_fault_injection_leaves_record_sessions_unchanged() {
+    let storage = MemoryStorage::new();
+    let mut machine = mounted(&config(memory_root(), true), memory_mount(&storage));
+    for handle in &mut machine.persistence {
+        handle.fail_retention("replace");
+    }
+    assert_eq!(session(&mut machine, true).0, pattern());
+    drop(machine);
+    for name in ["floppy.upfj", "cmos.upfj", "ide.upfj"] {
+        assert!(!storage.is_open(name));
+        assert_eq!(storage.durable(name), storage.contents(name));
+    }
 }

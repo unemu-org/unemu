@@ -66,7 +66,7 @@ fn serial_mouse_rom_receives_identification_and_motion_via_irq4_at_pinned_times(
         }],
         ..Default::default()
     };
-    let mut assembled = assembly::assemble_with_observation_and_options(
+    let mut assembled = machine_file::assemble_with_observation_and_options(
         &config,
         &policy,
         assembly::AssemblyOptions {

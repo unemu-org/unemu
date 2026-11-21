@@ -14,6 +14,8 @@ layer = "pc"
 side = "core"
 
 [dependencies]
+machine-file.workspace = true
+journal-files.workspace = true
 anyhow.workspace = true
 assembly.workspace = true
 cpu.workspace = true
@@ -31,6 +33,6 @@ toml.workspace = true
 # line does.
 machine-file = { workspace = true, features = ["test-support"] }
 # The FAT12 reader that checks disks the guest wrote.
-media = { workspace = true, features = ["test-support"] }
+media.workspace = true
 machine = { workspace = true, features = ["reference-scheduler"] }
 assembly = { workspace = true, features = ["reference-scheduler", "test-support"] }

@@ -136,7 +136,7 @@ impl Fixture {
             {
                 let bytes = medium_bytes(&image, source, expected);
                 let id = id.as_str().unwrap();
-                let mut journal = media::JournalMedia::open(
+                let mut journal = journal_files::JournalMedia::open(
                     &owner.path().join("media").join(format!("{id}.upfj")),
                     &bytes,
                     bytes.len() as u64,
@@ -154,7 +154,7 @@ impl Fixture {
             .find(|d| d.media_type == pc_image::CMOS)
             .unwrap();
         let bytes = self.store.read_verified(d, 64).unwrap();
-        let mut journal = media::JournalMedia::open(
+        let mut journal = journal_files::JournalMedia::open(
             &owner.path().join("media/cmos.upfj"),
             &bytes,
             64,

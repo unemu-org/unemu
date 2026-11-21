@@ -167,7 +167,7 @@ fn synthetic_planar_scrolling_and_page_flips_have_pinned_frame_hashes() {
         ],
         ..ObservationPolicy::default()
     };
-    let mut rig = assembly::assemble_with_observation_and_options(
+    let mut rig = machine_file::assemble_with_observation_and_options(
         &config,
         &policy,
         AssemblyOptions {

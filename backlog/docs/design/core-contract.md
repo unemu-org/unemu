@@ -3909,7 +3909,7 @@ tests with the code they test. Sizes are ASSUMED.
 | 8 | **Contract 0.2.** The types of §12.5 in `unemu-core-api`; `Content::File`, `CreateRequest::session` and the path of `WriteTarget::Kept` go; `CONTRACT` is 0.2 and `PcCore` states 0.2; a storage in memory behind `test-support`. Since §13 this step is made in the contract's repository together with the additions of §13.2 (steps 4 and 5 of §13.6), and this repository moves its pin in step 7 there | None: `create` and `add_medium` still answer `Unsupported` | The contract's tests: a record's append, sync, truncate; a replacement that is committed, dropped, and failed in both ways; `drives` refuses a 0.1 core. The contract's lines leave the host guard's list, and the guard then refuses `std::fs` and `std::path` in the contract |
 | 9 | **Done.** **The journal over records, inside `media`** (move 1 of §12.5). As landed: `JournalMedia` keeps its journal in one record and opens no file: it scans by `size` and `read_at`, cuts an invalid tail with `truncate`, confirms with `sync`, creates a journal by committing a replacement that holds only the header, and rewrites retained history through a replacement it reads back before `commit`. The record is the contract's `Record` plus one seam of the journal's file record (`media::store::JournalRecord`, crate-private): a retention replacement whose host calls go through the offline tools' `ToolIo`, so their failures stay injectable; any other record ignores it. After a retention commit fails with `StorageUncertain`, the journal reads the record back (reads still work then) and takes the new contents as in place when the record has their length and their header, whose anchor the old contents cannot have; it then reports the new numbering, as it did before for a file whose rename took place and whose directory sync failed. New API: `JournalMedia::open_record(Box<dyn Record>, &VerifiedBase, length, SinkStatus)` and `media::JournalFile`, a journal file as a contract `Record` (`JournalFile::open(path, base identity, base metadata)`; `Usage` when the lock is held, `Storage` otherwise, the message naming the step; an existing file with no bytes is refused, as the path constructors refuse it, because the publication protocol never leaves one; its creation commit publishes only the header of the base it was opened for, and refuses another with `Usage`), which is what §14.4 item 1 asks for and what the storage plan of §14.2.4 opens per record; it takes the base's identity because a creation leftover is removed only when it holds a prefix of that journal's header, and the plan has the identity from its content table. The journal's file code (`HostFilesystem`, the `FILE.lock` sidecar, header publication through `FILE.create-N.tmp` and a hard link that never replaces a file, retention through `FILE.retain-N.tmp` with the journal's exact mode and a rename, the leftover cleanup, `platform_sync`) moved unchanged into `media::journal_file` as that record; the path constructors (`open`, `open_verified`, `open_with_base_metadata`, …) are thin wrappers over it, and no caller in `assembly`, `pc-image`, `cli-core` or the offline tools changed. How journal files map to records: one record is one `.upfj` file, named by the storage's table and not by its path (§12.9, corrected 2026-11-19); its lock `FILE.lock` (§14.6 Q8) and its temporaries are the record's own and are never records. The file record keeps the host calls in their order: its `size` seeks to the end, which also places the next append there, and a read seeks to its offset, so the model traces of `sink_tests.rs` (lock, open, header creation, path check, cleanup, directory sync, seeks, reads, writes, barriers, cut) and every failure's operation name ("lock", "publish header", "directory sync", "append seek", "command/end sync", …) are the same; `sink_tests.rs` and `offline_tests.rs` did not change. One difference exists only through a record, which no caller uses yet, and S10 keeps it: the journal names a failure of the header commit "publish header" whatever the record, so a file record's creation step ("header write", "header sync", "unlink temporary header", "verify journal path", "remove creation temporaries", "directory sync") is not the operation but the start of the message, as `header sync: …`; the path constructors still name the step itself. A failed append to a retention replacement is `Storage` and leaves the record writable, because the replacement's bytes are its own temporary file; when the partial write cannot be cut back, the replacement refuses everything but being dropped. `media` gains the contract as a dependency (layer `neutral` → `contract`, already on the external list); `unemu-core-api` is unchanged. MEASURED: `media`'s 139 unit tests pass unchanged; `media/tests/journal_storage.rs` adds 7: one scripted session (creation, duplicate sectors, checkpoints with retention to 3 and to 2, an interrupted session sealed at the next mount, a torn tail cut at mount) through the path constructors, through `JournalFile` from a name-to-file storage and through the contract's `MemoryStorage` leaves equal bytes after each of its four sessions, pinned to the SHA-256 the parent commit wrote for the same session (so a journal written before the step is the journal written after it, and each stage is mounted by the next); a power cut in memory keeps the synchronized command only; a failed header commit leaves no journal; a session over `JournalFile` and `JournalTool` (inspect and mutate) exclude each other through `disk.upfj.lock`, and both file tests fail when `JournalFile` locks another name; an uncertain retention commit over `MemoryStorage`, once before and once after its contents are in place, reports the numbering of the contents the record holds (fails when the read-back is skipped); a 0-byte journal file is refused by `JournalFile::open` and by the path constructors (fails without the check); a journal file opened for one base refuses to publish another base's header (fails without the check). `cargo test --workspace --release` passes (4 311 tests) and so do the 63 ignored goldens, `ide_journal_golden`, `dos_write_golden` and `media_files_golden` among them. | None | `media`'s own tests pass unchanged, the ones that record the order of writes, barriers and renames among them; the journal goldens (`ide_journal_golden`, `dos_write_golden`, `media_files_golden`) pass; a new test runs one session over the file-backed storage and over the storage in memory and compares the records byte for byte; a journal written before the step mounts after it |
 | 10 | **Done.** **The mount seam in `assembly`** (move 2). As landed: `assembly::Mount` (`crates/assembly/src/mount.rs`) is the one object the assembler asks for what a `MachineConfig` names by path, and the path is its key: `image(path)` gives `ImageBytes` (a ROM, a ROM part, a disk image mounted read-only or volatile, the CMOS image of an NVRAM journal); `disk_base(path, check_length)` gives the `DiskBase` of a journalled disk, calling `check_length` before it reads a byte, so a file of the wrong size is still refused before it is hashed; `journal(path)` gives a `JournalStore`, asked when the journal opens; `check_outputs(media)` checks the journal outputs before anything opens. Failures are `MountError::Config` (passed on unchanged) or `MountError::Host(unemu_core_api::Error)`, reported as the path's read or journal failure. The seam names only the contract's `ContentReader` and `Record` and types `assembly` owns, so `unemu-pc-core` can implement it without naming `media` (§14.4 item 2): `DiskBase::from_reader(Box<dyn ContentReader>, sha256, size)` reads the base on demand and never hashes it again, `JournalStore::record(Box<dyn Record>)` keeps the journal in a record through `JournalMedia::open_record`. `FileMount` is the file-backed implementation, still in `assembly`: each path is the file it names, a journal file opens through the journal's path constructors with its `FILE.lock` and the base file's identity, as before, and `FileMount::with_verified_bases` takes the table of `assemble_with_verified_bases`. `assemble_mounted(config, policy, options, Rc<dyn Mount>)` is new; every other `assemble*` function is the same assembly over a `FileMount`, as are a floppy appended by path, which still opens its base itself, and the byte loads of an already resolved config, and `MachineConfig::validate` keeps its host checks, which are `FileMount::check_outputs`. The assembler validates through the mount's `check_outputs`, and two rules of that step that are not about the host now run for every mount: a positive NVRAM retention before it, and distinct journal keys among fixed drives, catalogue entries and NVRAM journals after it (after, so that a file mount, which refuses equal outputs as aliases, reports exactly what it did before; a mount of records would otherwise let two media share one record). The mount's digest of a base is trusted, never recomputed. **Lifetime** (§14.4 item 3): the machine keeps its mount (`AssembledMachine::mount`, an opaque `MachineMount`, host files by default), and each catalogue medium's handle keeps it too and asks it for the journal at every insert. **A medium appended by path** (`append_floppy`, `append_floppy_verified`, signatures unchanged) is a host file whatever the mount: its journal opens through a `FileMount`. On a machine over files the whole config is validated as before; on another mount the mount checks the candidate's outputs and the media appended by path are checked against each other with the file rules (aliases, reserved names), because the mount's keys are not host paths. A failed `Mount::journal` is the journal's mount failure, step "open journal record". A ROM is now read like a disk image (open, metadata, read), not with `std::fs::read`: the same bytes and messages. Callers: none of the production code changed. `AssembledMachine` gained the public field `mount`, so the three struct literals in tests (`assembly`'s `observation_audio_tests.rs`, `pc-harness`'s `inline_host_can_select_capture_output` and its scheduler support) add `mount: Default::default()`. `PersistenceHandle::mount`, `prepare_removable` and `verify_drive_base` stay as test-only wrappers over the mounted forms, so the persistence and image-source tests, and the test that a wrong-sized base is not hashed, did not change. MEASURED: `crates/assembly/tests/mount_seam.rs` adds 6 tests over a mount in memory (the contract's `MemoryStorage` and `MemoryContent`, keys under an absolute folder of the temporary directory that is never created): a machine with a µPD765 floppy journal, an ATA fixed-disk journal and a CMOS journal, its program and CMOS image read through `image`, runs two sessions (a guest floppy write and read-back, a host ATA write, a CMOS byte) beside the same machine over files, with equal guest results, and after each session the three records hold exactly the bytes of the three journal files, durable and released; a catalogue's second medium opens its record only at insert, the ejected one's record is sealed and released, the mount lives exactly as long as the machine (a weak reference dies with it), also for a machine with no journal at all; a machine over records takes a floppy appended by path, its journal is a host file with its own lock and the guest's write lands there, and an appended journal that aliases its own base, or another appended journal by another spelling, is refused by the host check (fails when it is skipped), and the same spelling by the key check; two catalogue media with one journal key, and a CMOS journal with the fixed disk's key, are refused before any record opens; a record held elsewhere fails the assembly with "open journal record" and leaves no record open. `cargo test --workspace --release` passes (4 328 tests, 63 ignored), and the bead gate's goldens tier runs 4 368 tests with the ignored goldens (the 20 user-ROM tests skipped), `ide_journal_golden`, `dos_write_golden` and `media_files_golden` among them, all passing | None | `assembly`'s persistence and image-source tests pass unchanged; the slow goldens; the new seam has a test with a mount that serves from memory |
-| 11 | **Partly done (2026-11-21).** As landed: see the two notes below. **The crates split** (move 3), as three beads: `journal`; the journal's file code onto `unemu-core-files`, which exists since step 6 of §13.6; `journal-files` with the journal commands moving from `cli-core` to `cli-pc` and `unemupc` | None in `upcli`'s output: the journal commands change crate, and with one platform their words, output and exit codes are the same. New: the four journal commands of `unemupc` | Test names unchanged apart from the crate (§8.1.5 rule 3); `media_tools` and `media_fifo` pass in their new package; both `assembly` → `media` lines leave the allow list; `libc` keeps one way in, through `cpufeatures`, and the reasons of the `serde` and `toml` crates no longer name `media` (corrected 2026-11-20, S2: `pc-config` keeps the thirteen crates, `serde_derive` and `syn` 3, so the list does not lose them); `persistence.rs` and `assemble.rs` leave the host guard's list |
+| 11 | **Done (2026-11-21).** As landed: see the final extraction note and the earlier compatibility notes below. **The crates split** (move 3), as three beads: `journal`; the journal's file code onto `unemu-core-files`, which exists since step 6 of §13.6; `journal-files` with the journal commands moving from `cli-core` to `cli-pc` and `unemupc` | None in `upcli`'s output: the journal commands change crate, and with one platform their words, output and exit codes are the same. New: the four journal commands of `unemupc` | Test names unchanged apart from the crate (§8.1.5 rule 3); `media_tools` and `media_fifo` pass in their new package; both `assembly` → `media` lines leave the allow list; `libc` keeps one way in, through `cpufeatures`, and the reasons of the `serde` and `toml` crates no longer name `media` (corrected 2026-11-20, S2: `pc-config` keeps the thirteen crates, `serde_derive` and `syn` 3, so the list does not lose them); `persistence.rs` and `assemble.rs` leave the host guard's list |
 | 12 | **Done.** **Firmware discovery leaves `assembly`** (move 4). As landed: see the note below | None | The discovery tests move with the module and pass; the user-ROM helper of the tests keeps working from its new place; `assembly` has no line left in the host guard's list, and the list is empty |
 | 13 | **The command line joins `unemu`**, or `upcli` is renamed, as Q1 is answered: the binary, the release workflow, the `setup-upcli` action and its docs | **Stated:** the program name in usage and in the release | `command_line_pin` changes only in the program's name; the action's own workflow installs and runs the new binary |
 
@@ -4139,53 +4139,75 @@ finishing through that descriptor.
    temporary restrictions remain. These two changes are stated in commands.md
    and status.md; no other journal byte or CLI result is exempted from comparison.
 
-**Remaining row proofs, checked against the current graph.**
+**Step 11, final extraction (2026-11-21).** `journal` is now
+`emulation` (core); `journal-files` is `pc`, `side = "core"` (host).
+`machine-file` owns `FileMount` (`mount.rs`), host `assemble*` entry points
+(`assemble.rs`), output-path validation (`mount_paths.rs`) and floppy
+append-by-path (`floppy.rs`, `FileMachineExt`). Callers select those host
+entry points explicitly. Assembly's inline entry points use `InlineMount`;
+`assemble_mounted` remains the content/record seam. Config validation in
+assembly is logical; `machine_file::validate` adds the original host checks
+through `MachineConfig::validate_mounted`, preserving their order.
 
-- Record lifecycle and shared file engine: done. Contract 0.3 supplies
-  the necessary operations, and contract 0.3.1 fixes the restrictive-umask
-  creation-descriptor case; no further contract repository change is needed.
-- File mount and host metadata in `machine-file`: not done. `assembly` still
-  has `FileMount` (`mount.rs`), metadata-bearing `ImageBytes`/`DiskBase`,
-  `Store::File`, and `NvramBases` (`assemble.rs`). Its default `assemble*`
-  functions construct `FileMount`; `load_image_bytes`, the preverified-base
-  helper, `MachineConfig::validate` and `append_floppy*` also select file
-  behavior internally. Moving only the implementation into `machine-file`
-  produces a Cargo cycle (`machine-file -> assembly -> machine-file`).
-  Completing this item requires moving these host entry points and their
-  real-file tests together, and extending the record mount request to pass
-  the journal's base/header and protected input identity: today's `journal(path)`
-  cannot create a `JournalFile` safely without that context. This remains
-  in-repository work; it is not an external-user compatibility constraint.
-- Both `assembly -> media` allow lines: not removed. The production dependency
-  still calls the file constructors and the dev dependency still runs their
-  real-file fault tests. Deleting either would make the boundary list false.
-- Media temporary exports: reduced to live names; unused `Generation`,
-  `Refusal`, `SparseScan`, `Tail` and `Tip` exports are removed; the overlay
-  helper module is now a private import. The remaining
-  facade exports are still consumed by assembly, machine-file, pc-image and
-  their tests. `media::create` also uses the offline `ToolIo`, and
-  `media::layer` uses file-backed bases and shared overlay hash helpers.
-- Final tags (`journal = emulation`, `journal-files = pc/core`): not applied.
-  Neutral `media` still normally depends on journal-files for creation and
-  layers; neutral `cli-core` still reaches media for FAT12 export. Applying
-  either final tag now breaks a neutral dependency path. This requires
-  settling the neutral FAT12/export and PC file-layer separation as well
-  as the assembly move. No new or widened allow entry masks that path.
-- `libc` only through cpufeatures: not achieved. The assembly file path still
-  reaches `media` and journal-files' Unix file flags/error constants. The
-  exact external list retains those real paths and unemu-core-files.
-- serde/toml reasons: already done in the base. The external list names only
-  pc-config's codec, not media, for both crates and their parser/model crates.
-- `assemble.rs` host exceptions: retained. Five entries name the existing
-  host-seeded lookup maps (import, two fields, construction, local map);
-  the sixth is the metadata-bearing NVRAM map alias. File extraction alone
-  would not remove the other five. `persistence.rs` has no allow entry and
-  still implements host path validation below its first test-only import;
-  the scanner's first-test-marker cutoff is not proof of host independence.
-  The 20 original entries remain: six assemble, seven mount, four assembly
-  test-support, one observation map and two CPU reset-cache entries.
+`ImageBytes` and `DiskBase` retain only opaque origin tokens (`Rc<dyn Any>`),
+never filesystem metadata. The file mount creates and interprets the tokens.
+`JournalStore` defers opening until the verified base, geometry length and
+status are available, so the file adapter still protects the input inode
+while creating or replacing a journal. `JournalSession` exposes sector reads,
+command writes, boundary persistence and finalization; file sessions keep
+the file engine's retention/publication and failure-injection policy, while
+record sessions keep the journal's policy. A removable medium retains its
+mount for every insert. Append-by-path keeps the original cross-input/output
+checks, including appended media on a machine over records.
 
-MEASURED final validation after these accepted changes: the journal crates
+**Placement adjustment to §12.5 move 3.** `media` keeps neutral FAT12
+formats/readers/builders. Its former `create` and `layer` modules move
+unchanged to `journal-files`: both use the PC file engine, shared file-base
+receipts and journal overlay helpers. Keeping them in neutral `media` would
+leave `cli-core`'s FAT12 export transitively dependent on a PC/core host crate.
+Moving these two modules closes that path without a new boundary exception
+or a second implementation of publication or sector-source behavior. All
+callers now use `journal_files::{create, layer}`; the journal facade in
+`media` is gone. Real-file assembly tests move to `machine-file`, retaining
+their test names and assertions.
+
+**Final row proofs.** Both `assembly -> media` exceptions and
+`machine-file -> media` are removed; `pc-harness -> media` (dev) remains for
+the FAT12 reader. Emulation no longer reaches `unemu-core-files`; its only
+path to `libc` is `sha2 -> cpufeatures` on targets requiring the capability
+query. The serde/TOML reasons name only the `pc-config` codec, which still
+needs them. The host guard falls from 20 entries to 6: the four existing
+assembly test-directory helpers and the two CPU immutable reset-cache lines.
+No `assemble.rs`, `mount.rs` or `observation.rs` exception remains.
+`HashMap` is correctly flagged because its default hasher requests host
+randomness, even when the table is only used for lookup. Those tables now
+use `BTreeMap`; the scanner has not been weakened.
+
+MEASURED final extraction checks: offline all-target build, workspace clippy
+with every target and feature and warnings denied, formatting, rustdoc with
+warnings denied, crate boundaries, the external list and the host guard pass.
+All 4,409 original annotated test names remain; two cases are added. Retained
+file/record sessions produce identical journal bytes, durable records and
+unchanged bases across four sessions; disabling retention-policy forwarding
+fails this case (four generations instead of one). File-only retention fault
+injection leaves record sessions with the storage's own behavior, as before;
+its regression first fails on the extracted adapter's rejection, then passes.
+All 192 saved CLI stdout/stderr/exit-code/output-file-hash records match both
+the part-one and file-adapter baselines, with no exclusions.
+
+The full affected plan selects the workspace/goldens tier because Cargo.lock
+changes. Its run has 4,375 passes, 142 failures and 20 user-ROM skips: 140
+failures are denied loopback binds, one is an unavailable clipboard, and one
+is a file-backed test still importing the inline assembler through a wildcard.
+That import is corrected and the CLI creation binary's nine cases pass afterward.
+The gate also finds a redundant test borrow and a stale FAT12 publication doc
+link; both are fixed and the full clippy and rustdoc commands pass afterward.
+The final focused run passes eight mount-seam and 28 persistence cases. Doctests
+and all 894 release-profile device tests pass. The full gate is not rerun after
+these focused corrections; user-ROM checks and cargo-deny remain the supervisor's
+lane outside this sandbox. No code move remains in this row.
+
+MEASURED validation of the earlier file-adapter landing (before the final extraction): the journal crates
 pass 120 tests, including all archived original names and the four new
 rollback/reserved-name/mode/crash-tail tests. The new assembly case passes;
 the assembly, journal CLI and machine-file consumer suites pass 28, 32 and
@@ -4295,7 +4317,7 @@ These types/functions currently live in `journal-files/src/journal_file.rs`,
 `temporary.rs`, `offline.rs` and `store.rs`; they need a generic public
 counterpart in `unemu-core-files`, not a dependency on `journal-files`.
 
-**Remaining row proofs.** Neither `assembly` → `media` allow entry is
+**Remaining row proofs at the earlier partial landing (superseded above).** Neither `assembly` → `media` allow entry is
 removed: assembly still reaches the compatibility facade. The host allow
 list stays exact at 20 entries: `persistence.rs` has none on this base;
 `mount.rs` retains seven file opens/metadata entries; `assemble.rs` retains

@@ -205,12 +205,14 @@ pub fn execute(command: CreateCommand, output: &mut impl Write) -> io::Result<u8
         ),
         ImageKind::HardDisk(geometry) => (geometry.image_bytes(), Vec::new()),
     };
-    media::create::image(&command.output, bytes, &prefix, command.force).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("create {}: {error}", command.output.display()),
-        )
-    })?;
+    journal_files::create::image(&command.output, bytes, &prefix, command.force).map_err(
+        |error| {
+            io::Error::new(
+                error.kind(),
+                format!("create {}: {error}", command.output.display()),
+            )
+        },
+    )?;
     writeln!(
         output,
         "created {} ({bytes} bytes)",
@@ -375,7 +377,7 @@ fn execute_files(
         }
     }
     for (index, ((path, image), disk)) in paths.iter().zip(&images).zip(&plan.disks).enumerate() {
-        media::create::image(path, image.len() as u64, image, force).map_err(|error| {
+        journal_files::create::image(path, image.len() as u64, image, force).map_err(|error| {
             let written: Vec<_> = paths[..index]
                 .iter()
                 .map(|path| path.display().to_string())

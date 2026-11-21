@@ -19,6 +19,7 @@ layer = "pc"
 test-support = []
 
 [dependencies]
+journal-files.workspace = true
 assembly.workspace = true
 devices.workspace = true
 image-store = { path = "../image-store", version = "0.0.3" }

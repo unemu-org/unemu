@@ -23,8 +23,8 @@
 //! copies it. A pending insert of the machine list for the same drive, which
 //! a version without created disks may have set later, goes in instead.
 
+use journal_files::SectorSource as _;
 use media::fat12::{FloppyFormat, HostItem, ShortName, Survey};
-use media::SectorSource as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{
@@ -116,12 +116,12 @@ pub enum Place {
 /// identity and metadata, so the window puts it into a drive without reading
 /// and hashing it again.
 #[derive(Clone)]
-pub struct Verified(std::sync::Arc<(fs::File, media::Header, fs::Metadata)>);
+pub struct Verified(std::sync::Arc<(fs::File, journal_files::Header, fs::Metadata)>);
 
 impl Verified {
     /// Hash the file at `path` in full; it must still be the image `digest`.
     fn open(path: &Path, digest: &[u8; 32]) -> io::Result<Self> {
-        let base = media::VerifiedBase::from_file(fs::File::open(path)?)?;
+        let base = journal_files::VerifiedBase::from_file(fs::File::open(path)?)?;
         if base.identity().base_digest != *digest {
             return Err(io::Error::other(
                 "the stored image does not match its SHA-256",
@@ -139,9 +139,9 @@ impl Verified {
     }
 
     /// The verified base again, checked unchanged but not hashed.
-    pub fn base(&self) -> io::Result<media::VerifiedBase> {
+    pub fn base(&self) -> io::Result<journal_files::VerifiedBase> {
         let (file, identity, metadata) = &*self.0;
-        media::VerifiedBase::from_verified_file(
+        journal_files::VerifiedBase::from_verified_file(
             file.try_clone()?,
             identity.clone(),
             metadata.clone(),
@@ -237,7 +237,7 @@ pub(crate) fn store_image(media: &Path, bytes: &[u8]) -> io::Result<(PathBuf, [u
 /// a new directory entry over a damaged file. A file another create of the
 /// same image published meanwhile counts as done.
 fn publish_image(path: &Path, bytes: &[u8], digest: &[u8; 32], replace: bool) -> io::Result<()> {
-    match media::create::image(path, bytes.len() as u64, bytes, replace) {
+    match journal_files::create::image(path, bytes.len() as u64, bytes, replace) {
         Err(error)
             if error.kind() == io::ErrorKind::AlreadyExists
                 && fs::read(path).is_ok_and(|existing| {
@@ -406,7 +406,7 @@ fn apply_one(
             .join(FOLDER)
             .join(format!("{}.img", disk.sha256));
         let file = fs::File::open(&path).map_err(|e| format!("{}: {e}", disk.name))?;
-        let base = media::VerifiedBase::from_file(file).map_err(|e| e.to_string())?;
+        let base = journal_files::VerifiedBase::from_file(file).map_err(|e| e.to_string())?;
         let hash = base.identity().base_digest;
         if hex(&hash) != disk.sha256 {
             return Err(format!(

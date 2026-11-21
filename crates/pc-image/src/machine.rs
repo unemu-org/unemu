@@ -29,7 +29,7 @@ use image_store::{
     workspace::Workspace,
     BlobSource, Descriptor, Digest, Manifest, Store, Tag, MAX_SMALL_BLOB,
 };
-use media::SectorSource;
+use journal_files::SectorSource;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs, io,
@@ -754,7 +754,8 @@ fn changes(store: &Store, id: &str, image: &Descriptor) -> Result<(Vec<Change>, 
                 else {
                     continue;
                 };
-                if known.contains(stem) || media::JournalMedia::is_creation_temp_name(&path) {
+                if known.contains(stem) || journal_files::JournalMedia::is_creation_temp_name(&path)
+                {
                     continue;
                 }
                 let sectors =
@@ -800,15 +801,16 @@ fn current_cmos(workspace: &Path, base: &[u8]) -> Result<Option<[u8; 64]>> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Some(bytes)),
         Err(e) => return Err(e.into()),
     };
-    let verified = media::VerifiedBase::from_bytes(base).map_err(|e| invalid(e.to_string()))?;
-    let scan = media::scan_overlay_reader(&mut file, &verified, 64)?;
-    if scan.report.needs_recovery() || !matches!(scan.report.status, media::Status::Valid) {
+    let verified =
+        journal_files::VerifiedBase::from_bytes(base).map_err(|e| invalid(e.to_string()))?;
+    let scan = journal_files::scan_overlay_reader(&mut file, &verified, 64)?;
+    if scan.report.needs_recovery() || !matches!(scan.report.status, journal_files::Status::Valid) {
         return Ok(None);
     }
     let Some(overlay) = scan.overlay else {
         return Ok(None);
     };
-    media::SectorSource::read_range(&overlay, 0, &mut bytes)?;
+    journal_files::SectorSource::read_range(&overlay, 0, &mut bytes)?;
     Ok(Some(bytes))
 }
 
@@ -1019,7 +1021,8 @@ fn copy_workspace(from: &Path, to: &Path) -> Result<()> {
                 let copied = if top {
                     name == "session.toml"
                 } else {
-                    !name.ends_with(".lock") && !media::JournalMedia::is_creation_temp_name(&path)
+                    !name.ends_with(".lock")
+                        && !journal_files::JournalMedia::is_creation_temp_name(&path)
                 };
                 if copied {
                     let target = to.join(&*name);
@@ -1383,11 +1386,11 @@ fn finish_cmos_reset(owner: &Workspace<'_>, session: &workspace::PreparedSession
 fn write_cmos(workspace: &Path, base: &[u8], bytes: &[u8; 64]) -> Result<()> {
     let directory = workspace.join("media");
     fs::create_dir_all(&directory)?;
-    let mut journal = media::JournalMedia::open(
+    let mut journal = journal_files::JournalMedia::open(
         &directory.join("cmos.upfj"),
         base,
         64,
-        media::SinkStatus::default(),
+        journal_files::SinkStatus::default(),
     )
     .map_err(|e| invalid(format!("CMOS journal: {e}")))?;
     let mut sector = journal.read_sector(0);

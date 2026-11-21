@@ -26,3 +26,6 @@ mod store;
 pub use sink::{
     JournalMedia, MaintenanceFailure, OpenError, ReplaceRecord, SinkFailure, SinkStatus,
 };
+
+mod session;
+pub use session::JournalSession;

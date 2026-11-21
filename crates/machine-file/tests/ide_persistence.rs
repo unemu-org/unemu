@@ -5,7 +5,8 @@
 use assembly::*;
 use cpu::Cpu;
 use device::Device;
-use media::offline::{Access, JournalTool};
+use journal_files::offline::{Access, JournalTool};
+use machine_file::assemble;
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicUsize, Ordering},
@@ -57,8 +58,8 @@ impl Disk {
         });
         config
     }
-    fn scan(&self) -> media::Scan {
-        media::scan(
+    fn scan(&self) -> journal_files::Scan {
+        journal_files::scan(
             &std::fs::read(self.root.join("disk.upfj")).unwrap(),
             &self.base,
             self.base.len() as u64,
@@ -250,7 +251,7 @@ fn ide_journal_execution_error_leaves_completed_sectors_recoverable() {
     assert_eq!(ata(&mut fresh).drive(0).unwrap().image(), expected);
     assert_eq!(
         disk.scan().report.generations[0].reason,
-        media::ClosingReason::Recovered
+        journal_files::ClosingReason::Recovered
     );
     fresh.finish_persistence().unwrap();
 }
@@ -380,7 +381,7 @@ fn ide_journal_guest_cpu_reset_preserves_exactly_one_completed_sector() {
         std::fs::metadata(disk.root.join("disk.upfj"))
             .unwrap()
             .len(),
-        (media::HEADER_LEN + 2 * media::FRAME_LEN) as u64,
+        (journal_files::HEADER_LEN + 2 * journal_files::FRAME_LEN) as u64,
         "reset must append one sector and its command end, without sealing the session"
     );
     let scan = disk.scan();

@@ -183,7 +183,7 @@ fn machine_file_escape_retains_the_junk_rom_origin_and_reaches_assembly() {
     };
     let config =
         machine_file::load_with_reader_and_options(&file.0, &mut Images(rom()), options).unwrap();
-    let assembled = assembly::assemble_with_options(&config, options).unwrap();
+    let assembled = machine_file::assemble_with_options(&config, options).unwrap();
     assert_eq!(
         assembled.option_roms[0].provides,
         [assembly::FirmwareService::FixedDisk]
@@ -245,7 +245,7 @@ fn video_container_toml_yaml_hash_full_file_and_map_only_suffix() {
             config.images[1].source,
             assembly::ImageSource::RomContainer { offset: 8192, .. }
         ));
-        let regions = assembly::test_support::cpu_mapping_regions(&config, options).unwrap();
+        let regions = machine_file::test_support::cpu_mapping_regions(&config, options).unwrap();
         assert!(regions.contains(&(0xC8000, 0xCE000, "rom")));
         let mut corrupt = bytes.clone();
         corrupt[0] = 1;
@@ -289,4 +289,34 @@ fn video_container_offsets_reject_empty_suffix_and_system_bios_slicing() {
         assert_eq!(error.field, field);
         assert_eq!(error.message, expected);
     }
+}
+
+#[test]
+fn file_backed_system_bios_is_identified_after_resolution() {
+    let Some(_) = fixtures::fixture("kiselev-bios/bios-xi8088.bin") else {
+        return;
+    };
+    use assembly::{AssemblyOptions, ImageKind, ImageSource, LoadImage};
+    use machine_file::assemble_with_options;
+    let mut config = assembly::bios(vec![0; 32768], Some(vec![0; 1_474_560]));
+    config.images.push(LoadImage {
+        base: 0xC8000,
+        source: ImageSource::Inline(rom()),
+        kind: ImageKind::Rom,
+        provides: vec![],
+    });
+    config.images[0].source = ImageSource::File(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/kiselev-bios/bios-xi8088.bin"),
+    );
+    config.images.reverse();
+    config.system_bios_image = Some(1);
+    assert_eq!(machine_file::validate(&config), Ok(()));
+    assert!(assemble_with_options(
+        &config,
+        AssemblyOptions {
+            allow_unlisted_firmware: true
+        }
+    )
+    .is_ok());
 }

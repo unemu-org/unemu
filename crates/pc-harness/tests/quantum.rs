@@ -4,9 +4,10 @@
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use assembly::{assemble, at_boot};
+use assembly::at_boot;
 use cpu::Cpu;
 use machine::RunOutcome;
+use machine_file::assemble;
 
 // A subprocess lets the parent kill and reap an unbounded CPU run on regression;
 // a detached watchdog thread would leave the spinning guest alive in the suite.

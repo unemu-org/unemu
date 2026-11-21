@@ -4,7 +4,7 @@
 
 #![cfg(unix)]
 
-use media::Header;
+use journal_files::Header;
 use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;

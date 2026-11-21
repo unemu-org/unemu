@@ -10,7 +10,7 @@
 
 use std::{
     cell::{Ref, RefCell},
-    collections::HashMap,
+    collections::BTreeMap,
 };
 
 use audio::{AudioBlock, AudioError, AudioSink, AudioSource, CaptureAudioSink, Mixer};
@@ -196,8 +196,8 @@ pub enum ObservationError {
 #[derive(Default)]
 pub struct Observation {
     routes: Vec<ObservationRoute>,
-    streams: HashMap<(DeviceId, ByteStreamKind), ByteCapture>,
-    displays: HashMap<DeviceId, DisplaySubscribers>,
+    streams: BTreeMap<(DeviceId, ByteStreamKind), ByteCapture>,
+    displays: BTreeMap<DeviceId, DisplaySubscribers>,
     audio: RefCell<AudioObservation>,
     pub(crate) speaker_trace: Option<crate::speaker_trace::SpeakerTrace>,
 }
@@ -249,7 +249,7 @@ impl Observation {
     /// Missing roles, invalid slots and unsupported capabilities are config errors.
     pub fn bind(
         policy: &ObservationPolicy,
-        device_index: &HashMap<DeviceId, usize>,
+        device_index: &BTreeMap<DeviceId, usize>,
         devices: &mut [Box<dyn Device>],
     ) -> Result<Self, ConfigError> {
         let mut observation = Self::default();
@@ -808,7 +808,7 @@ mod tests {
                 routes: vec![request(DeviceId::Vga, OutputKind::TextScanout, 0)],
                 ..Default::default()
             },
-            &HashMap::from([(DeviceId::Vga, 0)]),
+            &BTreeMap::from([(DeviceId::Vga, 0)]),
             &mut devices,
         )
         .unwrap();
@@ -853,7 +853,7 @@ mod tests {
                     routes: vec![request(DeviceId::Vga, OutputKind::TextScanout, 0)],
                     ..Default::default()
                 },
-                &HashMap::from([(DeviceId::Vga, 0)]),
+                &BTreeMap::from([(DeviceId::Vga, 0)]),
                 &mut devices,
             )
             .unwrap();

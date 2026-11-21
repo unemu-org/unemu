@@ -255,7 +255,7 @@ pub struct FloppyMedium {
 }
 
 impl DriveConfig {
-    pub(crate) fn with_medium(&self, medium: &FloppyMedium) -> Self {
+    pub fn with_medium(&self, medium: &FloppyMedium) -> Self {
         Self {
             media: None,
             image: medium.image.clone(),

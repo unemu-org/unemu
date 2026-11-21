@@ -26,8 +26,16 @@ use std::path::{Path, PathBuf};
 
 pub mod firmware_discovery;
 mod firmware_resolve;
+mod floppy;
 #[cfg(test)]
 mod lower;
+pub use floppy::FileMachineExt;
+#[path = "assemble.rs"]
+mod file_assembly;
+mod mount;
+mod mount_paths;
+pub use file_assembly::*;
+pub use mount::FileMount;
 mod origin;
 mod paths;
 mod resolve;
@@ -105,7 +113,7 @@ pub struct LoadedMachine {
     pub cards: Vec<(String, assembly::DeviceId)>,
     diagnostics: pc_config::AssemblyDiagnostics,
     options: assembly::AssemblyOptions,
-    bases: std::collections::BTreeMap<PathBuf, media::VerifiedBase>,
+    bases: std::collections::BTreeMap<PathBuf, journal_files::VerifiedBase>,
 }
 
 impl LoadedMachine {
@@ -190,7 +198,7 @@ impl LoadedMachine {
             // Hardware validation executes no guest code and must never open a writer.
             rtc.nvram = assembly::NvramSource::Blank;
         }
-        let assembled = assembly::assemble_with_observation_and_options(
+        let assembled = crate::assemble_with_observation_and_options(
             &config,
             &assembly::ObservationPolicy::default(),
             self.options,
@@ -205,7 +213,7 @@ impl LoadedMachine {
         &self,
         observation: &assembly::ObservationPolicy,
     ) -> Result<assembly::AssembledMachine, LowerError> {
-        let mut assembled = assembly::assemble_with_verified_bases(
+        let mut assembled = crate::assemble_with_verified_bases(
             &self.config,
             observation,
             self.options,
@@ -223,12 +231,18 @@ impl LoadedMachine {
 pub struct FileImageReader;
 
 impl ImageReader for FileImageReader {
+    fn validate_machine(
+        &self,
+        config: &assembly::MachineConfig,
+    ) -> Result<(), assembly::ConfigError> {
+        crate::validate(config)
+    }
     fn read(&mut self, path: &Path) -> std::io::Result<Vec<u8>> {
         std::fs::read(path)
     }
 
     fn verify_journal_base(&mut self, path: &Path) -> std::io::Result<JournalBase> {
-        media::VerifiedBase::open(path).map(|base| journal_base(&base))
+        journal_files::VerifiedBase::open(path).map(|base| journal_base(&base))
     }
 
     fn read_journal_base(&mut self, path: &Path) -> std::io::Result<Vec<u8>> {
@@ -263,7 +277,7 @@ impl ImageReader for FileImageReader {
 }
 
 /// What the lowering needs of a verified base; the caller keeps the base.
-pub fn journal_base(base: &media::VerifiedBase) -> JournalBase {
+pub fn journal_base(base: &journal_files::VerifiedBase) -> JournalBase {
     JournalBase {
         length: base.identity().base_length,
         sha256: base.identity().base_digest,
@@ -275,6 +289,12 @@ pub fn journal_base(base: &media::VerifiedBase) -> JournalBase {
 struct MetadataReader;
 
 impl ImageReader for MetadataReader {
+    fn validate_machine(
+        &self,
+        config: &assembly::MachineConfig,
+    ) -> Result<(), assembly::ConfigError> {
+        crate::validate(config)
+    }
     fn read(&mut self, _: &Path) -> std::io::Result<Vec<u8>> {
         Err(std::io::Error::other(
             "metadata lowering does not read images",
@@ -304,12 +324,18 @@ impl Describe for MachineFile {
 
 #[derive(Default)]
 struct LaunchImageReader<'a> {
-    bases: std::collections::BTreeMap<PathBuf, media::VerifiedBase>,
+    bases: std::collections::BTreeMap<PathBuf, journal_files::VerifiedBase>,
     /// Verified decoded ROMs from compressed firmware packages.
     memory: Option<&'a std::collections::BTreeMap<PathBuf, Vec<u8>>>,
 }
 
 impl ImageReader for LaunchImageReader<'_> {
+    fn validate_machine(
+        &self,
+        config: &assembly::MachineConfig,
+    ) -> Result<(), assembly::ConfigError> {
+        crate::validate(config)
+    }
     fn read(&mut self, path: &Path) -> std::io::Result<Vec<u8>> {
         if let Some(bytes) = self.memory.and_then(|memory| memory.get(path)) {
             return Ok(bytes.clone());
@@ -320,12 +346,12 @@ impl ImageReader for LaunchImageReader<'_> {
         FileImageReader.read_journal_base(path)
     }
     fn verify_journal_base(&mut self, path: &Path) -> std::io::Result<JournalBase> {
-        use media::SectorSource;
+        use journal_files::SectorSource;
         if let Some(base) = self.bases.get(path) {
             base.check_unchanged()?;
             return Ok(journal_base(base));
         }
-        let base = media::VerifiedBase::open(path)?;
+        let base = journal_files::VerifiedBase::open(path)?;
         let answer = journal_base(&base);
         self.bases.insert(path.into(), base);
         Ok(answer)
@@ -537,8 +563,8 @@ fn inspect_journal(
     path: &Path,
     geometry_length: u64,
 ) -> Result<Option<String>, String> {
-    use media::offline::{Access, JournalTool, ToolError};
-    media::check_journal_path(path).map_err(|error| error.message)?;
+    use journal_files::offline::{Access, JournalTool, ToolError};
+    journal_files::check_journal_path(path).map_err(|error| error.message)?;
     match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Some("note: journal will be created".into()))
@@ -562,7 +588,7 @@ fn inspect_journal(
             std::fs::read(base).map_err(|error| format!("base {}: {error}", base.display()))?;
         let mut file = std::fs::File::open(&canonical)
             .map_err(|error| format!("journal {}: {error}", path.display()))?;
-        media::scan_reader(&mut file, &base_bytes, geometry_length)
+        journal_files::scan_reader(&mut file, &base_bytes, geometry_length)
             .map_err(|error| format!("journal {}: {error}", path.display()))?
             .report
     } else {
@@ -579,7 +605,7 @@ fn inspect_journal(
         };
         tool.verify().map_err(|error| error.to_string())?.report
     };
-    if let media::Status::Refused(refusal) = &report.status {
+    if let journal_files::Status::Refused(refusal) = &report.status {
         return Err(format!(
             "journal {}: verification refused at {}: {}",
             path.display(),
@@ -616,9 +642,60 @@ mod vga_tests {
 /// Shared user-ROM discovery and skip policy for host-side tests.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
+    /// Resolve host images through the production resolver without executing firmware.
+    pub fn resolve_file_sources(
+        config: &assembly::MachineConfig,
+        options: assembly::AssemblyOptions,
+    ) -> Result<assembly::MachineConfig, assembly::ConfigError> {
+        assembly::test_support::resolve_sources_preverified(
+            config,
+            options,
+            config.board.firmware_catalogue(),
+            &crate::FileMount::new(),
+        )
+        .map(|(resolved, _)| resolved.into_owned())
+    }
+
+    /// Record the physical mappings of a config backed by host files.
+    pub fn cpu_mapping_regions(
+        config: &assembly::MachineConfig,
+        options: assembly::AssemblyOptions,
+    ) -> Result<Vec<(u64, u64, &'static str)>, assembly::AssemblyError> {
+        assembly::test_support::cpu_mapping_regions_mounted(
+            config,
+            options,
+            &crate::FileMount::new(),
+        )
+    }
+    /// Build a CPU map of a config backed by host files for inspection and DMA tests.
+    pub fn mapped_cpu(
+        config: &assembly::MachineConfig,
+        options: assembly::AssemblyOptions,
+    ) -> Result<cpu::X86JitCpu, assembly::AssemblyError> {
+        assembly::test_support::mapped_cpu_mounted(config, options, &crate::FileMount::new())
+    }
+
     mod user_firmware;
     pub use user_firmware::{
         find_user_firmware, required_user_firmware, FoundUserFirmware, UserFirmwareError,
         UserFirmwareLayout,
     };
 }
+
+#[cfg(test)]
+#[path = "assembly_tests.rs"]
+mod assemble;
+#[cfg(test)]
+#[path = "persistence_tests.rs"]
+mod persistence;
+
+#[cfg(test)]
+#[path = "run_tests.rs"]
+mod run;
+#[cfg(test)]
+#[path = "validation_tests.rs"]
+mod validate;
+
+#[cfg(test)]
+#[path = "firmware_tests.rs"]
+mod firmware;

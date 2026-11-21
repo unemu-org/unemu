@@ -93,7 +93,7 @@ fn freedos_dir_observes_scheduled_second_floppy() {
         }],
         ..Default::default()
     };
-    let mut assembled = assembly::assemble_with_observation(&config, &policy).unwrap();
+    let mut assembled = machine_file::assemble_with_observation(&config, &policy).unwrap();
     let keyboard = assembled.device_index[&DeviceId::Keyboard];
     let boot = RunPolicy {
         retired_cap: Some(pc_harness::BIOS_MAX_RETIRED),

@@ -2,7 +2,7 @@
 //! Non-writing machine checks; persistent-media § Session lifecycle and inspection.
 //! These tests run in-process so sibling children cannot inherit journal locks.
 
-use assembly::test_support::{Header, JournalMedia, SinkStatus, HEADER_LEN};
+use journal_files::{Header, JournalMedia, SinkStatus, HEADER_LEN};
 use std::{
     collections::BTreeMap,
     ffi::OsString,

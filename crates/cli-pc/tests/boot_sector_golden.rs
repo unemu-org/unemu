@@ -99,7 +99,7 @@ fn boots_the_data_disk_and_retries_after_a_key(profile: &std::path::Path, firmwa
         }],
         ..Default::default()
     };
-    let mut assembled = assembly::assemble_with_observation(&config, &policy).unwrap();
+    let mut assembled = machine_file::assemble_with_observation(&config, &policy).unwrap();
     let keyboard = assembled.device_index[&DeviceId::Keyboard];
     let shown = |count: usize| move |text: &str| text.matches(PROMPT).count() >= count;
 

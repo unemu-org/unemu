@@ -193,7 +193,7 @@ fn polling_rejects_if_clear_halt() {
             }],
             ..Default::default()
         };
-        let mut assembled = assembly::assemble_with_observation(&config, &observation).unwrap();
+        let mut assembled = machine_file::assemble_with_observation(&config, &observation).unwrap();
         let mut policy = RunPolicy::natural(Some(100), Some(pc_harness::BIOS_IDLE_LIMIT));
         if prompt {
             policy.stop = StopCondition::PromptThen {
@@ -218,7 +218,7 @@ fn polling_rejects_if_clear_halt() {
 #[test]
 fn polling_rejects_a_nonadvancing_clock() {
     let config = assembly::at_vga_text(vec![0xEB, 0xFE]);
-    let mut assembled = assembly::assemble(&config).unwrap();
+    let mut assembled = machine_file::assemble(&config).unwrap();
     let policy = RunPolicy::natural(Some(assembled.machine.virtual_time()), None);
     let error = session::run_progressing(&mut assembled, &policy).unwrap_err();
     assert!(
@@ -246,7 +246,7 @@ fn freedos_installs_and_boots_from_a_blank_hard_disk() {
         }
     }
     let tools = fixtures::fixture("freedos/freedos-tools-1200.img").unwrap();
-    let tools_digest: String = media::Header::new(&tools, 0)
+    let tools_digest: String = journal_files::Header::new(&tools, 0)
         .unwrap()
         .base_digest
         .iter()
@@ -276,7 +276,7 @@ fn freedos_installs_and_boots_from_a_blank_hard_disk() {
     );
     let base = std::fs::read(&base_path).unwrap();
     assert!(base.iter().all(|&byte| byte == 0));
-    let base_digest = media::Header::new(&base, 0).unwrap().base_digest;
+    let base_digest = journal_files::Header::new(&base, 0).unwrap().base_digest;
     let mut config = machine_file::load(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-ide.toml"),
     )
@@ -316,7 +316,7 @@ fn freedos_installs_and_boots_from_a_blank_hard_disk() {
         }],
         ..Default::default()
     };
-    let mut assembled = assembly::assemble_with_observation(&config, &observation).unwrap();
+    let mut assembled = machine_file::assemble_with_observation(&config, &observation).unwrap();
     boot_prompt(&mut assembled, "A");
     // FDISK's DOC/FDISK/HELP.TXT defines the ,100 percentage suffix and /PRIO
     // forces FAT16, matching the 8086 FAT12/16 kernel rather than FAT32.
@@ -373,8 +373,8 @@ fn freedos_installs_and_boots_from_a_blank_hard_disk() {
     assembled.finish_persistence().unwrap();
     drop(assembled);
     assert_eq!(std::fs::read(&base_path).unwrap(), base);
-    let scan = media::scan(&std::fs::read(journal).unwrap(), &base, base.len() as u64);
-    assert_eq!(scan.report.status, media::Status::Valid);
+    let scan = journal_files::scan(&std::fs::read(journal).unwrap(), &base, base.len() as u64);
+    assert_eq!(scan.report.status, journal_files::Status::Valid);
     assert_ne!(installed, base);
     assert_eq!(
         scan.image.unwrap(),

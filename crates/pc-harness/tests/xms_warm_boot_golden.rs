@@ -251,7 +251,7 @@ fn no_vdisk_record_survives_a_restart() {
             .unwrap();
         bios.source = ImageSource::Inline(std::fs::read(path).unwrap());
     }
-    let mut assembled = assembly::assemble_with_observation_and_options(
+    let mut assembled = machine_file::assemble_with_observation_and_options(
         &config,
         &ObservationPolicy {
             routes: vec![ObservationRequest {

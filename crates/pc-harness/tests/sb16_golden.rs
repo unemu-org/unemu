@@ -4,10 +4,11 @@
 //! PCM is pinned against x86jit revision 6cb817b86c1fbf463f7aab8c0da1ce0eec3db0b7.
 
 use assembly::{
-    assemble_with_observation_and_options, AssemblyOptions, AudioSinkKind, DeviceConfig, DeviceId,
-    DeviceKind, DmaSpec, ObservationPolicy, RunPolicy, Sb16Cfg,
+    AssemblyOptions, AudioSinkKind, DeviceConfig, DeviceId, DeviceKind, DmaSpec, ObservationPolicy,
+    RunPolicy, Sb16Cfg,
 };
 use device::{AccessDir, TraceEvent, TracePolicy};
+use machine_file::assemble_with_observation_and_options;
 
 fn out(program: &mut Vec<u8>, port: u16, byte: u8) {
     program.extend_from_slice(&[0xBA, port as u8, (port >> 8) as u8, 0xB0, byte, 0xEE]);

@@ -2,9 +2,10 @@
 //! Production timing regressions, Intel 80286 Programmer's Reference Manual,
 //! string instructions and interrupt recognition (§6 of the scheduler design).
 
-use assembly::{assemble, at_boot};
+use assembly::at_boot;
 use cpu::Cpu;
 use machine::RunOutcome;
+use machine_file::assemble;
 
 #[test]
 fn default_machine_counts_rep_iterations_and_stops_at_exact_cap() {

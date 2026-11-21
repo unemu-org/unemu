@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use assembly::{
-    assemble, assemble_with_observation, AssembledMachine, DeviceId, ImageSource, MachineConfig,
-    ObservationPolicy, RunPolicy, WriteMode,
+    AssembledMachine, DeviceId, ImageSource, MachineConfig, ObservationPolicy, RunPolicy, WriteMode,
 };
 use cpu::{Cpu, CpuReg};
-use media::{ClosingReason, Frame, Header, Record};
+use journal_files::{ClosingReason, Frame, Header, Record};
+use machine_file::{assemble, assemble_with_observation};
 
 struct Temp(PathBuf);
 impl Temp {
@@ -114,9 +114,9 @@ fn readback(assembled: &AssembledMachine) -> Vec<u8> {
     assembled.machine.cpu().read_mem(0xA00, &mut bytes).unwrap();
     bytes
 }
-fn report(path: &Path, base: &Path) -> media::VerificationReport {
+fn report(path: &Path, base: &Path) -> journal_files::VerificationReport {
     let bytes = std::fs::read(base).unwrap();
-    media::scan(&std::fs::read(path).unwrap(), &bytes, bytes.len() as u64).report
+    journal_files::scan(&std::fs::read(path).unwrap(), &bytes, bytes.len() as u64).report
 }
 
 #[test]
@@ -281,18 +281,18 @@ fn journal_and_volatile_have_identical_guest_state_at_every_boundary() {
         a.finish_persistence().unwrap();
         drop(a);
         let base = std::fs::read(temp.path("base.img")).unwrap();
-        let replay = media::scan(
+        let replay = journal_files::scan(
             &std::fs::read(temp.path("disk.upfj")).unwrap(),
             &base,
             base.len() as u64,
         );
-        assert_eq!(replay.report.status, media::Status::Valid);
+        assert_eq!(replay.report.status, journal_files::Status::Valid);
         assert_eq!(replay.image.as_deref(), Some(image.as_slice()));
-        let reloaded = media::JournalMedia::open(
+        let reloaded = journal_files::JournalMedia::open(
             &temp.path("disk.upfj"),
             &base,
             base.len() as u64,
-            media::SinkStatus::default(),
+            journal_files::SinkStatus::default(),
         )
         .unwrap();
         assert_eq!(reloaded.image(), image);
@@ -413,8 +413,7 @@ fn journal_config_rejects_incompatible_sources_geometry_and_retention() {
     ] {
         let mut config = original.clone();
         config.drives[0].image = image;
-        assert!(config
-            .validate()
+        assert!(machine_file::validate(&config)
             .unwrap_err()
             .to_string()
             .contains("file-backed"));
@@ -424,14 +423,12 @@ fn journal_config_rejects_incompatible_sources_geometry_and_retention() {
         path: temp.path("disk.upfj"),
         keep_generations: 0,
     };
-    assert!(invalid
-        .validate()
+    assert!(machine_file::validate(&invalid)
         .unwrap_err()
         .to_string()
         .contains("positive"));
     invalid.drives[0].write = WriteMode::journal("");
-    assert!(invalid
-        .validate()
+    assert!(machine_file::validate(&invalid)
         .unwrap_err()
         .to_string()
         .contains("explicit"));
@@ -453,8 +450,7 @@ fn journal_config_rejects_incompatible_sources_geometry_and_retention() {
     ] {
         invalid = original.clone();
         invalid.drives[0].kind = kind;
-        assert!(invalid
-            .validate()
+        assert!(machine_file::validate(&invalid)
             .unwrap_err()
             .to_string()
             .contains("512-byte sectors"));
@@ -468,8 +464,7 @@ fn journal_and_lock_outputs_cannot_alias_any_mounted_input_or_output() {
     let original = config(&temp, true, 512);
     let assert_rejected = |config: &MachineConfig| {
         let before = temp.entries();
-        assert!(config
-            .validate()
+        assert!(machine_file::validate(config)
             .unwrap_err()
             .to_string()
             .contains("aliases"));
@@ -662,7 +657,7 @@ fn creation_temp_namespace_rejects_mounted_inputs() {
             candidate.drives[0].image = ImageSource::File(collision.clone());
         }
         let before = temp.entries();
-        let error = candidate.validate().unwrap_err().to_string();
+        let error = machine_file::validate(&candidate).unwrap_err().to_string();
         assert!(error.contains("drive 0"), "{error}");
         assert!(error.contains(&journal.display().to_string()), "{error}");
         assert!(error.contains(&collision.display().to_string()), "{error}");
@@ -688,7 +683,7 @@ fn journal_config_refuses_creation_temp_names_in_either_drive_order() {
         let path = temp.path("j.upfj.create-7.tmp");
         candidate.drives[index].write = WriteMode::journal(&path);
         let before = temp.entries();
-        let error = candidate.validate().unwrap_err().to_string();
+        let error = machine_file::validate(&candidate).unwrap_err().to_string();
         assert!(error.contains(&format!("drive {index}")), "{error}");
         assert!(error.contains("reserved sidecar path"), "{error}");
         assert!(assemble(&candidate).is_err());
@@ -712,7 +707,7 @@ fn reserved_symlink_input_names_are_refused_for_bases_and_load_images() {
             candidate.drives[0].image = ImageSource::File(link.clone());
         }
         let before = temp.entries();
-        let error = candidate.validate().unwrap_err().to_string();
+        let error = machine_file::validate(&candidate).unwrap_err().to_string();
         assert!(
             error.contains("drive 0") && error.contains("creation-temporary"),
             "{error}"
@@ -762,7 +757,7 @@ fn invalid_volatile_bases_keep_their_image_read_errors_with_an_unrelated_journal
             Err(error) => error.to_string(),
         };
         candidate.drives[1].write = WriteMode::journal(temp.path("other.upfj"));
-        candidate.validate().unwrap();
+        machine_file::validate(&candidate).unwrap();
         let with = match assemble(&candidate) {
             Ok(_) => panic!("invalid base mounted"),
             Err(error) => error.to_string(),
@@ -788,7 +783,7 @@ fn dangling_journal_alias_is_rejected_before_any_mount_or_lock() {
     second.write = WriteMode::journal(&link);
     candidate.drives.push(second);
     let before = temp.entries();
-    let error = candidate.validate().unwrap_err().to_string();
+    let error = machine_file::validate(&candidate).unwrap_err().to_string();
     assert!(error.contains("drive 1"), "{error}");
     assert!(error.contains("journal path"), "{error}");
     assert!(error.contains(&link.display().to_string()), "{error}");
@@ -804,7 +799,7 @@ fn journal_normalization_errors_name_the_path() {
     std::fs::write(temp.path("file"), b"not a directory").unwrap();
     let path = temp.path("file").join("disk.upfj");
     candidate.drives[0].write = WriteMode::journal(&path);
-    let error = candidate.validate().unwrap_err().to_string();
+    let error = machine_file::validate(&candidate).unwrap_err().to_string();
     assert!(
         error.contains("drive 0") && error.contains("journal path"),
         "{error}"
@@ -878,7 +873,7 @@ fn journal_config_refuses_creation_temp_names_through_symlinks() {
         };
         candidate.drives[0].write = WriteMode::journal(path);
         let before = temp.entries();
-        let error = candidate.validate().unwrap_err().to_string();
+        let error = machine_file::validate(&candidate).unwrap_err().to_string();
         assert!(
             error.contains("drive 0") && error.contains("reserved sidecar path"),
             "{error}"
@@ -897,7 +892,7 @@ fn nested_creation_names_are_refused_by_assembly() {
         let path = temp.path(name);
         candidate.drives[0].write = WriteMode::journal(&path);
         let before = temp.entries();
-        let error = candidate.validate().unwrap_err().to_string();
+        let error = machine_file::validate(&candidate).unwrap_err().to_string();
         assert!(error.contains("drive 0"), "{error}");
         assert!(error.contains("reserved sidecar path"), "{error}");
         assert!(assemble(&candidate).is_err());
@@ -923,8 +918,8 @@ fn assembly_passes_retention_and_reserves_retention_temporary_names() {
     }
     machine.finish_persistence().unwrap();
     drop(machine);
-    let result = media::scan(&std::fs::read(&path).unwrap(), &base, base.len() as u64);
-    assert_eq!(result.report.status, media::Status::Valid);
+    let result = journal_files::scan(&std::fs::read(&path).unwrap(), &base, base.len() as u64);
+    assert_eq!(result.report.status, journal_files::Status::Valid);
     assert_eq!(result.report.header.unwrap().anchor_generation, 4);
     assert_eq!(
         result
@@ -940,14 +935,14 @@ fn assembly_passes_retention_and_reserves_retention_temporary_names() {
     for marker in ["retain", "export"] {
         candidate.drives[0].write =
             WriteMode::journal(temp.path(&format!("disk.upfj.{marker}-1.tmp")));
-        assert!(candidate.validate().is_err());
+        assert!(machine_file::validate(&candidate).is_err());
         assert!(assemble(&candidate).is_err());
     }
     candidate.drives[0].write = WriteMode::journal(&path);
     let reserved = temp.path("disk.upfj.retain-1.tmp");
     std::fs::write(&reserved, &base).unwrap();
     candidate.drives[0].image = ImageSource::File(reserved);
-    assert!(candidate.validate().is_err());
+    assert!(machine_file::validate(&candidate).is_err());
 }
 
 #[cfg(feature = "test-support")]
@@ -996,8 +991,7 @@ fn retention_reserved_inputs_are_refused_even_for_other_or_volatile_journals() {
         std::fs::rename(temp.path("base.img"), &reserved).unwrap();
         config.drives[0].image = ImageSource::File(reserved.clone());
         config.drives[0].write = mode;
-        assert!(config
-            .validate()
+        assert!(machine_file::validate(&config)
             .unwrap_err()
             .to_string()
             .contains("retention-temporary"));
@@ -1017,7 +1011,7 @@ fn reserved_input_errors_name_the_owning_drive_and_firmware_image() {
     std::fs::copy(temp.path("base.img"), &reserved).unwrap();
     second.image = ImageSource::File(reserved.clone());
     drives.drives.push(second);
-    let error = drives.validate().unwrap_err();
+    let error = machine_file::validate(&drives).unwrap_err();
     assert!(
         matches!(&error,assembly::ConfigError::DriveInput {drive_index:1,path,..} if path==&reserved)
     );
@@ -1045,7 +1039,7 @@ fn reserved_input_errors_name_the_owning_drive_and_firmware_image() {
             kind,
             provides: vec![],
         });
-        let error = images.validate().unwrap_err();
+        let error = machine_file::validate(&images).unwrap_err();
         assert!(
             matches!(&error,assembly::ConfigError::ImageInput {image_index,role:r,path,..} if *image_index==index && *r==role && path==&reserved)
         );
@@ -1134,7 +1128,7 @@ fn assembly_protects_the_inode_of_the_single_loaded_base_read() {
 
 #[test]
 fn rollback_then_reappend_is_visible_through_fresh_guest_dma_reads() {
-    use media::offline::{Access, JournalTool};
+    use journal_files::offline::{Access, JournalTool};
 
     let temp = Temp::new();
     for value in [0x11, 0x22, 0x33] {
@@ -1222,7 +1216,7 @@ fn failed_output_preserves_complete_guest_prefix_and_final_media() {
     assert!(a.finish_persistence().is_err());
     assert_eq!(
         std::fs::metadata(temp.path("disk.upfj")).unwrap().len(),
-        media::HEADER_LEN as u64
+        journal_files::HEADER_LEN as u64
     );
 }
 
@@ -1267,7 +1261,7 @@ fn reserved_journal_sidecars_are_usage_errors_before_assembly_opens_outputs() {
     ] {
         let path = temp.path(name);
         machine.drives[0].write = WriteMode::journal(&path);
-        let error = machine.validate().unwrap_err();
+        let error = machine_file::validate(&machine).unwrap_err();
         assert!(
             matches!(error, assembly::ConfigError::Journal { ref message, .. } if message == "reserved sidecar path")
         );
@@ -1285,7 +1279,7 @@ fn reserved_journal_sidecars_are_usage_errors_before_assembly_opens_outputs() {
     ] {
         let path = temp.path(&name);
         machine.drives[0].write = WriteMode::journal(&path);
-        machine.validate().unwrap();
+        machine_file::validate(&machine).unwrap();
         assemble(&machine).unwrap().finish_persistence().unwrap();
     }
 }

@@ -2,7 +2,7 @@
 //! Synthetic split-ROM tests; see firmware design §3.5.
 
 use super::*;
-use crate::{
+use assembly::{
     check_firmware_parts, check_system_bios, interleave_parts, AssemblyOptions, BoardModel,
     FirmwareDistribution, FirmwareEntry, FirmwareStatus, ImagePart, KnownPart, Lane, LoadImage,
 };
@@ -78,7 +78,7 @@ fn synthetic_entry(bytes: &[u8]) -> FirmwareEntry {
             ) as &'static [KnownPart]]
             .into_boxed_slice(),
         ),
-        ..crate::KISELEV_XI8088
+        ..assembly::KISELEV_XI8088
     }
 }
 
@@ -179,7 +179,7 @@ fn parts_layout_errors_have_exact_messages_even_with_escape() {
         let expected = format!("firmware parts: {message}");
         assert_eq!(interleave_parts(&parts).unwrap_err().to_string(), expected);
         let directory = PartsDirectory::new();
-        let mut config = crate::bios(vec![0; 8192], None);
+        let mut config = assembly::bios(vec![0; 8192], None);
         config.images[0].source = directory.source(&parts);
         for allow_unlisted_firmware in [false, true] {
             assert_eq!(
@@ -198,27 +198,27 @@ fn parts_layout_errors_have_exact_messages_even_with_escape() {
 }
 #[test]
 fn parts_reject_drives_ramloads_and_option_roms_before_io() {
-    let mut config = crate::bios(vec![0; 8192], Some(vec![0; 1_474_560]));
+    let mut config = assembly::bios(vec![0; 8192], Some(vec![0; 1_474_560]));
     config.drives[0].image = ImageSource::Interleaved(vec![]);
     assert_eq!(
-        config.validate().unwrap_err().to_string(),
+        crate::validate(&config).unwrap_err().to_string(),
         "firmware parts: drives cannot use parts"
     );
     config.drives.clear();
-    config.images.push(crate::LoadImage {
+    config.images.push(assembly::LoadImage {
         base: 0,
         source: ImageSource::Interleaved(vec![]),
         kind: ImageKind::RamLoad,
         provides: vec![],
     });
     assert_eq!(
-        config.validate().unwrap_err().to_string(),
+        crate::validate(&config).unwrap_err().to_string(),
         "firmware parts: RAM load images cannot use parts"
     );
     config.images[1].kind = ImageKind::Rom;
     config.images[1].base = 0xC8000;
     assert_eq!(
-        config.validate().unwrap_err().to_string(),
+        crate::validate(&config).unwrap_err().to_string(),
         "firmware parts: option ROMs cannot use parts; only firmware.bios supports parts"
     );
 }
@@ -231,7 +231,7 @@ fn parts_and_preinterleaved_file_match_same_synthetic_entry() {
     let path = directory.0.join("assembled");
     std::fs::write(&path, &bytes).unwrap();
     for source in [directory.source(&parts), ImageSource::File(path)] {
-        let mut config = crate::bios(vec![0; 8192], None);
+        let mut config = assembly::bios(vec![0; 8192], None);
         config.images[0].source = source;
         config.images[0].base = 0xFE000;
         let (resolved, _) = resolve_file_sources(&config, AssemblyOptions::default()).unwrap();
@@ -240,7 +240,7 @@ fn parts_and_preinterleaved_file_match_same_synthetic_entry() {
             ImageSource::Inline(bytes.clone())
         );
         assert_eq!(
-            crate::firmware::matched_entry(&resolved.images[0], &[entry]),
+            assembly::test_support::matched_entry(&resolved.images[0], &[entry]),
             Some(&entry)
         );
         assert_eq!(
@@ -313,7 +313,7 @@ fn parts_diagnose_swapped_lanes_and_each_wrong_chip() {
         }
     )
     .is_ok());
-    let mut config = crate::bios(vec![0; 8192], None);
+    let mut config = assembly::bios(vec![0; 8192], None);
     config.images[0].source = ImageSource::Inline(vec![0; 8192]);
     let error = check_system_bios(
         &config,
@@ -351,7 +351,7 @@ fn parts_production_catalogue_exact_data_and_tiling() {
         catalogue
             .iter()
             .filter(|e| e.distribution == FirmwareDistribution::UserSupplied
-                && e.kind == crate::FirmwareKind::SystemBios)
+                && e.kind == assembly::FirmwareKind::SystemBios)
             .count(),
         4
     );
@@ -364,29 +364,29 @@ fn parts_production_catalogue_exact_data_and_tiling() {
         "74e7b36b4ec0adc5ac3277a887579996c1d2aa755b9892ef3afe7485c10ce04f"
     );
     assert_eq!(entry.size, 65536);
-    assert_eq!(entry.kind, crate::FirmwareKind::SystemBios);
-    assert_eq!(entry.base, crate::FirmwareBase::TopOfFirstMib);
+    assert_eq!(entry.kind, assembly::FirmwareKind::SystemBios);
+    assert_eq!(entry.base, assembly::FirmwareBase::TopOfFirstMib);
     assert_eq!(entry.scan_window, Some((0xC8000, 0xE0000)));
     assert_eq!(
         entry.provides,
         &[
-            crate::FirmwareService::Floppy,
-            crate::FirmwareService::FixedDisk
+            assembly::FirmwareService::Floppy,
+            assembly::FirmwareService::FixedDisk
         ]
     );
     assert_eq!(
         entry.capabilities,
-        &[crate::FirmwareCapability::CmosDriveTypes]
+        &[assembly::FirmwareCapability::CmosDriveTypes]
     );
     assert_eq!(
         entry.requires,
         &[
-            crate::FirmwarePart::Kbc8042,
-            crate::FirmwarePart::RtcCmos,
-            crate::FirmwarePart::PicCascade
+            assembly::FirmwarePart::Kbc8042,
+            assembly::FirmwarePart::RtcCmos,
+            assembly::FirmwarePart::PicCascade
         ]
     );
-    assert_eq!(entry.cpu_min, crate::FirmwareCpu::I80286);
+    assert_eq!(entry.cpu_min, assembly::FirmwareCpu::I80286);
     assert_eq!(entry.boards, &["ibm-5170"]);
     assert_eq!(entry.distribution, FirmwareDistribution::UserSupplied);
     assert_eq!(entry.status, FirmwareStatus::Listed);
@@ -465,29 +465,29 @@ fn parts_production_catalogue_exact_data_and_tiling() {
         "6fb653b58e678cb69b0f943a105c6c803b18a6db23d13c0abccec5b66c6ee652"
     );
     assert_eq!(entry.size, 65536);
-    assert_eq!(entry.kind, crate::FirmwareKind::SystemBios);
-    assert_eq!(entry.base, crate::FirmwareBase::TopOfFirstMib);
+    assert_eq!(entry.kind, assembly::FirmwareKind::SystemBios);
+    assert_eq!(entry.base, assembly::FirmwareBase::TopOfFirstMib);
     assert_eq!(entry.scan_window, Some((0xC8000, 0xE0000)));
     assert_eq!(
         entry.provides,
         &[
-            crate::FirmwareService::Floppy,
-            crate::FirmwareService::FixedDisk
+            assembly::FirmwareService::Floppy,
+            assembly::FirmwareService::FixedDisk
         ]
     );
     assert_eq!(
         entry.capabilities,
-        &[crate::FirmwareCapability::CmosDriveTypes]
+        &[assembly::FirmwareCapability::CmosDriveTypes]
     );
     assert_eq!(
         entry.requires,
         &[
-            crate::FirmwarePart::Kbc8042,
-            crate::FirmwarePart::RtcCmos,
-            crate::FirmwarePart::PicCascade
+            assembly::FirmwarePart::Kbc8042,
+            assembly::FirmwarePart::RtcCmos,
+            assembly::FirmwarePart::PicCascade
         ]
     );
-    assert_eq!(entry.cpu_min, crate::FirmwareCpu::I80286);
+    assert_eq!(entry.cpu_min, assembly::FirmwareCpu::I80286);
     assert_eq!(entry.boards, &["ibm-5170"]);
     assert_eq!(entry.distribution, FirmwareDistribution::UserSupplied);
     assert_eq!(entry.status, FirmwareStatus::Listed);
@@ -529,29 +529,29 @@ fn parts_production_catalogue_exact_data_and_tiling() {
         "872febf7d7034bfadf72ed1936e06600eca72456b9ded41d15b7a284de20337d"
     );
     assert_eq!(entry.size, 65536);
-    assert_eq!(entry.kind, crate::FirmwareKind::SystemBios);
-    assert_eq!(entry.base, crate::FirmwareBase::TopOfFirstMib);
+    assert_eq!(entry.kind, assembly::FirmwareKind::SystemBios);
+    assert_eq!(entry.base, assembly::FirmwareBase::TopOfFirstMib);
     assert_eq!(entry.scan_window, Some((0xC8000, 0xE0000)));
     assert_eq!(
         entry.provides,
         &[
-            crate::FirmwareService::Floppy,
-            crate::FirmwareService::FixedDisk
+            assembly::FirmwareService::Floppy,
+            assembly::FirmwareService::FixedDisk
         ]
     );
     assert_eq!(
         entry.capabilities,
-        &[crate::FirmwareCapability::CmosDriveTypes]
+        &[assembly::FirmwareCapability::CmosDriveTypes]
     );
     assert_eq!(
         entry.requires,
         &[
-            crate::FirmwarePart::Kbc8042,
-            crate::FirmwarePart::RtcCmos,
-            crate::FirmwarePart::PicCascade
+            assembly::FirmwarePart::Kbc8042,
+            assembly::FirmwarePart::RtcCmos,
+            assembly::FirmwarePart::PicCascade
         ]
     );
-    assert_eq!(entry.cpu_min, crate::FirmwareCpu::I80286);
+    assert_eq!(entry.cpu_min, assembly::FirmwareCpu::I80286);
     assert_eq!(entry.boards, &["ibm-5170"]);
     assert_eq!(entry.distribution, FirmwareDistribution::UserSupplied);
     assert_eq!(entry.status, FirmwareStatus::Listed);
@@ -637,7 +637,7 @@ fn layout_entry(parts: &[(Lane, u64, Vec<u8>)]) -> FirmwareEntry {
             .into_boxed_slice(),
         ),
         distribution: FirmwareDistribution::UserSupplied,
-        ..crate::KISELEV_XI8088
+        ..assembly::KISELEV_XI8088
     }
 }
 fn four_parts() -> Vec<(Lane, u64, Vec<u8>)> {
@@ -778,12 +778,12 @@ fn parts_layout_selection_filters_part_count_and_listing_shows_offsets() {
 }
 #[test]
 fn parts_unresolved_bios_without_declared_index_tolerates_inline_option_rom_like_file() {
-    let mut config = crate::bios(vec![], Some(vec![0; 1_474_560]));
+    let mut config = assembly::bios(vec![], Some(vec![0; 1_474_560]));
     config.system_bios_image = None;
     let mut option = vec![0; 2048];
     option[..3].copy_from_slice(&[0x55, 0xAA, 4]);
     option[2047] = 0xFD;
-    config.images.push(crate::LoadImage {
+    config.images.push(assembly::LoadImage {
         base: 0xC8000,
         source: ImageSource::Inline(option),
         kind: ImageKind::Rom,
@@ -794,7 +794,7 @@ fn parts_unresolved_bios_without_declared_index_tolerates_inline_option_rom_like
         ImageSource::Interleaved(vec![]),
     ] {
         config.images[0].source = source;
-        assert_eq!(config.validate(), Ok(()));
+        assert_eq!(crate::validate(&config), Ok(()));
     }
 }
 
@@ -803,16 +803,16 @@ fn parts_deferred_option_rom_source_is_rejected_after_resolution() {
     let directory = PartsDirectory::new();
     let path = directory.0.join("bios");
     std::fs::write(&path, vec![0; 32768]).unwrap();
-    let mut config = crate::bios(vec![], Some(vec![0; 1_474_560]));
+    let mut config = assembly::bios(vec![], Some(vec![0; 1_474_560]));
     config.system_bios_image = None;
     config.images[0].source = ImageSource::File(path);
-    config.images.push(crate::LoadImage {
+    config.images.push(assembly::LoadImage {
         base: 0xC8000,
         source: directory.source(&pair()),
         kind: ImageKind::Rom,
         provides: vec![],
     });
-    config.validate().unwrap();
+    crate::validate(&config).unwrap();
     let error = resolve_file_sources(&config, AssemblyOptions::default()).unwrap_err();
     assert_eq!(
         error.to_string(),
@@ -880,7 +880,7 @@ fn parts_option_rom_role_precedes_layout_errors_and_part_reads() {
     let directory = PartsDirectory::new();
     let path = directory.0.join("bios");
     std::fs::write(&path, vec![0; 32768]).unwrap();
-    let mut config = crate::bios(vec![], Some(vec![0; 1_474_560]));
+    let mut config = assembly::bios(vec![], Some(vec![0; 1_474_560]));
     config.system_bios_image = None;
     config.images[0].source = ImageSource::File(path);
     for source in [
@@ -892,7 +892,7 @@ fn parts_option_rom_role_precedes_layout_errors_and_part_reads() {
         }]),
     ] {
         config.images.truncate(1);
-        config.images.push(crate::LoadImage {
+        config.images.push(assembly::LoadImage {
             base: 0xC8000,
             source,
             kind: ImageKind::Rom,
@@ -912,7 +912,7 @@ fn parts_resolution_call_site_diagnoses_swapped_and_bad_chips_and_preserves_esca
     let original = pair();
     let expected_bytes = interleave_parts(&original).unwrap();
     let entry = synthetic_entry(&expected_bytes);
-    let mut config = crate::bios(vec![], Some(vec![0; 1_474_560]));
+    let mut config = assembly::bios(vec![], Some(vec![0; 1_474_560]));
     config.images[0].base = 0xFE000;
     config.images[0].source = directory.source(&original);
     let (resolved, _) =
@@ -981,7 +981,7 @@ fn video_container_file_resolution_retains_complete_identity_and_mapped_size() {
         requires: &[],
         ..FirmwareEntry::IBM_VGA_1987
     };
-    let mut config = crate::bios(vec![0; 32768], Some(vec![0; 1_474_560]));
+    let mut config = assembly::bios(vec![0; 32768], Some(vec![0; 1_474_560]));
     config.images.push(LoadImage {
         base: 0xC0000,
         source: ImageSource::File(path),
@@ -996,7 +996,7 @@ fn video_container_file_resolution_retains_complete_identity_and_mapped_size() {
         ImageSource::RomContainer { offset: 8192, .. }
     ));
     assert_eq!(
-        crate::firmware::matched_entry(&resolved.images[1], &[video]),
+        assembly::test_support::matched_entry(&resolved.images[1], &[video]),
         Some(&video)
     );
     let mapped = load_image_bytes(&resolved.images[1].source).unwrap();
@@ -1013,7 +1013,7 @@ fn video_container_used_as_system_file_is_not_sliced() {
         sha256: Box::leak(format!("{:x}", Sha256::digest(&bytes)).into_boxed_str()),
         ..FirmwareEntry::IBM_VGA_1987
     };
-    let mut config = crate::bios(vec![0; 32768], Some(vec![0; 1_474_560]));
+    let mut config = assembly::bios(vec![0; 32768], Some(vec![0; 1_474_560]));
     config.images[0].source = ImageSource::File(path);
     config.images.push(LoadImage {
         base: 0xC8000,

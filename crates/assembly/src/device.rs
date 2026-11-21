@@ -15,7 +15,7 @@
 /// [`crate::ConfigError`]), which is why this is a plain enum rather than a
 /// string — it is exhaustive over the roles this machine models and is a natural
 /// map key ([`Hash`]/[`Eq`]).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DeviceId {
     /// 16550 serial UART (COM1).
     Uart,

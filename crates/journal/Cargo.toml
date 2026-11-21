@@ -10,7 +10,7 @@ publish.workspace = true
 description = "Host-independent disk journal codec, replay and sparse overlays."
 
 [package.metadata.unemu]
-layer = "neutral"
+layer = "emulation"
 side = "core"
 
 [dependencies]

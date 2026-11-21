@@ -4832,17 +4832,20 @@ pub(super) mod tests {
             launch: None,
             machine: assembly::bios(vec![0xf4; 32768], None),
             image: Digest::of(b"synthetic image"),
-            bases: BTreeMap::from([(path.clone(), media::VerifiedBase::open(&path).unwrap())]),
+            bases: BTreeMap::from([(
+                path.clone(),
+                journal_files::VerifiedBase::open(&path).unwrap(),
+            )]),
             zero: BTreeMap::new(),
         };
         let prepared = make();
-        let before = media::data_passes(512);
+        let before = journal_files::data_passes(512);
         let transfer = prepared.into_transfer().unwrap();
-        assert_eq!(media::data_passes(512), before);
+        assert_eq!(journal_files::data_passes(512), before);
         assert!(std::thread::spawn(move || {
-            let before = media::data_passes(512);
+            let before = journal_files::data_passes(512);
             let ready = transfer.restore().is_ok();
-            assert_eq!(media::data_passes(512), before);
+            assert_eq!(journal_files::data_passes(512), before);
             ready
         })
         .join()
@@ -4853,13 +4856,13 @@ pub(super) mod tests {
     }
     #[test]
     fn verified_transfer_uses_original_handle_after_same_length_and_mtime_inode_swap() {
-        use media::SectorSource;
+        use journal_files::SectorSource;
         let temp = assembly::test_support::TempDir::new("verified-inode-swap");
         let dir = temp.path().join("current");
         std::fs::create_dir(&dir).unwrap();
         let path = dir.join("base.img");
         std::fs::write(&path, [7; 512]).unwrap();
-        let base = media::VerifiedBase::open(&path).unwrap();
+        let base = journal_files::VerifiedBase::open(&path).unwrap();
         let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
         std::fs::rename(&dir, temp.path().join("original")).unwrap();
         std::fs::create_dir(&dir).unwrap();

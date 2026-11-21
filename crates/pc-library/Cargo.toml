@@ -25,6 +25,7 @@ test-support = [
 ]
 
 [dependencies]
+journal-files.workspace = true
 assembly.workspace = true
 image-store = { path = "../image-store", version = "0.0.3" }
 image-registry = { path = "../registry", version = "0.0.3" }

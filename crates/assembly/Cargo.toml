@@ -14,7 +14,7 @@ layer = "emulation"
 
 [dependencies]
 thiserror.workspace = true
-media = { path = "../media", version = "0.0.3" }
+journal.workspace = true
 sha2.workspace = true
 # The contract's content and records: what the mount seam hands over
 # (core-contract.md §12.5, step 10 of §12.10).
@@ -35,10 +35,10 @@ chipset.workspace = true
 
 [features]
 default = []
-test-support = ["media/test-support"]
+test-support = ["journal/test-support"]
 reference-scheduler = ["machine/reference-scheduler"]
 
 [dev-dependencies]
 testkit.workspace = true
-media = { path = "../media", version = "0.0.3", features = ["test-support"] }
+journal = { workspace = true, features = ["test-support"] }
 unemu-core-api = { workspace = true, features = ["test-support"] }

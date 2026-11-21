@@ -278,7 +278,7 @@ mod tests {
     #[test]
     fn synthetic_unmapped_cpu_stop_has_failure_diagnostic() {
         // Inject the stop so reporting does not depend on core memory accesses.
-        let assembled = assembly::assemble(&assembly::at_boot(vec![0xF4])).unwrap();
+        let assembled = machine_file::assemble(&assembly::at_boot(vec![0xF4])).unwrap();
         let stop = pc_harness::classify_bios_stop(
             &assembled.machine,
             Err(assembly::RunError::Machine(machine::MachineError::Cpu(
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn a_cpu_refusal_has_a_stop_report_and_a_halt_has_none() {
         let mut assembled =
-            assembly::assemble(&assembly::test_support::refused_gate_call()).unwrap();
+            machine_file::assemble(&assembly::test_support::refused_gate_call()).unwrap();
         let result = assembled.run_session(&assembly::RunPolicy::natural(Some(100_000), None));
         let report = cpu_stop_report(&assembled, &result).expect("the refusal has a report");
         assert!(report.starts_with(
@@ -310,7 +310,7 @@ mod tests {
         );
         assert!(report.ends_with("ss2:sp2 0030:4000\n"));
 
-        let mut assembled = assembly::assemble(&assembly::at_boot(vec![0xFA, 0xF4])).unwrap();
+        let mut assembled = machine_file::assemble(&assembly::at_boot(vec![0xFA, 0xF4])).unwrap();
         let result = assembled.run_session(&assembly::RunPolicy::natural(Some(100_000), None));
         assert!(result.is_ok());
         assert_eq!(cpu_stop_report(&assembled, &result), None);

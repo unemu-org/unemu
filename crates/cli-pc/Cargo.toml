@@ -13,6 +13,7 @@ description = "The IBM PC/AT family's part of the command line: its machine runs
 layer = "pc"
 
 [dependencies]
+journal-files.workspace = true
 unemupc = { path = "../unemupc", version = "0.0.3" }
 cli-core = { path = "../cli-core", version = "0.0.3" }
 core-launch = { path = "../core-launch", version = "0.0.3" }
@@ -39,7 +40,7 @@ pc-image = { path = "../pc-image", version = "0.0.3", features = ["test-support"
 cpu.workspace = true
 devices.workspace = true
 # The FAT12 reader that checks disks built from host files.
-media = { workspace = true, features = ["test-support"] }
+media.workspace = true
 image-registry = { path = "../registry", version = "0.0.3", features = ["test-support"] }
 # Tags an image as a newer release would, in a store both share.
 image-store = { path = "../image-store", version = "0.0.3", features = ["test-support"] }

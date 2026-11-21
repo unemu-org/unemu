@@ -4,7 +4,7 @@
 //! boundaries, resets, and the drives' journals at Stop.
 
 use super::*;
-use assembly::assemble_with_observation;
+use machine_file::assemble_with_observation;
 
 /// An idle screen is copied out of the machine once, not on every paint.
 #[test]
@@ -36,7 +36,7 @@ fn presenter_prints_speaker_trace_lines_only_when_enabled() {
     let mut config = assembly::bios(rom, None);
     config.cpu.reset = assembly::ResetSpec::Entry { cs: 0xF800, ip: 0 };
     for trace in [false, true] {
-        let assembled = assembly::assemble_with_observation_and_options(
+        let assembled = machine_file::assemble_with_observation_and_options(
             &config,
             &ObservationPolicy {
                 routes: vec![ObservationRequest {
@@ -319,7 +319,7 @@ fn cmos_written_before_a_halt_is_durable_without_stop() {
     assert!(presenter.halted);
     // As after a crash: the presenter goes away without Stop.
     drop(presenter);
-    let mut fresh = assembly::assemble(&config).unwrap();
+    let mut fresh = machine_file::assemble(&config).unwrap();
     let bus = fresh.machine.bus_mut();
     bus.port_write(0x70, 1, 0x10).unwrap();
     assert_eq!(bus.port_read(0x71, 1).unwrap() & 0xFF, 0x55);
@@ -689,13 +689,13 @@ fn nvram_journal_matches_cli_across_window_frame_slices() {
             }
         }
         if lane == "cli" {
-            let mut assembled = assembly::assemble(&config).unwrap();
+            let mut assembled = machine_file::assemble(&config).unwrap();
             assembled
                 .run_session(&assembly::RunPolicy::natural(Some(200), None))
                 .unwrap();
             assembled.finish_persistence().unwrap();
         } else {
-            let assembled = assembly::assemble_with_observation(
+            let assembled = machine_file::assemble_with_observation(
                 &config,
                 &ObservationPolicy {
                     routes: vec![ObservationRequest {
@@ -807,7 +807,7 @@ fn window_ide_run_error_flushes_whole_outsw_prefix_without_opening_a_window() {
     assert!(presenter.window.is_none());
     assert_eq!(std::fs::read(&journal).unwrap().len(), 128 + 2 * 640);
     drop(presenter);
-    let mut fresh = assembly::assemble(&config).unwrap();
+    let mut fresh = machine_file::assemble(&config).unwrap();
     let report = fresh.persistence[0].mount_report();
     assert!(report.generations.is_empty());
     assert_eq!(report.unsealed_tip.as_ref().unwrap().commands, 1);
@@ -1335,7 +1335,7 @@ fn host_queue_only_delivers_at_chunk_start_and_defers_full_buffer_in_order() {
 #[test]
 fn tagged_reset_chords_replay_through_the_inhibited_keyboard_buffer() {
     let config = assembly::at_keyboard(vec![0xEB, 0xFE]);
-    let mut original = assembly::assemble(&config).unwrap();
+    let mut original = machine_file::assemble(&config).unwrap();
     original
         .machine
         .bus_mut()
@@ -1347,7 +1347,7 @@ fn tagged_reset_chords_replay_through_the_inhibited_keyboard_buffer() {
     let log = vec![(0, bytes, keyboard.typed_ranges().to_vec())];
     assert_eq!(log[0].2.len(), 1);
     assert_eq!(log[0].2[0], 0..6);
-    let mut replay = assembly::assemble(&config).unwrap();
+    let mut replay = machine_file::assemble(&config).unwrap();
     replay.machine.bus_mut().port_write(0x64, 1, 0xAD).unwrap();
     replay_input(&mut replay, &log, 0, 1);
     let index = original.device_index[&DeviceId::Keyboard];

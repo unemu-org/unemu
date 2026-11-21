@@ -5,6 +5,24 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-21 — Final journal and file-mount separation:**
+  `journal` is emulation/core and `journal-files` is PC/core on the host.
+  `machine-file` owns `FileMount`, file assembly entry points, output-path
+  validation, floppy append-by-path and the real-file assembly tests.
+  Assembly uses only the journal's byte/record logic and mount-supplied
+  sessions; protected input identities are opaque tokens, interpreted by
+  the file mount. The default lookup maps are ordered maps without a
+  host-seeded hasher. Both assembly/media boundary exceptions and the
+  assemble/mount/observation host exceptions are removed.
+  `media` retains neutral FAT12 codecs; atomic image publication and file
+  layer chains move to `journal-files` with their tests, closing the neutral
+  CLI's transitive path to the PC file engine. No media journal facade remains.
+  Disk bases remain read-only and fully SHA-256 identified; writes remain
+  separate overlays, and commit publishes a new base.
+  All 192 saved CLI cases remain byte-identical. Open-fixture guest goldens
+  pass; the sandbox's loopback/clipboard failures and supervisor-only checks
+  are recorded in the core-contract step's validation note.
+
 - **2026-11-21 — Shared journal file engine, extraction still partial:**
   `journal-files` now uses contract 0.3.1's `FileRecord` for session records,
   header publication, retention and cleanup; offline tools transfer `PathLock`

@@ -524,7 +524,7 @@ fn stored_freedos_runs_keep_the_old_workspace_and_journal_bytes() {
         let (retired, time, clock, image) = {
             let owner = store.workspace("legacy").unwrap();
             let prepared = pc_image::workspace::prepare_start(&owner, "test:dos", false).unwrap();
-            let mut machine = assembly::assemble_with_verified_bases(
+            let mut machine = machine_file::assemble_with_verified_bases(
                 &prepared.machine,
                 &assembly::ObservationPolicy::default(),
                 assembly::AssemblyOptions::default(),

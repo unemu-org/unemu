@@ -2615,7 +2615,7 @@ mod tests {
                     // A base changed after verification cannot be transferred.
                     let path = w.path().join("base");
                     fs::write(&path, [0; 512]).unwrap();
-                    let base = media::VerifiedBase::open(&path).unwrap();
+                    let base = journal_files::VerifiedBase::open(&path).unwrap();
                     fs::write(&path, [1; 512]).unwrap();
                     std::collections::BTreeMap::from([(path, base)])
                 } else {
@@ -2679,10 +2679,10 @@ mod tests {
             new: bool,
         ) -> Result<pc_image::workspace::PreparedSession> {
             let stored = image_store::verification_passes(&self.root);
-            let raw = media::data_passes(16384);
+            let raw = journal_files::data_passes(16384);
             let result = SyntheticBackend.prepare(w, image, new);
             assert_eq!(image_store::verification_passes(&self.root) - stored, 1);
-            assert_eq!(media::data_passes(16384) - raw, 1);
+            assert_eq!(journal_files::data_passes(16384) - raw, 1);
             result
         }
         fn publish(&self, w: &Workspace<'_>, target: &Target) -> Result<Descriptor> {
@@ -2703,10 +2703,10 @@ mod tests {
                 assert!(store.read_library().unwrap().images[&row.descriptor.digest].favorite);
             }
             let stored = image_store::verification_passes(&self.root);
-            let raw = media::data_passes(16384);
+            let raw = journal_files::data_passes(16384);
             let result = PcBackend.check(store, row, name, cancelled);
             assert_eq!(image_store::verification_passes(&self.root), stored);
-            assert_eq!(media::data_passes(16384), raw);
+            assert_eq!(journal_files::data_passes(16384), raw);
             result
         }
     }
@@ -4362,7 +4362,7 @@ mod tests {
         let selected = entries.len() - 1;
         let bases = [(
             path.clone(),
-            media::VerifiedBase::from_file(fs::File::open(&path).unwrap()).unwrap(),
+            journal_files::VerifiedBase::from_file(fs::File::open(&path).unwrap()).unwrap(),
         )]
         .into_iter()
         .collect();
@@ -4405,7 +4405,8 @@ mod tests {
             .collect::<Vec<_>>();
         let rejected = f.temp.path().join("host/rejected.img");
         fs::write(&rejected, vec![0x62; 360 * 1024]).unwrap();
-        let base = media::VerifiedBase::from_file(fs::File::open(&rejected).unwrap()).unwrap();
+        let base =
+            journal_files::VerifiedBase::from_file(fs::File::open(&rejected).unwrap()).unwrap();
         let mut entries = drive_a(&prepared).entries.clone();
         entries[0].name = "Edited before refusal".into();
         entries.push(assembly::FloppyMedium {
@@ -4922,7 +4923,8 @@ mod tests {
     /// the guest's writes go.
     fn journal_write(path: &std::path::Path, base: &[u8], value: u8) {
         let mut journal =
-            media::JournalMedia::open(path, base, base.len() as u64, Default::default()).unwrap();
+            journal_files::JournalMedia::open(path, base, base.len() as u64, Default::default())
+                .unwrap();
         journal.write_batch(&[(0, [value; 512])]);
         journal.finish().unwrap();
     }

@@ -72,7 +72,7 @@ fn frontend_launch_hashes_each_disk_once_with_bounded_allocations() {
         std::fs::write(&machine_path, format!("schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='bios.bin'\nprovides=['fixed-disk']\n[[card]]\nkind='ide'\n[[card.drives]]\nchannel='master'\ngeometry={{cylinders={cylinders},heads={heads},sectors={sectors}}}\nimage='{name}.img'\nwrite='journal'\njournal='{name}.upfj'\n")).unwrap();
         let baseline = LIVE.load(Ordering::Relaxed);
         PEAK.store(baseline, Ordering::Relaxed);
-        let hashes = media::hash_passes();
+        let hashes = journal_files::hash_passes();
         let loaded = machine_file::load_for_assembly(
             &machine_path,
             assembly::AssemblyOptions {
@@ -83,7 +83,11 @@ fn frontend_launch_hashes_each_disk_once_with_bounded_allocations() {
         let mut assembled = loaded
             .assemble(&assembly::ObservationPolicy::default())
             .unwrap();
-        assert_eq!(media::hash_passes() - hashes, 1, "hashes for {name} launch");
+        assert_eq!(
+            journal_files::hash_passes() - hashes,
+            1,
+            "hashes for {name} launch"
+        );
         assembled.finish_persistence().unwrap();
         let peak = PEAK.load(Ordering::Relaxed).saturating_sub(baseline);
         eprintln!(
@@ -109,6 +113,6 @@ fn frontend_launch_hashes_each_disk_once_with_bounded_allocations() {
         assert!(error
             .to_string()
             .contains("base file changed after verification"));
-        assert_eq!(media::hash_passes() - hashes, 1);
+        assert_eq!(journal_files::hash_passes() - hashes, 1);
     }
 }

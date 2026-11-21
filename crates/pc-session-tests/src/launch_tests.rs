@@ -2,6 +2,7 @@
 //! Equality of the launch factory and the verified-file assembler, including
 //! the version-1 journal bytes (core-contract.md §14.3).
 
+use machine_file::FileMachineExt;
 use pc_config::{image::Digest, launch};
 use std::{
     cell::RefCell,
@@ -351,7 +352,10 @@ fn launch_and_verified_file_sessions_have_identical_output_and_journal_bytes() {
         let path = temp.path().join(key.file_name().unwrap());
         let data = &source.blobs[sha256];
         std::fs::write(&path, data).unwrap();
-        bases.insert(path.clone(), media::VerifiedBase::from_bytes(data).unwrap());
+        bases.insert(
+            path.clone(),
+            journal_files::VerifiedBase::from_bytes(data).unwrap(),
+        );
         for drive in &mut direct_config.drives {
             if drive.image == assembly::ImageSource::File(key.clone()) {
                 drive.image = assembly::ImageSource::File(path.clone());
@@ -395,7 +399,7 @@ fn launch_and_verified_file_sessions_have_identical_output_and_journal_bytes() {
     }
     for session in 1..=5 {
         let direct =
-            assembly::assemble_with_verified_bases(&direct_config, &policy(), options, &bases)
+            machine_file::assemble_with_verified_bases(&direct_config, &policy(), options, &bases)
                 .unwrap();
         let mut direct = PcMachine::from_assembled(&direct_config, direct).unwrap();
         let mut created = Box::new(
@@ -419,8 +423,8 @@ fn launch_and_verified_file_sessions_have_identical_output_and_journal_bytes() {
             } else {
                 vec![0; 64]
             };
-            let scan = media::scan(&journal, &base, base.len() as u64);
-            assert_eq!(scan.report.status, media::Status::Valid);
+            let scan = journal_files::scan(&journal, &base, base.len() as u64);
+            assert_eq!(scan.report.status, journal_files::Status::Valid);
             assert_eq!(scan.report.generations.len(), usize::from(session.min(3)));
             let anchor = if session > 3 {
                 u64::from(session - 2)
@@ -455,7 +459,7 @@ fn launch_machine_accepts_a_verified_floppy_appended_by_path() {
     let path = temp.path().join("extra.img");
     let data = vec![0xe5; 368640];
     std::fs::write(&path, &data).unwrap();
-    let base = media::VerifiedBase::open(&path).unwrap();
+    let base = journal_files::VerifiedBase::open(&path).unwrap();
     let medium = assembly::FloppyMedium {
         image: assembly::ImageSource::File(path),
         expected_sha256: None,
@@ -610,7 +614,7 @@ fn stored_launch_and_existing_start_match_across_restarts_in_both_directions() {
                     }
                 })
                 .unwrap();
-            let assembled = assembly::assemble_with_verified_bases(
+            let assembled = machine_file::assemble_with_verified_bases(
                 &prepared.machine,
                 &policy(),
                 assembly::AssemblyOptions {
@@ -649,8 +653,8 @@ fn stored_launch_and_existing_start_match_across_restarts_in_both_directions() {
                 } else {
                     vec![0; 64]
                 };
-                let scan = media::scan(&left, &base, base.len() as u64);
-                assert_eq!(scan.report.status, media::Status::Valid);
+                let scan = journal_files::scan(&left, &base, base.len() as u64);
+                assert_eq!(scan.report.status, journal_files::Status::Valid);
                 assert_eq!(scan.report.generations.len(), usize::from(session.min(3)));
                 assert_eq!(
                     scan.report.header.unwrap().anchor_generation,
@@ -678,7 +682,7 @@ fn boxed_stored_launch_matches_existing_start_and_its_journals() {
         for session in 1..=2 {
             let old_session =
                 pc_image::workspace::prepare_start(&old, "test:launch", false).unwrap();
-            let assembled = assembly::assemble_with_verified_bases(
+            let assembled = machine_file::assemble_with_verified_bases(
                 &old_session.machine,
                 &policy(),
                 assembly::AssemblyOptions {
@@ -700,7 +704,7 @@ fn boxed_stored_launch_matches_existing_start_and_its_journals() {
                     std::fs::read(new.path().join("media").join(name)).unwrap()
                 );
                 if name == "a.upfj" {
-                    let scan = media::scan(&bytes, &vec![0xf6; 368640], 368640);
+                    let scan = journal_files::scan(&bytes, &vec![0xf6; 368640], 368640);
                     let image = scan.image.unwrap();
                     assert_eq!(image[..512], vec![session; 512]);
                     assert_eq!(image[512..1024], vec![session ^ 0x50; 512]);
@@ -712,7 +716,7 @@ fn boxed_stored_launch_matches_existing_start_and_its_journals() {
 
 #[test]
 fn stored_launch_locks_exclude_another_start_and_the_rollback_tool_and_release_on_drop() {
-    use media::offline::{Access, JournalTool};
+    use journal_files::offline::{Access, JournalTool};
     pc_image::test_support::with_synthetic_firmware(|| {
         let (_temp, store, _) = stored_fixture();
         let owner = store.workspace("locks").unwrap();
@@ -740,7 +744,7 @@ fn stored_launch_locks_exclude_another_start_and_the_rollback_tool_and_release_o
             .to_string()
             .contains("journal is locked by another session or tool"));
         let old = pc_image::workspace::prepare_start(&owner, "test:launch", false).unwrap();
-        let old_error = assembly::assemble_with_verified_bases(
+        let old_error = machine_file::assemble_with_verified_bases(
             &old.machine,
             &policy(),
             assembly::AssemblyOptions {
@@ -992,7 +996,7 @@ fn edited_catalogue_records_keep_their_external_journal_paths() {
         let base_path = temp.path().join("external.img");
         let journal = temp.path().join("external.upfj");
         std::fs::write(&base_path, vec![0xf6; 368640]).unwrap();
-        let base = media::VerifiedBase::open(&base_path).unwrap();
+        let base = journal_files::VerifiedBase::open(&base_path).unwrap();
         session
             .replace_floppy_catalogue(
                 0,
@@ -1013,20 +1017,20 @@ fn edited_catalogue_records_keep_their_external_journal_paths() {
             let mut machine = core_launch::start(&prepared).unwrap();
             assert!(journal.is_file());
             assert!(!owner.path().join("media/a.upfj").exists());
-            assert!(media::offline::JournalTool::open(
+            assert!(journal_files::offline::JournalTool::open(
                 &base_path,
                 &journal,
-                media::offline::Access::Mutate
+                journal_files::offline::Access::Mutate
             )
             .is_err());
             machine.run(RunLimit::steps(8300)).unwrap();
             machine.finish().unwrap();
         }
         assert_eq!(std::fs::read(base_path).unwrap(), vec![0xf6; 368640]);
-        assert!(media::offline::JournalTool::open(
+        assert!(journal_files::offline::JournalTool::open(
             &temp.path().join("external.img"),
             &journal,
-            media::offline::Access::Mutate
+            journal_files::offline::Access::Mutate
         )
         .is_ok());
     });
@@ -1095,7 +1099,7 @@ fn library_start_matches_verified_file_sessions_and_releases_finished_records() 
         let mut created = core_launch::start_with(&prepared, |r| PcCore.create_machine(r)).unwrap();
         worker.send.send(Request::Assembled).unwrap();
         let session = pc_image::workspace::prepare_pinned(&old, &image, false).unwrap();
-        let assembled = assembly::assemble_with_verified_bases(
+        let assembled = machine_file::assemble_with_verified_bases(
             &session.machine,
             &policy(),
             Default::default(),

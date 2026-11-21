@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use assembly::{ConfigError, MachineConfig, WriteMode};
-use media::JournalMedia;
+use journal_files::JournalMedia;
 
 use crate::Origins;
 
@@ -48,7 +48,7 @@ pub(crate) fn validate_journals(
             },
             None => ConfigError::Nvram { message },
         };
-        media::check_journal_path(path).map_err(|failure| error(failure.message))?;
+        journal_files::check_journal_path(path).map_err(|failure| error(failure.message))?;
         if std::fs::metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
             return Err(error(format!(
                 "journal path {} is a directory",
@@ -122,7 +122,7 @@ fn aliases(left: &Path, right: &Path) -> bool {
 mod tests {
     use std::path::Path;
 
-    use media::JournalMedia;
+    use journal_files::JournalMedia;
 
     /// The lowering keeps its own copy of the journal's retention-name rule so
     /// that it needs no journal; the two must not drift apart.

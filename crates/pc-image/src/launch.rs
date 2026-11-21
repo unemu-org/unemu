@@ -6,7 +6,7 @@
 
 use crate::workspace::{PreparedSession, Transfer};
 use image_store::{machine::PendingInsert, workspace::Workspace, Descriptor, Digest};
-use media::{SectorSource, VerifiedBase};
+use journal_files::{SectorSource, VerifiedBase};
 use pc_config::launch;
 use std::{collections::BTreeMap, path::PathBuf, rc::Rc};
 use unemu_core_api::{
@@ -203,7 +203,7 @@ pub fn from_session(
             row.name.clone(),
             Journal {
                 path: path.clone(),
-                base: media::Header {
+                base: journal_files::Header {
                     base_digest: content.sha256,
                     base_length: content.size,
                     anchor_generation: 0,
@@ -236,8 +236,8 @@ pub struct ContentPlan {
 
 enum Entry {
     Bytes(Vec<u8>),
-    File(std::fs::File, media::Header, Box<std::fs::Metadata>),
-    Zero(crate::zero::ZeroChain, media::Header),
+    File(std::fs::File, journal_files::Header, Box<std::fs::Metadata>),
+    Zero(crate::zero::ZeroChain, journal_files::Header),
 }
 
 enum Opened {
@@ -344,20 +344,20 @@ impl ContentReader for Reader {
         self.0.check_unchanged().map_err(base_error)?;
         let mut position = offset;
         let mut remaining = bytes;
-        if !position.is_multiple_of(media::SECTOR_LEN as u64) {
+        if !position.is_multiple_of(journal_files::SECTOR_LEN as u64) {
             let sector = self
                 .0
-                .read_sector(position / media::SECTOR_LEN as u64)
+                .read_sector(position / journal_files::SECTOR_LEN as u64)
                 .map_err(base_error)?;
-            let start = (position % media::SECTOR_LEN as u64) as usize;
-            let count = remaining.len().min(media::SECTOR_LEN - start);
+            let start = (position % journal_files::SECTOR_LEN as u64) as usize;
+            let count = remaining.len().min(journal_files::SECTOR_LEN - start);
             remaining[..count].copy_from_slice(&sector[start..start + count]);
             remaining = &mut remaining[count..];
             position += count as u64;
         }
         if !remaining.is_empty() {
             self.0
-                .read_range(position / media::SECTOR_LEN as u64, remaining)
+                .read_range(position / journal_files::SECTOR_LEN as u64, remaining)
                 .map_err(base_error)?;
         }
         self.0.check_unchanged().map_err(base_error)
@@ -373,7 +373,7 @@ pub struct StoragePlan {
 #[derive(Clone)]
 struct Journal {
     path: PathBuf,
-    base: media::Header,
+    base: journal_files::Header,
     metadata: Option<Box<std::fs::Metadata>>,
 }
 impl core_launch::StoragePlan for StoragePlan {
@@ -392,7 +392,7 @@ impl Storage for Files {
             .records
             .get(name)
             .ok_or_else(|| Error::new(ErrorKind::Usage, "record is not listed by this launch"))?;
-        Ok(Box::new(media::JournalFile::open(
+        Ok(Box::new(journal_files::JournalFile::open(
             &journal.path,
             &journal.base,
             journal.metadata.as_deref(),

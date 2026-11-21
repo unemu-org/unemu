@@ -117,7 +117,7 @@ pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
-    Journal(#[from] media::offline::ToolError),
+    Journal(#[from] journal_files::offline::ToolError),
     #[error("missing inputs:\n{paths}")]
     MissingInputs { paths: String, firmware: bool },
     #[error("invalid PC image: {0}")]

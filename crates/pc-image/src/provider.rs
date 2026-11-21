@@ -442,7 +442,7 @@ fn config_from_image(image: &image_store::ResolvedImage) -> Result<Config> {
 /// Verified launch bases keyed by the path each drive names; zero-rooted heads
 /// also keep their parts so a launch can move them to another thread.
 pub(crate) type LaunchBases = (
-    BTreeMap<std::path::PathBuf, media::VerifiedBase>,
+    BTreeMap<std::path::PathBuf, journal_files::VerifiedBase>,
     BTreeMap<std::path::PathBuf, std::rc::Rc<crate::zero::ZeroChain>>,
 );
 pub(crate) struct PreparedImage {
@@ -540,7 +540,7 @@ pub(crate) fn resolve_pinned(
     LaunchBases,
     crate::workspace::PreparedLaunch,
 )> {
-    use media::SectorSource;
+    use journal_files::SectorSource;
     let resolved = load_pinned(store, descriptor, false, true)?;
     let image = resolved.image;
     let (config, descriptors, cmos) = match settings {

@@ -53,7 +53,7 @@ use crate::media_dialog::FloppySlot;
 use crate::media_picker::{drive_name, CatalogueDisk, SetEntry};
 use assembly::{FloppyMedium, ImageSource, WriteMode};
 use image_store::{media_set::CatalogueSource, Descriptor, Digest, Store};
-use media::SectorSource as _;
+use journal_files::SectorSource as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{
@@ -667,7 +667,7 @@ impl Sets {
 /// assembly takes it from and, for a set's disk, what the window shows of it.
 struct Ready {
     medium: FloppyMedium,
-    base: Option<(PathBuf, media::VerifiedBase)>,
+    base: Option<(PathBuf, journal_files::VerifiedBase)>,
     set: Option<(CatalogueSource, String, String)>,
 }
 
@@ -744,7 +744,7 @@ fn image_disk(
     let media = workspace.join("media");
     let path = media.join(FOLDER).join(format!("{sha256}.img"));
     let file = fs::File::open(&path).map_err(|e| format!("its image is gone ({e})"))?;
-    let base = media::VerifiedBase::from_file(file).map_err(|e| e.to_string())?;
+    let base = journal_files::VerifiedBase::from_file(file).map_err(|e| e.to_string())?;
     let digest = base.identity().base_digest;
     if hex(&digest) != sha256 {
         return Err("its image no longer matches its SHA-256".into());

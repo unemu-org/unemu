@@ -14,6 +14,7 @@ description = "The desktop: the shell, the machine library and the window of a r
 layer = "application"
 
 [dependencies]
+journal-files.workspace = true
 image-store = { path = "../image-store", version = "0.0.3" }
 image-registry = { path = "../registry", version = "0.0.3" }
 pc-image = { path = "../pc-image", version = "0.0.3" }
@@ -70,7 +71,7 @@ machine.workspace = true
 video.workspace = true
 image-store = { path = "../image-store", version = "0.0.3", features = ["test-support"] }
 image-registry = { path = "../registry", version = "0.0.3", features = ["test-support"] }
-media = { workspace = true, features = ["test-support"] }
+media.workspace = true
 pc-image = { path = "../pc-image", version = "0.0.3", features = ["test-support"] }
 assembly = { workspace = true, features = ["test-support"] }
 cpu.workspace = true

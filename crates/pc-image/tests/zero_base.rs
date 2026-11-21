@@ -3,7 +3,7 @@
 //! sparse layers, flattening, redistribution and sizes; machine-images §§2, 4.
 
 use image_store::{media_type as mt, BlobSource, ConfigValidator, Descriptor, Digest, Store};
-use media::SectorSource;
+use journal_files::SectorSource;
 use pc_image::{create::Chs, workspace, PcProvider, DISK_ZERO};
 #[path = "support/open_image.rs"]
 mod open_image;
@@ -26,7 +26,11 @@ fn zero(layers: &[Descriptor]) -> Descriptor {
 /// The verified reader and journal path of the IDE master.
 fn fixed_disk(
     prepared: &workspace::PreparedSession,
-) -> (media::VerifiedBase, std::path::PathBuf, std::path::PathBuf) {
+) -> (
+    journal_files::VerifiedBase,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
     let drive = prepared
         .machine
         .drives
@@ -43,7 +47,7 @@ fn fixed_disk(
 }
 fn write(prepared: &workspace::PreparedSession, sectors: &[(u64, [u8; 512])]) {
     let (base, _, journal) = fixed_disk(prepared);
-    let mut media = media::JournalMedia::open_verified_with_metadata(
+    let mut media = journal_files::JournalMedia::open_verified_with_metadata(
         &journal,
         &base,
         base.byte_len(),
@@ -136,7 +140,7 @@ fn writes_journal_then_save_seals_only_written_sectors_and_flatten_stays_sparse(
         .unwrap();
     assert_eq!(
         pack.decoded_size().unwrap(),
-        2 * media::layer::RECORD_LEN,
+        2 * journal_files::layer::RECORD_LEN,
         "only written sectors"
     );
     let layer = saved
@@ -144,7 +148,8 @@ fn writes_journal_then_save_seals_only_written_sectors_and_flatten_stays_sparse(
         .find(|d| d.media_type == mt::DISK_LAYER)
         .unwrap();
     let layer =
-        media::layer::Descriptor::decode(&open.store.read_verified(layer, 4096).unwrap()).unwrap();
+        journal_files::layer::Descriptor::decode(&open.store.read_verified(layer, 4096).unwrap())
+            .unwrap();
     assert_eq!(layer.parent, zero_digest.to_string());
     assert_eq!(layer.base, zero_digest.to_string());
 
@@ -181,13 +186,17 @@ fn writes_journal_then_save_seals_only_written_sectors_and_flatten_stays_sparse(
         .iter()
         .find(|d| d.decoded_media_type() == mt::DISK_SECTORS)
         .unwrap();
-    assert_eq!(pack.decoded_size().unwrap(), 3 * media::layer::RECORD_LEN);
+    assert_eq!(
+        pack.decoded_size().unwrap(),
+        3 * journal_files::layer::RECORD_LEN
+    );
     let layer = flat
         .iter()
         .find(|d| d.media_type == mt::DISK_LAYER)
         .unwrap();
     let layer =
-        media::layer::Descriptor::decode(&open.store.read_verified(layer, 4096).unwrap()).unwrap();
+        journal_files::layer::Descriptor::decode(&open.store.read_verified(layer, 4096).unwrap())
+            .unwrap();
     assert_eq!(layer.parent, zero_digest.to_string());
 
     // Writing zeros back makes the flattened head the zero base itself.
@@ -419,7 +428,7 @@ fn disks_of_one_geometry_share_one_zero_base_and_keep_separate_journals() {
         .collect();
     assert_eq!(disks.len(), 2);
     assert_ne!(disks[0].1, disks[1].1, "each disk has its own journal");
-    let mut media = media::JournalMedia::open_verified_with_metadata(
+    let mut media = journal_files::JournalMedia::open_verified_with_metadata(
         &disks[0].1,
         &disks[0].0,
         disks[0].0.byte_len(),
@@ -599,7 +608,10 @@ fn a_compressed_sector_pack_over_a_zero_base_mounts_without_any_decoded_file() {
         .iter()
         .find(|d| d.decoded_media_type() == mt::DISK_SECTORS)
         .unwrap();
-    assert_eq!(pack.decoded_size().unwrap(), 16 * media::layer::RECORD_LEN);
+    assert_eq!(
+        pack.decoded_size().unwrap(),
+        16 * journal_files::layer::RECORD_LEN
+    );
     assert_eq!(zero(&flat).digest, zero(&saved).digest);
     no_materialized_disk(&open.store);
 }
@@ -749,7 +761,7 @@ fn the_closure_lists_firmware_then_media_then_cmos_in_config_order() {
                     if d.media_type != mt::DISK_LAYER {
                         break;
                     }
-                    let layer = media::layer::Descriptor::decode(
+                    let layer = journal_files::layer::Descriptor::decode(
                         &open.store.read_verified(d, 4096).unwrap(),
                     )
                     .unwrap();

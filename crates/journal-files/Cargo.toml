@@ -10,12 +10,14 @@ publish.workspace = true
 description = "File-backed journals and their offline tools."
 
 [package.metadata.unemu]
-layer = "neutral"
+layer = "pc"
 side = "core"
 
 [dependencies]
 journal.workspace = true
 sha2.workspace = true
+serde.workspace = true
+toml.workspace = true
 thiserror.workspace = true
 unemu-core-api.workspace = true
 unemu-core-files.workspace = true

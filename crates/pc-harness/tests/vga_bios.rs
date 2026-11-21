@@ -96,7 +96,7 @@ fn kiselev_post_executes_video_rom_from_eprom_container() {
             .unwrap();
     assert_eq!(config.images[1].source.known_len(), Some(24576));
     let mut assembled =
-        assembly::assemble_with_observation_and_options(&config, &policy(), options).unwrap();
+        machine_file::assemble_with_observation_and_options(&config, &policy(), options).unwrap();
     let mut post = Vec::new();
     for cap in (10_000..=5_000_000).step_by(10_000) {
         assembled.machine.run_bounded(Some(cap)).unwrap();
@@ -529,7 +529,7 @@ fn vga_measurement_does_not_inject_keys_during_controller_self_test() {
     rom[..program.len()].copy_from_slice(&program);
     rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0, 0, 0, 0xF8]);
     let config = assembly::bios(rom, None);
-    let mut assembled = assembly::assemble_with_observation(&config, &policy()).unwrap();
+    let mut assembled = machine_file::assemble_with_observation(&config, &policy()).unwrap();
     let run = run_vga_program(&mut assembled);
     assert_eq!(run.outcome, RunOutcome::Halted);
     assert!(assembled.machine.cpu().retired() > 2_000_000);
@@ -603,7 +603,7 @@ fn assemble_boot_probe(program: Vec<u8>, cs: u16, ip: u16) -> assembly::Assemble
             provides: vec![],
         });
     }
-    assembly::assemble_with_observation(&config, &policy()).unwrap()
+    machine_file::assemble_with_observation(&config, &policy()).unwrap()
 }
 
 #[test]

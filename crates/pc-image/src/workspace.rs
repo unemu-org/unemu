@@ -4,7 +4,7 @@
 
 use crate::*;
 use image_store::{media_type as mt, workspace::Workspace, ConfigValidator, Manifest, Store};
-use media::{
+use journal_files::{
     layer::{seal, SectorReader},
     SectorSource, VerifiedBase,
 };
@@ -619,7 +619,7 @@ pub(crate) fn publish_machine(
                 .saturating_add(disk.zero.as_ref().map_or(0, |chain| chain.stored_sectors()));
             store.require_space(
                 sealed_sectors
-                    .saturating_mul(media::layer::RECORD_LEN)
+                    .saturating_mul(journal_files::layer::RECORD_LEN)
                     .saturating_mul(2),
             )?;
             let (parent, parent_digest): (&dyn SectorSource, String) = match &zero_root {
@@ -853,15 +853,15 @@ fn journal(
     workspace: &Workspace<'_>,
     id: &str,
     base: &VerifiedBase,
-) -> Result<Option<media::SparseOverlay>> {
+) -> Result<Option<journal_files::SparseOverlay>> {
     let path = workspace.path().join("media").join(format!("{id}.upfj"));
     let mut file = match fs::File::open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.into()),
     };
-    let scan = media::scan_overlay_reader(&mut file, base, base.byte_len())?;
-    if scan.report.needs_recovery() || !matches!(scan.report.status, media::Status::Valid) {
+    let scan = journal_files::scan_overlay_reader(&mut file, base, base.byte_len())?;
+    if scan.report.needs_recovery() || !matches!(scan.report.status, journal_files::Status::Valid) {
         return Err(invalid(format!(
             "{id}: journal requires recovery before publication"
         )));
@@ -1050,7 +1050,7 @@ pub struct SessionTransfer {
 /// boxed because its size depends on the host, and on Linux it alone makes
 /// the file variant several times larger than the byte-buffer one.
 pub(crate) enum Transfer {
-    File(fs::File, media::Header, Box<fs::Metadata>),
+    File(fs::File, journal_files::Header, Box<fs::Metadata>),
     Memory(Vec<u8>),
 }
 impl PreparedSession {

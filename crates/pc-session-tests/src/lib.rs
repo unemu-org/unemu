@@ -105,7 +105,7 @@ fn new_presenter(
     options: assembly::AssemblyOptions,
     warnings: &mut impl io::Write,
 ) -> Result<Presenter, Box<dyn Error>> {
-    let assembled = assembly::assemble_with_observation_and_options(
+    let assembled = machine_file::assemble_with_observation_and_options(
         config,
         &ObservationPolicy {
             routes: vec![ObservationRequest {

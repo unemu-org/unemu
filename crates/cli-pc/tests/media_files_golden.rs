@@ -139,7 +139,7 @@ fn boot(a: Option<Vec<u8>>, b: FloppyMediaList) -> (assembly::AssembledMachine, 
         }],
         ..Default::default()
     };
-    let mut assembled = assembly::assemble_with_observation(&config, &policy).unwrap();
+    let mut assembled = machine_file::assemble_with_observation(&config, &policy).unwrap();
     let keyboard = assembled.device_index[&DeviceId::Keyboard];
     assembled
         .run_session(&RunPolicy {

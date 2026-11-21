@@ -2,7 +2,8 @@
 //! File-loaded floppy persistence through NEC µPD765 WRITE/READ DATA (N=2)
 //! and Intel 8237A single-transfer mode; see machine-files.md § Drives and extends.
 
-use assembly::{assemble_with_options, AssemblyOptions, ConfigError, WriteMode};
+use assembly::{AssemblyOptions, ConfigError, WriteMode};
+use machine_file::assemble_with_options;
 use machine_file::{load, LoadError};
 use sha2::{Digest, Sha256};
 use std::{
@@ -353,7 +354,7 @@ fn repository_fixture_drives_remain_volatile_without_creating_sidecars() {
             .drives
             .iter()
             .all(|drive| drive.write == WriteMode::Volatile));
-        let mut assembled = assembly::assemble(&config).unwrap();
+        let mut assembled = machine_file::assemble(&config).unwrap();
         assert!(assembled.persistence.is_empty());
         assembled.finish_persistence().unwrap();
     }
@@ -533,7 +534,7 @@ fn ide_journal_requires_a_file_backed_base_before_assembly() {
     assert!(matches!(config.drives[0].write, WriteMode::Journal { .. }));
     let mut invalid = config;
     invalid.drives[0].image = assembly::ImageSource::Inline(vec![0; 512]);
-    let e = invalid.validate().unwrap_err();
+    let e = machine_file::validate(&invalid).unwrap_err();
     assert_eq!(
         e.to_string(),
         "drive 0 journal configuration: journal mode requires a file-backed image"
@@ -1175,8 +1176,13 @@ fn nvram_machine_check_never_creates_or_repairs_journals() {
     let lock = temp.0.join("cmos.upfj.lock");
     assert!(!journal.exists());
     assert!(!lock.exists());
-    let mut sink =
-        media::JournalMedia::open(&journal, &base, 64, media::SinkStatus::default()).unwrap();
+    let mut sink = journal_files::JournalMedia::open(
+        &journal,
+        &base,
+        64,
+        journal_files::SinkStatus::default(),
+    )
+    .unwrap();
     let mut block = sink.read_sector(0);
     block[63] = 0x67;
     sink.write_batch(&[(0, block)]);

@@ -7,7 +7,7 @@
 
 use crate::*;
 use image_store::{media_type as mt, BlobSource, ContentReader, ResolvedImage, Store};
-use media::{layer::Descriptor as Layer, SectorSource, VerifiedBase, SECTOR_LEN};
+use journal_files::{layer::Descriptor as Layer, SectorSource, VerifiedBase, SECTOR_LEN};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
@@ -16,8 +16,8 @@ use std::{
     path::PathBuf,
 };
 
-pub(crate) fn geometry(g: &Geometry) -> media::layer::Geometry {
-    media::layer::Geometry {
+pub(crate) fn geometry(g: &Geometry) -> journal_files::layer::Geometry {
+    journal_files::layer::Geometry {
         cylinders: g.cylinders,
         heads: g.heads,
         sectors: g.sectors,
@@ -62,7 +62,9 @@ pub(crate) fn graph(
                 }
                 let pack = descriptor(descriptors, &layer.sectors.parse()?, mt::DISK_SECTORS)?;
                 if Some(pack.decoded_size()?)
-                    != layer.sector_count.checked_mul(media::layer::RECORD_LEN)
+                    != layer
+                        .sector_count
+                        .checked_mul(journal_files::layer::RECORD_LEN)
                 {
                     return Err(invalid("sector pack size mismatch"));
                 }
@@ -143,7 +145,7 @@ fn file_base(image: &ResolvedImage, d: &Descriptor) -> Result<VerifiedBase> {
     let (file, metadata) = image.verified_file(&d.decoded_digest()?)?;
     Ok(VerifiedBase::from_verified_file(
         file,
-        media::Header {
+        journal_files::Header {
             base_length: d.decoded_size()?,
             base_digest: super::provider::hash_array(&d.decoded_digest()?)?,
             anchor_generation: 0,
@@ -166,7 +168,7 @@ fn memory_base(image: &ResolvedImage, d: &Descriptor) -> Result<VerifiedBase> {
 /// higher layer's record replaces the sector below it, so neither a
 /// compressed base nor a compressed pack is decoded to a file or held whole
 /// in memory. Reads must run contiguously from LBA 0, the way
-/// `media::layer::copy_and_digest` drives a source; each member's length,
+/// `journal_files::layer::copy_and_digest` drives a source; each member's length,
 /// SHA-256 and receipt are checked when the last sector has been read.
 struct Layered {
     length: u64,
@@ -360,7 +362,8 @@ pub(crate) fn check(store: &Store, config: &Config, image: &ResolvedImage) -> Re
             if d.media_type == mt::DISK_LAYER {
                 let identity = identity(&head_digest, &image.manifest.layers, store)?;
                 let layered = layered(store, &head_digest, &m.geometry, image)?;
-                if media::layer::copy_and_digest(&layered, &mut io::sink())? != identity.to_string()
+                if journal_files::layer::copy_and_digest(&layered, &mut io::sink())?
+                    != identity.to_string()
                 {
                     return Err(invalid("reconstructed disk digest mismatch"));
                 }
@@ -372,7 +375,8 @@ pub(crate) fn check(store: &Store, config: &Config, image: &ResolvedImage) -> Re
                 cached_head(&path, m, &identity)?;
             } else {
                 let layered = layered(store, &head_digest, &m.geometry, image)?;
-                if media::layer::copy_and_digest(&layered, &mut io::sink())? != identity.to_string()
+                if journal_files::layer::copy_and_digest(&layered, &mut io::sink())?
+                    != identity.to_string()
                 {
                     return Err(invalid("reconstructed disk digest mismatch"));
                 }
@@ -472,12 +476,12 @@ pub(crate) fn base_path(store: &Store, m: &Medium, image: &ResolvedImage) -> Res
             return Err(invalid("materialized disk length mismatch"));
         }
         let mut compare = CompareCache(file);
-        if media::layer::copy_and_digest(&layered, &mut compare)? != identity.to_string() {
+        if journal_files::layer::copy_and_digest(&layered, &mut compare)? != identity.to_string() {
             return Err(invalid("reconstructed disk digest mismatch"));
         }
         VerifiedBase::from_verified_file(
             compare.0,
-            media::Header {
+            journal_files::Header {
                 base_length: layered.byte_len(),
                 base_digest: super::provider::hash_array(&identity)?,
                 anchor_generation: 0,
@@ -498,7 +502,8 @@ pub(crate) fn base_path(store: &Store, m: &Medium, image: &ResolvedImage) -> Res
                 .create_new(true)
                 .open(&temporary)?;
             let mut writer = BufWriter::with_capacity(64 * 1024, &file);
-            if media::layer::copy_and_digest(&layered, &mut writer)? != identity.to_string() {
+            if journal_files::layer::copy_and_digest(&layered, &mut writer)? != identity.to_string()
+            {
                 return Err(invalid("reconstructed disk digest mismatch"));
             }
             writer.flush()?;
@@ -509,7 +514,7 @@ pub(crate) fn base_path(store: &Store, m: &Medium, image: &ResolvedImage) -> Res
             let metadata = file.metadata()?;
             Ok(VerifiedBase::from_verified_file(
                 fs::File::open(&path)?,
-                media::Header {
+                journal_files::Header {
                     base_length: layered.byte_len(),
                     base_digest: super::provider::hash_array(&identity)?,
                     anchor_generation: 0,

@@ -150,7 +150,7 @@ fn repository_machine_file_parity() {
                     },
                 ) {
                     Ok(config) => {
-                        config.validate().unwrap();
+                        machine_file::validate(&config).unwrap();
                         if file.ends_with("machines/at-games-open.toml") {
                             // The fingerprint must cover the open game hardware.
                             let has = |kind: fn(&assembly::DeviceKind) -> bool| {

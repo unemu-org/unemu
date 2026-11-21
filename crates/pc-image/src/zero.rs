@@ -14,7 +14,7 @@
 
 use crate::{invalid, Result};
 use image_store::{media_type as mt, BlobSource, Descriptor, Digest, ResolvedImage, Store};
-use media::{layer::Geometry, Header, SectorSource, VerifiedBase, SECTOR_LEN};
+use journal_files::{layer::Geometry, Header, SectorSource, VerifiedBase, SECTOR_LEN};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -152,7 +152,7 @@ pub fn zero_digest(length: u64) -> Digest {
     digest
 }
 fn streamed_digest(length: u64) -> Digest {
-    media::layer::logical_digest(&ZeroSource(length))
+    journal_files::layer::logical_digest(&ZeroSource(length))
         .expect("an all-zero source cannot fail to read")
         .parse()
         .expect("the streamed digest is a valid SHA-256 string")
@@ -327,7 +327,7 @@ pub(crate) fn disk(
         written: Arc::new(written),
     };
     let base = chain.mount()?;
-    if layered && media::layer::logical_digest(&base)? != identity.to_string() {
+    if layered && journal_files::layer::logical_digest(&base)? != identity.to_string() {
         return Err(invalid("reconstructed disk digest mismatch"));
     }
     Ok(Some(crate::disk::Disk {

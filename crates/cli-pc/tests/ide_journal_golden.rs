@@ -138,20 +138,20 @@ fn freedos_ide_journal_survives_a_fresh_assembly_without_changing_base() {
         }],
         ..Default::default()
     };
-    let mut first = assembly::assemble_with_observation(&config, &policy).unwrap();
+    let mut first = machine_file::assemble_with_observation(&config, &policy).unwrap();
     assert_eq!(first.persistence.len(), 1);
     session(&mut first, "echo x>c:zz");
     assert!(console(&first).contains("A:\\>echo x>c:zz"));
     first.finish_persistence().unwrap();
     drop(first);
-    let scan = media::scan(&std::fs::read(&journal).unwrap(), &base, base.len() as u64);
-    assert_eq!(scan.report.status, media::Status::Valid);
+    let scan = journal_files::scan(&std::fs::read(&journal).unwrap(), &base, base.len() as u64);
+    assert_eq!(scan.report.status, journal_files::Status::Valid);
     assert_eq!(scan.report.generations.len(), 1);
     assert!(scan.report.generations[0].commands > 0);
     let replay = scan.image.unwrap();
     assert_ne!(replay, base);
     assert_eq!(fat16_file(&replay, b"ZZ         "), b"x\r\n");
-    let mut second = assembly::assemble_with_observation(&config, &policy).unwrap();
+    let mut second = machine_file::assemble_with_observation(&config, &policy).unwrap();
     let index = second.device_index[&DeviceId::Ide];
     let ata = second
         .machine
@@ -211,7 +211,7 @@ fn freedos_ide_journal_survives_a_fresh_assembly_without_changing_base() {
         );
     }
     assert_eq!(std::fs::read(exported).unwrap(), replay);
-    let scan = media::scan(&std::fs::read(&journal).unwrap(), &base, base.len() as u64);
+    let scan = journal_files::scan(&std::fs::read(&journal).unwrap(), &base, base.len() as u64);
     assert_eq!(scan.report.generations.len(), 1);
     assert_eq!(scan.image.unwrap(), replay);
     assert_eq!(std::fs::read(base_path).unwrap(), base);

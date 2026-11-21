@@ -268,7 +268,7 @@ mod media_set_tests {
             &[],
         );
         let mut machine = assembly::floppy_boot(vec![0xFA, 0xEB, 0xFE], vec![0; bytes.len()]);
-        let mut assembled = assembly::assemble(&machine).unwrap();
+        let mut assembled = machine_file::assemble(&machine).unwrap();
         let mut slots = FloppySlot::from_config(&machine);
         let mut library = LibraryInsert::new(
             image_store::location::machine_media_dir(&root.join("machine.toml")).unwrap(),
@@ -371,12 +371,12 @@ mod media_set_tests {
         assert!(stored.is_compressed());
         store.verify(&stored.digest, stored.size).unwrap();
         assert_eq!(std::fs::read(base_path).unwrap(), bytes);
-        let scan = media::scan(&std::fs::read(path).unwrap(), &bytes, bytes.len() as u64);
+        let scan = journal_files::scan(&std::fs::read(path).unwrap(), &bytes, bytes.len() as u64);
         assert_eq!(&scan.image.unwrap()[..512], &[0xA5; 512]);
         let mut receiving = assembly::floppy_boot(vec![0xFA, 0xEB, 0xFE], vec![0; bytes.len()]);
         receiving.drives[0].unit = 1;
         let mut receiving_slots = FloppySlot::from_config(&receiving);
-        let mut receiving_machine = assembly::assemble(&receiving).unwrap();
+        let mut receiving_machine = machine_file::assemble(&receiving).unwrap();
         let (moved, _) = library
             .entries(receiving_slots[1].as_ref().unwrap(), 1)
             .unwrap();
@@ -458,7 +458,7 @@ mod media_set_tests {
         let path = temp.path().join("disk.img");
         std::fs::write(&path, vec![0; 1_474_560]).unwrap();
         let mut config = assembly::floppy_boot(vec![0xFA, 0xEB, 0xFE], vec![0; 1_474_560]);
-        let mut assembled = assembly::assemble(&config).unwrap();
+        let mut assembled = machine_file::assemble(&config).unwrap();
         let mut slots = FloppySlot::from_config(&config);
         let first = browse(&path, FloppyGeometry::HD_1_44).unwrap();
         let mut bad = first.clone();
@@ -504,7 +504,7 @@ mod review_tests {
     fn reused_library_disk_takes_the_source_of_the_set_it_came_from_again() {
         let (_temp, mut library, mut config) = fixture();
         let mut slots = FloppySlot::from_config(&config);
-        let mut assembled = assembly::assemble(&config).unwrap();
+        let mut assembled = machine_file::assemble(&config).unwrap();
         let (entries, _) = library.entries(slots[0].as_ref().unwrap(), 0).unwrap();
         let first = "Media set review-set:r1 from the library · disk 1 of 1";
         assert_eq!(entries[0].origin.as_deref(), Some(first));
@@ -528,7 +528,7 @@ mod review_tests {
     fn review_single_hash_reuse_per_medium_journal_and_gc_roots() {
         let (_temp, mut library, mut config) = fixture();
         let mut slots = FloppySlot::from_config(&config);
-        let mut assembled = assembly::assemble(&config).unwrap();
+        let mut assembled = machine_file::assemble(&config).unwrap();
         let medium = &library.rows[0].config.as_ref().unwrap().media[0];
         let decoded_digest = medium.blob.clone();
         let store = image_store::Store::open_existing(&library.store_path).unwrap();
@@ -547,11 +547,11 @@ mod review_tests {
             .digest
             .clone();
         let stored = image_store::verification_passes(&digest);
-        let hashes = media::hash_passes();
+        let hashes = journal_files::hash_passes();
         let (entries, _) = library.entries(slots[0].as_ref().unwrap(), 0).unwrap();
         assert_eq!(image_store::verification_passes(&digest) - stored, 1);
         let indices = append_entries(&mut assembled, &mut config, &mut slots, 0, &entries).unwrap();
-        assert_eq!(media::hash_passes(), hashes);
+        assert_eq!(journal_files::hash_passes(), hashes);
         let (again, _) = library.entries(slots[0].as_ref().unwrap(), 0).unwrap();
         assert_eq!(
             append_entries(&mut assembled, &mut config, &mut slots, 0, &again).unwrap(),
@@ -656,7 +656,7 @@ mod review_tests {
     fn library_disks_switch_between_write_protection_and_the_workspace_journal() {
         let (_temp, mut library, mut config) = fixture();
         let mut slots = FloppySlot::from_config(&config);
-        let mut assembled = assembly::assemble(&config).unwrap();
+        let mut assembled = machine_file::assemble(&config).unwrap();
         library.journal = false;
         let (entries, _) = library.entries(slots[0].as_ref().unwrap(), 0).unwrap();
         assert_eq!(entries[0].medium.write, WriteMode::ReadOnly);
@@ -722,7 +722,7 @@ mod review_tests {
     fn review_candidate_validation_and_mid_batch_failure_are_atomic() {
         let (temp, library, mut config) = fixture();
         let mut slots = FloppySlot::from_config(&config);
-        let mut assembled = assembly::assemble(&config).unwrap();
+        let mut assembled = machine_file::assemble(&config).unwrap();
         let (entries, _) = library.entries(slots[0].as_ref().unwrap(), 0).unwrap();
         let mut bad = entries[0].clone();
         let ImageSource::File(base) = &bad.medium.image else {
@@ -767,7 +767,7 @@ mod review_tests {
     fn review_tampered_blob_and_receipt_refuse_insertion() {
         let (_temp, library, mut config) = fixture();
         let mut slots = FloppySlot::from_config(&config);
-        let mut assembled = assembly::assemble(&config).unwrap();
+        let mut assembled = machine_file::assemble(&config).unwrap();
         let (entries, _) = library.entries(slots[0].as_ref().unwrap(), 0).unwrap();
         let ImageSource::File(base) = &entries[0].medium.image else {
             panic!("base")

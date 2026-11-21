@@ -7,9 +7,8 @@
 //! image mounted without a journal, the CMOS image of an NVRAM journal), the
 //! verified base of a journalled disk, and the journal of a
 //! [`WriteMode::Journal`](crate::WriteMode::Journal) or an NVRAM journal. A
-//! path is a key here, not a file the assembler opens: [`FileMount`] answers
-//! each key by opening the file it names, which is what every `assemble*`
-//! function but [`crate::assemble_mounted`] does; another [`Mount`] answers from the contract's objects, a
+//! path is a key here, not a file the assembler opens: `machine_file::FileMount` answers
+//! each key by opening the file it names, which the host-side assembly entry points use; another [`Mount`] answers from the contract's objects, a
 //! [`ContentReader`] for a base and a [`Record`] for a journal, with no host
 //! file at all. See `backlog/docs/design/core-contract.md` §12.5 (move 2) and
 //! §14.4, and `backlog/docs/design/persistent-media.md` § Integration.
@@ -17,9 +16,9 @@
 //! A machine keeps its mount for its whole life: a catalogue's journal opens
 //! when its medium is inserted, which can be long after assembly.
 
-use std::collections::BTreeMap;
-use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::any::Any;
+use std::io;
+use std::path::Path;
 use std::rc::Rc;
 
 use unemu_core_api::{ContentReader, Error, ErrorKind, Record};
@@ -33,6 +32,10 @@ use crate::{ConfigError, MachineConfig};
 /// failure for that path, worded as the assembler words a file's failure; a
 /// [`MountError::Config`] is reported unchanged.
 pub trait Mount {
+    /// Whether keys name the same host files as appended media.
+    fn is_file_mount(&self) -> bool {
+        false
+    }
     /// The bytes of an image the config names by path: a ROM, a ROM part, a
     /// disk image mounted read-only or volatile, the CMOS image of an NVRAM
     /// journal. The assembler checks the expected SHA-256 and the length
@@ -67,7 +70,7 @@ pub trait Mount {
     /// when it opens.
     ///
     /// On a machine that took media by path after assembly, `media` holds
-    /// those media too. When the machine's mount is not [`FileMount`], the
+    /// those media too. When the machine's mount is not `machine_file::FileMount`, the
     /// assembler checks the appended media's host paths only against each
     /// other, and this method sees them beside the mount's own outputs; a
     /// mount whose keys stand for host files (a table from record name to
@@ -97,7 +100,7 @@ impl From<io::Error> for MountError {
 /// The bytes of one image, as a [`Mount`] read them.
 pub struct ImageBytes {
     bytes: Vec<u8>,
-    origin: Option<std::fs::Metadata>,
+    origin: Option<Rc<dyn Any>>,
 }
 
 impl ImageBytes {
@@ -109,13 +112,12 @@ impl ImageBytes {
         }
     }
 
-    /// The bytes read from the host file whose identity is `metadata`. A
-    /// journal over these bytes never removes that file, even when it is
-    /// linked under a name the journal reserves for its temporaries.
-    pub(crate) fn from_file(bytes: Vec<u8>, metadata: std::fs::Metadata) -> Self {
+    /// Bytes with an opaque input identity that only the mount interprets.
+    /// A host mount uses it to protect the input during journal publication.
+    pub fn with_origin(bytes: Vec<u8>, origin: Rc<dyn Any>) -> Self {
         Self {
             bytes,
-            origin: Some(metadata),
+            origin: Some(origin),
         }
     }
 
@@ -124,7 +126,7 @@ impl ImageBytes {
         &self.bytes
     }
 
-    pub(crate) fn into_parts(self) -> (Vec<u8>, Option<std::fs::Metadata>) {
+    pub(crate) fn into_parts(self) -> (Vec<u8>, Option<Rc<dyn Any>>) {
         (self.bytes, self.origin)
     }
 }
@@ -132,10 +134,10 @@ impl ImageBytes {
 /// The verified, read-only base of a journalled disk: its bytes, its length
 /// and its SHA-256, which a journal binds in its header. Nothing writes
 /// through it.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct DiskBase {
-    base: media::VerifiedBase,
-    origin: Option<std::fs::Metadata>,
+    base: journal::VerifiedBase,
+    origin: Option<Rc<dyn Any>>,
 }
 
 impl DiskBase {
@@ -158,19 +160,19 @@ impl DiskBase {
             )
             .into());
         }
-        let identity = media::Header {
+        let identity = journal::Header {
             base_length: size,
             base_digest: sha256,
             anchor_generation: 0,
         };
-        media::VerifiedBase::from_verified_source(Rc::new(ReaderSource(reader)), identity)
+        journal::VerifiedBase::from_verified_source(Rc::new(ReaderSource(reader)), identity)
             .map(Self::from)
             .map_err(|error| Error::new(ErrorKind::Content, error.to_string()).into())
     }
 
     /// A base in memory, hashed here.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, MountError> {
-        media::VerifiedBase::from_bytes(bytes)
+        journal::VerifiedBase::from_bytes(bytes)
             .map(Self::from)
             .map_err(|error| Error::new(ErrorKind::Content, error.to_string()).into())
     }
@@ -190,22 +192,22 @@ impl DiskBase {
         self.base.identity().base_digest
     }
 
-    pub(crate) fn with_origin(mut self, origin: Option<std::fs::Metadata>) -> Self {
+    pub fn with_origin(mut self, origin: Option<Rc<dyn Any>>) -> Self {
         self.origin = origin;
         self
     }
 
-    pub(crate) fn verified(&self) -> &media::VerifiedBase {
+    pub fn verified(&self) -> &journal::VerifiedBase {
         &self.base
     }
 
-    pub(crate) fn origin(&self) -> Option<&std::fs::Metadata> {
+    pub fn origin(&self) -> Option<&Rc<dyn Any>> {
         self.origin.as_ref()
     }
 }
 
-impl From<media::VerifiedBase> for DiskBase {
-    fn from(base: media::VerifiedBase) -> Self {
+impl From<journal::VerifiedBase> for DiskBase {
+    fn from(base: journal::VerifiedBase) -> Self {
         Self { base, origin: None }
     }
 }
@@ -213,19 +215,19 @@ impl From<media::VerifiedBase> for DiskBase {
 /// Sector reads of a disk base over a [`ContentReader`].
 struct ReaderSource(Box<dyn ContentReader>);
 
-impl media::SectorSource for ReaderSource {
+impl journal::SectorSource for ReaderSource {
     fn byte_len(&self) -> u64 {
         self.0.size()
     }
 
-    fn read_sector(&self, lba: u64) -> io::Result<[u8; media::SECTOR_LEN]> {
-        let mut bytes = [0; media::SECTOR_LEN];
+    fn read_sector(&self, lba: u64) -> io::Result<[u8; journal::SECTOR_LEN]> {
+        let mut bytes = [0; journal::SECTOR_LEN];
         let length = self.0.size();
         if let Some(offset) = lba
-            .checked_mul(media::SECTOR_LEN as u64)
+            .checked_mul(journal::SECTOR_LEN as u64)
             .filter(|&offset| offset < length)
         {
-            let count = (length - offset).min(media::SECTOR_LEN as u64) as usize;
+            let count = (length - offset).min(journal::SECTOR_LEN as u64) as usize;
             self.0
                 .read_at(offset, &mut bytes[..count])
                 .map_err(io::Error::other)?;
@@ -240,117 +242,115 @@ impl media::SectorSource for ReaderSource {
 
     fn read_range(&self, first_lba: u64, bytes: &mut [u8]) -> io::Result<()> {
         let offset = first_lba
-            .checked_mul(media::SECTOR_LEN as u64)
+            .checked_mul(journal::SECTOR_LEN as u64)
             .ok_or_else(|| io::Error::other("base offset overflow"))?;
         self.0.read_at(offset, bytes).map_err(io::Error::other)
     }
 }
 
 /// Where one journal is kept.
-pub struct JournalStore(Store);
+pub struct JournalStore(Box<JournalOpener>);
 
-pub(crate) enum Store {
-    /// A journal file at a host path, opened by the journal's own path
-    /// constructors with its `FILE.lock`.
-    File(PathBuf),
-    /// A record of the contract, held exclusively already.
-    Record(Box<dyn Record>),
-}
-
+type JournalOpener = dyn FnOnce(
+    &DiskBase,
+    u64,
+    journal::SinkStatus,
+) -> Result<Box<dyn journal::JournalSession>, journal::OpenError>;
 impl JournalStore {
-    /// A journal kept in a record of the contract. An empty record becomes a
-    /// new journal; the record's bytes are the version-1 journal format, the
-    /// same bytes a journal file holds.
+    /// Open a record using the journal's byte format and lifecycle.
     pub fn record(record: Box<dyn Record>) -> Self {
-        Self(Store::Record(record))
+        Self::new(move |base, length, status| {
+            journal::JournalMedia::open_record(record, base.verified(), length, status)
+                .map(|session| Box::new(session) as Box<dyn journal::JournalSession>)
+        })
     }
-
-    pub(crate) fn file(path: &Path) -> Self {
-        Self(Store::File(path.into()))
+    /// Defer journal opening until the assembler supplies its verified base.
+    /// The host can protect the base's origin while creating the record.
+    pub fn new(
+        open: impl FnOnce(
+                &DiskBase,
+                u64,
+                journal::SinkStatus,
+            ) -> Result<Box<dyn journal::JournalSession>, journal::OpenError>
+            + 'static,
+    ) -> Self {
+        Self(Box::new(open))
     }
-
-    pub(crate) fn into_store(self) -> Store {
-        self.0
-    }
-}
-
-/// The mount over host files: each path is the file it names. This is what
-/// every `assemble*` function but [`crate::assemble_mounted`] uses, and what
-/// a medium appended by path uses.
-///
-/// Bases the caller verified already are taken from its table by path and
-/// never hashed again; every other base is hashed in full when it is mounted.
-#[derive(Clone, Debug, Default)]
-pub struct FileMount {
-    verified: BTreeMap<PathBuf, media::VerifiedBase>,
-}
-
-impl FileMount {
-    /// Open every path on the host.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Take the bases in `verified` by their exact path instead of opening
-    /// and hashing those files; their metadata is checked again.
-    pub fn with_verified_bases(verified: BTreeMap<PathBuf, media::VerifiedBase>) -> Self {
-        Self { verified }
+    pub(crate) fn open(
+        self,
+        base: &DiskBase,
+        length: u64,
+        status: journal::SinkStatus,
+    ) -> Result<Box<dyn journal::JournalSession>, journal::OpenError> {
+        (self.0)(base, length, status)
     }
 }
 
-impl Mount for FileMount {
-    fn image(&self, path: &Path) -> Result<ImageBytes, MountError> {
-        let mut file = std::fs::File::open(path)?;
-        let metadata = file.metadata()?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-        Ok(ImageBytes::from_file(bytes, metadata))
+/// A mount for configs containing only inline images.
+#[derive(Default)]
+pub struct InlineMount;
+impl Mount for InlineMount {
+    fn is_file_mount(&self) -> bool {
+        // Appends to a hand-built machine still validate its whole host config.
+        true
     }
 
+    fn image(&self, _path: &Path) -> Result<ImageBytes, MountError> {
+        Err(Error::new(ErrorKind::Content, "a file mount is required").into())
+    }
     fn disk_base(
         &self,
-        path: &Path,
-        check_length: &dyn Fn(u64) -> Result<(), ConfigError>,
+        _path: &Path,
+        _check_length: &dyn Fn(u64) -> Result<(), ConfigError>,
     ) -> Result<DiskBase, MountError> {
-        use media::SectorSource;
-        if let Some(base) = self.verified.get(path) {
-            base.check_unchanged()?;
-            return Ok(base.clone().into());
-        }
-        let file = std::fs::File::open(path)?;
-        check_length(file.metadata()?.len())?;
-        let base = media::VerifiedBase::from_file(file)?;
-        let origin = base.metadata().cloned();
-        Ok(DiskBase::from(base).with_origin(origin))
+        Err(Error::new(ErrorKind::Content, "a file mount is required").into())
     }
-
-    fn journal(&self, path: &Path) -> Result<JournalStore, MountError> {
-        Ok(JournalStore::file(path))
+    fn journal(&self, _path: &Path) -> Result<JournalStore, MountError> {
+        Err(Error::new(ErrorKind::Storage, "a journal mount is required").into())
     }
-
-    fn check_outputs(&self, media: &MachineConfig) -> Result<(), ConfigError> {
-        crate::persistence::validate_paths(media)
+    fn check_outputs(&self, _media: &MachineConfig) -> Result<(), ConfigError> {
+        Ok(())
     }
 }
 
-/// The mount a machine was assembled with, kept for the machine's life
-/// ([`crate::AssembledMachine::mount`]). The default is host files: what
-/// every `assemble*` function but [`crate::assemble_mounted`] mounts, and
-/// what a machine put together from parts by hand has.
-#[derive(Default)]
-pub struct MachineMount(pub(crate) MountKind);
+/// The mount retained for later catalogue insertions.
+#[derive(Clone)]
+pub struct MachineMount {
+    mount: Rc<dyn Mount>,
+    appended: Vec<(usize, crate::FloppyMedium)>,
+}
+impl Default for MachineMount {
+    fn default() -> Self {
+        Self::new(Rc::new(InlineMount))
+    }
+}
+impl MachineMount {
+    /// Keep a mount alive for the machine and all future insertions.
+    pub fn new(mount: Rc<dyn Mount>) -> Self {
+        Self {
+            mount,
+            appended: Vec::new(),
+        }
+    }
+    /// File media appended after assembly, checked separately on record mounts.
+    pub fn appended_media(&self) -> &[(usize, crate::FloppyMedium)] {
+        &self.appended
+    }
+    /// Retain the validated file media only after a successful append.
+    pub fn set_appended_media(&mut self, media: Vec<(usize, crate::FloppyMedium)>) {
+        self.appended = media;
+    }
 
-#[derive(Default)]
-pub(crate) enum MountKind {
-    /// Host files. A medium appended by path is checked against every other
-    /// path of the config.
-    #[default]
-    Files,
-    /// Another mount. A medium appended by path is a host file all the same;
-    /// the mount checks its own outputs, and the media appended by path are
-    /// checked against each other (`host_media`, by drive index).
-    Other {
-        mount: Rc<dyn Mount>,
-        host_media: Vec<(usize, crate::FloppyMedium)>,
-    },
+    /// The retained mount, including its output validation rules.
+    pub fn mount(&self) -> Rc<dyn Mount> {
+        self.mount.clone()
+    }
+}
+
+impl std::fmt::Debug for DiskBase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiskBase")
+            .field("base", &self.base)
+            .finish_non_exhaustive()
+    }
 }

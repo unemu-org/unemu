@@ -6,7 +6,7 @@
 //! runners that this crate's golden integration tests call, so a golden pins
 //! what the binary does. Every PC-family runner here builds a
 //! declarative [`assembly::MachineConfig`] from a Rust preset or machine file, realises it with
-//! [`assembly::assemble`], and drives the resulting machine — addressing devices
+//! [`machine_file::assemble`], and drives the resulting machine — addressing devices
 //! by role through the assembler's device-index map, never a hardcoded bus index.
 //!
 //! Runners return their observables (COM1 bytes, POST stream, text screens)
@@ -20,16 +20,17 @@
 
 use anyhow::{Context, Result};
 use assembly::{
-    assemble_with_observation, AssembledMachine, ConsoleProbe, DeviceId, InjectionSchedule,
-    KeyboardStimulus, MachineConfig, Observation, ObservationPolicy, ObservationRequest,
-    OutputKind, RunError, RunPolicy, StopCondition,
+    AssembledMachine, ConsoleProbe, DeviceId, InjectionSchedule, KeyboardStimulus, MachineConfig,
+    Observation, ObservationPolicy, ObservationRequest, OutputKind, RunError, RunPolicy,
+    StopCondition,
 };
 use cpu::{Cpu, CpuError, CpuReg, X86JitCpu};
 use device::{ByteStreamKind, Device};
 use devices::upd765::FLOPPY_IMAGE_BYTES;
 use devices::vga_text::{COLS, ROWS, TEXT_BUFFER_LEN};
 use machine::{Machine, MachineError, RunOutcome};
-use std::collections::HashMap;
+use machine_file::assemble_with_observation;
+use std::collections::BTreeMap;
 use video::{render_text_mode, Frame, TextGrid, TextModeState};
 
 /// Consecutive halted PIT clocks with no interrupt before the boot machine
@@ -713,7 +714,7 @@ fn freedos_prompt_policy(stimuli: Vec<KeyboardStimulus>, then_budget: u64) -> Ru
 /// paths hand back a natural-stop policy; the FreeDOS paths a prompt-poll one.
 fn run_bios_config(
     config: MachineConfig,
-    build_policy: impl FnOnce(&HashMap<DeviceId, usize>) -> RunPolicy,
+    build_policy: impl FnOnce(&BTreeMap<DeviceId, usize>) -> RunPolicy,
 ) -> BiosRun {
     let mut assembled = match assemble_with_observation(&config, &bios_observation_policy()) {
         Ok(assembled) => assembled,
@@ -745,7 +746,7 @@ fn bios_file_config(
 ) -> Result<MachineConfig> {
     let mut config = assembly::bios(Vec::new(), Some(vec![0; FLOPPY_IMAGE_BYTES]));
     config.images[0].source = assembly::ImageSource::File(path.into());
-    config.validate().map_err(assembly::AssemblyError::Config)?;
+    machine_file::validate(&config).map_err(assembly::AssemblyError::Config)?;
     let bytes = std::fs::read(path).map_err(|error| {
         assembly::AssemblyError::Config(assembly::ConfigError::ImageRead {
             path: path.into(),
@@ -776,7 +777,7 @@ pub fn run_bios_file(
     warnings: &mut impl std::io::Write,
 ) -> Result<BiosRun> {
     let config = bios_file_config(path, assembly::BoardModel::Ibm5170.firmware_catalogue())?;
-    let mut assembled = assembly::assemble_with_observation_and_options(
+    let mut assembled = machine_file::assemble_with_observation_and_options(
         &config,
         &bios_observation_policy(),
         options,
@@ -793,14 +794,14 @@ pub fn run_bios_file(
 
 fn run_bios_assembled(
     assembled: &mut AssembledMachine,
-    build_policy: impl FnOnce(&HashMap<DeviceId, usize>) -> RunPolicy,
+    build_policy: impl FnOnce(&BTreeMap<DeviceId, usize>) -> RunPolicy,
 ) -> BiosRun {
     run_bios_assembled_with_warnings(assembled, build_policy, &mut std::io::stderr())
 }
 
 fn run_bios_assembled_with_warnings(
     assembled: &mut AssembledMachine,
-    build_policy: impl FnOnce(&HashMap<DeviceId, usize>) -> RunPolicy,
+    build_policy: impl FnOnce(&BTreeMap<DeviceId, usize>) -> RunPolicy,
     warnings: &mut impl std::io::Write,
 ) -> BiosRun {
     let policy = build_policy(&assembled.device_index);
@@ -1597,15 +1598,15 @@ mod tests {
                 };
                 assert_eq!(String::from_utf8(warnings).unwrap(), expected);
                 let base = std::fs::read(temp.path().join("base.img")).unwrap();
-                let scan = media::scan(
+                let scan = journal_files::scan(
                     &std::fs::read(temp.path().join("second.upfj")).unwrap(),
                     &base,
                     base.len() as u64,
                 );
-                assert_eq!(scan.report.status, media::Status::Valid);
+                assert_eq!(scan.report.status, journal_files::Status::Valid);
                 assert_eq!(
                     scan.report.generations.last().unwrap().reason,
-                    media::ClosingReason::SessionEnd
+                    journal_files::ClosingReason::SessionEnd
                 );
                 assert_eq!(scan.report.generations.last().unwrap().id, 2);
             }
@@ -1744,7 +1745,7 @@ mod tests {
     fn inline_host_can_select_capture_output() {
         let mut devices: Vec<Box<dyn Device>> = vec![Box::new(devices::VgaText::new())];
         devices[0].mmio_write(0xB8000, 2, 0x7049).unwrap();
-        let device_index = HashMap::from([(DeviceId::Vga, 0)]);
+        let device_index = BTreeMap::from([(DeviceId::Vga, 0)]);
         let mut observation =
             Observation::bind(&display_policy(), &device_index, &mut devices).unwrap();
         observation.configure_output(assembly::OutputConfig {
@@ -2095,7 +2096,8 @@ mod tests {
 
     #[test]
     fn bios_later_capture_failures_preserve_the_post_failure() {
-        let mut assembled = assembly::assemble(&assembly::bios(vec![0xF4; 32768], None)).unwrap();
+        let mut assembled =
+            machine_file::assemble(&assembly::bios(vec![0xF4; 32768], None)).unwrap();
         let run = run_bios_assembled(&mut assembled, |_| RunPolicy::natural(Some(0), None));
         assert!(matches!(run.stop, StopReason::ObservationFailed { detail }
             if detail.contains("capturing POST checkpoints")));
@@ -2103,7 +2105,7 @@ mod tests {
 
     #[test]
     fn console_unavailable_is_classified_as_an_observation_failure() {
-        let assembled = assembly::assemble(&assembly::at_boot(vec![0xF4])).unwrap();
+        let assembled = machine_file::assemble(&assembly::at_boot(vec![0xF4])).unwrap();
         let device = DeviceId::Keyboard;
         for stop in [
             classify_bios_stop(
@@ -2333,7 +2335,7 @@ mod user_bios_tests {
             std::fs::write(&path, bytes).unwrap();
             let config = bios_file_config(&path, catalogue).unwrap();
             assert_eq!(config.display_switch, assembly::DisplaySwitch::Colour);
-            let mut assembled = assembly::assemble(&config).unwrap();
+            let mut assembled = machine_file::assemble(&config).unwrap();
             assembled
                 .machine
                 .bus_mut()
@@ -2360,7 +2362,7 @@ mod user_bios_tests {
             config.primary_display().unwrap(),
             assembly::PrimaryDisplay::Monochrome
         );
-        let mut assembled = assembly::assemble(&config).unwrap();
+        let mut assembled = machine_file::assemble(&config).unwrap();
         assembled
             .machine
             .bus_mut()
@@ -2377,7 +2379,7 @@ mod user_bios_tests {
         std::fs::write(&path, vec![0xF4; 32768]).unwrap();
         let config = bios_file_config(&path, catalogue).unwrap();
         assert_eq!(config.display_switch, assembly::DisplaySwitch::Auto);
-        let mut assembled = assembly::assemble_with_options(
+        let mut assembled = machine_file::assemble_with_options(
             &config,
             assembly::AssemblyOptions {
                 allow_unlisted_firmware: true,
@@ -2455,14 +2457,15 @@ mod small_bios_tests {
         let config =
             bios_file_config(&path, assembly::BoardModel::Ibm5170.firmware_catalogue()).unwrap();
         assert_eq!(config.images[0].base, 0xFC000);
-        let error = assembly::assemble_with_options(&config, assembly::AssemblyOptions::default())
-            .map(|_| ())
-            .expect_err("unlisted firmware requires the escape");
+        let error =
+            machine_file::assemble_with_options(&config, assembly::AssemblyOptions::default())
+                .map(|_| ())
+                .expect_err("unlisted firmware requires the escape");
         assert!(matches!(
             error,
             assembly::AssemblyError::Config(assembly::ConfigError::FirmwareNotListed { .. })
         ));
-        let assembled = assembly::assemble_with_options(
+        let assembled = machine_file::assemble_with_options(
             &config,
             assembly::AssemblyOptions {
                 allow_unlisted_firmware: true,

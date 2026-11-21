@@ -169,7 +169,7 @@ impl Presenter {
         options: assembly::AssemblyOptions,
         warnings: &mut impl io::Write,
     ) -> Result<Self, Box<dyn Error>> {
-        let assembled = assembly::assemble_with_observation_and_options(
+        let assembled = machine_file::assemble_with_observation_and_options(
             config,
             &ObservationPolicy {
                 routes: vec![ObservationRequest {
@@ -716,7 +716,7 @@ fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use assembly::assemble_with_observation;
+    use machine_file::assemble_with_observation;
 
     #[test]
     fn a_factory_presenter_keeps_the_selected_card_with_two_displays() {
@@ -761,7 +761,7 @@ mod tests {
             session
         });
         let config = session.machine.clone();
-        let direct = assembly::assemble_with_verified_bases(
+        let direct = machine_file::assemble_with_verified_bases(
             &config,
             &ObservationPolicy {
                 routes: vec![ObservationRequest {
@@ -1434,7 +1434,7 @@ mod tests {
 
     #[test]
     fn an_absolute_legacy_journal_remains_the_only_journal() {
-        use media::{JournalMedia, SectorSource, SinkStatus, VerifiedBase};
+        use journal_files::{JournalMedia, SectorSource, SinkStatus, VerifiedBase};
         let temp = assembly::test_support::TempDir::new("legacy-absolute-journal");
         let data = temp.path().canonicalize().unwrap();
         let journal = data.join("unemupc/machines/target/disk.upfj");

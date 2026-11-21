@@ -157,18 +157,18 @@ fn focus_loss_releases_held_host_keys_in_the_window_order() {
         keyboard.key_event(usage(*key), unemu_core_api::KeyState::Pressed);
     }
     let config = assembly::at_keyboard(vec![0xEB, 0xFE]);
-    let mut assembled = assembly::assemble(&config).unwrap();
+    let mut assembled = machine_file::assemble(&config).unwrap();
     // Drop the makes, then release everything at once.
     let mut sink = Vec::new();
     while keyboard.pending_events() != 0 {
         sink.extend(keyboard.inject_at_boundary(&mut assembled));
-        assembled = assembly::assemble(&config).unwrap();
+        assembled = machine_file::assemble(&config).unwrap();
     }
     keyboard.release_all();
     let mut released = Vec::new();
     while keyboard.pending_events() != 0 {
         released.extend(keyboard.inject_at_boundary(&mut assembled));
-        assembled = assembly::assemble(&config).unwrap();
+        assembled = machine_file::assemble(&config).unwrap();
     }
     // Held Shift wraps the navigation keys' breaks with artificial
     // Shift makes; the window sorted held keys by winit key code and

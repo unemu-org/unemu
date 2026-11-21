@@ -184,6 +184,7 @@ fn creation_refuses_existing_entries_and_force_replaces_without_rewriting_aliase
 #[test]
 fn hd_size_rounds_up_to_chs_and_explicit_geometry_reaches_identify() {
     use assembly::*;
+    use machine_file::assemble;
     let scratch = Scratch::new();
     let (code, output, errors) = scratch.invoke(&["hd", "--size", "1MiB"], "size.img");
     assert_eq!(code, 0, "{errors}");
@@ -363,7 +364,7 @@ fn printed_mount_snippet_loads_and_assembles_with_quoted_paths() {
         )
     );
     assert!(!output.contains("not available yet"));
-    let mut assembled = assembly::assemble_with_options(
+    let mut assembled = machine_file::assemble_with_options(
         &config,
         assembly::AssemblyOptions {
             allow_unlisted_firmware: true,

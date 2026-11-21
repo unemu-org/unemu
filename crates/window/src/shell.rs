@@ -7403,7 +7403,7 @@ mod tests {
     fn keyboard_shell() -> Shell {
         let mut shell = shell();
         *shell.presenter.as_mut().unwrap().assembled() =
-            assembly::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
+            machine_file::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
         shell.sync_routing();
         shell
     }
@@ -8812,7 +8812,7 @@ mod tests {
             for command_key in [SuperLeft, SuperRight] {
                 let mut shell = media_shell();
                 *shell.presenter.as_mut().unwrap().assembled() =
-                    assembly::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
+                    machine_file::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
                 shell.macos_shortcuts = true;
                 let presenter = shell.presenter.as_mut().unwrap();
                 presenter.media_slots[1] = presenter.media_slots[0].clone();
@@ -9303,7 +9303,7 @@ mod tests {
         use KeyCode::*;
         let mut shell = captured_shell();
         *shell.presenter.as_mut().unwrap().assembled() =
-            assembly::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
+            machine_file::assemble(&assembly::at_keyboard(vec![0xEB, 0xFE])).unwrap();
         shell.macos_shortcuts = true;
         let ctx = egui::Context::default();
         for key in [ControlLeft, AltLeft, KeyG] {
@@ -10761,7 +10761,7 @@ mod tests {
         std::fs::write(&base, [0; 64]).unwrap();
         let cli = temp.path().join("cli.upfj");
         let mut reference =
-            assembly::assemble(&crate::tests::cmos_halt_config(&base, &cli)).unwrap();
+            machine_file::assemble(&crate::tests::cmos_halt_config(&base, &cli)).unwrap();
         reference
             .run_session(&assembly::RunPolicy::natural(Some(200), None))
             .unwrap();
@@ -12369,7 +12369,7 @@ kind='mda'
     /// A session of the protected-mode guest the CPU core refuses.
     fn refusing_presenter() -> Presenter {
         let config = assembly::test_support::refused_gate_call();
-        let assembled = assembly::assemble_with_observation_and_options(
+        let assembled = machine_file::assemble_with_observation_and_options(
             &config,
             &assembly::ObservationPolicy {
                 routes: vec![assembly::ObservationRequest {
@@ -14211,9 +14211,9 @@ kind='mda'
         assert_eq!(created.disks.len(), 2);
         shell.creating = shell.drive_owner();
         // The worker hashed the images; the window does not read them again.
-        let hashed = media::data_passes(1_474_560);
+        let hashed = journal_files::data_passes(1_474_560);
         shell.disks_created(Ok(Box::new(created.clone())));
-        assert_eq!(media::data_passes(1_474_560), hashed);
+        assert_eq!(journal_files::data_passes(1_474_560), hashed);
         assert!(shell.dialog.is_none(), "{:?}", shell.dialog);
         let name = shell.session_name().unwrap_or("the machine").to_owned();
         assert_eq!(

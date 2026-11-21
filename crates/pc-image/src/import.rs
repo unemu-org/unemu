@@ -4,8 +4,8 @@
 
 use crate::*;
 use image_store::{media_type as mt, ConfigValidator, Store};
+use journal_files::SectorSource;
 use machine_file::{schema::v1, ImageReader, Origins};
-use media::SectorSource;
 use std::{
     collections::BTreeMap,
     fs,
@@ -156,7 +156,7 @@ fn expected(hash: [u8; 32]) -> Result<Digest> {
 }
 #[derive(Default)]
 struct BaseReader<'a> {
-    bases: BTreeMap<PathBuf, media::VerifiedBase>,
+    bases: BTreeMap<PathBuf, journal_files::VerifiedBase>,
     /// ROMs decoded from compressed firmware packages during resolution.
     prepared: Option<&'a machine_file::PreparedMachineFile>,
 }
@@ -175,7 +175,7 @@ impl ImageReader for BaseReader<'_> {
             base.check_unchanged()?;
             return Ok(machine_file::journal_base(base));
         }
-        let base = media::VerifiedBase::open(path)?;
+        let base = journal_files::VerifiedBase::open(path)?;
         let identity = machine_file::journal_base(&base);
         self.bases.insert(path.into(), base);
         Ok(identity)
@@ -317,7 +317,7 @@ impl Freezer<'_> {
             let base = if let Some(base) = self.reader.bases.get(base_path) {
                 base
             } else {
-                owned = media::VerifiedBase::open(base_path)?;
+                owned = journal_files::VerifiedBase::open(base_path)?;
                 &owned
             };
             if pin
@@ -373,9 +373,10 @@ impl Freezer<'_> {
                             "{id}: journal changed while taking snapshot"
                         )));
                     }
-                    let scan = media::scan_overlay_reader(&mut snapshot, base, base.byte_len())?;
+                    let scan =
+                        journal_files::scan_overlay_reader(&mut snapshot, base, base.byte_len())?;
                     let report = scan.report;
-                    if matches!(report.status, media::Status::Refused(_)) {
+                    if matches!(report.status, journal_files::Status::Refused(_)) {
                         return Err(invalid(format!(
                             "journal for {id} refused: {:?}",
                             report.status
@@ -405,7 +406,7 @@ impl Freezer<'_> {
                                     .as_ref()
                                     .is_some_and(|h| h.anchor_generation == 0)
                             {
-                                media::HEADER_LEN
+                                journal_files::HEADER_LEN
                             } else {
                                 report.generations.iter().find(|g| g.id == n).map(|g| g.end_offset).ok_or_else(|| invalid(format!("{id}: generation {n} is not a retained closed generation; recoverable generations: {available}")))?
                             };
@@ -432,12 +433,12 @@ impl Freezer<'_> {
                                 .ok_or_else(|| invalid("no closed generation"))?
                         }
                     };
-                    let chosen = media::scan_overlay_reader(&mut snapshot, base, base.byte_len())?;
+                    let chosen =
+                        journal_files::scan_overlay_reader(&mut snapshot, base, base.byte_len())?;
                     record.generation = Some(generation);
-                    record.recovered =
-                        chosen.report.generations.iter().any(|g| {
-                            g.id == generation && g.reason == media::ClosingReason::Recovered
-                        });
+                    record.recovered = chosen.report.generations.iter().any(|g| {
+                        g.id == generation && g.reason == journal_files::ClosingReason::Recovered
+                    });
                     let overlay = chosen
                         .overlay
                         .ok_or_else(|| invalid("generation reconstruction refused"))?;

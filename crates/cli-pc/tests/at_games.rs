@@ -6,6 +6,7 @@
 
 use assembly::{AssemblyOptions, BoardModel, DeviceId, DeviceKind, ImageSource, WriteMode};
 use machine_file::schema::v1;
+use machine_file::FileMachineExt;
 
 #[path = "../../pc-harness/tests/support/session.rs"]
 pub mod session;

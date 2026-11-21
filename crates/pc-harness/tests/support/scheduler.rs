@@ -8,7 +8,7 @@
 //! across devices and Intel 8259A INTA/EOI (datasheet, "Interrupt Sequence" and
 //! "End of Interrupt"). Sorting completed per-device traces would lose that order.
 
-use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc};
+use std::{cell::RefCell, collections::BTreeMap, fmt, rc::Rc};
 
 use anyhow::Result;
 use assembly::{AssembledMachine, ConsoleProbe, DeviceId, RunPolicy, StopCondition};
@@ -240,7 +240,7 @@ pub const FAST_WORKLOADS: [Workload; 8] = [
 
 pub struct Prepared {
     pub machine: Machine<X86JitCpu>,
-    pub device_index: HashMap<DeviceId, usize>,
+    pub device_index: BTreeMap<DeviceId, usize>,
     pub policy: RunPolicy,
     pub observation: assembly::Observation,
     ram_regions: Vec<assembly::RamRegion>,
@@ -263,7 +263,7 @@ pub fn prepare_with_bios(workload: Workload, bios: Option<Vec<u8>>) -> Result<Op
     let mut ram_regions = vec![assembly::RamRegion::new(0, 0x10000)];
     let mut assemble = |config: &assembly::MachineConfig| {
         ram_regions = config.memory.ram.clone();
-        assembly::assemble_with_observation(
+        machine_file::assemble_with_observation(
             config,
             &assembly::ObservationPolicy {
                 routes: config
@@ -305,7 +305,7 @@ pub fn prepare_with_bios(workload: Workload, bios: Option<Vec<u8>>) -> Result<Op
                 floppy_names: Default::default(),
                 machine: Machine::new(cpu, bus, Box::new(NoInterruptController), Vec::new(), None),
                 a20_line: Default::default(),
-                device_index: HashMap::from([(DeviceId::Uart, 0)]),
+                device_index: BTreeMap::from([(DeviceId::Uart, 0)]),
                 mouse_target: None,
                 observation: assembly::Observation::default(),
                 persistence: Vec::new(),
@@ -652,7 +652,7 @@ fn final_state_detects_untraced_ram_register_and_device_changes() {
                     Vec::new(),
                     None,
                 ),
-                device_index: HashMap::from([(DeviceId::Uart, 0)]),
+                device_index: BTreeMap::from([(DeviceId::Uart, 0)]),
                 policy: RunPolicy::natural(None, None),
                 observation: assembly::Observation::default(),
                 ram_regions: vec![assembly::RamRegion::new(0, 0x10000)],

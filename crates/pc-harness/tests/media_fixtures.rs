@@ -11,10 +11,10 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use assembly::{
-    assemble_with_observation, ConsoleProbe, DeviceId, ImageSource, InjectionSchedule,
-    KeyboardStimulus, ObservationPolicy, ObservationRequest, OutputKind, RunPolicy, StopCondition,
-    WriteMode,
+    ConsoleProbe, DeviceId, ImageSource, InjectionSchedule, KeyboardStimulus, ObservationPolicy,
+    ObservationRequest, OutputKind, RunPolicy, StopCondition, WriteMode,
 };
+use machine_file::assemble_with_observation;
 
 #[path = "support/fixtures.rs"]
 mod fixtures;
@@ -135,7 +135,7 @@ fn freedos_floppy_fixtures_have_pinned_geometry_signature_and_hash() {
             &[0x55, 0xAA],
             "boot signature: {relative}"
         );
-        let hash: String = media::Header::new(&bytes, 0)
+        let hash: String = journal_files::Header::new(&bytes, 0)
             .unwrap()
             .base_digest
             .iter()

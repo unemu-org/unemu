@@ -163,7 +163,7 @@ fn capture(config: &assembly::MachineConfig, broken: bool) -> (String, u64) {
         }],
         ..Default::default()
     };
-    let mut rig = assembly::assemble_with_observation(config, &observation).unwrap();
+    let mut rig = machine_file::assemble_with_observation(config, &observation).unwrap();
     if broken {
         let index = rig.device_index[&DeviceId::LotechEms];
         let slot = rig.machine.bus_mut().device_mut(index).unwrap();

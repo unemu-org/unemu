@@ -320,7 +320,7 @@ fn insert_level_disk(config: &mut assembly::MachineConfig, path: &Path) {
 }
 
 fn level_presenter(config: &assembly::MachineConfig) -> Presenter {
-    let assembled = assembly::assemble_with_observation(
+    let assembled = machine_file::assemble_with_observation(
         config,
         &ObservationPolicy {
             routes: vec![ObservationRequest {
@@ -406,7 +406,7 @@ fn open_games_template_image_plays_cards_and_speaker_at_host_mix_levels() {
         .unwrap();
     let mut prepared = pc_image::workspace::prepare_pinned(&owner, &image, true).unwrap();
     insert_level_disk(&mut prepared.machine, &temp.path().join("levels-1200.img"));
-    let assembled = assembly::assemble_with_verified_bases(
+    let assembled = machine_file::assemble_with_verified_bases(
         &prepared.machine,
         &ObservationPolicy {
             routes: vec![ObservationRequest {

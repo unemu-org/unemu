@@ -226,7 +226,7 @@ fn changed_kiselev_bios_reports_pin_origin_and_defers_catalogue_rejection_to_ass
     std::fs::write(&path, MINIMAL).unwrap();
     let config = machine_file::load(&path).unwrap();
     assert_eq!(config.images[0].source, ImageSource::Inline(rom));
-    let error = match assembly::assemble(&config) {
+    let error = match machine_file::assemble(&config) {
         Err(assembly::AssemblyError::Config(error)) => error,
         _ => panic!("assembly must reject the unlisted image"),
     };
@@ -382,7 +382,7 @@ fn firmware_open_bus_starts_after_configured_extended_ram() {
     ];
     rom[..program.len()].copy_from_slice(&program);
     rom[0x7FF0..0x7FF5].copy_from_slice(&[0xEA, 0, 0, 0, 0xF8]);
-    let mut cpu = assembly::test_support::mapped_cpu(
+    let mut cpu = machine_file::test_support::mapped_cpu(
         &config,
         assembly::AssemblyOptions {
             allow_unlisted_firmware: true,
@@ -434,7 +434,7 @@ fn full_extended_memory_map_touches_the_high_rom_alias() {
     let options = assembly::AssemblyOptions {
         allow_unlisted_firmware: true,
     };
-    let mut regions = assembly::test_support::cpu_mapping_regions(&config, options).unwrap();
+    let mut regions = machine_file::test_support::cpu_mapping_regions(&config, options).unwrap();
     regions.sort_unstable();
     assert_eq!(
         regions,
@@ -447,7 +447,7 @@ fn full_extended_memory_map_touches_the_high_rom_alias() {
         ]
     );
     assert!(regions.windows(2).all(|pair| pair[0].1 == pair[1].0));
-    let mut cpu = assembly::test_support::mapped_cpu(&config, options).unwrap();
+    let mut cpu = machine_file::test_support::mapped_cpu(&config, options).unwrap();
     // High physical stores use byte DMA; the host loader would overwrite ROM.
     assert_eq!(cpu.guest_dma_write(0xFDFFFF, 0x5A), DmaAccess::Complete(()));
     assert_eq!(cpu.guest_dma_write(0xFE0000, 0x5A), DmaAccess::Complete(()));
@@ -1090,7 +1090,7 @@ fn at_adapter_empty_ibm5170_card_echoes_through_assembled_bus_and_preserves_fdc(
     let config = ide_lower(&input).unwrap();
     assert_eq!(config.board, assembly::BoardModel::Ibm5170);
     assert!(config.drives.is_empty());
-    let mut assembled = assembly::assemble_with_options(
+    let mut assembled = machine_file::assemble_with_options(
         &config,
         assembly::AssemblyOptions {
             allow_unlisted_firmware: true,
@@ -1314,7 +1314,7 @@ fn catalogued_bios_file_uses_omitted_empty_or_equal_services() {
             &mut images,
         )
         .unwrap();
-        assert!(assembly::assemble(&config)
+        assert!(machine_file::assemble(&config)
             .unwrap()
             .unlisted_firmware
             .is_empty());

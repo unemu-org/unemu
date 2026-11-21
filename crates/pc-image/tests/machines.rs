@@ -66,7 +66,7 @@ fn cmos(fixture: &Fixture, id: &str) -> [u8; 64] {
     let Ok(journal) = fs::read(path) else {
         return base.try_into().unwrap();
     };
-    let scan = media::scan(&journal, &base, 64);
+    let scan = journal_files::scan(&journal, &base, 64);
     scan.image.unwrap()[..64].try_into().unwrap()
 }
 fn checksum(bytes: &mut [u8; 64]) {

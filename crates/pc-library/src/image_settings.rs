@@ -895,10 +895,10 @@ pub mod test_support {
             panic!("expected a journal")
         };
         let base = prepared.bases[path].clone();
-        let mut media = media::JournalMedia::open_verified_with_metadata(
+        let mut media = journal_files::JournalMedia::open_verified_with_metadata(
             journal,
             &base,
-            media::SectorSource::byte_len(&base),
+            journal_files::SectorSource::byte_len(&base),
             Default::default(),
             None,
         )

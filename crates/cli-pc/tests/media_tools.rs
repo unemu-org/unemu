@@ -2,8 +2,8 @@
 //! Offline floppy journal contracts from persistent-media.md § Offline commands.
 //! All images are generated; temporary directories live outside the repository.
 
-use media::offline::{Access, JournalTool};
-use media::{
+use journal_files::offline::{Access, JournalTool};
+use journal_files::{
     ClosingReason, Frame, Header, JournalMedia, Record, SinkStatus, FRAME_LEN, HEADER_LEN,
 };
 use std::ffi::OsString;

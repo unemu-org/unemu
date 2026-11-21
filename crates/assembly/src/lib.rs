@@ -68,7 +68,7 @@ mod validate;
 
 pub use assemble::{
     assemble, assemble_mounted, assemble_with_observation, assemble_with_observation_and_options,
-    assemble_with_options, assemble_with_verified_bases, derive_cmos_config, derive_cmos_layout,
+    assemble_with_options, derive_cmos_config, derive_cmos_layout, medium_geometry,
     AssembledMachine, AssemblyError,
 };
 pub use board::{BoardModel, DisplaySwitch, MachineClass, PrimaryDisplay};
@@ -94,7 +94,7 @@ pub use image::{
 };
 pub use machine::MachineConfig;
 pub use memory::{MemoryConfig, MmioWindow, RamRegion, IBM5170_MAX_EXTENDED_KIB};
-pub use mount::{DiskBase, FileMount, ImageBytes, JournalStore, MachineMount, Mount, MountError};
+pub use mount::{DiskBase, ImageBytes, InlineMount, JournalStore, MachineMount, Mount, MountError};
 pub use observation::{
     Observation, ObservationError, ObservationPolicy, ObservationRequest, ObservationRoute,
     OutputKind,
@@ -114,8 +114,58 @@ pub use speaker_trace::{GuestStamp, ResetCause, ResetSource, SpeakerTraceEvent};
 /// Shared host-side fixtures for image, diagnostic and persistence tests.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
+    #[doc(hidden)]
+    pub use crate::firmware::{
+        check_cmos_capabilities, check_entry_requirements, matched_entry,
+        validate_option_roms_with_catalogue, IBM_5170_1985_06_10, LANDMARK_ROM_POST_AT_1_2_0,
+    };
+    /// Exercise the assembler's ATA-controller ownership invariant.
+    pub fn flush_ata_with_invalid_controller(
+        assembled: &mut crate::AssembledMachine,
+        controller: usize,
+    ) {
+        assembled.persistence[0].ata_index = Some(controller);
+        crate::persistence::flush_ata(&mut assembled.machine, &assembled.persistence);
+    }
+
+    #[doc(hidden)]
+    pub use crate::assemble::*;
+    /// Validate and trace a config over the caller's mount without running it.
+    pub fn cpu_mapping_regions_mounted(
+        config: &crate::MachineConfig,
+        options: crate::AssemblyOptions,
+        mount: &dyn crate::Mount,
+    ) -> Result<Vec<(u64, u64, &'static str)>, crate::AssemblyError> {
+        let (resolved, _) = crate::assemble::resolve_sources_preverified(
+            config,
+            options,
+            config.board.firmware_catalogue(),
+            mount,
+        )?;
+        resolved.validate_resolved()?;
+        let mut regions = Vec::new();
+        crate::assemble::build_cpu_with_mapping_trace(&resolved, |base, end, kind| {
+            regions.push((base, end, kind))
+        })?;
+        Ok(regions)
+    }
+    /// Build a CPU map over the caller's mount for host inspection and DMA tests.
+    pub fn mapped_cpu_mounted(
+        config: &crate::MachineConfig,
+        options: crate::AssemblyOptions,
+        mount: &dyn crate::Mount,
+    ) -> Result<::cpu::X86JitCpu, crate::AssemblyError> {
+        let (resolved, _) = crate::assemble::resolve_sources_preverified(
+            config,
+            options,
+            config.board.firmware_catalogue(),
+            mount,
+        )?;
+        resolved.validate_resolved()?;
+        crate::assemble::build_cpu(&resolved)
+    }
     pub use ::cpu::{Cpu, CpuStop, DmaAccess};
-    pub use media::{Header, JournalMedia, SinkStatus, HEADER_LEN};
+    pub use journal::{Header, JournalMedia, SinkStatus, HEADER_LEN};
 
     /// Record successful CPU mappings as (base, exclusive end, kind), where
     /// kind is ram/mmio/rom/empty-bus.

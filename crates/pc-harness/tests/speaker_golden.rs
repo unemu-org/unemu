@@ -3,10 +3,8 @@
 //! Intel 8254 datasheet, Mode 3. Synthetic ROMs exercise the actual AT wiring.
 //! PCM is pinned against x86jit revision 6cb817b86c1fbf463f7aab8c0da1ce0eec3db0b7.
 
-use assembly::{
-    assemble_with_observation_and_options, AssemblyOptions, AudioSinkKind, ObservationPolicy,
-    RunPolicy,
-};
+use assembly::{AssemblyOptions, AudioSinkKind, ObservationPolicy, RunPolicy};
+use machine_file::assemble_with_observation_and_options;
 
 fn capture(program: &[u8], until: u64, splits: &[u64]) -> (u64, u64, Vec<[i16; 2]>) {
     let mut rom = vec![0; 32768];

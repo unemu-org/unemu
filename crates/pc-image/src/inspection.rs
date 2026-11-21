@@ -100,8 +100,9 @@ pub fn inspect(
                 .then(|| crate::zero::ZeroBase::read(d, store).map(|zero| zero.byte_len()))
                 .transpose()?;
             let parent = if d.media_type == mt::DISK_LAYER {
-                let layer =
-                    media::layer::Descriptor::decode(&store.read_verified(d, MAX_SMALL_BLOB)?)?;
+                let layer = journal_files::layer::Descriptor::decode(
+                    &store.read_verified(d, MAX_SMALL_BLOB)?,
+                )?;
                 let pack: Digest = layer.sectors.parse()?;
                 size += manifest
                     .layers
@@ -252,7 +253,7 @@ fn working(
     store: &Store,
     workspace_name: Option<&str>,
     id: &str,
-    base: impl FnOnce() -> Result<media::VerifiedBase>,
+    base: impl FnOnce() -> Result<journal_files::VerifiedBase>,
 ) -> Result<Option<usize>> {
     let Some(name) = workspace_name else {
         return Ok(Some(0));
@@ -267,7 +268,11 @@ fn working(
         Err(e) => return Err(e.into()),
     };
     let base = base()?;
-    let scan = media::scan_overlay_reader(&mut file, &base, media::SectorSource::byte_len(&base))?;
+    let scan = journal_files::scan_overlay_reader(
+        &mut file,
+        &base,
+        journal_files::SectorSource::byte_len(&base),
+    )?;
     Ok(Some(
         scan.overlay
             .ok_or_else(|| invalid("working journal requires repair"))?

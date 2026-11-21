@@ -111,7 +111,7 @@ fn floppy_drive_types_take_their_lower_density_media() {
             if drive_type == "1.44M" { 4 } else { 2 },
             "CMOS 10h names the drive type, not the medium"
         );
-        let _assembled = assembly::assemble_with_options(
+        let _assembled = machine_file::assemble_with_options(
             &config,
             assembly::AssemblyOptions {
                 allow_unlisted_firmware: true,
@@ -155,7 +155,7 @@ fn floppy_media_all_bases_are_revalidated_before_any_journal_opens() {
     let spec = "media=[{image='one.img',write='journal',journal='one.upfj'},{image='two.img'}]";
     let config = load(temp.path(), "machine.toml", &toml(spec)).unwrap();
     std::fs::write(temp.path().join("two.img"), vec![0x99; 368640]).unwrap();
-    let error = assembly::assemble_with_options(
+    let error = machine_file::assemble_with_options(
         &config,
         assembly::AssemblyOptions {
             allow_unlisted_firmware: true,
@@ -193,7 +193,7 @@ fn floppy_media_empty_start_and_next_assert_change_line() {
         &toml("empty=true\nmedia=[{image='one.img'},{image='two.img'}]"),
     )
     .unwrap();
-    let mut machine = assembly::assemble_with_options(
+    let mut machine = machine_file::assemble_with_options(
         &config,
         assembly::AssemblyOptions {
             allow_unlisted_firmware: true,

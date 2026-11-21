@@ -25,7 +25,7 @@ fn kiselev_empty_socket_finishes_the_coprocessor_probe() {
             }],
             ..Default::default()
         };
-        let mut assembled = assembly::assemble_with_observation(&config, &policy).unwrap();
+        let mut assembled = machine_file::assemble_with_observation(&config, &policy).unwrap();
         assert_eq!(
             assembled
                 .run_session(&assembly::RunPolicy::natural(

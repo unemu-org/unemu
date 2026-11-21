@@ -37,8 +37,8 @@ const MIB: u64 = 0x100000;
 pub trait ImageReader {
     fn read(&mut self, path: &Path) -> io::Result<Vec<u8>>;
 
-    /// Validate the machine in the namespace used by this reader. A content
-    /// reader overrides this because its mount keys have no host paths.
+    /// Validate logical keys in the namespace used by this reader. A file
+    /// reader adds its host path checks here.
     fn validate_machine(&self, config: &MachineConfig) -> Result<(), ConfigError> {
         config.validate()
     }

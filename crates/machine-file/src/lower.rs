@@ -44,7 +44,7 @@ mod tests {
         let diagnostics = AssemblyDiagnostics::without_sources(Origins::new("machine.toml"));
         let error = diagnostics.map(assembly::AssemblyError::Journal {
             drive_index: 9,
-            source: media::OpenError::Format(media::Error::HeaderMagic),
+            source: journal_files::OpenError::Format(journal_files::Error::HeaderMagic),
         });
         assert_eq!(error.field, "internal error");
         assert!(

@@ -117,6 +117,11 @@ pub struct JournalMedia {
 }
 
 impl JournalMedia {
+    /// Update the positive retention policy before execution.
+    pub fn set_retention_policy(&mut self, keep: u32) {
+        self.keep_generations = keep.max(1);
+    }
+
     /// Set the positive assembly retention policy before executing the session.
     pub fn with_retention(mut self, keep_generations: u32) -> Self {
         self.keep_generations = keep_generations.max(1);

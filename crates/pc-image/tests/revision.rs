@@ -5,7 +5,7 @@
 //! Open firmware and synthetic disks only; machine-images §§2, 4 and 7.
 
 use image_store::{BlobSource, Descriptor, Digest, Store};
-use media::SectorSource;
+use journal_files::SectorSource;
 use pc_image::{
     create::Chs,
     revision::{self, Source},
@@ -496,7 +496,7 @@ fn write_c(prepared: &workspace::PreparedSession, sectors: &[(u64, [u8; 512])]) 
         panic!("expected a journal")
     };
     let base = prepared.bases[path].clone();
-    let mut media = media::JournalMedia::open_verified_with_metadata(
+    let mut media = journal_files::JournalMedia::open_verified_with_metadata(
         journal,
         &base,
         base.byte_len(),

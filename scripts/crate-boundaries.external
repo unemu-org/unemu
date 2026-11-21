@@ -16,7 +16,6 @@
 
 # The contract, the CPU core and error types.
 emulation: unemu-core-api (run): the contract every core implements, pinned to one revision; it depends on nothing
-emulation: unemu-core-files (run): existing file-content adapter, temporarily reached through media and journal-files until the journal file split completes
 emulation: thiserror (run): error enums (conventions.md); generated code only, no host access
 emulation: x86jit-core (run): the CPU core, pinned to a revision; its host needs are listed in core-contract.md §12.7
 emulation: iced-x86 (run): x86jit-core's instruction decoder; pure Rust
@@ -31,12 +30,10 @@ emulation: generic-array (run): sha2's fixed-size arrays; pure Rust, no host acc
 emulation: typenum (run): type-level numbers for generic-array; pure Rust, no host access
 emulation: cfg-if (run): sha2's conditional compilation macro; pure Rust, no host access
 emulation: cpufeatures (run): sha2 asks the processor once which SHA instructions it has; no file, no clock, no thread
-emulation: libc (run): declarations of the host C library, reached through cpufeatures on AArch64 Linux, Android, Apple and LoongArch64 Linux targets (one capability query) and through media and journal-files on Unix (file flags and error numbers, pending the remaining journal split, core-contract.md §12.4)
+emulation: libc (run): declarations of the host C library, reached through cpufeatures on AArch64 Linux, Android, Apple and LoongArch64 Linux targets (one capability query)
 
 # The PC config codec: pc-config reads the machine schema and, from S4,
-# reads and writes the stored PC config, both TOML (core-contract.md §14.2.1). media reaches
-# the same crates for its disk-layer descriptor and FAT12 builder formats
-# until the journal split (§12.5, step 11 of §12.10).
+# reads and writes the stored PC config, both TOML (core-contract.md §14.2.1).
 emulation: serde (run): the PC config codec (pc-config): the machine schema's model and the stored config's (from S4)
 emulation: serde_core (run): serde's core traits, for the PC config codec
 emulation: toml (run): the PC config codec (pc-config): the machine schema and the stored config (from S4) are TOML

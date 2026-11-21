@@ -270,8 +270,8 @@ dependencies = [
  "cpu",
  "device",
  "devices",
+ "journal",
  "machine",
- "media",
  "sha2",
  "testkit",
  "thiserror 1.0.69",
@@ -708,6 +708,7 @@ dependencies = [
  "devices",
  "image-registry",
  "image-store",
+ "journal-files",
  "machine",
  "machine-file",
  "media",
@@ -1863,8 +1864,10 @@ version = "0.0.3"
 dependencies = [
  "journal",
  "libc",
+ "serde",
  "sha2",
  "thiserror 1.0.69",
+ "toml",
  "unemu-core-api",
  "unemu-core-files",
 ]
@@ -2022,15 +2025,25 @@ name = "machine-file"
 version = "0.0.3"
 dependencies = [
  "assembly",
+ "audio",
+ "bus",
+ "chipset",
+ "cpu",
+ "device",
+ "devices",
+ "journal",
+ "journal-files",
  "machine",
  "machine-file",
- "media",
  "pc-config",
  "serde",
  "serde-saphyr",
  "sha2",
+ "testkit",
  "thiserror 1.0.69",
  "toml",
+ "unemu-core-api",
+ "video",
 ]
 
 [[package]]
@@ -2051,12 +2064,9 @@ dependencies = [
 name = "media"
 version = "0.0.3"
 dependencies = [
- "journal-files",
  "libc",
- "serde",
  "sha2",
  "thiserror 1.0.69",
- "toml",
 ]
 
 [[package]]
@@ -2717,6 +2727,7 @@ dependencies = [
  "cpu",
  "device",
  "devices",
+ "journal-files",
  "machine",
  "machine-file",
  "media",
@@ -2734,6 +2745,7 @@ dependencies = [
  "cpu",
  "image-registry",
  "image-store",
+ "journal-files",
  "machine",
  "machine-file",
  "media",
@@ -2753,6 +2765,7 @@ dependencies = [
  "assembly",
  "image-registry",
  "image-store",
+ "journal-files",
  "library-model",
  "machine-file",
  "media",
@@ -2772,6 +2785,7 @@ dependencies = [
  "assembly",
  "devices",
  "image-store",
+ "journal-files",
  "machine-file",
  "media",
  "pc-image",
@@ -2791,6 +2805,7 @@ dependencies = [
  "cpu",
  "device",
  "image-store",
+ "journal-files",
  "machine",
  "machine-file",
  "machine-view",
@@ -2816,6 +2831,7 @@ dependencies = [
  "egui",
  "image-registry",
  "image-store",
+ "journal-files",
  "library-model",
  "library-ui",
  "machine-file",
@@ -4497,6 +4513,7 @@ dependencies = [
  "egui",
  "image-registry",
  "image-store",
+ "journal-files",
  "library-model",
  "library-ui",
  "machine",

@@ -665,7 +665,7 @@ pub(crate) fn rom_source(
     crate::ImageSource::Inline(bytes)
 }
 
-pub(crate) fn matched_entry<'a>(
+pub fn matched_entry<'a>(
     image: &LoadImage,
     catalogue: &'a [FirmwareEntry],
 ) -> Option<&'a FirmwareEntry> {
@@ -770,7 +770,7 @@ pub(crate) fn validate_option_roms(config: &MachineConfig) -> Result<(), ConfigE
     validate_option_roms_with_catalogue(config, config.board.firmware_catalogue())
 }
 
-pub(crate) fn validate_option_roms_with_catalogue(
+pub fn validate_option_roms_with_catalogue(
     config: &MachineConfig,
     catalogue: &[FirmwareEntry],
 ) -> Result<(), ConfigError> {
@@ -1019,7 +1019,7 @@ pub fn check_system_bios(
     Ok(None)
 }
 
-pub(crate) fn check_entry_requirements(
+pub fn check_entry_requirements(
     config: &MachineConfig,
     board: BoardModel,
     entry: &FirmwareEntry,
@@ -1065,7 +1065,7 @@ pub(crate) fn check_entry_requirements(
 }
 
 /// Reject conflicting interpretations of the same fixed-disk CMOS bytes.
-pub(crate) fn check_cmos_capabilities(entry: &FirmwareEntry) -> Result<(), ConfigError> {
+pub fn check_cmos_capabilities(entry: &FirmwareEntry) -> Result<(), ConfigError> {
     if entry
         .capabilities
         .contains(&FirmwareCapability::CmosDriveTypes)
@@ -3171,23 +3171,6 @@ mod tests {
     }
 
     #[test]
-    fn real_kiselev_image_passes_inline_and_file_catalogue_checks() {
-        let Some(bytes) = fixture() else { return };
-        assert_eq!(bytes.len(), 32768);
-        let mut config = config();
-        for source in [
-            ImageSource::Inline(bytes),
-            ImageSource::File(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../vendor/kiselev-bios/bios-xi8088.bin"),
-            ),
-        ] {
-            config.images[0].source = source;
-            assert!(assemble(&config).unwrap().unlisted_firmware.is_empty());
-        }
-    }
-
-    #[test]
     fn one_byte_changed_kiselev_is_rejected_with_full_hash_and_known_entries() {
         let Some(mut bytes) = fixture() else { return };
         bytes[0] ^= 1;
@@ -3258,27 +3241,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn catalogue_services_supply_omitted_or_equal_declarations() {
-        let Some(bytes) = fixture() else {
-            return;
-        };
-        let mut config = config();
-        for source in [
-            ImageSource::Inline(bytes),
-            ImageSource::File(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../vendor/kiselev-bios/bios-xi8088.bin"),
-            ),
-        ] {
-            config.images[0].source = source;
-            for declared in [Vec::new(), vec![FirmwareService::Floppy]] {
-                config.images[0].provides = declared;
-                assert_eq!(config.validate(), Ok(()));
-                assert!(assemble(&config).unwrap().unlisted_firmware.is_empty());
-            }
-        }
-    }
     #[test]
     fn primary_ata_requirement_matches_the_assembled_channel_contract() {
         let cfg = crate::IdeCfg {

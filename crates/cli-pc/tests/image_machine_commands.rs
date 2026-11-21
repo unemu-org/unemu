@@ -243,7 +243,8 @@ fn write_floppy(store: &image_store::Store, id: &str, value: u8) {
         panic!("journaled floppy expected")
     };
     let mut journal =
-        media::JournalMedia::open(path, &[0; 360 * 1024], 360 * 1024, Default::default()).unwrap();
+        journal_files::JournalMedia::open(path, &[0; 360 * 1024], 360 * 1024, Default::default())
+            .unwrap();
     journal.write_batch(&[(0, [value; 512])]);
     journal.finish().unwrap();
 }
@@ -559,7 +560,7 @@ fn a_pending_insert_goes_into_its_drive_at_the_next_start_and_is_consumed() {
     assert!(!lab.row("installer")[5].ends_with("never"));
     // Writes to an inserted disk show in the state, and Save as new image
     // warns that they are not part of the image.
-    let mut writer = media::JournalMedia::open(
+    let mut writer = journal_files::JournalMedia::open(
         &journal,
         &[0xE5; 360 * 1024],
         360 * 1024,

@@ -161,7 +161,7 @@ fn audio_fanout_and_reconfiguration_preserve_stream_position_and_subscriptions()
         .machine;
     machine.run_bounded(Some(125)).unwrap();
     let mut observation =
-        Observation::bind(&policy_without_displays(), &HashMap::new(), &mut []).unwrap();
+        Observation::bind(&policy_without_displays(), &BTreeMap::new(), &mut []).unwrap();
     observation.add_audio_source(VClock::ZERO, Box::new(Constant));
     let external = Rc::new(RefCell::new(CaptureAudioSink::with_frame_limit(10_000)));
     observation.subscribe_audio(Box::new(Recorder(external.clone())));
@@ -331,7 +331,7 @@ fn dormant_audio_device_records_history_on_mock_bus_and_settles_before_capture()
     assert_eq!(edges.pending_edges(), 1);
     let (mut machine, edges, now) = history_machine(&[0xEB, 0xFE], None);
     let mut observation =
-        Observation::bind(&policy_without_displays(), &HashMap::new(), &mut []).unwrap();
+        Observation::bind(&policy_without_displays(), &BTreeMap::new(), &mut []).unwrap();
     observation.add_audio_source(VClock::ZERO, Box::new(edges));
     machine.run_bounded(Some(100)).unwrap();
     assert_eq!(now.get(), 0);
@@ -399,20 +399,40 @@ fn machine_error_has_priority_over_audio_rewind_error() {
 
 #[test]
 fn persistence_failure_is_checked_before_audio_rewind_error() {
-    let temp = crate::test_support::TempDir::new("audio-boundary-journal");
-    let (mut handle, media) = crate::PersistenceHandle::mount(
+    struct Records(unemu_core_api::test_support::MemoryStorage);
+    impl crate::Mount for Records {
+        fn image(&self, _: &std::path::Path) -> Result<crate::ImageBytes, crate::MountError> {
+            unreachable!()
+        }
+        fn disk_base(
+            &self,
+            _: &std::path::Path,
+            _: &dyn Fn(u64) -> Result<(), crate::ConfigError>,
+        ) -> Result<crate::DiskBase, crate::MountError> {
+            unreachable!()
+        }
+        fn journal(&self, _: &std::path::Path) -> Result<crate::JournalStore, crate::MountError> {
+            use unemu_core_api::Storage;
+            Ok(crate::JournalStore::record(self.0.open("audio")?))
+        }
+        fn check_outputs(&self, _: &crate::MachineConfig) -> Result<(), crate::ConfigError> {
+            Ok(())
+        }
+    }
+    let records = Records(Default::default());
+    let (mut handle, media) = crate::PersistenceHandle::mount_journal(
         0,
-        &temp.path().join("audio.upfj"),
-        &[0; 512],
+        &records,
+        std::path::Path::new("audio"),
+        &crate::DiskBase::from_bytes(&[0; 512]).unwrap(),
         512,
         0,
-        None,
     )
     .unwrap();
     handle.fail_output();
     let (mut machine, _, _) = history_machine(&[0xEB, 0xFE], Some(media));
     let observation =
-        Observation::bind(&policy_without_displays(), &HashMap::new(), &mut []).unwrap();
+        Observation::bind(&policy_without_displays(), &BTreeMap::new(), &mut []).unwrap();
     observation.audio.borrow_mut().mixer = Some(Mixer::new(VClock(1000)));
     assert!(matches!(
         crate::run_with_persistence(
@@ -448,7 +468,7 @@ fn speaker_history_stays_bounded_without_capture_on_direct_and_session_runs() {
         cpu.write_mem(0, &[0xB0, 2, 0xE6, 0x61, 0x34, 2, 0xEB, 0xFA])
             .unwrap();
         let mut devices: Vec<Box<dyn Device>> = vec![Box::new(pit), Box::new(sys)];
-        let index = HashMap::from([(DeviceId::Pit, 0), (DeviceId::SysControl, 1)]);
+        let index = BTreeMap::from([(DeviceId::Pit, 0), (DeviceId::SysControl, 1)]);
         let mut observation =
             Observation::bind(&ObservationPolicy::default(), &index, &mut devices).unwrap();
         observation.add_audio_source(VClock::ZERO, Box::new(edges.clone()));

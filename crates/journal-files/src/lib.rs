@@ -29,3 +29,8 @@ pub use sink::{JournalMedia, MaintenanceFailure, OpenError, SinkFailure, SinkSta
 mod overlay_tests;
 #[cfg(feature = "test-support")]
 pub use overlay::{data_passes, hash_passes};
+
+mod session;
+
+pub mod create;
+pub mod layer;

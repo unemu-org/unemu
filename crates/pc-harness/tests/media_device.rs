@@ -6,7 +6,7 @@
 
 use device::{DmaOp, DmaOutcome, InMemoryMedia, SectorMedia, SectorWrite, TracePolicy};
 use devices::{Drive, FloppyGeometry, Upd765};
-use media::{JournalMedia, SinkStatus};
+use journal_files::{JournalMedia, SinkStatus};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use testkit::MockBus;
@@ -155,7 +155,7 @@ fn failing_sink_on_mock_bus_keeps_dma_results_irq_padding_and_reset_state() {
         std::fs::metadata(directory.join("disk.upfj"))
             .unwrap()
             .len(),
-        media::HEADER_LEN as u64
+        journal_files::HEADER_LEN as u64
     );
     drop(a);
     drop(b);
