@@ -3155,6 +3155,61 @@ goldens need machine files, and the config codec is built on
 the contract leaves room for it (§3.12), but it re-plumbs `assembly`'s
 persistence and belongs with layered disk images, not with this split.
 
+**Q4 follow-up — Recommendation (Proposed, 2026-11-21)**
+
+For maintainer review; this does not replace the accepted answer above.
+§12.5 and step 11's final extraction (2026-11-21) have already superseded
+its journal timing: storage now crosses the contract as objects. Recommend
+keeping the remaining `media` crate **with the front end**, without another
+crate or a duplicate FAT12 reader.
+
+| Destination | Crate / contents |
+|---|---|
+| Core, `emulation` | `journal`: wire format, recovery, `SectorSource`, verified-base/overlay model and record-backed durable sink (`src/sink.rs`). `device::SectorMedia` and assembly's controller/geometry adapters stay here too. None needs FAT12 or a host path. |
+| Core, `pc`, `side = "core"` | `journal-files`: file-backed bases and sink constructors, locks, offline tools, raw-image publication (`create.rs`) and disk-layer descriptor/sector format (`layer.rs`). These already share the file engine after step 11; keep them together. `machine-file` owns file mounts and host assembly; `unemupc` owns the journal commands. |
+| Front end, `neutral` | `media`: FAT12 format/layout and reader, in-memory formatter/builders, names/times, host-file survey and `fat12/boot.asm` with its encoded boot sector and source-equivalence test. It depends on no core crate; PC geometry here describes a volume format, not a controller. |
+| Front end, `pc` | `pc-image`: disk closure/decompression and zero-base OCI adapters (`disk.rs`, `zero.rs`), media creation/recipe orchestration and store publication. They use core-side `journal-files::{create, layer}` rather than copy its codecs or publication rules. |
+| Front end, existing layers | `cli-core` keeps FAT12 file export; `cli-pc` keeps PC media commands. `pc-media`, `pc-library`, `pc-ui`, `media-ui` and `window` keep creation models, host-file selection and views. `pc-session-tests` keeps its front-end integration tests; `platforms` and `upcli` compose the providers/commands. |
+
+Evidence: `cargo tree -i media --offline` and current manifests show direct
+normal dependents `cli-core`, `cli-pc`, `media-ui`, `pc-image`, `pc-library`,
+`pc-media`, `pc-ui`, `window`; additional dev edges include
+`pc-session-tests` and **`pc-harness`**. All but the latter belong to the
+front end; its transitive users include `platforms` and `upcli`.
+`media/src/lib.rs` now exports only `fat12`, with no journal facade.
+
+**Remove the remaining media boundary exception by moving its tests.**
+The only current `media::` user in `pc-harness` is
+`tests/user_media_volumes.rs`: it builds volumes and reads them back; it
+does not run a guest. It uses `plan_volumes`, names/times and geometry as
+well as `reader::Volume`, so extracting just the reader would not remove
+the dependency. Move the suite whole to `crates/pc-image/tests/`, keeping
+every test, corpus, full SHA-256 check, skip/required-fixture rule and
+byte-equality assertion. Adjust corpus paths and affected-test data rules
+if needed. Remove `media` from `crates/pc-harness/Cargo.toml`'s dev
+dependencies and delete `pc-harness → media (dev)` from
+`scripts/crate-boundaries.allow`; a core-side Cargo closure including dev
+dependencies must then contain no `media` or front-end crate. Keep the
+unrelated application-composition exception separate (§7.3).
+
+This keeps sector overlays and persistence below the object seam,
+while volume preparation remains a front-end tool. Reject moving all FAT12
+code into the core just to serve one builder test; reject a new shared
+repository or reader crate until an actual core consumer needs it. Core
+goldens remain with `pc-harness`; this suite tests volume preparation.
+
+Layering remains possible: verify every base's full SHA-256, including
+large hard disks; keep bases read-only and written sectors separate. Commit
+publishes a new base, never rewrites the old inode; sector reads use one
+overlay interface replaceable by a chain of hash-linked layers (§12.5 and
+deferred.md, “Layered disk images”). No layer feature is added by this move.
+
+**Open questions for the maintainer:** Accept front-end ownership of FAT12
+and the suite's move to `pc-image`? Confirm `journal-files` keeps raw/layer
+formats and publication helpers despite front-end callers? On acceptance,
+update §9's destination table/item 4 and §12.8's historical exception text
+with this placement and the measured empty media-crossing proof.
+
 **Q5. The PC text rasteriser and its fonts move below the contract, into
 the PC adapter.** The contract then carries pixels only, and the CC BY-SA
 font assets, their notices and the `deny.toml` exception move from

@@ -161,3 +161,83 @@ firmware packages (`unemu-at-bios-1.0.2-unemu.3:1`,
   download (measured: "unknown field `min_version`"). Remotes would have to
   fetch every config, and the marker would become part of the machine
   digest.
+
+## Amendment (Proposed, 2026-11-21)
+
+For maintainer review; the record remains **Accepted**, and the decision
+above remains in force until this amendment is accepted and implemented.
+This addresses the pre-extraction question in core-contract §§9 and 14.6 Q6.
+
+**Two release domains.** `unemu.min-app-version` keeps its spelling and
+names the oldest **core** release that reads and runs the artifact for
+`unemu.platform`: for the PC, unemupc, described by
+`CoreDescription::version`. It never names the contract version or the
+front end's package version. Recommend a second manifest-only annotation,
+`unemu.min-frontend-version`, for the oldest front-end release that reads
+the artifact's envelope and front-end-owned config. Check both leniently
+before strict decoding or blob download; either unmet requirement disables
+the artifact with a reason naming the component. Missing means no
+requirement; malformed means unmet, independently for each annotation.
+Unknown platforms remain unsupported, never implicitly compatible.
+
+| Owner and release domain | Rows (current names) |
+|---|---|
+| Core: `pc-config`, with hardware facts from `assembly` | `MACHINE_KEYS`; machine vocabulary matches (board, CPU/FPU, cards, controllers, drives, channels, write policy, lanes, firmware services, display switch, IRQ/DMA, RTC/NVRAM); widened hardware ranges; `CATALOGUE` entries the core accepts. Accepted platform ids/aliases also need a core-domain rating. |
+| Front end: `image-store` | Artifact/config/payload media types, `COMPRESSED`, `RECIPE_TYPES`, descriptor redistribution values, store routing aliases (`PLATFORMS`), `MEDIA_SET_KEYS`, `EXTRA_KEYS`, `FIRMWARE_KEYS` and their shared vocabulary. |
+| Front end: PC provider (`pc-image`) | `PAYLOADS` (including disk base/sector compression), `MEDIA_FORMAT_KEYS`, `MEDIA_FORMATS`, `FIT_KEYS`, `ROLES`, `FIT_BOARDS`, `FIT_CLASSES`, `LANES`: these decode packages and prepare content, rather than configure the running core. A lane in a machine config remains a core row. |
+| Front end: `recipe` and catalogue metadata | Recipe work-file keys/types use the front-end requirement. `METADATA_SCHEMAS` and `TITLE_FIELDS` remain front-end rows for read-only catalogue fallback; they raise neither runnable-artifact marker. |
+
+**Levels and writers.** Compare core requirements with the selected
+platform's core description version, raised to that core's newest table
+row for a development build. Compare front-end requirements with the
+composing front-end application's version, raised only to its newest
+front-end row. Inject both levels; a neutral store must neither link a PC
+core nor infer the application's version from its own package. Separate
+`NEXT_RELEASE`/`NEWEST_ROW` values and coverage checks in each domain.
+Never take a maximum across the two domains. Compute and stamp each
+requirement independently, omit its baseline, and preserve inherited or
+explicit higher floors within that domain. `--min-app-version` and a
+recipe's existing minimum keep meaning the core requirement; recipe parser
+features themselves require the front end. Importing a package contributes
+its core floor to a machine; its packaging-only requirement does not follow
+decoded ROM bytes into a differently packaged machine image.
+
+**Transition.** Keep historical row numbers as literal pre-split releases;
+both components shared that release line. Preserve existing manifests,
+digests and explicit core floors, including conservative old markers that
+also covered front-end features. Do not bulk restamp published artifacts.
+Only new front-end features above the extraction baseline need the new
+annotation; freeze that baseline and test that rebuilding existing feature
+sets keeps their manifest bytes. Old readers ignore the new annotation,
+but strict codecs still refuse new keys/types. Neither domain may silently
+change the meaning of an existing key/value (point 4 still applies).
+
+**Implied implementation (not part of this document change):**
+
+1. Add `crates/pc-config/src/compat.rs`, export it from `src/lib.rs`, and
+   move the core rows/evaluators and coverage tests there from
+   `crates/pc-image/src/compat.rs`. Use core-owned release/row data without
+   an `image-store` dependency; the provider converts it at the boundary.
+   Keep package-format rows in `pc-image`; do not move the whole file.
+2. In `crates/image-store/src/compat.rs`, replace global `level()` checks
+   in `Requirement`, `raised`, `stamp`, `floor` and `carry` with explicit
+   component levels and two requirements. Split `envelope`/`shared_release`
+   results by owner. Extend `ConfigValidator` in `src/store.rs` beyond its
+   single `required_release` result; update `src/lib.rs` errors and
+   `src/summary.rs` fields/cache schema for component-specific reasons.
+3. Wire core version/rows and front-end application version through
+   `crates/pc-image/src/{compat,provider}.rs`, `crates/platforms/src/` and
+   application composition (`upcli`, `window`). Update `image-registry`
+   pull/push guards, `recipe/src/compat.rs`, CLI import/template writers
+   and library/Remotes readers to use the same pair, before fetching blobs.
+   Update machine-images §5.6 when this amendment is accepted.
+4. Test unequal core/front-end versions in both directions, missing core,
+   malformed/absent markers, development-row maxima, inherited floors,
+   early pull refusal and component-specific disabled rows. Retain table
+   completeness and published byte/digest pins; test front-end-only changes
+   leave the core marker unchanged and metadata raises neither marker.
+
+**Open questions for the maintainer:** Accept the second annotation's name
+and the frozen extraction baseline? Confirm that inherited front-end floors
+follow retained encoded content only, while explicit core floors survive
+repackaging?
