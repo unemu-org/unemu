@@ -414,7 +414,7 @@ mod tests {
     use super::*;
     #[test]
     fn fix_round_library_ignores_dotfiles_and_pending_files() {
-        let temp = assembly::test_support::TempDir::new("library-pending");
+        let temp = machine_file::test_support::TempDir::new("library-pending");
         std::fs::create_dir_all(temp.path().join("local")).unwrap();
         for file in [
             "visible.toml",
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn firmware_readiness_is_lazy_and_runs_on_a_host_worker() {
-        let temp = assembly::test_support::TempDir::new("worker-firmware-check");
+        let temp = machine_file::test_support::TempDir::new("worker-firmware-check");
         let path = temp.path().join("missing.toml");
         let entry = LibraryEntry::pending(path.clone());
         assert!(!entry.checked);
@@ -518,7 +518,7 @@ mod tests {
 
     #[test]
     fn discovery_includes_local_and_yaml_but_not_nested_or_non_machine_files() {
-        let temp = assembly::test_support::TempDir::new("shell-discovery");
+        let temp = machine_file::test_support::TempDir::new("shell-discovery");
         std::fs::create_dir_all(temp.path().join("local/nested")).unwrap();
         for file in [
             "z.toml",
@@ -562,7 +562,7 @@ mod tests {
     /// nothing selected instead of a row for a file that does not exist.
     #[test]
     fn a_missing_default_machine_is_neither_listed_nor_selected() {
-        let temp = assembly::test_support::TempDir::new("default-machine-selection");
+        let temp = machine_file::test_support::TempDir::new("default-machine-selection");
         let mut paths = vec![PathBuf::from("first.toml")];
         let missing = temp.path().join("at-freedos.toml");
         assert_eq!(select_machine(&mut paths, &missing, false), None);
@@ -577,7 +577,7 @@ mod tests {
 
     #[test]
     fn invalid_machine_is_visible_with_start_blocked() {
-        let temp = assembly::test_support::TempDir::new("shell-invalid");
+        let temp = machine_file::test_support::TempDir::new("shell-invalid");
         let path = temp.path().join("missing-firmware.toml");
         std::fs::write(&path, "schema = 1\nname = 'Missing firmware'\nextends = 'preset:ibm-5170'\n[firmware.bios]\nimage = 'absent.bin'\n").unwrap();
         let entry = LibraryEntry::inspect(path, assembly::AssemblyOptions::default());
@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     fn missing_local_media_names_the_media_cause_and_shortens_resolved_paths() {
-        let temp = assembly::test_support::TempDir::new("missing-media-hint");
+        let temp = machine_file::test_support::TempDir::new("missing-media-hint");
         std::fs::create_dir(temp.path().join("machines")).unwrap();
         let path = temp.path().join("machines/example.toml");
         std::fs::write(temp.path().join("machines/bios.bin"), vec![0xF4; 32768]).unwrap();

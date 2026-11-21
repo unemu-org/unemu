@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn old_diagnostics_and_logs_stay_in_use_for_the_next_report() {
-        let temp = assembly::test_support::TempDir::new("diagnostics-upgrade");
+        let temp = machine_file::test_support::TempDir::new("diagnostics-upgrade");
         let old = temp.path().join("unemupc/diagnostics");
         std::fs::create_dir_all(&old).unwrap();
         std::fs::write(old.join("diag-7.txt"), "report").unwrap();
@@ -214,7 +214,7 @@ mod tests {
     /// number.
     #[test]
     fn a_recording_keeps_its_file_and_never_overwrites_another() {
-        let temp = assembly::test_support::TempDir::new("trace-numbering");
+        let temp = machine_file::test_support::TempDir::new("trace-numbering");
         let folder = temp.path().join("diagnostics");
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join("trace-3.txt"), "earlier").unwrap();
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn reports_take_the_next_free_number() {
-        let temp = assembly::test_support::TempDir::new("diag-numbering");
+        let temp = machine_file::test_support::TempDir::new("diag-numbering");
         let folder = temp.path().join("diagnostics");
         assert_eq!(save(&folder, "a").unwrap(), folder.join("diag-1.txt"));
         assert_eq!(save(&folder, "b").unwrap(), folder.join("diag-2.txt"));

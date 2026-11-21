@@ -64,7 +64,7 @@ mod metadata_tests {
 
     #[test]
     fn metadata_uses_normal_lowering_defaults_and_file_length_without_reading_bytes() {
-        let temp = assembly::test_support::TempDir::new("metadata-lowering");
+        let temp = crate::test_support::TempDir::new("metadata-lowering");
         std::fs::write(temp.path().join("bios.bin"), vec![0xF4; 32768]).unwrap();
         let path = temp.path().join("machine.toml");
         let text = "schema=1\n[board]\nmodel='ibm-5170'\n[cpu]\nfpu='80287'\n[board.rtc]\nstart='2001-02-03T04:05:06'\n[firmware.bios]\nimage='bios.bin'\n[[card]]\nkind='mda'\n";

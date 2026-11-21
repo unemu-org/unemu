@@ -18,7 +18,7 @@ mod tests {
     /// writing into the working directory.
     #[test]
     fn custom_layer_of_a_file_outside_machines_stays_out_of_the_build_tree() {
-        let temp = assembly::test_support::TempDir::new("settings-outside-machines");
+        let temp = machine_file::test_support::TempDir::new("settings-outside-machines");
         fs::write(temp.path().join("bios.bin"), vec![0xF4; 32768]).unwrap();
         let parent = temp.path().join("example.toml");
         fs::write(&parent, "schema=1\nname='Example'\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='bios.bin'\nprovides=['floppy']\n").unwrap();

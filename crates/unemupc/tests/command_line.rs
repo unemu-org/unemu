@@ -70,7 +70,7 @@ fn standalone_dispatches_all_four_machine_commands() {
     assert_eq!(demo.status.code(), Some(0));
     assert_eq!(demo.stdout, b".....");
     assert!(demo.stderr.is_empty());
-    let files = assembly::test_support::TempDir::new("standalone-commands");
+    let files = machine_file::test_support::TempDir::new("standalone-commands");
     let mut rom = vec![0; 32768];
     rom[0x7ff0..0x7ff8].copy_from_slice(&[0xfa, 0xba, 0xf8, 0x03, 0xb0, b'Z', 0xee, 0xf4]);
     let bios = files.path().join("bios.bin");

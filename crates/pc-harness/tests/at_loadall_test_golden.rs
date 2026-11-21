@@ -19,13 +19,13 @@
 //! System Board, Keyboard Controller (output port bit 1 gates A20), and BIOS
 //! listing, INT 15h AH=87h (BLOCKMOVE).
 
-use assembly::test_support::TempDir;
 use assembly::{
     AssemblyOptions, DeviceId, ObservationPolicy, ObservationRequest, OutputKind, RunPolicy,
 };
 use cpu::Cpu;
 use device::ByteStreamKind;
 use machine::RunOutcome;
+use machine_file::test_support::TempDir;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 

@@ -18,9 +18,10 @@
 //! Compatibility Considerations ("Address after Reset"), and Appendix B,
 //! LIDT and INT (a real-mode interrupt beyond the IDT limit shuts down).
 
-use assembly::test_support::{fixture_sha256, TempDir};
+use assembly::test_support::fixture_sha256;
 use assembly::{AssemblyOptions, BoardModel, ObservationPolicy, RunPolicy};
 use machine::RunOutcome;
+use machine_file::test_support::TempDir;
 use machine_file::test_support::UserFirmwareLayout;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};

@@ -5,6 +5,12 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-21 — Core host-interface allow list empty:** the four temporary
+  directory exceptions move from assembly to host-side `machine-file` test
+  support, with all callers following them. The CPU builds only its legacy
+  reset image, replacing the process-wide once cell without changing x86jit.
+  The host guard has zero exceptions. See
+  [core contract §9](design/core-contract.md#9-towards-two-repositories).
 - **2026-11-21 — One front-end binary:** `unemu` opens the window with no
   arguments or desktop options and runs the composed command line when its
   first argument is a word (`image`, `media`, `recipe`, `library`, `run`).

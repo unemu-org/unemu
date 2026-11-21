@@ -27,8 +27,8 @@ pub const NAS: &str = "nas.example:5000";
 /// Preferences that list `registry.lan.example` with a private namespace
 /// and no account, and `nas.example:5000`, a whole private registry with
 /// an account; the family default registry is listed without an entry.
-pub fn preferences() -> (assembly::test_support::TempDir, Accounts) {
-    let temp = assembly::test_support::TempDir::new("remotes-view");
+pub fn preferences() -> (machine_file::test_support::TempDir, Accounts) {
+    let temp = machine_file::test_support::TempDir::new("remotes-view");
     let path = temp.path().join("preferences.toml");
     std::fs::write(
         &path,
@@ -53,7 +53,7 @@ pub struct Rig {
     pub requests: mpsc::Receiver<Request>,
     /// Dropping it is the worker going away.
     pub events: Option<mpsc::SyncSender<Event>>,
-    _preferences: assembly::test_support::TempDir,
+    _preferences: machine_file::test_support::TempDir,
 }
 
 impl Default for Rig {

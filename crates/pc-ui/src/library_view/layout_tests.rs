@@ -2036,7 +2036,7 @@ const HEADER_INSET: f32 = 6.0;
 
 /// The Images collection of a store with three images, one tag each, so
 /// every row is an image row under the list's header.
-fn images_list() -> (assembly::test_support::TempDir, LibraryView) {
+fn images_list() -> (machine_file::test_support::TempDir, LibraryView) {
     let (temp, store, _) = tests::catalogue(3);
     let cache = firmware::tests::warm(&store);
     let mut view = LibraryView::new(None);

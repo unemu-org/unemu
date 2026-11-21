@@ -20,7 +20,6 @@
 //! Exceptions (double fault and shutdown) and System Control and
 //! Initialization (LMSW).
 
-use assembly::test_support::TempDir;
 use assembly::{
     AssemblyOptions, BoardModel, DeviceId, ImageSource, ObservationPolicy, ObservationRequest,
     OutputKind, RunPolicy,
@@ -28,6 +27,7 @@ use assembly::{
 use cpu::Cpu;
 use device::ByteStreamKind;
 use machine::RunOutcome;
+use machine_file::test_support::TempDir;
 use machine_file::test_support::{FoundUserFirmware, UserFirmwareLayout};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};

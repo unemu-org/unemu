@@ -4084,7 +4084,7 @@ mod tests {
 mod base_length_tests {
     #[test]
     fn wrong_disk_geometry_is_rejected_before_hashing() {
-        let directory = assembly::test_support::TempDir::new("geometry-before-hash");
+        let directory = crate::test_support::TempDir::new("geometry-before-hash");
         let path = directory.path().join("base.img");
         std::fs::write(&path, [0; 4096]).unwrap();
         let before = journal_files::hash_passes();

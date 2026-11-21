@@ -1140,7 +1140,7 @@ mod tests {
     /// and an empty catalogue list removes it.
     #[test]
     fn the_record_round_trips_and_refuses_what_it_does_not_know() {
-        let temp = assembly::test_support::TempDir::new("kept-record");
+        let temp = machine_file::test_support::TempDir::new("kept-record");
         let workspace = temp.path();
         assert!(read(workspace).unwrap().is_empty());
         let drives = vec![
@@ -1236,7 +1236,7 @@ mod tests {
     /// in the drive, leaves no record; any other catalogue does.
     #[test]
     fn a_catalogue_as_the_image_sets_it_leaves_no_record() {
-        let temp = assembly::test_support::TempDir::new("kept-default");
+        let temp = machine_file::test_support::TempDir::new("kept-default");
         let workspace = temp.path();
         let drive = |in_drive, disk| KeptDrive {
             drive: "A:".into(),
@@ -1270,7 +1270,7 @@ mod tests {
     /// browsed once more, is kept once, and the drive holds that one.
     #[test]
     fn the_same_disk_inserted_again_is_kept_once() {
-        let temp = assembly::test_support::TempDir::new("kept-once");
+        let temp = machine_file::test_support::TempDir::new("kept-once");
         let store = Store::open(temp.path().join("store")).unwrap();
         let workspace = temp.path().join("workspace");
         let bytes = vec![0x5a; 368_640];
@@ -1318,7 +1318,7 @@ mod tests {
     /// the same bytes again are the same journal.
     #[test]
     fn a_journal_beside_a_file_is_copied_into_the_machine() {
-        let temp = assembly::test_support::TempDir::new("kept-journal");
+        let temp = machine_file::test_support::TempDir::new("kept-journal");
         let media = temp.path().join("media");
         fs::create_dir_all(&media).unwrap();
         let host = temp.path().join("game.img.upfj");

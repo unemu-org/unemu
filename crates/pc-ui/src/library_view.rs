@@ -4011,8 +4011,8 @@ pub(super) mod tests {
     }
     pub(crate) fn catalogue(
         count: usize,
-    ) -> (assembly::test_support::TempDir, Store, Vec<Descriptor>) {
-        let temp = assembly::test_support::TempDir::new("desktop-library");
+    ) -> (machine_file::test_support::TempDir, Store, Vec<Descriptor>) {
+        let temp = machine_file::test_support::TempDir::new("desktop-library");
         let store = Store::open(temp.path().join("store")).unwrap();
         let blob = store
             .import(&b"schema=1\nplatform='synthetic'\n"[..], None)
@@ -4165,7 +4165,7 @@ pub(super) mod tests {
         assert!(frame(&mut library, vec![]).1.is_some());
     }
     /// A store with one firmware package and one media set, and no machine image.
-    fn firmware_and_media_only() -> (assembly::test_support::TempDir, Store) {
+    fn firmware_and_media_only() -> (machine_file::test_support::TempDir, Store) {
         let (temp, store, images) = catalogue(1);
         let machine = Manifest::decode_for_summary(
             &store
@@ -4825,7 +4825,7 @@ pub(super) mod tests {
     }
     #[test]
     fn verified_launch_handles_transfer_without_payload_reads_and_detect_changes() {
-        let temp = assembly::test_support::TempDir::new("desktop-launch-transfer");
+        let temp = machine_file::test_support::TempDir::new("desktop-launch-transfer");
         let path = temp.path().join("disk.img");
         std::fs::write(&path, [0u8; 512]).unwrap();
         let make = || pc_image::workspace::PreparedSession {
@@ -4857,7 +4857,7 @@ pub(super) mod tests {
     #[test]
     fn verified_transfer_uses_original_handle_after_same_length_and_mtime_inode_swap() {
         use journal_files::SectorSource;
-        let temp = assembly::test_support::TempDir::new("verified-inode-swap");
+        let temp = machine_file::test_support::TempDir::new("verified-inode-swap");
         let dir = temp.path().join("current");
         std::fs::create_dir(&dir).unwrap();
         let path = dir.join("base.img");
@@ -4950,7 +4950,7 @@ pub(super) mod tests {
     }
     #[test]
     fn failed_store_open_and_dead_sends_clear_busy_and_allow_folder_replacement() {
-        let temp = assembly::test_support::TempDir::new("bad-library-root");
+        let temp = machine_file::test_support::TempDir::new("bad-library-root");
         let file = temp.path().join("file");
         std::fs::write(&file, b"not a directory").unwrap();
         let mut view = LibraryView::new(Some(file));

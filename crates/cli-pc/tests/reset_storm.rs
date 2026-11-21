@@ -15,7 +15,7 @@ use std::time::Duration;
 
 #[test]
 fn run_stops_a_guest_that_resets_again_and_again_with_a_report() {
-    let temp = assembly::test_support::TempDir::new("reset-storm");
+    let temp = machine_file::test_support::TempDir::new("reset-storm");
     let rom = assembly::test_support::reset_storm_rom();
     let rom_path = temp.path().join("storm.bin");
     std::fs::write(&rom_path, &rom).unwrap();

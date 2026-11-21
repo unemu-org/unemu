@@ -218,7 +218,7 @@ fn no_vdisk_record_survives_a_restart() {
     fat12::add_file(&mut image, b"AUTOEXECBAT", b"@ECHO OFF\r\nECHO READY\r\n");
     // Copies of the shipped machine files and their fixtures, and a child
     // that adds the extended memory and replaces A:.
-    let tree = assembly::test_support::TempDir::new("xms-warm-boot");
+    let tree = machine_file::test_support::TempDir::new("xms-warm-boot");
     let write = |relative: &str, bytes: &[u8]| {
         let path = tree.path().join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

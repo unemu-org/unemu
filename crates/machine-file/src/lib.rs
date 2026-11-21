@@ -639,9 +639,12 @@ mod vga_tests {
     }
 }
 
-/// Shared user-ROM discovery and skip policy for host-side tests.
+/// Shared host fixtures, user-ROM discovery and skip policy for tests.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
+    mod temp_dir;
+    pub use temp_dir::TempDir;
+
     /// Resolve host images through the production resolver without executing firmware.
     pub fn resolve_file_sources(
         config: &assembly::MachineConfig,

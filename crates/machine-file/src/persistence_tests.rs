@@ -50,7 +50,7 @@ mod tests {
         let mut machine = crate::assemble(&assembly::at_boot(vec![0xf4]))
             .unwrap()
             .machine;
-        let temp = assembly::test_support::TempDir::new("floppy-eject-journal");
+        let temp = crate::test_support::TempDir::new("floppy-eject-journal");
         let path = temp.path().join("disk.upfj");
         let base = vec![0x11; 1_474_560];
         let (mut handle, media) = PersistenceHandle::prepare_removable(
@@ -133,7 +133,7 @@ mod tests {
         let mut machine = crate::assemble(&assembly::at_boot(vec![0xf4]))
             .unwrap()
             .machine;
-        let temp = assembly::test_support::TempDir::new("removable-retention-warning");
+        let temp = crate::test_support::TempDir::new("removable-retention-warning");
         let path = temp.path().join("disk.upfj");
         let base = vec![0; 512];
         let (mut handle, mut media) = PersistenceHandle::prepare_removable(
@@ -174,7 +174,7 @@ mod tests {
         let mut machine = crate::assemble(&assembly::at_boot(vec![0xf4]))
             .unwrap()
             .machine;
-        let temp = assembly::test_support::TempDir::new("floppy-eject-error");
+        let temp = crate::test_support::TempDir::new("floppy-eject-error");
         let path = temp.path().join("disk.upfj");
         let base = vec![0; 1_474_560];
         let (mut handle, mut media) = PersistenceHandle::prepare_removable(
@@ -222,7 +222,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn logical_validation_ignores_host_paths_but_checks_journal_keys_and_retention() {
-        let temp = assembly::test_support::TempDir::new("logical-validation");
+        let temp = crate::test_support::TempDir::new("logical-validation");
         let (mut config, _, journal) = nvram_config(temp.path(), vec![0xf4]);
         std::os::unix::fs::symlink("absent", &journal).unwrap();
         assert!(config.validate_host().is_err());
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn nvram_run_stops_and_prompt_polls_do_not_append() {
-        let temp = assembly::test_support::TempDir::new("nvram-polls");
+        let temp = crate::test_support::TempDir::new("nvram-polls");
         let (config, base, path) = nvram_config(temp.path(), vec![0x90, 0xEB, 0xFD]);
         let mut machine = crate::assemble_with_observation(
             &config,
@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn nvram_finish_coalesces_replays_and_closes_one_session_generation() {
-        let temp = assembly::test_support::TempDir::new("nvram-session");
+        let temp = crate::test_support::TempDir::new("nvram-session");
         let (config, base, path) = nvram_config(
             temp.path(),
             vec![0xFA, 0xB0, 0x0E, 0xE6, 0x70, 0xB0, 0xA5, 0xE6, 0x71, 0xF4],
@@ -422,7 +422,7 @@ mod tests {
     #[test]
     fn nvram_shutdown_only_reset_never_appends_ram() {
         for index in [0x0F, 0x10] {
-            let temp = assembly::test_support::TempDir::new("nvram-shutdown");
+            let temp = crate::test_support::TempDir::new("nvram-shutdown");
             let (mut config, base, path) = nvram_config(
                 temp.path(),
                 vec![
@@ -465,7 +465,7 @@ mod tests {
 
     #[test]
     fn nvram_execution_error_leaves_reset_records_open_for_recovery() {
-        let temp = assembly::test_support::TempDir::new("nvram-error");
+        let temp = crate::test_support::TempDir::new("nvram-error");
         let (mut config, base, path) = nvram_config(
             temp.path(),
             vec![
@@ -509,7 +509,7 @@ mod tests {
 
     #[test]
     fn nvram_resets_share_a_generation_and_retention_waits_for_finish() {
-        let temp = assembly::test_support::TempDir::new("nvram-retention");
+        let temp = crate::test_support::TempDir::new("nvram-retention");
         let (mut config, base, path) = nvram_config(temp.path(), vec![0xF4]);
         for device in &mut config.devices {
             if let assembly::DeviceKind::Rtc(assembly::CmosCfg {
@@ -558,7 +558,7 @@ mod tests {
     #[test]
     fn nvram_tail_damage_is_reported_and_base_pin_precedes_outputs() {
         use std::io::Write;
-        let temp = assembly::test_support::TempDir::new("nvram-tail");
+        let temp = crate::test_support::TempDir::new("nvram-tail");
         let (config, base, path) = nvram_config(temp.path(), vec![0xF4]);
         let mut machine = crate::assemble(&config).unwrap();
         write_cmos(&mut machine, 63, 0x99);
@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn nvram_output_failure_stops_before_cpu_reset() {
-        let temp = assembly::test_support::TempDir::new("nvram-reset");
+        let temp = crate::test_support::TempDir::new("nvram-reset");
         let program = vec![
             0xFA, 0xB0, 0x3F, 0xE6, 0x70, 0xB0, 0xA5, 0xE6, 0x71, 0xB0, 0xFE, 0xE6, 0x64, 0xF4,
         ];
@@ -638,7 +638,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "journal ATA controller must exist and expose Ata")]
     fn ide_journal_invalid_controller_index_is_an_assembly_invariant() {
-        let temp = assembly::test_support::TempDir::new("ide-controller-invariant");
+        let temp = crate::test_support::TempDir::new("ide-controller-invariant");
         let (config, _, _) = nvram_config(temp.path(), vec![0xF4]);
         let mut machine = crate::assemble(&config).unwrap();
         let controller = machine.device_index[&assembly::DeviceId::Rtc];
@@ -647,7 +647,7 @@ mod tests {
 
     #[test]
     fn ide_journal_sink_failure_keeps_guest_writes_and_recovers_unsealed_prefix() {
-        let temp = assembly::test_support::TempDir::new("ide-sink-failure");
+        let temp = crate::test_support::TempDir::new("ide-sink-failure");
         let base = vec![0; 32768];
         let base_path = temp.path().join("base.img");
         let path = temp.path().join("ide.upfj");
@@ -741,7 +741,7 @@ mod tests {
 
     #[test]
     fn failing_sink_preserves_guest_prefix_and_stops_at_frontend_boundary() {
-        let temp = assembly::test_support::TempDir::new("journal-test");
+        let temp = crate::test_support::TempDir::new("journal-test");
         let path = temp.path();
         let out = |program: &mut Vec<u8>, port: u16, value: u8| {
             program.extend([0xBA, port as u8, (port >> 8) as u8, 0xB0, value, 0xEE]);
@@ -852,7 +852,7 @@ mod tests {
             "replace",
             "publication directory sync",
         ] {
-            let temp = assembly::test_support::TempDir::new("retention-test");
+            let temp = crate::test_support::TempDir::new("retention-test");
             let mut program = vec![0xFA, 0xFC];
             let out = |p: &mut Vec<u8>, port: u16, value: u8| {
                 p.extend([0xBA, port as u8, (port >> 8) as u8, 0xB0, value, 0xEE]);

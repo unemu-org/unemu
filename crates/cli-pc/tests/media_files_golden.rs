@@ -200,7 +200,7 @@ fn freedos_reads_a_floppy_built_from_host_files() {
     ) else {
         return;
     };
-    let tree = assembly::test_support::TempDir::new("host-tree-floppy");
+    let tree = machine_file::test_support::TempDir::new("host-tree-floppy");
     let host = tree.path().join("host");
     std::fs::create_dir_all(host.join("sub")).unwrap();
     std::fs::write(host.join("hello.txt"), b"hello from the host\r\n").unwrap();
@@ -298,7 +298,7 @@ fn freedos_enters_and_rebuilds_a_split_set_with_xcopy() {
     // 400,000 bytes, then forty 9,000-byte files: the first disk takes the
     // large file and 35 of them (37 entries, two 1,024-byte clusters of
     // folder), the second the last five and SUB\SUB2.
-    let tree = assembly::test_support::TempDir::new("host-tree-split");
+    let tree = machine_file::test_support::TempDir::new("host-tree-split");
     let host = tree.path().join("host");
     std::fs::create_dir_all(host.join("many")).unwrap();
     std::fs::create_dir_all(host.join("sub/sub2")).unwrap();

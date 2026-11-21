@@ -811,12 +811,12 @@ mod tests {
         SourceTarget,
     };
     use crate::library_view::{snapshot, Filter, LibraryView};
-    use assembly::test_support::TempDir;
     use image_store::{
         firmware::{Config, Validator},
         media_type, Descriptor, Manifest, Store, MAX_SMALL_BLOB,
     };
     use machine_file::firmware_discovery::DiscoveryControl;
+    use machine_file::test_support::TempDir;
     use pc_image::{
         firmware::PcFirmwareRules,
         firmware_import::{self, ReadmeChoice, Statement},

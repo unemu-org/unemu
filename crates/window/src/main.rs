@@ -1027,7 +1027,7 @@ mod tests {
 
     #[test]
     fn display_flag_selects_card_identity_and_default_follows_file_order() {
-        let temp = assembly::test_support::TempDir::new("window-machine-display");
+        let temp = machine_file::test_support::TempDir::new("window-machine-display");
         std::fs::write(temp.path().join("bios.bin"), vec![0xF4; 32768]).unwrap();
         let file = temp.path().join("machine.toml");
         std::fs::write(&file, "schema=1\n[board]\nmodel='ibm-5170'\n[firmware.bios]\nimage='bios.bin'\n[[card]]\nkind='vga-text'\nid='colour'\n[[card]]\nkind='mda'\nid='mono'\n").unwrap();
@@ -1081,7 +1081,7 @@ mod tests {
 
     #[test]
     fn missing_default_suggests_machine_and_help_names_the_default_path() {
-        let temp = assembly::test_support::TempDir::new("window-missing-default");
+        let temp = machine_file::test_support::TempDir::new("window-missing-default");
         let missing = temp.path().join("missing.toml");
         let error = load_machine(&missing, &missing, assembly::AssemblyOptions::default())
             .err()
@@ -1464,7 +1464,7 @@ mod tests {
     #[test]
     fn an_absolute_legacy_journal_remains_the_only_journal() {
         use journal_files::{JournalMedia, SectorSource, SinkStatus, VerifiedBase};
-        let temp = assembly::test_support::TempDir::new("legacy-absolute-journal");
+        let temp = machine_file::test_support::TempDir::new("legacy-absolute-journal");
         let data = temp.path().canonicalize().unwrap();
         let journal = data.join("unemupc/machines/target/disk.upfj");
         legacy_machine(&data, &journal);
@@ -1506,7 +1506,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_symlinked_legacy_machine_keeps_target_relative_paths() {
-        let temp = assembly::test_support::TempDir::new("legacy-machine-link");
+        let temp = machine_file::test_support::TempDir::new("legacy-machine-link");
         let data = temp.path().canonicalize().unwrap();
         let target = legacy_machine(&data, Path::new("disk.upfj"));
         let old = data.join("unemupc/machines");
@@ -1525,7 +1525,7 @@ mod tests {
 
     #[test]
     fn files_opened_keep_their_saves_and_states_in_the_data_directory() {
-        let temp = assembly::test_support::TempDir::new("host-dirs");
+        let temp = machine_file::test_support::TempDir::new("host-dirs");
         for name in ["saves", "states"] {
             let old = temp
                 .path()

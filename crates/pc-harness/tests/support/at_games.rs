@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Disposable game profiles and synthetic media; machine-files.md §Validation.
 
-use assembly::test_support::TempDir;
+use machine_file::test_support::TempDir;
 use std::path::{Path, PathBuf};
 
 pub const IBM: &str = "at-games.toml";

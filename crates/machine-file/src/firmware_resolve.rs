@@ -158,7 +158,7 @@ fn path_text(path: &Path) -> Result<String, LoadError> {
 mod tests {
     use super::*;
     use crate::firmware_discovery::{with_discovery_session, DiscoveryControl, RootOrigin};
-    use assembly::test_support::TempDir;
+    use crate::test_support::TempDir;
     use sha2::{Digest, Sha256};
 
     #[test]

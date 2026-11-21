@@ -583,7 +583,7 @@ fn save(path: &Path, cache: &HashCache) -> io::Result<()> {
 #[cfg(all(test, not(windows)))]
 mod tests {
     use super::*;
-    use assembly::test_support::TempDir;
+    use crate::test_support::TempDir;
 
     fn test_session<T>(
         path: Option<&Path>,

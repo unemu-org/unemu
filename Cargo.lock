@@ -2077,6 +2077,7 @@ dependencies = [
  "egui",
  "image-registry",
  "image-store",
+ "machine-file",
  "media",
  "pc-image",
  "pc-media",

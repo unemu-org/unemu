@@ -593,7 +593,7 @@ mod tests {
     #[test]
     fn browse_pins_every_byte_and_disables_incompatible_images() {
         use sha2::{Digest, Sha256};
-        let temp = assembly::test_support::TempDir::new("browse-pins");
+        let temp = machine_file::test_support::TempDir::new("browse-pins");
         let path = temp.path().join("image.img");
         let mut bytes = vec![0; FloppyGeometry::HD_1_44.image_bytes() as usize];
         let last = bytes.len() - 1;
@@ -616,7 +616,7 @@ mod tests {
 
     #[test]
     fn browse_accepts_any_medium_the_drive_type_takes() {
-        let temp = assembly::test_support::TempDir::new("browse-mixed-density");
+        let temp = machine_file::test_support::TempDir::new("browse-mixed-density");
         for (image, drive, fits) in [
             (FloppyGeometry::DD_720K, FloppyGeometry::HD_1_44, true),
             (FloppyGeometry::DD_360K, FloppyGeometry::HD_1_2, true),
@@ -653,7 +653,7 @@ mod tests {
 
     #[test]
     fn relative_journal_paths_resolve_beside_the_selected_base() {
-        let temp = assembly::test_support::TempDir::new("journal-directory");
+        let temp = machine_file::test_support::TempDir::new("journal-directory");
         let root = temp.path().canonicalize().unwrap();
         let path = root.join("disk.img");
         std::fs::write(&path, vec![0; 1_474_560]).unwrap();
@@ -676,7 +676,7 @@ mod tests {
 
     #[test]
     fn selected_browsed_image_defaults_to_an_adjacent_journal() {
-        let temp = assembly::test_support::TempDir::new("journal-default");
+        let temp = machine_file::test_support::TempDir::new("journal-default");
         let root = temp.path().canonicalize().unwrap();
         let path = root.join("disk.img");
         std::fs::write(&path, vec![0; 1_474_560]).unwrap();
@@ -699,7 +699,7 @@ mod tests {
 
     #[test]
     fn blank_disk_paths_and_prefills_follow_the_machine_and_defining_layer() {
-        let temp = assembly::test_support::TempDir::new("blank-prefill");
+        let temp = machine_file::test_support::TempDir::new("blank-prefill");
         let root = temp.path().canonicalize().unwrap();
         std::fs::create_dir(root.join("child")).unwrap();
         let parent = root.join("base.toml");
@@ -735,7 +735,7 @@ mod tests {
 
     #[test]
     fn existing_blank_disk_output_uses_a_gui_message_and_preserves_the_file() {
-        let temp = assembly::test_support::TempDir::new("blank-existing");
+        let temp = machine_file::test_support::TempDir::new("blank-existing");
         let path = temp.path().join("existing.img");
         std::fs::write(&path, b"existing base").unwrap();
         let form = BlankDisk {
@@ -792,7 +792,7 @@ mod tests {
 
     #[test]
     fn session_images_switch_write_policy_and_machine_file_entries_stay_fixed() {
-        let temp = assembly::test_support::TempDir::new("session-write-policy");
+        let temp = machine_file::test_support::TempDir::new("session-write-policy");
         let root = temp.path().canonicalize().unwrap();
         let path = root.join("extra.img");
         std::fs::write(&path, vec![0; 1_474_560]).unwrap();
@@ -859,7 +859,7 @@ mod tests {
 
     #[test]
     fn browsing_the_same_image_again_reuses_its_catalogue_entry() {
-        let temp = assembly::test_support::TempDir::new("browse-reuse");
+        let temp = machine_file::test_support::TempDir::new("browse-reuse");
         let root = temp.path().canonicalize().unwrap();
         let path = root.join("disk.img");
         let copy = root.join("copy.img");
@@ -904,7 +904,7 @@ mod tests {
     #[test]
     fn browsing_a_machine_file_image_adds_a_session_row_that_may_journal() {
         use sha2::{Digest, Sha256};
-        let temp = assembly::test_support::TempDir::new("browse-declared");
+        let temp = machine_file::test_support::TempDir::new("browse-declared");
         let root = temp.path().canonicalize().unwrap();
         let path = root.join("declared.img");
         std::fs::write(&path, vec![0; 1_474_560]).unwrap();
@@ -945,7 +945,7 @@ mod tests {
 
     #[test]
     fn blank_disk_form_uses_existing_chs_size_and_formatted_floppy_creation() {
-        let temp = assembly::test_support::TempDir::new("blank-dialog");
+        let temp = machine_file::test_support::TempDir::new("blank-dialog");
         let mut form = BlankDisk {
             output: temp.path().join("fixed.img").to_string_lossy().into_owned(),
             ..BlankDisk::new(None)

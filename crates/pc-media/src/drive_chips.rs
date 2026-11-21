@@ -654,7 +654,7 @@ mod tests {
 
     #[test]
     fn chips_name_the_medium_format_in_a_mixed_density_drive() {
-        let temp = assembly::test_support::TempDir::new("chips-mixed-density");
+        let temp = machine_file::test_support::TempDir::new("chips-mixed-density");
         let game = temp.path().join("game.img");
         std::fs::write(&game, vec![0; 737_280]).unwrap();
         let mut config = machine();

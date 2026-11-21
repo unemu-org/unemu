@@ -54,7 +54,7 @@ fn version_and_about_share_the_desktop_notice_without_opening_a_window() {
 
 #[test]
 fn media_creation_runs_the_composed_command_line_without_a_display() {
-    let temp = assembly::test_support::TempDir::new("unemu-media-dispatch");
+    let temp = machine_file::test_support::TempDir::new("unemu-media-dispatch");
     let root = temp.path();
     let disk = root.join("disk.img");
     let output = run(&[
@@ -82,7 +82,7 @@ fn help_lists_both_the_window_and_command_words() {
 
 #[test]
 fn image_media_and_recipe_commands_work_without_a_window() {
-    let temp = assembly::test_support::TempDir::new("unemu-dispatch");
+    let temp = machine_file::test_support::TempDir::new("unemu-dispatch");
     let root = temp.path();
     let store = root.join("store");
     image_store::Store::open(&store).unwrap();

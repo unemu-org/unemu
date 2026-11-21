@@ -628,7 +628,7 @@ pub fn locate_firmware_with_roots(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use assembly::test_support::TempDir;
+    use crate::test_support::TempDir;
 
     fn pin(bytes: &[u8], length: Option<u64>) -> FirmwarePin {
         FirmwarePin {

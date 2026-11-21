@@ -13,7 +13,7 @@ use std::time::Duration;
 
 #[test]
 fn run_stops_a_guest_stuck_in_exception_delivery_with_a_report() {
-    let temp = assembly::test_support::TempDir::new("delivery-stall");
+    let temp = machine_file::test_support::TempDir::new("delivery-stall");
     let rom = assembly::test_support::delivery_stall_rom();
     let rom_path = temp.path().join("stall.bin");
     std::fs::write(&rom_path, &rom).unwrap();

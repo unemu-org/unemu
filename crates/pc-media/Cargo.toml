@@ -32,4 +32,5 @@ toml.workspace = true
 unemu-core-api.workspace = true
 
 [dev-dependencies]
+machine-file = { workspace = true, features = ["test-support"] }
 assembly = { workspace = true, features = ["test-support"] }

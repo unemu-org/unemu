@@ -1753,7 +1753,7 @@ pub(crate) mod tests {
 
     #[test]
     fn rom_folder_import_runs_on_the_worker_reports_refusals_and_refreshes_rows() {
-        let temp = assembly::test_support::TempDir::new("firmware-import-flow");
+        let temp = machine_file::test_support::TempDir::new("firmware-import-flow");
         let folder = chip_folder(temp.path());
         fs::write(folder.join("c"), [0x41; 16384]).unwrap();
         fs::write(folder.join("junk.bin"), [0x99; 16384]).unwrap();
@@ -1839,7 +1839,7 @@ pub(crate) mod tests {
 
     #[test]
     fn ambiguous_identities_changed_sources_and_cancelled_scans_are_refused() {
-        let temp = assembly::test_support::TempDir::new("firmware-import-refusals");
+        let temp = machine_file::test_support::TempDir::new("firmware-import-refusals");
         let store = Store::open(temp.path().join("store")).unwrap();
         let cat = [
             single("synthetic-first", 0x11, false),
@@ -1994,7 +1994,7 @@ pub(crate) mod tests {
 
     #[test]
     fn import_dialog_fails_and_closes_when_the_worker_is_missing_or_dies() {
-        let temp = assembly::test_support::TempDir::new("firmware-dead-worker");
+        let temp = machine_file::test_support::TempDir::new("firmware-dead-worker");
         let folder = chip_folder(temp.path());
         assert!(!LibraryView::new(None).can_import_firmware());
         // The request cannot reach a worker whose thread has already ended.
@@ -2029,7 +2029,7 @@ pub(crate) mod tests {
 
     #[test]
     fn unrelated_worker_errors_do_not_reach_the_import_dialog() {
-        let temp = assembly::test_support::TempDir::new("firmware-unrelated-error");
+        let temp = machine_file::test_support::TempDir::new("firmware-unrelated-error");
         let folder = chip_folder(temp.path());
         let mut view = LibraryView::synthetic(temp.path().join("store"));
         poll_until(&mut view, |v| v.snapshot.storage.is_some());
@@ -2059,7 +2059,7 @@ pub(crate) mod tests {
 
     #[test]
     fn scans_list_refused_sets_apart_from_unreadable_files() {
-        let temp = assembly::test_support::TempDir::new("firmware-scan-classes");
+        let temp = machine_file::test_support::TempDir::new("firmware-scan-classes");
         let store = Store::open(temp.path().join("store")).unwrap();
         let folder = chip_folder(temp.path());
         fs::write(folder.join("c"), [0x41; 16384]).unwrap();
@@ -2088,7 +2088,7 @@ pub(crate) mod tests {
     #[cfg(not(windows))]
     #[test]
     fn a_second_scan_reads_no_rom_through_the_persistent_index() {
-        let temp = assembly::test_support::TempDir::new("firmware-index-reuse");
+        let temp = machine_file::test_support::TempDir::new("firmware-index-reuse");
         let store = Store::open(temp.path().join("store")).unwrap();
         let folder = chip_folder(temp.path());
         // A hash of a file changed within two seconds never enters the index.

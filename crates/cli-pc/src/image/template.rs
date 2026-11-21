@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn the_official_guard_checks_the_declared_release() {
         use image_store::{firmware, license, media_type as mt, Descriptor, Digest};
-        let temp = assembly::test_support::TempDir::new("template-guard-release");
+        let temp = machine_file::test_support::TempDir::new("template-guard-release");
         let store = Store::open(temp.path().join("store")).unwrap();
         let rom = [0x5a_u8; 2048];
         let digest = Digest::of(&rom);

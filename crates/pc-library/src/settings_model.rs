@@ -758,8 +758,8 @@ mod tests {
         }
     }
 
-    fn fixture() -> (assembly::test_support::TempDir, SettingsModel) {
-        let temp = assembly::test_support::TempDir::new("settings-sheet");
+    fn fixture() -> (machine_file::test_support::TempDir, SettingsModel) {
+        let temp = machine_file::test_support::TempDir::new("settings-sheet");
         fs::create_dir(temp.path().join("machines")).unwrap();
         fs::write(temp.path().join("machines/bios.bin"), vec![0xF4; 32768]).unwrap();
         let parent = temp.path().join("machines/example.toml");
@@ -771,7 +771,7 @@ mod tests {
     #[test]
     fn shipped_documents_save_memory_children_without_modifying_the_sources() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines");
-        let output = assembly::test_support::TempDir::new("shipped-settings-children");
+        let output = machine_file::test_support::TempDir::new("shipped-settings-children");
         fs::create_dir(output.path().join("machines")).unwrap();
         let mut count = 0;
         for entry in fs::read_dir(&root).unwrap() {
@@ -1442,7 +1442,7 @@ mod tests {
             ) {
                 continue;
             }
-            let temp = assembly::test_support::TempDir::new("normal-lowering-parity");
+            let temp = machine_file::test_support::TempDir::new("normal-lowering-parity");
             let (document, origins) = machine_file::resolve(&path).unwrap();
             let variant = fixture_variant(document, &origins, temp.path(), &bios);
             let metadata = variant.describe(&origins).unwrap();
@@ -1503,8 +1503,8 @@ mod tests {
         assert_eq!(count, 6);
     }
 
-    fn parts_and_options_fixture() -> (assembly::test_support::TempDir, SettingsModel) {
-        let temp = assembly::test_support::TempDir::new("parts-and-video-settings");
+    fn parts_and_options_fixture() -> (machine_file::test_support::TempDir, SettingsModel) {
+        let temp = machine_file::test_support::TempDir::new("parts-and-video-settings");
         fs::create_dir_all(temp.path().join("machines")).unwrap();
         fs::create_dir_all(temp.path().join("vendor/user-roms")).unwrap();
         fs::create_dir_all(temp.path().join("external")).unwrap();

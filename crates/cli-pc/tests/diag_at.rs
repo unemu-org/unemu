@@ -10,7 +10,7 @@
 use std::ffi::OsString;
 
 fn run(extra: &[&str]) -> (u8, String) {
-    let temp = assembly::test_support::TempDir::new("diag-at");
+    let temp = machine_file::test_support::TempDir::new("diag-at");
     let rom = assembly::test_support::keyboard_masked_halt_rom();
     std::fs::write(temp.path().join("halt.bin"), &rom).unwrap();
     let machine = temp.path().join("halt.toml");

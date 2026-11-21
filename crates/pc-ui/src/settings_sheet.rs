@@ -1358,7 +1358,7 @@ mod tests {
 
     #[test]
     fn every_tab_and_invalid_reason_render_without_a_window() {
-        let temp = assembly::test_support::TempDir::new("settings-render");
+        let temp = machine_file::test_support::TempDir::new("settings-render");
         std::fs::create_dir(temp.path().join("machines")).unwrap();
         let path = temp.path().join("machines/example.toml");
         std::fs::write(&path, "schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='missing.bin'\n[[card]]\nkind='sb16'\n[[card]]\nkind='lotech-ems'\nframe=0xD000\n").unwrap();
@@ -1388,7 +1388,7 @@ mod tests {
     }
     #[test]
     fn fix_round_escape_and_title_close_cancel_without_saving() {
-        let temp = assembly::test_support::TempDir::new("sheet-close");
+        let temp = machine_file::test_support::TempDir::new("sheet-close");
         std::fs::create_dir(temp.path().join("machines")).unwrap();
         let path = temp.path().join("machines/example.toml");
         std::fs::write(

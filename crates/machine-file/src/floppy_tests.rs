@@ -8,7 +8,7 @@ use assembly::{FloppyMediaList, FloppyMedium, ImageSource, WriteMode};
 #[test]
 fn append_floppy_verifies_pins_and_paths_before_changing_the_catalogue() {
     use sha2::{Digest, Sha256};
-    let temp = assembly::test_support::TempDir::new("append-floppy");
+    let temp = crate::test_support::TempDir::new("append-floppy");
     let path = temp.path().join("extra.img");
     let base = vec![0x33; 1_474_560];
     std::fs::write(&path, &base).unwrap();
@@ -59,7 +59,7 @@ fn append_floppy_verifies_pins_and_paths_before_changing_the_catalogue() {
 
 #[test]
 fn append_floppy_takes_any_medium_the_drive_type_takes() {
-    let temp = assembly::test_support::TempDir::new("append-mixed-density");
+    let temp = crate::test_support::TempDir::new("append-mixed-density");
     let mut config = assembly::floppy_boot(vec![0xFA, 0xEB, 0xFE], vec![0; 1_474_560]);
     let mut assembled = crate::assemble(&config).unwrap();
     let medium = |name: &str, bytes: Vec<u8>| {
@@ -123,7 +123,7 @@ fn append_floppy_takes_any_medium_the_drive_type_takes() {
 
 #[test]
 fn appended_journal_keeps_guest_writes_separate_and_reopens_the_overlay() {
-    let temp = assembly::test_support::TempDir::new("append-journal");
+    let temp = crate::test_support::TempDir::new("append-journal");
     let path = temp.path().join("extra.img");
     let journal = temp.path().join("extra.upfj");
     let base = vec![0x33; 1_474_560];
@@ -241,7 +241,7 @@ fn floppy_media_schedule_is_ordered_and_applies_only_at_the_requested_boundary()
 /// first entry's would, and an entry past the catalogue is refused.
 #[test]
 fn a_catalogue_can_start_with_any_entry_in_the_drive() {
-    let temp = assembly::test_support::TempDir::new("floppy-power-on");
+    let temp = crate::test_support::TempDir::new("floppy-power-on");
     let base_path = temp.path().join("base.img");
     let journal_path = temp.path().join("second.upfj");
     std::fs::write(&base_path, vec![0x22; 1_474_560]).unwrap();
@@ -276,7 +276,7 @@ fn a_catalogue_can_start_with_any_entry_in_the_drive() {
 
 #[test]
 fn floppy_media_runtime_eject_releases_journal_and_reinsertion_replays_writes() {
-    let temp = assembly::test_support::TempDir::new("floppy-runtime");
+    let temp = crate::test_support::TempDir::new("floppy-runtime");
     let base_path = temp.path().join("base.img");
     let journal_path = temp.path().join("disk.upfj");
     let base = vec![0x11; 1_474_560];
@@ -373,7 +373,7 @@ fn floppy_media_eject_keeps_in_flight_ide_sectors_buffered_until_finish() {
         AtaControllerModel, DeviceConfig, DeviceKind, DriveConfig, DriveKind, HardDiskGeometry,
         IdeCfg,
     };
-    let temp = assembly::test_support::TempDir::new("floppy-ide-boundary");
+    let temp = crate::test_support::TempDir::new("floppy-ide-boundary");
     let floppy_base = vec![0; assembly::FloppyGeometry::DD_360K.image_bytes() as usize];
     let ide_base = vec![0x11; 32768];
     let floppy_image = temp.path().join("floppy.img");

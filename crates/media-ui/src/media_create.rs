@@ -1475,8 +1475,8 @@ pub(crate) mod tests {
 
     /// Host files under a temporary folder: each path relative to it with
     /// its length.
-    pub(crate) fn host(tag: &str, files: &[(&str, usize)]) -> assembly::test_support::TempDir {
-        let temp = assembly::test_support::TempDir::new(tag);
+    pub(crate) fn host(tag: &str, files: &[(&str, usize)]) -> machine_file::test_support::TempDir {
+        let temp = machine_file::test_support::TempDir::new(tag);
         for (relative, length) in files {
             let path = temp.path().join(relative);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();

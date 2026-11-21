@@ -2052,7 +2052,7 @@ pub(crate) mod tests {
     /// starts it; with machines it asks which, the last run first.
     #[test]
     fn start_on_an_image_creates_a_machine_or_asks_which() {
-        let temp = assembly::test_support::TempDir::new("start-on-image");
+        let temp = machine_file::test_support::TempDir::new("start-on-image");
         let mut view = LibraryView::synthetic(temp.path().join("store"));
         let image_row = row("x", "X", "a", &["games:1.0.0"]).image_row();
         view.start_image(image_row.clone());
@@ -2117,7 +2117,7 @@ pub(crate) mod tests {
     /// for (and then following) the selected machine's readiness check.
     #[test]
     fn image_gaming_mode_plays_the_image_without_the_machines_check() {
-        let temp = assembly::test_support::TempDir::new("image-gaming");
+        let temp = machine_file::test_support::TempDir::new("image-gaming");
         let mut view = LibraryView::synthetic(temp.path().join("store"));
         let machine = row("dos", "DOS", "a", &["games:1.0.0"]);
         view.set_machines(vec![machine.clone()]);

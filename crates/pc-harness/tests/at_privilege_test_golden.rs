@@ -25,13 +25,13 @@
 //! Appendix B (IRET and RET n to an outer level; CALL through a call gate;
 //! CLI at CPL > IOPL raises #GP(0)).
 
-use assembly::test_support::TempDir;
 use assembly::{
     AssemblyOptions, DeviceId, ObservationPolicy, ObservationRequest, OutputKind, RunPolicy,
 };
 use cpu::Cpu;
 use device::ByteStreamKind;
 use machine::RunOutcome;
+use machine_file::test_support::TempDir;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 

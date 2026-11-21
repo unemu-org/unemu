@@ -2188,7 +2188,7 @@ pub(crate) mod tests {
 
     #[test]
     fn folder_import_runs_on_the_worker_like_the_cli_and_reimport_is_already_imported() {
-        let temp = assembly::test_support::TempDir::new("media-import-flow");
+        let temp = machine_file::test_support::TempDir::new("media-import-flow");
         let folder = temp.path().join("disks");
         fs::create_dir(&folder).unwrap();
         disk(&folder.join("b.img"), FLOPPY_1440, 2);
@@ -2282,7 +2282,7 @@ pub(crate) mod tests {
 
     #[test]
     fn refusals_read_as_the_cli_gives_them_and_cancel_stops_between_files() {
-        let temp = assembly::test_support::TempDir::new("media-import-refusals");
+        let temp = machine_file::test_support::TempDir::new("media-import-refusals");
         let folder = temp.path().join("mixed");
         fs::create_dir(&folder).unwrap();
         disk(&folder.join("a.img"), FLOPPY_1440, 1);
@@ -2379,7 +2379,7 @@ pub(crate) mod tests {
 
     #[test]
     fn import_dialog_fails_and_closes_when_the_worker_is_missing_or_dies() {
-        let temp = assembly::test_support::TempDir::new("media-dead-worker");
+        let temp = machine_file::test_support::TempDir::new("media-dead-worker");
         let source = temp.path().join("a.img");
         disk(&source, FLOPPY_1440, 1);
         assert!(!LibraryView::new(None).can_import_media());

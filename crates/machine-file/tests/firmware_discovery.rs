@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Synthetic host ROM discovery through launch loading; machine-files.md §Frontends.
-use assembly::test_support::TempDir;
+use machine_file::test_support::TempDir;
 use sha2::{Digest, Sha256};
 
 fn digest(bytes: &[u8]) -> String {

@@ -6801,7 +6801,7 @@ mod tests {
 
     #[test]
     fn settings_save_selects_the_child_and_live_sessions_reject_publication() {
-        let temp = assembly::test_support::TempDir::new("shell-settings");
+        let temp = machine_file::test_support::TempDir::new("shell-settings");
         std::fs::create_dir(temp.path().join("machines")).unwrap();
         let parent = temp.path().join("machines/example.toml");
         std::fs::write(
@@ -6901,7 +6901,7 @@ mod tests {
         shell.command(Command::PullReference, &ctx);
         assert!(shell.image_library.push.is_none() && shell.image_library.pull.is_none());
         shell.stop();
-        let temp = assembly::test_support::TempDir::new("shell-registry-transfer");
+        let temp = machine_file::test_support::TempDir::new("shell-registry-transfer");
         let path = temp.path().join("preferences.toml");
         std::fs::write(&path, "default_registry = \"nas.example:5000\"\n[[registries]]\nhost = \"nas.example:5000\"\nprivate = true\n").unwrap();
         shell.preferences_path = Some(path);
@@ -7165,7 +7165,7 @@ mod tests {
         assert!(!shell.image_library.remote_shown());
         shell.stop();
         assert!(shell.command_allowed(Command::GetTemplates));
-        let temp = assembly::test_support::TempDir::new("shell-templates");
+        let temp = machine_file::test_support::TempDir::new("shell-templates");
         let path = temp.path().join("preferences.toml");
         std::fs::write(&path, "default_registry = \"nas.example:5000\"\n").unwrap();
         shell.preferences_path = Some(path);
@@ -7200,7 +7200,7 @@ mod tests {
         let mut shell = shell();
         shell.stop();
         let ctx = egui::Context::default();
-        let temp = assembly::test_support::TempDir::new("shell-remotes-login");
+        let temp = machine_file::test_support::TempDir::new("shell-remotes-login");
         let path = temp.path().join("preferences.toml");
         std::fs::write(
             &path,
@@ -7236,7 +7236,7 @@ mod tests {
     fn log_in_for_a_registry_without_an_entry_opens_add_registry_and_selects_no_other_row() {
         let mut shell = shell();
         let ctx = egui::Context::default();
-        let temp = assembly::test_support::TempDir::new("shell-templates-add");
+        let temp = machine_file::test_support::TempDir::new("shell-templates-add");
         let path = temp.path().join("preferences.toml");
         // The default registry has no [[registries]] entry, as UNEMU_REGISTRY
         // or a bare default_registry allows.
@@ -7289,7 +7289,7 @@ mod tests {
             let host_name = registry.host();
             let mut shell = shell();
             shell.stop();
-            let temp = assembly::test_support::TempDir::new("shell-login-paste");
+            let temp = machine_file::test_support::TempDir::new("shell-login-paste");
             let path = temp.path().join("preferences.toml");
             std::fs::write(
                 &path,
@@ -7445,7 +7445,7 @@ mod tests {
         (shell, host)
     }
 
-    fn floppy_image(temp: &assembly::test_support::TempDir, name: &str) -> std::path::PathBuf {
+    fn floppy_image(temp: &machine_file::test_support::TempDir, name: &str) -> std::path::PathBuf {
         let path = temp.path().join(name);
         std::fs::write(&path, vec![0; 1_474_560]).unwrap();
         path.canonicalize().unwrap()
@@ -7482,7 +7482,7 @@ mod tests {
             assert_eq!(request.file_name.as_deref(), file_name, "{asker:?}");
         };
         let ctx = egui::Context::default();
-        let temp = assembly::test_support::TempDir::new("file-dialog-requests");
+        let temp = machine_file::test_support::TempDir::new("file-dialog-requests");
         let base = floppy_image(&temp, "extra.img");
         let folder = base.parent().unwrap().to_path_buf();
         let folder_name = folder.file_name().unwrap().to_str().unwrap().to_owned();
@@ -7595,7 +7595,7 @@ mod tests {
     #[test]
     fn browse_from_a_drive_picker_returns_at_once_and_the_machine_keeps_running() {
         let ctx = egui::Context::default();
-        let temp = assembly::test_support::TempDir::new("file-dialog-browse");
+        let temp = machine_file::test_support::TempDir::new("file-dialog-browse");
         let image = floppy_image(&temp, "extra.img");
         let (mut shell, host) = file_dialog_shell();
         shell.apply_picker(crate::media_picker::Outcome::Browse(0));
@@ -7633,7 +7633,7 @@ mod tests {
     #[test]
     fn a_second_file_dialog_is_refused_while_one_is_open() {
         let ctx = egui::Context::default();
-        let temp = assembly::test_support::TempDir::new("file-dialog-busy");
+        let temp = machine_file::test_support::TempDir::new("file-dialog-busy");
         let image = floppy_image(&temp, "extra.img");
         let (mut shell, host) = file_dialog_shell();
         shell.apply_picker(crate::media_picker::Outcome::Browse(0));
@@ -7678,7 +7678,7 @@ mod tests {
     #[test]
     fn the_frame_logic_delivers_the_answer_before_drawing() {
         let ctx = egui::Context::default();
-        let temp = assembly::test_support::TempDir::new("file-dialog-frame");
+        let temp = machine_file::test_support::TempDir::new("file-dialog-frame");
         let image = floppy_image(&temp, "extra.img");
         let (mut shell, host) = file_dialog_shell();
         let mut frame = eframe::Frame::_new_kittest();
@@ -7699,7 +7699,7 @@ mod tests {
 
     /// Files and library state the delivery rows share.
     struct Delivery {
-        temp: assembly::test_support::TempDir,
+        temp: machine_file::test_support::TempDir,
         image: std::path::PathBuf,
         second: std::path::PathBuf,
         library: crate::library_test_support::Fixture,
@@ -7708,7 +7708,7 @@ mod tests {
 
     impl Delivery {
         fn new() -> Self {
-            let temp = assembly::test_support::TempDir::new("file-dialog-delivery");
+            let temp = machine_file::test_support::TempDir::new("file-dialog-delivery");
             let library = crate::library_test_support::Fixture::new();
             crate::library_view::firmware::tests::publish_open_package(&library);
             let cache = crate::library_view::firmware::tests::warm(&library.store);
@@ -8134,7 +8134,7 @@ mod tests {
             "changed pin",
             "journal alias",
         ] {
-            let temp = assembly::test_support::TempDir::new("browse-validation");
+            let temp = machine_file::test_support::TempDir::new("browse-validation");
             let path = temp.path().join("extra.img");
             std::fs::write(&path, vec![0; 1_474_560]).unwrap();
             let mut shell = media_shell();
@@ -8225,7 +8225,7 @@ mod tests {
 
     #[test]
     fn create_blank_disk_prefills_the_selected_failed_drives_path_and_geometry() {
-        let temp = assembly::test_support::TempDir::new("shell-blank-prefill");
+        let temp = machine_file::test_support::TempDir::new("shell-blank-prefill");
         let root = temp.path().canonicalize().unwrap();
         let machine = root.join("example.toml");
         std::fs::write(&machine, "schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='missing.bin'\n[[card]]\nid='fdc-765'\n[[card.drives]]\nunit=0\ntype='360K'\nimage='transfer.img'\nwrite='readonly'\n").unwrap();
@@ -8263,7 +8263,7 @@ mod tests {
 
     #[test]
     fn failed_journal_mount_stops_execution_and_shows_a_persistence_dialog() {
-        let temp = assembly::test_support::TempDir::new("shell-journal-error");
+        let temp = machine_file::test_support::TempDir::new("shell-journal-error");
         let path = temp.path().join("extra.img");
         let journal = temp.path().join("invalid.upfj");
         std::fs::write(&path, vec![0; 1_474_560]).unwrap();
@@ -8367,7 +8367,7 @@ mod tests {
     fn browse_insertion_runs_while_paused_and_a_changed_pin_stays_in_the_dialog() {
         let ctx = egui::Context::default();
         for changed in [false, true] {
-            let temp = assembly::test_support::TempDir::new("shell-browse");
+            let temp = machine_file::test_support::TempDir::new("shell-browse");
             let path = temp.path().join("extra.img");
             std::fs::write(&path, vec![0; 1_474_560]).unwrap();
             let mut shell = media_shell();
@@ -9149,7 +9149,7 @@ mod tests {
 
     #[test]
     fn turning_the_option_on_asks_for_accessibility_once_and_saves_it() {
-        let temp = assembly::test_support::TempDir::new("shell-system-shortcuts");
+        let temp = machine_file::test_support::TempDir::new("shell-system-shortcuts");
         let path = temp.path().join("preferences.toml");
         let (mut shell, log) = system_keys_shell();
         shell.preferences_path = Some(path.clone());
@@ -9405,7 +9405,7 @@ mod tests {
     /// break codes do. Without a machine the chord writes nothing.
     #[test]
     fn the_diagnostic_chord_saves_a_report_and_never_types_d() {
-        let temp = assembly::test_support::TempDir::new("shell-diagnostics");
+        let temp = machine_file::test_support::TempDir::new("shell-diagnostics");
         let folder = temp.path().join("unemu").join("diagnostics");
         let chord = |shell: &mut Shell| {
             let ctx = egui::Context::default();
@@ -10030,7 +10030,7 @@ mod tests {
         );
     }
 
-    fn journal_shell(temp: &assembly::test_support::TempDir, program: Vec<u8>) -> Shell {
+    fn journal_shell(temp: &machine_file::test_support::TempDir, program: Vec<u8>) -> Shell {
         let base = temp.path().join("base.img");
         let journal = temp.path().join("disk.upfj");
         std::fs::write(&base, vec![0; 1_474_560]).unwrap();
@@ -10062,7 +10062,7 @@ mod tests {
 
     #[test]
     fn stop_preserves_unsealed_execution_error_journals() {
-        let temp = assembly::test_support::TempDir::new("shell-execution-error");
+        let temp = machine_file::test_support::TempDir::new("shell-execution-error");
         let mut shell = journal_shell(&temp, vec![0x0f, 0x05]);
         shell
             .presenter
@@ -10084,7 +10084,7 @@ mod tests {
 
     #[test]
     fn stop_finishes_the_session_a_halt_left_open() {
-        let temp = assembly::test_support::TempDir::new("shell-finished-halt");
+        let temp = machine_file::test_support::TempDir::new("shell-finished-halt");
         let mut shell = journal_shell(&temp, vec![0xfa, 0xf4]);
         shell
             .presenter
@@ -10156,7 +10156,7 @@ mod tests {
     /// count.
     #[test]
     fn record_exceptions_writes_the_last_entries_at_every_trigger() {
-        let temp = assembly::test_support::TempDir::new("shell-record-exceptions");
+        let temp = machine_file::test_support::TempDir::new("shell-record-exceptions");
         let folder = temp.path().join("unemu").join("diagnostics");
         let ctx = egui::Context::default();
         let trace = |n: u32| folder.join(format!("trace-{n}.txt"));
@@ -10264,7 +10264,7 @@ mod tests {
     /// refused), the report says why instead of calling the item off.
     #[test]
     fn the_report_says_why_a_checked_recording_is_missing() {
-        let temp = assembly::test_support::TempDir::new("shell-recording-refused");
+        let temp = machine_file::test_support::TempDir::new("shell-recording-refused");
         let folder = temp.path().join("unemu").join("diagnostics");
         let mut shell = keyboard_shell();
         shell.args.diagnostics = Ok(folder.clone());
@@ -10339,7 +10339,7 @@ mod tests {
     /// always works. Each item does what it says.
     #[test]
     fn the_tools_menu_has_the_diagnostics_items() {
-        let temp = assembly::test_support::TempDir::new("shell-diagnostics-menu");
+        let temp = machine_file::test_support::TempDir::new("shell-diagnostics-menu");
         let folder = temp.path().join("unemu").join("diagnostics");
         let ctx = egui::Context::default();
         let item = |nodes: &[(String, bool, Option<bool>)], label: &str| {
@@ -10510,7 +10510,7 @@ mod tests {
     /// A stopped shell with one ready machine file selected: its 1.44M A:
     /// starts empty with `boot.img` in its catalogue, and its B: is empty.
     fn stopped_machine_file_shell(
-        temp: &assembly::test_support::TempDir,
+        temp: &machine_file::test_support::TempDir,
     ) -> (Shell, std::path::PathBuf) {
         std::fs::write(temp.path().join("bios.bin"), vec![0xF4; 32768]).unwrap();
         std::fs::write(temp.path().join("boot.img"), vec![0; 1_474_560]).unwrap();
@@ -10535,7 +10535,7 @@ mod tests {
 
     #[test]
     fn floppies_inserted_before_start_go_in_before_the_first_instruction() {
-        let temp = assembly::test_support::TempDir::new("shell-pending-floppy");
+        let temp = machine_file::test_support::TempDir::new("shell-pending-floppy");
         let (mut shell, path) = stopped_machine_file_shell(&temp);
         let machine_file = std::fs::read(&path).unwrap();
         let ctx = egui::Context::default();
@@ -10636,7 +10636,7 @@ mod tests {
 
     #[test]
     fn another_selection_drops_the_floppies_inserted_for_start() {
-        let temp = assembly::test_support::TempDir::new("shell-pending-selection");
+        let temp = machine_file::test_support::TempDir::new("shell-pending-selection");
         let (mut shell, _) = stopped_machine_file_shell(&temp);
         let ctx = egui::Context::default();
         shell.command(Command::InsertFile(0), &ctx);
@@ -10735,7 +10735,7 @@ mod tests {
 
     #[test]
     fn an_error_dialog_on_a_halted_session_still_lets_stop_finish_it() {
-        let temp = assembly::test_support::TempDir::new("shell-halt-error");
+        let temp = machine_file::test_support::TempDir::new("shell-halt-error");
         let mut shell = journal_shell(&temp, vec![0xfa, 0xf4]);
         shell
             .presenter
@@ -10756,7 +10756,7 @@ mod tests {
 
     #[test]
     fn exit_from_a_halted_session_finishes_its_cmos_journal_as_the_cli_does() {
-        let temp = assembly::test_support::TempDir::new("shell-halt-exit");
+        let temp = machine_file::test_support::TempDir::new("shell-halt-exit");
         let base = temp.path().join("cmos.bin");
         std::fs::write(&base, [0; 64]).unwrap();
         let cli = temp.path().join("cli.upfj");
@@ -10818,7 +10818,7 @@ mod tests {
 
     #[test]
     fn start_leaves_out_a_changed_pending_floppy_and_inserts_the_others() {
-        let temp = assembly::test_support::TempDir::new("shell-pending-failure");
+        let temp = machine_file::test_support::TempDir::new("shell-pending-failure");
         let (mut shell, _) = stopped_machine_file_shell(&temp);
         let ctx = egui::Context::default();
         for (unit, name) in [(0, "a.img"), (1, "b.img")] {
@@ -10858,7 +10858,7 @@ mod tests {
 
     #[test]
     fn a_changed_machine_file_never_swaps_the_disk_inserted_before_start() {
-        let temp = assembly::test_support::TempDir::new("shell-pending-changed");
+        let temp = machine_file::test_support::TempDir::new("shell-pending-changed");
         let other = temp.path().join("other.img");
         std::fs::write(&other, vec![0; 1_474_560]).unwrap();
         let ctx = egui::Context::default();
@@ -10890,7 +10890,7 @@ mod tests {
         assert!(shell.drive_views().is_empty());
         // Edited outside the program: Start reads the new file and leaves the
         // pending disk out instead of inserting another one.
-        let temp = assembly::test_support::TempDir::new("shell-pending-edited");
+        let temp = machine_file::test_support::TempDir::new("shell-pending-edited");
         std::fs::write(temp.path().join("other.img"), vec![0; 1_474_560]).unwrap();
         let (mut shell, path) = stopped_machine_file_shell(&temp);
         insert_boot(&mut shell);
@@ -10922,7 +10922,7 @@ mod tests {
     /// INT 18h, as a hard disk's master boot record does without an active
     /// partition; otherwise A: starts empty.
     fn open_bios_floppy_machine(
-        temp: &assembly::test_support::TempDir,
+        temp: &machine_file::test_support::TempDir,
         no_boot: bool,
     ) -> Option<std::path::PathBuf> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -11002,7 +11002,7 @@ mod tests {
     #[test]
     #[ignore = "slow: open AT BIOS POST twice and a FreeDOS 1.2M boot through the shell"]
     fn no_rom_basic_takes_a_boot_floppy_and_ctrl_alt_del_boots_freedos() {
-        let temp = assembly::test_support::TempDir::new("shell-no-rom-basic");
+        let temp = machine_file::test_support::TempDir::new("shell-no-rom-basic");
         let Some(path) = open_bios_floppy_machine(&temp, true) else {
             return;
         };
@@ -11049,7 +11049,7 @@ mod tests {
     #[test]
     #[ignore = "slow: open AT BIOS POST and a FreeDOS 1.2M boot through the shell"]
     fn a_floppy_inserted_before_start_boots_freedos_on_the_open_bios() {
-        let temp = assembly::test_support::TempDir::new("shell-pending-boot");
+        let temp = machine_file::test_support::TempDir::new("shell-pending-boot");
         let Some(path) = open_bios_floppy_machine(&temp, false) else {
             return;
         };
@@ -11078,7 +11078,7 @@ mod tests {
 
     #[test]
     fn failed_finish_drops_session_and_exit_remains_available() {
-        let temp = assembly::test_support::TempDir::new("shell-failed-finish");
+        let temp = machine_file::test_support::TempDir::new("shell-failed-finish");
         let mut shell = journal_shell(&temp, vec![0xeb, 0xfe]);
         shell.presenter.as_mut().unwrap().assembled().persistence[0].fail_output();
         assert!(!shell.stop());
@@ -11213,7 +11213,7 @@ mod tests {
     }
     #[test]
     fn exit_closes_even_when_it_discovers_a_finish_error() {
-        let temp = assembly::test_support::TempDir::new("shell-exit-finish-error");
+        let temp = machine_file::test_support::TempDir::new("shell-exit-finish-error");
         let mut shell = journal_shell(&temp, vec![0xeb, 0xfe]);
         shell.presenter.as_mut().unwrap().assembled().persistence[0].fail_output();
         let ctx = egui::Context::default();
@@ -11244,7 +11244,7 @@ mod tests {
         assert!(shell.errors.borrow().is_none());
     }
 
-    fn discovery_shell(temp: &assembly::test_support::TempDir) -> Shell {
+    fn discovery_shell(temp: &machine_file::test_support::TempDir) -> Shell {
         use sha2::{Digest, Sha256};
         let root = temp.path().join("roms");
         std::fs::create_dir(&root).unwrap();
@@ -11295,7 +11295,7 @@ kind='mda'
 
     #[test]
     fn readiness_uses_preferences_store_then_injected_default_without_rom_folders() {
-        let temp = assembly::test_support::TempDir::new("readiness-store-root");
+        let temp = machine_file::test_support::TempDir::new("readiness-store-root");
         let root = temp.path().join("configured");
         let store = image_store::Store::open(&root).unwrap();
         let bytes = vec![0xf4; 32768];
@@ -11410,7 +11410,7 @@ kind='mda'
 
     #[test]
     fn checked_start_has_zero_discovery_reads_without_an_error_hint() {
-        let temp = assembly::test_support::TempDir::new("checked-start-reuse");
+        let temp = machine_file::test_support::TempDir::new("checked-start-reuse");
         let mut shell = discovery_shell(&temp);
         let ctx = egui::Context::default();
         let checked = finish_discovery(&mut shell, &ctx);
@@ -11436,7 +11436,7 @@ kind='mda'
 
     #[test]
     fn changed_located_rom_relists_only_its_folder_and_retries_once() {
-        let temp = assembly::test_support::TempDir::new("changed-start-rom");
+        let temp = machine_file::test_support::TempDir::new("changed-start-rom");
         let mut shell = discovery_shell(&temp);
         let untouched = temp.path().join("untouched");
         std::fs::create_dir(&untouched).unwrap();
@@ -11460,7 +11460,7 @@ kind='mda'
 
     #[test]
     fn missing_replacement_reports_only_the_final_failure_without_looping() {
-        let temp = assembly::test_support::TempDir::new("failed-start-retry");
+        let temp = machine_file::test_support::TempDir::new("failed-start-retry");
         let mut shell = discovery_shell(&temp);
         let ctx = egui::Context::default();
         finish_discovery(&mut shell, &ctx);
@@ -11478,7 +11478,7 @@ kind='mda'
 
     #[test]
     fn folder_add_scans_once_and_selection_reuses_the_session_listing() {
-        let temp = assembly::test_support::TempDir::new("folder-add-scan");
+        let temp = machine_file::test_support::TempDir::new("folder-add-scan");
         let mut shell = discovery_shell(&temp);
         shell.preferences = Default::default();
         shell.preferences_draft = Default::default();
@@ -11509,7 +11509,7 @@ kind='mda'
 
     #[test]
     fn automatic_check_recovers_a_rom_moved_into_a_subfolder() {
-        let temp = assembly::test_support::TempDir::new("moved-session-rom");
+        let temp = machine_file::test_support::TempDir::new("moved-session-rom");
         let mut shell = discovery_shell(&temp);
         let ctx = egui::Context::default();
         finish_discovery(&mut shell, &ctx);
@@ -11529,7 +11529,7 @@ kind='mda'
 
     #[test]
     fn saved_folder_changes_keep_existing_listings_and_drafts_do_not_scan() {
-        let temp = assembly::test_support::TempDir::new("incremental-rom-folders");
+        let temp = machine_file::test_support::TempDir::new("incremental-rom-folders");
         let mut shell = discovery_shell(&temp);
         let ctx = egui::Context::default();
         finish_discovery(&mut shell, &ctx);
@@ -11557,7 +11557,7 @@ kind='mda'
 
     #[test]
     fn saved_folder_changes_defer_readiness_while_a_machine_runs() {
-        let temp = assembly::test_support::TempDir::new("running-rom-folders");
+        let temp = machine_file::test_support::TempDir::new("running-rom-folders");
         let mut shell = discovery_shell(&temp);
         let ctx = egui::Context::default();
         finish_discovery(&mut shell, &ctx);
@@ -11579,7 +11579,7 @@ kind='mda'
     #[test]
     fn abandoned_start_resets_loading_after_selection_cancel_and_disconnect() {
         for action in 0..3 {
-            let temp = assembly::test_support::TempDir::new("abandoned-start-status");
+            let temp = machine_file::test_support::TempDir::new("abandoned-start-status");
             let mut shell = discovery_shell(&temp);
             shell.discovery_roots = shell
                 .preferences
@@ -11611,7 +11611,7 @@ kind='mda'
 
     #[test]
     fn changed_machine_document_is_not_replaced_by_the_checked_document() {
-        let temp = assembly::test_support::TempDir::new("changed-machine-start");
+        let temp = machine_file::test_support::TempDir::new("changed-machine-start");
         let mut shell = discovery_shell(&temp);
         let path = shell.library[0].path.clone();
         let parent = temp.path().join("parent.toml");
@@ -11656,7 +11656,7 @@ kind='mda'
     #[test]
     fn discovery_job_uses_only_explicit_and_injected_roots() {
         use machine_file::firmware_discovery::{FirmwareRoot, RootOrigin};
-        let temp = assembly::test_support::TempDir::new("isolated-shell-discovery");
+        let temp = machine_file::test_support::TempDir::new("isolated-shell-discovery");
         let mut shell = discovery_shell(&temp);
         let env_like = FirmwareRoot::new(
             temp.path().join("missing-env-like"),
@@ -11691,7 +11691,7 @@ kind='mda'
 
     #[test]
     fn cancel_and_rescan_preserve_dialog_disable_start_and_discard_old_readiness() {
-        let temp = assembly::test_support::TempDir::new("cancel-rescan-readiness");
+        let temp = machine_file::test_support::TempDir::new("cancel-rescan-readiness");
         let mut shell = discovery_shell(&temp);
         shell.dialog = Some(("ROM folders", String::new()));
         let ctx = egui::Context::default();
@@ -11737,7 +11737,7 @@ kind='mda'
 
     #[test]
     fn closing_folders_discards_drafts_without_touching_a_saved_job() {
-        let temp = assembly::test_support::TempDir::new("close-firmware-folders");
+        let temp = machine_file::test_support::TempDir::new("close-firmware-folders");
         let mut shell = discovery_shell(&temp);
         let ctx = egui::Context::default();
         shell.poll_readiness(&ctx);
@@ -11759,7 +11759,7 @@ kind='mda'
 
     #[test]
     fn superseded_selection_is_not_a_user_cancel_even_when_selected_again() {
-        let temp = assembly::test_support::TempDir::new("superseded-firmware-check");
+        let temp = machine_file::test_support::TempDir::new("superseded-firmware-check");
         let mut shell = discovery_shell(&temp);
         shell.checked_selection = Some(0);
         shell
@@ -11859,7 +11859,7 @@ kind='mda'
 
     #[test]
     fn cancel_discards_a_queued_rescan_before_the_previous_worker_finishes() {
-        let temp = assembly::test_support::TempDir::new("cancel-queued-rescan");
+        let temp = machine_file::test_support::TempDir::new("cancel-queued-rescan");
         let mut shell = shell();
         shell.presenter = None;
         let path = temp.path().join("machine.toml");
@@ -11922,7 +11922,7 @@ kind='mda'
 
     #[test]
     fn readiness_checks_only_selection_and_ignores_stale_results() {
-        let temp = assembly::test_support::TempDir::new("selected-firmware-readiness");
+        let temp = machine_file::test_support::TempDir::new("selected-firmware-readiness");
         let mut shell = shell();
         shell.presenter = None;
         shell.library = vec![
@@ -11960,7 +11960,7 @@ kind='mda'
     #[test]
     fn saved_rom_folders_refresh_readiness_and_feed_launch_loading() {
         use sha2::{Digest, Sha256};
-        let temp = assembly::test_support::TempDir::new("shell-rom-readiness");
+        let temp = machine_file::test_support::TempDir::new("shell-rom-readiness");
         let dumps = temp.path().join("dumps");
         std::fs::create_dir(&dumps).unwrap();
         let bytes = vec![0xf4; 32768];
@@ -12359,7 +12359,7 @@ kind='mda'
 
     /// A shell whose machine file lives in `temp` and whose machine is the
     /// protected-mode guest the CPU core refuses.
-    fn refusing_shell(temp: &assembly::test_support::TempDir) -> Shell {
+    fn refusing_shell(temp: &machine_file::test_support::TempDir) -> Shell {
         let mut shell = shell();
         shell.args.machine = temp.path().join("refusal.toml");
         shell.presenter = Some(refusing_presenter());
@@ -12427,7 +12427,7 @@ kind='mda'
     #[test]
     fn a_cpu_refusal_shows_saves_and_copies_its_stop_report() {
         use std::time::Duration;
-        let temp = assembly::test_support::TempDir::new("window-cpu-stop-report");
+        let temp = machine_file::test_support::TempDir::new("window-cpu-stop-report");
         let mut shell = refusing_shell(&temp);
         let ctx = egui::Context::default();
         shell.presenter.as_mut().unwrap().full_slices = true;
@@ -12486,7 +12486,7 @@ kind='mda'
     /// file that exists.
     #[test]
     fn a_new_session_saves_its_own_stop_report() {
-        let temp = assembly::test_support::TempDir::new("window-cpu-stop-again");
+        let temp = machine_file::test_support::TempDir::new("window-cpu-stop-again");
         let mut shell = refusing_shell(&temp);
         tick_to_refusal(&mut shell);
         assert!(!shell.stop());
@@ -12592,7 +12592,7 @@ kind='mda'
 
     #[test]
     fn stop_prompt_names_the_machine_and_escape_cancels() {
-        let temp = assembly::test_support::TempDir::new("stop-prompt-name");
+        let temp = machine_file::test_support::TempDir::new("stop-prompt-name");
         let path = temp.path().join("dos-games.toml");
         std::fs::write(
             &path,
@@ -12683,7 +12683,7 @@ kind='mda'
 
     #[test]
     fn insert_dialog_fixes_only_machine_file_policies_and_session_images_can_switch() {
-        let temp = assembly::test_support::TempDir::new("insert-write-policy");
+        let temp = machine_file::test_support::TempDir::new("insert-write-policy");
         let root = temp.path().canonicalize().unwrap();
         let path = root.join("extra.img");
         std::fs::write(&path, vec![0; 1_474_560]).unwrap();
@@ -13003,7 +13003,7 @@ kind='mda'
 
     #[test]
     fn chip_insert_opens_the_media_picker_and_its_set_reads_the_library_store() {
-        let temp = assembly::test_support::TempDir::new("chip-from-library");
+        let temp = machine_file::test_support::TempDir::new("chip-from-library");
         let root = temp.path().canonicalize().unwrap();
         let ctx = egui::Context::default();
         let mut shell = media_shell();
@@ -13069,7 +13069,7 @@ kind='mda'
         shell.picker = None;
         assert!(shell.stop());
 
-        let temp = assembly::test_support::TempDir::new("shell-create-menu");
+        let temp = machine_file::test_support::TempDir::new("shell-create-menu");
         let (mut shell, _) = stopped_machine_file_shell(&temp);
         let ctx = egui::Context::default();
         let drawn = draw(&ctx, &mut shell, Vec::new());
@@ -13230,7 +13230,7 @@ kind='mda'
     /// A stopped shell with one machine file selected: its 1.44M A: holds
     /// `one.img` at power-on and `two.img` too in its catalogue; its B:
     /// starts empty, with no disk in its catalogue.
-    fn stopped_two_disk_shell(temp: &assembly::test_support::TempDir) -> Shell {
+    fn stopped_two_disk_shell(temp: &machine_file::test_support::TempDir) -> Shell {
         std::fs::write(temp.path().join("bios.bin"), vec![0xF4; 32768]).unwrap();
         for name in ["one.img", "two.img"] {
             std::fs::write(temp.path().join(name), vec![0; 1_474_560]).unwrap();
@@ -13262,7 +13262,7 @@ kind='mda'
     /// disables the item with the reason.
     #[test]
     fn a_stopped_machine_takes_a_catalogue_disk_at_its_next_start() {
-        let temp = assembly::test_support::TempDir::new("shell-catalogue-stopped");
+        let temp = machine_file::test_support::TempDir::new("shell-catalogue-stopped");
         let mut shell = stopped_two_disk_shell(&temp);
         let name = shell.stopped_name();
         let ctx = egui::Context::default();
@@ -13350,7 +13350,7 @@ kind='mda'
     /// One disk or none disables the item, which says why.
     #[test]
     fn one_disk_or_none_disables_catalogue_with_the_reason() {
-        let temp = assembly::test_support::TempDir::new("shell-catalogue-one");
+        let temp = machine_file::test_support::TempDir::new("shell-catalogue-one");
         let (mut shell, _) = stopped_machine_file_shell(&temp);
         let ctx = egui::Context::default();
         let drawn = draw(&ctx, &mut shell, Vec::new());
@@ -13856,7 +13856,7 @@ kind='mda'
     /// listed, and choosing another makes it the one that goes in.
     #[test]
     fn an_image_lists_the_disks_waiting_for_its_start() {
-        let temp = assembly::test_support::TempDir::new("shell-catalogue-image");
+        let temp = machine_file::test_support::TempDir::new("shell-catalogue-image");
         let mut shell = shell();
         shell.stop();
         // An image of the library is selected, and no machine of it.
@@ -14179,7 +14179,7 @@ kind='mda'
     fn created_disks_go_into_the_running_machine_in_order() {
         use crate::created_media::{CreateOrder, Place};
         use media::fat12::{volume_label, FloppyFormat, HostItem, ShortName};
-        let temp = assembly::test_support::TempDir::new("shell-create-running");
+        let temp = machine_file::test_support::TempDir::new("shell-create-running");
         let root = temp.path().canonicalize().unwrap();
         let game = root.join("galaxia");
         std::fs::create_dir_all(&game).unwrap();
@@ -14292,7 +14292,7 @@ kind='mda'
     /// where the pointer is and Insert stays on screen.
     #[test]
     fn the_picker_from_a_drive_chip_keeps_its_size() {
-        let temp = assembly::test_support::TempDir::new("chip-picker-size");
+        let temp = machine_file::test_support::TempDir::new("chip-picker-size");
         let root = temp.path().canonicalize().unwrap();
         let ctx = egui::Context::default();
         let mut shell = media_shell();
@@ -14325,7 +14325,7 @@ kind='mda'
 
     #[test]
     fn a_set_chosen_in_the_picker_loads_into_the_running_drive_in_order() {
-        let temp = assembly::test_support::TempDir::new("library-set-insert");
+        let temp = machine_file::test_support::TempDir::new("library-set-insert");
         let root = temp.path().canonicalize().unwrap();
         let store = root.join("store");
         for (name, byte) in [("one.img", 1u8), ("two.img", 2)] {
@@ -14529,7 +14529,7 @@ kind='mda'
 
     #[test]
     fn session_floppy_write_mode_changes_through_its_insert_dialog() {
-        let temp = assembly::test_support::TempDir::new("chip-write-mode");
+        let temp = machine_file::test_support::TempDir::new("chip-write-mode");
         let root = temp.path().canonicalize().unwrap();
         let path = root.join("extra.img");
         std::fs::write(&path, vec![0; 1_474_560]).unwrap();
@@ -14966,7 +14966,7 @@ kind='mda'
 
     #[test]
     fn quitting_closes_an_open_dialog_or_menu_and_then_asks() {
-        let temp = assembly::test_support::TempDir::new("exit-through-dialogs");
+        let temp = machine_file::test_support::TempDir::new("exit-through-dialogs");
         std::fs::create_dir(temp.path().join("machines")).unwrap();
         let machine = temp.path().join("machines/example.toml");
         std::fs::write(
@@ -15255,7 +15255,7 @@ kind='mda'
 
     #[test]
     fn system_quit_while_running_asks_and_stop_terminates_after_persistence() {
-        let temp = assembly::test_support::TempDir::new("shell-system-quit-stop");
+        let temp = machine_file::test_support::TempDir::new("shell-system-quit-stop");
         let journal = temp.path().join("disk.upfj");
         let mut shell = journal_shell(&temp, vec![0xeb, 0xfe]);
         // The journal's length when each reply is given.
@@ -15412,7 +15412,7 @@ kind='mda'
 
     #[test]
     fn system_quit_with_a_failed_stop_keeps_running_and_shows_the_error() {
-        let temp = assembly::test_support::TempDir::new("shell-system-quit-failed-stop");
+        let temp = machine_file::test_support::TempDir::new("shell-system-quit-failed-stop");
         let mut shell = journal_shell(&temp, vec![0xeb, 0xfe]);
         shell.presenter.as_mut().unwrap().assembled().persistence[0].fail_output();
         let replies = replies(&shell);
@@ -15523,7 +15523,7 @@ kind='mda'
     /// only says why; the guest keeps running and the drives take disks.
     #[test]
     fn a_refused_picker_insert_keeps_the_machine_running_and_says_why() {
-        let temp = assembly::test_support::TempDir::new("refused-insert");
+        let temp = machine_file::test_support::TempDir::new("refused-insert");
         let ctx = egui::Context::default();
         let mut shell = media_shell();
         shell.preferences.store_root = Some(temp.path().join("no-store"));
@@ -15548,7 +15548,7 @@ kind='mda'
     /// a disk of the drive's catalogue goes in at once, also while halted.
     #[test]
     fn browse_shows_the_files_own_step_and_a_catalogue_disk_goes_in_now() {
-        let temp = assembly::test_support::TempDir::new("picker-browse");
+        let temp = machine_file::test_support::TempDir::new("picker-browse");
         let mut shell = media_shell();
         let file = temp.path().join("game.img");
         std::fs::write(&file, vec![0; 737_280]).unwrap();
@@ -17048,7 +17048,7 @@ kind='mda'
 
     /// A stopped shell whose cores open the test core's scripts, keeping
     /// what machines leave behind under `temp`.
-    fn opening_shell(temp: &assembly::test_support::TempDir) -> Shell {
+    fn opening_shell(temp: &machine_file::test_support::TempDir) -> Shell {
         let mut shell = shell();
         shell.presenter = None;
         shell.guest_focus = false;
@@ -17059,7 +17059,7 @@ kind='mda'
 
     /// A script of the test core, its first line written for it.
     fn script(
-        temp: &assembly::test_support::TempDir,
+        temp: &machine_file::test_support::TempDir,
         name: &str,
         lines: &str,
     ) -> std::path::PathBuf {
@@ -17089,7 +17089,7 @@ kind='mda'
 
     #[test]
     fn dash_open_and_file_open_start_a_player() {
-        let temp = assembly::test_support::TempDir::new("shell-open-file");
+        let temp = machine_file::test_support::TempDir::new("shell-open-file");
         let path = script(&temp, "machine.utc", "title Scripted machine");
         let ctx = egui::Context::default();
         // --open FILE --core ID, once the window shows.
@@ -17221,7 +17221,7 @@ kind='mda'
 
     #[test]
     fn a_player_and_the_pc_ask_to_stop_each_other_with_the_stop_prompt() {
-        let temp = assembly::test_support::TempDir::new("shell-open-prompt");
+        let temp = machine_file::test_support::TempDir::new("shell-open-prompt");
         let path = script(&temp, "machine.utc", "title Scripted machine");
         let ctx = egui::Context::default();
         // Starting the PC while a player runs: the library, then Start, or
@@ -17277,7 +17277,7 @@ kind='mda'
 
     #[test]
     fn pause_reset_power_cycle_and_stop_reach_the_players_machine() {
-        let temp = assembly::test_support::TempDir::new("shell-player-commands");
+        let temp = machine_file::test_support::TempDir::new("shell-player-commands");
         let path = script(
             &temp,
             "machine.utc",
@@ -17351,7 +17351,7 @@ kind='mda'
 
     #[test]
     fn a_refused_file_shows_its_box_and_leaves_a_running_machine_alone() {
-        let temp = assembly::test_support::TempDir::new("shell-open-refused");
+        let temp = machine_file::test_support::TempDir::new("shell-open-refused");
         let notes = temp.path().join("notes.txt");
         std::fs::write(&notes, "hello\n").unwrap();
         let odd = script(&temp, "odd.utc", "unsupported board 5 is not modelled");
@@ -17393,7 +17393,7 @@ kind='mda'
     #[test]
     fn pad_keys_come_from_the_preferences_and_the_input_dialog_stores_them() {
         use unemu_core_api::{Key, PadControl};
-        let temp = assembly::test_support::TempDir::new("shell-player-pads");
+        let temp = machine_file::test_support::TempDir::new("shell-player-pads");
         let path = script(&temp, "pads.utc", "pad 0 a,b Controller 1");
         let ctx = egui::Context::default();
         let mut shell = opening_shell(&temp);
@@ -17422,7 +17422,7 @@ kind='mda'
 
     #[test]
     fn a_file_prepared_late_never_replaces_a_question_or_an_exit() {
-        let temp = assembly::test_support::TempDir::new("shell-open-late");
+        let temp = machine_file::test_support::TempDir::new("shell-open-late");
         let path = script(&temp, "machine.utc", "title Scripted machine");
         let ctx = egui::Context::default();
         // The library's question stays the library's: Stop machine stops
@@ -17460,7 +17460,7 @@ kind='mda'
 
     #[test]
     fn a_file_started_while_a_pc_start_is_under_way_stays_the_only_machine() {
-        let temp = assembly::test_support::TempDir::new("shell-open-start");
+        let temp = machine_file::test_support::TempDir::new("shell-open-start");
         let path = script(&temp, "machine.utc", "title Scripted machine");
         let ctx = egui::Context::default();
         let mut shell = opening_shell(&temp);
@@ -17478,7 +17478,7 @@ kind='mda'
 
     #[test]
     fn save_and_load_state_chords_reach_a_player_that_saves_state_and_the_pc_s_guest() {
-        let temp = assembly::test_support::TempDir::new("shell-player-state");
+        let temp = machine_file::test_support::TempDir::new("shell-player-state");
         let path = script(&temp, "state.utc", "saved-state");
         let ctx = egui::Context::default();
         let mut shell = opening_shell(&temp);
@@ -17524,7 +17524,7 @@ kind='mda'
     #[test]
     fn host_keys_reach_the_players_pad_and_its_input_dialog_raw() {
         use unemu_core_api::{Key, PadControl};
-        let temp = assembly::test_support::TempDir::new("shell-player-keys");
+        let temp = machine_file::test_support::TempDir::new("shell-player-keys");
         let path = script(
             &temp,
             "pads.utc",
@@ -17584,7 +17584,7 @@ kind='mda'
 
     #[test]
     fn a_click_on_the_screen_works_an_aimed_players_trigger() {
-        let temp = assembly::test_support::TempDir::new("shell-player-gun");
+        let temp = machine_file::test_support::TempDir::new("shell-player-gun");
         let path = script(&temp, "gun.utc", "absolute 0 1 Light gun\necho-input");
         let ctx = egui::Context::default();
         let mut shell = opening_shell(&temp);
@@ -17607,7 +17607,7 @@ kind='mda'
     #[test]
     fn a_shell_dialog_holds_the_players_machine() {
         use std::time::Duration;
-        let temp = assembly::test_support::TempDir::new("shell-player-hold");
+        let temp = machine_file::test_support::TempDir::new("shell-player-hold");
         let path = script(&temp, "timed.utc", "at 6000 note a tenth of a second in");
         let ctx = egui::Context::default();
         let mut shell = opening_shell(&temp);

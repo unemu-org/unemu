@@ -363,7 +363,7 @@ fn open_games_machine_file_plays_cards_and_speaker_at_host_mix_levels() {
         };
         found.push((relative, path));
     }
-    let tree = assembly::test_support::TempDir::new("window-open-levels");
+    let tree = machine_file::test_support::TempDir::new("window-open-levels");
     let write = |relative: &str, bytes: &[u8]| {
         let path = tree.path().join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -397,7 +397,7 @@ fn open_games_template_image_plays_cards_and_speaker_at_host_mix_levels() {
             }
         }
     }
-    let temp = assembly::test_support::TempDir::new("window-template-levels");
+    let temp = machine_file::test_support::TempDir::new("window-template-levels");
     let store = image_store::Store::open(temp.path().join("store")).unwrap();
     pc_image::template::build(&store, &vendor, &|_, _, _| Ok(()), &mut |_| {}).unwrap();
     let image = store.tag_descriptor("open-at-games:latest").unwrap();

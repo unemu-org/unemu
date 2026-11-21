@@ -1416,7 +1416,7 @@ fn showing_a_machine_leaves_remotes() {
 #[test]
 fn attaching_again_takes_the_new_accounts() {
     let mut rig = Rig::new();
-    let temp = assembly::test_support::TempDir::new("remotes-other-preferences");
+    let temp = machine_file::test_support::TempDir::new("remotes-other-preferences");
     let path = temp.path().join("preferences.toml");
     std::fs::write(&path, "[[registries]]\nhost = \"other.example\"\n").unwrap();
     let (_, mut accounts) = preferences();
@@ -1970,7 +1970,7 @@ fn pulling_from_remotes_writes_the_local_tag_last_and_never_moves_one() {
     let local = |repository: &str| format!("{host}/private/{repository}:1.0.0");
 
     let listed = |dir: &str| {
-        let target = assembly::test_support::TempDir::new(dir);
+        let target = machine_file::test_support::TempDir::new(dir);
         let store = image_store::Store::open(target.path().join("store")).unwrap();
         let mut view = LibraryView::synthetic(store.root().to_owned());
         view.attach_remotes(lab.accounts.clone());

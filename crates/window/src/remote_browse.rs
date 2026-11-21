@@ -92,7 +92,7 @@ mod tests {
     /// A store, preferences and the accounts that read them, each in its own
     /// directory.
     struct Setup {
-        _temp: assembly::test_support::TempDir,
+        _temp: machine_file::test_support::TempDir,
         store: Store,
         accounts: Accounts,
     }
@@ -100,7 +100,7 @@ mod tests {
     impl Setup {
         /// Preferences that list `entries` (TOML `[[registries]]` bodies).
         fn new(entries: &[String]) -> Self {
-            let temp = assembly::test_support::TempDir::new("remote-browse");
+            let temp = machine_file::test_support::TempDir::new("remote-browse");
             let store = Store::open(temp.path().join("store")).unwrap();
             let config = temp.path().join("config");
             std::fs::create_dir(&config).unwrap();

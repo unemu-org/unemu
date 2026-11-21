@@ -45,6 +45,7 @@ pc-media = { path = "../pc-media", version = "0.0.3" }
 ui-kit = { path = "../ui-kit", version = "0.0.3" }
 
 [dev-dependencies]
+machine-file = { workspace = true, features = ["test-support"] }
 core-launch = { path = "../core-launch", version = "0.0.3" }
 unemu-pc-core.workspace = true
 assembly = { workspace = true, features = ["test-support"] }

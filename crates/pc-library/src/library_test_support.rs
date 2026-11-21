@@ -86,7 +86,7 @@ pub fn import_media_set(
 }
 
 pub struct Fixture {
-    pub temp: assembly::test_support::TempDir,
+    pub temp: machine_file::test_support::TempDir,
     pub store: Store,
     pub row: ImageRow,
 }
@@ -94,7 +94,7 @@ impl Fixture {
     // Each call writes a new store to disk; a `Default` would hide that.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        let temp = assembly::test_support::TempDir::new("desktop-session");
+        let temp = machine_file::test_support::TempDir::new("desktop-session");
         fs::write(temp.path().join("bios.bin"), [0xf4; 32768]).unwrap();
         fs::write(temp.path().join("disk.img"), [0; 16384]).unwrap();
         fs::write(temp.path().join("one.img"), vec![0; 360 * 1024]).unwrap();
@@ -220,7 +220,7 @@ pub fn source_archive(candidate: &pc_image::firmware_import::Candidate) -> &'sta
 /// XT-class BIOS and one naming no board. `None` when a fetched fixture it reads is missing,
 /// which skips the test.
 pub struct FirmwareStore {
-    pub temp: assembly::test_support::TempDir,
+    pub temp: machine_file::test_support::TempDir,
     pub store: Store,
 }
 impl FirmwareStore {
@@ -258,7 +258,7 @@ impl FirmwareStore {
         } else {
             None
         };
-        let temp = assembly::test_support::TempDir::new("new-machine-firmware");
+        let temp = machine_file::test_support::TempDir::new("new-machine-firmware");
         let roms = temp.path().join("roms");
         fs::create_dir(&roms).unwrap();
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

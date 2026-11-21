@@ -54,7 +54,7 @@ fn run_until(assembled: &mut AssembledMachine, budget: u64, done: impl Fn(&str) 
 
 /// A 1.44M data disk built from one host file by `unemu media create`.
 fn data_disk() -> Vec<u8> {
-    let scratch = assembly::test_support::TempDir::new("boot-sector-golden");
+    let scratch = machine_file::test_support::TempDir::new("boot-sector-golden");
     let file = scratch.path().join("readme.txt");
     std::fs::write(&file, b"no system here\r\n").unwrap();
     let image = scratch.path().join("data.img");
@@ -138,7 +138,7 @@ fn xi8088_bios_runs_the_data_disk_boot_sector_and_retries() {
 /// the retry.
 #[test]
 fn open_at_bios_runs_the_data_disk_boot_sector_and_retries() {
-    let profile = assembly::test_support::TempDir::new("boot-sector-open-at");
+    let profile = machine_file::test_support::TempDir::new("boot-sector-open-at");
     let file = profile.path().join("at-open-floppy.toml");
     std::fs::write(profile.path().join("data.img"), data_disk()).unwrap();
     let bios = machines().join("../vendor/unemu-at-bios/bios-unemu-at.bin");

@@ -31,5 +31,6 @@ pc-media = { path = "../pc-media", version = "0.0.3" }
 ui-kit = { path = "../ui-kit", version = "0.0.3" }
 
 [dev-dependencies]
+machine-file = { workspace = true, features = ["test-support"] }
 assembly = { workspace = true, features = ["test-support"] }
 ui-kit = { path = "../ui-kit", version = "0.0.3", features = ["test-support"] }

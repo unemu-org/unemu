@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn system_shortcuts_stay_with_macos_until_the_user_turns_them_on() {
-        let temp = assembly::test_support::TempDir::new("shell-system-shortcuts");
+        let temp = machine_file::test_support::TempDir::new("shell-system-shortcuts");
         let path = temp.path().join("preferences.toml");
         assert!(!Preferences::load(&path).unwrap().send_system_shortcuts);
         std::fs::write(&path, "rom_dirs = []\n").unwrap();
@@ -258,7 +258,7 @@ mod tests {
     fn pad_keys_are_stored_by_name_and_the_defaults_need_no_entry() {
         use machine_view::keys;
         use unemu_core_api::Key;
-        let temp = assembly::test_support::TempDir::new("shell-pad-keys");
+        let temp = machine_file::test_support::TempDir::new("shell-pad-keys");
         let path = temp.path().join("preferences.toml");
         let mut prefs = Preferences::load(&path).unwrap();
         assert_eq!(prefs.pad_bindings(), PadBindings::defaults());
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn preferences_round_trip_with_validated_rom_folders() {
-        let temp = assembly::test_support::TempDir::new("shell-preferences");
+        let temp = machine_file::test_support::TempDir::new("shell-preferences");
         let path = temp.path().join("config/preferences.toml");
         assert_eq!(Preferences::load(&path).unwrap(), Preferences::default());
         let mut prefs = Preferences::default();
@@ -313,7 +313,7 @@ mod tests {
     }
     #[test]
     fn atomic_save_preserves_unknown_fields_and_old_contents_on_failure() {
-        let temp = assembly::test_support::TempDir::new("atomic-shell-preferences");
+        let temp = machine_file::test_support::TempDir::new("atomic-shell-preferences");
         let path = temp.path().join("preferences.toml");
         let original = "rom_dirs = []\nfuture_option = true\n[future_table]\nvalue = 'preserved'\n";
         std::fs::write(&path, original).unwrap();
@@ -358,7 +358,7 @@ mod tests {
 
     #[test]
     fn a_save_keeps_registry_settings_written_after_the_shell_loaded_its_copy() {
-        let temp = assembly::test_support::TempDir::new("shared-shell-preferences");
+        let temp = machine_file::test_support::TempDir::new("shared-shell-preferences");
         let path = temp.path().join("preferences.toml");
         let registry = |private: bool, user: &str| {
             format!(

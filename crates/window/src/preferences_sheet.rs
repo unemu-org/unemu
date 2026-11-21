@@ -575,7 +575,7 @@ mod tests {
 
     #[test]
     fn every_page_and_dialog_renders_without_a_window_and_masks_the_password() {
-        let temp = assembly::test_support::TempDir::new("preferences-render");
+        let temp = machine_file::test_support::TempDir::new("preferences-render");
         let path = temp.path().join("preferences.toml");
         std::fs::write(
             &path,
@@ -677,7 +677,7 @@ mod tests {
                 _ => None,
             }
         }
-        let temp = assembly::test_support::TempDir::new("preferences-system-shortcuts");
+        let temp = machine_file::test_support::TempDir::new("preferences-system-shortcuts");
         let mut dialog = PreferencesDialog {
             tab: Tab::General,
             registries: RegistriesPage::new(
@@ -734,7 +734,7 @@ mod tests {
 
     #[test]
     fn namespaces_render_as_child_rows_and_the_add_dialog_has_their_field() {
-        let temp = assembly::test_support::TempDir::new("preferences-namespaces");
+        let temp = machine_file::test_support::TempDir::new("preferences-namespaces");
         let path = temp.path().join("preferences.toml");
         std::fs::write(
             &path,
@@ -785,7 +785,7 @@ mod tests {
         let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let unreachable = closed.local_addr().unwrap().to_string();
         drop(closed);
-        let temp = assembly::test_support::TempDir::new("preferences-password");
+        let temp = machine_file::test_support::TempDir::new("preferences-password");
         let path = temp.path().join("preferences.toml");
         std::fs::write(
             &path,

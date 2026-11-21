@@ -3069,6 +3069,18 @@ What must be true first:
 4 for the journal half of `media`), and the crates that go with the core
 depend on nothing of the front end (the core-side rule of §12.8).
 
+As of 2026-11-21, the host-interface allow list is empty: the guard scans
+zero matched lines. Temporary-directory fixtures live in the host-side
+`machine-file` test support, and the CPU constructs its small legacy reset
+image directly, without a process-wide cache. This completes the remaining
+six exceptions after step 11; the historical counts below describe their
+respective landings. MEASURED in release mode: 27 samples of 200,000
+resets per version give pooled medians of 546.492 ns/reset with the once
+cell and 546.474 ns/reset with direct legacy construction (no measurable
+regression). The timing probe is `crates/cpu/tests/reset_timing.rs`; it
+checks that resets retire no instructions. A unit test also compares every
+legacy field with the pinned CPU's real-entry constructor.
+
 Decision-30 then needs one sentence of care: `unemu.min-app-version` names
 the oldest release of the program that provides the manifest's platform.
 After the split that program is the **core**: the marker keeps meaning the

@@ -4,8 +4,8 @@
 use assembly::{DeviceId, FloppyAction, ImageSource, WriteMode};
 use std::path::Path;
 
-fn files() -> assembly::test_support::TempDir {
-    let temp = assembly::test_support::TempDir::new("floppy-catalogue");
+fn files() -> machine_file::test_support::TempDir {
+    let temp = machine_file::test_support::TempDir::new("floppy-catalogue");
     std::fs::write(temp.path().join("bios.bin"), vec![0xf4; 32768]).unwrap();
     std::fs::write(temp.path().join("one.img"), vec![0x11; 368640]).unwrap();
     std::fs::write(temp.path().join("two.img"), vec![0x22; 368640]).unwrap();

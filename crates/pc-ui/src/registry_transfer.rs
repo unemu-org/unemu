@@ -618,7 +618,7 @@ pub(crate) mod tests {
         lab.registry
             .hold_next(&format!("GET /v2/private/test/blobs/{}", largest.digest));
 
-        let target = assembly::test_support::TempDir::new("registry-pull");
+        let target = machine_file::test_support::TempDir::new("registry-pull");
         let store = Store::open(target.path().join("store")).unwrap();
         let mut view = LibraryView::synthetic(store.root().to_owned());
         view.begin_pull(lab.accounts.clone());
@@ -768,7 +768,7 @@ pub(crate) mod tests {
         let mut lab = Lab::new(true);
         let host = lab.host();
         lab.push_through("test:source", &format!("{host}/private/test:1.0.0"));
-        let target = assembly::test_support::TempDir::new("registry-pull-cancel");
+        let target = machine_file::test_support::TempDir::new("registry-pull-cancel");
         let store = Store::open(target.path().join("store")).unwrap();
         let mut view = LibraryView::synthetic(store.root().to_owned());
         view.begin_pull(lab.accounts.clone());

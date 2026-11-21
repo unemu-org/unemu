@@ -6,7 +6,7 @@ use std::{fs, path::PathBuf, process::Command};
 
 #[test]
 fn desktop_keeps_the_legacy_machine_tree_until_it_is_moved() {
-    let temp = assembly::test_support::TempDir::new("desktop-directory-upgrade");
+    let temp = machine_file::test_support::TempDir::new("desktop-directory-upgrade");
     let home = temp.path().join("home");
     let data = if cfg!(target_os = "macos") {
         home.join("Library/Application Support")

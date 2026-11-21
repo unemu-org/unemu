@@ -25,7 +25,7 @@ audio.workspace = true
 cpu.workspace = true
 device.workspace = true
 machine.workspace = true
-machine-file.workspace = true
+machine-file = { workspace = true, features = ["test-support"] }
 pc-config.workspace = true
 media.workspace = true
 video.workspace = true

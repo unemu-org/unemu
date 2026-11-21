@@ -11,13 +11,13 @@ use cpu::{Cpu, CpuError, CpuReg};
 use machine::{MachineError, RunOutcome};
 use video::{Frame, TextGrid};
 
-use assembly::test_support::TempDir;
 use assembly::{
     AssemblyOptions, BoardModel, ConsoleProbe, DeviceId, ImageSource, InjectionSchedule,
     KeyboardStimulus, ObservationPolicy, ObservationRequest, OutputKind, RunError, RunPolicy,
     StopCondition,
 };
 use machine_file::test_support::FoundUserFirmware;
+use machine_file::test_support::TempDir;
 use std::{
     fmt::Write as _,
     path::{Path, PathBuf},

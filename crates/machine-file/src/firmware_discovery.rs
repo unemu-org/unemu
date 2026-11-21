@@ -900,7 +900,8 @@ fn access_denied(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use assembly::{test_support::TempDir, KnownPart, Lane};
+    use crate::test_support::TempDir;
+    use assembly::{KnownPart, Lane};
 
     fn hash(bytes: &[u8]) -> &'static str {
         Box::leak(format!("{:x}", Sha256::digest(bytes)).into_boxed_str())
@@ -1582,7 +1583,7 @@ mod package_hash_tests {
     use super::*;
     #[test]
     fn firmware_import_hash_reuses_index_metadata_and_rescan_reads_again() {
-        let temp = assembly::test_support::TempDir::new("firmware-import-hash");
+        let temp = crate::test_support::TempDir::new("firmware-import-hash");
         let rom = temp.path().join("rom");
         fs::write(&rom, [0x37; 512]).unwrap();
         let index = temp.path().join("index");

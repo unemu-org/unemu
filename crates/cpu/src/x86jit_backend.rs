@@ -745,14 +745,27 @@ impl X86JitCpu {
     }
 }
 
-/// The legacy part of the real-mode entry state at CS F000h, which every
-/// reset of the machine profile starts from. Built once: building it makes a
-/// whole `CpuState` (vector and x87 state, the CPUID overrides) only to keep
-/// its legacy part, which measured about a tenth of a reset.
+/// The real-mode caches at CS F000h used before applying the board's reset
+/// fetch alias (Intel 80286 Programmer's Reference Manual, §5.1).
+/// Construct only the legacy fields so reset needs neither a whole CPU state
+/// nor a process-wide cache (core-contract.md §12.10).
 fn reset_legacy_image() -> x86jit_core::legacy::LegacyCpuState {
-    static IMAGE: std::sync::OnceLock<x86jit_core::legacy::LegacyCpuState> =
-        std::sync::OnceLock::new();
-    *IMAGE.get_or_init(|| CpuState::legacy_real_entry([0xF000, 0, 0, 0, 0, 0]).legacy)
+    use x86jit_core::legacy::{LegacyCpuState, SegmentCache, TableRegister};
+
+    LegacyCpuState {
+        idtr: TableRegister {
+            limit: 0x03FF,
+            ..TableRegister::default()
+        },
+        segments: std::array::from_fn(|index| SegmentCache {
+            base: if index == 0 { 0xF0000 } else { 0 },
+            limit: 0xFFFF,
+            attributes: if index == 0 { 0x9B } else { 0x93 },
+            ..SegmentCache::default()
+        }),
+        a20_enabled: 1,
+        ..LegacyCpuState::default()
+    }
 }
 
 impl Cpu for X86JitCpu {
@@ -1328,6 +1341,14 @@ mod tests {
         let run = cpu.run_steps(1_000_000, StepRunOptions::default()).unwrap();
         assert_eq!(run.stop, CpuStepStop::Exit(CpuStop::Halt));
         assert_eq!(cpu.reg(CpuReg::Rcx) & 0xFFFF, 0);
+    }
+
+    #[test]
+    fn reset_image_matches_the_pinned_real_entry() {
+        assert_eq!(
+            super::reset_legacy_image(),
+            CpuState::legacy_real_entry([0xF000, 0, 0, 0, 0, 0]).legacy
+        );
     }
 
     /// The board's reset after a shutdown writes the complete 80286 reset

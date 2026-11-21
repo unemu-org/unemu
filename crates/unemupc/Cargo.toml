@@ -26,5 +26,6 @@ video.workspace = true
 anyhow.workspace = true
 
 [dev-dependencies]
+machine-file = { workspace = true, features = ["test-support"] }
 cpu.workspace = true
 assembly = { workspace = true, features = ["test-support"] }

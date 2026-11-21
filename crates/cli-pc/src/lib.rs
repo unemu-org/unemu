@@ -366,7 +366,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let temp = assembly::test_support::TempDir::new("cli-pc-restricted");
+        let temp = machine_file::test_support::TempDir::new("cli-pc-restricted");
         let store = Store::open(temp.path().join("store")).unwrap();
         with_platform(|pc| {
             assert_eq!(
@@ -434,7 +434,7 @@ mod tests {
     /// so the guard keeps the pulled copy private whatever its marks say.
     #[test]
     fn a_pulled_package_marking_proprietary_firmware_open_cannot_leave() {
-        let temp = assembly::test_support::TempDir::new("pulled-foreign-firmware");
+        let temp = machine_file::test_support::TempDir::new("pulled-foreign-firmware");
         let bytes = vec![0x6b; 8192];
         let rom = temp.path().join("rom.bin");
         std::fs::write(&rom, &bytes).unwrap();

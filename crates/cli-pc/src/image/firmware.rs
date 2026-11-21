@@ -533,7 +533,7 @@ mod tests {
 
     #[test]
     fn folder_reimport_keeps_existing_packages_and_publishes_new_ones() {
-        let temp = assembly::test_support::TempDir::new("firmware-folder-reimport");
+        let temp = machine_file::test_support::TempDir::new("firmware-folder-reimport");
         let root = temp.path();
         let files = root.join("roms");
         std::fs::create_dir(&files).unwrap();
@@ -556,7 +556,7 @@ mod tests {
     }
     #[test]
     fn a_folder_imported_with_a_statement_is_already_imported_when_scanned_again() {
-        let temp = assembly::test_support::TempDir::new("firmware-described-reimport");
+        let temp = machine_file::test_support::TempDir::new("firmware-described-reimport");
         let root = temp.path();
         let files = root.join("roms");
         std::fs::create_dir(&files).unwrap();
@@ -592,7 +592,7 @@ mod tests {
     }
     #[test]
     fn edit_keeps_a_hand_written_readme_unless_regenerate_readme_is_given() {
-        let temp = assembly::test_support::TempDir::new("firmware-edit-readme");
+        let temp = machine_file::test_support::TempDir::new("firmware-edit-readme");
         let root = temp.path();
         let rom = root.join("rom.bin");
         std::fs::write(&rom, [0x66; 8192]).unwrap();
@@ -660,7 +660,7 @@ mod tests {
     }
     #[test]
     fn ambiguity_is_skipped_before_any_existing_tag_precheck() {
-        let temp = assembly::test_support::TempDir::new("firmware-ambiguity-precheck");
+        let temp = machine_file::test_support::TempDir::new("firmware-ambiguity-precheck");
         let root = temp.path();
         let file = root.join("rom");
         std::fs::write(&file, vec![0x11; 32768]).unwrap();
@@ -680,7 +680,7 @@ mod tests {
     }
     #[test]
     fn listing_prints_only_the_original_facet_fields() {
-        let temp = assembly::test_support::TempDir::new("firmware-ls-fields");
+        let temp = machine_file::test_support::TempDir::new("firmware-ls-fields");
         let root = temp.path();
         let file = root.join("rom");
         std::fs::write(&file, vec![0x11; 32768]).unwrap();

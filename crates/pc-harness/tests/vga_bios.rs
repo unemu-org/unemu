@@ -258,7 +258,7 @@ fn write_vga_post_machine_file(
 #[test]
 fn ibm_vga_measurement_machine_keeps_the_ibm_post_hardware() {
     use machine_file::schema::v1;
-    let temporary = assembly::test_support::TempDir::new("ibm-vga-profile");
+    let temporary = machine_file::test_support::TempDir::new("ibm-vga-profile");
     let bios = temporary.path().join("system.bin");
     let video = temporary.path().join("video.bin");
     let floppy = temporary.path().join("boot.img");
@@ -343,7 +343,7 @@ fn user_rom_ibm_vga_bios_mode13_pattern() {
     let bios = machine_file::require_user_firmware!("ibm-5170-bios-1985-06-10", catalogue);
     let video = machine_file::require_user_firmware!(FirmwareEntry::IBM_VGA_1987.id, catalogue);
     assert!(include_str!("../../../Cargo.lock").contains(CPU_REV));
-    let temporary = assembly::test_support::TempDir::new("ibm-vga-post-machine");
+    let temporary = machine_file::test_support::TempDir::new("ibm-vga-post-machine");
     let redact = |message: &str| {
         video
             .redact(&bios.redact(message))

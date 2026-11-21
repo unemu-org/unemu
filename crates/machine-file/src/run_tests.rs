@@ -8,7 +8,7 @@ mod tests {
     fn reset_boundaries_check_journals_before_continuing_and_seal_once() {
         for stop in ["natural", "prompt", "post-prompt"] {
             for fail in [false, true] {
-                let temp = assembly::test_support::TempDir::new("run-reset-journal");
+                let temp = crate::test_support::TempDir::new("run-reset-journal");
                 let path = temp.path();
                 let base = path.join("base.img");
                 let journal = path.join("disk.upfj");

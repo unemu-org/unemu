@@ -236,7 +236,7 @@ mod media_set_tests {
     }
     #[test]
     fn media_set_load_all_appends_in_order_and_journals_preserve_store() {
-        let temp = assembly::test_support::TempDir::new("library-insert");
+        let temp = machine_file::test_support::TempDir::new("library-insert");
         let root = temp.path().canonicalize().unwrap();
         let store_path = root.join("store");
         let source = root.join("first.img");
@@ -454,7 +454,7 @@ mod media_set_tests {
     }
     #[test]
     fn media_set_batch_rejection_leaves_catalogue_unchanged() {
-        let temp = assembly::test_support::TempDir::new("library-batch");
+        let temp = machine_file::test_support::TempDir::new("library-batch");
         let path = temp.path().join("disk.img");
         std::fs::write(&path, vec![0; 1_474_560]).unwrap();
         let mut config = assembly::floppy_boot(vec![0xFA, 0xEB, 0xFE], vec![0; 1_474_560]);
@@ -473,11 +473,11 @@ mod media_set_tests {
 mod review_tests {
     use super::*;
     fn fixture() -> (
-        assembly::test_support::TempDir,
+        machine_file::test_support::TempDir,
         LibraryInsert,
         MachineConfig,
     ) {
-        let temp = assembly::test_support::TempDir::new("review-media");
+        let temp = machine_file::test_support::TempDir::new("review-media");
         let root = temp.path().canonicalize().unwrap();
         let source = root.join("disk.img");
         std::fs::write(&source, vec![0x11; 1_474_560]).unwrap();

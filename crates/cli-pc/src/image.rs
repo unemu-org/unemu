@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn a_stored_run_persists_cmos_and_seals_its_generation_after_a_cpu_refusal() {
-        let temp = assembly::test_support::TempDir::new("stored-run-refusal");
+        let temp = machine_file::test_support::TempDir::new("stored-run-refusal");
         let base = [0; 64];
         let image = temp.path().join("cmos.bin");
         let journal = temp.path().join("cmos.upfj");
@@ -419,7 +419,7 @@ mod tests {
     #[test]
     fn the_run_hook_persists_a_failed_pc_and_keeps_its_diagnostic() {
         pc_image::test_support::with_synthetic_firmware(|| {
-            let temp = assembly::test_support::TempDir::new("run-hook-failure");
+            let temp = machine_file::test_support::TempDir::new("run-hook-failure");
             let refused = assembly::test_support::refused_gate_call();
             let guest = refused
                 .images

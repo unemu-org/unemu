@@ -310,7 +310,7 @@ pub(super) fn vga_presenter(config: &assembly::MachineConfig) -> Presenter {
 
 #[test]
 fn cmos_written_before_a_halt_is_durable_without_stop() {
-    let temp = assembly::test_support::TempDir::new("window-halt-cmos");
+    let temp = machine_file::test_support::TempDir::new("window-halt-cmos");
     let base = temp.path().join("cmos.bin");
     std::fs::write(&base, [0; 64]).unwrap();
     let config = cmos_halt_config(&base, &temp.path().join("cmos.upfj"));
@@ -655,7 +655,7 @@ fn mouse_presenter_without_mouse_preserves_keyboard_and_device_state() {
 
 #[test]
 fn nvram_journal_matches_cli_across_window_frame_slices() {
-    let temp = assembly::test_support::TempDir::new("window-nvram");
+    let temp = machine_file::test_support::TempDir::new("window-nvram");
     let base = temp.path().join("cmos.bin");
     std::fs::write(&base, [0; 64]).unwrap();
     let mut reference = None;
@@ -741,7 +741,7 @@ fn nvram_journal_matches_cli_across_window_frame_slices() {
 
 #[test]
 fn window_ide_run_error_flushes_whole_outsw_prefix_without_opening_a_window() {
-    let temp = assembly::test_support::TempDir::new("window-ide-error");
+    let temp = machine_file::test_support::TempDir::new("window-ide-error");
     let base_path = temp.path().join("base.img");
     let journal = temp.path().join("disk.upfj");
     let base = vec![0; 32768];
@@ -844,7 +844,7 @@ fn window_ide_run_error_flushes_whole_outsw_prefix_without_opening_a_window() {
 #[test]
 fn journal_host_failure_stops_at_the_first_window_boundary() {
     for fail in [false, true] {
-        let temp = assembly::test_support::TempDir::new("window-host-failure");
+        let temp = machine_file::test_support::TempDir::new("window-host-failure");
         let base = temp.path().join("base.img");
         let journal = temp.path().join("disk.upfj");
         std::fs::write(&base, vec![0; 1_474_560]).unwrap();
@@ -937,7 +937,7 @@ fn journal_host_failure_stops_at_the_first_window_boundary() {
 #[test]
 fn journal_presenter_keeps_a_halt_open_until_stop_and_preserves_unsealed_execution_errors() {
     for fail in [false, true] {
-        let temp = assembly::test_support::TempDir::new("journal-test");
+        let temp = machine_file::test_support::TempDir::new("journal-test");
         let path = temp.path();
         let base = path.join("base.img");
         let journal = path.join("disk.upfj");
@@ -982,7 +982,7 @@ fn journal_presenter_keeps_a_halt_open_until_stop_and_preserves_unsealed_executi
 
 #[test]
 fn floppy_media_window_prints_retention_warning_after_same_boundary_reinsert() {
-    let temp = assembly::test_support::TempDir::new("window-removable-warning");
+    let temp = machine_file::test_support::TempDir::new("window-removable-warning");
     let base = temp.path().join("base.img");
     std::fs::write(&base, vec![0; 1_474_560]).unwrap();
     let mut config = assembly::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
@@ -1018,7 +1018,7 @@ fn floppy_media_window_prints_retention_warning_after_same_boundary_reinsert() {
 fn window_finishes_every_drive_and_warns_once_for_maintenance() {
     for operation in ["temporary write", "publication directory sync"] {
         for both_fail in [false, true] {
-            let temp = assembly::test_support::TempDir::new("window-maintenance");
+            let temp = machine_file::test_support::TempDir::new("window-maintenance");
             let base = temp.path().join("base.img");
             std::fs::write(&base, vec![0; 1_474_560]).unwrap();
             let mut config = assembly::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));

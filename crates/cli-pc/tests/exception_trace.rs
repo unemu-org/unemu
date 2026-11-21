@@ -13,7 +13,7 @@
 use std::ffi::OsString;
 
 fn run(rom: &[u8], extra: &[&str]) -> (u8, String) {
-    let temp = assembly::test_support::TempDir::new("exception-trace");
+    let temp = machine_file::test_support::TempDir::new("exception-trace");
     std::fs::write(temp.path().join("rom.bin"), rom).unwrap();
     let machine = temp.path().join("rom.toml");
     std::fs::write(

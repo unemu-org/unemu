@@ -345,7 +345,7 @@ fn launch_and_verified_file_sessions_have_identical_output_and_journal_bytes() {
     };
     let lowered = launch::lower(&launch::decode(&bytes).unwrap(), &source, options).unwrap();
     let storage = Rc::new(MemoryStorage::new());
-    let temp = assembly::test_support::TempDir::new("launch-comparison");
+    let temp = machine_file::test_support::TempDir::new("launch-comparison");
     let mut direct_config = lowered.machine.clone();
     let mut bases = BTreeMap::new();
     for (key, (sha256, _)) in &lowered.bases {
@@ -455,7 +455,7 @@ fn launch_machine_accepts_a_verified_floppy_appended_by_path() {
     )
     .unwrap();
     assert_eq!(created.config(), &lowered.machine);
-    let temp = assembly::test_support::TempDir::new("launch-append");
+    let temp = machine_file::test_support::TempDir::new("launch-append");
     let path = temp.path().join("extra.img");
     let data = vec![0xe5; 368640];
     std::fs::write(&path, &data).unwrap();
@@ -481,7 +481,7 @@ fn launch_machine_accepts_a_verified_floppy_appended_by_path() {
 }
 
 fn stored_fixture() -> (
-    assembly::test_support::TempDir,
+    machine_file::test_support::TempDir,
     image_store::Store,
     image_store::Descriptor,
 ) {
@@ -491,14 +491,14 @@ fn stored_fixture() -> (
 fn stored_fixture_with_zero(
     zero_disk: bool,
 ) -> (
-    assembly::test_support::TempDir,
+    machine_file::test_support::TempDir,
     image_store::Store,
     image_store::Descriptor,
 ) {
     use image_store::{media_type as mt, Descriptor, Manifest, Store};
     let (bytes, source) = fixture();
     let mut document = launch::decode(&bytes).unwrap();
-    let temp = assembly::test_support::TempDir::new("stored-launch");
+    let temp = machine_file::test_support::TempDir::new("stored-launch");
     let store = Store::open(temp.path().join("store")).unwrap();
     let mut layers = Vec::new();
     for (digest, kind) in [
@@ -1041,7 +1041,7 @@ fn library_start_matches_verified_file_sessions_and_releases_finished_records() 
     use cpu::Cpu as _;
     use pc_library::library_worker::{Event, Finish, Recovery, Request, Worker, WorkspaceKind};
     use std::{fs, sync::Arc, time::Duration};
-    let temp = assembly::test_support::TempDir::new("library-start-comparison");
+    let temp = machine_file::test_support::TempDir::new("library-start-comparison");
     let Some(bios) = super::sound_levels_tests::open_fixture(
         "vendor/unemu-at-bios/bios-unemu-at.bin",
         "vendor/unemu-at-bios/fetch.sh",

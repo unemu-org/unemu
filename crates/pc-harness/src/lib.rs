@@ -1550,7 +1550,7 @@ mod tests {
     fn cli_finishes_every_drive_and_warns_without_failing_the_run() {
         for operation in ["temporary write", "publication directory sync"] {
             for both_fail in [false, true] {
-                let temp = assembly::test_support::TempDir::new("cli-maintenance");
+                let temp = machine_file::test_support::TempDir::new("cli-maintenance");
                 let base = temp.path().join("base.img");
                 std::fs::write(&base, vec![0; 1_474_560]).unwrap();
                 let mut config = assembly::bios(vec![0xF4; 32768], Some(vec![0; 1_474_560]));
@@ -1623,7 +1623,7 @@ mod tests {
 
     #[test]
     fn journal_host_failures_are_reported_as_persistence_failures() {
-        let temp = assembly::test_support::TempDir::new("cli-host-failure");
+        let temp = machine_file::test_support::TempDir::new("cli-host-failure");
         let base = temp.path().join("base.img");
         let journal = temp.path().join("disk.upfj");
         std::fs::write(&base, vec![0; 1_474_560]).unwrap();
@@ -1656,7 +1656,7 @@ mod tests {
     #[test]
     fn journal_frontend_finishes_successful_caps_but_leaves_execution_errors_unsealed() {
         for fail in [false, true] {
-            let temp = assembly::test_support::TempDir::new("journal-test");
+            let temp = machine_file::test_support::TempDir::new("journal-test");
             let path = temp.path();
             let base = path.join("base.img");
             let journal = path.join("disk.upfj");
@@ -2322,7 +2322,7 @@ mod user_bios_tests {
 
     #[test]
     fn bios_file_display_switch_follows_the_loaded_firmware() {
-        let directory = assembly::test_support::TempDir::new("cli-display-switch");
+        let directory = machine_file::test_support::TempDir::new("cli-display-switch");
         let path = directory.path().join("bios.bin");
         let catalogue = assembly::BoardModel::Ibm5170.firmware_catalogue();
         for image in [
@@ -2399,7 +2399,7 @@ mod user_bios_tests {
 
     #[test]
     fn preinterleaved_bios_file_uses_catalogue_placement_and_services() {
-        let directory = assembly::test_support::TempDir::new("cli-user-bios");
+        let directory = machine_file::test_support::TempDir::new("cli-user-bios");
         let path = directory.path().join("assembled.bin");
         let bytes = vec![0; 65536];
         std::fs::write(&path, &bytes).unwrap();
@@ -2451,7 +2451,7 @@ mod small_bios_tests {
 
     #[test]
     fn unlisted_16k_bios_file_is_top_aligned_under_escape() {
-        let directory = assembly::test_support::TempDir::new("cli-16k-bios");
+        let directory = machine_file::test_support::TempDir::new("cli-16k-bios");
         let path = directory.path().join("bios.bin");
         std::fs::write(&path, vec![0xF4; 16384]).unwrap();
         let config =

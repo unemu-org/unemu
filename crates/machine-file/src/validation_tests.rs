@@ -4,7 +4,7 @@ mod tests {
     use assembly::*;
     #[test]
     fn floppy_media_validation_reports_original_drive_indices_after_expansion() {
-        let temp = assembly::test_support::TempDir::new("catalogue-diagnostics");
+        let temp = crate::test_support::TempDir::new("catalogue-diagnostics");
         let base = temp.path().join("base.img");
         std::fs::write(&base, vec![0; 1_474_560]).unwrap();
         let mut config = assembly::floppy_boot(vec![0xf4], vec![0; 1_474_560]);

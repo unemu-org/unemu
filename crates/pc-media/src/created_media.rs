@@ -732,7 +732,7 @@ mod tests {
     /// name is replaced by a new directory entry, never written in place.
     #[test]
     fn created_images_are_stored_once_by_their_sha256() {
-        let temp = assembly::test_support::TempDir::new("created-store");
+        let temp = machine_file::test_support::TempDir::new("created-store");
         let media = temp.path().join("media");
         let bytes = vec![0x5a; 1_474_560];
         let (path, digest) = store_image(&media, &bytes).unwrap();
@@ -760,7 +760,7 @@ mod tests {
     /// name are still an error.
     #[test]
     fn a_create_that_finds_its_image_published_meanwhile_is_done() {
-        let temp = assembly::test_support::TempDir::new("created-race");
+        let temp = machine_file::test_support::TempDir::new("created-race");
         let bytes = vec![0x33; 737_280];
         let digest: [u8; 32] = Sha256::digest(&bytes).into();
         let path = temp.path().join(format!("{}.img", hex(&digest)));
@@ -775,7 +775,7 @@ mod tests {
     /// replaced by the next change rather than refusing it.
     #[test]
     fn an_unreadable_record_is_replaced_by_the_next_change() {
-        let temp = assembly::test_support::TempDir::new("created-unreadable");
+        let temp = machine_file::test_support::TempDir::new("created-unreadable");
         let workspace = temp.path();
         std::fs::create_dir_all(workspace.join("media").join(FOLDER)).unwrap();
         for text in ["not toml at all", "schema = 2\n"] {
@@ -800,7 +800,7 @@ mod tests {
     /// The pending record keeps one insert per drive and goes once empty.
     #[test]
     fn the_pending_record_keeps_one_insert_per_drive() {
-        let temp = assembly::test_support::TempDir::new("created-pending");
+        let temp = machine_file::test_support::TempDir::new("created-pending");
         let workspace = temp.path();
         let insert = |drive: &str, title: &str| CreatedInsert {
             drive: drive.into(),
@@ -854,7 +854,7 @@ mod tests {
             ["CONIN$-01.img", "CONIN$-02.img"]
         );
 
-        let temp = assembly::test_support::TempDir::new("created-keep-names");
+        let temp = machine_file::test_support::TempDir::new("created-keep-names");
         let game = temp.path().join("galaxia");
         fs::create_dir_all(&game).unwrap();
         fs::write(game.join("a.dat"), vec![1; 900_000]).unwrap();
