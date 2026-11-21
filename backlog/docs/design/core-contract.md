@@ -3044,6 +3044,12 @@ named the crate, and the layer is in its manifest.
 
 Not part of the first beads; recorded so that no step works against it.
 
+The extraction plan is [repository split](repo-split.md) (Proposed,
+2026-11-21): the destination of every crate and file, names and history,
+pins, CI and releases, and the ordered steps. The maintainer decided on
+2026-11-21 to separate the repositories before contract 1.0, which
+supersedes item 5 of the list below.
+
 | Destination | Crates |
 |---|---|
 | The contract's own source (§11 Q1) | `unemu-core-api` |

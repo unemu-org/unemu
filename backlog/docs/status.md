@@ -5,6 +5,12 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-21 — Repository split planned (Proposed):** the extraction plan
+  for a core repository and a front-end repository is written and waits for
+  the maintainer. The core keeps `unemupc` with 17 crates; the front end is
+  a new repository with 22 crates that pins the core by revision. Nothing is
+  implemented and no repository exists yet. See
+  [repository split](design/repo-split.md).
 - **2026-11-21 — Independent core and front-end compatibility:**
   `unemu.min-app-version` names the selected platform core's release;
   `unemu.min-frontend-version` independently rates front-end formats.
