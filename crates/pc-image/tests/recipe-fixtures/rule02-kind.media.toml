@@ -1,6 +1,6 @@
 # Rule 2: two identity tables, a table of the other kind, the reserved
 # [machine], no medium and no title; a name whose components disagree.
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "private/firmware/nes/demo"

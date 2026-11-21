@@ -1,6 +1,6 @@
 # Rule 1: an unknown key at the top, in a table and in an array of tables,
 # and a missing key, each reported with its path; nothing stops at the first.
-recipe = "0.1"
+recipe = "1.0"
 colour = "blue"
 
 [media]

@@ -60,7 +60,7 @@ fn plan(temp: &Temp, recipe: &Path, extra: &[&str]) -> (u8, String, String) {
     upcli(&words.iter().collect::<Vec<_>>())
 }
 
-const HEAD: &str = "recipe = \"0.1\"\n\n[media]\nname = \"private/media/ibm-pc/synthetic\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n[title]\ntitle = \"Synthetic\"\n\n";
+const HEAD: &str = "recipe = \"1.0\"\n\n[media]\nname = \"private/media/ibm-pc/synthetic\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n[title]\ntitle = \"Synthetic\"\n\n";
 
 /// A recipe of one game folder of two files, built into one 1.44M disk.
 fn game_recipe(temp: &Temp, run: &[u8], data: &[u8]) -> PathBuf {

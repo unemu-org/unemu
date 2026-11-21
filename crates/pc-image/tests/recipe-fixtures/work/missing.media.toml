@@ -1,5 +1,5 @@
 # Rule 3: a work file that is not beside the recipe.
-recipe = "0.1"
+recipe = "1.0"
 work = "absent"
 
 [media]

@@ -1,6 +1,6 @@
 # Rule 10: a volume label the volume would change (here, to upper case) is
 # refused, never renamed.
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "private/media/ibm-pc/demo"

@@ -958,7 +958,7 @@ mod tests {
         d
     }
 
-    const RECIPE: &[u8] = b"recipe = \"0.1\"\n";
+    const RECIPE: &[u8] = b"recipe = \"1.0\"\n";
 
     /// Read back an artifact of `kind` whose config is titled `config` and
     /// whose layers are `(media type, title, bytes)`.

@@ -9,6 +9,24 @@ inputs embedded by the template builder. This corpus retains their design
 notes and HCL snapshots; Ken's Labyrinth and all other design examples stay
 here. Recipe checks cover both locations.
 
+## Proposed 1.0 freeze (2026-11-20)
+
+The current Mediafile, Firmwarefile and work-file TOML copies now say
+`recipe = "1.0"` for decision-43; all seven output pins and lock files stay
+unchanged. This version-only divergence from the software revision below
+must be adopted there before recipes are published. HCL snapshots and the
+Machinefile installation sketches keep experimental `0.1`: they are
+historical or future syntax evidence, outside the implemented freeze.
+
+The release corpus consists of the six shipped pinned recipes and
+`kenslab-2.01/kenslab-2.01.media.toml`. The gate names that file explicitly
+because this folder also contains unpinned design examples. It forbids
+`--allow-drafts`, so a selected recipe becoming a draft fails release.
+Every newly pinned recipe must join the gate. The vendor library must
+supply Ken's exact original archive via `vendor/kenslab/fetch-labfull.sh`,
+as well as the existing shipped inputs; missing bytes block release. The
+licence index is bundled beside Ken's recipe.
+
 ## Current copies (2026-11-20)
 
 The real TOML recipes, work files and locks track the
@@ -22,8 +40,9 @@ The real TOML recipes, work files and locks track the
 
 The FreeDOS source-archive URLs use the repository's new name, `software`
 (formerly `unemu-media`). Locks are copied byte for byte and contain no
-payload. Bundled licence indexes and source-building scripts stay in the
-software repository; the corpus's build tests supply inputs from fixtures.
+payload. Ken's bundled `kenslab-2.01/licenses.txt` is copied byte for byte
+from that revision too. Other licence indexes and source-building scripts
+stay in the software repository; build tests supply their inputs from fixtures.
 All seven real recipes are now pinned. Their cited metadata supersedes the
 earlier assumptions: work ids, requirements and needs, and firmware dates
 and board compatibility. Firmware configs therefore differ from the older

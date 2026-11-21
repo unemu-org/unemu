@@ -1,6 +1,6 @@
 # Rule 10: names a volume refuses: lower case, a long name, a DOS device, a
 # folder deeper than DOS can enter, and a label with a period.
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "private/media/ibm-pc/demo"

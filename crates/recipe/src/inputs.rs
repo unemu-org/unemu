@@ -305,7 +305,7 @@ mod tests {
 
     fn recipe() -> Recipe {
         let text = format!(
-            "recipe = \"0.1\"\n\n[media]\nname = \"private/media/ibm-pc/demo\"\nplatform = \"ibm-pc\"\nrelease = \"1.0\"\nrevision = 2\n\n\
+            "recipe = \"1.0\"\n\n[media]\nname = \"private/media/ibm-pc/demo\"\nplatform = \"ibm-pc\"\nrelease = \"1.0\"\nrevision = 2\n\n\
              [input.zip]\nname = \"A&B, \\\"1\\\".ZIP\"\nsize = 10\nsha256 = \"{SHA_A}\"\ncrc32 = \"0badf00d\"\nsha1 = \"{}\"\n\n\
              [input.text]\nname = \"OWN.TXT\"\nsize = 3\nsha256 = \"{SHA_C}\"\nbundle = true\n\n\
              [input.game]\nname = \"GAME\"\nfiles = [\n    {{ path = \"A.EXE\", size = 5, sha256 = \"{SHA_B}\" }},\n    {{ path = \"SUB/<B>.DAT\", size = 6, sha256 = \"{SHA_C}\" }},\n]\n",
@@ -357,7 +357,7 @@ mod tests {
 
     fn parsed(text: &str) -> Recipe {
         let text = format!(
-            "recipe = \"0.1\"\n\n[media]\nname = \"private/media/ibm-pc/demo\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n{text}"
+            "recipe = \"1.0\"\n\n[media]\nname = \"private/media/ibm-pc/demo\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n{text}"
         );
         match crate::parse_text(&text) {
             Some(Document::Recipe(recipe)) => *recipe,

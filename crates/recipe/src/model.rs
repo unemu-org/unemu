@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The typed model of recipe version 0.1 (recipes §6): a Mediafile or a
+//! The typed model of recipe version 1.0 (recipes §6): a Mediafile or a
 //! Firmwarefile, and the work file of recipes §6.16.
 //!
 //! Every value keeps where it was written ([`At`]), so a later check reports

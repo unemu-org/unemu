@@ -1,6 +1,6 @@
 # Rule 10: a fat step whose format differs from the medium it feeds, as one
 # volume and as a volume of a split.
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "private/media/ibm-pc/demo"

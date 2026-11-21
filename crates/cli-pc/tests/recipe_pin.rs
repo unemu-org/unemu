@@ -41,7 +41,7 @@ fn sha(bytes: &[u8]) -> String {
     image_store::Digest::of(bytes).hex().to_owned()
 }
 
-const WORK: &str = "recipe = \"0.1\"\n\n[work]\nid = \"pinned\"\n\n[title]\ntitle = \"Pinned\"\nsynopsis = \"A work.\"\n";
+const WORK: &str = "recipe = \"1.0\"\n\n[work]\nid = \"pinned\"\n\n[title]\ntitle = \"Pinned\"\nsynopsis = \"A work.\"\n";
 
 /// A media recipe of a 720K disk image taken unmodified and a readme, with
 /// a work file; the inputs in `t/lib`.
@@ -55,7 +55,7 @@ fn recipe(t: &Temp) -> (PathBuf, PathBuf) {
     fs::write(lib.join("DATA.BIN"), &data).unwrap();
     fs::write(lib.join("README.TXT"), readme).unwrap();
     let text = format!(
-        "recipe = \"0.1\"\nwork = \"pinned\"\n\n[media]\nname = \"private/media/ibm-pc/pinned\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n\
+        "recipe = \"1.0\"\nwork = \"pinned\"\n\n[media]\nname = \"private/media/ibm-pc/pinned\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n\
          [title]\nyear = 1990\n\n\
          [input.readme]\nname = \"README.TXT\"\nsize = {}\nsha256 = \"{}\"\n\n\
          [input.data]\nname = \"DATA.BIN\"\nsize = {}\nsha256 = \"{}\"\n\n\

@@ -1,6 +1,6 @@
 # Rule 3: the work is the repository, so the last component of name is the
 # work id.
-recipe = "0.1"
+recipe = "1.0"
 work = "good"
 
 [media]

@@ -2,7 +2,7 @@
 # Private: the user supplies the five disks; the documentation is an optional part.
 # The disk count, names, hashes and ids are PLACEHOLDERS: nothing was measured (README).
 
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "private/media/ibm-pc/windows"

@@ -2,7 +2,7 @@
 # reference (bonus) is not reported again, nor is anything a step of two
 # verbs names (extras). An input only an unused step reads (orphan) is
 # reported with that step.
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "private/media/ibm-pc/demo"

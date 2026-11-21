@@ -2,7 +2,7 @@
 # A second release of the same work, to exercise the work file. PLACEHOLDER data: the
 # archive was not obtained; its name, size, hash, members and terms are not measured.
 
-recipe = "0.1"
+recipe = "1.0"
 work = "kenslab"
 
 [media]

@@ -1,7 +1,7 @@
 # Rule 6: a ROM the catalogue lists as user-supplied takes no [license], also
 # when the recipe names no catalogue entry: its chips are known by their
 # SHA-256 and size.
-recipe = "0.1"
+recipe = "1.0"
 
 [firmware]
 name = "private/firmware/ibm-pc/demo"

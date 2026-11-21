@@ -25,7 +25,7 @@ use crate::model::{Op, Recipe};
 use image_store::compat::{lookup, AppVersion, Requirement, Row};
 
 /// Recipe versions, the value of the top-level `recipe` key.
-pub const VERSIONS: &[Row] = &[("0.1", AppVersion::new(0, 0, 3))];
+pub const VERSIONS: &[Row] = &[("1.0", AppVersion::new(0, 0, 3))];
 
 /// Step kinds, by verb.
 pub const STEPS: &[Row] = &[
@@ -127,7 +127,7 @@ mod tests {
 
     fn recipe(steps: &str) -> Recipe {
         let text = format!(
-            "recipe = \"0.1\"\n\n[media]\nname = \"private/media/ibm-pc/x\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n\
+            "recipe = \"1.0\"\n\n[media]\nname = \"private/media/ibm-pc/x\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n\
              [title]\ntitle = \"X\"\n\n\
              [input.disk]\nname = \"x.zip\"\nsize = 1\nsha256 = \"{}\"\n\n{steps}\
              [[medium]]\nid = \"disk-1\"\nlabel = \"Disk 1\"\nformat = \"1.44M\"\nfrom = \"disk\"\n",
@@ -150,7 +150,7 @@ mod tests {
         let unpacked = recipe("[[step]]\nid = \"files\"\nunpack = \"disk\"\nmembers = []\n\n");
         assert_eq!(required(&plain, &Requirement::None, &TABLE), Ok(next));
         assert_eq!(required(&unpacked, &Requirement::None, &TABLE), Ok(next));
-        let versions: &[Row] = &[("0.1", newer)];
+        let versions: &[Row] = &[("1.0", newer)];
         let raised = Table { versions, ..TABLE };
         assert_eq!(required(&plain, &Requirement::None, &raised), Ok(newer));
         let steps: &[Row] = &[("unpack", newer), ("fat", next), ("text", next)];

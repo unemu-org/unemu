@@ -5,6 +5,17 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-21 — Recipe format 1.0 frozen:** decision-43 is
+  accepted. Recipes and work files use 1.0;
+  experimental 0.1 is refused, while historical syntax snapshots remain.
+  Existing output pins and lock bytes are preserved. The generated 1.0
+  schema has a drift check and release asset; CI and release upload require
+  conformance of all seven pinned open recipes without allowing drafts.
+  Ken's exact licence-index input is missing locally; the complete Ken's
+  input set still needs release-fixture provisioning. No recipe is published by this change.
+  `commands.md` carries §9's promises until user documentation follows the
+  front-end split. See `design/recipes.md` §19.2 B17 and decision-43.
+
 - **2026-11-20 — Contract 0.3 re-pin:** `unemu-core-api` and
   `unemu-core-files` use release 0.3.0 at `0d490fcb`; the NES core uses
   `1b2b1128`. The PC and scripted test cores state contract 0.3, and both

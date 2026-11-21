@@ -1,8 +1,11 @@
 # Recipes: Mediafile, Firmwarefile and Machinefile
 
-Status: **Proposed** (design step of `upc-5pw.113`), 2026-11-17. Nothing here is
-implemented and nothing is frozen. The syntax is experimental (`recipe = "0.1"`)
-until unemu-media has migrated and one private recipe works end to end; see §14.
+Status: **Freeze proposed**, 2026-11-20 ([decision-43](../../decisions/decision-43%20-%20Recipe-format-1.0-frozen.md)).
+The implemented recipe and work-file format now says `recipe = "1.0"`;
+experimental `0.1` is refused. The maintainer accepts the freeze; recipes
+remain unpublished until acceptance and a green release conformance gate.
+The software migration, independent Windows 3.1 build and Machinefile
+syntax review supply §14's evidence. The Machinefile remains outside 1.0.
 The maintainer accepted the syntax, TOML at `0.x`, on 2026-11-17 after
 reading the corpus (decision-33); HCL stays as the documented fallback.
 On the same day he answered questions Q2 to Q7 (§16); none is open.
@@ -544,7 +547,7 @@ tables, arrays and scalars, and the corpus generator writes both syntaxes
 from it. If the Machinefile corpus with its long step lists (§14, review
 dated 2026-11-20) shows TOML to be unreadable there, the fallback is the
 HCL subset of the corpus with the same schema. That is a second parser, not
-a second design. The syntax stays `0.x` until the freeze gates pass (§14).
+a second design. The syntax stayed `0.x` until the freeze gates of §14; decision-43 proposes the 1.0 boundary.
 
 ### 4.6. Findings of the corpus check (B1)
 
@@ -732,7 +735,8 @@ O1 to O4 on 2026-11-17, and B4 implemented them (§19.2); O5 stays open.
   hash differs from its catalogue entry. None fires on the corpus.
 - **O3. Who keeps the schema. Decided:** it is generated from the
   parser's key tables and the providers, never kept by hand; a test
-  compares the published file with it, and the freeze publishes it (B17).
+  compares the published file with it; B17 adds `recipe-schema-1.0.json`
+  and its release asset, retaining the 0.1 file as historical evidence.
 - **O4. A work file's version. Decided:** a recipe names a work file of
   its own recipe version only.
 - **O5. A work whose releases differ in openness.** A shareware episode
@@ -750,7 +754,7 @@ two licence texts. `digest` is absent: no builder exists
 yet, so every recipe of the corpus is a draft.
 
 ```toml
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "unemu/media/ibm-pc/kenslab"
@@ -837,10 +841,12 @@ kind = "document"
 from = "licenses"
 ```
 
-## 6. Specification of version 0.1
+## 6. Specification of version 1.0
 
-Version 0.1 is the candidate for 1.0. Everything in this section is open to
-change until the freeze of §14.
+Version 1.0 is proposed for the freeze of §14 (decision-43). Only the
+implemented Mediafile, Firmwarefile and work-file subset freezes on
+acceptance. Explicitly marked later extensions remain outside 1.0 and need
+new recipe versions; the Machinefile sketch is not frozen.
 
 ### 6.1. The file
 
@@ -874,7 +880,7 @@ change until the freeze of §14.
 
 | Key | Kind | Required | Content |
 | --- | --- | --- | --- |
-| `recipe` | string | yes | The recipe version, `"0.1"`. It selects the schema and the bytes every step writes (§9). |
+| `recipe` | string | yes | The recipe version, `"1.0"`. It selects the schema and the bytes every step writes (§9). |
 | `work` | string | no | The id of the work this is a release of. Its shared description is read from `<id>.work.toml` beside the recipe (§6.16). Media only: a work file holds only media tables. |
 | `[media]`, `[firmware]` or `[machine]` | table | exactly one | The kind and the output's identity (§6.3). |
 | `[title]` | table | media: yes | The title record (§6.4). |
@@ -1324,7 +1330,7 @@ releases of a cartridge, the shareware and full versions of a game, the
 disk formats of an operating system. A **work file** holds what they share.
 
 ```toml
-recipe = "0.1"
+recipe = "1.0"
 
 [work]
 id = "contra"
@@ -1347,7 +1353,7 @@ wikidata = "Q…"
 and a release states only what is its own:
 
 ```toml
-recipe = "0.1"
+recipe = "1.0"
 work = "contra"
 
 [media]
@@ -1952,11 +1958,21 @@ As the maintainer accepted: nothing freezes before it meets reality.
    scope does not outweigh TOML's readable linear order and literal strings
    in these cases. This supplies the syntax-review evidence for step 5,
    not guest validation or the freeze. The maintainer decides; decision-33
-   is unchanged and its point 7 fallback remains available before step 7.
+   is unchanged; the maintainer approved TOML staying on 2026-11-20
+   (B16). Step 7 still needs the freeze decision's acceptance.
 6. **The FAT builder's last free choices**, before the freeze, because the
    freeze makes them permanent. The boot sector is decided (§6.9); the
    builder's remaining defaults are reviewed once more at the freeze.
 7. **Freeze 1.0**, publish recipes, and from then on §9 holds.
+   **2026-11-21:** decision-43 is Accepted; the format is frozen. The version boundary
+   is `recipe = "1.0"`; 0.1 may be dropped under §9 and is refused.
+   The work-file format is included; the Machinefile syntax sketches are
+   not frozen. FAT defaults stay as implemented: serial `0x28959855`,
+   name order, epoch fallback time, strict DOS names and the accepted
+   data-disk boot sector. The release gate requires all seven pinned open
+   recipes without `--allow-drafts`; missing fixture inputs also block it.
+   User documentation follows the front-end split; `commands.md` carries
+   the promises until then.
 
 ## 15. Risks
 
@@ -3126,6 +3142,31 @@ written into the user documentation, the conformance corpus required by
 the release gate. Depends on: B14, B15, B16.
 Recipes are published only after it.
 
+Done on 2026-11-21 (`upc-5pw.113.17`; decision-43 accepted by the maintainer).
+As landed:
+- Decision-43 proposes the explicit 1.0 recipe/work-file boundary, unchanged
+  locks and media types, §9's compatibility rules and §13's exclusions.
+  Machinefiles stay experimental; B15's Windows 3.1 build and B16's TOML
+  review were approved by the maintainer on 2026-11-20. B14 is the software
+  repository's migration; this change does not publish that repository.
+- The parser, schema, accepted corpus and checker/CLI fixtures use 1.0;
+  0.1 and unknown future versions are refused. Historical HCL snapshots,
+  Machinefile sketches and the 0.1 schema remain design evidence. Existing
+  output pins and locks are preserved; recipe-artifact and local provenance
+  hashes necessarily change with recipe text.
+- `recipe-schema-1.0.json` is generated by `recipe::schema::render` and
+  checked by `pc-image`'s existing byte-for-byte drift test. The release
+  workflow checks it and attaches the checksummed file.
+- CI and the release upload require `scripts/ci-gate.sh recipe-conformance`
+  on six shipped recipes and the remaining pinned Ken's Labyrinth recipe,
+  against vendor libraries, without `--allow-drafts`. A fixture gap remains:
+  Ken's exact licence index is missing locally; CI must also supply its
+  archive or pinned members. Decision-43 records the input requirements. No fixture is changed
+  or output repinned to conceal that gap.
+- `commands.md` carries all nine §9 promises until user documentation is
+  written after the front-end split. The recent `--deny-drift` and strict
+  conformance draft policy remain in force.
+
 ### 19.3. Order and what blocks the release
 
 ```text
@@ -3138,4 +3179,6 @@ B1 -> B4 -> B6 -> B7 -> B8 -> B10 -> B14 -> B17
 
 Before the first public release: A1, A2, A3 and the push; B2, so that the first public release reads schema 2. The recipe
 track itself need not be finished for the release: recipes stay
-experimental at `0.x` and none is published before B17.
+unpublished before B17's freeze decision is accepted. The prepared
+implementation uses 1.0; that version string alone is not approval to
+publish.

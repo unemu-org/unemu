@@ -1,6 +1,6 @@
 # Rule 1: TOML 1.1 forms, which recipes refuse: a line break and a trailing
 # comma in an inline table, the \x escape and a time without seconds.
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "private/media/ibm-pc/demo"

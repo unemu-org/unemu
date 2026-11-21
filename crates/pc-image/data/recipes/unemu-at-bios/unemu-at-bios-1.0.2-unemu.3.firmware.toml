@@ -8,7 +8,7 @@
 # word. digest and the lock beside this file pin the package
 # (docs/recipes.md).
 
-recipe = "0.1"
+recipe = "1.0"
 
 [firmware]
 name = "unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3"

@@ -219,7 +219,7 @@ fn scaffold(temp: &Temp) -> (u8, String, String) {
 /// and the outputs that use every value.
 fn recipe_text(tables: &str) -> String {
     format!(
-        r#"recipe = "0.1"
+        r#"recipe = "1.0"
 
 [media]
 name = "private/media/ibm-pc/scaffold-test"
@@ -400,7 +400,7 @@ fn what_a_recipe_cannot_hold_exits_1_and_usage_exits_2() {
 
     // A recipe with findings: the check's report, exit 1.
     let recipe = temp.path("bad.media.toml");
-    fs::write(&recipe, "recipe = \"0.1\"\n").unwrap();
+    fs::write(&recipe, "recipe = \"1.0\"\n").unwrap();
     let (code, output, _) = inputs(&recipe, "csv");
     assert_eq!(code, 1);
     assert!(output.contains(": error["), "{output}");
@@ -409,7 +409,7 @@ fn what_a_recipe_cannot_hold_exits_1_and_usage_exits_2() {
     fs::write(
         &clash,
         format!(
-            "recipe = \"0.1\"\n\n[media]\nname = \"private/media/ibm-pc/clash\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n[title]\ntitle = \"Clash\"\n\n\
+            "recipe = \"1.0\"\n\n[media]\nname = \"private/media/ibm-pc/clash\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n[title]\ntitle = \"Clash\"\n\n\
              [input.a]\nname = \"X.BIN\"\nsize = 2\nsha256 = \"{A}\"\n\n[input.b]\nname = \"X.BIN\"\nsize = 4\nsha256 = \"{B}\"\n\n\
              [input.disk]\nname = \"D.IMG\"\nsize = 1474560\nsha256 = \"{Z}\"\n\n\
              [[medium]]\nid = \"disk-1\"\nlabel = \"Disk 1\"\nformat = \"1.44M\"\nfrom = \"disk\"\n\n\

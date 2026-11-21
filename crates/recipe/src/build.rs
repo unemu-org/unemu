@@ -1813,7 +1813,7 @@ mod tests {
     #[test]
     fn running_the_steps_is_a_pure_function_of_the_gathered_bytes() {
         let recipe = recipe(&format!(
-            "recipe = \"0.1\"\n\n[media]\nname = \"private/media/test/x\"\nplatform = \"test\"\nrevision = 1\n\n[title]\ntitle = \"X\"\n\n\
+            "recipe = \"1.0\"\n\n[media]\nname = \"private/media/test/x\"\nplatform = \"test\"\nrevision = 1\n\n[title]\ntitle = \"X\"\n\n\
              [input.archive]\nname = \"X.ZIP\"\nsize = 1\nsha256 = \"{ZERO}\"\n\n\
              [input.game]\nname = \"GAME\"\nfiles = [{{ path = \"RUN.COM\", size = 3, sha256 = \"{ZERO}\", time = 1999-12-31T23:59:58 }}]\n\n\
              [input.notes]\nname = \"notes\"\nsize = 1\nsha256 = \"{ZERO}\"\n\n\
@@ -1878,7 +1878,7 @@ mod tests {
         use std::sync::Barrier;
         let bytes = b"downloaded bytes".to_vec();
         let recipe = recipe(&format!(
-            "recipe = \"0.1\"\n\n[media]\nname = \"private/media/test/x\"\nplatform = \"test\"\nrevision = 1\n\n[title]\ntitle = \"X\"\n\n\
+            "recipe = \"1.0\"\n\n[media]\nname = \"private/media/test/x\"\nplatform = \"test\"\nrevision = 1\n\n[title]\ntitle = \"X\"\n\n\
              [input.disk]\nname = \"DISK.IMG\"\nsize = {}\nsha256 = \"{}\"\nurls = [\"https://example.org/DISK.IMG\"]\n\n\
              [[medium]]\nid = \"disk-1\"\nlabel = \"Disk\"\nformat = \"disk\"\nfrom = \"disk\"\n",
             bytes.len(),
@@ -1958,7 +1958,7 @@ mod tests {
         }
         assert_eq!(file_name_problem("x86BOOT.img"), None);
         let recipe = recipe(&format!(
-            "recipe = \"0.1\"\n\n[media]\nname = \"private/media/test/x\"\nplatform = \"test\"\nrevision = 1\n\n[title]\ntitle = \"X\"\n\n\
+            "recipe = \"1.0\"\n\n[media]\nname = \"private/media/test/x\"\nplatform = \"test\"\nrevision = 1\n\n[title]\ntitle = \"X\"\n\n\
              [input.disk]\nname = \"D\"\nsize = 1\nsha256 = \"{ZERO}\"\n\n\
              [[medium]]\nid = \"disk-1\"\nlabel = \"Disk\"\nformat = \"disk\"\nfrom = \"disk\"\n"
         ));

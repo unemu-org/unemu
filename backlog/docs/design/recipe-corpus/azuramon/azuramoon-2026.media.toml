@@ -2,7 +2,7 @@
 # Private: no licence statement, no URL. The user supplies the files; the recipe holds
 # names, sizes and hashes only. Real data, measured on one copy of the folder.
 
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "private/media/ibm-pc/azuramoon"

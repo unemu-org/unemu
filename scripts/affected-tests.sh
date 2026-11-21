@@ -116,7 +116,7 @@ def data_rules: [
   {prefix: "backlog/docs/design/recipe-corpus/", goldens: false,
    crates: ["cli-pc", "pc-harness", "pc-image"],
    why: "recipes the recipe checks and the user-file volume tests read"},
-  {prefix: "backlog/docs/design/recipe-schema-0.1.json", goldens: false,
+  {prefix: "backlog/docs/design/recipe-schema-1.0.json", goldens: false,
    crates: ["pc-image"], why: "the recipe schema a test compares with the generated one"}
 ];
 # Tests that read the sources of every crate.

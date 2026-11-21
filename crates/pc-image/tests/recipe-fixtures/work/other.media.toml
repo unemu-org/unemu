@@ -2,7 +2,7 @@
 # of its own version only), and one that holds another work's id. The work
 # file's needs are checked against this recipe's platform (rule 7), and
 # neither states a title (rule 2).
-recipe = "0.1"
+recipe = "1.0"
 work = "other"
 
 [media]

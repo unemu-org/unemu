@@ -22,7 +22,7 @@
 # file's: an edit here reaches a published set only with a new pin
 # (docs/recipes.md).
 
-recipe = "0.1"
+recipe = "1.0"
 
 [work]
 id = "kenslab"

@@ -58,7 +58,7 @@ fn sha(bytes: &[u8]) -> String {
 /// and a readme stored as an extra.
 fn recipe(t: &Temp, readme: &[u8], data: &[u8]) -> PathBuf {
     let text = format!(
-        "recipe = \"0.1\"\n\n[media]\nname = \"private/media/ibm-pc/fetched\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n\
+        "recipe = \"1.0\"\n\n[media]\nname = \"private/media/ibm-pc/fetched\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n\
          [title]\ntitle = \"Fetched\"\n\n\
          [input.readme]\nname = \"README.TXT\"\nsize = {}\nsha256 = \"{}\"\nurls = [\"https://example.org/dl/README.TXT\"]\n\n\
          [input.data]\nname = \"DATA.BIN\"\nsize = {}\nsha256 = \"{}\"\nurls = [\"https://example.org/dl/DATA.BIN\"]\n\n\

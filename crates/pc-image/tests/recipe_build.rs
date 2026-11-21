@@ -330,7 +330,7 @@ fn set_disks(file: &str) -> usize {
     }
 }
 
-const HEAD: &str = "recipe = \"0.1\"\n\n[media]\nname = \"private/media/ibm-pc/synthetic\"\nplatform = \"ibm-pc\"\nrelease = \"1.0\"\nrevision = 1\n\n[title]\ntitle = \"Synthetic\"\n\n";
+const HEAD: &str = "recipe = \"1.0\"\n\n[media]\nname = \"private/media/ibm-pc/synthetic\"\nplatform = \"ibm-pc\"\nrelease = \"1.0\"\nrevision = 1\n\n[title]\ntitle = \"Synthetic\"\n\n";
 
 fn sha(bytes: &[u8]) -> String {
     Digest::of(bytes).hex().to_owned()

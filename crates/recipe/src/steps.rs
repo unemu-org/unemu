@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The three steps of recipe version 0.1 (recipes §6.9), each a pure
+//! The three steps of recipe version 1.0 (recipes §6.9), each a pure
 //! function of its operand's bytes and its keys (recipes §3.6, §6.12): it
 //! reads no clock, no locale, no host file or name, and opens no
 //! connection. A time exists only where the recipe states one.

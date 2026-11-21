@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The JSON Schema (draft 2020-12) of recipe version 0.1, written from the
+//! The JSON Schema (draft 2020-12) of recipe version 1.0, written from the
 //! key tables of [`crate::spec`] and the vocabularies of the providers, so
 //! that it cannot drift from the checker (recipes §4.6, §19.2).
 //!
@@ -54,8 +54,8 @@ pub fn schema(providers: &[&dyn Provider]) -> Value {
     let work = writer.table(&spec::WORK_FILE, None);
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "unemupc recipe 0.1: Mediafile, Firmwarefile or work file",
-        "description": "Generated from the key tables of the recipe crate and the vocabularies of its platform providers (recipes.md section 6, experimental). A TOML file is validated through the usual TOML-to-JSON mapping, in which a local date-time is a string. What a schema cannot say (TOML 1.1 syntax, references, uniqueness, sums, the licence rules, sizes against formats and the firmware catalogue) is decided by upcli recipe check.",
+        "title": "unemupc recipe 1.0: Mediafile, Firmwarefile or work file",
+        "description": "Generated from the key tables of the recipe crate and the vocabularies of its platform providers (recipes.md section 6). A TOML file is validated through the usual TOML-to-JSON mapping, in which a local date-time is a string. What a schema cannot say (TOML 1.1 syntax, references, uniqueness, sums, the licence rules, sizes against formats and the firmware catalogue) is decided by upcli recipe check.",
         "type": "object",
         "if": { "properties": { "work": { "type": "object" } }, "required": ["work"] },
         "then": { "$ref": format!("#/$defs/{work}") },

@@ -297,7 +297,7 @@ fn zip(members: &[(&str, &[u8])]) -> Vec<u8> {
     out
 }
 
-const WORK: &str = "recipe = \"0.1\"\n\n[work]\nid = \"synthetic\"\n\n[title]\ntitle = \"Synthetic\"\npublishers = [\"Example Software\"]\nlabels = [\"game\"]\nsynopsis = \"A synthetic game.\"\n";
+const WORK: &str = "recipe = \"1.0\"\n\n[work]\nid = \"synthetic\"\n\n[title]\ntitle = \"Synthetic\"\npublishers = [\"Example Software\"]\nlabels = [\"game\"]\nsynopsis = \"A synthetic game.\"\n";
 
 /// A draft media recipe in `t/recipes` of three steps (members unpacked
 /// from an archive, built into a 1.44M disk, and a text with DOS line
@@ -313,7 +313,7 @@ fn synthetic(t: &Temp) -> (PathBuf, PathBuf) {
     fs::write(lib.join("GAME.ZIP"), &archive).unwrap();
     fs::write(lib.join("notes.txt"), notes).unwrap();
     let text = format!(
-        "recipe = \"0.1\"\nwork = \"synthetic\"\n\n[media]\nname = \"private/media/ibm-pc/synthetic\"\nplatform = \"ibm-pc\"\nrelease = \"1.0\"\nrevision = 1\n\n\
+        "recipe = \"1.0\"\nwork = \"synthetic\"\n\n[media]\nname = \"private/media/ibm-pc/synthetic\"\nplatform = \"ibm-pc\"\nrelease = \"1.0\"\nrevision = 1\n\n\
          [title]\nyear = 1993\ndescription = \"The first release, on one disk.\"\nlabels = [\"freeware\"]\n\n\
          [input.archive]\nname = \"GAME.ZIP\"\nsize = {}\nsha256 = \"{}\"\n\n\
          [input.notes]\nname = \"notes.txt\"\nsize = {}\nsha256 = \"{}\"\n\n\
@@ -906,7 +906,7 @@ fn a_lock_that_marks_a_user_supplied_package_open_is_refused() {
     fs::write(
         &recipe,
         format!(
-            "recipe = \"0.1\"\n\n[firmware]\nname = \"private/firmware/ibm-pc/vgabios-0.9d-unemu.1-std\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n\
+            "recipe = \"1.0\"\n\n[firmware]\nname = \"private/firmware/ibm-pc/vgabios-0.9d-unemu.1-std\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n\
              [package]\ntitle = \"A user's VGA BIOS\"\n\n\
              [input.rom]\nname = \"vgabios-std.bin\"\nsize = {}\nsha256 = \"{}\"\n\n\
              [[rom]]\nid = \"video-bios\"\nrole = \"video-bios\"\ncatalogue_id = \"vgabios-0.9d-unemu.1-std\"\nfrom = \"rom\"\n",

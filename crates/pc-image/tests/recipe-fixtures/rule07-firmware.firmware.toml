@@ -1,6 +1,6 @@
 # Rule 7 for firmware: a role, a lane, a board, a machine class and a
 # catalogue entry the provider does not know.
-recipe = "0.1"
+recipe = "1.0"
 
 [firmware]
 name = "private/firmware/ibm-pc/demo"

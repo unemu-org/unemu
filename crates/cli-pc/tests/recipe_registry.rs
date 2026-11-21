@@ -66,7 +66,7 @@ fn sha(bytes: &[u8]) -> String {
 }
 
 const WORK: &str =
-    "recipe = \"0.1\"\n\n[work]\nid = \"shared\"\n\n[title]\ntitle = \"Shared\"\nsynopsis = \"A work.\"\n";
+    "recipe = \"1.0\"\n\n[work]\nid = \"shared\"\n\n[title]\ntitle = \"Shared\"\nsynopsis = \"A work.\"\n";
 
 /// Notes of 300 bytes: a bundled text over the disclosable limit.
 fn notes() -> Vec<u8> {
@@ -117,7 +117,7 @@ fn pinned(
     fs::write(dir.join("NOTES.TXT"), notes).unwrap();
     fs::write(dir.join("shared.work.toml"), WORK).unwrap();
     let text = format!(
-        "recipe = \"0.1\"\nwork = \"shared\"\n\n[media]\nname = \"private/media/ibm-pc/shared\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n\
+        "recipe = \"1.0\"\nwork = \"shared\"\n\n[media]\nname = \"private/media/ibm-pc/shared\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n\
          [title]\nyear = 1990\n\n\
          [input.notes]\nname = \"NOTES.TXT\"\nsize = {}\nsha256 = \"{}\"\nbundle = true\n{extra}\n\
          [input.data]\nname = \"DATA{seed}.BIN\"\nsize = {}\nsha256 = \"{}\"\n\n\
@@ -848,7 +848,7 @@ fn a_newer_recipe_is_refused_before_any_blob_of_its_bundle_is_fetched() {
         "a release this one is not"
     );
     let next = AppVersion::new(0, 0, 3);
-    let versions: &[image_store::compat::Row] = &[("0.1", newer)];
+    let versions: &[image_store::compat::Row] = &[("1.0", newer)];
     let steps: &[image_store::compat::Row] = &[("unpack", next), ("fat", next), ("text", newer)];
     let cases = [
         ("version", Table { versions, ..TABLE }, Requirement::None),
@@ -1000,7 +1000,7 @@ fn member_recipe(
         (String::new(), String::new(), "")
     };
     let text = format!(
-        "recipe = \"0.1\"\n\n[media]\nname = \"private/media/ibm-pc/shared\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n\
+        "recipe = \"1.0\"\n\n[media]\nname = \"private/media/ibm-pc/shared\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n\
          [title]\ntitle = \"Shared\"\n\n{license}\
          [input.game]\nname = \"GAME.ZIP\"\nsize = {}\nsha256 = \"{}\"\ndisclosable = true\n\n\
          [input.data]\nname = \"DATA7.BIN\"\nsize = {}\nsha256 = \"{}\"\n\n{terms_input}\
@@ -1085,7 +1085,7 @@ fn identical_bundled_parts_are_a_finding_of_the_checks() {
     let data = data(0);
     let recipe = |inputs: &str| {
         format!(
-            "recipe = \"0.1\"\nwork = \"shared\"\n\n[media]\nname = \"private/media/ibm-pc/shared\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n\
+            "recipe = \"1.0\"\nwork = \"shared\"\n\n[media]\nname = \"private/media/ibm-pc/shared\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n\
              {inputs}\
              [input.data]\nname = \"DATA0.BIN\"\nsize = {}\nsha256 = \"{}\"\n\n\
              [[medium]]\nid = \"disk-1\"\nlabel = \"Disk 1\"\nformat = \"720K\"\nfrom = \"data\"\n\n\

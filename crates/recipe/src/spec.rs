@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The keys of recipe version 0.1 (recipes §6.2 to §6.10, §6.16): every
+//! The keys of recipe version 1.0 (recipes §6.2 to §6.10, §6.16): every
 //! table, its keys, their types and which are required.
 //!
 //! This one description drives both the parser's checks of rule 1 (an
@@ -193,7 +193,7 @@ const LABELS: Ty = Ty::Array {
 pub const MAX_RELEASE: usize = 128 - 2 - 19;
 
 /// The recipe version this release reads (recipes §6.1, §9).
-pub const VERSION: &str = "0.1";
+pub const VERSION: &str = "1.0";
 const RECIPE: Field = req("recipe", Ty::Enum(&[VERSION]));
 
 /// `[media]`, `[firmware]`: the output's identity (recipes §6.3).
@@ -622,7 +622,7 @@ pub static WORK_FILE: Table = table(
 );
 
 /// The identity tables, one per kind; `machine` is reserved for the
-/// Machinefile, which version 0.1 does not specify (recipes §6.2, §11).
+/// Machinefile, which version 1.0 does not specify (recipes §6.2, §11).
 pub const IDENTITIES: &[&str] = &["media", "firmware", "machine"];
 
 /// The top-level keys only a Mediafile has, and only a Firmwarefile has.

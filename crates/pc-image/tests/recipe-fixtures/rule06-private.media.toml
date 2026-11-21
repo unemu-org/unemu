@@ -1,5 +1,5 @@
 # Rule 6: a recipe without [license] is user-supplied, so not under unemu/.
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "unemu/media/ibm-pc/demo"

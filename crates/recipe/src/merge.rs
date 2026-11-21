@@ -398,7 +398,7 @@ mod tests {
         document
     }
 
-    const HEAD: &str = "recipe = \"0.1\"\nwork = \"w\"\n\n[media]\nname = \"private/media/ibm-pc/w\"\nplatform = \"ibm-pc\"\nrelease = \"1.0\"\nrevision = 2\n\n";
+    const HEAD: &str = "recipe = \"1.0\"\nwork = \"w\"\n\n[media]\nname = \"private/media/ibm-pc/w\"\nplatform = \"ibm-pc\"\nrelease = \"1.0\"\nrevision = 2\n\n";
     const MEDIUM: &str = "\n[input.disk]\nname = \"x.img\"\nsize = 1474560\nsha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\n\n[[medium]]\nid = \"disk-1\"\nlabel = \"Disk 1\"\nformat = \"1.44M\"\nfrom = \"disk\"\n";
 
     /// Merge a recipe whose tables are `recipe` with a work file whose
@@ -414,7 +414,7 @@ mod tests {
         };
         let work = work.map(|w| {
             let Document::Work(work) =
-                document(&format!("recipe = \"0.1\"\n\n[work]\nid = \"w\"\n\n{w}"))
+                document(&format!("recipe = \"1.0\"\n\n[work]\nid = \"w\"\n\n{w}"))
             else {
                 panic!("not a work file");
             };

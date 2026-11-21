@@ -1,5 +1,10 @@
 [
   {
+    "name": "the frozen recipe schema selects its checker",
+    "changed": ["backlog/docs/design/recipe-schema-1.0.json"],
+    "expect": {"mode": "crates", "seeds": ["pc-image"], "tier": "fast"}
+  },
+  {
     "name": "a shipped template recipe selects its readers and their ignored tests",
     "changed": [
       "crates/pc-image/data/recipes/freedos-1.4-floppy/freedos-1.4.media.toml"

@@ -1,6 +1,6 @@
 # Rule 2: the work file it names is a recipe, not a work file; and so the
 # recipe states no title (rule 2).
-recipe = "0.1"
+recipe = "1.0"
 work = "notwork"
 
 [media]

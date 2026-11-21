@@ -1,5 +1,5 @@
 # Rule 9: a bundled input over 1 MiB, and 65 steps where 64 are allowed.
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "private/media/ibm-pc/demo"

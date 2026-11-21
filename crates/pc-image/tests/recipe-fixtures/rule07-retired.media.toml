@@ -1,5 +1,5 @@
 # Rule 7: a retired platform id; a recipe names the current one.
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "private/media/ibm-pc-at/demo"

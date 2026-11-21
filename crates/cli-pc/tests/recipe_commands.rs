@@ -155,7 +155,7 @@ fn show_marks_only_the_fields_inherited_from_a_draft_work_file() {
     std::fs::create_dir_all(&temp.0).unwrap();
     std::fs::write(
         temp.0.join("draft.work.toml"),
-        r#"recipe = "0.1"
+        r#"recipe = "1.0"
 [work]
 id = "draft"
 [title]
@@ -177,7 +177,7 @@ memory = "512K"
     let recipe = temp.0.join("draft.media.toml");
     std::fs::write(
         &recipe,
-        r#"recipe = "0.1"
+        r#"recipe = "1.0"
 work = "draft"
 [media]
 name = "private/media/ibm-pc/draft"

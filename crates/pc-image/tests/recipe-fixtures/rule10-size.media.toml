@@ -1,6 +1,6 @@
 # Rule 10: a stated size the medium's format does not allow, from an input
 # and from an archive member.
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "private/media/ibm-pc/demo"

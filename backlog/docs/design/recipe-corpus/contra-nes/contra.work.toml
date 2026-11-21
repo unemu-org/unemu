@@ -1,7 +1,7 @@
 # Contra, the work: what every NES release of it shares. The recipes beside this file state
 # only what differs by region and revision. ASSUMED and PLACEHOLDER as in the recipes.
 
-recipe = "0.1"
+recipe = "1.0"
 
 [work]
 id = "contra"

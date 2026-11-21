@@ -1,7 +1,7 @@
 # Rule 6 for firmware: a copyleft expression without source, a ROM the
 # catalogue lists as user-supplied under a licence, and an expression that
 # differs from the one the catalogue records.
-recipe = "0.1"
+recipe = "1.0"
 
 [firmware]
 name = "unemu/firmware/ibm-pc/demo"

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Recipes: Mediafiles and Firmwarefiles that state how an artifact is made
 //! from inputs found by SHA-256 and size (`backlog/docs/design/recipes.md`,
-//! the specification of version 0.1 in §6).
+//! the specification of version 1.0 in §6).
 //!
 //! This crate is the platform-neutral part: the typed model ([`model`]), the
 //! parser of TOML 1.0 with exact positions, and the static checks of
@@ -852,6 +852,30 @@ fn lock_findings(
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_frozen_version_is_accepted_and_experimental_or_future_versions_are_refused() {
+        for (version, accepted) in [("1.0", true), ("0.1", false), ("1.1", false)] {
+            let text =
+                format!("recipe = {version:?}\n[work]\nid = \"test\"\n[title]\ntitle = \"Test\"\n");
+            let report = check_text("test.work.toml", &text, Providers(&[]));
+            assert_eq!(
+                !report.findings.iter().any(|f| f.path == "recipe"),
+                accepted,
+                "{version}: {:?}",
+                report.findings
+            );
+            if !accepted {
+                let finding = report.findings.iter().find(|f| f.path == "recipe").unwrap();
+                let expected = if version == "0.1" {
+                    "recipe \"0.1\" is the experimental format; this upcli reads recipe \"1.0\": change recipe = \"0.1\" to \"1.0\" (and the work file's version) and check the recipe with upcli recipe check before pinning"
+                } else {
+                    "\"1.1\" is not one of 1.0"
+                };
+                assert_eq!(finding.message, expected);
+            }
+        }
+    }
+
     fn findings(text: &str) -> Vec<String> {
         check_text("x.media.toml", text, Providers(&[]))
             .findings
@@ -860,7 +884,7 @@ mod tests {
             .collect()
     }
 
-    const MINIMAL: &str = "recipe = \"0.1\"\n\n[media]\nname = \"private/media/ibm-pc/x\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n[title]\ntitle = \"X\"\n\n[input.disk]\nname = \"x.img\"\nsize = 1\nsha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\n\n[[medium]]\nid = \"disk-1\"\nlabel = \"Disk 1\"\nformat = \"1.44M\"\nfrom = \"disk\"\n";
+    const MINIMAL: &str = "recipe = \"1.0\"\n\n[media]\nname = \"private/media/ibm-pc/x\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n[title]\ntitle = \"X\"\n\n[input.disk]\nname = \"x.img\"\nsize = 1\nsha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\n\n[[medium]]\nid = \"disk-1\"\nlabel = \"Disk 1\"\nformat = \"1.44M\"\nfrom = \"disk\"\n";
 
     #[test]
     fn without_a_provider_only_the_platform_is_reported() {

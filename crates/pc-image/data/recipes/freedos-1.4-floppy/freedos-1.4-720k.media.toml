@@ -8,7 +8,7 @@
 # freedos.work.toml. digest and the lock beside this file pin the set, as
 # the release of upcli.toml pinned it (docs/recipes.md).
 
-recipe = "0.1"
+recipe = "1.0"
 work = "freedos"
 
 [media]

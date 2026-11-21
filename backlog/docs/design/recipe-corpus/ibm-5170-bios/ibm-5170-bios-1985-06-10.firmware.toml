@@ -2,7 +2,7 @@
 # Private: the user supplies the two chip dumps. Sizes, hashes, part numbers and lanes are
 # real, from the firmware catalogue (crates/assembly/src/firmware.rs).
 
-recipe = "0.1"
+recipe = "1.0"
 
 [firmware]
 name = "private/firmware/ibm-pc/ibm-5170-bios-1985-06-10"

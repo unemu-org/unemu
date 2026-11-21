@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 const CORPUS: &str = "../../backlog/docs/design/recipe-corpus";
 const TEMPLATE_RECIPES: &str = "data/recipes";
-const SCHEMA: &str = "../../backlog/docs/design/recipe-schema-0.1.json";
+const SCHEMA: &str = "../../backlog/docs/design/recipe-schema-1.0.json";
 const FIXTURES: &str = "tests/recipe-fixtures";
 
 fn check(paths: &[&str], providers: &[&dyn Provider]) -> recipe::Report {
@@ -93,7 +93,7 @@ fn generated(name: &str, text: &str) -> recipe::Report {
 
 fn head(name: &str) -> String {
     format!(
-        "recipe = \"0.1\"\n\n[media]\nname = \"private/media/ibm-pc/{name}\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n[title]\ntitle = \"Demo\"\n"
+        "recipe = \"1.0\"\n\n[media]\nname = \"private/media/ibm-pc/{name}\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n[title]\ntitle = \"Demo\"\n"
     )
 }
 

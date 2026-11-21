@@ -1,5 +1,5 @@
 # Rule 6: an expression that is not SPDX, and terms that names no extra.
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "unemu/media/ibm-pc/demo"

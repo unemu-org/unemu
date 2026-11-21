@@ -64,6 +64,9 @@ target/
 # licence index and the deterministic source archive, written by
 # vendor/freedos/fetch-floppy-1.4.sh (its downloads stay under build/).
 /vendor/freedos/floppy-1.4/
+# Ken's Labyrinth: the author's pinned archive, fetched for recipe conformance.
+/vendor/kenslab/LABFULL.ZIP
+/vendor/kenslab/LABFULL.ZIP.part
 # XTIDE Universal BIOS AT option ROM: pinned download, source export, the
 # padded/checksummed images and their source archive are rebuilt by
 # vendor/xtide-universal-bios/fetch.sh, not checked in.

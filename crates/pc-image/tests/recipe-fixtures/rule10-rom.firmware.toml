@@ -1,6 +1,6 @@
 # Rule 10: a ROM whose size and hash differ from its catalogue entry, named
 # by its id or known by its hash.
-recipe = "0.1"
+recipe = "1.0"
 
 [firmware]
 name = "private/firmware/ibm-pc/demo"

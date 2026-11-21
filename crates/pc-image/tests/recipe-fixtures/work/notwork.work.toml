@@ -1,5 +1,5 @@
 # A recipe saved under a work file's name.
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "private/media/ibm-pc/notwork"

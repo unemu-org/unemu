@@ -2,7 +2,7 @@
 # id `amiga`, the format `880K` and the needs vocabulary are ASSUMED. Private, a user's own
 # recipe. The size and hash are real (MEASURED); the title is ASSUMED: the disk was not identified.
 
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "private/media/amiga/amdemo"

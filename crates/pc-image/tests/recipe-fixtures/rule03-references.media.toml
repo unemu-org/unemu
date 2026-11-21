@@ -2,7 +2,7 @@
 # file, a member the tree does not list, a tree where a file is wanted, a
 # file where a tree is wanted, a value name and an output id used twice, a
 # path listed twice, a DOS name used twice and a step that reads itself.
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "private/media/ibm-pc/demo"

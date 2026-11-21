@@ -117,11 +117,12 @@ impl Checker<'_, '_> {
                 if names.contains(&text.as_ref()) {
                     Some(node(V::Str(text.to_string())))
                 } else {
-                    self.finding(
-                        &span,
-                        path,
-                        format!("{text:?} is not one of {}", names.join(", ")),
-                    );
+                    let message = if path == "recipe" && text == "0.1" {
+                        "recipe \"0.1\" is the experimental format; this upcli reads recipe \"1.0\": change recipe = \"0.1\" to \"1.0\" (and the work file's version) and check the recipe with upcli recipe check before pinning".to_owned()
+                    } else {
+                        format!("{text:?} is not one of {}", names.join(", "))
+                    };
+                    self.finding(&span, path, message);
                     None
                 }
             }
@@ -574,7 +575,7 @@ pub(crate) fn document(sink: &mut Sink<'_>, root: &Spanned<DeTable<'_>>) -> Opti
             Rule::Kind,
             span,
             "machine",
-            "[machine] is reserved for the Machinefile, which recipe 0.1 does not specify",
+            "[machine] is reserved for the Machinefile, which recipe 1.0 does not specify",
         );
         skip.push("machine");
     }

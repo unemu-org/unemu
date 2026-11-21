@@ -2,7 +2,7 @@
 # `nes`, the format `ines` and the needs vocabulary are ASSUMED. Private. The size, hash,
 # year and ids are PLACEHOLDERS: no dump was measured (README).
 
-recipe = "0.1"
+recipe = "1.0"
 work = "contra"
 
 [media]

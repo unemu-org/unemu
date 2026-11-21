@@ -1,6 +1,6 @@
 # Rule 7: a platform with no provider in this build. Nothing that would need
 # the provider is reported after it.
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "private/media/nes/demo"

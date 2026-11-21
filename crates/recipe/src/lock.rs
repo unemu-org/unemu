@@ -1713,7 +1713,7 @@ mod tests {
     #[test]
     fn a_payload_whose_bytes_a_lock_holds_is_still_a_payload() {
         let Some(crate::model::Document::Recipe(recipe)) = crate::parse_text(
-            "recipe = \"0.1\"\n\n[media]\nname = \"private/media/ibm-pc/x\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n[title]\ntitle = \"X\"\n\n[license]\nexpression = \"MIT\"\n\n[input.disk]\nname = \"x.img\"\nsize = 4\nsha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\n\n[[medium]]\nid = \"disk-1\"\nlabel = \"Disk 1\"\nformat = \"1.44M\"\nfrom = \"disk\"\n",
+            "recipe = \"1.0\"\n\n[media]\nname = \"private/media/ibm-pc/x\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n[title]\ntitle = \"X\"\n\n[license]\nexpression = \"MIT\"\n\n[input.disk]\nname = \"x.img\"\nsize = 4\nsha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\n\n[[medium]]\nid = \"disk-1\"\nlabel = \"Disk 1\"\nformat = \"1.44M\"\nfrom = \"disk\"\n",
         ) else {
             panic!("the recipe does not read");
         };

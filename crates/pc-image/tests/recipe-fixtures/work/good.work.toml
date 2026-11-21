@@ -1,5 +1,5 @@
 # A work file with nothing wrong.
-recipe = "0.1"
+recipe = "1.0"
 
 [work]
 id = "good"

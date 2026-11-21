@@ -3,7 +3,7 @@
 # boot floppy that ships beside it. The archive's hash, size and URLs and the ISO's hash are
 # real (unemu-media build.sh); the ISO's size is from the earlier design draft. See README.
 
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "private/media/ibm-pc/freedos"

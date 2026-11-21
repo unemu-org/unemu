@@ -1447,7 +1447,7 @@ mod tests {
         }
     }
 
-    const HEAD: &str = "recipe = \"0.1\"\n\n[media]\nname = \"private/media/ibm-pc/x\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n[title]\ntitle = \"X\"\n\n";
+    const HEAD: &str = "recipe = \"1.0\"\n\n[media]\nname = \"private/media/ibm-pc/x\"\nplatform = \"ibm-pc\"\nrevision = 1\n\n[title]\ntitle = \"X\"\n\n";
 
     /// A recipe that unpacks two members of GAME.ZIP and builds a disk from
     /// them, and the bytes of the members.

@@ -1702,9 +1702,12 @@ the work file is a description for the next revision, and the lock wins
 (design/recipes.md §3.8). Use the flag in CI to require the work file and
 lock to agree. Read and usage errors still exit 2.
 
-The JSON Schema `design/recipe-schema-0.1.json` is written from the
+The JSON Schema `design/recipe-schema-1.0.json` is written from the
 parser's key tables and the providers; a test in `pc-image` compares it.
-After a change to the format or a provider vocabulary, regenerate it:
+The 1.0 key set and step behaviour are frozen. Regeneration for a format
+change (new keys, steps or formats) belongs to a new minor version under
+design/recipes.md §9, with its own versioned schema; it must not add keys to 1.0.
+To reproduce the existing 1.0 schema from its unchanged tables:
 
 ```sh
 UNEMUPC_WRITE_RECIPE_SCHEMA=1 cargo test --offline -p pc-image --test recipe_check
@@ -2079,6 +2082,50 @@ publishes the lock's values. A clean recipe, including a lost-lock rebuild,
 keeps the existing build exit codes. `recipe pin` and `recipe show` are
 unchanged.
 
+## Recipe format 1.0 compatibility
+
+The proposed freeze is [decision-43](../decisions/decision-43%20-%20Recipe-format-1.0-frozen.md).
+Acceptance belongs to the maintainer; recipes are published only after it.
+This developer reference carries the promises of [design/recipes.md §9](design/recipes.md#9-what-binds-forever)
+until user documentation is written after the front-end split and takes them over.
+
+- An input is always its SHA-256 and exact size; names and indexes are hints.
+- `recipe = "1.0"` selects the TOML 1.0 subset, schema and exact step bytes.
+  This release refuses experimental `0.1` and unknown versions. Future
+  releases read every version from 1.0 through their own; an existing
+  version never gains a key or changes interpretation.
+- A new minor adds keys, steps, formats or corrected step bytes. The old
+  behaviour and tests remain; the author opts in by raising `recipe`.
+  Grammar or an existing meaning changes with a new major and new media types.
+- Locked payload encoding is exact, including stored `+zstd` output under
+  encoder profile 1. A later encoding needs a distinct profile marker.
+- Old configs, metadata and manifests remain readable. Their writers may
+  change: the lock preserves the author's bytes, annotations and output digest.
+  Serialization, annotation order, default filenames and calculation of
+  `unemu.min-app-version` are not frozen.
+- Tag grammar, revision `rN` and the `recipes/` repository mapping stay fixed.
+- Provider vocabularies (platforms, formats and their sizes, volume profiles,
+  firmware roles and needs) are append-only; names never change meaning.
+- Recipe artifact media types and annotation keys remain stable; another
+  major uses new media types. Work files use the same recipe version and
+  retain the merge and locked-metadata rules described above.
+- Export layout is separately versioned by `EXPORT-VERSION` (currently `1`).
+
+The plan/report JSON has its own version and may change. Library indexes
+are caches; resolution order and download consent may evolve. Machinefiles
+and later features of §13 stay open; the installation syntax corpus is
+evidence, not an implementation. Attachments retain their declared schema
+and meaning, but their build implementation remains deferred.
+
+The editor schema is [recipe-schema-1.0.json](design/recipe-schema-1.0.json),
+generated from the recipe tables and PC provider. `pc-image`'s
+`the_published_schema_is_the_generated_one` test refuses drift; reproduce
+the frozen 1.0 schema with `UNEMUPC_WRITE_RECIPE_SCHEMA=1 cargo test -p pc-image
+--test recipe_check the_published_schema_is_the_generated_one`. The release
+workflow attaches that same file as a checksummed release asset. A JSON
+Schema cannot replace `recipe check` for TOML syntax, references, licences,
+content hashes or provider size rules.
+
 ## Recipe conformance
 
 `upcli recipe conformance FILE|FOLDER... [--library DIR]... [--store DIR]
@@ -2119,6 +2166,18 @@ drafts: a failed pinned build or a run with no pinned recipe still exits 1.
 The test `the_pinned_corpus_builds_the_digests_it_pins` (`pc-image`,
 `recipe_lock`) runs the same harness on the corpus's six pinned open recipes,
 the three FreeDOS 1.4 floppy sets and the three open firmware packages.
+
+The required release gate is `bash scripts/ci-gate.sh recipe-conformance`.
+It runs the six pinned shipped recipes and the pinned
+`design/recipe-corpus/kenslab-2.01/kenslab-2.01.media.toml`, with
+`--library vendor/freedos --library vendor` and without `--allow-drafts`.
+The other corpus files are unpinned design examples, not release inputs.
+Every new pinned recipe must join this gate. Missing fixture inputs fail
+release just as a digest difference does. Ken's original archive and licence
+index must be provided with the exact sizes and hashes in its recipe;
+changing the pinned recipe to fit available files is not conformance.
+The release upload depends on both binary builds and this gate, including
+the schema drift check. This developer command requires the Nix devShell.
 
 ## Scaffolding recipes and listing their inputs
 

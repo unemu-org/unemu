@@ -4,7 +4,7 @@
 set -euo pipefail
 
 usage() {
-    echo 'Usage: bash scripts/ci-gate.sh {devshell|fmt|guard|clippy|deny|tests|fixtures|goldens|user-roms}' >&2
+    echo 'Usage: bash scripts/ci-gate.sh {devshell|fmt|guard|clippy|deny|tests|fixtures|goldens|recipe-conformance|user-roms}' >&2
     exit 2
 }
 
@@ -50,6 +50,12 @@ case "$step" in
             cargo test --locked --release -p devices
         ')
         ;;
+    recipe-conformance)
+        gate_command+=(cargo run --locked -p upcli -- recipe conformance
+            crates/pc-image/data/recipes
+            backlog/docs/design/recipe-corpus/kenslab-2.01/kenslab-2.01.media.toml
+            --library vendor/freedos --library vendor)
+        ;;
     fixtures)
         # The goldens gate requires every fixture its tests read. vgabios and
         # unemu-at-bios are built by Nix from their public GitHub repositories
@@ -71,6 +77,8 @@ case "$step" in
             bash vendor/freedos/fetch.sh
             echo "== fixtures: vendor/test386/fetch.sh"
             bash vendor/test386/fetch.sh
+            echo "== fixtures: vendor/kenslab/fetch-labfull.sh"
+            bash vendor/kenslab/fetch-labfull.sh
             echo "== fixtures: vendor/hdd/build.sh"
             bash vendor/hdd/build.sh
             echo "== fixtures: vendor/vgabios/fetch.sh"

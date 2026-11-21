@@ -1,5 +1,5 @@
 # Rule 8: a digest pins a lock, and there is none beside the recipe.
-recipe = "0.1"
+recipe = "1.0"
 
 [media]
 name = "private/media/ibm-pc/demo"
