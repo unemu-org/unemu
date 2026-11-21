@@ -46,7 +46,7 @@ impl Drop for Files {
     }
 }
 fn command(args: &[&str], path: &Path, extra: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_upcli"))
+    Command::new(env!("CARGO_BIN_EXE_unemu"))
         .args(args)
         .arg(path)
         .args(extra)
@@ -168,7 +168,7 @@ fn journal_run(fail: bool) {
             "stopped: unsupported instruction: unsupported cpu system operation I286LoadallTable"
         ));
     }
-    let verify = Command::new(env!("CARGO_BIN_EXE_upcli"))
+    let verify = Command::new(env!("CARGO_BIN_EXE_unemu"))
         .args(["media", "verify", "--base"])
         .arg(&base)
         .arg("--journal")
@@ -191,7 +191,7 @@ fn journal_run(fail: bool) {
         .unwrap()
         .contains("session end"));
     let exported = files.0.join("export.img");
-    let export = Command::new(env!("CARGO_BIN_EXE_upcli"))
+    let export = Command::new(env!("CARGO_BIN_EXE_unemu"))
         .args(["media", "commit", "--base"])
         .arg(&base)
         .arg("--journal")

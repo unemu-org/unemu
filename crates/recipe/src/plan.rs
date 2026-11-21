@@ -976,7 +976,7 @@ impl Plan {
         text
     }
 
-    /// The text `upcli recipe plan` prints.
+    /// The text `unemu recipe plan` prints.
     pub fn render(&self) -> String {
         let mut out = format!(
             "{}: {} recipe {}\n",
@@ -1130,7 +1130,7 @@ impl Plan {
         out
     }
 
-    /// The text `upcli recipe plan --json` prints: [`Self::json`], indented,
+    /// The text `unemu recipe plan --json` prints: [`Self::json`], indented,
     /// and a line break.
     pub fn render_json(&self) -> String {
         format!(
@@ -1242,7 +1242,7 @@ impl PayloadPlan {
     }
 }
 
-/// What `upcli recipe plan --json` prints for a recipe that does not pass
+/// What `unemu recipe plan --json` prints for a recipe that does not pass
 /// the checks: `complete` false, a summary and the findings as `recipe
 /// check` prints them.
 pub fn refused_json(file: &str, report: &crate::Report) -> String {

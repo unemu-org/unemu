@@ -79,14 +79,14 @@
         "crates/window/src/shell.rs: in changed crate window"
       ],
       "scan_tests": ["image-store:platform_ids"],
-      "release_devices": false, "cli": false, "deny": false, "user_roms": false
+      "release_devices": false, "cli": true, "deny": false, "user_roms": false
     }
   },
   {
     "name": "a test change of the PC command line runs it and the program, with its front-end goldens by name",
     "changed": ["crates/cli-pc/tests/image_commands.rs"],
     "expect": {
-      "mode": "crates", "seeds": ["cli-pc"], "affected": ["cli-pc", "upcli"], "tier": "fast",
+      "mode": "crates", "seeds": ["cli-pc"], "affected": ["cli-pc", "upcli", "window"], "tier": "fast",
       "targeted": [
         "freedos_enters_and_rebuilds_a_split_set_with_xcopy",
         "freedos_ide_journal_survives_a_fresh_assembly_without_changing_base",
@@ -105,7 +105,7 @@
     "name": "a change to the program alone runs the program's tests, which hold no goldens",
     "changed": ["crates/upcli/src/about.rs"],
     "expect": {
-      "mode": "crates", "seeds": ["upcli"], "affected": ["upcli"], "tier": "fast",
+      "mode": "crates", "seeds": ["upcli"], "affected": ["upcli", "window"], "tier": "fast",
       "targeted": [], "release_devices": false, "cli": true, "deny": false
     }
   },
@@ -113,7 +113,7 @@
     "name": "machine-runner change selects the goldens of the runners and the command line",
     "changed": ["crates/pc-harness/src/lib.rs"],
     "expect": {
-      "mode": "crates", "seeds": ["pc-harness"], "affected": ["cli-pc", "pc-harness", "upcli"],
+      "mode": "crates", "seeds": ["pc-harness"], "affected": ["cli-pc", "pc-harness", "upcli", "window"],
       "tier": "goldens",
       "golden_reasons": ["crates/pc-harness/src/lib.rs: machine runner the goldens drive"],
       "targeted": []
@@ -131,7 +131,7 @@
     "name": "the PC command line the front-end goldens drive selects the goldens",
     "changed": ["crates/cli-pc/src/command.rs"],
     "expect": {
-      "mode": "crates", "seeds": ["cli-pc"], "affected": ["cli-pc", "upcli"], "tier": "goldens",
+      "mode": "crates", "seeds": ["cli-pc"], "affected": ["cli-pc", "upcli", "window"], "tier": "goldens",
       "golden_reasons": ["crates/cli-pc/src/command.rs: machine runner the goldens drive"]
     }
   },
@@ -139,7 +139,7 @@
     "name": "a PC command module of the command line selects the goldens",
     "changed": ["crates/cli-pc/src/run.rs"],
     "expect": {
-      "mode": "crates", "seeds": ["cli-pc"], "affected": ["cli-pc", "upcli"], "tier": "goldens",
+      "mode": "crates", "seeds": ["cli-pc"], "affected": ["cli-pc", "upcli", "window"], "tier": "goldens",
       "golden_reasons": ["crates/cli-pc/src/run.rs: machine runner the goldens drive"]
     }
   },
@@ -147,7 +147,7 @@
     "name": "the neutral command line's dispatch selects the goldens",
     "changed": ["crates/cli-core/src/lib.rs"],
     "expect": {
-      "mode": "crates", "seeds": ["cli-core"], "affected": ["cli-core", "cli-pc", "upcli"],
+      "mode": "crates", "seeds": ["cli-core"], "affected": ["cli-core", "cli-pc", "upcli", "window"],
       "tier": "goldens",
       "golden_reasons": ["crates/cli-core/src/lib.rs: machine runner the goldens drive"]
     }
@@ -156,7 +156,7 @@
     "name": "the standalone journal commands select the goldens",
     "changed": ["crates/unemupc/src/journal.rs"],
     "expect": {
-      "mode": "crates", "seeds": ["unemupc"], "affected": ["cli-pc", "unemupc", "upcli"],
+      "mode": "crates", "seeds": ["unemupc"], "affected": ["cli-pc", "unemupc", "upcli", "window"],
       "tier": "goldens", "cli": true,
       "golden_reasons": ["crates/unemupc/src/journal.rs: machine runner the goldens drive"]
     }
@@ -165,7 +165,7 @@
     "name": "a neutral command module no golden drives, the recipe commands, keeps the fast tier",
     "changed": ["crates/cli-core/src/recipe.rs"],
     "expect": {
-      "mode": "crates", "seeds": ["cli-core"], "affected": ["cli-core", "cli-pc", "upcli"],
+      "mode": "crates", "seeds": ["cli-core"], "affected": ["cli-core", "cli-pc", "upcli", "window"],
       "tier": "fast"
     }
   },
@@ -378,7 +378,7 @@
     "name": "changed golden test file runs its crate's ignored tests by name",
     "changed": ["crates/pc-harness/tests/freedos_boot_golden.rs"],
     "expect": {
-      "mode": "crates", "affected": ["cli-pc", "pc-harness", "upcli"], "tier": "fast",
+      "mode": "crates", "affected": ["cli-pc", "pc-harness", "upcli", "window"], "tier": "fast",
       "targeted_crates": ["cli-pc", "pc-harness"]
     }
   },
@@ -413,7 +413,7 @@
     "expect": {
       "mode": "crates", "seeds": ["machine-view"],
       "affected": ["machine-view", "pc-session-tests", "window"],
-      "tier": "fast", "release_devices": false, "cli": false
+      "tier": "fast", "release_devices": false, "cli": true
     }
   },
   {

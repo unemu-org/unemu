@@ -5,6 +5,17 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-21 — One front-end binary:** `unemu` opens the window with no
+  arguments or desktop options and runs the composed command line when its
+  first argument is a word (`image`, `media`, `recipe`, `library`, `run`).
+  `--help` lists both paths; `--version` and `--about` use the desktop notice.
+  The `upcli` executable is removed; its application-layer library remains.
+  Archives contain `unemu` and the standalone PC core `unemupc`.
+  `setup-unemu` replaces `setup-upcli`; its workflow installs and runs the
+  current binary from a checked test archive. Linux still requires ALSA for
+  command words: the release workflow checks bare Ubuntu before and after
+  installing `libasound2`. The container result remains unmeasured locally.
+  See [core contract §12.10 step 13](design/core-contract.md#1210-steps).
 - **2026-11-21 — Final journal and file-mount separation:**
   `journal` is emulation/core and `journal-files` is PC/core on the host.
   `machine-file` owns `FileMount`, file assembly entry points, output-path

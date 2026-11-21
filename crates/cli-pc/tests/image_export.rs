@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `upcli image export` (recipes.md §3.10, decision-37, §19.2 B11): every
+//! `unemu image export` (recipes.md §3.10, decision-37, §19.2 B11): every
 //! layer of a set or package as a plain file under its export file name,
 //! the config and manifest as stored, `EXPORT-VERSION` and `SHA256SUMS`;
 //! with `--files`, the trees of the set's FAT12 disks merged into `files`,

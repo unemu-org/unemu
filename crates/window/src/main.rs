@@ -433,7 +433,7 @@ fn informational_text(arg: &OsStr, cores: &core_launch::Cores) -> Option<String>
     let shown = shown_path;
     if arg == "--help" {
         Some(format!(
-            "usage: unemu [--machine FILE] [--open FILE [--core ID]] [--display CARD] [--rom-dir DIR]... [--allow-unlisted-firmware]\n\ndefault selection: {} (opens the machine library; --machine starts immediately)\nmachine files: {} (set {MACHINES_DIR_VAR} to use another directory)\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}\n\n{opl3}", shown(default_machine()), shown(machines_dir())
+            "usage: unemu [--machine FILE] [--open FILE [--core ID]] [--display CARD] [--rom-dir DIR]... [--allow-unlisted-firmware]\n\ndefault selection: {} (opens the machine library; --machine starts immediately)\nmachine files: {} (set {MACHINES_DIR_VAR} to use another directory)\n\n{FONT_NOTICE}\n\n{EGUI_FONT_NOTICE}\n\n{SYMBOL_FONT_NOTICE}\n\n{opl3}\n\n{}", shown(default_machine()), shown(machines_dir()), upcli::usage()
         ))
     } else if arg == "--version" || arg == "--about" {
         let mut lines = String::new();
@@ -703,7 +703,17 @@ fn run() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Commands start with a word; desktop options start with a dash. Unknown
+/// words reach the command parser too, so it owns usage errors and exit codes.
+fn command_word(first: Option<&OsStr>) -> bool {
+    first.is_some_and(|arg| !arg.as_encoded_bytes().starts_with(b"-"))
+}
+
 fn main() -> std::process::ExitCode {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if command_word(args.first().map(|arg| arg.as_os_str())) {
+        return std::process::ExitCode::from(upcli::run_command(&args));
+    }
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
@@ -717,6 +727,24 @@ fn main() -> std::process::ExitCode {
 mod tests {
     use super::*;
     use machine_file::assemble_with_observation;
+
+    #[test]
+    fn command_words_and_desktop_options_have_separate_routes() {
+        assert!(!command_word(None));
+        for option in [
+            "--machine",
+            "--display",
+            "--open",
+            "--version",
+            "--about",
+            "--help",
+        ] {
+            assert!(!command_word(Some(OsStr::new(option))), "{option}");
+        }
+        for word in ["image", "media", "recipe", "library", "run", "unknown"] {
+            assert!(command_word(Some(OsStr::new(word))), "{word}");
+        }
+    }
 
     #[test]
     fn a_factory_presenter_keeps_the_selected_card_with_two_displays() {
@@ -1381,13 +1409,14 @@ mod tests {
             .replace(FONT_NOTICE, "FONT NOTICE")
             .replace(EGUI_FONT_NOTICE, "EGUI FONT NOTICE")
             .replace(SYMBOL_FONT_NOTICE, "SYMBOL FONT NOTICE")
-            .replace(devices::OPL3_NOTICE, "OPL3 NOTICE");
+            .replace(devices::OPL3_NOTICE, "OPL3 NOTICE")
+            .replace(&upcli::usage(), "COMMAND USAGE");
         assert_eq!(
             text,
             "usage: unemu [--machine FILE] [--open FILE [--core ID]] [--display CARD] [--rom-dir DIR]... [--allow-unlisted-firmware]\n\n\
              default selection: DEFAULT (opens the machine library; --machine starts immediately)\n\
              machine files: MACHINES (set UNEMUPC_MACHINES_DIR to use another directory)\n\n\
-             FONT NOTICE\n\nEGUI FONT NOTICE\n\nSYMBOL FONT NOTICE\n\nOPL3 NOTICE"
+             FONT NOTICE\n\nEGUI FONT NOTICE\n\nSYMBOL FONT NOTICE\n\nOPL3 NOTICE\n\nCOMMAND USAGE"
         );
     }
 

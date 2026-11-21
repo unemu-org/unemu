@@ -25,7 +25,8 @@
 #
 # and no window crate (window, window-*, ui-kit, machine-view, library-model,
 # library-ui, pc-media, pc-library, media-ui, pc-ui, player-ui, unemu)
-# depends on a CLI crate (cli, cli-*, upcli), nor the other way round. The
+# depends on a CLI crate (cli, cli-*, upcli), nor the other way round, except
+# the application composition edge window → upcli. The
 # launch crate, core-launch, is neutral and in neither family: both programs
 # make their list of cores with it, and the command line will start machines
 # through it too. The player, player-ui, is neutral and a window crate: it

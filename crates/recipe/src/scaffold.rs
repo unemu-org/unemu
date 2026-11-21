@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `upcli recipe scaffold` (recipes §6.15): the `[input]` tables, member
+//! `unemu recipe scaffold` (recipes §6.15): the `[input]` tables, member
 //! lists and file sets of files the author has, written in the recipe
 //! syntax so that a recipe starts from measured sizes, hashes and times
 //! instead of typed ones. The author adds the description, the outputs and

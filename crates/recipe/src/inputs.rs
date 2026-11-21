@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `upcli recipe inputs` (recipes §6.15): the inputs a user supplies for a
+//! `unemu recipe inputs` (recipes §6.15): the inputs a user supplies for a
 //! recipe, as a Logiqx DAT for a ROM manager, a CSV, or a checksum file for
 //! `sha256sum -c`. The three forms are the catalogues a library reads
 //! (recipes §3.4), and they describe one folder: each file input at its
@@ -226,7 +226,7 @@ impl Inputs {
         out.push_str(&format!("\t\t<name>{}</name>\n", xml(&self.name)));
         out.push_str(&format!("\t\t<description>{reference}</description>\n"));
         out.push_str(&format!("\t\t<version>{}</version>\n", xml(&self.tag)));
-        out.push_str("\t\t<author>upcli recipe inputs</author>\n");
+        out.push_str("\t\t<author>unemu recipe inputs</author>\n");
         out.push_str("\t</header>\n");
         out.push_str(&format!(
             "\t<game name=\"{}\">\n",
@@ -341,7 +341,7 @@ mod tests {
                  \t\t<name>private/media/ibm-pc/demo</name>\n\
                  \t\t<description>private/media/ibm-pc/demo:1.0-r2</description>\n\
                  \t\t<version>1.0-r2</version>\n\
-                 \t\t<author>upcli recipe inputs</author>\n\
+                 \t\t<author>unemu recipe inputs</author>\n\
                  \t</header>\n\
                  \t<game name=\"demo-1.0-r2\">\n\
                  \t\t<description>private/media/ibm-pc/demo:1.0-r2</description>\n\

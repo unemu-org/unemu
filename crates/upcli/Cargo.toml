@@ -7,14 +7,10 @@ license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "Command-line frontend for deterministic Real16 PC/AT machines and their images (§3.1): the neutral command line with the platforms compiled in."
+description = "Command composition library for the unemu frontend for deterministic Real16 PC/AT machines and their images (§3.1): the neutral command line with the platforms compiled in."
 
 [package.metadata.unemu]
 layer = "application"
-
-[[bin]]
-name = "upcli"
-path = "src/main.rs"
 
 [dependencies]
 machine-file.workspace = true

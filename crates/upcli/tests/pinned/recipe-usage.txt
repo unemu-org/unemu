@@ -1,13 +1,13 @@
-usage: upcli recipe check FILE|FOLDER... [--deny-drift]
-       upcli recipe show FILE
-       upcli recipe plan FILE|REF [--json] [--library DIR]... [--store DIR] [--config FILE]
-       upcli recipe build FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] [--keep-as TAG] [--deny-drift]
-       upcli recipe pin FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE]
-       upcli recipe conformance FILE|FOLDER... [--library DIR]... [--store DIR] [--config FILE] [--allow-drafts]
-       upcli recipe scaffold FILE|FOLDER...
-       upcli recipe inputs FILE --format dat|csv|sha256sums
-       upcli recipe push FILE REF [--dry-run] [--registry HOST] [--store DIR] [--config FILE]
-       upcli recipe pull REF [--to DIR] [--registry HOST] [--config FILE]
+usage: unemu recipe check FILE|FOLDER... [--deny-drift]
+       unemu recipe show FILE
+       unemu recipe plan FILE|REF [--json] [--library DIR]... [--store DIR] [--config FILE]
+       unemu recipe build FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] [--keep-as TAG] [--deny-drift]
+       unemu recipe pin FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE]
+       unemu recipe conformance FILE|FOLDER... [--library DIR]... [--store DIR] [--config FILE] [--allow-drafts]
+       unemu recipe scaffold FILE|FOLDER...
+       unemu recipe inputs FILE --format dat|csv|sha256sums
+       unemu recipe push FILE REF [--dry-run] [--registry HOST] [--store DIR] [--config FILE]
+       unemu recipe pull REF [--to DIR] [--registry HOST] [--config FILE]
   check: checks recipes and work files; a folder is checked with every *.media.toml, *.firmware.toml, *.machine.toml and *.work.toml below it
   show: prints a media recipe's title record merged with its work file, with a comment on each value that came from the work file; for a pinned recipe the record of its lock, which a build writes
   plan: where each input is found (the store, the download cache, beside the recipe, the libraries of the preferences, then each --library) or why not, the steps that would run and the outputs; a REF (a registry reference with a tag or digest, not a file) is judged from the recipe artifact's manifest and config alone, its bundled inputs found in the artifact, and one that needs a newer unemupc from its manifest alone

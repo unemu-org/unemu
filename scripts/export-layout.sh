@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Export one installation set or firmware package as plain files without
-# upcli: the layout `upcli image export` writes (backlog/docs/commands.md,
+# unemu: the layout `unemu image export` writes (backlog/docs/commands.md,
 # Exporting an image; backlog/docs/design/recipes.md §3.10; decision-37).
 #
 # It reads an OCI Image Layout: the images folder of a store (STORE/images),
@@ -9,16 +9,16 @@
 # a POSIX shell, jq, sha256sum, zstd and a UTF-8 locale; --files needs
 # mtools too, which runs with MTOOLSRC=/dev/null. Every blob is checked
 # against its digest, and a decoded layer against its unemu.decoded.digest;
-# the names are checked as upcli checks them before anything is written.
+# the names are checked as unemu checks them before anything is written.
 #
-# It writes the same files as `upcli image export REF --to DIR [--files]`:
+# It writes the same files as `unemu image export REF --to DIR [--files]`:
 # each layer under its org.opencontainers.image.title (without .zst, after
 # zstd -d, for a +zstd layer), config.toml and manifest.json as stored,
 # EXPORT-VERSION, and SHA256SUMS over them. With --files, the folder files
 # holds the trees of the set's diskettes, merged in the set's order, with
-# their entries' times taken as UTC (mcopy -m with TZ=UTC0); as with upcli,
+# their entries' times taken as UTC (mcopy -m with TZ=UTC0); as with unemu,
 # a diskette that cannot be read is left out with a `not read` line on
-# standard output. Unlike upcli it writes only into an empty or absent DIR.
+# standard output. Unlike unemu it writes only into an empty or absent DIR.
 #
 # Usage: scripts/export-layout.sh [--files] LAYOUT REF DIR
 #        scripts/export-layout.sh --help
@@ -104,7 +104,7 @@ jq -r '.layers[] | [.digest, .mediaType,
 	(.annotations["unemu.decoded.digest"] // ""), "end"] | join("\u001f")' \
 	"$(blob "$manifest")" >"$tmp/layers"
 
-# The names first, as upcli checks them (machine-images §2, Export file
+# The names first, as unemu checks them (machine-images §2, Export file
 # names): a title, and without .zst the decoded name of a compressed layer,
 # is one file name; no two layers take names equal ignoring case; and no
 # layer takes a name the export writes itself, but a set's metadata layer

@@ -38,7 +38,7 @@ case "$step" in
     clippy)
         gate_command+=(bash -euc '
             cargo clippy --locked --all-targets --all-features -- -D warnings
-            cargo clippy --locked -p upcli --bin upcli -- -D warnings
+            cargo clippy --locked -p window --bin unemu -- -D warnings
         ')
         ;;
     deny) gate_command+=(cargo deny --all-features check advisories licenses bans sources) ;;
@@ -51,7 +51,7 @@ case "$step" in
         ')
         ;;
     recipe-conformance)
-        gate_command+=(cargo run --locked -p upcli -- recipe conformance
+        gate_command+=(cargo run --locked -p window -- recipe conformance
             crates/pc-image/data/recipes
             backlog/docs/design/recipe-corpus/kenslab-2.01/kenslab-2.01.media.toml
             --library vendor/freedos --library vendor)

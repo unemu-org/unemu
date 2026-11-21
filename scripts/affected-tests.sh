@@ -230,7 +230,7 @@ else
        | select(.watch as $w | $changed | any(test($w)))
        | "\(.package):\(.test)"] end),
     release_devices: ($affected | has("devices") and ($mode == "crates" or $mode == "full")),
-    cli: ($affected | has("upcli") and ($mode == "crates" or $mode == "full")),
+    cli: ($affected | has("window") and ($mode == "crates" or $mode == "full")),
     deny: ($files | any(.deny)),
     docs: [$files[] | select(.class == "docs") | .path],
     shell: [$changed[] | select(test("[.]sh$"))],

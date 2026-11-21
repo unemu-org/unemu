@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `upcli run --machine` on a guest that shuts down again right after every
+//! `unemu run --machine` on a guest that shuts down again right after every
 //! reset: each reset takes three steps of virtual time, so the run's cap
 //! (20,000,000 steps by default) would take over 6 million resets to reach. The
 //! run stops with the guest-stop exit code after the storm's 64th reset,

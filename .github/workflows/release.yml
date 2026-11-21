@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: Release
 
-# Builds upcli, unemu and unemupc for each release platform and attaches them to the
+# Builds unemu and unemupc for each release platform and attaches them to the
 # GitHub release: one unemupc-<version>-<target>.tar.gz per platform and a
 # SHA256SUMS file. Publishing a release for a tag (v0.1.0) starts it; a manual
 # run with that tag builds again and replaces the release's assets. Nothing is
@@ -152,7 +152,29 @@ jobs:
           export UNEMUPC_SOURCE_COMMIT
           export CFLAGS="-ffile-prefix-map=$GITHUB_WORKSPACE=/build/unemupc -ffile-prefix-map=$cargo_home/registry/src=/cargo/registry/src -ffile-prefix-map=$cargo_home/git/checkouts=/cargo/git/checkouts"
           cargo build --locked --release --target "$TARGET" \
-            -p upcli -p window -p unemupc --bin upcli --bin unemu --bin unemupc
+            -p window -p unemupc --bin unemu --bin unemupc
+
+      - name: Check command words on headless Linux with and without ALSA
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/target/$TARGET/release/unemu:/usr/local/bin/unemu:ro" ubuntu:22.04 bash -euc '
+            if unemu image ls --store /tmp/missing-store > /tmp/no-alsa.log 2>&1; then
+              echo "::error::unemu unexpectedly started without the ALSA runtime"
+              exit 1
+            fi
+            cat /tmp/no-alsa.log
+            grep -q libasound.so.2 /tmp/no-alsa.log
+            apt-get update
+            apt-get install -y --no-install-recommends libasound2
+            unemu --version
+            status=0
+            unemu image ls --store /tmp/missing-store > /tmp/with-alsa.log 2>&1 || status=$?
+            cat /tmp/with-alsa.log
+            test "$status" = 1
+            unemu media create floppy --type 360K /tmp/disk.img --format
+            test "$(stat -c %s /tmp/disk.img)" = 368640
+          '
 
       - name: Check the binaries
         run: |
@@ -160,7 +182,7 @@ jobs:
           cargo_home=${CARGO_HOME:-$HOME/.cargo}
           sysroot=$(rustc --print sysroot)
           failed=0
-          for bin in upcli unemu unemupc; do
+          for bin in unemu unemupc; do
             file=target/$TARGET/release/$bin
             "$file" --version
             list=$RUNNER_TEMP/$bin.strings
@@ -210,7 +232,7 @@ jobs:
           name=unemupc-${TAG#v}-$TARGET
           stage=dist/$name
           mkdir -p "$stage/notices"
-          cp "target/$TARGET/release/upcli" "target/$TARGET/release/unemu" "target/$TARGET/release/unemupc" LICENSE README.md "$stage/"
+          cp "target/$TARGET/release/unemu" "target/$TARGET/release/unemupc" LICENSE README.md "$stage/"
           bash scripts/third-party-licenses.sh "$stage/THIRD-PARTY-LICENSES.md" "$TARGET"
           # The headings of "Components in this repository" name those files;
           # the licence texts between the fences are skipped.
@@ -300,8 +322,7 @@ jobs:
 
           `recipe-schema-1.0.json` is the recipe format 1.0 editor schema.
 
-          Each archive holds `unemu` (the desktop app), `upcli` (the command
-          line), `unemupc` (the standalone PC core command line), `LICENSE`,
+          Each archive holds `unemu` (the desktop app and command line), `unemupc` (the standalone PC core command line), `LICENSE`,
           `README.md`, `THIRD-PARTY-LICENSES.md` and the notices it quotes. Check a download against `SHA256SUMS`:
 
           ```sh
@@ -314,10 +335,11 @@ jobs:
           the unpacked folder:
 
           ```sh
-          xattr -d com.apple.quarantine unemu upcli unemupc
+          xattr -d com.apple.quarantine unemu unemupc
           ```
 
-          On Linux the desktop app needs ALSA (`libasound.so.2`) and an X11 or
+          On Linux `unemu` needs ALSA (`libasound.so.2`), including for command words
+          on a headless host; install `libasound2` on Ubuntu 22.04. The window also needs an X11 or
           Wayland session with OpenGL; the command line needs neither.
           NOTES
           } > "$RUNNER_TEMP/notes.md"

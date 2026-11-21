@@ -1665,7 +1665,7 @@ fn kept(recipe: &Recipe, plan: &Plan, built: &Built) -> Vec<Kept> {
 }
 
 impl Report {
-    /// The text `upcli recipe build` prints after a build.
+    /// The text `unemu recipe build` prints after a build.
     pub fn render(&self) -> String {
         let mut out = String::new();
         for kept in &self.kept {

@@ -52,7 +52,7 @@ fn run_until(assembled: &mut AssembledMachine, budget: u64, done: impl Fn(&str) 
     }
 }
 
-/// A 1.44M data disk built from one host file by `upcli media create`.
+/// A 1.44M data disk built from one host file by `unemu media create`.
 fn data_disk() -> Vec<u8> {
     let scratch = assembly::test_support::TempDir::new("boot-sector-golden");
     let file = scratch.path().join("readme.txt");

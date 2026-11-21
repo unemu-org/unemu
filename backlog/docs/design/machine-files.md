@@ -819,7 +819,7 @@ Frontends:
   The workspace path comes from `CARGO_MANIFEST_DIR` at build time, independent
   of the current directory. Running without the build workspace requires an
   explicit `--machine`. A missing default file is an error.
-- **CLI:** `upcli machine check FILE [--allow-unlisted-firmware]` parses,
+- **CLI:** `unemu machine check FILE [--allow-unlisted-firmware]` parses,
   merges, lowers, validates and assembles without executing the guest, including
   catalogue checks against image bytes, then prints errors with file and position.
   Journal inspection never writes: missing journals are valid with a creation
@@ -829,7 +829,7 @@ Frontends:
   shared inspection; a missing lock uses the same read-only scanner without
   creating a lock and reports that fact. Journal drives assemble as volatile.
   It exits 0 for a valid file,
-  1 for an invalid one, 2 for usage errors. `upcli run --machine FILE
+  1 for an invalid one, 2 for usage errors. `unemu run --machine FILE
   [--max-steps N] [--idle-limit N] [--print CARD]` maps its flags onto
   `RunPolicy::natural` and prints a display card's text screen or a UART's
   stream. The default caps are 20,000,000 completed-step equivalents and 1,000,000

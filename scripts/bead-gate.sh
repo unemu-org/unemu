@@ -4,7 +4,7 @@
 #
 # scripts/affected-tests.sh plans the change; this gate then runs formatting,
 # the publication guard, clippy on the affected crates (and on the production
-# command-line binary when upcli is affected), the affected tests in their tier,
+# unemu binary when its command composition is affected), the affected tests in their tier,
 # rustdoc of the affected crates, and cargo deny when the lock file, a
 # manifest or the dependency policy changed. Documentation, script and
 # configuration changes build nothing: they run the guard and their own
@@ -116,7 +116,7 @@ if [[ $mode == crates || $mode == full ]]; then
   step clippy "${cargo_cmd[@]}" clippy --locked "${packages[@]}" --all-targets --all-features -- -D warnings
   if [[ $(var cli) == 1 ]]; then
     # The production binary without the dev-dependency features tests unify in.
-    step clippy-upcli "${cargo_cmd[@]}" clippy --locked -p upcli --bin upcli -- -D warnings
+    step clippy-unemu "${cargo_cmd[@]}" clippy --locked -p window --bin unemu -- -D warnings
   fi
 else
   skip clippy "no crate affected"
@@ -137,7 +137,9 @@ else
   skip rustdoc "no crate affected"
 fi
 
-if [[ $(var deny) == 1 ]]; then
+if [[ ${BEAD_GATE_SKIP_DENY:-0} == 1 ]]; then
+  skip deny "reserved for supervisor (BEAD_GATE_SKIP_DENY=1)"
+elif [[ $(var deny) == 1 ]]; then
   step deny "${cargo_cmd[@]}" deny --all-features check advisories licenses bans sources
 else
   skip deny "lock file, manifests and dependency policy unchanged"

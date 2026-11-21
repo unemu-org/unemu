@@ -1397,13 +1397,17 @@ Gaps this found, none blocking 0.1:
 
 ## 7. The CLI split
 
+Current names (2026-11-21, §12.10 step 13): `upcli` is the composition
+library only; the `window` package builds the combined `unemu` executable.
+The dated split records below retain the executable name they measured.
+
 ### 7.1. Target crates
 
 | Crate (directory) | Layer | Contents |
 |---|---|---|
 | `cli-core` (`crates/cli-core`) | neutral | The command model and top-level parser; usage assembly; exit-code policy. Commands: `image ls`, `image sweep`, `image compress`, `image workspace ls`, `image workspace discard`, `image media ls`, `show`, `image firmware ls`, `show`, `image push`, `pull`, `remote ls`, `login`, `registry set`, `recipe check`, `show`, `media generations`, `verify`, `rollback`, `commit`. The `CliPlatform` trait (§7.2). Depends on `image-store`, `image-registry`, `media`, `recipe`, `anyhow`, `toml` |
 | `cli-pc` (`crates/cli-pc`) | PC | The PC's `CliPlatform`. Commands: `--boot`, `--bios`, `machine check`, `run --machine`, `image import`, `image run`, `image publish`, `image workspace abandon-publication`, `image machine *`, `image media import`, `image firmware import`, `edit`, `image template build`, `media create`. Depends on `cli-core`, `pc-image`, `machine-file`, `assembly`, `pc-harness`, and the emulation crates the run commands need |
-| `upcli` (`crates/upcli`) | application | `main.rs`: host paths, the list of platforms, `cli_core::run`. Keeps the binary name `upcli` |
+| `upcli` (`crates/upcli`) | application | Library-only command composition, the host-default runner and command usage/parse pins. `window` calls it for command words; the executable is `unemu` (§12.10 step 13) |
 | `pc-harness` (`crates/pc-harness`) | PC | Today's `cli/src/lib.rs`: runners, guest programs, key scripts, `StopReason`, and `tests/support`, a directory the other crates' tests include with `#[path]` (a `test-support` feature would need `assembly` to depend on a `pc` crate). Its `tests/` are the 33 emulation golden binaries (§2.4 plus `user_media_volumes`). Depends on `assembly` and the emulation crates and, as a test dependency for the eleven goldens that load machine files, on `machine-file` |
 | `platforms` (`crates/platforms`) | application | The one place that names every compiled-in platform, for both binaries: the provider list (`with_image_providers`), the program's licence notice with each core's notices. In the front-end repository this is the crate whose manifest pins the cores |
 
@@ -1478,15 +1482,16 @@ layer = "neutral"   # contract | neutral | emulation | pc | application
 | `neutral` | `image-store`, `image-registry`, `media`, `cli-core`, later the recipe crate and the neutral window crates | `contract`, `neutral` |
 | `emulation` | `device`, `bus`, `cpu`, `video`, `audio`, `devices`, `chipset`, `machine`, `testkit`, `assembly`, `unemu-pc-core`, `pc-config` | `contract`, `emulation` |
 | `pc` | `machine-file`, `pc-image`, `pc-harness`, `cli-pc`, later the PC window module | `contract`, `neutral`, `emulation`, `pc` |
-| `application` | `upcli`, `platforms`, `unemupc` | anything |
+| `application` | `upcli` (composition library), `platforms`, `window` (`unemu` binary) | anything |
 
 `pc-config`, the PC config codec of §4 stage B (§14.2.1), joins the
 `emulation` row (corrected 2026-11-19, stage B plan).
 
 Two more rules:
 
-- No window crate depends on a CLI crate, and no CLI crate on a window
-  crate.
+- No window library depends on a CLI crate, and no CLI crate on a window
+  crate. The combined application permits one explicit normal `window` →
+  `upcli` composition edge (§12.10 step 13); UI libraries keep the boundary.
 - The rules cover normal, build **and** test dependencies, because a
   neutral crate whose tests need a PC crate is rebuilt by every emulator
   change and cannot leave the repository without it. Test fixtures that
@@ -1516,7 +1521,9 @@ in the devShell; no new crate):
    with today's one forbidden edge, `assembly → media` (`emulation` →
    `neutral`), and the test dependencies found when the layers are first
    declared. `machine-file → image-store` is `pc` → `neutral` and allowed;
-   it matters only for the extraction (§9).
+   it matters only for the extraction (§9). Step 13 of §12.10 adds one
+   deliberate application-composition edge, `window` → `upcli` (normal),
+   with a passing fixture; the existing library-crossing fixtures still fail.
 6. `--self-test` runs the rules over fixture metadata files, each with one
    planted violation, and expects each to fail: the same approach the
    affected-set runner takes for its own mapping.
@@ -3852,8 +3859,9 @@ feature freeze:
 
 ### 12.9. The front end's side: `unemu`
 
-The desktop binary, `unemupc` today, becomes `unemu`. What follows for
-each command of `upcli`:
+The desktop binary is `unemu` since step 4. Step 13 joins its command line
+under the same executable; `upcli` remains the composition library only.
+The table records how the former `upcli` executable's commands were split:
 
 | Today in `upcli` | After |
 |---|---|
@@ -3864,10 +3872,11 @@ each command of `upcli`:
 | Every other `image`, `media create` and `recipe` command | Unchanged |
 | `--version`, `--about` | The front end's: its own release, and each compiled-in core's id, release, contract version and notices from `CoreDescription` |
 
-Whether the command line is part of the `unemu` binary or a second binary
-is §12.13 Q1. Either way the crates stay as §7.1 has them: the split is
-what keeps a CLI-only change fast, and the binary is where they are
-composed.
+The command line is part of the `unemu` binary (§12.13 Q1(a)). The
+libraries stay split as §7.1 has them; `window` is the application composition
+point and its executable tests run both entry points. A CLI change now also
+rebuilds and tests that application; toolkit-independent library tests stay
+in `cli-core`, `cli-pc` and `upcli`.
 
 What the rename covers, and what it does not:
 
@@ -3911,7 +3920,7 @@ tests with the code they test. Sizes are ASSUMED.
 | 10 | **Done.** **The mount seam in `assembly`** (move 2). As landed: `assembly::Mount` (`crates/assembly/src/mount.rs`) is the one object the assembler asks for what a `MachineConfig` names by path, and the path is its key: `image(path)` gives `ImageBytes` (a ROM, a ROM part, a disk image mounted read-only or volatile, the CMOS image of an NVRAM journal); `disk_base(path, check_length)` gives the `DiskBase` of a journalled disk, calling `check_length` before it reads a byte, so a file of the wrong size is still refused before it is hashed; `journal(path)` gives a `JournalStore`, asked when the journal opens; `check_outputs(media)` checks the journal outputs before anything opens. Failures are `MountError::Config` (passed on unchanged) or `MountError::Host(unemu_core_api::Error)`, reported as the path's read or journal failure. The seam names only the contract's `ContentReader` and `Record` and types `assembly` owns, so `unemu-pc-core` can implement it without naming `media` (§14.4 item 2): `DiskBase::from_reader(Box<dyn ContentReader>, sha256, size)` reads the base on demand and never hashes it again, `JournalStore::record(Box<dyn Record>)` keeps the journal in a record through `JournalMedia::open_record`. `FileMount` is the file-backed implementation, still in `assembly`: each path is the file it names, a journal file opens through the journal's path constructors with its `FILE.lock` and the base file's identity, as before, and `FileMount::with_verified_bases` takes the table of `assemble_with_verified_bases`. `assemble_mounted(config, policy, options, Rc<dyn Mount>)` is new; every other `assemble*` function is the same assembly over a `FileMount`, as are a floppy appended by path, which still opens its base itself, and the byte loads of an already resolved config, and `MachineConfig::validate` keeps its host checks, which are `FileMount::check_outputs`. The assembler validates through the mount's `check_outputs`, and two rules of that step that are not about the host now run for every mount: a positive NVRAM retention before it, and distinct journal keys among fixed drives, catalogue entries and NVRAM journals after it (after, so that a file mount, which refuses equal outputs as aliases, reports exactly what it did before; a mount of records would otherwise let two media share one record). The mount's digest of a base is trusted, never recomputed. **Lifetime** (§14.4 item 3): the machine keeps its mount (`AssembledMachine::mount`, an opaque `MachineMount`, host files by default), and each catalogue medium's handle keeps it too and asks it for the journal at every insert. **A medium appended by path** (`append_floppy`, `append_floppy_verified`, signatures unchanged) is a host file whatever the mount: its journal opens through a `FileMount`. On a machine over files the whole config is validated as before; on another mount the mount checks the candidate's outputs and the media appended by path are checked against each other with the file rules (aliases, reserved names), because the mount's keys are not host paths. A failed `Mount::journal` is the journal's mount failure, step "open journal record". A ROM is now read like a disk image (open, metadata, read), not with `std::fs::read`: the same bytes and messages. Callers: none of the production code changed. `AssembledMachine` gained the public field `mount`, so the three struct literals in tests (`assembly`'s `observation_audio_tests.rs`, `pc-harness`'s `inline_host_can_select_capture_output` and its scheduler support) add `mount: Default::default()`. `PersistenceHandle::mount`, `prepare_removable` and `verify_drive_base` stay as test-only wrappers over the mounted forms, so the persistence and image-source tests, and the test that a wrong-sized base is not hashed, did not change. MEASURED: `crates/assembly/tests/mount_seam.rs` adds 6 tests over a mount in memory (the contract's `MemoryStorage` and `MemoryContent`, keys under an absolute folder of the temporary directory that is never created): a machine with a µPD765 floppy journal, an ATA fixed-disk journal and a CMOS journal, its program and CMOS image read through `image`, runs two sessions (a guest floppy write and read-back, a host ATA write, a CMOS byte) beside the same machine over files, with equal guest results, and after each session the three records hold exactly the bytes of the three journal files, durable and released; a catalogue's second medium opens its record only at insert, the ejected one's record is sealed and released, the mount lives exactly as long as the machine (a weak reference dies with it), also for a machine with no journal at all; a machine over records takes a floppy appended by path, its journal is a host file with its own lock and the guest's write lands there, and an appended journal that aliases its own base, or another appended journal by another spelling, is refused by the host check (fails when it is skipped), and the same spelling by the key check; two catalogue media with one journal key, and a CMOS journal with the fixed disk's key, are refused before any record opens; a record held elsewhere fails the assembly with "open journal record" and leaves no record open. `cargo test --workspace --release` passes (4 328 tests, 63 ignored), and the bead gate's goldens tier runs 4 368 tests with the ignored goldens (the 20 user-ROM tests skipped), `ide_journal_golden`, `dos_write_golden` and `media_files_golden` among them, all passing | None | `assembly`'s persistence and image-source tests pass unchanged; the slow goldens; the new seam has a test with a mount that serves from memory |
 | 11 | **Done (2026-11-21).** As landed: see the final extraction note and the earlier compatibility notes below. **The crates split** (move 3), as three beads: `journal`; the journal's file code onto `unemu-core-files`, which exists since step 6 of §13.6; `journal-files` with the journal commands moving from `cli-core` to `cli-pc` and `unemupc` | None in `upcli`'s output: the journal commands change crate, and with one platform their words, output and exit codes are the same. New: the four journal commands of `unemupc` | Test names unchanged apart from the crate (§8.1.5 rule 3); `media_tools` and `media_fifo` pass in their new package; both `assembly` → `media` lines leave the allow list; `libc` keeps one way in, through `cpufeatures`, and the reasons of the `serde` and `toml` crates no longer name `media` (corrected 2026-11-20, S2: `pc-config` keeps the thirteen crates, `serde_derive` and `syn` 3, so the list does not lose them); `persistence.rs` and `assemble.rs` leave the host guard's list |
 | 12 | **Done.** **Firmware discovery leaves `assembly`** (move 4). As landed: see the note below | None | The discovery tests move with the module and pass; the user-ROM helper of the tests keeps working from its new place; `assembly` has no line left in the host guard's list, and the list is empty |
-| 13 | **The command line joins `unemu`**, or `upcli` is renamed, as Q1 is answered: the binary, the release workflow, the `setup-upcli` action and its docs | **Stated:** the program name in usage and in the release | `command_line_pin` changes only in the program's name; the action's own workflow installs and runs the new binary |
+| 13 | **Done.** **The command line joins `unemu`** (Q1(a)): command words dispatch through the retained `upcli` composition library; the `upcli` executable is removed. Releases pack `unemu` and `unemupc`; `setup-unemu` installs the combined frontend. As landed: see the step 13 note below | **Stated:** the program name in usage and in the release; no arguments or desktop options still select the window | `command_line_pin` changes only in the program name; binary dispatch and existing moved tests run `unemu`; the action workflow installs and runs it |
 
 | 14 | **Done.** **Front-end host directories follow `unemu`**, with a one-time read of the old place (§12.13 Q5). As landed: only the small, self-contained preferences document is copied once to a missing `unemu/preferences.toml`, from `unemupc` or the original project directory. Machines (including journals), diagnostics/trace logs, saves and states each keep using their existing `<data>/unemupc/NAME` tree, including for new writes, until the user moves it; only an absent old tree selects `<data>/unemu/NAME`. The old tree takes precedence even if a new tree exists, so empty or abandoned destinations cannot hide user data. No tree is traversed, copied, merged, rewritten or deleted during location selection. This interprets “a one-time read of the old place” as discovery and continued use, rather than duplicating path-bearing files: absolute journals must have one writable identity, symlinked machine files must retain target-relative paths, private permissions must remain private, and multi-GB journals must not be copied at startup. Preferences alone use a lock, temporary file, sync and rename; an interrupted copy can be retried. The image store, caches, workspaces, explicit roots, source-tree paths, `UNEMUPC_*` and PC firmware index stay unchanged. `commands.md` inventories the locations | **Stated:** new front-end defaults use `unemu`; existing trees stay in use in place until the user moves them, with no automatic tree migration | Temporary HOME/XDG probes cover every directory, repeat and concurrent starts, old-tree precedence and absence, external/dangling/cyclic symlinks, private permissions and abandoned staging. Machine-loader tests cover target-relative symlinks and sector writes to one absolute journal; preferences test an error after a partial write and retry. Store/cache/workspace and core firmware-cache pins remain unchanged |
 
@@ -4409,6 +4418,64 @@ pass; cargo-deny is reserved for the supervisor and was suppressed at
 invocation, not run. The all-target build passes. Plain workspace
 `cargo test` stops at the expected loopback failure after 616 passes.
 
+**Step 13, as landed (2026-11-21).** The `window` package still builds
+`unemu`. Its first argument selects the route: a word runs
+`upcli::run_command`, including unknown words so the command parser owns
+its refusals and exit codes; no argument or a leading dash keeps desktop
+parsing. No GUI or audio setup precedes command dispatch. `--help` combines
+desktop and command usage; `--version` and `--about` remain the same desktop
+notice, with every compiled-in core and the font/component notices.
+`crates/upcli` stays as an application-layer composition library, with its
+usage/About/parse pins and library tests. Its binary and `main.rs` go.
+The three tests that spawn the executable (`machine_commands`,
+`image_registry_commands`, `raw_commands`) move to `window`; raw desktop
+options retain the desktop refusal (exit 1), while `machine check` is an
+unknown command (exit 2). The command-line pin changes only `upcli` to
+`unemu`; the argument/parse corpus is unchanged. An explicit normal `window` → `upcli` allow-list entry permits application
+composition. Other UI crates still cannot depend on CLI crates, and CLI
+crates cannot depend on window crates. Fixtures cover both sides.
+
+The release workflow builds, checks `--version` and archives only `unemu`
+and `unemupc`. The renamed `setup-unemu` action retains checksum and optional
+source-commit validation and installs `unemu`; its workflow installs the
+ALSA build/runtime package on Ubuntu 22.04, builds and packages the current
+binary, substitutes only curl's download transport and installs it through
+the action with its checksum check. It runs `--version` and `media create`. The licence generator starts from
+`window` and `unemupc`; production-binary lint follows `unemu`.
+Current command examples in the guides and design reference text follow
+the program name; dated implementation and timing records keep `upcli`.
+Only name-bearing usage/messages in the other worker's command/runner crates
+change; mounting and assembly call sites are untouched.
+
+ALSA choice: Q1(a), with the runtime package rather than a headless Cargo
+feature. ASSUMED from the Linux link closure: without `libasound.so.2`,
+the loader refuses even command words before Rust starts. This sandbox
+cannot run a Linux container. The release's Linux job therefore runs the
+`unemu image ls` in bare `ubuntu:22.04`, checks the missing-library refusal,
+installs `libasound2`, then checks the ordinary missing-store exit, runs
+`--version` and formats a floppy without a display.
+That hosted measurement and the release/action workflows remain pending;
+local YAML, packaging and install probes do not establish hosted success.
+
+MEASURED validation (2026-11-21): the original cached desktop executable
+refuses command words and media creation and omits command usage from help;
+the restored implementation passes all 17 focused tests (five dispatch,
+four command-line pins, seven moved machine commands, one raw-command
+refusal). The 246 argument/parse records and saved command examples are
+byte-identical; usage, recipe usage and the command About pin differ only
+in the program name. The full goldens-tier bead gate takes 961 s: formatting,
+guards, workspace and production-binary clippy and rustdoc pass; tests record
+4,381 passes and 141 sandbox failures (140 denied loopback binds, one host
+clipboard), with doctests and all 894 release-profile device tests passing.
+Cargo-deny is explicitly delegated to the supervisor. The final offline
+all-target build, workspace clippy and formatting pass; ordinary workspace
+tests stop at the expected CLI loopback refusal after 616 passes. The local
+action probe installs the actual binary and creates formatted media, refuses
+a missing release, a mismatched source commit and a bad checksum; the former
+installer refuses that archive because it contains no `upcli`. Boundary
+fixtures and the real graph pass, as do YAML/action syntax checks. No GUI
+or container is launched locally.
+
 ### 12.11. Where the steps fit
 
 - **Steps 1 to 3** touch scripts, lists, one attribute per crate and one
@@ -4435,8 +4502,8 @@ invocation, not run. The all-target build passes. Plain workspace
   `upc-dfs.25.7`), so that a moved call site is not edited twice. Step 8
   alone touches only the contract and can land at any time; it is steps
   4 and 5 of §13.6 now.
-- **Step 13** waits for Q1 and is best done with the first release that
-  ships `unemu`.
+- **Step 13** follows Q1 (a) and changes the application dispatch, release
+  packaging and setup action together.
 - **Step 14** follows step 4 and is independent of the command-line join
   and firmware-discovery move. It changes only front-end host-location
   preparation and its tests; the core's cache keeps its name. It touches
@@ -4487,8 +4554,8 @@ learn, install and document, and it is what the maintainer's sentence says:
 the front end's binary is `unemu`. The cost is on Linux hosts without a
 desktop: the binary links the system's audio library (ALSA) and will not
 start without it, even for `unemu image ls` (READ: the lock file holds
-`alsa-sys` for the host-audio crate; step 13 measures it in a bare
-container). A CI job installs one package, or takes the headless build of
+`alsa-sys` for the host-audio crate; step 13 adds the bare-container release check; its hosted result is
+pending). A CI job installs one package, or takes the headless build of
 (c). The five-minute criterion of §1 is not affected: it is met by the
 crates, which stay split.
 

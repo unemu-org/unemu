@@ -2,7 +2,7 @@
 //! The command line with the PC platform alone: the neutral command line of
 //! `cli-core` with [`crate::PcPlatform`] offered every command it does not
 //! take itself (`backlog/docs/design/core-contract.md` §7.2). The program's
-//! own `--version` and `--about` are not here: the `upcli` program owns them
+//! own `--version` and `--about` are not here: the `unemu` program owns them
 //! with the notices of everything compiled into it. The tests of the PC
 //! commands drive the command line through here, as the program does.
 

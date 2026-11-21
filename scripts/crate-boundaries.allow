@@ -1,6 +1,7 @@
 # Known crossings of the crate layers, checked by scripts/crate-boundaries.sh.
 # One `FROM → TO (KIND): REASON` per line, KIND being the kind of FROM's own
-# dependency (normal, build or dev) that leads to TO. The list only shrinks:
-# a line whose crossing is gone fails the check until it is deleted.
+# dependency (normal, build or dev) that leads to TO. A stale entry fails:
+# delete a line when its crossing is gone.
 # See backlog/docs/design/core-contract.md §7.4 and §9.
 pc-harness → media (dev): the FAT12 reader checks disks written by guest goldens until extraction
+window → upcli (normal): the application binary composes desktop options and command words; UI libraries still cannot depend on command-line crates (§12.13 Q1)

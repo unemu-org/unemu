@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `upcli recipe scaffold` and `upcli recipe inputs` (recipes.md §6.15,
+//! `unemu recipe scaffold` and `unemu recipe inputs` (recipes.md §6.15,
 //! §19.2 B9): the tables scaffold writes for a zip archive, a folder and a
 //! plain file, byte for byte; that they parse back and pass `recipe check`
 //! once the author adds the rest; the inputs of that recipe as a DAT, a CSV
@@ -327,7 +327,7 @@ fn inputs_lists_the_recipe_in_three_forms_and_sha256sum_accepts_the_files() {
 		<name>private/media/ibm-pc/scaffold-test</name>
 		<description>private/media/ibm-pc/scaffold-test:1.0-r1</description>
 		<version>1.0-r1</version>
-		<author>upcli recipe inputs</author>
+		<author>unemu recipe inputs</author>
 	</header>
 	<game name="scaffold-test-1.0-r1">
 		<description>private/media/ibm-pc/scaffold-test:1.0-r1</description>
@@ -387,7 +387,7 @@ fn what_a_recipe_cannot_hold_exits_1_and_usage_exits_2() {
     ]);
     assert_eq!((code, output.as_str()), (1, ""));
     assert!(
-        errors.starts_with("upcli recipe scaffold: ") && errors.contains("a `..` path component"),
+        errors.starts_with("unemu recipe scaffold: ") && errors.contains("a `..` path component"),
         "{errors}"
     );
     let (code, output, errors) = upcli(&[
@@ -396,7 +396,7 @@ fn what_a_recipe_cannot_hold_exits_1_and_usage_exits_2() {
         temp.path("absent").into(),
     ]);
     assert_eq!((code, output.as_str()), (2, ""));
-    assert!(errors.starts_with("upcli recipe scaffold: "), "{errors}");
+    assert!(errors.starts_with("unemu recipe scaffold: "), "{errors}");
 
     // A recipe with findings: the check's report, exit 1.
     let recipe = temp.path("bad.media.toml");
@@ -462,8 +462,8 @@ fn what_a_recipe_cannot_hold_exits_1_and_usage_exits_2() {
         let (code, output, errors) = upcli(&words(line));
         assert_eq!((code, output.as_str()), (2, ""), "{line:?}");
         assert!(
-            errors.contains("upcli recipe scaffold FILE|FOLDER...")
-                && errors.contains("upcli recipe inputs FILE --format dat|csv|sha256sums"),
+            errors.contains("unemu recipe scaffold FILE|FOLDER...")
+                && errors.contains("unemu recipe inputs FILE --format dat|csv|sha256sums"),
             "{errors}"
         );
     }

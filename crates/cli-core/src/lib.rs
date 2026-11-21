@@ -212,52 +212,52 @@ pub fn usage(platforms: &[&dyn CliPlatform]) -> String {
         }
     };
     slot(&mut text, UsageSlot::First);
-    text.push_str("       upcli --version | --about (licence, source and third-party notices)\n");
+    text.push_str("       unemu --version | --about (licence, source and third-party notices)\n");
     slot(&mut text, UsageSlot::AfterAbout);
     text.push_str(concat!(
-        "       upcli image compress NAME:TAG --store DIR --tag NAME:TAG\n",
-        "       upcli image ls --store DIR\n",
-        "       upcli image sweep --store DIR\n",
+        "       unemu image compress NAME:TAG --store DIR --tag NAME:TAG\n",
+        "       unemu image ls --store DIR\n",
+        "       unemu image sweep --store DIR\n",
     ));
     text.push_str(
-        "       upcli image run NAME:TAG --store DIR --workspace NAME [--new] [--max-steps N]\n",
+        "       unemu image run NAME:TAG --store DIR --workspace NAME [--new] [--max-steps N]\n",
     );
     slot(&mut text, UsageSlot::AfterImageSweep);
     text.push_str(concat!(
-        "       upcli image workspace ls --store DIR\n",
-        "       upcli image workspace discard NAME --store DIR --yes\n",
+        "       unemu image workspace ls --store DIR\n",
+        "       unemu image workspace discard NAME --store DIR --yes\n",
     ));
     slot(&mut text, UsageSlot::AfterWorkspaceDiscard);
     slot(&mut text, UsageSlot::BeforeMachineRun);
-    text.push_str("       upcli image machine run ID --store DIR [--max-steps N]\n");
+    text.push_str("       unemu image machine run ID --store DIR [--max-steps N]\n");
     slot(&mut text, UsageSlot::AfterMachineRun);
     text.push_str(concat!(
-        "       upcli image firmware ls [--store DIR]\n",
-        "       upcli image firmware show NAME:TAG [--store DIR]\n",
-        "       upcli image media ls --store DIR\n",
-        "       upcli image media show NAME:TAG --store DIR\n",
-        "       upcli image export NAME:TAG --to DIR [--files] [--store DIR] (every layer as a plain file under its file name, with config.toml, manifest.json, EXPORT-VERSION and SHA256SUMS; --files also the files of the set's FAT12 disks; exit 1 refused, nothing overwritten)\n",
-        "       upcli image push NAME:TAG [REFERENCE] --store DIR [--registry HOST] [--move] [--dry-run] [--config FILE]\n",
-        "       upcli image pull REFERENCE --store DIR [--tag NAME:TAG] [--create] [--registry HOST] [--config FILE]\n",
-        "       upcli image remote ls REPOSITORY|REGISTRY [--registry HOST] [--config FILE]\n",
-        "       upcli image login HOST --user NAME [--config FILE]\n",
-        "       upcli image registry set HOST [--private | --namespace NAME[:private|:public]...] [--config FILE]\n",
+        "       unemu image firmware ls [--store DIR]\n",
+        "       unemu image firmware show NAME:TAG [--store DIR]\n",
+        "       unemu image media ls --store DIR\n",
+        "       unemu image media show NAME:TAG --store DIR\n",
+        "       unemu image export NAME:TAG --to DIR [--files] [--store DIR] (every layer as a plain file under its file name, with config.toml, manifest.json, EXPORT-VERSION and SHA256SUMS; --files also the files of the set's FAT12 disks; exit 1 refused, nothing overwritten)\n",
+        "       unemu image push NAME:TAG [REFERENCE] --store DIR [--registry HOST] [--move] [--dry-run] [--config FILE]\n",
+        "       unemu image pull REFERENCE --store DIR [--tag NAME:TAG] [--create] [--registry HOST] [--config FILE]\n",
+        "       unemu image remote ls REPOSITORY|REGISTRY [--registry HOST] [--config FILE]\n",
+        "       unemu image login HOST --user NAME [--config FILE]\n",
+        "       unemu image registry set HOST [--private | --namespace NAME[:private|:public]...] [--config FILE]\n",
     ));
     slot(&mut text, UsageSlot::AfterRegistry);
     text.push_str(concat!(
-        "       upcli recipe check FILE|FOLDER... [--deny-drift] (the static checks of recipes and work files; exit 0 clean, 1 with findings)\n",
-        "       upcli recipe show FILE (a media recipe's title record merged with its work file; exit 1 with the check's findings)\n",
-        "       upcli recipe plan FILE|REF [--json] [--library DIR]... [--store DIR] [--config FILE] (where each input is found, or why not; a REF is judged from its manifest and config; exit 0 all found, 1 missing)\n",
-        "       upcli recipe build FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] [--keep-as TAG] [--deny-drift] (builds a recipe and tags it, a pinned one from its lock; --fetch downloads missing inputs; exit 0 tagged, 1 not built)\n",
-        "       upcli recipe pin FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] (builds a draft, writes its lock beside it and its digest into it; exit 0 pinned, 1 not built)\n",
-        "       upcli recipe conformance FILE|FOLDER... [--library DIR]... [--store DIR] [--config FILE] [--allow-drafts] (builds each pinned recipe into a scratch store and compares its digest; exit 0 all conform, 1 not)\n",
-        "       upcli recipe scaffold FILE|FOLDER... (the [input] tables, member lists with the archive's times and file sets of files the author has; exit 1 for one a recipe cannot hold)\n",
-        "       upcli recipe inputs FILE --format dat|csv|sha256sums (a recipe's inputs for a ROM manager or sha256sum -c; exit 1 with the check's findings)\n",
-        "       upcli recipe push FILE REF [--dry-run] [--registry HOST] [--store DIR] [--config FILE] (publishes a pinned recipe with its work file, bundled inputs and lock under the recipe guard; exit 1 refused)\n",
-        "       upcli recipe pull REF [--to DIR] [--registry HOST] [--config FILE] (writes a recipe and its parts into DIR, where it plans and builds; exit 1 refused)\n",
-        "       upcli library ls [--store DIR] [--config FILE]\n",
-        "       upcli library add|remove DIR [--config FILE]\n",
-        "       upcli library scan [DIR...] [--store DIR] [--config FILE] (lists files, zip directories and catalogues into the index; hashes nothing)\n",
+        "       unemu recipe check FILE|FOLDER... [--deny-drift] (the static checks of recipes and work files; exit 0 clean, 1 with findings)\n",
+        "       unemu recipe show FILE (a media recipe's title record merged with its work file; exit 1 with the check's findings)\n",
+        "       unemu recipe plan FILE|REF [--json] [--library DIR]... [--store DIR] [--config FILE] (where each input is found, or why not; a REF is judged from its manifest and config; exit 0 all found, 1 missing)\n",
+        "       unemu recipe build FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] [--keep-as TAG] [--deny-drift] (builds a recipe and tags it, a pinned one from its lock; --fetch downloads missing inputs; exit 0 tagged, 1 not built)\n",
+        "       unemu recipe pin FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] (builds a draft, writes its lock beside it and its digest into it; exit 0 pinned, 1 not built)\n",
+        "       unemu recipe conformance FILE|FOLDER... [--library DIR]... [--store DIR] [--config FILE] [--allow-drafts] (builds each pinned recipe into a scratch store and compares its digest; exit 0 all conform, 1 not)\n",
+        "       unemu recipe scaffold FILE|FOLDER... (the [input] tables, member lists with the archive's times and file sets of files the author has; exit 1 for one a recipe cannot hold)\n",
+        "       unemu recipe inputs FILE --format dat|csv|sha256sums (a recipe's inputs for a ROM manager or sha256sum -c; exit 1 with the check's findings)\n",
+        "       unemu recipe push FILE REF [--dry-run] [--registry HOST] [--store DIR] [--config FILE] (publishes a pinned recipe with its work file, bundled inputs and lock under the recipe guard; exit 1 refused)\n",
+        "       unemu recipe pull REF [--to DIR] [--registry HOST] [--config FILE] (writes a recipe and its parts into DIR, where it plans and builds; exit 1 refused)\n",
+        "       unemu library ls [--store DIR] [--config FILE]\n",
+        "       unemu library add|remove DIR [--config FILE]\n",
+        "       unemu library scan [DIR...] [--store DIR] [--config FILE] (lists files, zip directories and catalogues into the index; hashes nothing)\n",
     ));
     slot(&mut text, UsageSlot::AfterRecipe);
     slot(&mut text, UsageSlot::Journal);
@@ -428,7 +428,7 @@ pub(crate) mod tests {
         }
         fn usage(&self, slot: UsageSlot) -> &str {
             match slot {
-                UsageSlot::First => "       upcli toy\n",
+                UsageSlot::First => "       unemu toy\n",
                 UsageSlot::Last => "toy footer\n",
                 _ => "",
             }
@@ -621,7 +621,7 @@ pub(crate) mod tests {
         let toy: &dyn CliPlatform = &Toy::default();
         let text = usage(&[toy]);
         assert!(
-            text.starts_with("usage: upcli toy\n       upcli --version"),
+            text.starts_with("usage: unemu toy\n       unemu --version"),
             "{text}"
         );
         assert!(text.ends_with("toy footer\n"), "{text}");
@@ -637,7 +637,7 @@ pub(crate) mod tests {
     #[test]
     fn without_a_platform_the_neutral_commands_still_parse_and_the_rest_is_refused() {
         let text = usage(&[]);
-        assert!(text.starts_with("usage: upcli --version"), "{text}");
+        assert!(text.starts_with("usage: unemu --version"), "{text}");
         assert!(!text.contains("--boot") && !text.contains("image import"));
         assert!(matches!(
             parse(&words("image ls --store s"), &[]),

@@ -143,7 +143,7 @@ impl fmt::Display for Refusal {
             Self::Findings(report) => write!(f, "the recipe does not pass its checks:\n{report}"),
             Self::Draft { file } => write!(
                 f,
-                "{file} is a draft, without digest; pin it first (upcli recipe pin), as a recipe artifact names its output's digest"
+                "{file} is a draft, without digest; pin it first (unemu recipe pin), as a recipe artifact names its output's digest"
             ),
             Self::Bundled { file, size, sha256 } => write!(
                 f,

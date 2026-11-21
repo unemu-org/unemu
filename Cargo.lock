@@ -4524,6 +4524,7 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "pc-harness",
  "pc-image",
  "pc-library",
  "pc-media",
@@ -4537,6 +4538,7 @@ dependencies = [
  "unemu-core-api",
  "unemu-pc-core",
  "unemu-test-core",
+ "upcli",
  "video",
  "winit",
 ]

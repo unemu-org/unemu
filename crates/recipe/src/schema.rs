@@ -10,7 +10,7 @@
 //! TOML file is validated through the usual TOML-to-JSON mapping, in which
 //! a local date-time is a string. What a schema cannot say, from the TOML
 //! 1.1 forms to references, uniqueness, sums and the licence rules, only
-//! `upcli recipe check` decides (recipes §4.6).
+//! `unemu recipe check` decides (recipes §4.6).
 
 use crate::provider::Provider;
 use crate::spec::{self, MapKey, Table, Text, Ty, Vocab};
@@ -55,7 +55,7 @@ pub fn schema(providers: &[&dyn Provider]) -> Value {
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "unemupc recipe 1.0: Mediafile, Firmwarefile or work file",
-        "description": "Generated from the key tables of the recipe crate and the vocabularies of its platform providers (recipes.md section 6). A TOML file is validated through the usual TOML-to-JSON mapping, in which a local date-time is a string. What a schema cannot say (TOML 1.1 syntax, references, uniqueness, sums, the licence rules, sizes against formats and the firmware catalogue) is decided by upcli recipe check.",
+        "description": "Generated from the key tables of the recipe crate and the vocabularies of its platform providers (recipes.md section 6). A TOML file is validated through the usual TOML-to-JSON mapping, in which a local date-time is a string. What a schema cannot say (TOML 1.1 syntax, references, uniqueness, sums, the licence rules, sizes against formats and the firmware catalogue) is decided by unemu recipe check.",
         "type": "object",
         "if": { "properties": { "work": { "type": "object" } }, "required": ["work"] },
         "then": { "$ref": format!("#/$defs/{work}") },

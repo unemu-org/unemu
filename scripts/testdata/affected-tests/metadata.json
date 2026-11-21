@@ -608,6 +608,11 @@
       "manifest_path": "/workspace/crates/window/Cargo.toml",
       "dependencies": [
         {
+          "name": "upcli",
+          "kind": null,
+          "path": "/workspace/crates/upcli"
+        },
+        {
           "name": "assembly",
           "kind": null,
           "path": "/workspace/crates/assembly"

@@ -10,7 +10,7 @@ use library_model::listing::ImageRow;
 use std::{fs, path::Path};
 #[path = "../../pc-harness/tests/support/fixtures.rs"]
 mod fixtures;
-/// One medium of an installation set, as `upcli image media import` takes
+/// One medium of an installation set, as `unemu image media import` takes
 /// it: the file, and its `--label N=TEXT` and `--format N=FORMAT` if given.
 pub struct Medium<'a> {
     pub path: &'a Path,
@@ -40,7 +40,7 @@ impl<'a> Medium<'a> {
 }
 
 /// Publish an installation set titled `title` as `tag` into `store`, as
-/// `upcli image media import` does with the same files, labels, formats and
+/// `unemu image media import` does with the same files, labels, formats and
 /// extras (each with its DOS name, if given): compressed, and never moving an
 /// existing tag. Returns the set's manifest.
 pub fn import_media_set(

@@ -1533,7 +1533,7 @@ publishing proprietary bytes by accident:
   another image drops the record. Remotes gains the pushed repository or tag
   from the local manifest that went up, without a request; a tag pushed from
   a local tag of another name reads *Pushed from here · as …*, with Show in
-  library. Only the desktop records a push: `upcli image push` sends the
+  library. Only the desktop records a push: `unemu image push` sends the
   same image and leaves the store as it was. Every dialog runs its
   transfers on the library worker, never on the frame loop, and shares the
   command line's push plan, guard, client and providers list.
@@ -1915,7 +1915,7 @@ library's machines that take the set and opens the picker on one (§3.2,
 Desktop library). Add to machine… stays disabled: a machine keeps a floppy
 catalogue only as the desktop kept it at its last Stop (§3.2 Start), which
 no set adds to yet.
-The dialog, `image media import` and `upcli recipe build` share one
+The dialog, `image media import` and `unemu recipe build` share one
 plan-and-publish function and its refusals. All write the set's one title
 record, whose id is the last component of the set's repository (§2.1): title, publishers, genres,
 release year, software platform and description, and on the command line also
@@ -2469,7 +2469,7 @@ made.
 
 **Who publishes what (2026-11-16).** The firmware packages and the
 installation sets are built and published by the software repository
-(<https://github.com/unemu-org/software>) with a pinned `upcli` release;
+(<https://github.com/unemu-org/software>) with a pinned `unemu` release;
 `image template build` builds the template machines only.
 `pc_image::template::build_firmware` and `build_media` build the same images
 locally from this repository's fixtures through the six pinned corpus recipes
@@ -2707,10 +2707,10 @@ the tag-move rules changed. The probe found:
 
 - Unknown annotations change nothing, whether on the manifest
   (`unemu.min-version`, `dev.unemu.min-app`) or on the config descriptor.
-  Decode, summary, Start check, New machine from image… and `upcli image
+  Decode, summary, Start check, New machine from image… and `unemu image
   pull` all succeed, and the pull writes the tag. Any other key behaves the
   same way, because the codec checks only the two keys named above.
-- `application/vnd.unemu.machine.config.v2+toml`: `upcli image pull` fails
+- `application/vnd.unemu.machine.config.v2+toml`: `unemu image pull` fails
   before any blob is fetched with "unsupported media type: …". In a shared
   store the image is an unreadable row and `image ls` says `unknown`.
 - A new top-level config key, a new key in `machine.memory`, the reserved
@@ -2738,7 +2738,7 @@ wrongly, and the proposal forbids that.
   SemVer release `MAJOR.MINOR.PATCH`: the oldest release of the program
   providing `unemu.platform` that reads and runs the artifact. For
   `ibm-pc` (and its alias `ibm-pc-at`) that program is unemupc; `unemupc`
-  and `upcli` share its version. Machine images, installation sets and
+  and `unemu` share its version. Machine images, installation sets and
   firmware packages use the same rule. Without the annotation there is no
   requirement, so the six published sets and packages keep their digests. Like every annotation it
   is a hint, not an authority: codecs stay strict. Media-type majors move
@@ -2806,7 +2806,7 @@ paths:
    marked, the repository is dimmed.
 
 Optionally, the unemu-media pipeline can also run the release a new
-template's marker names (its pinned `upcli`) against the built template.
+template's marker names (its pinned `unemu`) against the built template.
 That tests the table against the real release.
 
 **Rows for metadata schema 3: specified, not implemented yet (`upc-miu`).**

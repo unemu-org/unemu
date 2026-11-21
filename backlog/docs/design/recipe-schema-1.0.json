@@ -1928,7 +1928,7 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Generated from the key tables of the recipe crate and the vocabularies of its platform providers (recipes.md section 6). A TOML file is validated through the usual TOML-to-JSON mapping, in which a local date-time is a string. What a schema cannot say (TOML 1.1 syntax, references, uniqueness, sums, the licence rules, sizes against formats and the firmware catalogue) is decided by upcli recipe check.",
+  "description": "Generated from the key tables of the recipe crate and the vocabularies of its platform providers (recipes.md section 6). A TOML file is validated through the usual TOML-to-JSON mapping, in which a local date-time is a string. What a schema cannot say (TOML 1.1 syntax, references, uniqueness, sums, the licence rules, sizes against formats and the firmware catalogue) is decided by unemu recipe check.",
   "else": {
     "else": {
       "$ref": "#/$defs/mediafile"

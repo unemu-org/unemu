@@ -15,6 +15,7 @@ layer = "application"
 
 [dependencies]
 journal-files.workspace = true
+upcli = { path = "../upcli", version = "0.0.3" }
 image-store = { path = "../image-store", version = "0.0.3" }
 image-registry = { path = "../registry", version = "0.0.3" }
 pc-image = { path = "../pc-image", version = "0.0.3" }
@@ -66,6 +67,7 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder", "NSWindow"] }
 
 [dev-dependencies]
+pc-harness = { path = "../pc-harness", version = "0.0.3" }
 device.workspace = true
 machine.workspace = true
 video.workspace = true

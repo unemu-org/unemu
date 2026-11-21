@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `upcli library`: the folders a recipe's inputs are searched in, and their
+//! `unemu library`: the folders a recipe's inputs are searched in, and their
 //! index (`backlog/docs/design/recipes.md` §3.4 and §6.15).
 //!
 //! The libraries are a list in the shared preferences file (or `--config`),
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 /// The preferences key of the library list.
 pub const KEY: &str = "libraries";
 
-/// A parsed `upcli library` command.
+/// A parsed `unemu library` command.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LibraryCommand {
     List {
@@ -227,7 +227,7 @@ pub fn execute(
                     Err(error) if from_preferences => {
                         writeln!(
                             errors,
-                            "upcli library scan: warning: library {} skipped: {error}",
+                            "unemu library scan: warning: library {} skipped: {error}",
                             dir.display()
                         )?;
                         continue;
@@ -434,7 +434,7 @@ mod tests {
         );
         assert!(
             err.starts_with(&format!(
-                "upcli library scan: warning: library {} skipped: ",
+                "unemu library scan: warning: library {} skipped: ",
                 gone.display()
             )),
             "{err}"

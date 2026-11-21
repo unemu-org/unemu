@@ -798,10 +798,10 @@ Parsing is dependency-free; the command layer and journal operations are library
 APIs tested without spawning the binary:
 
 ```text
-upcli media generations --base disk.img --journal disk.img.upfj
-upcli media verify --base disk.img --journal disk.img.upfj
-upcli media verify --base disk.img --journal disk.img.upfj --repair-tail --backup before-repair.upfj
-upcli media rollback --base disk.img --journal disk.img.upfj --to 7 --backup before-rollback.upfj
+unemu media generations --base disk.img --journal disk.img.upfj
+unemu media verify --base disk.img --journal disk.img.upfj
+unemu media verify --base disk.img --journal disk.img.upfj --repair-tail --backup before-repair.upfj
+unemu media rollback --base disk.img --journal disk.img.upfj --to 7 --backup before-rollback.upfj
 ```
 
 `generations` lists ids, closing reasons, end offsets, command/sector counts,
@@ -844,7 +844,7 @@ validates its target before printing the removal warning.
 Immutable export:
 
 ```text
-upcli media commit --base disk.img --journal disk.img.upfj --to 7 --output restored.img
+unemu media commit --base disk.img --journal disk.img.upfj --to 7 --output restored.img
 ```
 
 `commit` (alias `compact`) reconstructs a selected closed generation into a

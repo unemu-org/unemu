@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# The install step of the setup-upcli action: download one release archive of
+# The install step of the setup-unemu action: download one release archive of
 # unemupc, check it against the release's own SHA256SUMS (a check of the
-# download, not a pin), and install upcli from it into the runner's temporary
+# download, not a pin), and install unemu from it into the runner's temporary
 # directory.
 #
-# The inputs arrive only through the environment (UPCLI_VERSION,
-# UPCLI_COMMIT), never pasted into the script text, so no value can become
+# The inputs arrive only through the environment (UNEMU_VERSION,
+# UNEMU_COMMIT), never pasted into the script text, so no value can become
 # shell code. The runner provides RUNNER_OS, RUNNER_ARCH, RUNNER_TEMP,
 # GITHUB_PATH and GITHUB_OUTPUT. An invalid input is described, never echoed:
 # a printed line that starts with :: would be read as a workflow command.
@@ -20,13 +20,13 @@ error() {
   exit 1
 }
 
-version=${UPCLI_VERSION:-}
-commit=${UPCLI_COMMIT:-}
+version=${UNEMU_VERSION:-}
+commit=${UNEMU_COMMIT:-}
 
 version_re='^v[0-9][0-9A-Za-z.+-]*$'
 commit_re='^[0-9a-f]{40}$'
 if [[ ! $version =~ $version_re ]]; then
-  error 'version must be a release tag of unemupc, such as v0.0.1'
+  error 'version must be a release tag of unemupc, such as v0.0.3'
 fi
 if [[ -n $commit && ! $commit =~ $commit_re ]]; then
   error 'commit must be empty or a full commit: 40 lowercase hex digits'
@@ -36,7 +36,7 @@ fi
 case "${RUNNER_OS:-}/${RUNNER_ARCH:-}" in
   Linux/X64) target=x86_64-unknown-linux-gnu ;;
   macOS/ARM64) target=aarch64-apple-darwin ;;
-  *) error "unemupc releases upcli for Linux X64 and macOS ARM64 runners, not for ${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown}" ;;
+  *) error "unemupc releases unemu for Linux X64 and macOS ARM64 runners, not for ${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown}" ;;
 esac
 
 : "${RUNNER_TEMP:?}" "${GITHUB_PATH:?}" "${GITHUB_OUTPUT:?}"
@@ -46,7 +46,7 @@ archive=$name.tar.gz
 base=https://github.com/unemu-org/unemupc/releases/download/$version
 
 # The archive never outlives this step, whether it passes the check or not.
-download=$(mktemp -d "$RUNNER_TEMP/setup-upcli-download.XXXXXXXX")
+download=$(mktemp -d "$RUNNER_TEMP/setup-unemu-download.XXXXXXXX")
 trap 'rm -rf "$download"' EXIT
 
 fetch() {
@@ -76,14 +76,14 @@ if [[ $actual != "$sha256" ]]; then
 fi
 echo "$archive matches the release's SHA256SUMS ($sha256)"
 
-# Only the command line and the licence texts that go with it: the desktop
-# app, the README and the notices stay in the archive.
-bin=$(mktemp -d "$RUNNER_TEMP/upcli-$version.XXXXXXXX")
+# The combined front end and its licence texts; the standalone PC core,
+# README and repository notices stay in the archive.
+bin=$(mktemp -d "$RUNNER_TEMP/unemu-$version.XXXXXXXX")
 tar -x -z -f "$download/$archive" -C "$bin" --strip-components 1 \
-  "$name/upcli" "$name/LICENSE" "$name/THIRD-PARTY-LICENSES.md"
-upcli=$bin/upcli
+  "$name/unemu" "$name/LICENSE" "$name/THIRD-PARTY-LICENSES.md"
+unemu=$bin/unemu
 
-about=$("$upcli" --version)
+about=$("$unemu" --version)
 printf '%s\n' "$about"
 
 # A tag can be moved after the fact, a commit cannot; release builds name
@@ -91,13 +91,13 @@ printf '%s\n' "$about"
 if [[ -n $commit ]]; then
   built=$(printf '%s\n' "$about" | sed -n 's/^commit: \([0-9a-f]\{40\}\)$/\1/p')
   if [[ -z $built ]]; then
-    error "upcli $version prints no commit line, so it cannot be checked against the pinned commit $commit; leave commit empty for this release"
+    error "unemu $version prints no commit line, so it cannot be checked against the pinned commit $commit; leave commit empty for this release"
   fi
   if [[ $built != "$commit" ]]; then
-    error "upcli $version was built from commit $built, not the pinned $commit"
+    error "unemu $version was built from commit $built, not the pinned $commit"
   fi
-  echo "upcli $version was built from the pinned commit $commit"
+  echo "unemu $version was built from the pinned commit $commit"
 fi
 
 echo "$bin" >> "$GITHUB_PATH"
-echo "path=$upcli" >> "$GITHUB_OUTPUT"
+echo "path=$unemu" >> "$GITHUB_OUTPUT"

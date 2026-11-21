@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `upcli run --machine --diag-at N` writes the machine's diagnostic report
+//! `unemu run --machine --diag-at N` writes the machine's diagnostic report
 //! to stderr when the run reaches step N, then runs on to its natural stop
 //! (commands.md, Build / run / test; `backlog/docs/design/observation.md`
 //! §Diagnostic report of a running machine). The system ROM is

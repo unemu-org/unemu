@@ -5,7 +5,7 @@
 //! Structure (FAT12 entries), FAT Directory Structure, and Long File Name
 //! Implementation for the long names other tools write.
 //!
-//! The builder's tests read every image back through it, and `upcli image
+//! The builder's tests read every image back through it, and `unemu image
 //! export --files` unpacks the disks of a set with [`Volume::tree`]
 //! (backlog/docs/design/recipes.md §3.10, decision-37). An image is
 //! untrusted input: every offset is checked against the image, every

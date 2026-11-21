@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `upcli recipe pin`, and the commands on a pinned recipe: `recipe show`,
+//! `unemu recipe pin`, and the commands on a pinned recipe: `recipe show`,
 //! `recipe build` and `recipe conformance` (recipes.md §3.1, §3.8, §6.15,
 //! §6.16, §9): their output and exit codes. Every test names its own
 //! preferences file and stores. Synthetic files only.
@@ -208,7 +208,7 @@ fn recipe_pin_and_conformance_usage_errors_exit_2() {
     ] {
         let (code, _, errors) = upcli(&args);
         assert_eq!(code, 2, "{args:?}");
-        assert!(errors.contains("upcli recipe pin FILE"), "{errors}");
+        assert!(errors.contains("unemu recipe pin FILE"), "{errors}");
     }
 }
 
@@ -230,7 +230,7 @@ fn recipe_conformance_that_finds_no_pinned_recipe_exits_1() {
     );
     assert_eq!(
         errors,
-        "upcli recipe conformance: no pinned recipe found in the files and folders named\n"
+        "unemu recipe conformance: no pinned recipe found in the files and folders named\n"
     );
 }
 

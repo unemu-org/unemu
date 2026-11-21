@@ -2,7 +2,7 @@
 //! Pinning a recipe and the conformance harness (recipes §3.1, §6.12, §6.15,
 //! §9).
 //!
-//! **Pin** ([`pin_path`], `upcli recipe pin`): the author's build, once per
+//! **Pin** ([`pin_path`], `unemu recipe pin`): the author's build, once per
 //! revision. A draft is built and tagged as `recipe build` builds it, with
 //! this build's writers; then its manifest, its config and every layer no
 //! step made (the title metadata, a firmware package's README) are copied
@@ -15,7 +15,7 @@
 //! wrote stays: it names exactly the artifact `recipe build` makes of the
 //! draft, and a revision tag is never removed or moved.
 //!
-//! **Conformance** ([`conformance`], `upcli recipe conformance`): every
+//! **Conformance** ([`conformance`], `unemu recipe conformance`): every
 //! pinned recipe of the files and folders named is built into a scratch
 //! store from the libraries given, and the digest it publishes is compared
 //! with its `digest`. A build of the program conforms when every pinned
@@ -242,7 +242,7 @@ pub fn conformance(
     Ok(out)
 }
 
-/// The text `upcli recipe conformance` prints: a line per recipe, then a
+/// The text `unemu recipe conformance` prints: a line per recipe, then a
 /// total. `true` when every pinned recipe conforms.
 pub fn render(results: &[Conformance]) -> (String, bool) {
     let mut out = String::new();

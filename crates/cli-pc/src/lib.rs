@@ -15,7 +15,7 @@
 //!
 //! The crate is in the PC layer (core-contract.md §7.3): it builds on the
 //! neutral command line of `cli-core` and on the PC and emulation crates, and
-//! the `upcli` program composes it with the other platforms compiled in.
+//! the `unemu` program composes it with the other platforms compiled in.
 //! [`command`] is the command line with this platform alone, which the tests
 //! of the PC commands drive.
 
@@ -187,39 +187,39 @@ impl CliPlatform for PcPlatform<'_> {
         UsageSlot::AfterAbout => MACHINE_AND_IMPORT_USAGE,
         UsageSlot::AfterImageSweep => "",
         UsageSlot::AfterWorkspaceDiscard => concat!(
-            "       upcli image workspace abandon-publication NAME --store DIR\n",
-            "       upcli image publish --from-workspace NAME --store DIR --tag NAME:TAG [--flatten]\n",
+            "       unemu image workspace abandon-publication NAME --store DIR\n",
+            "       unemu image publish --from-workspace NAME --store DIR --tag NAME:TAG [--flatten]\n",
         ),
         UsageSlot::BeforeMachineRun => concat!(
-            "       upcli image machine ls --store DIR\n",
-            "       upcli image machine new NAME:TAG --store DIR [--name NAME]\n",
-            "       upcli image machine rename ID NAME --store DIR\n",
-            "       upcli image machine duplicate ID --store DIR [--name NAME]\n",
-            "       upcli image machine reset ID --store DIR --yes\n",
-            "       upcli image machine rm ID --store DIR --yes\n",
-            "       upcli image machine settings ID --store DIR [--set PATH=VALUE]... [--clear] [--dry-run]\n",
-            "       upcli image machine commit ID --store DIR --tag NAME:TAG [--title TITLE] [--keep-on-old-image]\n",
+            "       unemu image machine ls --store DIR\n",
+            "       unemu image machine new NAME:TAG --store DIR [--name NAME]\n",
+            "       unemu image machine rename ID NAME --store DIR\n",
+            "       unemu image machine duplicate ID --store DIR [--name NAME]\n",
+            "       unemu image machine reset ID --store DIR --yes\n",
+            "       unemu image machine rm ID --store DIR --yes\n",
+            "       unemu image machine settings ID --store DIR [--set PATH=VALUE]... [--clear] [--dry-run]\n",
+            "       unemu image machine commit ID --store DIR --tag NAME:TAG [--title TITLE] [--keep-on-old-image]\n",
         ),
         UsageSlot::AfterMachineRun => concat!(
-            "       upcli image media import FILE...|DIR --title TITLE --tag NAME:TAG --store DIR [--create] [--dry-run] [--no-compress] [--label N=TEXT]... [--format N=FORMAT]... [--extra PATH[:DOSNAME]]... [--open --license LicenseRef-NAME --license-text EXTRA] [--open --license EXPRESSION --license-text EXTRA --source EXTRA] [--min-app-version X.Y.Z] [SET-METADATA]\n",
+            "       unemu image media import FILE...|DIR --title TITLE --tag NAME:TAG --store DIR [--create] [--dry-run] [--no-compress] [--label N=TEXT]... [--format N=FORMAT]... [--extra PATH[:DOSNAME]]... [--open --license LicenseRef-NAME --license-text EXTRA] [--open --license EXPRESSION --license-text EXTRA --source EXTRA] [--min-app-version X.Y.Z] [SET-METADATA]\n",
             "         SET-METADATA: [--publisher P]... [--developer D]... [--year YYYY] [--genre G]... [--platform PLATFORM] [--description TEXT] [--version V] [--edition E] [--set-label L]...\n",
             "                       [--need KIND=VALUE[,VALUE]...]... [--requirements TEXT] [--work ID] [--synopsis TEXT] [--work-id wikidata|mobygames|igdb=ID]...\n",
-            "       upcli image firmware import FOLDER|FILES... [--store DIR] [--create] [--rescan] [--dry-run] [--for CATALOGUE-ID [EXTRAS] [METADATA] [--min-app-version X.Y.Z]]\n",
-            "       upcli image firmware import FILE --unlisted ID --role ROLE [--store DIR] [--create] [--dry-run] [EXTRAS] [METADATA] [--min-app-version X.Y.Z]\n",
-            "       upcli image firmware edit NAME:TAG [--to NAME:TAG] [--store DIR] [--regenerate-readme] [METADATA] [--min-app-version X.Y.Z]\n",
+            "       unemu image firmware import FOLDER|FILES... [--store DIR] [--create] [--rescan] [--dry-run] [--for CATALOGUE-ID [EXTRAS] [METADATA] [--min-app-version X.Y.Z]]\n",
+            "       unemu image firmware import FILE --unlisted ID --role ROLE [--store DIR] [--create] [--dry-run] [EXTRAS] [METADATA] [--min-app-version X.Y.Z]\n",
+            "       unemu image firmware edit NAME:TAG [--to NAME:TAG] [--store DIR] [--regenerate-readme] [METADATA] [--min-app-version X.Y.Z]\n",
             "         EXTRAS: [--extra PATH[:DOSNAME] [--extra-license SPDX]]...\n",
             "         METADATA: [--title T] [--description T] [--notes T] [--vendor T] [--version T] [--date YYYY-MM-DD]\n",
             "                   [--label L]... [--board B]... [--class C]... [--requires KIND]...\n",
             "                   [--dumped-from T | --downloaded-from T | --built-from T] [--revision R] [--url U] [--provenance-date YYYY-MM-DD]\n",
             "                   [--open [--license SPDX] | --user-supplied] [--source ARCHIVE.tar|.zip [--source-license SPDX]]\n",
         ),
-        UsageSlot::AfterRegistry => "       upcli image template build --store DIR [--vendor DIR] [--dry-run]\n",
+        UsageSlot::AfterRegistry => "       unemu image template build --store DIR [--vendor DIR] [--dry-run]\n",
         UsageSlot::AfterRecipe => concat!(
-            "       upcli media create floppy --type 1.44M|1.2M|720K|360K OUT [--format] [--label NAME] [--force]\n",
-            "       upcli media create floppy --type 1.44M|1.2M|720K|360K OUT --add PATH [--add PATH]... [--top NAME] [--label NAME] [--split] [--force]\n",
+            "       unemu media create floppy --type 1.44M|1.2M|720K|360K OUT [--format] [--label NAME] [--force]\n",
+            "       unemu media create floppy --type 1.44M|1.2M|720K|360K OUT --add PATH [--add PATH]... [--top NAME] [--label NAME] [--split] [--force]\n",
             "         --add copies host files and folders (folders whole, symlinks never followed) onto a new FAT12 disk with 8.3 names;\n",
             "         --top NAME puts them all under one folder; --split writes <stem>-1ofN.<ext>, <stem>-2ofN.<ext>... when they need more than one disk\n",
-            "       upcli media create hd (--chs C/H/S | --size SIZE[MiB|GiB]) OUT [--force]\n",
+            "       unemu media create hd (--chs C/H/S | --size SIZE[MiB|GiB]) OUT [--force]\n",
         ),
         UsageSlot::Journal => unemupc::JOURNAL_USAGE,
         UsageSlot::Last => "DOS boot and interactive sessions: see crates/pc-harness/tests/*dos*golden.rs\n",
@@ -233,7 +233,7 @@ impl CliPlatform for PcPlatform<'_> {
 }
 
 const MACHINE_AND_IMPORT_USAGE: &str = unemupc::machine_usage!(
-            "       upcli image import FILE --store DIR --tag NAME:TAG [--create] [--no-compress] [--rom-dir DIR]... [--recover MEDIUM=tip|MEDIUM=generation:N]... [--min-app-version X.Y.Z]\n",
+            "       unemu image import FILE --store DIR --tag NAME:TAG [--create] [--no-compress] [--rom-dir DIR]... [--recover MEDIUM=tip|MEDIUM=generation:N]... [--min-app-version X.Y.Z]\n",
             "         --min-app-version (here, on image media import and on image firmware import and edit) raises the oldest unemupc the image declares it needs: never below what this release computes, never above this release\n",
 );
 

@@ -134,7 +134,7 @@ which stay cached. A download is renamed into the cache only after its hash
 matches, and a bad response from the release directory falls back to the
 mirror. The unemu-media repository builds and publishes the sets
 (`unemu/media/freedos:1.4`, `:1.4-1.2m`, `:1.4-720k`; get them with
-`upcli image pull`); `pc_image::template::build_media` builds the same sets
+`unemu image pull`); `pc_image::template::build_media` builds the same sets
 locally from these fixtures for tests, and the tests pin the published
 digests (commands.md, Official template images; machine-images §5.5).
 

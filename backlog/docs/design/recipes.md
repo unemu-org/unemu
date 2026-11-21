@@ -45,7 +45,7 @@ throwaway checker or the named step; **MEASURED** = measured for this document.
    before it runs, and the checker knows exactly which outputs depend on
    which inputs.
 4. A published recipe carries a **lock**: the output's manifest, config and
-   metadata, byte for byte, as its author's `upcli` wrote them. A build makes
+   metadata, byte for byte, as its author's `unemu` wrote them. A build makes
    the payload blobs, checks each against the lock and publishes the locked
    manifest unchanged. Only the payload builders must stay byte-stable for
    good; the encodings of manifests, configs and metadata need not.
@@ -62,7 +62,7 @@ throwaway checker or the named step; **MEASURED** = measured for this document.
    never moves. `<release>` alone is an alias that follows the newest `rN`.
    A metadata fix is a new `rN`; it downloads nothing, because every blob is
    already there.
-9. Export is lossless and documented without `upcli`: every stored blob
+9. Export is lossless and documented without `unemu`: every stored blob
    comes back byte-identical under its recorded file name, and a built file
    system also comes back as files with names and times.
 10. What binds forever is short and listed in §9: the hash identity, the
@@ -74,12 +74,12 @@ throwaway checker or the named step; **MEASURED** = measured for this document.
 The unemu family keeps three kinds of images as OCI artifacts in a local store
 and on registries (machine-images §2, §5.2, §5.3 [REPO]): machine images,
 installation media sets and firmware packages. Today a person makes a set or
-a package with `upcli image media import` or `image firmware import`, and
+a package with `unemu image media import` or `image firmware import`, and
 unemu-media builds the open ones with one hand-written `build.sh` per recipe
 plus a `media.toml` or `firmware.toml` [REPO: unemu-media `docs/recipes.md`].
 Those scripts run curl, unzip, mtools, git, tar and Python. They cannot be
 handed to a user for private media, cannot be run by the window, and tie
-every digest to one pinned `upcli` binary.
+every digest to one pinned `unemu` binary.
 
 This document designs the replacement: a recipe format and engine that
 builds media sets and firmware packages, and later machine images, from
@@ -116,14 +116,14 @@ Each requirement is written so a test can decide it.
 | R4 | Every input is identified by SHA-256 and exact size. A file is used only after its whole content has been hashed and both values match. |
 | R5 | A build with every required input present publishes the artifact. A build with one missing required input writes no tag and no artifact, and reports every missing input with name, size, SHA-256 and database ids. |
 | R6 | A recipe that holds only hashes, sizes, names, URLs and our own text builds the same artifact as one whose inputs are public. Publishing such a recipe publishes no payload byte. |
-| R7 | For a pinned recipe, two builds on two hosts, with two `upcli` releases that both support the recipe's version, give the same manifest digest. |
+| R7 | For a pinned recipe, two builds on two hosts, with two `unemu` releases that both support the recipe's version, give the same manifest digest. |
 | R8 | The main artifact's digest is the same whether or not the user has the optional inputs. |
 | R9 | A build never uses a library's index as proof. An index or catalogue only proposes candidates. |
 | R10 | Finding an input does not need a full library scan when a size, a name or a catalogue entry narrows the candidates. A scan hashes only files whose size equals a wanted size. |
 | R11 | The engine and syntax contain no platform rule. A platform provider supplies media formats, geometry, file-system profiles, firmware roles and the `needs` vocabulary. |
-| R12 | Every artifact exports to plain files, byte-identical for unmodified media, with a layout simple enough for a script without `upcli` (§3.10). |
+| R12 | Every artifact exports to plain files, byte-identical for unmodified media, with a layout simple enough for a script without `unemu` (§3.10). |
 | R13 | A recipe is itself an OCI artifact that a registry lists, and a client can tell from it, without any payload, whether the user can build it. |
-| R14 | `upcli recipe check` decides every static rule of §6.11 without reading an input, the store or the network. |
+| R14 | `unemu recipe check` decides every static rule of §6.11 without reading an input, the store or the network. |
 | R15 | A fetch from a URL happens only with the user's consent for that recipe or publisher, reads at most the pinned size, and is hashed before use. |
 | R16 | A media recipe states what the title needs from the platform family as features, never as machine models. The library warns and suggests; it never blocks. |
 
@@ -148,11 +148,11 @@ Each requirement is written so a test can decide it.
 
 There are two ways to run a recipe.
 
-- **Pin** (the author, once per revision): `upcli recipe pin` builds the
+- **Pin** (the author, once per revision): `unemu recipe pin` builds the
   payload blobs, writes the config, the metadata and the manifest with the
-  writers of that `upcli`, records the manifest digest in the recipe
+  writers of that `unemu`, records the manifest digest in the recipe
   (`digest = "sha256:…"`) and writes the lock beside it.
-- **Build** (everyone, with any later `upcli`): `upcli recipe build` builds
+- **Build** (everyone, with any later `unemu`): `unemu recipe build` builds
   the payload blobs, checks each against its descriptor in the locked
   manifest (decoded digest and size, and the stored digest and size), and
   publishes the locked manifest, config and metadata unchanged.
@@ -161,10 +161,10 @@ A recipe without `digest` is a **draft**. It builds, the result is tagged
 locally and its digest is printed, and nothing is checked against a pin. A
 user's own private recipe may stay a draft for ever.
 
-Why a lock: today the digest of a set depends on how one `upcli` release
+Why a lock: today the digest of a set depends on how one `unemu` release
 spells TOML and JSON, which annotations it writes and how it orders them.
-unemu-media handles that by pinning one `upcli` binary [REPO: unemu-media
-`upcli.toml`]. A user's later `upcli` cannot be pinned. The manifest gained
+unemu-media handles that by pinning one `unemu` binary [REPO: unemu-media
+`upcli.toml`]. A user's later `unemu` cannot be pinned. The manifest gained
 five annotations on 2026-11-15 and every set digest moved (machine-images
 §5.2, Manifest annotations [REPO]); the same would happen at each later
 improvement. With the lock, a later release never has to write an old
@@ -284,7 +284,7 @@ another hash is reported as stale and skipped.
 
 ### 3.5. The missing-input report
 
-`upcli recipe plan` resolves without writing. For every input it prints one
+`unemu recipe plan` resolves without writing. For every input it prints one
 row: found (and where), or missing. For a missing input it prints the
 canonical name, size, SHA-256, every database id, what the input is used for
 (the labels of the outputs that depend on it) and any **near miss**: a file
@@ -389,7 +389,7 @@ ordinary set for the documents (a set needs at least one medium).
 
 ### 3.10. Export
 
-`upcli image export REF --to DIR` writes every part of an artifact as a
+`unemu image export REF --to DIR` writes every part of an artifact as a
 plain file (decision-37):
 
 - each medium and ROM chip: the decoded bytes, byte-identical to the input
@@ -418,7 +418,7 @@ archive itself, N members unused`; B11's wording, 2026-11-19), so a user
 who means to delete the originals knows what stays. A recipe that wants the
 archive itself kept lists it as an extra.
 
-So that a script needs no `upcli`: every layer descriptor carries the
+So that a script needs no `unemu`: every layer descriptor carries the
 annotation `org.opencontainers.image.title` with its export file name, the
 convention ORAS uses to name pulled files [SRC 11]. A layer whose media type
 ends in `+zstd` is one Zstandard frame titled with `.zst` after its file
@@ -688,7 +688,7 @@ a disclosable file under 256 bytes; no `[license]` means not under
 `unemu/`; the source rules of §6.6; `synopsis` only in a work file and the
 release fields only in a recipe.
 
-It cannot express the following, so `upcli recipe check` stays the
+It cannot express the following, so `unemu recipe check` stays the
 authority:
 
 1. Syntax: the 1.1 forms, a byte-order mark, the 1 MiB limit. A schema sees
@@ -1086,7 +1086,7 @@ declared size are verified, and `size` and `sha256` when given.
 Nothing but bytes is taken from the archive (§3.4). A member's time is the
 `time` the recipe states, a local date-time with even seconds and a year
 from 1980 to 2107, which is what both a zip entry and a FAT directory
-entry can hold. `upcli recipe scaffold` writes the list, with sizes, hashes and the archive's own times,
+entry can hold. `unemu recipe scaffold` writes the list, with sizes, hashes and the archive's own times,
 when a recipe is first written. When the archive is opened and a stated
 size, hash or time differs from the archive's, the build stops: a recipe
 may not claim an archive's times and state others. A member with `size` and
@@ -1163,7 +1163,7 @@ of `[[extra]]`.
 
 ### 6.11. Static checks
 
-`upcli recipe check` refuses, without reading any input:
+`unemu recipe check` refuses, without reading any input:
 
 1. a file that is not the TOML of §6.1, or has an unknown key, type or value;
 2. no identity table, or two; a table that belongs to another kind;
@@ -1295,7 +1295,7 @@ the artifacts changes.
 | `[[medium]].format` | `--format N=1.44M`: the provider's `MediaFormats::validate_format` turns the name into the config's format table and checks the size [REPO: `image_store::media_set`]. |
 | `[firmware]`, `[package]`, `[[rom]]`, `[[extra]]` | A `Candidate` of `pc_image::firmware_import`: the config with its ROMs and parts, checked against the firmware catalogue by SHA-256 and size [REPO]. |
 | An input found in a library | **Locate firmware** and Import ROM folder…, which already match chips by hash and size, never by name (machine-images §5 [REPO]). The library index generalises that scan to every input. |
-| `digest` and the lock | The `digest` pins of `media.toml` and `firmware.toml`, and the pinned `upcli` of unemu-media [REPO]. |
+| `digest` and the lock | The `digest` pins of `media.toml` and `firmware.toml`, and the pinned `unemu` of unemu-media [REPO]. |
 | `fat` | `crates/media/src/fat12`, and unemu-media's `fat_image` over mtools [REPO]. |
 | `revision` | `[[set]].revision` and `[package].revision` [REPO]. |
 
@@ -1311,17 +1311,17 @@ the set of commands is the proposal.
 
 | Command | What it does |
 | --- | --- |
-| `upcli recipe check FILE` | The static checks of §6.11. Reads nothing else. |
-| `upcli recipe show FILE` | A media recipe's identity and its description merged with its work file (§6.16), each value from the work file marked. Refuses a recipe that does not pass `check`. |
-| `upcli recipe plan FILE\|REF [--json]` | Resolves every input and prints the report of §3.5. Writes nothing. |
-| `upcli recipe build FILE\|REF [--fetch] [--library DIR]…` | Builds and tags the artifact and every attachment whose inputs are found. `--fetch` is the consent of R15. |
-| `upcli recipe pin FILE` | The author's build: writes `digest` into the file and the lock beside it. |
-| `upcli recipe conformance FILE\|FOLDER…` | Builds every pinned recipe named into a scratch store from the libraries and compares the digests (B8). |
-| `upcli recipe scaffold FILE\|DIR…` | Writes the `[input]` tables, member lists and file sets for files the author has, with sizes, hashes and an archive's times. The author adds the description. |
-| `upcli recipe inputs FILE --format dat\|csv\|sha256sums` | The inputs as a Logiqx DAT, a CSV or a checksum file, for a ROM manager or `sha256sum -c`. |
-| `upcli recipe push FILE REF`, `recipe pull REF` | The recipe artifact (§7). |
-| `upcli library add DIR`, `library index [--catalogue FILE]`, `library list` | The user's libraries and their index (§3.4). |
-| `upcli image export REF --to DIR [--files]` | The export of §3.10. |
+| `unemu recipe check FILE` | The static checks of §6.11. Reads nothing else. |
+| `unemu recipe show FILE` | A media recipe's identity and its description merged with its work file (§6.16), each value from the work file marked. Refuses a recipe that does not pass `check`. |
+| `unemu recipe plan FILE\|REF [--json]` | Resolves every input and prints the report of §3.5. Writes nothing. |
+| `unemu recipe build FILE\|REF [--fetch] [--library DIR]…` | Builds and tags the artifact and every attachment whose inputs are found. `--fetch` is the consent of R15. |
+| `unemu recipe pin FILE` | The author's build: writes `digest` into the file and the lock beside it. |
+| `unemu recipe conformance FILE\|FOLDER…` | Builds every pinned recipe named into a scratch store from the libraries and compares the digests (B8). |
+| `unemu recipe scaffold FILE\|DIR…` | Writes the `[input]` tables, member lists and file sets for files the author has, with sizes, hashes and an archive's times. The author adds the description. |
+| `unemu recipe inputs FILE --format dat\|csv\|sha256sums` | The inputs as a Logiqx DAT, a CSV or a checksum file, for a ROM manager or `sha256sum -c`. |
+| `unemu recipe push FILE REF`, `recipe pull REF` | The recipe artifact (§7). |
+| `unemu library add DIR`, `library index [--catalogue FILE]`, `library list` | The user's libraries and their index (§3.4). |
+| `unemu image export REF --to DIR [--files]` | The export of §3.10. |
 
 ### 6.16. Work files
 
@@ -1413,11 +1413,11 @@ recipe states none, it is the synopsis. Metadata schema 2 also carries the
 synopsis and the work id on their own, so the library can show one text
 for the work above its releases.
 
-**`upcli recipe show FILE`** prints the identity line (the tag, the digest
+**`unemu recipe show FILE`** prints the identity line (the tag, the digest
 or `draft`, the platform) and the merged description record: `[title]`,
 `[needs]` and `[ids]` with the work file's fields, and nothing of the
 inputs, steps, media or licence. It writes them in the plain lines of
-`upcli image media show`, not as a TOML document, with a comment on each
+`unemu image media show`, not as a TOML document, with a comment on each
 value that came from the work file (B5, §19.2).
 `check` works on the merged result and names the file a bad value came from.
 
@@ -1872,7 +1872,7 @@ Machinefile corpus decides whether the cost is acceptable (§4.5).
 | `fat_image` (mtools 4.0.49) | `fat`; the bytes differ from mtools', so Ken's Labyrinth is pinned anew. It was never published |
 | `crlf` | `text` with `eol = "crlf"` |
 | `outputs_match`, `check_outputs`, `install_outputs` | The lock and §3.8 |
-| `digest` pins and the pinned `upcli` | `digest` and the lock. The pinned `upcli` stays for `recipe pin` only |
+| `digest` pins and the pinned `unemu` | `digest` and the lock. The pinned `unemu` stays for `recipe pin` only |
 | `git_export`, `source_tar`, `iso-extract.py` | **No equivalent in v1** (below) |
 | `lib/publish.py` | `recipe build`, `image push`, `recipe push` |
 
@@ -2354,7 +2354,7 @@ with `/` separators, the bytes (or none for a folder) and an optional
 Scope: a platform-neutral crate beside `image-store` with the typed model
 of §6, the parser over the `toml` crate with the restrictions B1 found, the
 static checks, and the provider traits it calls (formats, volume profiles,
-firmware rules, needs). `upcli recipe check`. Depends on: B1. Must prove:
+firmware rules, needs). `unemu recipe check`. Depends on: B1. Must prove:
 the whole corpus passes; one failing fixture per rule of §6.11.
 Done on 2026-11-17 (`upc-5pw.113.4`). The crate is `crates/recipe`
 (layer `neutral`): `spec` holds every table of §6 with its keys, types and
@@ -2445,7 +2445,7 @@ taken while building it:
   check, with no change of behaviour.
 
 **B5. Work files.**
-Scope: `<id>.work.toml`, the merge rules of §6.16, `upcli recipe show`,
+Scope: `<id>.work.toml`, the merge rules of §6.16, `unemu recipe show`,
 and the check that the repository's last component is the work id (done
 in B4).
 Depends on: B4, B2 (the work id and synopsis need schema 2). Must prove:
@@ -2507,8 +2507,8 @@ Scope: library folders in preferences and `--library`; the index cache
 with sizes, change times and computed hashes; zip directories; the index
 of decoded digests for the store; catalogues as hints (CSV and
 `SHA256SUMS`; the Logiqx DAT may follow); resolution in the order of §3.4
-including "found instead of made"; `upcli recipe plan` with `--json`;
-`upcli library …`. Depends on: B4. Must prove: a scan hashes only files of
+including "found instead of made"; `unemu recipe plan` with `--json`;
+`unemu library …`. Depends on: B4. Must prove: a scan hashes only files of
 a wanted size (counted in a test); a stale index entry is dropped, never
 trusted; the plan for AZURAMON finds 561 entries from 204 files; a near
 miss is reported.
@@ -2623,7 +2623,7 @@ Decisions taken while building it:
 **B7. Steps and the draft build.**
 Scope: `unpack` (zip), `text`, `fat` through B3; outputs handed to the
 importers' shared plan-and-publish functions; the download cache and
-`--fetch` with consent; `upcli recipe build` for drafts; `--keep-as`.
+`--fetch` with consent; `unemu recipe build` for drafts; `--keep-as`.
 Depends on: B4, B6, B3 (for `fat`). Must prove: the three firmware recipes
 and the three FreeDOS recipes build artifacts whose configs equal the ones
 `image firmware import` and `image media import` make today; nothing is
@@ -2708,14 +2708,14 @@ recipes). Decisions taken while building it:
   builds its ten disks from the user's folder, twice to the same artifact.
 
 **B8. The lock and pinning.**
-Scope: `upcli recipe pin`; the lock directory; the checks of §3.8,
+Scope: `unemu recipe pin`; the lock directory; the checks of §3.8,
 including the field-by-field comparison and the work-file drift report;
 building from a lock with a release other than the one that pinned it; the
 conformance harness that builds pinned recipes from a fixture library and
 compares digests; `recipe show` of a pinned recipe prints the locked
 metadata, which a build writes, rather than the merge with today's work file
 (B5 merges the work file as it is, as a draft builds). Depends on: B7, A2, B5. Must prove: a recipe pinned by
-one build of `upcli` builds the same manifest digest with another whose
+one build of `unemu` builds the same manifest digest with another whose
 manifest writer was deliberately changed; a changed work file is reported
 and does not change the result.
 
@@ -2893,8 +2893,8 @@ conformance). Decisions taken while building it:
     file alone.
 
 **B9. `scaffold` and `inputs`.**
-Scope: `upcli recipe scaffold` (input tables, member lists with sizes,
-hashes and times, file sets) and `upcli recipe inputs` (DAT, CSV,
+Scope: `unemu recipe scaffold` (input tables, member lists with sizes,
+hashes and times, file sets) and `unemu recipe inputs` (DAT, CSV,
 checksums). Depends on: B4. Must prove: scaffolding LABFULL.ZIP and the
 AZURAMON folder gives the corpus's tables byte for byte.
 Done on 2026-11-19 (`upc-5pw.113.9`): `recipe::scaffold` and
@@ -3016,9 +3016,9 @@ Readings taken:
   pinned text, and an alias that moved with the revision is not recorded.
 
 **B11. Export.**
-Scope: `upcli image export`, `--files` with the FAT reader promoted from
+Scope: `unemu image export`, `--files` with the FAT reader promoted from
 test code, the per-input "kept" report of `recipe build`, and the layout
-documented with a script that uses no `upcli`. Related and distinct:
+documented with a script that uses no `unemu`. Related and distinct:
 `upc-5pw.116` saves and loads whole artifacts, selections and repositories
 as OCI Image Layouts; export unpacks one artifact into plain files.
 Depends on: A3. Must prove: the script and the command write the same files; an

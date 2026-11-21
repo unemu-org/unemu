@@ -1,25 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `upcli recipe check`: the static checks of recipes, which read the
+//! `unemu recipe check`: the static checks of recipes, which read the
 //! recipe, its work file and whether its lock exists, and no input
-//! (`backlog/docs/design/recipes.md` §6.11 and §6.15). `upcli recipe show`:
+//! (`backlog/docs/design/recipes.md` §6.11 and §6.15). `unemu recipe show`:
 //! a media recipe's description merged with its work file (recipes §6.16),
-//! printed as `upcli image media show` prints a set's title metadata.
-//! `upcli recipe plan`: where each input of a recipe is found, or why not,
+//! printed as `unemu image media show` prints a set's title metadata.
+//! `unemu recipe plan`: where each input of a recipe is found, or why not,
 //! which steps would run and what can be built (recipes §3.4, §3.5), from
 //! the store, the recipe's folder and the libraries of the preferences and
-//! of `--library`. `upcli recipe build`: the draft build of recipes §3.1,
+//! of `--library`. `unemu recipe build`: the draft build of recipes §3.1,
 //! from the same sources plus the download cache, with downloads only on
 //! `--fetch`, the user's consent (recipes §6.13); the outputs go through the
 //! platform's importers and the artifact is tagged last; a pinned recipe
 //! publishes its lock's manifest, config and metadata unchanged after its
-//! payloads matched them (recipes §3.8). `upcli recipe pin`: the author's
+//! payloads matched them (recipes §3.8). `unemu recipe pin`: the author's
 //! build, which writes the lock beside the recipe and its digest into it.
-//! `upcli recipe conformance`: builds every pinned recipe of the files and
+//! `unemu recipe conformance`: builds every pinned recipe of the files and
 //! folders named into a scratch store and compares the digests (recipes
-//! §9). `upcli recipe scaffold`: the input tables, member lists and file
+//! §9). `unemu recipe scaffold`: the input tables, member lists and file
 //! sets of files and folders the author has, in the recipe syntax
-//! ([`recipe::scaffold`]). `upcli recipe inputs`: a recipe's inputs as a
-//! Logiqx DAT, a CSV or a checksum file ([`recipe::inputs`]). `upcli recipe
+//! ([`recipe::scaffold`]). `unemu recipe inputs`: a recipe's inputs as a
+//! Logiqx DAT, a CSV or a checksum file ([`recipe::inputs`]). `unemu recipe
 //! push` and `pull`: a pinned recipe as a registry artifact, with its work
 //! file, bundled inputs and lock (recipes §7, [`image_registry::recipe`]);
 //! `recipe plan REF` judges such an artifact from its manifest and config.
@@ -32,16 +32,16 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "usage: upcli recipe check FILE|FOLDER... [--deny-drift]
-       upcli recipe show FILE
-       upcli recipe plan FILE|REF [--json] [--library DIR]... [--store DIR] [--config FILE]
-       upcli recipe build FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] [--keep-as TAG] [--deny-drift]
-       upcli recipe pin FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE]
-       upcli recipe conformance FILE|FOLDER... [--library DIR]... [--store DIR] [--config FILE] [--allow-drafts]
-       upcli recipe scaffold FILE|FOLDER...
-       upcli recipe inputs FILE --format dat|csv|sha256sums
-       upcli recipe push FILE REF [--dry-run] [--registry HOST] [--store DIR] [--config FILE]
-       upcli recipe pull REF [--to DIR] [--registry HOST] [--config FILE]
+const USAGE: &str = "usage: unemu recipe check FILE|FOLDER... [--deny-drift]
+       unemu recipe show FILE
+       unemu recipe plan FILE|REF [--json] [--library DIR]... [--store DIR] [--config FILE]
+       unemu recipe build FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE] [--keep-as TAG] [--deny-drift]
+       unemu recipe pin FILE [--fetch] [--library DIR]... [--store DIR] [--config FILE]
+       unemu recipe conformance FILE|FOLDER... [--library DIR]... [--store DIR] [--config FILE] [--allow-drafts]
+       unemu recipe scaffold FILE|FOLDER...
+       unemu recipe inputs FILE --format dat|csv|sha256sums
+       unemu recipe push FILE REF [--dry-run] [--registry HOST] [--store DIR] [--config FILE]
+       unemu recipe pull REF [--to DIR] [--registry HOST] [--config FILE]
   check: checks recipes and work files; a folder is checked with every *.media.toml, *.firmware.toml, *.machine.toml and *.work.toml below it
   show: prints a media recipe's title record merged with its work file, with a comment on each value that came from the work file; for a pinned recipe the record of its lock, which a build writes
   plan: where each input is found (the store, the download cache, beside the recipe, the libraries of the preferences, then each --library) or why not, the steps that would run and the outputs; a REF (a registry reference with a tag or digest, not a file) is judged from the recipe artifact's manifest and config alone, its bundled inputs found in the artifact, and one that needs a newer unemupc from its manifest alone
@@ -55,7 +55,7 @@ const USAGE: &str = "usage: upcli recipe check FILE|FOLDER... [--deny-drift]
   exit 0: no findings, for plan every input found, for build and pin the artifact tagged, for conformance every pinned recipe built to its digest, for scaffold and inputs the text printed, for push and pull the artifact sent or written; 1: findings, which show, plan, build, pin and inputs print instead, for plan, build and pin an input missing, for build and pin a failed download, read, step or import, or a lock mismatch, with nothing tagged, for conformance a recipe that differs or was not built, or no pinned recipe found, for scaffold a file or folder a recipe cannot hold (a name or member it refuses, an archive an unpack step refuses, more than 100000 files, 4096 inputs or 64 archives), for inputs two inputs at one path, for push a refusal of the guard or the registry, for pull and plan REF a recipe that needs a newer unemupc, one the codec refuses, or a registry failure; 2: usage or a file that cannot be read
 ";
 
-/// A parsed `upcli recipe` command line.
+/// A parsed `unemu recipe` command line.
 #[derive(Debug, PartialEq, Eq)]
 pub enum RecipeCommand {
     Check(Vec<PathBuf>),
@@ -80,7 +80,7 @@ pub enum RecipeCommand {
     Usage,
 }
 
-/// The words of `upcli recipe plan`.
+/// The words of `unemu recipe plan`.
 #[derive(Debug, PartialEq, Eq)]
 pub struct PlanOptions {
     pub path: PathBuf,
@@ -91,7 +91,7 @@ pub struct PlanOptions {
     pub config: Option<PathBuf>,
 }
 
-/// The words of `upcli recipe build`.
+/// The words of `unemu recipe build`.
 #[derive(Debug, PartialEq, Eq)]
 pub struct BuildOptions {
     pub path: PathBuf,
@@ -103,7 +103,7 @@ pub struct BuildOptions {
     pub keep_as: Option<String>,
 }
 
-/// The words of `upcli recipe conformance`.
+/// The words of `unemu recipe conformance`.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ConformanceOptions {
     pub paths: Vec<PathBuf>,
@@ -112,7 +112,7 @@ pub struct ConformanceOptions {
     pub config: Option<PathBuf>,
 }
 
-/// The words of `upcli recipe push`.
+/// The words of `unemu recipe push`.
 #[derive(Debug, PartialEq, Eq)]
 pub struct PushOptions {
     pub path: PathBuf,
@@ -125,7 +125,7 @@ pub struct PushOptions {
     pub config: Option<PathBuf>,
 }
 
-/// The words of `upcli recipe pull`.
+/// The words of `unemu recipe pull`.
 #[derive(Debug, PartialEq, Eq)]
 pub struct PullOptions {
     pub source: String,
@@ -198,7 +198,7 @@ fn pull_options(args: &[OsString]) -> Option<PullOptions> {
     })
 }
 
-/// The words of `upcli recipe inputs`.
+/// The words of `unemu recipe inputs`.
 #[derive(Debug, PartialEq, Eq)]
 pub struct InputsOptions {
     pub path: PathBuf,
@@ -487,7 +487,7 @@ fn build_command(
             Err(error) => {
                 let _ = writeln!(
                     io.errors,
-                    "upcli recipe {}: {error}",
+                    "unemu recipe {}: {error}",
                     if pin { "pin" } else { "build" }
                 );
                 return 2;
@@ -517,7 +517,7 @@ fn check(
     let report = match recipe::check_paths(paths, providers) {
         Ok(report) => report,
         Err(error) => {
-            let _ = writeln!(errors, "upcli recipe check: {error}");
+            let _ = writeln!(errors, "unemu recipe check: {error}");
             return 2;
         }
     };
@@ -539,7 +539,7 @@ fn show(
     if path.is_dir() {
         let _ = writeln!(
             errors,
-            "upcli recipe show: {}: a folder; show takes one recipe file",
+            "unemu recipe show: {}: a folder; show takes one recipe file",
             path.display()
         );
         return 2;
@@ -566,13 +566,13 @@ fn show(
             };
             let _ = writeln!(
                 errors,
-                "upcli recipe show: {}: {what}; show prints the title record of a media recipe",
+                "unemu recipe show: {}: {what}; show prints the title record of a media recipe",
                 path.display()
             );
             return 2;
         }
         Err(error) => {
-            let _ = writeln!(errors, "upcli recipe show: {error}");
+            let _ = writeln!(errors, "unemu recipe show: {error}");
             return 2;
         }
     };
@@ -592,7 +592,7 @@ fn plan(
     io: &mut Io<'_>,
 ) -> u8 {
     let fail = |io: &mut Io<'_>, error: &dyn std::fmt::Display| {
-        let _ = writeln!(io.errors, "upcli recipe plan: {error:#}");
+        let _ = writeln!(io.errors, "unemu recipe plan: {error:#}");
         2
     };
     if options.path.is_dir() {
@@ -645,7 +645,7 @@ fn plan(
         let (text, code) = match judged {
             Ok(judged) => judged,
             Err(error) => {
-                let _ = writeln!(io.errors, "upcli recipe plan: {error:#}");
+                let _ = writeln!(io.errors, "unemu recipe plan: {error:#}");
                 return 1;
             }
         };
@@ -772,7 +772,7 @@ fn push(
     io: &mut Io<'_>,
 ) -> u8 {
     let fail = |io: &mut Io<'_>, code: u8, error: &dyn std::fmt::Display| {
-        let _ = writeln!(io.errors, "upcli recipe push: {error:#}");
+        let _ = writeln!(io.errors, "unemu recipe push: {error:#}");
         code
     };
     if options.path.is_dir() {
@@ -891,7 +891,7 @@ fn push(
 /// the current folder.
 fn pull(options: &PullOptions, providers: recipe::Providers<'_>, io: &mut Io<'_>) -> u8 {
     let fail = |io: &mut Io<'_>, code: u8, error: &dyn std::fmt::Display| {
-        let _ = writeln!(io.errors, "upcli recipe pull: {error:#}");
+        let _ = writeln!(io.errors, "unemu recipe pull: {error:#}");
         code
     };
     let (source, _, client) = match super::image::registry::resolve(
@@ -956,7 +956,7 @@ fn open_libraries(
             Err(error) if from_preferences => {
                 let _ = writeln!(
                     io.errors,
-                    "upcli recipe {command}: warning: library {} skipped: {error}",
+                    "unemu recipe {command}: warning: library {} skipped: {error}",
                     dir.display()
                 );
                 continue;
@@ -985,7 +985,7 @@ fn save_libraries(
             if let Err(error) = library.save(cache) {
                 let _ = writeln!(
                     io.errors,
-                    "upcli recipe {command}: warning: the index of {} was not kept: {error}",
+                    "unemu recipe {command}: warning: the index of {} was not kept: {error}",
                     library.named.display()
                 );
             }
@@ -1015,7 +1015,7 @@ fn build(
 ) -> u8 {
     let command = if pin { "pin" } else { "build" };
     let fail = |io: &mut Io<'_>, error: &dyn std::fmt::Display| {
-        let _ = writeln!(io.errors, "upcli recipe {command}: {error:#}");
+        let _ = writeln!(io.errors, "unemu recipe {command}: {error:#}");
         2
     };
     if options.path.is_dir() {
@@ -1078,7 +1078,7 @@ fn build(
             Ok(recipe::pin::Pinned::Already(digest)) => {
                 let _ = writeln!(
                     io.errors,
-                    "upcli recipe pin: {}: already pinned to {digest}; a changed artifact is a new revision: raise revision and remove digest, then pin",
+                    "unemu recipe pin: {}: already pinned to {digest}; a changed artifact is a new revision: raise revision and remove digest, then pin",
                     options.path.display()
                 );
                 save_libraries(&libraries, &caches, command, io);
@@ -1123,7 +1123,7 @@ fn build(
             1,
         ),
         Ok(recipe::build::Outcome::Failed { plan, error }) => {
-            let _ = writeln!(io.errors, "upcli recipe {command}: {error}");
+            let _ = writeln!(io.errors, "unemu recipe {command}: {error}");
             (
                 format!(
                     "{}: not built: {}; nothing was tagged\n",
@@ -1139,7 +1139,7 @@ fn build(
             kept,
         }) => {
             for mismatch in &mismatches {
-                let _ = writeln!(io.errors, "upcli recipe {command}: {mismatch}");
+                let _ = writeln!(io.errors, "unemu recipe {command}: {mismatch}");
             }
             let kept = match kept {
                 Some((reference, published)) => format!(
@@ -1186,7 +1186,7 @@ fn conformance(
     io: &mut Io<'_>,
 ) -> u8 {
     let fail = |io: &mut Io<'_>, error: &dyn std::fmt::Display| {
-        let _ = writeln!(io.errors, "upcli recipe conformance: {error:#}");
+        let _ = writeln!(io.errors, "unemu recipe conformance: {error:#}");
         2
     };
     let Some(root) = library::store_root(&options.store, host) else {
@@ -1234,7 +1234,7 @@ fn conformance(
     {
         let _ = writeln!(
             io.errors,
-            "upcli recipe conformance: no pinned recipe found in the files and folders named"
+            "unemu recipe conformance: no pinned recipe found in the files and folders named"
         );
         return 1;
     }
@@ -1255,7 +1255,7 @@ fn scaffold(paths: &[PathBuf], io: &mut Io<'_>) -> u8 {
             if text.len() > recipe::MAX_FILE {
                 let _ = writeln!(
                     io.errors,
-                    "upcli recipe scaffold: warning: the tables are {} bytes; a recipe is at most {} bytes",
+                    "unemu recipe scaffold: warning: the tables are {} bytes; a recipe is at most {} bytes",
                     text.len(),
                     recipe::MAX_FILE
                 );
@@ -1263,7 +1263,7 @@ fn scaffold(paths: &[PathBuf], io: &mut Io<'_>) -> u8 {
             u8::from(io.output.write_all(text.as_bytes()).is_err()) * 2
         }
         Err(error) => {
-            let _ = writeln!(io.errors, "upcli recipe scaffold: {error}");
+            let _ = writeln!(io.errors, "unemu recipe scaffold: {error}");
             match error {
                 recipe::scaffold::Error::Refused(_) => 1,
                 recipe::scaffold::Error::Io(_) => 2,
@@ -1276,7 +1276,7 @@ fn scaffold(paths: &[PathBuf], io: &mut Io<'_>) -> u8 {
 /// prints the check's report instead.
 fn inputs(options: &InputsOptions, providers: recipe::Providers<'_>, io: &mut Io<'_>) -> u8 {
     let fail = |io: &mut Io<'_>, error: &dyn std::fmt::Display| {
-        let _ = writeln!(io.errors, "upcli recipe inputs: {error}");
+        let _ = writeln!(io.errors, "unemu recipe inputs: {error}");
         2
     };
     if options.path.is_dir() {
@@ -1294,7 +1294,7 @@ fn inputs(options: &InputsOptions, providers: recipe::Providers<'_>, io: &mut Io
         Ok(recipe::inputs::Listing::Clash(clash)) => {
             let _ = writeln!(
                 io.errors,
-                "upcli recipe inputs: {}: {clash}",
+                "unemu recipe inputs: {}: {clash}",
                 options.path.display()
             );
             return 1;
@@ -1320,7 +1320,7 @@ fn inputs(options: &InputsOptions, providers: recipe::Providers<'_>, io: &mut Io
 /// cache, one per process, removed when the run ends.
 const CONFORMANCE: &str = "cache/recipe-conformance";
 
-/// The merged record, one line per value as `upcli image media show`
+/// The merged record, one line per value as `unemu image media show`
 /// writes a set's catalogue fields: a field name, a tab and the value, text
 /// quoted, in that command's names and order, with the title fields it
 /// leaves out beside their neighbours. The first line names the tag, the

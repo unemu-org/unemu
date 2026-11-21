@@ -217,7 +217,7 @@ fn files(dir: &Path) -> Vec<String> {
     out
 }
 
-/// The flow of recipes §7 through `upcli`: push, pull into an empty folder,
+/// The flow of recipes §7 through `unemu`: push, pull into an empty folder,
 /// plan and build there into an empty store with the library alone; the
 /// build gives the pinned digest and its tag records the recipe it was
 /// built from, the artifact's config digest.
@@ -763,7 +763,7 @@ fn requests(registry: &MockRegistry) -> Vec<String> {
 
 /// A registry row is judged from the manifest and the config alone: two
 /// requests, no part of the bundle; the bundled input counts as found in
-/// the artifact. `upcli recipe plan REF` prints that plan.
+/// the artifact. `unemu recipe plan REF` prints that plan.
 #[test]
 fn a_registry_row_is_judged_from_manifest_and_config_alone() {
     let t = Temp::new("row");
@@ -1342,7 +1342,7 @@ fn a_missing_path_that_is_no_reference_is_a_file_that_cannot_be_read() {
             &t.path("preferences.toml"),
         ]));
         assert_eq!((code, output.as_str()), (2, ""), "{operand}: {errors}");
-        assert!(errors.starts_with("upcli recipe plan: "), "{errors}");
+        assert!(errors.starts_with("unemu recipe plan: "), "{errors}");
         assert!(!errors.contains("registry"), "{operand}: {errors}");
     }
 }

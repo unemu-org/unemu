@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `upcli recipe build` (recipes.md §3.1, §6.13, §6.15): its output and exit
+//! `unemu recipe build` (recipes.md §3.1, §6.13, §6.15): its output and exit
 //! codes, and `--fetch`: a download happens only with consent, only for the
 //! inputs the plan reports missing, after the list of what will be
 //! downloaded is printed, and is kept in the store's download cache only
@@ -336,7 +336,7 @@ fn recipe_build_usage_errors_exit_2() {
     ] {
         let (code, _, errors) = upcli(&words(&t, &recipe, extra));
         assert_eq!(code, 2, "{extra:?}");
-        assert!(errors.starts_with("usage: upcli recipe check"), "{errors}");
+        assert!(errors.starts_with("usage: unemu recipe check"), "{errors}");
     }
     let (code, _, errors) = upcli(&[
         "recipe".into(),

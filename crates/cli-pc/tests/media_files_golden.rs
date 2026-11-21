@@ -101,7 +101,7 @@ fn type_line(assembled: &mut assembly::AssembledMachine, keyboard: usize, line: 
     }
 }
 
-/// `upcli` with these arguments must succeed.
+/// `unemu` with these arguments must succeed.
 fn upcli(args: &[OsString]) -> String {
     let (mut out, mut err) = (Vec::new(), Vec::new());
     assert_eq!(

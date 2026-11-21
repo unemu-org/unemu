@@ -88,12 +88,12 @@ cards, firmware and drives. `at-games-open.toml` is the open DOS games machine
   newest revision:
 
   ```sh
-  upcli image pull unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1 --store DIR --create
-  upcli image pull unemu/firmware/ibm-pc/vgabios-0.9d-unemu.1-std:r1 --store DIR
-  upcli image pull unemu/firmware/ibm-pc/xub-r638-xtp-ata1f0:r1 --store DIR
-  upcli image pull unemu/media/ibm-pc/freedos:1.4 --store DIR        # 1.44M disks
-  upcli image pull unemu/media/ibm-pc/freedos:1.4-1.2m --store DIR
-  upcli image pull unemu/media/ibm-pc/freedos:1.4-720k --store DIR
+  unemu image pull unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1 --store DIR --create
+  unemu image pull unemu/firmware/ibm-pc/vgabios-0.9d-unemu.1-std:r1 --store DIR
+  unemu image pull unemu/firmware/ibm-pc/xub-r638-xtp-ata1f0:r1 --store DIR
+  unemu image pull unemu/media/ibm-pc/freedos:1.4 --store DIR        # 1.44M disks
+  unemu image pull unemu/media/ibm-pc/freedos:1.4-1.2m --store DIR
+  unemu image pull unemu/media/ibm-pc/freedos:1.4-720k --store DIR
   ```
 
   Until then they are on the registry under their earlier names, which
@@ -101,7 +101,7 @@ cards, firmware and drives. `at-games-open.toml` is the open DOS games machine
   `unemu/media/freedos:1.4`, `:1.4-1.2m`, `:1.4-720k`.
 
   The template machines come with a later release; until then, build them
-  locally with the firmware fetch scripts and `upcli image template build`
+  locally with the firmware fetch scripts and `unemu image template build`
   (see [`commands.md`](backlog/docs/commands.md), Official template images).
 
 ### Applications
@@ -114,7 +114,7 @@ cards, firmware and drives. `at-games-open.toml` is the open DOS games machine
   lights; Media menu with Insert…, Create from files… and a Catalogue
   submenu per floppy drive, which a drive chip's menu has too; speed
   controls; macOS application menu.
-- **Command line** (`upcli`): run machines headless and manage images,
+- **Command line** (the same `unemu` binary): run machines headless and manage images,
   media sets, firmware packages, registries and media journals. The standalone PC core command line (`unemupc`) provides
   `--boot`, `--bios` and `machine check`, as well as `run --machine`.
 
@@ -122,7 +122,7 @@ cards, firmware and drives. `at-games-open.toml` is the open DOS games machine
 
 Binaries for Linux x86-64 and macOS on Apple silicon are attached to each
 [release](https://github.com/unemu-org/unemupc/releases), with `SHA256SUMS`;
-the release notes say how to check them and how to open the unsigned macOS
+each archive holds `unemu` (desktop and command line) and `unemupc` (standalone PC core). The release notes say how to check them and how to open the unsigned macOS
 binaries. On other platforms, build from source as below.
 
 ## Getting started
@@ -131,7 +131,7 @@ binaries. On other platforms, build from source as below.
 nix develop                                   # toolchain and fixture tools (or let direnv load it)
 bash scripts/ci-gate.sh fixtures              # build the open firmware and fixture images
 cargo run --release -p window --bin unemu
-cargo run --release -p upcli -- run --machine machines/at-freedos.toml --print mda
+cargo run --release -p window -- run --machine machines/at-freedos.toml --print mda
 cargo test --workspace                        # unit, golden and integration tests
 ```
 
@@ -148,9 +148,10 @@ data directory (retaining `unemupc/machines` while it exists), or
 - Rust 1.99 or newer (`rust-version` in `Cargo.toml`), for example through
   rustup, and a C compiler.
 - On Linux, `pkg-config` and the ALSA development files (`libasound2-dev` on
-  Debian and Ubuntu, `alsa-lib-devel` on Fedora). The X11 or Wayland libraries
-  are loaded at run time.
-- `cargo build --release --bin unemu --bin upcli --bin unemupc`.
+  Debian and Ubuntu, `alsa-lib-devel` on Fedora). The installed `unemu` also needs the ALSA runtime (`libasound2` on Ubuntu 22.04),
+  including for command words on a host without a display. X11 or Wayland libraries
+  are loaded only when opening the window.
+- `cargo build --release --bin unemu --bin unemupc`.
 
 The firmware and disk fixtures that the tests and templates use are built by
 the scripts under `vendor/`, which expect the devShell's tools (`nasm`,
@@ -185,7 +186,7 @@ revision. Real-mode and 286 support live there under `CpuMode::Real16`.
 - **The unemupc logo**: CC0 1.0 ([notice](assets/brand/README.md)).
 - **Rust crates**: `scripts/third-party-licenses.sh` writes their licences
   for the exact `Cargo.lock` into `THIRD-PARTY-LICENSES.md`, which ships with
-  the release binaries. `upcli --about` and `unemu --about` print the notices.
+  the release binaries. `unemu --about` and `unemupc --about` print the notices.
 
 ## License
 

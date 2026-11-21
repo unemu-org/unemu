@@ -938,7 +938,7 @@ Drawn in [`mockups/about.html`](mockups/about.html); this is the behaviour.
 The command line draws no Markdown. It prints the source, which §2.8 keeps
 readable.
 
-- **`upcli image media show REF`** prints, after `work`:
+- **`unemu image media show REF`** prints, after `work`:
 
   ```
   synopsis	en	"A free, open source operating system …"
@@ -955,21 +955,21 @@ readable.
   prints `about-source	nl	none`, and the guard's verdict line names it.
   `about-link` lists each address the text links to, once, in the order of
   the text: read from the text, not stored.
-- **`upcli image media show REF --about [TAG]`** prints the stored source,
+- **`unemu image media show REF --about [TAG]`** prints the stored source,
   then the source line; with a tag one language, without one every language
   under a heading line. No language is chosen from the host: the command
   line prints what the record holds, the same on every machine.
-- **`upcli recipe show FILE`** prints the same lines for the merged record,
+- **`unemu recipe show FILE`** prints the same lines for the merged record,
   each marked as coming from the work file, with the text file's name when
   there is one; `--about [TAG]` prints the normalised source (§5.5).
-- **`upcli recipe check FILE`** prints rule 11's refusals, warnings and the
+- **`unemu recipe check FILE`** prints rule 11's refusals, warnings and the
   note of linked hosts.
-- **`upcli image media import`**: no new flags. `--synopsis TEXT` keeps its
+- **`unemu image media import`**: no new flags. `--synopsis TEXT` keeps its
   meaning and states English. An about text, and a synopsis in another
   language, are written in a work file and built by a recipe (§13, Q19).
-- **`upcli image export`** (decision-37): `metadata.json` is the record, so
+- **`unemu image export`** (decision-37): `metadata.json` is the record, so
   the texts and their sources are exported with it and nothing is added.
-- **`upcli image push`, `recipe push`**: the refusals of R3, R4 and R5, each
+- **`unemu image push`, `recipe push`**: the refusals of R3, R4 and R5, each
   naming the title, the language and the missing part.
 
 ## 11. What changes in the documents

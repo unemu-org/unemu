@@ -118,7 +118,7 @@ impl Checker<'_, '_> {
                     Some(node(V::Str(text.to_string())))
                 } else {
                     let message = if path == "recipe" && text == "0.1" {
-                        "recipe \"0.1\" is the experimental format; this upcli reads recipe \"1.0\": change recipe = \"0.1\" to \"1.0\" (and the work file's version) and check the recipe with upcli recipe check before pinning".to_owned()
+                        "recipe \"0.1\" is the experimental format; this unemu reads recipe \"1.0\": change recipe = \"0.1\" to \"1.0\" (and the work file's version) and check the recipe with unemu recipe check before pinning".to_owned()
                     } else {
                         format!("{text:?} is not one of {}", names.join(", "))
                     };

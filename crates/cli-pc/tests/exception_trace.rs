@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `upcli run --machine --trace-exceptions` records the exception and
+//! `unemu run --machine --trace-exceptions` records the exception and
 //! interrupt deliveries and writes the last entries to stderr when the run
 //! ends, consecutive identical deliveries folded into one, with a summary,
 //! and `--diag-at N` adds the last deliveries to the diagnostic report

@@ -122,7 +122,7 @@ impl Report {
         self.findings.is_empty()
     }
 
-    /// The text `upcli recipe check` prints: the findings, then a line per
+    /// The text `unemu recipe check` prints: the findings, then a line per
     /// file with its kind and the split of its inputs, then a total.
     pub fn render(&self) -> String {
         let mut out = String::new();
@@ -424,7 +424,7 @@ pub enum Showing {
     },
 }
 
-/// The record `upcli recipe show` prints (recipes §6.15, §6.16): for a
+/// The record `unemu recipe show` prints (recipes §6.15, §6.16): for a
 /// draft the merge with today's work file ([`merge_path`]); for a pinned
 /// recipe the record of its lock, which a build writes, whatever the work
 /// file says today.
@@ -867,7 +867,7 @@ mod tests {
             if !accepted {
                 let finding = report.findings.iter().find(|f| f.path == "recipe").unwrap();
                 let expected = if version == "0.1" {
-                    "recipe \"0.1\" is the experimental format; this upcli reads recipe \"1.0\": change recipe = \"0.1\" to \"1.0\" (and the work file's version) and check the recipe with upcli recipe check before pinning"
+                    "recipe \"0.1\" is the experimental format; this unemu reads recipe \"1.0\": change recipe = \"0.1\" to \"1.0\" (and the work file's version) and check the recipe with unemu recipe check before pinning"
                 } else {
                     "\"1.1\" is not one of 1.0"
                 };

@@ -1179,7 +1179,7 @@ fn a_lock_that_changes_the_catalogues_provenance_is_refused() {
 
 /// Build `recipe` with this build into `store` from the libraries named,
 /// reading content the store holds through the `ibm-pc` validators, as
-/// `upcli recipe build` does.
+/// `unemu recipe build` does.
 fn build_reading_store(
     recipe: &Path,
     providers: &[&dyn Provider],

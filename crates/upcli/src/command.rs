@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The `upcli` program: the platform-neutral command line (`cli_core`) with
+//! The `unemu` program: the platform-neutral command line (`cli_core`) with
 //! the platforms compiled in, which today is the PC (`cli_pc`), and the
 //! program's own `--version` and `--about`;
 //! `backlog/docs/design/core-contract.md` §7.1. The executable and the tests
@@ -15,7 +15,7 @@ pub use cli_core::HostSources as FirmwareSources;
 /// The journal report and its exit code, which tests of the journal tools read.
 pub use cli_pc::journal::{render_report, report_exit_code};
 
-/// A parsed `upcli` command line.
+/// A parsed `unemu` command line.
 pub enum Command {
     /// `--version` or `--about`: the licence and third-party notices.
     About,
@@ -51,7 +51,7 @@ fn about(args: &[OsString]) -> bool {
     matches!(args, [arg] if arg == "--version" || arg == "--about")
 }
 
-/// Parse an `upcli` command line with the platforms compiled in.
+/// Parse an `unemu` command line with the platforms compiled in.
 pub fn parse(args: &[OsString]) -> Result<Command, &'static str> {
     if about(args) {
         return Ok(Command::About);
@@ -78,7 +78,7 @@ pub fn run_with_firmware_sources(
     })
 }
 
-/// Run an `upcli` command line with `platforms` and `cores`: the program's
+/// Run an `unemu` command line with `platforms` and `cores`: the program's
 /// notices, or the command line of [`cli_core::run`].
 pub fn run_program(
     args: &[OsString],
@@ -92,7 +92,7 @@ pub fn run_program(
     }
     match io
         .output
-        .write_all(crate::about::upcli_notice(cores).as_bytes())
+        .write_all(crate::about::unemu_notice(cores).as_bytes())
     {
         Ok(()) => 0,
         Err(error) => {
@@ -108,17 +108,17 @@ mod tests {
     use std::io;
 
     #[test]
-    fn usage_names_the_program_upcli() {
+    fn usage_names_the_program_unemu() {
         let mut output = Vec::new();
         assert_eq!(run(&[], &mut output, &mut io::sink()), 0);
         let usage = String::from_utf8(output).unwrap();
-        assert!(usage.starts_with("usage: upcli --version"), "{usage}");
+        assert!(usage.starts_with("usage: unemu --version"), "{usage}");
         let commands = usage
             .lines()
             .skip(1)
             .filter(|line| line.starts_with("       ") && !line.starts_with("        "));
         for line in commands {
-            assert!(line.trim_start().starts_with("upcli "), "{line}");
+            assert!(line.trim_start().starts_with("unemu "), "{line}");
         }
         let former = image_store::location::preferences::FORMER_DIRECTORY;
         assert!(!usage.to_ascii_lowercase().contains(former), "{usage}");
@@ -137,7 +137,7 @@ mod tests {
             assert!(errors.is_empty(), "{option}");
             let text = String::from_utf8(output).unwrap();
             assert!(
-                text.starts_with(&format!("upcli {}\n", env!("CARGO_PKG_VERSION"))),
+                text.starts_with(&format!("unemu {}\n", env!("CARGO_PKG_VERSION"))),
                 "{text}"
             );
             for expected in [

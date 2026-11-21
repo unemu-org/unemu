@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `upcli run --machine` on a guest stuck delivering exceptions: its handler
+//! `unemu run --machine` on a guest stuck delivering exceptions: its handler
 //! faults at its first instruction, so no instruction retires and the run's
 //! cap, which counts retired instructions, is never reached. The run stops
 //! with the guest-stop exit code, names the stall on its `stopped:` line and

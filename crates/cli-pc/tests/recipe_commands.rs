@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `upcli recipe check` and `upcli recipe show` (recipes.md §6.11, §6.15,
+//! `unemu recipe check` and `unemu recipe show` (recipes.md §6.11, §6.15,
 //! §6.16): their output and exit codes on the recipe corpus and on usage
 //! errors. Uses synthetic draft files and reads the corpus only.
 
@@ -78,7 +78,7 @@ fn usage_errors_and_unreadable_files_exit_2() {
         assert_eq!(output, "");
         assert!(
             errors.starts_with(
-                "usage: upcli recipe check FILE|FOLDER... [--deny-drift]\n       upcli recipe show FILE\n"
+                "usage: unemu recipe check FILE|FOLDER... [--deny-drift]\n       unemu recipe show FILE\n"
             ),
             "{errors}"
         );
@@ -86,7 +86,7 @@ fn usage_errors_and_unreadable_files_exit_2() {
     let (code, _, errors) = upcli(&["recipe", "check", "no-such.media.toml"]);
     assert_eq!(code, 2);
     assert!(
-        errors.starts_with("upcli recipe check: no-such.media.toml: "),
+        errors.starts_with("unemu recipe check: no-such.media.toml: "),
         "{errors}"
     );
 }
@@ -95,8 +95,8 @@ fn usage_errors_and_unreadable_files_exit_2() {
 fn the_usage_names_the_command() {
     let (code, output, _) = upcli(&[]);
     assert_eq!(code, 0);
-    assert!(output.contains("upcli recipe check FILE|FOLDER... [--deny-drift]"));
-    assert!(output.contains("upcli recipe show FILE"));
+    assert!(output.contains("unemu recipe check FILE|FOLDER... [--deny-drift]"));
+    assert!(output.contains("unemu recipe show FILE"));
 }
 
 /// Ken's Labyrinth 2.01 now has a lock: show prints its pinned record,
@@ -261,12 +261,12 @@ fn show_takes_one_readable_media_recipe() {
     ] {
         let (code, output, errors) = upcli(&["recipe", "show", path]);
         assert_eq!((code, output.as_str()), (2, ""), "{path}");
-        assert_eq!(errors, format!("upcli recipe show: {path}: {message}\n"));
+        assert_eq!(errors, format!("unemu recipe show: {path}: {message}\n"));
     }
     let (code, _, errors) = upcli(&["recipe", "show", "no-such.media.toml"]);
     assert_eq!(code, 2);
     assert!(
-        errors.starts_with("upcli recipe show: no-such.media.toml: "),
+        errors.starts_with("unemu recipe show: no-such.media.toml: "),
         "{errors}"
     );
 }

@@ -749,7 +749,7 @@ The PC core keeps the report of the refusal that failed it
 dialog and saves it as `diagnostics/last-cpu-stop.txt` in the machine's
 workspace (a folder that discarding or clearing an image's workspace
 removes; a new session always writes its own), and
-`upcli run --machine` prints it after its `stopped:` line (commands.md, Build
+`unemu run --machine` prints it after its `stopped:` line (commands.md, Build
 / run / test).
 
 ### Stuck in exception delivery
@@ -805,7 +805,7 @@ decoded  mov %ax,%ds
 tss      tr not loaded
 ```
 
-`upcli run --machine` prints `stopped: cpu fault: the processor is stuck
+`unemu run --machine` prints `stopped: cpu fault: the processor is stuck
 delivering exceptions: ...` and this report, and exits 1.
 
 ### The machine resets again and again
@@ -815,7 +815,7 @@ shutdown with one (IBM Personal Computer AT Technical Reference, System
 Board, Logic Diagrams: shutdown decoding resets the processor alone). A
 guest that shuts down again right after every reset makes a few steps of
 virtual time per reset: a 1 ms desktop chunk at 3 steps per reset is about
-245 resets, and `upcli run`'s default cap of 20,000,000 steps over 6 million. What never
+245 resets, and `unemu run`'s default cap of 20,000,000 steps over 6 million. What never
 returns is a loop that makes no virtual-time progress at all, as when the
 processor shuts down before the first instruction after each reset
 completes: a run capped by virtual time then resets for ever. The machine
@@ -836,7 +836,7 @@ happens inside `PcMachine::run`, which continues to the same deadline
 16 steps, which count toward the run's cap. Any bound of at least one step
 would bound host work; 16 only diagnoses loops that make essentially no
 progress. The same stop ends the headless loops (`assembly`'s
-`run_session`, `upcli run`, the `pc-harness` runners), which run through
+`run_session`, `unemu run`, the `pc-harness` runners), which run through
 resets to their caps.
 
 A guest that switches modes through resets moves virtual time far more.
@@ -878,7 +878,7 @@ form     int3, vector 03
 tss      real mode
 ```
 
-The desktop shows the stop in its machine error box; `upcli run --machine`
+The desktop shows the stop in its machine error box; `unemu run --machine`
 prints `stopped: cpu fault: the machine resets again and again: ...` and the
 report, and exits 1. When the reset line rather than a shutdown made the last
 request, the stop says `the last reset request at`: a guest that writes FEh to
@@ -1000,7 +1000,7 @@ its D never reaches the guest (`crates/window/src/diagnostics.rs`). Tools ›
 Diagnostics › Open diagnostics folder shows that folder in the platform's
 file manager (`open` on macOS, `explorer` on Windows, `xdg-open`
 elsewhere, the opener reaped by a thread), creating it first.
-`upcli run --machine FILE --diag-at N` writes the report to stderr when the
+`unemu run --machine FILE --diag-at N` writes the report to stderr when the
 run reaches step N, the unit of `--max-steps`, with the trail and the
 deliveries enabled from the start, then runs on to its usual stop
 (commands.md, Build / run / test).
@@ -1150,7 +1150,7 @@ while it still holds what the recording wrote last (otherwise the text takes
 the next free number), at each of: Save machine report, Stop,
 unchecking the item, and closing the window or quitting; unchecking and
 Stop end the recording. Nothing is written while the guest runs, so an app
-that is killed writes nothing. `upcli run --machine FILE --trace-exceptions`
+that is killed writes nothing. `unemu run --machine FILE --trace-exceptions`
 keeps the same recording from the start of the run and writes it to stderr
 when the run ends, before the `stopped: ...` line. The text: two header
 lines, the entries oldest first, and the summary, which gives the total, the
@@ -1175,7 +1175,7 @@ the last K of T exceptions and interrupts in E entries, oldest first (D
 dropped before they were read)`, then the E entries in the line format
 above. The desktop keeps the log from its first report or from Record
 exceptions, whichever comes first (§Diagnostic report of a running machine,
-The code trail, for the measured cost); `upcli --diag-at` from the start of
+The code trail, for the measured cost); `unemu --diag-at` from the start of
 the run.
 
 MEASURED. The open guest `assembly::test_support::deliveries_rom` (its NASM

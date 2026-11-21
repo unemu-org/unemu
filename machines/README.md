@@ -214,7 +214,7 @@ The CLI accepts repeatable ROM directories for both validation and running:
 
 ```sh
 unemupc machine check machines/at-games.toml --rom-dir /path/to/roms
-upcli run --machine machines/at-games.toml --rom-dir /path/to/roms --print vga
+unemu run --machine machines/at-games.toml --rom-dir /path/to/roms --print vga
 ```
 
 Without `--rom-dir`, the CLI performs no ROM discovery. The
@@ -266,7 +266,7 @@ image = "images/work.img"      # replaces drive A and removes its inherited pin
 Run `unemupc machine check machines/local.toml` before booting with
 `unemu --machine machines/local.toml`. Unknown development firmware
 requires `--allow-unlisted-firmware` on either command. For a headless run, use
-`upcli run --machine machines/local.toml --print mda`. Run limits and host
+`unemu run --machine machines/local.toml --print mda`. Run limits and host
 output selection stay outside the hardware description.
 
 ## Preparing disks
@@ -284,8 +284,8 @@ Create a blank hard disk and a formatted data floppy without external tools:
 
 ```sh
 mkdir -p "$HOME/unemupc-disks"
-upcli media create hd --size 32MiB "$HOME/unemupc-disks/disk.img"
-upcli media create floppy --type 1.44M --format --label TRANSFER "$HOME/unemupc-disks/transfer.img"
+unemu media create hd --size 32MiB "$HOME/unemupc-disks/disk.img"
+unemu media create floppy --type 1.44M --format --label TRANSFER "$HOME/unemupc-disks/transfer.img"
 ```
 
 Floppy types are `1.44M`, `1.2M`, `720K` and `360K`. To fill a new floppy with
@@ -546,11 +546,11 @@ new base, or roll back with a fresh backup path:
 
 ```sh
 cd "$HOME/unemupc-disks"
-upcli media generations --base disk.img --journal disk.upfj
-upcli media verify --base disk.img --journal disk.upfj
+unemu media generations --base disk.img --journal disk.upfj
+unemu media verify --base disk.img --journal disk.upfj
 # Use a retained closed generation reported above (1 is an example).
-upcli media commit --base disk.img --journal disk.upfj --to 1 --output disk-next.img
-upcli media rollback --base disk.img --journal disk.upfj --to 1 --backup disk-before-rollback.upfj
+unemu media commit --base disk.img --journal disk.upfj --to 1 --output disk-next.img
+unemu media rollback --base disk.img --journal disk.upfj --to 1 --backup disk-before-rollback.upfj
 ```
 
 Choose an available closed generation from `generations`. Rollback backs up the
@@ -571,11 +571,11 @@ floppies with `--add`, without mtools. The command only ever writes new images:
 ```sh
 cd "$HOME/unemupc-disks"
 # A folder becomes \GAME on the disk, with its whole tree.
-upcli media create floppy --type 1.44M --add /path/to/GAME --label GAME game.img
+unemu media create floppy --type 1.44M --add /path/to/GAME --label GAME game.img
 # Loose files under one root folder, \MYGAME.
-upcli media create floppy --type 1.44M --add /path/to/PLAY.EXE --add /path/to/DATA.DAT --top MYGAME mygame.img
+unemu media create floppy --type 1.44M --add /path/to/PLAY.EXE --add /path/to/DATA.DAT --top MYGAME mygame.img
 # A tree too large for one disk: big-1ofN.img, big-2ofN.img… (N disks)
-upcli media create floppy --type 1.44M --add /path/to/BIGGAME --label BIGGAME --split big.img
+unemu media create floppy --type 1.44M --add /path/to/BIGGAME --label BIGGAME --split big.img
 ```
 
 `--add PATH` may repeat; a folder is copied whole as a subdirectory. `--add`
@@ -684,7 +684,7 @@ On the first disk XCOPY may ask whether `C:\AZURAMON` is a file or a
 directory: answer `D`.
 
 **Create and insert** builds the images on the library worker with the same
-builder as `upcli media create floppy`, so the same files, top folder, label and
+builder as `unemu media create floppy`, so the same files, top folder, label and
 format give the same bytes. One difference in how the sources are named: in the
 window a single added folder *is* the top folder, while `--add DIR --top NAME`
 nests `\NAME\DIR\`. To make the window's disk on the command line, give a
@@ -842,8 +842,8 @@ FreeDOS fixtures:
 ```sh
 vendor/freedos/fetch.sh
 mkdir -p machines/local
-upcli media create hd --chs 615/4/17 machines/local/games.img
-upcli media create floppy --type 1.2M --format --label TRANSFER machines/local/transfer-1200.img
+unemu media create hd --chs 615/4/17 machines/local/games.img
+unemu media create floppy --type 1.2M --format --label TRANSFER machines/local/transfer-1200.img
 unemupc machine check machines/at-games.toml
 unemu --machine machines/at-games.toml
 # Open firmware, no user ROMs (also run vendor/unemu-at-bios/fetch.sh,

@@ -499,7 +499,7 @@ fn a_build_runs_the_three_steps_and_hands_the_outputs_to_the_importer() {
 }
 
 /// recipes.md §3.10: the build says, per input, how and in which exported
-/// files it is kept, byte for byte as `upcli recipe build` prints it. An
+/// files it is kept, byte for byte as `unemu recipe build` prints it. An
 /// archive gives its members, never itself, and counts the members the
 /// recipe did not take; a split names every volume; a disk image taken as
 /// it is and a member taken as an extra are kept as stored; an archive

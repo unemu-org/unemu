@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! `upcli recipe plan` (recipes.md §3.4, §3.5, §6.15): where each input of
+//! `unemu recipe plan` (recipes.md §3.4, §3.5, §6.15): where each input of
 //! a recipe is found, from the store, a library of the preferences or one
 //! named with `--library`; a near miss; the JSON form; the exit codes. Every
 //! test names its own preferences file and store, so the user's are never
@@ -50,7 +50,7 @@ fn sha(bytes: &[u8]) -> String {
         .to_owned()
 }
 
-/// `upcli recipe plan` with the temporary preferences file and store, plus
+/// `unemu recipe plan` with the temporary preferences file and store, plus
 /// `extra` words.
 fn plan(temp: &Temp, recipe: &Path, extra: &[&str]) -> (u8, String, String) {
     let mut words: Vec<OsString> = vec!["recipe".into(), "plan".into(), recipe.into()];
@@ -283,7 +283,7 @@ fn a_recipe_with_findings_prints_the_checks_and_usage_errors_exit_2() {
         &["--library", temp.path("absent").to_str().unwrap()],
     );
     assert_eq!(code, 2);
-    assert!(errors.starts_with("upcli recipe plan: "), "{errors}");
+    assert!(errors.starts_with("unemu recipe plan: "), "{errors}");
     for words in [
         &["recipe", "plan"][..],
         &["recipe", "plan", "a.media.toml", "b.media.toml"],
@@ -295,7 +295,7 @@ fn a_recipe_with_findings_prints_the_checks_and_usage_errors_exit_2() {
         let (code, output, errors) = upcli(&words.iter().collect::<Vec<_>>());
         assert_eq!((code, output.as_str()), (2, ""), "{words:?}");
         assert!(
-            errors.contains("upcli recipe plan FILE|REF [--json]"),
+            errors.contains("unemu recipe plan FILE|REF [--json]"),
             "{errors}"
         );
     }

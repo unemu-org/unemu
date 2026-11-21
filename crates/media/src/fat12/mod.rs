@@ -32,7 +32,7 @@
 //! chosen.
 //!
 //! [`reader`] reads a FAT12 volume back, independently of the builder: the
-//! builder's tests check every image with it, and `upcli image export
+//! builder's tests check every image with it, and `unemu image export
 //! --files` unpacks the disks of a set into folders with it (recipes.md
 //! §3.10). It refuses a damaged or hostile image with a reason.
 //!

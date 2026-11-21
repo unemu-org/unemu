@@ -3,7 +3,7 @@
 //! between crates cannot change it (`backlog/docs/design/core-contract.md`
 //! §7.5): the usage text byte for byte, the `recipe` usage, the
 //! `--version` and `--about` text, and how every documented command line
-//! parses: each form of each usage line, every `upcli` example of
+//! parses: each form of each usage line, every `unemu` example of
 //! `backlog/docs/commands.md`, and a few refused lines whose reason depends
 //! on which part of the command line reads them.
 //!
@@ -11,7 +11,7 @@
 //! program printed before the command line was split into a neutral part
 //! and the PC's, with the lines of commands added since. `pinned/documented.txt` holds the examples of commands.md
 //! as they were written then, the arguments after `-p cli --` (the package then) of each
-//! `cargo run` and each line that starts with `upcli `, without a trailing
+//! `cargo run` and each line that starts with `unemu `, without a trailing
 //! comment; the test keeps its own copy so that editing the documentation
 //! stays a documentation change. `pinned/command-lines.txt` is each line,
 //! as `$ WORDS`, followed by the `Debug` form of its parse.
@@ -213,7 +213,7 @@ fn quoted(word: &str) -> String {
     }
 }
 
-/// The `upcli` examples of commands.md, one per line.
+/// The `unemu` examples of commands.md, one per line.
 fn documented() -> Vec<String> {
     pinned("documented.txt")
         .lines()

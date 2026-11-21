@@ -294,7 +294,7 @@ pub fn notice() -> String {
 macro_rules! machine_usage {
     ($($tail:literal),* $(,)?) => {
         concat!(
-            "       upcli run --machine FILE [--store DIR | --no-store] [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--diag-at N] [--trace-exceptions] [--print CARD] [--allow-unlisted-firmware]\n",
+            "       unemu run --machine FILE [--store DIR | --no-store] [--rom-dir DIR]... [--max-steps N] [--idle-limit N] [--diag-at N] [--trace-exceptions] [--print CARD] [--allow-unlisted-firmware]\n",
             "         --diag-at N writes the machine's diagnostic report to stderr when the run reaches step N (the unit of --max-steps), then runs on\n",
             "         --trace-exceptions writes the exceptions and interrupts the guest takes to stderr when the run ends: the last 10000 entries, each with the registers of the interrupted code (the bytes at CS:IP as at the end of each run slice), consecutive identical deliveries folded into one with a count and the last one's registers, and a summary per vector\n", $($tail),*)
     };
@@ -304,27 +304,27 @@ pub const FRONTEND_MACHINE_USAGE: &str = machine_usage!();
 
 /// Journal usage shared with the frontend; keep command words and ordering equal.
 pub const JOURNAL_USAGE: &str = concat!(
-    "       upcli media generations --base IMG --journal J\n",
-    "       upcli media verify --base IMG --journal J [--repair-tail --backup PATH]\n",
-    "       upcli media rollback --base IMG --journal J --to N --backup PATH\n",
-    "       upcli media commit (alias compact) --base IMG --journal J --to N --output OUT\n",
+    "       unemu media generations --base IMG --journal J\n",
+    "       unemu media verify --base IMG --journal J [--repair-tail --backup PATH]\n",
+    "       unemu media rollback --base IMG --journal J --to N --backup PATH\n",
+    "       unemu media commit (alias compact) --base IMG --journal J --to N --output OUT\n",
 );
 
 /// Standalone usage names the core and offers no frontend store options.
 pub fn usage() -> String {
     let text = format!(
         concat!(
-            "       upcli --boot (Real16 timer demo)\n",
-            "       upcli --version | --about\n",
-            "       upcli --bios PATH [--allow-unlisted-firmware]\n",
-            "       upcli machine check FILE [--allow-unlisted-firmware] [--rom-dir DIR]...\n",
+            "       unemu --boot (Real16 timer demo)\n",
+            "       unemu --version | --about\n",
+            "       unemu --bios PATH [--allow-unlisted-firmware]\n",
+            "       unemu machine check FILE [--allow-unlisted-firmware] [--rom-dir DIR]...\n",
             "{}{}",
             "DOS boot and interactive sessions: see crates/pc-harness/tests/*dos*golden.rs\n",
         ),
         FRONTEND_MACHINE_USAGE, JOURNAL_USAGE
     );
     text.replacen("       ", "usage: ", 1)
-        .replace("upcli", "unemupc")
+        .replace("unemu", "unemupc")
         .replace(" [--store DIR | --no-store]", "")
 }
 
