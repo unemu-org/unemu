@@ -337,7 +337,7 @@ plan() {
 }
 
 print_plan_text() {
-  jq -r '
+  printf '%s' "$1" | jq -r '
     def list: if length == 0 then "none" else join(" ") end;
     "changed files: \(.files | length)",
     (.files[] | "  \(.path) -> \(if .class == "crate" then (.crates | join(" ")) else .class end) (\(.why))"),
@@ -361,11 +361,11 @@ print_plan_text() {
       + (if (.shell | length) > 0 then ", bash -n of the changed shell scripts" else "" end)
       + (if .self_test then ", the runner self-test" else "" end)
      else empty end)
-  ' <<< "$1"
+  '
 }
 
 print_plan_vars() {
-  jq -r '
+  printf '%s' "$1" | jq -r '
     "mode=\(.mode)", "seeds=\(.seeds | join(" "))", "affected=\(.affected | join(" "))",
     "tier=\(.tier)", "user_roms=\(if .user_roms then 1 else 0 end)",
     "targeted=\(.targeted | join(" "))", "scan_tests=\(.scan_tests | join(" "))",
@@ -373,8 +373,10 @@ print_plan_vars() {
     "cli=\(if .cli then 1 else 0 end)", "deny=\(if .deny then 1 else 0 end)",
     "docs=\(.docs | join(" "))", "shell=\(.shell | join(" "))",
     "self_test=\(if .self_test then 1 else 0 end)"
-  ' <<< "$1"
+  '
 }
+
+field() { printf '%s' "$plan_json" | jq -r "$1"; }
 
 # The failed tests in one step's log, in the format of the runner that wrote it.
 failed_tests() {
@@ -407,7 +409,7 @@ crate_of() {
   local file=$1 dirs=$2 best= crate= dir name
   while IFS=$'\t' read -r dir name; do
     if [[ $file == "$dir"/* && ${#dir} -gt ${#best} ]]; then best=$dir; crate=$name; fi
-  done <<< "$dirs"
+  done < <(printf '%s\n' "$dirs")
   [[ -n $best ]] && printf '%s\t%s\n' "$crate" "$best"
 }
 
@@ -455,7 +457,7 @@ root_builders() {
         END { exit !found }' {} \; -print) ]]; then
       echo "$name"
     fi
-  done <<< "$dirs"
+  done < <(printf '%s\n' "$dirs")
 }
 
 run_self_test() {
@@ -481,6 +483,28 @@ run_self_test() {
     else
       echo "FAIL $name"
       printf '%s\n' "$mismatch"
+      failures=$((failures + 1))
+    fi
+  done
+
+  # Exercise both the pipe-sized deadlock window on macOS and larger inputs.
+  local size padding plan_json dirs
+  printf '%s\n' 'env!("CARGO_MANIFEST_DIR").join("../..");' > "$tmp/root-builder.rs"
+  for size in 32768 131072; do
+    padding=$(jq -rn --argjson size "$size" '"x" * $size')
+    plan_json=$(jq -n --argjson size "$size" '{mode: "checks", seeds: [], affected: [],
+      tier: "fast", user_roms: false, targeted: [], scan_tests: [],
+      release_devices: false, cli: false, deny: false, docs: [], shell: [],
+      self_test: false, files: [{path: ("x" * $size), class: "scripts", why: "script"}]}')
+    dirs=$(printf '%s\t%s\n' "$tmp" "$padding")
+    if [[ $(print_plan_text "$plan_json") == *"$padding -> scripts (script)"* &&
+          $(print_plan_vars "$plan_json") == *'mode=checks'* &&
+          $(field '.files[0].path') == "$padding" &&
+          $(crate_of "$tmp/root-builder.rs" "$dirs") == "$padding"$'\t'"$tmp" &&
+          $(root_builders "$dirs") == "$padding" ]]; then
+      echo "ok   plan and directory helpers stream $size-byte payloads"
+    else
+      echo "FAIL plan and directory helpers with $size-byte payloads"
       failures=$((failures + 1))
     fi
   done
@@ -524,7 +548,7 @@ run_self_test() {
     dirs=$(jq -r '.workspace_root as $r | .packages[]
       | "\(.manifest_path | ltrimstr($r + "/") | rtrimstr("/Cargo.toml"))\t\(.name)"' "$metadata")
     refs=$(outside_references "$dirs" | sort -u)
-    cut -f2 <<< "$refs" | sort -u > "$tmp/paths"
+    printf '%s\n' "$refs" | cut -f2 | sort -u > "$tmp/paths"
     got=$(plan "$metadata" "$tmp/paths" '{}' auto false "")
     missing=$(jq -rn --argjson plan "$got" --arg refs "$refs" '
       ($plan.files | map({(.path): .}) | add) as $by_path
@@ -563,8 +587,8 @@ run_self_test() {
       | "    crate \(.) named by a rule is not in the workspace"')
     while IFS= read -r file; do
       [[ -e $file ]] || missing+=$'\n'"    $file named by a rule does not exist"
-    done < <(jq -r '.runner_files[], .data_rules[].prefix,
-      (.scan_tests[] | "crates/\(.package)/tests/\(.test).rs")' <<< "$rules")
+    done < <(printf '%s' "$rules" | jq -r '.runner_files[], .data_rules[].prefix,
+      (.scan_tests[] | "crates/\(.package)/tests/\(.test).rs")')
     if [[ -z $missing ]]; then
       echo "ok   every crate and file the rules name exists"
     else
@@ -613,7 +637,6 @@ print_plan_text "$plan_json"
 
 log_dir=${AFFECTED_LOG_DIR:-$(mktemp -d "$tmp_root/affected-tests-logs.XXXXXX")}
 mkdir -p "$log_dir"
-field() { jq -r "$1" <<< "$plan_json"; }
 mode=$(field .mode)
 failed=()
 summary=()

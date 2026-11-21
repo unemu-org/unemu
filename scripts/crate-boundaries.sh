@@ -125,7 +125,8 @@ contract_crate=unemu-core-api
 
 # Prints {"errors": [...], "packages": N, "allowed": N} for one metadata
 # document and one allow list.
-read -r -d '' program <<'JQ' || true
+# Quoted assignments avoid Bash pipe deadlocks while loading these programs.
+program='
 def layers: ["contract", "neutral", "emulation", "pc", "application"];
 def may_use: {
   contract: [],
@@ -163,10 +164,10 @@ def listed($valid; $from; $to; $kind):
   any($valid[]; .from == $from and .to == $to and .kind == $kind);
 
 # The forbidden crates $from reaches, each once, by the shortest path, with
-# the kind of $from's own dependency the path starts with (normal before
-# build before dev). The walk follows $from's dependencies of every kind and
+# the kind of the starting dependency of $from (normal before
+# build before dev). The walk follows every dependency of $from and
 # then the normal and build dependencies of the crates it reaches: a
-# dependency's own test dependencies are never built for $from. It stops at
+# transitive dependency never builds its own test dependencies. It stops at
 # a forbidden crate and never crosses an allow-listed edge.
 def walk($graph; $layer; $core; $valid; $from):
   ([("normal", "build", "dev") as $k | ($graph[$from] // [])[] | select(.kind == $k)]
@@ -238,11 +239,11 @@ def walk($graph; $layer; $core; $valid; $from):
           | "malformed allow entry, line \(.line): \(.text); expected FROM → TO (normal|build|dev): REASON" ]
     )
   }
-JQ
+'
 
 # Prints {"errors": [...], "source": S} for one resolved metadata document:
 # an error unless exactly one package is named $crate.
-read -r -d '' one_copy_program <<'JQ' || true
+one_copy_program='
 (.packages // []) as $packages
 | ($packages | map({key: .id, value: .name}) | from_entries) as $name_of
 | [$packages[] | select(.name == $crate)] as $copies
@@ -262,11 +263,11 @@ read -r -d '' one_copy_program <<'JQ' || true
         + [$copies[] | "    \(.version) from \(where), used by \(.id as $id | $doc | users($id))"]
       end)
   }
-JQ
+'
 
 # Prints {"errors": [...], "reached": {LAYER: {"run": N, "build": N,
 # "test": N}}} for one resolved metadata document and one external-crate list.
-read -r -d '' external_program <<'JQ' || true
+external_program='
 # The layers whose external crates are listed; the others are not limited.
 def limited: ["contract", "emulation"];
 def rank: {run: 0, build: 1, test: 2}[.];
@@ -350,7 +351,7 @@ def article: if test("^[aeiou]") then "an \(.)" else "a \(.)" end;
         | "malformed external entry, line \(.line): \(.text); expected LAYER: CRATE (run|build|test): REASON" ]
   )
 }
-JQ
+'
 
 # check_external METADATA LIST: print each error and a summary; fail on any
 # error.
@@ -360,14 +361,14 @@ check_external() {
         echo "crate boundaries: cannot read the resolved metadata $1 with the external list $2" >&2
         return 2
     }
-    jq -r '.errors[]' <<<"$result"
-    count=$(jq '.errors | length' <<<"$result")
+    printf '%s' "$result" | jq -r '.errors[]'
+    count=$(printf '%s' "$result" | jq '.errors | length')
     if [[ $count -ne 0 ]]; then
         echo "crate boundaries: $count external-crate error(s)" >&2
         return 1
     fi
-    jq -r '.reached | to_entries[]
-        | "crate boundaries: the \(.key) layer reaches \(.value.run // 0) run-time, \(.value.build // 0) build-time and \(.value.test // 0) test-only external crate(s), all listed"' <<<"$result"
+    printf '%s' "$result" | jq -r '.reached | to_entries[]
+        | "crate boundaries: the \(.key) layer reaches \(.value.run // 0) run-time, \(.value.build // 0) build-time and \(.value.test // 0) test-only external crate(s), all listed"'
 }
 
 # check_one_copy METADATA: print each error, or the contract's source; fail
@@ -378,12 +379,12 @@ check_one_copy() {
         echo "crate boundaries: cannot read the resolved metadata $1" >&2
         return 2
     }
-    jq -r '.errors[]' <<<"$result"
-    if [[ $(jq '.errors | length' <<<"$result") -ne 0 ]]; then
+    printf '%s' "$result" | jq -r '.errors[]'
+    if [[ $(printf '%s' "$result" | jq '.errors | length') -ne 0 ]]; then
         echo "crate boundaries: not exactly one copy of $contract_crate" >&2
         return 1
     fi
-    jq -r --arg crate "$contract_crate" '"crate boundaries: one copy of \($crate), from \(.source)"' <<<"$result"
+    printf '%s' "$result" | jq -r --arg crate "$contract_crate" '"crate boundaries: one copy of \($crate), from \(.source)"'
 }
 
 # check METADATA ALLOW: print each error and a summary; fail on any error.
@@ -393,13 +394,13 @@ check() {
         echo "crate boundaries: cannot read $1 with the allow list $2" >&2
         return 2
     }
-    jq -r '.errors[]' <<<"$result"
-    count=$(jq '.errors | length' <<<"$result")
+    printf '%s' "$result" | jq -r '.errors[]'
+    count=$(printf '%s' "$result" | jq '.errors | length')
     if [[ $count -ne 0 ]]; then
         echo "crate boundaries: $count error(s)" >&2
         return 1
     fi
-    jq -r '"crate boundaries: \(.packages) crates checked, \(.allowed) allowed exception(s)"' <<<"$result"
+    printf '%s' "$result" | jq -r '"crate boundaries: \(.packages) crates checked, \(.allowed) allowed exception(s)"'
 }
 
 # Each fixture is metadata with one planted case and its expectation:

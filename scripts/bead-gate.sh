@@ -88,7 +88,7 @@ if (( ${#failed[@]} )); then
   exit 1
 fi
 vars=$(bash scripts/affected-tests.sh --plan --format vars ${plan_args[@]+"${plan_args[@]}"})
-var() { sed -n "s/^$1=//p" <<< "$vars"; }
+var() { printf '%s\n' "$vars" | sed -n "s/^$1=//p"; }
 mode=$(var mode)
 
 packages=()
