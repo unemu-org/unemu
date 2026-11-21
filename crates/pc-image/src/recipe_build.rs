@@ -142,7 +142,7 @@ fn media(store: &Store, artifact: &Staged) -> Result<Published, String> {
     plan.name_media(&ids)
         .map_err(|refusal| refusal.to_string())?;
     if let Some(version) = min_app_version(artifact)? {
-        plan.raise_min_app_version(version)
+        plan.raise_min_app_version_at(version, crate::compat::source_levels(store).core)
             .map_err(|refusal| refusal.to_string())?;
     }
     match media_import::publish(store, &plan, &|_, _| {}, &|| false)
@@ -240,9 +240,14 @@ fn firmware(store: &Store, artifact: &Staged) -> Result<Published, String> {
             });
         }
     }
-    let preview =
-        firmware_import::preview_manifest_with(&candidate, &attachments, &statement, catalogue)
-            .map_err(|e| e.to_string())?;
+    let preview = firmware_import::preview_manifest_at(
+        &candidate,
+        &attachments,
+        &statement,
+        catalogue,
+        crate::compat::source_levels(store),
+    )
+    .map_err(|e| e.to_string())?;
     // The importer gives a document its kind from its file name; a recipe
     // that states another is refused rather than published as something
     // it did not say.

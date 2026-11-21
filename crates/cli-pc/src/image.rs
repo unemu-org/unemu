@@ -161,10 +161,17 @@ fn import(args: &[OsString]) -> Result<PcImageCommand, &'static str> {
 }
 
 pub fn execute(command: PcImageCommand, io: &mut Io<'_>, host: &HostSources) -> anyhow::Result<u8> {
+    if let PcImageCommand::Import { options, .. } = &command {
+        cli_core::image::check_min_app_version(
+            options.min_app_version,
+            host.compatibility.levels(pc_image::PLATFORM),
+        )?;
+    }
     let (output, errors) = (&mut io.output, &mut io.errors);
     match command {
         PcImageCommand::Abandon { store, workspace } => {
-            let store = image_store::Store::open_existing(store)?;
+            let store = image_store::Store::open_existing(store)?
+                .with_compatibility(host.compatibility.clone());
             let owner = store.open_workspace(&workspace)?;
             pc_image::workspace::abandon_publication(&owner)?;
         }
@@ -174,7 +181,8 @@ pub fn execute(command: PcImageCommand, io: &mut Io<'_>, host: &HostSources) -> 
             tag,
             flatten,
         } => {
-            let store = image_store::Store::open_existing(store)?;
+            let store = image_store::Store::open_existing(store)?
+                .with_compatibility(host.compatibility.clone());
             // A machine's settings belong in its new image, and its record
             // follows the publication; only the machine command does both.
             refuse_machine(&store, &workspace, "image machine commit ID --tag NAME:TAG")?;
@@ -183,10 +191,16 @@ pub fn execute(command: PcImageCommand, io: &mut Io<'_>, host: &HostSources) -> 
                 pc_image::workspace::publish_with_options(&owner, &tag, None, flatten, |_| Ok(()))?;
             writeln!(output, "{tag}\t{}", manifest.digest)?;
         }
-        PcImageCommand::Media(command) => media::execute(command, output)?,
-        PcImageCommand::Machine(command) => machine::execute(command, output, errors)?,
+        PcImageCommand::Media(command) => {
+            media::execute_with_compatibility(command, output, &host.compatibility)?
+        }
+        PcImageCommand::Machine(command) => {
+            machine::execute(command, output, errors, &host.compatibility)?
+        }
         PcImageCommand::Firmware(command) => firmware::execute(command, output, host)?,
-        PcImageCommand::Template(command) => template::execute(command, output)?,
+        PcImageCommand::Template(command) => {
+            template::execute_with_compatibility(command, output, &host.compatibility)?
+        }
         PcImageCommand::Import {
             machine,
             store,
@@ -195,9 +209,10 @@ pub fn execute(command: PcImageCommand, io: &mut Io<'_>, host: &HostSources) -> 
             options,
         } => {
             let store = if create {
-                image_store::Store::open(store)?
+                image_store::Store::open(store)?.with_compatibility(host.compatibility.clone())
             } else {
                 image_store::Store::open_existing(store)?
+                    .with_compatibility(host.compatibility.clone())
             };
             let record = pc_image::import_machine(&store, &machine, &tag, &options)?;
             for warning in record.warnings {
@@ -446,7 +461,11 @@ mod tests {
             std::fs::write(temp.path().join("cmos.bin"), [0; 64]).unwrap();
             let file = temp.path().join("machine.toml");
             std::fs::write(&file, "schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='bios.bin'\n[board.rtc.nvram]\nimage='cmos.bin'\nwrite='journal'\njournal='source.upfj'\n[[card]]\nkind='vga-text'\n").unwrap();
-            let store = image_store::Store::open(temp.path().join("store")).unwrap();
+            let store = image_store::Store::open(temp.path().join("store"))
+                .unwrap()
+                .with_compatibility(pc_image::compat::compatibility(
+                    image_store::compat::EXTRACTION_BASELINE,
+                ));
             pc_image::import_machine(
                 &store,
                 &file,

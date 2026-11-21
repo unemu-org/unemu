@@ -1298,6 +1298,12 @@ pub mod test_support {
     }
 
     pub fn warm(store: &Store) -> SummaryCache {
+        let store = store
+            .clone()
+            .with_compatibility(pc_image::with_providers(|providers| {
+                store.compatibility_with(providers)
+            }));
+        let store = &store;
         let mut cache = SummaryCache::open(store).unwrap();
         while !cache.pending().is_empty() {
             cache.rebuild(store, 8, &[], &[]).unwrap();

@@ -619,6 +619,12 @@ pub fn read_package(
     catalogue: &[assembly::FirmwareEntry],
 ) -> Result<PackageDetails, String> {
     use image_registry::guard;
+    let configured = store
+        .clone()
+        .with_compatibility(pc_image::with_providers(|providers| {
+            store.compatibility_with(providers)
+        }));
+    let store = &configured;
     let plan = image_registry::push::plan_with_catalogue(
         store,
         tag,

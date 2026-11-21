@@ -175,7 +175,8 @@ pub fn package_table(rom: &PackageRom) -> Result<Table, String> {
 /// "Needs unemupc X or newer" for a package this release does not read
 /// (machine-images §5.6): it is offered with that reason and never bound.
 pub fn package_needs_newer(package: &Package) -> Option<String> {
-    image_store::compat::Requirement::of(&package.manifest).unmet_reason()
+    image_store::compat::Requirements::of(&package.manifest)
+        .unmet_reason(package.compatibility_levels)
 }
 
 /// The package ROM of the local store that holds an entry's bytes: its

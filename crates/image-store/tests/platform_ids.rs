@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 const RETIRED_ID: &[&str] = &[
     "image-store/src/platform.rs",
     "image-store/src/compat.rs",
+    "pc-config/src/compat.rs",
     "cli-pc/tests/platform_alias.rs",
     // The PC launch document refuses the retired id: the store writes the
     // current one.
@@ -40,6 +41,7 @@ const PC_LITERAL: &[&str] = &[
     "pc-image/src/firmware_package.rs",
     "image-store/src/platform.rs",
     "image-store/src/compat.rs",
+    "pc-config/src/compat.rs",
     "pc-image/src/lib.rs",
     "pc-core/src/core.rs",
     "pc-config/src/launch.rs",
@@ -86,6 +88,11 @@ const CORE_OWN_PLATFORM: &[(&str, &str)] = &[
         ".any(|described| described.id == platform)",
     ),
 ];
+/// Recipe provider lookup compares through `platform::same` inside `Providers::get`.
+const NORMALIZED_PROVIDER_LOOKUP: &[(&str, &str)] = &[(
+    "recipe/src/artifact.rs",
+    "let provider = providers .get(platform)",
+)];
 /// This file, whose detector tests quote the forms it flags.
 const SELF: &str = "image-store/tests/platform_ids.rs";
 
@@ -481,6 +488,7 @@ fn platform_ids_are_never_compared_exactly() {
             if SOFTWARE_PLATFORM
                 .iter()
                 .chain(CORE_OWN_PLATFORM)
+                .chain(NORMALIZED_PROVIDER_LOOKUP)
                 .any(|(path, line)| *path == relative && code.contains(line))
             {
                 continue;

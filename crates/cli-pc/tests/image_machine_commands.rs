@@ -736,7 +736,7 @@ fn an_image_that_needs_a_newer_release_is_refused_before_its_config_is_read() {
         .unwrap();
     let sentence = format!(
         "newer:1.0.0 needs unemupc 99.0.0 or newer (this is {})",
-        compat::level()
+        compat::EXTRACTION_BASELINE
     );
     for command in [
         &["image", "machine", "new", "newer:1.0.0"][..],
@@ -827,7 +827,8 @@ fn an_image_that_needs_a_newer_release_is_refused_before_its_config_is_read() {
 /// at 0.0.3, and the refusals on both sides.
 #[test]
 fn import_states_a_minimum_release_only_upwards() {
-    use image_store::compat::{level, PACKAGE};
+    let level = || image_store::compat::EXTRACTION_BASELINE;
+    use image_store::compat::EXTRACTION_BASELINE as PACKAGE;
     let Some(lab) = Lab::new() else {
         return;
     };

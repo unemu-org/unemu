@@ -36,6 +36,8 @@ use std::path::PathBuf;
 /// them unset, so a command never discovers a host path on its own.
 #[derive(Clone, Debug, Default)]
 pub struct HostSources {
+    /// Application and core release levels, supplied by command composition.
+    pub compatibility: image_store::compat::Compatibility,
     /// Default store for `run` and `image firmware` when no `--store` is given.
     pub store_root: Option<PathBuf>,
     /// Persistent ROM hash index reused by `image firmware import`.

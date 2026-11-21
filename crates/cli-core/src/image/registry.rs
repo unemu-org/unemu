@@ -245,6 +245,20 @@ pub fn execute(
     output: &mut impl Write,
     platforms: &[&dyn CliPlatform],
 ) -> anyhow::Result<()> {
+    execute_with_compatibility(
+        command,
+        output,
+        platforms,
+        &image_store::compat::Compatibility::default(),
+    )
+}
+
+pub fn execute_with_compatibility(
+    command: RegistryCommand,
+    output: &mut impl Write,
+    platforms: &[&dyn CliPlatform],
+    compatibility: &image_store::compat::Compatibility,
+) -> anyhow::Result<()> {
     let providers = &super::super::validators(platforms)[..];
     let secrets = credential_store::detect();
     match command {
@@ -257,7 +271,7 @@ pub fn execute(
             dry_run,
         } => {
             let (config, default_host) = load(&options)?;
-            let store = Store::open_existing(store)?;
+            let store = Store::open_existing(store)?.with_compatibility(compatibility.clone());
             let target = Reference::parse(target.as_deref().unwrap_or(&local_tag), &default_host)?;
             if target.host != default_host {
                 conflicting_registry(&options, &target)?;
@@ -333,9 +347,9 @@ pub fn execute(
             };
             Store::validate_tag_name(&local_tag)?;
             let store = if create {
-                Store::open(store)?
+                Store::open(store)?.with_compatibility(compatibility.clone())
             } else {
-                Store::open_existing(store)?
+                Store::open_existing(store)?.with_compatibility(compatibility.clone())
             };
             let client = client(&config, &source.host, &secrets)?;
             let report = pull::pull(&store, &client, &source, &local_tag, providers, &|_| {})?;

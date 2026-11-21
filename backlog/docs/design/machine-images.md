@@ -270,7 +270,8 @@ Annotations are string values and never bind hardware or media:
 | `unemu.provenance` | Publish-safe evidence supporting the open classification. |
 | `unemu.pull.registry` | Local only, on a tag's manifest descriptor in the store's `index.json`, never in a manifest: the registry host, port included, that a pull wrote the tag from (§3, §5.1). |
 | `unemu.made-here` | Local only, beside `unemu.pull.registry` and never with it: `true` when a write in this library, not a pull, made the tag (§3). |
-| `unemu.min-app-version` | Manifest only, optional: the oldest release of the program providing `unemu.platform` that reads and runs the artifact, a SemVer `MAJOR.MINOR.PATCH`. Absent means no requirement (release 0.0.1). A hint read before any strict decode, never an authority and never part of a config (§5.6). |
+| `unemu.min-app-version` | Manifest only, optional: the oldest core release for `unemu.platform`, from `CoreDescription::version`, as SemVer `MAJOR.MINOR.PATCH`. Absent means no requirement. Read before strict decoding; a hint, never an authority or part of config identity (§5.6). |
+| `unemu.min-frontend-version` | Manifest only, optional: the oldest front-end application release that reads the encoded envelope and package. Independent of the core floor; omitted for existing features through the frozen extraction baseline 0.0.3 (§5.6). |
 | `unemu.needs` | Manifest only, optional: the `needs` of the artifact's one title (metadata schema 2, §2.1) in a compact form, so a registry browser can warn from the manifest alone ([recipes](recipes.md) §6.7). Each kind stated, in sorted order, as `kind=value,value`, the values in the title's order (best first), the kinds joined by `;`: `cpu=286+;memory=640K;sound=sb,adlib,pc-speaker,none;video=vga`. The value grammar of §2.1 keeps `=`, `,` and `;` out of every kind and value. Written by the installation-set import when the title states needs, absent otherwise, so a set without needs keeps its digest. A hint, never an authority: the metadata is. A reader ignores text that is not exactly what the writer writes for needs of a valid shape (`image_store::needs::parse_annotation`). |
 
 **Export file names (2026-11-17, decision-37 point 3 and its amendment).**
@@ -2732,54 +2733,60 @@ something new, and fail at pull or Start with a decoder message. Only a
 change in what an existing key or value means could make them run an image
 wrongly, and the proposal forbids that.
 
-**Proposal.**
+**Implemented release domains (2026-11-21; decision-30 amendment).**
 
-- **Marker.** The manifest annotation `unemu.min-app-version` holds a
-  SemVer release `MAJOR.MINOR.PATCH`: the oldest release of the program
-  providing `unemu.platform` that reads and runs the artifact. For
-  `ibm-pc` (and its alias `ibm-pc-at`) that program is unemupc; `unemupc`
-  and `unemu` share its version. Machine images, installation sets and
-  firmware packages use the same rule. Without the annotation there is no
-  requirement, so the six published sets and packages keep their digests. Like every annotation it
-  is a hint, not an authority: codecs stay strict. Media-type majors move
-  only for a decoder break. A release never changes what an existing key or
-  value means; it adds new ones.
-- **Value.** The shared store crate and the provider keep a per-feature
-  table: the release that first reads each optional key, vocabulary value,
-  payload media type, firmware catalogue entry and widened range. Writers
-  stamp the maximum over what the artifact uses. When the maximum is the
-  baseline 0.0.1, they leave the annotation out, so rebuilding something
-  older releases already read gives byte-identical manifests. A recipe of
-  `image template create`, or `--min-app-version` on the importing
-  commands, may raise the value, for an emulation fix a title needs, but
-  never lower it. Template creation and the push guard of `unemu/` compute
-  the value again and refuse a missing or lower marker. New catalogue
-  fields go into metadata schema 2, never into schema 1, so metadata never
-  raises the value.
-- **Platform id.** The platform ids of the alias table are shared rows:
-  `ibm-pc-at` is the baseline and `ibm-pc` is first read by 0.0.3, because
-  0.0.1 and 0.0.2 compare platform ids exactly. Every PC writer writes
-  `ibm-pc`, so every PC artifact written since declares 0.0.3; releases 0.0.1
-  and 0.0.2 ignore the marker and refuse such an artifact at pull, after the
-  download (decision-32).
-- **Reading.** The annotation is read leniently before the strict decode.
-  A requirement is met when it is no higher than the release's level: its
-  package version, or the newest version its own table names if that is
-  higher, so development builds read what they write. A value that does not
-  parse counts as unmet.
-- **Display.** The library rows of machine images, sets and packages, the
-  machines made from such an image, Remotes, Get templates, the media
-  picker and the command line say "Needs unemupc X or newer". They disable
-  Start, New machine from image…, Insert…, Use in machine…, `image run` and
-  `image machine new`; manifest details and Delete tag stay. Get templates
-  offers the newest version this release can run (`latest`'s version when
-  it can), notes which newer version needs which release, and dims a
-  repository with nothing runnable. **Pull refuses before fetching any
-  blob.** A tag is written only for a validated closure (§3.1), and a
-  release cannot validate a config it does not read.
+- `unemu.min-app-version` keeps its spelling and now names the oldest core
+  release for `unemu.platform`, from `CoreDescription::version`. It never
+  names the contract version or a front-end crate's package version.
+  `--min-app-version` and a recipe's existing minimum retain this meaning.
+- `unemu.min-frontend-version` is a second, manifest-only release floor for
+  the composing application. Missing means no requirement; malformed means
+  unmet, independently for each marker. Neither marker changes config identity.
+- `pc_config::compat` owns the machine keys, hardware vocabulary, accepted
+  platform spellings and firmware catalogue rows, with facts from assembly.
+  It has no store dependency. `pc_image::compat` converts core releases at
+  the provider boundary and keeps payloads, media formats, package fit tables,
+  roles and package lanes. `image_store::compat` keeps shared envelope,
+  compression, redistribution, routing and package rows. Recipe parser rows
+  belong to the front end. Metadata schemas and title fields raise neither
+  runnable requirement.
+- Application composition injects its release and the selected core's release.
+  Each is raised only to its own newest table row for development builds.
+  Readers and writers never combine the two release levels into a maximum.
+  Standalone providers can supply their core-owned version; the neutral store
+  neither links a PC core nor infers the application release from its package.
+  Each domain retains independent next-release and newest-row coverage checks.
+- Writers compute and stamp the two floors independently. The core baseline
+  remains 0.0.1. The front-end extraction baseline is frozen at **0.0.3**:
+  existing front-end features through that release add no new annotation.
+  Historical row numbers and conservative core floors stay literal; published
+  manifests, recipe locks, digest pins and explicit core floors are not
+  restamped. Existing PC recipe envelopes retain the 0.0.3 core floor
+  required by their canonical platform id. Only later front-end features
+  need the new marker.
+- Raising a stated core floor cannot lower the computed core requirement or
+  exceed the selected core's level. Derived artifacts retain higher floors
+  within each domain while their encoded content is retained. Importing ROM
+  bytes from a firmware package carries its core floor into the machine;
+  that package's packaging-only floor does not follow the decoded bytes.
+- Both annotations are read leniently before strict decoding. **Pull refuses
+  before fetching any blob.** Unknown platforms remain unsupported. The
+  library, Remotes, Get templates, pickers and command line use reasons that
+  name the component: "Needs unemupc X or newer" for the PC core and
+  "Needs front end X or newer" for the application. A malformed marker says
+  "Needs a newer …". Actions requiring the config stay disabled; manifest
+  details and Delete tag remain available. The summary cache stores both
+  markers and rebuilds caches of a different schema.
+- Codecs remain strict. Old readers ignore the new annotation but still
+  refuse unknown keys and media types. No existing key or value changes
+  meaning; media-type majors move only for a decoder break.
 
-**Test plan.** All inputs are synthetic and go through today's decoder
-paths:
+**Regression coverage.** Synthetic inputs exercise unequal core/front-end
+versions in both directions, missing cores, independently malformed or absent
+markers, development-row maxima, inherited floors, component-specific disabled
+rows, manifest-only pull refusal and the frozen front-end baseline. Existing
+published byte/digest pins and table completeness checks remain in force.
+The original decoder coverage is retained:
 
 1. A machine image, a set and a package, each carrying
    `unemu.min-app-version = "99.0.0"` and an unknown annotation, decode in

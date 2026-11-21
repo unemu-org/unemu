@@ -131,6 +131,7 @@ pub struct TagRecord {
     pub formats: Vec<String>,
     /// `unemu.min-app-version` as the manifest has it, not yet interpreted.
     pub min_app_version: Option<String>,
+    pub compatibility_levels: compat::Levels,
     /// `unemu.platform` as the manifest has it: the machine family the
     /// artifact is for.
     pub platform: Option<String>,
@@ -219,21 +220,20 @@ impl TagRecord {
     /// the `unemu.min-app-version` of its manifest read as the store reads
     /// it: a value that is not a release version is unmet (machine-images
     /// §5.6).
-    pub fn needs_newer(&self) -> Option<String> {
-        let requirement = match self.min_app_version.as_deref() {
-            None => compat::Requirement::None,
-            Some(text) => text.parse().map_or_else(
-                |_| compat::Requirement::Invalid(text.into()),
-                compat::Requirement::Release,
+    pub fn needs_newer_with(&self, levels: compat::Levels) -> Option<String> {
+        compat::Requirements {
+            core: compat::Requirement::of_text(self.min_app_version.as_deref()),
+            frontend: compat::Requirement::of_text(
+                self.annotations
+                    .get(compat::MIN_FRONTEND_VERSION)
+                    .map(String::as_str),
             ),
-        };
-        if requirement.met_by(compat::level()) {
-            return None;
         }
-        Some(compat::needs(match requirement {
-            compat::Requirement::Release(required) => Some(required),
-            _ => None,
-        }))
+        .unmet_reason(levels)
+    }
+
+    pub fn needs_newer(&self) -> Option<String> {
+        self.needs_newer_with(self.compatibility_levels)
     }
 
     /// What the Newer available hint across releases compares, for a set or
@@ -275,7 +275,11 @@ impl TagRecord {
 
     /// The record of a read tag; a media set's format names come from the
     /// first platform.
-    fn from_read(read: browse::TagRecord, platforms: &[&dyn DesktopPlatform]) -> Self {
+    fn from_read(
+        read: browse::TagRecord,
+        platforms: &[&dyn DesktopPlatform],
+        levels: compat::Levels,
+    ) -> Self {
         let annotation = |key: &str| {
             read.annotations
                 .get(key)
@@ -336,6 +340,7 @@ impl TagRecord {
             version: annotation(VERSION).or_else(|| field("version")),
             formats,
             min_app_version: read.annotations.get(MIN_APP_VERSION).cloned(),
+            compatibility_levels: levels,
             platform: annotation(PLATFORM),
             digest: read.digest,
             artifact_type: read.artifact_type,
@@ -795,6 +800,9 @@ fn local_release(
             config,
         },
         platforms,
+        store
+            .compatibility_with(&crate::platform::validators(platforms))
+            .manifest_levels(&bytes),
     );
     record.details = Some(Ok(details_of(title)));
     record.release().map(Some).ok_or(())
@@ -1123,6 +1131,9 @@ pub fn local_record(
             config,
         },
         platforms,
+        store
+            .compatibility_with(&crate::platform::validators(platforms))
+            .manifest_levels(&bytes),
     );
     record.details = Some(Ok(details_of(title)));
     Some(record)
@@ -1264,21 +1275,45 @@ fn tag_row(
 ) -> Result<TagRow, Error> {
     let local_tag = local_tag_of(client.host(), repository, tag);
     let text = |error: &Error| common_failure(error).unwrap_or_else(|| error.to_string());
-    let read = match browse::read_tag(client, repository, tag, cancelled) {
-        Ok(read) => read,
-        Err(error) if ends_job(&error) => return Err(error),
-        Err(error) => {
-            return Ok(TagRow {
-                tag: tag.into(),
-                local_tag,
-                record: Err(text(&error)),
-                local: None,
-                stored: BTreeSet::new(),
-                newest_revision: None,
-            })
-        }
+    let providers: Vec<_> = platforms
+        .list
+        .iter()
+        .flat_map(|platform| platform.validators())
+        .collect();
+    let runtime = store.compatibility_with(&providers);
+    let read =
+        match browse::read_tag_with_compatibility(client, repository, tag, cancelled, &runtime) {
+            Ok(read) => read,
+            Err(error) if ends_job(&error) => return Err(error),
+            Err(error) => {
+                return Ok(TagRow {
+                    tag: tag.into(),
+                    local_tag,
+                    record: Err(text(&error)),
+                    local: None,
+                    stored: BTreeSet::new(),
+                    newest_revision: None,
+                })
+            }
+        };
+    let levels = runtime.levels(
+        read.annotations
+            .get("unemu.platform")
+            .map_or("", String::as_str),
+    );
+    let requirements = compat::Requirements {
+        core: compat::Requirement::of_text(
+            read.annotations
+                .get(compat::MIN_APP_VERSION)
+                .map(String::as_str),
+        ),
+        frontend: compat::Requirement::of_text(
+            read.annotations
+                .get(compat::MIN_FRONTEND_VERSION)
+                .map(String::as_str),
+        ),
     };
-    let title = if details {
+    let title = if details && levels.core.is_some() && requirements.unmet_reason(levels).is_none() {
         match browse::read_title(client, repository, &read, cancelled) {
             Ok(title) => Some(Ok(details_of(title))),
             Err(error) if ends_job(&error) => return Err(error),
@@ -1287,7 +1322,7 @@ fn tag_row(
     } else {
         None
     };
-    let mut record = TagRecord::from_read(read, platforms.list);
+    let mut record = TagRecord::from_read(read, platforms.list, levels);
     record.details = title;
     let newest_revision = image_store::tag::governs(&record.artifact_type)
         .then(|| newest_listed_revision(listed, tag))
@@ -3220,5 +3255,51 @@ mod tests {
             setup.answer(&mut remotes, request);
             assert_eq!(remotes.registry(&host).unwrap().state, State::Listed);
         }
+    }
+}
+
+#[cfg(test)]
+mod compatibility_domain_tests {
+    use super::*;
+    #[test]
+    fn remotes_disabled_reasons_keep_the_component_release_domains_separate() {
+        use compat::{AppVersion as V, Levels};
+        let v = |patch| V::new(0, 0, patch);
+        let mut row = TagRecord {
+            digest: Digest::of(b"synthetic"),
+            artifact_type: mt::MACHINE.into(),
+            title: None,
+            version: None,
+            formats: Vec::new(),
+            min_app_version: Some("0.0.5".into()),
+            compatibility_levels: Levels::new(Some((v(3), v(1))), v(9), v(1)),
+            platform: Some("synthetic".into()),
+            size: 0,
+            user_supplied: false,
+            annotations: BTreeMap::new(),
+            details: None,
+            manifest_size: 0,
+            descriptors: Vec::new(),
+            media: Vec::new(),
+        };
+        assert_eq!(
+            row.needs_newer().as_deref(),
+            Some("Needs unemupc 0.0.5 or newer")
+        );
+        row.min_app_version = None;
+        row.annotations
+            .insert(compat::MIN_FRONTEND_VERSION.into(), "0.0.5".into());
+        assert_eq!(row.needs_newer(), None);
+        row.compatibility_levels = Levels::new(Some((v(9), v(1))), v(3), v(1));
+        assert_eq!(
+            row.needs_newer().as_deref(),
+            Some("Needs front end 0.0.5 or newer")
+        );
+        row.annotations
+            .insert(compat::MIN_FRONTEND_VERSION.into(), "soon".into());
+        assert_eq!(
+            row.needs_newer().as_deref(),
+            Some("Needs a newer front end")
+        );
     }
 }

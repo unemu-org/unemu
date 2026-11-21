@@ -443,9 +443,14 @@ pub struct LibraryView {
     pub remote: remotes::RemotesView,
     /// What the registry dialogs and Remotes read of the compiled-in
     /// platforms, made once.
+    pub compatibility: image_store::compat::Compatibility,
     pub(crate) platform_facts: library_model::PlatformFacts,
 }
 impl LibraryView {
+    pub fn with_compatibility(mut self, compatibility: image_store::compat::Compatibility) -> Self {
+        self.compatibility = compatibility;
+        self
+    }
     pub fn new(root: Option<PathBuf>) -> Self {
         Self {
             root,
@@ -525,6 +530,9 @@ impl LibraryView {
             start_notes: Vec::new(),
             start_catalogue: Vec::new(),
             remote: remotes::RemotesView::new(),
+            compatibility: pc_image::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ),
             platform_facts: crate::pc_desktop::PcDesktop::facts(),
         }
     }
@@ -625,9 +633,10 @@ impl LibraryView {
         if self.worker.is_none() && !self.worker_dead {
             if let Some(root) = self.root.clone() {
                 let ctx = ctx.clone();
-                self.worker = Some(Worker::spawn(
+                self.worker = Some(Worker::spawn_with_compatibility(
                     root,
                     std::sync::Arc::new(move || ctx.request_repaint()),
+                    self.compatibility.clone(),
                 ));
             }
         }
@@ -1944,7 +1953,8 @@ impl LibraryView {
         wizard.store = self
             .root
             .as_ref()
-            .and_then(|root| Store::open_existing(root).ok());
+            .and_then(|root| Store::open_existing(root).ok())
+            .map(|store| store.with_compatibility(self.compatibility.clone()));
         self.new_machine = Some(wizard);
         self.send(Request::FirmwarePackages);
         if self.worker_dead {
@@ -3980,6 +3990,24 @@ impl LibraryView {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+
+    #[test]
+    fn regression_new_machine_store_keeps_library_compatibility() {
+        use image_store::compat::{AppVersion as V, Compatibility};
+        let temp = machine_file::test_support::TempDir::new("wizard-compatibility");
+        let store = Store::open(temp.path().join("store")).unwrap();
+        let runtime = Compatibility::new(V::new(0, 0, 9), V::new(0, 0, 1)).with_core(
+            "ibm-pc",
+            V::new(0, 0, 7),
+            V::new(0, 0, 1),
+        );
+        let mut view = LibraryView::new(None).with_compatibility(runtime.clone());
+        view.root = Some(store.root().to_path_buf());
+        view.begin_new_machine();
+        let reopened = view.new_machine.as_ref().unwrap().store.as_ref().unwrap();
+        assert_eq!(reopened.levels("ibm-pc"), runtime.levels("ibm-pc"));
+        assert!(image_store::BlobSource::compatibility_configured(reopened));
+    }
     use image_store::summary::{ArtifactKind, SummaryCache};
     use image_store::{
         media_type as mt,

@@ -77,8 +77,9 @@ pub enum Error {
     /// The artifact declares a newer release than this build reads; nothing
     /// of it was decoded (machine-images §5.6). `required` is `None` when the
     /// declared value does not parse.
-    #[error("{reference} {}", compat::needs_newer(.required, .level))]
+    #[error("{reference} {}", compat::needs_newer(.component, .required, .level))]
     NeedsNewer {
+        component: compat::Component,
         reference: String,
         required: Option<compat::AppVersion>,
         level: compat::AppVersion,

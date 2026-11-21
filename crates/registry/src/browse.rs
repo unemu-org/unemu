@@ -166,13 +166,48 @@ pub fn read_tag(
     tag: &str,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<TagRecord> {
+    read_tag_inner(client, repository, tag, cancelled, None)
+}
+
+pub fn read_tag_with_compatibility(
+    client: &Client,
+    repository: &str,
+    tag: &str,
+    cancelled: &dyn Fn() -> bool,
+    compatibility: &image_store::compat::Compatibility,
+) -> Result<TagRecord> {
+    read_tag_inner(client, repository, tag, cancelled, Some(compatibility))
+}
+
+fn read_tag_inner(
+    client: &Client,
+    repository: &str,
+    tag: &str,
+    cancelled: &dyn Fn() -> bool,
+    compatibility: Option<&image_store::compat::Compatibility>,
+) -> Result<TagRecord> {
     let fetched = client.manifest(repository, tag)?.ok_or_else(|| {
         Error::NotFound(format!(
             "{repository}:{tag} (no OCI image manifest under this tag)"
         ))
     })?;
-    let envelope: Envelope = serde_json::from_slice(&fetched.bytes)
-        .map_err(|e| Error::Protocol(format!("manifest of {repository}:{tag}: {e}")))?;
+    let unread = compatibility.is_some_and(|runtime| {
+        let levels = runtime.manifest_levels(&fetched.bytes);
+        levels.core.is_none()
+            || image_store::compat::Requirements::read(&fetched.bytes)
+                .unmet_reason(levels)
+                .is_some()
+    });
+    let envelope: Envelope = serde_json::from_slice(&fetched.bytes).map_err(|e| {
+        compatibility
+            .and_then(|runtime| {
+                runtime
+                    .check(&fetched.bytes, &format!("{repository}:{tag}"))
+                    .err()
+            })
+            .map(Error::Store)
+            .unwrap_or_else(|| Error::Protocol(format!("manifest of {repository}:{tag}: {e}")))
+    })?;
     let config = envelope.config.descriptor()?;
     let layers = envelope
         .layers
@@ -192,7 +227,7 @@ pub fn read_tag(
             .is_some_and(|mark| mark == image_store::license::USER_SUPPLIED)
     });
     let config_bytes = match config.media_type.as_str() {
-        mt::MEDIA_SET_CONFIG | mt::FIRMWARE_CONFIG => {
+        mt::MEDIA_SET_CONFIG | mt::FIRMWARE_CONFIG if !unread => {
             check(cancelled)?;
             Some(client.small_blob(repository, &config)?)
         }

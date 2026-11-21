@@ -123,7 +123,7 @@ pub fn execute(
             .clone()
             .ok_or_else(|| anyhow::anyhow!("default store unavailable; use --store DIR"))?,
     };
-    let store = Store::open_existing(&store)?;
+    let store = Store::open_existing(&store)?.with_compatibility(host.compatibility.clone());
     let (image, manifest) = resolve(&store, &command.tag, platforms)?;
     let plan = plan(&image, &manifest, command.files)?;
     check(&command.to, &plan, &image)?;

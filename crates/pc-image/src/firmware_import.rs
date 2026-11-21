@@ -1313,7 +1313,14 @@ fn validate(
 
 /// Compute the immutable package identity without writing any store objects.
 pub fn preview_manifest(candidate: &Candidate, attachments: &[Attachment]) -> Result<Manifest> {
-    Ok(plan(candidate, attachments, &Statement::default(), None)?.manifest)
+    Ok(plan(
+        candidate,
+        attachments,
+        &Statement::default(),
+        None,
+        crate::compat::levels(image_store::compat::EXTRACTION_BASELINE),
+    )?
+    .manifest)
 }
 /// What an import or edit with a statement would publish.
 #[derive(Debug)]
@@ -1344,7 +1351,23 @@ pub fn preview_manifest_with(
     statement: &Statement,
     catalogue: &[assembly::FirmwareEntry],
 ) -> Result<Preview> {
-    let plan = plan(candidate, attachments, statement, Some(catalogue))?;
+    preview_manifest_at(
+        candidate,
+        attachments,
+        statement,
+        catalogue,
+        crate::compat::levels(image_store::compat::EXTRACTION_BASELINE),
+    )
+}
+
+pub fn preview_manifest_at(
+    candidate: &Candidate,
+    attachments: &[Attachment],
+    statement: &Statement,
+    catalogue: &[assembly::FirmwareEntry],
+    levels: image_store::compat::Levels,
+) -> Result<Preview> {
+    let plan = plan(candidate, attachments, statement, Some(catalogue), levels)?;
     validate(&plan, catalogue, None)?;
     Ok(plan.into())
 }
@@ -1354,6 +1377,7 @@ fn plan(
     attachments: &[Attachment],
     statement: &Statement,
     catalogue: Option<&[assembly::FirmwareEntry]>,
+    levels: image_store::compat::Levels,
 ) -> Result<Plan> {
     let mut config = candidate.config.clone();
     let bindings = config.payloads();
@@ -1429,7 +1453,7 @@ fn plan(
         ReadmeChoice::Keep | ReadmeChoice::Generate => None,
     };
     decide(
-        config, roms, source, extras, known, default, statement, catalogue, readme,
+        config, roms, source, extras, known, default, statement, catalogue, readme, levels,
     )
 }
 
@@ -1445,6 +1469,7 @@ fn decide(
     statement: &Statement,
     catalogue: Option<&[assembly::FirmwareEntry]>,
     readme: Option<&str>,
+    levels: image_store::compat::Levels,
 ) -> Result<Plan> {
     if statement.source_license.is_some() && source.is_none() {
         return Err(invalid(
@@ -1471,6 +1496,7 @@ fn decide(
         &plan.config,
         image_store::compat::BASELINE,
         statement.min_app_version,
+        levels,
     )?;
     Ok(plan)
 }
@@ -1640,7 +1666,13 @@ pub fn publish_as(
     tag: &str,
     judged: Option<&Digest>,
 ) -> Result<Descriptor> {
-    let plan = plan(candidate, attachments, statement, Some(catalogue))?;
+    let plan = plan(
+        candidate,
+        attachments,
+        statement,
+        Some(catalogue),
+        crate::compat::source_levels(store),
+    )?;
     validate(&plan, catalogue, None)?;
     let digest = Digest::of(&plan.manifest.encode()?);
     unjudged(judged, &digest)?;
@@ -1935,8 +1967,13 @@ fn edit_plan(
         statement,
         Some(catalogue),
         kept.as_deref(),
+        crate::compat::source_levels(store),
     )?;
-    image_store::compat::carry(&mut plan.manifest, &image.manifest)?;
+    image_store::compat::carry(
+        &mut plan.manifest,
+        &image.manifest,
+        crate::compat::source_levels(store),
+    )?;
     validate(&plan, catalogue, Some(store))?;
     let unchanged = Digest::of(&plan.manifest.encode()?) == image.image.digest;
     Ok((plan, unchanged))
@@ -2035,7 +2072,8 @@ mod tests {
     /// package's marker and never lowers it.
     #[test]
     fn a_stated_minimum_release_marks_a_package_and_an_edit_keeps_it() {
-        use image_store::compat::{level, AppVersion, Requirement, BASELINE};
+        use crate::compat::level;
+        use image_store::compat::{AppVersion, Requirement, BASELINE};
         let computed = AppVersion::new(0, 0, 3);
         let root = std::env::temp_dir().join(format!(
             "pc-image-firmware-min-app-version-{}",
@@ -2045,7 +2083,9 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let rom = root.join("rom.bin");
         fs::write(&rom, [0x5a; 8192]).unwrap();
-        let store = Store::open(root.join("store")).unwrap();
+        let store = Store::open(root.join("store")).unwrap().with_compatibility(
+            crate::compat::compatibility(image_store::compat::EXTRACTION_BASELINE),
+        );
         let candidate = unlisted(&rom, "marked-rom", "option-rom", &[]).unwrap();
         let requirement = |tag: &str| {
             let image = store
@@ -2182,7 +2222,11 @@ mod tests {
             ..Statement::default()
         };
         // Open or not, a local import never takes the official name.
-        let opened = Store::open(root.join("opened")).unwrap();
+        let opened = Store::open(root.join("opened"))
+            .unwrap()
+            .with_compatibility(crate::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         let open_package = publish_with(&opened, &candidate, &[], &open, &[]).unwrap();
         assert_eq!(
             opened.tag_descriptor(tag).unwrap().digest,
@@ -2190,7 +2234,11 @@ mod tests {
         );
         // The official revision the store already holds is the one an
         // import checks: the same ROMs there are already imported.
-        let official = Store::open(root.join("official")).unwrap();
+        let official = Store::open(root.join("official"))
+            .unwrap()
+            .with_compatibility(crate::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         let unemu = "unemu/firmware/ibm-pc/synthetic-rom:r1";
         let pulled = publish_as(&official, &candidate, &[], &open, &[], unemu, None).unwrap();
         assert_eq!(import_tag(&official, "synthetic-rom").unwrap(), unemu);
@@ -2198,7 +2246,9 @@ mod tests {
         assert!(official.tag_descriptor(tag).is_err());
         // A package's revision tag never moves, not even from the confirmed
         // digest, and no package is tagged latest.
-        let store = Store::open(root.join("store")).unwrap();
+        let store = Store::open(root.join("store")).unwrap().with_compatibility(
+            crate::compat::compatibility(image_store::compat::EXTRACTION_BASELINE),
+        );
         let first = publish(&store, &candidate, &[], &[]).unwrap();
         assert_eq!(store.tag_descriptor(tag).unwrap().digest, first.digest);
         let validator = Validator(&PcFirmwareRules(&[]));

@@ -1,30 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Compatibility of published images: the oldest release that reads and runs
-//! an artifact; machine-images §5.6.
+//! Independent release requirements of published artifacts; machine-images §5.6.
 //!
-//! The manifest annotation [`MIN_APP_VERSION`] names that release as a
-//! Semantic Versioning 2.0.0 normal version (§2: `MAJOR.MINOR.PATCH`, with no
-//! pre-release or build part). It is a hint that lets a release refuse early,
-//! with a reason a person understands, never an authority: every codec stays
-//! strict and fails closed. No annotation means no requirement, so an artifact
-//! that older releases already read keeps its bytes and digest. The marker is
-//! not part of any config, so a corrected marker never changes a machine's
-//! identity.
+//! `unemu.min-app-version` names the selected platform core's release, and
+//! `unemu.min-frontend-version` names the composing application's release.
+//! Both are manifest-only SemVer normal versions, read leniently before strict
+//! codecs or blob downloads. Application composition injects the two levels;
+//! the store neither links a core nor infers an application version from its package.
 //!
-//! A per-feature table records, for every feature a reader reads, the first
-//! release that reads it: artifact and payload media types, config keys,
-//! vocabulary values, firmware catalogue entries and accepted ranges. This
-//! module holds the shared rows (the envelope's media types, the platform ids
-//! of the alias table, the keys and values of installation-set and
-//! firmware-package configs, and the metadata schemas and title fields); the
-//! platform provider holds its own. Metadata rows never raise the marker: a
-//! release that does not read a metadata schema shows the catalogue
-//! read-only and still runs the artifact. Release
-//! 0.0.1 is the baseline: everything it reads has [`BASELINE`]. Writers stamp
-//! the maximum over what an artifact uses ([`stamp`]) and leave the
-//! annotation out at the baseline. Readers check the marker leniently before
-//! any strict decode ([`Requirement::read`]), so even a future envelope gets
-//! the message.
+//! Shared envelope, routing, compression and package rows belong to the front end.
+//! Providers supply core-owned rows and their own package-format rows separately.
+//! Metadata schemas and title fields raise neither runnable requirement. Core
+//! baseline 0.0.1 and the frozen front-end extraction baseline 0.0.3 keep existing
+//! manifests byte-identical. Higher inherited floors stay within their own domain.
 
 use crate::{
     artifact::NEUTRAL_TYPES, firmware, invalid, media_set, media_type, Error, Manifest, Result,
@@ -33,11 +20,11 @@ use crate::{
 use serde::Deserialize;
 use std::{fmt, str::FromStr};
 
-/// Manifest annotation: the oldest release of the program that provides the
-/// manifest's `unemu.platform` and reads and runs the artifact.
+/// Manifest annotation naming the oldest core release for `unemu.platform`.
 pub const MIN_APP_VERSION: &str = "unemu.min-app-version";
-/// The program the version numbers name. The desktop program and the command
-/// line share one version.
+/// Manifest-only minimum front-end release; independent of the core release.
+pub const MIN_FRONTEND_VERSION: &str = "unemu.min-frontend-version";
+/// The name of the PC core in compatibility diagnostics.
 pub const PROGRAM: &str = "unemupc";
 
 /// A release version: SemVer 2.0.0 §2 normal version `MAJOR.MINOR.PATCH`,
@@ -100,41 +87,211 @@ impl fmt::Display for AppVersion {
 /// Release 0.0.1, the first one. Every feature it reads is the baseline, and
 /// an artifact that needs nothing newer carries no annotation.
 pub const BASELINE: AppVersion = AppVersion::new(0, 0, 1);
-/// The release after the newest published one (0.0.3): the version a row for
-/// a feature that release does not read takes. A row writes it as a literal,
-/// `AppVersion::new(0, 0, 3)`, never as this constant, so it keeps naming 0.0.3
-/// after 0.0.3 ships. The release commit raises this constant past the new
-/// package version; a test refuses a value that is not above it.
+/// The next front-end release. Rows use literal historical releases so their
+/// meaning survives later releases; this constant advances with the application.
 pub const NEXT_RELEASE: AppVersion = AppVersion::new(0, 0, 4);
-/// The newest version any row of this build's tables names, shared or
-/// provider-owned. A provider's tests pin it, so a development build that
-/// adds a row for the next release reads what it writes.
+/// The newest shared front-end row. Composition also includes the PC provider
+/// and recipe parser's front-end maxima, independently of every core table.
 pub const NEWEST_ROW: AppVersion = AppVersion::new(0, 0, 3);
-/// This build's package version.
-pub const PACKAGE: AppVersion = AppVersion::new(
-    decimal(env!("CARGO_PKG_VERSION_MAJOR")),
-    decimal(env!("CARGO_PKG_VERSION_MINOR")),
-    decimal(env!("CARGO_PKG_VERSION_PATCH")),
-);
+/// The frozen pre-extraction release line. It is never the store package version.
+pub const EXTRACTION_BASELINE: AppVersion = AppVersion::new(0, 0, 3);
 
-const fn decimal(text: &str) -> u64 {
-    let bytes = text.as_bytes();
-    let mut value = 0;
-    let mut index = 0;
-    while index < bytes.len() {
-        value = value * 10 + (bytes[index] - b'0') as u64;
-        index += 1;
+/// A release domain; a requirement is always compared within its own domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Component {
+    Core,
+    Frontend,
+}
+impl Component {
+    pub fn annotation(self) -> &'static str {
+        match self {
+            Self::Core => MIN_APP_VERSION,
+            Self::Frontend => MIN_FRONTEND_VERSION,
+        }
     }
-    value
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Core => PROGRAM,
+            Self::Frontend => "front end",
+        }
+    }
+    pub fn baseline(self) -> AppVersion {
+        match self {
+            Self::Core => BASELINE,
+            Self::Frontend => EXTRACTION_BASELINE,
+        }
+    }
 }
 
-/// The release level this build reads: its package version, or the newest
-/// version its tables name when that is higher.
-pub fn level() -> AppVersion {
-    if NEWEST_ROW > PACKAGE {
-        NEWEST_ROW
-    } else {
-        PACKAGE
+/// Injected release levels for one selected platform, including development rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Levels {
+    pub core: Option<AppVersion>,
+    pub frontend: AppVersion,
+}
+impl Default for Levels {
+    fn default() -> Self {
+        Self {
+            core: None,
+            frontend: EXTRACTION_BASELINE,
+        }
+    }
+}
+impl Levels {
+    pub fn new(
+        core: Option<(AppVersion, AppVersion)>,
+        frontend: AppVersion,
+        frontend_row: AppVersion,
+    ) -> Self {
+        Self {
+            core: core.map(|(version, row)| version.max(row)),
+            frontend: frontend.max(frontend_row),
+        }
+    }
+    pub fn level(self, component: Component) -> Option<AppVersion> {
+        match component {
+            Component::Core => self.core,
+            Component::Frontend => Some(self.frontend),
+        }
+    }
+}
+
+/// Release descriptions supplied by application composition, keyed by platform.
+#[derive(Clone, Debug, Default)]
+pub struct Compatibility {
+    pub frontend: Option<AppVersion>,
+    pub frontend_row: AppVersion,
+    pub cores: Vec<(String, AppVersion, AppVersion)>,
+}
+impl Default for AppVersion {
+    fn default() -> Self {
+        BASELINE
+    }
+}
+impl Compatibility {
+    pub fn new(frontend: AppVersion, newest_row: AppVersion) -> Self {
+        Self {
+            frontend: Some(frontend),
+            frontend_row: newest_row,
+            cores: Vec::new(),
+        }
+    }
+    pub fn with_core(
+        mut self,
+        platform: &str,
+        version: AppVersion,
+        newest_row: AppVersion,
+    ) -> Self {
+        self.cores.push((platform.into(), version, newest_row));
+        self
+    }
+    pub fn levels(&self, platform: &str) -> Levels {
+        let core = self
+            .cores
+            .iter()
+            .find(|(id, _, _)| crate::platform::same(platform, id))
+            .map(|(_, version, row)| (*version, *row));
+        Levels::new(
+            core,
+            self.frontend.unwrap_or(EXTRACTION_BASELINE),
+            self.frontend_row,
+        )
+    }
+    pub fn manifest_platform(bytes: &[u8]) -> Option<String> {
+        #[derive(Deserialize)]
+        struct Routing {
+            #[serde(default)]
+            annotations: std::collections::BTreeMap<String, serde_json::Value>,
+        }
+        (bytes.len() as u64 <= MAX_SMALL_BLOB)
+            .then(|| serde_json::from_slice::<Routing>(bytes).ok())
+            .flatten()
+            .and_then(|routing| {
+                routing
+                    .annotations
+                    .get("unemu.platform")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+    }
+    pub fn manifest_levels(&self, bytes: &[u8]) -> Levels {
+        self.levels(
+            Self::manifest_platform(bytes)
+                .as_deref()
+                .unwrap_or_default(),
+        )
+    }
+    pub fn check(&self, bytes: &[u8], reference: &str) -> Result<()> {
+        let levels = self.manifest_levels(bytes);
+        Requirements::read(bytes).check(reference, levels)?;
+        if self.frontend.is_some() && levels.core.is_none() {
+            if let Some(platform) = Self::manifest_platform(bytes) {
+                return Err(invalid(format!(
+                    "{reference}: no core available for platform {platform}"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The independently computed floors of one artifact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Releases {
+    pub core: AppVersion,
+    pub frontend: AppVersion,
+}
+impl Default for Releases {
+    fn default() -> Self {
+        Self {
+            core: BASELINE,
+            frontend: BASELINE,
+        }
+    }
+}
+
+/// Both manifest-only requirements, read before any strict codec.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Requirements {
+    pub core: Requirement,
+    pub frontend: Requirement,
+}
+impl Requirements {
+    pub fn read(bytes: &[u8]) -> Self {
+        Self {
+            core: Requirement::read_key(bytes, MIN_APP_VERSION),
+            frontend: Requirement::read_key(bytes, MIN_FRONTEND_VERSION),
+        }
+    }
+    pub fn of(manifest: &Manifest) -> Self {
+        Self {
+            core: Requirement::of(manifest),
+            frontend: Requirement::of_text(
+                manifest
+                    .annotations
+                    .get(MIN_FRONTEND_VERSION)
+                    .map(String::as_str),
+            ),
+        }
+    }
+    pub fn unmet_reason(&self, levels: Levels) -> Option<String> {
+        self.core
+            .unmet_reason(Component::Core, levels.core)
+            .or_else(|| {
+                self.frontend
+                    .unmet_reason(Component::Frontend, Some(levels.frontend))
+            })
+    }
+    pub fn check(&self, reference: &str, levels: Levels) -> Result<()> {
+        self.core.check(reference, Component::Core, levels.core)?;
+        self.frontend
+            .check(reference, Component::Frontend, Some(levels.frontend))
+    }
+    pub fn releases(&self) -> Result<Releases> {
+        Ok(Releases {
+            core: self.core.release()?,
+            frontend: self.frontend.release()?,
+        })
     }
 }
 
@@ -154,6 +311,10 @@ impl Requirement {
     /// that are not a bounded JSON object give no requirement; the strict
     /// decode that follows refuses them.
     pub fn read(manifest: &[u8]) -> Self {
+        Self::read_key(manifest, MIN_APP_VERSION)
+    }
+
+    fn read_key(manifest: &[u8], key: &str) -> Self {
         #[derive(Deserialize)]
         struct Lenient {
             #[serde(default)]
@@ -165,7 +326,7 @@ impl Requirement {
         match serde_json::from_slice::<Lenient>(manifest) {
             Ok(Lenient {
                 annotations: Some(serde_json::Value::Object(annotations)),
-            }) => match annotations.get(MIN_APP_VERSION) {
+            }) => match annotations.get(key) {
                 None => Self::None,
                 Some(serde_json::Value::String(text)) => Self::parse(text),
                 Some(other) => Self::Invalid(other.to_string()),
@@ -204,12 +365,15 @@ impl Requirement {
 
     /// "Needs unemupc X or newer" when this build does not read the
     /// artifact, as every list that disables it says.
-    pub fn unmet_reason(&self) -> Option<String> {
-        (!self.met_by(level())).then(|| {
-            needs(match self {
-                Self::Release(required) => Some(*required),
-                _ => None,
-            })
+    pub fn unmet_reason(&self, component: Component, level: Option<AppVersion>) -> Option<String> {
+        (!level.is_some_and(|level| self.met_by(level)) && !matches!(self, Self::None)).then(|| {
+            needs_component(
+                component,
+                match self {
+                    Self::Release(required) => Some(*required),
+                    _ => None,
+                },
+            )
         })
     }
 
@@ -224,18 +388,23 @@ impl Requirement {
     }
 
     /// Refuse an artifact this build does not read, naming `reference`.
-    pub fn check(&self, reference: &str) -> Result<()> {
-        let level = level();
-        if self.met_by(level) {
+    pub fn check(
+        &self,
+        reference: &str,
+        component: Component,
+        level: Option<AppVersion>,
+    ) -> Result<()> {
+        if matches!(self, Self::None) || level.is_some_and(|level| self.met_by(level)) {
             return Ok(());
         }
         Err(Error::NeedsNewer {
             reference: reference.into(),
+            component,
             required: match self {
                 Self::Release(required) => Some(*required),
                 _ => None,
             },
-            level,
+            level: level.unwrap_or(BASELINE),
         })
     }
 
@@ -252,92 +421,103 @@ impl Requirement {
 /// The reason an unmet requirement gives: "Needs unemupc X or newer", or
 /// "Needs a newer unemupc" for a value that does not parse.
 pub fn needs(required: Option<AppVersion>) -> String {
+    needs_component(Component::Core, required)
+}
+
+pub fn needs_component(component: Component, required: Option<AppVersion>) -> String {
+    let name = component.name();
     match required {
-        Some(required) => format!("Needs {PROGRAM} {required} or newer"),
-        None => format!("Needs a newer {PROGRAM}"),
+        Some(required) => format!("Needs {name} {required} or newer"),
+        None => format!("Needs a newer {name}"),
     }
 }
 
-/// The message of [`Error::NeedsNewer`] after the reference.
-pub(crate) fn needs_newer(required: &Option<AppVersion>, level: &AppVersion) -> String {
+pub(crate) fn needs_newer(
+    component: &Component,
+    required: &Option<AppVersion>,
+    level: &AppVersion,
+) -> String {
+    let name = component.name();
     match required {
-        Some(required) => format!("needs {PROGRAM} {required} or newer (this is {level})"),
-        None => format!("needs a newer {PROGRAM} (this is {level})"),
+        Some(required) => format!("needs {name} {required} or newer (this is {level})"),
+        None => format!("needs a newer {name} (this is {level})"),
     }
 }
 
-/// Write the marker: `required` from the tables and from what the artifact
-/// inherits, raised to `stated` when a recipe or `--min-app-version` states a
-/// higher one, and left out at the baseline. A stated value below `required`
-/// is refused, naming both, and so is one above this build's level, which
-/// could not read the artifact then.
+/// Stamp each domain independently, preserving inherited floors and omitting its baseline.
 pub fn stamp(
     manifest: &mut Manifest,
-    required: AppVersion,
+    required: Releases,
     stated: Option<AppVersion>,
+    levels: Levels,
 ) -> Result<()> {
-    set(manifest, raised(required, stated)?);
-    Ok(())
+    let inherited = Requirement::of(manifest).release()?;
+    let core = raised(
+        required.core.max(inherited),
+        stated,
+        Component::Core,
+        levels.core,
+    )?;
+    floor(manifest, Releases { core, ..required }, levels)
 }
 
-/// The marker [`stamp`] writes: `required` raised to `stated`. A stated value
-/// below `required` is refused, naming both, and so is one above this build's
-/// level.
-pub fn raised(required: AppVersion, stated: Option<AppVersion>) -> Result<AppVersion> {
-    within_level(required)?;
+pub fn raised(
+    required: AppVersion,
+    stated: Option<AppVersion>,
+    component: Component,
+    level: Option<AppVersion>,
+) -> Result<AppVersion> {
+    within_level(required, component, level)?;
     let Some(stated) = stated else {
         return Ok(required);
     };
     if stated < required {
-        return Err(invalid(format!(
-            "the stated minimum version {stated} is lower than {required}, the oldest {PROGRAM} that reads this artifact"
-        )));
+        return Err(invalid(format!("the stated minimum version {stated} is lower than {required}, the oldest {} that reads this artifact", component.name())));
     }
-    let level = level();
-    if stated > level {
-        return Err(invalid(format!(
-            "the stated minimum version {stated} is newer than this {PROGRAM} ({level}), which could not read the artifact"
-        )));
-    }
+    within_level(stated, component, level)?;
     Ok(stated)
 }
 
-/// Keep the marker of the artifact `manifest` derives from as a floor: a
-/// derived machine needs at least what its source needed, such as an
-/// emulation fix stated at import that the tables cannot see.
-pub fn carry(manifest: &mut Manifest, source: &Manifest) -> Result<()> {
-    floor(manifest, Requirement::of(source).release()?)
+/// Carry floors only while the encoded content is retained. Repackaged ROMs carry only core floors.
+pub fn carry(manifest: &mut Manifest, source: &Manifest, levels: Levels) -> Result<()> {
+    floor(manifest, Requirements::of(source).releases()?, levels)
 }
 
-/// Raise the marker to at least `release`, keeping a higher one the manifest
-/// already carries, such as one copied from the artifact it was made from.
-pub fn floor(manifest: &mut Manifest, release: AppVersion) -> Result<()> {
-    within_level(release)?;
-    let own = Requirement::of(manifest).release()?;
-    set(manifest, own.max(release));
-    Ok(())
-}
-
-/// A computed requirement above this build's level means a table row names
-/// a release after the package version that [`NEWEST_ROW`] does not cover:
-/// a mistake in this build, never in the artifact.
-fn within_level(required: AppVersion) -> Result<()> {
-    let level = level();
-    if required > level {
-        return Err(invalid(format!(
-            "a compatibility table row names {required}, newer than this build's level {level}; raise image_store::compat::NEWEST_ROW (or the package version) to it"
-        )));
+pub fn floor(manifest: &mut Manifest, releases: Releases, levels: Levels) -> Result<()> {
+    let own = Requirements::of(manifest).releases()?;
+    let floors = [
+        (Component::Core, own.core.max(releases.core)),
+        (Component::Frontend, own.frontend.max(releases.frontend)),
+    ];
+    for (component, required) in floors {
+        within_level(required, component, levels.level(component))?;
+    }
+    for (component, required) in floors {
+        set(manifest, component, required);
     }
     Ok(())
 }
 
-fn set(manifest: &mut Manifest, release: AppVersion) {
-    if release > BASELINE {
-        manifest
-            .annotations
-            .insert(MIN_APP_VERSION.into(), release.to_string());
+fn within_level(
+    required: AppVersion,
+    component: Component,
+    level: Option<AppVersion>,
+) -> Result<()> {
+    if required <= component.baseline() {
+        return Ok(());
+    }
+    if level.is_some_and(|level| required <= level) {
+        return Ok(());
+    }
+    Err(invalid(format!("minimum {} version {required} is newer than this build's level {}; check the component's newest compatibility row", component.name(), level.unwrap_or(BASELINE))))
+}
+
+fn set(manifest: &mut Manifest, component: Component, release: AppVersion) {
+    let key = component.annotation();
+    if release > component.baseline() {
+        manifest.annotations.insert(key.into(), release.to_string());
     } else {
-        manifest.annotations.remove(MIN_APP_VERSION);
+        manifest.annotations.remove(key);
     }
 }
 
@@ -682,7 +862,7 @@ pub fn envelope(manifest: &Manifest, provider: &[Row]) -> Result<AppVersion> {
 /// values of its config that the store owns. Provider-declared payload types
 /// and the provider's tables are left to the provider, which overrides
 /// [`crate::ConfigValidator::required_release`] with its own rows.
-pub fn shared_release(manifest: &Manifest, config: &[u8]) -> Result<AppVersion> {
+pub fn shared_frontend_release(manifest: &Manifest, config: &[u8]) -> Result<AppVersion> {
     let mut release = artifact(manifest.artifact_type())
         .ok_or_else(|| {
             invalid(format!(
@@ -769,8 +949,43 @@ pub fn struct_fields<T: serde::de::DeserializeOwned>() -> &'static [&'static str
 #[cfg(test)]
 mod tests {
     use super::*;
+    const PACKAGE: AppVersion = EXTRACTION_BASELINE;
+    fn level() -> AppVersion {
+        EXTRACTION_BASELINE
+    }
+    fn levels() -> Levels {
+        Levels::new(Some((level(), BASELINE)), level(), NEWEST_ROW)
+    }
+
     use crate::{Descriptor, Digest};
 
+    fn stamp(manifest: &mut Manifest, core: AppVersion, stated: Option<AppVersion>) -> Result<()> {
+        super::stamp(
+            manifest,
+            Releases {
+                core,
+                ..Releases::default()
+            },
+            stated,
+            levels(),
+        )
+    }
+    fn floor(manifest: &mut Manifest, core: AppVersion) -> Result<()> {
+        super::floor(
+            manifest,
+            Releases {
+                core,
+                ..Releases::default()
+            },
+            levels(),
+        )
+    }
+    fn carry(manifest: &mut Manifest, source: &Manifest) -> Result<()> {
+        super::carry(manifest, source, levels())
+    }
+    fn set(manifest: &mut Manifest, core: AppVersion) {
+        super::set(manifest, Component::Core, core)
+    }
     fn machine() -> Manifest {
         let config = Descriptor::new(media_type::CONFIG, Digest::of(b"config"), 6);
         let metadata = Descriptor::new(media_type::METADATA, Digest::of(b"metadata"), 8);
@@ -821,18 +1036,20 @@ mod tests {
         // A development build whose tables name a newer release reads it.
         assert!(level() >= PACKAGE && level() >= NEWEST_ROW);
         let this = level();
-        assert!(Requirement::Release(this).check("x:1").is_ok());
+        assert!(Requirement::Release(this)
+            .check("x:1", Component::Core, Some(level()))
+            .is_ok());
         let higher = AppVersion::new(this.major, this.minor, this.patch + 1);
         assert_eq!(
             Requirement::Release(higher)
-                .check("x:1")
+                .check("x:1", Component::Core, Some(level()))
                 .unwrap_err()
                 .to_string(),
             format!("x:1 needs unemupc {higher} or newer (this is {this})")
         );
         assert_eq!(
             Requirement::Invalid("soon".into())
-                .check("x:1")
+                .check("x:1", Component::Core, Some(level()))
                 .unwrap_err()
                 .to_string(),
             format!("x:1 needs a newer unemupc (this is {this})")
@@ -851,15 +1068,21 @@ mod tests {
             assert_eq!(Requirement::of_text(text), requirement);
             assert_eq!(requirement.text().as_deref(), text);
         }
-        assert_eq!(Requirement::Release(this).unmet_reason(), None);
-        assert_eq!(Requirement::None.unmet_reason(), None);
         assert_eq!(
-            Requirement::Release(higher).unmet_reason(),
+            Requirement::Release(this).unmet_reason(Component::Core, Some(level())),
+            None
+        );
+        assert_eq!(
+            Requirement::None.unmet_reason(Component::Core, Some(level())),
+            None
+        );
+        assert_eq!(
+            Requirement::Release(higher).unmet_reason(Component::Core, Some(level())),
             Some(format!("Needs unemupc {higher} or newer"))
         );
         assert_eq!(
             Requirement::Invalid("soon".into())
-                .unmet_reason()
+                .unmet_reason(Component::Core, Some(level()))
                 .as_deref(),
             Some("Needs a newer unemupc")
         );
@@ -924,9 +1147,9 @@ mod tests {
         assert_eq!(next.annotations[MIN_APP_VERSION], "0.0.3");
         let beyond = AppVersion::new(level().major, level().minor, level().patch + 1);
         let mistake = stamp(&mut machine(), beyond, None).unwrap_err().to_string();
-        assert!(mistake.contains("NEWEST_ROW"), "{mistake}");
+        assert!(mistake.contains("newest compatibility row"), "{mistake}");
         let mistake = floor(&mut machine(), beyond).unwrap_err().to_string();
-        assert!(mistake.contains("NEWEST_ROW"), "{mistake}");
+        assert!(mistake.contains("newest compatibility row"), "{mistake}");
 
         let mut raised = machine();
         stamp(&mut raised, BASELINE, Some(PACKAGE)).unwrap();
@@ -1059,7 +1282,7 @@ mod tests {
             .unwrap();
             (
                 envelope(&manifest, &[]).unwrap(),
-                shared_release(&manifest, config.as_bytes()).unwrap(),
+                shared_frontend_release(&manifest, config.as_bytes()).unwrap(),
             )
         };
         let next = AppVersion::new(0, 0, 3);
@@ -1308,7 +1531,9 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        let store = crate::Store::open(&root).unwrap();
+        let store = crate::Store::open(&root).unwrap().with_compatibility(
+            Compatibility::new(level(), NEWEST_ROW).with_core("synthetic", level(), BASELINE),
+        );
         let put = |kind: &str, bytes: &[u8]| {
             let blob = store.import(bytes, None).unwrap();
             Descriptor::new(kind, blob.digest, blob.size)
@@ -1420,7 +1645,9 @@ mod tests {
             std::process::id(),
             std::thread::current().id()
         ));
-        let store = crate::Store::open(&root).unwrap();
+        let store = crate::Store::open(&root).unwrap().with_compatibility(
+            Compatibility::new(level(), NEWEST_ROW).with_core("synthetic", level(), BASELINE),
+        );
         let put = |kind: &str, bytes: &[u8]| {
             let blob = store.import(bytes, None).unwrap();
             Descriptor::new(kind, blob.digest, blob.size)
@@ -1483,7 +1710,10 @@ mod tests {
             ],
         )
         .unwrap();
-        assert_eq!(shared_release(&manifest, &bytes).unwrap(), BASELINE);
+        assert_eq!(
+            shared_frontend_release(&manifest, &bytes).unwrap(),
+            BASELINE
+        );
         assert_eq!(envelope(&manifest, &[]).unwrap(), BASELINE);
         let mut future = machine();
         future.layers.push(Descriptor::new(

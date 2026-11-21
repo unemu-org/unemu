@@ -371,6 +371,7 @@ pub struct Package {
     pub descriptor: Descriptor,
     pub manifest: Manifest,
     pub config: PackageConfig,
+    pub compatibility_levels: image_store::compat::Levels,
 }
 impl Package {
     /// Provider fit claims; malformed claims fit nothing.
@@ -461,6 +462,7 @@ pub fn packages(store: &Store) -> Result<Vec<Package>> {
                 let config =
                     PackageConfig::decode(&store.read_verified(&manifest.config, MAX_SMALL_BLOB)?)?;
                 Ok(crate::is_pc(&config.platform).then(|| Package {
+                    compatibility_levels: crate::compat::source_levels(store),
                     reference: tag.name.clone(),
                     descriptor: tag.manifest.clone(),
                     manifest,
@@ -866,8 +868,17 @@ fn finish(mut plan: Plan, blobs: &dyn BlobSource, image: &NewImage) -> Result<(V
                 .join(",")
         ),
     );
-    let inherited = crate::compat::packages_floor(image.firmware.iter().map(|rom| &rom.package))?;
-    crate::compat::stamp(&mut manifest, &bytes, inherited, None)?;
+    let inherited = crate::compat::packages_floor(
+        crate::compat::source_levels(blobs),
+        image.firmware.iter().map(|rom| &rom.package),
+    )?;
+    crate::compat::stamp(
+        &mut manifest,
+        &bytes,
+        inherited,
+        None,
+        crate::compat::source_levels(blobs),
+    )?;
     Ok((bytes, manifest))
 }
 

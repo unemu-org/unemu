@@ -27,6 +27,17 @@ pub struct Blob {
 /// Read-only access for providers traversing transitive config references.
 /// OCI Content Descriptors require both digest and size checks before decoding.
 pub trait BlobSource {
+    /// A selected application context must never be replaced by a provider fallback,
+    /// even when that context has no core for a platform.
+    fn compatibility_configured(&self) -> bool {
+        false
+    }
+
+    /// Release levels supplied with the content source, never inferred from store code.
+    fn compatibility_levels(&self, _platform: &str) -> crate::compat::Levels {
+        crate::compat::Levels::default()
+    }
+
     /// Read and fully hash a bounded descriptor, refusing oversized data first.
     fn read_verified(&self, descriptor: &Descriptor, limit: u64) -> Result<Vec<u8>>;
     /// Open a verified file of the decoded payload for random access. A raw
@@ -78,12 +89,33 @@ pub trait ConfigValidator {
         blobs: &dyn BlobSource,
     ) -> Result<Vec<Digest>>;
 
-    /// The oldest release that reads this artifact by the compatibility
-    /// tables (machine-images §5.6), from its manifest and config bytes. The
-    /// default knows the shared rows only; a provider that owns config keys,
-    /// vocabulary or payload types overrides it with its own rows.
+    /// The core-only floor for a provider without separate packaging rows.
+    /// Providers with their own codecs override `required_releases` below.
     fn required_release(&self, manifest: &Manifest, config: &[u8]) -> Result<AppVersion> {
-        crate::compat::shared_release(manifest, config)
+        let _ = (manifest, config);
+        Ok(crate::compat::BASELINE)
+    }
+
+    /// Core and front-end table floors are independent, even when their release numbers differ.
+    fn required_releases(
+        &self,
+        manifest: &Manifest,
+        config: &[u8],
+    ) -> Result<crate::compat::Releases> {
+        Ok(crate::compat::Releases {
+            core: self.required_release(manifest, config)?,
+            frontend: crate::compat::shared_frontend_release(manifest, config)?,
+        })
+    }
+
+    /// Core-owned fallback for standalone provider use. Application descriptions take precedence.
+    fn core_release(&self) -> Option<(AppVersion, AppVersion)> {
+        None
+    }
+
+    /// Newest packaging row, independent of the provider's core rows.
+    fn newest_frontend_row(&self) -> AppVersion {
+        crate::compat::NEWEST_ROW
     }
 
     /// The provider's needs vocabulary (machine-images §2.1), against which
@@ -414,6 +446,7 @@ impl ResolvedImage {
         }
         let store = Store {
             root: self.store_root.clone(),
+            compatibility: crate::compat::Compatibility::default(),
         };
         let _lease = store.lease()?;
         let (file, metadata) = store
@@ -483,6 +516,7 @@ impl Read for ContentReader {
 #[derive(Clone, Debug)]
 pub struct Store {
     root: PathBuf,
+    compatibility: crate::compat::Compatibility,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -512,6 +546,53 @@ struct Index {
 }
 
 impl Store {
+    /// Bind the application's release and selected core descriptions to this handle.
+    pub fn with_compatibility(mut self, compatibility: crate::compat::Compatibility) -> Self {
+        self.compatibility = compatibility;
+        self
+    }
+    pub fn compatibility(&self) -> &crate::compat::Compatibility {
+        &self.compatibility
+    }
+    pub fn levels(&self, platform: &str) -> crate::compat::Levels {
+        self.compatibility.levels(platform)
+    }
+
+    pub fn compatibility_with(
+        &self,
+        providers: &[&dyn ConfigValidator],
+    ) -> crate::compat::Compatibility {
+        let standalone = self.compatibility.frontend.is_none();
+        let mut runtime = if standalone {
+            crate::compat::Compatibility::new(
+                crate::compat::EXTRACTION_BASELINE,
+                crate::compat::NEWEST_ROW,
+            )
+        } else {
+            self.compatibility.clone()
+        };
+        for provider in providers {
+            runtime.frontend_row = runtime.frontend_row.max(provider.newest_frontend_row());
+            if let Some((version, newest)) = provider.core_release() {
+                if standalone {
+                    runtime = runtime.with_core(provider.platform(), version, newest);
+                } else {
+                    for (id, _, row) in &mut runtime.cores {
+                        if crate::platform::same(id, provider.platform()) {
+                            *row = (*row).max(newest);
+                        }
+                    }
+                }
+            }
+        }
+        runtime
+    }
+
+    pub fn levels_for(&self, validator: &dyn ConfigValidator) -> crate::compat::Levels {
+        self.compatibility_with(&[validator])
+            .levels(validator.platform())
+    }
+
     /// Create or open layout version 1. Refuse newer formats and roots without
     /// local filesystem semantics. Existing index and content are never reset.
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
@@ -520,6 +601,7 @@ impl Store {
         host::require_local(root)?;
         let store = Self {
             root: root.canonicalize()?,
+            compatibility: crate::compat::Compatibility::default(),
         };
         let version_path = store.root.join("store.toml");
         if version_path.exists() {
@@ -865,6 +947,13 @@ impl Store {
     /// Read a manifest only after descriptor and release compatibility checks.
     /// Platform dispatch uses this before decoding even a future envelope.
     pub fn read_compatible_manifest(&self, image: &Descriptor) -> Result<Vec<u8>> {
+        self.read_compatible_manifest_at(image, None)
+    }
+    fn read_compatible_manifest_at(
+        &self,
+        image: &Descriptor,
+        levels: Option<crate::compat::Levels>,
+    ) -> Result<Vec<u8>> {
         let _lease = self.lease()?;
         image.validate()?;
         if image.media_type != media_type::MANIFEST {
@@ -875,8 +964,9 @@ impl Store {
         // with the release it needs, never with a decoder message. A machine
         // keeps its image by digest alone, so the refusal names a tag that
         // names the image, and the digest only when none does.
-        let requirement = crate::compat::Requirement::read(&bytes);
-        if requirement.unmet_reason().is_some() {
+        let levels = levels.unwrap_or_else(|| self.compatibility.manifest_levels(&bytes));
+        let requirement = crate::compat::Requirements::read(&bytes);
+        if requirement.unmet_reason(levels).is_some() {
             let tagged = || {
                 self.tags_inner().ok().and_then(|tags| {
                     tags.into_iter()
@@ -889,7 +979,15 @@ impl Store {
                     .map(str::to_owned)
                     .or_else(tagged)
                     .unwrap_or_else(|| image.digest.to_string()),
+                levels,
             )?;
+        }
+        if self.compatibility.frontend.is_some() && levels.core.is_none() {
+            if let Some(platform) = crate::compat::Compatibility::manifest_platform(&bytes) {
+                return Err(invalid(format!(
+                    "no core available for platform {platform}"
+                )));
+            }
         }
         Ok(bytes)
     }
@@ -910,7 +1008,7 @@ impl Store {
         reuse: Option<&ResolvedImage>,
         progress: Option<&dyn Fn(usize, usize)>,
     ) -> Result<ResolvedImage> {
-        let bytes = self.read_compatible_manifest(image)?;
+        let bytes = self.read_compatible_manifest_at(image, Some(self.levels_for(validator)))?;
         let manifest = Manifest::decode_with_types(&bytes, validator.payload_types())?;
         if manifest.artifact_type() != validator.artifact_type() {
             return Err(invalid("artifact type does not match validator"));
@@ -1244,6 +1342,13 @@ impl Store {
 }
 
 impl BlobSource for Store {
+    fn compatibility_configured(&self) -> bool {
+        self.compatibility.frontend.is_some()
+    }
+    fn compatibility_levels(&self, platform: &str) -> crate::compat::Levels {
+        self.levels(platform)
+    }
+
     fn open_verified(&self, descriptor: &Descriptor) -> Result<File> {
         let _lease = self.lease()?;
         let verified = self.verify_payload(descriptor)?;
@@ -1849,7 +1954,10 @@ impl Store {
     pub fn open_existing(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().canonicalize()?;
         host::require_local(&root)?;
-        let store = Self { root };
+        let store = Self {
+            root,
+            compatibility: crate::compat::Compatibility::default(),
+        };
         store.check_version()?;
         let layout: Layout = decode_json(&read_bounded(
             &store.root.join("images/oci-layout"),

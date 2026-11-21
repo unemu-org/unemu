@@ -87,6 +87,16 @@ pub fn run_program(
     platforms: &[&dyn CliPlatform],
     cores: &Cores,
 ) -> u8 {
+    let mut host = host.clone();
+    host.compatibility =
+        match platforms::compatibility_with_cores(env!("CARGO_PKG_VERSION"), cores.usable()) {
+            Ok(compatibility) => compatibility,
+            Err(error) => {
+                let _ = writeln!(io.errors, "{error}");
+                return 1;
+            }
+        };
+    let host = &host;
     if !about(args) {
         return cli_core::run(args, io, host, platforms, cores);
     }

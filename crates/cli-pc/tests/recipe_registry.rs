@@ -844,7 +844,7 @@ fn a_newer_recipe_is_refused_before_any_blob_of_its_bundle_is_fetched() {
     let inspected = artifact::inspect(&artifact, providers(), &t.path("inspect")).unwrap();
     let newer = AppVersion::new(0, 0, 4);
     assert!(
-        newer > image_store::compat::level(),
+        newer > image_store::compat::EXTRACTION_BASELINE,
         "a release this one is not"
     );
     let next = AppVersion::new(0, 0, 3);

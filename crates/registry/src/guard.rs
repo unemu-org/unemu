@@ -120,7 +120,7 @@ impl LocalMarks {
                 let bytes = store.read_verified(&tag.manifest, MAX_SMALL_BLOB)?;
                 // An image a newer release tagged fails the scan with the
                 // release it needs, not with a decoder message.
-                Requirement::read(&bytes).check(&tag.name)?;
+                store.compatibility().check(&bytes, &tag.name)?;
                 let manifest = Manifest::decode_for_summary(&bytes)?;
                 for descriptor in std::iter::once(&manifest.config).chain(&manifest.layers) {
                     if Redistribution::of(descriptor) == Redistribution::UserSupplied {
@@ -257,6 +257,12 @@ pub enum Refusal {
         required: AppVersion,
         /// What the manifest declares: `none`, a lower release or a value
         /// that does not parse.
+        declared: String,
+    },
+    #[error("{target} needs front end {required} or newer by its tables, but unemu.min-frontend-version declares {declared}")]
+    MinFrontendVersion {
+        target: String,
+        required: AppVersion,
         declared: String,
     },
 }
@@ -435,6 +441,32 @@ pub fn check_release(
             Requirement::Invalid(text) => format!("{text:?}"),
         },
     })
+}
+
+/// Check each annotation against its own table floor before an official upload.
+pub fn check_releases(
+    target: &Reference,
+    manifest: &Manifest,
+    required: compat::Releases,
+) -> Result<(), Refusal> {
+    check_release(target, manifest, required.core)?;
+    if target.namespace() != OFFICIAL_NAMESPACE {
+        return Ok(());
+    }
+    let declared = compat::Requirements::of(manifest).frontend;
+    let enough = match &declared {
+        Requirement::None => required.frontend <= compat::EXTRACTION_BASELINE,
+        Requirement::Release(release) => *release >= required.frontend,
+        Requirement::Invalid(_) => false,
+    };
+    if !enough {
+        return Err(Refusal::MinFrontendVersion {
+            target: target.to_string(),
+            required: required.frontend,
+            declared: declared.text().unwrap_or_else(|| "none".into()),
+        });
+    }
+    Ok(())
 }
 
 /// What clears a user-supplied restriction, when the closure shows it: a

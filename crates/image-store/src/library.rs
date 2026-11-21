@@ -514,8 +514,9 @@ impl Store {
             );
             // Artwork types have rows of their own; the source's marker stays
             // as a floor.
-            let required = validator.required_release(&manifest, &resolved.config)?;
-            crate::compat::floor(&mut manifest, required)?;
+            let required = validator.required_releases(&manifest, &resolved.config)?;
+            let levels = self.levels_for(validator);
+            crate::compat::floor(&mut manifest, required, levels)?;
             self.import_manifest_with_types(&manifest, validator.payload_types())?
         };
         let _lock = host::exclusive_lock(&self.root().join("locks/index.lock"))?;

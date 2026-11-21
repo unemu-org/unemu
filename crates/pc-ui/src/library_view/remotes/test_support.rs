@@ -135,6 +135,7 @@ pub fn record(artifact_type: &str, title: &str) -> TagRecord {
         version: None,
         formats: Vec::new(),
         min_app_version: None,
+        compatibility_levels: pc_image::compat::levels(image_store::compat::EXTRACTION_BASELINE),
         platform: Some(pc_image::PLATFORM.into()),
         size: 3 * 1024 * 1024 + 512 * 1024,
         user_supplied: false,

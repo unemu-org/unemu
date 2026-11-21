@@ -289,11 +289,12 @@ impl PlatformCommand for PcCommand {
                     |path, options, dirs, errors| {
                         let roots = unemupc::run::firmware_roots(dirs);
                         let mut warnings = Vec::new();
-                        let result = pc_image::firmware::prepare_for_assembly_with_store_root(
+                        let result = pc_image::firmware::prepare_for_assembly_with_compatibility(
                             path,
                             &roots,
                             &mut warnings,
                             store_root.as_deref(),
+                            &host.compatibility,
                         )
                         .and_then(|document| document.load(options));
                         for warning in warnings {
@@ -319,6 +320,17 @@ pub(crate) fn guard_marks(
     manifest: &Manifest,
     catalogue: &[assembly::FirmwareEntry],
 ) -> image_registry::Result<image_registry::guard::LocalMarks> {
+    let standalone;
+    let store = if store.compatibility().frontend.is_none() {
+        standalone = store
+            .clone()
+            .with_compatibility(pc_image::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
+        &standalone
+    } else {
+        store
+    };
     let mut marks = image_registry::guard::LocalMarks::scan(store)?;
     for digest in pc_image::firmware::restricted(manifest, catalogue)? {
         marks.restrict_catalogue(digest);
@@ -428,6 +440,50 @@ mod tests {
         }
     }
 
+    #[test]
+    fn firmware_push_planning_uses_the_injected_pc_core_release() {
+        let temp = machine_file::test_support::TempDir::new("firmware-push-release");
+        let rom = temp.path().join("rom.bin");
+        std::fs::write(&rom, [0x6b; 8192]).unwrap();
+        let store = Store::open(temp.path().join("store"))
+            .unwrap()
+            .with_compatibility(pc_image::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
+        let candidate =
+            pc_image::firmware_import::unlisted(&rom, "foreign-rom", "option-rom", &[]).unwrap();
+        let statement = pc_image::firmware_import::Statement {
+            open: true,
+            license: Some("MIT".into()),
+            ..Default::default()
+        };
+        pc_image::firmware_import::publish_with(&store, &candidate, &[], &statement, &[]).unwrap();
+        let entry = image_registry::RegistryEntry::builtin("registry.example");
+        let plan = push::plan(
+            &store,
+            "private/firmware/ibm-pc/foreign-rom:r1",
+            Reference::parse("registry.example/owner/rom:r1", "unused.example").unwrap(),
+            Some(&entry),
+        )
+        .unwrap();
+        assert_eq!(plan.verdict(), &Ok(()));
+        let unconfigured = Store::open(store.root()).unwrap();
+        assert!(matches!(
+            push::plan(
+                &unconfigured,
+                "private/firmware/ibm-pc/foreign-rom:r1",
+                plan.target().clone(),
+                Some(&entry),
+            ),
+            Err(image_registry::Error::Store(
+                image_store::Error::NeedsNewer {
+                    component: image_store::compat::Component::Core,
+                    ..
+                }
+            ))
+        ));
+    }
+
     /// A firmware package made where the catalogue does not know its ROM,
     /// marking it open under MIT, pushed to a registry and pulled back into
     /// another store. There the catalogue lists the same bytes as proprietary,
@@ -438,7 +494,11 @@ mod tests {
         let bytes = vec![0x6b; 8192];
         let rom = temp.path().join("rom.bin");
         std::fs::write(&rom, &bytes).unwrap();
-        let foreign = Store::open(temp.path().join("foreign")).unwrap();
+        let foreign = Store::open(temp.path().join("foreign"))
+            .unwrap()
+            .with_compatibility(pc_image::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         let candidate =
             pc_image::firmware_import::unlisted(&rom, "foreign-rom", "option-rom", &[]).unwrap();
         let statement = pc_image::firmware_import::Statement {
@@ -480,7 +540,9 @@ mod tests {
             &mut |_, _| {},
         )
         .unwrap();
-        let local = Store::open(temp.path().join("local")).unwrap();
+        let local = Store::open(temp.path().join("local"))
+            .unwrap()
+            .with_compatibility(foreign.compatibility().clone());
         pull::pull(
             &local,
             &client,

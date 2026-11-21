@@ -5,6 +5,16 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-21 — Independent core and front-end compatibility:**
+  `unemu.min-app-version` names the selected platform core's release;
+  `unemu.min-frontend-version` independently rates front-end formats.
+  Core rows and completeness tests live in `pc-config::compat`; package
+  and recipe rows remain on the front end. Application composition supplies
+  both release levels; readers refuse either unmet marker before strict
+  decoding or pull blobs and give a component-specific disabled reason.
+  The front-end extraction baseline stays 0.0.3, preserving existing
+  manifest bytes, digest pins and explicit core floors. See
+  [machine images §5.6](design/machine-images.md#56-compatibility-of-published-images).
 - **2026-11-21 — FAT12 tests stay with the front end:** the complete
   user-file volume-builder suite moves from `pc-harness` to `pc-image`,
   retaining both test names, corpus, full SHA-256 checks, skip/required-file

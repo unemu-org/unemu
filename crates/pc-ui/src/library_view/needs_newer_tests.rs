@@ -10,7 +10,10 @@ use super::install_media::{self, test_support::library};
 use super::machines::test_support::row as machine_row;
 use super::{snapshot, Filter, LibraryView, Query, Snapshot};
 use egui::accesskit::Role;
-use image_store::compat::level;
+use image_store::compat::EXTRACTION_BASELINE;
+fn level() -> image_store::compat::AppVersion {
+    EXTRACTION_BASELINE
+}
 use pc_library::library_test_support::{tag_newer, warm};
 use std::sync::Arc;
 

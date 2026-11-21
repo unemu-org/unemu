@@ -77,6 +77,30 @@ pub const PAYLOAD_TYPES: &[PayloadType] = &[
 /// The IBM PC/AT provider; no host endpoints or inheritance are accepted.
 pub struct PcProvider;
 impl ConfigValidator for PcProvider {
+    fn required_release(
+        &self,
+        manifest: &image_store::Manifest,
+        config: &[u8],
+    ) -> image_store::Result<image_store::compat::AppVersion> {
+        Ok(self.required_releases(manifest, config)?.core)
+    }
+
+    fn newest_frontend_row(&self) -> image_store::compat::AppVersion {
+        crate::compat::newest_frontend_row()
+    }
+
+    fn core_release(
+        &self,
+    ) -> Option<(
+        image_store::compat::AppVersion,
+        image_store::compat::AppVersion,
+    )> {
+        Some((
+            crate::compat::from_core(pc_config::compat::package()),
+            crate::compat::core_newest_row(),
+        ))
+    }
+
     fn platform(&self) -> &str {
         PLATFORM
     }
@@ -105,12 +129,12 @@ impl ConfigValidator for PcProvider {
         .map(|p| p.references)
         .map_err(store_error)
     }
-    fn required_release(
+    fn required_releases(
         &self,
         manifest: &image_store::Manifest,
         config: &[u8],
-    ) -> image_store::Result<image_store::compat::AppVersion> {
-        crate::compat::release(manifest, config)
+    ) -> image_store::Result<image_store::compat::Releases> {
+        crate::compat::releases(manifest, config)
     }
     fn needs(&self) -> Option<&dyn image_store::needs::Vocabulary> {
         Some(&crate::needs::PcNeeds)
@@ -505,10 +529,11 @@ pub(crate) fn load_pinned(
         }
     }
     let capture = Capture(std::cell::RefCell::new(None), mount);
+    let validator = crate::compat::WithPcRows(&capture);
     let image = if publication {
-        store.verify_publication(descriptor, &capture)?
+        store.verify_publication(descriptor, &validator)?
     } else {
-        store.resolve_descriptor(descriptor, &capture)?
+        store.resolve_descriptor(descriptor, &validator)?
     };
     if publication && image.metadata_read_only {
         return Err(invalid(
@@ -1104,7 +1129,11 @@ inserted = "HEAD_C"
         let (mut config, mut descriptors, blobs) = image()?;
         mutate(&mut config);
         let temp = image_store::test_support::TempDir::new("launch-start");
-        let store = Store::open(temp.path().join("store")).unwrap();
+        let store = Store::open(temp.path().join("store"))
+            .unwrap()
+            .with_compatibility(crate::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         for bytes in &blobs {
             store.import(bytes.as_slice(), None).unwrap();
         }

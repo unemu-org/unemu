@@ -102,7 +102,11 @@ impl Fixture {
         fs::write(temp.path().join("cmos.bin"), [0; 64]).unwrap();
         let path = temp.path().join("machine.toml");
         fs::write(&path,"schema=1\nextends='preset:ibm-5170'\n[firmware.bios]\nimage='bios.bin'\nbase=0xF8000\nprovides=['floppy','fixed-disk']\n[board.rtc.nvram]\nimage='cmos.bin'\nwrite='journal'\njournal='cmos.upfj'\n[[card]]\nid='fdc-765'\n[[card.drives]]\nunit=0\ntype='360K'\n[[card.drives.media]]\nimage='one.img'\nwrite='journal'\njournal='one.upfj'\n[[card.drives.media]]\nimage='two.img'\nwrite='journal'\njournal='two.upfj'\n[[card]]\nkind='ide'\n[[card.drives]]\nchannel='master'\ngeometry={cylinders=1,heads=1,sectors=32}\nimage='disk.img'\nwrite='journal'\njournal='disk.upfj'\n").unwrap();
-        let store = Store::open(temp.path().join("store")).unwrap();
+        let store = Store::open(temp.path().join("store"))
+            .unwrap()
+            .with_compatibility(pc_image::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         let descriptor = pc_image::test_support::with_synthetic_firmware(|| {
             pc_image::import_machine(&store, &path, "test:source", &Default::default())
         })
@@ -265,7 +269,11 @@ impl FirmwareStore {
         for (bytes, to) in images {
             fs::write(roms.join(to), bytes).unwrap();
         }
-        let store = Store::open(temp.path().join("store")).unwrap();
+        let store = Store::open(temp.path().join("store"))
+            .unwrap()
+            .with_compatibility(pc_image::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         let catalogue = pc_image::firmware::catalogue();
         let scan = pc_image::firmware_import::scan(std::slice::from_ref(&roms), catalogue).unwrap();
         assert_eq!(scan.candidates.len(), 3, "{:?}", scan.issues);
@@ -465,6 +473,12 @@ pub fn tag_newer(
 
 /// A summary cache of `store` with every image summarised.
 pub fn warm(store: &Store) -> image_store::summary::SummaryCache {
+    let store = store
+        .clone()
+        .with_compatibility(pc_image::with_providers(|providers| {
+            store.compatibility_with(providers)
+        }));
+    let store = &store;
     let mut cache = image_store::summary::SummaryCache::open(store).unwrap();
     while !cache.pending().is_empty() {
         cache.rebuild(store, 8, &[], &[]).unwrap();

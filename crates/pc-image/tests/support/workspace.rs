@@ -88,7 +88,9 @@ impl Fixture {
             )
         };
         fs::write(&file, text).unwrap();
-        let store = Store::open(path.join("store")).unwrap();
+        let store = Store::open(path.join("store")).unwrap().with_compatibility(
+            pc_image::compat::compatibility(image_store::compat::EXTRACTION_BASELINE),
+        );
         let image = pc_image::import_machine(
             &store,
             &file,

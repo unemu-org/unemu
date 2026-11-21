@@ -67,7 +67,9 @@ impl Open {
         for (bytes, to) in roms {
             fs::write(path.join("roms").join(to), bytes).unwrap();
         }
-        let store = Store::open(path.join("store")).unwrap();
+        let store = Store::open(path.join("store")).unwrap().with_compatibility(
+            pc_image::compat::compatibility(image_store::compat::EXTRACTION_BASELINE),
+        );
         let catalogue = pc_image::firmware::catalogue();
         let scan = pc_image::firmware_import::scan(&[path.join("roms")], catalogue).unwrap();
         assert_eq!(scan.candidates.len(), 3, "{:?}", scan.issues);

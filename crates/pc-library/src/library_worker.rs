@@ -477,16 +477,41 @@ pub struct Worker {
 }
 impl Worker {
     pub fn spawn(root: PathBuf, wake: Wake) -> Self {
-        Self::spawn_backend(root, wake, PcBackend)
+        Self::spawn_with_compatibility(
+            root,
+            wake,
+            pc_image::compat::compatibility(image_store::compat::EXTRACTION_BASELINE),
+        )
     }
+    pub fn spawn_with_compatibility(
+        root: PathBuf,
+        wake: Wake,
+        compatibility: image_store::compat::Compatibility,
+    ) -> Self {
+        Self::spawn_configured(root, wake, PcBackend, compatibility)
+    }
+    #[cfg(any(test, feature = "test-support"))]
     fn spawn_backend<B: Backend>(root: PathBuf, wake: Wake, backend: B) -> Self {
+        Self::spawn_configured(
+            root,
+            wake,
+            backend,
+            pc_image::compat::compatibility(image_store::compat::EXTRACTION_BASELINE),
+        )
+    }
+    fn spawn_configured<B: Backend>(
+        root: PathBuf,
+        wake: Wake,
+        backend: B,
+        compatibility: image_store::compat::Compatibility,
+    ) -> Self {
         let (send, requests) = mpsc::channel();
         let (events, receive) = mpsc::sync_channel(2);
         let (finished, done) = mpsc::channel();
         let cancel = Arc::new(AtomicU64::new(0));
         let token = cancel.clone();
         let join = std::thread::spawn(move || {
-            run(root, requests, events, wake, token, backend);
+            run(root, requests, events, wake, token, backend, compatibility);
             let _ = finished.send(());
         });
         Self {
@@ -1268,7 +1293,8 @@ fn machine_row(
 fn needs_newer(store: &Store, image: &image_store::Descriptor) -> Option<String> {
     let bytes =
         image_store::BlobSource::read_verified(store, image, image_store::MAX_SMALL_BLOB).ok()?;
-    image_store::compat::Requirement::read(&bytes).unmet_reason()
+    image_store::compat::Requirements::read(&bytes)
+        .unmet_reason(pc_image::compat::source_levels(store))
 }
 
 /// Refuse a job that reads or rewrites the config of an image this release
@@ -1708,13 +1734,16 @@ fn run<B: Backend>(
     wake: Wake,
     cancel: Arc<AtomicU64>,
     backend: B,
+    compatibility: image_store::compat::Compatibility,
 ) {
     let send = |event| {
         let _ = events.send(event);
         wake();
     };
     let run = || -> Result<()> {
-        let store = Store::open(root).map_err(|e| e.to_string())?;
+        let store = Store::open(root)
+            .map_err(|e| e.to_string())?
+            .with_compatibility(compatibility.clone());
         // Desktop sessions made before machines existed become machines
         // once, when the library first opens the store.
         match pc_image::machine::migrate(&store) {
@@ -1931,8 +1960,9 @@ fn run<B: Backend>(
                                 image_store::MAX_SMALL_BLOB,
                             )
                             .map_err(|e| e.to_string())?;
-                            image_store::compat::Requirement::read(&bytes)
-                                .check(&row.reference)
+                            store
+                                .compatibility()
+                                .check(&bytes, &row.reference)
                                 .map_err(|e| e.to_string())?;
                         }
                         if gaming {

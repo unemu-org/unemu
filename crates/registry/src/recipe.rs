@@ -36,7 +36,7 @@ use crate::{
 use ::recipe::artifact::{self, Artifact, Judged};
 use ::recipe::plan::Sources;
 use ::recipe::Providers;
-use image_store::{compat::Requirement, media_type, Descriptor, Digest, Manifest, Store};
+use image_store::{media_type, Descriptor, Digest, Manifest, Store};
 use std::path::{Path, PathBuf};
 
 /// The parts of `artifact` as a closure in which every blob is open: the
@@ -217,11 +217,15 @@ pub struct Pulled {
 
 /// The manifest at `source`, refused before anything else is fetched when
 /// it needs a newer release, and decoded as a recipe artifact.
-fn recipe_manifest(client: &Client, source: &Reference) -> Result<(Vec<u8>, Manifest)> {
+fn recipe_manifest(
+    client: &Client,
+    source: &Reference,
+    compatibility: &image_store::compat::Compatibility,
+) -> Result<(Vec<u8>, Manifest)> {
     let fetched = client
         .manifest(&source.repository, &source.manifest_reference())?
         .ok_or_else(|| Error::NotFound(source.to_string()))?;
-    Requirement::read(&fetched.bytes).check(&source.to_string())?;
+    compatibility.check(&fetched.bytes, &source.to_string())?;
     recipe_manifest_from(source, fetched)
 }
 
@@ -238,17 +242,38 @@ pub fn pull(
     dir: &Path,
     providers: Providers<'_>,
 ) -> Result<Pulled> {
+    pull_with_compatibility(
+        client,
+        source,
+        dir,
+        providers,
+        &historical_compatibility(providers),
+    )
+}
+
+pub fn pull_with_compatibility(
+    client: &Client,
+    source: &Reference,
+    dir: &Path,
+    providers: Providers<'_>,
+    compatibility: &image_store::compat::Compatibility,
+) -> Result<Pulled> {
     if source.host != client.host() {
         return Err(Error::Config("client and source registry differ".into()));
     }
-    let (manifest_bytes, manifest) = recipe_manifest(client, source)?;
+    let (manifest_bytes, manifest) = recipe_manifest(client, source, compatibility)?;
     let repository = source.repository.as_str();
     let config = client.small_blob(repository, &manifest.config)?;
     let mut layers = Vec::new();
     for layer in &manifest.layers {
         layers.push(client.small_blob(repository, layer)?);
     }
-    let artifact = Artifact::from_parts(manifest_bytes, config, layers)?;
+    let artifact = Artifact::from_parts_with_levels(
+        manifest_bytes.clone(),
+        config,
+        layers,
+        compatibility.manifest_levels(&manifest_bytes),
+    )?;
     let created = !dir.exists();
     let result = (|| -> Result<PathBuf> {
         {
@@ -301,10 +326,33 @@ pub fn row(
     providers: Providers<'_>,
     sources: Sources<'_>,
 ) -> Result<Row> {
+    row_with_compatibility(
+        client,
+        reference,
+        providers,
+        sources,
+        &historical_compatibility(providers),
+    )
+}
+
+pub fn row_with_compatibility(
+    client: &Client,
+    reference: &Reference,
+    providers: Providers<'_>,
+    sources: Sources<'_>,
+    compatibility: &image_store::compat::Compatibility,
+) -> Result<Row> {
     let repository = reference.repository.as_str();
     let fetched = client
         .manifest(repository, &reference.manifest_reference())?
         .ok_or_else(|| Error::NotFound(reference.to_string()))?;
+    let needs = artifact::needs(
+        &fetched.bytes,
+        compatibility.manifest_levels(&fetched.bytes),
+    );
+    if needs.is_none() {
+        compatibility.check(&fetched.bytes, &reference.to_string())?;
+    }
     let lenient = Manifest::decode_for_summary(&fetched.bytes).ok();
     let annotation = |key: &str| {
         lenient
@@ -318,7 +366,7 @@ pub fn row(
         output_digest: annotation(artifact::OUTPUT_DIGEST),
         state: RowState::NeedsNewer(String::new()),
     };
-    if let Some(reason) = artifact::needs(&fetched.bytes) {
+    if let Some(reason) = needs {
         row.state = RowState::NeedsNewer(reason);
         return Ok(row);
     }
@@ -359,4 +407,12 @@ fn recipe_manifest_from(
     }
     let manifest = Manifest::decode(&fetched.bytes)?;
     Ok((fetched.bytes, manifest))
+}
+
+fn historical_compatibility(providers: Providers<'_>) -> image_store::compat::Compatibility {
+    use image_store::compat::{Compatibility, BASELINE, EXTRACTION_BASELINE};
+    providers.platforms().into_iter().fold(
+        Compatibility::new(EXTRACTION_BASELINE, BASELINE),
+        |runtime, platform| runtime.with_core(platform, EXTRACTION_BASELINE, BASELINE),
+    )
 }

@@ -51,7 +51,17 @@ pub struct Migration {
 /// Open an existing store for machine work. Older workspaces become machines
 /// first ([`migrate`]).
 pub fn open_store(root: impl AsRef<Path>) -> Result<(Store, Migration)> {
-    let store = Store::open_existing(root)?;
+    open_store_with_compatibility(
+        root,
+        crate::compat::compatibility(image_store::compat::EXTRACTION_BASELINE),
+    )
+}
+
+pub fn open_store_with_compatibility(
+    root: impl AsRef<Path>,
+    compatibility: image_store::compat::Compatibility,
+) -> Result<(Store, Migration)> {
+    let store = Store::open_existing(root)?.with_compatibility(compatibility);
     let migration = migrate(&store)?;
     Ok((store, migration))
 }
@@ -410,8 +420,8 @@ pub fn create(
     } else {
         source.to_owned()
     };
-    image_store::compat::Requirement::read(&store.read_verified(image, MAX_SMALL_BLOB)?)
-        .check(&reference)?;
+    image_store::compat::Requirements::read(&store.read_verified(image, MAX_SMALL_BLOB)?)
+        .check(&reference, crate::compat::source_levels(store))?;
     let image = &identity(image);
     let name = name.map(validate_name).transpose()?;
     let title = match &name {
@@ -677,7 +687,10 @@ fn image_config(store: &Store, image: &Descriptor) -> Result<(Manifest, Config)>
     let bytes = store.read_verified(image, MAX_SMALL_BLOB)?;
     // The config of an image a newer release wrote is not read: the listing
     // shows the release it needs instead of a decoder message.
-    image_store::compat::Requirement::read(&bytes).check(&image.digest.to_string())?;
+    image_store::compat::Requirements::read(&bytes).check(
+        &image.digest.to_string(),
+        crate::compat::source_levels(store),
+    )?;
     let manifest = Manifest::decode_with_types(&bytes, PAYLOAD_TYPES)?;
     let bytes = store.read_verified(&manifest.config, MAX_SMALL_BLOB)?;
     let config: Config = decode(

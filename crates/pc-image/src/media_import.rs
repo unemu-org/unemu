@@ -334,8 +334,20 @@ impl Plan {
     /// for the set, for behaviour they cannot see (machine-images §5.6). A
     /// value below the computed one is refused, naming both.
     pub fn raise_min_app_version(&mut self, stated: AppVersion) -> Result<()> {
+        self.raise_min_app_version_at(stated, Some(crate::compat::level()))
+    }
+    pub fn raise_min_app_version_at(
+        &mut self,
+        stated: AppVersion,
+        level: Option<AppVersion>,
+    ) -> Result<()> {
         let required = crate::compat::media_set_config(&self.config)?;
-        image_store::compat::raised(required, Some(stated))?;
+        image_store::compat::raised(
+            required,
+            Some(stated),
+            image_store::compat::Component::Core,
+            level,
+        )?;
         self.min_app_version = Some(stated);
         Ok(())
     }
@@ -905,6 +917,7 @@ pub fn publish_checked(
         &config_bytes,
         image_store::compat::BASELINE,
         plan.min_app_version,
+        crate::compat::source_levels(store),
     )?;
     check(&manifest, &config_bytes).map_err(Refusal)?;
     let manifest = store.import_manifest(&manifest)?;
@@ -976,6 +989,8 @@ fn compare_existing(
     let release = image_store::compat::raised(
         crate::compat::media_set_config(&stored)?,
         plan.min_app_version,
+        image_store::compat::Component::Core,
+        crate::compat::source_levels(store).core,
     )?;
     if layout != plan.config
         || resolved.metadata != plan.metadata.encode(&[])?
@@ -1136,7 +1151,11 @@ mod tests {
         let (a, b) = (temp.0.join("a.img"), temp.0.join("b.img"));
         floppy(&a, 1);
         floppy(&b, 2);
-        let store = Store::open(temp.0.join("store")).unwrap();
+        let store = Store::open(temp.0.join("store"))
+            .unwrap()
+            .with_compatibility(crate::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         let first = request(&[a.clone(), b.clone()], "Synthetic set");
         let imported = publish(&store, &plan(&first).unwrap(), &|_, _| {}, &|| false).unwrap();
         assert!(matches!(imported, Outcome::Imported(_)));
@@ -1172,7 +1191,11 @@ mod tests {
         floppy(&b, 2);
         let manual = temp.0.join("manual.txt");
         fs::write(&manual, b"synthetic manual").unwrap();
-        let store = Store::open(temp.0.join("store")).unwrap();
+        let store = Store::open(temp.0.join("store"))
+            .unwrap()
+            .with_compatibility(crate::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         let mut raw = request(&[a.clone(), b.clone()], "Stored raw");
         raw.compress = false;
         let stored = publish(&store, &plan(&raw).unwrap(), &|_, _| {}, &|| false).unwrap();
@@ -1257,12 +1280,17 @@ mod tests {
     /// raise a PC set above it; the shared tables' tests raise one.
     #[test]
     fn a_stated_minimum_release_raises_the_marker_and_never_lowers_it() {
-        use image_store::compat::{level, AppVersion, Requirement, BASELINE};
+        use crate::compat::level;
+        use image_store::compat::{AppVersion, Requirement, BASELINE};
         let computed = AppVersion::new(0, 0, 3);
         let temp = Temp::new("min-app-version");
         let disk = temp.0.join("disk.img");
         floppy(&disk, 7);
-        let store = Store::open(temp.0.join("store")).unwrap();
+        let store = Store::open(temp.0.join("store"))
+            .unwrap()
+            .with_compatibility(crate::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         let read = |d: &Descriptor| {
             use image_store::BlobSource;
             Manifest::decode(&store.read_verified(d, image_store::MAX_SMALL_BLOB).unwrap()).unwrap()
@@ -1309,7 +1337,11 @@ mod tests {
         for (i, path) in paths.iter().enumerate() {
             floppy(path, i as u8);
         }
-        let store = Store::open(temp.0.join("store")).unwrap();
+        let store = Store::open(temp.0.join("store"))
+            .unwrap()
+            .with_compatibility(crate::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         let plan = plan(&request(&paths, "Cancelled set")).unwrap();
         let seen = std::cell::RefCell::new(Vec::new());
         let refusal = publish(
@@ -1412,7 +1444,11 @@ mod tests {
         // the links name its decoded digest, not the stored one.
         let terms = temp.0.join("VENDOR.TXT");
         fs::write(&terms, "Synthetic vendor terms. ".repeat(200)).unwrap();
-        let store = Store::open(temp.0.join("store")).unwrap();
+        let store = Store::open(temp.0.join("store"))
+            .unwrap()
+            .with_compatibility(crate::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         let mut shareware = request(&[a, b], "Synthetic shareware");
         shareware.tag = "test:open-r1".into();
         shareware.extras = vec![extra(&manual), extra(&terms)];
@@ -1591,7 +1627,11 @@ mod tests {
         // Above the compression threshold: the links name decoded digests.
         let archive = temp.0.join("SRC.TAR");
         fs::write(&archive, vec![b's'; 9000]).unwrap();
-        let store = Store::open(temp.0.join("store")).unwrap();
+        let store = Store::open(temp.0.join("store"))
+            .unwrap()
+            .with_compatibility(crate::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         let mut set = request(&[a, b], "Synthetic free software");
         set.tag = "test:gpl-r1".into();
         set.extras = vec![extra(&copying), extra(&archive)];
@@ -1678,7 +1718,11 @@ mod tests {
         let temp = Temp::new("checked");
         let disk = temp.0.join("disk.img");
         floppy(&disk, 3);
-        let store = Store::open(temp.0.join("store")).unwrap();
+        let store = Store::open(temp.0.join("store"))
+            .unwrap()
+            .with_compatibility(crate::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         let plan = plan(&request(&[disk], "Checked set")).unwrap();
         let seen = std::cell::RefCell::new(None);
         let refusal = publish_checked(&store, &plan, &|_, _| {}, &|| false, &|manifest, _| {
@@ -1716,7 +1760,11 @@ mod tests {
         floppy(&disk, 0x5a);
         let manual = temp.0.join("MANUAL.TXT");
         fs::write(&manual, b"Synthetic manual").unwrap();
-        let store = Store::open(temp.0.join("store")).unwrap();
+        let store = Store::open(temp.0.join("store"))
+            .unwrap()
+            .with_compatibility(crate::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         let mut set = request(&[disk], "Pinned set");
         set.extras.push(ExtraSource {
             path: manual,
@@ -1786,7 +1834,11 @@ mod tests {
         floppy(&two, 2);
         let manual = temp.0.join("manual.txt");
         fs::write(&manual, b"Synthetic manual").unwrap();
-        let store = Store::open(temp.0.join("store")).unwrap();
+        let store = Store::open(temp.0.join("store"))
+            .unwrap()
+            .with_compatibility(crate::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         // The same disk listed twice is one layer, under its one name.
         let mut set = request(&[one.clone(), two.clone(), one.clone()], "Named set");
         set.extras.push(ExtraSource {
@@ -1920,7 +1972,11 @@ mod tests {
         fs::create_dir_all(temp.0.join("b")).unwrap();
         let one = temp.0.join("DISK.IMG");
         floppy(&one, 1);
-        let store = Store::open(temp.0.join("store")).unwrap();
+        let store = Store::open(temp.0.join("store"))
+            .unwrap()
+            .with_compatibility(crate::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         let blobs = || entries(&store.root().join("images/blobs/sha256"));
         let before = blobs();
         let refused = |set: &Request| plan(set).unwrap_err().to_string();
@@ -1999,7 +2055,11 @@ mod tests {
         let temp = Temp::new("annotations");
         let disk = temp.0.join("disk.img");
         floppy(&disk, 1);
-        let store = Store::open(temp.0.join("store")).unwrap();
+        let store = Store::open(temp.0.join("store"))
+            .unwrap()
+            .with_compatibility(crate::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         let mut set = request(&[disk], "Catalogued set");
         set.title.description = Some("A synthetic set.\nSecond line.".into());
         set.title.publishers = vec!["Second Publisher".into(), "First Publisher".into()];
@@ -2126,7 +2186,11 @@ mod tests {
         let temp = Temp::new("needs");
         let disk = temp.0.join("disk.img");
         floppy(&disk, 3);
-        let store = Store::open(temp.0.join("store")).unwrap();
+        let store = Store::open(temp.0.join("store"))
+            .unwrap()
+            .with_compatibility(crate::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         let mut set = request(std::slice::from_ref(&disk), "Needy set");
         set.title.needs = BTreeMap::from([
             (

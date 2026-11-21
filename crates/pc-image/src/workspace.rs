@@ -740,11 +740,23 @@ pub(crate) fn publish_machine(
             .annotations
             .insert(crate::revision::FIRMWARE_SOURCES.into(), sources);
     }
-    let inherited =
-        crate::compat::packages_floor(crate::compat::listed_packages(&manifest, packages.list()?))?;
-    crate::compat::stamp(&mut manifest, config_bytes.as_bytes(), inherited, None)?;
+    let inherited = crate::compat::packages_floor(
+        crate::compat::source_levels(store),
+        crate::compat::listed_packages(&manifest, packages.list()?),
+    )?;
+    crate::compat::stamp(
+        &mut manifest,
+        config_bytes.as_bytes(),
+        inherited,
+        None,
+        crate::compat::source_levels(store),
+    )?;
     derive_annotations(&mut manifest, &image.manifest, &old.image.digest, title)?;
-    image_store::compat::carry(&mut manifest, &image.manifest)?;
+    image_store::compat::carry(
+        &mut manifest,
+        &image.manifest,
+        crate::compat::source_levels(store),
+    )?;
     let proposed = store.import_manifest_with_types(&manifest, PcProvider.payload_types())?;
     hook(PublicationStep::BlobStored(proposed.digest.clone()))?;
     let verified = store.verify_publication_reusing(&proposed, &PcProvider, &image)?;

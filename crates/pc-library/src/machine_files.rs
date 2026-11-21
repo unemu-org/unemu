@@ -70,7 +70,15 @@ impl LibraryEntry {
                 )
             })
             .collect::<Vec<_>>();
-        Self::prepare(path, options, &roots, None, None).0
+        Self::prepare(
+            path,
+            options,
+            &roots,
+            None,
+            None,
+            &pc_image::compat::compatibility(image_store::compat::EXTRACTION_BASELINE),
+        )
+        .0
     }
 
     fn prepare(
@@ -79,6 +87,7 @@ impl LibraryEntry {
         roots: &[machine_file::firmware_discovery::FirmwareRoot],
         control: Option<&machine_file::firmware_discovery::DiscoveryControl>,
         store_root: Option<&Path>,
+        compatibility: &image_store::compat::Compatibility,
     ) -> PreparedEntry {
         let name = machine_file::resolve(&path)
             .ok()
@@ -103,11 +112,12 @@ impl LibraryEntry {
             source,
         };
         let mut prepared = None;
-        match pc_image::firmware::prepare_for_assembly_with_store_root(
+        match pc_image::firmware::prepare_for_assembly_with_compatibility(
             &entry.path,
             roots,
             &mut entry.discovery_warnings,
             store_root,
+            compatibility,
         )
         .and_then(|document| {
             if let Some(control) = control {
@@ -291,6 +301,18 @@ pub fn spawn_library_check(
     request: LibraryCheck,
     wake: impl FnOnce() + Send + 'static,
 ) -> std::sync::mpsc::Receiver<PreparedEntry> {
+    spawn_library_check_with_compatibility(
+        request,
+        wake,
+        pc_image::compat::compatibility(image_store::compat::EXTRACTION_BASELINE),
+    )
+}
+
+pub fn spawn_library_check_with_compatibility(
+    request: LibraryCheck,
+    wake: impl FnOnce() + Send + 'static,
+    compatibility: image_store::compat::Compatibility,
+) -> std::sync::mpsc::Receiver<PreparedEntry> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let LibraryCheck {
@@ -351,7 +373,14 @@ pub fn spawn_library_check(
                     }
                 }
             }
-            LibraryEntry::prepare(path, options, &roots, Some(&control), store_root.as_deref())
+            LibraryEntry::prepare(
+                path,
+                options,
+                &roots,
+                Some(&control),
+                store_root.as_deref(),
+                &compatibility,
+            )
         });
         let _ = tx.send(prepared);
         wake();

@@ -116,6 +116,16 @@ pub(crate) struct Response {
 }
 
 impl Response {
+    #[cfg(test)]
+    pub(crate) fn manifest_bytes(url: &str, bytes: Vec<u8>) -> Self {
+        Self {
+            status: 200,
+            url: url.into(),
+            headers: Vec::new(),
+            body: Box::new(io::Cursor::new(bytes)),
+        }
+    }
+
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()

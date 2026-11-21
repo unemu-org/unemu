@@ -91,7 +91,9 @@ fn stored() -> Option<Stored> {
     fs::write(path.join("cmos.bin"), cmos).unwrap();
     let file = path.join("machine.toml");
     fs::write(&file, "schema=1\nextends='preset:ibm-5170'\n[memory]\nextended_kib=1024\n[firmware.bios]\nimage='bios.bin'\n[[firmware.option_roms]]\nimage='xtide.bin'\nbase=0xC8000\nprovides=['fixed-disk']\n[board.rtc.nvram]\nimage='cmos.bin'\nwrite='journal'\njournal='source-cmos.upfj'\n[[card]]\nid='fdc-765'\n[[card.drives]]\nunit=0\ntype='360K'\n[[card.drives.media]]\nimage='one.img'\nwrite='journal'\njournal='source-one.upfj'\n[[card]]\nkind='ide'\n[[card.drives]]\nchannel='master'\ngeometry={cylinders=1,heads=1,sectors=32}\nimage='fixed.img'\nwrite='journal'\njournal='source-fixed.upfj'\nkeep_generations=3\n").unwrap();
-    let store = Store::open(path.join("store")).unwrap();
+    let store = Store::open(path.join("store")).unwrap().with_compatibility(
+        pc_image::compat::compatibility(image_store::compat::EXTRACTION_BASELINE),
+    );
     let image = pc_image::import_machine(
         &store,
         &file,

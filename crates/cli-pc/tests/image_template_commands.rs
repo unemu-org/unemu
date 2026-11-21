@@ -126,7 +126,11 @@ fn the_build_is_reproducible_all_open_for_unemu_and_its_dry_run_writes_nothing()
     );
     // The firmware packages the templates bind stay in the store under the
     // tags `image pull` writes for the published packages, without a line.
-    let store = Store::open_existing(t.0.join("a")).unwrap();
+    let store = Store::open_existing(t.0.join("a"))
+        .unwrap()
+        .with_compatibility(pc_image::compat::compatibility(
+            image_store::compat::EXTRACTION_BASELINE,
+        ));
     for source in &pc_image::template::FIRMWARE {
         let tag = pc_image::template::local_tag(
             &source.repository(),
@@ -169,7 +173,11 @@ fn the_build_is_reproducible_all_open_for_unemu_and_its_dry_run_writes_nothing()
 
     // `image push` of each tag to the official namespace would pass the guard:
     // every blob open, every copyleft ROM and medium with its source archive.
-    let store = Store::open_existing(t.0.join("a")).unwrap();
+    let store = Store::open_existing(t.0.join("a"))
+        .unwrap()
+        .with_compatibility(pc_image::compat::compatibility(
+            image_store::compat::EXTRACTION_BASELINE,
+        ));
     let entry = RegistryEntry::builtin(DEFAULT_REGISTRY);
     for (tag, digest, _, _) in &first {
         let target = Reference::parse(tag, DEFAULT_REGISTRY).unwrap();

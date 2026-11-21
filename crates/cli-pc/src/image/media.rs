@@ -254,15 +254,32 @@ pub fn parse(args: &[OsString]) -> Result<MediaCommand, &'static str> {
     Ok(command)
 }
 
+#[cfg(test)]
 pub fn execute(command: MediaCommand, output: &mut impl Write) -> anyhow::Result<()> {
+    execute_with_compatibility(
+        command,
+        output,
+        &pc_image::compat::compatibility(image_store::compat::EXTRACTION_BASELINE),
+    )
+}
+
+pub fn execute_with_compatibility(
+    command: MediaCommand,
+    output: &mut impl Write,
+    compatibility: &image_store::compat::Compatibility,
+) -> anyhow::Result<()> {
+    cli_core::image::check_min_app_version(
+        command.min_app_version,
+        compatibility.levels(pc_image::PLATFORM),
+    )?;
     Store::validate_tag_name(&command.tag)?;
     let store = if command.dry_run && !command.store.exists() {
         None
     } else {
         let store = if command.create {
-            Store::open(&command.store)?
+            Store::open(&command.store)?.with_compatibility(compatibility.clone())
         } else {
-            Store::open_existing(&command.store)?
+            Store::open_existing(&command.store)?.with_compatibility(compatibility.clone())
         };
         // The command line never moves an existing tag, even to identical bytes.
         store.check_new_tag(&command.tag)?;
@@ -325,7 +342,7 @@ pub fn execute(command: MediaCommand, output: &mut impl Write) -> anyhow::Result
     };
     let mut plan = media_import::plan_with(&request, open.as_ref())?;
     if let Some(stated) = command.min_app_version {
-        plan.raise_min_app_version(stated)?;
+        plan.raise_min_app_version_at(stated, compatibility.levels(pc_image::PLATFORM).core)?;
     }
     writeln!(output, "media order:")?;
     for (index, (path, medium)) in plan.media().enumerate() {

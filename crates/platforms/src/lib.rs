@@ -31,6 +31,40 @@ pub fn cores() -> &'static [&'static dyn Core] {
     &CORES
 }
 
+/// Release domains supplied by the composing application and each selected core.
+pub fn compatibility(frontend: &str) -> image_store::Result<image_store::compat::Compatibility> {
+    compatibility_with_cores(
+        frontend,
+        cores()
+            .iter()
+            .copied()
+            .filter(|core| unemu_core_api::CONTRACT.drives(core.description().implements)),
+    )
+}
+
+pub fn compatibility_with_cores<'a>(
+    frontend: &str,
+    cores: impl IntoIterator<Item = &'a dyn Core>,
+) -> image_store::Result<image_store::compat::Compatibility> {
+    let mut compatibility = image_store::compat::Compatibility::new(
+        frontend.parse()?,
+        pc_image::compat::newest_frontend_row(),
+    );
+    for core in cores {
+        let description = core.description();
+        let version = description.version.parse()?;
+        let newest = if description.id == "unemupc" {
+            pc_image::compat::core_newest_row()
+        } else {
+            version
+        };
+        for platform in description.platforms {
+            compatibility = compatibility.with_core(platform.id, version, newest);
+        }
+    }
+    Ok(compatibility)
+}
+
 /// Run `job` with every platform provider a registry transfer may need: PC
 /// machine images, PC media sets and PC firmware packages
 /// ([`pc_image::with_providers`]). Push and pull pick the one whose artifact
@@ -249,5 +283,21 @@ mod tests {
         assert_eq!(commit_line(Some(commit)), format!("commit: {commit}\n"));
         assert_eq!(commit_line(None), "");
         assert_eq!(commit_line(Some("")), "");
+    }
+    #[test]
+    fn compatibility_uses_the_core_description_and_injected_application_version() {
+        use image_store::compat::AppVersion as V;
+        for (core_version, frontend) in [("0.0.5", 9), ("0.0.9", 5)] {
+            let core = Described(
+                CoreDescription::new(ContractVersion::new(0, 3), "home", "Home", core_version)
+                    .with_platforms(&HOME),
+            );
+            let runtime =
+                compatibility_with_cores(&format!("0.0.{frontend}"), [&core as &dyn Core]).unwrap();
+            let levels = runtime.levels("home");
+            assert_eq!(levels.core, Some(core_version.parse().unwrap()));
+            assert_eq!(levels.frontend, V::new(0, 0, frontend));
+            assert_eq!(runtime.levels("unknown").core, None);
+        }
     }
 }

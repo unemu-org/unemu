@@ -59,6 +59,15 @@ static VOLUMES: [FatVolume; 4] = [
 ];
 
 impl Provider for PcRecipes {
+    fn core_platform_release(
+        &self,
+        platform: &str,
+    ) -> Result<image_store::compat::AppVersion, String> {
+        pc_config::compat::platform(platform)
+            .map(crate::compat::from_core)
+            .map_err(|error| error.to_string())
+    }
+
     fn platform(&self) -> &str {
         crate::PLATFORM
     }

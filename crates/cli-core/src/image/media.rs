@@ -132,9 +132,23 @@ pub fn execute(
     output: &mut impl Write,
     platforms: &[&dyn CliPlatform],
 ) -> anyhow::Result<()> {
+    execute_with_compatibility(
+        command,
+        output,
+        platforms,
+        &image_store::compat::Compatibility::default(),
+    )
+}
+
+pub fn execute_with_compatibility(
+    command: MediaCommand,
+    output: &mut impl Write,
+    platforms: &[&dyn CliPlatform],
+    compatibility: &image_store::compat::Compatibility,
+) -> anyhow::Result<()> {
     match command {
         MediaCommand::List { store } => {
-            let store = Store::open_existing(&store)?;
+            let store = Store::open_existing(&store)?.with_compatibility(compatibility.clone());
             let mut summaries = image_store::summary::SummaryCache::open(&store)?;
             while !summaries.pending().is_empty() {
                 summaries.rebuild(&store, 64, &[], &[])?;
@@ -155,7 +169,7 @@ pub fn execute(
             }
         }
         MediaCommand::Show { store, tag } => {
-            let store = Store::open_existing(&store)?;
+            let store = Store::open_existing(&store)?.with_compatibility(compatibility.clone());
             show(&store, &tag, output, platforms)?
         }
     }

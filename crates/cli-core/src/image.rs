@@ -132,8 +132,9 @@ fn stored_run(
     io: &mut Io<'_>,
     platforms: &[&dyn CliPlatform],
     cores: &core_launch::Cores,
+    host: &HostSources,
 ) -> anyhow::Result<()> {
-    let store = Store::open_existing(root)?;
+    let store = Store::open_existing(root)?.with_compatibility(host.compatibility.clone());
     for provider in platforms {
         let Some(owner) = provider.own_run(&store, &request, io.errors)? else {
             continue;
@@ -365,6 +366,7 @@ pub fn execute(
                 io,
                 platforms,
                 cores,
+                host,
             )?;
         }
         ImageCommand::MachineRun {
@@ -383,15 +385,16 @@ pub fn execute(
                 io,
                 platforms,
                 cores,
+                host,
             )?;
         }
         ImageCommand::Compress { store, source, tag } => {
-            let store = Store::open_existing(store)?;
+            let store = Store::open_existing(store)?.with_compatibility(host.compatibility.clone());
             let result = super::platform_of(platforms)?.compress(&store, &source, &tag)?;
             writeln!(output, "{tag}\t{}", result.digest)?;
         }
         ImageCommand::Workspaces { store } => {
-            let store = Store::open_existing(store)?;
+            let store = Store::open_existing(store)?.with_compatibility(host.compatibility.clone());
             for name in store.list_workspaces()? {
                 writeln!(output, "{name}")?;
             }
@@ -401,7 +404,7 @@ pub fn execute(
             workspace,
             yes,
         } => {
-            let store = Store::open_existing(store)?;
+            let store = Store::open_existing(store)?.with_compatibility(host.compatibility.clone());
             // A machine's changes include its settings and pending inserts,
             // which only the machine command drops with its journals.
             refuse_machine(&store, &workspace, "image machine reset ID --yes")?;
@@ -414,12 +417,17 @@ pub fn execute(
             }
             owner.discard()?;
         }
-        ImageCommand::Media(command) => media::execute(command, output, platforms)?,
+        ImageCommand::Media(command) => {
+            media::execute_with_compatibility(command, output, platforms, &host.compatibility)?
+        }
         ImageCommand::Export(command) => export::execute(command, output, host, platforms)?,
         ImageCommand::Firmware(command) => firmware::execute(command, output, host, platforms)?,
-        ImageCommand::Registry(command) => registry::execute(command, output, platforms)?,
+        ImageCommand::Registry(command) => {
+            registry::execute_with_compatibility(command, output, platforms, &host.compatibility)?
+        }
         ImageCommand::List { store } => {
-            let store = image_store::Store::open_existing(store)?;
+            let store = image_store::Store::open_existing(store)?
+                .with_compatibility(host.compatibility.clone());
             let mut after = None;
             loop {
                 let page = store.list_tags(after.as_deref(), 1000)?;
@@ -475,7 +483,7 @@ pub fn execute(
             writeln!(output, "materialized:{}", store.materialized_bytes()?)?;
         }
         ImageCommand::Sweep { store } => {
-            let store = Store::open_existing(store)?;
+            let store = Store::open_existing(store)?.with_compatibility(host.compatibility.clone());
             let mut pinned = Vec::new();
             for platform in platforms {
                 pinned.extend(platform.pinned(&store)?);
@@ -491,11 +499,10 @@ pub fn execute(
     Ok(0)
 }
 
-/// The value of `--min-app-version`: a release `MAJOR.MINOR.PATCH`, from
-/// the first release up to this one, refused before anything is read or
-/// copied.
+/// Parse `--min-app-version` as a normal release at or above the baseline.
+/// The selected core checks its upper bound at execution, before import inputs.
 pub fn min_app_version(value: &OsString) -> Result<image_store::compat::AppVersion, &'static str> {
-    use image_store::compat::{level, AppVersion, BASELINE};
+    use image_store::compat::{AppVersion, BASELINE};
     let version: AppVersion = value
         .to_str()
         .and_then(|s| s.parse().ok())
@@ -503,18 +510,25 @@ pub fn min_app_version(value: &OsString) -> Result<image_store::compat::AppVersi
     if version < BASELINE {
         return Err("--min-app-version is lower than 0.0.1, the first release");
     }
-    if version > level() {
-        // This build's level can be above its package version, so the message
-        // names it.
-        static NEWER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-        return Err(NEWER.get_or_init(|| {
-            format!(
-                "--min-app-version is newer than {}, the newest release this unemupc reads",
-                level()
-            )
-        }));
-    }
     Ok(version)
+}
+
+/// Check a stated core minimum against the selected core, before opening import inputs.
+pub fn check_min_app_version(
+    stated: Option<image_store::compat::AppVersion>,
+    levels: image_store::compat::Levels,
+) -> anyhow::Result<()> {
+    if let Some(stated) = stated {
+        let level = levels
+            .core
+            .ok_or_else(|| anyhow::anyhow!("no core available for this platform"))?;
+        if stated > level {
+            anyhow::bail!(
+                "--min-app-version is newer than {level}, the newest release this unemupc reads"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// The listing columns of an image's minimum release (machine-images §5.6),
@@ -526,20 +540,22 @@ pub fn requirement_columns(store: &image_store::Store, image: &image_store::Desc
     let Ok(bytes) = store.read_verified(image, image_store::MAX_SMALL_BLOB) else {
         return String::new();
     };
-    let requirement = Requirement::read(&bytes);
-    let declared = match &requirement {
-        Requirement::None => return String::new(),
-        Requirement::Release(release) => release.to_string(),
-        Requirement::Invalid(text) => format!("{text:?}"),
-    };
-    let mut columns = format!("\tmin-app-version:{declared}");
-    if !requirement.met_by(image_store::compat::level()) {
-        let required = match requirement {
-            Requirement::Release(release) => Some(release),
-            _ => None,
+    let requirements = image_store::compat::Requirements::read(&bytes);
+    let mut columns = String::new();
+    for (label, requirement) in [
+        ("min-app-version", &requirements.core),
+        ("min-frontend-version", &requirements.frontend),
+    ] {
+        let declared = match requirement {
+            Requirement::None => continue,
+            Requirement::Release(release) => release.to_string(),
+            Requirement::Invalid(text) => format!("{text:?}"),
         };
+        columns.push_str(&format!("\t{label}:{declared}"));
+    }
+    if let Some(reason) = requirements.unmet_reason(store.compatibility().manifest_levels(&bytes)) {
         columns.push('\t');
-        columns.push_str(&image_store::compat::needs(required));
+        columns.push_str(&reason);
     }
     columns
 }

@@ -126,7 +126,9 @@ pub fn pull_cancellable(
         .ok_or_else(|| Error::NotFound(source.to_string()))?;
     // An image a newer release wrote is refused before any blob is fetched,
     // with the release it needs, whatever else in it this build cannot read.
-    image_store::compat::Requirement::read(&fetched.bytes).check(&source.to_string())?;
+    store
+        .compatibility()
+        .check(&fetched.bytes, &source.to_string())?;
     if fetched
         .media_type
         .as_deref()

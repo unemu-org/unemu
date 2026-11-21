@@ -87,7 +87,7 @@ pub fn execute(
             .clone()
             .ok_or_else(|| anyhow::anyhow!("default store unavailable; use --store DIR"))?,
     };
-    let store = Store::open_existing(&store)?;
+    let store = Store::open_existing(&store)?.with_compatibility(host.compatibility.clone());
     if let Some(tag) = tag {
         show(&store, &tag, output, platforms)?;
     } else {

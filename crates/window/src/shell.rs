@@ -2734,6 +2734,9 @@ impl Shell {
                     .store_root
                     .clone()
                     .or_else(|| crate::library_view::default_store_path().ok()),
+            )
+            .with_compatibility(
+                platforms::compatibility(env!("CARGO_PKG_VERSION")).unwrap_or_default(),
             ),
             retain_workspace_on_stop: false,
             record_exceptions: false,
@@ -3447,7 +3450,7 @@ impl Shell {
                     revision: self.library_revision,
                     user_cancelled: false,
                     control: self.discovery_control.clone(),
-                    receiver: shell_model::spawn_library_check(
+                    receiver: shell_model::spawn_library_check_with_compatibility(
                         shell_model::LibraryCheck {
                             path: self.library[index].path.clone(),
                             options: self.args.options,
@@ -3472,6 +3475,7 @@ impl Shell {
                             }),
                         },
                         move || wake.request_repaint(),
+                        self.image_library.compatibility.clone(),
                     ),
                 });
             }
@@ -6199,7 +6203,11 @@ impl eframe::App for Shell {
                                     self.message = e.to_string();
                                 } else {
                                     self.image_library =
-                                        crate::library_view::LibraryView::new(Some(path));
+                                        crate::library_view::LibraryView::new(Some(path))
+                                            .with_compatibility(
+                                                platforms::compatibility(env!("CARGO_PKG_VERSION"))
+                                                    .unwrap_or_default(),
+                                            );
                                     reattach_remotes = true;
                                     close_dialog = true;
                                 }

@@ -463,7 +463,7 @@ pub fn execute(
         RecipeCommand::Scaffold(paths) => scaffold(&paths, io),
         RecipeCommand::Inputs(options) => inputs(&options, providers, io),
         RecipeCommand::Push(options) => push(&options, providers, host, io),
-        RecipeCommand::Pull(options) => pull(&options, providers, io),
+        RecipeCommand::Pull(options) => pull(&options, providers, host, io),
         RecipeCommand::Usage => {
             let _ = io.errors.write_all(USAGE.as_bytes());
             2
@@ -606,11 +606,12 @@ fn plan(
     }
     let store = match &options.store {
         Some(root) => match image_store::Store::open_existing(root) {
-            Ok(store) => Some(store),
+            Ok(store) => Some(store.with_compatibility(host.compatibility.clone())),
             Err(error) => return fail(io, &format!("{}: {error}", root.display())),
         },
         None => library::store_root(&None, host)
-            .and_then(|root| image_store::Store::open_existing(root).ok()),
+            .and_then(|root| image_store::Store::open_existing(root).ok())
+            .map(|store| store.with_compatibility(host.compatibility.clone())),
     };
     let index = match store.as_ref().map(recipe::store_index::StoreIndex::load) {
         Some(Ok(index)) => Some(index),
@@ -640,6 +641,7 @@ fn plan(
                 downloads: downloads.as_deref(),
                 libraries: &mut libraries,
             },
+            &host.compatibility,
         );
         save_libraries(&libraries, &caches, "plan", io);
         let (text, code) = match judged {
@@ -722,12 +724,19 @@ fn reference_plan(
     options: &PlanOptions,
     providers: recipe::Providers<'_>,
     sources: recipe::plan::Sources<'_>,
+    compatibility: &image_store::compat::Compatibility,
 ) -> anyhow::Result<(String, u8)> {
     use image_registry::recipe::RowState;
     use recipe::artifact::Judged;
     let (reference, _, client) =
         super::image::registry::resolve(None, options.config.as_deref(), text)?;
-    let row = image_registry::recipe::row(&client, &reference, providers, sources)?;
+    let row = image_registry::recipe::row_with_compatibility(
+        &client,
+        &reference,
+        providers,
+        sources,
+        compatibility,
+    )?;
     Ok(match row.state {
         RowState::NeedsNewer(reason) => (
             if options.json {
@@ -785,7 +794,12 @@ fn push(
             ),
         );
     }
-    let artifact = match recipe::artifact::bundle(&options.path, providers) {
+    let artifact = match recipe::artifact::bundle_with_levels(
+        &options.path,
+        providers,
+        host.compatibility
+            .levels(providers.platforms().first().copied().unwrap_or("")),
+    ) {
         Ok(artifact) => artifact,
         Err(recipe::artifact::Refusal::Findings(report)) => {
             let _ = io.output.write_all(report.as_bytes());
@@ -810,7 +824,7 @@ fn push(
         );
     };
     let store = match image_store::Store::open(&root) {
-        Ok(store) => store,
+        Ok(store) => store.with_compatibility(host.compatibility.clone()),
         Err(error) => return fail(io, 2, &format!("{}: {error}", root.display())),
     };
     if options.dry_run {
@@ -889,7 +903,12 @@ fn push(
 
 /// `recipe pull`: fetch, check and write a recipe artifact into `--to` or
 /// the current folder.
-fn pull(options: &PullOptions, providers: recipe::Providers<'_>, io: &mut Io<'_>) -> u8 {
+fn pull(
+    options: &PullOptions,
+    providers: recipe::Providers<'_>,
+    host: &HostSources,
+    io: &mut Io<'_>,
+) -> u8 {
     let fail = |io: &mut Io<'_>, code: u8, error: &dyn std::fmt::Display| {
         let _ = writeln!(io.errors, "unemu recipe pull: {error:#}");
         code
@@ -903,7 +922,13 @@ fn pull(options: &PullOptions, providers: recipe::Providers<'_>, io: &mut Io<'_>
         Err(error) => return fail(io, 2, &error),
     };
     let dir = options.to.clone().unwrap_or_else(|| PathBuf::from("."));
-    let pulled = match image_registry::recipe::pull(&client, &source, &dir, providers) {
+    let pulled = match image_registry::recipe::pull_with_compatibility(
+        &client,
+        &source,
+        &dir,
+        providers,
+        &host.compatibility,
+    ) {
         Ok(pulled) => pulled,
         Err(error) => return fail(io, 1, &error),
     };
@@ -1034,7 +1059,7 @@ fn build(
         );
     };
     let store = match image_store::Store::open(&root) {
-        Ok(store) => store,
+        Ok(store) => store.with_compatibility(host.compatibility.clone()),
         Err(error) => return fail(io, &format!("{}: {error}", root.display())),
     };
     let index = match recipe::store_index::StoreIndex::load(&store) {
@@ -1196,7 +1221,7 @@ fn conformance(
         );
     };
     let store = match image_store::Store::open(&root) {
-        Ok(store) => store,
+        Ok(store) => store.with_compatibility(host.compatibility.clone()),
         Err(error) => return fail(io, &format!("{}: {error}", root.display())),
     };
     let (mut libraries, caches) = match open_libraries(
@@ -1212,6 +1237,7 @@ fn conformance(
     let scratch_root = root.join(CONFORMANCE).join(std::process::id().to_string());
     let _ = std::fs::remove_dir_all(&scratch_root);
     let results = image_store::Store::open(&scratch_root)
+        .map(|scratch| scratch.with_compatibility(host.compatibility.clone()))
         .map_err(|e| std::io::Error::other(format!("{}: {e}", scratch_root.display())))
         .and_then(|scratch| {
             recipe::pin::conformance(&options.paths, providers, &scratch, &mut libraries)

@@ -16,6 +16,14 @@ use image_store::needs::Vocabulary;
 
 /// The provider of one platform family.
 pub trait Provider {
+    /// The core-owned rating of the platform spelling a recipe envelope writes.
+    fn core_platform_release(
+        &self,
+        _platform: &str,
+    ) -> Result<image_store::compat::AppVersion, String> {
+        Ok(image_store::compat::BASELINE)
+    }
+
     /// The platform id it routes on (`ibm-pc`), current, never an alias.
     fn platform(&self) -> &str;
     fn media(&self) -> &dyn MediaProfile;

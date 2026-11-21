@@ -74,6 +74,29 @@ pub fn format_name(table: &toml::Table) -> Result<&'static str> {
     }
 }
 impl MediaFormats for PcMediaFormats {
+    fn newest_frontend_row(&self) -> image_store::compat::AppVersion {
+        crate::compat::newest_frontend_row()
+    }
+
+    fn core_release(
+        &self,
+    ) -> Option<(
+        image_store::compat::AppVersion,
+        image_store::compat::AppVersion,
+    )> {
+        Some((
+            crate::compat::from_core(pc_config::compat::package()),
+            crate::compat::core_newest_row(),
+        ))
+    }
+    fn required_releases(
+        &self,
+        manifest: &image_store::Manifest,
+        config: &[u8],
+    ) -> image_store::Result<image_store::compat::Releases> {
+        crate::compat::releases(manifest, config)
+    }
+
     fn platform(&self) -> &str {
         crate::PLATFORM
     }

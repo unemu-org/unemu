@@ -87,6 +87,29 @@ pub fn lane(s: &str) -> Result<Lane> {
 /// Catalogue-backed rules used for package ingestion and final resolution.
 pub struct PcFirmwareRules<'a>(pub &'a [FirmwareEntry]);
 impl FirmwareRules for PcFirmwareRules<'_> {
+    fn newest_frontend_row(&self) -> image_store::compat::AppVersion {
+        crate::compat::newest_frontend_row()
+    }
+
+    fn core_release(
+        &self,
+    ) -> Option<(
+        image_store::compat::AppVersion,
+        image_store::compat::AppVersion,
+    )> {
+        Some((
+            crate::compat::from_core(pc_config::compat::package()),
+            crate::compat::core_newest_row(),
+        ))
+    }
+    fn required_releases(
+        &self,
+        manifest: &image_store::Manifest,
+        config: &[u8],
+    ) -> image_store::Result<image_store::compat::Releases> {
+        crate::compat::releases(manifest, config)
+    }
+
     fn platform(&self) -> &str {
         PLATFORM
     }
@@ -243,9 +266,25 @@ pub fn prepare_for_assembly_with_store_root(
     warnings: &mut Vec<String>,
     store_root: Option<&std::path::Path>,
 ) -> std::result::Result<machine_file::PreparedMachineFile, machine_file::LoadError> {
+    prepare_for_assembly_with_compatibility(
+        path,
+        roots,
+        warnings,
+        store_root,
+        &crate::compat::compatibility(image_store::compat::EXTRACTION_BASELINE),
+    )
+}
+
+pub fn prepare_for_assembly_with_compatibility(
+    path: impl AsRef<std::path::Path>,
+    roots: &[machine_file::firmware_discovery::FirmwareRoot],
+    warnings: &mut Vec<String>,
+    store_root: Option<&std::path::Path>,
+    compatibility: &image_store::compat::Compatibility,
+) -> std::result::Result<machine_file::PreparedMachineFile, machine_file::LoadError> {
     let store_root = store_root.filter(|root| !matches!(root.try_exists(), Ok(false)));
     let store = match store_root.map(image_store::Store::open_existing) {
-        Some(Ok(store)) => Some(store),
+        Some(Ok(store)) => Some(store.with_compatibility(compatibility.clone())),
         Some(Err(error)) => {
             warnings.push(format!("firmware store unavailable: {error}"));
             None

@@ -896,13 +896,16 @@ pub fn import_machine(
         [] => Vec::new(),
         _ => crate::create::packages(store)?,
     };
-    let inherited =
-        crate::compat::packages_floor(crate::compat::listed_packages(&manifest, &packages))?;
+    let inherited = crate::compat::packages_floor(
+        crate::compat::source_levels(store),
+        crate::compat::listed_packages(&manifest, &packages),
+    )?;
     crate::compat::stamp(
         &mut manifest,
         bytes.as_bytes(),
         inherited,
         options.min_app_version,
+        crate::compat::source_levels(store),
     )?;
     let manifest = store.import_manifest_with_types(&manifest, PcProvider.payload_types())?;
     let record = ImportRecord {

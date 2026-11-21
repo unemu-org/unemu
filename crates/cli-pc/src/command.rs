@@ -31,11 +31,29 @@ pub fn run_with_firmware_sources(
     errors: &mut impl Write,
     sources: &FirmwareSources,
 ) -> u8 {
+    let mut sources = sources.clone();
+    if sources.compatibility.frontend.is_none() {
+        use unemu_core_api::Core;
+        let version = unemu_pc_core::PcCore.description().version.parse();
+        let Ok(version) = version else {
+            let _ = writeln!(errors, "invalid PC core release");
+            return 1;
+        };
+        sources.compatibility = image_store::compat::Compatibility::new(
+            image_store::compat::EXTRACTION_BASELINE,
+            pc_image::compat::newest_frontend_row(),
+        )
+        .with_core(
+            pc_image::PLATFORM,
+            version,
+            pc_image::compat::core_newest_row(),
+        );
+    }
     crate::with_platform(|pc| {
         cli_core::run(
             args,
             &mut Io { output, errors },
-            sources,
+            &sources,
             &[pc],
             &core_launch::Cores::new(&[&unemu_pc_core::PcCore]),
         )

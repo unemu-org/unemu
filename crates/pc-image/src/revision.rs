@@ -938,16 +938,28 @@ pub fn plan(store: &Store, source: &Source, machine: Table) -> Result<Plan> {
             .annotations
             .insert(FIRMWARE_SOURCES.into(), sources);
     }
-    let inherited =
-        crate::compat::packages_floor(crate::compat::listed_packages(&manifest, packages.list()?))?;
-    crate::compat::stamp(&mut manifest, &bytes, inherited, None)?;
+    let inherited = crate::compat::packages_floor(
+        crate::compat::source_levels(store),
+        crate::compat::listed_packages(&manifest, packages.list()?),
+    )?;
+    crate::compat::stamp(
+        &mut manifest,
+        &bytes,
+        inherited,
+        None,
+        crate::compat::source_levels(store),
+    )?;
     crate::workspace::derive_annotations(
         &mut manifest,
         &source.manifest,
         &source.descriptor.digest,
         None,
     )?;
-    image_store::compat::carry(&mut manifest, &source.manifest)?;
+    image_store::compat::carry(
+        &mut manifest,
+        &source.manifest,
+        crate::compat::source_levels(store),
+    )?;
     let old_digests: BTreeSet<_> = source.manifest.layers.iter().map(|d| &d.digest).collect();
     let (shared, added) = manifest
         .layers

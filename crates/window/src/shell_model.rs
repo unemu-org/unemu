@@ -8,7 +8,8 @@
 //! `design/spec.md` §9.4.
 
 pub(crate) use pc_library::machine_files::{
-    machine_paths, select_machine, spawn_library_check, LibraryCheck, LibraryEntry, PreparedEntry,
+    machine_paths, select_machine, spawn_library_check_with_compatibility, LibraryCheck,
+    LibraryEntry, PreparedEntry,
 };
 pub(crate) use pc_ui::commands::{Command, Enablement, State};
 use winit::keyboard::{Key, KeyCode, NamedKey};

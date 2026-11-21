@@ -52,6 +52,7 @@ fn record(artifact_type: &str, title: &str, layers: &[Descriptor]) -> TagRecord 
         version: None,
         formats: Vec::new(),
         min_app_version: None,
+        compatibility_levels: pc_image::compat::levels(image_store::compat::EXTRACTION_BASELINE),
         platform: Some(pc_image::PLATFORM.into()),
         size,
         user_supplied: false,

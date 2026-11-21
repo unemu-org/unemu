@@ -12,6 +12,24 @@ use std::collections::BTreeSet;
 /// Provider-owned format validation, independent of emulator hardware in storage.
 /// See machine-images § Platform neutrality and §5.2.
 pub trait MediaFormats {
+    fn newest_frontend_row(&self) -> crate::compat::AppVersion {
+        crate::compat::NEWEST_ROW
+    }
+
+    fn core_release(&self) -> Option<(crate::compat::AppVersion, crate::compat::AppVersion)> {
+        None
+    }
+    fn required_releases(
+        &self,
+        manifest: &crate::Manifest,
+        config: &[u8],
+    ) -> Result<crate::compat::Releases> {
+        Ok(crate::compat::Releases {
+            core: crate::compat::BASELINE,
+            frontend: crate::compat::shared_frontend_release(manifest, config)?,
+        })
+    }
+
     fn platform(&self) -> &str;
     /// Validate a provider-owned guest filename, including canonical spelling.
     fn validate_name(&self, name: &str) -> Result<()>;
@@ -142,6 +160,29 @@ pub fn valid_id(id: &str) -> bool {
 /// Adapter reuses store closure, full-blob verification and CAS publication.
 pub struct Validator<'a>(pub &'a dyn MediaFormats);
 impl ConfigValidator for Validator<'_> {
+    fn required_release(
+        &self,
+        manifest: &crate::Manifest,
+        config: &[u8],
+    ) -> Result<crate::compat::AppVersion> {
+        Ok(self.required_releases(manifest, config)?.core)
+    }
+
+    fn newest_frontend_row(&self) -> crate::compat::AppVersion {
+        self.0.newest_frontend_row()
+    }
+
+    fn core_release(&self) -> Option<(crate::compat::AppVersion, crate::compat::AppVersion)> {
+        self.0.core_release()
+    }
+    fn required_releases(
+        &self,
+        manifest: &crate::Manifest,
+        config: &[u8],
+    ) -> Result<crate::compat::Releases> {
+        self.0.required_releases(manifest, config)
+    }
+
     fn artifact_type(&self) -> &str {
         media_type::MEDIA_SET
     }

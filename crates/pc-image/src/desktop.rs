@@ -325,7 +325,11 @@ mod tests {
                 Err(e) => panic!("{e}"),
             }
         };
-        let store = Store::open(&path).unwrap();
+        let store = Store::open(&path)
+            .unwrap()
+            .with_compatibility(crate::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
         let owner = store.workspace("session").unwrap();
         fs::create_dir(owner.path().join("media")).unwrap();
         let journal = owner.path().join("media/disk.upfj");

@@ -247,8 +247,10 @@ pub fn execute(
     command: MachineCommand,
     output: &mut impl Write,
     errors: &mut impl Write,
+    compatibility: &image_store::compat::Compatibility,
 ) -> anyhow::Result<()> {
-    let (store, migration) = machine::open_store(&command.store)?;
+    let (store, migration) =
+        machine::open_store_with_compatibility(&command.store, compatibility.clone())?;
     for id in migration.adopted {
         writeln!(errors, "migrated:{id}")?;
     }

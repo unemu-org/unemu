@@ -11,7 +11,7 @@
 mod open_image;
 
 use image_store::{
-    compat::{level, AppVersion, Requirement, MIN_APP_VERSION},
+    compat::{AppVersion, Requirement, MIN_APP_VERSION},
     BlobSource, Descriptor, Manifest, MAX_SMALL_BLOB,
 };
 use pc_image::{
@@ -19,6 +19,8 @@ use pc_image::{
     firmware_import::{self, Statement},
     machine, revision, PcProvider, PAYLOAD_TYPES,
 };
+
+use pc_image::compat::level;
 
 const BIOS: &str = "unemu-at-bios-1.0.2-unemu.3";
 /// The first release that reads the platform id `ibm-pc`.
@@ -63,7 +65,8 @@ fn a_new_machine_inherits_the_minimum_version_of_its_firmware_packages() {
         Requirement::Release(level())
     );
     assert_eq!(
-        pc_image::compat::packages_floor(std::iter::once(raised)).unwrap(),
+        pc_image::compat::packages_floor(store.levels(pc_image::PLATFORM), std::iter::once(raised))
+            .unwrap(),
         level()
     );
     let rom = raised
@@ -177,4 +180,42 @@ fn a_machine_binding_a_package_this_release_cannot_read_is_refused() {
         refused(machine::commit(store, &id, "lab:saved", None, None, false).unwrap_err());
         assert!(store.tag_descriptor("lab:saved").is_err());
     }
+}
+
+#[test]
+fn decoded_package_roms_carry_the_core_floor_without_the_packaging_floor() {
+    use image_store::compat::{Levels, MIN_FRONTEND_VERSION};
+    let Some(open) = open_image::Open::new() else {
+        return;
+    };
+    let mut package = open.packages[0].clone();
+    package
+        .manifest
+        .annotations
+        .insert(MIN_FRONTEND_VERSION.into(), "0.0.8".into());
+    let older_frontend = Levels::new(
+        Some((AppVersion::new(0, 0, 9), RENAMED_IN)),
+        RENAMED_IN,
+        RENAMED_IN,
+    );
+    assert!(pc_image::compat::packages_floor(older_frontend, [&package]).is_err());
+    let levels = Levels::new(
+        Some((RENAMED_IN, RENAMED_IN)),
+        AppVersion::new(0, 0, 9),
+        RENAMED_IN,
+    );
+    assert_eq!(
+        pc_image::compat::packages_floor(levels, [&package]).unwrap(),
+        RENAMED_IN
+    );
+    let store = open
+        .store
+        .clone()
+        .with_compatibility(pc_image::compat::compatibility(AppVersion::new(0, 0, 9)));
+    let mut image = open.image([None, None]);
+    let rom = package.config.roms.first().unwrap();
+    image.firmware[0] = PackageRom::new(&package, rom);
+    let manifest = create::preview(&image, &store).unwrap();
+    assert_eq!(Requirement::of(&manifest), Requirement::Release(RENAMED_IN));
+    assert!(!manifest.annotations.contains_key(MIN_FRONTEND_VERSION));
 }

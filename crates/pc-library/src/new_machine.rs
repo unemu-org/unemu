@@ -113,6 +113,12 @@ struct Roms<'a> {
     cache: &'a RefCell<BTreeMap<Digest, Vec<u8>>>,
 }
 impl image_store::BlobSource for Roms<'_> {
+    fn compatibility_configured(&self) -> bool {
+        self.store.compatibility_configured()
+    }
+    fn compatibility_levels(&self, platform: &str) -> image_store::compat::Levels {
+        self.store.compatibility_levels(platform)
+    }
     fn read_verified(
         &self,
         descriptor: &image_store::Descriptor,
@@ -1440,6 +1446,48 @@ mod tests {
         wizard.store = Some(store.store.clone());
         wizard.set_store(store.choices());
         wizard
+    }
+
+    #[test]
+    fn regression_preview_preserves_injected_component_levels() {
+        use image_store::compat::{AppVersion as V, MIN_FRONTEND_VERSION};
+        use image_store::BlobSource;
+        let Some(mut store) = FirmwareStore::new(false) else {
+            return;
+        };
+        store.store = store
+            .store
+            .with_compatibility(pc_image::compat::compatibility(V::new(0, 0, 9)));
+        let (packages, _, _) = store.choices();
+        for (index, package) in packages.into_iter().enumerate() {
+            let mut manifest = package.manifest;
+            manifest
+                .annotations
+                .insert(MIN_FRONTEND_VERSION.into(), "0.0.8".into());
+            let descriptor = store.store.import_manifest(&manifest).unwrap();
+            store
+                .store
+                .remove_tag(&package.reference, &package.descriptor.digest)
+                .unwrap();
+            store
+                .store
+                .tag_as_newer_release(&format!("supported-firmware-{index}:r1"), &descriptor)
+                .unwrap();
+        }
+        let wizard = wizard(&store);
+        assert!(!wizard.offers(Slot::Bios).0.is_empty());
+        let preview = wizard.preview().unwrap();
+        assert!(preview.is_ok(), "{preview:?}");
+        let cache = RefCell::default();
+        let roms = Roms {
+            store: &store.store,
+            cache: &cache,
+        };
+        assert!(roms.compatibility_configured());
+        assert_eq!(
+            roms.compatibility_levels("ibm-pc"),
+            store.store.levels("ibm-pc")
+        );
     }
     fn offer_names(offers: &[Offer]) -> Vec<&str> {
         offers.iter().map(|o| o.name.as_str()).collect()

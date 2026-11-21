@@ -241,6 +241,22 @@ impl Client {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test_transport(host: &str, transport: Box<dyn Transport>) -> Self {
+        let base = format!("https://{host}");
+        Self {
+            host: host.into(),
+            origin: Origin::of(&base).unwrap(),
+            base,
+            tls: true,
+            confidential: true,
+            transport,
+            credentials: Box::new(crate::credentials::Anonymous),
+            authorization: Mutex::new(None),
+            challenge: Mutex::new(None),
+        }
+    }
+
     pub fn host(&self) -> &str {
         &self.host
     }

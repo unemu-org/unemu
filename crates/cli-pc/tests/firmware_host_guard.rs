@@ -107,6 +107,7 @@ fn firmware_host_guard_child() {
     let supplied = cli_pc::command::FirmwareSources {
         store_root: Some(default_root.clone()),
         index: None,
+        ..Default::default()
     };
     let mut listed = Vec::new();
     assert_eq!(

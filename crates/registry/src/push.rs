@@ -213,7 +213,7 @@ pub fn plan_with_marks(
     let manifest_bytes = store.read_verified(&image, MAX_SMALL_BLOB)?;
     // An image a newer release tagged in a shared store is refused with the
     // release it needs, even when this build cannot decode its envelope.
-    image_store::compat::Requirement::read(&manifest_bytes).check(local_tag)?;
+    store.compatibility().check(&manifest_bytes, local_tag)?;
     let manifest = Manifest::decode_for_summary(&manifest_bytes)?;
     if target.digest.as_ref().is_some_and(|d| d != &image.digest) {
         return Err(Error::Reference(format!(
@@ -316,8 +316,8 @@ pub fn push_cancellable(
     store.verify_publication(&plan.image, validator)?;
     if plan.target.namespace() == crate::reference::OFFICIAL_NAMESPACE {
         let config = store.read_verified(&plan.manifest.config, MAX_SMALL_BLOB)?;
-        let required = validator.required_release(&plan.manifest, &config)?;
-        guard::check_release(&plan.target, &plan.manifest, required)?;
+        let required = validator.required_releases(&plan.manifest, &config)?;
+        guard::check_releases(&plan.target, &plan.manifest, required)?;
     }
     let repository = plan.target.repository.as_str();
     if guard::needs_private_probe(&plan.closure) {

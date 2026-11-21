@@ -38,6 +38,7 @@ fn run(root: &Path, args: &[&str]) -> (u8, String, String) {
     let sources = cli_pc::command::FirmwareSources {
         store_root: Some(root.join("store")),
         index: Some(root.join("rom-index")),
+        ..Default::default()
     };
     let code = cli_pc::command::run_with_firmware_sources(&args, &mut out, &mut err, &sources);
     (

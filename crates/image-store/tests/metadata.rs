@@ -30,7 +30,17 @@ impl Temp {
         Self(path)
     }
     fn store(&self) -> Store {
-        Store::open(&self.0).unwrap()
+        Store::open(&self.0).unwrap().with_compatibility(
+            image_store::compat::Compatibility::new(
+                image_store::compat::EXTRACTION_BASELINE,
+                image_store::compat::NEWEST_ROW,
+            )
+            .with_core(
+                "c64",
+                image_store::compat::EXTRACTION_BASELINE,
+                image_store::compat::BASELINE,
+            ),
+        )
     }
 }
 impl Drop for Temp {
@@ -588,14 +598,14 @@ fn older_summary_caches_without_decoded_sizes_are_rebuilt() {
     // Schemas 3 and 4 (the firmware-package format) predate decoded sizes,
     // schema 5 predates firmware licences and labels, schema 6 read
     // metadata schema 2 as a projection and schema 7 kept no minimum release.
-    for schema in [3, 4, 5, 6, 7] {
+    for schema in [3, 4, 5, 6, 7, 8, 9] {
         let mut cache = SummaryCache::open(&store).unwrap();
         while !cache.pending().is_empty() {
             cache.rebuild(&store, 1, &[], &[]).unwrap();
         }
         let mut value: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema"], 8);
+        assert_eq!(value["schema"], 10);
         value["schema"] = schema.into();
         value["images"][image.digest.to_string()]
             .as_object_mut()
@@ -610,7 +620,7 @@ fn older_summary_caches_without_decoded_sizes_are_rebuilt() {
         let row = cache.summary(&image.digest).unwrap();
         assert_eq!(row.decoded_size, row.stored_size);
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["schema"], 8);
+        assert_eq!(saved["schema"], 10);
     }
 }
 
@@ -1372,7 +1382,7 @@ fn unassigned_artwork_stays_rooted_without_creating_an_image_revision() {
 /// keeps the higher of that and the source's marker (machine-images §5.6).
 #[test]
 fn a_published_catalogue_edit_is_rated_by_the_provider() {
-    use image_store::compat::{AppVersion, Requirement, PACKAGE};
+    use image_store::compat::{AppVersion, Requirement, EXTRACTION_BASELINE as PACKAGE};
     struct Rated;
     impl ConfigValidator for Rated {
         fn platform(&self) -> &str {

@@ -86,8 +86,8 @@ fn official_guard<'a>(
             let closure = guard::closure(manifest, &marks);
             guard::check(Some(&entry), &target, &closure).map_err(|e| e.to_string())?;
         }
-        let required = pc_image::compat::release(manifest, config).map_err(|e| e.to_string())?;
-        guard::check_release(&target, manifest, required).map_err(|e| e.to_string())
+        let required = pc_image::compat::releases(manifest, config).map_err(|e| e.to_string())?;
+        guard::check_releases(&target, manifest, required).map_err(|e| e.to_string())
     }
 }
 
@@ -151,10 +151,14 @@ fn report(
     output.flush()
 }
 
-pub fn execute(command: TemplateCommand, output: &mut impl Write) -> anyhow::Result<()> {
+pub fn execute_with_compatibility(
+    command: TemplateCommand,
+    output: &mut impl Write,
+    compatibility: &image_store::compat::Compatibility,
+) -> anyhow::Result<()> {
     let mut failed: Option<anyhow::Error> = None;
     if !command.dry_run {
-        let store = Store::open(&command.store)?;
+        let store = Store::open(&command.store)?.with_compatibility(compatibility.clone());
         let stores = [&store];
         let guard = official_guard(&stores);
         let mut on_built = |image: &Built| {
@@ -177,9 +181,9 @@ pub fn execute(command: TemplateCommand, output: &mut impl Write) -> anyhow::Res
         std::process::id(),
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     )));
-    let staging = Store::open(&scratch.0)?;
+    let staging = Store::open(&scratch.0)?.with_compatibility(compatibility.clone());
     let target = if command.store.join("store.toml").exists() {
-        Some(Store::open_existing(&command.store)?)
+        Some(Store::open_existing(&command.store)?.with_compatibility(compatibility.clone()))
     } else {
         None
     };
@@ -288,8 +292,14 @@ mod tests {
         // refused until it declares that release.
         let refusal = guard("unemu/firmware/ibm-pc/synthetic:r1", &manifest, &bytes).unwrap_err();
         assert!(refusal.contains("unemu.min-app-version"), "{refusal}");
-        pc_image::compat::stamp(&mut manifest, &bytes, image_store::compat::BASELINE, None)
-            .unwrap();
+        pc_image::compat::stamp(
+            &mut manifest,
+            &bytes,
+            image_store::compat::BASELINE,
+            None,
+            pc_image::compat::source_levels(&store),
+        )
+        .unwrap();
         guard("unemu/firmware/ibm-pc/synthetic:r1", &manifest, &bytes).unwrap();
         manifest
             .annotations

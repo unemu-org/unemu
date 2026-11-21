@@ -36,7 +36,22 @@ impl Temp {
         Self(path)
     }
     pub(crate) fn store(&self) -> Store {
-        Store::open(&self.0).unwrap()
+        Store::open(&self.0).unwrap().with_compatibility(
+            image_store::compat::Compatibility::new(
+                image_store::compat::EXTRACTION_BASELINE,
+                image_store::compat::NEWEST_ROW,
+            )
+            .with_core(
+                "synthetic",
+                image_store::compat::EXTRACTION_BASELINE,
+                image_store::compat::BASELINE,
+            )
+            .with_core(
+                "synthetic-zstd",
+                image_store::compat::EXTRACTION_BASELINE,
+                image_store::compat::BASELINE,
+            ),
+        )
     }
     pub(crate) fn path(&self) -> &std::path::Path {
         &self.0
@@ -2887,7 +2902,7 @@ fn pull_refuses_an_image_that_needs_a_newer_release_before_fetching_any_blob() {
     let registry = MockRegistry::start(open_policy());
     let entry = registry.entry(false);
     let client = client(&entry, Anonymous);
-    let level = image_store::compat::level();
+    let level = image_store::compat::EXTRACTION_BASELINE;
     let providers: [&dyn ConfigValidator; 1] = [&Strict];
 
     let (reference, _) = newer_image(&registry, "o/newer", Some("99.0.0"));
@@ -2961,7 +2976,7 @@ fn pull_takes_an_image_whose_marker_this_release_meets() {
     let client = client(&entry, Anonymous);
     let source = Temp::new();
     let store = source.store();
-    let level = image_store::compat::level();
+    let level = image_store::compat::EXTRACTION_BASELINE;
     let image = rated_image(&store, "met:1.0.0", b"met", Some(&level.to_string()));
     let reference = target(&registry, "o/met:1.0.0");
     push_with(
@@ -3045,7 +3060,7 @@ fn rated_image(store: &Store, tag: &str, label: &[u8], marker: Option<&str>) -> 
 fn the_official_namespace_refuses_a_missing_or_lower_release_marker() {
     let dir = Temp::new();
     let store = dir.store();
-    let required = image_store::compat::level();
+    let required = image_store::compat::EXTRACTION_BASELINE;
     assert!(required > image_store::compat::BASELINE);
     rated_image(&store, "none:1.0.0", b"none", None);
     rated_image(&store, "lower:1.0.0", b"lower", Some("0.0.1"));
@@ -3203,7 +3218,7 @@ fn a_push_plan_refuses_an_unreadable_newer_image_with_the_release_it_needs() {
     let entry = registry.entry(false);
     let sentence = format!(
         "future:1 needs unemupc 99.0.0 or newer (this is {})",
-        image_store::compat::level()
+        image_store::compat::EXTRACTION_BASELINE
     );
     let refused = push::plan_with_marks(
         &store,
@@ -3226,4 +3241,161 @@ fn a_push_plan_refuses_an_unreadable_newer_image_with_the_release_it_needs() {
     .unwrap_err()
     .to_string();
     assert_eq!(refused, sentence);
+}
+
+/// A manifest-only transport makes a blob fetch a test failure without binding a socket.
+#[test]
+fn regression_recipe_row_without_core_stops_before_decode_or_config_request() {
+    use image_store::compat::{AppVersion as V, Compatibility};
+    use std::sync::{atomic::AtomicUsize, Arc};
+    struct OnlyManifest {
+        bytes: Vec<u8>,
+        requests: Arc<AtomicUsize>,
+    }
+    impl crate::http::Transport for OnlyManifest {
+        fn send(
+            &self,
+            _: Method,
+            url: &str,
+            _: &[(&str, String)],
+            _: &Body<'_>,
+        ) -> std::io::Result<crate::http::Response> {
+            assert!(
+                url.contains("/manifests/"),
+                "unexpected config request: {url}"
+            );
+            self.requests.fetch_add(1, Ordering::Relaxed);
+            Ok(crate::http::Response::manifest_bytes(
+                url,
+                self.bytes.clone(),
+            ))
+        }
+    }
+    let runtime = Compatibility::new(V::new(0, 0, 9), V::new(0, 0, 1));
+    let source = Reference::parse("registry.example/o/recipe:1", "registry.example").unwrap();
+    let config = Descriptor::new(mt::RECIPE_CONFIG, Digest::of(b"config"), 6);
+    let manifest = Manifest::new_recipe(mt::RECIPE_MEDIA, "synthetic", config, vec![]).unwrap();
+    for bytes in [
+        manifest.encode().unwrap(),
+        br#"{"future_envelope":true,"annotations":{"unemu.platform":"synthetic"}}"#.to_vec(),
+    ] {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let client = Client::for_test_transport(
+            "registry.example",
+            Box::new(OnlyManifest {
+                bytes,
+                requests: requests.clone(),
+            }),
+        );
+        let result = crate::recipe::row_with_compatibility(
+            &client,
+            &source,
+            ::recipe::Providers(&[]),
+            ::recipe::plan::Sources {
+                store: None,
+                downloads: None,
+                libraries: &mut [],
+            },
+            &runtime,
+        );
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("no core available for platform synthetic"),
+            "{error}"
+        );
+        assert_eq!(requests.load(Ordering::Relaxed), 1);
+    }
+}
+
+/// A manifest-only transport makes a blob fetch a test failure without binding a socket.
+#[test]
+fn independent_component_floors_refuse_pull_before_strict_decode_or_any_blob_request() {
+    use image_store::compat::{
+        AppVersion as V, Compatibility, MIN_APP_VERSION, MIN_FRONTEND_VERSION,
+    };
+    use std::sync::{atomic::AtomicUsize, Arc};
+    struct OnlyManifest {
+        bytes: Vec<u8>,
+        requests: Arc<AtomicUsize>,
+    }
+    impl crate::http::Transport for OnlyManifest {
+        fn send(
+            &self,
+            _: Method,
+            url: &str,
+            _: &[(&str, String)],
+            _: &Body<'_>,
+        ) -> std::io::Result<crate::http::Response> {
+            assert!(
+                url.contains("/manifests/"),
+                "unexpected blob request: {url}"
+            );
+            self.requests.fetch_add(1, Ordering::Relaxed);
+            Ok(crate::http::Response::manifest_bytes(
+                url,
+                self.bytes.clone(),
+            ))
+        }
+    }
+    let v = |patch| V::new(0, 0, patch);
+    for (core, frontend, key, marker, reason) in [
+        (
+            3,
+            9,
+            MIN_APP_VERSION,
+            "0.0.5",
+            "needs unemupc 0.0.5 or newer",
+        ),
+        (
+            9,
+            3,
+            MIN_FRONTEND_VERSION,
+            "0.0.5",
+            "needs front end 0.0.5 or newer",
+        ),
+        (
+            9,
+            9,
+            MIN_FRONTEND_VERSION,
+            "soon",
+            "needs a newer front end",
+        ),
+        (9, 9, MIN_APP_VERSION, "soon", "needs a newer unemupc"),
+    ] {
+        let temp = Temp::new();
+        let store =
+            temp.store()
+                .with_compatibility(Compatibility::new(v(frontend), v(1)).with_core(
+                    "synthetic",
+                    v(core),
+                    v(1),
+                ));
+        let bytes = serde_json::to_vec(&serde_json::json!({"future_envelope": true,
+            "annotations": {"unemu.platform": "synthetic", key: marker}}))
+        .unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let client = Client::for_test_transport(
+            "registry.example",
+            Box::new(OnlyManifest {
+                bytes,
+                requests: requests.clone(),
+            }),
+        );
+        let source = Reference::parse("registry.example/o/image:1", "registry.example").unwrap();
+        let error =
+            pull::pull(&store, &client, &source, "image:1", &PROVIDERS, &|_| {}).unwrap_err();
+        assert!(error.to_string().contains(reason), "{error}");
+        assert_eq!(requests.load(Ordering::Relaxed), 1);
+        assert!(store.tag_descriptor("image:1").is_err());
+        let error = crate::browse::read_tag_with_compatibility(
+            &client,
+            "o/image",
+            "1",
+            &|| false,
+            store.compatibility(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains(reason), "{error}");
+        assert_eq!(requests.load(Ordering::Relaxed), 2);
+    }
 }

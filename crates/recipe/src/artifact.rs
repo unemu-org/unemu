@@ -19,8 +19,8 @@
 //! the pulled recipe plans and builds with no other file. Every part is at
 //! most 1 MiB. The manifest's annotations are `unemu.platform`,
 //! `unemu.recipe.output` (`name:tag`), `unemu.recipe.output.digest`, the
-//! title and description for registry web pages, `unemu.min-app-version`
-//! (the oldest release that can *build* the recipe, [`crate::compat`]) and
+//! title and description for registry web pages, independent core and front-end
+//! minimum releases ([`crate::compat`]), and
 //! `org.opencontainers.image.licenses = "CC0-1.0"`.
 //!
 //! **Reading** fails closed ([`Artifact::from_parts`], [`inspect`]): the
@@ -43,7 +43,7 @@
 use crate::model::{Document, InputForm, Kind, Recipe};
 use crate::plan::{Plan, Sources};
 use crate::{lock, Providers, Report};
-use image_store::compat::{self, AppVersion, Requirement};
+use image_store::compat::{self, AppVersion, Levels, Requirement, Requirements};
 use image_store::{media_type, Descriptor, Digest, Manifest};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -282,9 +282,18 @@ impl Artifact {
         config: Vec<u8>,
         layers: Vec<Vec<u8>>,
     ) -> Result<Self, Refusal> {
+        Self::from_parts_with_levels(manifest_bytes, config, layers, historical_levels())
+    }
+
+    pub fn from_parts_with_levels(
+        manifest_bytes: Vec<u8>,
+        config: Vec<u8>,
+        layers: Vec<Vec<u8>>,
+        levels: Levels,
+    ) -> Result<Self, Refusal> {
         let codec = |e: image_store::Error| Refusal::Codec(e.to_string());
-        Requirement::read(&manifest_bytes)
-            .check("the recipe artifact")
+        Requirements::read(&manifest_bytes)
+            .check("the recipe artifact", levels)
             .map_err(codec)?;
         let manifest = Manifest::decode(&manifest_bytes).map_err(codec)?;
         if !image_store::is_recipe(manifest.artifact_type()) {
@@ -518,6 +527,15 @@ fn read(path: &Path) -> Result<Vec<u8>, Refusal> {
 /// inputs and lock files are read from its folder, each bundled input
 /// checked against its size and hash. Nothing is written.
 pub fn bundle(path: &Path, providers: Providers<'_>) -> Result<Artifact, Refusal> {
+    bundle_with_levels(path, providers, historical_levels())
+}
+
+/// Bind recipe parser features to the caller's front-end level.
+pub fn bundle_with_levels(
+    path: &Path,
+    providers: Providers<'_>,
+    levels: Levels,
+) -> Result<Artifact, Refusal> {
     let unreadable = |e: io::Error| Refusal::Unreadable(e.to_string());
     let report = crate::check_paths(&[path.to_path_buf()], providers).map_err(unreadable)?;
     if !report.is_clean() {
@@ -573,13 +591,7 @@ pub fn bundle(path: &Path, providers: Providers<'_>) -> Result<Artifact, Refusal
         parts.push(part(media_type::RECIPE_LOCK, &title, bytes));
     }
     let locked = lock::open(&digest.value, &lock_dir).map_err(Refusal::Unreadable)?;
-    let required = crate::compat::required(
-        &recipe,
-        &Requirement::of(&locked.manifest),
-        &crate::compat::TABLE,
-    )
-    .and_then(|r| compat::raised(r, None).map_err(|e| e.to_string()))
-    .map_err(Refusal::Codec)?;
+    let required = requirements(&recipe, &locked.manifest, providers).map_err(Refusal::Codec)?;
     let (title_text, description) = match recipe.kind {
         Kind::Media => {
             let merged = crate::merge::merge(&recipe, work.as_deref());
@@ -616,12 +628,13 @@ pub fn bundle(path: &Path, providers: Providers<'_>) -> Result<Artifact, Refusal
     if let Some(description) = description {
         annotations.insert(DESCRIPTION.into(), description);
     }
-    compat::stamp(&mut manifest, required, None).map_err(|e| Refusal::Codec(e.to_string()))?;
+    compat::stamp(&mut manifest, required, None, levels)
+        .map_err(|e| Refusal::Codec(e.to_string()))?;
     let manifest_bytes = manifest
         .encode()
         .map_err(|e| Refusal::Codec(e.to_string()))?;
     let layers = gathered.parts.into_iter().map(|(_, bytes)| bytes).collect();
-    Artifact::from_parts(manifest_bytes, gathered.config, layers)
+    Artifact::from_parts_with_levels(manifest_bytes, gathered.config, layers, levels)
 }
 
 /// The manifest of the parts, without the annotations the bundle adds.
@@ -833,23 +846,38 @@ pub fn guard(
         .unwrap_or_default();
     annotation(PLATFORM, platform)?;
     let locked = lock::open(&digest, &lock::dir(&path)).map_err(Refusal::Unreadable)?;
-    let required = crate::compat::required(
-        &recipe,
-        &Requirement::of(&locked.manifest),
-        &crate::compat::TABLE,
-    )
-    .map_err(Refusal::Codec)?;
-    let declared = Requirement::of(&artifact.manifest);
-    let enough = match &declared {
-        Requirement::None => required <= compat::BASELINE,
-        Requirement::Release(release) => *release >= required,
-        Requirement::Invalid(_) => false,
-    };
-    if !enough {
-        return Err(Refusal::MinAppVersion {
-            declared: declared.text().unwrap_or_else(|| "none".into()),
-            required,
-        });
+    let required = requirements(&recipe, &locked.manifest, providers).map_err(Refusal::Codec)?;
+    for (component, requirement, floor) in [
+        (
+            compat::Component::Core,
+            Requirements::of(&artifact.manifest).core,
+            required.core,
+        ),
+        (
+            compat::Component::Frontend,
+            Requirements::of(&artifact.manifest).frontend,
+            required.frontend,
+        ),
+    ] {
+        let enough = match &requirement {
+            Requirement::None => floor <= component.baseline(),
+            Requirement::Release(release) => *release >= floor,
+            Requirement::Invalid(_) => false,
+        };
+        if !enough {
+            if component == compat::Component::Core {
+                return Err(Refusal::MinAppVersion {
+                    declared: requirement.text().unwrap_or_else(|| "none".into()),
+                    required: floor,
+                });
+            }
+            return Err(Refusal::Codec(format!(
+                "{} declares {}, needs {} {floor} or newer",
+                component.annotation(),
+                requirement.text().unwrap_or_else(|| "none".into()),
+                component.name()
+            )));
+        }
     }
     Ok(())
 }
@@ -942,8 +970,36 @@ pub fn judge(
 
 /// The release a manifest's marker asks for, for a row's "Needs unemupc X
 /// or newer"; `None` when this release reads it.
-pub fn needs(manifest_bytes: &[u8]) -> Option<String> {
-    Requirement::read(manifest_bytes).unmet_reason()
+pub fn needs(manifest_bytes: &[u8], levels: Levels) -> Option<String> {
+    Requirements::read(manifest_bytes).unmet_reason(levels)
+}
+
+fn requirements(
+    recipe: &Recipe,
+    output: &Manifest,
+    providers: Providers<'_>,
+) -> Result<compat::Releases, String> {
+    let mut required =
+        crate::compat::requirements(recipe, &Requirements::of(output), &crate::compat::TABLE)?;
+    let platform = recipe
+        .identity
+        .platform
+        .as_ref()
+        .map(|platform| image_store::platform::canonical(&platform.value))
+        .ok_or("the recipe states no platform")?;
+    let provider = providers
+        .get(platform)
+        .ok_or_else(|| format!("no provider for platform {platform}"))?;
+    required.core = required.core.max(provider.core_platform_release(platform)?);
+    Ok(required)
+}
+
+fn historical_levels() -> Levels {
+    Levels::new(
+        Some((compat::EXTRACTION_BASELINE, compat::BASELINE)),
+        compat::EXTRACTION_BASELINE,
+        compat::NEWEST_ROW,
+    )
 }
 
 #[cfg(test)]

@@ -100,7 +100,7 @@ fn release_before_future_manifest_envelope(machine: bool) {
         false,
         &format!(
             "test:future needs unemupc 99.0.0 or newer (this is {})",
-            compat::level()
+            compat::EXTRACTION_BASELINE
         ),
     );
 }

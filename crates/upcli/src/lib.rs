@@ -16,6 +16,7 @@ pub fn run_command(args: &[std::ffi::OsString]) -> u8 {
     let host = command::FirmwareSources {
         store_root: image_store::location::default_store_root().ok(),
         index: machine_file::firmware_discovery::firmware_cache_path(),
+        ..Default::default()
     };
     command::run_with_firmware_sources(args, &mut std::io::stdout(), &mut std::io::stderr(), &host)
 }

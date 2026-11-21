@@ -245,7 +245,11 @@ mod tests {
         /// Preferences that list `entries` (TOML `[[registries]]` bodies).
         fn new(entries: &[String]) -> Self {
             let temp = machine_file::test_support::TempDir::new("remote-browse");
-            let store = Store::open(temp.path().join("store")).unwrap();
+            let store = Store::open(temp.path().join("store"))
+                .unwrap()
+                .with_compatibility(pc_image::compat::compatibility(
+                    image_store::compat::EXTRACTION_BASELINE,
+                ));
             let config = temp.path().join("config");
             std::fs::create_dir(&config).unwrap();
             let preferences = config.join("preferences.toml");
@@ -296,6 +300,63 @@ mod tests {
         }
     }
 
+    #[test]
+    fn local_push_records_keep_the_injected_core_and_frontend_levels() {
+        use image_store::compat::{AppVersion as V, Compatibility, MIN_FRONTEND_VERSION};
+
+        let setup = Setup::new(&[]);
+        let image = machine(
+            "push feedback",
+            &[(MIN_APP_VERSION, "0.0.3"), (MIN_FRONTEND_VERSION, "0.0.3")],
+        );
+        image.tag(&setup.store, "local:1");
+        let descriptor = setup.store.tag_descriptor("local:1").unwrap();
+        let pc = PcDesktop::new(&[], &[]);
+        let record = local_record(&setup.store, &descriptor, &[&pc]).unwrap();
+        assert_eq!(record.needs_newer(), None);
+        assert_eq!(
+            record.compatibility_levels,
+            pc_image::compat::levels(image_store::compat::EXTRACTION_BASELINE)
+        );
+
+        for (core, frontend, reason) in [
+            (Some(1), 9, "Needs unemupc 0.0.3 or newer"),
+            (Some(9), 1, "Needs front end 0.0.3 or newer"),
+            (None, 9, "Needs unemupc 0.0.3 or newer"),
+        ] {
+            let v = |patch| V::new(0, 0, patch);
+            let mut compatibility = Compatibility::new(v(frontend), v(1));
+            if let Some(core) = core {
+                compatibility = compatibility.with_core(pc_image::PLATFORM, v(core), v(1));
+            }
+            let store = setup.store.clone().with_compatibility(compatibility);
+            let record = local_record(&store, &descriptor, &[&pc]).unwrap();
+            assert_eq!(record.needs_newer().as_deref(), Some(reason));
+        }
+    }
+
+    #[test]
+    fn browse_test_composition_supplies_the_pc_release_without_validators() {
+        use library_model::DesktopPlatform;
+
+        let setup = Setup::new(&[]);
+        let pc = PcDesktop::new(&[], &[]);
+        let runtime = setup.store.compatibility_with(&pc.validators());
+        let levels = runtime.levels(pc_image::PLATFORM);
+        assert_eq!(
+            levels,
+            pc_image::compat::levels(image_store::compat::EXTRACTION_BASELINE)
+        );
+        assert!(levels.core.is_some());
+
+        let image = release("local disks", "Standard", "1.3", &["720K", "1.44M"]);
+        image.tag(&setup.store, "local:1-r1");
+        let descriptor = setup.store.tag_descriptor("local:1-r1").unwrap();
+        let record = local_record(&setup.store, &descriptor, &[&pc]).unwrap();
+        assert_eq!(record.formats, ["720K", "1.44M"]);
+        assert_eq!(record.release().unwrap().version, "1.3");
+    }
+
     /// Run `request` on a thread until `registry` holds the request that
     /// starts with `prefix`, handing the answers so far to `remotes`; then
     /// press Stop for `host`, release the request and hand over the rest.
@@ -312,8 +373,9 @@ mod tests {
         let request = request.expect("a request");
         let (send, receive) = mpsc::channel();
         let root = setup.store.root().to_owned();
+        let compatibility = setup.store.compatibility().clone();
         let worker = std::thread::spawn(move || {
-            let store = Store::open(root).unwrap();
+            let store = Store::open(root).unwrap().with_compatibility(compatibility);
             let pc = PcDesktop::new(&[], &[]);
             run(&store, request, &[&pc], &|event| send.send(event).unwrap());
         });

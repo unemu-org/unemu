@@ -1,28 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The compatibility rows of recipes (recipes §7.1, §9; machine-images
-//! §5.6): the first
-//! release that builds each recipe version and each step kind. A recipe
-//! artifact's `unemu.min-app-version` is the oldest release that can
-//! *build* the recipe, the maximum over its version's row, the row of every
-//! step it has, the rows of the artifact's own media types
-//! ([`image_store::compat::artifact`], [`image_store::compat::RECIPE_TYPES`])
-//! and what its pinned output needs, which the output's manifest declares
-//! in its lock: that marker already covers the provider's rows of the media
-//! formats, firmware roles and catalogue entries the output uses, as the
-//! importer computed them when the recipe was pinned.
-//!
-//! A reader checks the marker on the manifest before it fetches the
-//! config or any part ([`image_store::compat::Requirement::read`]), so a
-//! newer recipe is refused early with "Needs unemupc X or newer"; the
-//! parser still refuses a version or a verb it does not know, the fail-closed
-//! codec behind the hint.
-//!
-//! Every recipe version the parser accepts and every verb of
-//! [`crate::spec::VERBS`] must have a row; [`step`] matches the model's
-//! steps exhaustively, so a new step kind does not compile without one.
+//! Front-end compatibility rows of recipe versions and step kinds;
+//! recipes §§7.1, 9 and machine-images §5.6. Parser features raise only
+//! `unemu.min-frontend-version`. The locked output's core and packaging floors
+//! remain independent. The platform provider rates the envelope platform spelling
+//! in the core domain. Unknown versions and verbs still fail closed.
 
 use crate::model::{Op, Recipe};
 use image_store::compat::{lookup, AppVersion, Requirement, Row};
+
+pub const NEXT_RELEASE: AppVersion = AppVersion::new(0, 0, 4);
+pub const NEWEST_ROW: AppVersion = AppVersion::new(0, 0, 3);
 
 /// Recipe versions, the value of the top-level `recipe` key.
 pub const VERSIONS: &[Row] = &[("1.0", AppVersion::new(0, 0, 3))];
@@ -72,7 +59,7 @@ pub fn step(op: &Op, table: &Table<'_>) -> Result<AppVersion, String> {
 /// refused, as no release is known to read it.
 pub fn required(
     recipe: &Recipe,
-    output: &Requirement,
+    output_frontend: &Requirement,
     table: &Table<'_>,
 ) -> Result<AppVersion, String> {
     let version = recipe
@@ -97,13 +84,24 @@ pub fn required(
             .ok_or_else(|| format!("no compatibility row for media type {kind}"))?;
         release = release.max(row);
     }
-    let output = output.release().map_err(|e| {
+    let output = output_frontend.release().map_err(|e| {
         format!(
             "the locked output's {}: {e}",
-            image_store::compat::MIN_APP_VERSION
+            image_store::compat::MIN_FRONTEND_VERSION
         )
     })?;
     Ok(release.max(output))
+}
+
+/// Compute parser and output requirements without comparing their release domains.
+pub fn requirements(
+    recipe: &Recipe,
+    output: &image_store::compat::Requirements,
+    table: &Table<'_>,
+) -> Result<image_store::compat::Releases, String> {
+    let frontend = required(recipe, &output.frontend, table)?;
+    let core = output.core.release().map_err(|error| error.to_string())?;
+    Ok(image_store::compat::Releases { core, frontend })
 }
 
 #[cfg(test)]
@@ -120,8 +118,17 @@ mod tests {
             assert!(lookup(&[STEPS], verb).is_some(), "{verb}");
         }
         assert_eq!(STEPS.len(), crate::spec::VERBS.len());
+        assert_eq!(
+            VERSIONS
+                .iter()
+                .chain(STEPS)
+                .map(|(_, release)| *release)
+                .max(),
+            Some(NEWEST_ROW)
+        );
+        assert!(NEXT_RELEASE > NEWEST_ROW);
         for (_, release) in VERSIONS.iter().chain(STEPS) {
-            assert!(*release <= image_store::compat::level());
+            assert!(*release <= image_store::compat::EXTRACTION_BASELINE);
         }
     }
 
@@ -171,5 +178,35 @@ mod tests {
             Err("no compatibility row for step kind unpack".into())
         );
         assert!(required(&plain, &Requirement::Invalid("soon".into()), &TABLE).is_err());
+    }
+    #[test]
+    fn parser_features_raise_only_the_frontend_and_output_floors_keep_their_domain() {
+        use image_store::compat::{Releases, Requirements};
+        let newer = AppVersion::new(0, 0, 7);
+        let versions: &[Row] = &[("1.0", newer)];
+        let output = Requirements {
+            core: Requirement::Release(AppVersion::new(0, 0, 5)),
+            frontend: Requirement::None,
+        };
+        let rated = requirements(&recipe(""), &output, &Table { versions, ..TABLE }).unwrap();
+        assert_eq!(
+            rated,
+            Releases {
+                core: AppVersion::new(0, 0, 5),
+                frontend: newer
+            }
+        );
+        let output = Requirements {
+            core: Requirement::None,
+            frontend: Requirement::Release(AppVersion::new(0, 0, 8)),
+        };
+        let rated = requirements(&recipe(""), &output, &TABLE).unwrap();
+        assert_eq!(
+            rated,
+            Releases {
+                core: image_store::compat::BASELINE,
+                frontend: AppVersion::new(0, 0, 8)
+            }
+        );
     }
 }

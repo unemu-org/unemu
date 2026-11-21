@@ -267,6 +267,10 @@ pub fn execute(
     output: &mut impl Write,
     sources: &HostSources,
 ) -> anyhow::Result<()> {
+    cli_core::image::check_min_app_version(
+        command.statement.min_app_version,
+        sources.compatibility.levels(pc_image::PLATFORM),
+    )?;
     if command.store.as_os_str().is_empty() {
         command.store = sources
             .store_root
@@ -284,10 +288,11 @@ pub fn execute(
             cache,
             command.rescan,
             &control,
-            || import(command, output, catalogue()),
+            || import_with_compatibility(command, output, catalogue(), &sources.compatibility),
         );
     }
-    let store = Store::open_existing(&command.store)?;
+    let store =
+        Store::open_existing(&command.store)?.with_compatibility(sources.compatibility.clone());
     edit(&store, command, output, catalogue())
 }
 
@@ -319,10 +324,25 @@ fn edit(
     Ok(())
 }
 
+#[cfg(test)]
 fn import(
     command: FirmwareCommand,
     output: &mut impl Write,
     catalogue: &[assembly::FirmwareEntry],
+) -> anyhow::Result<()> {
+    import_with_compatibility(
+        command,
+        output,
+        catalogue,
+        &pc_image::compat::compatibility(image_store::compat::EXTRACTION_BASELINE),
+    )
+}
+
+fn import_with_compatibility(
+    command: FirmwareCommand,
+    output: &mut impl Write,
+    catalogue: &[assembly::FirmwareEntry],
+    compatibility: &image_store::compat::Compatibility,
 ) -> anyhow::Result<()> {
     let candidates = if let Some((id, role)) = &command.unlisted {
         vec![firmware_import::unlisted(
@@ -384,9 +404,9 @@ fn import(
     let store = if command.dry_run && !command.store.join("store.toml").exists() {
         None
     } else if command.create && !command.dry_run {
-        Some(Store::open(&command.store)?)
+        Some(Store::open(&command.store)?.with_compatibility(compatibility.clone()))
     } else {
-        Some(Store::open_existing(&command.store)?)
+        Some(Store::open_existing(&command.store)?.with_compatibility(compatibility.clone()))
     };
     let extras = command
         .extras
@@ -406,8 +426,13 @@ fn import(
     let statement = &command.statement;
     let mut states = Vec::new();
     for candidate in &eligible {
-        let preview =
-            firmware_import::preview_manifest_with(candidate, &extras, statement, catalogue)?;
+        let preview = firmware_import::preview_manifest_at(
+            candidate,
+            &extras,
+            statement,
+            catalogue,
+            compatibility.levels(pc_image::PLATFORM),
+        )?;
         let tag = match &store {
             Some(store) => firmware_import::import_tag(store, &candidate.catalogue_id)?,
             None => candidate.tag(),
@@ -694,7 +719,17 @@ mod tests {
         };
         let mut out = Vec::new();
         crate::with_platform(|pc| {
-            cli_core::image::firmware::execute(listing, &mut out, &HostSources::default(), &[pc])
+            cli_core::image::firmware::execute(
+                listing,
+                &mut out,
+                &HostSources {
+                    compatibility: pc_image::compat::compatibility(
+                        image_store::compat::EXTRACTION_BASELINE,
+                    ),
+                    ..HostSources::default()
+                },
+                &[pc],
+            )
         })
         .unwrap();
         assert_eq!(

@@ -220,7 +220,8 @@ pub fn execute(
             let root = store_root(&store, host).context(
                 "no store: give --store DIR; the index lives in the store's cache folder",
             )?;
-            let store = image_store::Store::open(&root)?;
+            let store =
+                image_store::Store::open(&root)?.with_compatibility(host.compatibility.clone());
             for dir in dirs {
                 let absolute = match dir.canonicalize() {
                     Ok(path) => path,

@@ -8,7 +8,7 @@
 //! reason instead of as unreadable.
 
 use crate::{
-    compat::Requirement,
+    compat::{Levels, Requirement, Requirements},
     filesystem as host, invalid,
     library::{Library, LibraryEntry},
     media_type,
@@ -155,6 +155,10 @@ pub struct ImageSummary {
     /// manifest names none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_app_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_frontend_version: Option<String>,
+    #[serde(skip)]
+    pub compatibility_levels: Levels,
 }
 
 impl ImageSummary {
@@ -170,7 +174,11 @@ impl ImageSummary {
     /// artifact: the library lists it disabled with this reason, and every
     /// action that needs its config is unavailable.
     pub fn needs_newer(&self) -> Option<String> {
-        self.requirement().unmet_reason()
+        Requirements {
+            core: self.requirement(),
+            frontend: Requirement::of_text(self.min_frontend_version.as_deref()),
+        }
+        .unmet_reason(self.compatibility_levels)
     }
     /// A firmware package or installation set whose summary lacks the
     /// details its config gives, so it is summarised again; one this build
@@ -201,10 +209,19 @@ pub struct SummaryFailure {
     pub image: Digest,
     pub local_content: Digest,
     pub reason: String,
+    /// Only release refusals become retryable when the supplied levels change.
+    #[serde(default)]
+    pub compatibility_failure: bool,
+    #[serde(default)]
+    pub platform: String,
     /// The manifest's minimum release when the failure is that this build
     /// does not read it; a build that does tries again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_app_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_frontend_version: Option<String>,
+    #[serde(skip)]
+    pub compatibility_levels: Levels,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -215,10 +232,10 @@ struct CacheFile {
     failures: BTreeMap<Digest, SummaryFailure>,
     warnings: Vec<String>,
 }
-/// The cache schema this build writes. Schema 8 records each artifact's
-/// minimum release and summarises one this build does not read from its
-/// manifest; a cache of any other schema is rebuilt, never misread.
-const CACHE_SCHEMA: u32 = 8;
+/// Schema 10 distinguishes release refusals from terminal data errors so
+/// satisfied manifest markers cannot turn a damaged image into endless retries.
+/// A cache of any other schema is rebuilt, never misread.
+const CACHE_SCHEMA: u32 = 10;
 impl Default for CacheFile {
     fn default() -> Self {
         Self {
@@ -241,11 +258,25 @@ fn read_cache(store: &Store) -> Result<CacheFile> {
     ) {
         Ok(bytes) => {
             if let Ok(mut cache) = serde_json::from_slice::<CacheFile>(&bytes) {
+                for row in cache.images.values_mut() {
+                    row.compatibility_levels = store.levels(&row.platform);
+                }
                 for (id, failure) in &mut cache.failures {
                     failure.image = id.clone();
+                    failure.compatibility_levels = store.levels(&failure.platform);
+                    if failure.compatibility_failure {
+                        if let Some(reason) = (Requirements {
+                            core: Requirement::of_text(failure.min_app_version.as_deref()),
+                            frontend: Requirement::of_text(failure.min_frontend_version.as_deref()),
+                        })
+                        .unmet_reason(failure.compatibility_levels)
+                        {
+                            failure.reason = reason;
+                        }
+                    }
                 }
-                // Schema 7 read metadata schema 2 in full but did not keep
-                // the minimum release; older rows are rebuilt.
+                // Release levels are supplied by this application, never persisted
+                // in a cache another application or core release may share.
                 if cache.schema == CACHE_SCHEMA
                     && cache.images.iter().all(|(id, row)| id == &row.image)
                     && cache.failures.iter().all(|(id, row)| id == &row.image)
@@ -393,10 +424,13 @@ impl SummaryCache {
     pub fn failure(&self, image: &Digest) -> Option<&SummaryFailure> {
         self.failures.get(image).filter(|row| {
             &row.local_content == self.local_hash(image)
-                && (row.min_app_version.is_none()
-                    || Requirement::of_text(row.min_app_version.as_deref())
-                        .unmet_reason()
-                        .is_some())
+                && (!row.compatibility_failure
+                    || Requirements {
+                        core: Requirement::of_text(row.min_app_version.as_deref()),
+                        frontend: Requirement::of_text(row.min_frontend_version.as_deref()),
+                    }
+                    .unmet_reason(row.compatibility_levels)
+                    .is_some())
         })
     }
     pub fn retry(&mut self, image: &Digest) {
@@ -447,22 +481,25 @@ impl SummaryCache {
                     self.failures.remove(&id);
                     self.images.insert(id.clone(), row);
                 }
-                Err((error, requirement)) => {
+                Err(problem) => {
+                    let (error, requirement, levels, platform) = *problem;
                     self.images.remove(&id);
                     // A manifest this build cannot decode names the release
                     // it needs instead of the decoder's message.
-                    let reason = requirement
-                        .unmet_reason()
-                        .unwrap_or_else(|| error.to_string());
+                    let refusal = requirement.unmet_reason(levels);
+                    let compatibility_failure = refusal.is_some();
+                    let reason = refusal.unwrap_or_else(|| error.to_string());
                     self.failures.insert(
                         id.clone(),
                         SummaryFailure {
                             image: id.clone(),
                             local_content: self.local_hash(&id).clone(),
                             reason: reason.chars().take(512).collect(),
-                            min_app_version: requirement
-                                .unmet_reason()
-                                .and_then(|_| requirement.text()),
+                            compatibility_failure,
+                            platform,
+                            min_app_version: requirement.core.text(),
+                            min_frontend_version: requirement.frontend.text(),
+                            compatibility_levels: levels,
                         },
                     );
                 }
@@ -482,12 +519,23 @@ impl SummaryCache {
         &self,
         store: &Store,
         tag: &Tag,
-    ) -> std::result::Result<ImageSummary, (crate::Error, Requirement)> {
+    ) -> std::result::Result<ImageSummary, Box<(crate::Error, Requirements, Levels, String)>> {
         let bytes = store
             .read_verified(&tag.manifest, MAX_SMALL_BLOB)
-            .map_err(|e| (e, Requirement::None))?;
-        let requirement = Requirement::read(&bytes);
-        let unread = requirement.unmet_reason().is_some();
+            .map_err(|e| {
+                Box::new((
+                    e,
+                    Requirements {
+                        core: Requirement::None,
+                        frontend: Requirement::None,
+                    },
+                    Levels::default(),
+                    String::new(),
+                ))
+            })?;
+        let requirement = Requirements::read(&bytes);
+        let levels = store.compatibility().manifest_levels(&bytes);
+        let unread = requirement.unmet_reason(levels).is_some();
         let built = Manifest::decode_for_summary(&bytes).and_then(|manifest| {
             if manifest.artifact_type() != media_type::FIRMWARE {
                 return self.build_image(store, tag, manifest, unread);
@@ -499,10 +547,17 @@ impl SummaryCache {
         });
         match built {
             Ok(mut row) => {
-                row.min_app_version = requirement.text();
+                row.min_app_version = requirement.core.text();
+                row.min_frontend_version = requirement.frontend.text();
+                row.compatibility_levels = levels;
                 Ok(row)
             }
-            Err(error) => Err((error, requirement)),
+            Err(error) => Err(Box::new((
+                error,
+                requirement,
+                levels,
+                crate::compat::Compatibility::manifest_platform(&bytes).unwrap_or_default(),
+            ))),
         }
     }
 
@@ -564,6 +619,8 @@ impl SummaryCache {
             local_revision: entry.local_revision,
             titles: Vec::new(),
             min_app_version: None,
+            min_frontend_version: None,
+            compatibility_levels: Levels::default(),
         })
     }
 
@@ -696,6 +753,8 @@ impl SummaryCache {
             titles,
             tokens,
             min_app_version: None,
+            min_frontend_version: None,
+            compatibility_levels: Levels::default(),
         })
     }
 
@@ -817,6 +876,8 @@ impl SummaryCache {
             titles: Vec::new(),
             tokens,
             min_app_version: None,
+            min_frontend_version: None,
+            compatibility_levels: Levels::default(),
         })
     }
 
@@ -1059,7 +1120,11 @@ fn bounded_cache(cache: &mut CacheFile, limit: usize) -> Result<Vec<u8>> {
                     image: id.clone(),
                     local_content: row.local_content,
                     reason: "summary omitted: cache capacity".into(),
+                    compatibility_failure: false,
+                    platform: "c64".into(),
                     min_app_version: None,
+                    min_frontend_version: None,
+                    compatibility_levels: Levels::default(),
                 };
                 size = size
                     .saturating_sub(before)
@@ -1145,6 +1210,96 @@ fn tokenize(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn regression_terminal_failure_with_satisfied_markers_stays_out_of_pending() {
+        use crate::compat::{AppVersion as V, Compatibility, MIN_APP_VERSION};
+        let root = std::env::temp_dir().join(format!(
+            "summary-terminal-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let store = Store::open(&root).unwrap().with_compatibility(
+            Compatibility::new(V::new(0, 0, 9), V::new(0, 0, 1)).with_core(
+                "synthetic",
+                V::new(0, 0, 9),
+                V::new(0, 0, 1),
+            ),
+        );
+        let blob = store
+            .import(b"schema=1\nplatform='synthetic'\n".as_slice(), None)
+            .unwrap();
+        let mut manifest = Manifest::new(
+            "synthetic",
+            Descriptor::new(media_type::CONFIG, blob.digest, blob.size),
+            vec![Descriptor::new(
+                media_type::METADATA,
+                Digest::of(b"missing"),
+                7,
+            )],
+        )
+        .unwrap();
+        manifest
+            .annotations
+            .insert(MIN_APP_VERSION.into(), "0.0.3".into());
+        let image = store.import_manifest(&manifest).unwrap();
+        store.tag_as_newer_release("broken:1", &image).unwrap();
+        let mut cache = SummaryCache::open(&store).unwrap();
+        assert_eq!(cache.rebuild(&store, 1, &[], &[]).unwrap(), 1);
+        assert!(
+            cache.failure(&image.digest).is_some(),
+            "terminal error was discarded"
+        );
+        assert!(cache.pending().is_empty());
+        let mut cache = SummaryCache::open(&store).unwrap();
+        assert!(cache.failure(&image.digest).is_some());
+        assert_eq!(cache.rebuild(&store, 1, &[], &[]).unwrap(), 0);
+        cache.retry(&image.digest);
+        assert_eq!(cache.pending().len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn regression_cached_failure_reason_tracks_the_unmet_component() {
+        use crate::compat::{AppVersion as V, Compatibility};
+        let root = std::env::temp_dir().join(format!(
+            "summary-refusal-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let runtime = |core, frontend| {
+            Compatibility::new(V::new(0, 0, frontend), V::new(0, 0, 1)).with_core(
+                "synthetic",
+                V::new(0, 0, core),
+                V::new(0, 0, 1),
+            )
+        };
+        let store = Store::open(&root)
+            .unwrap()
+            .with_compatibility(runtime(9, 3));
+        let bytes = br#"{"future_envelope":true,"annotations":{"unemu.platform":"synthetic","unemu.min-app-version":"0.0.5","unemu.min-frontend-version":"0.0.7"}}"#;
+        let blob = store.import(bytes.as_slice(), None).unwrap();
+        let image = Descriptor::new(media_type::MANIFEST, blob.digest, blob.size);
+        store.tag_as_newer_release("future:1", &image).unwrap();
+        let mut cache = SummaryCache::open(&store).unwrap();
+        cache.rebuild(&store, 1, &[], &[]).unwrap();
+        assert_eq!(
+            cache.failure(&image.digest).unwrap().reason,
+            "Needs front end 0.0.7 or newer"
+        );
+        let store = store.with_compatibility(runtime(3, 9));
+        let cache = SummaryCache::open(&store).unwrap();
+        assert_eq!(
+            cache.failure(&image.digest).unwrap().reason,
+            "Needs unemupc 0.0.5 or newer"
+        );
+        assert!(cache.pending().is_empty());
+        let store = store.with_compatibility(runtime(9, 9));
+        let cache = SummaryCache::open(&store).unwrap();
+        assert!(cache.failure(&image.digest).is_none());
+        assert_eq!(cache.pending().len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn cache_capacity_keeps_facets_and_reports_search_reduction() {
         let mut cache = CacheFile::default();
@@ -1177,6 +1332,8 @@ mod tests {
                 titles: vec![],
                 tokens: vec!["x".repeat(100_000)],
                 min_app_version: None,
+                min_frontend_version: None,
+                compatibility_levels: Levels::default(),
             },
         );
         let bytes = bounded_cache(&mut cache, 4096).unwrap();
@@ -1195,7 +1352,11 @@ mod tests {
                     image,
                     local_content: id.clone(),
                     reason: "z".repeat(10_000),
+                    compatibility_failure: false,
+                    platform: "c64".into(),
                     min_app_version: None,
+                    min_frontend_version: None,
+                    compatibility_levels: Levels::default(),
                 },
             );
         }
@@ -1210,13 +1371,20 @@ mod tests {
     /// wrote is rebuilt, never misread.
     #[test]
     fn summaries_record_the_minimum_release_and_older_or_newer_caches_are_rebuilt() {
-        use crate::compat::{level, MIN_APP_VERSION};
+        let level = || crate::compat::EXTRACTION_BASELINE;
+        use crate::compat::MIN_APP_VERSION;
         let root = std::env::temp_dir().join(format!(
             "image-summary-requirement-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
-        let store = Store::open(&root).unwrap();
+        let store = Store::open(&root).unwrap().with_compatibility(
+            crate::compat::Compatibility::new(level(), crate::compat::NEWEST_ROW).with_core(
+                "c64",
+                level(),
+                crate::compat::BASELINE,
+            ),
+        );
         let put = |kind: &str, bytes: &[u8]| {
             let blob = store.import(bytes, None).unwrap();
             Descriptor::new(kind, blob.digest, blob.size)
@@ -1275,7 +1443,7 @@ mod tests {
 
         let path = store.root().join("cache/summaries/index.json");
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["schema"], 8);
+        assert_eq!(saved["schema"], 10);
         assert_eq!(
             saved["images"][newer.digest.to_string()]["min_app_version"],
             "99.0.0"
@@ -1283,10 +1451,10 @@ mod tests {
         assert!(saved["images"][plain.digest.to_string()]
             .get("min_app_version")
             .is_none());
-        for schema in [7, 9] {
+        for schema in [8, 9, 11] {
             let mut file = saved.clone();
             file["schema"] = schema.into();
-            if schema == 7 {
+            if schema == 8 {
                 // As schema 7 kept it: no requirement on the row.
                 file["images"][newer.digest.to_string()]
                     .as_object_mut()
@@ -1304,7 +1472,7 @@ mod tests {
             );
             let rewritten: serde_json::Value =
                 serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            assert_eq!(rewritten["schema"], 8, "schema {schema}");
+            assert_eq!(rewritten["schema"], 10, "schema {schema}");
         }
 
         // A manifest this build cannot decode at all is a failure that names
@@ -1319,7 +1487,11 @@ mod tests {
                     .local_hash(&newer.digest)
                     .clone(),
                 reason: "Needs unemupc 0.0.1 or newer".into(),
+                compatibility_failure: true,
+                platform: "c64".into(),
                 min_app_version: Some("0.0.1".into()),
+                min_frontend_version: None,
+                compatibility_levels: Levels::default(),
             },
         );
         fs::write(&path, serde_json::to_vec(&failures).unwrap()).unwrap();
@@ -1327,5 +1499,85 @@ mod tests {
         assert!(cache.failure(&newer.digest).is_none());
         assert!(cache.pending().iter().any(|t| t.name == "demo:newer"));
         std::fs::remove_dir_all(&root).unwrap();
+    }
+    #[test]
+    fn cached_disabled_rows_name_the_component_and_recheck_injected_versions() {
+        use crate::compat::{
+            AppVersion as V, Compatibility, MIN_APP_VERSION, MIN_FRONTEND_VERSION,
+        };
+        let root = std::env::temp_dir().join(format!(
+            "summary-components-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let v = |patch| V::new(0, 0, patch);
+        let runtime = |core, frontend| {
+            Compatibility::new(v(frontend), v(1)).with_core("synthetic", v(core), v(1))
+        };
+        let store = Store::open(&root)
+            .unwrap()
+            .with_compatibility(runtime(9, 3));
+        let put = |kind: &str, bytes: &[u8]| {
+            let blob = store.import(bytes, None).unwrap();
+            Descriptor::new(kind, blob.digest, blob.size)
+        };
+        let config = put(media_type::CONFIG, b"future_config = true");
+        let metadata = put(
+            media_type::METADATA,
+            &Metadata::new("synthetic").encode(&[]).unwrap(),
+        );
+        let image = |tag: &str, key: &str| {
+            let mut manifest =
+                Manifest::new("synthetic", config.clone(), vec![metadata.clone()]).unwrap();
+            manifest.annotations.insert(key.into(), "0.0.5".into());
+            let image = store.import_manifest(&manifest).unwrap();
+            store.tag_as_newer_release(tag, &image).unwrap();
+            image
+        };
+        let core = image("demo:core", MIN_APP_VERSION);
+        let frontend = image("demo:frontend", MIN_FRONTEND_VERSION);
+        let mut cache = SummaryCache::open(&store).unwrap();
+        cache.rebuild(&store, 8, &[], &[]).unwrap();
+        assert_eq!(cache.summary(&core.digest).unwrap().needs_newer(), None);
+        assert_eq!(
+            cache
+                .summary(&frontend.digest)
+                .unwrap()
+                .needs_newer()
+                .as_deref(),
+            Some("Needs front end 0.0.5 or newer")
+        );
+        let mut extra = Manifest::new("synthetic", config.clone(), vec![metadata.clone()]).unwrap();
+        extra
+            .annotations
+            .insert("example.record".into(), "another row".into());
+        let extra = store.import_manifest(&extra).unwrap();
+        store.tag_as_newer_release("demo:extra", &extra).unwrap();
+        cache.rebuild(&store, 8, &[], &[]).unwrap();
+        assert_eq!(
+            cache.summary(&core.digest).unwrap().needs_newer(),
+            None,
+            "merging a cache must rebind the existing rows' levels"
+        );
+        let store = store.with_compatibility(runtime(3, 9));
+        let cache = SummaryCache::open(&store).unwrap();
+        assert_eq!(
+            cache
+                .summary(&frontend.digest)
+                .unwrap()
+                .min_frontend_version
+                .as_deref(),
+            Some("0.0.5")
+        );
+        assert_eq!(cache.summary(&frontend.digest).unwrap().needs_newer(), None);
+        assert_eq!(
+            cache
+                .summary(&core.digest)
+                .unwrap()
+                .needs_newer()
+                .as_deref(),
+            Some("Needs unemupc 0.0.5 or newer")
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
