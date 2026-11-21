@@ -3167,9 +3167,11 @@ goldens need machine files, and the config codec is built on
 the contract leaves room for it (§3.12), but it re-plumbs `assembly`'s
 persistence and belongs with layered disk images, not with this split.
 
-**Q4 follow-up — Recommendation (Proposed, 2026-11-21)**
+**Q4 follow-up — Recommendation (Accepted, 2026-11-21)**
 
-For maintainer review; this does not replace the accepted answer above.
+Accepted by the maintainer on 2026-11-21, together with the decision to
+separate the repositories before contract 1.0 (the contract already lives
+in its own repository and is pinned by revision).
 §12.5 and step 11's final extraction (2026-11-21) have already superseded
 its journal timing: storage now crosses the contract as objects. Recommend
 keeping the remaining `media` crate **with the front end**, without another

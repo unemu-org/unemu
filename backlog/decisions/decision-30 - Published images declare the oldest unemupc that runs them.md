@@ -162,10 +162,11 @@ firmware packages (`unemu-at-bios-1.0.2-unemu.3:1`,
   fetch every config, and the marker would become part of the machine
   digest.
 
-## Amendment (Proposed, 2026-11-21)
+## Amendment (Accepted, 2026-11-21)
 
-For maintainer review; the record remains **Accepted**, and the decision
-above remains in force until this amendment is accepted and implemented.
+Accepted by the maintainer on 2026-11-21, with the new marker named
+`unemu.min-frontend-version` and the extraction baseline frozen at the split.
+The decision above remains in force until this amendment is implemented.
 This addresses the pre-extraction question in core-contract §§9 and 14.6 Q6.
 
 **Two release domains.** `unemu.min-app-version` keeps its spelling and
