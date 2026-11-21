@@ -697,6 +697,8 @@ fn validate_media_paths(config: &MachineConfig) -> Result<(), ConfigError> {
         })
         .chain(nvram.iter().map(|(i, _, path, _)| (*i, *path)))
     {
+        media::check_journal_path(path)
+            .map_err(|error| path_error(config, drive_index, error.message))?;
         if JournalMedia::is_creation_temp_name(path) {
             return Err(ConfigError::Journal {
                 drive_index,

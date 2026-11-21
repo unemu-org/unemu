@@ -26,4 +26,12 @@
 pub mod create;
 pub mod fat12;
 pub mod layer;
-pub use journal_files::*;
+use journal_files::overlay;
+pub use journal_files::{
+    check_journal_path, offline, scan, scan_overlay_reader, scan_reader, ClosingReason, Error,
+    Frame, Header, JournalFile, JournalMedia, MaintenanceFailure, OpenError, Record, Scan,
+    SectorSource, SinkFailure, SinkStatus, SparseOverlay, Status, VerificationReport, VerifiedBase,
+    FRAME_LEN, HEADER_LEN, SECTOR_LEN,
+};
+#[cfg(feature = "test-support")]
+pub use journal_files::{data_passes, hash_passes};

@@ -3,54 +3,12 @@
 //! (`unemu_core_api::Record`), core-contract.md §12.5 (move 1).
 //!
 //! [`crate::JournalMedia`] reads, appends, cuts, synchronizes and replaces a
-//! record. Behind it may be a journal file ([`crate::JournalFile`]), a buffer
+//! record. Behind it may be a journal file (supplied by its host), a buffer
 //! in memory, or any storage a front end hands to the core. The journal's
 //! bytes and recovery rules do not depend on which.
 
-use crate::offline::ToolIo;
 use std::io::{self, Read, Seek, SeekFrom};
 use unemu_core_api as contract;
-
-/// A record as the journal holds it: the contract's record, plus the retention
-/// seam of the journal's own file record.
-pub(crate) trait JournalRecord: contract::Record {
-    /// Start a replacement whose host operations go through `tool`. The
-    /// journal's file record uses it for retention, so that its failures can
-    /// be injected; any other record ignores `tool`.
-    fn replace_with<'t>(
-        &mut self,
-        tool: &'t mut dyn ToolIo,
-    ) -> Result<Box<dyn contract::Replacement + 't>, contract::Error> {
-        let _ = tool;
-        self.replace()
-    }
-}
-
-/// Any record of the contract, as the journal holds it.
-pub(crate) struct ContractRecord(pub(crate) Box<dyn contract::Record>);
-
-impl contract::Record for ContractRecord {
-    fn size(&self) -> Result<u64, contract::Error> {
-        self.0.size()
-    }
-    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), contract::Error> {
-        self.0.read_at(offset, buf)
-    }
-    fn append(&mut self, bytes: &[u8]) -> Result<(), contract::Error> {
-        self.0.append(bytes)
-    }
-    fn truncate(&mut self, size: u64) -> Result<(), contract::Error> {
-        self.0.truncate(size)
-    }
-    fn sync(&mut self) -> Result<(), contract::Error> {
-        self.0.sync()
-    }
-    fn replace(&mut self) -> Result<Box<dyn contract::Replacement>, contract::Error> {
-        self.0.replace()
-    }
-}
-
-impl JournalRecord for ContractRecord {}
 
 /// The contract's error as a host error with the same text, for the scans
 /// and reports that speak `io::Error`.
@@ -64,7 +22,7 @@ pub(crate) trait ReadAt {
     fn read_exact_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), contract::Error>;
 }
 
-impl ReadAt for dyn JournalRecord + '_ {
+impl ReadAt for dyn contract::Record + '_ {
     fn len_now(&self) -> Result<u64, contract::Error> {
         self.size()
     }

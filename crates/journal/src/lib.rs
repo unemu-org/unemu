@@ -20,3 +20,9 @@ pub use scan::{
     scan, scan_overlay_reader, scan_reader, Generation, Refusal, Scan, SparseScan, Status, Tail,
     Tip, VerificationReport,
 };
+
+mod sink;
+mod store;
+pub use sink::{
+    JournalMedia, MaintenanceFailure, OpenError, ReplaceRecord, SinkFailure, SinkStatus,
+};

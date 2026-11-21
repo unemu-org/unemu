@@ -706,10 +706,7 @@ fn reserved_journal_name_is_a_configuration_failure() {
             let original = fs::read(&f.journal).unwrap();
             let (code, _, error) = f.invoke("verify", &[]);
             assert_eq!(code, 2, "{error}");
-            assert!(
-                error.contains("journal") && error.contains("reserved journal temporary name"),
-                "{error}"
-            );
+            assert!(error.contains("reserved sidecar path"), "{error}");
             assert_eq!(fs::read(&f.journal).unwrap(), original);
             assert!(!f
                 .dir

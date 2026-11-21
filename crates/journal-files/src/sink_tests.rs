@@ -98,6 +98,13 @@ impl Write for ModelIo {
     }
 }
 impl JournalIo for ModelIo {
+    fn metadata(&self) -> io::Result<std::fs::Metadata> {
+        let dir = TempDir::new();
+        let file = File::create(dir.journal())?;
+        file.set_len(self.0.borrow().bytes.get_ref().len() as u64)?;
+        file.metadata()
+    }
+
     fn sync(&mut self) -> io::Result<()> {
         let mut model = self.0.borrow_mut();
         model.step(Event::Sync)?;
@@ -238,8 +245,11 @@ fn creation_and_each_command_have_ordered_barriers() {
     assert_eq!(
         fs.io.0.borrow().events,
         [
+            Event::Seek,
             Event::Write(FRAME_LEN),
+            Event::Seek,
             Event::Write(FRAME_LEN),
+            Event::Seek,
             Event::Write(FRAME_LEN),
             Event::Flush,
             Event::Sync,
@@ -265,13 +275,23 @@ fn creation_and_each_command_have_ordered_barriers() {
     media.checkpoint().unwrap();
     assert_eq!(
         fs.io.0.borrow().events,
-        [Event::Write(FRAME_LEN), Event::Flush, Event::Sync]
+        [
+            Event::Seek,
+            Event::Write(FRAME_LEN),
+            Event::Flush,
+            Event::Sync
+        ]
     );
     fs.io.0.borrow_mut().events.clear();
     media.finish().unwrap();
     assert_eq!(
         fs.io.0.borrow().events,
-        [Event::Write(FRAME_LEN), Event::Flush, Event::Sync]
+        [
+            Event::Seek,
+            Event::Write(FRAME_LEN),
+            Event::Flush,
+            Event::Sync
+        ]
     );
     assert!(!fs.locked.get());
 }
@@ -289,8 +309,11 @@ fn mounted_sector_access_never_reads_or_seeks_host_storage() {
     assert_eq!(
         fs.io.0.borrow().events,
         [
+            Event::Seek,
             Event::Write(FRAME_LEN),
+            Event::Seek,
             Event::Write(FRAME_LEN),
+            Event::Seek,
             Event::Write(FRAME_LEN),
             Event::Flush,
             Event::Sync,
@@ -339,6 +362,12 @@ fn every_partial_command_failure_preserves_memory_and_latches_first_error() {
         assert_eq!(fs.io.0.borrow().events.len(), calls);
         assert!(!fs.locked.get());
         let bytes = fs.io.0.borrow().bytes.get_ref().clone();
+        // Previously the failed append left HEADER_LEN + 4 * FRAME_LEN + budget
+        // bytes. Rollback now removes its partial frame, keeping earlier appends.
+        assert_eq!(
+            bytes.len(),
+            HEADER_LEN + (4 + budget / FRAME_LEN) * FRAME_LEN
+        );
         let scan = scan(&bytes, &[0; 2 * SECTOR_LEN], (2 * SECTOR_LEN) as u64);
         assert_eq!(
             scan.image.unwrap(),
@@ -350,7 +379,7 @@ fn every_partial_command_failure_preserves_memory_and_latches_first_error() {
 
 #[test]
 fn failed_flush_sync_and_zero_write_preserve_guest_data_and_poison_output() {
-    for (fail_on, zero_write) in [(Some(3), false), (Some(4), false), (None, true)] {
+    for (fail_on, zero_write) in [(Some(6), false), (Some(7), false), (None, true)] {
         let mut fs = model_fs(None);
         let status = SinkStatus::default();
         let mut media = mount(&mut fs, status.clone()).unwrap();
@@ -377,7 +406,7 @@ fn failed_flush_sync_and_zero_write_preserve_guest_data_and_poison_output() {
 #[test]
 fn enospc_and_eio_latch_without_write_protection_or_lost_memory_writes() {
     for errno in [libc::ENOSPC, libc::EIO] {
-        for operation in [0, 4] {
+        for operation in [1, 7] {
             let mut fs = model_fs(None);
             let status = SinkStatus::default();
             let mut medium = mount(&mut fs, status.clone()).unwrap();
@@ -417,7 +446,7 @@ fn lost_or_reordered_unsynchronized_frames_never_half_replay_a_command() {
     {
         let mut model = fs.io.0.borrow_mut();
         model.events.clear();
-        model.fail_on = Some(4);
+        model.fail_on = Some(7);
     }
     medium.write_batch(&batch(9));
     assert_eq!(status.failure().unwrap().operation, "command/end sync");
@@ -550,7 +579,11 @@ fn repair_truncates_and_syncs_before_sealing_and_refuses_every_io_failure() {
             if fail_on > truncate + 2 { 3 } else { 0 }
         );
         assert!(!fs.locked.get());
-        assert_eq!(fs.io.0.borrow().events.len(), fail_on + 1);
+        let actual = fs.io.0.borrow().events.clone();
+        assert_eq!(&actual[..=fail_on], &events[..=fail_on]);
+        assert!(actual[fail_on + 1..]
+            .iter()
+            .all(|event| matches!(event, Event::Truncate(_))));
     }
 }
 
@@ -830,22 +863,26 @@ fn reopen_clean_and_unsealed_histories_sync_directory_and_mount_before_append() 
             Event::CleanupTemps,
             Event::DirectorySync,
             Event::Seek,
-            Event::Seek,
             Event::Read(HEADER_LEN),
         ];
         for _ in 0..if closed { 4 } else { 3 } {
             expected.extend([Event::Seek, Event::Read(FRAME_LEN)]);
         }
         let mount_sync = expected.len() + 1;
-        expected.extend([Event::Flush, Event::Sync, Event::Seek]);
+        expected.extend([Event::Flush, Event::Sync]);
         if !closed {
-            expected.extend([Event::Write(FRAME_LEN), Event::Flush, Event::Sync]);
+            expected.extend([
+                Event::Seek,
+                Event::Write(FRAME_LEN),
+                Event::Flush,
+                Event::Sync,
+            ]);
         }
         let mut fs = model_fs(Some(bytes.clone()));
         let media = mount(&mut fs, SinkStatus::default()).unwrap();
         assert_image(&media, 6);
         assert_eq!(fs.io.0.borrow().events, expected);
-        assert_eq!(media.confirmed, 3);
+        assert_eq!(media.confirmed_sequence(), 3);
         let replay = scan(
             &fs.io.0.borrow().durable,
             &[0; 2 * SECTOR_LEN],
@@ -875,7 +912,11 @@ fn reopen_clean_and_unsealed_histories_sync_directory_and_mount_before_append() 
                 if fail_on > mount_sync { 3 } else { 0 }
             );
             assert!(!fs.locked.get());
-            assert_eq!(fs.io.0.borrow().events, expected[..=fail_on]);
+            let actual = fs.io.0.borrow().events.clone();
+            assert_eq!(&actual[..=fail_on], &expected[..=fail_on]);
+            assert!(actual[fail_on + 1..]
+                .iter()
+                .all(|event| matches!(event, Event::Truncate(_))));
             assert!(fs.io.0.borrow().published);
         }
     }
@@ -994,6 +1035,9 @@ impl Write for HeaderFailureIo {
     }
 }
 impl JournalIo for HeaderFailureIo {
+    fn metadata(&self) -> io::Result<std::fs::Metadata> {
+        self.output.metadata()
+    }
     fn sync(&mut self) -> io::Result<()> {
         if self.fail_sync {
             return Err(io::Error::other("injected header sync failure"));
@@ -1416,8 +1460,7 @@ fn journal_open_refuses_creation_temp_names_before_locking() {
             Ok(_) => panic!("reserved journal name mounted"),
             Err(error) => error.to_string(),
         };
-        assert!(error.contains("creation-temporary"), "{error}");
-        assert!(error.contains(name), "{error}");
+        assert_eq!(error, "reserved sidecar path");
         assert!(!path.exists());
         assert!(!dir.0.join(format!("{name}.lock")).exists());
     }
@@ -1444,7 +1487,7 @@ fn journal_open_refuses_creation_temp_names_through_symlinks() {
             Ok(_) => panic!("reserved journal alias mounted"),
             Err(error) => error.to_string(),
         };
-        assert!(error.contains("creation-temporary"), "{error}");
+        assert_eq!(error, "reserved sidecar path");
         assert_eq!(std::fs::read(path).unwrap(), before);
     }
 }
@@ -1485,10 +1528,7 @@ fn nested_creation_names_are_refused_before_locking() {
             Ok(_) => panic!("nested creation name mounted"),
             Err(error) => error.to_string(),
         };
-        assert!(
-            error.contains(name) && error.contains("creation-temporary"),
-            "{error}"
-        );
+        assert_eq!(error, "reserved sidecar path");
         assert!(!path.exists());
         assert!(!dir.0.join(format!("{name}.lock")).exists());
     }
@@ -1702,7 +1742,8 @@ fn retention_keeps_two_closed_states_with_anchor_ids_reasons_and_new_sequences()
     let old = scan(&original, &base, 1024);
     let mut disk = real_mount(&path).unwrap().with_retention(2);
     // Drop adds no generation: pruning itself is tested at the existing boundary.
-    disk.prune_with(&mut RetentionIo::default()).unwrap();
+    disk.prune_with(Rc::new(RefCell::new(RetentionIo::default())))
+        .unwrap();
     let bytes = std::fs::read(&path).unwrap();
     let after = scan(&bytes, &base, 1024);
     assert_eq!(after.report.status, Status::Valid);
@@ -1802,7 +1843,7 @@ fn retention_failures_report_maintenance_separately_and_keep_old_or_new_valid_fi
             let mut expected_old = std::fs::read(&path).unwrap();
             expected_old.extend(
                 Frame {
-                    sequence: disk.sequence + 1,
+                    sequence: disk.sequence() + 1,
                     generation: 6,
                     record: Record::GenerationEnd {
                         reason: ClosingReason::Checkpoint,
@@ -1811,12 +1852,13 @@ fn retention_failures_report_maintenance_separately_and_keep_old_or_new_valid_fi
                 .encode()
                 .unwrap(),
             );
-            let mut io = RetentionIo {
+            let io = Rc::new(RefCell::new(RetentionIo {
                 fail: Some(fail),
                 publish_then_fail,
                 ..RetentionIo::default()
-            };
-            disk.close_with(ClosingReason::Checkpoint, &mut io).unwrap();
+            }));
+            disk.close_with(ClosingReason::Checkpoint, io.clone())
+                .unwrap();
             let error = status.maintenance_failure().unwrap();
             let visible = std::fs::read(&path).unwrap();
             let result = scan(&visible, &[0; 1024], 1024);
@@ -1843,9 +1885,10 @@ fn retention_failures_report_maintenance_separately_and_keep_old_or_new_valid_fi
                 assert_eq!(result.report.header.as_ref().unwrap().anchor_generation, 5);
             }
             if !uncertain {
-                io.fail = None;
+                io.borrow_mut().fail = None;
                 disk.write_batch(&[(0, [0xB5; 512])]);
-                disk.close_with(ClosingReason::SessionEnd, &mut io).unwrap();
+                disk.close_with(ClosingReason::SessionEnd, io.clone())
+                    .unwrap();
                 assert!(status.maintenance_failure().is_none());
                 assert_eq!(
                     scan(&std::fs::read(&path).unwrap(), &[0; 1024], 1024)
@@ -1881,13 +1924,14 @@ fn retention_barriers_follow_complete_verified_temporary_and_namespace_is_isolat
     .unwrap();
     let retention_bytes = Header::new(&[0; 1024], 0).unwrap().encode().unwrap();
     std::fs::write(&retention, retention_bytes).unwrap();
-    let mut io = RetentionIo::default();
-    disk.close_with(ClosingReason::Checkpoint, &mut io).unwrap();
+    let io = Rc::new(RefCell::new(RetentionIo::default()));
+    disk.close_with(ClosingReason::Checkpoint, io.clone())
+        .unwrap();
     assert_eq!(
-        &io.calls[io.calls.len() - 3..],
+        &io.borrow().calls[io.borrow().calls.len() - 3..],
         ["temporary sync", "replace", "publication directory sync"]
     );
-    assert!(io.calls[..io.calls.len() - 3]
+    assert!(io.borrow().calls[..io.borrow().calls.len() - 3]
         .iter()
         .all(|s| *s == "temporary write"));
     assert!(creation.exists());
@@ -1908,15 +1952,17 @@ fn retention_never_runs_for_open_or_poisoned_generation() {
     let mut disk = real_mount(&path).unwrap().with_retention(2);
     disk.write_batch(&[(0, [0xB5; 512])]);
     let before = std::fs::read(&path).unwrap();
-    let mut io = RetentionIo::default();
-    assert!(disk.prune_with(&mut io).is_err());
-    assert!(io.calls.is_empty());
+    let io = Rc::new(RefCell::new(RetentionIo::default()));
+    assert!(disk.prune_with(io.clone()).is_err());
+    assert!(io.borrow().calls.is_empty());
     assert_eq!(std::fs::read(&path).unwrap(), before);
-    disk.status
-        .latch(disk.failure("injected", "failed command"));
-    assert!(disk.close_with(ClosingReason::Checkpoint, &mut io).is_err());
-    disk.prune_with(&mut io).unwrap();
-    assert!(io.calls.is_empty());
+    disk.status()
+        .latch_host_error("injected", "failed command".into());
+    assert!(disk
+        .close_with(ClosingReason::Checkpoint, io.clone())
+        .is_err());
+    disk.prune_with(io.clone()).unwrap();
+    assert!(io.borrow().calls.is_empty());
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
 
@@ -1994,7 +2040,7 @@ fn retention_verifies_each_state_before_sync_even_when_final_image_matches() {
     let original = std::fs::read(&path).unwrap();
     let mut disk = real_mount(&path).unwrap().with_retention(2);
     assert!(disk
-        .prune_with(&mut AlterAnchor)
+        .prune_with(Rc::new(RefCell::new(AlterAnchor)))
         .unwrap_err()
         .to_string()
         .contains("state verification"));
@@ -2030,7 +2076,7 @@ fn retention_fails_every_temporary_write_without_changing_durable_closed_journal
         let original = std::fs::read(&path).unwrap();
         let mut disk = real_mount(&path).unwrap().with_retention(2);
         assert!(disk
-            .prune_with(&mut FailWrite { position, count: 0 })
+            .prune_with(Rc::new(RefCell::new(FailWrite { position, count: 0 })))
             .is_err());
         assert_eq!(std::fs::read(&path).unwrap(), original);
         assert!(!disk.status().maintenance_failure().unwrap().uncertain);
@@ -2053,7 +2099,8 @@ fn retention_skips_occupied_temporary_aliases_and_preserves_offline_backups() {
     std::fs::hard_link(&path, &journal_alias).unwrap();
     std::fs::hard_link(&base, &base_alias).unwrap();
     std::fs::write(&backup, &original).unwrap();
-    disk.prune_with(&mut RetentionIo::default()).unwrap();
+    disk.prune_with(Rc::new(RefCell::new(RetentionIo::default())))
+        .unwrap();
     assert_eq!(std::fs::read(journal_alias).unwrap(), original);
     assert_eq!(std::fs::read(base_alias).unwrap(), [0; 1024]);
     assert_eq!(std::fs::read(base).unwrap(), [0; 1024]);
@@ -2072,7 +2119,7 @@ fn retention_does_not_rewrite_at_exact_limit() {
     let mut expected = std::fs::read(&path).unwrap();
     expected.extend(
         Frame {
-            sequence: disk.sequence + 1,
+            sequence: disk.sequence() + 1,
             generation: 2,
             record: Record::GenerationEnd {
                 reason: ClosingReason::Checkpoint,
@@ -2081,9 +2128,10 @@ fn retention_does_not_rewrite_at_exact_limit() {
         .encode()
         .unwrap(),
     );
-    let mut io = RetentionIo::default();
-    disk.close_with(ClosingReason::Checkpoint, &mut io).unwrap();
-    assert!(io.calls.is_empty());
+    let io = Rc::new(RefCell::new(RetentionIo::default()));
+    disk.close_with(ClosingReason::Checkpoint, io.clone())
+        .unwrap();
+    assert!(io.borrow().calls.is_empty());
     assert_eq!(std::fs::read(path).unwrap(), expected);
 }
 
@@ -2129,7 +2177,7 @@ fn retention_checks_whole_history_metadata_before_sync() {
     let original = std::fs::read(&path).unwrap();
     let mut disk = real_mount(&path).unwrap().with_retention(2);
     assert!(disk
-        .prune_with(&mut ChangeReason)
+        .prune_with(Rc::new(RefCell::new(ChangeReason)))
         .unwrap_err()
         .to_string()
         .contains("history verification failed"));
@@ -2151,10 +2199,10 @@ fn failed_retention_removes_its_temporary_and_preserves_other_entries() {
         let other = dir.0.join("other.upfj.retain-0.tmp");
         std::fs::write(&other, b"other journal").unwrap();
         assert!(disk
-            .prune_with(&mut RetentionIo {
+            .prune_with(Rc::new(RefCell::new(RetentionIo {
                 fail: Some(fail),
                 ..Default::default()
-            })
+            })))
             .is_err());
         assert!(std::fs::read_dir(&dir.0)
             .unwrap()
@@ -2169,10 +2217,11 @@ fn acknowledged_command_after_retention_survives_drop_without_close() {
     let path = dir.journal();
     five_generations(&path);
     let mut disk = real_mount(&path).unwrap().with_retention(2);
-    disk.prune_with(&mut RetentionIo::default()).unwrap();
+    disk.prune_with(Rc::new(RefCell::new(RetentionIo::default())))
+        .unwrap();
     disk.write_batch(&[(0, [0xCE; 512])]);
     assert!(disk.status().failure().is_none());
-    let confirmed = disk.confirmed;
+    let confirmed = disk.confirmed_sequence();
     drop(disk);
     let disk = real_mount(&path).unwrap();
     assert_eq!(disk.read_sector(0), [0xCE; 512]);
@@ -2228,12 +2277,12 @@ fn retention_preserves_exact_mode_before_writing_and_publication() {
     five_generations(&path);
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o664)).unwrap();
     let mut disk = real_mount(&path).unwrap().with_retention(2);
-    let mut io = ModeIo {
+    let io = Rc::new(RefCell::new(ModeIo {
         created: false,
         written: false,
-    };
-    disk.prune_with(&mut io).unwrap();
-    assert!(io.created && io.written);
+    }));
+    disk.prune_with(io.clone()).unwrap();
+    assert!(io.borrow().created && io.borrow().written);
     assert_eq!(
         std::fs::metadata(path).unwrap().permissions().mode() & 0o7777,
         0o664
@@ -2411,4 +2460,280 @@ fn nvram_write_batch_rejects_immutable_bytes_before_any_output() {
         assert_eq!(fs.io.0.borrow().durable, before);
         assert!(fs.io.0.borrow().events.is_empty(), "invalid byte {index}");
     }
+}
+
+#[test]
+fn failed_append_rolls_back_or_reports_uncertain_and_recovery_discards_the_tail() {
+    for failed_rollback in [false, true] {
+        let mut fs = model_fs(None);
+        let header = Header::new(&[0; 2 * SECTOR_LEN], 0)
+            .unwrap()
+            .encode()
+            .unwrap();
+        let (mut record, _) =
+            crate::journal_file::tests::open(&mut fs, Path::new("disk.upfj"), &header, None)
+                .unwrap();
+        {
+            let mut model = fs.io.0.borrow_mut();
+            model.events.clear();
+            model.write_budget = Some(7);
+            // Seek, partial write, failed write, rollback truncate.
+            model.fail_on = failed_rollback.then_some(3);
+        }
+        let error = record.append(&[0xA5; 20]).unwrap_err();
+        assert_eq!(
+            error.kind,
+            if failed_rollback {
+                contract::ErrorKind::StorageUncertain
+            } else {
+                contract::ErrorKind::Storage
+            }
+        );
+        // Previous behavior left 135 bytes for both failures; successful rollback now leaves 128.
+        assert_eq!(
+            fs.io.0.borrow().bytes.get_ref().len(),
+            if failed_rollback { 135 } else { 128 }
+        );
+        drop(record);
+        fs.io.0.borrow_mut().write_budget = None;
+        fs.io.0.borrow_mut().fail_on = None;
+        let media = mount(&mut fs, SinkStatus::default()).unwrap();
+        assert_eq!(
+            media.mount_report().discarded_bytes,
+            if failed_rollback { 7 } else { 0 }
+        );
+        assert_eq!(fs.io.0.borrow().bytes.get_ref().len(), HEADER_LEN);
+    }
+}
+
+#[test]
+fn reserved_sidecars_have_one_usage_diagnostic_and_generated_journals_mount() {
+    use crate::offline::{Access, JournalTool, ToolError};
+    let dir = TempDir::new();
+    let bytes = vec![0; 2 * SECTOR_LEN];
+    let base_path = dir.0.join("base.img");
+    std::fs::write(&base_path, &bytes).unwrap();
+    let header = Header::new(&bytes, 0).unwrap();
+    for name in [
+        "disk.lock",
+        "disk.LOCK",
+        "disk_lock",
+        "disk_LOCK",
+        "disk.create-0.tmp",
+        "disk.CREATE-7.TMP",
+        "disk.retain-1.tmp",
+        "disk.RETAIN-9.TMP",
+        "disk_7.tmp",
+    ] {
+        let path = dir.0.join(name);
+        std::fs::write(&path, header.encode().unwrap()).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let OpenError::Usage(error) = real_mount(&path).err().unwrap() else {
+            panic!("expected Usage")
+        };
+        assert_eq!(error.kind, contract::ErrorKind::Usage);
+        assert_eq!(error.message, "reserved sidecar path");
+        let error = crate::JournalFile::open(&path, &header, None)
+            .err()
+            .unwrap();
+        assert_eq!(error.kind, contract::ErrorKind::Usage);
+        assert_eq!(error.message, "reserved sidecar path");
+        for access in [Access::Inspect, Access::Mutate] {
+            let ToolError::Config(message) =
+                JournalTool::open(&base_path, &path, access).err().unwrap()
+            else {
+                panic!("expected usage refusal")
+            };
+            assert_eq!(message, error.message);
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!dir.0.join(format!("{name}.lock")).exists());
+    }
+    #[cfg(unix)]
+    for reserved_link in [false, true] {
+        let normal = dir.0.join("alias.upfj");
+        let reserved = dir.0.join("alias.LOCK");
+        let (link, target) = if reserved_link {
+            (&reserved, &normal)
+        } else {
+            (&normal, &reserved)
+        };
+        std::fs::write(target, header.encode().unwrap()).unwrap();
+        std::os::unix::fs::symlink(target, link).unwrap();
+        let OpenError::Usage(error) = real_mount(link).err().unwrap() else {
+            panic!("expected Usage")
+        };
+        assert_eq!(error.message, "reserved sidecar path");
+        let ToolError::Config(message) = JournalTool::open(&base_path, link, Access::Inspect)
+            .err()
+            .unwrap()
+        else {
+            panic!("expected usage refusal")
+        };
+        assert_eq!(message, error.message);
+        std::fs::remove_file(link).unwrap();
+        std::fs::remove_file(target).unwrap();
+    }
+    let hash = "a".repeat(64);
+    for name in [format!("{hash}.upfj"), format!("{hash}-disk-1.upfj")] {
+        let path = dir.0.join(name);
+        real_mount(&path).unwrap().finish().unwrap();
+        let mut tool = JournalTool::open(&base_path, &path, Access::Inspect).unwrap();
+        assert_eq!(tool.verify().unwrap().report.status, Status::Valid);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn journal_creation_keeps_the_original_umask_filtered_file_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TempDir::new();
+    let reference = dir.0.join("reference");
+    File::create(&reference).unwrap();
+    let expected = std::fs::metadata(&reference).unwrap().permissions().mode();
+    let path = dir.journal();
+    real_mount(&path).unwrap().finish().unwrap();
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode(),
+        expected
+    );
+    std::fs::remove_file(&path).unwrap();
+    let record =
+        crate::JournalFile::open(&path, &Header::new(&[0; 2 * SECTOR_LEN], 0).unwrap(), None)
+            .unwrap();
+    JournalMedia::open_record(
+        Box::new(record),
+        &VerifiedBase::from_bytes(&[0; 2 * SECTOR_LEN]).unwrap(),
+        (2 * SECTOR_LEN) as u64,
+        SinkStatus::default(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
+    assert_eq!(
+        std::fs::metadata(path).unwrap().permissions().mode(),
+        expected
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn retention_failed_temporary_rollback_reports_uncertainty_and_allows_reopen_retry() {
+    struct ReadOnlyTemporary;
+    impl unemu_core_files::Filesystem for ReadOnlyTemporary {
+        fn create_new(
+            &self,
+            path: &Path,
+            permissions: Option<&std::fs::Permissions>,
+        ) -> io::Result<Box<dyn unemu_core_files::FileIo>> {
+            drop(unemu_core_files::HostFilesystem.create_new(path, permissions)?);
+            // A read-only descriptor rejects both the write and its rollback.
+            Ok(Box::new(File::open(path)?))
+        }
+    }
+    let dir = TempDir::new();
+    let path = dir.journal();
+    five_generations(&path);
+    let mut disk = real_mount(&path).unwrap().with_retention(2);
+    let status = disk.status();
+    let file = disk.file.clone().unwrap();
+    disk.inner
+        .close_with(ClosingReason::Checkpoint, &mut |_| {
+            journal_replacement(file.borrow_mut().replace_with(&ReadOnlyTemporary))
+        })
+        .unwrap();
+    let failure = status.maintenance_failure().unwrap();
+    assert!(failure.uncertain, "{failure}");
+    assert_eq!(
+        failure.message,
+        io::Error::from_raw_os_error(libc::EBADF).to_string()
+    );
+    assert_eq!(
+        status.failure().unwrap().operation,
+        "journal appends disabled"
+    );
+    let closed = std::fs::read(&path).unwrap();
+    assert_eq!(scan(&closed, &[0; 1024], 1024).report.status, Status::Valid);
+    disk.write_batch(&[(0, [0xB5; 512])]);
+    assert_eq!(disk.read_sector(0), [0xB5; 512]);
+    assert_eq!(std::fs::read(&path).unwrap(), closed);
+    drop(file);
+    drop(disk);
+    let mut retry = real_mount(&path).unwrap().with_retention(2);
+    retry.write_batch(&[(0, [0xB5; 512])]);
+    retry.finish().unwrap();
+    let result = scan(&std::fs::read(&path).unwrap(), &[0; 1024], 1024);
+    assert_eq!(result.report.generations.len(), 2);
+    assert_eq!(&result.image.unwrap()[..512], &[0xB5; 512]);
+}
+
+#[test]
+fn shared_creation_header_sync_failure_keeps_the_original_stage_text() {
+    use unemu_core_files::{FileIo, Filesystem};
+    struct FailSync(Box<dyn FileIo>);
+    impl Read for FailSync {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            self.0.read(bytes)
+        }
+    }
+    impl Write for FailSync {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.write(bytes)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.0.flush()
+        }
+    }
+    impl Seek for FailSync {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.0.seek(position)
+        }
+    }
+    impl FileIo for FailSync {
+        fn metadata(&self) -> io::Result<std::fs::Metadata> {
+            self.0.metadata()
+        }
+        fn set_len(&mut self, length: u64) -> io::Result<()> {
+            self.0.set_len(length)
+        }
+        fn sync_all(&mut self) -> io::Result<()> {
+            Err(io::Error::other("injected header sync failure"))
+        }
+        fn set_permissions(&mut self, permissions: std::fs::Permissions) -> io::Result<()> {
+            self.0.set_permissions(permissions)
+        }
+    }
+    struct HeaderSyncFs;
+    impl Filesystem for HeaderSyncFs {
+        fn create_new(
+            &self,
+            path: &Path,
+            permissions: Option<&std::fs::Permissions>,
+        ) -> io::Result<Box<dyn FileIo>> {
+            Ok(Box::new(FailSync(
+                crate::journal_file::JournalFilesystem.create_new(path, permissions)?,
+            )))
+        }
+    }
+    let dir = TempDir::new();
+    let path = dir.journal();
+    let status = SinkStatus::default();
+    let error = JournalMedia::open_path_with(
+        &path,
+        &VerifiedBase::from_bytes(&[0; 1024]).unwrap(),
+        1024,
+        status.clone(),
+        None,
+        None,
+        Rc::new(HeaderSyncFs),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(status.failure().unwrap().operation, "header sync");
+    assert_eq!(
+        error.to_string(),
+        "header sync: injected header sync failure (last confirmed sequence 0)"
+    );
+    assert!(!path.exists());
+    real_mount(&path).unwrap().finish().unwrap();
 }

@@ -115,6 +115,10 @@ impl VerifiedBase {
             .try_clone()
     }
 
+    pub(crate) fn core(&self) -> &journal::VerifiedBase {
+        &self.source
+    }
+
     pub fn identity(&self) -> &Header {
         self.source.identity()
     }

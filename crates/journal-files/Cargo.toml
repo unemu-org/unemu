@@ -21,7 +21,7 @@ unemu-core-api.workspace = true
 unemu-core-files.workspace = true
 
 [features]
-test-support = []
+test-support = ["journal/test-support"]
 
 [dev-dependencies]
 unemu-core-api = { workspace = true, features = ["test-support"] }

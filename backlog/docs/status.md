@@ -5,6 +5,22 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-21 — Shared journal file engine, extraction still partial:**
+  `journal-files` now uses contract 0.3.1's `FileRecord` for session records,
+  header publication, retention and cleanup; offline tools transfer `PathLock`
+  into recovery. `unemu-core-api` and `unemu-core-files` use release 0.3.1
+  at `afba6e6b`; the NES core uses `0dbf0d56` with the same contract.
+  Contract 0.3.1 fixes first mount when umask removes write permission by
+  keeping the writable creation descriptor; the regression now runs by default.
+  Accepted behavior changes: failed appends roll back to their
+  prior length (`Storage`, or `StorageUncertain` if rollback fails), while the
+  journal still latches the failure and stops output; `media verify` may find
+  a shorter or no discarded tail. Real crash tails are still discarded.
+  Mounting and offline tools now refuse reserved sidecar names with the same
+  Usage diagnostic; generated journal names remain valid. Unused media facade
+  exports are removed, but live ones and the assembly file mount/metadata remain.
+  Final layer tags and the dependency/host-list proofs remain partial. See
+  [core contract §12.10 step 11](design/core-contract.md#1210-steps).
 - **2026-11-21 — Recipe format 1.0 frozen:** decision-43 is
   accepted. Recipes and work files use 1.0;
   experimental 0.1 is refused, while historical syntax snapshots remain.

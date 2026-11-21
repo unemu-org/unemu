@@ -2,16 +2,19 @@
 //! File-backed disk/CMOS journals and offline tools; see
 //! `backlog/docs/design/persistent-media.md` § Offline commands and
 //! `backlog/docs/design/core-contract.md` §12.5. The byte format and sector
-//! replay belong to `journal`; path publication and durable file operations
-//! stay here until the contract's file adapter can preserve their protocol.
+//! replay and the record lifecycle belong to `journal`; file publication,
+//! replacement and cleanup use the shared file engine. Failed appends are
+//! rolled back; the journal latches the failure and stops output.
 
-use journal::{codec, history};
+#[cfg(test)]
+use journal::codec;
+use journal::history;
 mod journal_file;
 pub mod offline;
 #[doc(hidden)]
 pub mod overlay;
 mod sink;
-mod store;
+#[cfg(test)]
 mod temporary;
 
 pub use journal::{
@@ -19,7 +22,7 @@ pub use journal::{
     Tip, VerificationReport,
 };
 pub use journal::{ClosingReason, Error, Frame, Header, Record, FRAME_LEN, HEADER_LEN, SECTOR_LEN};
-pub use journal_file::JournalFile;
+pub use journal_file::{check_journal_path, JournalFile};
 pub use overlay::{SectorSource, SparseOverlay, VerifiedBase};
 pub use sink::{JournalMedia, MaintenanceFailure, OpenError, SinkFailure, SinkStatus};
 #[cfg(test)]

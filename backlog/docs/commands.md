@@ -23,6 +23,24 @@ same arguments, reports and exit codes: 0 success, 1 host/storage failure,
 2 usage/configuration refusal, 3 recovery needed. `compact` aliases `commit`;
 `verify --repair-tail --backup PATH` preserves the original journal before
 repair. Commit writes a new base file and never rewrites the old base.
+Journal failure behavior changed with the shared file adapter: a failed append
+rolls back to the length before that append. It returns `Storage` if rollback
+succeeds and `StorageUncertain` if it cannot undo the write. The journal still
+latches either failure and stops output; guest writes remain readable in memory.
+Earlier complete frame appends remain, even if their command was not acknowledged.
+`media verify` can therefore report a shorter discarded tail, or none, after a
+failed append. Actual process-death tails and unsuccessful rollbacks still pass
+through normal recovery; the wire format, recovered-command rules and retention
+are unchanged.
+
+Journal paths now also refuse the shared engine's reserved sidecar namespace
+with the Usage message `reserved sidecar path`: `.lock`, `_lock`, `.create-`
+and `.retain-` markers, case variants, and legacy `_N.tmp` temporary suffixes.
+Both mounting and offline tools apply this rule before opening journal bytes
+or creating lock metadata, including names reached through a symlink. This is
+an explicit behavior change. Generated `<sha256>.upfj` and `<set>-<id>.upfj`
+names are unaffected. Existing journal-specific `.export-` restrictions remain.
+
 The shared implementation is `unemupc::journal`, using `journal-files`;
 `cli-pc` owns the frontend journal tests (`media_tools`, `media_fifo`).
 `--boot`, `--bios PATH` and `machine check FILE` are available only here. The frontend keeps

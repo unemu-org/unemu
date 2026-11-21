@@ -1132,10 +1132,7 @@ fn nvram_journal_namespace_rejects_aliases_and_reserved_names() {
                 journal.display(),
                 journal.display()
             ),
-            _ => format!(
-                "NVRAM: journal path {} uses a reserved creation-temporary name",
-                journal.display()
-            ),
+            _ => "NVRAM: reserved sidecar path".into(),
         };
         assert_eq!(error.message, expected);
     }

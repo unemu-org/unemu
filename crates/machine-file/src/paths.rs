@@ -48,6 +48,7 @@ pub(crate) fn validate_journals(
             },
             None => ConfigError::Nvram { message },
         };
+        media::check_journal_path(path).map_err(|failure| error(failure.message))?;
         if std::fs::metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
             return Err(error(format!(
                 "journal path {} is a directory",

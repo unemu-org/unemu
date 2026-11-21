@@ -690,8 +690,7 @@ fn journal_config_refuses_creation_temp_names_in_either_drive_order() {
         let before = temp.entries();
         let error = candidate.validate().unwrap_err().to_string();
         assert!(error.contains(&format!("drive {index}")), "{error}");
-        assert!(error.contains(&path.display().to_string()), "{error}");
-        assert!(error.contains("creation-temporary"), "{error}");
+        assert!(error.contains("reserved sidecar path"), "{error}");
         assert!(assemble(&candidate).is_err());
         assert_eq!(temp.entries(), before);
     }
@@ -881,10 +880,9 @@ fn journal_config_refuses_creation_temp_names_through_symlinks() {
         let before = temp.entries();
         let error = candidate.validate().unwrap_err().to_string();
         assert!(
-            error.contains("drive 0") && error.contains("creation-temporary"),
+            error.contains("drive 0") && error.contains("reserved sidecar path"),
             "{error}"
         );
-        assert!(error.contains(&path.display().to_string()), "{error}");
         assert!(assemble(&candidate).is_err());
         assert_eq!(temp.entries(), before);
         assert_eq!(std::fs::read(path).unwrap(), b"foreign file");
@@ -900,8 +898,8 @@ fn nested_creation_names_are_refused_by_assembly() {
         candidate.drives[0].write = WriteMode::journal(&path);
         let before = temp.entries();
         let error = candidate.validate().unwrap_err().to_string();
-        assert!(error.contains("drive 0") && error.contains(name), "{error}");
-        assert!(error.contains("creation-temporary"), "{error}");
+        assert!(error.contains("drive 0"), "{error}");
+        assert!(error.contains("reserved sidecar path"), "{error}");
         assert!(assemble(&candidate).is_err());
         assert_eq!(temp.entries(), before);
     }
@@ -1255,4 +1253,39 @@ fn identical_guest_sessions_produce_byte_identical_journals() {
         std::fs::read(first.path("base.img")).unwrap(),
         std::fs::read(second.path("base.img")).unwrap()
     );
+}
+
+#[test]
+fn reserved_journal_sidecars_are_usage_errors_before_assembly_opens_outputs() {
+    let temp = Temp::new();
+    let mut machine = config(&temp, false, 512);
+    for name in [
+        "disk.lock",
+        "disk_LOCK",
+        "disk.CREATE-0.TMP",
+        "disk.RETAIN-1.TMP",
+    ] {
+        let path = temp.path(name);
+        machine.drives[0].write = WriteMode::journal(&path);
+        let error = machine.validate().unwrap_err();
+        assert!(
+            matches!(error, assembly::ConfigError::Journal { ref message, .. } if message == "reserved sidecar path")
+        );
+        assert!(assemble(&machine)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("reserved sidecar path"));
+        assert!(!path.exists());
+        assert!(!temp.path(&format!("{name}.lock")).exists());
+    }
+    for name in [
+        format!("{}.upfj", "a".repeat(64)),
+        "games-install-1.upfj".into(),
+    ] {
+        let path = temp.path(&name);
+        machine.drives[0].write = WriteMode::journal(&path);
+        machine.validate().unwrap();
+        assemble(&machine).unwrap().finish_persistence().unwrap();
+    }
 }

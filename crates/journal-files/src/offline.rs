@@ -4,7 +4,7 @@
 //! and retention. Inspections may report an absent lock on read-only storage.
 
 use crate::journal_file::{
-    canonical_journal_path, inspection_lock, journal_lock_path, lock_journal, platform_sync,
+    canonical_journal_path, exclusive_lock, inspection_lock, journal_lock_path, platform_sync,
     refuse_creation_temp_name,
 };
 use crate::{
@@ -72,7 +72,7 @@ pub struct JournalTool {
     base: VerifiedBase,
     base_metadata: std::fs::Metadata,
     journal: File,
-    lock: Option<File>,
+    lock: Option<unemu_core_files::PathLock>,
     access: Access,
 }
 
@@ -88,6 +88,7 @@ impl JournalTool {
         access: Access,
     ) -> Result<Self, ToolError> {
         refuse_reserved_path("base", base)?;
+        crate::check_journal_path(journal).map_err(|error| ToolError::Config(error.message))?;
         refuse_reserved_path("journal", journal)?;
         let journal_error = |error| path_error("journal", journal, error);
         refuse_creation_temp_name(journal).map_err(journal_error)?;
@@ -105,7 +106,7 @@ impl JournalTool {
         let lock = if access == Access::Inspect {
             inspection_lock(&path).map_err(lock_error)?
         } else {
-            Some(lock_journal(&path, false).map_err(lock_error)?)
+            Some(exclusive_lock(&path).map_err(lock_error)?)
         };
         let file = io
             .open_input(&path, access == Access::Mutate)
@@ -480,7 +481,7 @@ pub trait ToolIo {
         &mut self,
         path: &Path,
         base: &VerifiedBase,
-        lock: File,
+        lock: unemu_core_files::PathLock,
         base_metadata: &std::fs::Metadata,
     ) -> Result<JournalMedia, OpenError> {
         JournalMedia::recover_locked(path, base, lock, base_metadata)

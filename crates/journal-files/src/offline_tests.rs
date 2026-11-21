@@ -119,7 +119,7 @@ impl ToolIo for RecordingIo {
         &mut self,
         path: &Path,
         base: &VerifiedBase,
-        lock: File,
+        lock: unemu_core_files::PathLock,
         base_metadata: &std::fs::Metadata,
     ) -> Result<JournalMedia, OpenError> {
         self.calls.push(("journal recovery", TargetKind::File));

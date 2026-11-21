@@ -23,7 +23,7 @@ use image_store::test_support::TempDir;
 use unemu_core_api::{DisplayId, RunLimit, Stop};
 
 /// The unemunes revision the frame count and the digest were taken from.
-const NES_REV: &str = "1b2b1128172602357af002a64523b39604b019cf";
+const NES_REV: &str = "0dbf0d56c627ab62601fca1dcd64ec77f3e4643c";
 
 /// The retired instructions the machine runs, stopping at every frame.
 const STEPS: u64 = 80_000;

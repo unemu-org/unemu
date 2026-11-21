@@ -2203,7 +2203,7 @@ dependencies = [
 [[package]]
 name = "nes"
 version = "0.0.1"
-source = "git+https://github.com/unemu-org/unemunes?rev=1b2b1128172602357af002a64523b39604b019cf#1b2b1128172602357af002a64523b39604b019cf"
+source = "git+https://github.com/unemu-org/unemunes?rev=0dbf0d56c627ab62601fca1dcd64ec77f3e4643c#0dbf0d56c627ab62601fca1dcd64ec77f3e4643c"
 dependencies = [
  "x65",
 ]
@@ -3916,13 +3916,13 @@ dependencies = [
 
 [[package]]
 name = "unemu-core-api"
-version = "0.3.0"
-source = "git+https://github.com/unemu-org/unemu-core-api?rev=0d490fcb0b97320ac785b12f84a5c49e72f28b1d#0d490fcb0b97320ac785b12f84a5c49e72f28b1d"
+version = "0.3.1"
+source = "git+https://github.com/unemu-org/unemu-core-api?rev=afba6e6b217946eb57b9556e79a30bbe53c90fb4#afba6e6b217946eb57b9556e79a30bbe53c90fb4"
 
 [[package]]
 name = "unemu-core-files"
-version = "0.3.0"
-source = "git+https://github.com/unemu-org/unemu-core-api?rev=0d490fcb0b97320ac785b12f84a5c49e72f28b1d#0d490fcb0b97320ac785b12f84a5c49e72f28b1d"
+version = "0.3.1"
+source = "git+https://github.com/unemu-org/unemu-core-api?rev=afba6e6b217946eb57b9556e79a30bbe53c90fb4#afba6e6b217946eb57b9556e79a30bbe53c90fb4"
 dependencies = [
  "unemu-core-api",
 ]
@@ -3930,7 +3930,7 @@ dependencies = [
 [[package]]
 name = "unemu-nes-core"
 version = "0.0.1"
-source = "git+https://github.com/unemu-org/unemunes?rev=1b2b1128172602357af002a64523b39604b019cf#1b2b1128172602357af002a64523b39604b019cf"
+source = "git+https://github.com/unemu-org/unemunes?rev=0dbf0d56c627ab62601fca1dcd64ec77f3e4643c#0dbf0d56c627ab62601fca1dcd64ec77f3e4643c"
 dependencies = [
  "nes",
  "unemu-core-api",
@@ -4845,7 +4845,7 @@ checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 [[package]]
 name = "x65"
 version = "0.0.1"
-source = "git+https://github.com/unemu-org/unemunes?rev=1b2b1128172602357af002a64523b39604b019cf#1b2b1128172602357af002a64523b39604b019cf"
+source = "git+https://github.com/unemu-org/unemunes?rev=0dbf0d56c627ab62601fca1dcd64ec77f3e4643c#0dbf0d56c627ab62601fca1dcd64ec77f3e4643c"
 
 [[package]]
 name = "x86jit-core"

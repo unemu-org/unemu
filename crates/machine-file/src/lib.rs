@@ -538,6 +538,7 @@ fn inspect_journal(
     geometry_length: u64,
 ) -> Result<Option<String>, String> {
     use media::offline::{Access, JournalTool, ToolError};
+    media::check_journal_path(path).map_err(|error| error.message)?;
     match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Some("note: journal will be created".into()))
