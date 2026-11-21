@@ -185,11 +185,11 @@ mod tests {
         PlatformDescription::new("console", "Console").with_content(&KINDS),
     ];
     static OTHER_PC: Described = Described(
-        CoreDescription::new(ContractVersion::new(0, 2), "other-pc", "Other PC", "1.0.0")
+        CoreDescription::new(ContractVersion::new(0, 3), "other-pc", "Other PC", "1.0.0")
             .with_platforms(&SECOND_PC),
     );
     static HOME_CORE: Described = Described(
-        CoreDescription::new(ContractVersion::new(0, 2), "home", "Home", "1.0.0")
+        CoreDescription::new(ContractVersion::new(0, 3), "home", "Home", "1.0.0")
             .with_platforms(&HOME),
     );
 

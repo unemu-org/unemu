@@ -81,16 +81,16 @@ x86jit-core = { version = "0.3", git = "https://github.com/unemu-org/x86jit", re
 # pin is an exact revision, moved together with every pinned core. A bare path
 # dependency breaks nix build and CI. To develop against a local checkout of the
 # contract, add a gitignored [patch] override instead of editing this line.
-unemu-core-api = { version = "0.2", git = "https://github.com/unemu-org/unemu-core-api", rev = "56c4640146339e967b69925b724bbec0cf878df8" }
+unemu-core-api = { version = "0.3", git = "https://github.com/unemu-org/unemu-core-api", rev = "0d490fcb0b97320ac785b12f84a5c49e72f28b1d" }
 # The contract's storage and content over host files, from the contract's
 # repository at the same revision: it depends on that copy of the contract.
-unemu-core-files = { version = "0.2", git = "https://github.com/unemu-org/unemu-core-api", rev = "56c4640146339e967b69925b724bbec0cf878df8" }
+unemu-core-files = { version = "0.3", git = "https://github.com/unemu-org/unemu-core-api", rev = "0d490fcb0b97320ac785b12f84a5c49e72f28b1d" }
 # The NES core, from its own repository at an exact revision built against the
 # same release of the contract as the pin above: one copy of the contract in the
 # build. Moving this pin moves the NES golden's revision too. A bare path
 # dependency breaks nix build and CI; develop against a local checkout through a
 # gitignored [patch] override instead of editing this line.
-unemu-nes-core = { version = "0.0.1", git = "https://github.com/unemu-org/unemunes", rev = "3aa955802a568a58b9bf8f5c29a0e23f44866a45" }
+unemu-nes-core = { version = "0.0.1", git = "https://github.com/unemu-org/unemunes", rev = "1b2b1128172602357af002a64523b39604b019cf" }
 
 # Internal crates share the workspace version.
 assembly = { path = "crates/assembly", version = "0.0.3" }

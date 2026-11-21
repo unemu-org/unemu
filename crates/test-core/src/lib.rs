@@ -157,7 +157,7 @@ static PLATFORMS: [PlatformDescription; 1] = [PlatformDescription::new(PLATFORM,
     .with_content(&KINDS)];
 
 static DESCRIPTION: CoreDescription = CoreDescription::new(
-    ContractVersion::new(0, 2),
+    ContractVersion::new(0, 3),
     CORE_ID,
     "unemu test core",
     env!("CARGO_PKG_VERSION"),

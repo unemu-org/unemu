@@ -5012,7 +5012,7 @@ and touches the PC's shell only where the two meet.
 
 | Crate | Layer | Toolkit | Holds |
 |---|---|---|---|
-| `unemu-test-core` (`crates/test-core`) | neutral | none | A scripted core that implements all of contract 0.2 and emulates nothing; the front end's tests run against it ("Testing before a NES exists", below) |
+| `unemu-test-core` (`crates/test-core`) | neutral | none | A scripted core that implements all of contract 0.3 and emulates nothing; the front end's tests run against it ("Testing before a NES exists", below) |
 | `core-launch` (`crates/core-launch`) | neutral | none | From a file and a list of cores to a machine: which cores to ask, hashing, `identify`, the content source, the machine's storage, `create`. Not a window crate: a later `image run` through the contract (§12.9) starts here too |
 | `player-ui` (`crates/player-ui`) | neutral, a window crate | egui | The view of one running machine driven through the contract alone: the screen, the status line, the machine's menu built from its description, the Input dialog |
 | `machine-view` (exists) | neutral | winit | Grows: sound at any rate, pads from the keyboard, the absolute pointer, reset by kind, saved state, the visible part of a picture |
@@ -5444,7 +5444,7 @@ contract over the NES machine:
 1. **The dependency.** `unemu-core-api` by the exact revision of a
    release tag, the line of §13.1, never a path, a branch or a copy; a
    gitignored patch for local work. `implements` is the literal
-   `ContractVersion::new(0, 2)`.
+   `ContractVersion::new(0, 3)`.
 2. **The description.** Core id `unemunes`. One platform; its id is the
    one artifacts will name later, so it is chosen once (proposed: `nes`,
    with the region in the config). Content kinds with their extensions.

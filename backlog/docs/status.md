@@ -5,6 +5,13 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-20 — Contract 0.3 re-pin:** `unemu-core-api` and
+  `unemu-core-files` use release 0.3.0 at `0d490fcb`; the NES core uses
+  `1b2b1128`. The PC and scripted test cores state contract 0.3, and both
+  programs' About lines follow. The contract's only API addition is the
+  arbitrary-path `unemu-core-files::FileRecord`; this re-pin does not adopt
+  it. Emulation goldens stay unchanged, including the NES picture digest
+  `0xFCDF_D186_11FE_D325` and eight frames at 80 000 retired instructions.
 - **2026-11-20 — Journal crate extraction, partly done:** `journal` owns
   the byte format, replay and sparse overlays; `journal-files` owns file
   sessions and offline tools; `media` temporarily re-exports the old paths.

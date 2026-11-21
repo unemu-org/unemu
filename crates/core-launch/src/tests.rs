@@ -20,13 +20,13 @@ impl Core for Stating {
 }
 
 static OLDER_MINOR: Stating = Stating(CoreDescription::new(
-    ContractVersion::new(0, 1),
+    ContractVersion::new(0, 2),
     "older",
     "Older core",
     "1.4.0",
 ));
 static NEXT_MINOR: Stating = Stating(CoreDescription::new(
-    ContractVersion::new(0, 3),
+    ContractVersion::new(0, 4),
     "next",
     "Next core",
     "0.9.1",
@@ -38,7 +38,7 @@ static OTHER_MAJOR: Stating = Stating(CoreDescription::new(
     "2.0.0",
 ));
 static SAME: Stating = Stating(CoreDescription::new(
-    ContractVersion::new(0, 2),
+    ContractVersion::new(0, 3),
     "same",
     "Same core",
     "0.1.0",
@@ -50,11 +50,11 @@ fn ids(cores: impl Iterator<Item = &'static dyn Core>) -> Vec<&'static str> {
     cores.map(|core| core.description().id).collect()
 }
 
-/// The programs are built against contract 0.2; the scripted cores above
+/// The programs are built against contract 0.3; the scripted cores above
 /// are written for that.
 #[test]
-fn the_tests_assume_the_contract_this_program_drives_is_0_2() {
-    assert_eq!(CONTRACT, ContractVersion::new(0, 2));
+fn the_tests_assume_the_contract_this_program_drives_is_0_3() {
+    assert_eq!(CONTRACT, ContractVersion::new(0, 3));
 }
 
 #[test]
@@ -70,15 +70,15 @@ fn a_core_that_states_another_contract_is_refused_with_the_reason() {
         [
             (
                 "older",
-                "core Older core implements contract 0.1; this program needs 0.2"
+                "core Older core implements contract 0.2; this program needs 0.3"
             ),
             (
                 "next",
-                "core Next core implements contract 0.3; this program needs 0.2"
+                "core Next core implements contract 0.4; this program needs 0.3"
             ),
             (
                 "major",
-                "core Major core implements contract 1.2; this program needs 0.2"
+                "core Major core implements contract 1.2; this program needs 0.3"
             ),
         ]
     );
@@ -107,11 +107,11 @@ fn the_about_lines_list_every_core_in_order_and_say_which_are_unusable() {
     assert_eq!(
         Cores::new(&LIST).about_lines(),
         [
-            "core older 1.4.0 (Older core), contract 0.1, unusable: core Older core implements contract 0.1; this program needs 0.2".to_owned(),
-            format!("core unemu-test-core {test_core} (unemu test core), contract 0.2"),
-            "core next 0.9.1 (Next core), contract 0.3, unusable: core Next core implements contract 0.3; this program needs 0.2".to_owned(),
-            "core same 0.1.0 (Same core), contract 0.2".to_owned(),
-            "core major 2.0.0 (Major core), contract 1.2, unusable: core Major core implements contract 1.2; this program needs 0.2".to_owned(),
+            "core older 1.4.0 (Older core), contract 0.2, unusable: core Older core implements contract 0.2; this program needs 0.3".to_owned(),
+            format!("core unemu-test-core {test_core} (unemu test core), contract 0.3"),
+            "core next 0.9.1 (Next core), contract 0.4, unusable: core Next core implements contract 0.4; this program needs 0.3".to_owned(),
+            "core same 0.1.0 (Same core), contract 0.3".to_owned(),
+            "core major 2.0.0 (Major core), contract 1.2, unusable: core Major core implements contract 1.2; this program needs 0.3".to_owned(),
         ]
     );
 }
@@ -143,7 +143,7 @@ static TEST_PLATFORM: [PlatformDescription; 1] = [PlatformDescription::new(
 /// A core of another contract that states the test core's platform.
 static OLD_TEST: Stating = Stating(
     CoreDescription::new(
-        ContractVersion::new(0, 1),
+        ContractVersion::new(0, 2),
         "old-test",
         "Old test core",
         "0.1.0",
@@ -153,7 +153,7 @@ static OLD_TEST: Stating = Stating(
 /// A second usable core of the test core's platform.
 static SECOND_TEST: Stating = Stating(
     CoreDescription::new(
-        ContractVersion::new(0, 2),
+        ContractVersion::new(0, 3),
         "second-test",
         "Second test core",
         "0.1.0",

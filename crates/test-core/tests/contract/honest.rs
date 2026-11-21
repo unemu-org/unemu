@@ -34,9 +34,9 @@ battery
 ";
 
 #[test]
-fn the_core_states_contract_0_2_and_one_platform_that_opens_scripts() {
+fn the_core_states_contract_0_3_and_one_platform_that_opens_scripts() {
     let description = CORE.description();
-    assert_eq!(description.implements, ContractVersion::new(0, 2));
+    assert_eq!(description.implements, ContractVersion::new(0, 3));
     assert!(CONTRACT.drives(description.implements));
     assert_eq!(description.platforms.len(), 1);
     let platform = &description.platforms[0];

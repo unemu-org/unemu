@@ -1495,8 +1495,8 @@ use an extending file as shown in `machines/README.md`. From outside the
 workspace, Cargo also needs `--manifest-path /path/to/workspace/Cargo.toml`.
 `--help`, `--version` and `--about` include the embedded fonts' attribution and
 the Nuked-OPL3 notice; `--version` and `--about` also print one line per
-compiled-in core, `core unemupc 0.0.2 (unemupc), contract 0.2` and
-`core unemunes 0.0.1 (unemunes), contract 0.2` in the release (a core
+compiled-in core, `core unemupc 0.0.2 (unemupc), contract 0.3` and
+`core unemunes 0.0.1 (unemunes), contract 0.3` in the release (a core
 built for another contract ends its line with `, unusable: ` and the reason),
 then the licence, the source URL and where the full licence texts are.
 `upcli --version` (or `--about`) prints the same for the command line, the core
