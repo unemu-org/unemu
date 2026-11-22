@@ -6,6 +6,9 @@
 //! machine-images §5.5. Nothing here reaches a network registry.
 use pc_harness::test_support::fixtures;
 
+#[path = "../../pc-image/tests/support/frontend.rs"]
+mod frontend;
+
 use image_registry::{guard::Redistribution, Reference, RegistryEntry, DEFAULT_REGISTRY};
 use image_store::Store;
 use std::{
@@ -74,6 +77,7 @@ fn run(args: &[&dyn AsRef<std::ffi::OsStr>]) -> (u8, String, String) {
 
 fn build(store: &Path, dry_run: bool) -> (u8, String, String) {
     let vendor = vendor();
+    let media = frontend::vendor();
     let mut args: Vec<&dyn AsRef<std::ffi::OsStr>> = vec![
         &"image",
         &"template",
@@ -82,6 +86,8 @@ fn build(store: &Path, dry_run: bool) -> (u8, String, String) {
         &store,
         &"--vendor",
         &vendor,
+        &"--vendor",
+        &media,
     ];
     if dry_run {
         args.push(&"--dry-run");
@@ -280,7 +286,7 @@ fn both_templates_post_with_the_open_bios_and_xtide_finds_their_blank_disk() {
     }
     let t = Temp::new("template-cli-post");
     let store = Store::open(t.0.join("store")).unwrap();
-    cli_pc::image::build_templates(&store, &vendor()).unwrap();
+    cli_pc::image::build_templates(&store, &[vendor(), frontend::vendor()]).unwrap();
     for tag in ["open-at:1.2.0", "open-at-games:1.2.0"] {
         post(&store, tag);
     }
@@ -397,7 +403,7 @@ fn the_dry_run_names_a_version_conflict_and_what_latest_does() {
     // Only the packages the templates bind: every template is refused.
     let firmware_only =
         |_: &str, _: &image_store::Manifest, _: &[u8]| Err("machines later".to_owned());
-    assert!(pc_image::template::build(&store, &vendor(), &firmware_only, &mut |_| {}).is_err());
+    assert!(pc_image::template::build(&store, &[vendor()], &firmware_only, &mut |_| {}).is_err());
     let other = pc_image::create::create(
         &store,
         &variant(&store, "Another AT"),
@@ -566,9 +572,105 @@ fn the_build_needs_only_the_firmware_fixtures() {
 /// fetched.
 fn media_fetched() -> Option<()> {
     for file in pc_image::template::media_files() {
-        fixtures::fixture(file.path)?;
+        frontend::fixture(file.path)?;
     }
     Some(())
+}
+
+#[test]
+fn template_build_finds_each_fixture_across_vendor_directories() {
+    if fetched().is_none() {
+        return;
+    }
+    let t = Temp::new("template-split-vendor");
+    let roots = [t.0.join("roms"), t.0.join("sources")];
+    for source in &pc_image::template::FIRMWARE {
+        for (root, relative) in roots.iter().zip([source.rom, source.source_archive]) {
+            let to = root.join(relative);
+            fs::create_dir_all(to.parent().unwrap()).unwrap();
+            fs::copy(vendor().join(relative), to).unwrap();
+        }
+    }
+    for dry_run in [true, false] {
+        let mut args: Vec<OsString> = vec![
+            "image".into(),
+            "template".into(),
+            "build".into(),
+            "--store".into(),
+            t.0.join("store").into(),
+            "--vendor".into(),
+            roots[0].clone().into(),
+            "--vendor".into(),
+            roots[1].clone().into(),
+        ];
+        if dry_run {
+            args.push("--dry-run".into());
+        }
+        let (code, output, errors) = run_args(&args);
+        assert_eq!(code, 0, "{errors}");
+        assert_eq!(rows(&output).len(), TEMPLATE_TAGS.len());
+    }
+}
+
+#[test]
+fn template_build_uses_the_first_matching_fixture() {
+    if fetched().is_none() {
+        return;
+    }
+    let t = Temp::new("template-vendor-precedence");
+    let shadow = t.0.join("shadow");
+    let rom = shadow.join(pc_image::template::FIRMWARE[0].rom);
+    fs::create_dir_all(rom.parent().unwrap()).unwrap();
+    fs::write(&rom, b"another ROM").unwrap();
+    for (index, roots) in [[vendor(), shadow.clone()], [shadow.clone(), vendor()]]
+        .iter()
+        .enumerate()
+    {
+        let args = [
+            "image".into(),
+            "template".into(),
+            "build".into(),
+            "--store".into(),
+            t.0.join(format!("store-{index}")).into(),
+            "--vendor".into(),
+            roots[0].clone().into(),
+            "--vendor".into(),
+            roots[1].clone().into(),
+        ];
+        let (code, output, errors) = run_args(&args);
+        if index == 0 {
+            assert_eq!(code, 0, "{errors}");
+            assert_eq!(rows(&output).len(), TEMPLATE_TAGS.len());
+        } else {
+            assert_ne!(code, 0, "{output}");
+            assert!(errors.contains(&rom.display().to_string()), "{errors}");
+            assert!(errors.contains("vendor/unemu-at-bios/fetch.sh"), "{errors}");
+        }
+    }
+}
+
+#[test]
+fn missing_template_fixtures_name_every_vendor_directory_and_the_fetch_script() {
+    let t = Temp::new("template-missing-vendors");
+    let roots = [t.0.join("first"), t.0.join("second")];
+    let args = [
+        "image".into(),
+        "template".into(),
+        "build".into(),
+        "--store".into(),
+        t.0.join("store").into(),
+        "--vendor".into(),
+        roots[0].clone().into(),
+        "--vendor".into(),
+        roots[1].clone().into(),
+    ];
+    let (code, _, errors) = run_args(&args);
+    assert_ne!(code, 0);
+    assert!(errors.contains("missing fixture"), "{errors}");
+    assert!(errors.contains("vendor/unemu-at-bios/fetch.sh"), "{errors}");
+    let first = errors.find(&roots[0].display().to_string()).unwrap();
+    let second = errors.find(&roots[1].display().to_string()).unwrap();
+    assert!(first < second, "{errors}");
 }
 
 /// The `image media import` command line that imports one installation set
@@ -579,7 +681,12 @@ fn media_fetched() -> Option<()> {
 fn media_import_args(source: &pc_image::template::MediaSource, store: &Path) -> Vec<OsString> {
     let release = source.release;
     let mut args: Vec<OsString> = vec!["image".into(), "media".into(), "import".into()];
-    args.extend(source.disks.iter().map(|d| vendor().join(d.path).into()));
+    args.extend(
+        source
+            .disks
+            .iter()
+            .map(|d| frontend::vendor().join(d.path).into()),
+    );
     let mut flag = |name: &str, value: OsString| args.extend([name.into(), value]);
     let tag = pc_image::template::local_tag(&source.repository(), source.tag);
     flag("--title", release.title.into());
@@ -592,7 +699,7 @@ fn media_import_args(source: &pc_image::template::MediaSource, store: &Path) -> 
         );
     }
     for (file, _) in release.extras {
-        let mut extra = vendor().join(file.path).into_os_string();
+        let mut extra = frontend::vendor().join(file.path).into_os_string();
         extra.push(":");
         extra.push(file.name);
         flag("--extra", extra);
@@ -656,7 +763,13 @@ fn the_media_import_command_reproduces_each_installation_set() {
     let t = Temp::new("template-media-import");
     let store = Store::open(t.0.join("built")).unwrap();
     let allow = |_: &str, _: &image_store::Manifest, _: &[u8]| Ok(());
-    let built = pc_image::template::build_media(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    let built = pc_image::template::build_media(
+        &store,
+        &[vendor(), frontend::vendor()],
+        &allow,
+        &mut |_| {},
+    )
+    .unwrap();
     assert_eq!(built.len(), pc_image::template::MEDIA.len());
     for (source, set) in pc_image::template::MEDIA.iter().zip(&built) {
         let tag = pc_image::template::local_tag(&source.repository(), source.tag);

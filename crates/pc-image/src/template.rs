@@ -39,7 +39,7 @@ use image_store::{
     media_set::{ExtraKind, Validator as MediaValidator},
     ConfigValidator, Descriptor, Digest, Manifest, Store,
 };
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[path = "template_recipe.rs"]
 mod recipe_build;
@@ -547,6 +547,7 @@ pub type Guard<'a> = &'a dyn Fn(&str, &Manifest, &[u8]) -> std::result::Result<(
 /// Build every template machine into `store`, in a fixed order, handing each
 /// to `built` once its tags are written. The firmware packages it binds come
 /// first from the open fixtures under `vendor` through [`build_firmware`],
+/// searching directories in order for each file (the first match wins),
 /// as local copies of the published packages: neither `guard` nor `built`
 /// sees them, and the guard judges their ROMs and source archives inside
 /// each template. A tag that already names the same image is kept; a version
@@ -556,7 +557,7 @@ pub type Guard<'a> = &'a dyn Fn(&str, &Manifest, &[u8]) -> std::result::Result<(
 /// image the build did not version.
 pub fn build(
     store: &Store,
-    vendor: &Path,
+    vendor: &[PathBuf],
     guard: Guard<'_>,
     built: &mut dyn FnMut(&Built),
 ) -> Result<Vec<Built>> {
@@ -602,10 +603,11 @@ pub fn build(
 /// `unemu/firmware/<platform>/<catalogue id>:r1` ([`FIRMWARE_REVISION`]) and
 /// offered to `guard` before it is tagged, as [`build`] builds the
 /// templates. A package's revision tag never moves, so another package under
-/// it refuses the build.
+/// it refuses the build. Each fixture is taken from the first matching
+/// directory in `vendor`.
 pub fn build_firmware(
     store: &Store,
-    vendor: &Path,
+    vendor: &[PathBuf],
     guard: Guard<'_>,
     built: &mut dyn FnMut(&Built),
 ) -> Result<Vec<Built>> {
@@ -626,10 +628,11 @@ pub fn build_firmware(
 /// [`build`] builds the templates. Every
 /// fixture of every set is checked against its pin first
 /// ([`check_media_fixtures`]), so a missing or changed file stops the build
-/// before any set is tagged.
+/// before any set is tagged. Each fixture is taken from the first matching
+/// directory in `vendor`.
 pub fn build_media(
     store: &Store,
-    vendor: &Path,
+    vendor: &[PathBuf],
     guard: Guard<'_>,
     built: &mut dyn FnMut(&Built),
 ) -> Result<Vec<Built>> {
@@ -654,23 +657,34 @@ pub fn media_files() -> Vec<&'static MediaFile> {
 /// Check that every fixture of [`MEDIA`] exists and holds the bytes its
 /// fetch script pins; the error names the first that does not and the
 /// script to run.
-pub fn check_media_fixtures(vendor: &Path) -> Result<()> {
+pub fn check_media_fixtures(vendor: &[PathBuf]) -> Result<()> {
     for file in media_files() {
         media_fixture(vendor, file, FREEDOS_1_4.fetch)?;
     }
     Ok(())
 }
 
+fn fixture(vendor: &[PathBuf], relative: &str, fetch: &str) -> Result<PathBuf> {
+    vendor
+        .iter()
+        .map(|root| root.join(relative))
+        .find(|path| path.is_file())
+        .ok_or_else(|| {
+            let searched = vendor
+                .iter()
+                .map(|root| root.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            invalid(format!(
+                "missing fixture {relative}; searched {searched}; run {fetch}"
+            ))
+        })
+}
+
 /// The path of one fixture, refused unless it holds the pinned bytes: the
 /// licence statement covers these bytes only.
-fn media_fixture(vendor: &Path, file: &MediaFile, fetch: &str) -> Result<PathBuf> {
-    let path = vendor.join(file.path);
-    if !path.is_file() {
-        return Err(invalid(format!(
-            "missing fixture {}; run {fetch}",
-            path.display()
-        )));
-    }
+fn media_fixture(vendor: &[PathBuf], file: &MediaFile, fetch: &str) -> Result<PathBuf> {
+    let path = fixture(vendor, file.path, fetch)?;
     if Digest::of(&std::fs::read(&path)?).hex() != file.sha256 {
         return Err(invalid(format!(
             "{} is not the file {fetch} pins; run it again",
@@ -682,7 +696,7 @@ fn media_fixture(vendor: &Path, file: &MediaFile, fetch: &str) -> Result<PathBuf
 
 fn build_package(
     store: &Store,
-    vendor: &Path,
+    vendor: &[PathBuf],
     source: &FirmwareSource,
     catalogue: &[assembly::FirmwareEntry],
     guard: Guard<'_>,
@@ -702,19 +716,8 @@ fn build_package(
             entry.id
         )));
     };
-    let fixture = |relative: &str| -> Result<PathBuf> {
-        let path = vendor.join(relative);
-        if path.is_file() {
-            Ok(path)
-        } else {
-            Err(invalid(format!(
-                "missing fixture {}; run {fetch}",
-                path.display()
-            )))
-        }
-    };
-    let rom = fixture(source.rom)?;
-    let archive = fixture(source.source_archive)?;
+    let rom = fixture(vendor, source.rom, fetch)?;
+    let archive = fixture(vendor, source.source_archive, fetch)?;
     // Another archive would keep the copyleft ROM user-supplied: only the one
     // the fetch script builds is open without a licence statement.
     if Digest::of(&std::fs::read(&archive)?).hex() != pin {
@@ -788,7 +791,7 @@ fn build_machine(
 /// is caught.
 fn build_set(
     store: &Store,
-    vendor: &Path,
+    vendor: &[PathBuf],
     source: &MediaSource,
     guard: Guard<'_>,
 ) -> Result<Built> {
@@ -1076,7 +1079,7 @@ mod tests {
     #[test]
     fn the_licence_expression_is_the_one_the_licence_index_states() {
         let index = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../vendor/freedos/floppy-1.4-licenses.txt"),
         )
         .unwrap();

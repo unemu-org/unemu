@@ -941,17 +941,19 @@ names another host. It deletes its repository content afterwards.
 bash scripts/core-checkout.sh
 fixture=$(bash scripts/core-checkout.sh --print-root)
 export "$fixture"
-cargo run --offline -p window -- image template build --vendor "$UNEMUPC_FIXTURE_ROOT/vendor" --store /path/to/templates --dry-run
-cargo run --offline -p window -- image template build --vendor "$UNEMUPC_FIXTURE_ROOT/vendor" --store /path/to/templates
+cargo run --offline -p window -- image template build --vendor "$UNEMUPC_FIXTURE_ROOT/vendor" --vendor vendor --store /path/to/templates --dry-run
+cargo run --offline -p window -- image template build --vendor "$UNEMUPC_FIXTURE_ROOT/vendor" --vendor vendor --store /path/to/templates
 ```
 
 `image template build` builds the two template machines and nothing else. It
 is a command rather than a script around `image firmware import` and New
 machine…: the template machines come from the create API (`pc_image::create`),
 which has no command of its own, and the push guard must judge each manifest
-before its tags are written. Use `--vendor "$UNEMUPC_FIXTURE_ROOT/vendor"`
-for the verified core's open firmware fixtures; the default `vendor/` in the
-working directory holds only front-end fixtures here. It writes into `--store`
+before its tags are written. Use `--vendor "$UNEMUPC_FIXTURE_ROOT/vendor"
+--vendor vendor` for the verified core's open firmware fixtures and the front-end's
+media. Repeated `--vendor` directories are searched in order for each input file;
+the first match wins. A single `--vendor` still works, and the default is
+`vendor/` in the working directory. It writes into `--store`
 (created when missing), in this order (design:
 machine-images §5.5):
 

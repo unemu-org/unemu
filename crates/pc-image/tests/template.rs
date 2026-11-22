@@ -68,6 +68,29 @@ fn media_present() -> bool {
         .all(|relative| frontend::fixture(relative).is_some())
 }
 
+#[test]
+fn media_build_finds_the_second_vendor_and_checks_the_first_match() {
+    if !media_present() {
+        return;
+    }
+    let t = Temp::new("template-media-vendors");
+    let roots = [t.0.join("first"), frontend::vendor()];
+    let store = Store::open(t.0.join("store")).unwrap();
+    let built = template::build_media(&store, &roots, &allow, &mut |_| {}).unwrap();
+    assert_eq!(built.len(), template::MEDIA.len());
+
+    let file = template::media_files()[0];
+    let shadow = roots[0].join(file.path);
+    fs::create_dir_all(shadow.parent().unwrap()).unwrap();
+    fs::write(&shadow, b"another disk").unwrap();
+    let error = template::build_media(&store, &roots, &allow, &mut |_| {})
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(&shadow.display().to_string()), "{error}");
+    assert!(error.contains("is not the file"), "{error}");
+    assert!(error.contains(template::FREEDOS_1_4.fetch), "{error}");
+}
+
 fn allow(_: &str, _: &Manifest, _: &[u8]) -> Result<(), String> {
     Ok(())
 }
@@ -103,8 +126,8 @@ fn two_builds_from_different_fixture_copies_give_identical_images() {
     }
     let first = Store::open(t.0.join("first")).unwrap();
     let second = Store::open(t.0.join("second")).unwrap();
-    let a = template::build(&first, &vendor(), &allow, &mut |_| {}).unwrap();
-    let b = template::build(&second, &copy, &allow, &mut |_| {}).unwrap();
+    let a = template::build(&first, &[vendor()], &allow, &mut |_| {}).unwrap();
+    let b = template::build(&second, std::slice::from_ref(&copy), &allow, &mut |_| {}).unwrap();
     assert_eq!(identities(&a), identities(&b));
     for (x, y) in a.iter().zip(&b) {
         assert_eq!(
@@ -149,7 +172,7 @@ fn two_builds_from_different_fixture_copies_give_identical_images() {
     }
     assert_eq!(a[0].tags[0].0, "open-at:1.2.0");
     // A rebuild into the same store finds every tag in place.
-    let again = template::build(&first, &vendor(), &allow, &mut |_| {}).unwrap();
+    let again = template::build(&first, &[vendor()], &allow, &mut |_| {}).unwrap();
     assert_eq!(identities(&again), identities(&a));
     assert!(again
         .iter()
@@ -179,7 +202,7 @@ fn the_guard_sees_each_image_before_its_tags_and_a_refusal_tags_nothing_of_it() 
             Ok(())
         }
     };
-    let error = template::build(&store, &vendor(), &guard, &mut |_| {})
+    let error = template::build(&store, &[vendor()], &guard, &mut |_| {})
         .unwrap_err()
         .to_string();
     assert!(
@@ -201,7 +224,7 @@ fn the_guard_sees_each_image_before_its_tags_and_a_refusal_tags_nothing_of_it() 
 fn a_missing_fixture_or_another_source_archive_names_the_fetch_script() {
     let t = Temp::new("template-fixtures");
     let store = Store::open(t.0.join("store")).unwrap();
-    let error = template::build(&store, &t.0.join("empty"), &allow, &mut |_| {})
+    let error = template::build(&store, &[t.0.join("empty")], &allow, &mut |_| {})
         .unwrap_err()
         .to_string();
     assert!(
@@ -221,7 +244,7 @@ fn a_missing_fixture_or_another_source_archive_names_the_fetch_script() {
     let mut archive = vec![0_u8; 8192];
     archive[257..263].copy_from_slice(b"ustar\0");
     fs::write(copy.join(bios.source_archive), archive).unwrap();
-    let error = template::build(&store, &copy, &allow, &mut |_| {})
+    let error = template::build(&store, std::slice::from_ref(&copy), &allow, &mut |_| {})
         .unwrap_err()
         .to_string();
     assert!(
@@ -238,7 +261,7 @@ fn template_machines_validate_lower_and_describe_themselves() {
     }
     let t = Temp::new("template-lowering");
     let store = Store::open(t.0.join("store")).unwrap();
-    template::build(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    template::build(&store, &[vendor()], &allow, &mut |_| {}).unwrap();
     for (tag, games) in [("open-at:1.2.0", false), ("open-at-games:latest", true)] {
         let resolved = store.resolve(tag, &pc_image::PcProvider).unwrap();
         let config: toml::Table = std::str::from_utf8(&resolved.config)
@@ -350,7 +373,7 @@ fn the_published_machine_configs_and_payloads_keep_their_pins() {
         "sha256:a73e08dd524459bfe1d2461abbc37523be6066da3eb837f824f26a9430a77ad2",
         "sha256:87802544d50ee31b1ed77af8443eea2e558799212e9955733e6bbb8ca721d957",
     ];
-    for (built, pinned) in template::build(&store, &vendor(), &allow, &mut |_| {})
+    for (built, pinned) in template::build(&store, &[vendor()], &allow, &mut |_| {})
         .unwrap()
         .iter()
         .zip(expected)
@@ -416,7 +439,7 @@ fn the_published_generation_keeps_its_pinned_digests() {
     }
     let t = Temp::new("template-pins");
     let store = Store::open(t.0.join("store")).unwrap();
-    let built = template::build(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    let built = template::build(&store, &[vendor()], &allow, &mut |_| {}).unwrap();
     let digests: Vec<_> = built
         .iter()
         .map(|b| (b.repository.clone(), b.descriptor.digest.to_string()))
@@ -454,8 +477,9 @@ fn the_firmware_packages_are_the_published_ones() {
         seen.borrow_mut().push(reference.to_owned());
         Ok(())
     };
-    let a = template::build_firmware(&first, &vendor(), &record, &mut |_| {}).unwrap();
-    let b = template::build_firmware(&second, &copy, &allow, &mut |_| {}).unwrap();
+    let a = template::build_firmware(&first, &[vendor()], &record, &mut |_| {}).unwrap();
+    let b = template::build_firmware(&second, std::slice::from_ref(&copy), &allow, &mut |_| {})
+        .unwrap();
     assert_eq!(identities(&a), identities(&b));
     let judged: Vec<_> = FIRMWARE_PINNED.iter().map(|(tag, _)| *tag).collect();
     assert_eq!(*seen.borrow(), judged, "the guard judges each package");
@@ -483,7 +507,7 @@ fn the_firmware_packages_are_the_published_ones() {
             *digest
         );
     }
-    let again = template::build_firmware(&first, &vendor(), &allow, &mut |_| {}).unwrap();
+    let again = template::build_firmware(&first, &[vendor()], &allow, &mut |_| {}).unwrap();
     assert_eq!(identities(&again), identities(&a));
     assert!(again
         .iter()
@@ -500,7 +524,7 @@ fn the_bios_package_readme_names_the_fork_and_its_original_author() {
     }
     let t = Temp::new("template-readme");
     let store = Store::open(t.0.join("store")).unwrap();
-    let built = template::build_firmware(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    let built = template::build_firmware(&store, &[vendor()], &allow, &mut |_| {}).unwrap();
     let bios = &built[0];
     assert_eq!(
         bios.repository,
@@ -578,7 +602,7 @@ fn a_version_tag_that_names_another_image_refuses_the_build() {
     let store = Store::open(t.0.join("store")).unwrap();
     // Only the packages the templates bind: every template is refused.
     let firmware_only = |_: &str, _: &Manifest, _: &[u8]| Err("machines later".to_owned());
-    assert!(template::build(&store, &vendor(), &firmware_only, &mut |_| {}).is_err());
+    assert!(template::build(&store, &[vendor()], &firmware_only, &mut |_| {}).is_err());
     let other = pc_image::create::create(
         &store,
         &variant(&store, "Another AT"),
@@ -586,7 +610,7 @@ fn a_version_tag_that_names_another_image_refuses_the_build() {
         None,
     )
     .unwrap();
-    let error = template::build(&store, &vendor(), &allow, &mut |_| {})
+    let error = template::build(&store, &[vendor()], &allow, &mut |_| {})
         .unwrap_err()
         .to_string();
     assert!(
@@ -608,7 +632,7 @@ fn latest_moves_only_away_from_lower_versions_of_its_repository() {
     }
     let t = Temp::new("template-alias");
     let store = Store::open(t.0.join("store")).unwrap();
-    let built = template::build(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    let built = template::build(&store, &[vendor()], &allow, &mut |_| {}).unwrap();
     let ours = built[0].descriptor.clone();
     let games = built[1].descriptor.clone();
     let point = |to: &image_store::Descriptor| {
@@ -617,7 +641,7 @@ fn latest_moves_only_away_from_lower_versions_of_its_repository() {
             .update_tag("open-at:latest", to, Some(&current), &pc_image::PcProvider)
             .unwrap();
     };
-    let rebuild = || template::build(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    let rebuild = || template::build(&store, &[vendor()], &allow, &mut |_| {}).unwrap();
 
     // A higher version keeps latest.
     let higher =
@@ -663,7 +687,7 @@ fn only_the_judged_manifest_is_tagged() {
     }
     let t = Temp::new("template-judged");
     let store = Store::open(t.0.join("store")).unwrap();
-    template::build(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    template::build(&store, &[vendor()], &allow, &mut |_| {}).unwrap();
     let wrong = image_store::Digest::of(b"another manifest");
     let image = variant(&store, "Judged AT");
     let error = pc_image::create::create_judged(&store, &image, "judged:1.0.0", None, &wrong)
@@ -726,7 +750,7 @@ fn each_firmware_package_states_its_title_description_vendor_and_version() {
     }
     let t = Temp::new("template-metadata");
     let store = Store::open(t.0.join("store")).unwrap();
-    let built = template::build_firmware(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    let built = template::build_firmware(&store, &[vendor()], &allow, &mut |_| {}).unwrap();
     assert!(template::FIRMWARE[0].description.contains("Sergey Kiselev"));
     for (source, package) in template::FIRMWARE.iter().zip(&built) {
         assert_eq!(package.repository, source.repository());
@@ -798,7 +822,7 @@ fn the_installation_sets_carry_the_edition_its_licence_index_and_its_source() {
     let t = Temp::new("template-media");
     let store = Store::open(t.0.join("store")).unwrap();
     let release = &template::FREEDOS_1_4;
-    let built = template::build_media(&store, &frontend::vendor(), &allow, &mut |_| {}).unwrap();
+    let built = template::build_media(&store, &[frontend::vendor()], &allow, &mut |_| {}).unwrap();
     for (source, set) in template::MEDIA.iter().zip(&built) {
         assert_eq!(
             (set.kind, set.repository.as_str()),
@@ -925,7 +949,7 @@ fn the_guard_judges_each_installation_set_before_its_tags() {
             Ok(())
         }
     };
-    let error = template::build_media(&store, &frontend::vendor(), &guard, &mut |_| {})
+    let error = template::build_media(&store, &[frontend::vendor()], &guard, &mut |_| {})
         .unwrap_err()
         .to_string();
     assert!(
@@ -968,7 +992,7 @@ fn another_file_at_a_media_fixture_path_is_refused_before_any_set_is_tagged() {
     bytes[0x200] ^= 1;
     fs::write(&boot, bytes).unwrap();
     let store = Store::open(t.0.join("store")).unwrap();
-    let error = template::build_media(&store, &copy, &allow, &mut |_| {})
+    let error = template::build_media(&store, std::slice::from_ref(&copy), &allow, &mut |_| {})
         .unwrap_err()
         .to_string();
     assert!(
@@ -986,7 +1010,7 @@ fn another_file_at_a_media_fixture_path_is_refused_before_any_set_is_tagged() {
     };
     assert_eq!(media_tags(&store), 0);
     fs::remove_file(&boot).unwrap();
-    let error = template::build_media(&store, &copy, &allow, &mut |_| {})
+    let error = template::build_media(&store, std::slice::from_ref(&copy), &allow, &mut |_| {})
         .unwrap_err()
         .to_string();
     assert!(
@@ -1023,8 +1047,9 @@ fn two_media_builds_from_different_fixture_copies_give_the_published_sets() {
     copy_media_fixtures(&copy);
     let first = Store::open(t.0.join("first")).unwrap();
     let second = Store::open(t.0.join("second")).unwrap();
-    let a = template::build_media(&first, &frontend::vendor(), &allow, &mut |_| {}).unwrap();
-    let b = template::build_media(&second, &copy, &allow, &mut |_| {}).unwrap();
+    let a = template::build_media(&first, &[frontend::vendor()], &allow, &mut |_| {}).unwrap();
+    let b =
+        template::build_media(&second, std::slice::from_ref(&copy), &allow, &mut |_| {}).unwrap();
     assert_eq!(identities(&a), identities(&b));
     for (built, source) in a.iter().zip(&template::MEDIA) {
         assert_eq!(built.version, source.tag);
@@ -1059,7 +1084,7 @@ fn two_media_builds_from_different_fixture_copies_give_the_published_sets() {
         tagged, pinned,
         "the local installation sets are no longer the published ones"
     );
-    let again = template::build_media(&first, &frontend::vendor(), &allow, &mut |_| {}).unwrap();
+    let again = template::build_media(&first, &[frontend::vendor()], &allow, &mut |_| {}).unwrap();
     assert_eq!(identities(&again), identities(&a));
     assert!(again
         .iter()
@@ -1183,7 +1208,7 @@ fn an_oras_style_pull_writes_each_layer_under_its_fixture_file_name() {
         }
         names
     };
-    let packages = template::build_firmware(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    let packages = template::build_firmware(&store, &[vendor()], &allow, &mut |_| {}).unwrap();
     for (built, source) in packages.iter().zip(&template::FIRMWARE) {
         let names = pull_and_decode(
             &built.descriptor,
@@ -1199,7 +1224,7 @@ fn an_oras_style_pull_writes_each_layer_under_its_fixture_file_name() {
             ]
         );
     }
-    let sets = template::build_media(&store, &frontend::vendor(), &allow, &mut |_| {}).unwrap();
+    let sets = template::build_media(&store, &[frontend::vendor()], &allow, &mut |_| {}).unwrap();
     for (built, source) in sets.iter().zip(&template::MEDIA) {
         let files: Vec<&str> = source
             .disks

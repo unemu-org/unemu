@@ -85,6 +85,7 @@ const USAGE_FORMS: &[&str] = &[
     "image registry set HOST --namespace NAME --namespace OTHER:private --namespace THIRD:public",
     "image template build --store DIR",
     "image template build --store DIR --vendor DIR --dry-run",
+    "image template build --store DIR --vendor DIR --vendor DIR2 --dry-run",
     "recipe check FILE FOLDER",
     "recipe show FILE",
     "recipe plan FILE",

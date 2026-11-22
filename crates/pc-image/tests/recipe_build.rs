@@ -186,7 +186,7 @@ fn the_open_firmware_recipes_match_the_template_packages_with_their_locked_metad
     let t = Temp::new("firmware");
     let from_recipes = Store::open(t.path("recipes")).unwrap();
     let imported = Store::open(t.path("imported")).unwrap();
-    let packages = template::build_firmware(&imported, &vendor(), &allow, &mut |_| {}).unwrap();
+    let packages = template::build_firmware(&imported, &[vendor()], &allow, &mut |_| {}).unwrap();
     let catalogue = pc_image::firmware::catalogue();
     let validator =
         image_store::firmware::Validator(&pc_image::firmware::PcFirmwareRules(catalogue));
@@ -257,7 +257,8 @@ fn the_freedos_recipes_build_the_same_locked_sets_as_the_templates() {
     let t = Temp::new("freedos");
     let from_recipes = Store::open(t.path("recipes")).unwrap();
     let imported = Store::open(t.path("imported")).unwrap();
-    let sets = template::build_media(&imported, &frontend::vendor(), &allow, &mut |_| {}).unwrap();
+    let sets =
+        template::build_media(&imported, &[frontend::vendor()], &allow, &mut |_| {}).unwrap();
     let validator = image_store::media_set::Validator(&pc_image::media_set::PcMediaFormats);
     for (file, set) in FREEDOS.iter().zip(&sets) {
         // The licence index, our own text with LF line ends, lies in the

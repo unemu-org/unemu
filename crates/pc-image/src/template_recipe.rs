@@ -7,7 +7,7 @@ use crate::{invalid, recipe::PcRecipes, Result};
 use image_store::{ConfigValidator, Descriptor, Store};
 use recipe::build::{Published, Publisher, Staged};
 use recipe::provider::{FirmwareProfile, MediaProfile, Provider};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static PC: PcRecipes = PcRecipes;
@@ -166,7 +166,7 @@ impl Publisher for Guarded<'_> {
 
 pub(super) fn build(
     store: &Store,
-    vendor: &Path,
+    vendor: &[PathBuf],
     reference: &str,
     validator: &dyn ConfigValidator,
     guard: Guard<'_>,
@@ -199,7 +199,11 @@ pub(super) fn build(
     }
     let provider = Guarded { guard, validator };
     let providers: [&dyn Provider; 1] = [&provider];
-    let mut libraries = [recipe::library::Library::scan(vendor, None)?];
+    let mut libraries = vendor
+        .iter()
+        .filter(|root| root.is_dir())
+        .map(|root| recipe::library::Library::scan(root, None))
+        .collect::<std::io::Result<Vec<_>>>()?;
     let outcome = recipe::build::build_path(
         recipe::build::Request {
             path: &folder.0.join(bundle.recipe),

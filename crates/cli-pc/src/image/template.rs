@@ -25,16 +25,12 @@ use image_registry::{
 };
 use image_store::{Manifest, Store};
 use pc_image::template::{self, Built, Kind, Outcome};
-use std::{
-    ffi::OsString,
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::{ffi::OsString, io::Write, path::PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct TemplateCommand {
     store: PathBuf,
-    vendor: PathBuf,
+    vendor: Vec<PathBuf>,
     dry_run: bool,
 }
 
@@ -42,7 +38,7 @@ pub fn parse(args: &[OsString]) -> Result<TemplateCommand, &'static str> {
     if args.first().and_then(|a| a.to_str()) != Some("build") {
         return Err("expected image template build");
     }
-    let (mut store, mut vendor, mut dry_run) = (None, None, false);
+    let (mut store, mut vendor, mut dry_run) = (None, Vec::new(), false);
     let mut args = args[1..].iter();
     while let Some(option) = args.next() {
         if option == "--dry-run" && !dry_run {
@@ -55,14 +51,18 @@ pub fn parse(args: &[OsString]) -> Result<TemplateCommand, &'static str> {
             .ok_or("missing template option value")?;
         match option.to_str() {
             Some("--store") if store.is_none() => store = Some(PathBuf::from(value)),
-            Some("--vendor") if vendor.is_none() => vendor = Some(PathBuf::from(value)),
+            Some("--vendor") => vendor.push(PathBuf::from(value)),
             _ => return Err("unknown or duplicate template option"),
         }
     }
     Ok(TemplateCommand {
         store: store.ok_or("image commands require --store DIR")?,
         // The fixture scripts write under the repository's vendor directory.
-        vendor: vendor.unwrap_or_else(|| PathBuf::from("vendor")),
+        vendor: if vendor.is_empty() {
+            vec![PathBuf::from("vendor")]
+        } else {
+            vendor
+        },
         dry_run,
     })
 }
@@ -94,7 +94,7 @@ fn official_guard<'a>(
 /// Build every template machine into `store`, with local copies of the
 /// firmware packages it binds, refusing any template the official
 /// namespace's push guard would refuse.
-pub fn build(store: &Store, vendor: &Path) -> anyhow::Result<Vec<Built>> {
+pub fn build(store: &Store, vendor: &[PathBuf]) -> anyhow::Result<Vec<Built>> {
     Ok(template::build(
         store,
         vendor,
@@ -318,13 +318,13 @@ mod tests {
             parse(&os(&["build", "--store", "s", "--dry-run"])),
             Ok(TemplateCommand {
                 store: "s".into(),
-                vendor: "vendor".into(),
+                vendor: vec!["vendor".into()],
                 dry_run: true,
             })
         );
         assert_eq!(
             parse(&os(&["build", "--vendor", "v", "--store", "s"])).map(|c| c.vendor),
-            Ok("v".into())
+            Ok(vec!["v".into()])
         );
         for bad in [
             &["build"][..],

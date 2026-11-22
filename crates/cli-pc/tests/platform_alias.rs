@@ -12,6 +12,9 @@
 #[path = "../../pc-image/tests/support/open_image.rs"]
 mod open_image;
 
+#[path = "../../pc-image/tests/support/frontend.rs"]
+mod frontend;
+
 use image_registry::{
     credentials::Anonymous,
     pull,
@@ -612,7 +615,10 @@ fn template_builds_write_the_current_id() {
     let Some(lab) = Lab::new() else {
         return;
     };
-    let vendor = pc_harness::test_support::root().join("vendor");
+    let vendor = [
+        pc_harness::test_support::root().join("vendor"),
+        frontend::vendor(),
+    ];
     let store = Store::open(lab.open.path.join("templates")).unwrap();
     let allow = |_: &str, _: &Manifest, _: &[u8]| -> Result<(), String> { Ok(()) };
     let built = pc_image::template::build(&store, &vendor, &allow, &mut |_| {}).unwrap();
@@ -623,7 +629,13 @@ fn template_builds_write_the_current_id() {
     for package in create::packages(&store).unwrap() {
         assert_written_now(&store, &package.descriptor, &[]);
     }
-    if pc_image::template::check_media_fixtures(&vendor).is_ok() {
+    let media = pc_image::template::check_media_fixtures(&vendor);
+    if std::env::var_os("UNEMUPC_REQUIRE_FIXTURES").is_some_and(|value| value == "1") {
+        if let Err(error) = &media {
+            panic!("installation media fixtures are required: {error}");
+        }
+    }
+    if media.is_ok() {
         let sets = pc_image::template::build_media(&store, &vendor, &allow, &mut |_| {}).unwrap();
         for set in &sets {
             assert_written_now(&store, &set.descriptor, &[]);

@@ -399,7 +399,7 @@ fn open_games_template_image_plays_cards_and_speaker_at_host_mix_levels() {
     }
     let temp = machine_file::test_support::TempDir::new("window-template-levels");
     let store = image_store::Store::open(temp.path().join("store")).unwrap();
-    pc_image::template::build(&store, &vendor, &|_, _, _| Ok(()), &mut |_| {}).unwrap();
+    pc_image::template::build(&store, &[vendor], &|_, _, _| Ok(()), &mut |_| {}).unwrap();
     let image = store.tag_descriptor("open-at-games:latest").unwrap();
     let owner = store
         .workspace(&crate::library_worker::regular_name(&image.digest))
