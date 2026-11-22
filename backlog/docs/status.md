@@ -5,6 +5,11 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-22 — Repository split point chosen (E4):** the maintainer chose
+  `0f279540` as the split point, with hosted CI green. Front-end changes now
+  land only on the front-end branch until the re-pin; core changes land on
+  `main` as usual. No new repository exists yet. See
+  [repository split §12](design/repo-split.md#12-steps).
 - **2026-11-22 — Repository split preparation: shared tests and fixture root:**
   front-end tests import the four shared harness modules through
   `pc-harness/test-support`; all 30 cross-side source includes are removed.

@@ -702,6 +702,12 @@ both sides. No crate dependency changes. The ownership check passes on all 1,157
 of the preparation baseline; its failure cases are exercised without
 changing the git index. The planner self-test covers 50 external paths.
 
+**E4 — the split point (2026-11-22).** The maintainer chose
+`0f2795402e947e235a7b892c931910b05f05d61f` (`0f279540`), the landing of E1
+and E2, with hosted CI green on that commit. From here front-end changes
+land only on the front-end branch; core changes land on `main` as usual.
+The 13 git lines of §4.1 pin this revision until the re-pin of E15.
+
 ### 12.2. The abort point
 
 Until E13 lands, `unemupc` holds everything and builds everything. E1 to E3
