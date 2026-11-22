@@ -12,6 +12,9 @@ use image_registry::{push, Reference, RegistryEntry};
 use image_store::{ConfigValidator, Digest, Manifest, Store};
 use unemu_core_api::Core;
 
+#[cfg(test)]
+mod locked_source;
+
 /// Every core compiled into the programs, in the order they are asked about
 /// a file and listed for people. Each program makes one list of usable cores
 /// from this (`core_launch::Cores`) and hands it down; no other crate keeps
@@ -107,9 +110,11 @@ pub fn restricted(
 /// the full licence texts are.
 pub fn licence_notice() -> String {
     format!(
-        "licence: AGPL-3.0-or-later\nsource: {}\n{}{}",
+        "licence: AGPL-3.0-or-later\nsource: {}\n{}core source (unemu-pc-core): {}\ncore source (unemu-nes-core): {}\n{}",
         source_pointer(option_env!("UNEMUPC_SOURCE_REV")),
         commit_line(option_env!("UNEMUPC_SOURCE_COMMIT")),
+        env!("UNEMU_PC_SOURCE"),
+        env!("UNEMU_NES_SOURCE"),
         concat!(
             "full licence texts: LICENSE, and THIRD-PARTY-LICENSES.md for the components\n",
             "and Rust crates inside, both shipped with the binaries; in the source,\n",
@@ -266,15 +271,63 @@ mod tests {
     fn the_source_pointer_names_the_revision_a_release_build_was_made_from() {
         assert_eq!(
             source_pointer(Some("v1.0.0")),
-            "https://github.com/unemu-org/unemupc/tree/v1.0.0"
+            "https://github.com/unemu-org/unemu/tree/v1.0.0"
         );
         let unnamed = format!(
-            "https://github.com/unemu-org/unemupc, version {}",
+            "https://github.com/unemu-org/unemu, version {}",
             env!("CARGO_PKG_VERSION")
         );
         assert_eq!(source_pointer(None), unnamed);
         assert_eq!(source_pointer(Some("")), unnamed);
-        assert!(licence_notice().contains("source: https://github.com/unemu-org/unemupc"));
+        assert!(licence_notice().contains("source: https://github.com/unemu-org/unemu"));
+    }
+
+    #[test]
+    fn every_core_source_notice_matches_the_locked_source() {
+        let lock = include_str!("../../../Cargo.lock");
+        for (package, packages, repository) in [
+            (
+                "unemu-pc-core",
+                locked_source::PC_PACKAGES,
+                "https://github.com/unemu-org/unemupc",
+            ),
+            (
+                "unemu-nes-core",
+                locked_source::NES_PACKAGES,
+                "https://github.com/unemu-org/unemunes",
+            ),
+        ] {
+            let block = lock
+                .split("[[package]]")
+                .find(|block| {
+                    block
+                        .lines()
+                        .any(|line| line == format!("name = \"{package}\""))
+                })
+                .unwrap();
+            let source = block.lines().find_map(|line| {
+                line.strip_prefix("source = \"")
+                    .and_then(|s| s.strip_suffix('"'))
+            });
+            let expected = match source {
+                Some(source) => {
+                    let revision = source.rsplit_once('#').unwrap().1;
+                    assert_eq!(revision.len(), 40);
+                    assert!(revision.bytes().all(|byte| byte.is_ascii_hexdigit()));
+                    format!("{repository}/tree/{revision}")
+                }
+                None => format!("{repository} (local checkout)"),
+            };
+            assert_eq!(
+                locked_source::core_source(lock, packages, repository, true).unwrap(),
+                expected
+            );
+            let line = format!("core source ({package}): {expected}");
+            assert!(
+                licence_notice().lines().any(|actual| actual == line),
+                "missing {line}"
+            );
+        }
     }
 
     #[test]

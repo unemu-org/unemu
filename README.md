@@ -1,194 +1,89 @@
-<img src="assets/brand/unemupc-logo-512.png" width="128" alt="unemupc logo">
+<img src="assets/brand/unemupc-logo-512.png" width="128" alt="unemu logo">
 
-# unemupc
+# unemu
 
-A deterministic, low-level emulator (LLE) of **period IBM-compatible PCs**,
-with an OCI-based library of machines, installation media and firmware. The
-CPU core is the `x86jit` x86 recompiler, consumed as a pinned git dependency.
+The **unemu application**: a desktop app and command line for unemu emulator
+cores. This repository owns the application, its machine and media library,
+OCI registry integration, recipes and host interface. It compiles in the
+[PC core](https://github.com/unemu-org/unemupc) and the
+[NES core](https://github.com/unemu-org/unemunes), each pinned to an exact git
+revision in `Cargo.toml` and `Cargo.lock`.
 
-The 286 AT is the first machine profile on a longer road: a period PC that runs
-DOS games now, and Windows 98 SE games on an emulated 3dfx Voodoo later
-(`backlog/decisions/decision-16*`).
+The PC's CPU, devices, machine configuration and emulation tests live in
+`unemupc`. Its CPU dependency and hardware development follow that
+repository's rules. This repository does not copy the core's code.
 
-## Status
-
-**MVP feature complete (2026-11-15)**: an AT 286 DOS games machine with a stable
-OCI image ecosystem. The project is now in a **feature freeze**: work goes into
-fixes, stability, tests and documentation, not new features. What works, in
-detail and with evidence, is in [`backlog/docs/status.md`](backlog/docs/status.md).
-Open work is tracked in [beads](https://github.com/steveyegge/beads), whose
-database travels with the repository: after cloning, install `bd` (1.3.1 or
-newer), run `bd bootstrap`, then `bd ready --exclude-type epic`; see
-[`backlog/docs/dev-setup.md`](backlog/docs/dev-setup.md#beads-bd).
-
-Priorities, in order: **testability** (every device tested in isolation on a
-mock bus, every machine-level feature behind a deterministic golden test),
-**swappability** (CPU, devices and graphics behind traits, machines as
-declarative files) and **documentation** (doc-comments that cite the datasheets,
-and a knowledge tree under `backlog/docs/`).
-
-## Features
-
-### The machine
-
-- **CPU:** Intel 80286 in real and protected mode through `x86jit`; optional
-  80287 socket. A20 through the 8042 and port 92h, CPU reset through the 8042
-  and triple fault, with the CMOS shutdown-byte resume.
-- **AT system board:** two 8259A PICs, 8254 PIT, two 8237A DMA controllers,
-  8042 keyboard controller, MC146818 RTC/CMOS (derived, deterministic contents),
-  port 61h speaker and parity control, POST port with page-register readback.
-- **Memory:** 640 KiB conventional plus extended memory; Lo-tech hardware EMS
-  with code execution from the page frame.
-- **Video:** MDA, CGA and a register-level VGA (text, EGA and VGA graphics
-  modes including unchained 256-colour), with an open VGA BIOS.
-- **Storage:** NEC µPD765 floppy controller with 360K, 720K, 1.2M and 1.44M
-  drives; a drive takes every medium real drives of its type read (720K disks
-  in a 1.44M drive, 360K disks in a 1.2M drive with double stepping). AT IDE
-  (ATA) fixed disks, with the XTIDE Universal BIOS as option ROM. Disks are
-  sparse, journalled and roll back by generation.
-- **Sound:** PC speaker and a Sound Blaster 16 (DSP 4.05, 8/16-bit DMA) with an
-  OPL3 FM synthesizer.
-- **Input and serial:** AT keyboard, PS/2 auxiliary mouse, 16550 UART with a
-  Microsoft serial mouse.
-- **Firmware:** the open **unemu AT BIOS** (a fork of Sergey Kiselev's
-  8088_bios), the open Xi 8088 build for the XT-style profiles, and
-  user-supplied IBM 5170 BIOSes identified by hash. ROMs are never committed:
-  a catalogue recognises them by SHA-256.
-- **Determinism:** virtual time is measured in retired instructions; there is
-  no wall clock in the execution path, so every run can be a golden test.
-
-### Machine profiles
-
-`machines/*.toml` describe whole machines declaratively: board, CPU, memory,
-cards, firmware and drives. `at-games-open.toml` is the open DOS games machine
-(unemu AT BIOS, VGA, SB16, serial mouse, EMS, IDE disk, A: 1.2M and B: 1.44M);
-`at-games.toml` is the same machine on the user-supplied IBM BIOS.
-
-### Library and registry (OCI)
-
-- **Machine images:** a whole machine (firmware, configuration, drives and
-  their order) as an OCI artifact with immutable disk layers, workspaces for
-  play sessions, zstd-compressed blobs and immutable version tags.
-- **Installation media sets:** floppy (and later CD) sets with extras such as
-  manuals, catalogue metadata (publisher, developer, year, genre, platform) and
-  the standard OCI annotations registry web UIs show.
-- **Firmware packages:** ROMs with fit metadata, per-layer SPDX licences,
-  corresponding source archives for copyleft firmware, and a README.
-- **Registries:** push and pull to any OCI registry, accounts with secrets in
-  the OS credential store, privacy per namespace. A client-side guard never
-  lets user-supplied (proprietary) content reach a public namespace; open
-  content goes public only with its licence, and copyleft only with its source.
-- **Templates:** official open machine images (`unemu/open-at`,
-  `unemu/open-at-games`) built from open firmware packages. The firmware
-  packages and the FreeDOS 1.4 Floppy Edition installation sets are
-  published on `registry.unemu.dev`. Once they are pushed again for this
-  release, they live under `unemu/firmware/<platform>/…` and
-  `unemu/media/<platform>/…`, and a set's tag is its release and revision
-  (`1.4-r1`), which never moves, while the release alone (`1.4`) follows the
-  newest revision:
-
-  ```sh
-  unemu image pull unemu/firmware/ibm-pc/unemu-at-bios-1.0.2-unemu.3:r1 --store DIR --create
-  unemu image pull unemu/firmware/ibm-pc/vgabios-0.9d-unemu.1-std:r1 --store DIR
-  unemu image pull unemu/firmware/ibm-pc/xub-r638-xtp-ata1f0:r1 --store DIR
-  unemu image pull unemu/media/ibm-pc/freedos:1.4 --store DIR        # 1.44M disks
-  unemu image pull unemu/media/ibm-pc/freedos:1.4-1.2m --store DIR
-  unemu image pull unemu/media/ibm-pc/freedos:1.4-720k --store DIR
-  ```
-
-  Until then they are on the registry under their earlier names, which
-  release 0.0.2 pulls: `unemu/firmware/<catalogue id>:1` and
-  `unemu/media/freedos:1.4`, `:1.4-1.2m`, `:1.4-720k`.
-
-  The template machines come with a later release; until then, build them
-  locally with the firmware fetch scripts and `unemu image template build`
-  (see [`commands.md`](backlog/docs/commands.md), Official template images).
-
-### Applications
-
-- **Desktop app** (`unemu`, egui): machine, media and firmware
-  library; New machine… wizard; Settings on an image and Save as new image…;
-  Remotes, which browse the configured registries and pull from them (File ›
-  Get templates… shows the official templates there); Push… and Pull by
-  reference…; status-bar drive chips with activity
-  lights; Media menu with Insert…, Create from files… and a Catalogue
-  submenu per floppy drive, which a drive chip's menu has too; speed
-  controls; macOS application menu.
-- **Command line** (the same `unemu` binary): run machines headless and manage images,
-  media sets, firmware packages, registries and media journals. The standalone PC core command line (`unemupc`) provides
-  `--boot`, `--bios` and `machine check`, as well as `run --machine`.
-
-## Downloads
-
-Binaries for Linux x86-64 and macOS on Apple silicon are attached to each
-[release](https://github.com/unemu-org/unemupc/releases), with `SHA256SUMS`;
-each archive holds `unemu` (desktop and command line) and `unemupc` (standalone PC core). The release notes say how to check them and how to open the unsigned macOS
-binaries. On other platforms, build from source as below.
-
-## Getting started
+## Build and run
 
 ```sh
-nix develop                                   # toolchain and fixture tools (or let direnv load it)
-bash scripts/ci-gate.sh fixtures              # build the open firmware and fixture images
-cargo run --release -p window --bin unemu
-cargo run --release -p window -- run --machine machines/at-freedos.toml --print mda
-cargo test --workspace                        # unit, golden and integration tests
+nix develop
+cargo build --locked -p window --bin unemu
+cargo run --locked -p window --bin unemu -- --about
+cargo test --locked --workspace
 ```
 
-The full command reference is in [`backlog/docs/commands.md`](backlog/docs/commands.md);
-the toolchain in [`backlog/docs/dev-setup.md`](backlog/docs/dev-setup.md);
-playing DOS games in [`machines/README.md`](machines/README.md#playing-dos-games).
-Under `cargo run` the desktop app lists the tree's `machines/` and searches
-`vendor/user-roms`; an installed binary uses `unemu/machines` in the platform
-data directory (retaining `unemupc/machines` while it exists), or
-`UNEMUPC_MACHINES_DIR`, and the ROM folders set in Preferences.
+Running `unemu` with no command opens the desktop. Command words provide
+headless machine execution and image, media, firmware and registry management;
+`unemu --help` lists them. Never launch the desktop during automated checks.
 
-### Building without Nix
+Without Nix, use the Rust version named by `rust-version` in `Cargo.toml` and
+a C compiler. Linux builds need `pkg-config` and ALSA development files
+(`libasound2-dev` on Ubuntu). Installed Linux binaries need the ALSA runtime
+(`libasound2` on Ubuntu 22.04), including for headless commands. The desktop
+needs X11 or Wayland with OpenGL.
 
-- Rust 1.99 or newer (`rust-version` in `Cargo.toml`), for example through
-  rustup, and a C compiler.
-- On Linux, `pkg-config` and the ALSA development files (`libasound2-dev` on
-  Debian and Ubuntu, `alsa-lib-devel` on Fedora). The installed `unemu` also needs the ALSA runtime (`libasound2` on Ubuntu 22.04),
-  including for command words on a host without a display. X11 or Wayland libraries
-  are loaded only when opening the window.
-- `cargo build --release --bin unemu --bin unemupc`.
+## Working with the PC core
 
-The firmware and disk fixtures that the tests and templates use are built by
-the scripts under `vendor/`, which expect the devShell's tools (`nasm`,
-`mtools`, `curl`, `unzip`).
+```sh
+bash scripts/core-checkout.sh           # pinned checkout and fixtures, using the core's flake
+bash scripts/core-checkout.sh --print-root
+bash scripts/core-patch.sh ../unemupc   # temporary Cargo override for a local core checkout
+bash scripts/core-patch.sh --remove     # remove the override
+```
 
-## Documentation
+`scripts/core-patch.sh` manages a gitignored override; do not replace the
+committed git pins with path dependencies. Fixture tests use
+`UNEMUPC_FIXTURE_ROOT` to locate the core's fixture tree. The front end owns
+its FreeDOS 1.4 Floppy Edition and recipe fixtures. Do not commit built media.
+Release builds require a tagged PC core release matching the locked package
+version. Development builds with a local core override name that core's
+repository as a local checkout in the source notice. Each core's packages must
+all use the same git revision or all use a local checkout. Release-profile
+builds require both cores' exact git sources in `Cargo.lock`; restore the pinned
+lock after local override work before building a release.
 
-- [`backlog/docs/status.md`](backlog/docs/status.md) — what works, with evidence
-- [`backlog/docs/architecture.md`](backlog/docs/architecture.md) — crates, layers and swap seams
-- [`backlog/docs/design/`](backlog/docs/design/) — design notes, including machine images and machine files
-- [`backlog/decisions/`](backlog/decisions/) — decision records
-- [`AGENTS.md`](AGENTS.md) — entry point for coding agents and the project's hard rules
+## Downloads and licences
 
-## CPU core: x86jit
+Front-end [releases](https://github.com/unemu-org/unemu/releases) ship
+`unemu-<version>-<target>.tar.gz` for Linux x86-64 and macOS on Apple silicon.
+Each archive holds `unemu`, `LICENSE`, `README.md`, `THIRD-PARTY-LICENSES.md`
+and `notices/`, with `SHA256SUMS` alongside. The standalone `unemupc` program
+comes from the PC core's own releases.
 
-The CPU is not vendored. `x86jit` lives in its own repository with its own
-tracker and gates; this project depends on it as a git dependency pinned to an
-exact revision of its `main`, and golden traces are valid only against that
-revision. Real-mode and 286 support live there under `CpuMode::Real16`.
+The [setup-unemu action](.github/actions/setup-unemu/action.yml) installs
+`unemu` from this repository's releases and checks the archive checksum; its
+optional commit input checks the build's source commit too. Pin the action
+to a full commit when using it in another workflow.
 
-## Third-party components
+[AGPL-3.0-or-later](LICENSE). `unemu --about` and `--version` name the front
+end's source and each compiled-in core's locked source revision.
+`scripts/third-party-licenses.sh` generates the full third-party texts,
+including Nuked-OPL3 (LGPL-2.1-or-later) and the Ultimate Oldschool PC Font
+Pack (CC BY-SA 4.0) from the PC core, plus the
+[desktop font notices](crates/ui-kit/assets/fonts/egui/NOTICE.txt),
+[DejaVu subset notice](crates/ui-kit/assets/fonts/dejavu/NOTICE.md) and
+[CC0 logo notice](assets/brand/README.md).
 
-- **Ultimate Oldschool PC Font Pack** by VileR: the MDA and VGA bitmap fonts,
-  CC BY-SA 4.0 ([notice](crates/pc-core/assets/fonts/NOTICE.md)).
-- **DejaVu Sans** 2.37: a five-symbol subset for the desktop app, Bitstream
-  Vera and Arev licences ([notice](crates/ui-kit/assets/fonts/dejavu/NOTICE.md)).
-- **egui's default fonts** (Ubuntu Light, Hack, Noto Emoji, emoji-icon-font):
-  Ubuntu Font Licence 1.0, MIT, OFL 1.1
-  ([notice](crates/ui-kit/assets/fonts/egui/NOTICE.txt)).
-- **Nuked-OPL3** 1.8 by Nuke.YKT: the OPL3 FM generator is a Rust translation,
-  LGPL-2.1-or-later ([licence](crates/devices/src/opl3/LICENSE)).
-- **The unemupc logo**: CC0 1.0 ([notice](assets/brand/README.md)).
-- **Rust crates**: `scripts/third-party-licenses.sh` writes their licences
-  for the exact `Cargo.lock` into `THIRD-PARTY-LICENSES.md`, which ships with
-  the release binaries. `unemu --about` and `unemupc --about` print the notices.
+## Development
 
-## License
+Open work uses beads with prefix **`ufe`**; the PC core retains **`upc`**.
+Knowledge and decisions live under [`backlog/`](backlog/). See
+[AGENTS.md](AGENTS.md) for working rules,
+[conventions](backlog/docs/conventions.md),
+[commands](backlog/docs/commands.md) and
+[the split design](backlog/docs/design/repo-split.md).
 
-[AGPL-3.0-or-later](LICENSE). Firmware forks and fixtures carry their own
-licences (see each `vendor/*/README.md`).
+Everything committed is English and safe to publish. Never commit proprietary
+firmware, guest software, manuals or screenshots, or private host names,
+paths or personal setup details. Commits require the maintainer's explicit
+request; publishing a repository is the maintainer's step.

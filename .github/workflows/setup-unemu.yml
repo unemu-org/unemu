@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: setup-unemu
 
+# Installs unemu-<version>-<target>.tar.gz from unemu-org/unemu releases.
 # Tests the setup-unemu action of this checkout on both platforms the releases
 # cover: it packages the current binary, installs it through the action and
 # runs command words, and refuses a

@@ -10,7 +10,7 @@ case "$(uname -s)/$(uname -m)" in
   Darwin/arm64) target=aarch64-apple-darwin ;;
   *) echo 'unsupported action test platform' >&2; exit 1 ;;
 esac
-name=unemupc-0.0.0-test-$target
+name=unemu-0.0.0-test-$target
 mkdir -p "$fixture/archive/$name" "$fixture/bin"
 cp "$binary" LICENSE "$fixture/archive/$name/"
 # Only installation is under test; release.yml generates the full notice.
@@ -33,7 +33,7 @@ while (( $# )); do
     *) shift ;;
   esac
 done
-[[ $url == */v0.0.0-test/* ]] || exit 22
+[[ $url == https://github.com/unemu-org/unemu/releases/download/v0.0.0-test/* ]] || exit 22
 cp "$SETUP_UNEMU_FIXTURE/${url##*/}" "$output"
 CURL
 chmod +x "$fixture/bin/curl"

@@ -31,7 +31,7 @@ version = "0.0.3"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 rust-version = "1.99"
-repository = "https://github.com/unemu-org/unemupc"
+repository = "https://github.com/unemu-org/unemu"
 # Workspace crate names (cpu, bus, device, machine, cli, window, ...) collide
 # with unrelated crates on crates.io; nothing here is published there.
 publish = false

@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 name: Set up unemu
 description: >-
-  Install unemu, the command line of unemupc, from a GitHub release of
-  unemu-org/unemupc. The archive is checked against the release's SHA256SUMS
+  Install unemu, the desktop app and command line, from a GitHub release of
+  unemu-org/unemu. The archive is checked against the release's SHA256SUMS
   before anything is unpacked, and unemu is added to PATH.
 
 inputs:
   version:
-    description: Release tag to install, for example v0.0.3.
+    description: Release tag to install, for example v0.0.4.
     required: true
   commit:
     description: >-

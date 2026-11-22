@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # The install step of the setup-unemu action: download one release archive of
-# unemupc, check it against the release's own SHA256SUMS (a check of the
+# unemu, check it against the release's own SHA256SUMS (a check of the
 # download, not a pin), and install unemu from it into the runner's temporary
 # directory.
 #
@@ -26,7 +26,7 @@ commit=${UNEMU_COMMIT:-}
 version_re='^v[0-9][0-9A-Za-z.+-]*$'
 commit_re='^[0-9a-f]{40}$'
 if [[ ! $version =~ $version_re ]]; then
-  error 'version must be a release tag of unemupc, such as v0.0.3'
+  error 'version must be a release tag of unemu, such as v0.0.4'
 fi
 if [[ -n $commit && ! $commit =~ $commit_re ]]; then
   error 'commit must be empty or a full commit: 40 lowercase hex digits'
@@ -36,14 +36,14 @@ fi
 case "${RUNNER_OS:-}/${RUNNER_ARCH:-}" in
   Linux/X64) target=x86_64-unknown-linux-gnu ;;
   macOS/ARM64) target=aarch64-apple-darwin ;;
-  *) error "unemupc releases unemu for Linux X64 and macOS ARM64 runners, not for ${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown}" ;;
+  *) error "unemu releases are available for Linux X64 and macOS ARM64 runners, not for ${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown}" ;;
 esac
 
 : "${RUNNER_TEMP:?}" "${GITHUB_PATH:?}" "${GITHUB_OUTPUT:?}"
 
-name=unemupc-${version#v}-$target
+name=unemu-${version#v}-$target
 archive=$name.tar.gz
-base=https://github.com/unemu-org/unemupc/releases/download/$version
+base=https://github.com/unemu-org/unemu/releases/download/$version
 
 # The archive never outlives this step, whether it passes the check or not.
 download=$(mktemp -d "$RUNNER_TEMP/setup-unemu-download.XXXXXXXX")
@@ -76,8 +76,8 @@ if [[ $actual != "$sha256" ]]; then
 fi
 echo "$archive matches the release's SHA256SUMS ($sha256)"
 
-# The combined front end and its licence texts; the standalone PC core,
-# README and repository notices stay in the archive.
+# The combined front end and its licence texts; the README and repository
+# notices stay in the archive.
 bin=$(mktemp -d "$RUNNER_TEMP/unemu-$version.XXXXXXXX")
 tar -x -z -f "$download/$archive" -C "$bin" --strip-components 1 \
   "$name/unemu" "$name/LICENSE" "$name/THIRD-PARTY-LICENSES.md"

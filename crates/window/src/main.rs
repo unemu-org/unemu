@@ -1356,9 +1356,17 @@ mod tests {
     fn version_and_about_name_the_licence_source_and_opl3_notice() {
         for option in ["--version", "--about"] {
             let output = informational_output(OsStr::new(option)).unwrap();
+            let source = output
+                .lines()
+                .find(|line| line.starts_with("source: "))
+                .unwrap();
+            assert!(
+                source.starts_with("source: https://github.com/unemu-org/unemu/tree/")
+                    || source.starts_with("source: https://github.com/unemu-org/unemu, version "),
+                "{option}: {source}"
+            );
             for expected in [
                 "AGPL-3.0-or-later",
-                "https://github.com/unemu-org/unemupc",
                 "Nuked-OPL3",
                 "LGPL-2.1-or-later",
                 "THIRD-PARTY-LICENSES.md",

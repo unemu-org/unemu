@@ -1,11 +1,11 @@
 # setup-unemu
 
-A composite GitHub Action that installs `unemu`, the desktop and command line of unemupc,
-from a release of [unemu-org/unemupc](https://github.com/unemu-org/unemupc),
+A composite GitHub Action that installs `unemu`, the desktop app and command line,
+from a release of [unemu-org/unemu](https://github.com/unemu-org/unemu),
 so another repository's workflow can import images and media sets and push
 them with the same CLI and the same publication guard.
 
-The action downloads `unemupc-<version>-<target>.tar.gz` from the release
+The action downloads `unemu-<version>-<target>.tar.gz` from the release
 with curl (HTTPS only, with retries, no token), checks it against the
 release's own `SHA256SUMS` before unpacking anything (a check of the download,
 not a pin), and unpacks only `unemu`, `LICENSE`
@@ -20,10 +20,10 @@ ALSA runtime equivalent before this action, even on headless runners) and macOS 
 
 ## Usage
 
-Pin the action to a full commit of unemupc and name the release:
+Pin the action to a full commit of unemu and name the release:
 
 ```yaml
-- uses: unemu-org/unemupc/.github/actions/setup-unemu@<unemupc commit SHA>
+- uses: unemu-org/unemu/.github/actions/setup-unemu@<unemu commit SHA>
   with:
     version: v0.0.4
 ```
@@ -31,7 +31,8 @@ Pin the action to a full commit of unemupc and name the release:
 The commit pins the action's own code; `version` names the release whose
 binary it installs, for the runner's platform.
 
-Releases before v0.0.4 ship `upcli`; pin the old `setup-upcli` action at an older unemupc commit to install them.
+For pre-split PC releases through v0.0.3, use `setup-upcli` at an older
+`unemupc` commit. Those releases belong to the PC core repository.
 
 ## Inputs
 
@@ -42,7 +43,7 @@ Releases before v0.0.4 ship `upcli`; pin the old `setup-upcli` action at an olde
 
 A tag can be moved, a commit cannot: `commit` checks that the installed
 binary was built from the source you expect. Find a
-release's commit with `gh api repos/unemu-org/unemupc/commits/<tag> --jq .sha`.
+release's commit with `gh api repos/unemu-org/unemu/commits/<tag> --jq .sha`.
 
 ## Outputs
 
@@ -68,7 +69,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: unemu-org/unemupc/.github/actions/setup-unemu@<unemupc commit SHA>
+      - uses: unemu-org/unemu/.github/actions/setup-unemu@<unemu commit SHA>
         with:
           version: v0.0.4
 
@@ -115,7 +116,7 @@ sets (such as `freedos:1.4` or `1.4-720k`) never move either, not even with
 Aliases such as `latest` move only with `--move`, after a refusal has shown
 both digests. `image media import` never moves a tag in the store either.
 
-See `backlog/docs/commands.md` in unemupc for the image, media-set and
+See `backlog/docs/commands.md` in unemu for the image, media-set and
 registry commands.
 
 ## Action checks

@@ -37,7 +37,7 @@ jobs:
       # runner it is gigabytes of target directory and cache archive.
       CARGO_INCREMENTAL: 0
     steps:
-      # The pinned CPU dependency and its submodules are anonymously fetchable.
+      # The pinned core dependencies are anonymously fetchable.
       # Do not leave the job token in .git/config next to unsandboxed builds.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -114,6 +114,21 @@ jobs:
           path: target
           key: cargo-target-x86_64-${{ hashFiles('flake.lock') }}-${{ hashFiles('Cargo.lock') }}
 
+      - name: Check out the pinned PC core
+        id: core_checkout
+        if: ${{ !cancelled() }}
+        run: |
+          bash scripts/core-checkout.sh --no-build
+          echo "revision=$(git -C .core/unemupc rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore built core fixtures
+        id: core_cache
+        if: ${{ !cancelled() && steps.core_checkout.outcome == 'success' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .core/unemupc/vendor
+          key: core-fixtures-x86_64-${{ steps.core_checkout.outputs.revision }}
+
       # An explicit status function bypasses Actions' implicit success() check,
       # so one failed gate does not hide failures in the remaining gates.
       - name: Formatting
@@ -184,6 +199,14 @@ jobs:
           path: vendor/freedos/floppy-1.4
           key: freedos-floppy-1.4-${{ hashFiles('vendor/freedos/fetch-floppy-1.4.sh', 'vendor/freedos/floppy-1.4-licenses.txt') }}
 
+      - name: Save built core fixtures
+        id: core_cache_save
+        if: ${{ !cancelled() && steps.fixtures.outcome == 'success' && steps.core_checkout.outcome == 'success' && steps.core_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .core/unemupc/vendor
+          key: core-fixtures-x86_64-${{ steps.core_checkout.outputs.revision }}
+
       - name: Save cargo downloads
         id: cache_save
         if: ${{ !cancelled() && steps.devshell.outcome == 'success' && steps.cargo_cache.outputs.cache-hit != 'true' }}
@@ -230,6 +253,9 @@ jobs:
             deny=${{ steps.deny.outcome }}
             tests=${{ steps.tests.outcome }}
             freedos_cache=${{ steps.freedos_cache.outcome }}
+            core_checkout=${{ steps.core_checkout.outcome }}
+            core_cache=${{ steps.core_cache.outcome }}
+            core_cache_save=${{ steps.core_cache_save.outcome }}
             fixtures=${{ steps.fixtures.outcome }}
             goldens=${{ steps.goldens.outcome }}
             recipe_conformance=${{ steps.recipe_conformance.outcome }}
