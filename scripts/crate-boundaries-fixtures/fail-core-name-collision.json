@@ -1,0 +1,168 @@
+{
+  "self_test": {
+    "expect": "fail",
+    "message": "forbidden: player-ui (neutral) \u2192 assembly (pc)"
+  },
+  "packages": [
+    {
+      "name": "player-ui",
+      "id": "path+file:///repo/crates/player-ui#player-ui@0.0.3",
+      "source": null,
+      "manifest_path": "/repo/crates/player-ui/Cargo.toml",
+      "metadata": {
+        "unemu": {
+          "layer": "neutral"
+        }
+      },
+      "dependencies": [
+        {
+          "name": "assembly",
+          "source": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111",
+          "path": null,
+          "kind": null,
+          "rename": null
+        }
+      ]
+    },
+    {
+      "name": "provider",
+      "id": "path+file:///repo/crates/provider#provider@0.0.3",
+      "source": null,
+      "manifest_path": "/repo/crates/provider/Cargo.toml",
+      "metadata": {
+        "unemu": {
+          "layer": "pc"
+        }
+      },
+      "dependencies": [
+        {
+          "name": "player-ui",
+          "source": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111",
+          "path": null,
+          "kind": null,
+          "rename": "core-player"
+        }
+      ]
+    }
+  ],
+  "workspace_members": [
+    "path+file:///repo/crates/player-ui#player-ui@0.0.3",
+    "path+file:///repo/crates/provider#provider@0.0.3"
+  ],
+  "workspace_root": "/repo",
+  "resolved": {
+    "packages": [
+      {
+        "name": "player-ui",
+        "id": "path+file:///repo/crates/player-ui#player-ui@0.0.3",
+        "source": null,
+        "manifest_path": "/repo/crates/player-ui/Cargo.toml",
+        "metadata": {
+          "unemu": {
+            "layer": "neutral"
+          }
+        },
+        "dependencies": [
+          {
+            "name": "assembly",
+            "source": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111",
+            "path": null,
+            "kind": null,
+            "rename": null
+          }
+        ]
+      },
+      {
+        "name": "provider",
+        "id": "path+file:///repo/crates/provider#provider@0.0.3",
+        "source": null,
+        "manifest_path": "/repo/crates/provider/Cargo.toml",
+        "metadata": {
+          "unemu": {
+            "layer": "pc"
+          }
+        },
+        "dependencies": [
+          {
+            "name": "player-ui",
+            "source": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111",
+            "path": null,
+            "kind": null,
+            "rename": "core-player"
+          }
+        ]
+      },
+      {
+        "name": "assembly",
+        "id": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111#assembly@0.0.3",
+        "source": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111",
+        "manifest_path": "/repo/crates/assembly/Cargo.toml",
+        "metadata": {
+          "unemu": {
+            "layer": "neutral"
+          }
+        },
+        "dependencies": []
+      },
+      {
+        "name": "player-ui",
+        "id": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111#player-ui@0.0.3",
+        "source": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111",
+        "manifest_path": "/cargo/git/checkouts/core/player-ui/Cargo.toml",
+        "metadata": {
+          "unemu": {
+            "layer": "neutral"
+          }
+        },
+        "dependencies": []
+      }
+    ],
+    "workspace_members": [
+      "path+file:///repo/crates/player-ui#player-ui@0.0.3",
+      "path+file:///repo/crates/provider#provider@0.0.3"
+    ],
+    "workspace_root": "/repo",
+    "resolve": {
+      "nodes": [
+        {
+          "id": "path+file:///repo/crates/player-ui#player-ui@0.0.3",
+          "deps": [
+            {
+              "name": "assembly",
+              "pkg": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111#assembly@0.0.3",
+              "dep_kinds": [
+                {
+                  "kind": null,
+                  "target": null
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "path+file:///repo/crates/provider#provider@0.0.3",
+          "deps": [
+            {
+              "name": "core_player",
+              "pkg": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111#player-ui@0.0.3",
+              "dep_kinds": [
+                {
+                  "kind": null,
+                  "target": null
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111#assembly@0.0.3",
+          "deps": []
+        },
+        {
+          "id": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111#player-ui@0.0.3",
+          "deps": []
+        }
+      ]
+    }
+  }
+}

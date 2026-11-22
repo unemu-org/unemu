@@ -1,7 +1,7 @@
 {
   "self_test": {
     "expect": "fail",
-    "message": "stale allow entry, line 2: assembly → journal (normal)"
+    "message": "stale allow entry, line 2: registry \u2192 store (normal)"
   },
   "packages": [
     {
@@ -61,7 +61,7 @@
       "name": "device",
       "metadata": {
         "unemu": {
-          "layer": "emulation"
+          "layer": "pc"
         }
       },
       "dependencies": []
@@ -70,7 +70,7 @@
       "name": "assembly",
       "metadata": {
         "unemu": {
-          "layer": "emulation"
+          "layer": "pc"
         }
       },
       "dependencies": [

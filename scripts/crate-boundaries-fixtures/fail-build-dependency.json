@@ -1,7 +1,7 @@
 {
   "self_test": {
     "expect": "fail",
-    "message": "forbidden: store (neutral) → device (emulation), build dependency, through store → device; rule: a neutral crate may depend only on contract, neutral",
+    "message": "forbidden: store (neutral) \u2192 device (pc), build dependency, through store \u2192 device; rule: a neutral crate may depend only on contract, neutral",
     "errors": 2
   },
   "packages": [
@@ -67,7 +67,7 @@
       "name": "device",
       "metadata": {
         "unemu": {
-          "layer": "emulation"
+          "layer": "pc"
         }
       },
       "dependencies": []
@@ -76,7 +76,7 @@
       "name": "assembly",
       "metadata": {
         "unemu": {
-          "layer": "emulation"
+          "layer": "pc"
         }
       },
       "dependencies": [

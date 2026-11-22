@@ -61,7 +61,7 @@
       "name": "device",
       "metadata": {
         "unemu": {
-          "layer": "emulation"
+          "layer": "pc"
         }
       },
       "dependencies": []
@@ -70,7 +70,7 @@
       "name": "assembly",
       "metadata": {
         "unemu": {
-          "layer": "emulation"
+          "layer": "pc"
         }
       },
       "dependencies": [

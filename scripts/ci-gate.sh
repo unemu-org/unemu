@@ -9,104 +9,109 @@ usage() {
 }
 
 [[ $# -eq 1 ]] || usage
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 step=$1
-gate_command=(nix develop --no-update-lock-file --command)
+case "$step" in
+    fixtures|goldens|recipe-conformance|user-roms)
+        if override=$(bash scripts/core-patch.sh --active); then
+            echo "ci gate: $override overrides the core; fixture lanes require the pinned graph; use bead-gate.sh for the patched checkout" >&2
+            exit 1
+        fi
+        ;;
+esac
 export RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
 case "$step" in
-    devshell) gate_command+=(rustc --version) ;;
-    fmt) gate_command+=(cargo fmt --check) ;;
-    # The publication guard needs no devShell; the crate-boundary check reads
-    # `cargo metadata` with the devShell's cargo and jq. Both run even when the
-    # other fails, so one log names every finding; either failure fails the gate.
-    # The check resolves the graph offline, and a restored cache can lack a
-    # git dependency the lock file has moved to (or hold nothing at all), so
-    # the lane downloads the locked sources first. Fetching builds nothing.
+    devshell) lane_command=(rustc --version) ;;
+    fmt) lane_command=(cargo fmt --check) ;;
     guard)
-        gate_command=(bash -uc '
+        # Check every guard even after a failure so the log names every finding.
+        lane_command=(bash -uc '
             status=0
+            # A cold CI cache needs the locked sources before the offline check.
+            if [[ ${CI_GATE_OFFLINE:-0} == 1 ]]; then
+                cargo fetch --locked --offline || status=1
+            else
+                cargo fetch --locked || status=1
+            fi
             bash scripts/publication-guard-test.sh && bash scripts/publication-guard.sh || status=1
-            bash scripts/repo-ownership.sh --self-test && bash scripts/repo-ownership.sh || status=1
-            nix develop --no-update-lock-file --command bash -euc "
-                cargo fetch --locked
-                bash scripts/crate-boundaries.sh --self-test
-                bash scripts/crate-boundaries.sh
-                bash scripts/core-host-guard.sh --self-test
-                bash scripts/core-host-guard.sh
-            " || status=1
+            bash scripts/crate-boundaries.sh --self-test || status=1
+            bash scripts/crate-boundaries.sh || status=1
+            bash scripts/core-patch.sh --self-test || status=1
+            bash scripts/core-checkout.sh --self-test || status=1
+            bash scripts/uid-guard.sh --self-test || status=1
             exit "$status"
         ')
         ;;
     clippy)
-        gate_command+=(bash -euc '
+        lane_command=(bash -euc '
             cargo clippy --locked --all-targets --all-features -- -D warnings
             cargo clippy --locked -p window --bin unemu -- -D warnings
         ')
         ;;
-    deny) gate_command+=(cargo deny --all-features check advisories licenses bans sources) ;;
-    tests)
-        # Release builds keep a few behaviours that debug builds assert against
-        # (devices ignore an earlier clock); run the device tests in both.
-        gate_command+=(bash -euc '
-            cargo test --locked --profile test --workspace
-            cargo test --locked --release -p devices
+    deny) lane_command=(cargo deny --all-features check advisories licenses bans sources) ;;
+    tests) lane_command=(cargo test --locked --profile test --workspace) ;;
+    recipe-conformance)
+        lane_command=(bash -euc '
+            fixture=$(bash scripts/core-checkout.sh --print-root)
+            export "$fixture"
+            cargo run --locked -p window -- recipe conformance \
+                crates/pc-image/data/recipes \
+                backlog/docs/design/recipe-corpus/kenslab-2.01/kenslab-2.01.media.toml \
+                --library vendor/freedos --library vendor \
+                --library "$UNEMUPC_FIXTURE_ROOT/vendor"
         ')
         ;;
-    recipe-conformance)
-        gate_command+=(cargo run --locked -p window -- recipe conformance
-            crates/pc-image/data/recipes
-            backlog/docs/design/recipe-corpus/kenslab-2.01/kenslab-2.01.media.toml
-            --library vendor/freedos --library vendor)
-        ;;
     fixtures)
-        # The goldens gate requires every fixture its tests read. vgabios and
-        # unemu-at-bios are built by Nix from their public GitHub repositories
-        # over anonymous HTTPS (UNEMU_VGABIOS_FLAKE / UNEMU_VGABIOS_CHECKOUT and
-        # UNEMU_AT_BIOS_FLAKE / UNEMU_AT_BIOS_CHECKOUT override the source).
-        # The Kiselev, XTIDE, vgabios and unemu-at-bios
-        # scripts also write the pinned source archives of their open
-        # images. XTIDE runs after them: it exports its
-        # source over the network with Subversion, which Nix supplies, so an
-        # unreachable server cannot keep the other fixtures from being built.
-        # The FreeDOS 1.4 Floppy Edition runs last for the same reason: its
-        # first run downloads about 330 MB from FreeDOS, GitHub and GitLab,
-        # and with the workflow's cache of its outputs it only re-checks pins.
-        # The lane stops at the first failing script; the last header names it.
-        gate_command+=(bash -euc '
-            echo "== fixtures: vendor/kiselev-bios/fetch.sh"
-            bash vendor/kiselev-bios/fetch.sh
-            echo "== fixtures: vendor/freedos/fetch.sh"
-            bash vendor/freedos/fetch.sh
-            echo "== fixtures: vendor/test386/fetch.sh"
-            bash vendor/test386/fetch.sh
+        # The core owns the build tools and pins of its fixtures. Keep the
+        # large FreeDOS edition download last, as in the original lane: an
+        # unavailable mirror must not prevent the other fixtures being built.
+        # Each header names the script if the lane stops at a network failure.
+        lane_command=(bash -euc '
+            echo "== fixtures: scripts/core-checkout.sh"
+            bash scripts/core-checkout.sh
             echo "== fixtures: vendor/kenslab/fetch-labfull.sh"
             bash vendor/kenslab/fetch-labfull.sh
-            echo "== fixtures: vendor/hdd/build.sh"
-            bash vendor/hdd/build.sh
-            echo "== fixtures: vendor/vgabios/fetch.sh"
-            bash vendor/vgabios/fetch.sh
-            echo "== fixtures: vendor/unemu-at-bios/fetch.sh"
-            bash vendor/unemu-at-bios/fetch.sh
-            echo "== fixtures: vendor/at-pm-test/build.sh"
-            bash vendor/at-pm-test/build.sh
-            echo "== fixtures: vendor/at-loadall-test/build.sh"
-            bash vendor/at-loadall-test/build.sh
-            echo "== fixtures: vendor/at-privilege-test/build.sh"
-            bash vendor/at-privilege-test/build.sh
-            echo "== fixtures: vendor/xtide-universal-bios/fetch.sh"
-            bash vendor/xtide-universal-bios/fetch.sh
             echo "== fixtures: vendor/freedos/fetch-floppy-1.4.sh"
             bash vendor/freedos/fetch-floppy-1.4.sh
         ')
         ;;
-    # The tests lane runs before the fixtures exist, so tests that read a
-    # fixture skip there. This lane runs them again with every fixture
-    # present, next to the slow ignored goldens.
-    goldens) gate_command+=(env UNEMUPC_REQUIRE_FIXTURES=1 cargo test --locked --profile test --workspace -- --include-ignored) ;;
-    # Local opt-in lane: CI never calls it and never has user-supplied firmware.
-    user-roms) gate_command+=(cargo test --locked --profile test --workspace --no-fail-fast -- --ignored user_rom_) ;;
+    # Tests before fixture provisioning may skip fixture reads. Goldens must
+    # use the verified checkout and require every fixture.
+    goldens)
+        lane_command=(bash -euc '
+            fixture=$(bash scripts/core-checkout.sh --print-root) || {
+                echo "goldens: run bash scripts/core-checkout.sh to provision the pinned core fixtures" >&2
+                exit 1
+            }
+            export "$fixture"
+            UNEMUPC_REQUIRE_FIXTURES=1 cargo test --locked --profile test --workspace -- --include-ignored --skip user_rom_
+        ')
+        ;;
+    # Local opt-in lane: CI never has user-supplied firmware.
+    user-roms)
+        lane_command=(bash -euc '
+            fixture=$(bash scripts/core-checkout.sh --print-root)
+            export "$fixture"
+            cargo test --locked --profile test --workspace --no-fail-fast -- --ignored user_rom_
+        ')
+        ;;
     *) usage ;;
 esac
 
+# A supervisor can supply an already loaded devShell and a shared cargo wrapper.
+gate_command=()
+if [[ ${CI_GATE_IN_DEV_SHELL:-0} != 1 ]]; then
+    gate_command=(nix develop --no-update-lock-file --command)
+fi
+gate_command+=(bash -euc '
+    cargo() {
+        local cargo_cmd
+        read -r -a cargo_cmd <<< "${AFFECTED_CARGO:-cargo}"
+        command "${cargo_cmd[@]}" "$@"
+    }
+    export -f cargo
+    "$@"
+' -- "${lane_command[@]}")
 log_dir=${CI_LOG_DIR:-ci-logs}
 mkdir -p "$log_dir"
 # pipefail keeps a failed gate red even when tee successfully writes its log.

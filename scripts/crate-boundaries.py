@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Reject Rust source includes across the core/front-end repository boundary."""
+"""Reject Rust source includes outside this repository."""
 
 import json
 from pathlib import Path
@@ -146,83 +146,85 @@ def source_includes(text, directory):
                         yield offset, path
 
 
-def check(packages):
-    owners = sorted([(Path(p['manifest_path']).parent.resolve(), p['name'],
-                      p['metadata']['unemu'].get('layer') == 'emulation'
-                      or p['metadata']['unemu'].get('side') == 'core')
+def check(packages, root):
+    root = Path(root).resolve()
+    owners = sorted([(Path(p['manifest_path']).parent.resolve(), p['name'])
                      for p in packages], key=lambda p: len(p[0].parts), reverse=True)
     def owner(path):
         return next((p for p in owners if path.is_relative_to(p[0])), None)
     errors = []
-    for directory, name, core in owners:
+    for directory, name in owners:
         for source in sorted(directory.rglob('*.rs')):
             if owner(source)[1] != name:
                 continue
             text = source.read_text()
             for offset, value in source_includes(text, directory):
                 target = (source.parent / value).resolve()
-                other = owner(target)
-                if other is not None and other[2] != core:
+                if not target.is_relative_to(root) or target.is_relative_to(root / ".core"):
                     line = text.count('\n', 0, offset) + 1
-                    errors.append(f'forbidden source include: {name} → {other[1]} in {source.relative_to(directory)}:{line}')
+                    errors.append(f'forbidden source include: {name} → outside repository in {source.relative_to(directory)}:{line}')
     for error in errors:
         print(error)
     return len(errors)
 
 if sys.argv[1] == '--self-test':
     with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
+        root = Path(tmp) / "repo"
+        root.mkdir()
+        (root.parent / "core").mkdir()
+        (root.parent / "core/lib.rs").write_text("")
         packages = []
-        for name, core in [('front', False), ('core', True), ('peer', False)]:
+        for name in ('front', 'peer'):
             directory = root / name
             directory.mkdir()
             packages.append(dict(name=name, manifest_path=str(directory / 'Cargo.toml'),
-                                 metadata={'unemu': {'layer': 'pc', 'side': 'core' if core else 'frontend'}}))
+                                 metadata={'unemu': {'layer': 'pc'}}))
             (directory / 'lib.rs').write_text('')
-        for expression in ['#[path = "../core/lib.rs"] mod shared;',
-                           'include!("../core/lib.rs");',
-                           'include_str!(\n"../core/lib.rs");',
-                           'include_bytes!(r"../core/lib.rs");',
-                           '#[path = r#"../core/lib.rs"#] mod shared;',
-                           'include! { "../core/lib.rs" }',
-                           'include_bytes!["../core/lib.rs"];',
-                           'include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../core/lib.rs"));',
-                           'include_str!(concat!("../", "core/lib.rs"));',
-                           'include_str!(concat ! (env!("CARGO_MANIFEST_DIR"), "/../core/lib.rs"));',
-                           'include_bytes! { concat /* spacing */ ! ["../", concat!("core/", r#"lib.rs"#),] }',
-                           r'include!("../core/\x6cib.rs");',
-                           '/* outer /* inner */ done */\ninclude!("../core/lib.rs");']:
+        for expression in ['#[path = "../../core/lib.rs"] mod shared;',
+                           'include!("../../core/lib.rs");',
+                           'include_str!(\n"../../core/lib.rs");',
+                           'include_bytes!(r"../../core/lib.rs");',
+                           'include!("../.core/unemupc/lib.rs");',
+                           '#[path = r#"../../core/lib.rs"#] mod shared;',
+                           'include! { "../../core/lib.rs" }',
+                           'include_bytes!["../../core/lib.rs"];',
+                           'include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../core/lib.rs"));',
+                           'include_str!(concat!("../../", "core/lib.rs"));',
+                           'include_str!(concat ! (env!("CARGO_MANIFEST_DIR"), "/../../core/lib.rs"));',
+                           'include_bytes! { concat /* spacing */ ! ["../../", concat!("core/", r#"lib.rs"#),] }',
+                           r'include!("../../core/\x6cib.rs");',
+                           '/* outer /* inner */ done */\ninclude!("../../core/lib.rs");']:
             (root / 'front/lib.rs').write_text(expression)
-            assert check(packages) == 1, expression
+            assert check(packages, root) == 1, expression
+        (root / 'data.txt').write_text('fixture')
         for expression in [
-                'include!("../peer/lib.rs");\n// include!("../core/lib.rs");',
+                'include_str!("../data.txt");',
+                'include!("../peer/lib.rs");\n// include!("../../core/lib.rs");',
                 'include!(concat ! ("../", "peer/lib.rs"));',
-                'let example = r#"include_str!("../core/lib.rs");"#;',
-                'let example = r###"#[path = "../core/lib.rs"] mod hidden;"###;',
-                'let example = "include!(\\\"../core/lib.rs\\\");";',
-                '/* outer /* inner */ include!("../core/lib.rs"); */',
-                '/* outer /* inner /* deeper */ */ include!("../core/lib.rs"); */',
-                'let example = br#"include_bytes!("../core/lib.rs");"#;',
+                'let example = r#"include_str!("../../core/lib.rs");"#;',
+                'let example = r###"#[path = "../../core/lib.rs"] mod hidden;"###;',
+                'let example = "include!(\\\"../../core/lib.rs\\\");";',
+                '/* outer /* inner */ include!("../../core/lib.rs"); */',
+                '/* outer /* inner /* deeper */ */ include!("../../core/lib.rs"); */',
+                'let example = br#"include_bytes!("../../core/lib.rs");"#;',
                 'let punctuation = (\')\', \'"\');',
         ]:
             (root / 'front/lib.rs').write_text(expression)
-            assert check(packages) == 0, expression
+            assert check(packages, root) == 0, expression
         (root / 'front/lib.rs').write_text('')
-        (root / 'core/lib.rs').write_text('include!("../front/lib.rs");')
-        assert check(packages) == 1
-        (root / 'core/lib.rs').write_text('')
         nested = root / 'front/src'
         nested.mkdir()
         (root / 'front/lib.rs').write_text('')
         for expression in [
-                'include_str!(concat!("../../", "core/lib.rs"));',
-                'include_str!(concat ! (env!("CARGO_MANIFEST_DIR"), "/../core/lib.rs"));',
-                'include_str!(concat!("../../", "core/", ")", ".rs"));',
+                'include_str!(concat!("../../../", "core/lib.rs"));',
+                'include_str!(concat ! (env!("CARGO_MANIFEST_DIR"), "/../../core/lib.rs"));',
+                'include_str!(concat!("../../../", "core/", ")", ".rs"));',
         ]:
             (nested / 'lib.rs').write_text(expression)
-            assert check(packages) == 1, expression
-    print('self-test source includes: cross-side plants rejected; same-side includes and comments accepted')
+            assert check(packages, root) == 1, expression
+    print('self-test source includes: external plants rejected; repository includes and comments accepted')
 else:
-    errors = check(json.loads(Path(sys.argv[1]).read_text())['packages'])
+    metadata = json.loads(Path(sys.argv[1]).read_text())
+    errors = check(metadata['packages'], metadata['workspace_root'])
     print(f'crate boundaries: {errors} source-include error(s)')
     sys.exit(bool(errors))

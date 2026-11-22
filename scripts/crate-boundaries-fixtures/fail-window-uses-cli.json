@@ -1,7 +1,7 @@
 {
   "self_test": {
     "expect": "fail",
-    "message": "forbidden: window (application) → cli (application), dev dependency, through window → cli; rule: no window crate depends on a CLI crate"
+    "message": "forbidden: window (application) \u2192 cli (application), dev dependency, through window \u2192 cli; rule: no window crate depends on a CLI crate"
   },
   "packages": [
     {
@@ -61,7 +61,7 @@
       "name": "device",
       "metadata": {
         "unemu": {
-          "layer": "emulation"
+          "layer": "pc"
         }
       },
       "dependencies": []
@@ -70,7 +70,7 @@
       "name": "assembly",
       "metadata": {
         "unemu": {
-          "layer": "emulation"
+          "layer": "pc"
         }
       },
       "dependencies": [

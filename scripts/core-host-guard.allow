@@ -1,5 +1,0 @@
-# SPDX-License-Identifier: AGPL-3.0-or-later
-# Exact host-interface exceptions (core-contract.md §12.2 and §12.3).
-# FILE: MATCHED SOURCE LINE: REASON; indentation is ignored, text is literal.
-# Removing an entry with a live use fails; removing or moving its use fails
-# until the stale entry is removed. A repeated identical line needs one entry.

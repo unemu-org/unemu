@@ -6,6 +6,49 @@
 
 set -e
 
+if [[ ${1:-} == --self-test ]]; then
+  scratch=$(mktemp -d)
+  trap 'rm -rf "$scratch"' EXIT
+  mkdir -p "$scratch/bin"
+  cp "${BASH_SOURCE[0]}" "$scratch/uid-guard.sh"
+  cat > "$scratch/bin/git" <<'GIT'
+#!/usr/bin/env bash
+case "$*" in
+  'config --get commit.gpgsign') echo "${UID_TEST_SIGN:-true}" ;;
+  'config --get user.email') echo "${UID_TEST_EMAIL-user@example.org}" ;;
+  'config --get user.signingkey') echo "${UID_TEST_KEY-test-key}" ;;
+  *) exit 2 ;;
+esac
+GIT
+  cat > "$scratch/bin/gpg" <<'GPG'
+#!/usr/bin/env bash
+printf 'uid:::::::::Test <%s>:\n' "${UID_TEST_UID:-user@example.org}"
+GPG
+  chmod +x "$scratch/bin/git" "$scratch/bin/gpg"
+  export PATH="$scratch/bin:$PATH"
+  for test_case in unsigned no-email no-key match case-match mismatch; do
+    status=0
+    (
+      unset UID_TEST_SIGN UID_TEST_EMAIL UID_TEST_KEY UID_TEST_UID
+      case "$test_case" in
+        unsigned) export UID_TEST_SIGN=false ;;
+        no-email) export UID_TEST_EMAIL= ;;
+        no-key) export UID_TEST_KEY= ;;
+        case-match) export UID_TEST_UID=USER@example.org ;;
+        mismatch) export UID_TEST_UID=other@example.org ;;
+      esac
+      bash "$scratch/uid-guard.sh"
+    ) > "$scratch/result" 2>&1 || status=$?
+    if [[ $test_case == mismatch ]]; then
+      [[ $status == 1 ]] && grep -q 'UID mismatch' "$scratch/result"
+    else
+      [[ $status == 0 ]]
+    fi
+  done
+  echo 'uid-guard: self-test passed (6 cases)'
+  exit 0
+fi
+
 if ! git config --get commit.gpgsign | grep -qE '^(true|1)$'; then
   exit 0
 fi

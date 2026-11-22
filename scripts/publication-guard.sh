@@ -27,7 +27,7 @@
 #   PUBLICATION_GUARD_PRIVATE_HOSTS so they never appear in the repository;
 #   without it, this check is skipped, so it runs only where someone sets it,
 #   never in CI. A hit prints only the file and line, never the name;
-# - LGPL headers outside the OPL3 port, and the project's former name.
+# - LGPL headers in front-end sources, and the project's former name.
 #
 # The project was renamed from unemupc98 to unemupc, so the old name fails the
 # guard too. It stays only where changing it would rewrite history or move a
@@ -69,8 +69,6 @@ rc=0
 old_name_allowed() {
   case "$1" in
     backlog/decisions/*|backlog/completed/*|backlog/archive/*) return 0 ;;
-    # Copied into the source archives whose SHA-256 the firmware catalogue pins.
-    vendor/*/source-notice.txt) return 0 ;;
     # LICENSES.TXT of the FreeDOS 1.4 template, whose hash is pinned.
     vendor/freedos/floppy-1.4-licenses.txt) return 0 ;;
     crates/image-store/src/location/preferences.rs) return 0 ;;
@@ -82,19 +80,13 @@ old_name_allowed() {
 # the status log that is every line above the rename entry: new entries go on
 # top, while the older ones record what the program was called then. Without
 # the rename entry the whole log is read, so the guard fails rather than
-# skipping it. In the fixture sources it leaves out only the quoted bytes:
-# the hard-disk fixture's MARKER.TXT, which the guest reads, and the SeaBIOS
-# version suffix inside the ROM, whose hash is pinned.
+# skipping it.
 old_name_text() {
   local urls='s#[[:alpha:]][[:alnum:]+.-]*://[^[:space:]"<>]*##g'
   case "$1" in
     backlog/docs/status.md)
       LC_ALL=C awk 'index($0, "The project is renamed unemupc:**") { exit } { print }' "$1" |
         LC_ALL=C sed -E "$urls" ;;
-    vendor/hdd/build.sh|vendor/hdd/README.md)
-      LC_ALL=C sed -E -e "$urls" -e 's#unemupc98 hard disk fixture##g' "$1" ;;
-    vendor/seabios/fetch.sh|vendor/seabios/README.md)
-      LC_ALL=C sed -E -e "$urls" -e 's#-unemupc98-isa##g' "$1" ;;
     *) LC_ALL=C sed -E "$urls" "$1" ;;
   esac
 }
@@ -139,17 +131,10 @@ scan() {
 
 for file in "${files[@]}"; do
 
-  # The LGPL translation is deliberately limited to the two upstream-derived
-  # files. Assembly, board timing, snapshots and tests retain the project licence.
+  # Upstream-derived LGPL hardware sources belong to the core repository.
   if grep -IqE '^// SPDX-License-Identifier: LGPL-' "$file"; then
-    case "$file" in
-      crates/devices/src/opl3/mod.rs|crates/devices/src/opl3/tables.rs)
-        if [[ $(head -n 1 "$file") != '// SPDX-License-Identifier: LGPL-2.1-or-later' ]]; then
-          printf '%s\n' "publication guard: invalid OPL3 licence: $file" >&2
-          rc=1
-        fi ;;
-      *) printf '%s\n' "publication guard: LGPL outside the OPL3 port: $file" >&2; rc=1 ;;
-    esac
+    printf '%s\n' "publication guard: LGPL in front-end sources: $file" >&2
+    rc=1
   fi
 
   if hits=$(grep -HIniE -- "$pattern" "$file"); then

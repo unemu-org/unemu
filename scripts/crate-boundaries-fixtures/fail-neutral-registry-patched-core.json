@@ -1,0 +1,95 @@
+{
+  "self_test": {
+    "expect": "fail",
+    "message": "forbidden: helper (neutral) \u2192 assembly (pc)"
+  },
+  "packages": [
+    {
+      "name": "helper",
+      "id": "path+file:///repo/crates/helper#helper@0.0.3",
+      "source": null,
+      "manifest_path": "/repo/crates/helper/Cargo.toml",
+      "metadata": {
+        "unemu": {
+          "layer": "neutral"
+        }
+      },
+      "dependencies": [
+        {
+          "name": "assembly",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "path": null,
+          "kind": null,
+          "rename": null
+        }
+      ]
+    }
+  ],
+  "workspace_members": [
+    "path+file:///repo/crates/helper#helper@0.0.3"
+  ],
+  "workspace_root": "/repo",
+  "resolved": {
+    "packages": [
+      {
+        "name": "helper",
+        "id": "path+file:///repo/crates/helper#helper@0.0.3",
+        "source": null,
+        "manifest_path": "/repo/crates/helper/Cargo.toml",
+        "metadata": {
+          "unemu": {
+            "layer": "neutral"
+          }
+        },
+        "dependencies": [
+          {
+            "name": "assembly",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "path": null,
+            "kind": null,
+            "rename": null
+          }
+        ]
+      },
+      {
+        "name": "assembly",
+        "id": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111#assembly@0.0.3",
+        "source": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111",
+        "manifest_path": "/cargo/git/checkouts/core/assembly/Cargo.toml",
+        "metadata": {
+          "unemu": {
+            "layer": "neutral"
+          }
+        },
+        "dependencies": []
+      }
+    ],
+    "workspace_members": [
+      "path+file:///repo/crates/helper#helper@0.0.3"
+    ],
+    "workspace_root": "/repo",
+    "resolve": {
+      "nodes": [
+        {
+          "id": "path+file:///repo/crates/helper#helper@0.0.3",
+          "deps": [
+            {
+              "name": "assembly",
+              "pkg": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111#assembly@0.0.3",
+              "dep_kinds": [
+                {
+                  "kind": null,
+                  "target": null
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111#assembly@0.0.3",
+          "deps": []
+        }
+      ]
+    }
+  }
+}

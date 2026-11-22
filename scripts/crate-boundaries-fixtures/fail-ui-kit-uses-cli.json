@@ -1,7 +1,7 @@
 {
   "self_test": {
     "expect": "fail",
-    "message": "forbidden: ui-kit (neutral) → cli-core (neutral), normal dependency, through ui-kit → cli-core; rule: no window crate depends on a CLI crate",
+    "message": "forbidden: ui-kit (neutral) \u2192 cli-core (neutral), normal dependency, through ui-kit \u2192 cli-core; rule: no window crate depends on a CLI crate",
     "errors": 1
   },
   "packages": [
@@ -62,7 +62,7 @@
       "name": "device",
       "metadata": {
         "unemu": {
-          "layer": "emulation"
+          "layer": "pc"
         }
       },
       "dependencies": []
@@ -71,7 +71,7 @@
       "name": "assembly",
       "metadata": {
         "unemu": {
-          "layer": "emulation"
+          "layer": "pc"
         }
       },
       "dependencies": [

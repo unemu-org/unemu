@@ -73,19 +73,19 @@ unemu-nes-core = { version = "0.0.1", git = "https://github.com/unemu-org/unemun
 # green CI, the same revision in every line (repo-split.md §4.1). Never a bare
 # path, a branch or a tag; develop against a local core checkout through a
 # gitignored [patch] override. Moving this revision is a re-pin bead.
-assembly = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
-audio = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
-cpu = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
-device = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
-devices = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
-journal-files = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
-machine = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
-machine-file = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
-pc-config = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
-pc-harness = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
-unemu-pc-core = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
-unemupc = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
-video = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+assembly = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+audio = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+cpu = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+device = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+devices = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+journal-files = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+machine = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+machine-file = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+pc-config = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+pc-harness = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+unemu-pc-core = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+unemupc = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+video = { version = "0.0.3", git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
 
 # Internal crates share the workspace version.
 media = { path = "crates/media", version = "0.0.3" }

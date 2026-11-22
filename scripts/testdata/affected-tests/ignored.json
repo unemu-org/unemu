@@ -1,30 +1,11 @@
 {
-  "crates/assembly/tests/option_roms.rs": {
-    "tests": [
-      "kiselev_post_calls_a_synthetic_option_rom"
-    ],
-    "mentions": [
-      "assembly",
-      "cpu",
-      "device",
-      "machine"
-    ]
-  },
   "crates/cli-pc/tests/at_games.rs": {
     "tests": [
       "open_game_profile_boots_freedos",
       "open_game_profile_reads_720k_in_b_and_360k_in_a"
     ],
     "mentions": [
-      "assembly",
-      "cli_pc",
-      "cpu",
-      "device",
-      "devices",
-      "machine",
-      "machine_file",
-      "pc_harness",
-      "video"
+      "cli_pc"
     ]
   },
   "crates/cli-pc/tests/freedos_install_golden.rs": {
@@ -32,14 +13,8 @@
       "freedos_installs_and_boots_from_a_blank_hard_disk"
     ],
     "mentions": [
-      "assembly",
       "cli_pc",
-      "cpu",
-      "devices",
-      "machine_file",
-      "media",
-      "pc_harness",
-      "video"
+      "media"
     ]
   },
   "crates/cli-pc/tests/ide_journal_golden.rs": {
@@ -47,13 +22,8 @@
       "freedos_ide_journal_survives_a_fresh_assembly_without_changing_base"
     ],
     "mentions": [
-      "assembly",
       "cli_pc",
-      "devices",
-      "machine_file",
-      "media",
-      "pc_harness",
-      "video"
+      "media"
     ]
   },
   "crates/cli-pc/tests/machine_freedos_golden.rs": {
@@ -61,13 +31,9 @@
       "freedos_writes_persist_in_a_machine_until_reset"
     ],
     "mentions": [
-      "assembly",
       "image_store",
-      "machine",
       "media",
-      "pc_harness",
-      "pc_image",
-      "video"
+      "pc_image"
     ]
   },
   "crates/cli-pc/tests/media_files_golden.rs": {
@@ -76,218 +42,7 @@
       "freedos_enters_and_rebuilds_a_split_set_with_xcopy"
     ],
     "mentions": [
-      "assembly",
-      "cli_pc",
-      "machine",
-      "machine_file",
-      "pc_harness",
-      "video"
-    ]
-  },
-  "crates/pc-harness/src/lib.rs": {
-    "tests": [
-      "bios_and_dos_outputs_ignore_trace_overflow_and_post_buffers_stay_bounded"
-    ],
-    "mentions": [
-      "assembly",
-      "bus",
-      "chipset",
-      "cpu",
-      "device",
-      "devices",
-      "machine",
-      "machine_file",
-      "media",
-      "video"
-    ]
-  },
-  "crates/pc-harness/tests/at_pm_test_golden.rs": {
-    "tests": [
-      "open_bios_resumes_the_protected_mode_test_through_the_shutdown_byte"
-    ],
-    "mentions": [
-      "assembly",
-      "cpu",
-      "device",
-      "machine",
-      "machine_file",
-      "pc_harness",
-      "video"
-    ]
-  },
-  "crates/pc-harness/tests/bios_boot_golden.rs": {
-    "tests": [
-      "bios_boot_stop_point_matches_golden"
-    ],
-    "mentions": [
-      "pc_harness",
-      "video"
-    ]
-  },
-  "crates/pc-harness/tests/bios_floppy_boot_golden.rs": {
-    "tests": [
-      "bios_int19_reads_boot_sector_over_the_floppy"
-    ],
-    "mentions": [
-      "pc_harness",
-      "video"
-    ]
-  },
-  "crates/pc-harness/tests/dos_interactive_golden.rs": {
-    "tests": [
-      "freedos_runs_dir_from_the_keyboard"
-    ],
-    "mentions": [
-      "machine_file",
-      "pc_harness",
-      "video"
-    ]
-  },
-  "crates/pc-harness/tests/dos_write_golden.rs": {
-    "tests": [
-      "freedos_writes_a_file_from_the_keyboard"
-    ],
-    "mentions": [
-      "machine_file",
-      "pc_harness",
-      "video"
-    ]
-  },
-  "crates/pc-harness/tests/floppy_swap_golden.rs": {
-    "tests": [
-      "freedos_dir_observes_scheduled_second_floppy"
-    ],
-    "mentions": [
-      "assembly",
-      "machine_file",
-      "pc_harness",
-      "video"
-    ]
-  },
-  "crates/pc-harness/tests/fpu_bios.rs": {
-    "tests": [
-      "kiselev_empty_socket_finishes_the_coprocessor_probe"
-    ],
-    "mentions": [
-      "assembly",
-      "machine",
-      "pc_harness",
-      "video"
-    ]
-  },
-  "crates/pc-harness/tests/freedos_boot_golden.rs": {
-    "tests": [
-      "freedos_reaches_shell_prompt"
-    ],
-    "mentions": [
-      "machine_file",
-      "pc_harness",
-      "video"
-    ]
-  },
-  "crates/pc-harness/tests/ide_freedos_golden.rs": {
-    "tests": [
-      "freedos_lists_the_readonly_ide_marker"
-    ],
-    "mentions": [
-      "assembly",
-      "cpu",
-      "device",
-      "machine_file",
-      "pc_harness",
-      "video"
-    ]
-  },
-  "crates/pc-harness/tests/lotech_ems_golden.rs": {
-    "tests": [
-      "freedos_mem_reports_lotech_expanded_memory"
-    ],
-    "mentions": [
-      "assembly",
-      "cpu",
-      "device",
-      "devices",
-      "machine_file",
-      "pc_harness",
-      "video"
-    ]
-  },
-  "crates/pc-harness/tests/media_fixtures.rs": {
-    "tests": [
-      "volatile_boots_preserve_pinned_fixture_hashes_and_vendor_entries",
-      "source_archives_match_pins_and_carry_their_notice"
-    ],
-    "mentions": [
-      "assembly",
-      "cpu",
-      "machine",
-      "media",
-      "pc_harness",
-      "video"
-    ]
-  },
-  "crates/pc-harness/tests/open_vga_golden.rs": {
-    "tests": [
-      "open_vga_bios_passes_the_int10_probe_floppy",
-      "open_vga_bios_teletype_bel_sounds_the_speaker_for_31_64_seconds",
-      "open_vga_bios_mode_0d_scrolling_and_mode_13h_reach_scanout"
-    ],
-    "mentions": [
-      "assembly",
-      "cpu",
-      "device",
-      "machine",
-      "machine_file",
-      "pc_harness",
-      "video"
-    ]
-  },
-  "crates/pc-harness/tests/scheduler_ab.rs": {
-    "tests": [
-      "deadline_matches_per_clock_on_bios_post",
-      "deadline_matches_per_clock_on_freedos_prompt",
-      "deadline_matches_per_clock_on_bios_floppy",
-      "deadline_matches_per_clock_on_dos_dir",
-      "deadline_matches_per_clock_on_dos_write",
-      "scheduler_engine_wall_times",
-      "scheduler_streams_unchanged"
-    ],
-    "mentions": [
-      "assembly",
-      "bus",
-      "chipset",
-      "cpu",
-      "device",
-      "devices",
-      "machine",
-      "testkit"
-    ]
-  },
-  "crates/pc-harness/tests/vga_bios.rs": {
-    "tests": [
-      "kiselev_post_executes_video_rom_from_eprom_container"
-    ],
-    "mentions": [
-      "assembly",
-      "cpu",
-      "device",
-      "devices",
-      "machine",
-      "machine_file",
-      "pc_harness",
-      "testkit",
-      "video"
-    ]
-  },
-  "crates/pc-harness/tests/xms_warm_boot_golden.rs": {
-    "tests": [
-      "no_vdisk_record_survives_a_restart"
-    ],
-    "mentions": [
-      "assembly",
-      "machine_file",
-      "pc_harness",
-      "video"
+      "cli_pc"
     ]
   },
   "crates/registry/src/credential_store.rs": {
@@ -309,15 +64,8 @@
       "freedos_window_chunks_deliver_dir_listing_without_opening_a_window"
     ],
     "mentions": [
-      "assembly",
-      "cpu",
-      "device",
-      "devices",
       "image_store",
-      "machine",
-      "machine_file",
       "platforms",
-      "video",
       "window"
     ]
   },
@@ -327,15 +75,11 @@
       "a_floppy_inserted_before_start_boots_freedos_on_the_open_bios"
     ],
     "mentions": [
-      "assembly",
-      "devices",
       "image_registry",
       "image_store",
-      "machine_file",
       "media",
       "pc_image",
       "platforms",
-      "video",
       "window"
     ]
   }

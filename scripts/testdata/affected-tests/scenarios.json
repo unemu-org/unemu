@@ -1,10 +1,5 @@
 [
   {
-    "name": "a core source change selects only the core source scan",
-    "changed": ["crates/pc-core/src/core.rs"],
-    "expect": {"scan_tests": ["pc-config:platform_ids"]}
-  },
-  {
     "name": "the front-end detector runs only its own scan",
     "changed": ["crates/image-store/tests/platform_ids.rs"],
     "expect": {"scan_tests": []}
@@ -75,9 +70,18 @@
   },
   {
     "name": "window-only change, with the window's own ignored tests by name",
-    "changed": ["crates/window/src/shell_model.rs"],
+    "changed": [
+      "crates/window/src/shell_model.rs"
+    ],
     "expect": {
-      "mode": "crates", "seeds": ["window"], "affected": ["window"], "tier": "fast",
+      "mode": "crates",
+      "seeds": [
+        "window"
+      ],
+      "affected": [
+        "window"
+      ],
+      "tier": "fast",
       "targeted": [
         "a_floppy_inserted_before_start_boots_freedos_on_the_open_bios",
         "freedos_window_chunks_deliver_dir_listing_without_opening_a_window",
@@ -87,15 +91,30 @@
         "crates/window/src/main.rs: in changed crate window",
         "crates/window/src/shell.rs: in changed crate window"
       ],
-      "scan_tests": ["image-store:platform_ids"],
-      "release_devices": false, "cli": true, "deny": false, "user_roms": false
+      "scan_tests": [
+        "image-store:platform_ids"
+      ],
+      "cli": true,
+      "deny": false,
+      "user_roms": false
     }
   },
   {
     "name": "a test change of the PC command line runs it and the program, with its front-end goldens by name",
-    "changed": ["crates/cli-pc/tests/image_commands.rs"],
+    "changed": [
+      "crates/cli-pc/tests/image_commands.rs"
+    ],
     "expect": {
-      "mode": "crates", "seeds": ["cli-pc"], "affected": ["cli-pc", "upcli", "window"], "tier": "fast",
+      "mode": "crates",
+      "seeds": [
+        "cli-pc"
+      ],
+      "affected": [
+        "cli-pc",
+        "upcli",
+        "window"
+      ],
+      "tier": "fast",
       "targeted": [
         "freedos_enters_and_rebuilds_a_split_set_with_xcopy",
         "freedos_ide_journal_survives_a_fresh_assembly_without_changing_base",
@@ -105,35 +124,34 @@
         "open_game_profile_boots_freedos",
         "open_game_profile_reads_720k_in_b_and_360k_in_a"
       ],
-      "targeted_crates": ["cli-pc"],
-      "scan_tests": ["image-store:platform_ids"],
-      "release_devices": false, "cli": true, "deny": false
+      "targeted_crates": [
+        "cli-pc"
+      ],
+      "scan_tests": [
+        "image-store:platform_ids"
+      ],
+      "cli": true,
+      "deny": false
     }
   },
   {
     "name": "a change to the program alone runs the program's tests, which hold no goldens",
-    "changed": ["crates/upcli/src/about.rs"],
+    "changed": [
+      "crates/upcli/src/about.rs"
+    ],
     "expect": {
-      "mode": "crates", "seeds": ["upcli"], "affected": ["upcli", "window"], "tier": "fast",
-      "targeted": [], "release_devices": false, "cli": true, "deny": false
-    }
-  },
-  {
-    "name": "machine-runner change selects the goldens of the runners and the command line",
-    "changed": ["crates/pc-harness/src/lib.rs"],
-    "expect": {
-      "mode": "crates", "seeds": ["pc-harness"], "affected": ["cli-pc", "pc-harness", "upcli", "window"],
-      "tier": "goldens",
-      "golden_reasons": ["crates/pc-harness/src/lib.rs: machine runner the goldens drive"],
-      "targeted": []
-    }
-  },
-  {
-    "name": "a new runner module is a runner too",
-    "changed": ["crates/pc-harness/src/new_runner.rs"],
-    "expect": {
-      "mode": "crates", "tier": "goldens",
-      "golden_reasons": ["crates/pc-harness/src/new_runner.rs: machine runner the goldens drive"]
+      "mode": "crates",
+      "seeds": [
+        "upcli"
+      ],
+      "affected": [
+        "upcli",
+        "window"
+      ],
+      "tier": "fast",
+      "targeted": [],
+      "cli": true,
+      "deny": false
     }
   },
   {
@@ -162,15 +180,6 @@
     }
   },
   {
-    "name": "the standalone journal commands select the goldens",
-    "changed": ["crates/unemupc/src/journal.rs"],
-    "expect": {
-      "mode": "crates", "seeds": ["unemupc"], "affected": ["cli-pc", "unemupc", "upcli", "window"],
-      "tier": "goldens", "cli": true,
-      "golden_reasons": ["crates/unemupc/src/journal.rs: machine runner the goldens drive"]
-    }
-  },
-  {
     "name": "a neutral command module no golden drives, the recipe commands, keeps the fast tier",
     "changed": ["crates/cli-core/src/recipe.rs"],
     "expect": {
@@ -180,11 +189,24 @@
   },
   {
     "name": "image-store change pulls in its dependents and the ignored tests that name image_store::",
-    "changed": ["crates/image-store/src/library.rs"],
+    "changed": [
+      "crates/image-store/src/library.rs"
+    ],
     "expect": {
-      "mode": "crates", "seeds": ["image-store"],
-      "affected": ["cli-core", "cli-pc", "image-registry", "image-store", "machine-file", "pc-harness",
-        "pc-image", "platforms", "upcli", "window"],
+      "mode": "crates",
+      "seeds": [
+        "image-store"
+      ],
+      "affected": [
+        "cli-core",
+        "cli-pc",
+        "image-registry",
+        "image-store",
+        "pc-image",
+        "platforms",
+        "upcli",
+        "window"
+      ],
       "tier": "fast",
       "targeted_files": [
         "crates/cli-pc/tests/machine_freedos_golden.rs: names image_store::",
@@ -192,7 +214,8 @@
         "crates/window/src/main.rs: names image_store::",
         "crates/window/src/shell.rs: names image_store::"
       ],
-      "scan_tests": [], "release_devices": false, "deny": false
+      "scan_tests": [],
+      "deny": false
     }
   },
   {
@@ -209,39 +232,41 @@
     }
   },
   {
-    "name": "devices change pulls in its dependents and the goldens",
-    "changed": ["crates/devices/src/pit8253.rs"],
-    "expect": {
-      "mode": "crates", "seeds": ["devices"],
-      "affected": ["assembly", "chipset", "cli-pc", "devices", "machine", "machine-file",
-        "pc-harness", "pc-image", "pc-session-tests", "platforms", "unemu-pc-core", "upcli",
-        "window"],
-      "tier": "goldens", "golden_reasons": ["crates/devices/src/pit8253.rs: emulation crate"],
-      "targeted": [], "scan_tests": ["pc-config:platform_ids"],
-      "release_devices": true, "deny": false
-    }
-  },
-  {
-    "name": "golden tier with a changed golden file runs nothing twice by name",
-    "changed": ["crates/devices/src/pit8253.rs", "crates/pc-harness/tests/freedos_boot_golden.rs"],
-    "expect": { "mode": "crates", "tier": "goldens", "targeted": [], "targeted_files": [] }
-  },
-  {
     "name": "docs-only change runs the doc and guard checks only",
-    "changed": ["backlog/docs/commands.md", "README.md", "vendor/hdd/README.md"],
+    "changed": [
+      "backlog/docs/commands.md",
+      "README.md",
+      "vendor/freedos/README.md"
+    ],
     "expect": {
-      "mode": "checks", "seeds": [], "affected": [],
-      "docs": ["backlog/docs/commands.md", "README.md", "vendor/hdd/README.md"], "shell": [],
-      "self_test": false, "deny": false, "release_devices": false
+      "mode": "checks",
+      "seeds": [],
+      "affected": [],
+      "docs": [
+        "backlog/docs/commands.md",
+        "README.md",
+        "vendor/freedos/README.md"
+      ],
+      "shell": [],
+      "self_test": false,
+      "deny": false
     }
   },
   {
     "name": "Serena project configuration is documentation",
-    "changed": [".serena/project.yml"],
+    "changed": [
+      ".serena/project.yml"
+    ],
     "expect": {
-      "mode": "checks", "seeds": [], "affected": [],
-      "docs": [".serena/project.yml"], "shell": [],
-      "self_test": false, "deny": false, "release_devices": false
+      "mode": "checks",
+      "seeds": [],
+      "affected": [],
+      "docs": [
+        ".serena/project.yml"
+      ],
+      "shell": [],
+      "self_test": false,
+      "deny": false
     }
   },
   {
@@ -256,30 +281,114 @@
   },
   {
     "name": "Cargo.lock change runs everything, the goldens and the dependency policy",
-    "changed": ["Cargo.lock"],
+    "changed": [
+      "Cargo.lock"
+    ],
     "expect": {
       "mode": "full",
-      "affected": ["assembly", "audio", "bus", "chipset", "cli-core", "cli-pc", "cpu", "device",
-        "devices", "image-registry", "image-store", "journal", "journal-files", "machine", "machine-file", "machine-view",
-        "media", "pc-harness", "pc-image", "pc-session-tests", "platforms", "testkit", "ui-kit",
-        "unemu-pc-core", "unemupc",
-        "upcli", "video", "window"],
-      "tier": "goldens", "deny": true, "release_devices": true, "cli": true, "scan_tests": [],
+      "affected": [
+        "cli-core",
+        "cli-pc",
+        "core-launch",
+        "image-registry",
+        "image-store",
+        "library-model",
+        "library-ui",
+        "machine-view",
+        "media",
+        "media-ui",
+        "pc-image",
+        "pc-library",
+        "pc-media",
+        "pc-session-tests",
+        "pc-ui",
+        "platforms",
+        "player-ui",
+        "recipe",
+        "ui-kit",
+        "unemu-test-core",
+        "upcli",
+        "window"
+      ],
+      "tier": "goldens",
+      "deny": true,
+      "cli": true,
+      "scan_tests": [],
       "targeted": []
     }
   },
   {
     "name": "workspace manifest change runs everything",
-    "changed": ["Cargo.toml"],
-    "expect": { "mode": "full", "tier": "goldens", "deny": true }
+    "changed": [
+      "Cargo.toml"
+    ],
+    "expect": {
+      "mode": "full",
+      "tier": "goldens",
+      "deny": true,
+      "affected": [
+        "cli-core",
+        "cli-pc",
+        "core-launch",
+        "image-registry",
+        "image-store",
+        "library-model",
+        "library-ui",
+        "machine-view",
+        "media",
+        "media-ui",
+        "pc-image",
+        "pc-library",
+        "pc-media",
+        "pc-session-tests",
+        "pc-ui",
+        "platforms",
+        "player-ui",
+        "recipe",
+        "ui-kit",
+        "unemu-test-core",
+        "upcli",
+        "window"
+      ]
+    }
   },
   {
     "name": "a [patch] override in .cargo/config.toml runs everything with the goldens",
-    "changed": ["crates/window/src/shell_model.rs"],
+    "changed": [
+      "crates/window/src/shell_model.rs"
+    ],
     "patch": ".cargo/config.toml has a [patch] section: a dependency is not the pinned one, so everything",
     "expect": {
-      "mode": "full", "tier": "goldens", "targeted": [],
-      "golden_reasons": [".cargo/config.toml: .cargo/config.toml has a [patch] section: a dependency is not the pinned one, so everything"]
+      "mode": "full",
+      "tier": "goldens",
+      "targeted": [],
+      "golden_reasons": [
+        ".cargo/config.toml: .cargo/config.toml has a [patch] section: a dependency is not the pinned one, so everything"
+      ],
+      "affected": [
+        "cli-core",
+        "cli-pc",
+        "core-launch",
+        "image-registry",
+        "image-store",
+        "library-model",
+        "library-ui",
+        "machine-view",
+        "media",
+        "media-ui",
+        "pc-image",
+        "pc-library",
+        "pc-media",
+        "pc-session-tests",
+        "pc-ui",
+        "platforms",
+        "player-ui",
+        "recipe",
+        "ui-kit",
+        "unemu-test-core",
+        "upcli",
+        "window"
+      ]
     }
   },
   {
@@ -296,112 +405,42 @@
     "expect": { "mode": "checks", "self_test": true, "shell": ["scripts/affected-tests.sh"] }
   },
   {
-    "name": "shipped machine file selects its readers and the goldens",
-    "changed": [
-      "machines/at-freedos.toml"
-    ],
-    "expect": {
-      "mode": "crates",
-      "seeds": [
-        "cli-pc",
-        "machine-file",
-        "pc-harness",
-        "pc-image",
-        "pc-library",
-        "pc-session-tests",
-        "unemupc",
-        "upcli",
-        "window"
-      ],
-      "affected": [
-        "cli-pc",
-        "machine-file",
-        "pc-harness",
-        "pc-image",
-        "pc-library",
-        "pc-session-tests",
-        "platforms",
-        "unemupc",
-        "upcli",
-        "window"
-      ],
-      "tier": "goldens"
-    }
-  },
-  {
-    "name": "machine-file guide selects its readers without the goldens",
-    "changed": ["machines/README.md"],
-    "expect": {
-      "mode": "crates", "seeds": ["cli-pc", "machine-file", "pc-image", "window"], "tier": "fast",
-      "targeted_crates": ["cli-pc", "pc-harness", "window"]
-    }
-  },
-  {
-    "name": "fixture script selects its readers and the goldens, and gets bash -n",
-    "changed": [
-      "vendor/kiselev-bios/fetch.sh"
-    ],
-    "expect": {
-      "mode": "crates",
-      "seeds": [
-        "assembly",
-        "cli-pc",
-        "machine-file",
-        "pc-harness",
-        "pc-image",
-        "pc-library",
-        "pc-session-tests",
-        "unemupc",
-        "upcli",
-        "window"
-      ],
-      "tier": "goldens",
-      "shell": [
-        "vendor/kiselev-bios/fetch.sh"
-      ]
-    }
-  },
-  {
-    "name": "golden test support shared through #[path] selects every including crate",
-    "changed": [
-      "crates/pc-harness/tests/support/fixtures.rs"
-    ],
-    "expect": {
-      "mode": "crates",
-      "seeds": [
-        "assembly",
-        "cli-pc",
-        "machine-file",
-        "pc-config",
-        "pc-harness",
-        "pc-image",
-        "pc-library",
-        "unemupc",
-        "upcli",
-        "window"
-      ],
-      "tier": "goldens"
-    }
-  },
-  {
-    "name": "changed golden test file runs its crate's ignored tests by name",
-    "changed": ["crates/pc-harness/tests/freedos_boot_golden.rs"],
-    "expect": {
-      "mode": "crates", "affected": ["cli-pc", "pc-harness", "upcli", "window"], "tier": "fast",
-      "targeted_crates": ["cli-pc", "pc-harness"]
-    }
-  },
-  {
     "name": "ignored tests given by a scenario: own crate and files naming it",
-    "changed": ["crates/image-store/src/library.rs"],
+    "changed": [
+      "crates/image-store/src/library.rs"
+    ],
     "ignored": {
-      "crates/image-store/tests/store.rs": {"tests": ["slow_store"], "mentions": ["image_store"]},
-      "crates/pc-image/tests/import.rs": {"tests": ["slow_import"], "mentions": ["image_store", "pc_image"]},
-      "crates/pc-harness/tests/rtc_golden.rs": {"tests": ["unrelated"], "mentions": ["pc_harness"]},
-      "crates/media/tests/journal.rs": {"tests": ["outside_the_affected_set"], "mentions": ["image_store"]}
+      "crates/image-store/tests/store.rs": {
+        "tests": [
+          "slow_store"
+        ],
+        "mentions": [
+          "image_store"
+        ]
+      },
+      "crates/pc-image/tests/import.rs": {
+        "tests": [
+          "slow_import"
+        ],
+        "mentions": [
+          "image_store",
+          "pc_image"
+        ]
+      },
+      "crates/media/tests/journal.rs": {
+        "tests": [
+          "outside_the_affected_set"
+        ],
+        "mentions": [
+          "image_store"
+        ]
+      }
     },
     "expect": {
-      "targeted": ["slow_import", "slow_store"],
+      "targeted": [
+        "slow_import",
+        "slow_store"
+      ],
       "targeted_files": [
         "crates/image-store/tests/store.rs: in changed crate image-store",
         "crates/pc-image/tests/import.rs: names image_store::"
@@ -418,11 +457,21 @@
   },
   {
     "name": "a session change runs the session crate and the window, not the goldens",
-    "changed": ["crates/machine-view/src/session.rs"],
+    "changed": [
+      "crates/machine-view/src/session.rs"
+    ],
     "expect": {
-      "mode": "crates", "seeds": ["machine-view"],
-      "affected": ["machine-view", "pc-session-tests", "window"],
-      "tier": "fast", "release_devices": false, "cli": true
+      "mode": "crates",
+      "seeds": [
+        "machine-view"
+      ],
+      "affected": [
+        "machine-view",
+        "pc-session-tests",
+        "window"
+      ],
+      "tier": "fast",
+      "cli": true
     }
   },
   {
@@ -439,15 +488,6 @@
     }
   },
   {
-    "name": "a PC core change is an emulation change: its dependents with the goldens",
-    "changed": ["crates/pc-core/src/machine.rs"],
-    "expect": {
-      "mode": "crates", "seeds": ["unemu-pc-core"],
-      "affected": ["pc-session-tests", "unemu-pc-core", "window"],
-      "tier": "goldens", "golden_reasons": ["crates/pc-core/src/machine.rs: emulation crate"]
-    }
-  },
-  {
     "name": "the contract comes from its own repository: a new contract is a moved pin in the workspace manifest, so everything",
     "changed": [
       "Cargo.toml",
@@ -457,33 +497,27 @@
       "mode": "full",
       "seeds": [],
       "affected": [
-        "assembly",
-        "audio",
-        "bus",
-        "chipset",
         "cli-core",
         "cli-pc",
-        "cpu",
-        "device",
-        "devices",
+        "core-launch",
         "image-registry",
         "image-store",
-        "journal",
-        "journal-files",
-        "machine",
-        "machine-file",
+        "library-model",
+        "library-ui",
         "machine-view",
         "media",
-        "pc-harness",
+        "media-ui",
         "pc-image",
+        "pc-library",
+        "pc-media",
         "pc-session-tests",
+        "pc-ui",
         "platforms",
-        "testkit",
+        "player-ui",
+        "recipe",
         "ui-kit",
-        "unemu-pc-core",
-        "unemupc",
+        "unemu-test-core",
         "upcli",
-        "video",
         "window"
       ],
       "tier": "goldens",
@@ -519,14 +553,51 @@
   },
   {
     "name": "unmapped path runs everything",
-    "changed": ["tools/new-tool.py"],
-    "expect": { "mode": "full", "tier": "goldens", "deny": false }
+    "changed": [
+      "tools/new-tool.py"
+    ],
+    "expect": {
+      "mode": "full",
+      "tier": "goldens",
+      "deny": false,
+      "affected": [
+        "cli-core",
+        "cli-pc",
+        "core-launch",
+        "image-registry",
+        "image-store",
+        "library-model",
+        "library-ui",
+        "machine-view",
+        "media",
+        "media-ui",
+        "pc-image",
+        "pc-library",
+        "pc-media",
+        "pc-session-tests",
+        "pc-ui",
+        "platforms",
+        "player-ui",
+        "recipe",
+        "ui-kit",
+        "unemu-test-core",
+        "upcli",
+        "window"
+      ]
+    }
   },
   {
     "name": "fast tier override drops the goldens and the named ignored tests",
-    "changed": ["crates/devices/src/pit8253.rs"],
+    "changed": [
+      "crates/media/src/lib.rs"
+    ],
     "tier": "fast",
-    "expect": { "mode": "crates", "tier": "fast", "targeted": [], "user_roms": false }
+    "expect": {
+      "mode": "crates",
+      "tier": "fast",
+      "targeted": [],
+      "user_roms": false
+    }
   },
   {
     "name": "user-rom tier adds the user-ROM tests",
@@ -534,11 +605,99 @@
     "tier": "user-roms",
     "expect": { "mode": "crates", "tier": "fast", "user_roms": true }
   },
-  {"name": "journal changes select journal goldens", "changed": ["crates/journal/src/lib.rs"], "expect": {"mode": "crates", "seeds": ["journal"], "tier": "goldens"}},
-  {"name": "journal-files changes select journal goldens", "changed": ["crates/journal-files/src/lib.rs"], "expect": {"mode": "crates", "seeds": ["journal-files"], "tier": "goldens"}},
   {
     "name": "nothing changed",
     "changed": [],
     "expect": { "mode": "none", "affected": [], "deny": false }
+  },
+  {
+    "name": "a core lock-file pin change selects every workspace package with goldens",
+    "changed": [
+      "Cargo.lock"
+    ],
+    "expect": {
+      "mode": "full",
+      "affected": [
+        "cli-core",
+        "cli-pc",
+        "core-launch",
+        "image-registry",
+        "image-store",
+        "library-model",
+        "library-ui",
+        "machine-view",
+        "media",
+        "media-ui",
+        "pc-image",
+        "pc-library",
+        "pc-media",
+        "pc-session-tests",
+        "pc-ui",
+        "platforms",
+        "player-ui",
+        "recipe",
+        "ui-kit",
+        "unemu-test-core",
+        "upcli",
+        "window"
+      ],
+      "tier": "goldens",
+      "deny": true
+    }
+  },
+  {
+    "name": "media changes retain the golden tier",
+    "changed": [
+      "crates/media/src/lib.rs"
+    ],
+    "expect": {
+      "mode": "crates",
+      "seeds": [
+        "media"
+      ],
+      "tier": "goldens"
+    }
+  },
+  {
+    "name": "FreeDOS recipe fixture selects front-end readers",
+    "changed": [
+      "vendor/freedos/fetch-floppy-1.4.sh"
+    ],
+    "expect": {
+      "mode": "crates",
+      "seeds": [
+        "cli-pc",
+        "pc-image"
+      ],
+      "tier": "goldens"
+    }
+  },
+  {
+    "name": "Ken\u2019s Labyrinth recipe fixture selects front-end readers",
+    "changed": [
+      "vendor/kenslab/fetch-labfull.sh"
+    ],
+    "expect": {
+      "mode": "crates",
+      "seeds": [
+        "cli-pc",
+        "pc-image"
+      ],
+      "tier": "goldens"
+    }
+  },
+  {
+    "name": "Shareware recipe fixture selects front-end readers",
+    "changed": [
+      "vendor/shareware/doom/fetch.sh"
+    ],
+    "expect": {
+      "mode": "crates",
+      "seeds": [
+        "cli-pc",
+        "pc-image"
+      ],
+      "tier": "goldens"
+    }
   }
 ]

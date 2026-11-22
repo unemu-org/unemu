@@ -107,11 +107,26 @@ fi
 guard_lane() {
   local status=0
   bash scripts/publication-guard-test.sh && bash scripts/publication-guard.sh || status=1
-  bash scripts/core-host-guard.sh --self-test && bash scripts/core-host-guard.sh || status=1
-  bash scripts/repo-ownership.sh --self-test && bash scripts/repo-ownership.sh || status=1
+  bash scripts/crate-boundaries.sh --self-test && bash scripts/crate-boundaries.sh || status=1
+  bash scripts/core-patch.sh --self-test || status=1
+  bash scripts/core-checkout.sh --self-test || status=1
+  bash scripts/uid-guard.sh --self-test || status=1
   return "$status"
 }
 step guard guard_lane
+
+if [[ $mode != crates && $mode != full ]]; then
+  echo "bead gate: fixture checkout not required for checks-only changes"
+elif override=$(bash scripts/core-patch.sh --active); then
+  unset UNEMUPC_FIXTURE_ROOT
+  echo "bead gate: $override overrides the core; using pc-harness fixtures from the patched checkout; .core is not required and UNEMUPC_FIXTURE_ROOT is unset"
+else
+  fixture=$(bash scripts/core-checkout.sh --print-root) || {
+    echo "bead gate: run bash scripts/core-checkout.sh to provision the pinned core fixtures" >&2
+    exit 1
+  }
+  export "$fixture"
+fi
 
 if [[ $mode == crates || $mode == full ]]; then
   step clippy "${cargo_cmd[@]}" clippy --locked "${packages[@]}" --all-targets --all-features -- -D warnings

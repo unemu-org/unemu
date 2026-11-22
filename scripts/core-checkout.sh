@@ -9,7 +9,20 @@ fail() {
 }
 
 lock_revision() {
-    local source revision="" candidate resolved
+    local source revision="" candidate resolved override
+    override=$(python3 -c '
+import pathlib, re, sys, tomllib
+root = pathlib.Path(sys.argv[1]).parent
+for relative in [".cargo/config.toml", ".cargo/config", "Cargo.toml"]:
+    config = root / relative
+    if config.is_file():
+        patches = tomllib.loads(config.read_text()).get("patch", {})
+        for source, packages in patches.items():
+            if re.match(r"^(?:[a-z][a-z0-9+.-]*://)?(?:[^/@]+@)?github[.]com[:/]unemu-org/unemupc(?:[.]git)?(?:[/?#]|$)", source, re.I) and packages:
+                print(relative)
+                sys.exit()
+' "$1")
+    [[ -z $override ]] || fail "$override overrides unemupc; Cargo.lock may hold path packages instead of the pin; use the patched checkout for fixtures, or remove the override and restore the pinned lock"
     local pattern='^git[+]https://github[.]com/unemu-org/unemupc[?]rev=([[:xdigit:]]{40})#([[:xdigit:]]{40})$'
     while IFS= read -r source; do
         [[ $source =~ $pattern ]] || fail "unemupc source must use rev=<40 hex>#<40 hex>: $source"
@@ -108,7 +121,23 @@ NIX
         fail "self-test: fixture logs escaped the checkout"
     fi
     [[ -f $scratch/.core/unemupc/.git/fixture-logs/fixtures.log && ! -e $scratch/outside ]] || fail "self-test: unexpected fixture log location"
-    echo "core-checkout: self-test passed (one valid lock; eleven invalid locks; clean and dirty print-root; contained fixture logs)"
+    mkdir -p "$scratch/.cargo"
+    cat > "$scratch/.cargo/config.toml" <<'CONFIG'
+[patch."https://github.com/unemu-org/unemupc"]
+core-test = { path = "../core/crates/core-test" }
+CONFIG
+    printf 'version = 4\n[[package]]\nname = "core-test"\nversion = "0.0.3"\n' > "$scratch/Cargo.lock"
+    if PATH="$scratch/bin:$PATH" bash "$scratch/scripts/core-checkout.sh" --print-root > /dev/null 2> "$scratch/error"; then
+        fail "self-test: override lock was accepted"
+    fi
+    grep -q '.cargo/config.toml overrides unemupc' "$scratch/error" || fail "self-test: override was not named"
+    # A remaining git entry must not hide path packages from the override.
+    plant "$first" "$first" >> "$scratch/Cargo.lock"
+    if PATH="$scratch/bin:$PATH" bash "$scratch/scripts/core-checkout.sh" --print-root > /dev/null 2> "$scratch/error"; then
+        fail "self-test: mixed override lock was accepted"
+    fi
+    grep -q '.cargo/config.toml overrides unemupc' "$scratch/error" || fail "self-test: mixed override was not named"
+    echo "core-checkout: self-test passed (one valid lock; eleven invalid locks; clean and dirty print-root; contained fixture logs; two override locks rejected by config name)"
 )
 
 mode=build

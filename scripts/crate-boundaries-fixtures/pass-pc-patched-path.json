@@ -1,0 +1,95 @@
+{
+  "self_test": {
+    "expect": "pass",
+    "message": ""
+  },
+  "packages": [
+    {
+      "name": "provider",
+      "id": "path+file:///repo/crates/provider#provider@0.0.3",
+      "source": null,
+      "manifest_path": "/repo/crates/provider/Cargo.toml",
+      "metadata": {
+        "unemu": {
+          "layer": "pc"
+        }
+      },
+      "dependencies": [
+        {
+          "name": "assembly",
+          "source": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111",
+          "path": null,
+          "kind": null,
+          "rename": null
+        }
+      ]
+    }
+  ],
+  "workspace_members": [
+    "path+file:///repo/crates/provider#provider@0.0.3"
+  ],
+  "workspace_root": "/repo",
+  "resolved": {
+    "packages": [
+      {
+        "name": "provider",
+        "id": "path+file:///repo/crates/provider#provider@0.0.3",
+        "source": null,
+        "manifest_path": "/repo/crates/provider/Cargo.toml",
+        "metadata": {
+          "unemu": {
+            "layer": "pc"
+          }
+        },
+        "dependencies": [
+          {
+            "name": "assembly",
+            "source": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111",
+            "path": null,
+            "kind": null,
+            "rename": null
+          }
+        ]
+      },
+      {
+        "name": "assembly",
+        "id": "path+file:///core/crates/assembly#assembly@0.0.3",
+        "source": null,
+        "manifest_path": "/core/crates/assembly/Cargo.toml",
+        "metadata": {
+          "unemu": {
+            "layer": "neutral"
+          }
+        },
+        "dependencies": []
+      }
+    ],
+    "workspace_members": [
+      "path+file:///repo/crates/provider#provider@0.0.3"
+    ],
+    "workspace_root": "/repo",
+    "resolve": {
+      "nodes": [
+        {
+          "id": "path+file:///repo/crates/provider#provider@0.0.3",
+          "deps": [
+            {
+              "name": "assembly",
+              "pkg": "path+file:///core/crates/assembly#assembly@0.0.3",
+              "dep_kinds": [
+                {
+                  "kind": null,
+                  "target": null
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "path+file:///core/crates/assembly#assembly@0.0.3",
+          "deps": []
+        }
+      ]
+    }
+  }
+}

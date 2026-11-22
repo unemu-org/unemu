@@ -1,123 +1,20 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Keep the workspace's crate layers apart, so the front end, the platform
-# providers and the emulator cores can later live in separate repositories
-# (backlog/docs/design/core-contract.md §7.3 and §7.4).
+# Keep neutral libraries, PC providers and application composition apart.
+# Dependencies from github.com/unemu-org/unemupc count as PC dependencies,
+# including optional, target-specific, build and test dependencies.
+# The walk follows normal/build edges after the starting crate's own edges.
+# Window and CLI families stay separate except for the listed composition edge.
+# Source includes must stay inside this repository, and the resolved graph
+# must contain exactly one unemu-core-api package.
 #
-# Source includes (#[path], include!, include_str!, include_bytes!) may not
-# cross the core/front-end boundary, even when Cargo permits a dependency.
-#
-# Every workspace package names its layer in its manifest:
-#
-#   [package.metadata.unemu]
-#   layer = "neutral"   # contract | neutral | emulation | pc | application
-#
-# A crate may depend on these layers, through normal, build and test
-# dependencies alike, directly or through other workspace crates:
-#
-#   contract     nothing at all, also outside the workspace
-#   neutral      contract, neutral
-#   emulation    contract, emulation
-#   pc           contract, neutral, emulation, pc
-#   application  anything
-#
-# and no window crate (window, window-*, ui-kit, machine-view, library-model,
-# library-ui, pc-media, pc-library, media-ui, pc-ui, player-ui, unemu)
-# depends on a CLI crate (cli, cli-*, upcli), nor the other way round, except
-# the application composition edge window → upcli. The
-# launch crate, core-launch, is neutral and in neither family: both programs
-# make their list of cores with it, and the command line will start machines
-# through it too. The player, player-ui, is neutral and a window crate: it
-# draws a machine started from a file with egui.
-#
-# The test core, unemu-test-core, is what the front end's crates test against
-# instead of a real platform, so it declares no dependency of any kind but the
-# contract, unemu-core-api, not even one from outside the workspace.
-#
-# The contract crate, unemu-core-api, lives in its own repository and comes in
-# as a pinned git dependency, so no workspace package has the contract layer
-# any more: the rule that a contract crate depends on nothing is checked by the
-# contract's own CI, and here it only applies if such a package comes back.
-#
-# One copy of the contract. Two revisions of unemu-core-api in one build are
-# two different crates, and a core built against one does not implement the
-# other's traits; the compiler then fails with a long error far from the
-# cause. So the resolved dependency graph (`cargo metadata --offline --locked`,
-# every package the lock file pins) must hold exactly one package named
-# unemu-core-api; otherwise the check prints each copy's source and the
-# packages that depend on it.
-#
-# The check reads the dependencies each manifest declares (optional and
-# target-specific ones included), not a resolved build. From each crate it
-# follows the crate's own dependencies of every kind, then the normal and build
-# dependencies of the crates it reaches, and reports the first forbidden crate
-# on each path once, with the path.
-#
-# Every emulation crate and each package with metadata.unemu.side = "core"
-# stays on the core's side: workspace dependencies may reach only that side,
-# the contract and unemu-core-files. The layer and frontend-family rules still
-# apply. Host crates mark their side explicitly so a neutral store cannot
-# silently enter the standalone core command line.
-#
-# Known violations are listed in scripts/crate-boundaries.allow, one declared
-# dependency per line: `FROM → TO (KIND): REASON`, KIND being normal, build or
-# dev. The walk never crosses a listed dependency, so a crate that reaches it
-# through FROM needs no entry of its own. A listed dependency that is gone or
-# no longer forbidden fails, so the list only shrinks.
-#
-# External crates of the core (core-contract.md §12.1 and §12.3). The contract
-# and emulation layers are the library an embedder links, so the crates from
-# outside the workspace they may reach are listed one by one in
-# scripts/crate-boundaries.external, one per line:
-# `LAYER: CRATE (run|build|test): REASON`. The other layers are not limited by
-# it. From every workspace package of a limited layer the check walks the
-# resolved graph (the lock file's, for every target): the package's own
-# dependencies of every kind, then the normal and build dependencies of each
-# crate it reaches, workspace crates of any layer included. A crate is of kind
-#
-#   run    reached through normal dependencies alone, and through no
-#          procedural macro;
-#   build  otherwise reached through a build dependency or a procedural macro
-#          (the macro itself included): it runs on the build host and is not
-#          linked;
-#   test   reached only through a test (dev) dependency of a package of the
-#          layer;
-#
-# the lowest kind of any path counting. Each external crate the layer reaches
-# must be listed with exactly that kind; an unlisted one is reported once,
-# with the first path of its kind a breadth-first walk finds. The list names
-# crates, not versions: the lock file and cargo deny own those. A listed crate
-# that the layer no longer reaches fails, so the list is exact and shrinks as
-# crates leave.
-#
-# The graph is cargo metadata's resolve, read with --all-features, not the
-# build of one package: it holds dependencies of weak optional features
-# (`dep?/feature`), edges under a cfg no target matches (`cfg(any())`) and the
-# features the whole workspace unifies. So a line may name a crate the core's
-# own build does not compile (`cargo tree -e normal,build` of the emulation
-# packages leaves it out), and a feature change in a front-end crate can move
-# the core's list. The list errs on the side of naming too much.
-#
-# Usage:
-#   scripts/crate-boundaries.sh                  check the workspace
-#   scripts/crate-boundaries.sh --self-test      run the rules over the fixtures
-#   scripts/crate-boundaries.sh --metadata FILE [--allow FILE]
-#                                                check `cargo metadata --no-deps` output
-#   scripts/crate-boundaries.sh --resolved FILE  check one copy of the contract in
-#                                                full `cargo metadata` output
-#   scripts/crate-boundaries.sh --external FILE [--list FILE]
-#                                                check the external crates of the core
-#                                                in full `cargo metadata` output
-#
-# Needs cargo, jq and python3 (all in the devShell). The workspace check reads one
-# `cargo metadata --no-deps`, which resolves nothing, and one resolved
-# `cargo metadata --offline --locked --all-features`, which reads the lock file and the local
-# dependency cache; both take well under a second.
+# Usage: scripts/crate-boundaries.sh [--self-test |
+#          --metadata FILE [--allow FILE] | --resolved FILE]
+# Needs cargo, jq and python3. AFFECTED_CARGO can wrap cargo.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 default_allow="$root/scripts/crate-boundaries.allow"
-default_external="$root/scripts/crate-boundaries.external"
 fixtures="$root/scripts/crate-boundaries-fixtures"
 # The crate every core and front end must link exactly once.
 contract_crate=unemu-core-api
@@ -126,12 +23,11 @@ contract_crate=unemu-core-api
 # document and one allow list.
 # Quoted assignments avoid Bash pipe deadlocks while loading these programs.
 program='
-def layers: ["contract", "neutral", "emulation", "pc", "application"];
+def layers: ["contract", "neutral", "pc", "application"];
 def may_use: {
   contract: [],
   neutral: ["contract", "neutral"],
-  emulation: ["contract", "emulation"],
-  pc: ["contract", "neutral", "emulation", "pc"],
+  pc: ["contract", "neutral", "pc"],
   application: layers
 };
 def known_layer: . as $l | any(layers[]; . == $l);
@@ -146,17 +42,14 @@ def family:
 
 # The rule $from breaks by depending on $to, if any. A crate without a known
 # layer is reported on its own, not as a dependency.
-def broken_rule($layer; $core; $from; $to):
+def broken_rule($layer; $name; $from; $to):
   $layer[$from] as $fl | $layer[$to] as $tl
   | if $tl == null or ($tl | known_layer | not) then empty
     elif any(may_use | .[$fl][]; . == $tl) | not then
       "\($fl | article) crate may depend only on \(may_use | .[$fl] | join(", "))"
-    elif ($from | family) != null and ($to | family) != null
-         and ($from | family) != ($to | family) then
-      "no \($from | family) crate depends on \($to | family | article) crate"
-    elif $core[$from] and ($core[$to] | not) and $tl != "contract"
-         and $to != "unemu-core-files" then
-      "a core-side crate may depend only on the contract, core-side crates and unemu-core-files"
+    elif ($name[$from] | family) != null and ($name[$to] | family) != null
+         and ($name[$from] | family) != ($name[$to] | family) then
+      "no \($name[$from] | family) crate depends on \($name[$to] | family | article) crate"
     else empty end;
 
 def listed($valid; $from; $to; $kind):
@@ -168,7 +61,7 @@ def listed($valid; $from; $to; $kind):
 # then the normal and build dependencies of the crates it reaches: a
 # transitive dependency never builds its own test dependencies. It stops at
 # a forbidden crate and never crosses an allow-listed edge.
-def walk($graph; $layer; $core; $valid; $from):
+def walk($graph; $layer; $name; $valid; $from):
   ([("normal", "build", "dev") as $k | ($graph[$from] // [])[] | select(.kind == $k)]
    | map(select(listed($valid; $from; .to; .kind) | not) | {path: [$from, .to], kind: .kind})) as $first
   | {queue: $first, seen: [$from], out: []}
@@ -178,7 +71,7 @@ def walk($graph; $layer; $core; $valid; $from):
       | $item.path[-1] as $node
       | if any(.seen[]; . == $node) then .
         else .seen += [$node]
-        | ([broken_rule($layer; $core; $from; $node)] | first // null) as $rule
+        | ([broken_rule($layer; $name; $from; $node)] | first // null) as $rule
         | if $rule != null then .out += [$item + {rule: $rule}]
           else .queue += [($graph[$node] // [])[] | select(.kind != "dev")
                           | select(listed($valid; $node; .to; .kind) | not)
@@ -195,42 +88,72 @@ def walk($graph; $layer; $core; $valid; $from):
          // {malformed: true})
       | . + {line: ($line.key + 1), text: $line.value})) as $entries
 | ($entries | map(select(.malformed | not))) as $valid
-| (.packages // []) as $packages
-| ($packages | map(.name)) as $names
-| ($packages | map({key: .name, value: (.metadata.unemu.layer? // null)}) | from_entries) as $layer
-| ($packages | map({key: .name, value: (.metadata.unemu.layer == "emulation"
-    or .metadata.unemu.side? == "core")}) | from_entries) as $core
-| ($packages
-   | map({key: .name, value: ([.dependencies[]?
-       | select(.source == null)
-       | .name as $n | select(any($names[]; . == $n))
-       | {to: .name, kind: (.kind // "normal")}] | unique)})
-   | from_entries) as $graph
+| . as $declared
+| (.resolved // .) as $resolved
+| ($declared.workspace_members // []) as $workspace
+| [($declared.packages // [])[]
+   | select($workspace == [] or (.id as $id | any($workspace[]; . == $id)))] as $packages
+| ($resolved.packages // []) as $all
+| def identity: .id // .name;
+  def pc_source: (. // "" | test("^git[+]([a-z][a-z0-9+.-]*://)?([^/@]+@)?github[.]com[:/]unemu-org/unemupc([.]git)?([/?#]|$)"; "i"));
+  def outside($root): $root != null and . != $root and (startswith($root + "/") | not);
+  ($packages | map(identity)) as $members
+| ($all | map({key: identity, value: .name}) | from_entries) as $local_names
+| [$all[].dependencies[]? | select(.source | pc_source)
+   | {id: (.source + "#" + .name), name: .name}] as $declared_core
+| ($local_names + ($declared_core | map({key: .id, value: .name}) | from_entries)) as $name
+| (($all | map(. as $p | identity as $id | {key: $id, value:
+      (if any($members[]; . == $id) then (.metadata.unemu.layer? // null)
+       elif (.source | pc_source) or (.id | pc_source)
+            or (.source == null and (.manifest_path // "" | outside($declared.workspace_root))) then "pc"
+       else null end)}) | from_entries)
+   + ($declared_core | map({key: .id, value: "pc"}) | from_entries)) as $layer
+# Resolved IDs preserve renames and source patches. Declaration edges retain
+# optional/target dependencies absent from the active resolution.
+| (($resolved.resolve.nodes // []) | map({key: .id, value: .deps}) | from_entries) as $nodes
+| ($all | map(. as $p | {key: identity, value:
+    ([($nodes[$p | identity] // [])[]
+      | . as $d | .dep_kinds[]? | {to: $d.pkg, kind: (.kind // "normal")}]
+     + [.dependencies[]? | . as $d
+        | select(any(($nodes[$p | identity] // [])[];
+            .name == (($d.rename // $d.name) | gsub("-"; "_"))
+            and any(.dep_kinds[]?; (.kind // "normal") == ($d.kind // "normal"))) | not)
+        | ([$all[] | select(.name == $d.name)
+            | select(if $d.path != null then .manifest_path == ($d.path + "/Cargo.toml")
+                     else .source == $d.source end) | identity] | first) as $target
+        | if $target != null then {to: $target, kind: (.kind // "normal")}
+          elif (.source | pc_source) then {to: (.source + "#" + .name), kind: (.kind // "normal")}
+          else empty end] | unique)}) | from_entries) as $graph
+| ($packages | map({key: .name, value: identity}) | from_entries) as $member_id
+| ($valid | map(.from = $member_id[.from] | .to = $member_id[.to])) as $walk_valid
 # An entry stands for one declared dependency that breaks a rule of its own
 # crate; anything else is stale.
 | ($valid | map(. as $e
-    | . + {live: (any(($graph[$e.from] // [])[]; .to == $e.to and .kind == $e.kind)
-                  and ([broken_rule($layer; $core; $e.from; $e.to)] | length > 0))})) as $checked
-| [ $packages[] | .name as $from | $layer[$from] as $fl
+    | . + {live: (any(($graph[$member_id[$e.from]] // [])[]; .to == $member_id[$e.to] and .kind == $e.kind)
+                  and ([broken_rule($layer; $name; $member_id[$e.from]; $member_id[$e.to])] | length > 0))})) as $checked
+| [ $packages[] | identity as $from | $layer[$from] as $fl
     | select($fl != null and $fl != "contract" and ($fl | known_layer))
-    | walk($graph; $layer; $core; $valid; $from) as $hit
+    | walk($graph; $layer; $name; $walk_valid; $from) as $hit
     | $hit.path[-1] as $to
-    | "forbidden: \($from) (\($fl)) → \($to) (\($layer[$to])), \($hit.kind) dependency, through \($hit.path | join(" → ")); rule: \($hit.rule)"
+    | "forbidden: \($name[$from]) (\($fl)) → \($name[$to]) (\($layer[$to])), \($hit.kind) dependency, through \($hit.path | map($name[.]) | join(" → ")); rule: \($hit.rule)"
   ] as $forbidden
 | {
     packages: ($packages | length),
     allowed: ([$checked[] | select(.live)] | length),
     errors: (
       (if $packages == [] then ["no packages: the metadata lists no workspace package"] else [] end)
-      + [ $packages[] | select($layer[.name] == null)
+      + [ $packages[] | select($layer[identity] == null)
         | "no layer: \(.name) has no [package.metadata.unemu] layer; set one of \(layers | join(", "))" ]
-      + [ $packages[] | select($layer[.name] != null and ($layer[.name] | known_layer | not))
-        | "unknown layer: \(.name) declares layer \($layer[.name] | tojson); use one of \(layers | join(", "))" ]
-      + [ $packages[] | select($layer[.name] == "contract") | .name as $from | .dependencies[]?
+      + [ $packages[] | select($layer[identity] != null and ($layer[identity] | known_layer | not))
+        | "unknown layer: \(.name) declares layer \($layer[identity] | tojson); use one of \(layers | join(", "))" ]
+      + [ $packages[] | select($layer[identity] == "contract") | .name as $from | .dependencies[]?
         | "forbidden: \($from) (contract) depends on \(.name) (\(.kind // "normal") dependency); rule: a contract crate depends on nothing" ]
       + [ $packages[] | select(.name == "unemu-test-core") | .name as $from | .dependencies[]?
         | select(.name != "unemu-core-api")
         | "forbidden: \($from) depends on \(.name) (\(.kind // "normal") dependency); rule: the test core depends on the contract alone" ]
+      + [ $packages[] | .name as $from | .dependencies[]?
+        | select(.path != null and (.path | outside($declared.workspace_root)))
+        | "outside repository: \($from) declares path dependency \(.name); use a local [patch] override instead" ]
       + $forbidden
       + [ $checked[] | select(.live | not)
           | "stale allow entry, line \(.line): \(.text); that dependency is gone or no longer forbidden, so delete the line" ]
@@ -263,112 +186,6 @@ one_copy_program='
       end)
   }
 '
-
-# Prints {"errors": [...], "reached": {LAYER: {"run": N, "build": N,
-# "test": N}}} for one resolved metadata document and one external-crate list.
-external_program='
-# The layers whose external crates are listed; the others are not limited.
-def limited: ["contract", "emulation"];
-def rank: {run: 0, build: 1, test: 2}[.];
-def worse($a; $b): if ($a | rank) >= ($b | rank) then $a else $b end;
-def article: if test("^[aeiou]") then "an \(.)" else "a \(.)" end;
-
-($list_text | split("\n") | to_entries
-  | map(select(.value | test("^\\s*(#|$)") | not))
-  | map(. as $line
-      | (($line.value
-          | capture("^(?<layer>[a-z]+): (?<crate>[^ ]+) \\((?<kind>run|build|test)\\): (?<reason>[^ ].*)$"))
-         // {malformed: true})
-      | . + {line: ($line.key + 1), text: $line.value})) as $entries
-| ($entries | map(select((.malformed | not) and (.layer as $l | any(limited[]; . == $l) | not))))
-  as $unlimited
-| ($entries | map(select((.malformed | not) and (.layer as $l | any(limited[]; . == $l))))) as $valid
-| (.packages // []) as $packages
-| (.workspace_members // []) as $members
-| ($packages | map({key: .id, value: {
-      name,
-      workspace: (.id as $id | any($members[]; . == $id)),
-      layer: (.metadata.unemu.layer? // null),
-      proc_macro: any(.targets[]?.kind[]?; . == "proc-macro")}})
-   | from_entries) as $pkg
-| ((.resolve.nodes // []) | map({key: .id, value: [.deps[]? | .pkg as $to
-      | ([.dep_kinds[]? | .kind // "normal"] | unique)[] | {to: $to, kind: .}]})
-   | from_entries) as $edges
-# The crates one step from $item, with the kind of the path through them. A
-# package of the layer contributes its test dependencies; nothing else does.
-| def step($item):
-    ($edges[$item.id] // [])[]
-    | select($item.root or .kind != "dev")
-    | .to as $to
-    | (if .kind == "dev" then "test"
-       elif .kind == "build" or $pkg[$to].proc_macro then "build"
-       else "run" end) as $k
-    | {id: $to, kind: worse($item.kind; $k), path: ($item.path + [$pkg[$to].name]), root: false};
-  # Every external crate the workspace packages of $layer reach, once by name,
-  # with its lowest kind and the first path of that kind found: the walk
-  # drains the run queue before the build queue before the test queue, each
-  # breadth first, so a crate is first seen with its lowest kind.
-  def reach($layer):
-    ([$packages[] | select($pkg[.id].workspace and $pkg[.id].layer == $layer)]
-     | sort_by(.name) | map({id, kind: "run", path: [.name], root: true})) as $roots
-    | {queues: [$roots, [], []], seen: {}, out: []}
-    | until(all(.queues[]; . == []);
-        (if .queues[0] != [] then 0 elif .queues[1] != [] then 1 else 2 end) as $q
-        | .queues[$q][0] as $item
-        | .queues[$q] |= .[1:]
-        | if .seen[$item.id] then .
-          else .seen[$item.id] = true
-          | (if $pkg[$item.id].workspace then . else .out += [$item] end)
-          | reduce step($item) as $next (.; .queues[$next.kind | rank] += [$next])
-          end)
-    | .out
-    | group_by($pkg[.id].name)
-    | map(min_by(.kind | rank) | {crate: $pkg[.id].name, kind, path});
-  ([limited[] as $layer | {key: $layer, value: reach($layer)}] | from_entries) as $reached
-| def rule($layer):
-    "\($layer | article) crate reaches only the external crates scripts/crate-boundaries.external lists for its layer, each with the kind it is reached by";
-  def hit($layer):
-    "\(.path[0]) (\($layer)) → \(.crate) (external), \(.kind) dependency, through \(.path | join(" → "))";
-{
-  reached: ($reached | map_values(group_by(.kind) | map({key: .[0].kind, value: length}) | from_entries)),
-  errors: (
-    [ limited[] as $layer | $reached[$layer][] as $hit
-      | [$valid[] | select(.layer == $layer and .crate == $hit.crate)] as $lines
-      | if $lines == [] then
-          "forbidden: \($hit | hit($layer)); rule: \(rule($layer))"
-        elif any($lines[]; .kind == $hit.kind) | not then
-          "wrong kind: \($hit | hit($layer)), listed as \($lines[0].kind) on line \($lines[0].line); rule: \(rule($layer))"
-        else empty end ]
-    + [ $valid[] as $e
-        | select(any($reached[$e.layer][]; .crate == $e.crate) | not)
-        | "stale external entry, line \($e.line): \($e.text); the \($e.layer) layer no longer reaches \($e.crate), so delete the line" ]
-    + [ $valid | group_by([.layer, .crate])[] | select(length > 1)
-        | "duplicate external entry, lines \(map(.line) | join(", ")): \(.[0].layer): \(.[0].crate); name each crate once" ]
-    + [ $unlimited[]
-        | "external entry for an unlimited layer, line \(.line): \(.text); the list limits only \(limited | join(", "))" ]
-    + [ $entries[] | select(.malformed)
-        | "malformed external entry, line \(.line): \(.text); expected LAYER: CRATE (run|build|test): REASON" ]
-  )
-}
-'
-
-# check_external METADATA LIST: print each error and a summary; fail on any
-# error.
-check_external() {
-    local result count
-    result=$(jq -c --rawfile list_text "$2" "$external_program" "$1") || {
-        echo "crate boundaries: cannot read the resolved metadata $1 with the external list $2" >&2
-        return 2
-    }
-    printf '%s' "$result" | jq -r '.errors[]'
-    count=$(printf '%s' "$result" | jq '.errors | length')
-    if [[ $count -ne 0 ]]; then
-        echo "crate boundaries: $count external-crate error(s)" >&2
-        return 1
-    fi
-    printf '%s' "$result" | jq -r '.reached | to_entries[]
-        | "crate boundaries: the \(.key) layer reaches \(.value.run // 0) run-time, \(.value.build // 0) build-time and \(.value.test // 0) test-only external crate(s), all listed"'
-}
 
 # check_one_copy METADATA: print each error, or the contract's source; fail
 # unless the graph holds exactly one copy.
@@ -449,28 +266,6 @@ self_test() {
             failed=1
         fi
     done
-    # Fixtures of resolved metadata for the external-crate lists, each with an
-    # optional list NAME.external beside it and the same "self_test"
-    # expectation as the first kind.
-    for fixture in "$fixtures"/external/*.json; do
-        name=external/$(basename "$fixture" .json)
-        list="${fixture%.json}.external"
-        [[ -f $list ]] || list=/dev/null
-        expect=$(jq -r '.self_test.expect' "$fixture")
-        message=$(jq -r '.self_test.message // ""' "$fixture")
-        errors=$(jq -r '.self_test.errors // ""' "$fixture")
-        status=0
-        output=$(check_external "$fixture" "$list" 2>&1) || status=$?
-        if [[ $expect == pass && $status -eq 0 ]] ||
-            [[ $expect == fail && $status -ne 0 && $output == *"$message"* &&
-                ( -z $errors || $output == *"crate boundaries: $errors external-crate error(s)"* ) ]]; then
-            echo "self-test $name: ${expect}ed as expected"
-        else
-            echo "self-test $name: expected $expect${message:+ with \"$message\"}${errors:+ and $errors external-crate error(s)}, got status $status:" >&2
-            printf '%s\n' "$output" | sed 's/^/    /' >&2
-            failed=1
-        fi
-    done
     check_sources --self-test || failed=1
     return "$failed"
 }
@@ -480,13 +275,16 @@ case "${1:-}" in
         metadata=$(mktemp)
         resolved=$(mktemp)
         trap 'rm -f "$metadata" "$resolved"' EXIT
-        (cd "$root" && cargo metadata --format-version 1 --no-deps) >"$metadata"
-        (cd "$root" && cargo metadata --format-version 1 --offline --locked --all-features) >"$resolved"
+        read -r -a cargo_cmd <<< "${AFFECTED_CARGO:-cargo}"
+        (cd "$root" && "${cargo_cmd[@]}" metadata --offline --format-version 1 --no-deps) >"$metadata"
+        (cd "$root" && "${cargo_cmd[@]}" metadata --format-version 1 --offline --locked --all-features) >"$resolved"
         status=0
-        check "$metadata" "$default_allow" || status=$?
+        combined=$(mktemp)
+        jq --slurpfile resolved "$resolved" '. + {resolved: $resolved[0]}' "$metadata" >"$combined"
+        check "$combined" "$default_allow" || status=$?
+        rm -f "$combined"
         check_sources "$metadata" || { s=$?; [[ $status -ne 0 ]] || status=$s; }
         check_one_copy "$resolved" || { s=$?; [[ $status -ne 0 ]] || status=$s; }
-        check_external "$resolved" "$default_external" || { s=$?; [[ $status -ne 0 ]] || status=$s; }
         exit "$status"
         ;;
     --self-test)
@@ -502,13 +300,8 @@ case "${1:-}" in
         [[ $# -eq 2 ]] || { echo "usage: $0 --resolved FILE" >&2; exit 2; }
         check_one_copy "$2"
         ;;
-    --external)
-        [[ $# -eq 2 || ($# -eq 4 && $3 == --list) ]] ||
-            { echo "usage: $0 --external FILE [--list FILE]" >&2; exit 2; }
-        check_external "$2" "${4:-$default_external}"
-        ;;
     *)
-        echo "usage: $0 [--self-test | --metadata FILE [--allow FILE] | --resolved FILE | --external FILE [--list FILE]]" >&2
+        echo "usage: $0 [--self-test | --metadata FILE [--allow FILE] | --resolved FILE]" >&2
         exit 2
         ;;
 esac

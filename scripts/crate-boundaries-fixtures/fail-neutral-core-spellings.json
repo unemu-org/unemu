@@ -1,0 +1,69 @@
+{
+  "self_test": {
+    "expect": "fail",
+    "message": "forbidden: helper0 (neutral) \u2192 core0 (pc)",
+    "errors": 4
+  },
+  "packages": [
+    {
+      "name": "helper0",
+      "metadata": {
+        "unemu": {
+          "layer": "neutral"
+        }
+      },
+      "dependencies": [
+        {
+          "name": "core0",
+          "source": "git+ssh://git@GitHub.com/Unemu-Org/Unemupc.git?rev=pin",
+          "kind": null
+        }
+      ]
+    },
+    {
+      "name": "helper1",
+      "metadata": {
+        "unemu": {
+          "layer": "neutral"
+        }
+      },
+      "dependencies": [
+        {
+          "name": "core1",
+          "source": "git+git://github.com/unemu-org/unemupc#pin",
+          "kind": "dev"
+        }
+      ]
+    },
+    {
+      "name": "helper2",
+      "metadata": {
+        "unemu": {
+          "layer": "neutral"
+        }
+      },
+      "dependencies": [
+        {
+          "name": "core2",
+          "source": "git+https://github.com/unemu-org/unemupc/?branch=main",
+          "kind": "build"
+        }
+      ]
+    },
+    {
+      "name": "helper3",
+      "metadata": {
+        "unemu": {
+          "layer": "neutral"
+        }
+      },
+      "dependencies": [
+        {
+          "name": "core3",
+          "source": "git+git@github.com:unemu-org/unemupc.git",
+          "kind": null
+        }
+      ]
+    }
+  ]
+}

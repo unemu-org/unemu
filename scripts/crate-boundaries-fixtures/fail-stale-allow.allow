@@ -1,2 +1,2 @@
 # Synthetic allow list for the self-test fixtures.
-assembly → journal (normal): the machine writes its journals while it runs
+registry → store (normal): this neutral edge needs no exception

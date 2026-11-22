@@ -113,7 +113,7 @@ target/
 .beads/proxieddb/
 *.gate.lock*
 
-# Local x86jit override for development (see backlog/docs/dev-setup.md § CPU core)
+# Local core and CPU overrides for development.
 .cargo/config.toml
 
 # Proprietary firmware remains user-supplied; only its instructions are tracked.

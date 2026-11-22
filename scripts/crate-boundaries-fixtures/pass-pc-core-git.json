@@ -1,0 +1,23 @@
+{
+  "self_test": {
+    "expect": "pass",
+    "message": ""
+  },
+  "packages": [
+    {
+      "name": "helper",
+      "metadata": {
+        "unemu": {
+          "layer": "pc"
+        }
+      },
+      "dependencies": [
+        {
+          "name": "assembly",
+          "kind": null,
+          "source": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111"
+        }
+      ]
+    }
+  ]
+}

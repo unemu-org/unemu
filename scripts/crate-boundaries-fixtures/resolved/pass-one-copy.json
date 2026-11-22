@@ -15,7 +15,7 @@
       "version": "0.0.2",
       "id": "path+file:///workspace/crates/pc-core#unemu-pc-core@0.0.2",
       "source": null,
-      "manifest_path": "/workspace/crates/pc-core/Cargo.toml"
+      "manifest_path": "/dependencies/pc-provider/Cargo.toml"
     },
     {
       "name": "machine-view",

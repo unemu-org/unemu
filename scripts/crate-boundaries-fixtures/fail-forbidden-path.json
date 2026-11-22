@@ -1,7 +1,7 @@
 {
   "self_test": {
     "expect": "fail",
-    "message": "forbidden: registry (neutral) → device (emulation), normal dependency, through registry → store → device; rule: a neutral crate may depend only on contract, neutral",
+    "message": "forbidden: registry (neutral) \u2192 device (pc), normal dependency, through registry \u2192 store \u2192 device; rule: a neutral crate may depend only on contract, neutral",
     "errors": 2
   },
   "packages": [
@@ -67,7 +67,7 @@
       "name": "device",
       "metadata": {
         "unemu": {
-          "layer": "emulation"
+          "layer": "pc"
         }
       },
       "dependencies": []
@@ -76,7 +76,7 @@
       "name": "assembly",
       "metadata": {
         "unemu": {
-          "layer": "emulation"
+          "layer": "pc"
         }
       },
       "dependencies": [

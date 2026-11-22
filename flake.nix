@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 {
-  description = "unemupc — IBM PC/AT (80286) LLE emulator devShell (Rust + Backlog.md + tooling)";
+  description = "unemu — multi-platform front-end devShell (Rust + Backlog.md + tooling)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -42,45 +42,29 @@
         };
       in
       {
-        devShells.firmware = pkgs.mkShell {
-          # SeaBIOS owns its freestanding flags and has no host hardening runtime.
-          # Legacy host Kconfig also needs translated printf formats without fatal warnings.
-          hardeningDisable = [ "all" ];
-          packages = [
-            pkgs.pkgsCross.i686-embedded.buildPackages.gcc
-            pkgs.pkgsCross.i686-embedded.buildPackages.binutils
-            pkgs.python3
-            pkgs.gnumake
-            pkgs.git
-            pkgs.coreutils
-            pkgs.gnutar
-            pkgs.gnugrep
-            pkgs.gawk
-          ];
-          CROSS_PREFIX = pkgs.pkgsCross.i686-embedded.stdenv.cc.targetPrefix;
-          # Kconfig runs on the host; firmware compilation uses the cross GCC.
-          HOSTCC = "${pkgs.stdenv.cc}/bin/cc";
-        };
         devShells.default = pkgs.mkShell {
           packages = [
             backlog-md.packages.${system}.default # `backlog` — local-first task tracker
             pkgs.pre-commit
             pkgs.git
+            pkgs.gnupg # uid-guard.sh verifies the signing key UID
 
-            # --- Rust toolchain (CPU core = x86jit, all crates are Rust) ---
+            # Rust and dependency checks.
             rustToolchain
             pkgs.cargo-deny
             # Runs every test in its own process and test binaries side by
             # side; scripts/affected-tests.sh uses it when present.
             pkgs.cargo-nextest
 
-            # --- guest test-ROM build (hand-assembled real-mode / long-mode programs) ---
+            # The media boot-sector source test assembles its checked-in bytes.
             pkgs.nasm
-            pkgs.binutils # ld, objcopy for flat binaries
 
-            # --- FreeDOS boot-floppy build (vendor/freedos/fetch.sh) ---
-            pkgs.mtools # mformat/mcopy/mdir — lay down the FAT12 filesystem
-            pkgs.dosfstools # mkfs.fat — FAT12 formatting
+            # Recipe media uses mformat, mcopy and mdir.
+            pkgs.mtools
+            # FreeDOS source archives need deterministic GNU tar and ISO extraction.
+            pkgs.gnutar
+            pkgs.python3
+            pkgs.coreutils # sha256sum for fixture verification and export-layout.sh
 
             # --- fixture downloads and archive extraction (vendor/*/fetch.sh) ---
             # Pinned instead of taken from the host, so every fixture script
@@ -90,10 +74,6 @@
             pkgs.curl.bin
             pkgs.unzip # Info-ZIP UnZip 6.00
 
-            # --- optional differential oracles (final-state / serial compare) ---
-            pkgs.qemu
-
-            # Fetching the SingleStepTests / ProcessorTests corpus (real-mode oracle)
             pkgs.jq
 
             # scripts/export-layout.sh decodes +zstd layers without unemu.
@@ -102,6 +82,8 @@
             # cpal's Linux backend discovers ALSA through pkg-config.
             pkgs.pkg-config
             pkgs.alsa-lib
+            pkgs.glibc.bin # locale for deterministic media exports
+            pkgs.xdg-utils # reveal the diagnostics folder on Linux
           ];
           # Downloads trust the pinned Mozilla roots, not the host's bundle: an
           # old container's bundle lacks roots that current mirrors chain to.

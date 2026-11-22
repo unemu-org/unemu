@@ -17,8 +17,7 @@
 # Tiers. The fast tier is the ordinary test run of the affected crates. The
 # golden tier adds the ignored tests (BIOS POST, DOS boots and sessions,
 # fixture archives) of every affected crate; it is chosen when a change can
-# alter emulated behaviour: an emulation crate, the machine runners the
-# goldens drive (pc-harness), a shipped machine file or a fixture pin changed.
+# alter emulated behaviour: media, the PC command runners, or the core pin.
 # Without it, the ignored tests of each changed crate still run, by name, and
 # so do those in files of the affected crates that name a changed crate
 # (`image_store::`, say). Tests that need user-supplied firmware start with
@@ -73,40 +72,28 @@ usage() {
 planner='
 # Crates whose change can alter emulated behaviour; a change to one of them
 # selects the golden tier.
-def emulation_crates: ["assembly", "audio", "bus", "chipset", "cpu", "device",
-  "devices", "journal", "journal-files", "machine", "machine-file", "media", "pc-config", "testkit", "unemu-pc-core",
-  "video"];
+def emulation_crates: ["media"];
 # Files that hold the machine runners and the disk builder the goldens drive,
 # and the command line the front-end goldens drive: of the neutral command
 # line its dispatch and the journal tools a golden runs (no golden drives its
 # recipe, image or library commands), and every PC command; a path ending in
 # "/" covers every file under it.
-def runner_files: ["crates/pc-harness/src/", "crates/cli-core/src/lib.rs",
-  "crates/cli-pc/src/", "crates/unemupc/src/",
+def runner_files: ["crates/cli-core/src/lib.rs",
+  "crates/cli-pc/src/",
   "crates/pc-image/src/media_create.rs"];
 # Paths that crates read outside their own directory: test support shared
-# with #[path], shipped machine files, fixture scripts and pins, assets.
+# with #[path], recipe fixtures, pins and assets.
 # The self-test checks that every path a crate source names outside its
-# directory is covered here, and that every crate that builds paths from the
-# repository root reads both machines/ and vendor/.
+# directory is covered here. Core fixtures belong to the pinned checkout.
 def data_rules: [
-  {prefix: "crates/pc-harness/tests/support/", goldens: true,
-   crates: ["assembly", "cli-pc", "machine-file", "pc-config", "pc-harness", "pc-image", "pc-library", "unemupc", "upcli",
-     "window"],
-   why: "golden test support shared by several crates"},
   {prefix: "crates/pc-image/tests/support/", goldens: false,
    crates: ["cli-pc", "pc-image"], why: "test support shared with the PC command line"},
-  {prefix: "machines/README.md", goldens: false,
-   crates: ["cli-pc", "machine-file", "pc-image", "window"],
-   why: "machine-file guide that tests quote"},
-  {prefix: "machines/", goldens: true,
-   crates: ["cli-pc", "machine-file", "pc-harness", "pc-image", "pc-library", "pc-session-tests",
-     "unemupc", "upcli", "window"],
-   why: "shipped machine file"},
-  {prefix: "vendor/", except: "[.]md$", goldens: true,
-   crates: ["assembly", "cli-pc", "machine-file", "pc-harness", "pc-image", "pc-library",
-     "pc-session-tests", "unemupc", "upcli", "window"],
-   why: "fixture script, pin or notice"},
+  {prefix: "vendor/freedos/", except: "[.]md$", goldens: true,
+   crates: ["cli-pc", "pc-image"], why: "FreeDOS recipe media and licence index"},
+  {prefix: "vendor/kenslab/", except: "[.]md$", goldens: true,
+   crates: ["cli-pc", "pc-image"], why: "Ken’s Labyrinth recipe archive"},
+  {prefix: "vendor/shareware/", except: "[.]md$", goldens: true,
+   crates: ["cli-pc", "pc-image"], why: "shareware installation media"},
   {prefix: "assets/", goldens: false, crates: ["ui-kit"], why: "brand asset the ui kit embeds"},
   {prefix: "backlog/docs/design/mockups/", goldens: false, crates: ["ui-kit"],
    why: "approved mock-ups the icon tests of the ui kit read"},
@@ -123,10 +110,7 @@ def data_rules: [
 def scan_tests: [
   {package: "image-store", test: "platform_ids",
    watch: "^crates/(media|image-store|registry|recipe|core-launch|cli-core|ui-kit|machine-view|library-model|library-ui|player-ui|test-core|pc-image|cli-pc|pc-media|pc-library|media-ui|pc-ui|pc-session-tests|platforms|upcli|window)/.+[.]rs$",
-   why: "scans the front-end Rust sources"},
-  {package: "pc-config", test: "platform_ids",
-   watch: "^crates/(device|bus|cpu|video|audio|devices|chipset|machine|assembly|testkit|journal|pc-config|pc-core|machine-file|journal-files|pc-harness|unemupc)/.+[.]rs$",
-   why: "scans the core Rust sources"}
+   why: "scans the front-end Rust sources"}
 ];
 def full_files: "^(Cargo[.]toml|Cargo[.]lock|flake[.]nix|flake[.]lock|rust-toolchain([.]toml)?|[.]?rustfmt[.]toml|[.]?clippy[.]toml|[.]cargo/.*)$";
 def docs_files: "^(backlog/.*|[^/]+[.]md|[.]agents/.*|[.]claude/.*|[.]serena/.*|LICENSE.*|LICENSES/.*|[.]markdownlint.*|[.]prettier.*|vendor/.+[.]md)$";
@@ -233,8 +217,7 @@ else
       [scan_tests[] | select(.package as $p | ($affected | has($p)) | not)
        | select(.watch as $w | $changed | any(test($w)))
        | "\(.package):\(.test)"] end),
-    release_devices: ($affected | has("devices") and ($mode == "crates" or $mode == "full")),
-    cli: ($affected | has("window") and ($mode == "crates" or $mode == "full")),
+    cli: ($affected | any(. == "window" or . == "upcli") and ($mode == "crates" or $mode == "full")),
     deny: ($files | any(.deny)),
     docs: [$files[] | select(.class == "docs") | .path],
     shell: [$changed[] | select(test("[.]sh$"))],
@@ -357,7 +340,7 @@ print_plan_text() {
         + (if (.targeted | length) > 0 then ", from:" else "" end),
       (.targeted_files[] | "  \(.)"),
       "workspace scan tests: \(.scan_tests | list)",
-      "release-profile devices tests: \(if .release_devices then "yes" else "no" end)"
+      "production-binary clippy: \(if .cli then "yes" else "no" end)"
      else empty end),
     "dependency policy (cargo deny): \(if .deny then "yes" else "no" end)",
     (if .mode != "none" then "checks: publication guard"
@@ -373,7 +356,6 @@ print_plan_vars() {
     "mode=\(.mode)", "seeds=\(.seeds | join(" "))", "affected=\(.affected | join(" "))",
     "tier=\(.tier)", "user_roms=\(if .user_roms then 1 else 0 end)",
     "targeted=\(.targeted | join(" "))", "scan_tests=\(.scan_tests | join(" "))",
-    "release_devices=\(if .release_devices then 1 else 0 end)",
     "cli=\(if .cli then 1 else 0 end)", "deny=\(if .deny then 1 else 0 end)",
     "docs=\(.docs | join(" "))", "shell=\(.shell | join(" "))",
     "self_test=\(if .self_test then 1 else 0 end)"
@@ -448,7 +430,7 @@ outside_references() {
 # The crates whose sources build paths from the repository root at run time:
 # join("../..") or a "/../.." literal (the root itself, not one file under
 # it), or parent() / ancestors() within a few lines of CARGO_MANIFEST_DIR. Such a crate may read anything under the root,
-# so the rules must count it among the readers of machines/ and vendor/.
+# so the source-reference self-test also exercises this helper.
 root_builders() {
   local dirs=$1 dir name
   while IFS=$'\t' read -r dir name; do
@@ -498,7 +480,7 @@ run_self_test() {
     padding=$(jq -rn --argjson size "$size" '"x" * $size')
     plan_json=$(jq -n --argjson size "$size" '{mode: "checks", seeds: [], affected: [],
       tier: "fast", user_roms: false, targeted: [], scan_tests: [],
-      release_devices: false, cli: false, deny: false, docs: [], shell: [],
+      cli: false, deny: false, docs: [], shell: [],
       self_test: false, files: [{path: ("x" * $size), class: "scripts", why: "script"}]}')
     dirs=$(printf '%s\t%s\n' "$tmp" "$padding")
     if [[ $(print_plan_text "$plan_json") == *"$padding -> scripts (script)"* &&
@@ -569,19 +551,6 @@ run_self_test() {
     fi
     rules=$(jq -n --argjson changed '[]' --argjson ignored '{}' --arg tier rules \
       --argjson all false --arg patch "" "$planner")
-    builders=$(root_builders "$dirs" | sort -u | tr '\n' ' ')
-    missing=$(jq -rn --argjson rules "$rules" --arg builders "$builders" '
-      $builders | split(" ")[] | select(. != "") as $crate
-      | ("machines/", "vendor/") as $prefix
-      | select([$rules.data_rules[] | select(.prefix == $prefix) | .crates[]] | index($crate) | not)
-      | "    \($crate) builds paths from the repository root but is not a reader of \($prefix)"')
-    if [[ -z $missing ]]; then
-      echo "ok   every crate that builds repository-root paths reads machines/ and vendor/ ($builders)"
-    else
-      echo "FAIL crates that build repository-root paths:"
-      printf '%s\n' "$missing"
-      failures=$((failures + 1))
-    fi
     # The crates and files the rules name must exist, so a rename cannot
     # silently turn a rule off.
     missing=$(jq -rn --argjson rules "$rules" --argjson meta "$(cat "$metadata")" '
@@ -808,11 +777,6 @@ if [[ $mode == crates || $mode == full ]]; then
     [[ -n $scan ]] || continue
     run_tests "scan-${scan#*:}" fast -p "${scan%%:*}" --test "${scan#*:}"
   done < <(field '.scan_tests[]')
-
-  # Release builds keep behaviours that debug builds assert against.
-  if [[ $(field .release_devices) == true ]]; then
-    run_tests devices-release fast --release -p devices
-  fi
 
   echo
   if [[ $runner == nextest ]]; then

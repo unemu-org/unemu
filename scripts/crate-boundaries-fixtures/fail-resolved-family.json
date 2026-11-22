@@ -1,0 +1,117 @@
+{
+  "self_test": {
+    "expect": "fail",
+    "message": "forbidden: player-ui (neutral) \u2192 cli-core (neutral), normal dependency, through player-ui \u2192 cli-core; rule: no window crate depends on a CLI crate",
+    "errors": 1
+  },
+  "packages": [
+    {
+      "name": "core-api",
+      "metadata": {
+        "unemu": {
+          "layer": "contract"
+        }
+      },
+      "dependencies": [],
+      "id": "path+file:///repo/crates/core-api#0.0.3"
+    },
+    {
+      "name": "machine-view",
+      "metadata": {
+        "unemu": {
+          "layer": "neutral"
+        }
+      },
+      "dependencies": [
+        {
+          "name": "core-api",
+          "kind": null,
+          "source": null
+        }
+      ],
+      "id": "path+file:///repo/crates/machine-view#0.0.3"
+    },
+    {
+      "name": "core-launch",
+      "metadata": {
+        "unemu": {
+          "layer": "neutral"
+        }
+      },
+      "dependencies": [
+        {
+          "name": "core-api",
+          "kind": null,
+          "source": null
+        }
+      ],
+      "id": "path+file:///repo/crates/core-launch#0.0.3"
+    },
+    {
+      "name": "ui-kit",
+      "metadata": {
+        "unemu": {
+          "layer": "neutral"
+        }
+      },
+      "dependencies": [
+        {
+          "name": "egui",
+          "kind": null,
+          "source": "registry+https://github.com/rust-lang/crates.io-index"
+        }
+      ],
+      "id": "path+file:///repo/crates/ui-kit#0.0.3"
+    },
+    {
+      "name": "cli-core",
+      "metadata": {
+        "unemu": {
+          "layer": "neutral"
+        }
+      },
+      "dependencies": [],
+      "id": "path+file:///repo/crates/cli-core#0.0.3"
+    },
+    {
+      "name": "player-ui",
+      "metadata": {
+        "unemu": {
+          "layer": "neutral"
+        }
+      },
+      "dependencies": [
+        {
+          "name": "machine-view",
+          "kind": null,
+          "source": null
+        },
+        {
+          "name": "core-launch",
+          "kind": null,
+          "source": null
+        },
+        {
+          "name": "ui-kit",
+          "kind": null,
+          "source": null
+        },
+        {
+          "name": "cli-core",
+          "kind": null,
+          "source": null
+        }
+      ],
+      "id": "path+file:///repo/crates/player-ui#0.0.3"
+    }
+  ],
+  "workspace_members": [
+    "path+file:///repo/crates/core-api#0.0.3",
+    "path+file:///repo/crates/machine-view#0.0.3",
+    "path+file:///repo/crates/core-launch#0.0.3",
+    "path+file:///repo/crates/ui-kit#0.0.3",
+    "path+file:///repo/crates/cli-core#0.0.3",
+    "path+file:///repo/crates/player-ui#0.0.3"
+  ],
+  "version": 1
+}

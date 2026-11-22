@@ -1,0 +1,23 @@
+{
+  "self_test": {
+    "expect": "fail",
+    "message": "forbidden: helper (neutral) \u2192 assembly (pc)"
+  },
+  "packages": [
+    {
+      "name": "helper",
+      "metadata": {
+        "unemu": {
+          "layer": "neutral"
+        }
+      },
+      "dependencies": [
+        {
+          "name": "assembly",
+          "kind": null,
+          "source": "git+https://github.com/unemu-org/unemupc?rev=1111111111111111111111111111111111111111"
+        }
+      ]
+    }
+  ]
+}
