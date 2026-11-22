@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Host playback of a machine's drained sound; no hardware is modelled here.
 //!
-//! See `backlog/docs/design/audio.md` §Host output. Only the window explicitly
+//! See `backlog/docs/architecture.md` § Core boundary and host timing. Only the window explicitly
 //! opens a device. Playback consumes completed virtual-time frames and cannot
 //! change the machine, its clock or host-clock pacing policy. Audio
 //! observations feed a 200 ms stereo ring at run boundaries; callbacks use
@@ -60,7 +60,7 @@ use std::{
 };
 
 /// Linear interpolation carries an exact rational position across input blocks.
-/// Only the producer uses this state; see audio.md §Host output for quality limits.
+/// Only the producer uses this state; see backlog/docs/architecture.md, Core boundary and host timing for quality limits.
 ///
 /// With the source at `n/d` frames a second and the device at `r`, one input
 /// interval is `r·d` units of position and one output interval is `n`. Per

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The desktop's two skins and the small pieces every window draws with them;
-//! see `backlog/docs/design/spec.md` §9.4 and
+//! see `backlog/docs/architecture.md` § Observation and presentation and
 //! `backlog/docs/design/machine-images.md` §7.
 //!
 //! The classic and the modern skin follow the approved mock-ups in

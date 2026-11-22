@@ -5,7 +5,7 @@
 //! test names its own preferences file and store, so the user's are never
 //! read. Synthetic files only, except the user-ROM test of AZURAMON, which
 //! looks for the user's copy of the game folder as the volume goldens do
-//! (crates/pc-harness/tests/user_media_volumes.rs).
+//! (crates/pc-image/tests/user_media_volumes.rs).
 
 use std::ffi::OsString;
 use std::fs;

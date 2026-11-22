@@ -13,8 +13,8 @@ deciders: Mikołaj Mikołajczyk
 Accepted — 2026-11-15. The maintainer asked for the image vs container split as
 key MVP functionality (an exception to the post-MVP feature freeze) and approved
 the mock-up `backlog/docs/design/mockups/machines.html` with every "please
-confirm" item. Builds on [[decision-25]] (machine images, workspaces) and
-[[decision-26]] (installation media). Tracked as `upc-5pw.63`.
+confirm" item. Builds on [decision-25](decision-25%20-%20Machine%20images%20are%20self-contained%20OCI%20artifacts%20in%20a%20local%20store.md) (machine images, workspaces) and
+[decision-26](decision-26%20-%20Installation%20media%20sets%20are%20their%20own%20OCI%20artifact%20type.md) (installation media). Tracked as `upc-5pw.63`.
 
 ## Context
 

@@ -12,7 +12,7 @@ deciders: Mikołaj Mikołajczyk
 
 Accepted — 2026-11-13. Records the maintainer's storage direction and their
 answers to the open questions of the machine-image design review. Builds on
-[[decision-24]] (desktop shell). Details: `backlog/docs/design/machine-images.md`.
+[decision-24](decision-24%20-%20Desktop%20shell%20is%20a%20classic%20in-window%20menu%20UI%20built%20with%20egui.md) (desktop shell). Details: `backlog/docs/design/machine-images.md`.
 
 ## Context
 

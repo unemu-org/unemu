@@ -7,7 +7,7 @@
 //! text field could take the text. The guest does not depend on that setting:
 //! while the emulated machine has the keyboard, the window queues its keys for
 //! the guest and never hands them to egui, so Ctrl+C stays the guest's (DOS
-//! break) on every host. See `design/spec.md` §9.4.
+//! break) on every host. See `backlog/docs/architecture.md` § Observation and presentation.
 //!
 //! [`shortcuts`] gives the chords back to the focused text field only. It
 //! maps a key press as egui-winit maps it with its shortcuts on: the dedicated

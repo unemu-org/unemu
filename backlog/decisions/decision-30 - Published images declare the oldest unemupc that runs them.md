@@ -6,15 +6,17 @@ status: Accepted
 deciders: Mikołaj Mikołajczyk
 ---
 
+unemu maintains the application portions; unemupc maintains the core portions of this shared historical decision.
+
 # decision-30 - Published images declare the oldest unemupc that runs them
 
 ## Status
 
 Accepted — 2026-11-17 by the maintainer. Design step of
 `upc-dfs.15`; it must be settled before `upcli image template create`
-(`upc-dfs.14`) publishes its first template. Builds on [[decision-25]]
-(machine images), [[decision-26]] (installation media sets) and
-[[decision-27]] (firmware packages). The survey of today's readers and the
+(`upc-dfs.14`) publishes its first template. Builds on [decision-25](decision-25%20-%20Machine%20images%20are%20self-contained%20OCI%20artifacts%20in%20a%20local%20store.md)
+(machine images), [decision-26](decision-26%20-%20Installation%20media%20sets%20are%20their%20own%20OCI%20artifact%20type.md) (installation media sets) and
+[decision-27](decision-27%20-%20Firmware%20packages%20are%20their%20own%20OCI%20artifact%20type.md) (firmware packages). The survey of today's readers and the
 measured behaviour of release 0.0.2 are in
 `backlog/docs/design/machine-images.md` §5.6.
 
@@ -215,7 +217,7 @@ change the meaning of an existing key/value (point 4 still applies).
 
 **Implied implementation (not part of this document change):**
 
-1. Add `crates/pc-config/src/compat.rs`, export it from `src/lib.rs`, and
+1. Add [`crates/pc-config/src/compat.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-config/src/compat.rs), export it from `src/lib.rs`, and
    move the core rows/evaluators and coverage tests there from
    `crates/pc-image/src/compat.rs`. Use core-owned release/row data without
    an `image-store` dependency; the provider converts it at the boundary.

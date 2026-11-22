@@ -4,7 +4,7 @@
 //! cap, which counts retired instructions, is never reached. The run stops
 //! with the guest-stop exit code, names the stall on its `stopped:` line and
 //! prints the CPU stop report (commands.md, Build / run / test;
-//! `backlog/docs/design/observation.md` §CPU stop report). The system ROM is
+//! `backlog/docs/architecture.md` § Core boundary and host timing). The system ROM is
 //! `assembly::test_support::delivery_stall_rom`, the project's own bytes.
 
 use std::ffi::OsString;

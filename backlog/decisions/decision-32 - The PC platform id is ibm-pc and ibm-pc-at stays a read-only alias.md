@@ -6,14 +6,16 @@ status: Accepted
 deciders: Mikołaj Mikołajczyk
 ---
 
+unemu maintains the application portions; unemupc maintains the core portions of this shared historical decision.
+
 # decision-32 - The PC platform id is ibm-pc and ibm-pc-at stays a read-only alias
 
 ## Status
 
 Accepted — 2026-11-17 by the maintainer, before the first public release.
-Amends [[decision-25]] (machine images), [[decision-26]] (installation media
-sets) and [[decision-27]] (firmware packages), which name the platform
-`ibm-pc-at`, and uses [[decision-30]] (the oldest release that runs an image).
+Amends [decision-25](decision-25%20-%20Machine%20images%20are%20self-contained%20OCI%20artifacts%20in%20a%20local%20store.md) (machine images), [decision-26](decision-26%20-%20Installation%20media%20sets%20are%20their%20own%20OCI%20artifact%20type.md) (installation media
+sets) and [decision-27](decision-27%20-%20Firmware%20packages%20are%20their%20own%20OCI%20artifact%20type.md) (firmware packages), which name the platform
+`ibm-pc-at`, and uses [decision-30](decision-30%20-%20Published%20images%20declare%20the%20oldest%20unemupc%20that%20runs%20them.md) (the oldest release that runs an image).
 
 ## Context
 

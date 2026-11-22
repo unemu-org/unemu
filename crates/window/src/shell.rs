@@ -2,7 +2,7 @@
 //! One egui desktop surface around the existing paced machine session.
 //!
 //! Raw winit events remain intact because guest scan codes describe physical
-//! positions, not egui text editing keys. See `design/spec.md` §9.4 and
+//! positions, not egui text editing keys. See `backlog/docs/architecture.md` § Observation and presentation and
 //! `backlog/docs/design/machine-images.md` §7.
 
 use crate::{

@@ -3,8 +3,8 @@
 //! interrupt deliveries and writes the last entries to stderr when the run
 //! ends, consecutive identical deliveries folded into one, with a summary,
 //! and `--diag-at N` adds the last deliveries to the diagnostic report
-//! (commands.md, Build / run / test; `backlog/docs/design/observation.md`
-//! §Exception and interrupt deliveries). The system ROMs are the project's
+//! (commands.md, Build / run / test; `backlog/docs/architecture.md` § Core boundary
+//! and host timing). The system ROMs are the project's
 //! own bytes from `assembly::test_support`: `deliveries_rom` takes a #UD, a
 //! software interrupt, an IRQ0 tick and a protected-mode #GP;
 //! `delivery_overrun_rom` faults in a loop until its stack overruns;

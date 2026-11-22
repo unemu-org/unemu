@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Host mix levels through the desktop audio path: the presenter renders each
 //! source into the window's host sink, and the tests read what the host
-//! callback would play. See `backlog/docs/design/audio.md` §Host mix levels.
+//! callback would play. See `backlog/docs/architecture.md` § Core boundary and host timing.
 //!
 //! Guest programs drive the PC speaker (IBM Personal Computer AT Technical
 //! Reference, System Board, Speaker; Intel 8254 datasheet, Mode 3), the SB16

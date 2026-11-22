@@ -6,6 +6,8 @@ status: Accepted
 deciders: Mikołaj Mikołajczyk
 ---
 
+unemu maintains the application portions; unemupc maintains the core portions of this shared historical decision.
+
 # decision-11 - License: AGPL-3.0-or-later
 
 ## Status

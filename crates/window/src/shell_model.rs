@@ -5,7 +5,7 @@
 //! files are `pc_library::machine_files`; both are re-exported here under
 //! the paths the desktop names them by. Presentation consumes decoded
 //! frames; see `backlog/docs/design/machine-images.md` §7 and
-//! `design/spec.md` §9.4.
+//! `backlog/docs/architecture.md` § Observation and presentation.
 
 pub(crate) use pc_library::machine_files::{
     machine_paths, select_machine, spawn_library_check_with_compatibility, LibraryCheck,

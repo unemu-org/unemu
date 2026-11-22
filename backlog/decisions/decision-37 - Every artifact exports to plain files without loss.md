@@ -98,4 +98,4 @@ has no `upcli`.
   users who want it.
 - **Rebuild archives on export.** Not reproducible for zip in general.
 - **Record original file names in the config.** A new config key, which
-  older releases refuse ([[decision-30]]).
+  older releases refuse ([decision-30](decision-30%20-%20Published%20images%20declare%20the%20oldest%20unemupc%20that%20runs%20them.md)).

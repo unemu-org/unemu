@@ -12,7 +12,7 @@ deciders: Mikołaj Mikołajczyk
 
 Accepted — 2026-11-17 by the maintainer (recipes.md Q4): `<release>-rN` immutable, `<release>` a moving alias, the digit-first rule retired, firmware tags `rN`. Design step of `upc-5pw.113`; recipes.md §8. Changes
 the set-tag rule of `backlog/docs/design/machine-images.md` §5.2 (Tags) and
-the firmware tag of §5.5; keeps the template rule. Uses [[decision-32]],
+the firmware tag of §5.5; keeps the template rule. Uses [decision-32](decision-32%20-%20The%20PC%20platform%20id%20is%20ibm-pc%20and%20ibm-pc-at%20stays%20a%20read-only%20alias.md),
 point 5.
 
 ## Context
@@ -61,7 +61,7 @@ the first packaging for ever.
 - `freedos:1.4` always means the best packaging of FreeDOS 1.4.
 - The digit-first rule for set tags is retired. Releases 0.0.1 and 0.0.2
   keep it and refuse to follow an alias once an `r2` exists; accepted for
-  preview releases, as [[decision-32]] accepts their other limits.
+  preview releases, as [decision-32](decision-32%20-%20The%20PC%20platform%20id%20is%20ibm-pc%20and%20ibm-pc-at%20stays%20a%20read-only%20alias.md) accepts their other limits.
 - Firmware tags change from `1` to `r1`, in the push that renames the
   platform.
 - unemu-media moves the alias in the push that publishes a revision.

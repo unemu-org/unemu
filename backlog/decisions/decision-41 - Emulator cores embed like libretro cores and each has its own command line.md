@@ -6,6 +6,8 @@ status: Accepted
 deciders: Mikołaj Mikołajczyk
 ---
 
+unemu maintains the application portions; unemupc maintains the core portions of this shared historical decision.
+
 # decision-41 - Emulator cores embed like libretro cores and each has its own command line
 
 ## Status
@@ -13,9 +15,9 @@ deciders: Mikołaj Mikołajczyk
 Accepted — 2026-11-18. The maintainer stated the principle, the core's own
 command line and the names; this record writes them down with the rules
 that follow from them. Design step of `upc-dfs.26`. Builds on
-[[decision-40]] (front ends drive cores through one contract crate),
-[[decision-5]] and [[decision-14]] (virtual time), [[decision-7]]
-(swappability behind traits) and [[decision-22]] (cycle-ready seams). The
+[decision-40](decision-40%20-%20Front%20ends%20drive%20emulator%20cores%20through%20one%20contract%20crate.md) (front ends drive cores through one contract crate),
+[decision-5 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-5%20-%20Virtual%20clock%20in%20retired%20instructions.md) and [decision-14 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-14%20-%20Virtual%20time%20advances%20while%20the%20CPU%20is%20halted.md) (virtual time), [decision-7 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-7%20-%20Swappability%20via%20Cpu%20Chipset%20Device%20FrameSink%20traits.md)
+(swappability behind traits) and [decision-22 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-22%20-%20Keep%20the%20path%20to%20a%20cycle-accurate%20profile%20open.md) (cycle-ready seams). The
 inventory of what a core touches of the host today, the allow list, the
 storage objects of contract 0.2, the command line of `unemupc` and the
 ordered steps are in `backlog/docs/design/core-contract.md` §12. The
@@ -39,7 +41,7 @@ The maintainer's words, 2026-11-18:
   its core: `unemupc` for the PC core, `unemunes` for the NES core. Today
   the desktop binary is named `unemupc`; it becomes `unemu`.
 
-[[decision-40]] put one contract crate between front ends and cores and
+[decision-40](decision-40%20-%20Front%20ends%20drive%20emulator%20cores%20through%20one%20contract%20crate.md) put one contract crate between front ends and cores and
 kept the picture, the sound, input and time on the front end's side of it.
 It left two things with the core: a session directory the core writes
 into, and content handed over as an open file. It also said nothing about
@@ -121,7 +123,7 @@ would stop the next dependency or the next `std::fs` call.
    logic stay in the core, over records.
 7. **Names.** The front end's binary is `unemu`. A core's binary, its
    `CoreDescription::id` and its repository carry the core's name:
-   `unemupc`, `unemunes`. The marker of [[decision-30]] keeps naming the
+   `unemupc`, `unemunes`. The marker of [decision-30](decision-30%20-%20Published%20images%20declare%20the%20oldest%20unemupc%20that%20runs%20them.md) keeps naming the
    core's release.
 8. **Each core has its own command line.** It lives with the core, runs
    and checks machines without the front end, and depends on the core's

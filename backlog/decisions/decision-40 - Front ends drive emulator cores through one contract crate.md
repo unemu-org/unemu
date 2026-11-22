@@ -6,6 +6,8 @@ status: Accepted
 deciders: Mikołaj Mikołajczyk
 ---
 
+unemu maintains the application portions; unemupc maintains the core portions of this shared historical decision.
+
 # decision-40 - Front ends drive emulator cores through one contract crate
 
 ## Status
@@ -17,10 +19,10 @@ once unemunes starts and published at 1.0; it is named `unemu-core-api`;
 `pc`-layer crates on the front-end side may depend on PC core crates;
 `machine-file` and the journal half of `media` stay with the PC core for
 now; the PC text rasteriser and its fonts move into the PC adapter. Design
-step of `upc-dfs.24`, with `upc-3bm`. Builds on [[decision-7]]
-(swappability behind traits), [[decision-25]] (machine images in a
-platform-neutral store), [[decision-30]] (the minimum release of an image)
-and [[decision-32]] (platform ids). The inventory of today's coupling, the
+step of `upc-dfs.24`, with `upc-3bm`. Builds on [decision-7 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-7%20-%20Swappability%20via%20Cpu%20Chipset%20Device%20FrameSink%20traits.md)
+(swappability behind traits), [decision-25](decision-25%20-%20Machine%20images%20are%20self-contained%20OCI%20artifacts%20in%20a%20local%20store.md) (machine images in a
+platform-neutral store), [decision-30](decision-30%20-%20Published%20images%20declare%20the%20oldest%20unemupc%20that%20runs%20them.md) (the minimum release of an image)
+and [decision-32](decision-32%20-%20The%20PC%20platform%20id%20is%20ibm-pc%20and%20ibm-pc-at%20stays%20a%20read-only%20alias.md) (platform ids). The inventory of today's coupling, the
 contract's signatures and the ordered steps are in
 `backlog/docs/design/core-contract.md`.
 
@@ -140,7 +142,7 @@ in under five minutes.
   `machine-file` loses its dependency on `image-store`, the PC config
   codec moves below the contract so `Core::create` reads stored configs,
   and the home of the journal half of `media` is settled.
-- After the split the program [[decision-30]]'s marker names is the core:
+- After the split the program [decision-30](decision-30%20-%20Published%20images%20declare%20the%20oldest%20unemupc%20that%20runs%20them.md)'s marker names is the core:
   `unemu.min-app-version` keeps meaning the unemupc release, and the front
   end has its own version that images never name.
 - The contract crate must reach every consumer from one source. Cargo

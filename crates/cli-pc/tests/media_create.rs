@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Generated FAT12 media and ATA-2 IDENTIFY DEVICE acceptance tests;
-//! see machines/README.md § Preparing disks and Microsoft FAT Specification,
+//! see the machine guide in unemupc § Preparing disks and Microsoft FAT Specification,
 //! FAT on-disk format, BPB and FAT12 entries.
 
 use pc_harness::test_support::fixtures;

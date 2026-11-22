@@ -1,6 +1,6 @@
 # About text for a work: design note
 
-Bead `upc-miu`. Status: **Accepted by the maintainer on 2026-11-19 with
+Bead `upc-miu` (unemupc). Status: **Accepted by the maintainer on 2026-11-19 with
 every recommendation** of §13, together with the mock-up
 [`mockups/about.html`](mockups/about.html) and the recommendation of each of
 its own questions. **Nothing here is implemented yet.** This note stays the
@@ -861,7 +861,7 @@ it without the record. It is not added now: an annotation holds one
 language; it would change the manifest bytes of every set that states a
 synopsis today, so an identical re-import would become a tag conflict; and
 the pane has the record a moment after selection. The catalogue index of
-`upc-5pw.65` is the planned home of per-repository texts for lists
+`upc-5pw.65` (unemupc) is the planned home of per-repository texts for lists
 (decision-39 point 9), derived from the newest revision's record (§13, Q13).
 
 **Recipes group** (recipes §7.4). A recipe row reads the manifest and the

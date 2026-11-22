@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Game-ready AT configuration contracts; machine-files.md §Validation.
+//! Game-ready AT configuration contracts; machine-files.md §Validation in unemupc.
 //! IBM Personal Computer AT Technical Reference, System Memory Map and TEST1
 //! video-ROM scan; Creative Sound Blaster Series Hardware Programming Guide,
 //! §2 Configuring DMA and Interrupt Settings.

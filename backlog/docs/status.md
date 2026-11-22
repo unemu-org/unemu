@@ -1,3 +1,5 @@
+2026-11-22 — Front end extracted from unemupc at `0f279540`; entries above this line are unemu’s own; unemupc maintains the core log.
+
 # Status
 
 Snapshot of what works, what's in flight, what's broken. **Not the roadmap** — open work lives in
@@ -266,7 +268,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   See `design/core-contract.md` §14.3 S10.
 
 - **2026-11-20 — Created disks and kept catalogues derive their start from the launch:**
-  (`upc-dfs.43.7`, stage B step S7; design/core-contract.md §14.3).
+  (`upc-dfs.43.7`, stage B step S7; [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §14.3).
   Both catalogue editors now update launch bindings transactionally before the
   machine is derived. Short kept record names map to the existing journal files,
   including journals outside the workspace; hashes, retention, catalogue order,
@@ -290,7 +292,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   factory is later work. See `design/core-contract.md` §14.3 S9.
 
 - **2026-11-20 — Stored PC starts derive their machine from a launch:**
-  (`upc-dfs.43.6`, stage B step S6; design/core-contract.md §14.3).
+  (`upc-dfs.43.6`, stage B step S6; [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §14.3).
   `pc-image` builds the effective launch after Settings, with verified flat-content
   identities and session retention. One lowering and path translation derives the
   assembly config; pending inserts edit the launch, and edits install the document
@@ -324,7 +326,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   See `design/machine-images.md` §5.5 and `design/recipes.md` §19.2.
 
 - **2026-11-20 — The PC launch document:** (`upc-dfs.43.5`, stage B step S5;
-  design/core-contract.md §14.2.2, §14.3). `pc_config::launch` holds the document the PC core
+  [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §14.2.2, §14.3). `pc_config::launch` holds the document the PC core
   is to build a stored image's machine from (`application/vnd.unemu.pc.launch.v1+toml`): the
   stored config unchanged, plus a `content` table (each bound digest's flat SHA-256 and length)
   and a `record` table (each journal's record and retention). `decode` and `encode` (pinned
@@ -348,7 +350,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   repository's new name. See `design/recipe-corpus/README.md` for the mapping.
 
 - **2026-11-20 — The core's host interfaces are guarded:** (`upc-dfs.29`,
-  embeddability step 2; design/core-contract.md §12.10). No guest behaviour change.
+  embeddability step 2; [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §12.10). No guest behaviour change.
   `scripts/core-host-guard.sh` checks the production source spellings of the contract
   and emulation layers against 41 exact exceptions (42 matched lines), rejects stale
   exceptions and new host access, including direct libc use, and runs with its planted
@@ -358,7 +360,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   and `unemu-pc-core` already had it.
 
 - **2026-11-20 — `machine-file` no longer depends on the image store:** (`upc-dfs.34`,
-  embeddability step 7; design/core-contract.md §12.10 and §9 item 3). No behaviour change.
+  embeddability step 7; [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §12.10 and §9 item 3). No behaviour change.
   The firmware-package lookup is the trait `machine_file::FirmwarePackages`, which
   `pc_image::firmware::StorePackages` implements over the store; the PC package rules and the
   lookup moved to `pc-image/src/firmware_package.rs`, and the preparations that take a store or
@@ -369,7 +371,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   run-time packages). `upcli run --machine` gives the same output with and without a store.
 
 - **2026-11-20 — A launch from parts in `core-launch`:** (`upc-dfs.43.8`, stage B step S8;
-  design/core-contract.md §14.3). No behaviour change for a file opened with Open… or
+  [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §14.3). No behaviour change for a file opened with Open… or
   `--open`. `core_launch::Prepared::from_parts` makes a start from a platform's own `Parts`: the
   core, the platform, a title, notes, the config, and a `ContentPlan` and a `StoragePlan` made
   on a worker and opened on the machine's thread at every start; `with_options` adds run-only
@@ -381,7 +383,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   comes with S10.
 
 - **2026-11-20 — The stored PC image config and its codec move below the contract:**
-  (`upc-dfs.43.4`, stage B step S4; design/core-contract.md §14.3). No behaviour change.
+  (`upc-dfs.43.4`, stage B step S4; [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §14.3). No behaviour change.
   `pc_config::image` now holds the stored config's model (`Config`, `Firmware`, `Medium`,
   `Slot`, `Nvram`, `Policy`, `Geometry`) with its decode and encode, the hardware-table encoding
   and frozen defaults of an import, the binding walks and the codec half of validation
@@ -412,9 +414,9 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   `a_stack_that_overruns_shuts_down_within_the_stall_window`; the
   open-BIOS A20 reset test leaves SP at 1 instead of 2, since at SP 2 the #UD of a missed reset
   fetch is now delivered and a returning handler reaches the low ROM copy; with the window
-  disabled it again stops with "64 resets within 0 steps", and decision-42 records why.
+  disabled it again stops with "64 resets within 0 steps", and [decision-42 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-42%20-%20CPU%20A20%20is%20held%20open%20from%20a%20CPU-only%20reset%20until%20the%20first%20CS%20load.md) records why.
 - **2026-11-20 — The PC provider's validation splits into a store half and a codec half:**
-  (`upc-dfs.43.3`, stage B step S3; design/core-contract.md §14.3). No behaviour change.
+  (`upc-dfs.43.3`, stage B step S3; [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §14.3). No behaviour change.
   `pc-image`'s `prepare` first reads the store (descriptors, size limits, a ROM's source link,
   a fixed disk's chain, the zero-base rule, the closure) and hands the codec half one row per
   bound blob or disk head (SHA-256 of the flat bytes and their length) and a reader of the
@@ -424,7 +426,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   before and after, refusal words and closure order included; new tests run the codec half over
   inputs in memory and pin the closure order.
 
-- **2026-11-20 — The assembler mounts through one seam:** (`upc-dfs.36`; design/core-contract.md
+- **2026-11-20 — The assembler mounts through one seam:** (`upc-dfs.36`; [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md)
   §12.5 move 2, step 10 of §12.10, §14.4). Assembly asks the machine's `assembly::Mount` for
   what a config names by path (the bytes of an image, the verified base of a journalled disk, the
   journal of a disk or of CMOS RAM) instead of opening it. `FileMount` answers with the files the
@@ -441,7 +443,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   The workspace tests and the ignored goldens pass, the journal goldens among them.
 
 - **2026-11-20 — `pc-config`: the machine schema and its lowering move below the contract:**
-  (`upc-dfs.43.2`, stage B step S2; design/core-contract.md §14.3). No behaviour change. The new
+  (`upc-dfs.43.2`, stage B step S2; [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §14.3). No behaviour change. The new
   `emulation` crate `pc-config` holds the machine schema, its TOML decoder, the source origins
   with their TOML half and the lowering to `assembly::MachineConfig`; it opens no file and
   forbids unsafe code. `machine-file` depends on it, re-exports every moved name at its old path
@@ -455,7 +457,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   `pc-config → media`. `pc-config`'s dependency tree still holds `media` through `assembly`
   until the journal split.
 - **2026-11-19 — The journal sits on a record of the contract:** (`upc-dfs.35`;
-  design/core-contract.md §12.5 move 1, step 9 of §12.10, §14.4). `media::JournalMedia` keeps a
+  [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §12.5 move 1, step 9 of §12.10, §14.4). `media::JournalMedia` keeps a
   floppy, IDE or CMOS journal in one `unemu_core_api::Record` and opens no file: it reads,
   appends, cuts, synchronizes, creates a journal by committing a replacement that holds only the
   header, and rewrites retained history through a replacement it verifies before the commit. The
@@ -473,7 +475,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   The workspace tests and the 63 ignored goldens pass, the journal goldens among them.
 
 - **2026-11-19 — The machine-file lowering asks its reader for everything of the host:**
-  (`upc-dfs.43.1`, stage B step S1; design/core-contract.md §14.3). No behaviour change.
+  (`upc-dfs.43.1`, stage B step S1; [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §14.3). No behaviour change.
   `ImageReader` answers an image's length without reading it, whether a path is a reserved
   retention name, and the check of journal paths against the inputs; `verify_journal_base`
   answers a length and a digest instead of the media crate's verified base. `lower.rs` now names
@@ -496,7 +498,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   platform name and a long title the names ellipsize, the light's word is whole and the message
   keeps 240 px; a long speed text widens its cell.
 - **2026-11-19 — A CPU-only reset with A20 off reaches the BIOS:** (`upc-f7j.20`;
-  decision-42; design/machine-config.md §A20 line and System Control Port A, "Reset fetch with
+  [decision-42 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-42%20-%20CPU%20A20%20is%20held%20open%20from%20a%20CPU-only%20reset%20until%20the%20first%20CS%20load.md); [`design/machine-config.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/machine-config.md) §A20 line and System Control Port A, "Reset fetch with
   the gate off"). Before, a guest that turned the gate off through the 8042 and then reset the
   processor (shutdown or command FEh) fetched its reset vector from EFFFF0h, where the IBM 5170
   board decodes nothing; with SS:SP 0000:0002 the #UD could not be delivered and the machine
@@ -508,7 +510,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   high for CS cycles until the first far jump); the 8042 output port, port 92h, the board line
   and the memory map are untouched, so the guest reads back the gate it wrote and 1 MiB wraps
   again right after the reset vector's far jump. The documents do not settle what the 5170's ROM
-  decode does here; decision-42 records the choice, its uncertainty and the trigger to revisit.
+  decode does here; [decision-42 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-42%20-%20CPU%20A20%20is%20held%20open%20from%20a%20CPU-only%20reset%20until%20the%20first%20CS%20load.md) records the choice, its uncertainty and the trigger to revisit.
   Supersedes the older entry below that pinned the #UD at EFFFF0h. New tests: an open test ROM
   (`assembly::test_support::a20_off_reset_rom`, hash-pinned listing) resetting through a triple
   fault and through FEh, a machine-level window test, and an open boot sector resumed through
@@ -517,7 +519,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   change, the last with the reported reset storm.
 
 - **2026-11-19 — The boundary check lists the external crates the core may reach:**
-  (`upc-dfs.28`; design/core-contract.md §12.3, step 1 of §12.10; commands.md § Crate
+  (`upc-dfs.28`; [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §12.3, step 1 of §12.10; commands.md § Crate
   boundaries). `scripts/crate-boundaries.external` names, with a reason each, the crates from
   outside the workspace that the `contract` and `emulation` layers reach: today 27 at run time
   (the contract, `thiserror`, `x86jit-core` with `iced-x86` and `lazy_static`, `sha2` and its
@@ -528,7 +530,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   path, and on a line whose crate is no longer reached, so the list only shrinks. Eleven new
   self-test fixtures; it runs in the `guard` gate as before. No code or behaviour changed.
 - **2026-11-19 — The about text of a work is specified, not implemented:** (`upc-miu`;
-  design/about-text.md, mock-up design/mockups/about.html, both accepted by the maintainer on
+  [`design/about-text.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/about-text.md), mock-up design/mockups/about.html, both accepted by the maintainer on
   2026-11-19 with every recommendation). A work gets a long Markdown text per language, with a
   source per language (`own`, or `licensed` with a title, authors, an `https` URL and one of
   five Creative Commons licences), and its synopsis may be stated per language. Specified:
@@ -540,7 +542,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   to W6, and the text layer `application/vnd.unemu.recipe.text.v1` in recipes §6.1, §6.11,
   §6.13, §6.16 and §7.1. The mock-up joined the icon inventory. No code reads or writes any
   of it yet; about-text.md §15 lists the implementation steps in order.
-- **2026-11-19 — Stage B of the core contract planned:** (design/core-contract.md §14; no code).
+- **2026-11-19 — Stage B of the core contract planned:** ([`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §14; no code).
   The maintainer accepted the plan with every recommendation: the PC config codec (the machine
   schema and its lowering from `machine-file`, the stored image config from `pc-image`) moves to
   a new `emulation` crate `pc-config`; the PC provider writes a launch document (the stored
@@ -554,7 +556,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   decision-30 gets a note that it is amended before the repositories separate.
 - **2026-11-19 — A guest that resets again and again no longer holds the desktop's frame;
   a storm of resets stops the machine with a report:** (`upc-f7j.19`;
-  design/observation.md §The machine resets again and again, §Window pacing).
+  [`design/observation.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/observation.md) §The machine resets again and again, §Window pacing).
   Before, a guest that shut down right after every reset kept one run resetting until its
   virtual-time cap (a run of one second of guest time did not return within 60 s, debug).
   The machine now stops 64 reset requests in a row, each fewer than 16 steps of virtual time
@@ -579,7 +581,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   reset request at f800:0004". The open AT protected-mode golden and every other golden are
   unchanged.
 - **2026-11-19 — Diagnostics move into Tools › Diagnostics, and the exception recording keeps
-  the last deliveries, folded:** (`upc-f7j.18`; design/observation.md §Diagnostic report of a
+  the last deliveries, folded:** (`upc-f7j.18`; [`design/observation.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/observation.md) §Diagnostic report of a
   running machine and §Exception and interrupt deliveries; commands.md). The desktop no longer
   reads `UNEMUPC_DIAG` or `UNEMUPC_TRACE_EXCEPTIONS`. Tools › Diagnostics › Save machine report
   (Ctrl+Alt+Shift+D, ⌘⇧D on macOS, with the pointer captured or not) writes `diag-N.txt`
@@ -604,7 +606,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   trail and the log, and with a recording, unchanged).
 - **2026-11-19 — Every exception and interrupt the guest takes can be traced, and the
   diagnostic report lists the last 64; x86jit moves to `e63c1321`:** (`upc-x83.17`, for
-  `upc-f7j.17`; design/observation.md §Exception and interrupt deliveries). x86jit
+  `upc-f7j.17`; [`design/observation.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/observation.md) §Exception and interrupt deliveries). x86jit
   `e63c1321` (xj-ir6.37 (x86jit)) keeps an opt-in log of the deliveries a machine vCPU
   performs in the guest, outside its state. `upcli run --machine FILE --trace-exceptions`
   writes a line per delivery to stderr (retired count, kind, mnemonic and vector, saved
@@ -629,7 +631,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   golden is unchanged at the new pin.
 - **2026-11-19 — Push from the library: Push to… of one item or several, Push here… of a
   registry or namespace, as the approved remotes-push mock-up (Remotes revision 3):**
-  (`upc-5pw.64.5`; design/machine-images.md §5.1, mockups/remotes-push.html). Image › Push…
+  (`upc-5pw.64.5`; [`design/machine-images.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/machine-images.md) §5.1, mockups/remotes-push.html). Image › Push…
   became Image › Push to…, with Image › Push here…, the toolbar's Push… beside Pull… (the Push
   icon, now painted) and the Push to… / Push here… buttons of the panes. One item's destination
   is preselected by the Remotes rule (a host-qualified tag goes to its registry, a short tag
@@ -652,7 +654,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   the shell's toolbar and menu gating test, `image-store` store test of the push record, and
   model tests of the rule and of Source.
 - **2026-11-19 — Every set and package exports to plain files:** step B11 of
-  design/recipes.md §19.2 (decision-37). `upcli image export NAME:TAG --to
+  [`design/recipes.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/recipes.md) §19.2 (decision-37). `upcli image export NAME:TAG --to
   DIR [--files] [--store DIR]` writes every layer's decoded bytes under its
   file name (the title of A3, without `.zst`), `config.toml` and
   `manifest.json` as stored, `EXPORT-VERSION` (`1`) and `SHA256SUMS`;
@@ -674,7 +676,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   that folder byte for byte (561 files). zstd joins the devShell for the
   script. commands.md, Exporting an image.
 - **2026-11-19 — A diagnostic report of a running machine, on demand:** (`upc-f7j.16`;
-  design/observation.md §Diagnostic report of a running machine). A guest that hangs without
+  [`design/observation.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/observation.md) §Diagnostic report of a running machine). A guest that hangs without
   an error (interrupts disabled around a HLT or a loop, IRQ1 masked, the 8042's keyboard
   interface disabled) kept the machine running with nothing to show why; the CPU stop report
   exists only when the CPU core refuses something. With `UNEMUPC_DIAG=1` in the desktop's
@@ -724,7 +726,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   The maintainer tags and publishes it; then the six published artifacts are
   pushed again under the new paths.
 - **2026-11-19 — A guest stuck delivering exceptions stops the machine with a report instead
-  of freezing it; x86jit moves to `7a9ea390`:** (`upc-f7j.15`; design/observation.md §CPU
+  of freezing it; x86jit moves to `7a9ea390`:** (`upc-f7j.15`; [`design/observation.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/observation.md) §CPU
   stop report). On the 286 AT a protected-mode guest whose exception handler faulted at its
   first instruction was delivered the exception again and again; a delivery retires nothing,
   virtual time counts retired instructions, so the run's deadline was never reached and the
@@ -754,7 +756,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   pin also brings x86jit's locked operand that spans RAM and a device region, now performed
   instead of refused (`e29dc1ae`). Every golden keeps its transcript and retired count at the
   new pin.
-- **2026-11-19 — Recipes on a registry:** step B10 of design/recipes.md
+- **2026-11-19 — Recipes on a registry:** step B10 of [`design/recipes.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/recipes.md)
   §19.2 (decision-35). `upcli recipe push FILE REF` publishes a pinned
   recipe as an artifact of its own type (`application/vnd.unemu.recipe.media.v1`
   or `…firmware.v1`): the recipe as config, its work file, bundled inputs
@@ -776,7 +778,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   the pinned digest; each refusal tested; a row is two requests. No
   Remotes UI yet (B13). commands.md, Recipes on a registry.
 - **2026-11-19 — Remotes says Newer available across releases again, from the title
-  records:** (`upc-5pw.64.7`; design/machine-images.md §3). A selected set or package tag whose
+  records:** (`upc-5pw.64.7`; [`design/machine-images.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/machine-images.md) §3). A selected set or package tag whose
   metadata record was read reads "Newer available · you have 1.3" when the library holds, under
   the local name a pull writes, records of the same title, edition, regions, languages and
   formats, all with an older `version` field. The rule is conservative
@@ -790,7 +792,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   the tag rule. The hint only appears once the tag is selected, since the list reads no
   metadata record. It is a hint only; nothing is replaced or pulled.
 - **2026-11-19 — Recipes are scaffolded from the author's files; their
-  inputs list for ROM managers:** step B9 of design/recipes.md §19.2.
+  inputs list for ROM managers:** step B9 of [`design/recipes.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/recipes.md) §19.2.
   `upcli recipe scaffold FILE|FOLDER...` prints the `[input]` tables of
   the files named, with sizes and SHA-256; a zip archive also gets an
   `unpack` step listing every member in the archive's order with its size,
@@ -806,7 +808,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   entries, both byte for byte. commands.md,
   Scaffolding recipes and listing their inputs.
 - **2026-11-19 — Local images that need a newer unemupc:** the desktop's part of decision-30
-  (`upc-dfs.15` part 2; design/machine-images.md §5.6). The summary cache, now schema 8, keeps
+  (`upc-dfs.15` part 2; [`design/machine-images.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/machine-images.md) §5.6). The summary cache, now schema 8, keeps
   each artifact's `unemu.min-app-version` and reads it before any config. An image, set or
   package this release does not read is summarised from its manifest and metadata and listed in
   its collection; one whose manifest, layers or metadata do not decode is still a ⚠ failure row,
@@ -821,7 +823,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   refusal names the machine's own tag, not the digest it keeps. The Images list's rows have no
   dimmed look yet; that waits for a mock-up (`upc-dfs.15.1`).
 - **2026-11-19 — Pinned recipes find their outputs; a lost lock is rebuilt:**
-  the two follow-ups of step B8 of design/recipes.md §19.2. A pinned
+  the two follow-ups of step B8 of [`design/recipes.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/recipes.md) §19.2. A pinned
   recipe's build looks every output a step makes up by the payload its
   lock names, in the store, the download cache and the libraries (§3.4,
   "found instead of made"), before it plans the steps; a found output is
@@ -845,7 +847,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 - **2026-11-19 — The session's PC tests have their own crate:**
   `crates/pc-session-tests` (layer `pc`, tests only, no library code)
   holds the 57 tests that drive a real PC through `machine_view::Session`
-  and test no code of the desktop (design/core-contract.md §8.1.10): the
+  and test no code of the desktop ([`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §8.1.10): the
   session tests of the window's `main.rs`, the host mix levels, host
   audio, the mouse shim and the key table, under the same module paths.
   A change to the desktop's shell no longer runs them; a change to the
@@ -859,7 +861,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   `crates/platforms/tests/nes_cartridge.rs` moves to `0xFCDFD18611FED325` (its picture uses rows
   1 and 2), the same digest unemunes pins for that picture.
 - **2026-11-19 — The NES core, compiled in:** step 16 of
-  design/core-contract.md §13.6. Both programs carry `unemu-nes-core`
+  [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §13.6. Both programs carry `unemu-nes-core`
   from unemunes, pinned to revision `7c5abb52` (built against the same
   `unemu-core-api` v0.2.0 commit, so one copy of the contract stays in the
   build; `deny.toml` allows that git source and no other new one). The NES
@@ -877,7 +879,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   80 000 instructions and the picture's FNV-1a digest
   `0x64CB5BF7C2F11325` for the pinned revision.
 - **2026-11-19 — Saved state in the player:** step 15 of
-  design/core-contract.md §13.6. A machine opened with Open… whose core
+  [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §13.6. A machine opened with Open… whose core
   lists saved state has Save state (Ctrl+Alt+S) and Load state
   (Ctrl+Alt+L) in its Machine menu after Stop: one quick slot per content
   and core, `unemupc/states/CORE/aa/DIGEST/quick.state` (the line
@@ -890,7 +892,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   Ctrl+Alt+S and Ctrl+Alt+L. No released core opens files yet, so only the
   test core shows it.
 - **2026-11-19 — Open… in the application:** step 14 of
-  design/core-contract.md §13.6. The desktop takes `--open FILE [--core ID]`
+  [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §13.6. The desktop takes `--open FILE [--core ID]`
   beside `--machine FILE` (the usage line changes by that, and `--core`
   alone or `--open` with `--machine` is a usage error) and has File ›
   Open… (Ctrl+O) above Open machine file…, which loses its key. The file
@@ -913,7 +915,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   Open… was greyed with "No core in this release opens files"; the `test-core`
   feature of `platforms` adds the scripted test core for trying it by hand.
 - **2026-11-19 — The player, the view of a machine started from a file:**
-  step 13 of design/core-contract.md §13.6. The new crate `player-ui`
+  step 13 of [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §13.6. The new crate `player-ui`
   (neutral, a window crate) holds one `dyn Machine` started from a
   `core_launch::Prepared` in a `machine_view::Session` and draws it as the
   approved `mockups/player.html`: the Machine menu (Pause, Reset when the
@@ -931,7 +933,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   nothing shows the player yet; the application wires it in at step 14,
   and Save state and Load state come with step 15.
 - **2026-11-18 — The launch path from a file to a machine:** step 12 of
-  design/core-contract.md §13.6. `core-launch` gains `prepare`, `start`,
+  [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §13.6. `core-launch` gains `prepare`, `start`,
   `HostDirs`, `Prepared`, `Outcome`, `LaunchError` and `Cores::filters`
   (§13.3). `prepare` opens the file once and hashes all of it through the
   `unemu-core-files` reader the machine gets later (a file whose length or
@@ -960,7 +962,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   as `LegacyInstruction`. Cargo.toml, Cargo.lock (only x86jit-core moves)
   and every golden's CPU revision follow; the 80286's identity is
   unchanged. The open privilege-level floppy gains case (e)
-  (design/at-privilege-test.md): from ring 3, a far CALL through a DPL-3
+  ([`design/at-privilege-test.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/at-privilege-test.md)): from ring 3, a far CALL through a DPL-3
   call gate copying two words to a DPL-0 handler, which checks SS0:SP0 and
   the frame order (outer SS, SP, the words, CS, IP), then RETF 4 back.
   MEASURED with the open AT BIOS: every line passes, 6,391,138 retired
@@ -973,7 +975,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   refuses.
 - **2026-11-18 — The library frame leaves the window; what is left is the
   application:** moves 6.4 and 6.5 of the window split
-  (design/core-contract.md §8.1.9). `pc-ui` takes the machine library's
+  ([`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §8.1.9). `pc-ui` takes the machine library's
   frame (`library_view` with the Machines, Firmware and Installation media
   collections, Edit metadata…, Remotes and the layout tests) and the tests
   of the push, pull and Pull… models that drive it (`registry_transfer`,
@@ -985,7 +987,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   behaviour changes: the workspace lists the same 4132 test names
   (MEASURED); 172 tests moved to `pc-ui`. The window's own tests take 26 s
   of wall time where they took 50 s (MEASURED, on a loaded host).
-- **2026-11-18 — Core registration:** step 8 of design/core-contract.md
+- **2026-11-18 — Core registration:** step 8 of [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md)
   §13.6. `platforms::cores()` is the one list of the cores compiled into
   both programs: the PC core alone, plus `unemu-test-core` with the
   `test-core` feature of `platforms`, which is off by default and which
@@ -1005,7 +1007,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   unique. The About dialog of the desktop's menu is unchanged.
 - **2026-11-18 — The PC dialogs and the command vocabulary leave the
   window:** moves 6.1 to 6.3 of the window split
-  (design/core-contract.md §8.1.9). `pc-library` takes the models of File ›
+  ([`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §8.1.9). `pc-library` takes the models of File ›
   New machine… (`new_machine`) and of a machine file's Settings…
   (`settings_model`, which now opens with the library's machine-file
   directory that the shell passes), and the machine-file list with its
@@ -1020,7 +1022,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   with their code to `machine_files` and `commands`; 51 tests moved to
   `pc-library`, 29 to `pc-ui` and the picker's size test to `media-ui`.
 - **2026-11-18 — `machine-view` on contract 0.2:** step 10 of
-  design/core-contract.md §13.6. A new module, `machine_view::screen`,
+  [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §13.6. A new module, `machine_view::screen`,
   is the geometry every view but the PC's will show a picture with:
   `layout` gives the shown part (the visible part, or the whole picture
   with overscan shown) and its rectangle in a panel, in the shape
@@ -1039,7 +1041,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   table. No behaviour changes: the PC keeps its 4:3 screen, nothing calls
   the new calls yet, and no PC test or pin changed.
 - **2026-11-18 — The PC media views leave the window:** moves 5.1 and 5.2
-  of the window split (design/core-contract.md §8.1.8). A drive's
+  of the window split ([`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §8.1.8). A drive's
   Catalogue submenu now answers with the disk chosen, or All N disks…, and
   the shell turns that into its command, so the submenu no longer names
   the shell. A new `pc` crate, `media-ui` (egui, `pc-media`, `ui-kit` and
@@ -1051,7 +1053,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   `media-ui`, and the picker's size test, which uses the library's modal
   helper, stays with the window.
 - **2026-11-18 — A scripted test core, `unemu-test-core`:** step 9 of
-  design/core-contract.md §13.6. A new neutral crate, `crates/test-core`,
+  [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §13.6. A new neutral crate, `crates/test-core`,
   whose only dependency is the contract: `TestCore` implements all of
   contract 0.2 and emulates nothing. Its content is a `utc` text script
   (first line `unemu-test-core 1`) that sets the picture's size, aspect
@@ -1079,7 +1081,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   system instructions, LOCK). A far CALL or JMP through a call gate is
   still refused (`LegacyGateOrTaskTransfer`). Cargo.toml, Cargo.lock (only
   x86jit-core moves) and every golden's CPU revision follow. A new open
-  floppy, `vendor/at-privilege-test` (design/at-privilege-test.md), IRETs
+  floppy, `vendor/at-privilege-test` ([`design/at-privilege-test.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/at-privilege-test.md)), IRETs
   to ring 3 with IOPL 3, takes INT 40h back to ring 0 on SS0:SP0, IRETs to
   ring 3 again with a DPL-0 ES that the return nulls, and takes #GP(0) for
   CLI at ring 3 with IOPL 0. MEASURED with the open AT BIOS: every line
@@ -1091,7 +1093,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   ring 3 and is refused at a call gate there, and two `upcli run` tests
   fail on a LOADALL table the core refuses.
 - **2026-11-18 — This repository on contract 0.2:** step 7 of
-  design/core-contract.md §13.6. The workspace pins release v0.2.0 of
+  [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §13.6. The workspace pins release v0.2.0 of
   `unemu-core-api` (commit `56c4640`), where content and storage are
   objects a front end hands in and the contract names no path. The PC core
   states contract 0.2, lists no content kind a person opens (a PC starts
@@ -1102,7 +1104,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   the contract in the build, and none of the contract's old path
   signatures in it or in this workspace.
 - **2026-11-18 — The library's neutral views leave the window:** moves 4.1
-  to 4.3 of the window split (design/core-contract.md §8.1.7). A new
+  to 4.3 of the window split ([`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §8.1.7). A new
   neutral crate, `library-ui` (egui, no PC crate), holds the list tables
   every collection and Remotes draw with (`table`), the Save as new image…
   form and its questions (`save_image`), the Push…, Pull by reference… and
@@ -1116,7 +1118,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   form's drawing test moved to `library-ui`, and the tests of Remotes and
   the dialogs, which drive the frame or plan PC images, stay with the
   window.
-- **2026-11-18 — Recipe locks and pinning:** step B8 of design/recipes.md
+- **2026-11-18 — Recipe locks and pinning:** step B8 of [`design/recipes.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/recipes.md)
   §19.2. `upcli recipe pin FILE` builds a draft, then writes its lock,
   `FILE.lock/sha256/<hex>` (the manifest, the config and every layer no
   step made, the bytes the store holds), and `digest = "sha256:…"` after
@@ -1142,7 +1144,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   made: 2026-11-19, above.) commands.md, Pinning recipes and Recipe
   conformance.
 - **2026-11-18 — The contract has its own repository:** step 3 of
-  design/core-contract.md §13.6. `unemu-core-api` is no longer a workspace
+  [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §13.6. `unemu-core-api` is no longer a workspace
   crate: the workspace pins release v0.1.0 of
   [unemu-org/unemu-core-api](https://github.com/unemu-org/unemu-core-api)
   (`MIT OR Apache-2.0`) by its exact commit, as it pins x86jit, and
@@ -1153,7 +1155,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   copy's source and users. A local checkout is used through a gitignored
   `[patch]` (dev-setup.md, "The contract: unemu-core-api").
 - **2026-11-18 — Sound at any rate, pads from the keyboard:** steps 1 and 2
-  of design/core-contract.md §13.6, in `machine-view`. The session plays a
+  of [`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §13.6, in `machine-view`. The session plays a
   machine's sound at the exact rate its description states, any rate from
   8 000 to 192 000 frames a second (984 375/22 Hz, the NES's, included),
   converted to the device's rate; only a rate outside those bounds disables
@@ -1167,7 +1169,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   (`keys::name`, `keys::by_name`). The PC has a keyboard port: its keys are
   unchanged. Nothing in the desktop shows a pad machine yet.
 - **2026-11-18 — The library's worker leaves the window:** moves 3.11 and
-  3.12 of the window split (design/core-contract.md §8.1.6). `pc-library`
+  3.12 of the window split ([`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §8.1.6). `pc-library`
   (layer pc, no toolkit) now holds the library's worker thread
   (`library_worker`), which wakes the frame through a plain function
   instead of an egui context, the PC's part of the registry models
@@ -1178,7 +1180,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   tests and those of `image_settings`, `hardware` and `remote_browse` that
   draw nothing moved with it: 67 tests leave the window's test binary.
   No behaviour changes: every test keeps its name (4044; MEASURED).
-- **2026-11-18 — Recipe builds:** step B7 of design/recipes.md §19.2.
+- **2026-11-18 — Recipe builds:** step B7 of [`design/recipes.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/recipes.md) §19.2.
   `upcli recipe build FILE [--fetch] [--library DIR]... [--store DIR]
   [--keep-as TAG]` builds a draft: the plan, the downloads `--fetch`
   consents to (HTTPS only, listed first, kept in the store's
@@ -1213,14 +1215,14 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   the machine's workspace (the status line names the path), and a refusal
   the instruction shown cannot make is noted as one that may have come while
   delivering an interrupt or exception. `upcli run --machine`
-  prints it on stderr. No change for running guests. design/observation.md
+  prints it on stderr. No change for running guests. [`design/observation.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/observation.md)
   §CPU stop report; commands.md, Build / run / test.
 - **2026-11-18 — The library's PC models leave the window:** the rest of
   move 3.7 and moves 3.8 to 3.10 of the window split
-  (design/core-contract.md §8.1.6). `pc-library` (layer pc, no toolkit)
+  ([`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §8.1.6). `pc-library` (layer pc, no toolkit)
   now also holds the frame's query and the worker's snapshot of every
   list (`snapshot`), the Machines, Firmware and Installation media
-  collections' rows, facets, labels, scans and imports (`machines`,
+  collections' rows, facets, labels, scans and imports ([`machines` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/machines),
   `firmware`, `install_media`), a firmware package's statement and the
   worker's sides of Edit metadata… (`firmware_metadata`), the details
   panes' hardware facts (`hardware`) and Settings… on an image
@@ -1230,7 +1232,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   names of the frame now lives below it. No behaviour changes: every test
   keeps its name and place (3962; MEASURED).
 - **2026-11-18 — Recipe libraries, the index and the plan:** step B6 of
-  design/recipes.md §19.2. `upcli recipe plan FILE [--json]` resolves every
+  [`design/recipes.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/recipes.md) §19.2. `upcli recipe plan FILE [--json]` resolves every
   input of a recipe that passes the checks: from the store (by the decoded
   digests of its layers), beside the recipe (bundled inputs) and from the
   user's libraries, including members of zip archives (stored and deflate,
@@ -1247,7 +1249,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   204 files of the user's copy, 204 hashes, and none on a second plan.
   commands.md, Planning recipes and libraries.
 - **2026-11-18 — Push, pull and Remotes' models leave the window:** moves
-  3.4 and 3.5 of the window split (design/core-contract.md §8.1.6).
+  3.4 and 3.5 of the window split ([`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §8.1.6).
   `library-model` (layer neutral) now also holds Image › Push… and Pull…
   (`registry_transfer`), browsing Remotes (`remote_browse`) and Pull… from
   them (`remote_pull`), and the desktop's provider seam (`DesktopPlatform`,
@@ -1259,7 +1261,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   11 tests moved to `library-model` and 4 are new (3962; MEASURED).
 - **2026-11-18 — The desktop's PC media models and firmware choices
   leave the window:** moves 3.6 and 3.7 of the window split
-  (design/core-contract.md §8.1.6). `pc-media` (layer pc, no toolkit)
+  ([`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §8.1.6). `pc-media` (layer pc, no toolkit)
   holds the floppy catalogue drafts, the blank-disk form and the pending
   floppies of `media_dialog`, `created_media`, `kept_catalogue`,
   `drive_chips`, and the sets and short disk names of the picker and the
@@ -1270,7 +1272,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   listing types of move 3.3. No behaviour changes: every test keeps its
   name (3958 before and after, 40 now in the two new crates; MEASURED).
 - **2026-11-18 — The desktop library's first neutral models:** moves 3.1
-  to 3.3 of the window split (design/core-contract.md §8.1.6). A new crate,
+  to 3.3 of the window split ([`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §8.1.6). A new crate,
   `library-model` (layer `neutral`, no toolkit, no PC crate), holds the
   Preferences › Registries page model, the rows of the image lists and the
   Save as new image… form's model; the window re-exports them under their
@@ -1281,7 +1283,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   workspace lists the same test names apart from the crate (25 tests moved
   to `library-model`).
 - **2026-11-18 — The command line in three crates:** steps 5 and 6 of
-  the CLI split (design/core-contract.md §7.1, §7.5). `cli` is gone:
+  the CLI split ([`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §7.1, §7.5). `cli` is gone:
   `cli-core` (layer neutral) holds the platform-neutral command line, its
   provider seam and the journal tools' tests; `cli-pc` (layer pc) the PC's
   platform, every PC command, the PC command tests and the front-end
@@ -1294,7 +1296,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   keeps its name and the binary's output over 319 invocations is
   byte-identical (MEASURED).
 - **2026-11-18 — The desktop's machine window drives a `dyn Machine`:**
-  second step of the window split (design/core-contract.md §8). Three new
+  second step of the window split ([`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §8). Three new
   crates: `unemu-core-api`, the front-end contract of §3 (layer
   `contract`, no dependency at all); `unemu-pc-core`, the PC behind it in
   stage A (`PcMachine::from_assembled` over the provider's assembled
@@ -1313,7 +1315,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   fonts' paths; `deny.toml` allows CC-BY-SA-4.0 for `unemu-pc-core`
   instead of `window`.
 - **2026-11-18 — The command line's provider seam:** step 4 of the CLI
-  split (design/core-contract.md §7.2, §7.5). Inside the `cli` crate the
+  split ([`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §7.2, §7.5). Inside the `cli` crate the
   platform-neutral command line (`cli::cli_core`: the top-level parser,
   the usage text, the exit codes, the neutral image, registry, recipe and
   journal commands) reaches a platform only through the `CliPlatform` and
@@ -1326,7 +1328,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   and written files are byte-identical over 319 invocations (MEASURED).
 - **2026-11-18 — Work files merge, and `upcli recipe show`:** a media
   recipe and the work file it names merge into one description record,
-  field by field as design/recipes.md §6.16 rules (B5): a single value is
+  field by field as [`design/recipes.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/recipes.md) §6.16 rules (B5): a single value is
   the recipe's when it states one; a recipe's list of publishers,
   developers or genres replaces the work's whole; labels are the union, the
   work's first; `[ids]` and `[needs]` merge per key; the description falls
@@ -1339,7 +1341,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   work files that had a first round give its full records field by field;
   the labels of Ken's Labyrinth 2.01 differ in order only (MEASURED).
 - **2026-11-18 — The desktop's skin and widget helpers move to a `ui-kit`
-  crate:** first step of the window split (design/core-contract.md §8).
+  crate:** first step of the window split ([`design/core-contract.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/core-contract.md) §8).
   The new crate (layer `neutral`; the boundary check counts it as a window
   crate, so it may not depend on a CLI crate) holds the skins, fonts, title
   strips, bevels and text marks (`ui_kit::skin`), the mock-up icons and
@@ -1353,7 +1355,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 - **2026-11-17 — Recipe crate and `upcli recipe check`:** the new
   platform-neutral crate `recipe` reads Mediafiles, Firmwarefiles and work
   files of recipe version 0.1 into a typed model and runs every static
-  check of design/recipes.md §6.11 without reading an input (B4): TOML 1.0
+  check of [`design/recipes.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/recipes.md) §6.11 without reading an input (B4): TOML 1.0
   only (the TOML 1.1 forms the `toml` crate accepts are refused in a pass
   over `toml_parser`'s events), unknown keys, types and values with their
   key paths, the kind's tables, references and unused values, the open
@@ -1381,7 +1383,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   real mode; the previous pin raised interrupt 6 there, so DOS stopped with
   "Invalid Opcode" at the first XMS move. Cargo.toml, Cargo.lock (only
   x86jit-core moves) and every golden's CPU revision follow. A new open
-  floppy, `vendor/at-loadall-test` (design/at-loadall-test.md), moves a
+  floppy, `vendor/at-loadall-test` ([`design/at-loadall-test.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/at-loadall-test.md)), moves a
   block to `150000h` and back through LOADALL-loaded ES and DS caches and
   checks the guard at their A20 and selector alias. MEASURED with the open
   AT BIOS: every line passes, 6,404,154 retired instructions; at the
@@ -1408,7 +1410,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   name instead of 32, 57 s instead of 95 s (MEASURED, loaded machine).
 - **2026-11-17 — FAT builder additions for recipes, and a data-disk boot
   sector:** `media::fat12::plan_volumes` builds FAT12 diskettes from files
-  given in memory, as a recipe's `fat` step will (design/recipes.md §6.9,
+  given in memory, as a recipe's `fat` step will ([`design/recipes.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/recipes.md) §6.9,
   B3): listed or name order, a time per entry (creation, access and write
   fields), a chosen serial, a label with its time, names refused with the
   rule they break (lower case included) and never renamed, folders deeper
@@ -1878,7 +1880,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   folder's own files before its subfolders', so a game's loose SETUP.EXE and
   README go on disk 1; directory entries stay sorted. The mock-up's DOS-name
   sentence now states the builder's rule (cut to 8.3, a `~N` tail only on a
-  clash). machines/README.md § Create from files… in the window describes it,
+  clash). [`machines/README.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/README.md) § Create from files… in the window describes it,
   with the XCOPY recipe and how to make the same disk on the command line.
 - **2026-11-17 — Pulled images keep their registry host:** an image pulled
   from any registry other than `registry.unemu.dev` gets the full reference
@@ -2084,12 +2086,12 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
 - **2026-11-16 — Release readiness of the tree:** the binaries no longer carry
   or use the path of the tree they were built in. The desktop's library lists
   machine files from `UNEMUPC_MACHINES_DIR`; else, when cargo started it, the
-  tree's `machines/` (from `CARGO_MANIFEST_DIR` at run time, never compiled
+  tree's [`machines/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/machines) (from `CARGO_MANIFEST_DIR` at run time, never compiled
   in); else `unemupc/machines` in the platform data directory. `--help` prints
   that directory, and a fresh install selects no machine instead of a missing
   default. Its ROM folders are its preferences, `--rom-dir`,
   `UNEMUPC_USER_ROMS_DIR` and, under cargo, the tree's `vendor/user-roms`. A
-  Settings… child of a machine file outside any `machines` directory goes to
+  Settings… child of a machine file outside any [`machines` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/machines) directory goes to
   the `local/` folder of the library's machines directory; with no data
   directory Settings refuses with a message. The user-ROM test lane exists only
   with `test-support`. Tests check that none of these defaults points into the
@@ -2428,7 +2430,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   entry whose provenance tag is its id's release or a later release of the
   same upstream base (`v0.8a-unemu.3` for `vgabios-0.8a-unemu.1-std`), and
   requires the revision in its `fetch`. The AT BIOS entries' provenance names
-  `unemu-org/at-bios`. `machines/at-games-open.toml` and the
+  `unemu-org/at-bios`. [`machines/at-games-open.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/at-games-open.toml) and the
   templates use the 0.9d ROM. New machine… lists a superseded video BIOS
   package under its package name but never chooses it by default; the
   capabilities and settings sheet labels the entry "unemu VGA BIOS
@@ -2527,8 +2529,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   (revision `4548c176`, ROM `6938dc8b…ef2442`, source archive
   `unemu-at-bios-1.0.2-unemu.3-src.tar`, `59d3d921…9d67`) clears every
   64 KiB block its POST sizing finds above 1 MiB, cold or warm. Its catalogue
-  entry `unemu-at-bios-1.0.2-unemu.3` is the one `machines/at-games-open.toml`,
-  `machines/at-ide.toml` and the templates use; `unemu-at-bios-1.0.2-unemu.2`
+  entry `unemu-at-bios-1.0.2-unemu.3` is the one [`machines/at-games-open.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/at-games-open.toml),
+  [`machines/at-ide.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/at-ide.toml) and the templates use; `unemu-at-bios-1.0.2-unemu.2`
   stays listed as a superseded open entry (new `FirmwareStatus::Superseded`)
   with its own source archive pin (`6c7aaace…a47e`), so machines and images
   made with it still start. The catalogue self-test holds the entries a fetch
@@ -2585,7 +2587,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   (timer status 00h then C0h) passes; headless, Duke Nukem II wrote no SB16
   mixer register before its title screen. Tests pin the levels for a synthetic
   machine, the shipped machine file and the template image. See [audio design
-  §Host mix levels](design/audio.md#host-mix-levels).
+  §Host mix levels](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/audio.md#host-mix-levels).
 
 - **2026-11-15 — Tests no longer play the POST melody on the host's
   speakers:** the window's shell tests start real machines, and starting a
@@ -2612,7 +2614,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   unchanged. Focus loss, pause, dialogs, stop and quit remove the tap; a tap
   macOS switched off for a slow answer is reinstalled; a refused tap leaves
   one status hint. Without the option the shortcuts stay with macOS; Help and
-  `machines/README.md` § macOS system shortcuts in games give the System
+  [`machines/README.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/README.md) § macOS system shortcuts in games give the System
   Settings › Keyboard Shortcuts › Mission Control workaround. Decision logic
   and lifetime are tested headless; the tap itself is checked by hand
   (Duke Nukem II with Ctrl+arrows, ASSUMED until the maintainer's check).
@@ -3019,10 +3021,10 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   (for example `a 1.44M drive takes 1.44M (1474560 bytes) or 720K (737280
   bytes) media`). A catalogue may mix the formats a drive takes; chips show the
   medium's own format. CMOS 10h still encodes the drive types (a 720K disk in
-  a 1.44M B: leaves type 4). `machines/at-games-open.toml` and the open
+  a 1.44M B: leaves type 4). [`machines/at-games-open.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/at-games-open.toml) and the open
   templates (still `1.1.0`, re-pinned: `open-at` `e3bccef9…3b75`,
   `open-at-games` `b5c48e53…10c9`) gain an empty 3.5-inch 1.44M B: (unit 1).
-  `machines/at-games.toml` keeps A: only: READ, the local IBM 06/10/85 listing
+  [`machines/at-games.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/at-games.toml) keeps A: only: READ, the local IBM 06/10/85 listing
   excerpt lacks `DSKETTE.ASM`, which holds the drive-type support (TEST1.ASM
   lines 67–70 name it), so whether that BIOS has a 720K type 3 is not
   verified, and `floppy_disabled_reason` still refuses only 1.44M on it.
@@ -3067,7 +3069,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   `fixtures` gate runs it before XTIDE. Catalogue entry
   `unemu-at-bios-1.0.2-unemu.2` (open, **Tested**; `ibm-5170`; floppy; 8042,
   RTC/CMOS, cascaded PICs; 80286) is now the system BIOS of
-  `machines/at-games-open.toml`, `machines/at-ide.toml` and the templates.
+  [`machines/at-games-open.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/at-games-open.toml), [`machines/at-ide.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/at-ide.toml) and the templates.
   READ (the fork's `README.unemu.md`): CMOS shutdown-byte resume (05h/0Ah
   through 0040:0067h, 09h, 04h via POST), INT 15h AH=87h/88h as IBM, extended
   memory measured into CMOS 30h–31h (one more 8042 CPU reset per POST), IBM
@@ -3096,10 +3098,10 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   F1: the derived CMOS of every open profile passes the new checks. The
   templates change their system BIOS package, so `pc_image::template::VERSION`
   is `1.1.0` with new pinned digests. The Kiselev entries stay: the unmodified
-  Xi 8088 image boots `machines/at-freedos.toml` and its BIOS POST, FreeDOS
+  Xi 8088 image boots [`machines/at-freedos.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/at-freedos.toml) and its BIOS POST, FreeDOS
   and DOS goldens; no machine uses the AT-reset build any more. See
-  [the fixture notes](../../vendor/unemu-at-bios/README.md) and
-  [open AT BIOS candidates](design/firmware-and-machine-classes.md#24-open-at-bios-candidates).
+  [the fixture notes](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/vendor/unemu-at-bios/README.md) and
+  [open AT BIOS candidates](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/firmware-and-machine-classes.md#24-open-at-bios-candidates).
 - **2026-11-15 — Set-level metadata on `image media import`:** `--publisher P`,
   `--developer D` and `--genre G` (repeatable, order kept), `--year YYYY`,
   `--platform PLATFORM` (the software platform, one of the library dialog's
@@ -3259,7 +3261,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   reset and saw FFh before. **MEASURED:** the IBM 5170 user-ROM golden
   gives `int15 88h ok`, `int15 87h ok`, `int15 87h fault ah 02 info 0000`,
   `failures 0`, 31,955,711 retired instructions (pinned). See
-  [`design/at-pm-test.md`](design/at-pm-test.md#int-15h-ah88h-and-ah87h).
+  [`design/at-pm-test.md`](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/at-pm-test.md#int-15h-ah88h-and-ah87h).
 - **2026-11-15 — Official template images and File › Get templates…:**
   - **`image template build --store DIR [--vendor DIR] [--dry-run]`** builds
     the open firmware packages (`unemu/firmware/<catalogue-id>`: Kiselev
@@ -3268,7 +3270,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
     create API, never from machine files: `open-at` (IBM 5170-class, the three
     ROMs, 640 KiB + 1 MiB, VGA, one empty 1.2M drive, a blank zero-base 504 MiB
     ATA disk, no sound) and `open-at-games` (plus SB16, COM1 mouse, Lo-tech EMS,
-    as `machines/at-games-open.toml` without media). Tags `1.0.1` (`1.0.0`
+    as [`machines/at-games-open.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/at-games-open.toml) without media). Tags `1.0.1` (`1.0.0`
     before the VGA BIOS re-pin, above) and `latest`;
     no operating system inside. Same fixtures, same digests on every run and
     host (pinned by a test). The push guard for `unemu/` judges each manifest
@@ -3584,7 +3586,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   its aliased latches drive the frame map). Unbacked windows as ROM leave both
   endpoints unchanged. Skipping the write-back fails eight synthetic rigs and
   the golden's DOS page check. See
-  [architecture](architecture.md#x86jit-integration).
+  [architecture](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/architecture.md#x86jit-integration).
 
 - **2026-11-14 — macOS application menu:** the global menu bar has one
   application menu: About unemupc98, Hide unemupc98 (⌘H), Hide Others (⌥⌘H),
@@ -3850,7 +3852,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   fast-forward hold and re-anchors pacing like the menu. Headless tests cover
   each prompt path, the policy switch and the toolbar selection; native visual
   and Dock/menu-bar behaviour need manual checking.
-- **2026-11-14 — Open VGA BIOS on the open AT profile:** `vendor/vgabios/fetch.sh` builds the unemu fork of the LGPL VGABIOS (release `v0.8a-unemu.1`, revision `8e154f04`; re-pinned 2026-11-15 to `v0.8a-unemu.2` with the same ROM and probe bytes, above) and its INT 10h probe floppy with Nix from the sibling `vgabios` repository, deriving the forge from this repository's origin remote, and checks both SHA-256 pins; neither file is committed. Catalogue entry `vgabios-0.8a-unemu.1-std` is an open (LGPL-2.1-or-later), **Tested** video BIOS: raw 32 KiB at C0000h, requiring the register-level `vga`. `machines/at-games-open.toml` replaces its MDA/VGA-text console with that card and ROM; XTIDE stays at C8000h. **MEASURED at CPU `fe240a56`:** Kiselev POST runs the ROM, shows its sign-on and "EGA/VGA (Video BIOS Present)", and FreeDOS reaches `A:\>` (`retired=15241264`); the probe reports all 32 checks `ok`, `fails:0000` (13 screen lines, `Halted` at `0000:880A`, `retired=10239957`); a boot sector drives mode 0Dh panning, page 1 and a CRTC byte start through INT 10h and ports, then mode 13h with a BIOS pixel and DAC entry; all four 0Dh frames match planar memory and the 13h frame matches the chain-4 byte stream and the BIOS default palette, pixel for pixel (`retired=10730615`). The CI `fixtures` gate now also builds XTIDE, the FAT16 disk and these fixtures; from CI's credential-less HTTPS origin the VGA BIOS builds only while `vgabios` is anonymously readable (MEASURED readable from the LAN), otherwise the gate fails naming `UNEMU_VGABIOS_FLAKE`. Registry delivery from `registry.unemu.dev/unemu/` is later work. No game is qualified. See [the fixture notes](../../vendor/vgabios/README.md) and [Video ROM placement](design/firmware-and-machine-classes.md#video-rom-placement).
+- **2026-11-14 — Open VGA BIOS on the open AT profile:** `vendor/vgabios/fetch.sh` builds the unemu fork of the LGPL VGABIOS (release `v0.8a-unemu.1`, revision `8e154f04`; re-pinned 2026-11-15 to `v0.8a-unemu.2` with the same ROM and probe bytes, above) and its INT 10h probe floppy with Nix from the sibling `vgabios` repository, deriving the forge from this repository's origin remote, and checks both SHA-256 pins; neither file is committed. Catalogue entry `vgabios-0.8a-unemu.1-std` is an open (LGPL-2.1-or-later), **Tested** video BIOS: raw 32 KiB at C0000h, requiring the register-level `vga`. [`machines/at-games-open.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/at-games-open.toml) replaces its MDA/VGA-text console with that card and ROM; XTIDE stays at C8000h. **MEASURED at CPU `fe240a56`:** Kiselev POST runs the ROM, shows its sign-on and "EGA/VGA (Video BIOS Present)", and FreeDOS reaches `A:\>` (`retired=15241264`); the probe reports all 32 checks `ok`, `fails:0000` (13 screen lines, `Halted` at `0000:880A`, `retired=10239957`); a boot sector drives mode 0Dh panning, page 1 and a CRTC byte start through INT 10h and ports, then mode 13h with a BIOS pixel and DAC entry; all four 0Dh frames match planar memory and the 13h frame matches the chain-4 byte stream and the BIOS default palette, pixel for pixel (`retired=10730615`). The CI `fixtures` gate now also builds XTIDE, the FAT16 disk and these fixtures; from CI's credential-less HTTPS origin the VGA BIOS builds only while `vgabios` is anonymously readable (MEASURED readable from the LAN), otherwise the gate fails naming `UNEMU_VGABIOS_FLAKE`. Registry delivery from `registry.unemu.dev/unemu/` is later work. No game is qualified. See [the fixture notes](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/vendor/vgabios/README.md) and [Video ROM placement](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/firmware-and-machine-classes.md#video-rom-placement).
 - **2026-11-14 — Registry push and pull:** the platform-neutral `image-registry` crate pushes and pulls tagged machine images, media sets and firmware packages to OCI distribution registries, with `image push/pull/remote ls/login` CLI commands. References resolve Docker-style against `registry.unemu.dev`; preferences list registries (host, private flag, user, no secrets); secrets come from the environment (bound to one host) or the macOS Keychain via the `security` tool. TLS is mandatory except for loopback test registries; authentication is anonymous first, then Basic, and credentials never follow a redirect to another origin. Push uploads only missing blobs, chunked and resumable above one chunk, publishes the manifest last, keeps version tags immutable and moves other tags only with `--move`. A push guard classifies each blob by the most restrictive mark any local manifest records for it and refuses user-supplied content outside private registries, anything but open content in `unemu/`, unlisted registries, and targets that are anonymously readable or answer with a Bearer challenge; `--dry-run` prints each blob's effective class and where it came from. Pull resumes interrupted blob downloads by range, verifies every digest through the store import and tags only a complete closure. Mock-registry tests cover resume, dedup, ordering, auth, digest mismatch, tag rules, paging and every guard refusal; the live round trip against registry.unemu.dev is opt-in. Firmware packages (2026-11-15) travel through the same CLI commands and guard: CLI mock-registry tests push and pull the open Xi8088 package with identical manifest and blob digests, list it in `image firmware ls` with its facets and as `firmware` (no Start) in `image ls`, show a repeat pull fetching nothing, refuse a user-supplied package to a non-private registry and to `unemu/`, and show each ROM layer's effective class in `--dry-run`. Since the licence work (entry above, 2026-11-15) a package whose every layer is open has an open config, and the guard adds the copyleft source rule. Bearer-token authentication, the GUI login and Browse registry remain separate.
 - **2026-11-14 — Open AT protected-mode return test:** `vendor/at-pm-test/`
   holds a project-owned NASM program and an offline build script for a
@@ -3873,7 +3875,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   AT fixed-disk controller, which the 1985 POST probes while testing the diskette adapter.
   The test machine now has an empty `at-adapter` IDE card. The private
   Windows 3.x Standard-mode acceptance steps are in
-  [`design/at-pm-test.md`](design/at-pm-test.md). The counts in this entry
+  [`design/at-pm-test.md`](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/at-pm-test.md). The counts in this entry
   predate the INT 15h lines (2026-11-15 entry above).
 - **2026-11-14 — Desktop image library and disk layers:** local-store summaries join machine files in an Explorer-style tree, virtualized details list and selected-image pane. Search, metadata facets, repository/tag groups, sorting, favorites and local labels use cached summaries. Store loading, bounded cache rebuilds, verification, imports and publication run in a background worker. Image launches pin the selected descriptor and reuse a regular workspace; Gaming mode isolates all writable media and CMOS, with explicit Keep as new image or Discard and startup recovery. Selection uses cancellable descriptor checks; full disk verification happens at Start. Disk layers exposes chains, sharing, working-sector counts, whole-machine publication/flatten and confirmed discard. Tag deletion preserves blobs. The store root follows platform data-directory conventions and can be changed under Tools. GUI acceptance remains manual; media-set browsing stays separate.
 - **2026-11-14 — Image blob compression (`+zstd`):** disk bases, sector packs,
@@ -4101,8 +4103,8 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   One virtual tick remains one PIT clock. Rounded RTC/UART/VGA/pacing crystal
   spellings now derive from OSC; the existing RTC UIP window remains 1193 PIT
   clocks. CPU instruction-rate calibration and policy units are unchanged.
-  See [conventions](conventions.md#device-time-and-clock-domains) for the rules
-  for new code. This implements decision-22 §1a–b; the private time field,
+  See [conventions](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/conventions.md#device-time-and-clock-domains) for the rules
+  for new code. This implements [decision-22 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-22%20-%20Keep%20the%20path%20to%20a%20cycle-accurate%20profile%20open.md) §1a–b; the private time field,
   permanent multi-tick test build and stateful VGA beam remain separate seams.
 
 - **2026-11-13 — Lo-tech hardware EMS:** the r02 board model owns 512 KiB
@@ -4112,14 +4114,14 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   latches are deterministically FFh; CPU and device reset retain latches and
   SRAM. Ordinary RAM keeps its existing CPU path. On IBM 5170, E0000h–FFFFFh
   is system-board ROM space, so EMS uses C000h or D000h; Bare also permits E000h.
-  Coverage and model choices are in `crates/devices/src/lotech_ems.rs`.
+  Coverage and model choices are in [`crates/devices/src/lotech_ems.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/devices/src/lotech_ems.rs).
   Machine files require `frame` for `kind = "lotech-ems"`; `port` and `size_kib`
   have defaults. Both shipped game profiles enable 2 MiB at D000h, port 260h.
   The CPU-region snapshot includes the card. MEASURED: the open-profile
   behaviour golden is unchanged. The supervisor's gate provides the user-ROM
   at-games golden measurement before merge. LTEMM r01 is a fetched,
   double-hash-pinned, gitignored fixture, never redistributed or placed in a published disk image; the project
-  emulates the board only and LTEMM is the user's own driver (decision-23, accepted). The ignored open-firmware
+  emulates the board only and LTEMM is the user's own driver ([decision-23 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-23%20-%20EMS%20on%20the%20286%20AT%20through%20a%20Lo-tech%202MB%20EMS%20board%20model.md), accepted). The ignored open-firmware
   FreeDOS MEM golden uses a disposable in-memory tools disk and a synthetic DOS
   program that checks all 128 pages through all four windows before MEM /E,
   including an aliased-page negative control. MEASURED: MEM reports 2,048 KiB
@@ -4127,10 +4129,10 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   18,681,813 instructions with text FNV-1a `0eda968da7052433`; the page-alias
   mutant failed the DOS check at 16,355,288 instructions with text
   `df1f6dc3129c84ce` (both re-pinned 2026-11-15, above). See
-  [the machine reference](../../machines/README.md#lo-tech-ems-card-reference)
-  and [fixture terms](../../vendor/ltemm/README.md).
+  [the machine reference](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/README.md#lo-tech-ems-card-reference)
+  and [fixture terms](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/vendor/ltemm/README.md).
 
-- **2026-11-13 — Game-ready AT profiles:** `machines/at-games.toml` combines
+- **2026-11-13 — Game-ready AT profiles:** [`machines/at-games.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/at-games.toml) combines
   the user-supplied June 1985 IBM 5170 BIOS and IBM VGA EPROM, register-level
   VGA, 640 KiB + 1 MiB RAM for a shorter POST memory test, SB16 with OPL3
   (220h/IRQ5/DMA1/HDMA5), a COM1
@@ -4140,7 +4142,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   since 2026-11-14 it also has the register-level VGA with the open VGA BIOS
   (entry above) instead of the MDA/VGA-text console. Both keep the empty 80287
   socket and fixed virtual RTC.
-  The [game guide](../../machines/README.md#playing-dos-games) covers supplying
+  The [game guide](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/README.md#playing-dos-games) covers supplying
   ROMs/tools, disk preparation, copying files, BLASTER, mouse drivers and
   journal export/rollback. The FreeDOS fixture supplies only kernel and shell.
   Synthetic tests check resolved firmware pins/device selection, lowering,
@@ -4186,7 +4188,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   retained generation export with dense snapshots.
   `SectorSource` is the parent seam for future hash-linked layers; actual layer
   files, deduplication and FAT optimizations remain deferred. See
-  [persistent media](design/persistent-media.md#memory-and-hashing).
+  [persistent media](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/persistent-media.md#memory-and-hashing).
 
 - **2026-11-13 — Microsoft serial mouse:** opt-in `mouse = "microsoft"` on a
   UART card supplies a two-button 1200 7N1 endpoint. DTR/RTS power-up produces
@@ -4209,7 +4211,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   internal loopback feedback remain unmodelled. Synthetic IRQ4 ROM and mock-bus tests qualify the
   protocol. Manual check (maintainer, 2026-11-15): CuteMouse 2.1b4 loads on
   the open AT games profile and the mouse works in FreeDOS EDIT; MOUSE.COM,
-  games and Windows driver sessions have not been exercised. See [serial mouse configuration](design/machine-files.md#serial-mouse).
+  games and Windows driver sessions have not been exercised. See [serial mouse configuration](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/machine-files.md#serial-mouse).
 
 - **2026-11-12 — CPU A20 wiring:** Assembly applies the shared 8042/92h OR
   line at construction; the machine forwards effective transitions after port
@@ -4225,7 +4227,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   suppression. Bare A20 rigs vector divide error through INT 0 in the guest.
   The IBM 5170 reset test pins the assumed external-gate/ROM interaction:
   with A20 off, FFFFF0h becomes empty-bus EFFFF0h and FFh bytes enter #UD.
-  See [the board contract](design/machine-config.md#a20-line-and-system-control-port-a).
+  See [the board contract](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/machine-config.md#a20-line-and-system-control-port-a).
 
   **MEASURED CPU-detection re-baseline, with the same CPU pin:** the bare POST
   rig has an 8042 and therefore runs the I80286 Machine model. The single-step
@@ -4259,7 +4261,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   displays `2000-01-01` instead of `0000-01-01`; FreeDOS keeps
   `Sat 01-01-2000` instead of falling back to `Tue 01-01-1980`, and new DOS
   files receive the 2000 date. Screen goldens retain these date differences. See
-  [machine-config.md §RTC start and NVRAM source](design/machine-config.md#rtc-start-and-nvram-source).
+  [machine-config.md §RTC start and NVRAM source](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/machine-config.md#rtc-start-and-nvram-source).
 
   **MEASURED against `20cd1da`, with the same CPU pin:** seeding CMOS 32h
   with 20h gives the Kiselev BIOS the century for its RTC line and date service.
@@ -4304,7 +4306,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   | IDE prompt | 15,775,579 | 15,775,575 |
   | IDE final | 19,746,109 | 19,746,105 |
 
-- **2026-11-12 — Open AT BIOS:** legacy Bochs rejected; keep Kiselev with an explicit display switch for open goldens and use the user-firmware lane for AT fidelity; an open 286 AT BIOS is [deferred](deferred.md#open-at-class-80286-system-bios).
+- **2026-11-12 — Open AT BIOS:** legacy Bochs rejected; keep Kiselev with an explicit display switch for open goldens and use the user-firmware lane for AT fidelity; an open 286 AT BIOS is [deferred](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/deferred.md#open-at-class-80286-system-bios).
 
 - **2026-11-12 — Audio seam:** the `audio` crate provides exact PIT-to-48-kHz
   mapping, interval box filtering of edge histories, timestamped native-rate integration,
@@ -4338,7 +4340,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   The onboard YMF262 now supplies native integer FM (Nuked-OPL3 1.8 port),
   virtual timers and OPL aliases, with CT1745 MIDI/master attenuation. Recording
   remains unimplemented. See
-  [audio design](design/audio.md).
+  [audio design](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/audio.md).
 
 - **2026-11-12 — 8042 keyboard command transmission:** writing a keyboard
   byte to port 60h releases the keyboard clock and clears command-byte bit 4;
@@ -4381,7 +4383,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   is fixed by AT decoding; CPU width and mapping bounds are validated. With
   A20 enabled, accesses above 1 MiB read FFh or extended RAM instead of Unmapped;
   the CPU wiring follow-up now makes a disabled gate alias physical bit 20. See
-  [memory-map policy](design/machine-config.md#memoryconfig--a-semantic-memory-map).
+  [memory-map policy](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/machine-config.md#memoryconfig--a-semantic-memory-map).
 
 - **2026-11-11 — Register-level VGA graphics:** opt-in `vga` cards capture
   planar 16-colour 0Dh/0Eh/10h/12h and chain-4 13h through owned indexed
@@ -4393,7 +4395,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   mid-frame changes other than the split and smooth-scrolling timing finer than
   a frame remain unmodelled. Frame-level panning and splits are covered below.
   Existing text presets and golden expectations are unchanged. See
-  [graphics scanout](design/observation.md#register-level-vga-graphics-scanout).
+  [graphics scanout](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/observation.md#register-level-vga-graphics-scanout).
 
 - **2026-11-11 — XT devices (device level):** Mode 0 8255, XT SW1/PPI and
   83-key set-1 receiver, NMI enable latch at A0h, and single 8237 with XT page
@@ -4436,7 +4438,7 @@ Update this when a feature lands, breaks, or gets pulled. Stale status is worse 
   conversion and carried fractions. Motion coalesces between button changes
   and enters only at run boundaries. Pure and headless presenter tests cover
   conversion, capture, button ordering and guest-visible packets; host GUI grab
-  behavior remains unmeasured. See [window input](design/observation.md#captured-ps2-mouse).
+  behavior remains unmeasured. See [window input](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/observation.md#captured-ps2-mouse).
 
 ## VGA frame scrolling and page flipping (2026-11-13)
 
@@ -4456,7 +4458,7 @@ panning after sync starts; sampling it at retrace end and CRTC 08h at retrace
 start are explicit frame-level assumptions. Undefined panning values and split
 boundary phase remain ASSUMED. CGA-interleaved shift, mid-frame changes other than the split, and
 smooth-scrolling timing finer than a frame remain unmodelled. See
-[frame scrolling](design/observation.md#frame-scrolling-split-screens-and-retrace-latches).
+[frame scrolling](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/observation.md#frame-scrolling-split-screens-and-retrace-latches).
 
 ## IBM ISA VGA video ROM integration (2026-11-12)
 
@@ -4472,7 +4474,7 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
   deterministic colour-monitor sense approximation and virtual-time retrace
   polling. Existing mono/colour port select, plane-2 font upload and DAC index
   protocols are covered across enable changes. Version-3 snapshots include
-  enable state. See [observation coverage and assumptions](design/observation.md#vga-cpu-decode-monitor-sense-and-polling).
+  enable state. See [observation coverage and assumptions](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/observation.md#vga-cpu-decode-monitor-sense-and-polling).
 - A synthetic 24 KiB ROM inside a 32 KiB container tests the open Kiselev POST
   path. **SUPERVISOR-MEASURED at CPU `fe240a56`:** the ignored
   `user_rom_ibm_vga_bios_mode13_pattern` qualifies the user-supplied IBM VGA
@@ -4480,7 +4482,7 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
   ROM, INT 10h mode 03h produces 80×25 text with 16-line characters, and mode
   13h produces the complete 320×200 byte-ramp pattern. The test pins Halted at
   `0000:7C50`, **23,463,327** retired instructions, and both capture SHA-256
-  values in the [qualification table](design/firmware-and-machine-classes.md#video-rom-placement).
+  values in the [qualification table](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/firmware-and-machine-classes.md#video-rom-placement).
   Sampling requires the boot program's magic/stage marker and CS/IP inside
   its sector. Missing ROMs skip cleanly. No ROM or firmware screen text is
   stored or fetched; other BIOS revisions and VGA modes are not qualified.
@@ -4556,7 +4558,7 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
   WRITE DATA reports not-writable before rate or CHS errors on protected media.
   Per-device module matrices record the remaining unsupported cases and
   assumptions; changed expectations are listed in
-  [scheduler adoption](design/scheduler.md#adoption).
+  [scheduler adoption](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/scheduler.md#adoption).
 - **AT fixed-disk adapter registers:** `ide` cards accept
   `controller_model = "at-adapter"` on every board, keeping task latches
   accessible without a disk (including cylinder-low 55h/AAh echo). Port 1F1h
@@ -4570,7 +4572,7 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
   historical presets retain their behaviour. The adapter is opt-in alongside
   the FDC, which owns all 3F7h bits; MFM and full WD1003 commands/timing remain
   unmodelled. See
-  [machine-config.md](design/machine-config.md#the-fixed-disk-idehdd-attachment-seam)
+  [machine-config.md](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/machine-config.md#the-fixed-disk-idehdd-attachment-seam)
   for reference sections and coverage. MEASURED externally: an empty adapter
   removes POST error 601 with an original IBM 5170 BIOS; this worker checks the
   register probe using synthetic firmware rather than that BIOS.
@@ -4609,7 +4611,7 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
   baseline. The polling cadence and POST path determine the combined endpoint.
   Omitting FORMAT makes the same C: boot fail at the partition boot signature
   check. Writes stay in a hash-bound journal; the base remains unchanged.
-  See `machines/README.md` §Playing DOS games for the same installation steps.
+  See [`machines/README.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/README.md) §Playing DOS games for the same installation steps.
 - **IDE PIO:** one primary (1F0h/3F6h, IRQ14) or secondary (170h/376h,
   IRQ15) channel assembles from Rust configs and TOML `ide` cards. Master/slave
   fixed disks use explicit CHS geometry and volatile/readonly/journal `SectorMedia`.
@@ -4617,7 +4619,7 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
   256 IDENTIFY words with `rep insw`; firmware boards require a ROM declaring
   fixed-disk services, even for an empty IDE card. The fixture recipe retains
   the AT build and adds configured XT+ (`xub-r638-xtp-ata1f0`), using 16-bit
-  ATA polling. `machines/at-ide.toml` loads XT+ at C8000h with a readonly
+  ATA polling. [`machines/at-ide.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/at-ide.toml) loads XT+ at C8000h with a readonly
   615/4/17 FAT16 master. **FreeDOS now boots from A: and lists C:** the separate
   Kiselev `bios-xi8088-atreset.bin` accepts XUB's DL=80h reset request using
   IBM AT semantics. The upstream BIOS remains unchanged for existing machines.
@@ -4672,8 +4674,8 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
   BIOS/FreeDOS/DOS-write runs; golden expectations remain unchanged.
   macOS/APFS sync/lock/publication paths were measured; Linux storage behavior
   and physical power-loss durability remain assumptions under the documented
-  storage contract. See [persistence evidence](design/persistent-media.md#acceptance-evidence-appendix)
-  and the [runnable walkthrough](commands.md#journal-session-walkthrough).
+  storage contract. See [persistence evidence](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/persistent-media.md#acceptance-evidence-appendix)
+  and the [runnable walkthrough](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/commands.md#journal-session-walkthrough).
   Closed/recovered markers do not imply a healthy filesystem.
 - **Machine files in frontends:** TOML/YAML, inheritance and embedded presets
   feed the window and CLI through `machine-file`, with source-positioned
@@ -4683,7 +4685,7 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
   `run --machine FILE` accepts retired/idle caps and a display/UART card id for
   final output. Normal halt/budget exhaustion finishes persistence; failed runs
   leave unsealed commands for the next mount.
-  The window defaults to the build workspace's `machines/at-freedos.toml`,
+  The window defaults to the build workspace's [`machines/at-freedos.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/at-freedos.toml),
   chooses the first display or `--display CARD`, and no longer accepts positional
   BIOS/floppy paths. FreeDOS goldens load that same file; BIOS goldens and
   synthetic fast tests keep their presets.
@@ -4731,7 +4733,7 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
 - **Optional window presenter:** the `window` leaf crate embeds the original
   VileR v2.2 CP437 MDA/VGA fonts (CC BY-SA 4.0), parses NE/FNT resources and
   rasterises decoded text styles to softbuffer pixels. `unemupc98-window` boots
-  `machines/at-freedos.toml` with paced runs and observation subscribers; it retains
+  [`machines/at-freedos.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/at-freedos.toml) with paced runs and observation subscribers; it retains
   the last delivered frame while continuing past date/time prompts. Physical
   host keys map to set-1 make/break bytes, including E0 navigation and right
   modifiers, queued only at run boundaries with backpressure. Presenter,
@@ -4768,7 +4770,7 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
   `DIR` test has a median wall time of 0.436899 s at `a92b676`, versus
   0.449007 s at `8979fc9` (three alternating pairs, 2.7% less time under shared
   host load). Current-pin sample shares await the supervisor; see
-  [`design/machine-time-profile.md`](design/machine-time-profile.md).
+  [`design/machine-time-profile.md`](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/machine-time-profile.md).
 
 - **CPU warm restart:** 8042 reset requests restart the CPU at F000:FFF0 after
   the persistence boundary check. CLI natural, prompt, post-prompt and
@@ -4781,7 +4783,7 @@ smooth-scrolling timing finer than a frame remain unmodelled. See
   does not end a journal session. I286 reset restores MSW/IDTR and real caches,
   including hidden CS base FF0000h; the system ROM has a 24-bit reset mirror.
   A20 address masking follows the shared board line; see
-  [machine-config.md, Board model](design/machine-config.md#board-model).
+  [machine-config.md, Board model](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/machine-config.md#board-model).
 
 ### User-supplied system ROM catalogue
 
@@ -4827,7 +4829,7 @@ clock**. This applies to Rust presets, machine-file board defaults and the
 shipped FreeDOS TOML/YAML files; IDE inherits the FreeDOS rate. Explicit rates
 remain authoritative. Bare rigs retain their own rates, including 1/1 for the
 historical no-controller POST rig. See
-[machine configuration](design/machine-config.md#cpuconfig-and-clockconfig--minimal-but-the-right-home).
+[machine configuration](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/machine-config.md#cpuconfig-and-clockconfig--minimal-but-the-right-home).
 
 **MEASURED comparison against main:** the old baseline is main `889601b`,
 with CPU `44403dd85077c0db29ad09780003ebd3b193ecdd`, per-read refresh and rate 1/1.
@@ -4890,7 +4892,7 @@ iterations gives `R = (3 × 1710/256 + 2)/36 ≈ 0.6122`. The synthetic guest
 counts 2903 iterations at 1/1 (CX=`F4A9h`) and 1721 at 8/13 (CX=`F947h`, inside
 the BIOS acceptance range). Actual firmware window measurements above belong
 to the supervisor; complete proprietary POST/boot compatibility remains
-unqualified. See [scheduler calibration](design/scheduler.md#device-migration-inventory).
+unqualified. See [scheduler calibration](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/scheduler.md#device-migration-inventory).
 
 ## I286 CPU-probe and exception-delivery re-baseline (2026-11-12)
 
@@ -5008,7 +5010,7 @@ no golden re-baseline was needed.
   sustained OUT0 in Modes 0/2/3; no timer pulse synthesis remains in the wiring.
   8042, FDC, ATA and RTC retain their held-output acknowledgement rules; UART
   IRQs and ICW1 LTIM remain unmodelled. See
-  [scheduler interrupt contract](design/scheduler.md#pic-state-must-follow-cpu-acceptance).
+  [scheduler interrupt contract](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/scheduler.md#pic-state-must-follow-cpu-acceptance).
 
 - **2026-11-12 — AT primary-display configuration:** board display selection now
   derives the 8042 C0h input bit 6 and CMOS 14h video bits from the installed
@@ -5022,7 +5024,7 @@ no golden re-baseline was needed.
   colour (10b). Other firmware retains automatic selection.
   Synthetic isolation, assembly and TOML/YAML tests cover these paths. The
   goldens did not change, and the user-firmware lane passed (supervisor-measured).
-  See [primary display](design/machine-config.md#primary-display).
+  See [primary display](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/machine-config.md#primary-display).
 
 - **2026-11-11 — A20 / System Control Port A device side:** Bare rigs can
   opt into port 92h with versioned snapshots, latch readback and CPU reset on
@@ -5039,7 +5041,7 @@ no golden re-baseline was needed.
   change counter at 1; no source reports disabled despite flat CPU addressing.
   The CPU wiring follow-up below retains those source defaults and counter baseline.
   IBM 5170 rejects port 92h. See
-  [machine-config.md §A20 line and System Control Port A](design/machine-config.md#a20-line-and-system-control-port-a).
+  [machine-config.md §A20 line and System Control Port A](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/machine-config.md#a20-line-and-system-control-port-a).
 
 - **2026-11-11 — Firmware-owned QEMU CMOS layout:** opt-in catalogue capability
   and byte-exact synthetic tests derive RAM, century, boot order, type-47 IDE
@@ -5075,14 +5077,14 @@ no golden re-baseline was needed.
   hash, with no screen text. Adapter gaps remain board-owned independently of
   the absent option-ROM scan window. Ruud XT v5.7 is a future `ibm-5160`
   fixture (`upc-fro.6`). See
-  [compatibility diagnostics](design/compatibility-diagnostics.md#3-golden-capture-rule).
+  [compatibility diagnostics](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/compatibility-diagnostics.md#3-golden-capture-rule).
 
 - **2026-11-11, fw_cfg device:** traditional read-only selector/data interface,
   inline file directory and explicit COM1 serial-console file are available
   through Rust assembly configuration on Bare rigs. Full-word selector decode
   at 510h preserves architecture keys; 511h is byte-wide. No DMA, machine-file
   syntax or firmware-board wiring; `generic-386-isa` remains pending. See
-  [machine-config.md §Emulator-only firmware configuration](design/machine-config.md#emulator-only-firmware-configuration).
+  [machine-config.md §Emulator-only firmware configuration](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/machine-config.md#emulator-only-firmware-configuration).
 
 - **2026-11-11 — Register-level VGA:** isolated registers, DAC, planar memory,
   CPU read/write modes and version-4 snapshots (including ISA enable state and
@@ -5106,11 +5108,11 @@ no golden re-baseline was needed.
   i686-elf GCC 15.2.0 and binutils 2.46 (MEASURED by the supervisor); the
   output SHA-256 is pinned. No board or catalogue entry is added;
   the entry waits for `generic-386-isa` and the x86jit 386 CPU model.
-- **2026-11-11, phase B:** firmware decided (decision-19): unmodified SeaBIOS
+- **2026-11-11, phase B:** firmware decided ([decision-19 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-19%20-%20Phase%20B%20firmware%20is%20unmodified%20SeaBIOS%20behind%20an%20emulator-only%20fw_cfg%20device.md)): unmodified SeaBIOS
   with emulator-only fw_cfg; requirements in
-  [firmware-and-machine-classes.md §3.6](design/firmware-and-machine-classes.md#36-phase-b-firmware-requirements-seabios-on-generic-386-isa).
+  [firmware-and-machine-classes.md §3.6](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/firmware-and-machine-classes.md#36-phase-b-firmware-requirements-seabios-on-generic-386-isa).
 
-The 286 foundation milestone is closed. Next is phase A of decision-16 (the
+The 286 foundation milestone is closed. Next is phase A of [decision-16 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-16%20-%20Scope%20a%20period%20PC%20from%20DOS%20to%20Windows%2098%20SE%20with%203dfx%20Voodoo.md) (the
 display through a real MDA card to a window, host keyboard input): epic
 `skeleton` in beads. The DOS-session profile records the current paired-pin
 wall-time comparison and historical CPU sample shares.
@@ -5210,7 +5212,7 @@ wall-time comparison and historical CPU sample shares.
   the independent MDA card, captured in `BiosRun.mda`.
 - **DOS-boot groundwork — M4.5 + M5a machine hardening** (tasks 13–19, 23): the
   push toward booting FreeDOS on the AT via the Kiselev Xi8088 open BIOS
-  (decision-12). **Real-mode CPU driven to 99.63% decided on the SST/80286 corpus**
+  ([decision-12 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-12%20-%20Boot-FreeDOS-via-the-Kiselev-Xi8088-open-BIOS-real-mode-first.md)). **Real-mode CPU driven to 99.63% decided on the SST/80286 corpus**
   (was 96.20%), lifting LES/LDS, LAHF/SAHF, PUSHA/POPA, ENTER, real-mode LEAVE, and
   fixing real-mode string ops to use `ds<<4`/`es<<4` bases instead of a flat base 0
   (the biggest fix — ~45k corpus fails; string ops are everywhere in a BIOS/DOS).

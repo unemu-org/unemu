@@ -11,8 +11,8 @@ deciders: Mikołaj Mikołajczyk
 ## Status
 
 Accepted — 2026-11-17 by the maintainer, who asked for work files and their rules, and chose that metadata schema 2 records the work id and the synopsis (recipes.md Q7). Design step of `upc-5pw.113`; recipes.md §6.16.
-Extends [[decision-33]] (the syntax) and relies on the lock of
-[[decision-34]].
+Extends [decision-33](decision-33%20-%20Recipes%20are%20TOML%201.0%20files%20with%20an%20ordered%20list%20of%20closed%20steps.md) (the syntax) and relies on the lock of
+[decision-34](decision-34%20-%20Recipe%20inputs%20are%20found%20by%20SHA-256%20and%20size%20and%20recipes%20carry%20a%20lock.md).
 
 ## Context
 

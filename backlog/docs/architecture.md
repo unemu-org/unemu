@@ -1,19 +1,19 @@
 # Architecture
 
-This describes the implementation on `main`: a deterministic, headless IBM
-PC/AT-class emulator with a real-mode CPU, device models, declarative assembly,
-and BIOS/FreeDOS integration tests. Testability, swappability, and documented
-hardware coverage guide the crate boundaries. Corrected timing and deadline
-dispatch are adopted; design documents distinguish implementation from proposals.
-The hardware specification is [`design/spec.md`](design/spec.md).
+unemu maintains the front end, library, registry and media workflows; [unemupc](https://github.com/unemu-org/unemupc/blob/main/backlog/docs/architecture.md) maintains PC configuration, hardware and execution.
+
+The desktop and command line compose swappable cores through the external
+`unemu-core-api` contract. The PC core is pinned to
+`0f2795402e947e235a7b892c931910b05f05d61f` in `Cargo.toml` and `Cargo.lock`;
+the NES core is pinned to `0dbf0d56c627ab62601fca1dcd64ec77f3e4643c`.
+Core changes land upstream before a front-end re-pin. The contract's normative
+text lives in [unemu-core-api](https://github.com/unemu-org/unemu-core-api).
 
 ## Crate map and dependencies
 
-These are the direct dependencies from each crate's `Cargo.toml`; test-only
-dependencies are separate. Workspace membership and the exact `x86jit-core` git
-revision are in the root [`Cargo.toml`](../../Cargo.toml). There is no firmware
-crate: `machine-file` (through the lowering of `pc-config`) reads and hashes declared images into inline buffers,
-`assembly` also supports direct Rust image sources, and guest assets live under `vendor/`.
+These are the front-end crates and their direct dependencies; core packages
+in dependency columns come from the pinned repository, not this workspace.
+Workspace membership and exact revisions are in [`Cargo.toml`](../../Cargo.toml).
 
 | Crate | Responsibility | Runtime dependencies | Test-only dependencies |
 | --- | --- | --- | --- |
@@ -21,19 +21,8 @@ crate: `machine-file` (through the lowering of `pc-config`) reads and hashes dec
 | `recipe` | Platform-neutral recipes ([design](design/recipes.md) §6): the typed model of Mediafiles, Firmwarefiles and work files, the TOML 1.0 parser with file, line, column and key path for every finding, the static checks of §6.11, the provider traits a platform implements (media formats and volume profiles, firmware rules, needs, software platforms, `[ids]` catalogues) and the JSON Schema written from the key tables and the providers. Builds nothing and reads no input | `image-store`, `serde_json`, `toml`, `toml_parser` | None |
 | `image-store` | Independent core/front-end manifest requirements and injected component release levels (`compat`), with both markers in summary cache schema 9; Platform-neutral OCI Image Layout, streaming SHA-256/zstd blobs, deterministic machine/media-set/firmware manifests, provider-validated closure and atomic compare-and-swap local tags, the orders of tags (set and package revisions, the Semantic Versioning precedence of machine-image versions), stable workspace ownership | `serde`, `serde_json`, `toml`, `sha2`, `zstd`, `thiserror`, `libc` (Unix) | None |
 | `image-registry` | Platform-neutral OCI distribution client: Docker-style references against the default registry, preferences registries list, environment/Keychain credentials, anonymous-then-Basic authentication, resumable chunked push, parallel verified pull, push guard and paged listings | `image-store`, `ureq` (rustls, no default features), `rustls` (ring), `rustls-native-certs`, `serde`, `serde_json`, `toml`, `thiserror` | None |
-| `journal` | Emulation/core: version-1 disk/CMOS codec, scanner, sparse overlays and record-backed lifecycle, recovery and verified retention. `JournalSession` keeps host publication policy outside the assembler | `sha2`, `thiserror`, `unemu-core-api` | `unemu-core-api/test-support` |
-| `journal-files` | PC/core host tools: verified file bases, journal path constructors over shared `FileRecord`, offline inspection/export/rollback, atomic image creation (`create`) and immutable sparse disk layers (`layer`). File sessions retain the same lock, recovery, retention and failure policy | `journal`, `sha2`, `serde`, `toml`, `thiserror`, `unemu-core-api`, `unemu-core-files`, `libc` (Unix) | `unemu-core-api/test-support` |
 | `media` | Neutral FAT12 formats, readers and builders. No journal facade or dependency on PC file tools; the neutral CLI uses it for FAT12 export | `thiserror`, `libc` (Unix) | `sha2` |
-| `device` | Hardware-neutral contracts: `Device`, `InterruptController`, `DmaMemory`, `VClock`, `NextEvent`, access traces, DMA messages, and the observation capabilities (text scanout, byte output, `ByteCapture`) | `thiserror` | None |
-| `cpu` | `Cpu`/`CpuStop` seam and `X86JitCpu`, which owns the core's `Vm` and `Vcpu` | `x86jit-core`, `thiserror` | None |
-| `bus` | Owns boxed devices and executes a port/MMIO `DecodeMap`; open-bus policy and ticking | `device`, `thiserror` | None |
-| `devices` | UART 16550, PIC 8259, PIT 8253, 8042, CMOS/RTC, DMA 8237, uPD765 floppy controller, VGA and MDA text cards, system control, POST port and Lo-tech EMS board | `device`, `thiserror` | `testkit`, `video` |
-| `chipset` | Shared/cascaded PIC composition, null interrupt controller, AT port constants; no `Chipset` trait | `device`, `devices` | `testkit` |
-| `machine` | Generic `Machine<C: Cpu>` and execution/clock/IRQ/DMA loop | `cpu`, `bus`, `device`, `thiserror` | `testkit`, `devices` |
-| `video` | `FrameSink`, text frames/grids, text-mode renderer and capture sink | `device` | None |
-| `assembly` | Emulation/core: `MachineConfig`, logical validation, presets, image/device construction, wiring, and `RunPolicy`; firmware catalogue and byte identity checks. `Mount` supplies bytes, verified bases and journal sessions, with opaque origin tokens interpreted only by the host. Inline configs assemble directly; host entry points live in `machine-file` | `machine`, `cpu`, `bus`, `device`, `devices`, `video`, `audio`, `chipset`, `journal`, `unemu-core-api`, `sha2`, `thiserror` | `journal/test-support`, `testkit`, `unemu-core-api/test-support` |
 | `unemu-core-api` (external) | Not a workspace crate: a git dependency pinned to release v0.3.1 (contract 0.3) at `afba6e6b` of its own repository, [unemu-org/unemu-core-api](https://github.com/unemu-org/unemu-core-api) (`MIT OR Apache-2.0`). The contract between front ends and emulator cores ([core contract](design/core-contract.md) §3, §13.1): `Core` with its `CoreDescription`, the `Machine` a front end drives (run to a limit, picture and sound, input by USB HID usage, media slots, reset, saved state, finish, messages), the `CONTRACT` version and its `drives` rule; content and storage are objects the front end hands in (`ContentReader`, `Storage`, `Record`), never a path, and a core can identify a file a person opens. `std` only, object-safe, every type `#[non_exhaustive]` | None | None |
-| `unemu-pc-core` | The PC core behind the contract (§4, §14.2.3): `PcMachine` wraps an assembled machine and runs it to tick deadlines, with the set-1 scan-code encoder and the 8042 back-pressure (`keyboard`), the pointing-device queue (`mouse`), the deadline-to-cap conversion (`pacing`), the CP437 text rasteriser and its CC BY-SA fonts (`raster`, `font`) and drive-activity sampling; `PcCore::validate` checks a launch document without content, and `create` / `create_machine` lower it through `pc-config` and assemble over contract content readers and storage records (`mount`); fixed MDA/VGA display order, run-only firmware permission and speaker trace, and the effective config through `PcMachine::config()` | `unemu-core-api`, `assembly`, `pc-config`, `audio`, `device`, `devices`, `machine`, `video` | None |
 | `unemu-test-core` | A scripted core for the front end's tests ([core contract](design/core-contract.md) §13.3): `TestCore` implements all of contract 0.3 and emulates nothing; its content is a `utc` script (picture size, aspect and visible part, clock, sound rate, input ports, slots with a catalogue, features, battery memory, events at a virtual time), its picture a pattern of the frame count with a field of the held pad controls and a cross per pointer, its sound a square wave at exactly `floor(now × rate / clock)` frames. In no program's list of cores | `unemu-core-api` | `unemu-core-api/test-support` |
 | `core-launch` | The front end's launch path ([core contract](design/core-contract.md) §13.3, §13.4): `Cores`, the list of cores a program was built with, each checked against the contract it drives (`usable`, `refused` with the reason of §3.2, `by_id`), the About lines both programs print, one per core, and the host file dialog's filters (`filters`); `prepare`, which hashes a file whole through a `unemu-core-files` reader, asks the cores (the named one, or those listing the extension first), checks the config the answering core wrote and gives `Outcome::Ready` or `Choose`, or a `LaunchError` with the sentence the application shows; `start`, which creates the machine over that one file and a `FileStorage` under `HostDirs::saves`/CORE/aa/DIGEST. A platform whose machines start from more than one file hands its start in as `Parts` (core, platform, title, notes, config, a `ContentPlan` and a `StoragePlan` made on a worker and opened on the machine's thread at every start, options) to `Prepared::from_parts`, whose file-only accessors (`kind`, `file_name`, `sha256`, `size`, `saves_dir`, `states_dir`) answer `None`; `with_options` adds the application's run-only options; `start_with` lets that platform's code build its own machine type from the same request (`start` is `start_with` over `Core::create`); `Cores::for_platform` finds the core of a platform id (core contract §14.2.5). Names no platform and no host location: each program hands it `platforms::cores()` and its directories | `unemu-core-api`, `unemu-core-files`, `sha2` | `unemu-test-core` |
 | `player-ui` | The view of one machine started from a file, driven through the contract alone ([core contract](design/core-contract.md) §13.3, the approved `mockups/player.html`): `Player`, started from a `core_launch::Prepared` and holding the machine in a `machine_view::Session` on its first display; its Machine, Media (one section per removable slot) and View menus and its status line, built from the machine's description so a control it does not offer is absent; the screen through `machine_view::screen::layout` (overscan hidden by default, integer scaling, the absolute pointer aimed with a cross-hair); the Input dialog over `machine_view::pads::PadBindings`; the player's message boxes (`MessageBox`); its own command vocabulary (`Command`) and the `Request`s it hands back (stopped, full screen, new pad keys). Power cycle is a hard reset when listed, otherwise the machine finishes and starts again from the same `Prepared` (a file or parts). Save and Load state are offered only for a start that has a states directory, which a start from parts has not. The desktop (`window`) holds one beside the PC's presenter. A window crate for the boundary check | `unemu-core-api`, `machine-view`, `core-launch`, `ui-kit`, `egui`, `winit` | `unemu-test-core`, `machine-view/test-support`, `ui-kit/test-support` |
@@ -47,13 +36,8 @@ crate: `machine-file` (through the lowering of `pc-config`) reads and hashes dec
 | `ui-kit` | The desktop's skin and widget helpers, free of any machine: the classic and modern skins (`skin`: visuals, fonts, title strips, bevels, the one-Escape rule, the text marks), the mock-up icons and their tested inventory (`shell_icons`), the library's details panes (`pane`), the brand logo, host file dialogs and clipboard shortcuts ([core contract](design/core-contract.md) §8); behind `test-support`, the helpers that drive egui frame by frame for the tests of the crates that draw with it (`test_support`: a modal's settled place, a scripted pointer, where a text is painted) | `egui`, `winit`, `image`, `rfd`, `arboard` | `toml` |
 | `library-model` | The desktop library's platform-neutral models, without a toolkit ([core contract](design/core-contract.md) §8.1): the Preferences › Registries page (`registries_model`), Image › Push… and Pull… (`registry_transfer`), browsing the registries of Remotes (`remote_browse`) and Pull… from them (`remote_pull`), the rows of the image lists with their source, sizes, short digests and last-run time (`listing`) and the Save as new image… form and its tag rules (`save_image`). What they ask of a platform goes through the desktop's provider seam (`platform`: `DesktopPlatform`, `PlatformFacts`, §8.1.4), which the caller fills; the PC's implementation, `PcDesktop`, is `pc_library::pc_desktop`. The desktop re-exports the models under their old paths and draws them | `image-store`, `image-registry`, `unemu-core-api`, `toml` | `image-store/test-support`, `image-registry/test-support` |
 | `library-ui` | The desktop library's platform-neutral views, drawn with egui ([core contract](design/core-contract.md) §8.1): the list tables of every collection and of Remotes, with the headers that sort, the columns that fit the list's room and the name cell with its icon and badges (`table`), the Save as new image… form and its questions (`save_image`), the Push…, Pull by reference… and Pull… dialogs (`registry_transfer_view`) and the Remotes group with its tree, list and details pane (`remotes`). Remotes draws without the library frame: the frame lends it the platform facts, the skin, the local tags and the stopped machines' drives (`RemotesContext`) and applies, in order, what it asks (`RemotesAction`: browsing requests, the node to show, Show in library, New machine from image…, Pull…, Log in…, the media picker). Behind `test-support`: the source folder for the desktop's glyph test and the layout figures and helpers the desktop's tests of these views compare with. The desktop re-exports them under their old paths | `egui`, `image-store`, `image-registry`, `library-model`, `ui-kit` | None |
-| `pc-config` | Core-owned compatibility rows and evaluators (`compat`: machine keys, hardware vocabulary, accepted platform spellings and firmware catalogue, independent release/row types without an image-store dependency); the PC config codec below the contract ([core contract](design/core-contract.md) §14.2.1): the machine schema 1 (`schema`), its TOML decoder (`parse_toml`, `ParseError`), the source origins and their TOML half (`Origins`, `source`), the guest attachment names (`pc_names`) and the lowering to `assembly::MachineConfig` through assembly validation (`lower`, `lower_tracked`, `MachineFile::describe_with`), which asks its `ImageReader` for every image and everything of the host; and the stored PC image config (`image`: its model, decode and encode, its own `Digest` in the store's text form, the hardware-table encoding `image::encode` and frozen defaults `image::defaults`, and the codec half of validation `image::lower` over the store's `ContentRow`s and a contract `ContentSource`); and the launch document the PC core is to read (`launch`, `application/vnd.unemu.pc.launch.v1+toml`: the stored config plus a `content` table of each bound digest's flat SHA-256 and size and a `record` table of each journal's record and retention; `decode`, `encode`, `check` without content, and `lower`, which reads firmware and CMOS and names each disk base and journal by a key). Opens no file and reads no environment; `#![forbid(unsafe_code)]`. Behind `test-support`: the lowering's copy of the journal's retention-name rule and an empty diagnostics context, for the tests `machine-file` keeps | `assembly`, `unemu-core-api`, `serde`, `sha2`, `toml`, `thiserror` | None |
-| `machine-file` | Machine description files on the host ([schema](design/machine-files.md#schema-field-by-field)): re-exports every name of `pc-config` at its old path and adds the YAML reader and the YAML half of the origins (`YamlOrigins`), `extends` and presets (`resolve`), journal path checks, host firmware discovery (`firmware_discovery`, with `frontend` and `persistent`, and the user-ROM helper behind `test-support`), machine-file firmware resolution (`firmware_resolve`), the seam of the firmware-package lookup (`FirmwarePackages`, which `pc-image` implements over the store; the prepared document keeps the packages' ids as text), the host's image reader (`FileImageReader`), `describe` over the host's file metadata (`Describe`) and the loaders (`load*`, `LoadedMachine`, `PreparedMachineFile`), `FileMount`, file-backed `assemble*`, host output validation and floppy append-by-path (`FileMachineExt`). Real-file assembly regressions live here | `assembly`, `pc-config`, `devices`, `cpu` (test support), `journal`, `journal-files`, `unemu-core-api`, `serde`, `sha2`, `toml`, `serde-saphyr`, `thiserror` | `machine-file/test-support` (self), `pc-config/test-support`, `assembly/test-support`, `machine` |
-| `testkit` | Single-device `MockBus`, scripted `MockCpu`, golden assertions | `device`, `cpu` | None |
 | `platforms` | The one place that names the platforms compiled into both programs: the cores (`cores()`, the PC core, then the NES core `unemu_nes_core::NesCore` from unemunes, pinned to an exact revision, and the test core with the `test-core` feature, which no release sets; its tests check each core's contract and that core, platform and content-kind ids are unique, and `tests/nes_cartridge.rs` opens a cartridge image built from our own bytes through `core_launch` and pins its frame count and picture for the pinned unemunes revision; `tests/pc_launch.rs` starts the compiled-in PC from launch parts, boxed and typed), the image providers a transfer or listing uses (`with_image_providers`, the PC's from `pc_image::with_providers`), the push plan bound to the PC firmware catalogue (`push_plan`) and the program's licence notice | `assembly`, `image-store`, `image-registry`, `pc-image`, `unemu-core-api`, `unemu-pc-core`, `unemu-nes-core`, `unemu-test-core` (optional, `test-core`) | `core-launch`, `pc-config`, `unemu-core-api/test-support` |
-| `pc-harness` | Machine runners for the PC/AT goldens and the command line: hand-encoded guest programs, key scripts, assembly/policy selection, output capture and stop diagnostics (`StopReason`). Its `tests/` hold the emulation goldens (BIOS POST, FreeDOS boots and sessions, floppy, IDE, VGA, EMS, sound, the scheduler A/B tests) and `tests/support/`. Behind `test-support`, it exports `test_support::{fixtures, session, at_games, fat12}` for front-end tests; `test_support::root()` selects the core fixture checkout via `UNEMUPC_FIXTURE_ROOT` (an existing absolute directory), defaulting to its own repository | `machine-file`, `journal-files`, `assembly`, `device`, `cpu`, `chipset`, `machine`, `devices`, `video`, `anyhow` | `bus`, `testkit`, `toml`, `machine-file/test-support`, `machine/reference-scheduler`, `assembly/reference-scheduler`, `assembly/test-support` |
 | `cli-core` | The platform-neutral command line ([core contract](design/core-contract.md) §7.1, §7.2): the top-level parser, the usage text, the exit codes, stored-image runs through the core contract (`image run`, `image machine run`, with the binary's `Cores` and canonical store platform ids), the commands that need no emulator (image listing, sweep, compress, workspaces, media and firmware listing and show, push, pull, remotes, login, registry settings, `recipe check` and `show`) and the provider seam (`CliPlatform`, `PlatformCommand`) through which each platform adds its commands. `CliPlatform::own_run` keeps platform session selection and machine ownership with the provider; `prepare_run` supplies the launch, post-creation confirmation and an optional typed starter for failed-run persistence. The neutral runner retains ownership through finish. Its toy-platform test runs and saves through the test core without PC dependencies. Its FAT12 export still uses `media`; journal commands and their tests belong to the PC | `core-launch`, `unemu-core-api`, `image-store`, `image-registry`, `media`, `recipe`, `anyhow`, `toml`, `libc` (Unix) | `image-registry/test-support`, `unemu-core-api/test-support`, `unemu-test-core` |
-| `unemupc` | The standalone PC core command line ([core contract](design/core-contract.md) §12.8): library parser, machine usage lines, dispatch, runner and core-only notices; binary `unemupc` offers `--boot`, `--bios`, `machine check`, `run --machine`, `--version`, `--about`, and `media generations`, `verify`, `rollback`, `commit` (alias `compact`). No store or registry. `execute_with_loader` shares execution with the frontend while leaving its store-backed preparation in `cli-pc` | `pc-harness`, `machine-file`, `unemu-pc-core`, `unemu-core-api`, `assembly`, `machine`, `device`, `video`, `anyhow`, `journal-files` | `cpu`, `assembly/test-support` |
 | `cli-pc` | The PC's `CliPlatform`: every PC frontend command (`run --machine`, image import and publish, the other machine commands, media and firmware import, firmware edit, template build, `media create`, and the four journal commands) and the PC's answers to the neutral commands; the file-run command calls `unemupc` with a frontend-owned firmware loader. The neutral stored-run commands call its ownership and preparation hooks: PC session pins, machine migration and ownership, `pc_image::launch`, typed `core_launch::start_with` and confirmation after creation. Its small CLI adapter retains the typed PC so a run failure still saves CMOS, closes journals and preserves the old error chain; successful run/finish and diagnostic output belong to `cli-core`. `cli_pc::command` is the command line with this platform alone. Its `tests/` hold the PC command tests and the goldens that need the command line or the store | `journal-files`, `unemupc`, `cli-core`, `core-launch`, `unemu-core-api`, `unemu-pc-core`, `pc-harness`, `pc-image`, `image-store`, `image-registry`, `recipe`, `machine-file`, `assembly`, `device`, `machine`, `media`, `video`, `anyhow`, `toml` | `pc-harness/test-support`, `machine-file/test-support`, `cpu`, `devices`, `assembly/test-support`, `media`, `image-store/test-support`, `image-registry/test-support`, `pc-image/test-support` |
 | `upcli` | Library-only command composition for `unemu`: the host-default runner, the compiled-in platforms, the command-line notice and `upcli::command`. The binary is removed. Usage, About and documented-parse pins stay here; tests that spawn the executable move to `window`, which dispatches command words before desktop initialization | `cli-core`, `cli-pc`, `platforms`, `core-launch`, `image-store`, `assembly`, `machine-file`, `devices` | `pc-harness/test-support`, `pc-image`, `cpu`, `machine`, `image-registry/test-support` |
 
@@ -64,16 +48,15 @@ and `scripts/crate-boundaries.sh` keeps the layers apart
 | Layer | Crates | May depend on |
 | --- | --- | --- |
 | `contract` | none here: the contract, `unemu-core-api`, is in its own repository, whose CI keeps it free of dependencies | nothing at all |
-| `neutral` | `journal` (temporary, core), `journal-files` (temporary, core), `media`, `image-store`, `image-registry`, `recipe`, `ui-kit`, `machine-view`, `library-model`, `library-ui`, `cli-core`, `unemu-test-core` (the contract alone), `core-launch`, `player-ui` | `contract`, `neutral` |
-| `emulation` | `device`, `bus`, `cpu`, `video`, `audio`, `devices`, `chipset`, `machine`, `testkit`, `assembly`, `unemu-pc-core`, `pc-config` | `contract`, `emulation` |
-| `pc` | `unemupc`, `machine-file`, `pc-image`, `pc-harness`, `cli-pc`, `pc-media`, `pc-library`, `media-ui`, `pc-ui`, `pc-session-tests` (tests only) | `contract`, `neutral`, `emulation`, `pc` |
+| `neutral` | `media`, `image-store`, `image-registry`, `recipe`, `ui-kit`, `machine-view`, `library-model`, `library-ui`, `cli-core`, `unemu-test-core` (the contract alone), `core-launch`, `player-ui` | `contract`, `neutral` |
+| `pc` | `pc-image`, `cli-pc`, `pc-media`, `pc-library`, `media-ui`, `pc-ui`, `pc-session-tests` (tests only) | `contract`, `neutral`, `emulation`, `pc` |
 | `application` | `upcli`, `window`, `platforms` | anything |
 
 The rules cover test dependencies too. Source inclusion through `#[path]`,
 `include!`, `include_str!` or `include_bytes!` may not cross the core/front-end
 boundary in either direction; same-side test support may still be included.
 Front-end tests import harness helpers through `pc-harness/test-support`
-and resolve core `machines/` and `vendor/` paths through its fixture root
+and resolve the core’s machine and vendor fixture paths through its fixture root
 ([repository split](design/repo-split.md) §2.4).
 
 The application root `window` composes
@@ -91,18 +74,12 @@ without it. The only exception in `scripts/crate-boundaries.allow` is the
 application-composition edge `window` → `upcli`; no core-side exception remains.
 The FAT12 volume-builder tests live with the front end in `pc-image`, so
 `pc-harness` needs no media dev-dependency.
-All emulation crates and the packages marked `side = "core"`
-(`machine-file`, `journal-files`, `pc-harness`, `unemupc`) may reach only core-side workspace
-crates, the contract and `unemu-core-files`, including dev dependencies.
-Step 7 already removed `machine-file`'s dependency on `image-store`.
+The boundary check also rejects core packages reached from a neutral crate.
+`journal` is an emulation-layer core package and `journal-files` is a PC-layer
+core package; neither belongs to the neutral layer or this workspace.
 The same script holds the resolved build to one copy of the contract: exactly
 one package named `unemu-core-api`, else it prints each copy's source and the
 crates that use it.
-
-Concrete hardware selection lives in `assembly` and the frontend. `machine`
-does not depend on `chipset`, `devices`, `video`, or x86jit directly. `Bus` is a
-concrete router over `dyn Device`, not a trait; the config-derived decode map is
-its routing authority. Concrete devices do not depend on the runtime bus.
 
 `image-store` takes a caller-selected local root and owns `store.toml`, the
 OCI layout under `images/`, immutable blobs, staging files and stable advisory
@@ -263,7 +240,7 @@ under `local/imports/<image-digest>.toml` report each medium policy and independ
 recovery choice; they are outside image identity and do not claim a synchronized
 machine snapshot. Firmware-root discovery and origin paths remain machine-file
 APIs, with exhaustive projection views guarding schema evolution. Fixed-disk layers use immutable TOML descriptors plus sorted LBA/sector packs in
-`media::layer`; its `Chain` merges an LBA index behind `SectorSource` and streams
+`journal_files::layer` in unemupc; its `Chain` merges an LBA index behind `SectorSource` and streams
 logical SHA-256 verification. Providers enumerate head, pack and parent closure
 in deterministic order. Floppies and CMOS always freeze whole. For existing v1
 journals, a layered head materializes once in `cache/materialized/<result-sha256>`;
@@ -370,210 +347,7 @@ import embeds the ROM closure independently and writes `unemu.firmware.sources`;
 execution never needs the source package tag. Firmware summary rows index roles,
 boards/classes and catalogue ids, and warm listing reads no ROM payloads.
 
-## From configuration to a run
-
-`machine_file::load` reads a complete TOML or YAML machine description, expands the
-assembly-owned board data and card defaults, resolves images against their
-defining files, checks optional SHA-256 pins, and retains the bytes inline.
-It derives the RAM mosaic and calls `MachineConfig::validate()` before returning.
-The reference file is `machines/at-freedos.toml`; frontends still use Rust presets.
-
-`assembly::descriptors` owns the implemented card names, video decodes, RAM
-and resource domains, effective defaults, named floppy geometries and firmware
-slots. EMS domains reference the device model's public jumper/population
-constants, so the runtime constructor and configuration cannot drift.
-Machine-file parsing/lowering consumes these definitions. The
-transport-neutral `assembly::capabilities` API describes fields, pages large
-integer domains, offers choices and validates a lowered `Draft` with atomic
-pending edits. Paths use card identities (`card[sound].irq`) and drive units,
-with optional source-level card names and image-field paths supplied by the
-caller. Image paths exclude the system BIOS when numbering option ROMs.
-Port descriptors expose IRQ dependencies; edits follow a changed port's derived
-IRQ default when the old default is still selected, preserving explicit IRQ edits.
-Choices retain unrelated existing errors as diagnostics without disabling other
-fields, so staged resource swaps remain editable. Responses echo
-the caller's revision so a frontend can discard stale choices.
-
-`validate_draft` shares the ordered checks behind `MachineConfig::validate`,
-collecting one error per independent check. Diagnostics include stable codes,
-field paths, conflict partners, decoded ports/routed IRQs/DMA ownership and
-severity. Candidate edits replace existing resources and rebuild derived
-port/MMIO/RAM maps; several fields are applied before checking conflicts.
-Selected firmware uses catalogue requirements and sizes for placement checks,
-while absent bytes remain pending. The known June 1985 IBM BIOS drive-type
-restriction is exposed to drafts; legacy lowering's first-error behavior and
-source-origin mapping remain unchanged. No host image reads, UI types or
-execution clocks enter the API. Launch must still load/verify inputs and run
-assembly validation, including persistent-path checks. `Validation::ready`
-means no reported error or pending check, not permission to bypass assembly.
-
-Host firmware discovery lives in `machine_file::firmware_discovery`. Its `frontend`
-module reuses one listing for the union of BIOS and option-ROM pins in a check, enforces the same
-size bounds on declared paths, and hashes only eligible files. The `persistent`
-module supplies a scoped host-worker session to existing machine-file resolver
-calls: an explicit cache path, metadata-validated SHA-256 index, cancellation flag
-and bounded progress/result snapshots. No guest configuration or execution state
-contains cache settings. Tests explicitly disable persistence or use temporary
-cache paths. The window readiness worker owns the session; the UI polls snapshots
-without doing filesystem I/O or waiting for the worker to join. Non-racy cache hits avoid
-candidate file reads, while the ordinary loader still verifies the selected ROM
-bytes before launch. See [machine descriptions](../../machines/README.md#selecting-a-machine)
-for local cache locations, privacy and Rescan/Cancel behavior.
-
-The normal real-mode path is:
-
-```text
-MachineConfig (preset or caller data)
-  -> assemble(&config)
-  -> AssembledMachine { Machine<X86JitCpu>, device_index, observation }
-  -> RunPolicy + assembly::run(&mut machine, &observation, &policy)
-  -> Machine::run_bounded(...) -> output capture / stop classification
-```
-
-[`MachineConfig`](../../crates/assembly/src/machine.rs) describes CPU/reset state,
-clock rate, RAM/MMIO layout, devices, drives and loadable images.
-[`assemble()`](../../crates/assembly/src/assemble.rs) validates
-it before construction, maps CPU memory, loads images, creates devices in config
-order, derives CMOS contents from memory/drives, and resolves device roles into
-bus indices. It builds the decode map, IRQ lines and DMA couplings. One shared
-master/slave PIC pair backs both bus faces and the interrupt-controller seam;
-a configuration without a PIC receives a null controller.
-
-[`RunPolicy`](../../crates/assembly/src/run.rs) describes how to drive that machine:
-virtual-time cap, halted idle limit, natural stop or console-prompt polling, and
-keyboard stimuli after the prompt. `run()` applies the idle limit and drives
-`run_bounded`; prompt polling captures a bound `DeviceId` display route through
-`ConsoleProbe` and the observation facade. Policy cadence affects guest execution and golden identity.
-The assembled machine starts without an idle wait. Some simple runners call
-`Machine::run()` directly. The assembler constructs Real16 machines and rejects a CPU without step-bounded
-execution. The Long64 machine demo has been intentionally removed.
-
-### Current execution order
-
-The authoritative loop is
-[`Machine::run_bounded`](../../crates/machine/src/lib.rs). For a running CPU:
-
-1. Settle instruction effects, check the absolute virtual-time cap, then
-   acknowledge a serviceable PIC request only if `Cpu::irq_ready()` permits it.
-2. Bound `Cpu::run_steps` by the next device deadline, remaining cap and host
-   cooperation limit. A pending INTR requests a stop at the first eligible
-   boundary, respecting IF and STI/SS-load inhibition.
-3. Charge completed prefix steps, dispatch the stopping port/MMIO access at
-   instruction-start time, and finish pending read/write handshakes. Each REP
-   iteration is a step, so long string instructions advance device time.
-4. Charge the completed stopping step once, settle bus/DMA effects and sample
-   wired IRQ transitions before the next acceptance check. Errors retain the
-   completed prefix's device time. Exact active caps win over a new INTA.
-
-Production uses deadline dispatch. Devices without a deadline implementation
-retain per-clock visits, while scheduled devices synchronize lazily on access.
-The non-default `reference-scheduler` feature exposes per-clock dispatch to
-integration tests as an oracle with the same CPU/IRQ rules. No production
-`MachineConfig` selects it, and no legacy outer loop remains.
-
-[`Bus`](../../crates/bus/src/lib.rs) dispatches port cycles according to each
-window's `PortWidth`: `Byte` by default, or `Word` for IOCS16# devices. An even
-port in a word window receives one size-2 call for a word access. Width is
-selected by the cycle's starting port, so a single-port word window consumes
-both data bytes even if the next port decodes to a byte device. Odd word accesses
-use two byte cycles. An aligned 32-bit access to word windows uses two size-2 cycles at
-port and port+2; each new cycle independently selects its window and width.
-Mixed windows therefore use byte or word cycles as selected, low bytes first,
-with port arithmetic wrapping at 16 bits. A fault preserves completed cycles.
-Device traces record those actual cycle sizes. This models the IBM Personal
-Computer AT Technical Reference, Section 1, System Board, I/O Channel,
-I/O Channel Signal Description, -I/O CS16 (IOCS16#); wait states and physical
-byte-lane signalling remain outside the model. Existing presets retain byte
-windows. Assembly checks word windows against a kind-based register support
-table, currently empty; ATA card wiring will declare its word data register.
-Port dispatch resolves the device and cycle width in one first-match lookup.
-See [Port window width](design/machine-config.md#port-window-width).
-Undecoded ports default to
-all-ones reads/dropped writes; optional bounded tracing and strict faulting are
-selectable. Assembly coalesces touching MMIO windows into one CPU trap region
-while retaining per-device bus decoding. MMIO accesses contained in one decode
-window reach the device once with their original size. Accesses crossing windows
-are split into contiguous sub-accesses in ascending address order, with
-little-endian read composition and write slicing. An undecoded MMIO address
-faults immediately: earlier sub-accesses remain completed and later ones are not
-attempted. Read results use `complete_port_in` or
-`complete_mmio_read`; trapped writes require `complete_mmio_write` so retrying
-the instruction does not repeat the device side effect.
-
-While halted, the loop stops immediately with IF clear (NMI is not modelled).
-With IF set it first tries IRQ service; otherwise, subject to idle/cap bounds,
-it jumps to the next device event, idle expiry or cap, settles DMA and samples
-edges before retrying IRQ acceptance. A queued IRQ permits CPU re-entry. Halt state and accumulated idle time
-survive bounded runner calls.
-
-## Contracts and ownership
-
-- **[`Cpu`](../../crates/cpu/src/lib.rs)** exposes `run_steps`, completed-step
-  and whole-instruction counters, general-purpose registers/RIP, port/MMIO
-  completions, IF and IRQ readiness, IRQ injection/pending status and DMA byte
-  access. It has no segment-register API,
-  bus-binding API or `irq_ack()` method. Segment seeds and `code_segment()` are
-  concrete `X86JitCpu` setup/inspection APIs.
-- **[`Device`](../../crates/device/src/lib.rs)** supplies port/MMIO access,
-  `tick(VClock)`, IRQ level queries, reset, per-device save/restore, trace
-  drains and optional DMA request/service/completion hooks. Host-side
-  `as_any_mut` is an optional downcast for input/output glue, not execution-loop
-  hardware selection. `NextEvent::{EveryPitClock, At(VClock), Dormant}` is an
-  scheduling contract consulted by the production deadline loop; `next_event`
-  defaults to `EveryPitClock` for unmigrated devices. Timestamped access wrappers
-  synchronize the target device at instruction start; deadline dispatch settles
-  due transitions without ticking dormant devices at each CPU boundary.
-- **[`SectorMedia`](../../crates/device/src/media.rs)** is owned by each uPD765
-  drive and covers its configured geometry. It serves 512-byte sectors, accepts
-  one ordered batch of replacements per nonempty completed WRITE DATA, and
-  reports write protection that remains constant while mounted. Partial sectors
-  are zero-filled by the controller; abnormal completions include sectors already
-  committed. The contract exposes no clock or host error result. Default drives
-  use `InMemoryMedia`; reset retains the medium and device snapshots exclude it.
-  The host-side `media::JournalMedia` owns reconstructed bytes, synchronous
-  per-command output, recovery and checkpoint/finish under a stable sidecar lock.
-  Its shared `SinkStatus` latches the first failure outside guest-visible state;
-  reads and later memory writes continue after output stops. Assembly adapts
-  journals to `SectorMedia` and exposes per-drive persistence handles. CLI and
-  window frontends poll status at run boundaries and explicitly finish normal
-  sessions; execution errors leave the tip unsealed.
-  See [persistent media](design/persistent-media.md#integration-layers-flush-points-determinism-argument).
-- **`InterruptController`**, defined in `device`, supplies `set_irq_line`,
-  non-mutating `poll`, `acknowledge`, and `end_of_interrupt`. Machine wiring
-  forwards rising and falling device pin levels to PIC inputs; the PIC detects
-  edges and withdraws unacknowledged requests when their inputs fall.
-  Acknowledgement requires CPU IRQ readiness and no already queued vector,
-  after the stopping instruction's bus/DMA effects have settled. Guest EOI port
-  writes reach the same shared PIC state. See the adopted ordering in
-  [scheduler design](design/scheduler.md#adoption).
-  Known limitation: cascaded-board validation does not reserve master IRQ2 for
-  slave INT, so a device route can still conflict with that internal connection.
-- **[`FrameSink`](../../crates/video/src/lib.rs)** consumes `&Frame` via
-  `present`; the current frame is `Frame::Text(TextGrid)`. Rendering turns VRAM
-  and display-start/cursor state into cells with glyph bytes and attributes.
-  `CaptureFrameSink` retains the last frame. Presentation is driven by the assembly observation facade at capture
-  boundaries, outside the machine loop.
-
-The bus owns devices; `X86JitCpu` owns guest memory. Devices do not retain RAM
-references. DMA requesters supply a channel and payload/length, the configured
-controller supplies addresses/counts, and the machine lends a temporary
-`DmaMemory` adapter over the CPU seam. `DmaOutcome` returns a transfer count or
-the bytes read, truncated to the controller's actual transfer length.
-
-### Snapshot clock and interrupt state
-
-Device restore keeps the current trace history, drop counts and recording policy.
-A restored bus clock must be at least as late as each device snapshot's absolute
-clock; devices ignore earlier sync/tick times to avoid rewinding or replaying an
-interval. Restoring an earlier epoch requires restoring its global clock too.
-
-A future machine-level snapshot must also save `Machine::last_levels`, the IRQ
-IRQ sampler's last observed levels. No device snapshot contains these samples;
-losing them can suppress or invent an interrupt edge after restore. CPU state,
-the global clock and its fractional remainder, halted state and idle counters
-also belong to that machine-level snapshot.
-
-### Observation and presentation
+## Observation and presentation
 
 The optional `window` crate remains a leaf frontend. Its `unemu`
 binary dispatches a leading command word to `upcli::run_command` before any
@@ -588,8 +362,8 @@ Menus stay inside the window on every platform.
 
 `src/shell_model.rs` owns hotkey mapping, the status-bar widths and pixel
 conversion; discovery is `pc_library::machine_files` and command enablement
-`pc_ui::commands`, which it re-exports. Discovery includes TOML/YAML files directly in `machines/`
-and `machines/local/`, with stable ordering and blank last-run metadata. The
+`pc_ui::commands`, which it re-exports. Discovery includes TOML/YAML files in the host machine-file directory
+and its local subdirectory, with stable ordering and blank last-run metadata. The
 existing machine-file loader and read-only checker supply hardware details and
 readiness; missing firmware or invalid media disables Start and exposes the
 validator diagnostic. Open accepts a machine-file path. The Settings sheet edits
@@ -804,161 +578,28 @@ host discovery on edits. Metadata descriptions cannot authorize launch: readines
 still uses ROM folders and the normal image-verifying loader. All state and save
 checks are headless-testable.
 
-`assemble_with_observation` binds requested routes by `DeviceId` and validates
-capabilities before execution. `AssembledMachine::capture_text` captures display
-state at a stamped machine boundary; semantic byte sinks collect UART TX and
-POST independently of access tracing. `ObservationPolicy.trace` selects Off
-(default) or `Ring { capacity }` for every device and the open bus. All recorders
-share overwrite-oldest behavior and cumulative drop counters; draining retains
-the count. Diagnostics and their policy are excluded from hardware snapshots.
-Capture preserves saved device state and
-does not consume traces. BIOS runners return the colour and MDA card grids,
-COM1/POST streams, final floppy media and classified stop. The BIOS preset routes
-`0xB0000..=0xB7FFF` and display ports `0x3B0..=0x3BB` / `0x3BF` to MDA;
-printer ports `0x3BC..=0x3BE` remain undecoded. VGA retains only its colour ports,
-so the cards have independent CRTC state. Prompt detection selects the MDA route
-by `DeviceId` and uses the same facade capture as final capture. The facade
-renders once and fans out that frame to subscribers.
-`ObservationPolicy.output.frame_sink` selects Headless (the default, no subscriber)
-or Capture (one last-frame sink per requested display). Presentation selection
-belongs to observation setup, outside the hardware-only `MachineConfig`.
-`Observation::subscribe` accepts a boxed `FrameSink` for a bound route, providing
-the window presenter seam without a window dependency. `run_vga_text` selects
-Capture; presentation stays outside the machine loop and adds no execution steps.
 
-See [`design/observation.md`](design/observation.md) for the route contracts and
-historical design inventory.
+## Core boundary and host timing
 
-## Virtual clock
+The PC core owns machine-file parsing, validation, firmware resolution, journal
+codecs and deterministic execution. The front end supplies verified content and
+storage, handles host preferences and publication, and explicitly finishes sessions.
+The core's machine examples and fixtures live in [unemupc](https://github.com/unemu-org/unemupc/blob/main/machines/README.md).
+Front-end tests obtain them through `UNEMUPC_FIXTURE_ROOT`; see
+[dev setup](dev-setup.md#the-pc-core-unemupc).
 
-[Decision-5](../decisions/decision-5%20-%20Virtual%20clock%20in%20retired%20instructions.md)
-sets retired instructions as the deterministic time source; block counts and
-wall time do not define device time. `VClock(u64)` counts virtual ticks;
-`device::clock::TICKS_PER_PIT_CLOCK` remains **1**. `VClock::from_pit` converts
-PIT input clocks at unit boundaries. The `device` crate owns clock domains
-because it already owns the common device-time seam; no additional crate or
-runtime dependency is needed.
+Host input is queued at run boundaries. Pointer capture, key release, modal
+pauses and host pacing belong to `machine-view` and the desktop. Host audio
+resamples into a bounded playback ring and applies host mix levels; playback
+and repaint frequency never advance guest time. Only the host pacing policy
+reads a wall clock; execution remains deterministic at the pinned core revision.
+See the core's [observation](https://github.com/unemu-org/unemupc/blob/main/backlog/docs/design/observation.md)
+and [audio](https://github.com/unemu-org/unemupc/blob/main/backlog/docs/design/audio.md)
+designs for device-side capture and mixing.
 
-`device::clock::OSC` is exactly **315/22 MHz**. Named `ClockDomain` constants
-cover PIT (OSC/12), CGA horizontal dots (OSC), VGA dots (25.175/28.322 MHz),
-UART (1.8432 MHz), RTC (32.768 kHz), OPL3 samples (OSC/288), 48 kHz output,
-and AT 12/16 MHz CPU crystals (6/8 MHz 286 after division by two). The CPU
-crystals describe hardware frequencies, not the calibrated instruction rate.
-A domain stores an exact ratio of virtual ticks per edge. `edges_between(a,b)`
-counts edges in `(a,b]`; `edge_at(n)` rounds up once; `next_edge_after(t)` uses
-the absolute epoch to retain phase, including when several fast edges share a
-tick. Checked edge methods report exhaustion; duration conversion saturates.
-Devices keep local reset/programming origins where the existing model anchors them.
-Audio integration remains in virtual-tick areas. PIT counters advance by input
-edges, while deadlines, UART/keyboard durations and the VGA clock conversion use
-domains. The public `VClock` field and existing stateless VGA raster remain
-unchanged by this seam (decision-22 §1a–b).
-[`ClockConfig`](../../crates/assembly/src/clock.rs) supplies the positive rational
-CPU rate A/B (`retired_per_pit_clock` / `retired_per_pit_clock_denominator`), in
-completed steps per PIT clock. Assembly passes
-the rate into `Machine::with_cpu_rate`; the default is 1/1. Running time emits
-`floor((remainder + completed_steps_delta * B * ticks_per_PIT) / A)` virtual ticks and carries the remainder
-across CPU exits. This is an instruction-timed approximation, not cycle timing.
-
-[Decision-14](../decisions/decision-14%20-%20Virtual%20time%20advances%20while%20the%20CPU%20is%20halted.md)
-extends time through HLT: halted clocks tick devices without retiring CPU
-instructions or consuming the running clock remainder. `Machine::virtual_time`
-is completed steps plus `floor(total_halted_ticks * A / (B * ticks_per_PIT))`, saturating
-at `u64::MAX`. Caps and policy targets use these instruction equivalents;
-device clocks use `VClock`. Golden runs depend on the CPU revision, config and
-policy cadence. Host cooperation size cannot change timing by contract;
-device-free CPU regressions and the per-clock-versus-deadline comparisons hold
-the CPU core to it (see [scheduler adoption](design/scheduler.md#adoption)).
-
-## x86jit integration
-
-[`X86JitCpu`](../../crates/cpu/src/x86jit_backend.rs) adapts a pinned external
-`x86jit-core`; machines use its Real16 interpreter. Long64 remains an
-adapter unit-test concern only. CPU changes are developed upstream and consumed by re-pinning,
-not copied into this workspace
-([decision-13](../decisions/decision-13%20-%20Consume%20x86jit%20main%20at%20an%20exact%20revision.md)).
-
-- `Exit::PortIo`, `MmioRead`, `MmioWrite`, `Hlt`, `Exception` and
-  `BudgetExhausted` map to `CpuStop`. `UnmappedMemory` and `UnknownInstruction`
-  become typed CPU errors; `Syscall` is unsupported. Host interruption, code
-  space exhaustion and unrecognized exits become `UnexpectedExit` errors.
-- The memory mosaic uses `RegionKind::Ram` (RWX), `Trap` (MMIO), and `Rom`
-  (RX, executable/readable with guest stores dropped). Host image loading uses
-  `Vm::write_bytes`, which can populate ROM. Real-mode `INT n` already vectors
-  through the guest IVT; it is not an outstanding embedder implementation.
-- The Lo-tech EMS board owns its four latches and SRAM behind `Device` and a
-  64 KiB MMIO frame, and shares them with assembly through a `LotechEmsFrame`
-  handle. Port writes update the latches synchronously before the next CPU
-  instruction. Every 400h I/O alias is represented in the decode map and
-  conflict validation. The IBM 5170's E0000h–FFFFFh system-board ROM decode
-  rejects an E000h frame; the shipped profiles use D000h. Only Rust bare test
-  rigs accept E000h. The normal high ROM alias is unchanged. CPU reset
-  preserves latches and SRAM.
-  See the coverage matrix in `crates/devices/src/lotech_ems.rs` and
-  [machine fields](../../machines/README.md#lo-tech-ems-card-reference).
-- The CPU cannot fetch instructions from a `Trap` region, so assembly maps
-  each EMS frame window in one of three forms
-  (`crates/assembly/src/ems_frame.rs`). A window whose latch selects a
-  populated page that no other latch selects is `Ram`, and its CPU copy is
-  authoritative. An unbacked window is `Rom` filled with FFh: reads and
-  fetches see the floating bus, guest and DMA stores are dropped. Only a page
-  selected by two latches stays `Trap` and reaches the board, data-correct but
-  not executable. `Machine::with_memory_map` calls the map when every run
-  starts and after every guest port write, before that instruction's DMA and
-  the next instruction. It writes held copies back into SRAM (all of them
-  before a retile), retiles the frame with `X86JitCpu::unmap` and
-  `map_ram`/`map_rom_in_place`/`map_mmio` (neighbouring windows of one form
-  share a region; the DMA region table follows; the core's flat backing keeps
-  bytes across unmap and map), then loads newly held pages, or the FFh fill of
-  a newly unbacked window, with `Vm::write_bytes`, whose `note_write` drops
-  any translation of the previous contents. Its change counters advance last,
-  so a failed apply is retried whole. When a run returns, held pages are
-  written back, so device snapshots read current SRAM; a restore makes the
-  next run drop the held copies unwritten and reload them. The core joins RAM
-  and ROM regions for one operand, so a word straddling a held and an unbacked
-  window reads FFh for the unbacked byte; an operand crossing a `Trap` region
-  (a shared window, or another device's window beside the frame) and a held
-  or unbacked window stops with `CpuError::Unmapped`. A latch
-  write costs one or two 16 KiB copies; a retile, whose `Trap` map invalidates
-  the whole translation cache, happens only when a window changes form.
-  The write-back on every run return copies at most 64 KiB. MEASURED once in
-  release on the development host: 1 ms run chunks (1,193 steps) of a spinning
-  guest took 26.2–26.6 µs per return with no held window and 26.9–27.3 µs with
-  four, under 1 µs and about 3% of the chunk, so held windows carry no
-  per-window dirty tracking.
-- `inject_irq` forwards a queued vector; the core gates delivery on IF, pending
-  completions and the STI/SS-load shadows, then enters the guest IVT handler.
-  `completed_steps()` drives machine time; `retired()` remains available for
-  whole-instruction diagnostics.
-- DMA byte access uses `Vm::read_bytes` / `write_bytes`; writes run `note_write`
-  for self-modifying-code invalidation
-  ([decision-6](../decisions/decision-6%20-%20Guest%20memory%20writes%20via%20note_write%20for%20SMC%20safety.md)).
-  The backend remembers the regions it mapped: a DMA write into ROM is
-  dropped and a DMA read from ROM returns ROM bytes, while a byte in a trapped
-  MMIO window is handed back to the machine (`DmaAccess::Mmio`), which runs it
-  as a bus MMIO cycle on the owning device. Read errors return `0xFF`; write
-  errors are discarded by the current byte seam.
-
-## In flight and further reading
-
-- **Board validation:** [`design/compatibility-diagnostics.md`](design/compatibility-diagnostics.md)
-  records the diagnostic-ROM spike, user-supplied firmware policy, expected
-  Landmark AT coverage and the golden capture rule; execution is not qualified.
-- **Scheduler:** [decision-15](../decisions/decision-15%20-%20Deterministic%20device%20scheduler%20with%20instruction-exact%20interrupt%20boundaries.md)
-  amends [`design/scheduler.md`](design/scheduler.md). Instruction-boundary
-  timing and deadline dispatch are adopted. Per-clock dispatch survives only as
-  a feature-gated test oracle; the harness compares ordered accesses, INTA/EOI,
-  RAM, registers, saved device state and stop endpoints without normalization
-  between the two engines. The post-adoption profile is in
-  [`design/machine-time-profile.md`](design/machine-time-profile.md).
-- **Observation:** [`design/observation.md`](design/observation.md) describes
-  typed device capabilities and assembly-owned observation routes. Access traces
-  are opt-in, bounded and independent of semantic output; the document retains
-  the historical inventory. Prompt polling, final capture and presentation now share one route-based facade.
-
-[`design/machine-config.md`](design/machine-config.md) explains composition;
-[`design/spec.md`](design/spec.md) specifies hardware coverage and seams;
-[`design/machine-time-profile.md`](design/machine-time-profile.md) records timing
-measurements. Historical decisions are under [`../decisions/`](../decisions/);
-accepted designs may precede implementation. Deferred hardware and fidelity
-work is listed in [`deferred.md`](deferred.md).
+Host diagnostic reports and exception traces are requested at run boundaries;
+the PC core provides captured device state, stop reasons and delivery records.
+The front end writes these observations without advancing guest time. Reset
+storms and stalled interrupt delivery stop through the existing run policy.
+Detailed report formats and hardware interpretation belong to the core's
+[observation design](https://github.com/unemu-org/unemupc/blob/main/backlog/docs/design/observation.md).

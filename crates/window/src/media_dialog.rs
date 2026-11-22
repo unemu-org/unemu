@@ -6,7 +6,7 @@
 //! desktop: the insert dialog's library form, drawn with egui, and putting the
 //! pending floppies into the machine a Start assembled, which the desktop's
 //! session holds. See `backlog/docs/design/machine-images.md` §7 and
-//! persistent-media.md § Media changes.
+//! persistent-media.md § Media changes in unemupc.
 
 use assembly::{ImageSource, WriteMode};
 pub(crate) use pc_media::media_dialog::*;

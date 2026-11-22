@@ -58,7 +58,7 @@ with those snapshots plus the explicit metadata corrections above.
 ## Design history
 
 Status: **drafts** for the design in [`../recipes.md`](../recipes.md)
-(`upc-5pw.113`), 2026-11-17. Nine recipes, each in the chosen syntax (TOML
+(`upc-5pw.113` (unemupc)), 2026-11-17. Nine recipes, each in the chosen syntax (TOML
 1.0, `*.toml`) and in the strongest alternative (an HCL literal subset,
 `*.hcl`). They exist to test the syntax and the model against real cases
 before anything freezes (recipes.md §14). When it was written no builder
@@ -298,7 +298,7 @@ extensions to the accepted recipe schema:
   VGA, 640 KiB conventional plus 2048 KiB extended RAM, a 1.44M drive and a
   30 MiB IDE master named `system` (960 cylinders, 4 heads, 16 sectors,
   512 bytes per sector). It is a base machine image, distinct from the
-  hardware-only `schema = 1` documents in [machine-files.md](../machine-files.md).
+  hardware-only `schema = 1` documents in [machine-files.md](https://github.com/unemu-org/unemupc/blob/main/backlog/docs/design/machine-files.md).
   The Windows parent is the DOS output here, with matching placeholder pins.
 - `insert` selects a medium of a digest-pinned set; `eject` empties the drive.
   Install media stay read-only. `start` powers on once; `reset = "warm"`
@@ -345,10 +345,10 @@ extensions to the accepted recipe schema:
   reproducible. Zero-padded digests/revisions are placeholders.
 
 READ: core-contract.md **§12.8**, not recipes.md, describes the shared future
-key-script vocabulary. `crates/pc-harness/src/lib.rs` already drives FreeCOM through
+key-script vocabulary. [`crates/pc-harness/src/lib.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/main/crates/pc-harness/src/lib.rs) already drives FreeCOM through
 `PromptThen`, `KeyboardStimulus` and set-1 make/break input; its small
 `type_set1` helper does not support all the characters this corpus proposes.
-`crates/unemupc/src/lib.rs` currently parses `--max-steps`, `--idle-limit`, `--diag-at`,
+[`crates/unemupc/src/lib.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/main/crates/unemupc/src/lib.rs) currently parses `--max-steps`, `--idle-limit`, `--diag-at`,
 `--trace-exceptions` and `--print` for `run --machine`; `--keys` and
 `--max-time` remain design work. The corpus therefore supplies no command line
 that claims to run these files now. Input pacing, key names, graphics observers,

@@ -1,3 +1,5 @@
+Frozen record of the split: unemu maintains the front end and unemupc the PC core; the living description is [architecture.md](../architecture.md), and the normative contract lives in [unemu-core-api](https://github.com/unemu-org/unemu-core-api).
+
 # Repository split: the extraction plan
 
 Status: **Accepted** by the maintainer on 2026-11-22 (bead `upc-dfs.53`), with
@@ -158,7 +160,7 @@ separate. The E1 source-include check now covers the first kind.
 
 **(a) Test support shared with `#[path]`.** MEASURED by
 `grep '#\[path' crates`: front-end test sources include files of
-`crates/pc-harness/tests/support/` 30 times.
+[`crates/pc-harness/tests/support/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-harness/tests/support) 30 times.
 
 | Front-end crate | `fixtures.rs` | `session.rs` | `at_games.rs` | `fat12.rs` |
 |---|---|---|---|---|
@@ -179,28 +181,28 @@ test dependency of `upcli` and `window`; `pc-image` and `pc-library` gain it
 as a test dependency. Step E1.
 
 **(b) Paths built from the repository root.** `fixtures.rs` and `at_games.rs`
-resolve `vendor/` and `machines/` from the *including* crate's
+resolve `vendor/` and [`machines/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/machines) from the *including* crate's
 `CARGO_MANIFEST_DIR` joined with `../..` [REPO:
-`crates/pc-harness/tests/support/fixtures.rs:17`, `at_games.rs:13`].
+[`crates/pc-harness/tests/support/fixtures.rs:17` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-harness/tests/support/fixtures.rs#L17), `at_games.rs:13`].
 MEASURED by `grep CARGO_MANIFEST_DIR` with `../..`: front-end crates build
 root paths themselves in `cli-pc` (9 places), `pc-image` (6), `pc-library`
 (4), `window` (4) and `image-store` (1, the lock file). Compile-time reads of
 core files from front-end tests: `vendor/freedos/fetch.sh`
-(`crates/cli-pc/tests/media_files_golden.rs`) and `machines/README.md`
+(`crates/cli-pc/tests/media_files_golden.rs`) and [`machines/README.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/README.md)
 (`crates/cli-pc/tests/media_create.rs`).
 
-Answer: one function names the tree that holds `machines/` and `vendor/`,
+Answer: one function names the tree that holds [`machines/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/machines) and `vendor/`,
 `pc_harness::test_support::root()`: the directory in `UNEMUPC_FIXTURE_ROOT`
 when it is set (absolute and existing, else a configuration error, the rule
 `UNEMUPC_USER_ROMS_DIR` already follows), otherwise the repository of
 `pc-harness` itself. In this repository both are the same directory, so
-behaviour does not change. Front-end tests take every `machines/` and
+behaviour does not change. Front-end tests take every [`machines/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/machines) and
 `vendor/` path of the core from it and read the two files above at run time.
 Paths to the front end's own data stay relative to the crate. Step E2.
 
 | Path family | Owner | Read by front-end tests through |
 |---|---|---|
-| `machines/*.toml`, `machines/README.md`, `machines/presets/` | core | the fixture root |
+| [`machines/*.toml` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/machines), [`machines/README.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/README.md), [`machines/presets/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/machines/presets) | core | the fixture root |
 | `vendor/` firmware and disk fixtures built by `fetch.sh` / `build.sh`: `kiselev-bios`, `unemu-at-bios`, `vgabios`, `xtide-universal-bios`, `freedos` (boot floppies), `hdd`, `user-roms` | core | the fixture root |
 | `vendor/` fixtures only the core reads: `test386`, `at-pm-test`, `at-loadall-test`, `at-privilege-test`, `seabios`, `ltemm` | core | not read |
 | `vendor/kenslab/`, `vendor/shareware/`, `vendor/freedos/fetch-floppy-1.4.sh` with `floppy-1.4-licenses.txt` and `iso-extract.py` | front end (recipes) | its own `vendor/` |
@@ -218,7 +220,7 @@ planner's self-test, which already lists every path a crate source names
 outside its directory, verify it.
 
 Core sources also read files outside their crate at compile time
-(`machines/presets/ibm-5170.toml` in `machine-file`, fixture scripts in
+([`machines/presets/ibm-5170.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/presets/ibm-5170.toml) in `machine-file`, fixture scripts in
 `assembly` tests). These stay inside the core repository and resolve in a git
 checkout of it, which holds the whole tree.
 
@@ -226,7 +228,7 @@ checkout of it, which holds the whole tree.
 
 | Destination | Paths |
 |---|---|
-| Core | `machines/`, `vendor/` except the front-end rows of §2.4, `scripts/core-host-guard.*`, `scripts/crate-boundaries.external`, `devShells.firmware` of `flake.nix`, `backlog/completed/`, `backlog/archive/`, `backlog/tasks/`, `backlog/drafts/`, the core's docs and decisions (§9) |
+| Core | [`machines/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/machines), `vendor/` except the front-end rows of §2.4, `scripts/core-host-guard.*`, `scripts/crate-boundaries.external`, `devShells.firmware` of `flake.nix`, [`backlog/completed/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/backlog/completed), [`backlog/archive/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/backlog/archive), [`backlog/tasks/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/backlog/tasks), [`backlog/drafts/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/backlog/drafts), the core's docs and decisions (§9) |
 | Front end | The front-end rows of §2.4, `assets/brand/`, `.github/actions/setup-unemu/`, `.github/workflows/setup-unemu.yml`, `scripts/export-layout.sh`, the front end's docs and decisions (§9) |
 | Both, each with its own edited copy | `Cargo.toml`, `Cargo.lock`, `flake.nix`, `flake.lock`, `deny.toml`, `LICENSE`, `LICENSES/`, `README.md`, `AGENTS.md`, `CLAUDE.md`, `.gitignore`, `.envrc`, `.pre-commit-config.yaml`, the lint configurations, `.agents/`, `.claude/`, `.serena/`, `.beads/` configuration, `backlog/config.yml`, `.github/workflows/ci.yml` and `release.yml`, the gate and guard scripts of §8, `vendor/freedos/README.md`, the shared docs of §9 |
 
@@ -245,7 +247,7 @@ the beads database with prefix `upc`.
   `unemupc`, the core's id in `CoreDescription`, "Needs unemupc X or newer"
   and `unemu.min-app-version` (decision-30), the firmware index directory, the
   `UNEMUPC_*` variables, core contract §9 and §12.9.
-- The project's goal line (decision-16) and nine of the twelve open epics are
+- The project's goal line ([decision-16 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-16%20-%20Scope%20a%20period%20PC%20from%20DOS%20to%20Windows%2098%20SE%20with%203dfx%20Voodoo.md)) and nine of the twelve open epics are
   core work: `cpu-core`, `scheduler`, `validation`, `storage`,
   `consolidation`, `protected-mode`, `win9x-base`, `voodoo` and the
   cycle-ready seams. Two concern both sides (`tests-ci` and the release
@@ -304,7 +306,7 @@ machine-file = { git = "https://github.com/unemu-org/unemupc", rev = "<40 hex>" 
 # ... one line per core package the front end names
 ```
 
-The rules are those of decision-13 for `x86jit`: never a bare `path`
+The rules are those of [decision-13 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-13%20-%20Consume%20x86jit%20main%20at%20an%20exact%20revision.md) for `x86jit`: never a bare `path`
 dependency, never a branch or a tag name, and the revision is a commit of the
 core's `main` whose CI is green. The front end does not name `x86jit-core`:
 its revision comes with the core's manifest and appears in the front end's
@@ -462,8 +464,8 @@ question is moot.
 
 `THIRD-PARTY-LICENSES.md` in the front end must still quote the notices of
 components that now sit in the pinned core: the Nuked-OPL3 licence
-(`crates/devices/src/opl3/LICENSE`) and the font notices under
-`crates/pc-core/assets/fonts/` [REPO: `scripts/third-party-licenses.sh`,
+([`crates/devices/src/opl3/LICENSE` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/devices/src/opl3/LICENSE)) and the font notices under
+[`crates/pc-core/assets/fonts/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-core/assets/fonts) [REPO: `scripts/third-party-licenses.sh`,
 "Components in this repository"]. The script finds them through the manifest
 paths `cargo metadata` reports for `devices` and `unemu-pc-core`.
 
@@ -492,7 +494,7 @@ that repository, by its own session (step E16).
 | `unemu.min-frontend-version` | The composing application's version | The **front end** repository's workspace version (`window`, `upcli`); rows, `NEXT_RELEASE` and the frozen `EXTRACTION_BASELINE` (`0.0.3`) in `image_store::compat`, `pc_image::compat` and `recipe::compat` |
 
 Both sources exist today as package versions of crates on the right side
-[REPO: `crates/pc-core/src/core.rs:44`, `crates/upcli/src/command.rs:92`,
+[REPO: [`crates/pc-core/src/core.rs:44` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-core/src/core.rs#L44), `crates/upcli/src/command.rs:92`,
 `crates/window/src/shell.rs:2739`]; the split only makes the two numbers free
 to differ. Nothing is restamped. "unemupc" in the reason a reader prints
 keeps naming the core.
@@ -518,7 +520,7 @@ keeps naming the core.
 | `crate-boundaries-fixtures/` | The fixtures of the rules it keeps | Likewise |
 | `ci-gate.sh` | Without `recipe-conformance`; `fixtures` without the two recipe downloads | With the core checkout before `fixtures`, and `UNEMUPC_FIXTURE_ROOT` exported for `goldens` |
 | `bead-gate.sh` | Stays; the production-binary clippy step names `unemupc` | Stays; without the host guard |
-| `affected-tests.sh`, `scripts/testdata/affected-tests/` | Its tables shrink to the core: `emulation_crates`, `runner_files` (`crates/pc-harness/src/`, `crates/unemupc/src/`), the data rules for `crates/pc-harness/tests/support/`, `machines/`, `vendor/` | `emulation_crates` holds `media` only; `runner_files` keeps the front end's entries; the data rules keep recipes, corpus, schema, mock-ups and assets. The rules for `machines/` and `vendor/` of the core disappear: those files change only with the pin, which already selects everything with the golden tier |
+| `affected-tests.sh`, `scripts/testdata/affected-tests/` | Its tables shrink to the core: `emulation_crates`, `runner_files` ([`crates/pc-harness/src/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-harness/src), [`crates/unemupc/src/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/crates/unemupc/src)), the data rules for [`crates/pc-harness/tests/support/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-harness/tests/support), [`machines/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/machines), `vendor/` | `emulation_crates` holds `media` only; `runner_files` keeps the front end's entries; the data rules keep recipes, corpus, schema, mock-ups and assets. The rules for [`machines/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/machines) and `vendor/` of the core disappear: those files change only with the pin, which already selects everything with the golden tier |
 | `third-party-licenses.sh` | For `unemupc` | For `unemu`, reading the core's notices from the pinned sources (§7.2) |
 | `export-layout.sh` | — | Moves here |
 | `skills-bootstrap.sh`, `uid-guard.sh` | Stay | Copies |
@@ -537,7 +539,7 @@ references to `x86jit` do today.
 
 | Document | Destination |
 |---|---|
-| `design/spec.md`, `machine-config.md`, `machine-files.md`, `firmware-and-machine-classes.md`, `scheduler.md`, `observation.md`, `audio.md`, `persistent-media.md`, `protected-mode-gaps.md`, `at-pm-test.md`, `at-loadall-test.md`, `at-privilege-test.md`, `compatibility-diagnostics.md`, `machine-time-profile.md`, `testing.md` | Core |
+| [`design/spec.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/spec.md), [`machine-config.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/machine-config.md), [`machine-files.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/machine-files.md), [`firmware-and-machine-classes.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/firmware-and-machine-classes.md), [`scheduler.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/scheduler.md), [`observation.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/observation.md), [`audio.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/audio.md), [`persistent-media.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/persistent-media.md), [`protected-mode-gaps.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/protected-mode-gaps.md), [`at-pm-test.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/at-pm-test.md), [`at-loadall-test.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/at-loadall-test.md), [`at-privilege-test.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/at-privilege-test.md), [`compatibility-diagnostics.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/compatibility-diagnostics.md), [`machine-time-profile.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/machine-time-profile.md), [`testing.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/testing.md) | Core |
 | `design/machine-images.md`, `recipes.md`, `recipe-schema-*.json`, `recipe-corpus/`, `registry-library-plan.md`, `about-text.md`, `icons.md`, `mockups/`, `docs/user/` | Front end |
 | `design/core-contract.md`, this document | **Both, frozen.** They are the record of the split. After the cut neither is edited except for a closing status line; the living description is each repository's `architecture.md`, and the contract's normative text is in its own repository |
 | `design/machine-images.md` §5.6 (compatibility) | Front end, with the core's rows described where they live: a short section in the core's docs that points at `pc_config::compat` and decision-30 |
@@ -546,7 +548,7 @@ references to `x86jit` do today.
 | `status.md` | Both keep the entries up to the split as they are: it is a dated log and its links stay valid. One marker line records the split; above it each repository writes only its own entries |
 | `dev-setup.md`, `conventions.md`, `decisions.md`, `glossary.md`, `working-on-tasks.md`, `readme.md`, `test-timings.md` | Both, each edited to its own crates, epics and pins. The front end's `dev-setup.md` gains "The PC core: unemupc" beside the contract's section |
 | `deferred.md` | Split by entry. Hardware entries to the core; "Machine-image daemon" and "Reusing Docker and oras registry logins" to the front end; "Layered disk images" in both (§11) |
-| `backlog/completed/`, `archive/`, `tasks/`, `drafts/` | Core: the history of the earlier tracker |
+| [`backlog/completed/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/backlog/completed), [`archive/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/backlog/archive), [`tasks/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/backlog/tasks), [`drafts/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/backlog/drafts) | Core: the history of the earlier tracker |
 
 **Decisions.** Records are not renumbered and not rewritten.
 
@@ -637,7 +639,7 @@ maintainer's word, as always.
 | E0 | M | Accept this plan and answer §14 | The answers recorded here; status becomes Accepted |
 | | | **Preparation, in `unemupc`, one bead each** | |
 | E1 | S | `pc-harness` exposes its shared test support behind `test-support`; the 30 front-end includes become `use` (§2.4 a). The boundary script fails when a crate's source includes a file of a crate on the other side | Full gate with goldens. `grep` finds no `#[path]` from a front-end crate into a core crate. A planted include fails the script's self-test |
-| E2 | S | One fixture root, `UNEMUPC_FIXTURE_ROOT` (§2.4 b); front-end tests read the core's `machines/` and `vendor/` only through it | Full gate with the variable unset. The front end's tests and goldens green again with the variable naming a second checkout that holds the built fixtures while the first checkout holds none |
+| E2 | S | One fixture root, `UNEMUPC_FIXTURE_ROOT` (§2.4 b); front-end tests read the core's [`machines/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/machines) and `vendor/` only through it | Full gate with the variable unset. The front end's tests and goldens green again with the variable naming a second checkout that holds the built fixtures while the first checkout holds none |
 | E3 | S | The ownership list of §2.5 as a committed file and a check in the guard lane; the source scan of §2.4 c split in two | The check passes; a planted unowned file and a planted doubly owned file fail its self-test |
 | E4 | M | Choose the split point: a commit of `main` after E1 to E3 with green hosted CI. From here front-end changes land only on the front-end branch; core changes land on `main` as usual | The commit is named in the bead and in this document |
 | | | **The front end, built locally: nothing is published** | |

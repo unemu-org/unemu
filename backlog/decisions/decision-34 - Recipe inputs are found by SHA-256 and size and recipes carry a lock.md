@@ -10,9 +10,9 @@ deciders: Mikołaj Mikołajczyk
 
 ## Status
 
-Accepted — 2026-11-17 by the maintainer: he chose the frozen encoder profile named in the lock (recipes.md Q3), took the FreeDOS source archive as a prepared input (Q6), and asked for work files on top of the lock ([[decision-39]]). He confirmed the lock itself explicitly, and decided that the `+zstd` suffix of the version-1 media types is encoder profile 1: no manifest byte changes, and a later profile gets a new marker. Design step of `upc-5pw.113`; recipes.md §3 and §9.
-Builds on [[decision-25]], [[decision-26]], [[decision-27]] and
-[[decision-30]].
+Accepted — 2026-11-17 by the maintainer: he chose the frozen encoder profile named in the lock (recipes.md Q3), took the FreeDOS source archive as a prepared input (Q6), and asked for work files on top of the lock ([decision-39](decision-39%20-%20A%20work%20file%20holds%20what%20the%20releases%20of%20one%20work%20share.md)). He confirmed the lock itself explicitly, and decided that the `+zstd` suffix of the version-1 media types is encoder profile 1: no manifest byte changes, and a later profile gets a new marker. Design step of `upc-5pw.113`; recipes.md §3 and §9.
+Builds on [decision-25](decision-25%20-%20Machine%20images%20are%20self-contained%20OCI%20artifacts%20in%20a%20local%20store.md), [decision-26](decision-26%20-%20Installation%20media%20sets%20are%20their%20own%20OCI%20artifact%20type.md), [decision-27](decision-27%20-%20Firmware%20packages%20are%20their%20own%20OCI%20artifact%20type.md) and
+[decision-30](decision-30%20-%20Published%20images%20declare%20the%20oldest%20unemupc%20that%20runs%20them.md).
 
 ## Context
 
@@ -79,7 +79,7 @@ pinned.
 - A recipe for private media publishes no payload byte, and its lock holds
   only digests, sizes, labels and our own text.
 - Later releases never have to write an old encoding again, only read it,
-  which [[decision-30]] already requires.
+  which [decision-30](decision-30%20-%20Published%20images%20declare%20the%20oldest%20unemupc%20that%20runs%20them.md) already requires.
 - The payload builders (the FAT builder, the zip reader, the text step)
   become versioned code with golden tests. A refactoring that changes one
   byte is a failed release test, not a surprise for users.

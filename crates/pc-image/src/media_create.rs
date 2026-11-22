@@ -6,7 +6,7 @@
 //!
 //! The FAT12 formatter and builder live in [`media::fat12`] (Microsoft FAT
 //! Specification; IBM Personal Computer AT Technical Reference, diskette
-//! formats and INT 13h CHS addressing). See machines/README.md § Preparing
+//! formats and INT 13h CHS addressing). See the machine guide in unemupc § Preparing
 //! disks. Hard disks remain unpartitioned; the bounded CHS policy targets the
 //! shipped XUB BIOS path.
 

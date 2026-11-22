@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The desktop's skin and widget helpers, free of any emulated machine; see
-//! `backlog/docs/design/spec.md` §9.4 and `backlog/docs/design/core-contract.md` §8.
+//! `backlog/docs/architecture.md` § Observation and presentation and
+//! `backlog/docs/design/core-contract.md` §8.
 //!
 //! [`skin`] holds the two skins (classic and modern, each light or dark) as
 //! egui visuals, the fonts every desktop window installs, the classic title

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Tests of the desktop's session of one PC: `machine_view::Session` driving
 //! a `unemu_pc_core::PcMachine` assembled from a machine config, the way the
-//! desktop runs a machine (design/spec.md §9.4,
+//! desktop runs a machine (backlog/docs/architecture.md, Observation and presentation,
 //! `backlog/docs/design/core-contract.md` §5 and §8.1.10).
 //!
 //! The session is neutral and may not depend on a PC crate, and the desktop

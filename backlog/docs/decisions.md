@@ -1,11 +1,13 @@
 # Where to capture a decision
 
+unemu maintains application decisions and `ufe` beads; unemupc maintains core decisions and `upc` beads. Shared historical records keep their original numbers.
+
 This project records decisions in **two** places. Pick the right one — don't invent a third.
 
 | Surface | Use when | Lifetime |
 |---------|----------|----------|
 | **Backlog decision** (`backlog/decisions/`) | The choice constrains app shape, public contracts, layering, error/test/runtime semantics, or is a cross-cutting tool/library/process call. Hard to reverse, or affects future contributors. This is the home for what other projects call ADRs. | Project-lifetime, append-only in spirit |
-| **Bead note** (`bd update <id> --append-notes`) | The decision is bound to one bead. Example: "for `upc-f7j.1` we chose X over Y because of constraint Z." | Bound to that bead |
+| **Bead note** (`bd update <id> --append-notes`) | The decision is bound to one bead. Example: "for `ufe-12.1` we chose X over Y because of constraint Z." | Bound to that bead |
 
 If a decision outlives the immediate bead, it's a `backlog decision`. If it only explains one
 bead's implementation, it's a bead note. There is no separate ADR folder — architecture-grade
@@ -68,3 +70,11 @@ Skip it (a bead note or commit message is enough) when the choice:
   skip.
 - **Process/workflow choice** (e.g. "release from `main` only"): durable contract with
   collaborators → record; personal preference → skip.
+
+## Split ownership
+
+See the [decision index](../decisions/readme.md) for retained records. Removed
+core records are linked by full URL and named `decision-N (unemupc)`.
+New decisions continue this repository's series; existing numbers are never
+renumbered. Decision 31 has no file in the split tree or its path history; it
+is an unused gap, not a record to migrate.

@@ -551,7 +551,7 @@ a second design. The syntax stayed `0.x` until the freeze gates of §14; decisio
 
 ### 4.6. Findings of the corpus check (B1)
 
-Done on 2026-11-17 for `upc-5pw.113.1`, before any product code, as §14 and
+Done on 2026-11-17 for `upc-5pw.113.1` (unemupc), before any product code, as §14 and
 §19.2 (B1) ask. Its fixes are already in §6 and in the corpus; what needs a
 decision is the open list at the end.
 
@@ -853,7 +853,7 @@ new recipe versions; the Machinefile sketch is not frozen.
 - UTF-8 without a byte-order mark, at most 1 MiB.
 - A work file may name **text files** in its own folder, each holding the
   about text of one language (§6.16; specified, not implemented yet:
-  `upc-miu`). Such a file is not a recipe file and is not TOML: a regular
+  `upc-miu` (unemupc)). Such a file is not a recipe file and is not TOML: a regular
   file, not a symbolic link, at most 65 536 bytes as it is on disk, UTF-8
   without a byte-order mark and without NUL.
 - **TOML 1.0.0** [SRC 3]. Syntax that only TOML 1.1 accepts (a line break or
@@ -1189,7 +1189,7 @@ of `[[extra]]`.
     a `fat` step that its volume profile refuses or would change; a ROM
     whose size or SHA-256 differs from its catalogue entry, found by
     `catalogue_id` or by its bytes.
-11. *(specified, not implemented yet: `upc-miu`)* the about text and the
+11. *(specified, not implemented yet: `upc-miu` (unemupc))* the about text and the
     localized synopsis of the merged record
     ([about-text](about-text.md) §5.2): the shapes and limits of metadata
     schema 3 (machine-images §2.1); the guard rules R1 and R2 of §6.13; for
@@ -1250,7 +1250,7 @@ work with:
   maintainer, 2026-11-19, for members). `recipe scaffold` never writes the
   key; the author marks what may be published. The rule and the key are
   the earlier design's.
-- **About texts** (specified, not implemented yet: `upc-miu`;
+- **About texts** (specified, not implemented yet: `upc-miu` (unemupc);
   [about-text](about-text.md) §4). Every about text of metadata schema 3
   (machine-images §2.1) has, per language, a source: `own`, or `licensed`
   with a title, authors, an `https` URL and one of five Creative Commons
@@ -1389,7 +1389,7 @@ file is that repository's description.
 | `developers`, `publishers`, `genres` | yes | yes | The recipe's list replaces the work's. A recipe states no empty list: it leaves the key out to keep the work's |
 | `labels` | yes | yes | The union: the work's, then the recipe's new ones |
 | `synopsis` | yes | no | — |
-| `about`, `about_source` (specified, not implemented yet: `upc-miu`) | yes | no | — |
+| `about`, `about_source` (specified, not implemented yet: `upc-miu` (unemupc)) | yes | no | — |
 | `version`, `edition`, `year`, `regions`, `languages`, `source_media`, `requirements`, `description` | no | yes | — |
 | `[ids]` | yes | yes | Per key, the recipe's value |
 | `[needs]` | yes | yes | Per kind, the recipe's value |
@@ -1440,7 +1440,7 @@ each agrees with its own lock.
 reaches every place that needs it: merged into each artifact's metadata,
 and bundled in each recipe. A third home would be a second source of truth
 with its own tag and revision rules. The natural later home is the
-catalogue index of registry-library-plan §2 (`upc-5pw.65`), which has one
+catalogue index of registry-library-plan §2 (`upc-5pw.65` (unemupc)), which has one
 entry per repository: the work is the repository, so the catalogue entry
 can carry the work's fields, **derived** from the newest revision's
 metadata (which names its work id and synopsis), never written by hand.
@@ -1466,7 +1466,7 @@ change what several pinned recipes build, which the description cannot do
 because the lock holds it. So no general include is planned (§13).
 
 **About text and localized synopsis** (specified, not implemented yet:
-`upc-miu`; [about-text](about-text.md) §5, metadata schema 3 in
+`upc-miu` (unemupc); [about-text](about-text.md) §5, metadata schema 3 in
 machine-images §2.1). `[title]` of a work file gains two keys, and
 `synopsis` a second type. All three are refused in a recipe, so each text
 has one home:
@@ -1556,7 +1556,7 @@ A client decides "can I build this" by fetching the manifest and the config,
 a few kilobytes, and running the plan against its libraries. It fetches no
 payload, because there is none (R13).
 
-**The text-file layer** (specified, not implemented yet: `upc-miu`;
+**The text-file layer** (specified, not implemented yet: `upc-miu` (unemupc);
 [about-text](about-text.md) §5.5). A work file's `{ file = "NAME" }`
 (§6.16) travels as a layer of its own, media type
 `application/vnd.unemu.recipe.text.v1`, "a text file a work file names",
@@ -1590,7 +1590,7 @@ then writes the config, metadata and manifest with its own writers. If the
 result has the pinned digest, the build is as good as any; if not, it says
 that the recipe needs its lock and tags nothing.
 
-As built (`upc-5pw.113.18`), "lost" means nothing at all at the lock's
+As built (`upc-5pw.113.18` (unemupc)), "lost" means nothing at all at the lock's
 path; a lock that is there and broken is refused, `recipe check` still
 reports rule 8, and the build writes no lock back.
 
@@ -1725,7 +1725,7 @@ registry-library-plan §3.
   `rev`, so it cannot be mistaken for our `rN`.
 - **One ROM, two chip layouts.** The IBM 5170 BIOS of 1984-01-10 is one
   64 KiB ROM that exists as two 32 KiB chips or four 16 KiB chips
-  [REPO: `crates/assembly/src/firmware.rs`]. A package stores the chips, so
+  [REPO: [`crates/assembly/src/firmware.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/main/crates/assembly/src/firmware.rs)]. A package stores the chips, so
   the two are different artifacts of one catalogue entry: `2x32k-r1` and
   `4x16k-r1`. Today both would be `:1` with whatever digest the user's chips
   give.
@@ -1916,7 +1916,7 @@ program.
 | `patch` (IPS, BPS, xdelta) | Official patches and translations | Later |
 | Input forms from the provider: an input found through a transform (a headerless cartridge, a sector image inside an IMD, TD0 or IPF file) | Finding a dump whatever container the user keeps it in | NES; preserved floppies |
 | Library containers beyond zip: 7z, FAT and ISO images in the store | Finding a file inside a stored disk | Rebuilding after the originals are gone |
-| Save and load of whole artifacts, selections and repositories as OCI Image Layouts (`upc-5pw.116`, its own bead) | Moving a store's content between machines without a registry | Related to export, and distinct from it: export (§3.10, decision-37) unpacks one artifact into plain files; save and load keep artifacts as artifacts |
+| Save and load of whole artifacts, selections and repositories as OCI Image Layouts (`upc-5pw.116` (unemupc), its own bead) | Moving a store's content between machines without a registry | Related to export, and distinct from it: export (§3.10, decision-37) unpacks one artifact into plain files; save and load keep artifacts as artifacts |
 | Character sets for `text` and member names (CP437, Shift JIS) | Non-ASCII DOS texts and archives | PC-98 |
 | `os` needs (`dos = "3.3+"`) | Suggesting a template with the right system | The library's suggestions |
 | An `oci` source for an input: a layer of a published artifact, by digest | Inputs we already publish, such as the FreeDOS source archive | FreeDOS (the earlier design's answer to Q6) |
@@ -2072,7 +2072,7 @@ was settled by the corpus check.
 ## 17. Differences from the earlier design
 
 An earlier design of the same task exists as a draft (`mediafile.md` on the
-branch of `upc-5pw.113`, with a reviewer's findings applied; it recommends
+branch of `upc-5pw.113` (unemupc), with a reviewer's findings applied; it recommends
 HCL). This document was written without reading it; the comparison below
 was made afterwards.
 
@@ -2266,7 +2266,7 @@ and template suggestion are *not* in this bead. The first vocabulary is
 the accepted one of §6.7. Depends on: nothing. Must prove:
 0.0.2 opens a schema-2 artifact read-only; a schema-1 artifact keeps its
 bytes when rebuilt; an unknown need is refused at check, not at run.
-Done on 2026-11-17 (`upc-5pw.113.2`): the title record's `needs`,
+Done on 2026-11-17 (`upc-5pw.113.2` (unemupc)): the title record's `needs`,
 `requirements`, `work_id`, `synopsis` and `work_ids` in metadata schema 2
 (machine-images §2.1), which a writer uses only when a title sets one of
 them; the compat rows of decision-30 rate schema 2 and each new field by
@@ -2292,7 +2292,7 @@ disk shows the message and, after a key, tries to boot again (a golden
 test); the boot sector holds no vendor's bytes (its source is in the
 repository); new goldens for each addition; Ken's
 Labyrinth's disk and AZURAMON's split build twice to the same bytes.
-Done on 2026-11-17 (`upc-5pw.113.3`). The typed API the `fat` step calls
+Done on 2026-11-17 (`upc-5pw.113.3` (unemupc)). The typed API the `fat` step calls
 in B7 is `media::fat12::plan_volumes(entries, &Volume)`: `Entry` is a path
 with `/` separators, the bytes (or none for a folder) and an optional
 `DosTime`; `Volume` holds `format`, `label`, `serial` (default
@@ -2356,7 +2356,7 @@ of §6, the parser over the `toml` crate with the restrictions B1 found, the
 static checks, and the provider traits it calls (formats, volume profiles,
 firmware rules, needs). `unemu recipe check`. Depends on: B1. Must prove:
 the whole corpus passes; one failing fixture per rule of §6.11.
-Done on 2026-11-17 (`upc-5pw.113.4`). The crate is `crates/recipe`
+Done on 2026-11-17 (`upc-5pw.113.4` (unemupc)). The crate is `crates/recipe`
 (layer `neutral`): `spec` holds every table of §6 with its keys, types and
 required keys, and drives both rule 1 and the JSON Schema; `model` is the
 typed model, every value with its span and key path; `provider` holds the
@@ -2452,7 +2452,7 @@ Depends on: B4, B2 (the work id and synopsis need schema 2). Must prove:
 the three corpus folders with work files show the same merged record the
 first-round recipes stated in full; each merge rule has a test, the label
 union and the list replacement above all.
-Done on 2026-11-18 (`upc-5pw.113.5`). The merge is `recipe::merge`:
+Done on 2026-11-18 (`upc-5pw.113.5` (unemupc)). The merge is `recipe::merge`:
 `merge_path(FILE, providers)` runs the checks on the file and gives
 `Shown::Merged` for a media recipe that passes, `Shown::Refused` with the
 check's report, or `Shown::NotMedia`; a file that no longer reads as it did when it was checked is
@@ -2512,7 +2512,7 @@ including "found instead of made"; `unemu recipe plan` with `--json`;
 a wanted size (counted in a test); a stale index entry is dropped, never
 trusted; the plan for AZURAMON finds 561 entries from 204 files; a near
 miss is reported.
-Done on 2026-11-18 (`upc-5pw.113.6`). The neutral code is in
+Done on 2026-11-18 (`upc-5pw.113.6` (unemupc)). The neutral code is in
 `crates/recipe`: `library` (the scan, the index and its cache), `zip` and
 `inflate` (a zip archive's central directory and its members' bytes),
 `store_index` (the store's decoded digests) and `plan` (resolution and the
@@ -2610,7 +2610,7 @@ Decisions taken while building it:
   archive is looked for only when one of them is missing (the step then
   says it `opens ARCHIVE for N of M members`), and is otherwise `not
   needed: its N members were found`. The payload blobs of a locked recipe
-  are looked for the same way (B8, `upc-5pw.113.18`); otherwise `fat` and
+  are looked for the same way (B8, `upc-5pw.113.18` (unemupc)); otherwise `fat` and
   `text` steps run when an output needs them.
 - Near misses, reported and never used, at most eight per value: a file or
   member with one of the value's names and another size, one with its name
@@ -2629,7 +2629,7 @@ and the three FreeDOS recipes build artifacts whose configs equal the ones
 `image firmware import` and `image media import` make today; nothing is
 tagged when an input is missing; no step can reach the network or the
 host clock (a test build runs with both denied).
-Done on 2026-11-18 (`upc-5pw.113.7`). The neutral part is in
+Done on 2026-11-18 (`upc-5pw.113.7` (unemupc)). The neutral part is in
 `crates/recipe`: `steps` holds the three steps as pure functions of bytes
 and keys (`unpack`, `text`, `fat`), and `build` the phases around them:
 check and plan, fetch with consent, gather (every value read where the plan
@@ -2719,7 +2719,7 @@ one build of `unemu` builds the same manifest digest with another whose
 manifest writer was deliberately changed; a changed work file is reported
 and does not change the result.
 
-Done on 2026-11-18 (`upc-5pw.113.8`). A2, which B8 depends on, is met: the
+Done on 2026-11-18 (`upc-5pw.113.8` (unemupc)). A2, which B8 depends on, is met: the
 Zstandard encoder was frozen as profile 1 on 2026-11-17 (status.md), so a
 pinned build re-encodes a `+zstd` payload with profile 1 and compares the
 stored digest. The neutral code is `recipe::lock` (the lock folder, points
@@ -2849,7 +2849,7 @@ conformance). Decisions taken while building it:
   copies from the firmware catalogue, are compared with the catalogue
   entry, so a lock cannot put text of its own into the generated config or
   README; a package without a README is refused.
-- Follow-ups done on 2026-11-19 (`upc-5pw.113.18`):
+- Follow-ups done on 2026-11-19 (`upc-5pw.113.18` (unemupc)):
   - §3.4's "found instead of made" for the payload blobs of a locked
     recipe (B6 left it to B8). Before the plan, a pinned build reads the
     lock's payloads for the outputs a step makes (`lock::payloads`: media
@@ -2897,7 +2897,7 @@ Scope: `unemu recipe scaffold` (input tables, member lists with sizes,
 hashes and times, file sets) and `unemu recipe inputs` (DAT, CSV,
 checksums). Depends on: B4. Must prove: scaffolding LABFULL.ZIP and the
 AZURAMON folder gives the corpus's tables byte for byte.
-Done on 2026-11-19 (`upc-5pw.113.9`): `recipe::scaffold` and
+Done on 2026-11-19 (`upc-5pw.113.9` (unemupc)): `recipe::scaffold` and
 `recipe::inputs`, the commands `upcli recipe scaffold FILE|FOLDER...` and
 `upcli recipe inputs FILE --format dat|csv|sha256sums` (commands.md,
 Scaffolding recipes and listing their inputs). Readings taken:
@@ -2955,7 +2955,7 @@ for recipe versions, steps and formats. Depends on: B8, A1. Must prove: a
 recipe pulled into an empty store plans and builds with no other file;
 each guard refusal has a test; a registry row can be judged from manifest
 and config alone.
-Done on 2026-11-19 (`upc-5pw.113.10`): `recipe::artifact` (the bundle,
+Done on 2026-11-19 (`upc-5pw.113.10` (unemupc)): `recipe::artifact` (the bundle,
 the codec, the guard and the row's plan), `recipe::compat` (the rows),
 `image_registry::recipe` (push, pull, row), the types in
 `image_store::media_type` and their rows in `image_store::compat`, the
@@ -3019,11 +3019,11 @@ Readings taken:
 Scope: `unemu image export`, `--files` with the FAT reader promoted from
 test code, the per-input "kept" report of `recipe build`, and the layout
 documented with a script that uses no `unemu`. Related and distinct:
-`upc-5pw.116` saves and loads whole artifacts, selections and repositories
+`upc-5pw.116` (unemupc) saves and loads whole artifacts, selections and repositories
 as OCI Image Layouts; export unpacks one artifact into plain files.
 Depends on: A3. Must prove: the script and the command write the same files; an
 exported AZURAMON tree equals the input files byte for byte.
-Done on 2026-11-19 (`upc-5pw.113.11`): `media::fat12::reader` (the
+Done on 2026-11-19 (`upc-5pw.113.11` (unemupc)): `media::fat12::reader` (the
 reader, product code now, with `Volume::tree`), `cli_core::image::export`
 and `upcli image export NAME:TAG --to DIR [--files] [--store DIR]`, the
 kept report of `recipe::build`, and `scripts/export-layout.sh`
@@ -3142,7 +3142,7 @@ written into the user documentation, the conformance corpus required by
 the release gate. Depends on: B14, B15, B16.
 Recipes are published only after it.
 
-Done on 2026-11-21 (`upc-5pw.113.17`; decision-43 accepted by the maintainer).
+Done on 2026-11-21 (`upc-5pw.113.17` (unemupc); decision-43 accepted by the maintainer).
 As landed:
 - Decision-43 proposes the explicit 1.0 recipe/work-file boundary, unchanged
   locks and media types, §9's compatibility rules and §13's exclusions.

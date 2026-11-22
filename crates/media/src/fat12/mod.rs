@@ -12,7 +12,7 @@
 //! are written: the volumes are plain DOS. Geometry and media descriptors are
 //! the IBM Personal Computer AT Technical Reference diskette formats (360K,
 //! 1.2M, 720K, 1.44M) with the BPB values DOS FORMAT writes for them.
-//! See machines/README.md § Preparing disks.
+//! See the machine guide in unemupc § Preparing disks.
 //!
 //! Every byte depends only on the request and on the host files' names and
 //! contents. Timestamps are the FAT epoch (1980-01-01 00:00:00), the volume

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! FIFO refusal from persistent-media.md § Offline commands. Keep this binary
-//! separate: a spawned child can inherit locks held by sibling test threads.
+//! FIFO refusal from persistent-media.md § Offline commands in unemupc. Keep this
+//! binary separate: a spawned child can inherit locks held by sibling test threads.
 
 #![cfg(unix)]
 

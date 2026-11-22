@@ -1,3 +1,5 @@
+Frozen record of the split: unemu maintains the front end and unemupc the PC core; the living description is [architecture.md](../architecture.md), and the normative contract lives in [unemu-core-api](https://github.com/unemu-org/unemu-core-api).
+
 # Core contract and the front-end split
 
 Status: **Accepted** by the maintainer on 2026-11-17 (design step of
@@ -142,10 +144,10 @@ Three edges cross the lines the split needs, and are marked bold in the
 table:
 
 - `assembly` → `media`: the running machine owns its journal sessions
-  [REPO: `crates/assembly/src/persistence.rs`].
+  [REPO: [`crates/assembly/src/persistence.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/assembly/src/persistence.rs)].
 - `machine-file` → `image-store`: a machine file may take firmware from a
-  package in the store [REPO: `crates/machine-file/src/firmware_package.rs`,
-  `crates/machine-file/src/lib.rs`].
+  package in the store [REPO: [`crates/machine-file/src/firmware_package.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/machine-file/src/firmware_resolve.rs),
+  [`crates/machine-file/src/lib.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/machine-file/src/lib.rs)].
 - `window` → `cli`: the desktop takes shared helpers from the command-line
   crate (§2.5).
 
@@ -179,10 +181,10 @@ table:
   journal and overlay format with its offline tools (`sink`, `overlay`,
   `scan`, `offline`, `layer`), and the FAT12 builder and image creation
   (`fat12`, `create`).
-- **Inside the emulator** the swap seams of decision-7 hold: `Cpu`,
+- **Inside the emulator** the swap seams of [decision-7 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-7%20-%20Swappability%20via%20Cpu%20Chipset%20Device%20FrameSink%20traits.md) hold: `Cpu`,
   `Device`, `InterruptController`, `FrameSink`, `AudioSink`, and
   `device::SectorMedia`, the hardware-neutral mounted medium a controller
-  reads and writes [REPO: `crates/device/src/media.rs`].
+  reads and writes [REPO: [`crates/device/src/media.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/device/src/media.rs)].
 - **The capabilities sketch** of machine-images §6 exists as PC code:
   `assembly::descriptors` (setting domains) and `assembly::capabilities`
   (choices and diagnostics over pending edits).
@@ -732,7 +734,7 @@ pub enum Status {
 ```
 
 Two units, because today's machine already has both and they mean
-different things [REPO: `crates/machine/src/lib.rs`, `clock`,
+different things [REPO: [`crates/machine/src/lib.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/machine/src/lib.rs), `clock`,
 `virtual_time`]. **Ticks** are the clock that pacing, sound and the picture
 follow: the front end turns elapsed host time into a tick deadline with
 `description().clock`, as `pacing::virtual_ticks` does with `PIT_HZ` today.
@@ -1004,7 +1006,7 @@ pub struct SlotId(pub u8);
 
 The three actions and the append are exactly today's
 `assembly::FloppyAction` and `append_floppy_verified` [REPO:
-`crates/assembly/src/floppy.rs`], with the controller role and unit folded
+[`crates/assembly/src/floppy.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/assembly/src/floppy.rs)], with the controller role and unit folded
 into a `SlotId`. A fixed disk is a slot that is not removable; it still
 reports activity.
 
@@ -1075,7 +1077,7 @@ pub struct Finished {
   machine-images §2 reserves for a stored state. The state's bytes are the
   core's own format.
 - **Finish** carries today's rule that "dropping this handle never writes a
-  clean generation marker" [REPO: `crates/assembly/src/persistence.rs`]
+  clean generation marker" [REPO: [`crates/assembly/src/persistence.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/assembly/src/persistence.rs)]
   and that a failed execution is left unsealed.
 
 ### 3.10. Errors and messages
@@ -1166,7 +1168,7 @@ lines, journal maintenance warnings.
 - The contract does not promise that two different ways of slicing a span
   into runs give the same guest. Today's machine is exact on active steps
   and rounds a halted stop to a whole tick [REPO:
-  `crates/machine/src/lib.rs`, `run_bounded`]; a front end that needs
+  [`crates/machine/src/lib.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/machine/src/lib.rs), `run_bounded`]; a front end that needs
   slice independence drives by `steps`.
 - Sound and picture never pace execution. Host failures never reach the
   guest.
@@ -2119,7 +2121,7 @@ How each hook is cut, with the words on the screen unchanged:
 | `platforms::push_plan(store, tag, target, entry, catalogue)` | `image_registry::push::plan_with_catalogue(store, tag, target, entry, \|manifest\| …)` with the digests every platform's `restricted` returns, joined |
 | `providers: &[&dyn ConfigValidator]` | every platform's `validators`, in the order of the list |
 | `pc_image::CMOS => "CMOS"`, `pc_image::DISK_ZERO => "disk base (zero)"` | `PlatformFacts::payload_label`, after the neutral media types |
-| `pc_image::is_pc(id)`, `pc_image::PLATFORM_NAME` | `PlatformFacts::runs(id)`, `PlatformFacts::family()`. The PC core already describes itself as `ibm-pc`, "IBM PC compatible" [REPO: `crates/pc-core/src/core.rs`]; a test in `pc-library` asserts that these equal `pc_image::PLATFORM` and `PLATFORM_NAME` |
+| `pc_image::is_pc(id)`, `pc_image::PLATFORM_NAME` | `PlatformFacts::runs(id)`, `PlatformFacts::family()`. The PC core already describes itself as `ibm-pc`, "IBM PC compatible" [REPO: [`crates/pc-core/src/core.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-core/src/core.rs)]; a test in `pc-library` asserts that these equal `pc_image::PLATFORM` and `PLATFORM_NAME` |
 | `pc_image::media_set::format_name(table).ok()` | the first platform's `medium_format(table)` |
 | `pc_image::template::precedence` | `image_store::tag::precedence`: the function moves to the neutral crate that already holds `tag::compare` and `tag::newest_first`, and `pc_image::template` re-exports it |
 | `Drive::geometry` with `accepted_media()` and `FLOPPY_TYPES` | `Drive::format` and `Drive::takes`, filled by the PC code that lists a stopped machine's drives (`shell.rs`, two places, and `stopped_drives` of the frame) |
@@ -2239,8 +2241,8 @@ Each move below is one bead under the rules of §7.5. In addition:
    behind by rule 2. The move that creates a crate adds its name to the
    window family of the script (the `family` function, the comment above
    it and a self-test fixture), so the rule against CLI crates covers it.
-5. **The runner.** A move whose tests read `vendor/`, `machines/` or
-   `crates/pc-harness/tests/support/` adds the new crate to those data
+5. **The runner.** A move whose tests read `vendor/`, [`machines/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/machines) or
+   [`crates/pc-harness/tests/support/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-harness/tests/support) adds the new crate to those data
    rules of `scripts/affected-tests.sh`; the runner's self-test fails on a
    path no rule covers. The bead's report gives
    `scripts/affected-tests.sh --plan` for one file of the moved module,
@@ -2275,7 +2277,7 @@ cycle.
 | 3.8 | **Done.** **`Query` and `Filter`, then the model halves of `firmware` and `firmware_metadata`** (712 and 650 lines: the rows, facets and labels, `ScanReport`, `Outcome`, `scan_folder`, `preview_set`, `import_selected`, `Verdict`, `EditSource`, `PackageDetails`, `open_edit`, `preview_edit`, `publish_edit`, `read_package`) into `pc-library` | `firmware_metadata` plans its push with `plan_with_catalogue` and `pc_image::firmware::restricted` in place of `platforms::push_plan` (1) | stay with the views: they drive the frame | The fields of `Query` become `pub`. As landed: see below the table |
 | 3.9 | **Done.** **The model halves of `install_media` and `machines`** (703 and 690 lines: `MediaRow`, `Availability`, `rows`, `all_rows`, `picker_set`, `Control`, `Pick`, `Sources`, `inspect`, `import`; `MachineRow`, `facets`, `visible`, `name_problem`, `id_for`, `setting_diffs`) into `pc-library` | none | stay with the views | As landed: see below the table |
 | 3.10 | **Done.** **`Snapshot` and `snapshot`** (with `facets_for`, `sort_value`) into `pc-library` | none | stay with the frame | After this move the worker names nothing of `library_view` but through re-exports. As landed: see below the table |
-| 3.11 | **Done.** **The worker.** `library_worker`, `layers_dialog::SourceImage`, `PcDesktop` and the test support (`library_test_support` without its three egui helpers, the synthetic firmware catalogue, `test_wait`) into `pc-library`; the support goes behind `test-support` | `Wake` in place of `egui::Context` (6) | its 30 tests (44.4 s) move, but for those that call test helpers of `layers_dialog` and `image_settings`, which follow in 6.2 | The cycle is cut by Cargo: `pc-library` cannot name the window. `crates/pc-harness/tests/support/` and `vendor/` gain `pc-library` in the runner's rules. As landed: see below the table |
+| 3.11 | **Done.** **The worker.** `library_worker`, `layers_dialog::SourceImage`, `PcDesktop` and the test support (`library_test_support` without its three egui helpers, the synthetic firmware catalogue, `test_wait`) into `pc-library`; the support goes behind `test-support` | `Wake` in place of `egui::Context` (6) | its 30 tests (44.4 s) move, but for those that call test helpers of `layers_dialog` and `image_settings`, which follow in 6.2 | The cycle is cut by Cargo: `pc-library` cannot name the window. [`crates/pc-harness/tests/support/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-harness/tests/support) and `vendor/` gain `pc-library` in the runner's rules. As landed: see below the table |
 | 3.12 | **Done.** **The tests left behind whose modules are now all in or below `pc-library`** move there, under the same paths: those of `remote_browse` (20 after 3.5 moved 8 of the 28 to `library-model`; the 28 took 9.8 s), and of `hardware` and `image_settings` where they name no view. The 15 of `registry_transfer` left after 3.4 hold a `LibraryView` in their fixture and wait for the frame (6.4) | none | about 40 tests, about 12 s | No production code changes. As landed: see below the table |
 
 As landed, 3.1 to 3.3 (one bead each, no behaviour change; the workspace
@@ -2505,8 +2507,8 @@ there, `crate::kept_catalogue`, `crate::remote_pull` and
   reviews the publication with `layers_dialog::tests` and stays in the
   window's `library_worker::tests`, with copies of the five helpers it
   calls (`until`, `worker`, `restarted`, `launch`, `finish`). The
-  runner's data rules gain `pc-library` for `machines/` as well: the
-  self-test requires both `machines/` and `vendor/` of a crate that builds
+  runner's data rules gain `pc-library` for [`machines/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/machines) as well: the
+  self-test requires both [`machines/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/machines) and `vendor/` of a crate that builds
   paths from the repository root, as the firmware store does for the
   source archives.
 - **3.12.** The 12 tests of `image_settings` that draw no sheet are
@@ -3089,7 +3091,7 @@ six exceptions after step 11; the historical counts below describe their
 respective landings. MEASURED in release mode: 27 samples of 200,000
 resets per version give pooled medians of 546.492 ns/reset with the once
 cell and 546.474 ns/reset with direct legacy construction (no measurable
-regression). The timing probe is `crates/cpu/tests/reset_timing.rs`; it
+regression). The timing probe is [`crates/cpu/tests/reset_timing.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/cpu/tests/reset_timing.rs); it
 checks that resets retire no instructions. A unit test also compares every
 legacy field with the pinned CPU's real-entry constructor.
 
@@ -3212,7 +3214,7 @@ well as `reader::Volume`, so extracting just the reader would not remove
 the dependency. Move the suite whole to `crates/pc-image/tests/`, keeping
 every test, corpus, full SHA-256 check, skip/required-fixture rule and
 byte-equality assertion. Adjust corpus paths and affected-test data rules
-if needed. Remove `media` from `crates/pc-harness/Cargo.toml`'s dev
+if needed. Remove `media` from [`crates/pc-harness/Cargo.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-harness/Cargo.toml)'s dev
 dependencies and delete `pc-harness → media (dev)` from
 `scripts/crate-boundaries.allow`; a core-side Cargo closure including dev
 dependencies must then contain no `media` or front-end crate. Keep the
@@ -3758,7 +3760,7 @@ at extraction"; the embeddability rule decides it now (§12.13 Q4).
   (§3.3, §3.5). An embedder may run several machines, each on a thread of
   its own. The library worker, the host audio stream and the registry
   transfers are the front end's threads and stay there.
-- **Time.** Decision-5 and decision-14 stand: virtual time is retired
+- **Time.** Decision-5 and [decision-14 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-14%20-%20Virtual%20time%20advances%20while%20the%20CPU%20is%20halted.md) stand: virtual time is retired
   instructions plus the clocks that pass while the CPU is halted, and
   devices tick off it. The host clock is read in one place, the front
   end's pacing (§5). A machine that shows a date takes its start from its
@@ -3777,7 +3779,7 @@ at extraction"; the embeddability rule decides it now (§12.13 Q4).
 ### 12.7. What the PC core needs from x86jit
 
 [X86JIT], for the way `cpu` uses the core [REPO:
-`crates/cpu/src/x86jit_backend.rs`]: `Vm::new(VmConfig::flat(bytes))`,
+[`crates/cpu/src/x86jit_backend.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/cpu/src/x86jit_backend.rs)]: `Vm::new(VmConfig::flat(bytes))`,
 `CpuMode::Real16` or `CpuModel::I80286`, one `Vcpu` on one thread, never a
 backend. The x86jit README states that 16-bit code and every CPU model run
 on the interpreter whichever backend is configured, so a JIT backend would
@@ -3936,7 +3938,7 @@ feature freeze:
   keys, type characters, run for a virtual time) should be the one the
   Machinefile's input steps use later ([recipes.md](recipes.md) §11), so
   it is fixed together with them. New limits count virtual time, not
-  instruction equivalents (decision-22 §5).
+  instruction equivalents ([decision-22 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-22%20-%20Keep%20the%20path%20to%20a%20cycle-accurate%20profile%20open.md) §5).
 - **Raw images.** `run --bios ROM [--floppy IMAGE] [--disk IMAGE]`: the
   board profile of `--bios` with read-only bases and volatile writes,
   for a boot sector or a test floppy without a machine file
@@ -3946,7 +3948,7 @@ feature freeze:
   the docs; ASSUMED from their titles). They attach to `run` as options
   (`--trace-exceptions`, `--trace WHAT`) and as one more command
   (`unemupc debug --machine FILE`), over the observation and trace policy
-  the core already has ([observation.md](observation.md)).
+  the core already has ([observation.md](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/docs/design/observation.md)).
 
 ### 12.9. The front end's side: `unemu`
 
@@ -3979,7 +3981,7 @@ What the rename covers, and what it does not:
   the release workflow and what it packs, `scripts/third-party-licenses.sh`,
   the binary ids in the runner's self-test, the window family of
   `scripts/crate-boundaries.sh` (where `unemupc` now means the core's
-  command line), README.md, `commands.md`, `machines/README.md` and
+  command line), README.md, `commands.md`, [`machines/README.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/README.md) and
   `architecture.md`. There is no macOS application bundle in the
   repository today (MEASURED: `grep` finds no `Info.plist` and no bundle
   step); when one is added it is named `unemu`.
@@ -4008,7 +4010,7 @@ tests with the code they test. Sizes are ASSUMED.
 | 7 | **Done.** **`machine-file` off `image-store`** (item 3 of §9). The firmware-package lookup becomes a small trait in `machine-file` that `pc-image` implements over the store. As landed: the trait is `machine_file::FirmwarePackages`, one method `resolve(document, warnings, images)` that points each pinned ROM or chip a package holds at its bytes (a host path, or a never-created key with the decoded bytes in `images`) and returns the ids of the packages used, in first-use order; its error is a boxed error (`machine_file::PackageError`) reported against the machine file as before. `machine_file::prepare_for_assembly_with_firmware_packages(path, roots, warnings, Option<&dyn FirmwarePackages>)` replaces the store-typed preparation, and `PreparedMachineFile::firmware_sources` gives the ids as text; the store spells a package's id as its manifest digest, `sha256:<hex>`. What touched the store moved unchanged from `machine-file/src/firmware_package.rs` to `pc-image/src/firmware_package.rs`: the PC package rules (`PLATFORM`, `BOARDS`, `Fit`, `PcFirmwareRules`, `reconstructed`, `lane`, `role`), the lookup over the summary cache and `rom_path`, and the two preparations that take a store or a store root, now `pc_image::firmware::prepare_for_assembly_with_firmware_store` and `prepare_for_assembly_with_store_root` with their old signatures, over `pc_image::firmware::StorePackages(&Store)`; `pc_image::firmware::firmware_sources(&prepared)` parses the ids back into digests for import. Callers changed only their path: `cli-pc`'s `run`, `pc-library`'s machine-file list, `pc-image`'s import; the tests changed only the path of the moved functions and, where they compare provenance with a digest, read it through `firmware_sources` (`pc-image/tests/firmware.rs`, one test of `window`'s shell). Two parts of the proof did not hold as written, because step 5 has not landed (corrected 2026-11-20, step 7): there is no allow-list line to delete, since the core-side rule that would refuse `machine-file` → `image-store` comes with step 5 and the layer rules allow a `pc` crate to use a `neutral` one, so that rule's list now starts without it; and there is no `unemupc` package yet (the binary of that name is the desktop's, package `window`, which depends on `image-store` itself until step 4), so the closure measured is `machine-file`'s, which is what that package will compile of these crates. MEASURED with `cargo tree -e normal`: `machine-file`'s closure goes from 62 packages to 54, losing `image-store`, `zstd`, `zstd-safe`, `zstd-sys`, `serde_json`, `itoa`, `memchr` and `zmij`; with build dependencies from 70 to 57, losing also `cc`, `find-msvc-tools`, `jobserver`, `pkg-config` and `shlex`; `pc-harness`'s stays at 41 (it reaches `machine-file` only in its tests). `upcli`'s `machine_commands` (11 tests), `cli-pc`'s `firmware_host_guard` (which runs `run --machine` with a supplied store, with `--store` and with `--no-store`) and the 21 tests of `pc-image/tests/firmware.rs` pass with their assertions unchanged; `upcli run --machine` built before and after the step gives the same output and exit code with a package found in the store, with `--no-store`, with a store root that does not exist, with one that is a file (the warning) and with a corrupted package blob (the digest refusal). `scripts/crate-boundaries.sh` passes | None | The front end's `run --machine` with `--store` reads the same packages (its tests in `machine_commands` unchanged); the crossing `machine-file` → `image-store` leaves the allow list; the closure of `unemupc` loses `image-store` and `zstd-sys` (MEASURED by the bead) |
 | 8 | **Contract 0.2.** The types of §12.5 in `unemu-core-api`; `Content::File`, `CreateRequest::session` and the path of `WriteTarget::Kept` go; `CONTRACT` is 0.2 and `PcCore` states 0.2; a storage in memory behind `test-support`. Since §13 this step is made in the contract's repository together with the additions of §13.2 (steps 4 and 5 of §13.6), and this repository moves its pin in step 7 there | None: `create` and `add_medium` still answer `Unsupported` | The contract's tests: a record's append, sync, truncate; a replacement that is committed, dropped, and failed in both ways; `drives` refuses a 0.1 core. The contract's lines leave the host guard's list, and the guard then refuses `std::fs` and `std::path` in the contract |
 | 9 | **Done.** **The journal over records, inside `media`** (move 1 of §12.5). As landed: `JournalMedia` keeps its journal in one record and opens no file: it scans by `size` and `read_at`, cuts an invalid tail with `truncate`, confirms with `sync`, creates a journal by committing a replacement that holds only the header, and rewrites retained history through a replacement it reads back before `commit`. The record is the contract's `Record` plus one seam of the journal's file record (`media::store::JournalRecord`, crate-private): a retention replacement whose host calls go through the offline tools' `ToolIo`, so their failures stay injectable; any other record ignores it. After a retention commit fails with `StorageUncertain`, the journal reads the record back (reads still work then) and takes the new contents as in place when the record has their length and their header, whose anchor the old contents cannot have; it then reports the new numbering, as it did before for a file whose rename took place and whose directory sync failed. New API: `JournalMedia::open_record(Box<dyn Record>, &VerifiedBase, length, SinkStatus)` and `media::JournalFile`, a journal file as a contract `Record` (`JournalFile::open(path, base identity, base metadata)`; `Usage` when the lock is held, `Storage` otherwise, the message naming the step; an existing file with no bytes is refused, as the path constructors refuse it, because the publication protocol never leaves one; its creation commit publishes only the header of the base it was opened for, and refuses another with `Usage`), which is what §14.4 item 1 asks for and what the storage plan of §14.2.4 opens per record; it takes the base's identity because a creation leftover is removed only when it holds a prefix of that journal's header, and the plan has the identity from its content table. The journal's file code (`HostFilesystem`, the `FILE.lock` sidecar, header publication through `FILE.create-N.tmp` and a hard link that never replaces a file, retention through `FILE.retain-N.tmp` with the journal's exact mode and a rename, the leftover cleanup, `platform_sync`) moved unchanged into `media::journal_file` as that record; the path constructors (`open`, `open_verified`, `open_with_base_metadata`, …) are thin wrappers over it, and no caller in `assembly`, `pc-image`, `cli-core` or the offline tools changed. How journal files map to records: one record is one `.upfj` file, named by the storage's table and not by its path (§12.9, corrected 2026-11-19); its lock `FILE.lock` (§14.6 Q8) and its temporaries are the record's own and are never records. The file record keeps the host calls in their order: its `size` seeks to the end, which also places the next append there, and a read seeks to its offset, so the model traces of `sink_tests.rs` (lock, open, header creation, path check, cleanup, directory sync, seeks, reads, writes, barriers, cut) and every failure's operation name ("lock", "publish header", "directory sync", "append seek", "command/end sync", …) are the same; `sink_tests.rs` and `offline_tests.rs` did not change. One difference exists only through a record, which no caller uses yet, and S10 keeps it: the journal names a failure of the header commit "publish header" whatever the record, so a file record's creation step ("header write", "header sync", "unlink temporary header", "verify journal path", "remove creation temporaries", "directory sync") is not the operation but the start of the message, as `header sync: …`; the path constructors still name the step itself. A failed append to a retention replacement is `Storage` and leaves the record writable, because the replacement's bytes are its own temporary file; when the partial write cannot be cut back, the replacement refuses everything but being dropped. `media` gains the contract as a dependency (layer `neutral` → `contract`, already on the external list); `unemu-core-api` is unchanged. MEASURED: `media`'s 139 unit tests pass unchanged; `media/tests/journal_storage.rs` adds 7: one scripted session (creation, duplicate sectors, checkpoints with retention to 3 and to 2, an interrupted session sealed at the next mount, a torn tail cut at mount) through the path constructors, through `JournalFile` from a name-to-file storage and through the contract's `MemoryStorage` leaves equal bytes after each of its four sessions, pinned to the SHA-256 the parent commit wrote for the same session (so a journal written before the step is the journal written after it, and each stage is mounted by the next); a power cut in memory keeps the synchronized command only; a failed header commit leaves no journal; a session over `JournalFile` and `JournalTool` (inspect and mutate) exclude each other through `disk.upfj.lock`, and both file tests fail when `JournalFile` locks another name; an uncertain retention commit over `MemoryStorage`, once before and once after its contents are in place, reports the numbering of the contents the record holds (fails when the read-back is skipped); a 0-byte journal file is refused by `JournalFile::open` and by the path constructors (fails without the check); a journal file opened for one base refuses to publish another base's header (fails without the check). `cargo test --workspace --release` passes (4 311 tests) and so do the 63 ignored goldens, `ide_journal_golden`, `dos_write_golden` and `media_files_golden` among them. | None | `media`'s own tests pass unchanged, the ones that record the order of writes, barriers and renames among them; the journal goldens (`ide_journal_golden`, `dos_write_golden`, `media_files_golden`) pass; a new test runs one session over the file-backed storage and over the storage in memory and compares the records byte for byte; a journal written before the step mounts after it |
-| 10 | **Done.** **The mount seam in `assembly`** (move 2). As landed: `assembly::Mount` (`crates/assembly/src/mount.rs`) is the one object the assembler asks for what a `MachineConfig` names by path, and the path is its key: `image(path)` gives `ImageBytes` (a ROM, a ROM part, a disk image mounted read-only or volatile, the CMOS image of an NVRAM journal); `disk_base(path, check_length)` gives the `DiskBase` of a journalled disk, calling `check_length` before it reads a byte, so a file of the wrong size is still refused before it is hashed; `journal(path)` gives a `JournalStore`, asked when the journal opens; `check_outputs(media)` checks the journal outputs before anything opens. Failures are `MountError::Config` (passed on unchanged) or `MountError::Host(unemu_core_api::Error)`, reported as the path's read or journal failure. The seam names only the contract's `ContentReader` and `Record` and types `assembly` owns, so `unemu-pc-core` can implement it without naming `media` (§14.4 item 2): `DiskBase::from_reader(Box<dyn ContentReader>, sha256, size)` reads the base on demand and never hashes it again, `JournalStore::record(Box<dyn Record>)` keeps the journal in a record through `JournalMedia::open_record`. `FileMount` is the file-backed implementation, still in `assembly`: each path is the file it names, a journal file opens through the journal's path constructors with its `FILE.lock` and the base file's identity, as before, and `FileMount::with_verified_bases` takes the table of `assemble_with_verified_bases`. `assemble_mounted(config, policy, options, Rc<dyn Mount>)` is new; every other `assemble*` function is the same assembly over a `FileMount`, as are a floppy appended by path, which still opens its base itself, and the byte loads of an already resolved config, and `MachineConfig::validate` keeps its host checks, which are `FileMount::check_outputs`. The assembler validates through the mount's `check_outputs`, and two rules of that step that are not about the host now run for every mount: a positive NVRAM retention before it, and distinct journal keys among fixed drives, catalogue entries and NVRAM journals after it (after, so that a file mount, which refuses equal outputs as aliases, reports exactly what it did before; a mount of records would otherwise let two media share one record). The mount's digest of a base is trusted, never recomputed. **Lifetime** (§14.4 item 3): the machine keeps its mount (`AssembledMachine::mount`, an opaque `MachineMount`, host files by default), and each catalogue medium's handle keeps it too and asks it for the journal at every insert. **A medium appended by path** (`append_floppy`, `append_floppy_verified`, signatures unchanged) is a host file whatever the mount: its journal opens through a `FileMount`. On a machine over files the whole config is validated as before; on another mount the mount checks the candidate's outputs and the media appended by path are checked against each other with the file rules (aliases, reserved names), because the mount's keys are not host paths. A failed `Mount::journal` is the journal's mount failure, step "open journal record". A ROM is now read like a disk image (open, metadata, read), not with `std::fs::read`: the same bytes and messages. Callers: none of the production code changed. `AssembledMachine` gained the public field `mount`, so the three struct literals in tests (`assembly`'s `observation_audio_tests.rs`, `pc-harness`'s `inline_host_can_select_capture_output` and its scheduler support) add `mount: Default::default()`. `PersistenceHandle::mount`, `prepare_removable` and `verify_drive_base` stay as test-only wrappers over the mounted forms, so the persistence and image-source tests, and the test that a wrong-sized base is not hashed, did not change. MEASURED: `crates/assembly/tests/mount_seam.rs` adds 6 tests over a mount in memory (the contract's `MemoryStorage` and `MemoryContent`, keys under an absolute folder of the temporary directory that is never created): a machine with a µPD765 floppy journal, an ATA fixed-disk journal and a CMOS journal, its program and CMOS image read through `image`, runs two sessions (a guest floppy write and read-back, a host ATA write, a CMOS byte) beside the same machine over files, with equal guest results, and after each session the three records hold exactly the bytes of the three journal files, durable and released; a catalogue's second medium opens its record only at insert, the ejected one's record is sealed and released, the mount lives exactly as long as the machine (a weak reference dies with it), also for a machine with no journal at all; a machine over records takes a floppy appended by path, its journal is a host file with its own lock and the guest's write lands there, and an appended journal that aliases its own base, or another appended journal by another spelling, is refused by the host check (fails when it is skipped), and the same spelling by the key check; two catalogue media with one journal key, and a CMOS journal with the fixed disk's key, are refused before any record opens; a record held elsewhere fails the assembly with "open journal record" and leaves no record open. `cargo test --workspace --release` passes (4 328 tests, 63 ignored), and the bead gate's goldens tier runs 4 368 tests with the ignored goldens (the 20 user-ROM tests skipped), `ide_journal_golden`, `dos_write_golden` and `media_files_golden` among them, all passing | None | `assembly`'s persistence and image-source tests pass unchanged; the slow goldens; the new seam has a test with a mount that serves from memory |
+| 10 | **Done.** **The mount seam in `assembly`** (move 2). As landed: `assembly::Mount` ([`crates/assembly/src/mount.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/assembly/src/mount.rs)) is the one object the assembler asks for what a `MachineConfig` names by path, and the path is its key: `image(path)` gives `ImageBytes` (a ROM, a ROM part, a disk image mounted read-only or volatile, the CMOS image of an NVRAM journal); `disk_base(path, check_length)` gives the `DiskBase` of a journalled disk, calling `check_length` before it reads a byte, so a file of the wrong size is still refused before it is hashed; `journal(path)` gives a `JournalStore`, asked when the journal opens; `check_outputs(media)` checks the journal outputs before anything opens. Failures are `MountError::Config` (passed on unchanged) or `MountError::Host(unemu_core_api::Error)`, reported as the path's read or journal failure. The seam names only the contract's `ContentReader` and `Record` and types `assembly` owns, so `unemu-pc-core` can implement it without naming `media` (§14.4 item 2): `DiskBase::from_reader(Box<dyn ContentReader>, sha256, size)` reads the base on demand and never hashes it again, `JournalStore::record(Box<dyn Record>)` keeps the journal in a record through `JournalMedia::open_record`. `FileMount` is the file-backed implementation, still in `assembly`: each path is the file it names, a journal file opens through the journal's path constructors with its `FILE.lock` and the base file's identity, as before, and `FileMount::with_verified_bases` takes the table of `assemble_with_verified_bases`. `assemble_mounted(config, policy, options, Rc<dyn Mount>)` is new; every other `assemble*` function is the same assembly over a `FileMount`, as are a floppy appended by path, which still opens its base itself, and the byte loads of an already resolved config, and `MachineConfig::validate` keeps its host checks, which are `FileMount::check_outputs`. The assembler validates through the mount's `check_outputs`, and two rules of that step that are not about the host now run for every mount: a positive NVRAM retention before it, and distinct journal keys among fixed drives, catalogue entries and NVRAM journals after it (after, so that a file mount, which refuses equal outputs as aliases, reports exactly what it did before; a mount of records would otherwise let two media share one record). The mount's digest of a base is trusted, never recomputed. **Lifetime** (§14.4 item 3): the machine keeps its mount (`AssembledMachine::mount`, an opaque `MachineMount`, host files by default), and each catalogue medium's handle keeps it too and asks it for the journal at every insert. **A medium appended by path** (`append_floppy`, `append_floppy_verified`, signatures unchanged) is a host file whatever the mount: its journal opens through a `FileMount`. On a machine over files the whole config is validated as before; on another mount the mount checks the candidate's outputs and the media appended by path are checked against each other with the file rules (aliases, reserved names), because the mount's keys are not host paths. A failed `Mount::journal` is the journal's mount failure, step "open journal record". A ROM is now read like a disk image (open, metadata, read), not with `std::fs::read`: the same bytes and messages. Callers: none of the production code changed. `AssembledMachine` gained the public field `mount`, so the three struct literals in tests (`assembly`'s `observation_audio_tests.rs`, `pc-harness`'s `inline_host_can_select_capture_output` and its scheduler support) add `mount: Default::default()`. `PersistenceHandle::mount`, `prepare_removable` and `verify_drive_base` stay as test-only wrappers over the mounted forms, so the persistence and image-source tests, and the test that a wrong-sized base is not hashed, did not change. MEASURED: [`crates/assembly/tests/mount_seam.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/machine-file/tests/mount_seam.rs) adds 6 tests over a mount in memory (the contract's `MemoryStorage` and `MemoryContent`, keys under an absolute folder of the temporary directory that is never created): a machine with a µPD765 floppy journal, an ATA fixed-disk journal and a CMOS journal, its program and CMOS image read through `image`, runs two sessions (a guest floppy write and read-back, a host ATA write, a CMOS byte) beside the same machine over files, with equal guest results, and after each session the three records hold exactly the bytes of the three journal files, durable and released; a catalogue's second medium opens its record only at insert, the ejected one's record is sealed and released, the mount lives exactly as long as the machine (a weak reference dies with it), also for a machine with no journal at all; a machine over records takes a floppy appended by path, its journal is a host file with its own lock and the guest's write lands there, and an appended journal that aliases its own base, or another appended journal by another spelling, is refused by the host check (fails when it is skipped), and the same spelling by the key check; two catalogue media with one journal key, and a CMOS journal with the fixed disk's key, are refused before any record opens; a record held elsewhere fails the assembly with "open journal record" and leaves no record open. `cargo test --workspace --release` passes (4 328 tests, 63 ignored), and the bead gate's goldens tier runs 4 368 tests with the ignored goldens (the 20 user-ROM tests skipped), `ide_journal_golden`, `dos_write_golden` and `media_files_golden` among them, all passing | None | `assembly`'s persistence and image-source tests pass unchanged; the slow goldens; the new seam has a test with a mount that serves from memory |
 | 11 | **Done (2026-11-21).** As landed: see the final extraction note and the earlier compatibility notes below. **The crates split** (move 3), as three beads: `journal`; the journal's file code onto `unemu-core-files`, which exists since step 6 of §13.6; `journal-files` with the journal commands moving from `cli-core` to `cli-pc` and `unemupc` | None in `upcli`'s output: the journal commands change crate, and with one platform their words, output and exit codes are the same. New: the four journal commands of `unemupc` | Test names unchanged apart from the crate (§8.1.5 rule 3); `media_tools` and `media_fifo` pass in their new package; both `assembly` → `media` lines leave the allow list; `libc` keeps one way in, through `cpufeatures`, and the reasons of the `serde` and `toml` crates no longer name `media` (corrected 2026-11-20, S2: `pc-config` keeps the thirteen crates, `serde_derive` and `syn` 3, so the list does not lose them); `persistence.rs` and `assemble.rs` leave the host guard's list |
 | 12 | **Done.** **Firmware discovery leaves `assembly`** (move 4). As landed: see the note below | None | The discovery tests move with the module and pass; the user-ROM helper of the tests keeps working from its new place; `assembly` has no line left in the host guard's list, and the list is empty |
 | 13 | **Done.** **The command line joins `unemu`** (Q1(a)): command words dispatch through the retained `upcli` composition library; the `upcli` executable is removed. Releases pack `unemu` and `unemupc`; `setup-unemu` installs the combined frontend. As landed: see the step 13 note below | **Stated:** the program name in usage and in the release; no arguments or desktop options still select the window | `command_line_pin` changes only in the program name; binary dispatch and existing moved tests run `unemu`; the action workflow installs and runs it |
@@ -4153,7 +4155,7 @@ The moved journal-inspection fixtures import
 standalone package from adding a forbidden direct dependency on `media`;
 no manifest, lock-file or boundary exception changes.
 
-`commands.md`, README.md, `machines/README.md` and `status.md` describe the
+`commands.md`, README.md, [`machines/README.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/machines/README.md) and `status.md` describe the
 new command homes. Unlike step 5, removing commands now requires shipping
 the standalone binary to retain those commands for release users:
 `release.yml` builds, checks and packs `unemupc` alongside `unemu` and
@@ -4463,7 +4465,7 @@ comparison remains identical after that correction. Existing test names remain
 unchanged.
 
 **Step 12, as landed (2026-11-20).** Host discovery lives in
-`machine_file::firmware_discovery`: `crates/machine-file/src/firmware_discovery.rs`
+`machine_file::firmware_discovery`: [`crates/machine-file/src/firmware_discovery.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/machine-file/src/firmware_discovery.rs)
 and its `frontend.rs` and `persistent.rs` submodules. The existing private
 machine-file resolver is now `firmware_resolve.rs`, so the public discovery
 module keeps its name. The catalogue and identity checks over bytes remain
@@ -4697,7 +4699,7 @@ one thing the principle forbids that the core still does.
 in `unemu` under the platform's data directory. The preferences directory,
 the machine-file directory and the firmware index are in `unemupc`
 [REPO: `crates/image-store/src/location/preferences.rs`,
-`crates/window/src/main.rs`, `crates/assembly/src/firmware_discovery/persistent.rs`].
+`crates/window/src/main.rs`, [`crates/assembly/src/firmware_discovery/persistent.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/machine-file/src/firmware_discovery/persistent.rs)].
 
 - (a) Leave them until the front end has its own repository; step 4
   renames the program only.
@@ -5706,7 +5708,7 @@ pub fn cores() -> &'static [&'static dyn Core] {
 | The filters of File › Open… | each platform's `name` and its content kinds' `name` and `extensions` |
 | Which core is asked about a file first | `extensions` |
 | The window title of a running machine: TITLE, then the platform | `Identified::title` or the file's name; `PlatformDescription::name` |
-| The About text: one line per core, then its notices | `CoreDescription::id`, `name`, `version`, `implements`, `notices`. The PC's two notices already come this way [REPO: `crates/pc-core/src/core.rs`] |
+| The About text: one line per core, then its notices | `CoreDescription::id`, `name`, `version`, `implements`, `notices`. The PC's two notices already come this way [REPO: [`crates/pc-core/src/core.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-core/src/core.rs)] |
 | A core shown as unusable, with the reason | `Cores::refused` |
 | The machine's menu, the status line, the Input dialog | `MachineDescription`, as the table of §13.3 |
 
@@ -6097,7 +6099,7 @@ Every start of a stored image is the PC provider's. It ends in
 | 6 | **A machine's extras**: a CMOS reset, pending inserts | `crates/pc-image/src/machine.rs` `prepare`, `insert_medium` | Edit the launch document's catalogues |
 | 7 | **The desktop's extras**: created disks, a kept catalogue | `crates/pc-media/src/created_media.rs` `apply`, `kept_catalogue.rs` `restore` | Edit the launch document's catalogues |
 | 8 | **Across the thread**: bases as file handles or bytes | `workspace.rs` `SessionTransfer` | A `core_launch::Prepared` made from parts |
-| 9, 10 | **Assemble and wrap** | `crates/assembly/src/assemble.rs` `assemble_with_verified_bases`; `crates/pc-core/src/machine.rs` `PcMachine::from_assembled` | `core_launch::start` calls `PcCore::create`; the desktop keeps a typed `PcMachine` (§14.2.6) |
+| 9, 10 | **Assemble and wrap** | [`crates/assembly/src/assemble.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/assembly/src/assemble.rs) `assemble_with_verified_bases`; [`crates/pc-core/src/machine.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-core/src/machine.rs) `PcMachine::from_assembled` | `core_launch::start` calls `PcCore::create`; the desktop keeps a typed `PcMachine` (§14.2.6) |
 
 The callers are `upcli image run` and `image machine run`
 (`crates/cli-pc/src/image.rs`, `image/machine.rs`; their run loop is
@@ -6139,7 +6141,7 @@ payload-type table, the session, machines, import, publication,
 templates, recipes and the compatibility rows.
 
 Four places of the lowering touch the host today and go behind
-`ImageReader` before it can move [REPO: `crates/machine-file/src/lower.rs`]:
+`ImageReader` before it can move [REPO: [`crates/machine-file/src/lower.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/machine-file/src/lower.rs)]:
 two `std::fs::metadata` calls that size a ROM file; `paths::is_retention_input`,
 which canonicalises a path; `paths::validate_journals`, which resolves the
 journal and input paths on the host; and `ImageReader::verify_journal_base`,
@@ -6497,7 +6499,7 @@ Beads that edit the same files go one after the other, in either order:
   length and digest; `LoadedMachine`'s reader and `FileImageReader` keep the
   `media::VerifiedBase` themselves. `lower.rs` then names neither `std::fs`
   nor `media`.
-- **Files.** `crates/machine-file/src/lower.rs`, `lib.rs`, `paths.rs`,
+- **Files.** [`crates/machine-file/src/lower.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/machine-file/src/lower.rs), `lib.rs`, `paths.rs`,
   `integrity.rs`; `crates/pc-image/src/provider.rs` (its `Reader`).
 - **Depends on.** Nothing.
 - **MUST PROVE.** `machine-file`'s tests pass unchanged, the ones that pin
@@ -6544,7 +6546,7 @@ Beads that edit the same files go one after the other, in either order:
   a function of `machine-file`, and its one caller changes (stated). If the
   TOML and YAML halves of `origin.rs` do not split cleanly, `Origins` moves
   whole and only the YAML decoder stays behind a function argument.
-- **Files.** `crates/pc-config/**` (new), `crates/machine-file/src/**`,
+- **Files.** [`crates/pc-config/**` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-config) (new), [`crates/machine-file/src/**` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/crates/machine-file/src),
   root `Cargo.toml`, `scripts/crate-boundaries.sh` fixtures,
   `scripts/affected-tests.sh`, `backlog/docs/architecture.md`.
 - **Depends on.** S1.
@@ -6694,7 +6696,7 @@ Beads that edit the same files go one after the other, in either order:
   `pc-image` implements that over `BlobSource`. `pc-config` gets its own
   digest type with the same text form (`sha256:` and 64 hex digits), and
   `pc-image` converts at its edge.
-- **Files.** `crates/pc-config/src/image/**` (new);
+- **Files.** [`crates/pc-config/src/image/**` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-config/src/image) (new);
   `crates/pc-image/src/lib.rs`, `provider.rs`, `encode.rs`, `defaults.rs`,
   and the modules that name the model (`revision.rs`, `create.rs`,
   `import.rs`, `template.rs`, `machine.rs`, `workspace.rs`,
@@ -6705,7 +6707,7 @@ Beads that edit the same files go one after the other, in either order:
   digest are the same before and after; a new test pins one image digest
   if none is pinned. Name proof. Layer proof; `pc-config` still has no
   store dependency. `pc-image`'s tests pass unchanged.
-- **As landed.** `crates/pc-config/src/image/` holds `mod.rs` (the model
+- **As landed.** [`crates/pc-config/src/image/` (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-config/src/image) holds `mod.rs` (the model
   with public fields: `Config` with `Config::decode` and `Config::encode`,
   `Firmware`, `Medium`, `Slot`, `Nvram`, `NvramMode`, `Policy` with
   `from_write` and `write`, `Geometry` with `of`, `of_medium` and `fits`;
@@ -6776,7 +6778,7 @@ Beads that edit the same files go one after the other, in either order:
   `encode`, `check`, `lower`, `Lowered`. `pc-image`'s validation calls
   `launch::lower`, so one function lowers for the store and for the core.
   Nothing starts a machine from it yet.
-- **Files.** `crates/pc-config/src/launch.rs` (new),
+- **Files.** [`crates/pc-config/src/launch.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-config/src/launch.rs) (new),
   `crates/pc-image/src/provider.rs`; this section (the document's final
   format).
 - **Depends on.** S4.
@@ -6786,7 +6788,7 @@ Beads that edit the same files go one after the other, in either order:
   document with a missing, a doubled or an unused `content` or `record`
   row is refused. For each fixture image, `lower` gives the
   `MachineConfig` that `prepare` gave before the bead (`==`).
-- **As landed.** `crates/pc-config/src/launch.rs` holds the model
+- **As landed.** [`crates/pc-config/src/launch.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-config/src/launch.rs) holds the model
   (`Launch`, `ContentRow`, `RecordRow`, `Lowered`), the wire form (a private
   `Document`: the stored config's fields in their order, then `[[content]]`
   and `[[record]]`; `sha256` as 64 lowercase hex digits), `decode`, `encode`,
@@ -7167,7 +7169,7 @@ Beads that edit the same files go one after the other, in either order:
   calls it yet, except the test over every compiled-in core. If it is more
   than a day, the mount and its tests are one bead and `create` with the
   description another.
-- **Files.** `crates/pc-core/src/core.rs`, `machine.rs`, a new
+- **Files.** [`crates/pc-core/src/core.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-core/src/core.rs), `machine.rs`, a new
   `mount.rs`, `machine/tests.rs`, `Cargo.toml`; `crates/pc-session-tests`
   (the comparison); `crates/platforms` (its test).
 - **Depends on.** S5; `upc-dfs.35` and `upc-dfs.36`; the `journal` crate
@@ -7581,7 +7583,7 @@ Beads that edit the same files go one after the other, in either order:
   landed", with the deviations), the launch row of §8.1.4, §9,
   `architecture.md`, `status.md`.
 - **Files.** `crates/pc-image/src/workspace.rs`, `provider.rs`;
-  `crates/pc-core/src/core.rs`, `machine.rs`; the docs above.
+  [`crates/pc-core/src/core.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/crates/pc-core/src/core.rs), `machine.rs`; the docs above.
 - **Depends on.** S11, S13, and S12 if it is done.
 - **MUST PROVE.** `grep`: outside `machine-file`, `pc-harness` and tests,
   no front-end crate calls `assemble_with_verified_bases`. The full gate.

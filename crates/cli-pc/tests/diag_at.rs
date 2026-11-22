@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `unemu run --machine --diag-at N` writes the machine's diagnostic report
 //! to stderr when the run reaches step N, then runs on to its natural stop
-//! (commands.md, Build / run / test; `backlog/docs/design/observation.md`
-//! §Diagnostic report of a running machine). The system ROM is
+//! (commands.md, Build / run / test; `backlog/docs/architecture.md` § Core boundary
+//! and host timing). The system ROM is
 //! `assembly::test_support::keyboard_masked_halt_rom`, the project's own
 //! bytes: it masks IRQ1, disables the 8042's keyboard interface and halts
 //! with interrupts disabled.

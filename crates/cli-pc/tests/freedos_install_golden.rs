@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Install FreeDOS from open tools onto a blank ATA disk, then boot that disk.
 //! ATA-2 §§6.1–6.2 PIO commands and Microsoft FAT Specification, FAT16 BPB,
-//! run through the open AT firmware. See machines/README.md §Playing DOS games.
+//! run through the open AT firmware. See the machine guide in unemupc §Playing DOS games.
 //! Core and fixture revisions are pinned independently of the final screen.
 
 use assembly::{

@@ -1,5 +1,14 @@
 # vendor/freedos — bootable FreeDOS floppy fixtures
 
+> **Which repository maintains which part.** This repository maintains the
+> FreeDOS 1.4 Floppy Edition sets (`fetch-floppy-1.4.sh`,
+> `floppy-1.4-licenses.txt`, `iso-extract.py`), which recipes read. The boot
+> floppies built by `fetch.sh` belong to the PC core: the script, its pins and
+> its outputs live in [unemupc](https://github.com/unemu-org/unemupc/tree/main/vendor/freedos),
+> and the front end's tests read them from the pinned core checkout
+> (`bash scripts/core-checkout.sh`, then `UNEMUPC_FIXTURE_ROOT`). The sections
+> about `fetch.sh` below describe that core script.
+
 `fetch.sh` builds three **bootable FAT12 FreeDOS floppy images** in one run:
 
 - `freedos.img`: 1.44 MB, 1,474,560 bytes (2880 sectors), used by the existing
@@ -355,8 +364,8 @@ conjunction as `floppy-1.4-licenses.txt`.
 ## Usage
 
 ```sh
-vendor/freedos/fetch.sh             # builds all three images
-vendor/freedos/fetch-floppy-1.4.sh  # the FreeDOS 1.4 Floppy Edition sets (separate)
+vendor/freedos/fetch-floppy-1.4.sh  # the FreeDOS 1.4 Floppy Edition sets
+bash scripts/core-checkout.sh       # the core's boot floppies (fetch.sh), in the pinned core checkout
 ```
 
 Requires `git`, `nasm`, `unzip`, `curl`, and mtools (`mformat`/`mcopy`/`mdir`/`mlabel`) —

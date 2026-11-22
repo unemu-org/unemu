@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! `media create floppy --add`: FAT12 disks built from host files and folders,
 //! read back through the media crate's independent reader. See
-//! machines/README.md § Preparing disks and the Microsoft FAT Specification,
+//! the machine guide in unemupc § Preparing disks and the Microsoft FAT Specification,
 //! FAT Directory Structure.
 
 use cli_pc::command::run;

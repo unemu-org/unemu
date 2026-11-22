@@ -222,7 +222,7 @@ impl CliPlatform for PcPlatform<'_> {
             "       unemu media create hd (--chs C/H/S | --size SIZE[MiB|GiB]) OUT [--force]\n",
         ),
         UsageSlot::Journal => unemupc::JOURNAL_USAGE,
-        UsageSlot::Last => "DOS boot and interactive sessions: see crates/pc-harness/tests/*dos*golden.rs\n",
+        UsageSlot::Last => "DOS boot and interactive sessions: see the DOS goldens of the PC core (unemupc: crates/pc-harness/tests/*dos*golden.rs)\n",
         }
     }
 

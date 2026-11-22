@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! FreeDOS writes C: through XTIDE's ATA-2 PIO WRITE SECTORS and reboots.
-//! See persistent-media.md §Integration and Microsoft FAT Specification,
+//! See persistent-media.md §Integration in unemupc and Microsoft FAT Specification,
 //! FAT16 BPB and Directory Structure. Firmware pins come from at-ide.toml;
 //! the core revision is pinned independently for this golden below.
 

@@ -11,7 +11,7 @@ deciders: Mikołaj Mikołajczyk
 ## Status
 
 Accepted — 2026-11-14. The maintainer proposed the feature and accepted this
-shape. Builds on [[decision-25]] (machine images in a local OCI store).
+shape. Builds on [decision-25](decision-25%20-%20Machine%20images%20are%20self-contained%20OCI%20artifacts%20in%20a%20local%20store.md) (machine images in a local OCI store).
 Details will go into `backlog/docs/design/machine-images.md`; the work is
 tracked as `upc-5pw.18`.
 
@@ -103,7 +103,7 @@ Point 8 stays the default; this amendment adds one exception to it:
 4. **Still never in the repository.** Game files and the vendor's terms
    texts are never committed; the repository holds only the fetch scripts,
    the pins and a paraphrase of the terms.
-5. **Rights follow the bytes**, as in [[decision-27]]: a machine image that
+5. **Rights follow the bytes**, as in [decision-27](decision-27%20-%20Firmware%20packages%20are%20their%20own%20OCI%20artifact%20type.md): a machine image that
    embeds an open set is open only where all its other layers are.
 
 ## Amendment 2026-11-15: open media under SPDX licences, with sources
@@ -119,7 +119,7 @@ This extends the shareware amendment above:
 2. **Copyleft needs its source.** A set whose expression contains a copyleft
    licence carries the corresponding source archive as an extra, and every
    copyleft layer links it (`unemu.source`), as firmware packages do
-   ([[decision-27]]). The client guard refuses such a set for `unemu/` or any
+   ([decision-27](decision-27%20-%20Firmware%20packages%20are%20their%20own%20OCI%20artifact%20type.md)). The client guard refuses such a set for `unemu/` or any
    public namespace without that link; a private namespace still takes it.
 3. **Every part is covered.** The open claim covers every program on the
    disks, each with its licence recorded in a licence index shipped with the

@@ -4,7 +4,7 @@
 //! listed and typed, and a two-disk split set entered with CD and rebuilt with
 //! XCOPY. Microsoft FAT Specification, BPB, FAT12 entries and FAT Directory
 //! Structure; IBM PC AT Technical Reference, diskette drive adapter. See
-//! machines/README.md § Preparing disks.
+//! the machine guide in unemupc § Preparing disks.
 
 use assembly::{
     ConsoleProbe, DeviceId, FloppyAction, FloppyMediaList, FloppyMedium, ImageSource,

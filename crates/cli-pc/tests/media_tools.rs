@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Offline floppy journal contracts from persistent-media.md § Offline commands.
+//! Offline floppy journal contracts from persistent-media.md § Offline commands
+//! in unemupc.
 //! All images are generated; temporary directories live outside the repository.
 
 use journal_files::offline::{Access, JournalTool};

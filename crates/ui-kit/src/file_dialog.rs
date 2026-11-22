@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Host file dialogs that never run their own event loop inside the shell's
-//! frame; see `backlog/docs/design/spec.md` §9.4.
+//! frame; see `backlog/docs/architecture.md` § Observation and presentation.
 //!
 //! A synchronous file dialog spins a nested modal event loop until the user
 //! answers. On macOS that nested loop dispatches winit's queued events while

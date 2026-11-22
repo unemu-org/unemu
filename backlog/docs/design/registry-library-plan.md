@@ -1,4 +1,4 @@
-# upc-5pw.65 — The registry as a game library: catalogue index and attachments
+# upc-5pw.65 (unemupc) — The registry as a game library: catalogue index and attachments
 
 Plan only. Nothing here is implemented. Date: 2026-11-15.
 Markers: **[SRC n]** = external fact with a source in §11; **[REPO]** = read in
@@ -643,11 +643,11 @@ implementation bead starts before the maintainer approves the mock-up.
 Exit of phase 1: `image catalog search unemu "keen year:1991"` works offline
 after one fetch, against the maintainer's zot.
 
-### Phase 2 — Remotes in the window (with upc-5pw.64)
+### Phase 2 — Remotes in the window (with upc-5pw.64 (unemupc))
 
 | Id | Title | Scope | Depends | Tests |
 |---|---|---|---|---|
-| P2-1 | **Mock-up: Remotes section and its states** | HTML mock-up under `backlog/docs/design/mockups/`: sidebar, rows, facets, every state of §4 | upc-5pw.64 direction, P0-1 | maintainer approval |
+| P2-1 | **Mock-up: Remotes section and its states** | HTML mock-up under `backlog/docs/design/mockups/`: sidebar, rows, facets, every state of §4 | upc-5pw.64 (unemupc) direction, P0-1 | maintainer approval |
 | P2-2 | Headless Remotes model | `window/src/remotes.rs` in the style of `templates.rs`: load, refresh, search, states, Pull by digest through `PullRun` | P2-1, P1-4 | model tests per state with the mock registry; cancel; login round trip |
 | P2-3 | Remotes in the sidebar | egui wiring, thumbnails placeholder, lazy cover fetch | P2-2 | window-level tests as the library view has |
 | P2-4 | Get templates through the catalogue | Use `unemu/catalog` when present; keep the `_catalog` fallback | P2-2 | existing Get templates tests on both paths; request-count assertion |

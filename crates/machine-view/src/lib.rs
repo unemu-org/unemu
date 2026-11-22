@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The desktop's session of one running machine, over the front-end contract
-//! alone; see `backlog/docs/design/spec.md` §9.4 and
+//! alone; see `backlog/docs/architecture.md` § Observation and presentation and
 //! `backlog/docs/design/core-contract.md` §5 and §8.
 //!
 //! [`session::Session`] drives a [`unemu_core_api::Machine`]: it paces runs

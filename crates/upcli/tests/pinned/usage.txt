@@ -65,4 +65,4 @@ usage: unemu --version | --about (licence, source and third-party notices)
        unemu media verify --base IMG --journal J [--repair-tail --backup PATH]
        unemu media rollback --base IMG --journal J --to N --backup PATH
        unemu media commit (alias compact) --base IMG --journal J --to N --output OUT
-DOS boot and interactive sessions: see crates/pc-harness/tests/*dos*golden.rs
+DOS boot and interactive sessions: see the DOS goldens of the PC core (unemupc: crates/pc-harness/tests/*dos*golden.rs)

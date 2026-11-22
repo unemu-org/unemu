@@ -1,6 +1,6 @@
 # Working on tasks
 
-Open work is tracked in **beads** (`bd`, a Dolt-backed issue tracker; issue prefix `upc`). Knowledge
+Open work is tracked in **beads** (`bd`, a Dolt-backed issue tracker; issue prefix `ufe`). Knowledge
 — design, decisions, guides — stays as markdown under `backlog/`; a bead links to a doc section and
 never copies it. Roles, the path from a bead to `main`, review and the worker rules are beads
 memories (`bd memories`, keys `roles`, `bead-to-main`, `bead-conventions`, `worker-prompts`,
@@ -10,8 +10,10 @@ gives the flags. `bd prime` prints the tool's generic workflow; where it differs
 the beads memories (who claims and closes, what goes into `bd remember` — see
 `bd recall bead-conventions` — pushing), these docs and the memories win.
 
-This is the same workflow the CPU core (`x86jit`, prefix `xj`) uses. The two projects keep separate
-bead databases; a reference across them carries a tag — `xj-6vd.9 (x86jit)`.
+The core (`unemupc`, prefix `upc`) and CPU (`x86jit`, prefix `xj`) keep
+separate databases. Cross-repository ids carry the repository name, for example
+`upc-sk3.16 (unemupc)`. A front-end bead waiting for a core change records that
+wait in prose; dependencies cannot cross databases.
 
 ## Statuses
 
@@ -38,30 +40,18 @@ Priorities are `P0`…`P4` (`P0` highest). The import mapped Backlog.md high/med
 
 Each theme is an epic (`bd list --type epic`); every task bead belongs to one, through `--parent`
 (housekeeping chores may stand alone). The epic carries the theme's label; children keep their own
-labels (create them with `--no-inherit-labels`). A dotted id (`upc-sk3.1`) shows the parent a bead
+labels (create them with `--no-inherit-labels`). A dotted id (`ufe-12.1`) shows the parent a bead
 was created under; after a reparent `bd show` is authoritative.
 
 | Epic key | Theme |
 |----------|-------|
-| `cpu-core` | the x86jit CPU core as a pinned dependency — the pin, API adaptation, real-mode gaps the machine needs |
-| `code-review` | defects from the whole-code review |
-| `validation` | machine-level validation ROMs and oracles (test386 and similar) |
-| `storage` | disk media, controllers and image persistence |
-| `tests-ci` | test infrastructure, CI lanes and tooling gates |
-| `scheduler` | event-driven device scheduling, clock domains, CPU speed |
-| `observation` | observable output from device state, not replayed traces |
-| `skeleton` | phase A of decision-16: the display through a real card to a window, host keyboard |
-| `ux` | how users run and manage machines: machine image bundles, library, media and settings UI (mock-ups approved by the maintainer before any GUI implementation) |
-| `consolidation` | phase A′: machine description files (TOML/YAML), firmware and machine class as configuration, recoverable floppy persistence |
-| `protected-mode` | phase B: 386 protected mode, paging, A20, a 386 profile — DOS-extended programs |
-| `win9x-base` | phase C: PCI, VBE, audio, IDE, mouse, Pentium features — Windows 98 SE to the desktop |
-| `voodoo` | phase D, the target: Windows 98 SE with a 3dfx Voodoo card |
+| `ux` | application, library, media and settings UI; GUI work needs approved mockups |
+| `tests-ci` | front-end test infrastructure and gates |
+| release | front-end packaging, release pins and distribution |
 
-The four phase epics follow the scope decision (decision-16). Each ends in a milestone bead
-(`bd list --type milestone`); the last one is the project's goal line. Later phases stay coarse
-until the phase before them is close to done. Before any phase, the foundation milestone (label
-`foundation`) gathers the open work that finishes the 286 machine across the other epics; it
-blocks the first bead of phases A and B.
+Hardware, CPU, scheduler and machine-validation epics stay in unemupc. Open
+front-end work is re-created with `external_ref unemupc:<old id>`; closed core
+beads remain history there. Do not invent new ids for migrated work in docs.
 
 A new theme gets a new epic; do not stretch an existing one to fit.
 
@@ -104,10 +94,8 @@ Plus, when the change warrants it:
 - `cargo deny --all-features check licenses bans sources` whenever the dependency
   set changes (including features, sources, and licence policy), following x86jit's
   conditional Definition of Done;
-- the slow goldens, `cargo test --workspace -- --ignored` (BIOS POST, FreeDOS boot, the DOS
-  sessions; about 75 s; the gitignored fixtures under `vendor/` must be fetched — a missing
-  fixture skips) —
-  whenever the `cpu`, `machine`, `assembly` or `devices` crates change or the x86jit pin moves;
+- the slow front-end goldens when a core pin or fixture changes, with the
+  verified fixture root and `UNEMUPC_REQUIRE_FIXTURES=1`;
 - an A/B equality test when a refactor claims to change nothing observable;
 - a mutation check on a new golden: break the feature, watch the golden fail.
 
@@ -141,23 +129,11 @@ rediscovering state from the diff.
 
 ## History
 
-Backlog.md was the tracker until 2026-11-09. Its Done history stays read-only under
-`backlog/completed/`; the task files migrated to beads are archived under `backlog/archive/tasks/`.
-Every migrated bead carries its old id as `external_ref` (`backlog:TASK-NN`) and its old file name
-and dates in `metadata`. Text that mentions `task-NN` resolves through
-`bd list --external-ref backlog:TASK-NN` (exact, upper case). No bead means the task was Done before
-the migration: read `backlog/completed/task-NN - *.md`.
-
-What the migration did, so it can be checked:
-
-- The board held 41 tasks: 39 `Done`, 1 `In Progress` (`task-7`), 1 `To Do` (`task-41`). The two
-  open ones became beads — `task-7` → `upc-fro.1`, `task-41` → `upc-sk3.1`. Title, Description,
-  Acceptance Criteria (numbering and checked state kept) and Implementation Notes were copied
-  verbatim; labels were kept; priority low became `P3`, unset became `P2`.
-- `task-7` had sat `In Progress` since 2026-07-17 with nobody working it; it was imported as
-  `open`, with a note saying so.
-- Neither open task had a dependency on another open task, so no `blocks` edges were needed.
-- The 39 Done tasks moved from `backlog/tasks/` to `backlog/completed/`, not imported. `task-9`
-  never existed on the board.
-- The working rules that lived in `handoff.md` became beads memories; the project snapshot it
-  carried is in [`status.md`](status.md).
+unemu maintains its front-end beads (`ufe`); unemupc maintains the pre-split
+tracker and closed beads (`upc`). Backlog.md was the tracker until 2026-11-09.
+Its [Done history](https://github.com/unemu-org/unemupc/tree/main/backlog/completed)
+and [migration archive](https://github.com/unemu-org/unemupc/tree/main/backlog/archive)
+live only in the core. Search old ids in the core's database with
+`bd list --external-ref backlog:TASK-NN`. Open front-end beads carry
+`external_ref unemupc:<old id>` after migration. Shared git history preserves
+all pre-split commit references.

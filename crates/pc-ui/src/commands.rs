@@ -2,7 +2,7 @@
 //! The desktop's command vocabulary: every command a menu, a toolbar, a
 //! hotkey or a view pushes, the session state it is checked against, and
 //! which commands the state allows. The shell carries them out; see
-//! `backlog/docs/design/machine-images.md` §7 and `design/spec.md` §9.4.
+//! `backlog/docs/design/machine-images.md` §7 and `backlog/docs/architecture.md` § Observation and presentation.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {

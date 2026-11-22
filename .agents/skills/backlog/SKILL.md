@@ -16,7 +16,8 @@ description: >-
 [Backlog.md](https://github.com/MrLesk/Backlog.md) keeps docs and decisions as plain markdown
 **inside the repo** (`backlog/`), versioned with the code. The CLI is `backlog`; `backlog <cmd>
 --help` gives the exact, version-current flags. Here it no longer tracks tasks: open work is in
-beads (`bd`), and `backlog/completed/` + `backlog/archive/` are read-only Done history.
+beads (`bd`, prefix `ufe`). The Done history of the earlier tracker stays in the
+[unemupc](https://github.com/unemu-org/unemupc) repository (`backlog/completed/`, `backlog/archive/`).
 
 ## Layout
 
@@ -44,6 +45,6 @@ Decision vs bead note: cross-cutting / architecture-grade → `backlog decision`
 
 ## Reading the Done history
 
-An old id (`TASK-NNN`) that has no bead (`bd list --external-ref backlog:TASK-NNN` is empty) was
-Done before the migration: its file is `backlog/completed/task-NNN - *.md` (or
-`backlog/archive/`).
+An old id (`TASK-NNN`) was Done before the migration to beads. Its file is
+`backlog/completed/task-NNN - *.md` (or `backlog/archive/`) in the
+[unemupc](https://github.com/unemu-org/unemupc) repository, which keeps that history.

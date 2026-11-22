@@ -1,5 +1,7 @@
 # Coding conventions
 
+unemu maintains front-end conventions; unemupc maintains hardware and execution conventions in its own repository.
+
 Generic conventions that apply regardless of stack. Stack-specific rules (language idioms, framework patterns, formatter config) go in the **Stack-specific** section at the bottom — filled at bootstrap.
 
 ## File naming
@@ -18,7 +20,7 @@ Generic conventions that apply regardless of stack. Stack-specific rules (langua
 - Add only when the *why* is non-obvious: hidden constraint, subtle invariant, workaround for a specific bug, surprising behavior.
 - Never explain *what* the code does — well-named identifiers already do that.
 - Don't reference the current task / fix / PR ("added for X", "handles case from #123") — that belongs in the commit message, not the source file.
-- **Comments must read for a human who has never seen our backlog.** No internal jargon in source: no milestone tags (`M1`, `M2`), no task ids (`task-2`), no decision ids (`decision-5`). Explain the *why* in plain language instead — e.g. not `// TODO(decision-5)` but `// Provisional clock; replace with retired-instruction time once the CPU core exposes an instruction counter.` A doc-comment *may* cite the spec by section (`see spec §6`), since `design/spec.md` is human documentation. Only cite a task id in a comment when it marks a genuine known blocker on that task.
+- **Comments must read for a human who has never seen our backlog.** No milestone tags, tracker ids or decision numbers in source comments. Explain the constraint in plain language. Public modules and traits document their ownership and contracts; hardware facts cite the datasheet by name and section or mode. Source comments contain no URLs.
 
 ## Commits
 
@@ -57,98 +59,48 @@ in CI; see [`commands.md` § CI](commands.md#ci).
 ## When in doubt
 
 - Read the relevant decision: `ls backlog/decisions/` (see [`decisions.md`](decisions.md)).
-- Check active work: `backlog task list --plain`.
+- Check active work: `bd ready` (prefix `ufe`).
 - Ask the user. Solo project — they're the only deciding authority.
 
 ---
 
 ## Stack-specific (Rust)
 
-- **Edition**: 2021. **MSRV**: the latest stable Rust the devShell provides
-  (currently 1.99; decision-17), never below x86jit's. **Workspace**: one Cargo workspace, one crate per swap-layer
-  (`cpu`, `bus`, `chipset`, `device`, `devices/*`, `video`, `machine`, `cli-core`, `cli-pc`, `upcli`,
-  `testkit`).
-- **Clippy**: `cargo clippy --all-targets --all-features -- -D warnings` is the
-  gate. **Format**: `cargo fmt`, default rustfmt.
-- **Error handling**: `thiserror` for library error enums with stable variants
-  (bus faults, device errors); `anyhow` only in the CLI crates (`cli-core`, `cli-pc`, `upcli`) and tests. Never `unwrap`/
-  `expect` in library code outside tests — return a typed error.
-- **Naming**: model real hardware — device types named after the chip
-  (`Uart16550`, `Pic8259`, `Pit8253`, `I8042`). One device per module.
+- **Edition**: 2021. **MSRV**: latest stable Rust from the devShell (currently
+  1.99), compatible with both pinned cores and the contract. The workspace is
+  the 22 front-end crates listed in [architecture](architecture.md).
+- **Clippy**: `cargo clippy --locked --all-targets --all-features -- -D warnings`.
+  **Format**: `cargo fmt --check`, default rustfmt.
+- **Error handling**: `thiserror` for stable library error variants; `anyhow`
+  only in front-end command plumbing and tests. Never `unwrap`/`expect` in
+  library code outside tests.
+- **Naming**: name host responsibilities and platform providers; hardware
+  implementations belong in the core repository.
 - **Language**: all code, comments, and identifiers in **English** (Polish only in
   chat with the maintainer — see AGENTS.md).
 - **License headers**: each source file carries an SPDX line
   `// SPDX-License-Identifier: AGPL-3.0-or-later`.
-  Exception: `crates/devices/src/opl3/mod.rs` and `opl3/tables.rs` translate
-  Nuked-OPL3 1.8, commit `765ec962`, and preserve Nuke.YKT's copyright with
-  `// SPDX-License-Identifier: LGPL-2.1-or-later` (decision-21).
-  `opl3/LICENSE` contains the upstream licence. Board timing, serialization and
-  tests remain AGPL. The publication guard enforces the exact two-file SPDX
-  exception. Cargo-deny checks crate metadata: `devices` and the combined
-  program remain AGPL-3.0-or-later; it does not enforce per-file licences.
-  URLs inside a verbatim upstream licence notice are allowed.
-- **Doc-comments (docs-first rule)**: every public module and trait has a `//!` /
-  `///` doc-comment naming the modelled hardware and cross-referencing
-  `backlog/docs/design/spec.md` (`§` style). Datasheet deviations are documented.
-- **Determinism**: no `std::time`, `Instant`, `SystemTime`, or RNG in the
-  execution path. Virtual time = retired instructions.
-- **Memory writes**: guest RAM is mutated only through the x86jit `Vm` API that
-  runs `note_write` (SMC safety) — never a raw buffer write. See the memory decision.
-- **x86jit dependency**: git dep pinned to an exact rev of x86jit `main`; a gitignored
-  `[patch]` onto a local checkout for development; never a bare `path` dep (breaks
-  `nix build`/CI). See decision-13.
+- **Doc-comments** explain public modules and traits, their ownership and
+  relevant front-end contracts. Hardware facts belong in the core's docs.
+- **Dependencies**: cores and `unemu-core-api` are git dependencies pinned to
+  exact revisions. Local work uses gitignored patches, never committed bare
+  path dependencies; contract and core pins move together when needed.
+- **Determinism**: host timing may pace execution but never becomes an input to
+  emulation. Virtual time is measured by the core; disk bases remain immutable
+  and SHA-256 identified, with writes behind the overlay interface.
 
 ## Test strategy
 
-See [`testing.md`](testing.md): device unit tests on a mock bus, fuzz +
-property-based, golden/trace tests (deterministic, pin the x86jit rev),
-boot/integration ROMs, SingleStepTests differential for real mode, snapshot/replay.
-No device or machine feature merges without its tests.
-
-Proprietary-firmware goldens store hashes and our own interpretation (POST codes,
-which tests passed, retired-instruction counts), never firmware bytes or copies
-of the firmware's screen text beyond short identifiers. Do not commit screenshots
-or full console transcripts from that firmware. User-ROM tests are ignored and
-start with `user_rom_`; those that need user firmware use the shared
-`machine_file::require_user_firmware!` helper (the user-media tests keep their
-own skip); see `commands.md` §User-supplied ROM tests. Discovery tests use synthetic
-bytes only.
+Test application behaviour at its boundary: headless UI models, synthetic
+store and registry content, recipes, and sessions over the pinned cores. Keep
+mockup inventories and recipe corpus/schema tests intact. Read PC fixtures
+through `UNEMUPC_FIXTURE_ROOT`; hardware tests are maintained by
+[unemupc](https://github.com/unemu-org/unemupc/blob/main/backlog/docs/testing.md).
+Run the [affected-test plan](commands.md#affected-tests-and-the-bead-gate)
+before its runner; a core re-pin requires the front-end goldens.
 
 Keep process-spawning tests in separate test binaries from tests holding journal
 locks or pipe/FIFO descriptors whose lifetime affects another test. On Unix,
 fork duplicates every thread's open descriptors: `O_CLOEXEC` closes them only at
 exec, so a child can briefly retain a sibling's released lock or postpone EOF.
 Separate binaries prevent that inheritance without serializing the fast suite.
-
-## Device time and clock domains
-
-Decision-22 §5 applies to new code:
-
-- Durations come from `device::clock::ClockDomain`, never bare tick literals.
-  No device assumes one `VClock` tick is one PIT input clock. Use
-  `VClock::from_pit` when converting a PIT duration at a boundary.
-- Schedule the next input edge with `domain.next_edge_after(now)`, never
-  `now + 1`. Handle exhaustion of the virtual-time range.
-- Define each crystal once as an exact integer ratio. The board oscillator is
-  `device::clock::OSC` (315/22 MHz); derive its divided clocks from it.
-  Round edges up and carry epoch phase. Never accumulate rounded periods or
-  use floating point for clock arithmetic.
-- New devices report deadlines and catch up idempotently in `sync(at)` for any
-  time. Do not introduce devices requiring a visit on every PIT input edge.
-- Latch picture-affecting state at a raster position in a stateful beam.
-  Do not derive new beam state from absolute time or read live state at capture.
-- Status phases never advance per read.
-- DMA requesters accept partial transfers.
-- New run-policy and pacing features count virtual time, not instruction
-  equivalents. Existing policy units retain their documented contracts.
-- Bus width and wait states belong in the decode map or machine file, never
-  hidden inside a device.
-
-The clock-domain seam does not itself change VGA raster anchoring, privatize
-`VClock`, or add a cycle-exact CPU profile; those remain separate work.
-
-Known compatibility exceptions in the existing serial models: the 8042 ACK
-adds two separately rounded frame durations (host frame plus reply frame),
-and the UART starts each back-to-back receive frame at the previous rounded
-completion time. Both can accumulate fractional rounding. They deliberately
-retain existing guest timing and are not patterns for new clocked hardware.

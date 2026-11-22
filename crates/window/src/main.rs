@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Desktop shell and the window of a running PC (design/spec.md §9.4).
+//! Desktop shell and the window of a running PC (backlog/docs/architecture.md, Observation and presentation).
 //!
 //! The paced session is `machine_view::Session`, which drives the machine
 //! through the front-end contract (`backlog/docs/design/core-contract.md`
@@ -9,8 +9,7 @@
 //! and the mouse, rasterises the text modes and samples the drives' activity
 //! after each run chunk for the status-bar lights. `Presenter` adds the PC
 //! catalogue model the media dialogs append to. The Media menu names both
-//! floppy media. See `backlog/docs/design/observation.md` § Window pacing and
-//! § Host input.
+//! floppy media. See `backlog/docs/architecture.md` § Core boundary and host timing.
 
 use assembly::{AssembledMachine, DeviceId, ObservationPolicy, ObservationRequest, OutputKind};
 use machine_view::Session;

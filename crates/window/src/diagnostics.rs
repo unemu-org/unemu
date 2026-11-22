@@ -19,11 +19,11 @@
 //! 10,000 entries, consecutive identical deliveries folded into one, and
 //! the totals per vector since the recording began. The recording goes to
 //! one `trace-N.txt` per recording, created new and never written over a
-//! file it did not write, written, and rewritten, at Save machine report, Stop, unchecking and closing the window; an app that is killed
+//! file it did not write, written, and rewritten, at Save machine report, Stop,
+//! unchecking and closing the window; an app that is killed
 //! writes nothing. Open diagnostics folder shows the folder in the
-//! platform's file manager. See `backlog/docs/design/observation.md`
-//! §Diagnostic report of a running machine and §Exception and interrupt
-//! deliveries, and `backlog/docs/commands.md`.
+//! platform's file manager. See `backlog/docs/architecture.md` § Core boundary and
+//! host timing, and `backlog/docs/commands.md` § Tools diagnostics.
 
 use std::{
     io::{self, Write},

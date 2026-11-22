@@ -1,10 +1,12 @@
 # Docs
 
+unemu maintains front-end guides; [unemupc](https://github.com/unemu-org/unemupc/tree/main/backlog/docs) maintains core documentation. The split records are frozen; living ownership is in architecture.md.
+
 Load-on-demand knowledge for coding agents and humans. The pointer table in
 [`../../AGENTS.md`](../../AGENTS.md) tells you which file to open for which task — don't read
 everything up-front.
 
-Open work is in beads (`bd`), and the shared working rules are beads memories (`bd memories`) —
+Open work is in beads (`bd`, prefix `ufe`), and the shared working rules are beads memories (`bd memories`) —
 start there. Create ad-hoc docs with `backlog doc create "<title>"` (→ `doc-N - Title.md`); the
 curated files below are hand-maintained.
 

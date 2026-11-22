@@ -11,7 +11,7 @@ deciders: Mikołaj Mikołajczyk
 ## Status
 
 Accepted — 2026-11-14. The maintainer proposed the feature and accepted this
-shape. Builds on [[decision-25]] (machine images) and [[decision-26]]
+shape. Builds on [decision-25](decision-25%20-%20Machine%20images%20are%20self-contained%20OCI%20artifacts%20in%20a%20local%20store.md) (machine images) and [decision-26](decision-26%20-%20Installation%20media%20sets%20are%20their%20own%20OCI%20artifact%20type.md)
 (installation media sets, including their extras). Details will go into
 `backlog/docs/design/machine-images.md`.
 

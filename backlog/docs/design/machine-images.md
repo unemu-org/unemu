@@ -1,5 +1,7 @@
 # Machine images, capabilities and desktop UX
 
+unemu maintains image envelopes, store, registry and desktop policy; unemupc maintains PC configuration, compatibility rows and disk-layer codecs.
+
 Status: **`+zstd` binary blobs implemented** (§2), 2026-11-14: provider-declared payloads
 are stored compressed (level 3, single-threaded) with decoded SHA-256/size annotations;
 resolution verifies decoded bytes by streaming and writes nothing; only mounted file-backed
@@ -13,14 +15,14 @@ imports and publication compress by default, `--no-compress` keeps raw fixtures,
 The installation-media library collection and Import dialog are implemented (2026-11-15); the transfer-medium generator remains.
 §5.3 and its [Firmware mock-up](mockups/firmware.html) were approved by the maintainer on 2026-11-14.
 §5.2 and its mock-up were approved by the maintainer on 2026-11-14. The local store core
-(`upc-5pw.6`), metadata codec, local overlays and summary cache (`upc-5pw.12`)
+(`upc-5pw.6` (unemupc)), metadata codec, local overlays and summary cache (`upc-5pw.12` (unemupc))
 are implemented in `crates/image-store`; PC machine-file import and bundle
-resolution (`upc-5pw.7`), immutable disk layers, isolated workspaces and offline
-publication (`upc-5pw.8`) are implemented in `crates/media`, `crates/image-store`
+resolution (`upc-5pw.7` (unemupc)), immutable disk layers, isolated workspaces and offline
+publication (`upc-5pw.8` (unemupc)) are implemented in `crates/media`, `crates/image-store`
 and `crates/pc-image`, with opt-in CLI commands. The desktop library, pinned launch,
 regular/disposable workspaces with explicit keep/discard and startup recovery, and
 Disk layers publication are implemented in `crates/window`. Registry push/pull (§5.1,
-`upc-5pw.10`), the push guard (`upc-5pw.36`) and the CLI commands are implemented in `crates/registry`
+`upc-5pw.10` (unemupc)), the push guard (`upc-5pw.36` (unemupc)) and the CLI commands are implemented in `crates/registry`
 (`image-registry`); bearer-token authentication, GUI login and Browse registry remain.
 Provider launch compilation remains separate; those sections describe later contracts.
 
@@ -59,8 +61,8 @@ transfer use the image digest. A metadata edit therefore gives a new image
 digest for the same machine, and nothing that runs is affected. Library edits
 remain local overlays until explicitly published as a new version or tag (§2.1).
 
-READ: [Machine files](machine-files.md), §§Schema, extends and Removable floppy
-catalogues; [Persistent media](persistent-media.md), §§Header, Media behind the
+READ: [Machine files](https://github.com/unemu-org/unemupc/blob/main/backlog/docs/design/machine-files.md), §§Schema, extends and Removable floppy
+catalogues; [Persistent media](https://github.com/unemu-org/unemupc/blob/main/backlog/docs/design/persistent-media.md), §§Header, Media behind the
 drive, Memory and hashing, and Media changes; [Deferred](../deferred.md),
 §Layered disk images. The existing `SectorMedia` seam, immutable verified base,
 sparse sector overlay, command batches and recovery generations remain the
@@ -68,7 +70,7 @@ foundation. A generation is a recovery point, not a disk layer or a filesystem
 consistency guarantee. A machine-file inheritance layer is also not a disk layer.
 
 READ: `crates/window/src/main.rs` queues floppy changes at execution boundaries;
-`machines/README.md` documents Ctrl+Alt+F/E (Shift for B:), Ctrl+Alt+M mute,
+[`machines/README.md` (unemupc)](https://github.com/unemu-org/unemupc/blob/main/machines/README.md) documents Ctrl+Alt+F/E (Shift for B:), Ctrl+Alt+M mute,
 click-to-capture and Ctrl+Alt+G/focus loss release. The approved shell makes these
 controls visible. CD, whole-machine save/restore and new hardware remain future
 capabilities, even when their reserved positions appear in a mock-up.
@@ -487,9 +489,9 @@ journaled workspace media offer crash recovery. Do not silently upgrade policy.
 ### 2.1. Game and software metadata
 
 Status: metadata codec, local overlay and summary cache implemented by
-`upc-5pw.12` in `crates/image-store`. Launch-profile compilation and input scripts,
+`upc-5pw.12` (unemupc) in `crates/image-store`. Launch-profile compilation and input scripts,
 as well as GUI wiring, are not implemented here. Schema 2 (below) implemented
-2026-11-17 by `upc-5pw.113.2`: the codec, the `ibm-pc` needs vocabulary, the
+2026-11-17 by `upc-5pw.113.2` (unemupc): the codec, the `ibm-pc` needs vocabulary, the
 `unemu.needs` annotation and the `image media import` flags; the library's
 warning on a mismatch and its template suggestion are later work.
 
@@ -559,7 +561,7 @@ runs the artifact (measured with its decoder), so metadata never raises
 the fields of schema 1 only; publishing an overlay of a schema-2 image keeps
 its schema-2 fields and schema.
 
-**Schema 3: specified, not implemented yet (`upc-miu`).** Accepted by the
+**Schema 3: specified, not implemented yet (`upc-miu` (unemupc)).** Accepted by the
 maintainer on 2026-11-19 with the design note
 [about-text](about-text.md), which holds the reasons, the Markdown subset,
 the rules of the source and the guard, and the desktop's behaviour. Schema 3
@@ -896,7 +898,7 @@ a live lock file or replace its inode to bypass a lock.
 |---|---|
 | Pull or import interrupted | No tag is written. Verified blobs stay, rooted by the `local/pulls` record; the library lists the image as incomplete with Resume and Remove. Resume fetches only missing blobs and continues a partial blob by HTTP range where the registry allows. |
 | Push interrupted | The remote tag is written last, so the registry holds the old tag or the complete new image, plus unreferenced blobs for its own GC. A retry uploads only what is missing. |
-| Disk full | Check free space against the known descriptor sizes before pull, materialize, seal and export. A failed write removes its temporary file and publishes nothing. During a run a full disk is a journal host error: execution stops with the persistence error ([Persistent media](persistent-media.md), §Host errors and determinism). |
+| Disk full | Check free space against the known descriptor sizes before pull, materialize, seal and export. A failed write removes its temporary file and publishes nothing. During a run a full disk is a journal host error: execution stops with the persistence error ([Persistent media](https://github.com/unemu-org/unemupc/blob/main/backlog/docs/design/persistent-media.md), §Host errors and determinism). |
 | Lock holder crashes | The next opener takes the stable lock first, then runs journal tail recovery and completes or rolls back `transaction.toml`, verifying staged data. GC removes `staging/` files, which no live lease can own while it holds the store lock. |
 | Blob fails verification | Move it to `quarantine/`, mark every image and workspace that needs it as damaged and block their Start. Repair fetches the digest again from a registry or re-imports the source. Nothing is deleted automatically and no substitute is accepted. |
 | Local tag race | Compare-and-swap conflict; the loser learns the current digest. Both manifests exist, so nothing is lost. |
@@ -1951,7 +1953,7 @@ date) and `notes` describe the package; absent means unknown. `fits` carries
 provider-owned board and machine-class ids. Catalogue ids belong to individual
 logical ROMs, and the package summary indexes their unique union. This sketch
 uses the existing IBM 5170 BIOS catalogue entry and the chip pins from
-`machines/at-games.toml`; it contains identities only, never ROM bytes:
+[`machines/at-games.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/main/machines/at-games.toml); it contains identities only, never ROM bytes:
 
 ```toml
 schema = 1
@@ -1995,7 +1997,7 @@ The single-image **IBM VGA BIOS 1987 (32 KiB)** package uses catalogue id
 `ibm-vga-bios-1987-32k`, role `video-bios`, size 32768 and full SHA-256
 `51b49761f72780a696c36f3d2e74a8168c1c99b865070f7f90b8e621a8b5ae17`.
 It fits `ibm-5170`, class `at`, and remains user-supplied. As in
-`machines/at-games.toml`, the option-ROM binding maps at `0xC0000` after skipping
+[`machines/at-games.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/main/machines/at-games.toml), the option-ROM binding maps at `0xC0000` after skipping
 `0x2000` container bytes; the stored/hash-identified input stays the full 32 KiB.
 The mock-up's incomplete set uses `ibm-5170-bios-1985-11-15`, with U27 part
 `61X9266` present and U47 part `61X9265` missing. These real catalogue names and
@@ -2008,12 +2010,12 @@ Each logical ROM has a unique §3-grammar `id`, a provider-declared `role`, opti
 a single `blob` with optional physical `position`/`part_number`, or a nonempty
 `parts` array, never both. PC roles `system-bios`, `option-rom` and `video-bios`
 map to `FirmwareKind::{SystemBios, OptionRom, VideoBios}` in
-`crates/assembly/src/firmware.rs`. `keyboard-controller` and `other` reserve roles
+[`crates/assembly/src/firmware.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/main/crates/assembly/src/firmware.rs). `keyboard-controller` and `other` reserve roles
 for storage and display, not executable support. Unknown roles need a provider
 schema extension; shared code never guesses ROM mapping from their names.
 
 **One BIOS, several chips.** `parts` mirrors machine-file `RomPart` in
-`crates/pc-config/src/schema/v1.rs`: `blob` supplies `image` bytes, with the
+[`crates/pc-config/src/schema/v1.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/main/crates/pc-config/src/schema/v1.rs): `blob` supplies `image` bytes, with the
 same `lane`, assembled-byte `offset` (default zero) and per-chip `sha256` pin.
 Every part also has exact `size` and optional socket `position` and `part_number`.
 Its role and catalogue id are inherited from the logical ROM. `KnownPart` has
@@ -2409,7 +2411,7 @@ needed for this design step.
 
 These are accepted directions, not detailed schemas or implemented capabilities.
 
-**Saved states.** `upc-5pw.17` will define the portable artifact and compatibility
+**Saved states.** `upc-5pw.17` (unemupc) will define the portable artifact and compatibility
 contract around §2's reserved `saved_state` field and
 `application/vnd.unemu.machine.state.v1` payload. Pin exact machine/media and
 emulator/CPU/device versions as §4 requires; reject the reserved field until
@@ -2430,7 +2432,7 @@ remain for a later design; no custom collection payload is specified here.
 
 ### 5.5. Official template images
 
-Shipped machine files (`machines/`) are development and test fixtures. What a
+The PC core’s [shipped machine files (unemupc)](https://github.com/unemu-org/unemupc/tree/main/machines) are development and test fixtures. What a
 user starts from is an **official template image**: an ordinary machine image in
 the official namespace of the default registry, pulled into the local store
 like any other (§5.1), never a machine file.
@@ -2545,7 +2547,7 @@ Kiselev AT-reset BIOS, the unemu VGA BIOS and XTIDE Universal BIOS r638 (each
 with the source archive the catalogue pins), 640 KiB + 1 MiB, VGA, a COM1 UART
 without a mouse, one 1.2M drive with an empty catalogue, a blank zero-base 504
 MiB (1024/16/63, the largest INT 13h CHS disk) ATA master at 1F0h, no sound
-card. `open-at-games`: the same plus the cards of `machines/at-games-open.toml`
+card. `open-at-games`: the same plus the cards of [`machines/at-games-open.toml` (unemupc)](https://github.com/unemu-org/unemupc/blob/main/machines/at-games-open.toml)
 without its media: SB16 at 220h (IRQ 5, DMA 1 and 5), a Microsoft mouse on
 COM1 and a 2 MiB Lo-tech EMS board at 260h with its frame at D000h. Neither
 holds an operating system or other software: disk images with an operating
@@ -2630,9 +2632,19 @@ uses the login-check timeouts (10 s to connect, 15 s per read).
 
 ### 5.6. Compatibility of published images
 
+After the split, unemu maintains the image envelope and front-end compatibility
+rows; the PC-core rows and `NEXT_RELEASE` live in `pc_config::compat` in
+[unemupc](https://github.com/unemu-org/unemupc/blob/main/crates/pc-config/src/compat.rs),
+as recorded in decision-30. Core requirements are compared with the selected
+core's `CoreDescription::version`; front-end requirements are compared with the
+application version. `image_store::compat`, `pc_image::compat` and
+`recipe::compat` keep the front-end rows and extraction baseline `0.0.3`.
+The implementation chronology below is retained for context.
+
+
 Status: **accepted** in
 [decision-30](<../../decisions/decision-30 - Published images declare the oldest unemupc that runs them.md>)
-(design step of `upc-dfs.15`), accepted by the maintainer 2026-11-17;
+(design step of `upc-dfs.15` (unemupc)), accepted by the maintainer 2026-11-17;
 **implemented in part: core and command line** (2026-11-17). The marker,
 its parser and lenient reader, the shared and PC tables (every row is
 0.0.1; the next release, 0.0.3, is `image_store::compat::NEXT_RELEASE`), the
@@ -2644,7 +2656,7 @@ of the newest runnable version, its note of which newer version needs which
 release, its dimming of a repository with nothing runnable and its refusal
 to pull a tag this release cannot run are in place too (2026-11-17; Get
 templates now shows Remotes, §5.5). The desktop's part followed
-(2026-11-19, `upc-dfs.15` part 2). The summary cache (schema 8) keeps each
+(2026-11-19, `upc-dfs.15` (unemupc) part 2). The summary cache (schema 8) keeps each
 artifact's `unemu.min-app-version` and reads it before any config. It
 summarises an artifact this release does not read from its manifest and
 metadata, with its config's details when the config still decodes, so the
@@ -2666,7 +2678,7 @@ image…, Settings…, Layers… and Disk layers…, Push…, Save as new image�
 Insert, Insert into…, Insert media… and the drives' Insert…, Use in
 machine… and Edit metadata…. Details and Delete tag… stay. The Images list
 has no disabled row look yet; a dimmed row there waits for a mock-up
-(`upc-dfs.15.1`). Start's refusal names the tag the machine came from, or
+(`upc-dfs.15.1` (unemupc)). Start's refusal names the tag the machine came from, or
 another tag that names the image, not the digest the machine keeps.
 Published templates, installation sets and firmware packages stay on the
 registry for good, and older releases read them too. This section records
@@ -2816,7 +2828,7 @@ Optionally, the unemu-media pipeline can also run the release a new
 template's marker names (its pinned `unemu`) against the built template.
 That tests the table against the real release.
 
-**Rows for metadata schema 3: specified, not implemented yet (`upc-miu`).**
+**Rows for metadata schema 3: specified, not implemented yet (`upc-miu` (unemupc)).**
 The about text and the localized synopsis of §2.1 ([about-text](about-text.md)
 §6) add these rows, each first read by 0.0.4 (`NEXT_RELEASE`):
 
@@ -2838,7 +2850,7 @@ others as typed.
 
 ## 6. Capabilities API sketch: validator-owned choices
 
-READ: `crates/assembly/src/validate.rs`, `validate_resolved`, resource checks,
+READ: [`crates/assembly/src/validate.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/main/crates/assembly/src/validate.rs), `validate_resolved`, resource checks,
 `check_board_memory`, IRQ routes and DMA inputs. It returns the first error in
 fixed order, not a form schema. Some current representation domains live in
 machine-file lowering/device configs. A UI must not transcribe those tables.
@@ -2892,7 +2904,7 @@ carry revisions so stale choices cannot authorize an incompatible edit.
 | Drives / ROM | Each catalogue entry's exact geometry, one of the media the drive type takes; ROM placement, container offsets, chip lanes, services, compatibility and missing hash bindings remain validator/loader checks. |
 
 Hardware rules are the existing models, not additional fidelity claims. See
-[machine-files.md](machine-files.md), §§RAM rule, Cards and SB16: IBM Personal
+[machine-files.md](https://github.com/unemu-org/unemupc/blob/main/backlog/docs/design/machine-files.md), §§RAM rule, Cards and SB16: IBM Personal
 Computer AT Technical Reference, Section 1, System Memory Map; Creative Sound
 Blaster Series Hardware Programming Guide, §2. The UI displays validator reasons,
 including an EMS C000h conflict with a video ROM, without embedding these facts.
@@ -2930,7 +2942,7 @@ the active emulator.
 | Machine | Start, Pause/Resume, Send Ctrl+Alt+Del, Power cycle, Stop, Settings… and Disk layers…; Save state remains disabled until supported. Gaming mode is a Machine-menu action when disposable workspaces are available. |
 | Media | Per-slot inserted names, Insert…, Next image in catalogue and Eject; absent drives and unsupported CD-ROM are disabled with reasons. |
 | View | Toolbar/status-bar visibility, scale, full screen and host audio mute. |
-| Tools | Image store folder…, Import ROM folder…, Media catalogue…, Locate firmware…, Create blank disk… and Preferences…; the Diagnostics submenu holds Save machine report, Record exceptions and Open diagnostics folder (design/observation.md §Diagnostic report of a running machine). |
+| Tools | Image store folder…, Import ROM folder…, Media catalogue…, Locate firmware…, Create blank disk… and Preferences…; the Diagnostics submenu holds Save machine report, Record exceptions and Open diagnostics folder ([observation design (unemupc)](https://github.com/unemu-org/unemupc/blob/main/backlog/docs/design/observation.md#diagnostic-report-of-a-running-machine)). |
 | Help | Keyboard shortcuts and About unemu. |
 
 The toolbar repeats common Start, Pause, Stop, Send Ctrl+Alt+Del, floppy,
@@ -2980,7 +2992,7 @@ for display and filtering. Personal ratings/notes always remain local (§2.1).
 
 The approved [main-window mock-up](mockups/main-window.html) shows the simple
 list. The Explorer-like library requires its own mock-up and maintainer approval
-before the library bead (`upc-5pw.9`) is implemented; this note changes no mock-up
+before the library bead (`upc-5pw.9` (unemupc)) is implemented; this note changes no mock-up
 or accepted shell styling.
 
 Selected-image details contain hardware, firmware readiness and the base/layer

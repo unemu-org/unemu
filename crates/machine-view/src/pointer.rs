@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Host pointer capture for a machine's relative pointing device (spec.md §9.4),
+//! Host pointer capture for a machine's relative pointing device (backlog/docs/architecture.md, Observation and presentation),
 //! and the uncaptured host pointer for an absolute one ([`Aiming`]).
 //!
 //! A machine with a relative pointer captures on a client-area click, and
@@ -7,7 +7,7 @@
 //! loss and suspension release capture and the guest's buttons. Raw host
 //! motion uses one host unit per device count, positive Y up, with carried
 //! fractions; the machine owns coalescing, back-pressure and overflow. See
-//! `backlog/docs/design/observation.md` § Host input for capture, release and
+//! `backlog/docs/architecture.md` § Core boundary and host timing for capture, release and
 //! boundary ordering.
 
 use std::collections::BTreeSet;

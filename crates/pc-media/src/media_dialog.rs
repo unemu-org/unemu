@@ -2,7 +2,8 @@
 //! Floppy catalogue drafts and blank-image forms for the desktop shell.
 //!
 //! The assembly boundary owns geometry and persistence. See
-//! `backlog/docs/design/machine-images.md` §7 and persistent-media.md § Media changes.
+//! `backlog/docs/design/machine-images.md` §7 and, in unemupc,
+//! persistent-media.md § Media changes.
 
 use assembly::{DriveKind, FloppyGeometry, FloppyMedium, ImageSource, MachineConfig, WriteMode};
 use machine_file::FileMachineExt;

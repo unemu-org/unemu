@@ -60,7 +60,7 @@ cat <<'EOF'
 2. bd memories → roles, bead-to-main flow, worker rules; backlog/docs/working-on-tasks.md → bd usage
 3. bd list --status in_progress, then bd show <id> → recent notes on the active bead
 4. Read only the backlog/docs/*.md files relevant to the task
-5. backlog/docs/design/spec.md → authoritative design spec
+5. backlog/docs/architecture.md → crate map; the PC core's design lives in unemupc
 EOF
 
 exit 0

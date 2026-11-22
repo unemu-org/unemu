@@ -62,7 +62,7 @@ approved the second round
 - The winit + softbuffer window is replaced by the egui shell. Hotkeys stay,
   and are listed under Help › Keyboard shortcuts.
 - Implementation starts with the shell skeleton (menus, toolbar, status bar,
-  welcome to screen, machine files from the machines/ folders). Then come the
+  welcome to screen, machine files from the [machines/ folders (unemupc)](https://github.com/unemu-org/unemupc/tree/0f2795402e947e235a7b892c931910b05f05d61f/machines)). Then come the
   media dialog on the existing floppy catalogue, the capabilities API and the
   settings sheet, and later the image store and the layer dialog from the
   design note.

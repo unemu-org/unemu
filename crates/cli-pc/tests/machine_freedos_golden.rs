@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! FreeDOS through a machine: the machine's floppy journal keeps a file the
 //! guest wrote across two starts, and Reset to image… drops it; see
-//! machine-images §3.2 and persistent-media.md §Integration. The guest writes
+//! machine-images §3.2 and persistent-media.md §Integration in unemupc. The guest writes
 //! through FreeCOM, INT 13h and the µPD765 WRITE DATA command onto FAT12
 //! (Microsoft FAT Specification, FAT12 BPB and Directory Structure).
 //!

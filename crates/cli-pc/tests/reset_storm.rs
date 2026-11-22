@@ -5,8 +5,8 @@
 //! run stops with the guest-stop exit code after the storm's 64th reset,
 //! names it on its `stopped:` line and prints the CPU stop report at the
 //! last shutdown (commands.md, Build / run / test;
-//! `backlog/docs/design/observation.md` §The machine resets again and
-//! again). The system ROM is `assembly::test_support::reset_storm_rom`, the
+//! `backlog/docs/architecture.md` § Core boundary and host timing). The system ROM is
+//! `assembly::test_support::reset_storm_rom`, the
 //! project's own bytes.
 
 use std::ffi::OsString;

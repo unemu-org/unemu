@@ -2,7 +2,7 @@
 
 `private/firmware/ibm-pc/ibm-5170-bios-1985-06-10:r1`. Private. Sizes, hashes,
 part numbers, lanes and the assembled ROM's hash are real, from the firmware
-catalogue (`crates/assembly/src/firmware.rs`). ASSUMED: the MAME set and ROM
+catalogue ([`crates/assembly/src/firmware.rs` (unemupc)](https://github.com/unemu-org/unemupc/blob/main/crates/assembly/src/firmware.rs)). ASSUMED: the MAME set and ROM
 names used as the canonical names and ids.
 
 ## What it exercises

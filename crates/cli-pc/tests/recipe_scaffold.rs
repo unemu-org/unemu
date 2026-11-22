@@ -7,7 +7,7 @@
 //! last against the files. Synthetic files only, except the two user-ROM
 //! tests, which scaffold the user's own LABFULL.ZIP and AZURAMON folder and
 //! compare with the corpus's tables; they look for the files as the volume
-//! goldens do (crates/pc-harness/tests/user_media_volumes.rs) and print
+//! goldens do (crates/pc-image/tests/user_media_volumes.rs) and print
 //! nothing about them.
 
 use std::ffi::OsString;

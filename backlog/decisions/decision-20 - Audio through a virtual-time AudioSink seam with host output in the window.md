@@ -6,17 +6,19 @@ status: Accepted
 deciders: Mikołaj Mikołajczyk
 ---
 
+unemu maintains the application portions; unemupc maintains the core portions of this shared historical decision.
+
 # decision-20 - Audio through a virtual-time AudioSink seam with host output in the window
 
 ## Status
 
-Accepted — 2026-11-12. Part of phase C of [[decision-16]] (Sound Blaster 16
+Accepted — 2026-11-12. Part of phase C of [decision-16 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-16%20-%20Scope%20a%20period%20PC%20from%20DOS%20to%20Windows%2098%20SE%20with%203dfx%20Voodoo.md) (Sound Blaster 16
 and PC speaker with an audio sink seam). Bound by the determinism rules of
-[[decision-14]] (virtual time) and [[decision-15]] (device scheduler).
+[decision-14 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-14%20-%20Virtual%20time%20advances%20while%20the%20CPU%20is%20halted.md) (virtual time) and [decision-15 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-15%20-%20Deterministic%20device%20scheduler%20with%20instruction-exact%20interrupt%20boundaries.md) (device scheduler).
 
 ## Context
 
-[[decision-16]] puts a DMA-driven Sound Blaster 16 and the PC speaker into
+[decision-16 (unemupc)](https://github.com/unemu-org/unemupc/blob/0f2795402e947e235a7b892c931910b05f05d61f/backlog/decisions/decision-16%20-%20Scope%20a%20period%20PC%20from%20DOS%20to%20Windows%2098%20SE%20with%203dfx%20Voodoo.md) puts a DMA-driven Sound Blaster 16 and the PC speaker into
 phase C, "with an audio sink seam beside FrameSink: deterministic headless
 capture for goldens, host audio output only in the window crate". Video
 already works this way: devices render into a `FrameSink`, headless runs

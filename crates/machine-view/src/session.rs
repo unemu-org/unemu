@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! The paced session of one machine in the desktop window (design/spec.md
-//! §9.4, core-contract.md §5).
+//! The paced session of one machine in the desktop window (backlog/docs/architecture.md,
+//! Observation and presentation; core-contract.md §5).
 //!
 //! The session reads a monotonic host clock for cadence and slice deadlines;
 //! [`crate::pacing`] converts elapsed time to bounded tick targets at the rate
@@ -22,7 +22,7 @@
 //! Confined, hides the cursor and shows the release chord in its status bar.
 //! Failed grabs leave input free; application exit restores the pointer.
 //! Focus loss releases all held keys; stopped-machine input is ignored. See
-//! `backlog/docs/design/observation.md` § Window pacing and § Host input.
+//! `backlog/docs/architecture.md` § Core boundary and host timing.
 //!
 //! A machine with a keyboard port gets the guest's keys there. A machine
 //! without one but with pad ports gets its pads from the keys bound in

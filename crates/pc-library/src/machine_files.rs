@@ -2,7 +2,7 @@
 //! The library's machine files: the files of the machine-file directory, the
 //! row each lists as, its readiness check on a host thread and the
 //! diagnostics a row shows. They consume the existing machine-file validator;
-//! see `backlog/docs/design/machine-images.md` §7 and `design/spec.md` §9.4.
+//! see `backlog/docs/design/machine-images.md` §7 and `backlog/docs/architecture.md` § Observation and presentation.
 
 use std::{
     io,

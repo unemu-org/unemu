@@ -11,7 +11,7 @@ deciders: Mikołaj Mikołajczyk
 ## Status
 
 Accepted — 2026-11-17 by the maintainer: the platform in repository paths and the `unemu/recipes/…` namespace, now, with the `ibm-pc` push (recipes.md Q2). He confirmed explicitly: a recipe tag is replaceable only by a recipe that pins the same output digest; one artifact type per recipe kind; the `disclosable` guard for files under 256 bytes in published user-supplied recipes. Design step of `upc-5pw.113`; recipes.md §7 and §8.3.
-Uses [[decision-32]] (point 5: the published artifacts are replaced once
+Uses [decision-32](decision-32%20-%20The%20PC%20platform%20id%20is%20ibm-pc%20and%20ibm-pc-at%20stays%20a%20read-only%20alias.md) (point 5: the published artifacts are replaced once
 before the first public release).
 
 ## Context
