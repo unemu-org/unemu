@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Open-fixture firmware CLI imports, dry runs and inspection; machine-images §5.3.
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use pc_harness::test_support::fixtures;
 
 use std::{
     ffi::OsString,

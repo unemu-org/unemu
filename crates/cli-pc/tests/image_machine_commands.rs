@@ -11,8 +11,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use pc_harness::test_support::fixtures;
 
 struct RemoveDir(PathBuf);
 impl Drop for RemoveDir {

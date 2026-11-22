@@ -814,8 +814,7 @@ pub(crate) fn hash_array(digest: &Digest) -> Result<[u8; 32]> {
 }
 
 #[cfg(test)]
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use pc_harness::test_support::fixtures;
 
 #[cfg(test)]
 mod tests {

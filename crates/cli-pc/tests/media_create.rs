@@ -3,8 +3,7 @@
 //! see machines/README.md § Preparing disks and Microsoft FAT Specification,
 //! FAT on-disk format, BPB and FAT12 entries.
 
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use pc_harness::test_support::fixtures;
 
 use cli_pc::command::{parse, run};
 use std::ffi::OsString;
@@ -432,15 +431,14 @@ fn preparing_disks_guide_override_loads_the_real_ide_profile() {
         }
     }
     let scratch = Scratch::new();
-    let profile = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../machines/at-ide.toml")
+    let profile = pc_harness::test_support::root()
+        .join("machines/at-ide.toml")
         .canonicalize()
         .unwrap();
     std::os::unix::fs::symlink(&profile, scratch.0.join("at-ide.toml")).unwrap();
-    let guide = include_str!("../../../machines/README.md")
-        .split_once("## Preparing disks")
-        .unwrap()
-        .1;
+    let guide =
+        fs::read_to_string(pc_harness::test_support::root().join("machines/README.md")).unwrap();
+    let guide = guide.split_once("## Preparing disks").unwrap().1;
     let example = guide
         .split_once("```toml\n")
         .unwrap()

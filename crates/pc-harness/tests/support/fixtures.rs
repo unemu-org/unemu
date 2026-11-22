@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Shared fixture policy for firmware/media goldens (see `backlog/docs/commands.md`).
 
-use std::{io::ErrorKind, path::PathBuf};
+use std::io::ErrorKind;
+
+#[path = "root.rs"]
+mod fixture_root;
+pub use fixture_root::root;
 
 pub fn fixture(relative: &str) -> Option<Vec<u8>> {
     read_fixture(relative, true)
@@ -14,9 +18,7 @@ pub fn optional_fixture(relative: &str) -> Option<Vec<u8>> {
 }
 
 fn read_fixture(relative: &str, required_by_gate: bool) -> Option<Vec<u8>> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../vendor")
-        .join(relative);
+    let path = root().join("vendor").join(relative);
     match std::fs::read(&path) {
         Ok(bytes) => Some(bytes),
         Err(error) if error.kind() == ErrorKind::NotFound => {
@@ -47,7 +49,7 @@ fn read_fixture(relative: &str, required_by_gate: bool) -> Option<Vec<u8>> {
 /// Fixtures built offline from committed sources use `build.sh`; fixtures
 /// fetched from upstream use `fetch.sh`.
 fn fixture_script(directory: &str) -> &'static str {
-    let vendor = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor");
+    let vendor = root().join("vendor");
     if vendor.join(directory).join("build.sh").is_file() {
         "build.sh"
     } else {

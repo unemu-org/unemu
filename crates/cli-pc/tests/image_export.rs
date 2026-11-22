@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
 
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+#[path = "../../pc-image/tests/support/frontend.rs"]
+mod frontend;
 
 const SCRIPT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -523,8 +523,7 @@ fn a_firmware_package_exports_its_roms_and_readme_as_the_script_does() {
 /// and the command and the script write the same files and trees.
 #[test]
 fn the_freedos_set_exports_as_the_script_exports_it() {
-    let dir =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/freedos/floppy-1.4/144m");
+    let dir = frontend::vendor().join("freedos/floppy-1.4/144m");
     let names = [
         "x86BOOT.img",
         "x86DSK01.img",
@@ -535,7 +534,7 @@ fn the_freedos_set_exports_as_the_script_exports_it() {
         "x86DSK06.img",
     ];
     for name in names {
-        if fixtures::fixture(&format!("freedos/floppy-1.4/144m/{name}")).is_none() {
+        if frontend::fixture(&format!("freedos/floppy-1.4/144m/{name}")).is_none() {
             return;
         }
     }

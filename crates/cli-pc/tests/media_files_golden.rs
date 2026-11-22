@@ -15,10 +15,8 @@ use machine::RunOutcome;
 use std::ffi::OsString;
 use video::Frame;
 
-#[path = "../../pc-harness/tests/support/fat12.rs"]
-mod fat12;
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use pc_harness::test_support::fat12;
+use pc_harness::test_support::fixtures;
 
 /// Set-1 make/break codes for a FreeDOS command line: lowercase letters,
 /// digits, space, period, backslash, slash, colon (shifted) and Enter.
@@ -116,10 +114,9 @@ fn upcli(args: &[OsString]) -> String {
 /// The reference FreeDOS machine (Xi8088 BIOS, MDA console) with `b` as a
 /// 1.44M B: drive, booted past the date and time prompts to `A:\>`.
 fn boot(a: Option<Vec<u8>>, b: FloppyMediaList) -> (assembly::AssembledMachine, usize) {
-    let mut config = machine_file::load(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml"),
-    )
-    .unwrap();
+    let mut config =
+        machine_file::load(pc_harness::test_support::root().join("machines/at-freedos.toml"))
+            .unwrap();
     let mut second = config.drives[0].clone();
     if let Some(image) = a {
         config.drives[0].image = ImageSource::Inline(image);
@@ -286,11 +283,10 @@ fn freedos_enters_and_rebuilds_a_split_set_with_xcopy() {
     ) else {
         return;
     };
-    let tools_pin = fixtures::parse_pin(
-        include_str!("../../../vendor/freedos/fetch.sh"),
-        "check_sha256 \"$OUT_TOOLS\" \"",
-    )
-    .unwrap();
+    let script =
+        std::fs::read_to_string(pc_harness::test_support::root().join("vendor/freedos/fetch.sh"))
+            .unwrap();
+    let tools_pin = fixtures::parse_pin(&script, "check_sha256 \"$OUT_TOOLS\" \"").unwrap();
     assert_eq!(assembly::test_support::fixture_sha256(&tools), tools_pin);
     let xcopy = fat12::file(&tools, b"XCOPY   EXE").expect("XCOPY.EXE on the tools floppy");
     fat12::add_file(&mut boot_disk, b"XCOPY   EXE", &xcopy);

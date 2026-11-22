@@ -13,10 +13,8 @@ use cpu::Cpu;
 use std::path::PathBuf;
 use video::Frame;
 
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
-#[path = "../../pc-harness/tests/support/session.rs"]
-pub mod session;
+use pc_harness::test_support::fixtures;
+pub use pc_harness::test_support::session;
 
 struct Scratch(PathBuf);
 impl Scratch {
@@ -277,10 +275,8 @@ fn freedos_installs_and_boots_from_a_blank_hard_disk() {
     let base = std::fs::read(&base_path).unwrap();
     assert!(base.iter().all(|&byte| byte == 0));
     let base_digest = journal_files::Header::new(&base, 0).unwrap().base_digest;
-    let mut config = machine_file::load(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-ide.toml"),
-    )
-    .unwrap();
+    let mut config =
+        machine_file::load(pc_harness::test_support::root().join("machines/at-ide.toml")).unwrap();
     let floppy = config
         .drives
         .iter_mut()

@@ -5,6 +5,15 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-22 — Repository split preparation: shared tests and fixture root:**
+  front-end tests import the four shared harness modules through
+  `pc-harness/test-support`; all 30 cross-side source includes are removed.
+  The boundary guard rejects source includes across the two sides, with
+  planted self-tests. Core fixture paths use `UNEMUPC_FIXTURE_ROOT` when set
+  (an existing absolute directory), otherwise the harness repository;
+  front-end data paths stay local. The machine guide and FreeDOS fetch script
+  are read at run time. The split plan is accepted; no new repository exists
+  yet. See [repository split §2.4](design/repo-split.md#24-what-crosses-the-line-outside-cargo).
 - **2026-11-22 — Repository split ownership guard and source scans:**
   the extraction inventory assigns every tracked path to the core, front end
   or both. The guard rejects missing and overlapping ownership. Platform-id

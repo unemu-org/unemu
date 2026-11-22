@@ -13,8 +13,10 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use pc_harness::test_support::fixtures;
+
+#[path = "support/frontend.rs"]
+mod frontend;
 
 struct Temp(PathBuf);
 impl Temp {
@@ -36,7 +38,7 @@ impl Drop for Temp {
 }
 
 fn vendor() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor")
+    pc_harness::test_support::root().join("vendor")
 }
 
 /// Whether the fetched ROMs and source archives of `sources` are present; the
@@ -63,7 +65,7 @@ fn media_files() -> Vec<&'static str> {
 fn media_present() -> bool {
     media_files()
         .into_iter()
-        .all(|relative| fixtures::fixture(relative).is_some())
+        .all(|relative| frontend::fixture(relative).is_some())
 }
 
 fn allow(_: &str, _: &Manifest, _: &[u8]) -> Result<(), String> {
@@ -772,7 +774,7 @@ fn copy_media_fixtures(to: &std::path::Path) {
     for relative in media_files() {
         let target = to.join(relative);
         fs::create_dir_all(target.parent().unwrap()).unwrap();
-        fs::copy(vendor().join(relative), target).unwrap();
+        fs::copy(frontend::vendor().join(relative), target).unwrap();
     }
 }
 
@@ -796,7 +798,7 @@ fn the_installation_sets_carry_the_edition_its_licence_index_and_its_source() {
     let t = Temp::new("template-media");
     let store = Store::open(t.0.join("store")).unwrap();
     let release = &template::FREEDOS_1_4;
-    let built = template::build_media(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    let built = template::build_media(&store, &frontend::vendor(), &allow, &mut |_| {}).unwrap();
     for (source, set) in template::MEDIA.iter().zip(&built) {
         assert_eq!(
             (set.kind, set.repository.as_str()),
@@ -923,7 +925,7 @@ fn the_guard_judges_each_installation_set_before_its_tags() {
             Ok(())
         }
     };
-    let error = template::build_media(&store, &vendor(), &guard, &mut |_| {})
+    let error = template::build_media(&store, &frontend::vendor(), &guard, &mut |_| {})
         .unwrap_err()
         .to_string();
     assert!(
@@ -1021,7 +1023,7 @@ fn two_media_builds_from_different_fixture_copies_give_the_published_sets() {
     copy_media_fixtures(&copy);
     let first = Store::open(t.0.join("first")).unwrap();
     let second = Store::open(t.0.join("second")).unwrap();
-    let a = template::build_media(&first, &vendor(), &allow, &mut |_| {}).unwrap();
+    let a = template::build_media(&first, &frontend::vendor(), &allow, &mut |_| {}).unwrap();
     let b = template::build_media(&second, &copy, &allow, &mut |_| {}).unwrap();
     assert_eq!(identities(&a), identities(&b));
     for (built, source) in a.iter().zip(&template::MEDIA) {
@@ -1057,7 +1059,7 @@ fn two_media_builds_from_different_fixture_copies_give_the_published_sets() {
         tagged, pinned,
         "the local installation sets are no longer the published ones"
     );
-    let again = template::build_media(&first, &vendor(), &allow, &mut |_| {}).unwrap();
+    let again = template::build_media(&first, &frontend::vendor(), &allow, &mut |_| {}).unwrap();
     assert_eq!(identities(&again), identities(&a));
     assert!(again
         .iter()
@@ -1165,7 +1167,11 @@ fn an_oras_style_pull_writes_each_layer_under_its_fixture_file_name() {
             Manifest::decode_for_summary(&store.read_verified(image, MAX_SMALL_BLOB).unwrap())
                 .unwrap();
         for ((layer, name), relative) in manifest.layers.iter().zip(&names).zip(fixtures) {
-            let fixture = fs::read(vendor().join(relative)).unwrap();
+            let fixture = if relative.starts_with("freedos/") {
+                frontend::fixture(relative).unwrap()
+            } else {
+                fixtures::fixture(relative).unwrap()
+            };
             let file = file_name(relative);
             if layer.is_compressed() {
                 assert_eq!(*name, format!("{file}.zst"));
@@ -1193,7 +1199,7 @@ fn an_oras_style_pull_writes_each_layer_under_its_fixture_file_name() {
             ]
         );
     }
-    let sets = template::build_media(&store, &vendor(), &allow, &mut |_| {}).unwrap();
+    let sets = template::build_media(&store, &frontend::vendor(), &allow, &mut |_| {}).unwrap();
     for (built, source) in sets.iter().zip(&template::MEDIA) {
         let files: Vec<&str> = source
             .disks

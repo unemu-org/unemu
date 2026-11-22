@@ -770,8 +770,61 @@ mod tests {
 
     #[test]
     fn shipped_documents_save_memory_children_without_modifying_the_sources() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines");
+        check_shipped_documents(&pc_harness::test_support::root().join("machines"));
+    }
+
+    fn copy_shipped_documents(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination.join("presets")).unwrap();
+        for name in [
+            "at-freedos-from-preset.toml",
+            "at-freedos.toml",
+            "at-freedos.yaml",
+            "at-games-open.toml",
+            "at-games.toml",
+            "at-ide.toml",
+            "presets/ibm-5170.toml",
+        ] {
+            fs::copy(source.join(name), destination.join(name)).unwrap();
+        }
+    }
+
+    #[test]
+    fn shipped_document_saves_ignore_local_fixture_state() {
+        let source = machine_file::test_support::TempDir::new("settings-fixture-root");
+        let machines = source.path().join("machines");
+        copy_shipped_documents(
+            &pc_harness::test_support::root().join("machines"),
+            &machines,
+        );
+        fs::create_dir(machines.join("local")).unwrap();
+        let local_files = [
+            (
+                "local/at-games-custom.toml",
+                b"schema=1\nextends='../at-games.toml'\n".as_slice(),
+            ),
+            ("local/games.img", b"local disk".as_slice()),
+            ("local/games.upfj", b"local journal".as_slice()),
+            (
+                "at-freedos.toml.local/diagnostics/report.txt",
+                b"local report".as_slice(),
+            ),
+            ("untracked.toml", b"not a shipped machine".as_slice()),
+        ];
+        for (name, bytes) in local_files {
+            fs::create_dir_all(machines.join(name).parent().unwrap()).unwrap();
+            fs::write(machines.join(name), bytes).unwrap();
+        }
+        check_shipped_documents(&machines);
+        for (name, bytes) in local_files {
+            assert_eq!(fs::read(machines.join(name)).unwrap(), bytes);
+        }
+    }
+
+    fn check_shipped_documents(source: &Path) {
         let output = machine_file::test_support::TempDir::new("shipped-settings-children");
+        // Opening settings also reads the adjacent local child, before the test changes its target.
+        let root = output.path().join("shipped/machines");
+        copy_shipped_documents(source, &root);
         fs::create_dir(output.path().join("machines")).unwrap();
         let mut count = 0;
         for entry in fs::read_dir(&root).unwrap() {
@@ -872,6 +925,10 @@ mod tests {
                 expected
             );
             assert_eq!(fs::read(&path).unwrap(), before);
+            assert_eq!(
+                fs::read(source.join(path.file_name().unwrap())).unwrap(),
+                before
+            );
             count += 1;
         }
         assert!(count >= 6, "covered {count} shipped machines");
@@ -1198,7 +1255,7 @@ mod tests {
     }
     #[test]
     fn known_firmware_requires_a_fixed_disk_provider_without_rom_bytes() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-games-open.toml");
+        let path = pc_harness::test_support::root().join("machines/at-games-open.toml");
         let mut model = SettingsModel::open(&path, false, None).unwrap();
         let choice = caps::choices(&model.draft, "firmware.option_roms")
             .into_iter()
@@ -1282,9 +1339,7 @@ mod tests {
     }
 
     fn open_firmware(name: &str) -> Option<Vec<u8>> {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../vendor")
-            .join(name);
+        let path = pc_harness::test_support::root().join("vendor").join(name);
         match fs::read(path) {
             Ok(bytes) => Some(bytes),
             Err(error)
@@ -1432,7 +1487,7 @@ mod tests {
         let Some(bios) = open_bios() else {
             return;
         };
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines");
+        let root = pc_harness::test_support::root().join("machines");
         let mut count = 0;
         for entry in fs::read_dir(root).unwrap() {
             let path = entry.unwrap().path();

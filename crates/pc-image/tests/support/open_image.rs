@@ -10,8 +10,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-#[path = "../../../pc-harness/tests/support/fixtures.rs"]
-pub mod fixtures;
+pub use pc_harness::test_support::fixtures;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 /// The source archive the open entry's fetch script builds and the catalogue
 /// pins, so the copyleft package is open together with its source.
@@ -63,7 +62,7 @@ impl Open {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(path.join("roms")).unwrap();
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = pc_harness::test_support::root();
         for (bytes, to) in roms {
             fs::write(path.join("roms").join(to), bytes).unwrap();
         }

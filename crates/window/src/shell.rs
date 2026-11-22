@@ -6705,6 +6705,7 @@ mod tests {
     }
 
     use super::*;
+    use std::collections::BTreeMap;
     use ElementState::{Pressed, Released};
 
     fn shell() -> Shell {
@@ -10039,6 +10040,14 @@ mod tests {
     }
 
     fn journal_shell(temp: &machine_file::test_support::TempDir, program: Vec<u8>) -> Shell {
+        journal_shell_with_args(temp, program, crate::parse_args([]).unwrap())
+    }
+
+    fn journal_shell_with_args(
+        temp: &machine_file::test_support::TempDir,
+        program: Vec<u8>,
+        args: crate::Args,
+    ) -> Shell {
         let base = temp.path().join("base.img");
         let journal = temp.path().join("disk.upfj");
         std::fs::write(&base, vec![0; 1_474_560]).unwrap();
@@ -10064,14 +10073,44 @@ mod tests {
         )
         .unwrap();
         let mut shell = shell();
+        shell.args = args;
+        // A CPU refusal saves a report beside the machine, even with synthetic firmware.
+        shell.args.machine = temp.path().join("machine.toml");
         shell.presenter = Some(presenter);
         shell
+    }
+
+    fn machine_source_files(
+        root: &std::path::Path,
+    ) -> BTreeMap<std::path::PathBuf, Option<Vec<u8>>> {
+        fn visit(
+            path: &std::path::Path,
+            files: &mut BTreeMap<std::path::PathBuf, Option<Vec<u8>>>,
+        ) {
+            if path.is_dir() {
+                files.insert(path.to_owned(), None);
+                for entry in std::fs::read_dir(path).unwrap() {
+                    visit(&entry.unwrap().path(), files);
+                }
+            } else if path.is_file() {
+                files.insert(path.to_owned(), Some(std::fs::read(path).unwrap()));
+            }
+        }
+        let mut files = BTreeMap::new();
+        visit(root, &mut files);
+        files
     }
 
     #[test]
     fn stop_preserves_unsealed_execution_error_journals() {
         let temp = machine_file::test_support::TempDir::new("shell-execution-error");
-        let mut shell = journal_shell(&temp, vec![0x0f, 0x05]);
+        let source_root = machine_file::test_support::TempDir::new("shell-source-machine");
+        let source = source_root.path().join("at-freedos.toml");
+        std::fs::write(&source, b"schema=1\n").unwrap();
+        let source_before = machine_source_files(source_root.path());
+        let args =
+            crate::parse_args(["--machine".into(), source.clone().into_os_string()]).unwrap();
+        let mut shell = journal_shell_with_args(&temp, vec![0x0f, 0x05], args);
         shell
             .presenter
             .as_mut()
@@ -10082,6 +10121,14 @@ mod tests {
         assert!(!shell.stop());
         assert!(shell.presenter.is_none());
         assert!(shell.errors.borrow().is_some());
+        assert_eq!(machine_source_files(source_root.path()), source_before);
+        let report = temp
+            .path()
+            .join("machine.toml.local/diagnostics")
+            .join(CPU_STOP_REPORT_FILE);
+        assert!(std::fs::read_to_string(report)
+            .unwrap()
+            .starts_with("cpu stop report\n"));
         assert_eq!(
             std::fs::metadata(temp.path().join("disk.upfj"))
                 .unwrap()
@@ -10933,7 +10980,7 @@ mod tests {
         temp: &machine_file::test_support::TempDir,
         no_boot: bool,
     ) -> Option<std::path::PathBuf> {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = pc_harness::test_support::root();
         let bios = root.join("vendor/unemu-at-bios/bios-unemu-at.bin");
         let floppy = root.join("vendor/freedos/freedos-1200.img");
         for (path, fetch) in [

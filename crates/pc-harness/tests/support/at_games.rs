@@ -2,7 +2,7 @@
 //! Disposable game profiles and synthetic media; machine-files.md §Validation.
 
 use machine_file::test_support::TempDir;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub const IBM: &str = "at-games.toml";
 pub const OPEN: &str = "at-games-open.toml";
@@ -10,7 +10,7 @@ pub const SYSTEM: &str = "ibm-5170-bios-1985-06-10";
 pub const VIDEO: &str = "ibm-vga-bios-1987-32k";
 
 pub fn repository() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    super::fixtures::root()
 }
 
 pub struct Profile {

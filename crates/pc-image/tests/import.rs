@@ -9,8 +9,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use pc_harness::test_support::fixtures;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Temp(PathBuf);
@@ -40,7 +39,7 @@ fn recovery(id: &str, choice: RecoveryChoice) -> ImportOptions {
     }
 }
 fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    pc_harness::test_support::root()
 }
 /// A machine file on the fetched open BIOS; `None` when that fixture is missing.
 fn fixture(temp: &Temp, extra: &str) -> Option<PathBuf> {

@@ -13,10 +13,16 @@
 //! through semantic byte routes for COM1 and POST. Text screens use the
 //! card-state observation facade. All captures share assembly-owned routing.
 //!
-//! The test support in `tests/support/` is shared with the tests of other
-//! crates through `#[path]` modules, not a dependency: `assembly` sits in a
-//! lower layer and may not depend on this crate, even for its tests
-//! (`backlog/docs/design/core-contract.md` §7.3).
+//! Front-end tests import the helpers in `test_support` with the
+//! `test-support` feature. Core tests keep including `tests/support/` through
+//! `#[path]`: `assembly` sits in a lower layer and may not depend on this
+//! crate, even for its tests (`backlog/docs/design/core-contract.md` §7.3).
+
+#[cfg(feature = "test-support")]
+extern crate self as pc_harness;
+
+#[cfg(feature = "test-support")]
+pub mod test_support;
 
 use anyhow::{Context, Result};
 use assembly::{
@@ -2166,9 +2172,12 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "test-support")))]
 #[path = "../tests/support/fixtures.rs"]
 mod trace_fixtures;
+
+#[cfg(all(test, feature = "test-support"))]
+use test_support::fixtures as trace_fixtures;
 
 #[cfg(test)]
 mod bounded_trace_tests {

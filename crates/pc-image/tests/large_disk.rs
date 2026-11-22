@@ -9,8 +9,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use pc_harness::test_support::fixtures;
 
 static LARGEST: AtomicUsize = AtomicUsize::new(0);
 struct Counting;

@@ -7,8 +7,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use pc_harness::test_support::fixtures;
 
 struct RemoveDir(PathBuf);
 impl Drop for RemoveDir {
@@ -76,7 +75,7 @@ fn cli_import_lists_a_tag_and_refuses_to_replace_it() {
     ));
     std::fs::create_dir(&root).unwrap();
     let _cleanup = RemoveDir(root.clone());
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml");
+    let source = pc_harness::test_support::root().join("machines/at-freedos.toml");
     let import = vec![
         "image".into(),
         "import".into(),
@@ -493,7 +492,7 @@ fn stored_freedos_runs_keep_the_old_workspace_and_journal_bytes() {
         std::env::temp_dir().join(format!("stored-freedos-comparison-{}", std::process::id()));
     std::fs::create_dir(&root).unwrap();
     let _cleanup = RemoveDir(root.clone());
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let repo = pc_harness::test_support::root();
     let profile = std::fs::read_to_string(repo.join("machines/at-freedos.toml")).unwrap();
     let file = root.join("machine.toml");
     std::fs::write(

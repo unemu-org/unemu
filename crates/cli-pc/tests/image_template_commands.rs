@@ -4,8 +4,7 @@
 //! namespace, a POST of the open-at template, and `image media import`
 //! reproducing the installation sets the unemu-media repository publishes;
 //! machine-images §5.5. Nothing here reaches a network registry.
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use pc_harness::test_support::fixtures;
 
 use image_registry::{guard::Redistribution, Reference, RegistryEntry, DEFAULT_REGISTRY};
 use image_store::Store;
@@ -36,7 +35,7 @@ impl Drop for Temp {
 }
 
 fn vendor() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor")
+    pc_harness::test_support::root().join("vendor")
 }
 
 /// The open firmware fixtures the templates need, the only fixtures

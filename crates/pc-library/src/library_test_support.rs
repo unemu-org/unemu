@@ -7,9 +7,8 @@
 //! line imports them, and a synthetic firmware catalogue.
 use image_store::{Digest, Store};
 use library_model::listing::ImageRow;
+use pc_harness::test_support::fixtures;
 use std::{fs, path::Path};
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
 /// One medium of an installation set, as `unemu image media import` takes
 /// it: the file, and its `--label N=TEXT` and `--format N=FORMAT` if given.
 pub struct Medium<'a> {
@@ -265,7 +264,7 @@ impl FirmwareStore {
         let temp = machine_file::test_support::TempDir::new("new-machine-firmware");
         let roms = temp.path().join("roms");
         fs::create_dir(&roms).unwrap();
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = pc_harness::test_support::root();
         for (bytes, to) in images {
             fs::write(roms.join(to), bytes).unwrap();
         }

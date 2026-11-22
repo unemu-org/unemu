@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Firmware policy at the CLI boundary; see firmware-and-machine-classes.md §6.
 
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use pc_harness::test_support::fixtures;
 
 #[test]
 fn legacy_post_runner_checks_the_catalogue_without_changing_the_bare_rig() {

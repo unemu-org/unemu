@@ -11,8 +11,7 @@ use std::{
 };
 use video::Frame;
 
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use pc_harness::test_support::fixtures;
 
 struct Temp(PathBuf);
 impl Temp {
@@ -112,10 +111,8 @@ fn freedos_ide_journal_survives_a_fresh_assembly_without_changing_base() {
         }
     }
     let temp = Temp::new();
-    let mut config = machine_file::load(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-ide.toml"),
-    )
-    .unwrap();
+    let mut config =
+        machine_file::load(pc_harness::test_support::root().join("machines/at-ide.toml")).unwrap();
     let drive = config
         .drives
         .iter_mut()

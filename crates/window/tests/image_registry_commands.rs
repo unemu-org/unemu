@@ -4,8 +4,7 @@
 //! and 5.3. Commands that talk to the registry run the binary as a child
 //! process so each gets its own environment: synthetic credentials, and none
 //! of the caller's registry settings.
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use pc_harness::test_support::fixtures;
 
 use image_registry::test_support::{MockRegistry, Policy};
 use std::{
@@ -90,7 +89,7 @@ fn child(
 fn import(store: &Path, tag: &str) -> Option<String> {
     fixtures::fixture("kiselev-bios/bios-xi8088.bin")?;
     fixtures::fixture("freedos/freedos.img")?;
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml");
+    let source = pc_harness::test_support::root().join("machines/at-freedos.toml");
     let (code, output, errors) = run(&os(&[
         &"image",
         &"import",
@@ -988,7 +987,7 @@ fn a_firmware_dry_run_shows_the_rom_layer_effective_class() {
     // local mark decides. It holds the BIOS raw, so the package's compressed
     // copy inherits the mark through its decoded digest.
     let restricted = dir.join("restricted");
-    let machine = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../machines/at-freedos.toml");
+    let machine = pc_harness::test_support::root().join("machines/at-freedos.toml");
     let (code, _, errors) = run(&os(&[
         &"image",
         &"import",

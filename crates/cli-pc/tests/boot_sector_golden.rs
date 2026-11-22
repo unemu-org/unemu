@@ -16,8 +16,7 @@ use assembly::{
 use std::ffi::OsString;
 use video::Frame;
 
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use pc_harness::test_support::fixtures;
 
 const MESSAGE: &str = "This is not a system disk.";
 const PROMPT: &str = "Replace it and press any key.";
@@ -119,8 +118,8 @@ fn boots_the_data_disk_and_retries_after_a_key(profile: &std::path::Path, firmwa
 }
 
 fn machines() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../machines")
+    pc_harness::test_support::root()
+        .join("machines")
         .canonicalize()
         .unwrap()
 }

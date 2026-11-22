@@ -102,9 +102,7 @@ const FLOPPY_FETCH: &str = "bash vendor/freedos/fetch.sh";
 
 #[cfg(test)]
 fn default_fixture(relative: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(relative)
+    pc_harness::test_support::root().join(relative)
 }
 
 #[cfg(test)]
@@ -1625,7 +1623,7 @@ mod tests {
         for relative in [BIOS_FIXTURE, FLOPPY_FIXTURE] {
             let path = default_fixture(relative);
             assert!(path.is_absolute());
-            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            let root = pc_harness::test_support::root();
             assert_eq!(path.strip_prefix(root).unwrap(), Path::new(relative));
         }
     }

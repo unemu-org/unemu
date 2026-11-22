@@ -4,10 +4,8 @@
 # providers and the emulator cores can later live in separate repositories
 # (backlog/docs/design/core-contract.md §7.3 and §7.4).
 #
-# The check reads Cargo dependencies only: a test that includes another
-# crate's source file with #[path] (the shared golden support under
-# crates/pc-harness/tests/support) is invisible to it, and only the compiler
-# stops such a file from naming a crate its includer may not use.
+# Source includes (#[path], include!, include_str!, include_bytes!) may not
+# cross the core/front-end boundary, even when Cargo permits a dependency.
 #
 # Every workspace package names its layer in its manifest:
 #
@@ -111,7 +109,7 @@
 #                                                check the external crates of the core
 #                                                in full `cargo metadata` output
 #
-# Needs cargo and jq (both in the devShell). The workspace check reads one
+# Needs cargo, jq and python3 (all in the devShell). The workspace check reads one
 # `cargo metadata --no-deps`, which resolves nothing, and one resolved
 # `cargo metadata --offline --locked --all-features`, which reads the lock file and the local
 # dependency cache; both take well under a second.
@@ -404,6 +402,11 @@ check() {
     printf '%s' "$result" | jq -r '"crate boundaries: \(.packages) crates checked, \(.allowed) allowed exception(s)"'
 }
 
+# Keep Python in a file: large here-documents can deadlock Bash pipes.
+check_sources() {
+    python3 "$root/scripts/crate-boundaries.py" "$@"
+}
+
 # Each fixture is metadata with one planted case and its expectation:
 # "self_test": {"expect": "pass"|"fail", "message": "text the output contains",
 # "errors": N (optional, how many errors it reports)}, and an optional allow
@@ -468,6 +471,7 @@ self_test() {
             failed=1
         fi
     done
+    check_sources --self-test || failed=1
     return "$failed"
 }
 
@@ -480,6 +484,7 @@ case "${1:-}" in
         (cd "$root" && cargo metadata --format-version 1 --offline --locked --all-features) >"$resolved"
         status=0
         check "$metadata" "$default_allow" || status=$?
+        check_sources "$metadata" || { s=$?; [[ $status -ne 0 ]] || status=$s; }
         check_one_copy "$resolved" || { s=$?; [[ $status -ne 0 ]] || status=$s; }
         check_external "$resolved" "$default_external" || { s=$?; [[ $status -ne 0 ]] || status=$s; }
         exit "$status"

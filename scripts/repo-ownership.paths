@@ -105,6 +105,7 @@ shared scripts/affected-tests.sh
 shared scripts/bead-gate.sh
 shared scripts/ci-gate.sh
 shared scripts/crate-boundaries.sh
+shared scripts/crate-boundaries.py
 shared scripts/crate-boundaries.allow
 shared scripts/crate-boundaries-fixtures/*
 shared scripts/publication-guard.sh

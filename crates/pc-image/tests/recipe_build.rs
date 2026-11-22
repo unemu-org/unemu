@@ -29,8 +29,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use pc_harness::test_support::fixtures;
+
+#[path = "support/frontend.rs"]
+mod frontend;
 
 const CORPUS: &str = "../../backlog/docs/design/recipe-corpus";
 const TEMPLATE_RECIPES: &str = "data/recipes";
@@ -61,7 +63,7 @@ impl Drop for Temp {
 }
 
 fn vendor() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor")
+    pc_harness::test_support::root().join("vendor")
 }
 
 fn template_recipe(relative: &str) -> PathBuf {
@@ -243,8 +245,8 @@ const FREEDOS: [&str; 3] = [
 fn media_present() -> bool {
     template::media_files()
         .into_iter()
-        .all(|file| fixtures::fixture(file.path).is_some())
-        && fixtures::fixture("freedos/floppy-1.4-licenses.txt").is_some()
+        .all(|file| frontend::fixture(file.path).is_some())
+        && frontend::fixture("freedos/floppy-1.4-licenses.txt").is_some()
 }
 
 #[test]
@@ -255,7 +257,7 @@ fn the_freedos_recipes_build_the_same_locked_sets_as_the_templates() {
     let t = Temp::new("freedos");
     let from_recipes = Store::open(t.path("recipes")).unwrap();
     let imported = Store::open(t.path("imported")).unwrap();
-    let sets = template::build_media(&imported, &vendor(), &allow, &mut |_| {}).unwrap();
+    let sets = template::build_media(&imported, &frontend::vendor(), &allow, &mut |_| {}).unwrap();
     let validator = image_store::media_set::Validator(&pc_image::media_set::PcMediaFormats);
     for (file, set) in FREEDOS.iter().zip(&sets) {
         // The licence index, our own text with LF line ends, lies in the
@@ -268,7 +270,7 @@ fn the_freedos_recipes_build_the_same_locked_sets_as_the_templates() {
         let (outcome, lines) = build(
             &template_recipe(file),
             &from_recipes,
-            &[vendor().join("freedos")],
+            &[frontend::vendor().join("freedos")],
             None,
         );
         assert!(lines.is_empty(), "nothing to fetch: {lines:?}");
@@ -694,7 +696,7 @@ fn nothing_is_tagged_when_an_input_is_missing_or_a_step_refuses() {
     let (outcome, _) = build(
         &template_recipe(FREEDOS[0]),
         &store,
-        &[vendor().join("freedos/floppy-1.4/144m")],
+        &[frontend::vendor().join("freedos/floppy-1.4/144m")],
         None,
     );
     let Outcome::Missing(plan) = outcome else {

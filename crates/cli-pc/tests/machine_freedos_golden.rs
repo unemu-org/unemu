@@ -16,11 +16,8 @@ use std::{
 };
 use video::Frame;
 
-#[allow(dead_code)]
-#[path = "../../pc-harness/tests/support/fat12.rs"]
-mod fat12;
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use pc_harness::test_support::fat12;
+use pc_harness::test_support::fixtures;
 
 struct Temp(PathBuf);
 impl Drop for Temp {
@@ -121,7 +118,7 @@ fn freedos_writes_persist_in_a_machine_until_reset() {
         NEXT.fetch_add(1, Ordering::Relaxed)
     )));
     std::fs::create_dir(&temp.0).unwrap();
-    let machines = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../machines");
+    let machines = pc_harness::test_support::root().join("machines");
     let reference = std::fs::read_to_string(machines.join("at-freedos.toml")).unwrap();
     assert_eq!(reference.matches("write = \"volatile\"").count(), 1);
     let vendor = machines.join("../vendor/");

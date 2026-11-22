@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Synthetic workspace fixture shared by isolated persistence test binaries.
 use image_store::{BlobSource, Descriptor, Store};
+pub use pc_harness::test_support::fixtures;
 use pc_image::{workspace, PcProvider};
 use std::{
     fs,
@@ -8,8 +9,6 @@ use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
-#[path = "../../../pc-harness/tests/support/fixtures.rs"]
-pub mod fixtures;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 /// Bytes of a resolved medium: its file, its inline bytes, or, for a
 /// compressed floppy held in memory, its verified decoded payload.

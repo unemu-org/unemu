@@ -27,7 +27,7 @@ assembly.workspace = true
 devices.workspace = true
 
 [dev-dependencies]
-pc-harness = { path = "../pc-harness", version = "0.0.3" }
+pc-harness = { path = "../pc-harness", version = "0.0.3", features = ["test-support"] }
 pc-image = { path = "../pc-image", version = "0.0.3" }
 image-registry = { path = "../registry", version = "0.0.3", features = ["test-support"] }
 cpu.workspace = true

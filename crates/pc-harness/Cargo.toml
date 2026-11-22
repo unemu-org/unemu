@@ -13,6 +13,9 @@ description = "Machine runners, guest programs and the emulation golden tests fo
 layer = "pc"
 side = "core"
 
+[features]
+test-support = ["machine-file/test-support"]
+
 [dependencies]
 machine-file.workspace = true
 journal-files.workspace = true

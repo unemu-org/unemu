@@ -8,17 +8,14 @@ use assembly::{AssemblyOptions, BoardModel, DeviceId, DeviceKind, ImageSource, W
 use machine_file::schema::v1;
 use machine_file::FileMachineExt;
 
-#[path = "../../pc-harness/tests/support/session.rs"]
-pub mod session;
-#[path = "../../pc-harness/tests/support/at_games.rs"]
-mod support;
+use pc_harness::test_support::at_games as support;
+pub use pc_harness::test_support::session;
 
 const OPTIONS: AssemblyOptions = AssemblyOptions {
     allow_unlisted_firmware: true,
 };
 
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use pc_harness::test_support::fixtures;
 
 const CPU_REV: &str = "6cb817b86c1fbf463f7aab8c0da1ce0eec3db0b7";
 // These values moved when the open profile replaced its MDA console with the

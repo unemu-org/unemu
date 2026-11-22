@@ -31,8 +31,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[path = "../../pc-harness/tests/support/fixtures.rs"]
-mod fixtures;
+use pc_harness::test_support::fixtures;
+
+#[path = "support/frontend.rs"]
+mod frontend;
 
 struct Temp(PathBuf);
 impl Temp {
@@ -656,7 +658,7 @@ fn template_recipe(relative: &str) -> PathBuf {
 }
 
 fn vendor() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor")
+    pc_harness::test_support::root().join("vendor")
 }
 
 /// The conformance harness on the corpus: the pinned open recipes, built
@@ -665,8 +667,8 @@ fn vendor() -> PathBuf {
 fn the_pinned_corpus_builds_the_digests_it_pins() {
     let present = pc_image::template::media_files()
         .into_iter()
-        .all(|file| fixtures::fixture(file.path).is_some())
-        && fixtures::fixture("freedos/floppy-1.4-licenses.txt").is_some()
+        .all(|file| frontend::fixture(file.path).is_some())
+        && frontend::fixture("freedos/floppy-1.4-licenses.txt").is_some()
         && pc_image::template::FIRMWARE.iter().all(|source| {
             [source.rom, source.source_archive]
                 .into_iter()
@@ -678,7 +680,7 @@ fn the_pinned_corpus_builds_the_digests_it_pins() {
     let t = Temp::new("conformance");
     let scratch = Store::open(t.path("scratch")).unwrap();
     let mut libraries = vec![
-        Library::scan(&vendor().join("freedos"), None).unwrap(),
+        Library::scan(&frontend::vendor().join("freedos"), None).unwrap(),
         Library::scan(&vendor(), None).unwrap(),
     ];
     let results = recipe::pin::conformance(

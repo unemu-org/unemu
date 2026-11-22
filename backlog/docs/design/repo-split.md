@@ -1,8 +1,9 @@
 # Repository split: the extraction plan
 
 Status: **Accepted** by the maintainer on 2026-11-22 (bead `upc-dfs.53`), with
-every recommended answer of §14. Proposed 2026-11-21. Nothing here is
-implemented yet and no repository exists yet; the steps of §12 track it. It continues
+every recommended answer of §14. Proposed 2026-11-21. Preparation steps E1
+and E2 are recorded below; no new repository exists yet. The steps of §12
+track the extraction. It continues
 [core contract §9](core-contract.md#9-towards-two-repositories), whose
 preconditions are met, and it follows the maintainer's decision of 2026-11-21
 to separate the repositories **before** contract 1.0.
@@ -151,9 +152,9 @@ later GUI and provider work, not to this split.
 
 ### 2.4. What crosses the line outside Cargo
 
-The boundary script reads Cargo dependencies only [REPO: its header says so].
-Three kinds of reach are invisible to it and must be cut before the
-repositories separate.
+At the plan baseline, the boundary script read Cargo dependencies only.
+Three kinds of reach outside that graph must be cut before the repositories
+separate. The E1 source-include check now covers the first kind.
 
 **(a) Test support shared with `#[path]`.** MEASURED by
 `grep '#\[path' crates`: front-end test sources include files of
@@ -656,6 +657,33 @@ maintainer's word, as always.
 | | | **Afterwards** | |
 | E16 | M; S prepares | Releases: core `v0.0.4`; the front end pins that tag's commit and releases `v0.0.4`. Then the `uses:` line in `unemu-media`, changed in that repository by its own session | Both release workflows green; the checks of §7.5. `setup-unemu` installs the front end's `v0.0.4` |
 | E17 | S | Close the record: a closing status line in `core-contract.md` and here, in both repositories; the split marker in each `status.md` | The documents say the split is done and name both commits |
+
+**As landed — E1 and E2 (2026-11-22).** `pc-harness/test-support`
+exposes `fixtures`, `session`, `at_games` and `fat12`. All 30 front-end
+`#[path]` includes of harness support became imports: 17 in `cli-pc`, 10
+in `pc-image`, and one each in `pc-library`, `upcli` and `window`.
+Core-side includes and the same-side `cli-pc` → `pc-image` include stay.
+`pc-image`, `pc-library` and `pc-session-tests` gain a harness test dependency;
+`pc-library` also activates it optionally for its exported `test-support` helpers.
+
+`pc_harness::test_support::root()` selects `UNEMUPC_FIXTURE_ROOT` when set,
+requiring an existing absolute directory; an empty, relative, missing or
+non-directory value is a configuration error, including optional fixture
+reads. Without the variable it uses the harness repository. Front-end
+machine and core-vendor paths, including session tests, now use it; the FreeDOS
+fetch script and the machine guide are read at run time. Front-end recipe data,
+scripts, FreeDOS Floppy Edition media and licence index, and lock-file checks
+keep their own paths. Process-isolated tests
+exercise the public API, external fixture bytes, default selection and
+invalid overrides. The boundary self-test plants all four source-include
+forms across the sides, including source-relative and manifest-relative
+`concat!` arguments with balanced delimiters and whitespace before `!`.
+Rust string literals and nested comments are tokenized so include examples
+stay inert; same-side includes still pass. The scanner shares the shell
+boundary check's ownership in §2.5.
+
+The supervisor verifies the second-checkout run with no built fixtures in
+the first tree and reruns the full gate with user ROMs before landing.
 
 **As landed — E3 (2026-11-22).** `scripts/repo-ownership.paths` records
 core, front-end and shared ownership by path pattern, including the separate

@@ -612,7 +612,7 @@ fn template_builds_write_the_current_id() {
     let Some(lab) = Lab::new() else {
         return;
     };
-    let vendor = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor");
+    let vendor = pc_harness::test_support::root().join("vendor");
     let store = Store::open(lab.open.path.join("templates")).unwrap();
     let allow = |_: &str, _: &Manifest, _: &[u8]| -> Result<(), String> { Ok(()) };
     let built = pc_image::template::build(&store, &vendor, &allow, &mut |_| {}).unwrap();

@@ -83,12 +83,37 @@ fn set1_scancodes(key: KeyCode, state: ElementState) -> Option<Vec<u8>> {
     )
 }
 
-/// A path in the workspace, from this crate's directory.
+/// A path in the core checkout holding machine files and firmware fixtures.
 #[cfg(test)]
 fn default_fixture(relative: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(relative)
+    pc_harness::test_support::root().join(relative)
+}
+
+#[test]
+fn fixture_root_probe() {
+    if let Some(root) = std::env::var_os("UNEMUPC_SESSION_FIXTURE_PROBE") {
+        let path = default_fixture("vendor/probe/fixture.bin");
+        assert_eq!(path, PathBuf::from(root).join("vendor/probe/fixture.bin"));
+        assert_eq!(std::fs::read(path).unwrap(), b"external session fixture");
+    }
+}
+
+#[test]
+fn session_fixtures_use_the_external_core_checkout() {
+    let temp = machine_file::test_support::TempDir::new("session-fixture-root");
+    std::fs::create_dir_all(temp.path().join("vendor/probe")).unwrap();
+    std::fs::write(
+        temp.path().join("vendor/probe/fixture.bin"),
+        b"external session fixture",
+    )
+    .unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "fixture_root_probe", "--nocapture"])
+        .env("UNEMUPC_FIXTURE_ROOT", temp.path())
+        .env("UNEMUPC_SESSION_FIXTURE_PROBE", temp.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
 }
 
 /// The desktop's session of one PC: the contract session over the PC core's

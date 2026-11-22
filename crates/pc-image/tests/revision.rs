@@ -655,7 +655,7 @@ fn save_as_new_image_keeps_title_and_firmware_sources_and_can_retitle() {
 /// Import the fixture ROMs `files` (vendor paths) as firmware packages, with
 /// the source archive `sources` names for an open copyleft one.
 fn import_roms(fixture: &Stored, files: &[(&str, Option<&str>)]) -> Option<Vec<Vec<u8>>> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = pc_harness::test_support::root();
     let catalogue = pc_image::firmware::catalogue();
     let mut roms = Vec::new();
     for (i, (file, source)) in files.iter().enumerate() {
