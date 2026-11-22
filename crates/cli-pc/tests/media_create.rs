@@ -446,10 +446,36 @@ fn preparing_disks_guide_override_loads_the_real_ide_profile() {
         .split_once("```")
         .unwrap()
         .0;
-    fs::write(scratch.0.join("local.toml"), example).unwrap();
-    assert_eq!(scratch.invoke(&["hd", "--size", "32MiB"], "disk.img").0, 0);
+    // The guide saves the override either beside the shipped profile or in a
+    // directory below it (`extends = "../at-ide.toml"`); mirror its layout.
+    let subdir = if example.contains("extends = \"../") {
+        "local"
+    } else {
+        ""
+    };
+    let local = scratch.0.join(subdir);
+    fs::create_dir_all(&local).unwrap();
+    fs::write(local.join("local.toml"), example).unwrap();
+    let disk_name = if subdir.is_empty() {
+        "disk.img".to_owned()
+    } else {
+        format!("{subdir}/disk.img")
+    };
+    // The disk matches the geometry the guide's example binds.
+    let geometry = |key: &str| -> u64 {
+        let rest = example.split_once(&format!("{key} = ")).unwrap().1;
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().unwrap()
+    };
+    let chs = format!(
+        "{}/{}/{}",
+        geometry("cylinders"),
+        geometry("heads"),
+        geometry("sectors")
+    );
+    assert_eq!(scratch.invoke(&["hd", "--chs", &chs], &disk_name).0, 0);
     let loaded = machine_file::load_for_assembly(
-        scratch.0.join("local.toml"),
+        local.join("local.toml"),
         assembly::AssemblyOptions::default(),
     )
     .unwrap();
@@ -459,7 +485,7 @@ fn preparing_disks_guide_override_loads_the_real_ide_profile() {
         .iter()
         .find(|drive| drive.controller == assembly::DeviceId::Ide)
         .unwrap();
-    let root = scratch.0.canonicalize().unwrap();
+    let root = local.canonicalize().unwrap();
     assert_eq!(
         disk.image,
         assembly::ImageSource::File(root.join("disk.img"))
@@ -471,7 +497,7 @@ fn preparing_disks_guide_override_loads_the_real_ide_profile() {
     let args = [
         OsString::from("machine"),
         OsString::from("check"),
-        scratch.0.join("local.toml").into(),
+        local.join("local.toml").into(),
     ];
     let (mut output, mut errors) = (Vec::new(), Vec::new());
     assert_eq!(
