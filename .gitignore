@@ -17,6 +17,7 @@ Thumbs.db
 *~
 
 # Local-only
+/.core/
 *.local
 .envrc.local
 

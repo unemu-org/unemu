@@ -817,9 +817,22 @@ pub(crate) fn hash_array(digest: &Digest) -> Result<[u8; 32]> {
 use pc_harness::test_support::fixtures;
 
 #[cfg(test)]
+#[path = "../tests/support/core_pin.rs"]
+mod core_pin;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use core_pin::assert_core_revision;
     use std::cell::RefCell;
+
+    // Moving the core pin requires checking the recorded golden again.
+    const CORE_REV: &str = "0f2795402e947e235a7b892c931910b05f05d61f";
+
+    #[test]
+    fn golden_core_revision_matches_lock() {
+        assert_core_revision(include_str!("../../../Cargo.lock"), CORE_REV);
+    }
 
     /// Blobs in memory by digest, with the digests read in order.
     struct Memory {
@@ -1383,8 +1396,7 @@ inserted = "HEAD_C"
     #[test]
     fn stored_image_start_keeps_its_retired_count() {
         use cpu::Cpu;
-        assert!(include_str!("../../../Cargo.lock")
-            .contains("#6cb817b86c1fbf463f7aab8c0da1ce0eec3db0b7"));
+        assert_core_revision(include_str!("../../../Cargo.lock"), CORE_REV);
         let Some((_temp, store)) = start_fixture(|_| {}) else {
             return;
         };

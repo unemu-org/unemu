@@ -2,7 +2,7 @@
 //! Install FreeDOS from open tools onto a blank ATA disk, then boot that disk.
 //! ATA-2 §§6.1–6.2 PIO commands and Microsoft FAT Specification, FAT16 BPB,
 //! run through the open AT firmware. See machines/README.md §Playing DOS games.
-//! CPU and fixture revisions are pinned independently of the final screen.
+//! Core and fixture revisions are pinned independently of the final screen.
 
 use assembly::{
     AssembledMachine, ConsoleProbe, DeviceId, DriveKind, FloppyAction, FloppyGeometry,
@@ -14,6 +14,18 @@ use std::path::PathBuf;
 use video::Frame;
 
 use pc_harness::test_support::fixtures;
+
+// Moving the core pin requires checking the recorded golden again.
+const CORE_REV: &str = "0f2795402e947e235a7b892c931910b05f05d61f";
+
+#[path = "../../pc-image/tests/support/core_pin.rs"]
+mod core_pin;
+use core_pin::assert_core_revision;
+
+#[test]
+fn golden_core_revision_matches_lock() {
+    assert_core_revision(include_str!("../../../Cargo.lock"), CORE_REV);
+}
 pub use pc_harness::test_support::session;
 
 struct Scratch(PathBuf);
@@ -229,9 +241,7 @@ fn polling_rejects_a_nonadvancing_clock() {
 #[test]
 #[ignore = "slow: open FreeDOS partition, format, system transfer and hard disk boot"]
 fn freedos_installs_and_boots_from_a_blank_hard_disk() {
-    assert!(
-        include_str!("../../../Cargo.lock").contains("#6cb817b86c1fbf463f7aab8c0da1ce0eec3db0b7")
-    );
+    assert_core_revision(include_str!("../../../Cargo.lock"), CORE_REV);
     for path in [
         "unemu-at-bios/bios-unemu-at.bin",
         "xtide-universal-bios/ide_xtp-r638-ata1f0-8k.bin",

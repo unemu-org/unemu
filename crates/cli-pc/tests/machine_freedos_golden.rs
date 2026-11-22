@@ -19,6 +19,18 @@ use video::Frame;
 use pc_harness::test_support::fat12;
 use pc_harness::test_support::fixtures;
 
+// Moving the core pin requires checking the recorded golden again.
+const CORE_REV: &str = "0f2795402e947e235a7b892c931910b05f05d61f";
+
+#[path = "../../pc-image/tests/support/core_pin.rs"]
+mod core_pin;
+use core_pin::assert_core_revision;
+
+#[test]
+fn golden_core_revision_matches_lock() {
+    assert_core_revision(include_str!("../../../Cargo.lock"), CORE_REV);
+}
+
 struct Temp(PathBuf);
 impl Drop for Temp {
     fn drop(&mut self) {
@@ -105,6 +117,7 @@ fn session(store: &image_store::Store, id: &str, command: &str) -> String {
 #[test]
 #[ignore = "slow: two BIOS/FreeDOS boots through a machine and its floppy journal"]
 fn freedos_writes_persist_in_a_machine_until_reset() {
+    assert_core_revision(include_str!("../../../Cargo.lock"), CORE_REV);
     let (Some(_), Some(floppy)) = (
         fixtures::fixture("kiselev-bios/bios-xi8088.bin"),
         fixtures::fixture("freedos/freedos.img"),

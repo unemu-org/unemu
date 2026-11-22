@@ -11,6 +11,23 @@ use std::{
 
 use pc_harness::test_support::fixtures;
 
+// Moving the core pin requires checking the recorded golden again.
+const CORE_REV: &str = "0f2795402e947e235a7b892c931910b05f05d61f";
+
+#[path = "support/core_pin.rs"]
+mod core_pin;
+use core_pin::assert_core_revision;
+
+#[test]
+fn golden_core_revision_rejects_alternate_sources() {
+    core_pin::assert_alternate_sources_rejected(CORE_REV);
+}
+
+#[test]
+fn golden_core_revision_matches_lock() {
+    assert_core_revision(include_str!("../../../Cargo.lock"), CORE_REV);
+}
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Temp(PathBuf);
 impl Temp {
@@ -468,9 +485,7 @@ fn short_open_bios_checkpoint_matches_machine_file() {
             Digest::of(&memory),
         )
     };
-    assert!(
-        include_str!("../../../Cargo.lock").contains("6cb817b86c1fbf463f7aab8c0da1ce0eec3db0b7")
-    );
+    assert_core_revision(include_str!("../../../Cargo.lock"), CORE_REV);
     let reference = checkpoint(&mut machine_file::assemble(&original).unwrap());
     assert_eq!(reference.0, machine::RunOutcome::RetiredCapReached);
     assert_eq!((reference.1, reference.2), (97, 10_000));

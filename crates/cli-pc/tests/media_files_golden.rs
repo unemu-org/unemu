@@ -18,6 +18,18 @@ use video::Frame;
 use pc_harness::test_support::fat12;
 use pc_harness::test_support::fixtures;
 
+// Moving the core pin requires checking the recorded golden again.
+const CORE_REV: &str = "0f2795402e947e235a7b892c931910b05f05d61f";
+
+#[path = "../../pc-image/tests/support/core_pin.rs"]
+mod core_pin;
+use core_pin::assert_core_revision;
+
+#[test]
+fn golden_core_revision_matches_lock() {
+    assert_core_revision(include_str!("../../../Cargo.lock"), CORE_REV);
+}
+
 /// Set-1 make/break codes for a FreeDOS command line: lowercase letters,
 /// digits, space, period, backslash, slash, colon (shifted) and Enter.
 fn keys(text: &str) -> Vec<u8> {
@@ -189,8 +201,7 @@ fn command(
 #[ignore = "slow: boots FreeDOS, then lists and types files from a disk built from host files"]
 #[test]
 fn freedos_reads_a_floppy_built_from_host_files() {
-    assert!(include_str!("../../../Cargo.lock")
-        .contains("rev=6cb817b86c1fbf463f7aab8c0da1ce0eec3db0b7"));
+    assert_core_revision(include_str!("../../../Cargo.lock"), CORE_REV);
     let (Some(_), Some(_)) = (
         fixtures::fixture("kiselev-bios/bios-xi8088.bin"),
         fixtures::fixture("freedos/freedos.img"),
@@ -274,8 +285,7 @@ fn freedos_reads_a_floppy_built_from_host_files() {
 #[ignore = "slow: boots FreeDOS, enters and XCOPYs a two-disk 720K set built from host files"]
 #[test]
 fn freedos_enters_and_rebuilds_a_split_set_with_xcopy() {
-    assert!(include_str!("../../../Cargo.lock")
-        .contains("rev=6cb817b86c1fbf463f7aab8c0da1ce0eec3db0b7"));
+    assert_core_revision(include_str!("../../../Cargo.lock"), CORE_REV);
     let (Some(_), Some(mut boot_disk), Some(tools)) = (
         fixtures::fixture("kiselev-bios/bios-xi8088.bin"),
         fixtures::fixture("freedos/freedos.img"),

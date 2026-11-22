@@ -17,7 +17,18 @@ const OPTIONS: AssemblyOptions = AssemblyOptions {
 
 use pc_harness::test_support::fixtures;
 
-const CPU_REV: &str = "6cb817b86c1fbf463f7aab8c0da1ce0eec3db0b7";
+// Moving the core pin requires checking the recorded golden again.
+const CORE_REV: &str = "0f2795402e947e235a7b892c931910b05f05d61f";
+
+#[path = "../../pc-image/tests/support/core_pin.rs"]
+mod core_pin;
+use core_pin::assert_core_revision;
+
+#[test]
+fn golden_core_revision_matches_lock() {
+    assert_core_revision(include_str!("../../../Cargo.lock"), CORE_REV);
+}
+
 // These values moved when the open profile replaced its MDA console with the
 // VGA card and open video BIOS, and when the test began sampling POST. They
 // moved again (from 15,241,264 and 41ff081e…) when the open AT BIOS began
@@ -149,10 +160,7 @@ fn user_rom_at_games_freedos_prompt() {
     let Some(floppy) = fixtures::fixture("freedos/freedos-1200.img") else {
         return;
     };
-    assert!(
-        include_str!("../../../Cargo.lock").contains(CPU_REV),
-        "CPU pin drifted"
-    );
+    assert_core_revision(include_str!("../../../Cargo.lock"), CORE_REV);
     let Some(tools) = fixtures::fixture("freedos/freedos-tools-1200.img") else {
         return;
     };
@@ -307,10 +315,7 @@ fn run_ctrl_alt_del_reboot(frame_chunk: Option<u64>) {
     let Some(floppy) = fixtures::fixture("freedos/freedos-1200.img") else {
         return;
     };
-    assert!(
-        include_str!("../../../Cargo.lock").contains(CPU_REV),
-        "CPU pin drifted"
-    );
+    assert_core_revision(include_str!("../../../Cargo.lock"), CORE_REV);
     let Some(tools) = fixtures::fixture("freedos/freedos-tools-1200.img") else {
         return;
     };
@@ -726,7 +731,7 @@ fn open_game_profile_boots_freedos() {
     use cpu::Cpu;
     use machine::RunOutcome;
 
-    assert!(include_str!("../../../Cargo.lock").contains(CPU_REV));
+    assert_core_revision(include_str!("../../../Cargo.lock"), CORE_REV);
     let Some(profile) = open_fixture_profile() else {
         return;
     };
@@ -892,7 +897,8 @@ fn add_fat12_file(image: &mut [u8], name: &[u8; 11], cluster: u16, data: &[u8]) 
     image[offset..offset + data.len()].copy_from_slice(data);
 }
 
-// MEASURED with the CPU pin above when the open profile gained its empty B:,
+// MEASURED with the CPU revision selected by the core pin above when the open
+// profile gained its empty B:,
 // and again (from 22,988,197 and b9e3a1cb…) when the open AT BIOS began
 // clearing extended memory during POST and its banner named the new release.
 // The video BIOS based on upstream 0.9d moved the screen hash again (from
@@ -918,7 +924,7 @@ fn open_game_profile_reads_720k_in_b_and_360k_in_a() {
     use cpu::Cpu;
     use machine::RunOutcome;
 
-    assert!(include_str!("../../../Cargo.lock").contains(CPU_REV));
+    assert_core_revision(include_str!("../../../Cargo.lock"), CORE_REV);
     let Some(profile) = open_fixture_profile() else {
         return;
     };
