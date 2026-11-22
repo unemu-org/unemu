@@ -108,6 +108,7 @@ guard_lane() {
   local status=0
   bash scripts/publication-guard-test.sh && bash scripts/publication-guard.sh || status=1
   bash scripts/core-host-guard.sh --self-test && bash scripts/core-host-guard.sh || status=1
+  bash scripts/repo-ownership.sh --self-test && bash scripts/repo-ownership.sh || status=1
   return "$status"
 }
 step guard guard_lane

@@ -119,10 +119,14 @@ def data_rules: [
   {prefix: "backlog/docs/design/recipe-schema-1.0.json", goldens: false,
    crates: ["pc-image"], why: "the recipe schema a test compares with the generated one"}
 ];
-# Tests that read the sources of every crate.
+# Tests that read the sources on their own side of the extraction boundary.
 def scan_tests: [
-  {package: "image-store", test: "platform_ids", watch: "^crates/.+[.]rs$",
-   why: "scans the Rust sources of every crate"}
+  {package: "image-store", test: "platform_ids",
+   watch: "^crates/(media|image-store|registry|recipe|core-launch|cli-core|ui-kit|machine-view|library-model|library-ui|player-ui|test-core|pc-image|cli-pc|pc-media|pc-library|media-ui|pc-ui|pc-session-tests|platforms|upcli|window)/.+[.]rs$",
+   why: "scans the front-end Rust sources"},
+  {package: "pc-config", test: "platform_ids",
+   watch: "^crates/(device|bus|cpu|video|audio|devices|chipset|machine|assembly|testkit|journal|pc-config|pc-core|machine-file|journal-files|pc-harness|unemupc)/.+[.]rs$",
+   why: "scans the core Rust sources"}
 ];
 def full_files: "^(Cargo[.]toml|Cargo[.]lock|flake[.]nix|flake[.]lock|rust-toolchain([.]toml)?|[.]?rustfmt[.]toml|[.]?clippy[.]toml|[.]cargo/.*)$";
 def docs_files: "^(backlog/.*|[^/]+[.]md|[.]agents/.*|[.]claude/.*|[.]serena/.*|LICENSE.*|LICENSES/.*|[.]markdownlint.*|[.]prettier.*|vendor/.+[.]md)$";
@@ -314,7 +318,7 @@ workspace_metadata() {
     cat "$metadata_from"
   else
     # Reads the manifests only: no dependency resolution, nothing is built.
-    cargo metadata --no-deps --format-version 1 --offline
+    "${cargo_cmd[@]}" metadata --no-deps --format-version 1 --offline
   fi
 }
 
@@ -544,7 +548,7 @@ run_self_test() {
   if command -v cargo > /dev/null; then
     local metadata dirs refs rules missing file builders
     metadata="$tmp/metadata.json"
-    cargo metadata --no-deps --format-version 1 --offline > "$metadata"
+    "${cargo_cmd[@]}" metadata --no-deps --format-version 1 --offline > "$metadata"
     dirs=$(jq -r '.workspace_root as $r | .packages[]
       | "\(.manifest_path | ltrimstr($r + "/") | rtrimstr("/Cargo.toml"))\t\(.name)"' "$metadata")
     refs=$(outside_references "$dirs" | sort -u)

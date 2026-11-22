@@ -7,7 +7,7 @@
 //! artifacts naming it; the current id `ibm-pc` is spelled out only where it
 //! is defined and in tests.
 //!
-//! A scan of the Rust source of every crate in the workspace, outside
+//! A scan of the Rust source of the front-end crates, outside
 //! comments, with a line that continues on the next one joined to it first.
 //! It flags the comparison forms this code base writes when one side is a
 //! platform operand: a `platform` field or accessor or a `PLATFORM` constant
@@ -22,32 +22,45 @@
 
 use std::path::{Path, PathBuf};
 
+/// Each repository scans only the crates it keeps after extraction.
+const CRATES: &[&str] = &[
+    "media",
+    "image-store",
+    "registry",
+    "recipe",
+    "core-launch",
+    "cli-core",
+    "ui-kit",
+    "machine-view",
+    "library-model",
+    "library-ui",
+    "player-ui",
+    "test-core",
+    "pc-image",
+    "cli-pc",
+    "pc-media",
+    "pc-library",
+    "media-ui",
+    "pc-ui",
+    "pc-session-tests",
+    "platforms",
+    "upcli",
+    "window",
+];
 /// The files that may name the retired id, relative to `crates/`.
 const RETIRED_ID: &[&str] = &[
     "image-store/src/platform.rs",
     "image-store/src/compat.rs",
-    "pc-config/src/compat.rs",
     "cli-pc/tests/platform_alias.rs",
-    // The PC launch document refuses the retired id: the store writes the
-    // current one.
-    "pc-config/src/launch/tests.rs",
-    "pc-core/src/machine/tests.rs",
 ];
-/// The production files that may spell out the current PC id: its
-/// definition, the alias table, the compatibility rows, the metadata of a
-/// new machine, the PC core's description of its platform and the platform
-/// of the PC launch document.
+/// Definitions, aliases, compatibility rows and new-machine metadata.
 const PC_LITERAL: &[&str] = &[
     "pc-image/src/firmware_package.rs",
     "image-store/src/platform.rs",
     "image-store/src/compat.rs",
-    "pc-config/src/compat.rs",
     "pc-image/src/lib.rs",
-    "pc-core/src/core.rs",
-    "pc-config/src/launch.rs",
 ];
-/// Comparisons of the software platform of a title record ("DOS"), which is
-/// no machine platform id: the file and code its logical line contains.
+/// Title records describe software platforms rather than machine ids.
 const SOFTWARE_PLATFORM: &[(&str, &str)] = &[
     (
         "image-store/src/summary.rs",
@@ -58,23 +71,9 @@ const SOFTWARE_PLATFORM: &[(&str, &str)] = &[
         "ensure(SOFTWARE_PLATFORMS.contains(&platform.as_str()), || {",
     ),
 ];
-/// A core's check of the platform a front end asks it for: the contract
-/// hands a core its platform id in the current spelling, so the core compares
-/// exactly. The file and code its logical line contains.
-/// The launch path's lookup of the platform a core's `identify` answered
-/// with, in that same core's description, is the same kind of check: both
-/// sides are the core's own current spelling. So are the launch path's
-/// lookups of a platform id a platform's own code hands it in the current
-/// spelling: the core that describes it, and that core's name for it. So is
-/// the PC launch document's check of its envelope: the store writes the
-/// current spelling into it, and the PC core reads it.
+/// A core and its caller exchange the core's own current spelling.
 const CORE_OWN_PLATFORM: &[(&str, &str)] = &[
     ("test-core/src/lib.rs", "if platform == PLATFORM {"),
-    ("pc-core/src/core.rs", "if platform != PLATFORM ||"),
-    (
-        "pc-config/src/launch.rs",
-        "codec::bind(config, &rows, config.platform == PLATFORM)",
-    ),
     (
         "core-launch/src/launch.rs",
         ".find(|platform| platform.id == identified.platform)",
@@ -88,12 +87,12 @@ const CORE_OWN_PLATFORM: &[(&str, &str)] = &[
         ".any(|described| described.id == platform)",
     ),
 ];
-/// Recipe provider lookup compares through `platform::same` inside `Providers::get`.
+/// Providers::get compares through platform::same.
 const NORMALIZED_PROVIDER_LOOKUP: &[(&str, &str)] = &[(
     "recipe/src/artifact.rs",
     "let provider = providers .get(platform)",
 )];
-/// This file, whose detector tests quote the forms it flags.
+/// This file quotes the forms its detector flags.
 const SELF: &str = "image-store/tests/platform_ids.rs";
 
 /// Methods that do not change which id an operand names.
@@ -469,7 +468,10 @@ fn the_detector_flags_exact_platform_comparisons_and_nothing_else() {
 fn platform_ids_are_never_compared_exactly() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut files = Vec::new();
-    rust_files(&crates, &mut files);
+    for name in CRATES {
+        rust_files(&crates.join(name), &mut files);
+    }
+    files.sort();
     assert!(files.len() > 100, "the scan found {} files", files.len());
     let mut problems = Vec::new();
     for file in &files {

@@ -1,5 +1,15 @@
 [
   {
+    "name": "a core source change selects only the core source scan",
+    "changed": ["crates/pc-core/src/core.rs"],
+    "expect": {"scan_tests": ["pc-config:platform_ids"]}
+  },
+  {
+    "name": "the front-end detector runs only its own scan",
+    "changed": ["crates/image-store/tests/platform_ids.rs"],
+    "expect": {"scan_tests": []}
+  },
+  {
     "name": "a recipe corpus change selects front-end readers only",
     "changed": ["backlog/docs/design/recipe-corpus/kenslab-2.01/kenslab-2.01.media.toml"],
     "expect": {"mode": "crates", "seeds": ["cli-pc", "pc-image"], "tier": "fast", "user_roms": false}
@@ -207,7 +217,7 @@
         "pc-harness", "pc-image", "pc-session-tests", "platforms", "unemu-pc-core", "upcli",
         "window"],
       "tier": "goldens", "golden_reasons": ["crates/devices/src/pit8253.rs: emulation crate"],
-      "targeted": [], "scan_tests": ["image-store:platform_ids"],
+      "targeted": [], "scan_tests": ["pc-config:platform_ids"],
       "release_devices": true, "deny": false
     }
   },

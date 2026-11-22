@@ -5,6 +5,13 @@ beads (`bd ready --exclude-type epic`, `bd list --type epic`).
 
 Update this when a feature lands, breaks, or gets pulled. Stale status is worse than no status.
 
+- **2026-11-22 — Repository split ownership guard and source scans:**
+  the extraction inventory assigns every tracked path to the core, front end
+  or both. The guard rejects missing and overlapping ownership. Platform-id
+  scans now stay on their own side: `image-store` scans 22 front-end crates,
+  `pc-config` scans 17 core crates, and the planner selects each by its source
+  set. Ownership and planner self-tests pass. See
+  [repository split §12](design/repo-split.md#12-steps).
 - **2026-11-21 — Repository split planned (Proposed):** the extraction plan
   for a core repository and a front-end repository is written and waits for
   the maintainer. The core keeps `unemupc` with 17 crates; the front end is

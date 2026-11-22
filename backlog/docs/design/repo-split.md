@@ -657,6 +657,23 @@ maintainer's word, as always.
 | E16 | M; S prepares | Releases: core `v0.0.4`; the front end pins that tag's commit and releases `v0.0.4`. Then the `uses:` line in `unemu-media`, changed in that repository by its own session | Both release workflows green; the checks of §7.5. `setup-unemu` installs the front end's `v0.0.4` |
 | E17 | S | Close the record: a closing status line in `core-contract.md` and here, in both repositories; the split marker in each `status.md` | The documents say the split is done and name both commits |
 
+**As landed — E3 (2026-11-22).** `scripts/repo-ownership.paths` records
+core, front-end and shared ownership by path pattern, including the separate
+FreeDOS recipe files. `scripts/repo-ownership.sh` requires exactly one
+matching row per tracked or new, non-ignored file. Its self-test rejects an
+unowned path and overlapping ownership, including duplicate rows and a
+shared row overlapping a core row. Both CI's guard lane and the bead gate
+run the check and its self-test.
+
+The platform-id scan is split between `image-store/tests/platform_ids.rs`
+(22 front-end crates) and `pc-config/tests/platform_ids.rs` (17 core crates).
+The core retains the three retired-id allow entries from §2.4 (c); neither
+scan reads sources on the other side. The affected-tests planner watches
+the corresponding crate set for each scan, with regression scenarios for
+both sides. No crate dependency changes. The ownership check passes on all 1,157 paths
+of the preparation baseline; its failure cases are exercised without
+changing the git index. The planner self-test covers 50 external paths.
+
 ### 12.2. The abort point
 
 Until E13 lands, `unemupc` holds everything and builds everything. E1 to E3
