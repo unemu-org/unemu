@@ -133,3 +133,6 @@ target/
 !/vendor/shareware/common.sh
 !/vendor/shareware/*/fetch.sh
 !/vendor/shareware/*/README.md
+
+# Beads / Dolt files (added by bd init)
+*.db

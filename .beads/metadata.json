@@ -2,6 +2,6 @@
   "database": "dolt",
   "backend": "dolt",
   "dolt_mode": "embedded",
-  "dolt_database": "upc",
-  "project_id": "c7dc1407-cec6-4499-8d00-c3faf10678ac"
+  "dolt_database": "ufe",
+  "project_id": "2ba5b827-72f5-4ee2-81cd-6f618e5e978f"
 }
