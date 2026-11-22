@@ -1,8 +1,8 @@
 # Repository split: the extraction plan
 
-Status: **Proposed** on 2026-11-21 (bead `upc-dfs.53`), for the maintainer to
-accept. Plan only: nothing here is implemented, no repository exists yet and
-no code changes with this document. It continues
+Status: **Accepted** by the maintainer on 2026-11-22 (bead `upc-dfs.53`), with
+every recommended answer of §14. Proposed 2026-11-21. Nothing here is
+implemented yet and no repository exists yet; the steps of §12 track it. It continues
 [core contract §9](core-contract.md#9-towards-two-repositories), whose
 preconditions are met, and it follows the maintainer's decision of 2026-11-21
 to separate the repositories **before** contract 1.0.
