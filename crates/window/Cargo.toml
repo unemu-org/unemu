@@ -68,7 +68,7 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std"
 
 [dev-dependencies]
 machine-file = { workspace = true, features = ["test-support"] }
-pc-harness = { path = "../pc-harness", version = "0.0.3", features = ["test-support"] }
+pc-harness = { workspace = true, features = ["test-support"] }
 device.workspace = true
 machine.workspace = true
 video.workspace = true

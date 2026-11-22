@@ -18,7 +18,7 @@ doctest = false
 # Everything is for the tests: a change to the session, the PC core or the
 # emulation below it runs them, a change to the desktop does not.
 [dev-dependencies]
-pc-harness = { path = "../pc-harness", version = "0.0.3", features = ["test-support"] }
+pc-harness = { workspace = true, features = ["test-support"] }
 core-launch = { path = "../core-launch", version = "0.0.3" }
 toml.workspace = true
 assembly = { workspace = true, features = ["test-support"] }

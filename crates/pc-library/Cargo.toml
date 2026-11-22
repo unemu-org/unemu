@@ -26,7 +26,7 @@ test-support = [
 ]
 
 [dependencies]
-pc-harness = { path = "../pc-harness", version = "0.0.3", optional = true, features = ["test-support"] }
+pc-harness = { workspace = true, optional = true, features = ["test-support"] }
 journal-files.workspace = true
 assembly.workspace = true
 image-store = { path = "../image-store", version = "0.0.3" }
@@ -45,7 +45,7 @@ unemu-core-api.workspace = true
 unemu-pc-core.workspace = true
 
 [dev-dependencies]
-pc-harness = { path = "../pc-harness", version = "0.0.3", features = ["test-support"] }
+pc-harness = { workspace = true, features = ["test-support"] }
 machine-file = { workspace = true, features = ["test-support"] }
 assembly = { workspace = true, features = ["test-support"] }
 image-store = { path = "../image-store", version = "0.0.3", features = ["test-support"] }

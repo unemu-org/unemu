@@ -2,37 +2,20 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/device",
-    "crates/bus",
-    "crates/chipset",
-    "crates/cpu",
-    "crates/machine",
-    "crates/devices",
-    "crates/video",
-    "crates/audio",
-    "crates/assembly",
-    "crates/testkit",
     "crates/cli-core",
     "crates/cli-pc",
-    "crates/unemupc",
     "crates/upcli",
-    "crates/pc-harness",
     "crates/window",
     "crates/pc-session-tests",
     "crates/ui-kit",
     "crates/library-model",
     "crates/library-ui",
     "crates/media-ui",
-    "crates/pc-core",
     "crates/machine-view",
     "crates/pc-media",
     "crates/pc-library",
     "crates/pc-ui",
     "crates/media",
-    "crates/journal",
-    "crates/journal-files",
-    "crates/machine-file",
-    "crates/pc-config",
     "crates/image-store",
     "crates/registry",
     "crates/pc-image",
@@ -70,12 +53,6 @@ egui = { version = "=0.37.0", default-features = false, features = ["default_fon
 # Wayland) instead of a string that lives only inside the app.
 eframe = { version = "=0.37.0", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "x11", "wayland"] }
 cpal = "=0.18.2"
-# CPU core: one device read and one device write for exchange and read-modify-write
-# instructions on memory-mapped devices, and RAM/ROM lookups off the hot memory path.
-# Every build and golden trace runs against a known CPU. A bare path dependency breaks
-# nix build and CI. To develop against a local x86jit checkout, add a gitignored
-# [patch] override instead of editing this line.
-x86jit-core = { version = "0.3", git = "https://github.com/unemu-org/x86jit", rev = "6cb817b86c1fbf463f7aab8c0da1ce0eec3db0b7", default-features = false }
 # The contract between front ends and emulator cores, at the commit of release
 # v0.2.0. Every core and front end in one build must link the same copy, so the
 # pin is an exact revision, moved together with every pinned core. A bare path
@@ -92,23 +69,26 @@ unemu-core-files = { version = "0.3", git = "https://github.com/unemu-org/unemu-
 # gitignored [patch] override instead of editing this line.
 unemu-nes-core = { version = "0.0.1", git = "https://github.com/unemu-org/unemunes", rev = "0dbf0d56c627ab62601fca1dcd64ec77f3e4643c" }
 
+# The PC core, from its own repository at one exact revision of its main with
+# green CI, the same revision in every line (repo-split.md §4.1). Never a bare
+# path, a branch or a tag; develop against a local core checkout through a
+# gitignored [patch] override. Moving this revision is a re-pin bead.
+assembly = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+audio = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+cpu = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+device = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+devices = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+journal-files = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+machine = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+machine-file = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+pc-config = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+pc-harness = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+unemu-pc-core = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+unemupc = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+video = { git = "https://github.com/unemu-org/unemupc", rev = "0f2795402e947e235a7b892c931910b05f05d61f" }
+
 # Internal crates share the workspace version.
-assembly = { path = "crates/assembly", version = "0.0.3" }
-device = { path = "crates/device", version = "0.0.3" }
-bus = { path = "crates/bus", version = "0.0.3" }
-chipset = { path = "crates/chipset", version = "0.0.3" }
-cpu = { path = "crates/cpu", version = "0.0.3" }
-machine = { path = "crates/machine", version = "0.0.3" }
-machine-file = { path = "crates/machine-file", version = "0.0.3" }
-pc-config = { path = "crates/pc-config", version = "0.0.3" }
 media = { path = "crates/media", version = "0.0.3" }
-journal = { path = "crates/journal", version = "0.0.3" }
-journal-files = { path = "crates/journal-files", version = "0.0.3" }
-devices = { path = "crates/devices", version = "0.0.3" }
-video = { path = "crates/video", version = "0.0.3" }
-audio = { path = "crates/audio", version = "0.0.3" }
-testkit = { path = "crates/testkit", version = "0.0.3" }
-unemu-pc-core = { path = "crates/pc-core", version = "0.0.3" }
 machine-view = { path = "crates/machine-view", version = "0.0.3" }
 
 # Keep hardware preconditions and arithmetic checked even in optimized dev/test code.
@@ -122,26 +102,5 @@ opt-level = 3
 
 # Optimize the emulation loop while leaving frontends and test drivers unoptimized
 # for debugging. The test profile inherits these optimization settings.
-[profile.dev.package.devices]
-opt-level = 3
-
-[profile.dev.package.machine]
-opt-level = 3
-
-[profile.dev.package.bus]
-opt-level = 3
-
-[profile.dev.package.cpu]
-opt-level = 3
-
-[profile.dev.package.assembly]
-opt-level = 3
-
-[profile.dev.package.audio]
-opt-level = 3
-
-[profile.dev.package.chipset]
-opt-level = 3
-
 [profile.dev.package.media]
 opt-level = 3

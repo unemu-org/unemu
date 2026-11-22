@@ -27,7 +27,7 @@ thiserror.workspace = true
 unemu-core-api.workspace = true
 
 [dev-dependencies]
-pc-harness = { path = "../pc-harness", version = "0.0.3", features = ["test-support"] }
+pc-harness = { workspace = true, features = ["test-support"] }
 machine-file = { workspace = true, features = ["test-support"] }
 unemu-pc-core.workspace = true
 image-registry = { path = "../registry", version = "0.0.3" }

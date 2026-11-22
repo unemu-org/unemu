@@ -263,6 +263,7 @@ checksum = "175571dd1d178ced59193a6fc02dde1b972eb0bc56c892cde9beeceac5bf0f6b"
 [[package]]
 name = "assembly"
 version = "0.0.3"
+source = "git+https://github.com/unemu-org/unemupc?rev=0f2795402e947e235a7b892c931910b05f05d61f#0f2795402e947e235a7b892c931910b05f05d61f"
 dependencies = [
  "audio",
  "bus",
@@ -273,7 +274,6 @@ dependencies = [
  "journal",
  "machine",
  "sha2",
- "testkit",
  "thiserror 1.0.69",
  "unemu-core-api",
  "video",
@@ -456,6 +456,7 @@ dependencies = [
 [[package]]
 name = "audio"
 version = "0.0.3"
+source = "git+https://github.com/unemu-org/unemupc?rev=0f2795402e947e235a7b892c931910b05f05d61f#0f2795402e947e235a7b892c931910b05f05d61f"
 dependencies = [
  "device",
  "thiserror 1.0.69",
@@ -549,6 +550,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "bus"
 version = "0.0.3"
+source = "git+https://github.com/unemu-org/unemupc?rev=0f2795402e947e235a7b892c931910b05f05d61f#0f2795402e947e235a7b892c931910b05f05d61f"
 dependencies = [
  "device",
  "thiserror 1.0.69",
@@ -673,10 +675,10 @@ dependencies = [
 [[package]]
 name = "chipset"
 version = "0.0.3"
+source = "git+https://github.com/unemu-org/unemupc?rev=0f2795402e947e235a7b892c931910b05f05d61f#0f2795402e947e235a7b892c931910b05f05d61f"
 dependencies = [
  "device",
  "devices",
- "testkit",
 ]
 
 [[package]]
@@ -887,6 +889,7 @@ dependencies = [
 [[package]]
 name = "cpu"
 version = "0.0.3"
+source = "git+https://github.com/unemu-org/unemupc?rev=0f2795402e947e235a7b892c931910b05f05d61f#0f2795402e947e235a7b892c931910b05f05d61f"
 dependencies = [
  "thiserror 1.0.69",
  "x86jit-core",
@@ -947,6 +950,7 @@ checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
 [[package]]
 name = "device"
 version = "0.0.3"
+source = "git+https://github.com/unemu-org/unemupc?rev=0f2795402e947e235a7b892c931910b05f05d61f#0f2795402e947e235a7b892c931910b05f05d61f"
 dependencies = [
  "thiserror 1.0.69",
 ]
@@ -954,11 +958,10 @@ dependencies = [
 [[package]]
 name = "devices"
 version = "0.0.3"
+source = "git+https://github.com/unemu-org/unemupc?rev=0f2795402e947e235a7b892c931910b05f05d61f#0f2795402e947e235a7b892c931910b05f05d61f"
 dependencies = [
  "device",
- "testkit",
  "thiserror 1.0.69",
- "video",
 ]
 
 [[package]]
@@ -1852,6 +1855,7 @@ dependencies = [
 [[package]]
 name = "journal"
 version = "0.0.3"
+source = "git+https://github.com/unemu-org/unemupc?rev=0f2795402e947e235a7b892c931910b05f05d61f#0f2795402e947e235a7b892c931910b05f05d61f"
 dependencies = [
  "sha2",
  "thiserror 1.0.69",
@@ -1861,6 +1865,7 @@ dependencies = [
 [[package]]
 name = "journal-files"
 version = "0.0.3"
+source = "git+https://github.com/unemu-org/unemupc?rev=0f2795402e947e235a7b892c931910b05f05d61f#0f2795402e947e235a7b892c931910b05f05d61f"
 dependencies = [
  "journal",
  "libc",
@@ -2010,40 +2015,31 @@ checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 [[package]]
 name = "machine"
 version = "0.0.3"
+source = "git+https://github.com/unemu-org/unemupc?rev=0f2795402e947e235a7b892c931910b05f05d61f#0f2795402e947e235a7b892c931910b05f05d61f"
 dependencies = [
  "bus",
- "chipset",
  "cpu",
  "device",
- "devices",
- "testkit",
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "machine-file"
 version = "0.0.3"
+source = "git+https://github.com/unemu-org/unemupc?rev=0f2795402e947e235a7b892c931910b05f05d61f#0f2795402e947e235a7b892c931910b05f05d61f"
 dependencies = [
  "assembly",
- "audio",
- "bus",
- "chipset",
  "cpu",
- "device",
  "devices",
  "journal",
  "journal-files",
- "machine",
- "machine-file",
  "pc-config",
  "serde",
  "serde-saphyr",
  "sha2",
- "testkit",
  "thiserror 1.0.69",
  "toml",
  "unemu-core-api",
- "video",
 ]
 
 [[package]]
@@ -2708,6 +2704,7 @@ dependencies = [
 [[package]]
 name = "pc-config"
 version = "0.0.3"
+source = "git+https://github.com/unemu-org/unemupc?rev=0f2795402e947e235a7b892c931910b05f05d61f#0f2795402e947e235a7b892c931910b05f05d61f"
 dependencies = [
  "assembly",
  "serde",
@@ -2720,10 +2717,10 @@ dependencies = [
 [[package]]
 name = "pc-harness"
 version = "0.0.3"
+source = "git+https://github.com/unemu-org/unemupc?rev=0f2795402e947e235a7b892c931910b05f05d61f#0f2795402e947e235a7b892c931910b05f05d61f"
 dependencies = [
  "anyhow",
  "assembly",
- "bus",
  "chipset",
  "cpu",
  "device",
@@ -2731,8 +2728,6 @@ dependencies = [
  "journal-files",
  "machine",
  "machine-file",
- "testkit",
- "toml",
  "video",
 ]
 
@@ -3700,14 +3695,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "testkit"
-version = "0.0.3"
-dependencies = [
- "cpu",
- "device",
-]
-
-[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3959,6 +3946,7 @@ dependencies = [
 [[package]]
 name = "unemu-pc-core"
 version = "0.0.3"
+source = "git+https://github.com/unemu-org/unemupc?rev=0f2795402e947e235a7b892c931910b05f05d61f#0f2795402e947e235a7b892c931910b05f05d61f"
 dependencies = [
  "assembly",
  "audio",
@@ -3981,10 +3969,10 @@ dependencies = [
 [[package]]
 name = "unemupc"
 version = "0.0.3"
+source = "git+https://github.com/unemu-org/unemupc?rev=0f2795402e947e235a7b892c931910b05f05d61f#0f2795402e947e235a7b892c931910b05f05d61f"
 dependencies = [
  "anyhow",
  "assembly",
- "cpu",
  "device",
  "journal-files",
  "machine",
@@ -4130,6 +4118,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "video"
 version = "0.0.3"
+source = "git+https://github.com/unemu-org/unemupc?rev=0f2795402e947e235a7b892c931910b05f05d61f#0f2795402e947e235a7b892c931910b05f05d61f"
 dependencies = [
  "device",
 ]
