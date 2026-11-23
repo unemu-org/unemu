@@ -225,6 +225,18 @@ fn validation_launch(config: &Config, stored: &Stored<'_>) -> launch::Launch {
     }
 }
 
+/// Config-only launch document for a read-only stored-media snapshot.
+pub(crate) fn export_document(
+    config: &Config,
+    descriptors: &[Descriptor],
+    blobs: &dyn BlobSource,
+) -> Result<launch::Launch> {
+    Ok(validation_launch(
+        config,
+        &store_half(config, descriptors, blobs)?,
+    ))
+}
+
 /// What the store half answers for one config.
 struct Stored<'a> {
     /// Whether the config's platform names this provider: the PC id or its
@@ -837,7 +849,7 @@ mod tests {
     use std::cell::RefCell;
 
     // Moving the core pin requires checking the recorded golden again.
-    const CORE_REV: &str = "fc9c652e6876e7f0d189bf11d178f303ada19b13";
+    const CORE_REV: &str = "472ababef9dbee6fdd552f7d873eaac79fd9864b";
 
     #[test]
     fn golden_core_revision_matches_lock() {

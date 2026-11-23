@@ -306,6 +306,53 @@ pub(crate) fn prepare_run<'a>(
     Ok(stored)
 }
 
+/// Adapter retaining the workspace locks while the neutral command exports.
+pub(crate) struct ExportSnapshot<'a> {
+    pub snapshot: pc_image::machine::export::Snapshot,
+    pub store: &'a image_store::Store,
+}
+impl cli_core::image::machine_export::Snapshot for ExportSnapshot<'_> {
+    fn config(&self) -> unemu_core_api::ConfigDocument<'_> {
+        self.snapshot.document()
+    }
+    fn baseline(&self) -> anyhow::Result<Vec<unemu_core_api::MediaDescription>> {
+        use unemu_core_api::{MediaDescription, SlotDescription, SlotId, SlotKind};
+        self.snapshot
+            .media(self.store)?
+            .into_iter()
+            .map(|row| {
+                let id = row
+                    .slot
+                    .as_bytes()
+                    .first()
+                    .and_then(|b| b.checked_sub(b'A'))
+                    .ok_or_else(|| anyhow::anyhow!("invalid baseline slot label"))?;
+                let kind = if row.kind == "fixed" {
+                    SlotKind::FixedDisk
+                } else {
+                    SlotKind::Floppy
+                };
+                Ok(MediaDescription::new(SlotDescription::new(
+                    SlotId(id),
+                    kind,
+                    row.slot,
+                    kind == SlotKind::Floppy,
+                ))
+                .with_size(Some(row.bytes))
+                .with_detail(format!(
+                    "journal-changed:{}\tselection:{}\tmedium:{}",
+                    if row.changed { "yes" } else { "no" },
+                    row.selection,
+                    row.name.as_deref().unwrap_or("(none)")
+                )))
+            })
+            .collect()
+    }
+    fn current(&self, label: &str) -> anyhow::Result<Box<dyn unemu_core_api::ContentReader + '_>> {
+        Ok(self.snapshot.current(self.store, label)?)
+    }
+}
+
 #[cfg(test)]
 fn run_started(
     machine: &mut unemu_pc_core::PcMachine,

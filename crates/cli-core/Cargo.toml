@@ -21,6 +21,7 @@ media.workspace = true
 recipe = { path = "../recipe", version = "0.0.4" }
 anyhow.workspace = true
 toml.workspace = true
+sha2.workspace = true
 
 # Terminal password entry: termios raw mode for `image login`.
 [target.'cfg(unix)'.dependencies]

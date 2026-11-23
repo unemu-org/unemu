@@ -5,6 +5,9 @@
 #[path = "../../pc-image/tests/support/workspace.rs"]
 mod support;
 
+#[path = "support/export.rs"]
+mod export_support;
+use export_support::Export;
 use pc_image::machine;
 use std::{fs, path::PathBuf, process::Command};
 
@@ -57,8 +60,8 @@ fn export_tempdir_child() {
                 snapshot.media(&store).unwrap();
             }
             "success" => {
-                let path = output.join("disk.img");
-                snapshot.export(&store, "C:", &path).unwrap();
+                let path = output.join("slot-2.img");
+                snapshot.export(&store, "C:", &output).unwrap();
                 let bytes = fs::read(&path).unwrap();
                 assert_eq!(bytes.len(), 32 * 512);
                 assert_eq!(&bytes[..512], &[0x23; 512]);
@@ -71,7 +74,7 @@ fn export_tempdir_child() {
             }
             _ => {
                 let error = snapshot
-                    .export_with_hook(&store, "C:", &output.join("failed.img"), |_| {
+                    .export_with_hook(&store, "C:", &output, |_| {
                         Err(std::io::Error::other("injected failure"))
                     })
                     .err()

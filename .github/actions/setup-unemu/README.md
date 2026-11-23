@@ -80,7 +80,7 @@ jobs:
         run: |
           set -euo pipefail
           unemu image media import media/disk1.img media/disk2.img \
-            --title "Example installation set" --tag example/media/example:1.0.0 \
+            --title "Example installation set" --tag unemu/media/example:1.0.0 \
             --extra media/LICENSE.TXT:LICENSE.TXT --extra media/SOURCE.TAR:SOURCE.TAR \
             --open --license GPL-2.0-or-later --license-text LICENSE.TXT --source SOURCE.TAR \
             --store "$RUNNER_TEMP/store" --create
@@ -88,21 +88,16 @@ jobs:
       # The guard's verdict and every blob's class, without network access or
       # credentials.
       - name: Check the publication guard
-        run: unemu image push example/media/example:1.0.0 --store "$RUNNER_TEMP/store" --dry-run
+        run: unemu image push unemu/media/example:1.0.0 --store "$RUNNER_TEMP/store" --dry-run
 
       # Only this step sees the registry credentials.
       - name: Push the media set
         env:
-          UNEMU_REGISTRY_HOST: registry.example.org
+          UNEMU_REGISTRY_HOST: registry.unemu.dev
           UNEMU_REGISTRY_USER: ${{ secrets.UNEMU_REGISTRY_USER }}
           UNEMU_REGISTRY_PASSWORD: ${{ secrets.UNEMU_REGISTRY_PASSWORD }}
-        run: unemu image push example/media/example:1.0.0 --store "$RUNNER_TEMP/store"
+        run: unemu image push unemu/media/example:1.0.0 --store "$RUNNER_TEMP/store"
 ```
-
-The example publishes to a registry and namespace of your own. The official
-`unemu/` namespace on `registry.unemu.dev` holds only the outputs of the pinned
-recipes of [unemu-org/software](https://github.com/unemu-org/software), each
-with its recipe artifact; nothing else pushes there.
 
 `UNEMU_REGISTRY_USER` and `UNEMU_REGISTRY_PASSWORD` are sent only to the host
 in `UNEMU_REGISTRY_HOST` (`registry.unemu.dev` when unset). Keep them on the
@@ -116,7 +111,7 @@ registry, never into `unemu/`, and an open copyleft medium leaves the private
 ones only with its source archive in the same set. There is no override;
 `--dry-run` prints the verdict.
 
-Version tags never move: once `example/media/example:1.0.0` names an image on
+Version tags never move: once `unemu/media/example:1.0.0` names an image on
 the registry, a push of other bytes under it is refused (a push of the same
 image again changes nothing). From v0.0.2 on, the tags of installation media
 sets (such as `freedos:1.4` or `1.4-720k`) never move either, not even with

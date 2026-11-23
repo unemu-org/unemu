@@ -5,6 +5,9 @@
 #[path = "../../pc-image/tests/support/workspace.rs"]
 mod support;
 
+#[path = "support/export.rs"]
+mod export_support;
+use export_support::Export;
 use image_store::Digest;
 use journal_files::SectorSource;
 use pc_image::machine;
@@ -41,11 +44,19 @@ fn files(root: &Path) -> BTreeMap<PathBuf, (Vec<u8>, bool)> {
 }
 
 fn exported(f: &support::Fixture, id: &str, slot: &str, name: &str) -> (PathBuf, String) {
-    let path = f.path.join(name);
-    let options = ["--slot", slot, "--to", path.to_str().unwrap()];
+    let directory = f.path.join(name);
+    let options = [
+        "--format",
+        "raw",
+        "--slot",
+        slot,
+        "--to",
+        directory.to_str().unwrap(),
+    ];
     let (code, out, err) = run(f, id, &options);
     assert_eq!(code, 0, "{err}");
-    (path, out)
+    let name = out.lines().next().unwrap().split('\t').next().unwrap();
+    (directory.join(name), out)
 }
 
 fn run(f: &support::Fixture, id: &str, options: &[&str]) -> (u8, String, String) {
@@ -74,10 +85,13 @@ fn lists_current_media() {
         pc_image::machine::create_from_tag(&f.store, "test:source", Some("export"), None).unwrap();
     let (code, out, err) = run(&f, &id, &[]);
     assert_eq!(code, 0, "{err}");
-    assert_eq!(
-        out,
-        "A:\tfloppy\t368640\tjournal-changed:no\tselection:configured\tmedium:one.img\nC:\tfixed\t16384\tjournal-changed:no\tselection:configured\tmedium:C: image\n"
+    assert!(
+        out.contains("format:raw\tRaw disk image\t.img\tslot\tavailable"),
+        "{out}"
     );
+    assert!(out.contains("format:machine\tPC machine file\t.toml\tmachine\tavailable"));
+    assert!(out.contains("A:\tfloppy\t368640\t5.25-inch 360K"));
+    assert!(out.contains("C:\tfixed\t16384\tCHS"));
 }
 
 #[test]
@@ -90,10 +104,11 @@ fn exports_unchanged_raw_and_prints_its_identity_without_changing_the_store() {
     let (path, out) = exported(&f, &id, "C:", "out.img");
     let raw = fs::read(&path).unwrap();
     assert_eq!(raw, fs::read(f.path.join("fixed.img")).unwrap());
-    assert_eq!(
-        out,
-        format!("{}\tbytes:16384\t{}\n", path.display(), Digest::of(&raw))
+    assert!(
+        out.starts_with(&format!("slot-2.img\tbytes:16384\t{}\n", Digest::of(&raw))),
+        "{out}"
     );
+    assert!(out.contains("note:"));
     assert_eq!(before, files(f.store.root()));
 }
 
@@ -135,7 +150,7 @@ fn journal_export_matches_sector_source_and_restored_writes_are_not_changes() {
     assert_eq!(before, files(f.store.root()));
     let (code, out, err) = run(&f, &id, &[]);
     assert_eq!(code, 0, "{err}");
-    assert!(out.contains("C:\tfixed\t16384\tjournal-changed:yes"));
+    assert!(out.contains("C:\tfixed\t16384\tCHS"));
     let mut journal = journal_files::JournalMedia::open(
         &journal_path,
         &raw,
@@ -147,7 +162,7 @@ fn journal_export_matches_sector_source_and_restored_writes_are_not_changes() {
     journal.finish().unwrap();
     let (code, out, err) = run(&f, &id, &[]);
     assert_eq!(code, 0, "{err}");
-    assert!(out.contains("C:\tfixed\t16384\tjournal-changed:no"));
+    assert!(out.contains("C:\tfixed\t16384\tCHS"));
 }
 
 #[test]
@@ -205,10 +220,17 @@ fn refuses_running_machine_and_holds_the_lock_until_export_finishes() {
     };
     let id = machine(&f);
     let owner = machine::own(&f.store, &id).unwrap();
-    let target = f.path.join("out.img");
+    let target = f.path.join("slot-2.img");
     for options in [
         vec![],
-        vec!["--slot", "C:", "--to", target.to_str().unwrap()],
+        vec![
+            "--format",
+            "raw",
+            "--slot",
+            "C:",
+            "--to",
+            f.path.to_str().unwrap(),
+        ],
     ] {
         let (code, _, err) = run(&f, &id, &options);
         assert_ne!(code, 0);
@@ -253,15 +275,26 @@ fn refuses_recovery_without_modifying_the_journal_or_creating_outputs() {
         .write_all(b"torn frame")
         .unwrap();
     let before = files(f.store.root());
-    let target = f.path.join("out.img");
-    for options in [
-        vec![],
-        vec!["--slot", "C:", "--to", target.to_str().unwrap()],
-    ] {
-        let (code, _, err) = run(&f, &id, &options);
-        assert_ne!(code, 0);
-        assert!(err.contains("needs recovery"), "{err}");
-    }
+    let target = f.path.join("slot-2.img");
+    let (code, _, err) = run(&f, &id, &[]);
+    assert_eq!(
+        code, 0,
+        "config-only listing must not read the journal: {err}"
+    );
+    let (code, _, err) = run(
+        &f,
+        &id,
+        &[
+            "--format",
+            "raw",
+            "--slot",
+            "C:",
+            "--to",
+            f.path.to_str().unwrap(),
+        ],
+    );
+    assert_ne!(code, 0);
+    assert!(err.contains("needs recovery"), "{err}");
     assert!(!target.exists());
     assert_eq!(before, files(f.store.root()));
 }
@@ -272,9 +305,20 @@ fn refuses_existing_outputs_including_dangling_symlinks() {
         return;
     };
     let id = machine(&f);
-    let path = f.path.join("out.img");
+    let path = f.path.join("slot-2.img");
     fs::write(&path, b"keep").unwrap();
-    let (code, _, err) = run(&f, &id, &["--slot", "C:", "--to", path.to_str().unwrap()]);
+    let (code, _, err) = run(
+        &f,
+        &id,
+        &[
+            "--format",
+            "raw",
+            "--slot",
+            "C:",
+            "--to",
+            f.path.to_str().unwrap(),
+        ],
+    );
     assert_ne!(code, 0);
     assert!(err.contains("already exists"), "{err}");
     assert_eq!(fs::read(&path).unwrap(), b"keep");
@@ -283,7 +327,18 @@ fn refuses_existing_outputs_including_dangling_symlinks() {
         fs::remove_file(&path).unwrap();
         let absent = f.path.join("absent");
         std::os::unix::fs::symlink(&absent, &path).unwrap();
-        let (code, _, err) = run(&f, &id, &["--slot", "C:", "--to", path.to_str().unwrap()]);
+        let (code, _, err) = run(
+            &f,
+            &id,
+            &[
+                "--format",
+                "raw",
+                "--slot",
+                "C:",
+                "--to",
+                f.path.to_str().unwrap(),
+            ],
+        );
         assert_ne!(code, 0);
         assert!(err.contains("already exists"), "{err}");
         assert_eq!(fs::read_link(&path).unwrap(), absent);
@@ -298,30 +353,33 @@ fn removes_partial_output_when_streaming_fails() {
     };
     let id = machine(&f);
     let snapshot = machine::export::open(&f.store, &id).unwrap();
-    let path = f.path.join("partial.img");
+    let path = f.path.join("slot-0.img");
     let before = files(f.store.root());
     let error = snapshot
-        .export_with_hook(&f.store, "A:", &path, |written| {
-            assert_eq!(written, 64 * 1024);
+        .export_with_hook(&f.store, "A:", &f.path, |written| {
+            assert!(written > 0);
             assert!(!path.exists());
             let partial = fs::read_dir(&f.path)
                 .unwrap()
-                .map(|entry| entry.unwrap().path())
+                .map(|entry| entry.unwrap())
                 .find(|entry| {
                     entry
                         .file_name()
-                        .unwrap()
                         .to_string_lossy()
-                        .starts_with(".partial.img.unemu-export-")
+                        .starts_with(".slot-0.img.unemu-export-")
                 })
-                .expect("export temp file");
-            assert_eq!(fs::metadata(partial).unwrap().len(), written);
+                .unwrap();
+            assert_eq!(partial.metadata().unwrap().len(), written);
             Err(std::io::Error::other("injected output failure"))
         })
-        .err()
-        .unwrap();
+        .unwrap_err();
     assert!(error.to_string().contains("injected output failure"));
     assert!(!path.exists());
+    assert!(!fs::read_dir(&f.path).unwrap().any(|entry| entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .ends_with(".part")));
     assert_eq!(before, files(f.store.root()));
     let (_, _, err) = run(&f, &id, &[]);
     assert!(err.is_empty(), "{err}");
@@ -384,7 +442,7 @@ fn compacted_journal_exports_match_random_access_run_reads() {
         let before = files(f.store.root());
         let (code, out, err) = run(&f, &id, &[]);
         assert_eq!(code, 0, "{kind}: {err}");
-        assert!(out.contains("C:\tfixed\t16384\tjournal-changed:yes"));
+        assert!(out.contains("C:\tfixed\t16384\tCHS"));
         let (path, _) = exported(&f, &id, "C:", "compacted.img");
         assert_eq!(fs::read(path).unwrap(), expected, "{kind}");
         assert_eq!(before, files(f.store.root()));
@@ -430,24 +488,23 @@ fn export_reads_settings_only_after_acquiring_the_workspace_lock() {
     let rows = snapshot.media(&f.store).unwrap();
     assert!(rows.iter().any(|row| row.slot == "B:"), "stale settings");
     assert!(machine::own(&f.store, &id).is_err());
-    snapshot
-        .export(&f.store, "C:", &f.path.join("latest.img"))
-        .unwrap();
+    snapshot.export(&f.store, "C:", &f.path).unwrap();
     assert_eq!(before.unwrap(), files(f.store.root()));
 }
 
 #[test]
-fn streaming_failure_preserves_a_replacement_at_the_output_path() {
+fn streaming_failure_preserves_a_final_created_by_another_party() {
     let Some(f) = support::Fixture::new() else {
         return;
     };
     let id = machine(&f);
     let snapshot = machine::export::open(&f.store, &id).unwrap();
-    let path = f.path.join("partial.img");
+    let path = f.path.join("slot-0.img");
     let before = files(f.store.root());
     let error = snapshot
-        .export_with_hook(&f.store, "A:", &path, |written| {
-            assert_eq!(written, 64 * 1024);
+        .export_with_hook(&f.store, "A:", &f.path, |written| {
+            assert!(written > 0);
+            assert!(!path.exists());
             fs::write(&path, b"replacement must survive").unwrap();
             Err(std::io::Error::other("injected output failure"))
         })
@@ -460,33 +517,28 @@ fn streaming_failure_preserves_a_replacement_at_the_output_path() {
 }
 
 #[test]
-fn publish_refuses_a_destination_created_after_the_last_write() {
+fn repeat_export_refuses_completed_output_without_overwriting() {
     let Some(f) = support::Fixture::new() else {
         return;
     };
     let id = machine(&f);
-    let snapshot = machine::export::open(&f.store, &id).unwrap();
-    let output = f.path.join("output");
-    fs::create_dir(&output).unwrap();
-    let path = output.join("late.img");
-    let before = files(f.store.root());
-    let error = snapshot
-        .export_with_hook(&f.store, "A:", &path, |written| {
-            if written == 360 * 1024 {
-                fs::write(&path, b"late destination must survive")?;
-            }
-            Ok(())
-        })
-        .err()
-        .expect("publish must refuse the late destination");
-    assert!(error.to_string().contains("exist"), "{error}");
-    assert_eq!(fs::read(&path).unwrap(), b"late destination must survive");
-    assert_eq!(
-        fs::read_dir(&output).unwrap().count(),
-        1,
-        "temp file leaked"
+    let (path, _) = exported(&f, &id, "A:", "output");
+    let before = fs::read(&path).unwrap();
+    let (code, _, err) = run(
+        &f,
+        &id,
+        &[
+            "--format",
+            "raw",
+            "--slot",
+            "A:",
+            "--to",
+            path.parent().unwrap().to_str().unwrap(),
+        ],
     );
-    assert_eq!(before, files(f.store.root()));
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("already exists"));
+    assert_eq!(fs::read(path).unwrap(), before);
 }
 
 #[test]
@@ -495,14 +547,21 @@ fn rejects_unknown_ids_slots_and_incomplete_options() {
         return;
     };
     let id = machine(&f);
-    let target = f.path.join("out.img");
+    let target = f.path.join("slot-2.img");
     let (code, _, err) = run(&f, "missing", &[]);
     assert_ne!(code, 0);
     assert!(err.contains("unemu image machine ls"), "{err}");
     let (code, _, err) = run(
         &f,
         &id,
-        &["--slot", "unknown", "--to", target.to_str().unwrap()],
+        &[
+            "--format",
+            "raw",
+            "--slot",
+            "unknown",
+            "--to",
+            f.path.to_str().unwrap(),
+        ],
     );
     assert_ne!(code, 0);
     assert!(
@@ -549,8 +608,19 @@ fn uses_the_executables_default_store_and_rejects_store_destinations() {
     );
     assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
     assert!(String::from_utf8(out).unwrap().contains("C:\tfixed\t16384"));
-    let target = f.store.root().join("out.img");
-    let (code, _, err) = run(&f, &id, &["--slot", "C:", "--to", target.to_str().unwrap()]);
+    let target = f.store.root().join("slot-2.img");
+    let (code, _, err) = run(
+        &f,
+        &id,
+        &[
+            "--format",
+            "raw",
+            "--slot",
+            "C:",
+            "--to",
+            target.parent().unwrap().to_str().unwrap(),
+        ],
+    );
     assert_ne!(code, 0);
     assert!(err.contains("outside the read-only store"), "{err}");
     assert!(!target.exists());
@@ -582,12 +652,20 @@ fn lists_empty_slots_and_refuses_to_export_them() {
     machine::change_settings(&f.store, &id, settings, true).unwrap();
     let (code, out, err) = run(&f, &id, &[]);
     assert_eq!(code, 0, "{err}");
-    assert!(
-        out.contains("B:\tfloppy\t0\tjournal-changed:no\tselection:empty\tmedium:(none)"),
-        "{out}"
+    assert!(out.contains("B:\tfloppy\t"), "{out}");
+    let target = f.path.join("slot-2.img");
+    let (code, _, err) = run(
+        &f,
+        &id,
+        &[
+            "--format",
+            "raw",
+            "--slot",
+            "B:",
+            "--to",
+            f.path.to_str().unwrap(),
+        ],
     );
-    let target = f.path.join("out.img");
-    let (code, _, err) = run(&f, &id, &["--slot", "B:", "--to", target.to_str().unwrap()]);
     assert_ne!(code, 0);
     assert!(err.contains("slot B: is empty"), "{err}");
     assert!(!target.exists());
@@ -604,8 +682,19 @@ fn refuses_a_damaged_base_without_writing_output() {
     let mut damaged = fs::read(&blob).unwrap();
     damaged[700] ^= 1;
     fs::write(&blob, damaged).unwrap();
-    let target = f.path.join("out.img");
-    let (code, _, err) = run(&f, &id, &["--slot", "C:", "--to", target.to_str().unwrap()]);
+    let target = f.path.join("slot-2.img");
+    let (code, _, err) = run(
+        &f,
+        &id,
+        &[
+            "--format",
+            "raw",
+            "--slot",
+            "C:",
+            "--to",
+            target.parent().unwrap().to_str().unwrap(),
+        ],
+    );
     assert_eq!(code, 1);
     assert!(
         err.contains("digest mismatch") || err.contains("sha256"),
@@ -691,12 +780,7 @@ fn pending_insert_export_matches_what_machine_run_will_mount() {
     let before = files(f.store.root());
     let (code, out, err) = run(&f, &id, &[]);
     assert_eq!(code, 0, "{err}");
-    assert!(
-        out.contains(
-            "A:\tfloppy\t368640\tjournal-changed:yes\tselection:pending-insert\tmedium:setup.img"
-        ),
-        "{out}"
-    );
+    assert!(out.contains("A:\tfloppy\t368640\t5.25-inch 360K"), "{out}");
     let (path, _) = exported(&f, &id, "A:", "pending.img");
     assert_eq!(fs::read(path).unwrap(), expected);
     assert_eq!(before, files(f.store.root()));
@@ -734,14 +818,161 @@ fn desktop_kept_selection_is_ignored_as_it_is_by_machine_run() {
     let before = files(f.store.root());
     let (code, out, err) = run(&f, &id, &[]);
     assert_eq!(code, 0, "{err}");
-    assert!(
-        out.contains("selection:configured\tmedium:one.img"),
-        "{out}"
-    );
+    assert!(out.contains("A:\tfloppy\t368640"), "{out}");
     let (path, _) = exported(&f, &id, "A:", "configured.img");
     assert_eq!(
         fs::read(path).unwrap(),
         fs::read(f.path.join("one.img")).unwrap()
     );
     assert_eq!(before, files(f.store.root()));
+}
+
+#[test]
+fn contract_formats_export_current_bytes_and_loadable_machine() {
+    let Some(f) = support::Fixture::new() else {
+        return;
+    };
+    let id = machine(&f);
+    let (code, listed, err) = run(&f, &id, &[]);
+    assert_eq!(code, 0, "{err}");
+    for format in ["raw", "vhd-fixed", "machine"] {
+        assert!(listed.contains(&format!("format:{format}\t")), "{listed}");
+        let dir = f.path.join(format);
+        fs::create_dir(&dir).unwrap();
+        let mut options = vec!["--format", format, "--to", dir.to_str().unwrap()];
+        if format != "machine" {
+            options.extend(["--slot", "C:"]);
+        }
+        let (code, out, err) = run(&f, &id, &options);
+        assert_eq!(code, 0, "{format}: {err}");
+        assert!(out.contains("sha256:"), "{out}");
+        let paths: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        let raw = fs::read(f.path.join("fixed.img")).unwrap();
+        if format == "raw" {
+            assert_eq!(fs::read(&paths[0]).unwrap(), raw);
+        }
+        if format == "vhd-fixed" {
+            let vhd = fs::read(&paths[0]).unwrap();
+            assert_eq!(vhd.len(), raw.len() + 512);
+            assert_eq!(&vhd[..raw.len()], raw);
+            assert_eq!(&vhd[raw.len()..raw.len() + 8], b"conectix");
+        }
+        if format == "machine" {
+            let document = paths
+                .iter()
+                .find(|p| p.extension().is_some_and(|e| e == "toml"))
+                .unwrap();
+            struct Reader<'a>(&'a support::Fixture);
+            impl machine_file::ImageReader for Reader<'_> {
+                fn read(&mut self, path: &Path) -> std::io::Result<Vec<u8>> {
+                    if path.is_file() {
+                        return fs::read(path);
+                    }
+                    let digest: Digest =
+                        format!("sha256:{}", path.file_name().unwrap().to_str().unwrap())
+                            .parse()
+                            .unwrap();
+                    for name in ["bios.bin", "xtide.bin"] {
+                        let bytes = fs::read(self.0.path.join(name))?;
+                        if Digest::of(&bytes) == digest {
+                            return Ok(bytes);
+                        }
+                    }
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "unbound firmware",
+                    ))
+                }
+            }
+            let loaded = machine_file::load_with_reader(document, &mut Reader(&f)).unwrap();
+            assert_eq!(loaded.drives.len(), 2);
+            let text = fs::read_to_string(document).unwrap();
+            for path in paths
+                .iter()
+                .filter(|p| p.extension().is_some_and(|e| e == "img"))
+            {
+                assert!(text.contains(path.file_name().unwrap().to_str().unwrap()));
+            }
+            for drive in &loaded.drives {
+                let image = drive
+                    .media
+                    .as_ref()
+                    .map(|media| &media.entries[media.inserted].image)
+                    .unwrap_or(&drive.image);
+                let bytes = match image {
+                    assembly::ImageSource::File(path) => fs::read(path).unwrap(),
+                    assembly::ImageSource::Inline(bytes) => bytes.clone(),
+                    _ => panic!("exported medium must have current bytes"),
+                };
+                assert!(paths
+                    .iter()
+                    .filter(|p| p.extension().is_some_and(|e| e == "img"))
+                    .any(|p| fs::read(p).unwrap() == bytes));
+            }
+            assert!(paths.len() >= 3);
+        }
+        assert!(out.contains("note:"), "{out}");
+        let snapshot = machine::export::open(&f.store, &id).unwrap();
+        let source = export_support::Source {
+            snapshot: &snapshot,
+            store: &f.store,
+        };
+        let expected_dir = f.path.join(format!("{format}-receipts"));
+        fs::create_dir(&expected_dir).unwrap();
+        let mut sink = cli_core::image::machine_export::FileSink::new(&expected_dir).unwrap();
+        let report = cli_core::image::machine_export::export(
+            &unemu_pc_core::PcCore,
+            pc_image::PLATFORM,
+            &source,
+            format,
+            if format == "machine" {
+                None
+            } else {
+                Some("C:")
+            },
+            &mut sink,
+        )
+        .unwrap();
+        for note in &report.notes {
+            assert!(
+                out.contains(&format!("note:{note}\n")),
+                "missing note: {note}"
+            );
+        }
+        let mut expected = Vec::new();
+        cli_core::image::machine_export::print(&report, &mut expected).unwrap();
+        assert_eq!(out.as_bytes(), expected);
+    }
+}
+
+#[test]
+fn current_reader_handles_unaligned_reads_and_detects_changed_verified_base() {
+    use unemu_core_api::ErrorKind;
+    let Some(f) = support::Fixture::new() else {
+        return;
+    };
+    let id = machine(&f);
+    f.changed(&id, 0x37);
+    let snapshot = machine::export::open(&f.store, &id).unwrap();
+    let reader = snapshot.current(&f.store, "C:").unwrap();
+    let mut bytes = [0; 514];
+    reader.read_at(1, &mut bytes).unwrap();
+    assert_eq!(&bytes[..511], &[0x37; 511]);
+    assert_eq!(&bytes[511..], &[0; 3]);
+    assert_eq!(
+        reader.read_at(reader.size(), &mut [0]).unwrap_err().kind,
+        ErrorKind::Usage
+    );
+    let digest = Digest::of(&fs::read(f.path.join("fixed.img")).unwrap());
+    let path = f.store.blob_file_path(&digest, reader.size()).unwrap();
+    let mut changed = fs::read(&path).unwrap();
+    changed[700] ^= 1;
+    fs::write(path, changed).unwrap();
+    assert_eq!(
+        reader.read_at(0, &mut bytes).unwrap_err().kind,
+        ErrorKind::Content
+    );
 }

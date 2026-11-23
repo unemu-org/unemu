@@ -133,6 +133,15 @@ pub trait CliPlatform {
         let _ = (owner, request, core);
         anyhow::bail!(image::NO_STORED_RUN)
     }
+    /// Retain the store's stopped-machine snapshot for the neutral exporter.
+    fn export_snapshot<'a>(
+        &self,
+        store: &'a Store,
+        id: &str,
+    ) -> anyhow::Result<Option<Box<dyn image::machine_export::Snapshot + 'a>>> {
+        let _ = (store, id);
+        Ok(None)
+    }
     /// The usage lines of the platform's own commands that go in `slot`,
     /// each ending in a line break; empty when none do.
     fn usage(&self, slot: UsageSlot) -> &str;
@@ -238,6 +247,8 @@ pub fn usage(platforms: &[&dyn CliPlatform]) -> String {
         "       unemu image firmware show NAME:TAG [--store DIR]\n",
         "       unemu image media ls --store DIR\n",
         "       unemu image media show NAME:TAG --store DIR\n",
+        "       unemu image machine export ID [--store DIR]\n",
+        "       unemu image machine export ID --format FMT [--slot NAME] --to DIR [--store DIR]\n",
         "       unemu image export NAME:TAG --to DIR [--files] [--store DIR] (every layer as a plain file under its file name, with config.toml, manifest.json, EXPORT-VERSION and SHA256SUMS; --files also the files of the set's FAT12 disks; exit 1 refused, nothing overwritten)\n",
         "       unemu image push NAME:TAG [REFERENCE] --store DIR [--registry HOST] [--move] [--dry-run] [--config FILE]\n",
         "       unemu image pull REFERENCE --store DIR [--tag NAME:TAG] [--create] [--registry HOST] [--config FILE]\n",

@@ -12,6 +12,7 @@
 
 pub mod export;
 pub mod firmware;
+pub mod machine_export;
 pub mod media;
 pub mod registry;
 
@@ -29,6 +30,7 @@ pub enum ImageCommand {
         max_steps: u64,
         fresh: bool,
     },
+    MachineExport(machine_export::Command),
     MachineRun {
         store: PathBuf,
         id: String,
@@ -242,6 +244,9 @@ fn parse_machine_run(args: &[OsString]) -> Result<ImageCommand, &'static str> {
 
 /// Parse the words after `image`: `Ok(None)` when they are a platform's.
 pub fn parse(args: &[OsString]) -> Result<Option<ImageCommand>, &'static str> {
+    if args.first().is_some_and(|a| a == "machine") && args.get(1).is_some_and(|a| a == "export") {
+        return machine_export::parse(&args[2..]).map(|c| Some(ImageCommand::MachineExport(c)));
+    }
     if args.first().is_some_and(|a| a == "machine") && args.get(1).is_some_and(|a| a == "run") {
         return parse_machine_run(&args[2..]).map(Some);
     }
@@ -368,6 +373,12 @@ pub fn execute(
                 cores,
                 host,
             )?;
+        }
+        ImageCommand::MachineExport(command) => {
+            if let Err(error) = machine_export::execute(command, output, host, platforms, cores) {
+                writeln!(io.errors, "{error:#}")?;
+                return Ok(machine_export::exit_code(&error));
+            }
         }
         ImageCommand::MachineRun {
             store,

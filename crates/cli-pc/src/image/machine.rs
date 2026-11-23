@@ -2,7 +2,7 @@
 //! `image machine`: named local instances of images, mirroring the desktop's
 //! machine actions; machine-images §3.2.
 //!
-//! Except for read-only export, every command opens the store through [`pc_image::machine::open_store`],
+//! Every command opens the store through [`pc_image::machine::open_store`],
 //! which first makes older workspaces machines; adopted ids are reported on
 //! the error stream as `migrated:ID`, and workspaces left as they are as
 //! `migration-skipped:NAME\tREASON`. Output lines are tab-separated.
@@ -13,11 +13,6 @@ use std::{ffi::OsString, io::Write, path::PathBuf};
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
     List,
-    Export {
-        id: String,
-        slot: Option<String>,
-        to: Option<PathBuf>,
-    },
     New {
         image: String,
         name: Option<String>,
@@ -100,14 +95,6 @@ pub fn parse(args: &[OsString]) -> Result<MachineCommand, &'static str> {
     let (id, mut index) = match verb {
         "ls" => (String::new(), 1),
         "new" => (word(args, 1, "image machine new requires NAME:TAG")?, 2),
-        "export" => (
-            word(
-                args,
-                1,
-                "export requires a machine ID; use unemu image machine ls",
-            )?,
-            2,
-        ),
         "rename" | "duplicate" | "reset" | "rm" | "settings" | "commit" => (
             word(args, 1, "image machine commands require a machine ID")?,
             2,
@@ -123,7 +110,6 @@ pub fn parse(args: &[OsString]) -> Result<MachineCommand, &'static str> {
     let (mut store, mut name, mut tag, mut title) = (None, None, None, None);
     let (mut yes, mut clear, mut dry_run, mut keep) = (false, false, false, false);
     let mut set = Vec::new();
-    let (mut slot, mut to) = (None, None);
     while index < args.len() {
         let option = args[index].to_str().ok_or("invalid machine option")?;
         index += 1;
@@ -154,8 +140,6 @@ pub fn parse(args: &[OsString]) -> Result<MachineCommand, &'static str> {
             .to_owned();
         index += 1;
         match option {
-            "--slot" if verb == "export" && slot.is_none() => slot = Some(value),
-            "--to" if verb == "export" && to.is_none() => to = Some(PathBuf::from(value)),
             "--store" if store.is_none() => store = Some(PathBuf::from(value)),
             "--name" if matches!(verb, "new" | "duplicate") && name.is_none() => name = Some(value),
             "--tag" if verb == "commit" && tag.is_none() => tag = Some(value),
@@ -167,12 +151,8 @@ pub fn parse(args: &[OsString]) -> Result<MachineCommand, &'static str> {
     if clear && !set.is_empty() {
         return Err("--clear and --set exclude each other");
     }
-    if verb == "export" && slot.is_some() != to.is_some() {
-        return Err("export requires --slot NAME and --to FILE together");
-    }
     let action = match verb {
         "ls" => Action::List,
-        "export" => Action::Export { id, slot, to },
         "new" => Action::New { image: id, name },
         "rename" => Action::Rename {
             id,
@@ -195,7 +175,7 @@ pub fn parse(args: &[OsString]) -> Result<MachineCommand, &'static str> {
         },
         _ => return Err(EXPECTED),
     };
-    if verb != "export" && store.is_none() {
+    if store.is_none() {
         return Err("image commands require --store DIR");
     }
     Ok(MachineCommand { store, action })
@@ -275,37 +255,6 @@ pub fn execute(
         .as_deref()
         .or(default_store)
         .ok_or_else(|| anyhow::anyhow!("default store unavailable; use --store DIR"))?;
-    if let Action::Export { id, slot, to } = command.action {
-        // Export skips the migration performed by editing commands because it
-        // must leave the store and workspace unchanged.
-        let store =
-            image_store::Store::open_existing(root)?.with_compatibility(compatibility.clone());
-        let snapshot = machine::export::open(&store, &id)?;
-        if let (Some(slot), Some(to)) = (slot, to) {
-            let exported = snapshot.export(&store, &slot, &to)?;
-            writeln!(
-                output,
-                "{}\tbytes:{}\t{}",
-                to.display(),
-                exported.bytes,
-                exported.sha256
-            )?;
-        } else {
-            for medium in snapshot.media(&store)? {
-                writeln!(
-                    output,
-                    "{}\t{}\t{}\tjournal-changed:{}\tselection:{}\tmedium:{}",
-                    medium.slot,
-                    medium.kind,
-                    medium.bytes,
-                    if medium.changed { "yes" } else { "no" },
-                    medium.selection,
-                    medium.name.as_deref().unwrap_or("(none)")
-                )?;
-            }
-        }
-        return Ok(());
-    }
     let (store, migration) = machine::open_store_with_compatibility(root, compatibility.clone())?;
     for id in migration.adopted {
         writeln!(errors, "migrated:{id}")?;
@@ -314,7 +263,6 @@ pub fn execute(
         writeln!(errors, "migration-skipped:{name}\t{reason}")?;
     }
     match command.action {
-        Action::Export { .. } => unreachable!("export handled before migration"),
         Action::List => {
             for listing in machine::list(&store)? {
                 writeln!(output, "{}", row(&store, &listing))?;

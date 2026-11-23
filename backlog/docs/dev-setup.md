@@ -84,7 +84,7 @@ pinned, to `ba0ece5d1bdad3d4ec813d5a795a54175118a46b`.
 
 The neutral session `machine-view` and synthetic `unemu-test-core` come from
 [unemu-org/unemu-host](https://github.com/unemu-org/unemu-host), version 0.0.4,
-pinned to `cfa7c3a08c9307a5c542ef27ce44a7fef462578e` in `Cargo.toml` and
+pinned to `1692a1fcfd6c9900d3074786a54f51c9de3b30f0` in `Cargo.toml` and
 `Cargo.lock`. They are not workspace crates. Land their changes in unemu-host
 first, then re-pin this workspace and run its gate, as for a core change.
 

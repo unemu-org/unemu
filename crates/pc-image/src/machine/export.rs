@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Read-only raw media exports of stopped library machines through SectorSource.
+//! Store-owned next-run config and current media under stopped-machine locks.
 
 use crate::*;
 use image_store::{ResolvedImage, Store};
@@ -7,7 +7,7 @@ use journal_files::{SectorSource, SparseOverlay, VerifiedBase};
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    io::{self, BufWriter, Write},
+    io,
     path::{Path, PathBuf},
 };
 
@@ -22,16 +22,11 @@ pub struct MediaRow {
     pub name: Option<String>,
 }
 
-/// The exact length and SHA-256 of the newly written raw bytes.
-pub struct Exported {
-    pub bytes: u64,
-    pub sha256: String,
-}
-
 /// A verified image under the same lock a running machine owns exclusively.
 /// Shared, existing locks prevent starts and deletion without creating files.
 pub struct Snapshot {
     config: Config,
+    document: unemu_core_api::ConfigDocumentBuf,
     image: ResolvedImage,
     names: BTreeMap<(String, u8), String>,
     kinds: BTreeMap<String, &'static str>,
@@ -108,14 +103,57 @@ pub fn open_with_hook(
     let (config, descriptors, _) =
         crate::provider::select_config(store, &prepared, record.settings.as_ref())?;
     let machine = crate::provider::prepare(config.clone(), &descriptors, store)?.machine;
+    let mut document = crate::provider::export_document(&config, &descriptors, store)?;
     let mut pending = BTreeMap::new();
     for insert in &record.pending {
         let selected = super::select_insert(store, &machine, insert)?;
-        let (_, medium, _) = selected
+        let (_, medium, format) = selected
             .entries
             .into_iter()
             .next()
             .ok_or_else(|| invalid("pending insert has no selected medium"))?;
+        let id = super::next_insert_id(&document.config);
+        let digest = medium.blob.to_config()?;
+        let size = selected
+            .resolved
+            .manifest
+            .layers
+            .iter()
+            .find(|d| d.names(&medium.blob))
+            .ok_or_else(|| invalid("missing pending medium descriptor"))?
+            .decoded_size()?;
+        if !document.content.iter().any(|row| row.digest == digest) {
+            document.content.push(pc_config::launch::ContentRow {
+                digest,
+                sha256: crate::provider::hash_array(&medium.blob)?,
+                size,
+            });
+        }
+        document.config.media.push(Medium {
+            id: id.clone(),
+            source: format!("assets/{id}.img"),
+            head: digest,
+            name: Some(medium.label.clone()),
+            policy: if insert.journal {
+                Policy::Journal
+            } else {
+                Policy::Readonly
+            },
+            geometry: pc_config::image::Geometry::of(assembly::DriveKind::Floppy {
+                geometry: format,
+            }),
+        });
+        if insert.journal {
+            document.records.push(pc_config::launch::RecordRow {
+                medium: id.clone(),
+                name: format!("kept-{id}.upfj"),
+                keep_generations: assembly::WriteMode::DEFAULT_KEEP_GENERATIONS,
+            });
+        }
+        let slot = &mut document.config.slots[selected.slot_index];
+        slot.catalogue_mode = true;
+        slot.catalogue.insert(0, id.clone());
+        slot.inserted = Some(id);
         pending.insert(
             selected.slot_index,
             Pending {
@@ -145,6 +183,10 @@ pub fn open_with_hook(
         },
     )?;
     Ok(Snapshot {
+        document: unemu_core_api::ConfigDocumentBuf::new(
+            pc_config::launch::MEDIA_TYPE,
+            pc_config::launch::encode(&document)?,
+        ),
         config,
         image: prepared.image,
         names,
@@ -262,81 +304,78 @@ impl Snapshot {
         Ok(rows)
     }
 
-    pub fn export(&self, store: &Store, slot: &str, to: &Path) -> Result<Exported> {
-        self.export_with_hook(store, slot, to, |_| Ok(()))
+    pub fn document(&self) -> unemu_core_api::ConfigDocument<'_> {
+        self.document.as_document()
     }
 
-    /// Fault-injection boundary after each streamed write, before publication.
-    /// An error removes only this export's temporary file.
-    #[doc(hidden)]
-    pub fn export_with_hook(
+    pub fn current(
         &self,
         store: &Store,
-        slot: &str,
-        to: &Path,
-        hook: impl FnMut(u64) -> io::Result<()>,
-    ) -> Result<Exported> {
-        let (index, selected) = self
+        label: &str,
+    ) -> Result<Box<dyn unemu_core_api::ContentReader + '_>> {
+        let (index, slot) = self
             .config
             .slots
             .iter()
             .enumerate()
-            .find(|(_, s)| self.name(s).is_ok_and(|name| name == slot))
-            .ok_or_else(|| invalid(format!("no slot {slot}; omit --slot to list media")))?;
-        let parent = to
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let path = parent.canonicalize()?.join(
-            to.file_name()
-                .ok_or_else(|| invalid("output needs a file name"))?,
-        );
-        if path.starts_with(store.root()) {
-            return Err(invalid(
-                "export destination must be outside the read-only store",
+            .find(|(_, slot)| self.name(slot).is_ok_and(|name| name == label))
+            .ok_or_else(|| invalid(format!("no slot {label}")))?;
+        let (base, journal) = self
+            .source(store, index, slot)?
+            .ok_or_else(|| invalid(format!("slot {label} is empty")))?;
+        let overlay = self.overlay(journal.as_deref(), &base)?;
+        Ok(Box::new(Current { base, overlay }))
+    }
+}
+
+struct Current {
+    base: VerifiedBase,
+    overlay: SparseOverlay,
+}
+impl unemu_core_api::ContentReader for Current {
+    fn size(&self) -> u64 {
+        self.base.byte_len()
+    }
+    fn read_at(
+        &self,
+        offset: u64,
+        bytes: &mut [u8],
+    ) -> std::result::Result<(), unemu_core_api::Error> {
+        use unemu_core_api::{Error, ErrorKind};
+        if offset
+            .checked_add(bytes.len() as u64)
+            .is_none_or(|end| end > self.size())
+        {
+            return Err(Error::new(
+                ErrorKind::Usage,
+                "export read is outside the medium",
             ));
         }
-        match fs::symlink_metadata(&path) {
-            Ok(_) => return Err(invalid(format!("output {} already exists", path.display()))),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => (),
-            Err(e) => return Err(e.into()),
-        }
-        let (base, journal) = self
-            .source(store, index, selected)?
-            .ok_or_else(|| invalid(format!("slot {slot} is empty")))?;
-        let overlay = self.overlay(journal.as_deref(), &base)?;
-        let mut created = Created::new(&path)?;
-        let result = (|| -> Result<Exported> {
-            let mut output = Progress {
-                output: BufWriter::new(&created.file),
-                written: 0,
-                hook,
-            };
-            let sha256 = journal_files::layer::copy_and_digest(&overlay, &mut output)?;
-            output.flush()?;
-            created.file.sync_all()?;
-            Ok(Exported {
-                bytes: output.written,
-                sha256,
-            })
-        })();
-        match result {
-            Ok(exported) => {
-                fs::hard_link(
-                    created
-                        .path
-                        .as_ref()
-                        .ok_or_else(|| invalid("missing export temp file"))?,
-                    &path,
-                )?;
-                created.remove()?;
-                Ok(exported)
+        let checked = || self.base.check_unchanged().map_err(content_error);
+        checked()?;
+        let mut position = offset;
+        let mut remaining = bytes;
+        while !remaining.is_empty() {
+            let start = (position % 512) as usize;
+            if start == 0 && remaining.len() >= 512 {
+                let count = remaining.len() / 512 * 512;
+                self.overlay
+                    .read_range(position / 512, &mut remaining[..count])
+                    .map_err(content_error)?;
+                remaining = &mut remaining[count..];
+                position += count as u64;
+            } else {
+                let sector = self
+                    .overlay
+                    .read_sector(position / 512)
+                    .map_err(content_error)?;
+                let count = remaining.len().min(512 - start);
+                remaining[..count].copy_from_slice(&sector[start..start + count]);
+                remaining = &mut remaining[count..];
+                position += count as u64;
             }
-            Err(error) => match created.remove() {
-                Ok(()) => Err(error),
-                Err(cleanup) => Err(invalid(format!("{error}; {cleanup}"))),
-            },
         }
+        checked()
     }
 }
 
@@ -359,75 +398,12 @@ fn has_changes(base: &VerifiedBase, overlay: &SparseOverlay) -> Result<bool> {
     Ok(changed)
 }
 
-struct Progress<W, F> {
-    output: W,
-    written: u64,
-    hook: F,
-}
-impl<W: Write, F: FnMut(u64) -> io::Result<()>> Write for Progress<W, F> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let count = self.output.write(bytes)?;
-        self.written += count as u64;
-        (self.hook)(self.written)?;
-        Ok(count)
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        self.output.flush()
-    }
-}
-
-struct Created {
-    file: File,
-    path: Option<PathBuf>,
-}
-impl Created {
-    fn new(destination: &Path) -> io::Result<Self> {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        loop {
-            let mut name = std::ffi::OsString::from(".");
-            name.push(
-                destination
-                    .file_name()
-                    .ok_or_else(|| io::Error::other("output needs a file name"))?,
-            );
-            name.push(format!(
-                ".unemu-export-{}-{}.part",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            let path = destination.with_file_name(name);
-            let mut options = fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            match options.open(&path) {
-                Ok(file) => {
-                    return Ok(Self {
-                        file,
-                        path: Some(path),
-                    })
-                }
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    fn remove(&mut self) -> io::Result<()> {
-        if let Some(path) = &self.path {
-            fs::remove_file(path)?;
-            self.path = None;
-        }
-        Ok(())
-    }
-}
-
-impl Drop for Created {
-    fn drop(&mut self) {
-        let _ = self.remove();
-    }
+fn content_error(error: io::Error) -> unemu_core_api::Error {
+    use unemu_core_api::{Error, ErrorKind};
+    let kind = if error.to_string() == "base file changed after verification" {
+        ErrorKind::Content
+    } else {
+        ErrorKind::Storage
+    };
+    Error::new(kind, error.to_string())
 }

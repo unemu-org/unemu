@@ -13,8 +13,6 @@ usage: unemu --version | --about (licence, source and third-party notices)
        unemu image workspace abandon-publication NAME --store DIR
        unemu image publish --from-workspace NAME --store DIR --tag NAME:TAG [--flatten]
        unemu image machine ls --store DIR
-       unemu image machine export ID [--store DIR]
-       unemu image machine export ID --slot NAME --to FILE [--store DIR]
        unemu image machine new NAME:TAG --store DIR [--name NAME]
        unemu image machine rename ID NAME --store DIR
        unemu image machine duplicate ID --store DIR [--name NAME]
@@ -38,6 +36,8 @@ usage: unemu --version | --about (licence, source and third-party notices)
        unemu image firmware show NAME:TAG [--store DIR]
        unemu image media ls --store DIR
        unemu image media show NAME:TAG --store DIR
+       unemu image machine export ID [--store DIR]
+       unemu image machine export ID --format FMT [--slot NAME] --to DIR [--store DIR]
        unemu image export NAME:TAG --to DIR [--files] [--store DIR] (every layer as a plain file under its file name, with config.toml, manifest.json, EXPORT-VERSION and SHA256SUMS; --files also the files of the set's FAT12 disks; exit 1 refused, nothing overwritten)
        unemu image push NAME:TAG [REFERENCE] --store DIR [--registry HOST] [--move] [--dry-run] [--config FILE]
        unemu image pull REFERENCE --store DIR [--tag NAME:TAG] [--create] [--registry HOST] [--config FILE]

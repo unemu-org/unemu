@@ -51,6 +51,24 @@ impl CliPlatform for PcPlatform<'_> {
         pc_image::PLATFORM
     }
 
+    fn export_snapshot<'a>(
+        &self,
+        store: &'a Store,
+        id: &str,
+    ) -> anyhow::Result<Option<Box<dyn cli_core::image::machine_export::Snapshot + 'a>>> {
+        let image = pc_image::machine::pinned_image(store, id)?;
+        if !image_store::platform::same(
+            &cli_core::image::run_platform(store, &image)?,
+            self.platform(),
+        ) {
+            return Ok(None);
+        }
+        Ok(Some(Box::new(image::ExportSnapshot {
+            snapshot: pc_image::machine::export::open(store, id)?,
+            store,
+        })))
+    }
+
     fn validators(&self) -> Vec<&dyn ConfigValidator> {
         self.validators.to_vec()
     }
@@ -192,8 +210,6 @@ impl CliPlatform for PcPlatform<'_> {
         ),
         UsageSlot::BeforeMachineRun => concat!(
             "       unemu image machine ls --store DIR\n",
-            "       unemu image machine export ID [--store DIR]\n",
-            "       unemu image machine export ID --slot NAME --to FILE [--store DIR]\n",
             "       unemu image machine new NAME:TAG --store DIR [--name NAME]\n",
             "       unemu image machine rename ID NAME --store DIR\n",
             "       unemu image machine duplicate ID --store DIR [--name NAME]\n",
