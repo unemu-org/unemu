@@ -307,6 +307,124 @@ fn layered(store: &Store, head: &Digest, g: &Geometry, image: &ResolvedImage) ->
         }),
     })
 }
+
+/// Random-access parents for journal replay, without store cache writes.
+pub(crate) fn export_base(
+    store: &Store,
+    m: &Medium,
+    image: &ResolvedImage,
+) -> Result<VerifiedBase> {
+    if let Some(disk) = crate::zero::disk(store, m, image)? {
+        return Ok(disk.base);
+    }
+    let d = head(m, image)?;
+    if d.decoded_media_type() != mt::DISK_LAYER {
+        return export_content(image, &d.decoded_digest()?);
+    }
+    let expected = identity(&m.head.store()?, &image.manifest.layers, store)?;
+    let (store, medium, image) = (store.clone(), m.clone(), image.clone());
+    verified_stream(
+        move || layered(&store, &medium.head.store()?, &medium.geometry, &image),
+        &expected,
+    )
+}
+
+pub(crate) fn export_content(image: &ResolvedImage, digest: &Digest) -> Result<VerifiedBase> {
+    let d = image
+        .manifest
+        .layers
+        .iter()
+        .find(|d| d.names(digest))
+        .ok_or_else(|| invalid("missing disk content"))?;
+    if !d.is_compressed() {
+        return file_base(image, d);
+    }
+    let (image, content) = (image.clone(), digest.clone());
+    verified_stream(move || stream_content(&image, &content), digest)
+}
+
+fn stream_content(image: &ResolvedImage, digest: &Digest) -> Result<Layered> {
+    let reader = image.content_reader(digest)?;
+    Ok(Layered {
+        length: reader.size(),
+        stream: RefCell::new(Stream {
+            base: Some(BufReader::with_capacity(64 * 1024, reader)),
+            position: 0,
+            packs: Vec::new(),
+        }),
+    })
+}
+
+fn verified_stream(
+    reopen: impl Fn() -> Result<Layered> + 'static,
+    expected: &Digest,
+) -> Result<VerifiedBase> {
+    let source = reopen()?;
+    if journal_files::layer::copy_and_digest(&source, &mut io::sink())? != expected.to_string() {
+        return Err(invalid("reconstructed disk digest mismatch"));
+    }
+    let identity = journal_files::Header {
+        base_length: source.byte_len(),
+        base_digest: super::provider::hash_array(expected)?,
+        anchor_generation: 0,
+    };
+    Ok(VerifiedBase::from_verified_source(
+        std::rc::Rc::new(Replayable {
+            length: source.byte_len(),
+            source: RefCell::new(source),
+            reopen: Box::new(reopen),
+        }),
+        identity,
+    )?)
+}
+
+// Journal anchors revisit parent sectors. Reopen the verified stream on backward
+// reads instead of writing a spool; forward reads retain bounded buffering.
+struct Replayable {
+    length: u64,
+    source: RefCell<Layered>,
+    reopen: Box<dyn Fn() -> Result<Layered>>,
+}
+impl SectorSource for Replayable {
+    fn byte_len(&self) -> u64 {
+        self.length
+    }
+    fn read_sector(&self, lba: u64) -> io::Result<[u8; SECTOR_LEN]> {
+        let mut sector = [0; SECTOR_LEN];
+        self.read_range(lba, &mut sector)?;
+        Ok(sector)
+    }
+    fn check_unchanged(&self) -> io::Result<()> {
+        self.source.borrow().check_unchanged()
+    }
+    fn read_range(&self, first_lba: u64, bytes: &mut [u8]) -> io::Result<()> {
+        let start = first_lba
+            .checked_mul(SECTOR_LEN as u64)
+            .filter(|start| {
+                start
+                    .checked_add(bytes.len() as u64)
+                    .is_some_and(|end| end <= self.length)
+            })
+            .ok_or_else(|| io::Error::other("disk read past its end"))?;
+        let mut source = self
+            .source
+            .try_borrow_mut()
+            .map_err(|_| io::Error::other("disk read re-entered"))?;
+        if source.stream.borrow().position > start {
+            *source = (self.reopen)().map_err(io::Error::other)?;
+        }
+        let mut discard = [0; 64 * 1024];
+        loop {
+            let position = source.stream.borrow().position;
+            if position == start {
+                break;
+            }
+            let count = (start - position).min(discard.len() as u64) as usize;
+            source.read_range(position / SECTOR_LEN as u64, &mut discard[..count])?;
+        }
+        source.read_range(first_lba, bytes)
+    }
+}
 /// A medium ready to mount. `path` is the verified file assembly opens, or
 /// `None` for a compressed floppy, whose bytes live only in `base`.
 #[derive(Clone)]

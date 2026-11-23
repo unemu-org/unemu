@@ -192,6 +192,8 @@ impl CliPlatform for PcPlatform<'_> {
         ),
         UsageSlot::BeforeMachineRun => concat!(
             "       unemu image machine ls --store DIR\n",
+            "       unemu image machine export ID [--store DIR]\n",
+            "       unemu image machine export ID --slot NAME --to FILE [--store DIR]\n",
             "       unemu image machine new NAME:TAG --store DIR [--name NAME]\n",
             "       unemu image machine rename ID NAME --store DIR\n",
             "       unemu image machine duplicate ID --store DIR [--name NAME]\n",

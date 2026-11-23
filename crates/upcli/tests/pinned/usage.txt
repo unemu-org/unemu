@@ -13,6 +13,8 @@ usage: unemu --version | --about (licence, source and third-party notices)
        unemu image workspace abandon-publication NAME --store DIR
        unemu image publish --from-workspace NAME --store DIR --tag NAME:TAG [--flatten]
        unemu image machine ls --store DIR
+       unemu image machine export ID [--store DIR]
+       unemu image machine export ID --slot NAME --to FILE [--store DIR]
        unemu image machine new NAME:TAG --store DIR [--name NAME]
        unemu image machine rename ID NAME --store DIR
        unemu image machine duplicate ID --store DIR [--name NAME]

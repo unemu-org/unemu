@@ -551,25 +551,15 @@ pub(crate) fn load_pinned(
         bases,
     })
 }
-/// `settings`, a machine's overlay of hardware tables, replaces the image's
-/// for this launch; disk bases stay the image's.
-pub(crate) fn resolve_pinned(
+/// The effective slot configuration shared by runs and read-only exports.
+pub(crate) fn select_config(
     store: &Store,
-    descriptor: &Descriptor,
-    session: &Path,
-    overrides: Option<&BTreeMap<String, u32>>,
+    resolved: &PreparedImage,
     settings: Option<&toml::Table>,
-) -> Result<(
-    image_store::ResolvedImage,
-    assembly::MachineConfig,
-    LaunchBases,
-    crate::workspace::PreparedLaunch,
-)> {
-    use journal_files::SectorSource;
-    let resolved = load_pinned(store, descriptor, false, true)?;
-    let image = resolved.image;
-    let (config, descriptors, cmos) = match settings {
-        None => (resolved.config, image.manifest.layers.clone(), None),
+) -> Result<(Config, Vec<Descriptor>, Option<[u8; 64]>)> {
+    let image = &resolved.image;
+    Ok(match settings {
+        None => (resolved.config.clone(), image.manifest.layers.clone(), None),
         Some(machine) => {
             let packages = crate::revision::Packages::new(store);
             let overlay = crate::revision::overlay(
@@ -587,7 +577,27 @@ pub(crate) fn resolve_pinned(
                 .collect();
             (overlay.config, descriptors, overlay.cmos)
         }
-    };
+    })
+}
+
+/// `settings`, a machine's overlay of hardware tables, replaces the image's
+/// for this launch; disk bases stay the image's.
+pub(crate) fn resolve_pinned(
+    store: &Store,
+    descriptor: &Descriptor,
+    session: &Path,
+    overrides: Option<&BTreeMap<String, u32>>,
+    settings: Option<&toml::Table>,
+) -> Result<(
+    image_store::ResolvedImage,
+    assembly::MachineConfig,
+    LaunchBases,
+    crate::workspace::PreparedLaunch,
+)> {
+    use journal_files::SectorSource;
+    let resolved = load_pinned(store, descriptor, false, true)?;
+    let (config, descriptors, cmos) = select_config(store, &resolved, settings)?;
+    let image = resolved.image;
     let stored = store_half(&config, &descriptors, store)?;
     let mut document = validation_launch(&config, &stored);
     let mut small = BTreeMap::new();

@@ -64,6 +64,8 @@ cargo run --offline -p window -- image machine settings dos-games --store /path/
 cargo run --offline -p window -- image machine settings dos-games --store /path/to/store --set memory.extended_kib=3072
 cargo run --offline -p window -- image machine settings dos-games --store /path/to/store --clear
 cargo run --offline -p window -- image machine run dos-games --store /path/to/store --max-steps 1000000
+cargo run --offline -p window -- image machine export dos-games --store /path/to/store
+cargo run --offline -p window -- image machine export dos-games --slot C: --to disk.img --store /path/to/store
 cargo run --offline -p window -- image machine commit dos-games --store /path/to/store --tag dos-games:1.0.0
 cargo run --offline -p window -- image machine commit dos-games --store /path/to/store --tag dos-games:1.1.0 --title "DOS games" --keep-on-old-image
 cargo run --offline -p window -- image machine reset dos-games --store /path/to/store --yes
@@ -83,7 +85,7 @@ desktop's Machines list on the command line. Each has a fixed id (its
 workspace, a slug of the first name; never starting `regular-`, `gaming-`,
 `disposable-` or `fresh-`, which get `m-` in front) and a free-text name,
 1–64 characters, unique ignoring case; `new` defaults the name to the image
-title, then `title (2)`. Every `image machine` command first adopts older
+title, then `title (2)`. Except for the read-only `export`, every `image machine` command first adopts older
 workspaces as machines and reports each on the error stream as
 `migrated:ID`, and each workspace it leaves alone because it is damaged as
 `migration-skipped:NAME REASON`: a desktop `regular-…` workspace takes its
@@ -112,6 +114,35 @@ the pending inserts only once the machine has assembled. `image run NAME:TAG
 that names another image; `image publish --from-workspace ID` and
 `image workspace discard ID` refuse a machine's id and name the machine
 command to use.
+
+### Exporting a machine's next-run medium
+
+`unemu image machine export ID [--store DIR]` lists the stopped machine's
+media, one tab-separated line per slot:
+`SLOT KIND BYTES journal-changed:yes|no selection:configured|pending-insert|empty medium:NAME`.
+Slot names are those of the other machine actions, such as `A:` and `C:`;
+kind is `floppy` or `fixed`. An empty slot has size zero, `selection:empty`
+and `medium:(none)`, and refuses export. The change flag compares journal
+sectors with the selected medium's verified base or layered head; a write
+restored to its original bytes counts as unchanged. Use the IDs printed by `unemu image machine ls`.
+
+The selected medium is what `image machine run` would mount on its next run,
+including pending inserts. The CLI run path does not restore the desktop's kept
+catalogue selections; export follows the same rule. Listing includes each
+selected medium's name. Pending inserts remain pending after export.
+
+Add `--slot NAME --to FILE` to stream the selected medium's current raw bytes
+(verified base, image layers, then workspace journal) to a new file.
+Output is `PATH bytes:N sha256:HEX`, tab-separated. Both size and SHA-256 cover
+exactly the bytes written. Sector reads use the existing overlay interface
+and a bounded buffer. Other formats will come from the core through a future
+contract extension.
+
+Export requires a stopped machine and refuses recovery-needed journals without
+recovering them. It reads the store and workspace without migration, mounting
+or materializing caches, refuses destinations inside the store, and never
+truncates an existing output. On failure it removes the partial output it
+created. Without `--store`, it uses the executable's default store.
 
 Stored-image runs (`image run` and `image machine run`) start through the
 core contract in the platform-neutral `cli-core` runner. The binary supplies
@@ -2283,6 +2314,8 @@ registry tests, no network) and the store test
 `a_tag_records_the_recipe_that_built_it_until_it_moves`.
 
 ## Exporting an image
+
+For a library machine's next-run medium, use [`image machine export`](#exporting-a-machines-next-run-medium).
 
 `unemu image export NAME:TAG --to DIR` writes an installation set or a
 firmware package of the store as plain files ([design/recipes.md](design/recipes.md)

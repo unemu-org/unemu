@@ -194,9 +194,13 @@ pub fn execute(command: PcImageCommand, io: &mut Io<'_>, host: &HostSources) -> 
         PcImageCommand::Media(command) => {
             media::execute_with_compatibility(command, output, &host.compatibility)?
         }
-        PcImageCommand::Machine(command) => {
-            machine::execute(command, output, errors, &host.compatibility)?
-        }
+        PcImageCommand::Machine(command) => machine::execute(
+            command,
+            output,
+            errors,
+            &host.compatibility,
+            host.store_root.as_deref(),
+        )?,
         PcImageCommand::Firmware(command) => firmware::execute(command, output, host)?,
         PcImageCommand::Template(command) => {
             template::execute_with_compatibility(command, output, &host.compatibility)?

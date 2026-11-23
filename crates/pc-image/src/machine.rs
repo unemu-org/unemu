@@ -30,6 +30,8 @@ use image_store::{
     BlobSource, Descriptor, Digest, Manifest, Store, Tag, MAX_SMALL_BLOB,
 };
 use journal_files::SectorSource;
+
+pub mod export;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs, io,
@@ -1755,24 +1757,30 @@ pub fn confirm(
     })
 }
 
-/// Put a pending insert into its floppy drive for this launch: the chosen
-/// medium first, so the drive starts with it, then the set's other media when
-/// all join the catalogue. Journals use the names of a live insert from the
-/// library, so the same disk keeps one journal in this machine.
-fn insert_medium(
+struct PendingSelection {
+    slot_index: usize,
+    resolved: image_store::ResolvedImage,
+    entries: Vec<(
+        bool,
+        image_store::media_set::Medium,
+        assembly::FloppyGeometry,
+    )>,
+}
+
+// Keep the selected medium and its compatibility checks identical for runs
+// and exports; only a run asks for materialized mount paths afterward.
+fn select_insert(
     store: &Store,
-    owner: &Workspace<'_>,
-    session: &mut workspace::PreparedSession,
+    machine: &assembly::MachineConfig,
     insert: &PendingInsert,
-) -> Result<()> {
+) -> Result<PendingSelection> {
     let unit = floppy_unit(&insert.drive)?;
-    let slot_index = session
-        .machine
+    let slot_index = machine
         .drives
         .iter()
         .position(|d| d.unit == unit && matches!(d.kind, assembly::DriveKind::Floppy { .. }))
         .ok_or_else(|| invalid(format!("{} is not a floppy drive here", insert.drive)))?;
-    let assembly::DriveKind::Floppy { geometry } = session.machine.drives[slot_index].kind else {
+    let assembly::DriveKind::Floppy { geometry } = machine.drives[slot_index].kind else {
         return Err(invalid("floppy drive expected"));
     };
     let resolved = store.resolve_descriptor(
@@ -1788,7 +1796,6 @@ fn insert_medium(
         .iter()
         .position(|m| m.id == insert.medium)
         .ok_or_else(|| invalid(format!("no medium {} in the set", insert.medium)))?;
-    let directory = owner.path().join("media");
     let mut entries = Vec::new();
     for (index, medium) in config.media.iter().enumerate() {
         if !insert.all && index != chosen {
@@ -1804,11 +1811,35 @@ fn insert_medium(
                 medium.label
             )));
         }
-        let path = store.resolved_file_path(&resolved, &medium.blob)?;
-        let base = crate::media_set::verified_base(&resolved, &medium.blob)?;
-        entries.push((index != chosen, medium, format, path, base));
+        entries.push((index != chosen, medium.clone(), format));
     }
     entries.sort_by_key(|(later, ..)| *later);
+    Ok(PendingSelection {
+        slot_index,
+        resolved,
+        entries,
+    })
+}
+
+/// Put a pending insert into its floppy drive for this launch: the chosen
+/// medium first, so the drive starts with it, then the set's other media when
+/// all join the catalogue. Journals use the names of a live insert from the
+/// library, so the same disk keeps one journal in this machine.
+fn insert_medium(
+    store: &Store,
+    owner: &Workspace<'_>,
+    session: &mut workspace::PreparedSession,
+    insert: &PendingInsert,
+) -> Result<()> {
+    let selected = select_insert(store, &session.machine, insert)?;
+    let slot_index = selected.slot_index;
+    let directory = owner.path().join("media");
+    let mut entries = Vec::new();
+    for (later, medium, format) in &selected.entries {
+        let path = store.resolved_file_path(&selected.resolved, &medium.blob)?;
+        let base = crate::media_set::verified_base(&selected.resolved, &medium.blob)?;
+        entries.push((*later, medium, *format, path, base));
+    }
     session.update_launch(|input| {
         let mut added = Vec::new();
         for (_, medium, format, path, base) in &entries {

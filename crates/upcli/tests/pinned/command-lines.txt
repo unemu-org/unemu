@@ -56,40 +56,40 @@ $ image publish --from-workspace NAME --store DIR --tag NAME:TAG --flatten
 Ok(Line(Platform(Image(Publish { store: "DIR", workspace: "NAME", tag: "NAME:TAG", flatten: true }))))
 
 $ image machine ls --store DIR
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "DIR", action: List })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("DIR"), action: List })))))
 
 $ image machine new NAME:TAG --store DIR
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "DIR", action: New { image: "NAME:TAG", name: None } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("DIR"), action: New { image: "NAME:TAG", name: None } })))))
 
 $ image machine new NAME:TAG --store DIR --name NAME
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "DIR", action: New { image: "NAME:TAG", name: Some("NAME") } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("DIR"), action: New { image: "NAME:TAG", name: Some("NAME") } })))))
 
 $ image machine rename ID NAME --store DIR
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "DIR", action: Rename { id: "ID", name: "NAME" } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("DIR"), action: Rename { id: "ID", name: "NAME" } })))))
 
 $ image machine duplicate ID --store DIR --name NAME
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "DIR", action: Duplicate { id: "ID", name: Some("NAME") } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("DIR"), action: Duplicate { id: "ID", name: Some("NAME") } })))))
 
 $ image machine reset ID --store DIR --yes
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "DIR", action: Reset { id: "ID", yes: true } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("DIR"), action: Reset { id: "ID", yes: true } })))))
 
 $ image machine rm ID --store DIR --yes
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "DIR", action: Remove { id: "ID", yes: true } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("DIR"), action: Remove { id: "ID", yes: true } })))))
 
 $ image machine settings ID --store DIR
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "DIR", action: Settings { id: "ID", set: [], clear: false, dry_run: false } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("DIR"), action: Settings { id: "ID", set: [], clear: false, dry_run: false } })))))
 
 $ image machine settings ID --store DIR --set memory.extended_kib=3072 --set video.card=vga --dry-run
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "DIR", action: Settings { id: "ID", set: [("memory.extended_kib", "3072"), ("video.card", "vga")], clear: false, dry_run: true } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("DIR"), action: Settings { id: "ID", set: [("memory.extended_kib", "3072"), ("video.card", "vga")], clear: false, dry_run: true } })))))
 
 $ image machine settings ID --store DIR --clear
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "DIR", action: Settings { id: "ID", set: [], clear: true, dry_run: false } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("DIR"), action: Settings { id: "ID", set: [], clear: true, dry_run: false } })))))
 
 $ image machine commit ID --store DIR --tag NAME:TAG
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "DIR", action: Commit { id: "ID", tag: "NAME:TAG", title: None, keep_on_old_image: false } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("DIR"), action: Commit { id: "ID", tag: "NAME:TAG", title: None, keep_on_old_image: false } })))))
 
 $ image machine commit ID --store DIR --tag NAME:TAG --title TITLE --keep-on-old-image
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "DIR", action: Commit { id: "ID", tag: "NAME:TAG", title: Some("TITLE"), keep_on_old_image: true } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("DIR"), action: Commit { id: "ID", tag: "NAME:TAG", title: Some("TITLE"), keep_on_old_image: true } })))))
 
 $ image machine run ID --store DIR --max-steps 8
 Ok(Line(Platform(Image(Machine(MachineCommand { store: "DIR", action: Run { id: "ID", max_steps: 8 } })))))
@@ -350,7 +350,7 @@ $ image firmware import FOLDER --for no-such-entry
 Err("unknown firmware catalogue id")
 
 $ image machine
-Err("expected image machine ls, new, rename, duplicate, reset, rm, settings, commit or run")
+Err("expected image machine ls, new, rename, duplicate, reset, rm, settings, commit, export or run")
 
 $ image template
 Err("expected image template build")
@@ -473,40 +473,40 @@ $ image workspace discard play --store /path/to/store --yes
 Ok(Line(Image(Discard { store: "/path/to/store", workspace: "play", yes: true })))
 
 $ image machine ls --store /path/to/store
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "/path/to/store", action: List })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("/path/to/store"), action: List })))))
 
 $ image machine new dos-lab:1.0 --store /path/to/store --name 'DOS games'
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "/path/to/store", action: New { image: "dos-lab:1.0", name: Some("DOS games") } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("/path/to/store"), action: New { image: "dos-lab:1.0", name: Some("DOS games") } })))))
 
 $ image machine rename dos-games Keen --store /path/to/store
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "/path/to/store", action: Rename { id: "dos-games", name: "Keen" } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("/path/to/store"), action: Rename { id: "dos-games", name: "Keen" } })))))
 
 $ image machine duplicate dos-games --store /path/to/store --name 'Keen copy'
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "/path/to/store", action: Duplicate { id: "dos-games", name: Some("Keen copy") } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("/path/to/store"), action: Duplicate { id: "dos-games", name: Some("Keen copy") } })))))
 
 $ image machine settings dos-games --store /path/to/store --set memory.extended_kib=3072 --dry-run
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "/path/to/store", action: Settings { id: "dos-games", set: [("memory.extended_kib", "3072")], clear: false, dry_run: true } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("/path/to/store"), action: Settings { id: "dos-games", set: [("memory.extended_kib", "3072")], clear: false, dry_run: true } })))))
 
 $ image machine settings dos-games --store /path/to/store --set memory.extended_kib=3072
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "/path/to/store", action: Settings { id: "dos-games", set: [("memory.extended_kib", "3072")], clear: false, dry_run: false } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("/path/to/store"), action: Settings { id: "dos-games", set: [("memory.extended_kib", "3072")], clear: false, dry_run: false } })))))
 
 $ image machine settings dos-games --store /path/to/store --clear
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "/path/to/store", action: Settings { id: "dos-games", set: [], clear: true, dry_run: false } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("/path/to/store"), action: Settings { id: "dos-games", set: [], clear: true, dry_run: false } })))))
 
 $ image machine run dos-games --store /path/to/store --max-steps 1000000
 Ok(Line(Platform(Image(Machine(MachineCommand { store: "/path/to/store", action: Run { id: "dos-games", max_steps: 1000000 } })))))
 
 $ image machine commit dos-games --store /path/to/store --tag dos-games:1.0.0
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "/path/to/store", action: Commit { id: "dos-games", tag: "dos-games:1.0.0", title: None, keep_on_old_image: false } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("/path/to/store"), action: Commit { id: "dos-games", tag: "dos-games:1.0.0", title: None, keep_on_old_image: false } })))))
 
 $ image machine commit dos-games --store /path/to/store --tag dos-games:1.1.0 --title 'DOS games' --keep-on-old-image
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "/path/to/store", action: Commit { id: "dos-games", tag: "dos-games:1.1.0", title: Some("DOS games"), keep_on_old_image: true } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("/path/to/store"), action: Commit { id: "dos-games", tag: "dos-games:1.1.0", title: Some("DOS games"), keep_on_old_image: true } })))))
 
 $ image machine reset dos-games --store /path/to/store --yes
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "/path/to/store", action: Reset { id: "dos-games", yes: true } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("/path/to/store"), action: Reset { id: "dos-games", yes: true } })))))
 
 $ image machine rm dos-games --store /path/to/store --yes
-Ok(Line(Platform(Image(Machine(MachineCommand { store: "/path/to/store", action: Remove { id: "dos-games", yes: true } })))))
+Ok(Line(Platform(Image(Machine(MachineCommand { store: Some("/path/to/store"), action: Remove { id: "dos-games", yes: true } })))))
 
 $ image media import /path/to/disks --title 'Installation set' --tag private/media/ibm-pc/install:1.0-r1 --store /path/to/store --create
 Ok(Line(Platform(Image(Media(MediaCommand { store: "/path/to/store", create: true, dry_run: false, no_compress: false, tag: "private/media/ibm-pc/install:1.0-r1", title: Title { id: "", title: "Installation set", sort_title: None, series: None, genres: [], developers: [], publishers: [], platform: None, release_year: None, players: None, languages: [], regions: [], description: None, version: None, edition: None, source_media: None, tags: [], cover: None, screenshots: [], launch: None, needs: {}, requirements: None, work_id: None, synopsis: None, work_ids: {} }, set_labels: [], files: ["/path/to/disks"], labels: {}, formats: {}, extras: [], open: false, license: None, license_text: None, source: None, min_app_version: None })))))
