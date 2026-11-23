@@ -18,7 +18,7 @@ const OPTIONS: AssemblyOptions = AssemblyOptions {
 use pc_harness::test_support::fixtures;
 
 // Moving the core pin requires checking the recorded golden again.
-const CORE_REV: &str = "8a319d70cb9636e7e95637b201c7c5f02cf9602c";
+const CORE_REV: &str = "06104a2429a971346acbd83de0f94c62349ed530";
 
 #[path = "../../pc-image/tests/support/core_pin.rs"]
 mod core_pin;
