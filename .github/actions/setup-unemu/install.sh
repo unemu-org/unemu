@@ -35,8 +35,10 @@ fi
 # The platforms the release workflow builds for.
 case "${RUNNER_OS:-}/${RUNNER_ARCH:-}" in
   Linux/X64) target=x86_64-unknown-linux-gnu ;;
+  Linux/ARM64) target=aarch64-unknown-linux-gnu ;;
   macOS/ARM64) target=aarch64-apple-darwin ;;
-  *) error "unemu releases are available for Linux X64 and macOS ARM64 runners, not for ${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown}" ;;
+  macOS/X64) target=x86_64-apple-darwin ;;
+  *) error "unemu releases are available for Linux X64, Linux ARM64, macOS ARM64 and macOS X64 runners, not for ${RUNNER_OS:-unknown}/${RUNNER_ARCH:-unknown}" ;;
 esac
 
 : "${RUNNER_TEMP:?}" "${GITHUB_PATH:?}" "${GITHUB_OUTPUT:?}"

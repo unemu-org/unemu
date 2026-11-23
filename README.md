@@ -55,7 +55,8 @@ lock after local override work before building a release.
 ## Downloads and licences
 
 Front-end [releases](https://github.com/unemu-org/unemu/releases) ship
-`unemu-<version>-<target>.tar.gz` for Linux x86-64 and macOS on Apple silicon.
+`unemu-<version>-<target>.tar.gz` for Linux x86-64 and ARM64 (glibc 2.35 or
+newer), and macOS on Apple silicon and Intel.
 Each archive holds `unemu`, `LICENSE`, `README.md`, `THIRD-PARTY-LICENSES.md`
 and `notices/`, with `SHA256SUMS` alongside. The standalone `unemupc` program
 comes from the PC core's own releases.

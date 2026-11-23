@@ -4,8 +4,10 @@ name: Release
 # Builds unemu for each release platform and attaches it to the
 # GitHub release: one unemu-<version>-<target>.tar.gz per platform and a
 # SHA256SUMS file. Publishing a release for a tag (v0.1.0) starts it; a manual
-# run with that tag builds again and replaces the release's assets. Nothing is
-# published to a package registry.
+# run with that tag builds again and replaces the release's assets by default.
+# Set upload=false on a manual run to build and check every target without
+# attaching assets or editing the release. Published releases always upload.
+# Nothing is published to a package registry.
 #
 # The binaries are built outside Nix with rustup: a Nix build links libraries
 # from /nix/store, and the binary would not start on a machine without Nix.
@@ -19,6 +21,10 @@ on:
         description: Tag of the published release to build, for example v0.1.0
         required: true
         type: string
+      upload:
+        description: Attach assets and download notes to the release
+        type: boolean
+        default: true
 
 # Only the upload job writes, and only to the release.
 permissions:
@@ -74,14 +80,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The oldest hosted Ubuntu sets the glibc the binaries need (2.35).
+          # Ubuntu 22.04 keeps the glibc floor at 2.35 on both architectures.
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
           # Rust targets macOS 11 by default, so the runner's macOS version does
           # not limit users. macos-latest follows GitHub's supported arm64 image:
           # macos-14 is no longer offered and macos-15 queued for capacity.
           - target: aarch64-apple-darwin
             runner: macos-latest
+          # GitHub's last x86_64 macOS image is supported until about August
+          # 2027; cross-building from arm64 macOS is the fallback after that.
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
     env:
       TARGET: ${{ matrix.target }}
       # `--about` names the exact source of the build: <repository>/tree/<tag>.
@@ -130,6 +142,10 @@ jobs:
         run: |
           set -euo pipefail
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [[ $TARGET != "$host" ]]; then
+            rustup target add "$TARGET"
+          fi
           rustc --version
           cargo --version
 
@@ -163,7 +179,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          docker run --rm -v "$PWD/target/$TARGET/release/unemu:/usr/local/bin/unemu:ro" ubuntu:22.04 bash -euc '
+          # Match the native runner even if Docker has a default platform set.
+          case "$TARGET" in
+            x86_64-unknown-linux-gnu) platform=linux/amd64 ;;
+            aarch64-unknown-linux-gnu) platform=linux/arm64 ;;
+          esac
+          docker run --rm --platform "$platform" -v "$PWD/target/$TARGET/release/unemu:/usr/local/bin/unemu:ro" ubuntu:22.04 bash -euc '
             if unemu image ls --store /tmp/missing-store > /tmp/no-alsa.log 2>&1; then
               echo "::error::unemu unexpectedly started without the ALSA runtime"
               exit 1
@@ -253,6 +274,7 @@ jobs:
 
   upload:
     name: upload
+    if: github.event_name == 'release' || inputs.upload
     needs: [build, recipe-conformance]
     runs-on: ubuntu-24.04
     permissions:
@@ -300,8 +322,12 @@ jobs:
             cat <<'NOTES'
           ## Downloads
 
-          - Linux x86-64 (glibc 2.35 or newer): `unemu-<version>-x86_64-unknown-linux-gnu.tar.gz`
+          - Linux x86-64: `unemu-<version>-x86_64-unknown-linux-gnu.tar.gz`
+          - Linux ARM64: `unemu-<version>-aarch64-unknown-linux-gnu.tar.gz`
           - macOS on Apple silicon: `unemu-<version>-aarch64-apple-darwin.tar.gz`
+          - macOS on Intel: `unemu-<version>-x86_64-apple-darwin.tar.gz`
+
+          Both Linux archives require glibc 2.35 or newer.
 
           `recipe-schema-1.0.json` is the recipe format 1.0 editor schema.
 

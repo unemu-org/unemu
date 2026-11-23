@@ -13,10 +13,13 @@ and `THIRD-PARTY-LICENSES.md` into a new directory under `$RUNNER_TEMP`. It
 adds that directory to `PATH` and prints `unemu --version`. It uses no other
 actions and no secrets.
 
-Runners: Linux X64 (`x86_64-unknown-linux-gnu`, glibc 2.35 or newer, such as
-`ubuntu-22.04` and later; install `libasound2` or the distribution's
-ALSA runtime equivalent before this action, even on headless runners) and macOS ARM64 (`aarch64-apple-darwin`, such as
-`macos-latest`). Any other runner fails with a message naming its platform.
+Runners: Linux X64 (`x86_64-unknown-linux-gnu`, such as `ubuntu-22.04`),
+Linux ARM64 (`aarch64-unknown-linux-gnu`, such as `ubuntu-22.04-arm`),
+macOS ARM64 (`aarch64-apple-darwin`, such as `macos-latest`) and
+macOS X64 (`x86_64-apple-darwin`, such as `macos-15-intel`). Both Linux
+architectures require glibc 2.35 or newer; install `libasound2` or the
+distribution's ALSA runtime equivalent before this action, even on headless
+runners. Any other runner fails with a message naming its platform.
 
 ## Usage
 

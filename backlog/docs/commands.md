@@ -2490,9 +2490,20 @@ commit. The release workflow validates this before packaging.
 
 The archives are `unemu-<version>-<target>.tar.gz`, containing `unemu`,
 `LICENSE`, `README.md`, `THIRD-PARTY-LICENSES.md` and the corresponding notices.
+Release targets are `x86_64-unknown-linux-gnu` (`ubuntu-22.04`),
+`aarch64-unknown-linux-gnu` (`ubuntu-22.04-arm`), `aarch64-apple-darwin`
+(`macos-latest`) and `x86_64-apple-darwin` (`macos-15-intel`). Both Linux
+archives require glibc 2.35 or newer. The Intel macOS runner is supported
+until about August 2027; cross-building from arm64 macOS is the fallback.
 `SHA256SUMS` verifies downloads. Release notes name the front-end commit and
 both locked core revisions. The maintainer authorizes tags, pushes and publication.
 Before a release, run the full gate with the authorized fixture and user-media lanes.
+
+To build and check all four targets from an existing tag without changing the
+release, run `.github/workflows/release.yml` manually with that `tag` and
+`upload=false`. Recipe conformance and builds still run and retain their workflow
+artifacts; the upload job is skipped. Manual runs default to `upload=true`,
+and publishing a release always uploads.
 
 ```sh
 sha256sum --ignore-missing -c SHA256SUMS
@@ -2502,8 +2513,9 @@ shasum -a 256 --ignore-missing -c SHA256SUMS
 ### Using unemu in other repositories' CI
 
 The composite action `.github/actions/setup-unemu` installs a released
-`unemu` on a Linux X64 or macOS ARM64 runner, so the media and firmware
-repositories import and push with this project's own CLI and push guard.
+`unemu` on Linux X64, Linux ARM64, macOS ARM64 or macOS X64 runners, so the
+media and firmware repositories import and push with this project's own CLI
+and push guard.
 Linux runners need the ALSA runtime first (`libasound2` on Ubuntu 22.04).
 Its `README.md` has the inputs, the output and an example job. A consumer
 pins the action by commit and names the release:
@@ -2524,8 +2536,9 @@ the consumer: `UNEMU_REGISTRY_USER`, `UNEMU_REGISTRY_PASSWORD` and
 `UNEMU_REGISTRY_HOST`, on the push step only.
 
 `.github/workflows/setup-unemu.yml` tests the action when its files change:
-on `ubuntu-22.04` and `macos-latest` it builds the current `unemu`, packages
-a local test archive and supplies it through a substituted curl. The real
+on `ubuntu-22.04`, `ubuntu-22.04-arm`, `macos-latest` and `macos-15-intel`
+it builds the current `unemu`, packages a local test archive and supplies it
+through a substituted curl. The real
 action checks and installs that archive, then runs `unemu --version` and
 `media create`; a missing release is refused without changing PATH. This
 checks the renamed binary before a public release exists; hosted release

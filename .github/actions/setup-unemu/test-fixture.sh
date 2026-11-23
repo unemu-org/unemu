@@ -7,7 +7,9 @@ binary=$1
 fixture=$2
 case "$(uname -s)/$(uname -m)" in
   Linux/x86_64) target=x86_64-unknown-linux-gnu ;;
+  Linux/aarch64) target=aarch64-unknown-linux-gnu ;;
   Darwin/arm64) target=aarch64-apple-darwin ;;
+  Darwin/x86_64) target=x86_64-apple-darwin ;;
   *) echo 'unsupported action test platform' >&2; exit 1 ;;
 esac
 name=unemu-0.0.0-test-$target

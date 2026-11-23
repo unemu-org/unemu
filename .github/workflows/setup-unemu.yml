@@ -2,7 +2,7 @@
 name: setup-unemu
 
 # Installs unemu-<version>-<target>.tar.gz from unemu-org/unemu releases.
-# Tests the setup-unemu action of this checkout on both platforms the releases
+# Tests the setup-unemu action of this checkout on all four platforms the releases
 # cover: it packages the current binary, installs it through the action and
 # runs command words, and refuses a
 # release that does not exist. Every action is pinned to a
@@ -46,7 +46,9 @@ jobs:
       matrix:
         include:
           - runner: ubuntu-22.04
+          - runner: ubuntu-22.04-arm
           - runner: macos-latest
+          - runner: macos-15-intel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
