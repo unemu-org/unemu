@@ -10,7 +10,7 @@ use crate::{
     shell_model::{self, Command, Enablement, LibraryEntry, State},
     Args, Presenter,
 };
-use egui::{Color32, Sense, Stroke, Vec2};
+use egui::{Color32, Sense, Vec2};
 use machine_file::Describe;
 use std::{
     cell::RefCell, collections::BTreeSet, error::Error, io, rc::Rc, sync::Arc, time::Instant,
@@ -6358,7 +6358,7 @@ impl eframe::App for Shell {
             };
             events.pixels_per_point = ctx.pixels_per_point();
         }
-        outline_focused_field(&ctx);
+        outline_focused_field(&ctx, self.classic);
         self.cursor(&ctx);
         self.window_close(&ctx);
     }
@@ -6369,13 +6369,12 @@ impl eframe::App for Shell {
     }
 }
 
-/// Outlines the focused text field in its own text colour, as the mock-ups
-/// outline a focused control (`:focus-visible`: 1 px in `currentColor`), in
-/// every skin. egui outlines it in the selection stroke, which stays white so
+/// Outlines the focused text field with the skin's focus stroke. egui uses
+/// the selection stroke, which stays white so
 /// that selected glyphs read on the selection fill; white all but vanishes on
 /// the light field. Called once a pass after everything is drawn, it paints
 /// over egui's outline in the field's own layer, clipped as the field is.
-pub(crate) fn outline_focused_field(ctx: &egui::Context) {
+pub(crate) fn outline_focused_field(ctx: &egui::Context, classic: bool) {
     let Some(id) = ctx.memory(|memory| memory.focused()) else {
         return;
     };
@@ -6387,12 +6386,7 @@ pub(crate) fn outline_focused_field(ctx: &egui::Context) {
     };
     let style = ctx.global_style();
     let visuals = &style.visuals;
-    let outline = Stroke::new(
-        visuals.selection.stroke.width,
-        visuals
-            .override_text_color
-            .unwrap_or(visuals.widgets.inactive.text_color()),
-    );
+    let outline = ui_kit::skin::focused_field_stroke(visuals, classic);
     ctx.layer_painter(field.layer_id)
         .with_clip_rect(field.interact_rect)
         .rect_stroke(
@@ -6705,6 +6699,7 @@ mod tests {
     }
 
     use super::*;
+    use egui::Stroke;
     use std::collections::BTreeMap;
     use ElementState::{Pressed, Released};
 
@@ -16969,7 +16964,7 @@ kind='mda'
                 let mut pass = || {
                     let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                         ui.add(egui::TextEdit::singleline(&mut text).id(id));
-                        outline_focused_field(ui.ctx());
+                        outline_focused_field(ui.ctx(), classic);
                     });
                     output.textures_delta.clear();
                     output
@@ -16995,6 +16990,16 @@ kind='mda'
                     })
                     .unwrap_or_else(|| panic!("no outline in {rects:?}"))
                     .stroke;
+                let expected =
+                    ui_kit::skin::focused_field_stroke(&ctx.global_style().visuals, classic);
+                assert_eq!(outline, expected);
+                if classic && !dark {
+                    assert_eq!(outline.color, ctx.global_style().visuals.selection.bg_fill);
+                    assert_ne!(
+                        outline.color,
+                        ctx.global_style().visuals.widgets.inactive.bg_stroke.color
+                    );
+                }
                 let ratio = contrast(outline.color, field);
                 assert!(
                     outline.width >= 1.0 && outline.color.is_opaque() && ratio >= 3.0,

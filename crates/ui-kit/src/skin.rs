@@ -278,3 +278,106 @@ fn title_strip(ui: &mut egui::Ui, title: &str, icon: bool) {
         Stroke::new(1.0, Color32::WHITE),
     );
 }
+
+/// Bounds classic light dialogs without changing the other skins' layouts.
+pub struct DialogLayout {
+    bounded: bool,
+    minimum: bool,
+    pub body_height: f32,
+}
+
+impl DialogLayout {
+    pub fn new(ui: &mut egui::Ui, classic: bool, width: f32) -> Self {
+        let screen = ui.ctx().content_rect();
+        let bounded = classic && !ui.visuals().dark_mode;
+        let minimum = bounded && screen.height() <= 500.0;
+        ui.set_width(if bounded {
+            width.min(screen.width() - 38.0)
+        } else {
+            width
+        });
+        if minimum {
+            ui.spacing_mut().item_spacing.y = 6.0;
+        }
+        Self {
+            bounded,
+            minimum,
+            // Frame, title, section gaps and footer leave this body budget.
+            body_height: (screen.height() - 111.0).max(0.0),
+        }
+    }
+
+    pub fn body<R>(&self, ui: &mut egui::Ui, draw: impl FnOnce(&mut egui::Ui) -> R) -> R {
+        if self.bounded {
+            egui::ScrollArea::vertical()
+                .id_salt("dialog-body")
+                .max_height(self.body_height)
+                .min_scrolled_height(self.body_height)
+                .auto_shrink([false, !self.minimum])
+                .show(ui, draw)
+                .inner
+        } else {
+            draw(ui)
+        }
+    }
+
+    pub fn footer<R>(&self, ui: &mut egui::Ui, draw: impl FnOnce(&mut egui::Ui) -> R) -> R {
+        if self.minimum {
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), 38.0),
+                egui::Layout::top_down(egui::Align::Min),
+                draw,
+            )
+            .inner
+        } else {
+            draw(ui)
+        }
+    }
+
+    pub fn bounded(&self) -> bool {
+        self.bounded
+    }
+}
+
+/// The shell repaints egui's selection-coloured field edge with this stroke.
+pub fn focused_field_stroke(visuals: &egui::Visuals, classic: bool) -> Stroke {
+    if classic && !visuals.dark_mode {
+        Stroke::new(1.0, visuals.selection.bg_fill)
+    } else {
+        Stroke::new(
+            visuals.selection.stroke.width,
+            visuals
+                .override_text_color
+                .unwrap_or(visuals.widgets.inactive.text_color()),
+        )
+    }
+}
+
+#[cfg(test)]
+mod readability_tests {
+    use super::*;
+
+    #[test]
+    fn classic_light_focus_uses_the_selection_fill_and_other_skins_keep_their_stroke() {
+        for classic in [false, true] {
+            for dark in [false, true] {
+                let visuals = skin_visuals(classic, dark);
+                let stroke = focused_field_stroke(&visuals, classic);
+                if classic && !dark {
+                    assert_eq!(stroke, Stroke::new(1.0, visuals.selection.bg_fill));
+                    assert_ne!(stroke.color, visuals.widgets.inactive.bg_stroke.color);
+                    assert_ne!(stroke.color, visuals.text_edit_bg_color());
+                    assert_eq!(visuals.selection.stroke.color, Color32::WHITE);
+                } else {
+                    assert_eq!(
+                        stroke,
+                        Stroke::new(
+                            visuals.selection.stroke.width,
+                            visuals.widgets.inactive.text_color()
+                        )
+                    );
+                }
+            }
+        }
+    }
+}

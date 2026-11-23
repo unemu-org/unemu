@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Classic light readability — design mock-up</title>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!--
+Palette provenance: these names refer to the Rust fields/helpers, since the
+classic palette uses inline values rather than named colour constants.
+crates/ui-kit/src/skin.rs, skin_visuals:
+  extreme_bg_color = Color32::WHITE (line 82); panel_fill/window_fill =
+  Color32::from_rgb(214, 211, 203) (98–101); selection.bg_fill =
+  Color32::from_rgb(34, 70, 138) (116); selection.stroke.color = WHITE (119).
+  Classic inherits egui 0.37.0 Widgets::light: noninteractive.fg_stroke
+  from_gray(80), inactive.fg_stroke from_gray(60). Hence #505050 / #3c3c3c,
+  rather than assuming the modern skin's #1d1c1a also applies to classic.
+crates/ui-kit/src/skin.rs, bevel: WHITE / from_rgb(141, 138, 131) (195–204).
+crates/ui-kit/src/skin.rs, title_strip: from_rgb(19, 51, 111) /
+  from_rgb(75, 121, 193), with WHITE text (244–247, 274).
+crates/ui-kit/src/pane.rs: good_colour = from_rgb(31, 107, 51) (301);
+  face/face_2/shadow match #d6d3cb / #e7e4dc / #8d8a83 (346–372).
+The desk, bevel layering and font stacks follow remotes-push.html and
+new-machine.html. Light is fixed so system dark mode cannot hide the defect.
+-->
+<style>
+:root {
+  color-scheme: light;
+  --desk: #5f7f86; --face: #d6d3cb; --face-2: #e7e4dc; --hi: #ffffff; --lo: #8d8a83; --dk: #3f3d39;
+  --ink: #505050; --control-ink: #3c3c3c; --muted: #5b5852; --title-a: #13336f; --title-b: #4b79c1;
+  --sel: #22468a; --sel-ink: #ffffff; --field: #ffffff; --stripe: #f3f1ea; --good: #1f6b33; --note: #eef3f3;
+  --ui: Tahoma, Verdana, "Segoe UI", system-ui, sans-serif;
+  --code: ui-monospace, SFMono-Regular, Consolas, monospace;
+  --out: inset -1px -1px var(--dk), inset 1px 1px var(--hi), inset -2px -2px var(--lo), inset 2px 2px var(--face-2);
+  --in: inset 1px 1px var(--lo), inset -1px -1px var(--hi), inset 2px 2px var(--dk), inset -2px -2px var(--face-2);
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 18px 16px 26px; background: var(--desk); color: var(--ink); font: 12px/1.35 var(--ui); }
+main { max-width: 1552px; margin: auto; }
+h1 { margin: 0 0 6px; font-size: 19px; }
+h2 { margin: 0 0 8px; font-size: 15px; }
+h3 { margin: 0 0 6px; font-size: 12px; }
+p { margin: 6px 0; }
+code, pre { font: 11px/1.5 var(--code); }
+a { color: inherit; }
+.note { color: var(--note); margin-bottom: 16px; max-width: 110ch; }
+.section { margin: 24px 0; }
+.rationale { color: var(--note); max-width: 110ch; margin-top: 10px; }
+.compare { display: grid; grid-template-columns: 760px 760px; gap: 16px; width: 1536px; }
+.compare-wrap { overflow-x: auto; padding: 3px 3px 12px; }
+figure { margin: 0; }
+figcaption { color: var(--note); margin-bottom: 6px; }
+.sample { background: var(--face); box-shadow: var(--out); padding: 14px; width: 760px; min-height: 166px; }
+.titlebar { height: 23px; background: linear-gradient(90deg, var(--title-a), var(--title-b)); color: var(--hi); display: flex; align-items: center; gap: 6px; padding: 0 7px; font-weight: 700; }
+.titlebar span { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+button, input { font: inherit; color: var(--control-ink); }
+.btn { background: var(--face); border: 0; box-shadow: var(--out); height: 24px; padding: 3px 12px; white-space: nowrap; }
+.btn.default { box-shadow: 0 0 0 1px var(--dk), var(--out); }
+button:disabled { color: var(--muted); }
+:focus-visible { outline: 1px dotted currentColor; outline-offset: -3px; }
+.tbtn { height: 17px; width: 18px; padding: 0; border: 0; background: var(--face); box-shadow: var(--out); font-weight: 700; }
+.bar { position: relative; height: 20px; width: 100%; background: var(--field); overflow: hidden; border-radius: 0; }
+.bar .fill { display: block; width: 20%; height: 100%; background: var(--sel); }
+.bar .bar-text { position: absolute; inset: 0; display: flex; align-items: center; padding-left: 8px; color: var(--sel-ink); font-size: 13px; white-space: nowrap; }
+.status { height: 18px; margin: 0 0 4px; }
+.progress-demo { width: 680px; margin-top: 12px; }
+.progress-demo.before { padding-top: 22px; }
+.muted, .hint { color: var(--muted); }
+.hint { font-size: 11px; }
+.good { color: var(--good); }
+.field { display: block; height: 24px; width: 100%; padding: 3px 6px; border: 0; border-radius: 0; background: var(--field); box-shadow: var(--in); }
+.field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+.field-grid label { display: grid; gap: 6px; }
+.focus-field { display: block; position: relative; }
+.focus-field::after { content: ""; position: absolute; top: 5px; bottom: 5px; left: 110px; border-left: 1px solid var(--control-ink); pointer-events: none; }
+.focus-now { box-shadow: inset 0 0 0 1px var(--hi); }
+.focus-proposed, .field:focus-visible { outline: 0; box-shadow: inset 0 0 0 1px var(--sel); }
+.focus-now:focus-visible { box-shadow: inset 0 0 0 1px var(--hi); }
+.selection { background: var(--sel); color: var(--sel-ink); padding: 2px 5px; }
+/* Fixed viewports reveal overflow without scaling the controls or the comparison. */
+.viewport { position: relative; width: 760px; height: 500px; overflow: hidden; background: var(--face-2); box-shadow: inset 0 0 0 1px var(--lo); }
+.shell-menu { height: 26px; padding: 6px 8px; background: var(--face); }
+.shell-tree { width: 148px; height: 447px; padding: 12px 8px; background: var(--field); line-height: 26px; }
+.shell-status { position: absolute; bottom: 0; width: 100%; height: 24px; background: var(--face); padding: 4px 8px; box-shadow: var(--in); }
+.dlg { position: absolute; top: 12px; padding: 7px; background: var(--face); box-shadow: var(--out), 4px 4px #0004; display: grid; grid-template-rows: 23px minmax(0, 1fr) 38px; gap: 6px; }
+.dlg.publish { width: 694px; left: 33px; }
+.dlg.push { width: 726px; left: 17px; }
+.dlg.wizard { width: 736px; left: 12px; }
+.dlg.now.publish { height: 538px; }
+.dlg.now.push { height: 516px; }
+.dlg.now.wizard { width: 874px; left: 0; height: 397px; top: 51px; }
+.dlg.proposed { height: 476px; }
+.bd { min-height: 0; overflow: hidden; }
+.proposed .bd { overflow-y: scroll; scrollbar-color: var(--lo) var(--field); scrollbar-width: auto; padding-right: 8px; }
+.ft { display: flex; align-items: center; justify-content: flex-end; gap: 7px; border-top: 1px solid var(--lo); box-shadow: inset 0 1px var(--hi); padding-top: 6px; }
+.ft .msg { margin-right: auto; font-size: 11px; }
+.form { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 6px 10px; align-items: center; margin: 6px 0; }
+.chips { display: flex; gap: 5px; }
+.chips .btn { height: 21px; padding: 2px 8px; font: 11px var(--code); }
+.preview { background: var(--field); box-shadow: var(--in); padding: 7px; margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.revision-review { height: 330px; overflow-y: auto; margin-top: 8px; }
+.proposed .revision-review { height: auto; overflow: visible; }
+.subhead { font-weight: 700; margin: 8px 0 4px; }
+.chooser { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 8px 0; }
+.picktree { background: var(--field); box-shadow: var(--in); padding: 6px; min-height: 100px; line-height: 23px; }
+.picktree .selected { background: var(--sel); color: var(--sel-ink); padding-left: 12px; }
+.chooser .form { grid-template-columns: 66px minmax(0, 1fr); }
+.mini { width: 100%; border-collapse: collapse; background: var(--field); font-size: 11px; }
+.mini th, .mini td { text-align: left; padding: 4px 5px; white-space: nowrap; }
+.mini th { background: var(--face-2); }
+.mini tr:nth-child(even) { background: var(--stripe); }
+.checks { margin: 5px 0; padding: 0; list-style: none; line-height: 20px; }
+.verdict { border: 1px solid var(--lo); padding: 7px; margin: 6px 0; }
+.wizard-grid { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 12px; min-height: 100%; }
+.now .wizard-grid { grid-template-columns: 190px 620px; }
+.steps { padding: 8px; background: var(--face-2); border-right: 1px solid var(--lo); }
+.steps ol { list-style: none; margin: 6px 0; padding: 0; line-height: 28px; }
+.steps .selected { background: var(--sel); color: var(--sel-ink); padding: 0 4px; }
+.wizard-page { min-width: 0; padding: 6px 0; }
+.proposed.wizard .bd { overflow: hidden; padding-right: 0; }
+.proposed .wizard-page { max-height: 389px; overflow-y: auto; padding-right: 8px; }
+.wizard-page .form { grid-template-columns: 100px minmax(0, 1fr); }
+.inventory { width: 100%; border-collapse: collapse; background: var(--face); }
+.inventory th, .inventory td { text-align: left; vertical-align: top; padding: 9px 10px; border-bottom: 1px solid var(--lo); }
+.inventory th { background: var(--face-2); }
+.sources { background: var(--face); padding: 12px 14px; margin-top: 16px; }
+.sources li { margin: 6px 0; }
+</style>
+</head>
+<body>
+<main>
+<header class="note">
+<h1>Classic light — readable progress, fitting dialogs, visible focus</h1>
+<p>Design proposal for review. Each pair is Now / Proposed at 1 CSS px per UI point (100% zoom). The viewport frames are exactly 760 × 500 px; scroll the comparison horizontally on a narrow display. No emulator wiring.</p>
+<p>The 12 px Tahoma/Verdana font stack and bevels follow the existing mock-ups. Exact egui glyph metrics and conditional text wrapping are not reproduced. Sizes below are source-derived layout estimates, not measurements from a running window.</p>
+</header>
+<section class="section" aria-labelledby="progress-heading">
+<h2 class="note" id="progress-heading">1. Push progress text</h2>
+<div class="compare-wrap"><div class="compare">
+<figure><figcaption><strong>Now</strong> · white selection text on the empty white track</figcaption>
+<div class="sample"><div class="titlebar"><span>Push — open-at:1.0.0</span></div>
+<div class="progress-demo before"><div class="bar" role="progressbar" aria-label="Push, 20 percent; 1 of 5 blobs; 2 MiB of 10 MiB" aria-valuenow="20" aria-valuemin="0" aria-valuemax="100"><span class="fill"></span><span class="bar-text">1 of 5 blobs · 2 MiB of 10 MiB</span></div></div>
+<p class="hint">20% filled. The status starts on navy and disappears where it crosses the empty track.</p></div></figure>
+<figure><figcaption><strong>Proposed · recommended</strong> · status line above an unlabelled bar</figcaption>
+<div class="sample"><div class="titlebar"><span>Push — open-at:1.0.0</span></div>
+<div class="progress-demo"><p class="status">1 of 5 blobs · 2 MiB of 10 MiB</p><div class="bar" role="progressbar" aria-label="Push" aria-valuenow="20" aria-valuemin="0" aria-valuemax="100"><span class="fill"></span></div></div>
+<p class="hint">Manifest and tag — written after every blob.</p></div></figure>
+</div></div>
+<p class="rationale">Recommend the existing blob/byte status as normal text above the bar: it stays readable at every fill level and does not depend on selection text colour. The status line costs 22 px, included in the proposed dialog body budget. A single text colour inside the bar would need to contrast with both white and navy; moving the text also accommodates longer status messages.</p>
+</section>
+<section class="section" aria-labelledby="size-heading">
+<h2 class="note" id="size-heading">2. Fit the minimum 760 × 500 px window</h2>
+<p class="note">Now frames illustrate the reported ~538 px revision and ~516 px Push planning cases. Content, warnings, checks and line wrapping can make either taller. Proposed sizes include the frame and title strip; buttons stay outside the scrollable body. Scroll inside each proposed body to inspect its remaining content.</p>
+<div class="compare-wrap"><div class="compare"><figure><figcaption><strong>Now</strong> · 694 × ~538 px; footer extends 50 px below viewport</figcaption>
+<div class="viewport" aria-label="760 by 500 application viewport"><div class="shell-menu">File　Machine　Image　Media　View　Tools　Help</div><div class="shell-tree">Library<br>　Machines<br>　Images<br>Remotes</div><div class="shell-status">unemu　·　stopped</div>
+<div class="dlg now publish"><div class="titlebar"><span>Publish new image revision</span><button class="tbtn" type="button" aria-label="Close (illustration)">×</button></div>
+<div class="bd" tabindex="0" aria-label="Publish new image revision body"><p>From open-at:1.0.0 · sha256:8a21…e71d · stopped</p>
+<div class="subhead">New revision</div><div class="form"><span>Repository name</span><input class="field" aria-label="Repository name" value="open-at" readonly><span>Tag</span><input class="field" aria-label="Tag" value="1.1.0" readonly></div>
+<div class="chips"><button class="btn" type="button">1.1.0</button><button class="btn" type="button">1.0.1</button></div>
+<p class="good">✓ This version tag is free.</p>
+<p class="hint">Suggested: the next minor version. A revision never overwrites a tag; version tags never move.</p>
+<div class="revision-review" tabindex="0" aria-label="Revision details">
+<div class="subhead">Hardware changes — flattened machine configuration</div>
+<pre class="preview">  [memory]
+- extended_kib = 1024
++ extended_kib = 2048</pre>
+<div class="subhead">CMOS bytes recomputed, as SETUP would</div>
+<pre class="preview">17h  00 → 00   extended memory, low byte
+18h  04 → 08   extended memory, high byte</pre>
+<p class="hint">Only the bytes that describe memory, drives, the display and the coprocessor change, plus the checksum over 10h–2Dh. The clock and every other option keep their stored values.</p>
+<div class="subhead">Image and media bindings</div>
+<pre class="preview">firmware      sha256:a27b…4b91  unchanged, shared
+configuration sha256:7f25…c41a  new</pre>
+<p>New in the store: one configuration blob, plus the manifest. 0 disk bytes copied.</p>
+<p class="good">Validator ✓ The draft passes validation; no pending checks.</p>
+<p class="hint">The new settings apply when the new revision starts. Existing workspaces keep running their image.</p>
+</div></div>
+<div class="ft"><button class="btn default" type="button">Publish revision</button><button class="btn" type="button">&lt; Back</button><button class="btn" type="button">Cancel</button></div></div></div></figure>
+<figure><figcaption><strong>Proposed · recommended</strong> · 694 × 476 px; body scrolls, actions pinned</figcaption>
+<div class="viewport" aria-label="760 by 500 application viewport"><div class="shell-menu">File　Machine　Image　Media　View　Tools　Help</div><div class="shell-tree">Library<br>　Machines<br>　Images<br>Remotes</div><div class="shell-status">unemu　·　stopped</div>
+<div class="dlg proposed publish"><div class="titlebar"><span>Publish new image revision</span><button class="tbtn" type="button" aria-label="Close (illustration)">×</button></div>
+<div class="bd" tabindex="0" aria-label="Publish new image revision body"><p>From open-at:1.0.0 · sha256:8a21…e71d · stopped</p>
+<div class="subhead">New revision</div><div class="form"><span>Repository name</span><input class="field" aria-label="Repository name" value="open-at" readonly><span>Tag</span><input class="field" aria-label="Tag" value="1.1.0" readonly></div>
+<div class="chips"><button class="btn" type="button">1.1.0</button><button class="btn" type="button">1.0.1</button></div>
+<p class="good">✓ This version tag is free.</p>
+<p class="hint">Suggested: the next minor version. A revision never overwrites a tag; version tags never move.</p>
+<div class="revision-review" tabindex="0" aria-label="Revision details">
+<div class="subhead">Hardware changes — flattened machine configuration</div>
+<pre class="preview">  [memory]
+- extended_kib = 1024
++ extended_kib = 2048</pre>
+<div class="subhead">CMOS bytes recomputed, as SETUP would</div>
+<pre class="preview">17h  00 → 00   extended memory, low byte
+18h  04 → 08   extended memory, high byte</pre>
+<p class="hint">Only the bytes that describe memory, drives, the display and the coprocessor change, plus the checksum over 10h–2Dh. The clock and every other option keep their stored values.</p>
+<div class="subhead">Image and media bindings</div>
+<pre class="preview">firmware      sha256:a27b…4b91  unchanged, shared
+configuration sha256:7f25…c41a  new</pre>
+<p>New in the store: one configuration blob, plus the manifest. 0 disk bytes copied.</p>
+<p class="good">Validator ✓ The draft passes validation; no pending checks.</p>
+<p class="hint">The new settings apply when the new revision starts. Existing workspaces keep running their image.</p>
+</div></div>
+<div class="ft"><button class="btn default" type="button">Publish revision</button><button class="btn" type="button">&lt; Back</button><button class="btn" type="button">Cancel</button></div></div></div></figure></div></div>
+<p class="rationale">Recommend scrolling the whole revision body, including the name form, notices and review, with Publish revision / Back / Cancel pinned below it. Replace the fixed 330 px review reservation and nested previews with one body scroll area. At 760 × 500 the outer dialog is 694 × 476 px, with a 389 px body; long warnings and errors use that body too. Tighter spacing alone would leave conditional notices able to push the buttons off-screen.</p><div class="compare-wrap"><div class="compare"><figure><figcaption><strong>Now</strong> · 726 × ~516 px; footer extends 28 px below viewport</figcaption>
+<div class="viewport" aria-label="760 by 500 application viewport"><div class="shell-menu">File　Machine　Image　Media　View　Tools　Help</div><div class="shell-tree">Library<br>　Machines<br>　Images<br>Remotes</div><div class="shell-status">unemu　·　stopped</div>
+<div class="dlg now push"><div class="titlebar"><span>Push to… — open-at:1.0.0</span><button class="tbtn" type="button" aria-label="Close (illustration)">×</button></div>
+<div class="bd" tabindex="0" aria-label="Push to… — open-at:1.0.0 body"><div class="form"><span>Image</span><span>open-at:1.0.0 · 10 MiB · open</span><span>Local tag</span><span>Stays open-at:1.0.0. Pushing never renames it.</span><span>Destination</span><input class="field" aria-label="Destination" value="registry.example.org/lab/open-at:1.0.0" readonly></div>
+<p class="hint">Type a reference here, or choose below; both show the same destination.</p>
+<div class="chooser"><div><div class="subhead">Registry and namespace</div><div class="picktree">registry.example.org<div class="selected">lab/ · private</div></div></div>
+<div><div class="form"><span>Repository</span><input class="field" aria-label="Repository" value="open-at" readonly><span>Tag</span><input class="field" aria-label="Tag" value="1.0.0" readonly></div><p class="hint">Under lab/. A new name creates the repository.</p><p class="hint">Resolves to registry.example.org/lab/open-at:1.0.0</p></div></div>
+<div class="subhead">Dry run — every blob in the image, with its redistribution mark</div>
+<table class="mini"><thead><tr><th>Part</th><th>Type</th><th>Digest</th><th>Size</th><th>Redistribution</th><th>Recorded in</th></tr></thead><tbody>
+<tr><td>Configuration</td><td>config</td><td>7f25…c41a</td><td>2 KiB</td><td>open</td><td>image</td></tr>
+<tr><td>System BIOS</td><td>firmware</td><td>a27b…4b91</td><td>64 KiB</td><td>open</td><td>package</td></tr>
+<tr><td>Disk base</td><td>disk</td><td>32ef…a618</td><td>10 MiB</td><td>open</td><td>image</td></tr>
+</tbody></table>
+<div class="subhead">Checks before upload</div>
+<ul class="checks"><li>✓ Destination is configured.</li><li>✓ Redistribution marks allow this destination.</li><li>✓ Logged in to the private namespace.</li><li>✓ Version tag is free, as listed.</li></ul>
+<div class="verdict"><strong class="good">Ready to push.</strong><p>10 MiB in 5 blobs; blobs the registry already has are skipped.</p></div>
+<p class="hint">Nothing has been sent.</p></div>
+<div class="ft"><span class="msg">Nothing has been sent.</span><button class="btn default" type="button">Push</button><button class="btn" type="button">Cancel</button></div></div></div></figure>
+<figure><figcaption><strong>Proposed · recommended</strong> · 726 × 476 px; body scrolls, actions pinned</figcaption>
+<div class="viewport" aria-label="760 by 500 application viewport"><div class="shell-menu">File　Machine　Image　Media　View　Tools　Help</div><div class="shell-tree">Library<br>　Machines<br>　Images<br>Remotes</div><div class="shell-status">unemu　·　stopped</div>
+<div class="dlg proposed push"><div class="titlebar"><span>Push to… — open-at:1.0.0</span><button class="tbtn" type="button" aria-label="Close (illustration)">×</button></div>
+<div class="bd" tabindex="0" aria-label="Push to… — open-at:1.0.0 body"><div class="form"><span>Image</span><span>open-at:1.0.0 · 10 MiB · open</span><span>Local tag</span><span>Stays open-at:1.0.0. Pushing never renames it.</span><span>Destination</span><input class="field" aria-label="Destination" value="registry.example.org/lab/open-at:1.0.0" readonly></div>
+<p class="hint">Type a reference here, or choose below; both show the same destination.</p>
+<div class="chooser"><div><div class="subhead">Registry and namespace</div><div class="picktree">registry.example.org<div class="selected">lab/ · private</div></div></div>
+<div><div class="form"><span>Repository</span><input class="field" aria-label="Repository" value="open-at" readonly><span>Tag</span><input class="field" aria-label="Tag" value="1.0.0" readonly></div><p class="hint">Under lab/. A new name creates the repository.</p><p class="hint">Resolves to registry.example.org/lab/open-at:1.0.0</p></div></div>
+<div class="subhead">Dry run — every blob in the image, with its redistribution mark</div>
+<table class="mini"><thead><tr><th>Part</th><th>Type</th><th>Digest</th><th>Size</th><th>Redistribution</th><th>Recorded in</th></tr></thead><tbody>
+<tr><td>Configuration</td><td>config</td><td>7f25…c41a</td><td>2 KiB</td><td>open</td><td>image</td></tr>
+<tr><td>System BIOS</td><td>firmware</td><td>a27b…4b91</td><td>64 KiB</td><td>open</td><td>package</td></tr>
+<tr><td>Disk base</td><td>disk</td><td>32ef…a618</td><td>10 MiB</td><td>open</td><td>image</td></tr>
+</tbody></table>
+<div class="subhead">Checks before upload</div>
+<ul class="checks"><li>✓ Destination is configured.</li><li>✓ Redistribution marks allow this destination.</li><li>✓ Logged in to the private namespace.</li><li>✓ Version tag is free, as listed.</li></ul>
+<div class="verdict"><strong class="good">Ready to push.</strong><p>10 MiB in 5 blobs; blobs the registry already has are skipped.</p></div>
+<p class="hint">Nothing has been sent.</p></div>
+<div class="ft"><span class="msg">Nothing has been sent.</span><button class="btn default" type="button">Push</button><button class="btn" type="button">Cancel</button></div></div></div></figure></div></div>
+<p class="rationale">Recommend the same bounded body for every Push stage, keeping the verdict and all checks available by scrolling, with Push / Cancel pinned. At 760 × 500 the outer dialog is 726 × 476 px and the body is 389 px. The running stage uses the separate status line from proposal 1 inside that budget. Local chooser, dry-run and blob-list height caps do not constrain the sum of the dialog; reducing only one cap would remain content-dependent.</p><div class="compare-wrap"><div class="compare"><figure><figcaption><strong>Now</strong> · 874 px outer width; right edge exceeds window by 114 px</figcaption>
+<div class="viewport" aria-label="760 by 500 application viewport"><div class="shell-menu">File　Machine　Image　Media　View　Tools　Help</div><div class="shell-tree">Library<br>　Machines<br>　Images<br>Remotes</div><div class="shell-status">unemu　·　stopped</div>
+<div class="dlg now wizard"><div class="titlebar"><span>New machine — step 3 of 7: CPU and memory</span><button class="tbtn" type="button" aria-label="Close (illustration)">×</button></div>
+<div class="bd" tabindex="0" aria-label="New machine — step 3 of 7: CPU and memory body"><div class="wizard-grid"><nav class="steps" aria-label="Wizard steps"><strong>New machine</strong><ol>
+<li>1. Class ✓</li><li>2. Motherboard ✓</li><li class="selected">3. CPU and memory</li><li>4. Devices</li><li>5. Drives</li><li>6. Name</li><li>7. Summary</li></ol>
+<p class="hint">Creates an empty image: configuration, firmware, blank disks and empty media catalogues. No operating system yet.</p></nav>
+<div class="wizard-page"><h3>CPU and memory</h3><p class="hint">Choose the processor and the memory fitted to the machine.</p>
+<div class="form"><span>CPU</span><input class="field" aria-label="CPU" value="80286" readonly><span>Clock</span><input class="field" aria-label="Clock" value="8 MHz" readonly><span>Base memory</span><input class="field" aria-label="Base memory" value="640 KiB" readonly><span>Extended</span><input class="field" aria-label="Extended" value="2048 KiB" readonly></div>
+<p class="hint">The motherboard and firmware determine which values are available.</p>
+<div class="subhead">Summary of this step</div><pre class="preview">CPU         80286, 8 MHz
+Base        640 KiB
+Extended    2048 KiB</pre>
+<p>Next: choose the display, controllers and other devices.</p></div></div></div>
+<div class="ft"><button class="btn" type="button">&lt; Back</button><button class="btn default" type="button">Next &gt;</button><button class="btn" type="button">Create</button><button class="btn" type="button">Cancel</button></div></div></div></figure>
+<figure><figcaption><strong>Proposed · recommended</strong> · 736 × 476 px; 160 px steps, flexible page</figcaption>
+<div class="viewport" aria-label="760 by 500 application viewport"><div class="shell-menu">File　Machine　Image　Media　View　Tools　Help</div><div class="shell-tree">Library<br>　Machines<br>　Images<br>Remotes</div><div class="shell-status">unemu　·　stopped</div>
+<div class="dlg proposed wizard"><div class="titlebar"><span>New machine — step 3 of 7: CPU and memory</span><button class="tbtn" type="button" aria-label="Close (illustration)">×</button></div>
+<div class="bd" tabindex="0" aria-label="New machine — step 3 of 7: CPU and memory body"><div class="wizard-grid"><nav class="steps" aria-label="Wizard steps"><strong>New machine</strong><ol>
+<li>1. Class ✓</li><li>2. Motherboard ✓</li><li class="selected">3. CPU and memory</li><li>4. Devices</li><li>5. Drives</li><li>6. Name</li><li>7. Summary</li></ol>
+<p class="hint">Creates an empty image: configuration, firmware, blank disks and empty media catalogues. No operating system yet.</p></nav>
+<div class="wizard-page"><h3>CPU and memory</h3><p class="hint">Choose the processor and the memory fitted to the machine.</p>
+<div class="form"><span>CPU</span><input class="field" aria-label="CPU" value="80286" readonly><span>Clock</span><input class="field" aria-label="Clock" value="8 MHz" readonly><span>Base memory</span><input class="field" aria-label="Base memory" value="640 KiB" readonly><span>Extended</span><input class="field" aria-label="Extended" value="2048 KiB" readonly></div>
+<p class="hint">The motherboard and firmware determine which values are available.</p>
+<div class="subhead">Summary of this step</div><pre class="preview">CPU         80286, 8 MHz
+Base        640 KiB
+Extended    2048 KiB</pre>
+<p>Next: choose the display, controllers and other devices.</p></div></div></div>
+<div class="ft"><button class="btn" type="button">&lt; Back</button><button class="btn default" type="button">Next &gt;</button><button class="btn" type="button">Create</button><button class="btn" type="button">Cancel</button></div></div></div></figure></div></div>
+<p class="rationale">Recommend capping the outer wizard at viewport minus 24 px on both axes, reducing the step column to 160 px, and letting the page take the remaining 550 px rather than forcing 620 px. At 760 × 500 it is 736 × 476 px, with a 389 px body and pinned navigation. Reflow long field rows and wrap explanations within the page; preserve all seven steps. The existing height formula already gives a 310 px body at this window size, so the primary defect is forced width. Scroll the body for taller pages rather than shrinking controls.</p>
+<table class="inventory"><thead><tr><th>Code-derived size / constraint</th><th>Why the current dialog grows</th><th>Proposed at 760 × 500</th></tr></thead><tbody>
+<tr><td>Minimum inner window: <strong>760 × 500</strong><br><code>crates/window/src/shell.rs:275</code></td><td>egui uses UI points; examples assume 1 point = 1 CSS px.</td><td>12 px top/bottom clearance; all dialog frames fit within 500 px.</td></tr>
+<tr><td>Revision: <strong>680 px content width</strong>; <strong>330 px</strong> review reservation<br><code>crates/pc-ui/src/settings_sheet.rs:840,867</code></td><td>~538 = 330 review + ~208 frame, title, form, hints, separators and actions in the reported case. Optional notices add height. The form is outside the review scroller (<code>crates/library-ui/src/save_image.rs:23–68</code>); its 20 px labelled rows, chips and tag check also count. Preview caps of 120 / 80 px are inside the 330 px area, not added again (<code>settings_sheet.rs:885,903</code>).</td><td><strong>694 × 476</strong><br>680 content + 14 frame; body 389; title 23; actions 38; gaps 12; frame 14.</td></tr>
+<tr><td>Push planning: <strong>712 px content width</strong> at 760<br><code>crates/library-ui/src/push_view.rs:251</code></td><td>(760 − 48) clamped to 360…820 = 712. Chooser cap 170 (<code>:165</code>) and dry-run cap 150 (<code>:211</code>) bound separate regions. Form rows use 6 px vertical grid gaps (<code>:279,343</code>); checks and verdict follow outside both scrollers (<code>:420–451</code>). The reported ~516 px case is their content-dependent sum, not a 516 px constant.</td><td><strong>726 × 476</strong><br>712 content + 14 frame; body 389. Running blob list currently has its own 220 px cap (<code>:531</code>).</td></tr>
+<tr><td>Wizard: <strong>860 px content</strong>, <strong>190 px steps</strong>, <strong>620 px page</strong><br><code>crates/pc-ui/src/new_machine_view.rs:20,56,89</code></td><td>860 + 14 frame = 874, 114 wider than 760. Columns and separator do not override that forced outer content width. Body at 500: clamp(500 − 190, 240, 460) = <strong>310</strong> (<code>:50</code>). Illustrated ~397 px outer height allows 87 px for frame, title, gaps and actions; error text can add more.</td><td><strong>736 × 476</strong><br>722 content = 160 steps + 12 gap + 550 page; body 389; actions pinned.</td></tr>
+</tbody></table>
+<p class="rationale">Frame accounting uses egui 0.37.0 (the exact pin in <code>Cargo.toml:51</code>): Modal defaults to Frame::popup, with a 6 px menu margin and 1 px window stroke per side, hence 14 px total. Default item spacing is (8, 3) and interaction height is 20 px. The proposed mock-up explicitly budgets 14 + 23 + 6 + 389 + 6 + 38 = 476 px; its 6 px section gaps and 38 px footer are design choices. The ~538 / ~516 reference heights depend on state and text and cannot be exact runtime measurements from source alone.</p>
+</section>
+<section class="section" aria-labelledby="focus-heading">
+<h2 class="note" id="focus-heading">3. Focused single-line field — visible outline decided</h2>
+<div class="compare-wrap"><div class="compare">
+<figure><figcaption><strong>Now · raw egui defect</strong> · white focus stroke on white</figcaption><div class="sample"><h3>Destination</h3><div class="field-grid">
+<label>Unfocused<input class="field" aria-label="Now unfocused field" value="open-at:1.0.0" readonly></label>
+<label>Focused<span class="focus-field"><input class="field focus-now" aria-label="Raw egui focused field illustration" value="open-at:1.0.0" readonly></span></label>
+</div><p class="hint">The caret remains visible, but the white boundary disappears.</p></div></figure>
+<figure><figcaption><strong>Proposed · recommended</strong> · 1 px navy outline inside the field</figcaption><div class="sample"><h3>Destination</h3><div class="field-grid">
+<label>Unfocused<input class="field" aria-label="Proposed unfocused field" value="open-at:1.0.0" readonly></label>
+<label>Focused<span class="focus-field"><input class="field focus-proposed" aria-label="Proposed navy focused field illustration" value="open-at:1.0.0" readonly></span></label>
+</div><p class="hint">Selection stays <span class="selection">white on navy</span>. Field size stays 358 × 24 px.</p></div></figure>
+</div></div>
+<p class="rationale">Recommend a solid 1 px inset outline in the existing selection navy, <code>#22468a</code>, around the focused single-line field. It is familiar in the classic palette and contrasts about 9.1:1 with the white field. Keep white selected glyphs on navy; the focus boundary must use its own paint colour. The inspected shell already has <code>outline_focused_field</code> (<code>crates/window/src/shell.rs:6378–6403</code>), which repaints focus using the field’s text colour; the left sample documents the underlying egui defect, while the navy sample proposes the explicit classic light treatment for approval.</p>
+</section>
+<footer class="sources">
+<h2>Source references and review scope</h2>
+<ul>
+<li><a href="../../../../crates/ui-kit/src/skin.rs">ui-kit skin</a>: <code>skin_visuals:73–123</code>, <code>bevel:195–210</code>, <code>title_strip:240–279</code>. ProgressBar and TextEdit inherit egui visuals; no separate ui-kit wrapper changes their text/focus colours.</li>
+<li><a href="../../../../crates/library-ui/src/push_view.rs">Push view</a>: <code>show_push:243–267</code>, <code>plan_one:269–453</code>, <code>blob_rows:511–554</code>; the latter passes a plain string to <code>ProgressBar::text</code>.</li>
+<li><a href="../../../../crates/pc-ui/src/settings_sheet.rs">Revision review</a>: <code>show_review:813–966</code>; <a href="../../../../crates/library-ui/src/save_image.rs">name form</a>: <code>form:23–69</code>.</li>
+<li><a href="../../../../crates/pc-ui/src/new_machine_view.rs">Wizard</a>: <code>show:17–159</code>; <a href="../../../../crates/window/src/shell.rs">shell</a>: minimum inner size <code>:275</code>, focus repaint call <code>:6361</code> and helper <code>:6378</code>.</li>
+<li>egui 0.37.0 dependency sources: <code>src/containers/modal.rs</code> (Frame::popup), <code>src/containers/frame.rs</code> (popup margins and stroke), <code>src/style.rs</code> (Spacing::default / Widgets::light), <code>src/widgets/progress_bar.rs</code> (selection stroke as text fallback), <code>src/widgets/text_edit/builder.rs</code> (selection stroke when focused).</li>
+</ul>
+<p>Mock-up only. Buttons and read-only fields illustrate layout; body scrolling works. No new icons or glyphs. Approval of these proposals precedes implementation.</p>
+</footer>
+</main>
+</body>
+</html>

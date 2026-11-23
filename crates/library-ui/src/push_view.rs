@@ -248,12 +248,18 @@ pub fn show_push(ctx: &egui::Context, dialog: &mut PushDialog, classic: bool) ->
         _ => format!("Push to… — {tag}"),
     };
     egui::Modal::new(egui::Id::unique("registry-push")).show(ctx, |ui| {
-        ui.set_width((ctx.content_rect().width() - 48.0).clamp(360.0, 820.0));
+        let layout = ui_kit::skin::DialogLayout::new(
+            ui,
+            classic,
+            (ctx.content_rect().width() - 48.0).clamp(360.0, 820.0),
+        );
         title(ui, &heading, classic);
         match dialog.state {
-            PushState::Planning | PushState::Ready => plan_one(ui, dialog, &mut action),
-            PushState::ConfirmMove { .. } => confirm_move(ui, dialog, &mut action),
-            PushState::Pushing(_) | PushState::Finished { .. } => run_one(ui, dialog, &mut action),
+            PushState::Planning | PushState::Ready => plan_one(ui, dialog, &mut action, &layout),
+            PushState::ConfirmMove { .. } => confirm_move(ui, dialog, &mut action, &layout),
+            PushState::Pushing(_) | PushState::Finished { .. } => {
+                run_one(ui, dialog, &mut action, &layout)
+            }
         }
     });
     if ctx.input_mut(ui_kit::skin::escape_pressed) {
@@ -266,7 +272,13 @@ pub fn show_push(ctx: &egui::Context, dialog: &mut PushDialog, classic: bool) ->
     action
 }
 
-fn plan_one(ui: &mut egui::Ui, dialog: &mut PushDialog, action: &mut Action) {
+fn plan_one(
+    ui: &mut egui::Ui,
+    dialog: &mut PushDialog,
+    action: &mut Action,
+    layout: &ui_kit::skin::DialogLayout,
+) {
+    layout.body(ui, |ui| {
     if let Some(notice) = &dialog.notice {
         warn(ui, notice.clone());
     }
@@ -338,6 +350,12 @@ fn plan_one(ui: &mut egui::Ui, dialog: &mut PushDialog, action: &mut Action) {
         );
         let ui = &mut columns[1];
         let offered = dialog.offered();
+        let label_width = ui.painter().layout_no_wrap(
+            "Repository".into(),
+            egui::TextStyle::Body.resolve(ui.style()),
+            ui.visuals().text_color(),
+        ).size().x;
+        let resolved_width = (ui.available_width() - label_width - 10.0).max(1.0);
         egui::Grid::new("push-chooser-fields")
             .num_columns(2)
             .spacing([10.0, 6.0])
@@ -397,7 +415,13 @@ fn plan_one(ui: &mut egui::Ui, dialog: &mut PushDialog, action: &mut Action) {
                 ui.label("Resolves to");
                 match &evaluation.resolved {
                     Some(target) => {
-                        ui.monospace(target.to_string());
+                        if layout.bounded() {
+                            ui.allocate_ui(egui::vec2(resolved_width, 0.0), |ui| {
+                                ui.add(egui::Label::new(egui::RichText::new(target.to_string()).monospace()).wrap());
+                            });
+                        } else {
+                            ui.monospace(target.to_string());
+                        }
                     }
                     None => weak(ui, "— no registry chosen"),
                 }
@@ -428,31 +452,35 @@ fn plan_one(ui: &mut egui::Ui, dialog: &mut PushDialog, action: &mut Action) {
     if !matches!(dialog.state, PushState::Planning) {
         verdict_box(ui, &evaluation, dialog.rules.private_place().as_ref());
     }
-    ui.add_space(4.0);
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if ui.button("Cancel").clicked() {
-            *action = Action::Close;
-        }
-        if ui
-            .add_enabled(dialog.can_push(), pane::primary(ui, "Push"))
-            .clicked()
-        {
-            if let Some(request) = dialog.push() {
-                *action = Action::Send(request);
+    });
+    let evaluation = dialog.evaluate();
+    layout.footer(ui, |ui| {
+        ui.add_space(4.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("Cancel").clicked() {
+                *action = Action::Close;
             }
-        }
-        small(
-            ui,
-            match evaluation.verdict {
-                Verdict::Refused => "Push is disabled: the guard refused this destination.",
-                Verdict::TagTaken => "Push is disabled: this tag cannot move.",
-                _ => "Nothing has been sent.",
-            },
-        );
+            if ui
+                .add_enabled(dialog.can_push(), pane::primary(ui, "Push"))
+                .clicked()
+            {
+                if let Some(request) = dialog.push() {
+                    *action = Action::Send(request);
+                }
+            }
+            small(
+                ui,
+                match evaluation.verdict {
+                    Verdict::Refused => "Push is disabled: the guard refused this destination.",
+                    Verdict::TagTaken => "Push is disabled: this tag cannot move.",
+                    _ => "Nothing has been sent.",
+                },
+            );
+        });
     });
 }
 
-fn move_question(ui: &mut egui::Ui, target: &str, current: &str, new: &str) {
+fn move_question(ui: &mut egui::Ui, target: &str, current: &str, new: &str, bounded: bool) {
     ui.strong("Move the tag to this image?");
     ui.add(
         egui::Label::new(format!(
@@ -460,15 +488,43 @@ fn move_question(ui: &mut egui::Ui, target: &str, current: &str, new: &str) {
         ))
         .wrap(),
     );
+    let digest_width = [current, new]
+        .into_iter()
+        .map(|text| {
+            ui.painter()
+                .layout_no_wrap(
+                    text.into(),
+                    egui::TextStyle::Monospace.resolve(ui.style()),
+                    ui.visuals().text_color(),
+                )
+                .size()
+                .x
+        })
+        .fold(0.0, f32::max);
+    let bounded = bounded && digest_width + 100.0 > ui.available_width();
+    let max_width = if bounded {
+        ui.available_width() - 100.0
+    } else {
+        f32::INFINITY
+    };
     egui::Grid::new("push-move")
+        .max_col_width(max_width)
         .num_columns(2)
         .spacing([10.0, 4.0])
         .show(ui, |ui| {
             ui.label("Now");
-            ui.monospace(current);
+            if bounded {
+                ui.add(egui::Label::new(egui::RichText::new(current).monospace()).wrap());
+            } else {
+                ui.monospace(current);
+            }
             ui.end_row();
             ui.label("After the push");
-            ui.monospace(new);
+            if bounded {
+                ui.add(egui::Label::new(egui::RichText::new(new).monospace()).wrap());
+            } else {
+                ui.monospace(new);
+            }
             ui.end_row();
         });
     small(
@@ -477,7 +533,12 @@ fn move_question(ui: &mut egui::Ui, target: &str, current: &str, new: &str) {
     );
 }
 
-fn confirm_move(ui: &mut egui::Ui, dialog: &mut PushDialog, action: &mut Action) {
+fn confirm_move(
+    ui: &mut egui::Ui,
+    dialog: &mut PushDialog,
+    action: &mut Action,
+    layout: &ui_kit::skin::DialogLayout,
+) {
     let PushState::ConfirmMove {
         target,
         current,
@@ -486,17 +547,22 @@ fn confirm_move(ui: &mut egui::Ui, dialog: &mut PushDialog, action: &mut Action)
     else {
         return;
     };
-    move_question(
-        ui,
-        &target.to_string(),
-        &current.to_string(),
-        &new.to_string(),
-    );
+    layout.body(ui, |ui| {
+        move_question(
+            ui,
+            &target.to_string(),
+            &current.to_string(),
+            &new.to_string(),
+            layout.bounded(),
+        );
+    });
     let mut confirm = false;
     let mut back = false;
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        back = ui.button("Back").clicked();
-        confirm = ui.button("Move tag").clicked();
+    layout.footer(ui, |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            back = ui.button("Back").clicked();
+            confirm = ui.button("Move tag").clicked();
+        });
     });
     if confirm {
         if let Some(request) = dialog.confirm_move() {
@@ -507,8 +573,18 @@ fn confirm_move(ui: &mut egui::Ui, dialog: &mut PushDialog, action: &mut Action)
     }
 }
 
+fn push_progress(ui: &mut egui::Ui, fraction: f32, status: String, separate_status: bool) {
+    let bar = egui::ProgressBar::new(fraction);
+    if separate_status {
+        ui.label(status);
+        ui.add(bar);
+    } else {
+        ui.add(bar.text(status));
+    }
+}
+
 /// The blob list of one running or finished push, with the manifest last.
-fn blob_rows(ui: &mut egui::Ui, progress: &Progress, finished: bool) {
+fn blob_rows(ui: &mut egui::Ui, progress: &Progress, finished: bool, separate_status: bool) {
     let blobs: Vec<BlobRow> = progress.blobs();
     let done = blobs.iter().filter(|row| row.outcome.is_some()).count();
     let bytes: u64 = blobs.iter().map(|row| row.size).sum();
@@ -519,14 +595,19 @@ fn blob_rows(ui: &mut egui::Ui, progress: &Progress, finished: bool) {
         // The manifest is the last step, so the bar stops short of full.
         sent as f32 / (bytes.max(1) as f32) * 0.99
     };
-    ui.add(egui::ProgressBar::new(fraction).text(format!(
-        "{done} of {} blobs · {} of {}",
-        blobs.len(),
-        human_size(sent),
-        human_size(bytes)
-    )));
+    push_progress(
+        ui,
+        fraction,
+        format!(
+            "{done} of {} blobs · {} of {}",
+            blobs.len(),
+            human_size(sent),
+            human_size(bytes)
+        ),
+        separate_status,
+    );
     let current = blobs.iter().position(|row| row.outcome.is_none());
-    egui::ScrollArea::vertical()
+    egui::ScrollArea::new([separate_status, true])
         .id_salt("push-progress")
         .max_height(220.0)
         .show(ui, |ui| {
@@ -589,7 +670,12 @@ fn after_line(ui: &mut egui::Ui, hosts: &[String], listing: &Listing, local: Opt
     small(ui, text);
 }
 
-fn run_one(ui: &mut egui::Ui, dialog: &mut PushDialog, action: &mut Action) {
+fn run_one(
+    ui: &mut egui::Ui,
+    dialog: &mut PushDialog,
+    action: &mut Action,
+    layout: &ui_kit::skin::DialogLayout,
+) {
     let (progress, finished) = match &dialog.state {
         PushState::Pushing(progress) => (progress, None),
         PushState::Finished {
@@ -599,9 +685,10 @@ fn run_one(ui: &mut egui::Ui, dialog: &mut PushDialog, action: &mut Action) {
         } => (progress, Some((*ok, message.clone()))),
         _ => return,
     };
-    ui.label(format!("To {}", progress.target));
-    blob_rows(ui, progress, finished.is_some());
     let cancelling = progress.cancelling;
+    layout.body(ui, |ui| {
+    ui.label(format!("To {}", progress.target));
+    blob_rows(ui, progress, finished.is_some(), layout.bounded());
     let tag = dialog.image.clone().unwrap_or_default();
     match &finished {
         Some((true, message)) => {
@@ -631,38 +718,41 @@ fn run_one(ui: &mut egui::Ui, dialog: &mut PushDialog, action: &mut Action) {
             "Large blobs go up in chunks of about 64 MiB. Each accepted chunk is remembered, so an interrupted push resumes at the registry's offset instead of starting again. Cancel stops at the next blob or chunk; a request already sending, up to 64 MiB, finishes first. Blobs the registry already has are skipped. The tag is written last.",
         ),
     }
+    });
     let shown = dialog.landed.first().cloned();
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if finished.is_some() {
-            if ui.button("Close").clicked() {
-                *action = Action::Close;
-            }
-            if ui.button("Back to the dry run").clicked() {
-                dialog.back();
-            }
-            if let Some(target) = shown {
-                if ui.add(pane::primary(ui, "Show in Remotes")).clicked() {
-                    *action = Action::ShowInRemotes(target);
+    layout.footer(ui, |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if finished.is_some() {
+                if ui.button("Close").clicked() {
+                    *action = Action::Close;
+                }
+                if ui.button("Back to the dry run").clicked() {
+                    dialog.back();
+                }
+                if let Some(target) = shown {
+                    if ui.add(pane::primary(ui, "Show in Remotes")).clicked() {
+                        *action = Action::ShowInRemotes(target);
+                    }
+                }
+            } else {
+                if ui
+                    .add_enabled(
+                        !cancelling,
+                        egui::Button::new(if cancelling {
+                            "Cancelling…"
+                        } else {
+                            "Cancel"
+                        }),
+                    )
+                    .clicked()
+                {
+                    dialog.cancel();
+                }
+                if !cancelling {
+                    small(ui, "Cancel or Escape stops at the next blob or chunk.");
                 }
             }
-        } else {
-            if ui
-                .add_enabled(
-                    !cancelling,
-                    egui::Button::new(if cancelling {
-                        "Cancelling…"
-                    } else {
-                        "Cancel"
-                    }),
-                )
-                .clicked()
-            {
-                dialog.cancel();
-            }
-            if !cancelling {
-                small(ui, "Cancel or Escape stops at the next blob or chunk.");
-            }
-        }
+        });
     });
 }
 
@@ -688,43 +778,54 @@ pub fn show_push_batch(ctx: &egui::Context, batch: &mut PushBatch, classic: bool
         (_, None) => format!("Push {} items to…", batch.total()),
     };
     egui::Modal::new(egui::Id::unique("registry-push-batch")).show(ctx, |ui| {
-        ui.set_width((ctx.content_rect().width() - 48.0).clamp(360.0, 860.0));
+        let layout = ui_kit::skin::DialogLayout::new(
+            ui,
+            classic,
+            (ctx.content_rect().width() - 48.0).clamp(360.0, 860.0),
+        );
         title(ui, &heading, classic);
-        if let Some(error) = batch.error.clone() {
-            ui.colored_label(ui.visuals().error_fg_color, error);
-        }
         match &batch.state {
             BatchState::Planning => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Reading every image and the marks of every local image…");
+                layout.body(ui, |ui| {
+                    batch_error(ui, batch);
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Reading every image and the marks of every local image…");
+                    });
                 });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Cancel").clicked() {
-                        action = Action::Close;
-                    }
+                layout.footer(ui, |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Cancel").clicked() {
+                            action = Action::Close;
+                        }
+                    });
                 });
             }
             BatchState::Ready => {
-                match batch.mode {
-                    Mode::To => plan_many(ui, batch, &mut action),
-                    Mode::Here(_) => plan_here(ui, batch, &mut action),
-                }
-                ui.add_space(4.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Cancel").clicked() {
-                        action = Action::Close;
+                layout.body(ui, |ui| {
+                    batch_error(ui, batch);
+                    match batch.mode {
+                        Mode::To => plan_many(ui, batch, &mut action),
+                        Mode::Here(_) => plan_here(ui, batch, &mut action),
                     }
-                    if ui
-                        .add_enabled(batch.can_push(), pane::primary(ui, &batch.go_label()))
-                        .clicked()
-                    {
-                        let requests = batch.start();
-                        if !requests.is_empty() {
-                            action = Action::SendAll(requests);
+                });
+                layout.footer(ui, |ui| {
+                    ui.add_space(4.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Cancel").clicked() {
+                            action = Action::Close;
                         }
-                    }
-                    small(ui, batch.message());
+                        if ui
+                            .add_enabled(batch.can_push(), pane::primary(ui, &batch.go_label()))
+                            .clicked()
+                        {
+                            let requests = batch.start();
+                            if !requests.is_empty() {
+                                action = Action::SendAll(requests);
+                            }
+                        }
+                        small(ui, batch.message());
+                    });
                 });
             }
             BatchState::ConfirmMove {
@@ -733,12 +834,23 @@ pub fn show_push_batch(ctx: &egui::Context, batch: &mut PushBatch, classic: bool
                 new,
             } => {
                 let target = batch.items[*index].reference();
-                move_question(ui, &target, &current.to_string(), &new.to_string());
+                layout.body(ui, |ui| {
+                    batch_error(ui, batch);
+                    move_question(
+                        ui,
+                        &target,
+                        &current.to_string(),
+                        &new.to_string(),
+                        layout.bounded(),
+                    );
+                });
                 let mut confirm = false;
                 let mut back = false;
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    back = ui.button("Back").clicked();
-                    confirm = ui.button("Move tag").clicked();
+                layout.footer(ui, |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        back = ui.button("Back").clicked();
+                        confirm = ui.button("Move tag").clicked();
+                    });
                 });
                 if confirm {
                     action = Action::SendAll(batch.confirm_move());
@@ -746,7 +858,7 @@ pub fn show_push_batch(ctx: &egui::Context, batch: &mut PushBatch, classic: bool
                     batch.decline_move();
                 }
             }
-            BatchState::Run => run_many(ui, batch, &mut action),
+            BatchState::Run => run_many(ui, batch, &mut action, &layout),
         }
     });
     if ctx.input_mut(ui_kit::skin::escape_pressed) {
@@ -1080,14 +1192,27 @@ fn plan_here(ui: &mut egui::Ui, batch: &mut PushBatch, action: &mut Action) {
     }
 }
 
-fn run_many(ui: &mut egui::Ui, batch: &mut PushBatch, action: &mut Action) {
+fn batch_error(ui: &mut egui::Ui, batch: &PushBatch) {
+    if let Some(error) = &batch.error {
+        ui.colored_label(ui.visuals().error_fg_color, error);
+    }
+}
+
+fn run_many(
+    ui: &mut egui::Ui,
+    batch: &mut PushBatch,
+    action: &mut Action,
+    layout: &ui_kit::skin::DialogLayout,
+) {
     let finished = batch.finished();
+    layout.body(ui, |ui| {
+    batch_error(ui, batch);
     if let [one] = batch.queue.as_slice() {
         let item = &batch.items[*one];
         match &item.run {
             Some(run) => {
                 ui.label(format!("To {}", run.target));
-                blob_rows(ui, run, finished);
+                blob_rows(ui, run, finished, layout.bounded());
             }
             None => {
                 if let Some(detail) = batch.detail(*one) {
@@ -1157,39 +1282,42 @@ fn run_many(ui: &mut egui::Ui, batch: &mut PushBatch, action: &mut Action) {
             "Each item’s manifest and tag are written after every blob of that item. Cancel stops at the next blob or chunk.",
         );
     }
+    });
     let shown = batch.first_landed().cloned();
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if finished {
-            if ui.button("Close").clicked() {
-                *action = Action::Close;
-            }
-            if ui.button("Back to the dry run").clicked() {
-                batch.state = BatchState::Ready;
-            }
-            if let Some(target) = shown {
-                if ui.add(pane::primary(ui, "Show in Remotes")).clicked() {
-                    *action = Action::ShowInRemotes(target);
+    layout.footer(ui, |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if finished {
+                if ui.button("Close").clicked() {
+                    *action = Action::Close;
+                }
+                if ui.button("Back to the dry run").clicked() {
+                    batch.state = BatchState::Ready;
+                }
+                if let Some(target) = shown {
+                    if ui.add(pane::primary(ui, "Show in Remotes")).clicked() {
+                        *action = Action::ShowInRemotes(target);
+                    }
+                }
+            } else {
+                let cancelling = batch.cancelling();
+                if ui
+                    .add_enabled(
+                        !cancelling,
+                        egui::Button::new(if cancelling {
+                            "Cancelling…"
+                        } else {
+                            "Cancel"
+                        }),
+                    )
+                    .clicked()
+                {
+                    batch.cancel();
+                }
+                if !cancelling {
+                    small(ui, "Cancel or Escape stops at the next blob or chunk.");
                 }
             }
-        } else {
-            let cancelling = batch.cancelling();
-            if ui
-                .add_enabled(
-                    !cancelling,
-                    egui::Button::new(if cancelling {
-                        "Cancelling…"
-                    } else {
-                        "Cancel"
-                    }),
-                )
-                .clicked()
-            {
-                batch.cancel();
-            }
-            if !cancelling {
-                small(ui, "Cancel or Escape stops at the next blob or chunk.");
-            }
-        }
+        });
     });
 }
 
@@ -1351,4 +1479,37 @@ pub fn several_items(ui: &mut egui::Ui, items: &[Selected]) -> Option<SeveralAct
         }
     });
     action
+}
+
+#[cfg(test)]
+mod readability_tests {
+    use super::*;
+
+    #[test]
+    fn classic_light_progress_status_is_above_the_unlabelled_bar() {
+        let ctx = egui::Context::default();
+        ctx.set_visuals(ui_kit::skin::skin_visuals(true, false));
+        for fraction in [0.0, 0.2, 1.0] {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                push_progress(ui, fraction, "1 of 5 blobs · 2 MiB of 10 MiB".into(), true);
+            });
+            output.textures_delta.clear();
+            let mut status = None;
+            let mut bar = None;
+            for shape in &output.shapes {
+                match &shape.shape {
+                    egui::Shape::Text(text) => {
+                        assert!(status.is_none(), "only the status label paints text");
+                        assert_eq!(text.galley.text(), "1 of 5 blobs · 2 MiB of 10 MiB");
+                        status = Some(text.galley.rect.translate(text.pos.to_vec2()));
+                    }
+                    egui::Shape::Rect(rect) if rect.fill == egui::Color32::WHITE => {
+                        bar = Some(rect.rect)
+                    }
+                    _ => (),
+                }
+            }
+            assert!(status.unwrap().bottom() < bar.unwrap().top());
+        }
+    }
 }

@@ -145,3 +145,118 @@ pub fn painted_at(texts: &[(String, egui::Rect)], label: &str) -> egui::Rect {
         .map(|(_, rect)| *rect)
         .unwrap_or_else(|| panic!("{label:?} not painted in {texts:?}"))
 }
+
+/// Checks settled modal bounds and the painted footer labels at the minimum window.
+pub fn minimum_dialog(id: &str, width: f32, buttons: &[&str], draw: impl FnMut(&egui::Context)) {
+    minimum_dialog_with_content(id, width, buttons, &[], draw);
+}
+
+/// Also checks that body text can be reached by scrolling while the footer stays visible.
+pub fn minimum_dialog_with_content(
+    id: &str,
+    width: f32,
+    buttons: &[&str],
+    content: &[&str],
+    mut draw: impl FnMut(&egui::Context),
+) {
+    let ctx = egui::Context::default();
+    crate::skin::configure_context(&ctx);
+    ctx.set_visuals(crate::skin::skin_visuals(true, false));
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(760.0, 500.0));
+    let mut previous = None;
+    let mut reached = vec![false; content.len()];
+    for frame in 0..if content.is_empty() { 30 } else { 120 } {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events: if frame >= 15 && (frame == 15 || !content.is_empty()) {
+                    vec![
+                        egui::Event::PointerMoved(screen.center()),
+                        egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Point,
+                            phase: egui::TouchPhase::Move,
+                            source: egui::MouseWheelSource::Unknown,
+                            delta: egui::vec2(
+                                0.0,
+                                if content.is_empty() { -1000.0 } else { -25.0 },
+                            ),
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]
+                } else {
+                    Vec::new()
+                },
+                ..Default::default()
+            },
+            |ui| draw(ui.ctx()),
+        );
+        output.textures_delta.clear();
+        if frame < 2 {
+            continue;
+        }
+        let rect = ctx
+            .memory(|m| m.area_rect(egui::Id::unique(id)))
+            .expect("modal shown");
+        assert!(screen.contains_rect(rect), "{id}: {rect:?}");
+        assert!(
+            (rect.width() - width).abs() < 0.5 && (rect.height() - 476.0).abs() < 0.5,
+            "{id}: {rect:?}, expected {width} × 476"
+        );
+        if let Some(previous) = previous {
+            assert_eq!(rect, previous, "modal stays settled");
+        }
+        previous = Some(rect);
+        for (label, reached) in content.iter().zip(&mut reached) {
+            fn visible(shape: &egui::Shape, clip: egui::Rect, label: &str) -> bool {
+                match shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => {
+                        clip.contains_rect(text.galley.rect.translate(text.pos.to_vec2()))
+                    }
+                    egui::Shape::Vec(shapes) => {
+                        shapes.iter().any(|shape| visible(shape, clip, label))
+                    }
+                    _ => false,
+                }
+            }
+            *reached |= frame >= 15
+                && output
+                    .shapes
+                    .iter()
+                    .any(|shape| visible(&shape.shape, shape.clip_rect.intersect(screen), label));
+        }
+        for button in buttons {
+            let mut found = false;
+            fn walk(
+                shape: &egui::Shape,
+                clip: egui::Rect,
+                screen: egui::Rect,
+                label: &str,
+                found: &mut bool,
+            ) {
+                match shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => {
+                        let rect = text.galley.rect.translate(text.pos.to_vec2());
+                        assert!(
+                            screen.contains_rect(rect) && clip.contains_rect(rect),
+                            "{label}: {rect:?} clipped by {clip:?}"
+                        );
+                        *found = true;
+                    }
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            walk(shape, clip, screen, label, found);
+                        }
+                    }
+                    _ => (),
+                }
+            }
+            for shape in &output.shapes {
+                walk(&shape.shape, shape.clip_rect, screen, button, &mut found);
+            }
+            assert!(found, "footer label {button} is painted");
+        }
+    }
+    for (label, reached) in content.iter().zip(reached) {
+        assert!(reached, "body text {label:?} is reachable after scrolling");
+    }
+}

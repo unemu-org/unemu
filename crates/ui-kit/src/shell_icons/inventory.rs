@@ -58,6 +58,7 @@ const REMOTES: &str = "remotes.html";
 const REMOTES_PUSH: &str = "remotes-push.html";
 const PLAYER: &str = "player.html";
 const ABOUT: &str = "about.html";
+const READABILITY: &str = "classic-light-readability.html";
 
 const TOOLBAR_ONLY_MACHINE: &str =
     "the app has one toolbar, the main-window mock-up's machine toolbar; \
@@ -97,6 +98,9 @@ const fn glyph(mockup: &'static str, ch: char, meaning: &'static str, place: Pla
 }
 
 pub const INVENTORY: &[Entry] = &[
+    glyph(READABILITY, '×', "close, and the times sign of dialog sizes", Place::Text(CLOSE)),
+    glyph(READABILITY, '✓', "validation, checks and completed wizard steps", Place::Text("revision validation, push checks and wizard steps")),
+    glyph(READABILITY, '−', "subtraction in layout calculations", Place::Missing("used only in the mock-up's size calculations")),
     // main-window.html, revision 2.
     svg(MAIN, "class=\"appicon\"", "application", Place::Painted(Icon::App, "classic title strip")),
     svg(MAIN, "M4 2l10 6-10 6z", "Start", Place::Painted(Icon::Play, "toolbar Start, and Resume")),
@@ -391,7 +395,7 @@ mod tests {
             .filter(|path| path.extension().is_some_and(|e| e == "html"))
             .collect();
         files.sort();
-        assert_eq!(files.len(), 16, "the approved mock-ups in {dir:?}");
+        assert_eq!(files.len(), 17, "the approved mock-ups in {dir:?}");
         files
             .into_iter()
             .map(|path| {
@@ -428,7 +432,11 @@ mod tests {
                     problems.push(format!("{name}: {matches} entries for {svg}"));
                 }
             }
-            let chars: BTreeSet<char> = html.chars().filter(|c| !c.is_ascii()).collect();
+            // Spacing in an illustration does not introduce an icon.
+            let chars: BTreeSet<char> = html
+                .chars()
+                .filter(|c| !c.is_ascii() && !c.is_whitespace())
+                .collect();
             for ch in &chars {
                 let listed = TYPOGRAPHY.contains(*ch)
                     || entries

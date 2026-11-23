@@ -907,3 +907,112 @@ fn several_selected_rows_leave_every_command_of_one_item_out() {
         Some(c)
     );
 }
+
+#[test]
+fn classic_light_push_fits_all_stages_at_the_minimum_window() {
+    use image_registry::guard::{ClosureEntry, MarkSource, Redistribution};
+    use library_model::{
+        platform::PlatformFacts,
+        registry_transfer::{Accounts, PlanData, Planned, PushDialog, TransferEvent},
+    };
+    let accounts = Accounts {
+        path: None,
+        store: std::sync::Arc::new(image_registry::credential_store::SessionStore::default()),
+        env: Default::default(),
+        default_override: None,
+    };
+    let (mut dialog, request) = PushDialog::open(
+        accounts,
+        PlatformFacts::default(),
+        Some("sample:1.0.0".into()),
+    );
+    let check = |dialog: &mut PushDialog, buttons: &[&str]| {
+        ui_kit::test_support::minimum_dialog("registry-push", 726.0, buttons, |ctx| {
+            let _ = library_ui::push_view::show_push(ctx, dialog, true);
+        });
+    };
+    dialog.notice = Some("A destination problem that must scroll with the checks. ".repeat(30));
+    check(&mut dialog, &["Push", "Cancel"]);
+    let TransferRequest::Plan { id, .. } = request else {
+        panic!("plan request")
+    };
+    let image = Descriptor::new(image_store::media_type::MANIFEST, Digest::of(b"image"), 20);
+    dialog.on_event(&TransferEvent::Planned {
+        id,
+        result: Ok(Box::new(Planned {
+            images: Vec::new(),
+            plan: Some(PlanData {
+                local_tag: "sample:1.0.0".into(),
+                image: image.clone(),
+                closure: (0..20)
+                    .map(|index| ClosureEntry {
+                        role: "layer",
+                        descriptor: Descriptor::new(
+                            "application/octet-stream",
+                            Digest::of(&[index]),
+                            1024,
+                        ),
+                        mark: Redistribution::Open,
+                        effective: Redistribution::Open,
+                        source: MarkSource::ThisImage,
+                    })
+                    .collect(),
+                revisions: false,
+            }),
+        })),
+    });
+    check(&mut dialog, &["Push", "Cancel"]);
+    dialog.state = PushState::ConfirmMove {
+        target: image_registry::Reference::parse(
+            "registry.example.org/lab/sample:latest",
+            image_registry::DEFAULT_REGISTRY,
+        )
+        .unwrap(),
+        current: Digest::of(b"previous"),
+        new: image.digest,
+    };
+    check(&mut dialog, &["Move tag", "Back"]);
+    assert!(dialog.confirm_move().is_some());
+    check(&mut dialog, &["Cancel"]);
+    dialog.fail(&"A registry error that must remain available after the push. ".repeat(30));
+    check(&mut dialog, &["Close", "Back to the dry run"]);
+}
+
+#[test]
+fn classic_light_push_fits_with_a_long_repository() {
+    let accounts = library_model::registry_transfer::Accounts {
+        path: None,
+        store: std::sync::Arc::new(image_registry::credential_store::SessionStore::default()),
+        env: Default::default(),
+        default_override: None,
+    };
+    let (mut dialog, request) = library_model::registry_transfer::PushDialog::open(
+        accounts,
+        Default::default(),
+        Some("sample:1.0.0".into()),
+    );
+    let TransferRequest::Plan { id, .. } = request else {
+        panic!("plan request");
+    };
+    let image = Descriptor::new(image_store::media_type::MANIFEST, Digest::of(b"image"), 20);
+    dialog.on_event(&library_model::registry_transfer::TransferEvent::Planned {
+        id,
+        result: Ok(Box::new(library_model::registry_transfer::Planned {
+            images: vec![library_model::push_destination::LocalImage::of(
+                "sample:1.0.0",
+                &image,
+            )],
+            plan: Some(library_model::registry_transfer::PlanData {
+                local_tag: "sample:1.0.0".into(),
+                image,
+                closure: Vec::new(),
+                revisions: false,
+            }),
+        })),
+    });
+    dialog.destination = format!("registry.example.org/lab/{}:1.0.0", "r".repeat(100));
+    assert!(dialog.evaluate().resolved.is_some());
+    ui_kit::test_support::minimum_dialog("registry-push", 726.0, &["Push", "Cancel"], |ctx| {
+        let _ = library_ui::push_view::show_push(ctx, &mut dialog, true);
+    });
+}

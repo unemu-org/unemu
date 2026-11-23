@@ -516,10 +516,15 @@ pub fn firmware_tab(
     edit
 }
 
-fn title_bar(ui: &mut egui::Ui, title: &str, classic: bool) -> bool {
+fn title_bar(ui: &mut egui::Ui, title: &str, classic: bool, fit_width: bool) -> bool {
     let mut close = false;
     ui.horizontal(|ui| {
-        let width = (ui.available_width() - 30.0).max(100.0);
+        let gap = if fit_width {
+            ui.spacing().item_spacing.x + 23.0
+        } else {
+            30.0
+        };
+        let width = (ui.available_width() - gap).max(100.0);
         ui.allocate_ui(egui::vec2(width, 23.0), |ui| {
             if classic {
                 ui_kit::skin::gradient_title(ui, title);
@@ -560,7 +565,7 @@ pub fn show_image(ctx: &egui::Context, model: &mut ImageSettings, classic: bool)
             Some(name) => format!("Settings — {name} (machine)"),
             None => format!("Settings — {reference} (image)"),
         };
-        if title_bar(ui, &heading, classic) {
+        if title_bar(ui, &heading, classic, false) {
             close = true;
         }
         // The save-as-image mock-up's note banner: ⓘ beside its two lines;
@@ -837,10 +842,12 @@ pub fn show_review(
     };
     let mut publish = false;
     egui::Modal::new(egui::Id::unique("image-revision")).show(ctx, |ui| {
-        ui.set_width(680.0);
-        if title_bar(ui, "Publish new image revision", classic) {
+        let layout = ui_kit::skin::DialogLayout::new(ui, classic, 680.0);
+        if title_bar(ui, "Publish new image revision", classic, layout.bounded() && ctx.content_rect().height() <= 500.0) {
             action = ReviewAction::Cancel;
         }
+        layout.body(ui, |ui| {
+        let body_top = ui.cursor().top();
         ui.label(format!(
             "From {reference} {} · stopped{}",
             save_image::short(&digest),
@@ -862,9 +869,12 @@ pub fn show_review(
                 users.join(" and the ")
             ));
         }
-        // Scrolled content takes the full height at once; offered the rest of
-        // last frame's dialog, it would grow the modal frame by frame.
-        egui::ScrollArea::vertical().id_salt("image-revision-review").max_height(330.0).min_scrolled_height(330.0).show(ui, |ui| {
+        let review_height = if layout.bounded() && ui.cursor().top() - body_top + 330.0 > layout.body_height {
+            f32::INFINITY
+        } else {
+            330.0
+        };
+        let draw_review = |ui: &mut egui::Ui| {
             match &review.plan {
                 None => {
                     ui.label("Checking the revision with the image's firmware…");
@@ -882,7 +892,7 @@ pub fn show_review(
                             pc_image::revision::DiffLine::Added(text) => diff.push_str(&format!("+ {text}\n")),
                         }
                     }
-                    preview_pane(ui, "image-revision-diff", &diff, 120.0);
+                    preview_pane(ui, "image-revision-diff", &diff, if review_height.is_finite() { 120.0 } else { f32::INFINITY });
                     ui.strong("CMOS bytes recomputed, as SETUP would");
                     if plan.cmos_reset {
                         notice(ui, "Another CMOS layout: the stored CMOS image is replaced by the bytes derived from the revision's configuration, as a new machine starts.");
@@ -900,7 +910,7 @@ pub fn show_review(
                             .iter()
                             .map(|c| format!("{:02X}h  {:02X} → {:02X}   {}\n", c.offset, c.old, c.new, c.field))
                             .collect();
-                        preview_pane(ui, "image-revision-cmos", &text, 80.0);
+                        preview_pane(ui, "image-revision-cmos", &text, if review_height.is_finite() { 80.0 } else { f32::INFINITY });
                     }
                     hint(ui, "Only the bytes that describe memory, drives, the display and the coprocessor change, plus the checksum over 10h–2Dh. The clock and every other option keep their stored values.");
                     ui.strong("Image and media bindings");
@@ -923,10 +933,22 @@ pub fn show_review(
                     hint(ui, format!("The new settings apply when the new revision starts. Workspaces of {reference} keep running that image."));
                 }
             }
-        });
+        };
+        if review_height.is_finite() {
+            egui::ScrollArea::vertical()
+                .id_salt("image-revision-review")
+                .max_height(review_height)
+                .min_scrolled_height(330.0)
+                .show(ui, draw_review);
+        } else {
+            // The body owns scrolling when notices and the review cannot fit together.
+            draw_review(ui);
+        }
         if let Some(error) = &review.error {
             ui.add(egui::Label::new(error).wrap());
         }
+        });
+        layout.footer(ui, |ui| {
         ui.separator();
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("Cancel").clicked() {
@@ -945,6 +967,7 @@ pub fn show_review(
             {
                 publish = true;
             }
+        });
         });
     });
     let confirmed = save_image::prompts(ctx, &mut review.save, classic);
@@ -966,17 +989,22 @@ pub fn show_review(
 }
 
 fn preview_pane(ui: &mut egui::Ui, id: &str, text: &str, height: f32) {
-    egui::ScrollArea::vertical()
-        .id_salt(id)
-        .max_height(height)
-        .show(ui, |ui| {
-            ui.add(
-                egui::TextEdit::multiline(&mut { text })
-                    .font(egui::TextStyle::Monospace)
-                    .desired_width(f32::INFINITY)
-                    .interactive(false),
-            );
-        });
+    let draw = |ui: &mut egui::Ui| {
+        ui.add(
+            egui::TextEdit::multiline(&mut { text })
+                .font(egui::TextStyle::Monospace)
+                .desired_width(f32::INFINITY)
+                .interactive(false),
+        );
+    };
+    if height.is_finite() {
+        egui::ScrollArea::vertical()
+            .id_salt(id)
+            .max_height(height)
+            .show(ui, draw);
+    } else {
+        draw(ui);
+    }
 }
 
 fn field_control(ui: &mut egui::Ui, model: &mut impl Sheet, field: &caps::Field) -> Option<Value> {
@@ -1453,5 +1481,114 @@ mod tests {
         }]);
         assert!(matches!(action, Action::Cancel));
         assert!(!model.target.exists());
+    }
+}
+
+#[cfg(test)]
+mod readability_tests {
+    use super::*;
+
+    fn synthetic_revision(
+        reference: &str,
+    ) -> (crate::library_test_support::Fixture, ImageSettings) {
+        let fixture = crate::library_test_support::Fixture::new();
+        let source =
+            pc_image::revision::Source::open(&fixture.store, &fixture.row.descriptor).unwrap();
+        let mut row = fixture.row.clone();
+        row.reference = reference.into();
+        let model = ImageSettings::new(row, source, Vec::new(), false).unwrap();
+        (fixture, model)
+    }
+
+    #[test]
+    fn classic_light_revision_review_is_reachable_after_long_notices() {
+        let host = format!(
+            "{}.{}.{}.example.org",
+            "r".repeat(60),
+            "s".repeat(60),
+            "t".repeat(60)
+        );
+        let reference = format!("{host}/unemu/open-at:1.0.0");
+        let (fixture, mut model) = synthetic_revision(&reference);
+        assert!(model.official_template());
+        model.set("memory.extended_kib", Value::Integer(2048));
+        let request = model.begin_review();
+        let plan = pc_image::test_support::with_synthetic_firmware(|| {
+            pc_image::revision::plan(&fixture.store, &model.source, request.machine)
+        })
+        .unwrap();
+        let diff = plan
+            .diff
+            .iter()
+            .map(|line| match line {
+                pc_image::revision::DiffLine::Section(name) => format!("  {name}\n"),
+                pc_image::revision::DiffLine::Removed(text) => format!("- {text}\n"),
+                pc_image::revision::DiffLine::Added(text) => format!("+ {text}\n"),
+            })
+            .collect::<String>();
+        assert!(diff.contains("2048"));
+        model.planned(request.revision, Ok(plan), Vec::new());
+        ui_kit::test_support::minimum_dialog_with_content(
+            "image-revision",
+            694.0,
+            &["Publish revision", "< Back", "Cancel"],
+            &[
+                "Hardware changes — flattened machine configuration",
+                &diff,
+                "Validator ✓ The draft passes validation; no pending checks.",
+            ],
+            |ctx| {
+                let _ = show_review(ctx, &mut model, false, true);
+            },
+        );
+    }
+
+    #[test]
+    fn classic_light_revision_fits_with_the_name_form_and_long_errors() {
+        let (store, mut model) = synthetic_revision("sample:1.0.0");
+        model.set("memory.extended_kib", Value::Integer(2048));
+        model.begin_review();
+        for stage in 0..3 {
+            if stage == 1 {
+                let request = model.begin_review();
+                let plan = pc_image::test_support::with_synthetic_firmware(|| {
+                    pc_image::revision::plan(&store.store, &model.source, request.machine)
+                });
+                model.planned(
+                    request.revision,
+                    plan.map_err(|e| e.to_string()),
+                    Vec::new(),
+                );
+                assert!(
+                    model
+                        .review
+                        .as_ref()
+                        .unwrap()
+                        .plan
+                        .as_ref()
+                        .unwrap()
+                        .is_ok(),
+                    "{:?}",
+                    model.review.as_ref().unwrap().plan
+                );
+            }
+            let review = model.review.as_mut().unwrap();
+            if stage == 2 {
+                review.plan = Some(Err(
+                    "A validation problem that needs to remain available before publishing. "
+                        .repeat(30),
+                ));
+                review.error =
+                    Some("A publication error that must scroll with the review. ".repeat(30));
+            }
+            ui_kit::test_support::minimum_dialog(
+                "image-revision",
+                694.0,
+                &["Publish revision", "< Back", "Cancel"],
+                |ctx| {
+                    let _ = show_review(ctx, &mut model, false, true);
+                },
+            );
+        }
     }
 }

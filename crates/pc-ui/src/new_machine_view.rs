@@ -17,9 +17,10 @@ pub enum Action {
 pub fn show(ctx: &egui::Context, wizard: &mut Wizard, classic: bool) -> Action {
     let mut action = Action::None;
     egui::Modal::new(egui::Id::unique("new-machine-wizard")).show(ctx, |ui| {
-        ui.set_width(860.0);
+        let layout = ui_kit::skin::DialogLayout::new(ui, classic, 860.0);
+        let narrow = layout.bounded() && ui.available_width() < 860.0;
         ui.horizontal(|ui| {
-            let width = (ui.available_width() - 30.0).max(100.0);
+            let width = (ui.available_width() - if narrow { ui.spacing().item_spacing.x + 23.0 } else { 30.0 }).max(100.0);
             ui.allocate_ui(egui::vec2(width, 23.0), |ui| {
                 let title = format!(
                     "New machine — step {} of {}: {}",
@@ -41,19 +42,40 @@ pub fn show(ctx: &egui::Context, wizard: &mut Wizard, classic: bool) -> Action {
                 action = Action::Cancel;
             }
         });
-        let problems = wizard.problems();
         // A modal lays its content out inside last frame's size, and the
         // vertical separator below fills the height on offer. Offered the
         // whole dialog, it would make the wizard taller on every frame, so
         // the body gets a fixed height that fits the window and the page
         // scrolls inside it.
-        let body = (ctx.content_rect().height() - 190.0).clamp(240.0, 460.0);
+        let body = if layout.bounded() {
+            if ctx.content_rect().height() <= 500.0 { layout.body_height } else {
+                (ctx.content_rect().height() - 190.0).clamp(240.0, 460.0).min(layout.body_height)
+            }
+        } else { (ctx.content_rect().height() - 190.0).clamp(240.0, 460.0) };
+        let problems = wizard.problems();
+        let here = problems.iter().find(|(step, _)| *step == wizard.step);
+        let last = wizard.step == STEPS.len() - 1;
+        let message = wizard
+            .error
+            .clone()
+            .or_else(|| here.map(|(_, text)| text.clone()))
+            .or_else(|| {
+                (last && !problems.is_empty()).then(|| {
+                    let (step, text) = &problems[0];
+                    format!("Fix step {} ({}) first: {text}", step + 1, STEPS[*step])
+                })
+            })
+            .or_else(|| wizard.busy.then(|| "Working in the image store…".into()));
+        let scroll_message = layout.bounded() && (ctx.content_rect().height() <= 500.0 || message.as_ref().is_some_and(|message| {
+            let galley = ui.painter().layout(message.clone(), egui::TextStyle::Body.resolve(ui.style()), ui.visuals().text_color(), ui.available_width());
+            body + 111.0 + galley.size().y > ctx.content_rect().height()
+        }));
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), body),
             egui::Layout::left_to_right(egui::Align::Min),
             |ui| {
                 ui.vertical(|ui| {
-                    ui.set_width(190.0);
+                    ui.set_width(if narrow { 160.0 } else { 190.0 });
                     ui.strong("New machine");
                     for (index, name) in STEPS.iter().enumerate() {
                         let label = format!(
@@ -80,13 +102,17 @@ pub fn show(ctx: &egui::Context, wizard: &mut Wizard, classic: bool) -> Action {
                         .wrap(),
                     );
                 });
-                ui.separator();
+                if narrow { ui.add_space(4.0); } else { ui.separator(); }
+                let page_width = if narrow { ui.available_width() } else { 620.0 };
                 ui.vertical(|ui| {
                     egui::ScrollArea::vertical()
                         .id_salt("new-machine-page")
                         .max_height(body)
                         .show(ui, |ui| {
-                            ui.set_width(620.0);
+                            ui.set_width(page_width);
+                            if layout.bounded() {
+                                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                            }
                             match wizard.step {
                                 0 => page_class(ui, wizard),
                                 model::MOTHERBOARD => {
@@ -105,28 +131,26 @@ pub fn show(ctx: &egui::Context, wizard: &mut Wizard, classic: bool) -> Action {
                                 model::SUMMARY => page_summary(ui, wizard),
                                 _ => (),
                             }
+                            if scroll_message {
+                                if let Some(message) = &message {
+                                    ui.add(egui::Label::new(message).wrap());
+                                }
+                            }
                         });
                 });
             },
         );
-        ui.separator();
+        if !scroll_message {
+            ui.separator();
+            if let Some(message) = &message {
+                ui.add(egui::Label::new(message).wrap());
+            }
+        }
         let problems = wizard.problems();
         let here = problems.iter().find(|(step, _)| *step == wizard.step);
         let last = wizard.step == STEPS.len() - 1;
-        let message = wizard
-            .error
-            .clone()
-            .or_else(|| here.map(|(_, text)| text.clone()))
-            .or_else(|| {
-                (last && !problems.is_empty()).then(|| {
-                    let (step, text) = &problems[0];
-                    format!("Fix step {} ({}) first: {text}", step + 1, STEPS[*step])
-                })
-            })
-            .or_else(|| wizard.busy.then(|| "Working in the image store…".into()));
-        if let Some(message) = message {
-            ui.add(egui::Label::new(message).wrap());
-        }
+        layout.footer(ui, |ui| {
+        if scroll_message { ui.separator(); }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("Cancel").clicked() {
                 action = Action::Cancel;
@@ -156,6 +180,7 @@ pub fn show(ctx: &egui::Context, wizard: &mut Wizard, classic: bool) -> Action {
             {
                 wizard.go(wizard.step - 1);
             }
+        });
         });
     });
     if wizard.move_prompt {
@@ -375,9 +400,30 @@ fn offer_row(ui: &mut egui::Ui, offer: &Offer, checked: bool) -> bool {
     let mut clicked = false;
     ui.add_enabled_ui(offer.reasons.is_empty(), |ui| {
         ui.horizontal(|ui| {
-            clicked = ui
-                .radio(checked, egui::RichText::new(&offer.name).strong())
-                .clicked();
+            if ui.style().wrap_mode == Some(egui::TextWrapMode::Wrap) {
+                let mark = if offer.open { "open" } else { "user-supplied" };
+                let mark_width = ui
+                    .painter()
+                    .layout_no_wrap(
+                        mark.into(),
+                        egui::TextStyle::Body.resolve(ui.style()),
+                        ui.visuals().text_color(),
+                    )
+                    .size()
+                    .x;
+                let width =
+                    (ui.available_width() - mark_width - ui.spacing().item_spacing.x).max(1.0);
+                clicked = ui
+                    .allocate_ui(egui::vec2(width, 0.0), |ui| {
+                        ui.radio(checked, egui::RichText::new(&offer.name).strong())
+                    })
+                    .inner
+                    .clicked();
+            } else {
+                clicked = ui
+                    .radio(checked, egui::RichText::new(&offer.name).strong())
+                    .clicked();
+            }
             ui.label(if offer.open { "open" } else { "user-supplied" });
         });
         ui.indent(&offer.rom.0, |ui| {
@@ -1204,4 +1250,44 @@ fn page_summary(ui: &mut egui::Ui, wizard: &mut Wizard) {
     small(ui, "The generated configuration is open, because it is our own file; the image's class still comes from its blobs.");
     ui.strong("Next steps");
     small(ui, format!("Start it, insert FreeDOS from Installation media and install it to C:, then save it under a new name such as {}-dos:1.0.0. That image records this one as its base.", wizard.repo.trim()));
+}
+
+#[cfg(test)]
+mod readability_tests {
+    use super::*;
+
+    #[test]
+    fn classic_light_wizard_fits_every_step_with_long_errors() {
+        let fixture = crate::library_test_support::Fixture::new();
+        let folder = fixture.temp.path().join("firmware");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("bios.bin"), [0xf4; 32768]).unwrap();
+        let catalogue = crate::library_test_support::synthetic_catalogue();
+        let scan = pc_image::firmware_import::scan(&[folder], catalogue).unwrap();
+        pc_image::firmware_import::publish(&fixture.store, &scan.candidates[0], &[], catalogue)
+            .unwrap();
+        let mut choices = crate::library_worker::store_choices(&fixture.store).unwrap();
+        let name = "Long firmware package name ".repeat(12);
+        choices.0[0].config.name = name.clone();
+        let mut wizard = Wizard::new();
+        wizard.store = Some(fixture.store.clone());
+        wizard.set_store(choices);
+        wizard.show_incompatible = [true; 3];
+        let (fits, misfits) = wizard.offers(Slot::Bios);
+        assert!(fits.iter().chain(&misfits).any(|offer| offer.name == name));
+        wizard.error = Some(
+            "A validation problem that needs to remain available while navigating. ".repeat(30),
+        );
+        for step in 0..STEPS.len() {
+            wizard.step = step;
+            ui_kit::test_support::minimum_dialog(
+                "new-machine-wizard",
+                736.0,
+                &["Cancel", "Create", "Next >", "< Back"],
+                |ctx| {
+                    let _ = show(ctx, &mut wizard, true);
+                },
+            );
+        }
+    }
 }
