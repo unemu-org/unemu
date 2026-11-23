@@ -3667,8 +3667,8 @@ impl Shell {
     }
 
     /// Tools › Diagnostics › Save machine report and its chord: the
-    /// running PC's report goes to the next `diag-N.txt`, the exception
-    /// recording, when one runs, to its `trace-N.txt`, and the status line
+    /// running PC's report and RAM go to the next `diag-N.txt` and `diag-N.mem`,
+    /// the exception recording, when one runs, to its `trace-N.txt`, and the status line
     /// says where. Without a PC nothing happens. See [`crate::diagnostics`].
     fn save_diagnostics(&mut self) {
         let Some(presenter) = &mut self.presenter else {
@@ -3706,10 +3706,23 @@ impl Shell {
             ),
             (None, false) => "desktop  exceptions not recorded (Tools › Diagnostics › Record exceptions is off)\n".to_owned(),
         });
-        self.message = match folder
-            .and_then(|folder| crate::diagnostics::save(&folder, &text).map_err(|e| e.to_string()))
-        {
-            Ok(path) => format!("Machine report saved to {}", path.display()),
+        let image = presenter
+            .machine_mut()
+            .memory_image()
+            .map_err(|error| error.to_string());
+        self.message = match folder.and_then(|folder| {
+            crate::diagnostics::save(&folder, &text, image).map_err(|e| e.to_string())
+        }) {
+            Ok(report) => {
+                let mut message = format!("Machine report saved to {}", report.path.display());
+                match report.memory {
+                    Ok(path) => {
+                        message.push_str(&format!("; memory image saved to {}", path.display()));
+                    }
+                    Err(error) => message.push_str(&format!("; memory image not written: {error}")),
+                }
+                message
+            }
             Err(error) => format!("Machine report not saved: {error}"),
         };
         match recording {
@@ -9403,7 +9416,7 @@ mod tests {
     }
 
     /// Ctrl+Alt+Shift+D (Command+Shift+D on macOS) saves the running PC's
-    /// report as the next numbered file and the status line names it, with
+    /// report and RAM image as the next numbered pair and names the report, with
     /// no environment switch, and as well with the pointer captured as
     /// without. Its D never reaches the guest: only the modifiers' make and
     /// break codes do. Without a machine the chord writes nothing.
@@ -9447,7 +9460,7 @@ mod tests {
         assert_eq!(none.message, "Ready");
         assert!(!folder.exists(), "no machine runs");
 
-        let mut on = keyboard_shell();
+        let mut on = shell();
         on.args.diagnostics = Ok(folder.clone());
         let typed = chord(&mut on);
         assert!(
@@ -9458,8 +9471,31 @@ mod tests {
         let first = folder.join("diag-1.txt");
         assert_eq!(
             on.message,
-            format!("Machine report saved to {}", first.display())
+            format!(
+                "Machine report saved to {}; memory image saved to {}",
+                first.display(),
+                first.with_extension("mem").display()
+            )
         );
+        let image = on
+            .presenter
+            .as_mut()
+            .unwrap()
+            .machine_mut()
+            .memory_image()
+            .unwrap();
+        let memory = std::fs::read(folder.join("diag-1.mem")).unwrap();
+        assert_eq!(
+            memory.len() as u64,
+            image
+                .regions
+                .last()
+                .map_or(0, |region| region.base + region.bytes.len() as u64)
+        );
+        for region in &image.regions {
+            let base = region.base as usize;
+            assert_eq!(&memory[base..base + region.bytes.len()], region.bytes);
+        }
         let report = std::fs::read_to_string(&first).unwrap();
         assert!(
             report.starts_with("machine diagnostic report\n"),
@@ -9468,7 +9504,7 @@ mod tests {
         assert!(report.contains("\nstatus   ready\n"), "{report}");
         // The first report starts the delivery log, so it lists none yet.
         assert!(
-            report.ends_with(
+            report.contains(
                 "\ndesktop  running\n\
                  desktop  the delivery log starts with this report: the next one lists the deliveries since\n\
                  desktop  exceptions not recorded (Tools › Diagnostics › Record exceptions is off)\n"
@@ -9482,19 +9518,35 @@ mod tests {
         assert!(report.contains("\nkbc      status "), "{report}");
         on.paused = true;
         chord(&mut on);
+        assert!(folder.join("diag-2.mem").exists());
         let second = std::fs::read_to_string(folder.join("diag-2.txt")).unwrap();
         assert!(
             second.contains("\ndesktop  paused\ndesktop  exceptions not recorded"),
             "{second}"
         );
-        assert!(on.message.ends_with("diag-2.txt"), "{}", on.message);
+        assert_eq!(
+            on.message,
+            format!(
+                "Machine report saved to {}; memory image saved to {}",
+                folder.join("diag-2.txt").display(),
+                folder.join("diag-2.mem").display()
+            )
+        );
 
         // On macOS the chord is Command+Shift+D, and nothing of it is typed.
-        let mut mac = keyboard_shell();
+        let mut mac = shell();
         mac.macos_shortcuts = true;
         mac.args.diagnostics = Ok(folder.clone());
         assert!(chord(&mut mac).is_empty());
-        assert!(mac.message.ends_with("diag-3.txt"), "{}", mac.message);
+        assert_eq!(
+            mac.message,
+            format!(
+                "Machine report saved to {}; memory image saved to {}",
+                folder.join("diag-3.txt").display(),
+                folder.join("diag-3.mem").display()
+            )
+        );
+        assert!(folder.join("diag-3.mem").exists());
 
         // With the pointer captured, through the window's event queue as
         // the window delivers keys and modifier changes.
@@ -9530,10 +9582,94 @@ mod tests {
             let path = folder.join(format!("diag-{number}.txt"));
             assert_eq!(
                 shell.message,
-                format!("Machine report saved to {}", path.display()),
+                format!(
+                    "Machine report saved to {}; memory image saved to {}",
+                    path.display(),
+                    path.with_extension("mem").display()
+                ),
                 "macOS {macos}"
             );
+            assert!(path.with_extension("mem").exists());
         }
+        for (number, extension) in [(8, "mem"), (12, "txt")] {
+            let orphan = folder.join(format!("diag-{number}.{extension}"));
+            std::fs::write(&orphan, "kept").unwrap();
+            chord(&mut on);
+            assert!(folder.join(format!("diag-{}.txt", number + 1)).exists());
+            assert!(folder.join(format!("diag-{}.mem", number + 1)).exists());
+            assert_eq!(std::fs::read(orphan).unwrap(), b"kept");
+        }
+    }
+
+    #[test]
+    fn a_memory_read_error_keeps_the_report_and_reaches_the_status_line() {
+        let temp = machine_file::test_support::TempDir::new("shell-memory-read-error");
+        let mut shell = shell();
+        let mut config = assembly::bios(vec![0xF4; 32768], None);
+        let assembled = machine_file::assemble_with_observation_and_options(
+            &config,
+            &assembly::ObservationPolicy {
+                routes: vec![assembly::ObservationRequest {
+                    device: assembly::DeviceId::Mda,
+                    output: assembly::OutputKind::TextScanout,
+                    byte_limit: 0,
+                }],
+                ..assembly::ObservationPolicy::default()
+            },
+            assembly::AssemblyOptions {
+                allow_unlisted_firmware: true,
+            },
+        )
+        .unwrap();
+        // A synthetic range outside the CPU's memory makes capture fail.
+        config
+            .memory
+            .ram
+            .push(assembly::RamRegion::new(0x200000, 16));
+        shell.presenter = Some(
+            Presenter::from_assembled(&config, assembled, assembly::DeviceId::Mda, &mut io::sink())
+                .unwrap(),
+        );
+        shell.args.diagnostics = Ok(temp.path().to_path_buf());
+        let error = shell
+            .presenter
+            .as_mut()
+            .unwrap()
+            .machine_mut()
+            .memory_image()
+            .unwrap_err()
+            .to_string();
+        let ctx = egui::Context::default();
+        let keys: &[KeyCode] = if shell.macos_shortcuts {
+            &[KeyCode::SuperLeft, KeyCode::ShiftLeft, KeyCode::KeyD]
+        } else {
+            &[
+                KeyCode::ControlLeft,
+                KeyCode::AltLeft,
+                KeyCode::ShiftLeft,
+                KeyCode::KeyD,
+            ]
+        };
+        for &key in keys {
+            shell.key(key, Pressed, false, &ctx);
+        }
+        let path = temp.path().join("diag-1.txt");
+        assert_eq!(
+            shell.message,
+            format!(
+            "Machine report saved to {}; memory image not written: cannot read guest RAM: {error}",
+            path.display(),
+        )
+        );
+        let report = std::fs::read_to_string(path).unwrap();
+        assert!(report.starts_with("machine diagnostic report\n"));
+        assert!(
+            report.contains(&format!(
+                "desktop  memory image not written: cannot read guest RAM: {error}\n"
+            )),
+            "{report}"
+        );
+        assert!(!temp.path().join("diag-1.mem").exists());
     }
 
     #[test]
@@ -10253,14 +10389,15 @@ mod tests {
         assert_eq!(
             shell.message,
             format!(
-                "Machine report saved to {}; exceptions to {}",
+                "Machine report saved to {}; memory image saved to {}; exceptions to {}",
                 folder.join("diag-1.txt").display(),
+                folder.join("diag-1.mem").display(),
                 trace(1).display()
             )
         );
         let report = std::fs::read_to_string(folder.join("diag-1.txt")).unwrap();
         assert!(
-            report.ends_with(&format!(
+            report.contains(&format!(
                 "\ndesktop  exceptions recorded to {}\n",
                 trace(1).display()
             )),
@@ -10316,14 +10453,14 @@ mod tests {
     fn the_report_says_why_a_checked_recording_is_missing() {
         let temp = machine_file::test_support::TempDir::new("shell-recording-refused");
         let folder = temp.path().join("unemu").join("diagnostics");
-        let mut shell = keyboard_shell();
+        let mut shell = self::shell();
         shell.args.diagnostics = Ok(folder.clone());
         shell.record_exceptions = true;
         shell.presenter.as_mut().unwrap().recording_error = Some("refused here".into());
         shell.save_diagnostics();
         let report = std::fs::read_to_string(folder.join("diag-1.txt")).unwrap();
         assert!(
-            report.ends_with(
+            report.contains(
                 "\ndesktop  exceptions not recorded: Record exceptions is on, but the recording did not start (refused here)\n"
             ),
             "{report}"
@@ -10450,7 +10587,7 @@ mod tests {
 
         // With a machine running Save is enabled and writes the report;
         // Record exceptions checks and unchecks.
-        let mut running = keyboard_shell();
+        let mut running = shell();
         running.args.diagnostics = Ok(folder.clone());
         let drawn = open_diagnostics_menu(&ctx, &mut running);
         let nodes = menu_nodes(&ctx, &mut running);
@@ -10463,8 +10600,9 @@ mod tests {
         assert_eq!(
             running.message,
             format!(
-                "Machine report saved to {}",
-                folder.join("diag-1.txt").display()
+                "Machine report saved to {}; memory image saved to {}",
+                folder.join("diag-1.txt").display(),
+                folder.join("diag-1.mem").display()
             )
         );
         let drawn = open_diagnostics_menu(&ctx, &mut running);
@@ -15842,7 +15980,11 @@ kind='mda'
             let path = diagnostics.join(format!("diag-{number}.txt"));
             assert_eq!(
                 shell.message,
-                format!("Machine report saved to {}", path.display())
+                format!(
+                    "Machine report saved to {}; memory image saved to {}",
+                    path.display(),
+                    path.with_extension("mem").display()
+                )
             );
             let report = std::fs::read_to_string(path).unwrap();
             assert!(

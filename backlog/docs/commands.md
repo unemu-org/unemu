@@ -1217,12 +1217,25 @@ In the window, Tools › Diagnostics holds three items:
   `unemu/diagnostics` of the platform data directory (on macOS
   `~/Library/Application Support/unemu/diagnostics`), N counting on from
   the highest number already there, and the status line shows `Machine
-  report saved to PATH`. It works whenever a PC runs, paused too, and is
-  disabled without one. The machine keeps its code trail from every Start;
-  the report's exception deliveries start with the first report (which
-  says so and lists none) or with Record exceptions, because the CPU runs
+  report saved to PATH; memory image saved to PATH`. It works whenever a PC
+  runs, paused too, and is disabled without one. The machine keeps its code
+  trail from every Start; the report's exception deliveries start with the
+  first report (which says so and lists none) or with Record exceptions, because the CPU runs
   6 to 10 per cent slower on interrupt-heavy guests while it logs them.
-  The chord's D never reaches the guest. The
+  The chord's D never reaches the guest. The same action also writes guest RAM to `diag-N.mem`, with the same reserved
+  number; either extension already in the folder advances the number, and
+  existing files are never overwritten. The `.mem` file is flat: byte offsets
+  equal guest physical addresses, gaps (including omitted ROM and device
+  windows) are zero-filled, and its length is the end of the highest region.
+  Regions and zero gaps are streamed without a second image-sized buffer.
+  The complete text report is written and flushed before the image: it names
+  the planned file and its size and lists each region's kind, physical base
+  and byte length in hex. If reading the image fails, the report includes the
+  reason and no image is written. If writing the image fails, its partial
+  file is removed if possible and a line with the reason is appended to the
+  report. The status line reports both outcomes. These files contain guest
+  bytes for local diagnosis: keep them in the diagnostics folder and never
+  add them to a repository. They are not restorable snapshots. The machine
   report is described in [observation.md §Diagnostic report of a running
   machine in unemupc](https://github.com/unemu-org/unemupc/blob/main/backlog/docs/design/observation.md#diagnostic-report-of-a-running-machine).
 - **Record exceptions**, a check item off at every launch, records the
