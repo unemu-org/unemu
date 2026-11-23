@@ -688,16 +688,17 @@ fn nothing_is_tagged_when_an_input_is_missing_or_a_step_refuses() {
     }
     assert!(tags(&store).is_empty());
 
-    // The FreeDOS disks alone: the licence index and the source archive
-    // are missing, and nothing is tagged.
+    // The FreeDOS disks alone, without fetch consent: the licence index
+    // and the source archive are missing, and nothing is tagged.
     if !media_present() {
         return;
     }
     let store = Store::open(t.path("freedos")).unwrap();
-    let (outcome, _) = build(
+    let (outcome, _) = build_with(
         &template_recipe(FREEDOS[0]),
         &store,
         &[frontend::vendor().join("freedos/floppy-1.4/144m")],
+        None,
         None,
     );
     let Outcome::Missing(plan) = outcome else {

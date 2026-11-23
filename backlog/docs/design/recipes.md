@@ -2653,8 +2653,12 @@ recipes). Decisions taken while building it:
   steps twice into two stores with a fetcher that fails the test on any
   request and the library files' host times changed between the builds:
   the same manifest digest.
-- `--fetch` downloads only when every input the plan reports missing has a
-  URL, so a download is never made for a build that cannot complete; the
+- `--fetch` downloads each missing required file input that has URLs,
+  once per SHA-256 and size; missing inputs without URLs are reported before
+  downloads and searched for by hash afterward, including file-set entries.
+  If no missing required file input has a URL, nothing is downloaded and the
+  missing inputs are reported. Otherwise the plan after downloads decides
+  whether the build can complete and reports any inputs still missing. The
   list (inputs, sizes, SHA-256, URLs) is printed before the first request.
   A download goes to a partial file of its own,
   `cache/downloads/.partial-<sha256>-<process>-<n>`, so concurrent builds

@@ -1029,7 +1029,7 @@ impl recipe::build::Fetcher for HttpsFetcher {
 
 /// Build a recipe into the store, or with `pin` pin it: `--store`, or the
 /// default store, created when it does not exist yet.
-fn build(
+pub fn build(
     options: &BuildOptions,
     pin: bool,
     providers: recipe::Providers<'_>,

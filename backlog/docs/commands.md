@@ -1851,14 +1851,18 @@ cargo run --offline -p window -- recipe build my.media.toml --deny-drift
   built as Pinning recipes below says, and the output ends `locked`.
 - `--fetch` is the consent to download (recipes §6.13). Without it a
   missing input is reported, as `recipe plan` reports it, and nothing is
-  downloaded. With it, every URL of an input the plan reports missing is
-  tried in order, and only when every missing input has a URL; the list of
-  what will be downloaded is printed first (`fetch: downloading N inputs
-  (BYTES bytes), as --fetch allows:`, then one line per input with its
-  size, SHA-256 and URLs). When a missing input has no URL, nothing is
-  downloaded and the build says `fetch: nothing downloaded: input ID has no
-  URL`. Only `https` is fetched, redirects only to `https`, at most the
-  pinned size; connecting may take 30 s, each read 60 s, and a whole
+  downloaded. With it, URLs of each missing required file input are
+  tried in order until one succeeds; inputs with the same SHA-256 and size
+  are downloaded once. The list of what will be downloaded is printed first
+  (`fetch: downloading N inputs (BYTES bytes), as --fetch allows:`, then one
+  line per input with its size, SHA-256 and URLs). Each missing input without
+  a URL is reported before downloads: `fetch: input ID has no URL; will look
+  for it by hash after downloads`. If none can be downloaded, the build says
+  `fetch: nothing could be downloaded: no missing required file input has a URL`
+  and reports the missing inputs without making requests. After downloads,
+  the plan searches by hash again, including file-set entries, and reports
+  any inputs still missing. Only `https` is fetched, redirects only to `https`,
+  at most the pinned size; connecting may take 30 s, each read 60 s, and a whole
   download 120 s plus one second per 32 KiB of the pinned size (an average
   of at least 32 KiB/s). A download is written to
   `cache/downloads/.partial-<sha256>-<process>-<n>`, a file of its own, and

@@ -10,8 +10,8 @@
 //!    finds every input in the store, the download cache, beside the recipe
 //!    or in a library, without the network.
 //! 2. *Fetch*, only with the user's consent ([`Fetcher`], `--fetch`): each
-//!    URL of an input the plan reports missing, and only when that makes
-//!    the build possible. The list of what will be downloaded is printed
+//!    URL of a required file input the plan reports missing. Inputs without
+//!    URLs are looked for by hash after downloads. The download list is printed
 //!    first. A download stops at the pinned size and is kept in the
 //!    download cache under its SHA-256 only when its size and hash are the
 //!    ones pinned; the plan then runs again.
@@ -1386,15 +1386,14 @@ fn draft(
 }
 
 enum FetchError {
-    /// Some missing input has no URL: downloading the others would not make
-    /// the build possible, so nothing is downloaded.
+    /// No missing required file input has a URL.
     Cannot,
     Failed(String),
 }
 
-/// Download every input the plan reports missing into the download cache,
-/// after printing what will be downloaded. A download is kept only when its
-/// size and SHA-256 are the pinned ones.
+/// Download missing required file inputs with URLs into the download cache,
+/// once per hash and size, after printing what will be downloaded. A download
+/// is kept only when its size and SHA-256 are the pinned ones.
 fn fetch_missing(
     plan: &Plan,
     downloads: &Path,
@@ -1407,17 +1406,25 @@ fn fetch_missing(
         .filter(|i| !i.optional && matches!(i.status, Status::Missing(_)))
         .collect();
     let mut wanted = Vec::new();
+    let mut seen = BTreeSet::new();
     for input in &missing {
         match &input.form {
-            Form::File(value) if !input.urls.is_empty() => wanted.push((*input, value)),
+            Form::File(value) if !input.urls.is_empty() => {
+                if seen.insert((&value.sha256, value.size)) {
+                    wanted.push((*input, value));
+                }
+            }
             _ => {
                 log(&format!(
-                    "fetch: nothing downloaded: input {} has no URL",
+                    "fetch: input {} has no URL; will look for it by hash after downloads",
                     input.id
                 ));
-                return Err(FetchError::Cannot);
             }
         }
+    }
+    if wanted.is_empty() {
+        log("fetch: nothing could be downloaded: no missing required file input has a URL");
+        return Err(FetchError::Cannot);
     }
     let total: u64 = wanted.iter().map(|(_, v)| v.size).sum();
     log(&format!(

@@ -130,12 +130,26 @@ fn build(
     libraries: &[PathBuf],
     fetch: Option<&str>,
 ) -> (Outcome, Vec<String>) {
+    let fetcher = fetch.map(|address| HttpsFetcher(Downloader::routed("example.org", address)));
+    build_with_fetcher(
+        recipe,
+        store,
+        libraries,
+        fetcher.as_ref().map(|f| f as &dyn recipe::build::Fetcher),
+    )
+}
+
+fn build_with_fetcher(
+    recipe: &Path,
+    store: &image_store::Store,
+    libraries: &[PathBuf],
+    fetcher: Option<&dyn recipe::build::Fetcher>,
+) -> (Outcome, Vec<String>) {
     let index = StoreIndex::load(store).unwrap();
     let mut libraries: Vec<Library> = libraries
         .iter()
         .map(|dir| Library::scan(dir, None).unwrap())
         .collect();
-    let fetcher = fetch.map(|address| HttpsFetcher(Downloader::routed("example.org", address)));
     let mut lines = Vec::new();
     let outcome = build_path(
         Request {
@@ -145,7 +159,7 @@ fn build(
             index: Some(&index),
             store_read: None,
             libraries: &mut libraries,
-            fetcher: fetcher.as_ref().map(|f| f as &dyn recipe::build::Fetcher),
+            fetcher,
             keep_as: None,
             find_outputs: true,
         },
@@ -250,25 +264,351 @@ fn a_download_of_other_bytes_is_not_kept_and_nothing_is_tagged() {
     assert_eq!(tags(&store), 0);
 }
 
-#[test]
-fn nothing_is_downloaded_when_a_missing_input_has_no_url() {
-    let t = Temp::new("no-url");
-    let readme = b"Read me first.\r\n".to_vec();
-    let data = data();
-    let recipe = recipe(&t, &readme, &data);
-    let text = fs::read_to_string(&recipe)
+/// The same exact-byte responses and request log as the local server,
+/// without sockets, so builder and CLI tests also run in a network sandbox.
+struct FakeFetcher {
+    files: Vec<(&'static str, Vec<u8>)>,
+    requests: Mutex<Vec<String>>,
+}
+
+impl FakeFetcher {
+    fn new(files: Vec<(&'static str, Vec<u8>)>) -> Self {
+        Self {
+            files,
+            requests: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl recipe::build::Fetcher for FakeFetcher {
+    fn fetch(&self, url: &str, _: u64, sink: &mut dyn Write) -> Result<(), String> {
+        self.requests.lock().unwrap().push(url.to_owned());
+        let name = url
+            .strip_prefix("https://example.org/dl/")
+            .ok_or("unexpected URL")?;
+        let (_, bytes) = self
+            .files
+            .iter()
+            .find(|(file, _)| *file == name)
+            .ok_or("not found")?;
+        sink.write_all(bytes).map_err(|e| e.to_string())
+    }
+}
+
+/// The archive itself and a file-set member need the same synthetic bytes.
+/// The FAT step stores those bytes as a file without unpacking them.
+fn file_set_recipe(t: &Temp, bytes: &[u8]) -> PathBuf {
+    let path = t.path("package.media.toml");
+    fs::write(
+        &path,
+        format!(
+            r#"recipe = "1.0"
+[media]
+name = "private/media/ibm-pc/package"
+platform = "ibm-pc"
+revision = 1
+[title]
+title = "Package"
+[input.zip]
+name = "package.zip"
+size = {size}
+sha256 = "{hash}"
+urls = ["https://example.org/dl/package.zip"]
+[input.package]
+name = "package"
+files = [{{ path = "APPEND.ZIP", size = {size}, sha256 = "{hash}" }}]
+[[step]]
+id = "disk"
+fat = "package"
+format = "720K"
+[[medium]]
+id = "disk-1"
+label = "Disk 1"
+format = "720K"
+from = "disk"
+[[extra]]
+id = "archive"
+file_name = "package.zip"
+kind = "other"
+from = "zip"
+"#,
+            size = bytes.len(),
+            hash = sha(bytes),
+        ),
+    )
+    .unwrap();
+    path
+}
+
+fn remove_readme_url(path: &Path) {
+    let text = fs::read_to_string(path)
         .unwrap()
         .replace("urls = [\"https://example.org/dl/README.TXT\"]\n", "");
-    fs::write(&recipe, text).unwrap();
-    let (address, requests) = serve(vec![("DATA.BIN", data)]);
+    fs::write(path, text).unwrap();
+}
+
+const PACKAGE_NO_URL: &str =
+    "fetch: input package has no URL; will look for it by hash after downloads";
+const README_NO_URL: &str =
+    "fetch: input readme has no URL; will look for it by hash after downloads";
+
+#[test]
+fn fetch_resolves_a_url_less_file_set_by_hash_after_downloading() {
+    let t = Temp::new("file-set-fetch");
+    let bytes = b"Synthetic package bytes.";
+    let recipe = file_set_recipe(&t, bytes);
+    let fetcher = FakeFetcher::new(vec![("package.zip", bytes.to_vec())]);
     let store = image_store::Store::open(t.path("store")).unwrap();
-    let (outcome, lines) = build(&recipe, &store, &[], Some(&address));
-    assert!(matches!(outcome, Outcome::Missing(_)), "{outcome:#?}");
+    let (outcome, lines) = build_with_fetcher(&recipe, &store, &[], Some(&fetcher));
+    let Outcome::Built(report) = outcome else {
+        panic!("{outcome:#?}");
+    };
+    assert_eq!(lines[0], PACKAGE_NO_URL);
+    assert_eq!(
+        lines[1],
+        "fetch: downloading 1 input (24 bytes), as --fetch allows:"
+    );
+    assert_eq!(
+        *fetcher.requests.lock().unwrap(),
+        ["https://example.org/dl/package.zip"]
+    );
+    assert_eq!(
+        fs::read(store.root().join(DOWNLOADS).join(sha(bytes))).unwrap(),
+        bytes
+    );
+    assert_eq!(tags(&store), 1);
+
+    let lib = t.path("lib");
+    fs::create_dir_all(&lib).unwrap();
+    fs::write(lib.join("APPEND.ZIP"), bytes).unwrap();
+    let local = image_store::Store::open(t.path("local-store")).unwrap();
+    let (outcome, _) = build_with_fetcher(&recipe, &local, &[lib], None);
+    let Outcome::Built(local_report) = outcome else {
+        panic!("{outcome:#?}");
+    };
+    assert_eq!(
+        report.published.descriptor,
+        local_report.published.descriptor
+    );
+}
+
+#[test]
+fn fetch_downloads_available_inputs_and_reports_only_what_is_still_missing() {
+    let t = Temp::new("partial-fetch");
+    let data = data();
+    let recipe = recipe(&t, b"Missing readme.", &data);
+    remove_readme_url(&recipe);
+    let fetcher = FakeFetcher::new(vec![("DATA.BIN", data.clone())]);
+    let store = image_store::Store::open(t.path("store")).unwrap();
+    let (outcome, lines) = build_with_fetcher(&recipe, &store, &[], Some(&fetcher));
+    let Outcome::Missing(plan) = outcome else {
+        panic!("{outcome:#?}")
+    };
+    let missing: Vec<_> = plan
+        .inputs
+        .iter()
+        .filter(|i| matches!(i.status, recipe::plan::Status::Missing(_)))
+        .map(|i| i.id.as_str())
+        .collect();
+    assert_eq!(missing, ["readme"]);
+    assert_eq!(lines[0], README_NO_URL);
+    assert!(
+        lines[1].starts_with("fetch: downloading 1 input"),
+        "{lines:?}"
+    );
+    assert_eq!(
+        *fetcher.requests.lock().unwrap(),
+        ["https://example.org/dl/DATA.BIN"]
+    );
+    assert_eq!(
+        fs::read(store.root().join(DOWNLOADS).join(sha(&data))).unwrap(),
+        data
+    );
+    assert_eq!(tags(&store), 0);
+}
+
+#[test]
+fn fetch_downloads_nothing_when_all_missing_inputs_lack_urls() {
+    let t = Temp::new("all-no-url");
+    let recipe = recipe(&t, b"Missing readme.", &data());
+    remove_readme_url(&recipe);
+    let text = fs::read_to_string(&recipe)
+        .unwrap()
+        .replace("urls = [\"https://example.org/dl/DATA.BIN\"]\n", "");
+    fs::write(&recipe, text).unwrap();
+    let fetcher = FakeFetcher::new(vec![]);
+    let store = image_store::Store::open(t.path("store")).unwrap();
+    let (outcome, lines) = build_with_fetcher(&recipe, &store, &[], Some(&fetcher));
+    let Outcome::Missing(plan) = outcome else {
+        panic!("{outcome:#?}")
+    };
+    assert_eq!(plan.summary(), "missing 2 of 2 inputs");
     assert_eq!(
         lines,
-        ["fetch: nothing downloaded: input readme has no URL"]
+        [
+            "fetch: input data has no URL; will look for it by hash after downloads",
+            README_NO_URL,
+            "fetch: nothing could be downloaded: no missing required file input has a URL",
+        ]
     );
-    assert!(requests.lock().unwrap().is_empty());
+    assert!(fetcher.requests.lock().unwrap().is_empty());
+    assert!(!store.root().join(DOWNLOADS).exists());
+    assert_eq!(tags(&store), 0);
+}
+
+#[test]
+fn fetch_downloads_inputs_with_the_same_hash_and_size_once() {
+    let t = Temp::new("duplicate-fetch");
+    let bytes = b"Synthetic package bytes.";
+    let recipe = file_set_recipe(&t, bytes);
+    let mut text = fs::read_to_string(&recipe).unwrap();
+    text.push_str(&format!(
+        r#"
+[input.copy]
+name = "copy.zip"
+size = {}
+sha256 = "{}"
+urls = ["https://example.org/dl/copy.zip"]
+[[extra]]
+id = "copy"
+file_name = "copy.zip"
+kind = "other"
+from = "copy"
+"#,
+        bytes.len(),
+        sha(bytes),
+    ));
+    let lib = t.path("lib");
+    fs::create_dir_all(&lib).unwrap();
+    // A different file-set member keeps both URL'd copies required and missing.
+    text = text.replace(
+        &format!(
+            "path = \"APPEND.ZIP\", size = {}, sha256 = \"{}\"",
+            bytes.len(),
+            sha(bytes)
+        ),
+        &format!(
+            "path = \"APPEND.ZIP\", size = 1, sha256 = \"{}\"",
+            sha(b"x")
+        ),
+    );
+    fs::write(lib.join("APPEND.ZIP"), b"x").unwrap();
+    fs::write(&recipe, text).unwrap();
+    let fetcher = FakeFetcher::new(vec![
+        ("package.zip", bytes.to_vec()),
+        ("copy.zip", bytes.to_vec()),
+    ]);
+    let store = image_store::Store::open(t.path("store")).unwrap();
+    let (outcome, lines) = build_with_fetcher(&recipe, &store, &[lib], Some(&fetcher));
+    assert!(matches!(outcome, Outcome::Built(_)), "{outcome:#?}");
+    assert_eq!(
+        *fetcher.requests.lock().unwrap(),
+        ["https://example.org/dl/copy.zip"]
+    );
+    assert_eq!(
+        lines[0],
+        "fetch: downloading 1 input (24 bytes), as --fetch allows:"
+    );
+}
+
+/// Run the CLI parser and build handler with a fake fetcher.
+fn upcli_fetch(
+    t: &Temp,
+    path: &Path,
+    fetcher: &dyn recipe::build::Fetcher,
+) -> (u8, String, String) {
+    let args = words(t, path, &["--fetch"]);
+    let cli_core::Command::Recipe(cli_core::recipe::RecipeCommand::Build(options)) =
+        cli_pc::command::parse(&args).unwrap()
+    else {
+        panic!("expected recipe build --fetch");
+    };
+    assert!(options.fetch);
+    let (mut output, mut errors) = (Vec::new(), Vec::new());
+    let code = cli_pc::with_platform(|pc| {
+        cli_core::recipe::build(
+            &options,
+            false,
+            recipe::Providers(&PROVIDERS),
+            &cli_core::HostSources::default(),
+            &[pc],
+            Some(fetcher),
+            &mut cli_core::Io {
+                output: &mut output,
+                errors: &mut errors,
+            },
+        )
+    });
+    (
+        code,
+        String::from_utf8(output).unwrap(),
+        String::from_utf8(errors).unwrap(),
+    )
+}
+
+#[test]
+fn recipe_build_fetch_prints_hash_lookup_then_builds_and_exits_0() {
+    let t = Temp::new("cli-file-set-fetch");
+    let bytes = b"Synthetic package bytes.";
+    let recipe = file_set_recipe(&t, bytes);
+    let fetcher = FakeFetcher::new(vec![("package.zip", bytes.to_vec())]);
+    let (code, output, errors) = upcli_fetch(&t, &recipe, &fetcher);
+    assert_eq!((code, errors.as_str()), (0, ""), "{output}");
+    assert!(
+        output.starts_with(&format!(
+            "{PACKAGE_NO_URL}\nfetch: downloading 1 input (24 bytes), as --fetch allows:\n"
+        )),
+        "{output}"
+    );
+    assert!(
+        output.contains("  zip: fetched from https://example.org/dl/package.zip\n"),
+        "{output}"
+    );
+    assert!(
+        output
+            .lines()
+            .last()
+            .unwrap()
+            .starts_with("built private/media/ibm-pc/package:r1\tsha256:"),
+        "{output}"
+    );
+    assert_eq!(
+        *fetcher.requests.lock().unwrap(),
+        ["https://example.org/dl/package.zip"]
+    );
+}
+
+#[test]
+fn recipe_build_fetch_prints_remaining_missing_input_and_exits_1() {
+    let t = Temp::new("cli-partial-fetch");
+    let recipe = recipe(&t, b"Missing readme.", &data());
+    remove_readme_url(&recipe);
+    let fetcher = FakeFetcher::new(vec![("DATA.BIN", data())]);
+    let (code, output, errors) = upcli_fetch(&t, &recipe, &fetcher);
+    assert_eq!((code, errors.as_str()), (1, ""), "{output}");
+    assert!(
+        output.starts_with(&format!(
+            "{README_NO_URL}\nfetch: downloading 1 input (737280 bytes), as --fetch allows:\n"
+        )),
+        "{output}"
+    );
+    assert!(
+        output.contains("  data: fetched from https://example.org/dl/DATA.BIN\n"),
+        "{output}"
+    );
+    assert!(
+        output.contains("  readme (README.TXT): missing"),
+        "{output}"
+    );
+    assert!(!output.contains("  data (DATA.BIN): missing"), "{output}");
+    assert!(
+        output.ends_with("not built: missing 1 of 2 inputs; nothing was tagged\n"),
+        "{output}"
+    );
+    assert_eq!(
+        *fetcher.requests.lock().unwrap(),
+        ["https://example.org/dl/DATA.BIN"]
+    );
 }
 
 fn words(t: &Temp, recipe: &Path, extra: &[&str]) -> Vec<OsString> {
