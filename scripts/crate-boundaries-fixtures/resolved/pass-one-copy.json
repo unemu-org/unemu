@@ -19,10 +19,10 @@
     },
     {
       "name": "machine-view",
-      "version": "0.0.2",
-      "id": "path+file:///workspace/crates/machine-view#0.0.2",
-      "source": null,
-      "manifest_path": "/workspace/crates/machine-view/Cargo.toml"
+      "version": "0.0.4",
+      "id": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9#machine-view@0.0.4",
+      "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9",
+      "manifest_path": "/dependencies/host/machine-view/Cargo.toml"
     },
     {
       "name": "platforms",
@@ -30,6 +30,14 @@
       "id": "path+file:///workspace/crates/platforms#0.0.2",
       "source": null,
       "manifest_path": "/workspace/crates/platforms/Cargo.toml"
+    },
+    {
+      "name": "unemu-test-core",
+      "id": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9#unemu-test-core@0.0.4",
+      "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9",
+      "manifest_path": "/dependencies/host/unemu-test-core/Cargo.toml",
+      "metadata": {},
+      "dependencies": []
     }
   ],
   "resolve": {
@@ -48,7 +56,7 @@
         ]
       },
       {
-        "id": "path+file:///workspace/crates/machine-view#0.0.2",
+        "id": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9#machine-view@0.0.4",
         "deps": [
           {
             "name": "unemu_core_api",
@@ -62,6 +70,15 @@
           {
             "name": "unemu_pc_core",
             "pkg": "path+file:///workspace/crates/pc-core#unemu-pc-core@0.0.2"
+          }
+        ]
+      },
+      {
+        "id": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9#unemu-test-core@0.0.4",
+        "deps": [
+          {
+            "name": "unemu_core_api",
+            "pkg": "git+https://github.com/unemu-org/unemu-core-api?rev=1111111111111111111111111111111111111111#unemu-core-api@0.1.0"
           }
         ]
       }

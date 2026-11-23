@@ -9,6 +9,12 @@ OCI registry integration, recipes and host interface. It compiles in the
 [NES core](https://github.com/unemu-org/unemunes), each pinned to an exact git
 revision in `Cargo.toml` and `Cargo.lock`.
 
+The neutral session `machine-view` and synthetic `unemu-test-core` come from
+[unemu-org/unemu-host](https://github.com/unemu-org/unemu-host), version 0.0.4,
+pinned to `cac0317b2bf5fe1c02357eb6119dd9916283edf9` in `Cargo.toml` and
+`Cargo.lock`. They are not workspace crates. Land their changes in unemu-host
+first, then re-pin this workspace and run its gate, as for a core change.
+
 The PC's CPU, devices, machine configuration and emulation tests live in
 `unemupc`. Its CPU dependency and hardware development follow that
 repository's rules. This repository does not copy the core's code.

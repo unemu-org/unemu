@@ -13,10 +13,10 @@
     },
     {
       "name": "machine-view",
-      "version": "0.0.2",
-      "id": "path+file:///workspace/crates/machine-view#0.0.2",
-      "source": null,
-      "manifest_path": "/workspace/crates/machine-view/Cargo.toml"
+      "version": "0.0.4",
+      "id": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9#machine-view@0.0.4",
+      "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9",
+      "manifest_path": "/dependencies/host/machine-view/Cargo.toml"
     },
     {
       "name": "platforms",
@@ -33,7 +33,7 @@
         "deps": []
       },
       {
-        "id": "path+file:///workspace/crates/machine-view#0.0.2",
+        "id": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9#machine-view@0.0.4",
         "deps": []
       },
       {

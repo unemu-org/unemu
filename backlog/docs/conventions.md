@@ -68,7 +68,7 @@ in CI; see [`commands.md` § CI](commands.md#ci).
 
 - **Edition**: 2021. **MSRV**: latest stable Rust from the devShell (currently
   1.99), compatible with both pinned cores and the contract. The workspace is
-  the 22 front-end crates listed in [architecture](architecture.md).
+  the 20 front-end crates listed in [architecture](architecture.md).
 - **Clippy**: `cargo clippy --locked --all-targets --all-features -- -D warnings`.
   **Format**: `cargo fmt --check`, default rustfmt.
 - **Error handling**: `thiserror` for stable library error variants; `anyhow`
@@ -82,8 +82,11 @@ in CI; see [`commands.md` § CI](commands.md#ci).
   `// SPDX-License-Identifier: AGPL-3.0-or-later`.
 - **Doc-comments** explain public modules and traits, their ownership and
   relevant front-end contracts. Hardware facts belong in the core's docs.
-- **Dependencies**: cores and `unemu-core-api` are git dependencies pinned to
-  exact revisions. Local work uses gitignored patches, never committed bare
+- **Dependencies**: cores, `unemu-core-api`, and the `machine-view` and
+  `unemu-test-core` libraries from [unemu-org/unemu-host](https://github.com/unemu-org/unemu-host)
+  are git dependencies pinned to exact revisions. The host libraries are not
+  workspace members; land their changes upstream first, then re-pin here.
+  Local work uses gitignored patches, never committed bare
   path dependencies; contract and core pins move together when needed.
 - **Determinism**: host timing may pace execution but never becomes an input to
   emulation. Virtual time is measured by the core; disk bases remain immutable

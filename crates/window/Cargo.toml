@@ -89,7 +89,7 @@ machine-view = { workspace = true, features = ["test-support"] }
 unemu-pc-core = { workspace = true, features = ["test-support"] }
 # A core that opens files, for the tests of File › Open… and --open: the
 # release's list has none yet.
-unemu-test-core = { path = "../test-core", version = "0.0.4" }
+unemu-test-core.workspace = true
 
 [[bin]]
 name = "unemu"

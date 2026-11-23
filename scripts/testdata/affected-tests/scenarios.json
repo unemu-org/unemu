@@ -294,7 +294,6 @@
         "image-store",
         "library-model",
         "library-ui",
-        "machine-view",
         "media",
         "media-ui",
         "pc-image",
@@ -306,7 +305,6 @@
         "player-ui",
         "recipe",
         "ui-kit",
-        "unemu-test-core",
         "upcli",
         "window"
       ],
@@ -334,7 +332,6 @@
         "image-store",
         "library-model",
         "library-ui",
-        "machine-view",
         "media",
         "media-ui",
         "pc-image",
@@ -346,7 +343,6 @@
         "player-ui",
         "recipe",
         "ui-kit",
-        "unemu-test-core",
         "upcli",
         "window"
       ]
@@ -373,7 +369,6 @@
         "image-store",
         "library-model",
         "library-ui",
-        "machine-view",
         "media",
         "media-ui",
         "pc-image",
@@ -385,7 +380,6 @@
         "player-ui",
         "recipe",
         "ui-kit",
-        "unemu-test-core",
         "upcli",
         "window"
       ]
@@ -456,36 +450,9 @@
     }
   },
   {
-    "name": "a session change runs the session crate and the window, not the goldens",
-    "changed": [
-      "crates/machine-view/src/session.rs"
-    ],
-    "expect": {
-      "mode": "crates",
-      "seeds": [
-        "machine-view"
-      ],
-      "affected": [
-        "machine-view",
-        "pc-session-tests",
-        "window"
-      ],
-      "tier": "fast",
-      "cli": true
-    }
-  },
-  {
     "name": "a change to the desktop's shell does not run the session's PC tests",
     "changed": ["crates/window/src/shell.rs"],
     "expect": {"mode": "crates", "seeds": ["window"], "affected": ["window"], "tier": "fast"}
-  },
-  {
-    "name": "a change to the session's host audio runs the session's PC tests",
-    "changed": ["crates/machine-view/src/host_audio.rs"],
-    "expect": {
-      "mode": "crates", "seeds": ["machine-view"],
-      "affected": ["machine-view", "pc-session-tests", "window"], "tier": "fast"
-    }
   },
   {
     "name": "the contract comes from its own repository: a new contract is a moved pin in the workspace manifest, so everything",
@@ -504,7 +471,6 @@
         "image-store",
         "library-model",
         "library-ui",
-        "machine-view",
         "media",
         "media-ui",
         "pc-image",
@@ -516,7 +482,6 @@
         "player-ui",
         "recipe",
         "ui-kit",
-        "unemu-test-core",
         "upcli",
         "window"
       ],
@@ -568,7 +533,6 @@
         "image-store",
         "library-model",
         "library-ui",
-        "machine-view",
         "media",
         "media-ui",
         "pc-image",
@@ -580,7 +544,6 @@
         "player-ui",
         "recipe",
         "ui-kit",
-        "unemu-test-core",
         "upcli",
         "window"
       ]
@@ -625,7 +588,6 @@
         "image-store",
         "library-model",
         "library-ui",
-        "machine-view",
         "media",
         "media-ui",
         "pc-image",
@@ -637,7 +599,6 @@
         "player-ui",
         "recipe",
         "ui-kit",
-        "unemu-test-core",
         "upcli",
         "window"
       ],
@@ -698,6 +659,74 @@
         "pc-image"
       ],
       "tier": "goldens"
+    }
+  },
+  {
+    "name": "an unemu-host re-pin in Cargo.toml selects every workspace consumer and the goldens",
+    "changed": [
+      "Cargo.toml"
+    ],
+    "expect": {
+      "mode": "full",
+      "affected": [
+        "cli-core",
+        "cli-pc",
+        "core-launch",
+        "image-registry",
+        "image-store",
+        "library-model",
+        "library-ui",
+        "media",
+        "media-ui",
+        "pc-image",
+        "pc-library",
+        "pc-media",
+        "pc-session-tests",
+        "pc-ui",
+        "platforms",
+        "player-ui",
+        "recipe",
+        "ui-kit",
+        "upcli",
+        "window"
+      ],
+      "tier": "goldens",
+      "deny": true,
+      "user_roms": false
+    }
+  },
+  {
+    "name": "an unemu-host re-pin in Cargo.lock selects every workspace consumer and the goldens",
+    "changed": [
+      "Cargo.lock"
+    ],
+    "expect": {
+      "mode": "full",
+      "affected": [
+        "cli-core",
+        "cli-pc",
+        "core-launch",
+        "image-registry",
+        "image-store",
+        "library-model",
+        "library-ui",
+        "media",
+        "media-ui",
+        "pc-image",
+        "pc-library",
+        "pc-media",
+        "pc-session-tests",
+        "pc-ui",
+        "platforms",
+        "player-ui",
+        "recipe",
+        "ui-kit",
+        "upcli",
+        "window"
+      ],
+      "tier": "goldens",
+      "deny": true,
+      "user_roms": false
     }
   }
 ]

@@ -80,6 +80,33 @@ Never commit a bare path dependency. Land changes in the core before moving
 all PC pins together and rerunning the front-end gate. The NES core is likewise
 pinned, to `0dbf0d56c627ab62601fca1dcd64ec77f3e4643c`.
 
+### Host libraries: unemu-host
+
+The neutral session `machine-view` and synthetic `unemu-test-core` come from
+[unemu-org/unemu-host](https://github.com/unemu-org/unemu-host), version 0.0.4,
+pinned to `cac0317b2bf5fe1c02357eb6119dd9916283edf9` in `Cargo.toml` and
+`Cargo.lock`. They are not workspace crates. Land their changes in unemu-host
+first, then re-pin this workspace and run its gate, as for a core change.
+
+For a local checkout, add both entries to the gitignored `.cargo/config.toml`
+(alongside a core patch if needed):
+
+```toml
+[patch."https://github.com/unemu-org/unemu-host"]
+machine-view = { path = "../unemu-host/crates/machine-view" }
+unemu-test-core = { path = "../unemu-host/crates/test-core" }
+```
+
+Paths are relative to the workspace root. Remove this patch section after local
+work and restore the pinned lock before a release. `scripts/core-patch.sh`
+manages only the PC-core section; apply it before adding a host override,
+because it refuses to replace an unmarked configuration. Keep a host section
+separate from its generated file when switching or removing core overrides:
+the helper replaces or removes the whole marked file. The affected-test planner
+selects the full golden tier for any local patch. The boundary checker still
+requires the neutral host libraries and desktop crates to be PC-free, and the
+resolved graph to contain exactly one `unemu-core-api`.
+
 ### The contract: unemu-core-api
 
 The contract between front ends and emulator cores, `unemu-core-api`, lives in its own repository,

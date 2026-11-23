@@ -12,6 +12,12 @@ image management, recipes and host interface. The PC core lives in
 [unemunes](https://github.com/unemu-org/unemunes). Both are git dependencies
 pinned to exact revisions in `Cargo.toml` and `Cargo.lock`.
 
+The neutral session `machine-view` and synthetic `unemu-test-core` come from
+[unemu-org/unemu-host](https://github.com/unemu-org/unemu-host), version 0.0.4,
+pinned to `cac0317b2bf5fe1c02357eb6119dd9916283edf9` in `Cargo.toml` and
+`Cargo.lock`. They are not workspace crates. Land their changes in unemu-host
+first, then re-pin this workspace and run its gate, as for a core change.
+
 CPU, devices, machine configuration and the core's tests belong in `unemupc`.
 Its own rules apply there, including its x86jit dependency workflow. Land
 core changes there before moving the front end's pin. Never copy core code

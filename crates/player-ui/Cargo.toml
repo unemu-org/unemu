@@ -30,5 +30,5 @@ winit.workspace = true
 # would.
 machine-view = { workspace = true, features = ["test-support"] }
 # The whole core the player's tests run, through the contract alone.
-unemu-test-core = { path = "../test-core", version = "0.0.4" }
+unemu-test-core.workspace = true
 ui-kit = { path = "../ui-kit", version = "0.0.4", features = ["test-support"] }

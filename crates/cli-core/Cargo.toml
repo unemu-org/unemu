@@ -27,7 +27,7 @@ toml.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
-unemu-test-core = { path = "../test-core", version = "0.0.4" }
+unemu-test-core.workspace = true
 unemu-core-api = { workspace = true, features = ["test-support"] }
 # The mock registry of the push, pull and login tests.
 image-registry = { path = "../registry", version = "0.0.4", features = ["test-support"] }

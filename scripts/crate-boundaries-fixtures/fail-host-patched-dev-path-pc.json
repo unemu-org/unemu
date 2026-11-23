@@ -1,0 +1,110 @@
+{
+  "self_test": {
+    "expect": "fail",
+    "message": "outside repository: machine-view declares path dependency assembly",
+    "errors": 3
+  },
+  "packages": [
+    {
+      "name": "player-ui",
+      "id": "path+file:///repo/player-ui#0.0.4",
+      "source": null,
+      "manifest_path": "/repo/player-ui/Cargo.toml",
+      "metadata": {
+        "unemu": {
+          "layer": "neutral"
+        }
+      },
+      "dependencies": [
+        {
+          "name": "machine-view",
+          "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9",
+          "kind": null
+        },
+        {
+          "name": "unemu-test-core",
+          "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9",
+          "kind": "dev"
+        }
+      ]
+    },
+    {
+      "name": "machine-view",
+      "id": "path+file:///dependencies/host/machine-view#0.0.4",
+      "source": null,
+      "manifest_path": "/dependencies/host/machine-view/Cargo.toml",
+      "metadata": {},
+      "dependencies": [
+        {
+          "name": "unemu-test-core",
+          "source": null,
+          "kind": "dev",
+          "path": "/dependencies/host/test-core"
+        },
+        {
+          "name": "assembly",
+          "source": null,
+          "kind": "dev",
+          "path": "/dependencies/pc/assembly"
+        },
+        {
+          "name": "cli-core",
+          "source": null,
+          "kind": null,
+          "path": "/dependencies/frontend/cli-core"
+        },
+        {
+          "name": "build-helper",
+          "source": null,
+          "kind": "build",
+          "path": "/dependencies/tools/build-helper"
+        }
+      ]
+    },
+    {
+      "name": "unemu-test-core",
+      "id": "path+file:///dependencies/host/test-core#unemu-test-core@0.0.4",
+      "source": null,
+      "manifest_path": "/dependencies/host/test-core/Cargo.toml",
+      "metadata": {},
+      "dependencies": [
+        {
+          "name": "unemu-core-api",
+          "source": "git+https://github.com/unemu-org/unemu-core-api?rev=pin",
+          "kind": null
+        }
+      ]
+    }
+  ],
+  "workspace_members": [
+    "path+file:///repo/player-ui#0.0.4"
+  ],
+  "workspace_root": "/repo",
+  "resolve": {
+    "nodes": [
+      {
+        "id": "path+file:///repo/player-ui#0.0.4",
+        "deps": [
+          {
+            "name": "machine_view",
+            "pkg": "path+file:///dependencies/host/machine-view#0.0.4",
+            "dep_kinds": [
+              {
+                "kind": null
+              }
+            ]
+          },
+          {
+            "name": "unemu_test_core",
+            "pkg": "path+file:///dependencies/host/test-core#unemu-test-core@0.0.4",
+            "dep_kinds": [
+              {
+                "kind": "dev"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -29,7 +29,9 @@
           "source": null
         }
       ],
-      "id": "path+file:///repo/crates/machine-view#0.0.3"
+      "id": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9#machine-view@0.0.4",
+      "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9",
+      "manifest_path": "/dependencies/host/machine-view/Cargo.toml"
     },
     {
       "name": "core-launch",
@@ -84,7 +86,7 @@
         {
           "name": "machine-view",
           "kind": null,
-          "source": null
+          "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9"
         },
         {
           "name": "core-launch",
@@ -107,7 +109,6 @@
   ],
   "workspace_members": [
     "path+file:///repo/crates/core-api#0.0.3",
-    "path+file:///repo/crates/machine-view#0.0.3",
     "path+file:///repo/crates/core-launch#0.0.3",
     "path+file:///repo/crates/ui-kit#0.0.3",
     "path+file:///repo/crates/cli-core#0.0.3",

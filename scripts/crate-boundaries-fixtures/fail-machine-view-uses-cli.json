@@ -1,7 +1,7 @@
 {
   "self_test": {
     "expect": "fail",
-    "message": "forbidden: machine-view (neutral) \u2192 cli-core (neutral), normal dependency, through machine-view \u2192 cli-core; rule: no window crate depends on a CLI crate",
+    "message": "forbidden: machine-view (neutral) → cli-core (neutral), normal dependency, through machine-view → cli-core; rule: no window crate depends on a CLI crate",
     "errors": 1
   },
   "packages": [
@@ -210,9 +210,23 @@
           "kind": null,
           "source": null
         }
-      ]
+      ],
+      "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9",
+      "manifest_path": "/dependencies/host/machine-view/Cargo.toml"
     }
   ],
-  "workspace_members": [],
+  "workspace_members": [
+    "core-api",
+    "store",
+    "registry",
+    "journal",
+    "device",
+    "assembly",
+    "provider",
+    "platforms",
+    "cli",
+    "window",
+    "cli-core"
+  ],
   "version": 1
 }

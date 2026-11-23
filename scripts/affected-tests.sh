@@ -109,7 +109,7 @@ def data_rules: [
 # Tests that read the sources on their own side of the extraction boundary.
 def scan_tests: [
   {package: "image-store", test: "platform_ids",
-   watch: "^crates/(media|image-store|registry|recipe|core-launch|cli-core|ui-kit|machine-view|library-model|library-ui|player-ui|test-core|pc-image|cli-pc|pc-media|pc-library|media-ui|pc-ui|pc-session-tests|platforms|upcli|window)/.+[.]rs$",
+   watch: "^crates/(media|image-store|registry|recipe|core-launch|cli-core|ui-kit|library-model|library-ui|player-ui|pc-image|cli-pc|pc-media|pc-library|media-ui|pc-ui|pc-session-tests|platforms|upcli|window)/.+[.]rs$",
    why: "scans the front-end Rust sources"}
 ];
 def full_files: "^(Cargo[.]toml|Cargo[.]lock|flake[.]nix|flake[.]lock|rust-toolchain([.]toml)?|[.]?rustfmt[.]toml|[.]?clippy[.]toml|[.]cargo/.*)$";

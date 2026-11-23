@@ -27,7 +27,9 @@
           "kind": null,
           "source": null
         }
-      ]
+      ],
+      "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9",
+      "manifest_path": "/dependencies/host/machine-view/Cargo.toml"
     },
     {
       "name": "core-launch",
@@ -79,7 +81,7 @@
         {
           "name": "machine-view",
           "kind": null,
-          "source": null
+          "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9"
         },
         {
           "name": "core-launch",
@@ -99,6 +101,12 @@
       ]
     }
   ],
-  "workspace_members": [],
+  "workspace_members": [
+    "core-api",
+    "core-launch",
+    "ui-kit",
+    "cli-core",
+    "player-ui"
+  ],
   "version": 1
 }

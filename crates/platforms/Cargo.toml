@@ -23,7 +23,7 @@ unemu-pc-core.workspace = true
 unemu-nes-core.workspace = true
 # The scripted core, only for trying the front end's generic path by hand;
 # see the `test-core` feature.
-unemu-test-core = { path = "../test-core", version = "0.0.4", optional = true }
+unemu-test-core = { workspace = true, optional = true }
 
 [features]
 # Adds the scripted test core to the list of compiled-in cores. Off by

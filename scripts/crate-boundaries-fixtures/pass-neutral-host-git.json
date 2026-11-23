@@ -1,0 +1,58 @@
+{
+  "self_test": {
+    "expect": "pass",
+    "message": ""
+  },
+  "packages": [
+    {
+      "name": "player-ui",
+      "id": "path+file:///repo/player-ui#0.0.4",
+      "source": null,
+      "manifest_path": "/repo/player-ui/Cargo.toml",
+      "metadata": {
+        "unemu": {
+          "layer": "neutral"
+        }
+      },
+      "dependencies": [
+        {
+          "name": "machine-view",
+          "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9",
+          "kind": null
+        }
+      ]
+    },
+    {
+      "name": "machine-view",
+      "id": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9#machine-view@0.0.4",
+      "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9",
+      "manifest_path": "/dependencies/host/machine-view/Cargo.toml",
+      "metadata": {},
+      "dependencies": [
+        {
+          "name": "unemu-test-core",
+          "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9",
+          "kind": "dev"
+        }
+      ]
+    },
+    {
+      "name": "unemu-test-core",
+      "id": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9#unemu-test-core@0.0.4",
+      "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9",
+      "manifest_path": "/dependencies/host/unemu-test-core/Cargo.toml",
+      "metadata": {},
+      "dependencies": [
+        {
+          "name": "unemu-core-api",
+          "source": "git+https://github.com/unemu-org/unemu-core-api?rev=pin",
+          "kind": null
+        }
+      ]
+    }
+  ],
+  "workspace_members": [
+    "path+file:///repo/player-ui#0.0.4"
+  ],
+  "workspace_root": "/repo"
+}

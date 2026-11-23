@@ -1464,7 +1464,7 @@ offers "NES cartridge images (*.nes)", and `--open game.nes` starts one, say
 `cargo run --offline -p window --bin unemu -- --open /path/to/game.nes`. A build whose
 cores open nothing greys File › Open… ("No core in this release opens
 files"). `--features platforms/test-core` adds the scripted test core, whose
-`.utc` scripts it runs (`crates/test-core/src/lib.rs` has the grammar, and
+`.utc` scripts it runs (the [script grammar in unemu-host](https://github.com/unemu-org/unemu-host/blob/cac0317b2bf5fe1c02357eb6119dd9916283edf9/crates/test-core/src/lib.rs) describes them, and
 `unemu-test-core 1` on the first line is a whole script). With that feature
 the `--about` pins of both programs fail by the test core's line.
 On Linux the window requires the host's X11 or Wayland client libraries at run
@@ -1484,7 +1484,11 @@ bash scripts/bead-gate.sh
 
 The planner maps changed front-end files to their crates and dependents.
 Mockups and recipe corpus/schema inputs select their readers. Documentation
-alone selects checks. Workspace dependencies, the lock file, core pins and
+alone selects checks. `machine-view` and `unemu-test-core` come from the pinned
+[unemu-org/unemu-host](https://github.com/unemu-org/unemu-host), outside this
+workspace; changes land there before a re-pin here. Local host overrides use
+the gitignored patches in [dev setup](dev-setup.md#host-libraries-unemu-host).
+Workspace dependencies, the lock file, core and unemu-host pins and
 unknown inputs select the full front-end golden tier. The core's fixtures
 come from `UNEMUPC_FIXTURE_ROOT`, not from this repository's source tree.
 Review the plan when it selects everything unexpectedly.

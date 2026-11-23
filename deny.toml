@@ -54,11 +54,12 @@ wildcards = "deny"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# The PC core, its CPU, the shared contract, and the NES core,
+# The PC core, its CPU, the shared contract, the neutral host crates and the NES core,
 # each pinned to an exact revision in the workspace manifest.
 allow-git = [
     "https://github.com/unemu-org/x86jit",
     "https://github.com/unemu-org/unemupc",
     "https://github.com/unemu-org/unemu-core-api",
+    "https://github.com/unemu-org/unemu-host",
     "https://github.com/unemu-org/unemunes",
 ]

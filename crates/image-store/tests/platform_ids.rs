@@ -31,11 +31,9 @@ const CRATES: &[&str] = &[
     "core-launch",
     "cli-core",
     "ui-kit",
-    "machine-view",
     "library-model",
     "library-ui",
     "player-ui",
-    "test-core",
     "pc-image",
     "cli-pc",
     "pc-media",
@@ -73,7 +71,6 @@ const SOFTWARE_PLATFORM: &[(&str, &str)] = &[
 ];
 /// A core and its caller exchange the core's own current spelling.
 const CORE_OWN_PLATFORM: &[(&str, &str)] = &[
-    ("test-core/src/lib.rs", "if platform == PLATFORM {"),
     (
         "core-launch/src/launch.rs",
         ".find(|platform| platform.id == identified.platform)",
@@ -502,4 +499,19 @@ fn platform_ids_are_never_compared_exactly() {
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn the_scan_covers_exactly_the_workspace_members() {
+    let manifest: toml::Value = toml::from_str(include_str!("../../../Cargo.toml")).unwrap();
+    let mut members: Vec<_> = manifest["workspace"]["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|member| member.as_str().unwrap().strip_prefix("crates/").unwrap())
+        .collect();
+    let mut scanned = CRATES.to_vec();
+    members.sort_unstable();
+    scanned.sort_unstable();
+    assert_eq!(scanned, members);
 }

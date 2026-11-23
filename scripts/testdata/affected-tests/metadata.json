@@ -262,7 +262,7 @@
         {
           "name": "machine-view",
           "kind": null,
-          "path": "/workspace/crates/machine-view"
+          "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9"
         },
         {
           "name": "unemu-core-api",
@@ -278,18 +278,6 @@
       "dependencies": []
     },
     {
-      "name": "machine-view",
-      "id": "path+file:///workspace/crates/machine-view#0.0.2",
-      "manifest_path": "/workspace/crates/machine-view/Cargo.toml",
-      "dependencies": [
-        {
-          "name": "unemu-core-api",
-          "kind": null,
-          "source": "git+https://github.com/unemu-org/unemu-core-api?rev=4e2dd8325b54ce652bf4884fd85da602b14ae726#4e2dd8325b54ce652bf4884fd85da602b14ae726"
-        }
-      ]
-    },
-    {
       "name": "pc-session-tests",
       "id": "path+file:///workspace/crates/pc-session-tests#0.0.2",
       "manifest_path": "/workspace/crates/pc-session-tests/Cargo.toml",
@@ -297,7 +285,7 @@
         {
           "name": "machine-view",
           "kind": "dev",
-          "path": "/workspace/crates/machine-view"
+          "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9"
         }
       ]
     },
@@ -354,12 +342,6 @@
       "id": "path+file:///workspace/crates/recipe#0.0.3",
       "manifest_path": "/workspace/crates/recipe/Cargo.toml",
       "dependencies": []
-    },
-    {
-      "name": "unemu-test-core",
-      "id": "path+file:///workspace/crates/test-core#0.0.3",
-      "manifest_path": "/workspace/crates/test-core/Cargo.toml",
-      "dependencies": []
     }
   ],
   "workspace_members": [
@@ -373,7 +355,6 @@
     "path+file:///workspace/crates/platforms#0.0.2",
     "path+file:///workspace/crates/window#0.0.2",
     "path+file:///workspace/crates/ui-kit#0.0.2",
-    "path+file:///workspace/crates/machine-view#0.0.2",
     "path+file:///workspace/crates/pc-session-tests#0.0.2",
     "path+file:///workspace/crates/core-launch#0.0.3",
     "path+file:///workspace/crates/library-model#0.0.3",
@@ -383,8 +364,7 @@
     "path+file:///workspace/crates/pc-media#0.0.3",
     "path+file:///workspace/crates/pc-ui#0.0.3",
     "path+file:///workspace/crates/player-ui#0.0.3",
-    "path+file:///workspace/crates/recipe#0.0.3",
-    "path+file:///workspace/crates/test-core#0.0.3"
+    "path+file:///workspace/crates/recipe#0.0.3"
   ],
   "workspace_root": "/workspace"
 }

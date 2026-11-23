@@ -3,6 +3,8 @@
 # Keep neutral libraries, PC providers and application composition apart.
 # Dependencies from github.com/unemu-org/unemupc count as PC dependencies,
 # including optional, target-specific, build and test dependencies.
+# unemu-host packages are neutral, including local source patches; audit
+# their edges too so moving a library cannot hide a PC dependency.
 # The walk follows normal/build edges after the starting crate's own edges.
 # Window and CLI families stay separate except for the listed composition edge.
 # Source includes must stay inside this repository, and the resolved graph
@@ -92,25 +94,37 @@ def walk($graph; $layer; $name; $valid; $from):
 | (.resolved // .) as $resolved
 | ($declared.workspace_members // []) as $workspace
 | [($declared.packages // [])[]
-   | select($workspace == [] or (.id as $id | any($workspace[]; . == $id)))] as $packages
+   | select($workspace == [] or ((.id // .name) as $id | any($workspace[]; . == $id)))] as $packages
 | ($resolved.packages // []) as $all
 | def identity: .id // .name;
   def pc_source: (. // "" | test("^git[+]([a-z][a-z0-9+.-]*://)?([^/@]+@)?github[.]com[:/]unemu-org/unemupc([.]git)?([/?#]|$)"; "i"));
+  def host_source: (. // "" | test("^git[+]([a-z][a-z0-9+.-]*://)?([^/@]+@)?github[.]com[:/]unemu-org/unemu-host([.]git)?([/?#]|$)"; "i"));
   def outside($root): $root != null and . != $root and (startswith($root + "/") | not);
   ($packages | map(identity)) as $members
+| (($resolved.resolve.nodes // []) | map({key: .id, value: .deps}) | from_entries) as $nodes
+# Declaration sources identify a local host patch even though its resolved
+# package has no git source. Do not trust arbitrary external layer metadata.
+| ([$all[] | select((.source | host_source) or (.id | host_source)) | identity]
+   + [$all[] | . as $p | .dependencies[]? | select(.source | host_source) as $d
+      | ($nodes[$p | identity] // [])[]
+      | select(.name == (($d.rename // $d.name) | gsub("-"; "_"))
+          and any(.dep_kinds[]?; (.kind // "normal") == ($d.kind // "normal"))) | .pkg]
+   | unique) as $host_ids
+| ($packages + [$all[] | identity as $id
+    | select(($host_ids | index($id)) != null and ($members | index($id)) == null)]) as $audited
 | ($all | map({key: identity, value: .name}) | from_entries) as $local_names
 | [$all[].dependencies[]? | select(.source | pc_source)
    | {id: (.source + "#" + .name), name: .name}] as $declared_core
 | ($local_names + ($declared_core | map({key: .id, value: .name}) | from_entries)) as $name
 | (($all | map(. as $p | identity as $id | {key: $id, value:
       (if any($members[]; . == $id) then (.metadata.unemu.layer? // null)
-       elif (.source | pc_source) or (.id | pc_source)
-            or (.source == null and (.manifest_path // "" | outside($declared.workspace_root))) then "pc"
+       elif (.source | pc_source) or (.id | pc_source) then "pc"
+       elif ($host_ids | index($id)) != null then "neutral"
+       elif .source == null and (.manifest_path // "" | outside($declared.workspace_root)) then "pc"
        else null end)}) | from_entries)
    + ($declared_core | map({key: .id, value: "pc"}) | from_entries)) as $layer
 # Resolved IDs preserve renames and source patches. Declaration edges retain
 # optional/target dependencies absent from the active resolution.
-| (($resolved.resolve.nodes // []) | map({key: .id, value: .deps}) | from_entries) as $nodes
 | ($all | map(. as $p | {key: identity, value:
     ([($nodes[$p | identity] // [])[]
       | . as $d | .dep_kinds[]? | {to: $d.pkg, kind: (.kind // "normal")}]
@@ -131,7 +145,7 @@ def walk($graph; $layer; $name; $valid; $from):
 | ($valid | map(. as $e
     | . + {live: (any(($graph[$member_id[$e.from]] // [])[]; .to == $member_id[$e.to] and .kind == $e.kind)
                   and ([broken_rule($layer; $name; $member_id[$e.from]; $member_id[$e.to])] | length > 0))})) as $checked
-| [ $packages[] | identity as $from | $layer[$from] as $fl
+| [ $audited[] | identity as $from | $layer[$from] as $fl
     | select($fl != null and $fl != "contract" and ($fl | known_layer))
     | walk($graph; $layer; $name; $walk_valid; $from) as $hit
     | $hit.path[-1] as $to
@@ -139,6 +153,7 @@ def walk($graph; $layer; $name; $valid; $from):
   ] as $forbidden
 | {
     packages: ($packages | length),
+    host_packages: ($audited | length) - ($packages | length),
     allowed: ([$checked[] | select(.live)] | length),
     errors: (
       (if $packages == [] then ["no packages: the metadata lists no workspace package"] else [] end)
@@ -148,11 +163,17 @@ def walk($graph; $layer; $name; $valid; $from):
         | "unknown layer: \(.name) declares layer \($layer[identity] | tojson); use one of \(layers | join(", "))" ]
       + [ $packages[] | select($layer[identity] == "contract") | .name as $from | .dependencies[]?
         | "forbidden: \($from) (contract) depends on \(.name) (\(.kind // "normal") dependency); rule: a contract crate depends on nothing" ]
-      + [ $packages[] | select(.name == "unemu-test-core") | .name as $from | .dependencies[]?
+      + [ $audited[] | select(.name == "unemu-test-core") | .name as $from | .dependencies[]?
         | select(.name != "unemu-core-api")
         | "forbidden: \($from) depends on \(.name) (\(.kind // "normal") dependency); rule: the test core depends on the contract alone" ]
-      + [ $packages[] | .name as $from | .dependencies[]?
+      + [ $audited[] | identity as $id | .name as $from | .dependencies[]?
         | select(.path != null and (.path | outside($declared.workspace_root)))
+        # Host crates can link one another by path in their upstream checkout.
+        | .path as $path
+        | select(($members | index($id)) != null
+            or (any($all[]; identity as $target
+                | .manifest_path == ($path + "/Cargo.toml")
+                  and ($host_ids | index($target)) != null) | not))
         | "outside repository: \($from) declares path dependency \(.name); use a local [patch] override instead" ]
       + $forbidden
       + [ $checked[] | select(.live | not)
@@ -216,7 +237,7 @@ check() {
         echo "crate boundaries: $count error(s)" >&2
         return 1
     fi
-    printf '%s' "$result" | jq -r '"crate boundaries: \(.packages) crates checked, \(.allowed) allowed exception(s)"'
+    printf '%s' "$result" | jq -r '"crate boundaries: \(.packages) workspace crates and \(.host_packages) host crates checked, \(.allowed) allowed exception(s)"'
 }
 
 # Keep Python in a file: large here-documents can deadlock Bash pipes.

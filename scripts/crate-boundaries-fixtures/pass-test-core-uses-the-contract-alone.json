@@ -214,9 +214,23 @@
           "kind": "dev",
           "source": "git+https://github.com/unemu-org/unemu-core-api?rev=0#0"
         }
-      ]
+      ],
+      "source": "git+https://github.com/unemu-org/unemu-host?rev=cac0317b2bf5fe1c02357eb6119dd9916283edf9",
+      "manifest_path": "/dependencies/host/unemu-test-core/Cargo.toml"
     }
   ],
-  "workspace_members": [],
+  "workspace_members": [
+    "core-api",
+    "store",
+    "registry",
+    "journal",
+    "device",
+    "assembly",
+    "provider",
+    "platforms",
+    "cli",
+    "window",
+    "harness"
+  ],
   "version": 1
 }
