@@ -111,17 +111,35 @@ impl LocalMarks {
     /// Read every tagged manifest in the store: machine images, media sets
     /// and any other artifact type. A manifest that cannot be read fails the
     /// scan, because its marks might restrict the closure being pushed.
+    /// Newer manifests stay fatal because their marks may also restrict that closure.
     pub fn scan(store: &Store) -> crate::Result<Self> {
+        Self::scan_with_policy(store, true)
+    }
+
+    /// Read local marks for desktop choices, retaining readable newer manifests.
+    /// Never use this for a push decision: the push path rescans strictly.
+    pub fn scan_for_display(store: &Store) -> crate::Result<Self> {
+        Self::scan_with_policy(store, false)
+    }
+
+    fn scan_with_policy(store: &Store, strict: bool) -> crate::Result<Self> {
         let mut restricted = BTreeMap::new();
         let mut after: Option<String> = None;
         loop {
             let page = store.list_tags(after.as_deref(), 1000)?;
             for tag in &page.tags {
-                let bytes = store.read_verified(&tag.manifest, MAX_SMALL_BLOB)?;
-                // An image a newer release tagged fails the scan with the
-                // release it needs, not with a decoder message.
-                store.compatibility().check(&bytes, &tag.name)?;
-                let manifest = Manifest::decode_for_summary(&bytes)?;
+                let manifest = (|| -> image_store::Result<Manifest> {
+                    let bytes = store.read_verified(&tag.manifest, MAX_SMALL_BLOB)?;
+                    if strict {
+                        store.compatibility().check(&bytes, &tag.name)?;
+                    }
+                    Manifest::decode_for_summary(&bytes)
+                })();
+                let manifest = match manifest {
+                    Ok(manifest) => manifest,
+                    Err(error) if strict => return Err(error.into()),
+                    Err(_) => continue,
+                };
                 for descriptor in std::iter::once(&manifest.config).chain(&manifest.layers) {
                     if Redistribution::of(descriptor) == Redistribution::UserSupplied {
                         for digest in identities(descriptor) {

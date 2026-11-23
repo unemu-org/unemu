@@ -948,13 +948,11 @@ pub(crate) mod tests {
             .unwrap()
     }
 
-    /// Re-tag the store's private Kiselev package as a newer release wrote
-    /// it, with only the newer copy left (machine-images §5.6), and the
-    /// store's choices then. The redistribution marks are those scanned
-    /// before: the registry's scan refuses a store holding a newer image.
+    /// Replace the usable copy so choices must handle the newer tag alone.
     fn newer_kiselev(store: &FirmwareStore) -> crate::library_worker::StoreChoices {
-        let (packages, _, marks) = store.choices();
-        let package = packages
+        let package = store
+            .choices()
+            .0
             .into_iter()
             .find(|p| p.config.name == "Kiselev AT BIOS (private copy)")
             .unwrap();
@@ -969,26 +967,18 @@ pub(crate) mod tests {
             .store
             .remove_tag(&package.reference, &package.descriptor.digest)
             .unwrap();
-        let tags = store
-            .store
-            .list_tags(None, 1000)
+        assert!(!pc_image::create::packages(&store.store)
             .unwrap()
-            .tags
-            .into_iter()
-            .map(|t| (t.name, t.manifest.digest))
-            .collect();
-        (
-            pc_image::create::packages(&store.store).unwrap(),
-            tags,
-            marks,
-        )
+            .iter()
+            .any(|p| p.reference == "newer-kiselev:r1"));
+        let choices = crate::library_worker::store_choices(&store.store).unwrap();
+        assert!(choices.1.iter().any(|(name, _)| name == "newer-kiselev:r1"));
+        assert!(!choices.0.iter().any(|p| p.reference == "newer-kiselev:r1"));
+        choices
     }
 
-    /// An entry only a package this release does not read holds is listed
-    /// with "Needs unemupc X or newer", and "Switch to …" says so instead of
-    /// binding it.
     #[test]
-    fn an_entry_only_a_newer_package_holds_says_it_needs_a_newer_release() {
+    fn store_choices_excludes_a_newer_package_and_keeps_firmware_settings_usable() {
         let Some(store) = FirmwareStore::new(true) else {
             return;
         };
@@ -1002,12 +992,17 @@ pub(crate) mod tests {
             .find(|c| c.entry.id == "kiselev-xi8088-1.0.2")
             .unwrap()
             .reason;
-        assert_eq!(reason.as_deref(), Some("Needs unemupc 99.0.0 or newer"));
+        assert!(reason.unwrap().starts_with("not in your store"));
+        assert!(model
+            .firmware_choices(Slot::System)
+            .iter()
+            .any(|c| { c.entry.id == "unemu-at-bios-1.0.2-unemu.3" && c.reason.is_none() }));
         model.switch_to(Slot::System, "kiselev-xi8088-1.0.2");
-        assert_eq!(
-            model.error.as_deref(),
-            Some("Needs unemupc 99.0.0 or newer")
-        );
+        assert!(model
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("not in your store"));
         assert_ne!(
             model.firmware(Slot::System).map(|e| e.id),
             Some("kiselev-xi8088-1.0.2")

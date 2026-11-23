@@ -438,7 +438,7 @@ impl<'a> Packages<'a> {
         if let Some(list) = self.list.get() {
             return Ok(list);
         }
-        let list = crate::create::packages(self.store)?;
+        let list = crate::create::packages_for_revision(self.store)?;
         Ok(self.list.get_or_init(|| list))
     }
 }

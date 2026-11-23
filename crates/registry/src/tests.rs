@@ -3243,6 +3243,45 @@ fn a_push_plan_refuses_an_unreadable_newer_image_with_the_release_it_needs() {
     assert_eq!(refused, sentence);
 }
 
+#[test]
+fn display_marks_keep_readable_newer_tags_but_push_scans_stay_strict() {
+    use crate::guard::{closure, LocalMarks};
+    use image_store::compat::{MIN_APP_VERSION, MIN_FRONTEND_VERSION};
+
+    for marker in [MIN_APP_VERSION, MIN_FRONTEND_VERSION] {
+        let dir = Temp::new();
+        let store = dir.store();
+        let source = image(
+            &store,
+            "rom:1",
+            &[(b"synthetic rom", Some("user-supplied"))],
+            Some("open"),
+        );
+        let mut manifest =
+            Manifest::decode(&store.read_verified(&source, MAX_SMALL_BLOB).unwrap()).unwrap();
+        manifest.annotations.insert(marker.into(), "99.0.0".into());
+        let newer = store.import_manifest(&manifest).unwrap();
+        store.tag_as_newer_release("future:1", &newer).unwrap();
+        store.remove_tag("rom:1", &source.digest).unwrap();
+
+        let marks = LocalMarks::scan_for_display(&store).unwrap();
+        set_mark(&mut manifest.layers[0], "open");
+        let entry = &closure(&manifest, &marks)[1];
+        assert_eq!(entry.effective, Redistribution::UserSupplied);
+        assert_eq!(entry.source, MarkSource::LocalTag("future:1".into()));
+        let refusal = LocalMarks::scan(&store).unwrap_err().to_string();
+        assert!(refusal.contains("99.0.0 or newer"), "{refusal}");
+
+        let bytes = br#"{"schemaVersion":3,"annotations":{"unemu.min-app-version":"99.0.0"}}"#;
+        let blob = store.import(&bytes[..], None).unwrap();
+        let unreadable = Descriptor::new(mt::MANIFEST, blob.digest, blob.size);
+        store
+            .tag_as_newer_release("unreadable:1", &unreadable)
+            .unwrap();
+        assert_eq!(LocalMarks::scan_for_display(&store).unwrap(), marks);
+    }
+}
+
 /// A manifest-only transport makes a blob fetch a test failure without binding a socket.
 #[test]
 fn regression_recipe_row_without_core_stops_before_decode_or_config_request() {

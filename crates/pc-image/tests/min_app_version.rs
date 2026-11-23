@@ -106,12 +106,29 @@ fn marked(open: &open_image::Open, marker: &str, tag: &str) -> Descriptor {
     copy
 }
 
+#[test]
+fn standalone_package_choices_keep_usable_firmware_and_skip_newer_releases() {
+    let Some(open) = open_image::Open::new() else {
+        return;
+    };
+    let store = image_store::Store::open(open.store.root()).unwrap();
+    marked(&open, "99.0.0", "future:r1");
+    let packages = create::packages(&store).unwrap();
+    assert_eq!(packages.len(), open.packages.len());
+    assert!(packages.iter().any(|p| p
+        .config
+        .roms
+        .iter()
+        .any(|r| { r.catalogue_id.as_deref() == Some(BIOS) })));
+    assert!(!packages.iter().any(|p| p.reference == "future:r1"));
+}
+
 /// A package that declares a release this build does not meet, a newer one
 /// or one that does not parse, is folded into every machine that binds it,
 /// so New machine… and both kinds of Save refuse the machine, naming the
 /// package.
 #[test]
-fn a_machine_binding_a_package_this_release_cannot_read_is_refused() {
+fn a_newer_package_omitted_from_choices_is_still_refused_by_every_writer() {
     let Some(open) = open_image::Open::new() else {
         return;
     };
@@ -131,8 +148,21 @@ fn a_machine_binding_a_package_this_release_cannot_read_is_refused() {
             );
         };
         // New machine… with the package's BIOS.
-        let packages = create::packages(store).unwrap();
-        let listed = packages.iter().find(|p| p.reference == tag).unwrap();
+        assert!(!create::packages(store)
+            .unwrap()
+            .iter()
+            .any(|p| p.reference == tag));
+        // A stale selection must still be refused even though choices omit it.
+        let mut listed = open
+            .packages
+            .iter()
+            .find(|p| p.reference == format!("private/firmware/ibm-pc/{BIOS}:r1"))
+            .unwrap()
+            .clone();
+        listed.reference = tag.clone();
+        listed.descriptor = package.clone();
+        listed.manifest =
+            Manifest::decode(&store.read_verified(&package, MAX_SMALL_BLOB).unwrap()).unwrap();
         let rom = listed
             .config
             .roms
@@ -140,7 +170,7 @@ fn a_machine_binding_a_package_this_release_cannot_read_is_refused() {
             .find(|r| r.catalogue_id.as_deref() == Some(BIOS))
             .unwrap();
         let mut image = open.image([None, None]);
-        image.firmware[0] = PackageRom::new(listed, rom);
+        image.firmware[0] = PackageRom::new(&listed, rom);
         refused(create::preview(&image, store).unwrap_err());
         refused(create::create(store, &image, "lab:refused", None).unwrap_err());
         assert!(store.tag_descriptor("lab:refused").is_err());

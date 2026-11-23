@@ -1017,7 +1017,8 @@ impl Backend for FirmwareCrash {
 
 pub fn store_choices(store: &Store) -> Result<StoreChoices> {
     let packages = pc_image::create::packages(store).map_err(|e| e.to_string())?;
-    let marks = image_registry::guard::LocalMarks::scan(store).map_err(|e| e.to_string())?;
+    let marks =
+        image_registry::guard::LocalMarks::scan_for_display(store).map_err(|e| e.to_string())?;
     let mut tags = Vec::new();
     let mut after: Option<String> = None;
     loop {

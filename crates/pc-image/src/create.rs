@@ -442,8 +442,29 @@ pub(crate) fn rom_blobs(rom: &Rom) -> Vec<Digest> {
 }
 
 /// PC firmware packages of the local store, without reading ROM bytes.
-/// Unreadable entries are skipped: a damaged package is never offered.
+/// Unreadable or incompatible entries are skipped so only usable packages are offered.
 pub fn packages(store: &Store) -> Result<Vec<Package>> {
+    read_packages(store, true)
+}
+
+/// Revisions need newer packages too, so their inherited requirements cannot disappear.
+pub(crate) fn packages_for_revision(store: &Store) -> Result<Vec<Package>> {
+    read_packages(store, false)
+}
+
+fn read_packages(store: &Store, compatible_only: bool) -> Result<Vec<Package>> {
+    // Standalone callers use the same PC levels as package creation does.
+    let standalone;
+    let store = if store.compatibility_configured() {
+        store
+    } else {
+        standalone = store
+            .clone()
+            .with_compatibility(crate::compat::compatibility(
+                image_store::compat::EXTRACTION_BASELINE,
+            ));
+        &standalone
+    };
     let mut seen = BTreeSet::new();
     let mut found = Vec::new();
     let mut after: Option<String> = None;
@@ -455,6 +476,9 @@ pub fn packages(store: &Store) -> Result<Vec<Package>> {
             }
             let package = (|| -> Result<Option<Package>> {
                 let bytes = store.read_verified(&tag.manifest, MAX_SMALL_BLOB)?;
+                if compatible_only {
+                    store.compatibility().check(&bytes, &tag.name)?;
+                }
                 if Manifest::decode_for_summary(&bytes)?.artifact_type() != mt::FIRMWARE {
                     return Ok(None);
                 }

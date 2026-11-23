@@ -1525,13 +1525,11 @@ mod tests {
             .any(|(step, _)| *step == MOTHERBOARD));
     }
 
-    /// Re-tag the store's private Kiselev package as a newer release wrote
-    /// it, with only the newer copy left (machine-images §5.6), and the
-    /// store's choices then. The redistribution marks are those scanned
-    /// before: the registry's scan refuses a store holding a newer image.
+    /// Replace the usable copy so choices must handle the newer tag alone.
     fn newer_kiselev(store: &FirmwareStore) -> crate::library_worker::StoreChoices {
-        let (packages, _, marks) = store.choices();
-        let package = packages
+        let package = store
+            .choices()
+            .0
             .into_iter()
             .find(|p| p.config.name == "Kiselev AT BIOS (private copy)")
             .unwrap();
@@ -1546,25 +1544,18 @@ mod tests {
             .store
             .remove_tag(&package.reference, &package.descriptor.digest)
             .unwrap();
-        let tags = store
-            .store
-            .list_tags(None, 1000)
+        assert!(!pc_image::create::packages(&store.store)
             .unwrap()
-            .tags
-            .into_iter()
-            .map(|t| (t.name, t.manifest.digest))
-            .collect();
-        (
-            pc_image::create::packages(&store.store).unwrap(),
-            tags,
-            marks,
-        )
+            .iter()
+            .any(|p| p.reference == "newer-kiselev:r1"));
+        let choices = crate::library_worker::store_choices(&store.store).unwrap();
+        assert!(choices.1.iter().any(|(name, _)| name == "newer-kiselev:r1"));
+        assert!(!choices.0.iter().any(|p| p.reference == "newer-kiselev:r1"));
+        choices
     }
 
-    /// A package this release does not read is offered among the misfits
-    /// with "Needs unemupc X or newer" and is never chosen.
     #[test]
-    fn a_package_that_needs_a_newer_release_is_offered_with_the_reason() {
+    fn store_choices_excludes_a_newer_package_and_keeps_the_wizard_usable() {
         let Some(store) = FirmwareStore::new(true) else {
             return;
         };
@@ -1574,13 +1565,40 @@ mod tests {
         wizard.set_store(choices);
         let (fits, misfits) = wizard.offers(Slot::Bios);
         assert_eq!(offer_names(&fits), ["unemu-at-bios-1.0.2-unemu.3"]);
-        let newer = misfits
+        assert!(!misfits
             .iter()
-            .find(|o| o.name == "Kiselev AT BIOS (private copy)")
-            .unwrap();
-        assert_eq!(newer.reasons, ["Needs unemupc 99.0.0 or newer"]);
+            .any(|o| o.name == "Kiselev AT BIOS (private copy)"));
         wizard.filter = "private copy".into();
         assert!(wizard.offers(Slot::Bios).0.is_empty());
+    }
+
+    #[test]
+    fn store_choices_keeps_the_wizard_usable_with_an_unrelated_newer_machine() {
+        let Some(store) = FirmwareStore::new(false) else {
+            return;
+        };
+        let row = crate::image_settings::tests::open_image(&store);
+        let newer = crate::library_test_support::tag_newer(
+            &store.store,
+            &row.reference,
+            "newer-machine:r1",
+            Some("99.0.0"),
+            true,
+        );
+        let choices = crate::library_worker::store_choices(&store.store).unwrap();
+        assert!(choices
+            .1
+            .contains(&("newer-machine:r1".into(), newer.digest)));
+        assert!(choices
+            .0
+            .iter()
+            .any(|p| p.config.name == "unemu-at-bios-1.0.2-unemu.3"));
+        let mut wizard = Wizard::new();
+        wizard.set_store(choices);
+        assert_eq!(
+            offer_names(&wizard.offers(Slot::Bios).0),
+            ["unemu-at-bios-1.0.2-unemu.3"]
+        );
     }
 
     #[test]
